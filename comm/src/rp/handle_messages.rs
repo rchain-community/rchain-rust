@@ -121,7 +121,7 @@ pub async fn handle_protocol_handshake<T: TransportLayer + ?Sized>(
         let response = protocol_helper::protocol_handshake_response(&conf.local, &conf.network_id);
         if transport.send(peer, response).await.is_ok() {
             let mut conns = connections.write().await;
-            *conns = add_conn(&*conns, &[peer.clone()]);
+            *conns = add_conn(&*conns, std::slice::from_ref(peer));
         }
     }
     CommunicationResponse::handled_without_message()

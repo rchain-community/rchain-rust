@@ -49,19 +49,14 @@ fn ssdp_discover() -> Vec<SsdpResponse> {
 
     let mut results = Vec::new();
     let mut buf = [0u8; 8192];
-    loop {
-        match socket.recv_from(&mut buf) {
-            Ok((len, _src)) => {
-                let text = String::from_utf8_lossy(&buf[..len]);
-                if let Some(location) = header(&text, "LOCATION") {
-                    let search_type = header(&text, "ST").unwrap_or_default();
-                    results.push(SsdpResponse {
-                        location,
-                        search_type,
-                    });
-                }
-            }
-            Err(_) => break, // read timeout
+    while let Ok((len, _src)) = socket.recv_from(&mut buf) {
+        let text = String::from_utf8_lossy(&buf[..len]);
+        if let Some(location) = header(&text, "LOCATION") {
+            let search_type = header(&text, "ST").unwrap_or_default();
+            results.push(SsdpResponse {
+                location,
+                search_type,
+            });
         }
     }
     results

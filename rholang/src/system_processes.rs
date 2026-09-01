@@ -1278,7 +1278,7 @@ impl SystemProcesses {
                 {
                     let old_nonce = RhoTupleN::unapply(&stored)
                         .and_then(|ps| ps.first())
-                        .and_then(|n| RhoNumber::unapply(n))
+                        .and_then(RhoNumber::unapply)
                         .unwrap_or(0);
                     if nonce <= old_nonce {
                         return cc.produce(&rand, &[RhoNil::apply()], ret).await;
@@ -1454,9 +1454,9 @@ impl SystemProcesses {
                         // Unauthenticated mint removed (issue #4): the Scala RevVault mints REV
                         // only via the genesis `init` path; a deploy callable `deposit` would let
                         // any deploy create REV from nothing.
-                        return Err(illegal_arg(
+                        Err(illegal_arg(
                             "revVault: deposit is not callable (REV is minted at genesis only)",
-                        ));
+                        ))
                     }
                     "transfer" => {
                         let [deployer_id, to, amount, ret] = rest else {

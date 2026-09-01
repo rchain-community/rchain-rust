@@ -14,7 +14,7 @@ use crate::transport::transport_layer::TransportLayer;
 
 /// Stream a blob to a single peer (port of `stream1`).
 pub async fn stream1<T: TransportLayer + ?Sized>(transport: &T, peer: &PeerNode, blob: Blob) {
-    transport.stream(&[peer.clone()], blob).await;
+    transport.stream(std::slice::from_ref(peer), blob).await;
 }
 
 /// Send a packet to a peer, wrapped in a protocol message (port of `sendToPeer`).

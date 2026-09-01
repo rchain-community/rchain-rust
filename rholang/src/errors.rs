@@ -53,9 +53,9 @@ pub enum RholangError {
     UnexpectedBundleContent(String),
     UnrecognizedNormalizerError(String),
     OutOfPhlogistonsError,
-    TopLevelWildcardsNotAllowedError(Par),
-    TopLevelFreeVariablesNotAllowedError(Par),
-    TopLevelLogicalConnectivesNotAllowedError(Par),
+    TopLevelWildcardsNotAllowedError(Box<Par>),
+    TopLevelFreeVariablesNotAllowedError(Box<Par>),
+    TopLevelLogicalConnectivesNotAllowedError(Box<Par>),
     SubstituteError {
         term: Var,
     },

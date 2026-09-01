@@ -463,7 +463,7 @@ mod tests {
 
         assert_eq!(Costs::to_byte_array_cost(&par).value, len);
         assert_eq!(Costs::to_byte_array_cost(&par).operation, "to byte array");
-        assert_eq!(Costs::storage_cost(&[par.clone()]).value, len);
+        assert_eq!(Costs::storage_cost(std::slice::from_ref(&par)).value, len);
         assert_eq!(Costs::equality_check_cost(&par, &par).value, len);
     }
 }

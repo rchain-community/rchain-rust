@@ -300,8 +300,8 @@ mod tests {
         let v1 = validator(1);
         let v2 = validator(2);
         let mut bonds = BTreeMap::new();
-        bonds.insert(v1.clone(), NonNegI64::try_from(10).unwrap());
-        bonds.insert(v2.clone(), NonNegI64::try_from(20).unwrap());
+        bonds.insert(v1, NonNegI64::try_from(10).unwrap());
+        bonds.insert(v2, NonNegI64::try_from(20).unwrap());
         native.set_bonds(&bonds);
 
         native.slash(&v1).await.unwrap().unwrap();

@@ -1693,16 +1693,16 @@ fn normalize_term(term: &Proc, env: &BTreeMap<String, Par>) -> Result<Par, Rhola
     if normalized.free_map.count() > 0 {
         if normalized.free_map.wildcards.is_empty() && normalized.free_map.connectives.is_empty() {
             Err(RholangError::TopLevelFreeVariablesNotAllowedError(
-                normalized.par,
+                Box::new(normalized.par),
             ))
         } else if !normalized.free_map.connectives.is_empty() {
             Err(RholangError::TopLevelLogicalConnectivesNotAllowedError(
-                normalized.par,
+                Box::new(normalized.par),
             ))
         } else {
-            Err(RholangError::TopLevelWildcardsNotAllowedError(
+            Err(RholangError::TopLevelWildcardsNotAllowedError(Box::new(
                 normalized.par,
-            ))
+            )))
         }
     } else {
         Ok(normalized.par)
