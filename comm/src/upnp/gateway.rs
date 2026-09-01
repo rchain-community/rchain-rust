@@ -129,7 +129,7 @@ fn is_ssrf_unsafe_host(host: &str) -> bool {
             ip.is_unspecified()
                 || ip.is_loopback()
                 || ip.is_multicast()
-                || (ip.segments()[0] & 0xfe00) == 0xfe80 // link-local fe80::/10
+                || (ip.segments()[0] & 0xffc0) == 0xfe80 // link-local fe80::/10
         }
         Err(_) => false, // hostname, not an IP-based SSRF target
     }
