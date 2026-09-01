@@ -291,7 +291,14 @@ impl Graphz {
             GraphType::Graph => " -- ",
             GraphType::DiGraph => " -> ",
         };
-        ser.push_line(&format!("{}{}{}{}{}", self.t, quote(src), sep, quote(dst), attr));
+        ser.push_line(&format!(
+            "{}{}{}{}{}",
+            self.t,
+            quote(src),
+            sep,
+            quote(dst),
+            attr
+        ));
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -387,7 +394,11 @@ fn insert<S: GraphSerializer>(
 mod tests {
     use super::*;
 
-    fn build(name: &str, gtype: GraphType, f: impl FnOnce(&Graphz, &mut StringSerializer)) -> String {
+    fn build(
+        name: &str,
+        gtype: GraphType,
+        f: impl FnOnce(&Graphz, &mut StringSerializer),
+    ) -> String {
         let mut ser = StringSerializer::new();
         let g = Graphz::new(name, gtype, &mut ser);
         f(&g, &mut ser);
@@ -439,7 +450,16 @@ mod tests {
     fn digraph_nodes_with_style() {
         let out = build("G", GraphType::DiGraph, |g, ser| {
             g.node("Hello", GraphShape::Box, None, None, None, None, None, ser);
-            g.node("World", GraphShape::DoubleCircle, None, None, None, None, None, ser);
+            g.node(
+                "World",
+                GraphShape::DoubleCircle,
+                None,
+                None,
+                None,
+                None,
+                None,
+                ser,
+            );
             g.edge("Hello", "World", None, None, None, ser);
         });
         assert_eq!(
@@ -545,24 +565,87 @@ mod tests {
     #[test]
     fn blockchain_simple() {
         fn lvl1(ser: &mut StringSerializer) {
-            let sg = Graphz::subgraph("", GraphType::DiGraph, ser, None, Some(GraphRank::Same), None, None, None);
+            let sg = Graphz::subgraph(
+                "",
+                GraphType::DiGraph,
+                ser,
+                None,
+                Some(GraphRank::Same),
+                None,
+                None,
+                None,
+            );
             sg.node("1", GraphShape::Circle, None, None, None, None, None, ser);
             sg.node("ddeecc", GraphShape::Box, None, None, None, None, None, ser);
             sg.node("ffeeff", GraphShape::Box, None, None, None, None, None, ser);
             sg.close(ser);
         }
         fn lvl0(ser: &mut StringSerializer) {
-            let sg = Graphz::subgraph("", GraphType::DiGraph, ser, None, Some(GraphRank::Same), None, None, None);
+            let sg = Graphz::subgraph(
+                "",
+                GraphType::DiGraph,
+                ser,
+                None,
+                Some(GraphRank::Same),
+                None,
+                None,
+                None,
+            );
             sg.node("0", GraphShape::Circle, None, None, None, None, None, ser);
             sg.node("000000", GraphShape::Box, None, None, None, None, None, ser);
             sg.close(ser);
         }
         fn timeline(ser: &mut StringSerializer) {
-            let sg = Graphz::subgraph("timeline", GraphType::DiGraph, ser, None, None, None, None, None);
-            sg.node("3", GraphShape::PlainText, None, None, None, None, None, ser);
-            sg.node("2", GraphShape::PlainText, None, None, None, None, None, ser);
-            sg.node("1", GraphShape::PlainText, None, None, None, None, None, ser);
-            sg.node("0", GraphShape::PlainText, None, None, None, None, None, ser);
+            let sg = Graphz::subgraph(
+                "timeline",
+                GraphType::DiGraph,
+                ser,
+                None,
+                None,
+                None,
+                None,
+                None,
+            );
+            sg.node(
+                "3",
+                GraphShape::PlainText,
+                None,
+                None,
+                None,
+                None,
+                None,
+                ser,
+            );
+            sg.node(
+                "2",
+                GraphShape::PlainText,
+                None,
+                None,
+                None,
+                None,
+                None,
+                ser,
+            );
+            sg.node(
+                "1",
+                GraphShape::PlainText,
+                None,
+                None,
+                None,
+                None,
+                None,
+                ser,
+            );
+            sg.node(
+                "0",
+                GraphShape::PlainText,
+                None,
+                None,
+                None,
+                None,
+                None,
+                ser,
+            );
             sg.edge("0", "1", None, None, None, ser);
             sg.edge("1", "2", None, None, None, ser);
             sg.edge("2", "3", None, None, None, ser);
@@ -616,7 +699,14 @@ mod tests {
         let mut ser = StringSerializer::new();
         let g = Graphz::new("G", GraphType::DiGraph, &mut ser);
         for i in 1..=1000 {
-            g.edge(&format!("e{i}"), &format!("e{}", i + 1), None, None, None, &mut ser);
+            g.edge(
+                &format!("e{i}"),
+                &format!("e{}", i + 1),
+                None,
+                None,
+                None,
+                &mut ser,
+            );
         }
         g.close(&mut ser);
         let out = ser.into_string();

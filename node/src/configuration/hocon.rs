@@ -150,8 +150,7 @@ fn to_f64(h: &Hocon) -> Result<f64, String> {
 fn to_duration(h: &Hocon) -> Result<Duration, String> {
     match h {
         Hocon::Integer(nanos) => {
-            let nanos =
-                u64::try_from(*nanos).map_err(|_| format!("negative duration: {nanos}"))?;
+            let nanos = u64::try_from(*nanos).map_err(|_| format!("negative duration: {nanos}"))?;
             Ok(Duration::from_nanos(nanos))
         }
         Hocon::String(s) => parse_duration(s).ok_or_else(|| format!("invalid duration `{s}`")),
@@ -303,9 +302,10 @@ fn casper_conf_from_hocon(h: &Hocon) -> Result<CasperConf, String> {
         requested_blocks_timeout: to_duration(get(h, "requested-blocks-timeout")?)?,
         max_number_of_parents: to_i32(get(h, "max-number-of-parents")?)?,
         fork_choice_stale_threshold: to_duration(get(h, "fork-choice-stale-threshold")?)?,
-        fork_choice_check_if_stale_interval: to_duration(
-            get(h, "fork-choice-check-if-stale-interval")?,
-        )?,
+        fork_choice_check_if_stale_interval: to_duration(get(
+            h,
+            "fork-choice-check-if-stale-interval",
+        )?)?,
         synchrony_constraint_threshold: to_f64(get(h, "synchrony-constraint-threshold")?)?,
         height_constraint_threshold: to_i64(get(h, "height-constraint-threshold")?)?,
         genesis_block_data: genesis_block_data_from_hocon(get(h, "genesis-block-data")?)?,

@@ -66,5 +66,10 @@ async fn rho_examples_parse_and_reduce() {
     for f in &failures {
         println!("FAIL {f}");
     }
-    assert!(failures.is_empty(), "{} of {} examples failed", failures.len(), EXAMPLES.len());
+    assert!(
+        failures.is_empty(),
+        "{} of {} examples failed",
+        failures.len(),
+        EXAMPLES.len()
+    );
 }

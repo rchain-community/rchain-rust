@@ -15,7 +15,9 @@ use crate::hashing::stable_hash_provider::hash_channel;
 use crate::history::history_repository::HistoryRepository;
 use crate::hot_store::{HotStore, InMemHotStore};
 use crate::i_space::ISpace;
-use crate::internal::{ConsumeCandidate, Datum, Install, ProduceCandidate, Row, WaitingContinuation};
+use crate::internal::{
+    ConsumeCandidate, Datum, Install, ProduceCandidate, Row, WaitingContinuation,
+};
 use crate::match_::Match;
 use crate::native_store::{InMemNativeStore, NativeStoreState};
 use crate::replay_rspace::ReplayRSpace;
@@ -24,8 +26,10 @@ use crate::trace::event::{Comm, Consume, Event, Produce};
 use crate::trace::Log;
 use crate::tuple_space::{ContResult, Result, Tuplespace};
 
-type MaybeActionResult<C, P, A, K> =
-    std::result::Result<Option<(ContResult<C, P, K>, Vec<Result<C, A>>)>, crate::errors::RSpaceError>;
+type MaybeActionResult<C, P, A, K> = std::result::Result<
+    Option<(ContResult<C, P, K>, Vec<Result<C, A>>)>,
+    crate::errors::RSpaceError,
+>;
 type MaybeProduceCandidate<C, P, A, K> =
     std::result::Result<Option<ProduceCandidate<C, P, A, K>>, crate::errors::RSpaceError>;
 
@@ -111,25 +115,21 @@ where
     }
 
     fn current_history(&self) -> Arc<HistoryRepository<C, P, A, K>> {
-        crate::lock::rlock(&self.history_repository)
-            .clone()
+        crate::lock::rlock(&self.history_repository).clone()
     }
 
     fn log_comm(&self, comm: Comm) -> Comm {
-        crate::lock::wlock(&self.event_log)
-            .insert(0, Event::Comm(comm.clone()));
+        crate::lock::wlock(&self.event_log).insert(0, Event::Comm(comm.clone()));
         comm
     }
 
     fn log_consume(&self, consume_ref: Consume) -> Consume {
-        crate::lock::wlock(&self.event_log)
-            .insert(0, Event::Consume(consume_ref.clone()));
+        crate::lock::wlock(&self.event_log).insert(0, Event::Consume(consume_ref.clone()));
         consume_ref
     }
 
     fn log_produce(&self, produce_ref: Produce, persist: bool) -> Produce {
-        crate::lock::wlock(&self.event_log)
-            .insert(0, Event::Produce(produce_ref.clone()));
+        crate::lock::wlock(&self.event_log).insert(0, Event::Produce(produce_ref.clone()));
         if !persist {
             let mut counter = crate::lock::wlock(&self.produce_counter);
             *counter.entry(produce_ref.clone()).or_insert(0) += 1;
@@ -145,8 +145,11 @@ where
         let mut map = BTreeMap::new();
         for c in channels {
             let data = store.get_data(c).await?;
-            let mut indexed: Vec<(Datum<A>, i64)> =
-                data.into_iter().enumerate().map(|(i, d)| (d, i as i64)).collect();
+            let mut indexed: Vec<(Datum<A>, i64)> = data
+                .into_iter()
+                .enumerate()
+                .map(|(i, d)| (d, i as i64))
+                .collect();
             // Content-addressed selection: sort candidates by their produce hash so the sorted-first
             // matching datum is chosen regardless of insertion order (Law 4/8).
             indexed.sort_by(|a, b| a.0.source.cmp(&b.0.source));
@@ -260,13 +263,19 @@ where
         let store = self.current_store();
         for channels in grouped_channels {
             let conts = store.get_continuations(channels).await?;
-            let match_candidates: Vec<(WaitingContinuation<P, K>, usize)> =
-                conts.into_iter().enumerate().map(|(i, wc)| (wc, i)).collect();
+            let match_candidates: Vec<(WaitingContinuation<P, K>, usize)> = conts
+                .into_iter()
+                .enumerate()
+                .map(|(i, wc)| (wc, i))
+                .collect();
             let mut channel_to_indexed_data = BTreeMap::new();
             for c in channels {
                 let data_list = store.get_data(c).await?;
-                let mut indexed: Vec<(Datum<A>, i64)> =
-                    data_list.into_iter().enumerate().map(|(i, d)| (d, i as i64)).collect();
+                let mut indexed: Vec<(Datum<A>, i64)> = data_list
+                    .into_iter()
+                    .enumerate()
+                    .map(|(i, d)| (d, i as i64))
+                    .collect();
                 // Sort the stored data by content hash, then prepend the in-flight datum so it stays
                 // the first candidate on its producing channel (the produce's own data).
                 indexed.sort_by(|a, b| a.0.source.cmp(&b.0.source));
@@ -400,8 +409,11 @@ where
         let mut channel_to_indexed_data = BTreeMap::new();
         for c in channels {
             let data = store.get_data(c).await?;
-            let indexed: Vec<(Datum<A>, i64)> =
-                data.into_iter().enumerate().map(|(i, d)| (d, i as i64)).collect();
+            let indexed: Vec<(Datum<A>, i64)> = data
+                .into_iter()
+                .enumerate()
+                .map(|(i, d)| (d, i as i64))
+                .collect();
             channel_to_indexed_data.insert(c.clone(), indexed);
         }
         let options = extract_data_candidates(
@@ -465,7 +477,14 @@ where
         );
         let consume_ref = Consume::apply(channels, patterns, &continuation, persist);
         let hashes: Vec<Blake2b256Hash> = channels.iter().map(hash_channel).collect();
-        let thunk = self.locked_consume(channels, patterns, continuation, persist, peeks, consume_ref);
+        let thunk = self.locked_consume(
+            channels,
+            patterns,
+            continuation,
+            persist,
+            peeks,
+            consume_ref,
+        );
         self.lock_f
             .acquire(&hashes, Box::pin(async { Ok(hashes.clone()) }), thunk)
             .await?
@@ -523,7 +542,9 @@ where
         let native_changes = self.native_store.drain_changes();
         let next_history = {
             let history = self.current_history();
-            history.checkpoint_with_native(&changes, &native_changes).await?
+            history
+                .checkpoint_with_native(&changes, &native_changes)
+                .await?
         };
         *crate::lock::wlock(&self.history_repository) = next_history.clone();
         let log = std::mem::take(&mut *crate::lock::wlock(&self.event_log));
@@ -556,7 +577,10 @@ where
         Ok(())
     }
 
-    async fn get_data(&self, channel: &C) -> std::result::Result<Vec<Datum<A>>, crate::errors::RSpaceError> {
+    async fn get_data(
+        &self,
+        channel: &C,
+    ) -> std::result::Result<Vec<Datum<A>>, crate::errors::RSpaceError> {
         self.current_store().get_data(channel).await
     }
 
@@ -567,7 +591,10 @@ where
         self.current_store().get_continuations(channels).await
     }
 
-    async fn get_joins(&self, channel: &C) -> std::result::Result<Vec<Vec<C>>, crate::errors::RSpaceError> {
+    async fn get_joins(
+        &self,
+        channel: &C,
+    ) -> std::result::Result<Vec<Vec<C>>, crate::errors::RSpaceError> {
         self.current_store().get_joins(channel).await
     }
 
@@ -618,15 +645,20 @@ mod tests {
 
     async fn space() -> Arc<RSpace<String, String, String, String>> {
         let manager = InMemoryStoreManager::default();
-        crate::factory::create_rspace::<String, String, String, String>(&manager, Arc::new(StrMatch))
-            .await
-            .unwrap()
+        crate::factory::create_rspace::<String, String, String, String>(
+            &manager,
+            Arc::new(StrMatch),
+        )
+        .await
+        .unwrap()
     }
 
     #[tokio::test]
     async fn checkpoint_reset_returns_persisted_data() {
         let s = space().await;
-        s.produce("c".to_string(), "data".to_string(), false).await.unwrap();
+        s.produce("c".to_string(), "data".to_string(), false)
+            .await
+            .unwrap();
         let cp = s.create_checkpoint().await.unwrap();
         s.reset(cp.root).await.unwrap();
         let data = s.get_data(&"c".to_string()).await.unwrap();
@@ -638,7 +670,9 @@ mod tests {
     async fn soft_checkpoint_revert_rolls_back_produces() {
         let s = space().await;
         let soft = s.create_soft_checkpoint().await;
-        s.produce("c".to_string(), "extra".to_string(), false).await.unwrap();
+        s.produce("c".to_string(), "extra".to_string(), false)
+            .await
+            .unwrap();
         s.revert_to_soft_checkpoint(soft).await;
         assert!(
             s.get_data(&"c".to_string()).await.unwrap().is_empty(),
@@ -666,7 +700,10 @@ mod tests {
             .produce("c".to_string(), "d1".to_string(), false)
             .await
             .unwrap();
-        assert!(first.is_some(), "persistent continuation must match the first produce");
+        assert!(
+            first.is_some(),
+            "persistent continuation must match the first produce"
+        );
 
         let joins = s.get_joins(&"c".to_string()).await.unwrap();
         assert_eq!(
@@ -679,6 +716,9 @@ mod tests {
             .produce("c".to_string(), "d2".to_string(), false)
             .await
             .unwrap();
-        assert!(second.is_some(), "persistent continuation must match the second produce too");
+        assert!(
+            second.is_some(),
+            "persistent continuation must match the second produce too"
+        );
     }
 }

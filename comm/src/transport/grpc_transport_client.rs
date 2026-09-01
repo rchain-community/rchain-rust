@@ -79,16 +79,18 @@ impl GrpcTransportClient {
         let host = peer.endpoint.host.clone();
         let port = peer.endpoint.tcp_port;
 
-        Ok(endpoint.connect_with_connector_lazy(service_fn(move |_: Uri| {
-            let connector = connector.clone();
-            let server_name = server_name.clone();
-            let host = host.clone();
-            async move {
-                let tcp = TcpStream::connect((host.as_str(), u16::from(port))).await?;
-                let tls = connector.connect(server_name, tcp).await?;
-                Ok::<_, std::io::Error>(TokioIo::new(tls))
-            }
-        })))
+        Ok(
+            endpoint.connect_with_connector_lazy(service_fn(move |_: Uri| {
+                let connector = connector.clone();
+                let server_name = server_name.clone();
+                let host = host.clone();
+                async move {
+                    let tcp = TcpStream::connect((host.as_str(), u16::from(port))).await?;
+                    let tls = connector.connect(server_name, tcp).await?;
+                    Ok::<_, std::io::Error>(TokioIo::new(tls))
+                }
+            })),
+        )
     }
 
     async fn get_channel(&self, peer: &PeerNode) -> Result<Channel, CommError> {
@@ -112,11 +114,14 @@ impl GrpcTransportClient {
 impl TransportLayer for GrpcTransportClient {
     async fn send(&self, peer: &PeerNode, msg: Protocol) -> CommErr<()> {
         let channel = self.get_channel(peer).await?;
-        let mut client = TransportLayerClient::new(channel)
-            .max_decoding_message_size(self.max_message_size);
-        tokio::time::timeout(DEFAULT_SEND_TIMEOUT, grpc_transport::send(&mut client, peer, msg))
-            .await
-            .map_err(|_| CommError::TimeOut)?
+        let mut client =
+            TransportLayerClient::new(channel).max_decoding_message_size(self.max_message_size);
+        tokio::time::timeout(
+            DEFAULT_SEND_TIMEOUT,
+            grpc_transport::send(&mut client, peer, msg),
+        )
+        .await
+        .map_err(|_| CommError::TimeOut)?
     }
 
     async fn broadcast(&self, peers: &[PeerNode], msg: Protocol) -> Vec<CommErr<()>> {

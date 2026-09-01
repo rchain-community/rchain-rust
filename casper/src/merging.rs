@@ -9,7 +9,6 @@ use std::hash::{Hash, Hasher};
 use std::sync::{Mutex, OnceLock};
 
 use rchain_block_storage::block_store::BlockStore;
-use rchain_shared::refined::NonNegI64;
 use rchain_block_storage::dag::finalizer::Message;
 use rchain_block_storage::dag::message_map;
 use rchain_crypto::hash::blake2b256_hash::Blake2b256Hash;
@@ -36,6 +35,7 @@ use rchain_sdk::dag::merging::{
     compute_dependency_map, compute_greedy_non_intersecting_branches,
     compute_relation_map_for_merge_set, resolve_conflict_set,
 };
+use rchain_shared::refined::NonNegI64;
 use rchain_shared::serialize::Serialize;
 
 use crate::block_random_seed::BlockRandomSeed;
@@ -164,12 +164,12 @@ impl DeployChainIndex {
             .iter()
             .flat_map(|d| d.deploys_with_cost.iter().map(|x| &x.id))
             .collect();
-        let a_event = a
-            .iter()
-            .fold(EventLogIndex::empty(), |acc, d| EventLogIndex::combine(&acc, &d.event_log_index));
-        let b_event = b
-            .iter()
-            .fold(EventLogIndex::empty(), |acc, d| EventLogIndex::combine(&acc, &d.event_log_index));
+        let a_event = a.iter().fold(EventLogIndex::empty(), |acc, d| {
+            EventLogIndex::combine(&acc, &d.event_log_index)
+        });
+        let b_event = b.iter().fold(EventLogIndex::empty(), |acc, d| {
+            EventLogIndex::combine(&acc, &d.event_log_index)
+        });
         !a_ids.is_disjoint(&b_ids) || are_conflicting(&a_event, &b_event)
     }
 
@@ -211,12 +211,8 @@ impl DeployChainIndex {
         let post_reader = history_repository.get_history_reader(post_state_hash).await;
         let post_binary = post_reader.reader_binary();
 
-        let state_changes = StateChange::apply(
-            pre_binary.as_ref(),
-            post_binary.as_ref(),
-            &event_log_index,
-        )
-        .await?;
+        let state_changes =
+            StateChange::apply(pre_binary.as_ref(), post_binary.as_ref(), &event_log_index).await?;
 
         Ok(DeployChainIndex {
             host_block,
@@ -380,10 +376,9 @@ impl BlockIndex {
         }
 
         // Deploys in a block execute sequentially, so there are only dependencies (no conflicts).
-        let dependency_map =
-            compute_dependency_map(&deploy_indices, &deploy_indices, |l, r| {
-                depends(&l.event_log_index, &r.event_log_index)
-            });
+        let dependency_map = compute_dependency_map(&deploy_indices, &deploy_indices, |l, r| {
+            depends(&l.event_log_index, &r.event_log_index)
+        });
         let deploy_chains =
             compute_greedy_non_intersecting_branches(&deploy_indices, &dependency_map);
 
@@ -419,7 +414,10 @@ fn sys_deploy_id(block_hash: &BlockHash, prefix: u8) -> Vec<u8> {
 /// The in-memory block-index cache (port of `BlockIndex.cache`).
 static BLOCK_INDEX_CACHE: OnceLock<Mutex<BTreeMap<BlockHash, BlockIndex>>> = OnceLock::new();
 
-async fn get_block_unsafe(block_store: &BlockStore, hash: &BlockHash) -> Result<BlockMessage, String> {
+async fn get_block_unsafe(
+    block_store: &BlockStore,
+    hash: &BlockHash,
+) -> Result<BlockMessage, String> {
     let mut vals = block_store.get(&[*hash]).await?;
     vals.pop()
         .flatten()
@@ -434,7 +432,11 @@ impl BlockIndex {
         block_hash: BlockHash,
     ) -> Result<BlockIndex, String> {
         let cache = BLOCK_INDEX_CACHE.get_or_init(|| Mutex::new(BTreeMap::new()));
-        if let Some(idx) = cache.lock().unwrap_or_else(|p| p.into_inner()).get(&block_hash) {
+        if let Some(idx) = cache
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(&block_hash)
+        {
             return Ok(idx.clone());
         }
 
@@ -443,7 +445,11 @@ impl BlockIndex {
         let pre_state_hash = Blake2b256Hash::from_byte_array(block.pre_state_hash.as_bytes());
         let post_state_hash = Blake2b256Hash::from_byte_array(block.post_state_hash.as_bytes());
         let mergeable_chs = match runtime
-            .load_mergeable_channels(post_state_hash.as_bytes(), &sender, i64::from(block.seq_num))
+            .load_mergeable_channels(
+                post_state_hash.as_bytes(),
+                &sender,
+                i64::from(block.seq_num),
+            )
             .await
         {
             Ok(channels) => channels,
@@ -521,7 +527,10 @@ impl BlockIndex {
         )
         .await?;
 
-        cache.lock().unwrap_or_else(|p| p.into_inner()).insert(block_hash, index.clone());
+        cache
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(block_hash, index.clone());
         Ok(index)
     }
 
@@ -738,9 +747,9 @@ impl MergeScope {
         let base_reader = history_reader.reader_binary();
 
         // Combine all state changes + mergeable diffs.
-        let all_changes = to_merge
-            .iter()
-            .fold(StateChange::empty(), |acc, b| StateChange::combine(&acc, &b.state_changes));
+        let all_changes = to_merge.iter().fold(StateChange::empty(), |acc, b| {
+            StateChange::combine(&acc, &b.state_changes)
+        });
         let mut mergeable_diffs: NumberChannelsDiff = BTreeMap::new();
         for b in to_merge {
             for (k, v) in &b.event_log_index.number_channels_data {
@@ -754,7 +763,11 @@ impl MergeScope {
             HotStoreTrieAction<SortedProc, BindPattern, ListParWithRandom, TaggedContinuation>,
         > = BTreeMap::new();
         for (hash, diff) in &mergeable_diffs {
-            let changes = all_changes.datums_changes.get(hash).cloned().unwrap_or_default();
+            let changes = all_changes
+                .datums_changes
+                .get(hash)
+                .cloned()
+                .unwrap_or_default();
             let action =
                 calculate_number_channel_merge(*hash, *diff, &changes, history_reader.as_ref())
                     .await?;
@@ -788,10 +801,7 @@ mod tests {
     fn chain(id: u8, cost: i64) -> DeployChainIndex {
         DeployChainIndex {
             host_block: Blake2b256Hash::from_bytes([id; 32]),
-            deploys_with_cost: BTreeSet::from([DeployIdWithCost {
-                id: vec![id],
-                cost,
-            }]),
+            deploys_with_cost: BTreeSet::from([DeployIdWithCost { id: vec![id], cost }]),
             pre_state_hash: Blake2b256Hash::from_bytes([0u8; 32]),
             post_state_hash: Blake2b256Hash::from_bytes([0u8; 32]),
             event_log_index: EventLogIndex::empty(),
@@ -827,7 +837,10 @@ mod tests {
         b.host_block = Blake2b256Hash::from_bytes([9; 32]);
         assert!(DeployChainIndex::deploys_are_conflicting(&a, &b));
         // Different ids, empty event logs -> not conflicting.
-        assert!(!DeployChainIndex::deploys_are_conflicting(&chain(1, 5), &chain(2, 5)));
+        assert!(!DeployChainIndex::deploys_are_conflicting(
+            &chain(1, 5),
+            &chain(2, 5)
+        ));
     }
 
     fn msg(id: u8, parents: &[u8], seen: &[u8]) -> Message<BlockHash, Validator> {

@@ -80,10 +80,19 @@ impl ReportingCasper for NoopReportingCasper {
 /// `ReportingProtoTransformer`).
 pub struct ReportingProtoTransformer;
 
-impl ReportingTransformer<SortedProc, BindPattern, ListParWithRandom, TaggedContinuation, ReportProto>
-    for ReportingProtoTransformer
+impl
+    ReportingTransformer<
+        SortedProc,
+        BindPattern,
+        ListParWithRandom,
+        TaggedContinuation,
+        ReportProto,
+    > for ReportingProtoTransformer
 {
-    fn serialize_consume(&self, rc: &ReportingConsume<SortedProc, BindPattern, TaggedContinuation>) -> ReportProto {
+    fn serialize_consume(
+        &self,
+        rc: &ReportingConsume<SortedProc, BindPattern, TaggedContinuation>,
+    ) -> ReportProto {
         ReportProto::Consume(ReportConsumeProto {
             channels: rc.channels.iter().map(|c| c.as_par().clone()).collect(),
             patterns: rc.patterns.clone(),
@@ -97,7 +106,10 @@ impl ReportingTransformer<SortedProc, BindPattern, ListParWithRandom, TaggedCont
         })
     }
 
-    fn serialize_produce(&self, rp: &ReportingProduce<SortedProc, ListParWithRandom>) -> ReportProto {
+    fn serialize_produce(
+        &self,
+        rp: &ReportingProduce<SortedProc, ListParWithRandom>,
+    ) -> ReportProto {
         ReportProto::Produce(ReportProduceProto {
             channel: rp.channel.as_par().clone(),
             data: rp.data.clone(),
@@ -109,7 +121,12 @@ impl ReportingTransformer<SortedProc, BindPattern, ListParWithRandom, TaggedCont
         rc: &ReportingComm<SortedProc, BindPattern, ListParWithRandom, TaggedContinuation>,
     ) -> ReportProto {
         let consume = ReportConsumeProto {
-            channels: rc.consume.channels.iter().map(|c| c.as_par().clone()).collect(),
+            channels: rc
+                .consume
+                .channels
+                .iter()
+                .map(|c| c.as_par().clone())
+                .collect(),
             patterns: rc.consume.patterns.clone(),
             peeks: rc
                 .consume
@@ -189,8 +206,7 @@ async fn replay_deploys(
             .replay_deploy_e(
                 term,
                 rand.split_byte(
-                    u8::try_from(i)
-                        .map_err(|_| "deploy count exceeds 255".to_string())?,
+                    u8::try_from(i).map_err(|_| "deploy count exceeds 255".to_string())?,
                 ),
                 with_cost_accounting,
             )

@@ -47,7 +47,11 @@ where
         }
     }
 
-    async fn fetch_data(&self, prefix: u8, key: Blake2b256Hash) -> Result<Option<PersistedData>, String> {
+    async fn fetch_data(
+        &self,
+        prefix: u8,
+        key: Blake2b256Hash,
+    ) -> Result<Option<PersistedData>, String> {
         let mut seg = vec![prefix];
         seg.extend_from_slice(key.as_bytes());
         match self.target_history.read(&KeySegment::new(seg)).await {
@@ -73,7 +77,11 @@ where
     }
 
     async fn get_data(&self, key: Blake2b256Hash) -> Result<Vec<Datum<A>>, RSpaceError> {
-        match self.fetch_data(PREFIX_DATUM, key).await.map_err(|_| RSpaceError::Codec("persisted data"))? {
+        match self
+            .fetch_data(PREFIX_DATUM, key)
+            .await
+            .map_err(|_| RSpaceError::Codec("persisted data"))?
+        {
             Some(PersistedData::DataLeaf(bytes)) => decode_datums(&bytes),
             Some(_) => Err(RSpaceError::UnexpectedLeaf("data")),
             None => Ok(Vec::new()),
@@ -84,7 +92,11 @@ where
         &self,
         key: Blake2b256Hash,
     ) -> Result<Vec<WaitingContinuation<P, K>>, RSpaceError> {
-        match self.fetch_data(PREFIX_KONT, key).await.map_err(|_| RSpaceError::Codec("persisted data"))? {
+        match self
+            .fetch_data(PREFIX_KONT, key)
+            .await
+            .map_err(|_| RSpaceError::Codec("persisted data"))?
+        {
             Some(PersistedData::ContinuationsLeaf(bytes)) => decode_continuations(&bytes),
             Some(_) => Err(RSpaceError::UnexpectedLeaf("continuations")),
             None => Ok(Vec::new()),
@@ -92,7 +104,11 @@ where
     }
 
     async fn get_joins(&self, key: Blake2b256Hash) -> Result<Vec<Vec<C>>, RSpaceError> {
-        match self.fetch_data(PREFIX_JOINS, key).await.map_err(|_| RSpaceError::Codec("persisted data"))? {
+        match self
+            .fetch_data(PREFIX_JOINS, key)
+            .await
+            .map_err(|_| RSpaceError::Codec("persisted data"))?
+        {
             Some(PersistedData::JoinsLeaf(bytes)) => decode_joins(&bytes),
             Some(_) => Err(RSpaceError::UnexpectedLeaf("joins")),
             None => Ok(Vec::new()),
@@ -104,7 +120,11 @@ where
         prefix: u8,
         key: Blake2b256Hash,
     ) -> Result<Option<Vec<u8>>, RSpaceError> {
-        match self.fetch_data(prefix, key).await.map_err(|_| RSpaceError::Codec("native"))? {
+        match self
+            .fetch_data(prefix, key)
+            .await
+            .map_err(|_| RSpaceError::Codec("native"))?
+        {
             Some(PersistedData::NativeLeaf(bytes)) => Ok(Some(bytes)),
             Some(_) => Err(RSpaceError::UnexpectedLeaf("native")),
             None => Ok(None),
@@ -218,7 +238,10 @@ where
         HistoryReader::get_data(self.reader.as_ref(), hash_channel(key)).await
     }
 
-    async fn get_continuations(&self, key: &[C]) -> Result<Vec<WaitingContinuation<P, K>>, RSpaceError> {
+    async fn get_continuations(
+        &self,
+        key: &[C],
+    ) -> Result<Vec<WaitingContinuation<P, K>>, RSpaceError> {
         HistoryReader::get_continuations(self.reader.as_ref(), hash_channels(key)).await
     }
 

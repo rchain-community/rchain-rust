@@ -15,8 +15,8 @@ use async_trait::async_trait;
 use num_bigint::BigInt;
 use rchain_crypto::hash::blake2b512_random::Blake2b512Random;
 use rchain_models::ast::{
-    AlwaysEqual, Bundle, EList, ETuple, Expr, GPrivate, GUnforgeable, Match, Name, New,
-    Par, ParMap, ParSet, Receive, ReceiveBind, Send, Sort, SortJoin, Var,
+    AlwaysEqual, Bundle, EList, ETuple, Expr, GPrivate, GUnforgeable, Match, Name, New, Par,
+    ParMap, ParSet, Receive, ReceiveBind, Send, Sort, SortJoin, Var,
 };
 use rchain_models::par_ops::{from_expr, par_concat, single_bundle, single_expr, typ};
 use rchain_models::runtime::{BindPattern, ListParWithRandom, ParWithRandom, TaggedContinuation};
@@ -37,11 +37,16 @@ fn union_free(a: Vec<i32>, b: Vec<i32>) -> Vec<i32> {
 
 /// Split the reduction RNG for the `i`-th of `n` sibling terms. This is the sequential
 /// interpreter's index-based split, preserved exactly so `new`-name freshness is unchanged.
-fn split_rand(rand: &Blake2b512Random, i: usize, n: usize) -> Result<Blake2b512Random, RholangError> {
+fn split_rand(
+    rand: &Blake2b512Random,
+    i: usize,
+    n: usize,
+) -> Result<Blake2b512Random, RholangError> {
     if n == 1 {
         Ok((*rand).clone())
     } else if n > 256 {
-        Ok(rand.split_short(u16::try_from(i).map_err(|e| RholangError::ReduceError(e.to_string()))?))
+        Ok(rand
+            .split_short(u16::try_from(i).map_err(|e| RholangError::ReduceError(e.to_string()))?))
     } else {
         Ok(rand.split_byte(u8::try_from(i).map_err(|e| RholangError::ReduceError(e.to_string()))?))
     }
@@ -77,9 +82,9 @@ pub fn update_locally_free(par: &Par) -> Par {
 fn eval_var(v: &Var, env: &Env<Par>, cost: &CostAccounting) -> Result<Par, RholangError> {
     cost.charge(Costs::var_eval_cost())?;
     match v {
-        Var::BoundVar(level) => env.get(*level).ok_or_else(|| {
-            RholangError::ReduceError(format!("Unbound variable: {level}"))
-        }),
+        Var::BoundVar(level) => env
+            .get(*level)
+            .ok_or_else(|| RholangError::ReduceError(format!("Unbound variable: {level}"))),
         Var::Wildcard | Var::FreeVar(_) => Err(RholangError::ReduceError(
             "Unbound variable: attempting to evaluate a pattern".to_string(),
         )),
@@ -169,10 +174,7 @@ fn relop(
     })
 }
 
-fn eval_to_string_pair(
-    key: &Expr,
-    value: &Expr,
-) -> Result<(String, String), RholangError> {
+fn eval_to_string_pair(key: &Expr, value: &Expr) -> Result<(String, String), RholangError> {
     match (key, value) {
         (Expr::GString(k), Expr::GString(v)) => Ok((k.clone(), v.clone())),
         (Expr::GString(k), Expr::GInt(v)) => Ok((k.clone(), v.to_string())),
@@ -193,7 +195,10 @@ fn interpolate(string: &str, pairs: &[(String, String)]) -> String {
     let mut result = String::new();
     let mut current = string;
     while !current.is_empty() {
-        match pairs.iter().find(|(k, _)| current.starts_with(&format!("${{{k}}}"))) {
+        match pairs
+            .iter()
+            .find(|(k, _)| current.starts_with(&format!("${{{k}}}")))
+        {
             Some((k, v)) => {
                 result.push_str(v);
                 current = &current[k.len() + 3..];
@@ -213,7 +218,11 @@ fn interpolate(string: &str, pairs: &[(String, String)]) -> String {
     result
 }
 
-fn eval_expr_to_par<S: Sort>(expr: &Expr, env: &Env<Par>, cost: &CostAccounting) -> Result<Par<S>, RholangError> {
+fn eval_expr_to_par<S: Sort>(
+    expr: &Expr,
+    env: &Env<Par>,
+    cost: &CostAccounting,
+) -> Result<Par<S>, RholangError> {
     match expr {
         Expr::EVar(v) => {
             let p = eval_var(v, env, cost)?;
@@ -227,13 +236,18 @@ fn eval_expr_to_par<S: Sort>(expr: &Expr, env: &Env<Par>, cost: &CostAccounting)
                 .iter()
                 .map(|a| eval_expr(a, env, cost))
                 .collect::<Result<_, _>>()?;
-            eval_method(&em.method_name, &evaled_target, &evaled_args, env, cost).map(|r| r.re_sort())
+            eval_method(&em.method_name, &evaled_target, &evaled_args, env, cost)
+                .map(|r| r.re_sort())
         }
         _ => Ok(from_expr(eval_expr_to_expr(expr, env, cost)?).re_sort()),
     }
 }
 
-fn eval_expr_to_expr(expr: &Expr, env: &Env<Par>, cost: &CostAccounting) -> Result<Expr, RholangError> {
+fn eval_expr_to_expr(
+    expr: &Expr,
+    env: &Env<Par>,
+    cost: &CostAccounting,
+) -> Result<Expr, RholangError> {
     match expr {
         Expr::GBool(_)
         | Expr::GInt(_)
@@ -415,14 +429,46 @@ fn eval_expr_to_expr(expr: &Expr, env: &Env<Par>, cost: &CostAccounting) -> Resu
                 }),
             }
         }
-        Expr::ELt(p1, p2) => relop(p1, p2, |a, b| a < b, |a, b| a < b, |a, b| a < b, |a, b| a < b, env, cost),
-        Expr::ELte(p1, p2) => {
-            relop(p1, p2, |a, b| a <= b, |a, b| a <= b, |a, b| a <= b, |a, b| a <= b, env, cost)
-        }
-        Expr::EGt(p1, p2) => relop(p1, p2, |a, b| a > b, |a, b| a > b, |a, b| a > b, |a, b| a > b, env, cost),
-        Expr::EGte(p1, p2) => {
-            relop(p1, p2, |a, b| a >= b, |a, b| a >= b, |a, b| a >= b, |a, b| a >= b, env, cost)
-        }
+        Expr::ELt(p1, p2) => relop(
+            p1,
+            p2,
+            |a, b| a < b,
+            |a, b| a < b,
+            |a, b| a < b,
+            |a, b| a < b,
+            env,
+            cost,
+        ),
+        Expr::ELte(p1, p2) => relop(
+            p1,
+            p2,
+            |a, b| a <= b,
+            |a, b| a <= b,
+            |a, b| a <= b,
+            |a, b| a <= b,
+            env,
+            cost,
+        ),
+        Expr::EGt(p1, p2) => relop(
+            p1,
+            p2,
+            |a, b| a > b,
+            |a, b| a > b,
+            |a, b| a > b,
+            |a, b| a > b,
+            env,
+            cost,
+        ),
+        Expr::EGte(p1, p2) => relop(
+            p1,
+            p2,
+            |a, b| a >= b,
+            |a, b| a >= b,
+            |a, b| a >= b,
+            |a, b| a >= b,
+            env,
+            cost,
+        ),
         Expr::EEq(p1, p2) => {
             let v1 = eval_expr(p1, env, cost)?;
             let v2 = eval_expr(p2, env, cost)?;
@@ -453,13 +499,21 @@ fn eval_expr_to_expr(expr: &Expr, env: &Env<Par>, cost: &CostAccounting) -> Resu
         }
         Expr::EShortAnd(p1, p2) => {
             let b1 = eval_to_bool(p1, env, cost)?;
-            let b2 = if b1 { eval_to_bool(p2, env, cost)? } else { false };
+            let b2 = if b1 {
+                eval_to_bool(p2, env, cost)?
+            } else {
+                false
+            };
             cost.charge(Costs::boolean_and_cost())?;
             Ok(Expr::GBool(b1 && b2))
         }
         Expr::EShortOr(p1, p2) => {
             let b1 = eval_to_bool(p1, env, cost)?;
-            let b2 = if b1 { true } else { eval_to_bool(p2, env, cost)? };
+            let b2 = if b1 {
+                true
+            } else {
+                eval_to_bool(p2, env, cost)?
+            };
             cost.charge(Costs::boolean_or_cost())?;
             Ok(Expr::GBool(b1 || b2))
         }
@@ -639,7 +693,11 @@ fn eval_expr_to_expr(expr: &Expr, env: &Env<Par>, cost: &CostAccounting) -> Resu
 }
 
 /// Evaluate the top-level expressions of a `Par` (port of `evalExpr`).
-pub fn eval_expr<S: Sort + SortJoin<S>>(par: &Par<S>, env: &Env<Par>, cost: &CostAccounting) -> Result<Par<S>, RholangError> {
+pub fn eval_expr<S: Sort + SortJoin<S>>(
+    par: &Par<S>,
+    env: &Env<Par>,
+    cost: &CostAccounting,
+) -> Result<Par<S>, RholangError> {
     let mut result = Par {
         exprs: Vec::new(),
         ..par.clone()
@@ -824,8 +882,7 @@ fn eval_method(
             // `mkProtobufInstance(Par)` — the protobuf serialization, not UTF-8).
             check_arity("toByteArray", 0, args.len())?;
             let substituted = substitute_par_and_charge(target, 0, env, cost)?;
-            let bytes =
-                <Par as rchain_shared::serialize::Serialize<Par>>::encode(&substituted);
+            let bytes = <Par as rchain_shared::serialize::Serialize<Par>>::encode(&substituted);
             cost.charge(Costs::to_byte_array_cost(&substituted))?;
             Ok(from_expr(Expr::GByteArray(bytes)))
         }
@@ -840,8 +897,10 @@ fn eval_method(
                     ps.extend(o.ps.clone());
                     let mut s = par_set(ps);
                     s.connective_used = b.connective_used || o.connective_used;
-                    s.locally_free =
-                        AlwaysEqual(union_free(b.locally_free.0.clone(), o.locally_free.0.clone()));
+                    s.locally_free = AlwaysEqual(union_free(
+                        b.locally_free.0.clone(),
+                        o.locally_free.0.clone(),
+                    ));
                     s.remainder = None;
                     Ok(from_expr(Expr::ESet(s)))
                 }
@@ -851,8 +910,10 @@ fn eval_method(
                     kvs.extend(o.kvs.clone());
                     let mut m = par_map(kvs);
                     m.connective_used = b.connective_used || o.connective_used;
-                    m.locally_free =
-                        AlwaysEqual(union_free(b.locally_free.0.clone(), o.locally_free.0.clone()));
+                    m.locally_free = AlwaysEqual(union_free(
+                        b.locally_free.0.clone(),
+                        o.locally_free.0.clone(),
+                    ));
                     m.remainder = None;
                     Ok(from_expr(Expr::EMap(m)))
                 }
@@ -895,8 +956,7 @@ fn eval_method(
                     ps.push(element);
                     let mut s = par_set(ps);
                     s.connective_used = b.connective_used || element_conn;
-                    s.locally_free =
-                        AlwaysEqual(union_free(b.locally_free.0.clone(), element_lf));
+                    s.locally_free = AlwaysEqual(union_free(b.locally_free.0.clone(), element_lf));
                     s.remainder = None;
                     Ok(from_expr(Expr::ESet(s)))
                 }
@@ -937,7 +997,9 @@ fn eval_method(
                 }
                 Expr::EMap(b) => {
                     cost.charge(Costs::lookup_cost().mul(b.kvs.len() as i64))?;
-                    Ok(from_expr(Expr::GBool(b.kvs.iter().any(|(k, _)| k == &element))))
+                    Ok(from_expr(Expr::GBool(
+                        b.kvs.iter().any(|(k, _)| k == &element),
+                    )))
                 }
                 other => Err(method_not_defined("contains", other)),
             }
@@ -949,8 +1011,7 @@ fn eval_method(
             match &base {
                 Expr::EMap(b) => {
                     cost.charge(Costs::lookup_cost().mul(b.kvs.len() as i64))?;
-                    Ok(b
-                        .kvs
+                    Ok(b.kvs
                         .iter()
                         .find(|(k, _)| k == &key)
                         .map(|(_, v)| v.clone())
@@ -967,8 +1028,7 @@ fn eval_method(
             match &base {
                 Expr::EMap(b) => {
                     cost.charge(Costs::lookup_cost().mul(b.kvs.len() as i64))?;
-                    Ok(b
-                        .kvs
+                    Ok(b.kvs
                         .iter()
                         .find(|(k, _)| k == &key)
                         .map(|(_, v)| v.clone())
@@ -1041,7 +1101,11 @@ fn eval_method(
             // `until - from` underflow — so clamp in `i64` first.
             let from = from_i.max(0);
             let until = until_i.max(0);
-            let len = if until > from { (until - from) as usize } else { 0 };
+            let len = if until > from {
+                (until - from) as usize
+            } else {
+                0
+            };
             // Charge the input walk (`skip(from).take(len)` touches `max(from, until)` elements), not
             // just the output length: otherwise `slice(n, n)` walks n elements for ~0 phlo (R23).
             cost.charge(Costs::slice_cost(from.max(until)))?;
@@ -1053,14 +1117,17 @@ fn eval_method(
                 Expr::GByteArray(b) => Ok(from_expr(Expr::GByteArray(
                     b.into_iter().skip(from).take(len).collect(),
                 ))),
-                Expr::EList(EList { ps, locally_free, connective_used, remainder }) => {
-                    Ok(from_expr(Expr::EList(EList {
-                        ps: ps.into_iter().skip(from).take(len).collect(),
-                        locally_free,
-                        connective_used,
-                        remainder,
-                    })))
-                }
+                Expr::EList(EList {
+                    ps,
+                    locally_free,
+                    connective_used,
+                    remainder,
+                }) => Ok(from_expr(Expr::EList(EList {
+                    ps: ps.into_iter().skip(from).take(len).collect(),
+                    locally_free,
+                    connective_used,
+                    remainder,
+                }))),
                 other => Err(method_not_defined("slice", &other)),
             }
         }
@@ -1073,14 +1140,17 @@ fn eval_method(
             let n = if n_i <= 0 { 0 } else { n_i as usize };
             cost.charge(Costs::take_cost(n as i64))?;
             match base {
-                Expr::EList(EList { ps, locally_free, connective_used, remainder }) => {
-                    Ok(from_expr(Expr::EList(EList {
-                        ps: ps.into_iter().take(n).collect(),
-                        locally_free,
-                        connective_used,
-                        remainder,
-                    })))
-                }
+                Expr::EList(EList {
+                    ps,
+                    locally_free,
+                    connective_used,
+                    remainder,
+                }) => Ok(from_expr(Expr::EList(EList {
+                    ps: ps.into_iter().take(n).collect(),
+                    locally_free,
+                    connective_used,
+                    remainder,
+                }))),
                 other => Err(method_not_defined("take", &other)),
             }
         }
@@ -1129,14 +1199,17 @@ fn eval_method(
                         .collect();
                     Ok(from_expr(Expr::ESet(par_set(ps))))
                 }
-                Expr::EList(EList { ps, connective_used, remainder, .. }) => {
-                    Ok(from_expr(Expr::ESet(ParSet {
-                        ps: par_set(ps).ps,
-                        connective_used,
-                        locally_free: AlwaysEqual(vec![]),
-                        remainder,
-                    })))
-                }
+                Expr::EList(EList {
+                    ps,
+                    connective_used,
+                    remainder,
+                    ..
+                }) => Ok(from_expr(Expr::ESet(ParSet {
+                    ps: par_set(ps).ps,
+                    connective_used,
+                    locally_free: AlwaysEqual(vec![]),
+                    remainder,
+                }))),
                 other => Err(method_not_defined("toSet", &other)),
             }
         }
@@ -1186,8 +1259,11 @@ fn eval_method(
 
 /// The result of a tuplespace produce/consume: the matched continuation, the list of
 /// (channel, matched data, removed data, persistent), and whether it was a peek.
-pub type Application =
-    Option<(TaggedContinuation, Vec<(SortedProc, ListParWithRandom, ListParWithRandom, bool)>, bool)>;
+pub type Application = Option<(
+    TaggedContinuation,
+    Vec<(SortedProc, ListParWithRandom, ListParWithRandom, bool)>,
+    bool,
+)>;
 
 /// The tuplespace interface the evaluator produces/consumes against (port of `RhoTuplespace`).
 #[async_trait]
@@ -1255,7 +1331,9 @@ fn resolve_term(
     match term {
         OwnedTerm::Send(s) => resolve_send(&s, &env, &rand, cost.as_ref()).map(Some),
         OwnedTerm::Receive(r) => resolve_receive(&r, &env, &rand, cost.as_ref()).map(Some),
-        OwnedTerm::New(n) => resolve_new(&n, &env, &rand, urn_map.as_ref(), cost.as_ref()).map(Some),
+        OwnedTerm::New(n) => {
+            resolve_new(&n, &env, &rand, urn_map.as_ref(), cost.as_ref()).map(Some)
+        }
         OwnedTerm::Match(m) => resolve_match(&m, &env, &rand, cost.as_ref()),
         OwnedTerm::Bundle(b) => Ok(Some(Effect::Par(*b.body, env, rand))),
         OwnedTerm::ExprVar(v) => {
@@ -1300,7 +1378,10 @@ fn resolve_send(
     Ok(Effect::Produce(
         SortedProc::new(unbundled),
         ListParWithRandom {
-            pars: subst_data.into_iter().map(|d| SortedProc::new(d.eval())).collect(),
+            pars: subst_data
+                .into_iter()
+                .map(|d| SortedProc::new(d.eval()))
+                .collect(),
             random_state: (*rand).clone(),
         },
         send.persistent,
@@ -1325,7 +1406,10 @@ fn resolve_receive(
             .collect::<Result<_, _>>()?;
         binds.push((
             BindPattern {
-                patterns: subst_patterns.into_iter().map(|p| SortedProc::new(p.eval())).collect(),
+                patterns: subst_patterns
+                    .into_iter()
+                    .map(|p| SortedProc::new(p.eval()))
+                    .collect(),
                 remainder: rb.remainder.as_deref().cloned(),
                 free_count: i32::from(rb.free_count),
             },
@@ -1376,7 +1460,14 @@ fn resolve_new(
 ) -> Result<Effect, RholangError> {
     cost.charge(Costs::new_bindings_cost(new.bind_count as i64))?;
     let mut r = (*rand).clone();
-    let new_env = alloc(new.bind_count, &new.uri, &new.injections, env, urn_map, &mut r)?;
+    let new_env = alloc(
+        new.bind_count,
+        &new.uri,
+        &new.injections,
+        env,
+        urn_map,
+        &mut r,
+    )?;
     // The body must run with the RNG state advanced past the freshly-allocated names: reusing the
     // incoming state would make a *nested* `new` draw the same random bytes as its parent (colliding
     // fresh names) — issue #19.
@@ -1441,7 +1532,11 @@ fn resolve_match(
             for e in 0..i32::from(case.free_count) {
                 new_env = new_env.put(free_map.get(&e).cloned().unwrap_or_default());
             }
-            return Ok(Some(Effect::Par((*case.source).clone(), new_env, (*rand).clone())));
+            return Ok(Some(Effect::Par(
+                (*case.source).clone(),
+                new_env,
+                (*rand).clone(),
+            )));
         }
     }
     Ok(None)
@@ -1539,8 +1634,13 @@ impl<T: Tuplespace + 'static, D: Dispatch + 'static> DebruijnInterpreter<T, D> {
     ) -> Result<(), RholangError> {
         self.steps.store(0, Ordering::SeqCst);
         self.cancelled.store(false, Ordering::SeqCst);
-        self.reduce_par((*par).clone(), (*env).clone(), (*rand).clone(), cost.clone())
-            .await
+        self.reduce_par(
+            (*par).clone(),
+            (*env).clone(),
+            (*rand).clone(),
+            cost.clone(),
+        )
+        .await
     }
 
     /// Reduce a `Par` (public: the continuation-dispatch hook used by the dispatcher's eval closure).
@@ -1610,12 +1710,14 @@ impl<T: Tuplespace + 'static, D: Dispatch + 'static> DebruijnInterpreter<T, D> {
                 let e = (*env).clone();
                 let urn_map = self.urn_map.clone();
                 let c = cost.clone();
-                handles.push(tokio::spawn(async move { resolve_term(term, e, r, urn_map, c) }));
+                handles.push(tokio::spawn(
+                    async move { resolve_term(term, e, r, urn_map, c) },
+                ));
             }
             for h in handles {
-                let resolved = h
-                    .await
-                    .map_err(|e| RholangError::ReduceError(format!("reducer task panicked: {e}")))??;
+                let resolved = h.await.map_err(|e| {
+                    RholangError::ReduceError(format!("reducer task panicked: {e}"))
+                })??;
                 if let Some(w) = resolved {
                     effects.push(w);
                 }
@@ -1653,11 +1755,7 @@ impl<T: Tuplespace + 'static, D: Dispatch + 'static> DebruijnInterpreter<T, D> {
     /// Apply one effect: expand a nested `Par` (a scheduling barrier), or perform a produce/consume/
     /// peek and reduce any matched continuation inline (the continuation-prepend invariant). The
     /// persistent/peek re-produce is applied *after* the continuation subtree.
-    fn apply_effect(
-        self: Arc<Self>,
-        effect: Effect,
-        cost: Arc<CostAccounting>,
-    ) -> ReducerFuture {
+    fn apply_effect(self: Arc<Self>, effect: Effect, cost: Arc<CostAccounting>) -> ReducerFuture {
         Box::pin(async move {
             match effect {
                 Effect::Par(par, env, rand) => self.reduce_par(par, env, rand, cost).await,
@@ -1681,8 +1779,10 @@ impl<T: Tuplespace + 'static, D: Dispatch + 'static> DebruijnInterpreter<T, D> {
                             .await?;
                         } else if peek {
                             join_spawned(
-                                self.clone()
-                                    .apply_effect_spawned(Effect::ProducePeeks(data_list.clone()), cost),
+                                self.clone().apply_effect_spawned(
+                                    Effect::ProducePeeks(data_list.clone()),
+                                    cost,
+                                ),
                                 "peek re-produce",
                             )
                             .await?;
@@ -1728,8 +1828,10 @@ impl<T: Tuplespace + 'static, D: Dispatch + 'static> DebruijnInterpreter<T, D> {
                             .await?;
                         } else if p {
                             join_spawned(
-                                self.clone()
-                                    .apply_effect_spawned(Effect::ProducePeeks(data_list.clone()), cost),
+                                self.clone().apply_effect_spawned(
+                                    Effect::ProducePeeks(data_list.clone()),
+                                    cost,
+                                ),
                                 "peek re-produce",
                             )
                             .await?;
@@ -1837,10 +1939,7 @@ mod tests {
             Box::new(from_expr(Expr::GInt(2))),
             Box::new(from_expr(Expr::GInt(3))),
         ));
-        assert_eq!(
-            eval_single_expr(&p, &e, &cost).unwrap(),
-            Expr::GInt(5)
-        );
+        assert_eq!(eval_single_expr(&p, &e, &cost).unwrap(), Expr::GInt(5));
     }
 
     #[test]
@@ -1984,10 +2083,17 @@ mod tests {
         };
         interp.clone().eval(&par, &env, &rand, &cost).await.unwrap();
 
-        let produced = interp.space.produced.lock().unwrap_or_else(|p| p.into_inner());
+        let produced = interp
+            .space
+            .produced
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
         assert_eq!(produced.len(), 1);
         assert_eq!(produced[0].0.as_par().exprs, vec![Expr::GInt(1)]);
-        assert_eq!(produced[0].1.pars, vec![SortedProc::new(from_expr(Expr::GInt(2)))]);
+        assert_eq!(
+            produced[0].1.pars,
+            vec![SortedProc::new(from_expr(Expr::GInt(2)))]
+        );
         assert!(!produced[0].2);
     }
 
@@ -1998,7 +2104,12 @@ mod tests {
         let space = MockSpace {
             produced: Mutex::new(Vec::new()),
         };
-        let interp = Arc::new(DebruijnInterpreter::new(space, MockDispatch, BTreeMap::new(), SortedProc::default()));
+        let interp = Arc::new(DebruijnInterpreter::new(
+            space,
+            MockDispatch,
+            BTreeMap::new(),
+            SortedProc::default(),
+        ));
         let cost = Arc::new(CostAccounting::from_initial(Costs::unsafe_max()));
         let env = Env::new();
         let rand = Blake2b512Random::new_random(128);
@@ -2017,7 +2128,11 @@ mod tests {
         };
         interp.clone().eval(&par, &env, &rand, &cost).await.unwrap();
 
-        let produced = interp.space.produced.lock().unwrap_or_else(|p| p.into_inner());
+        let produced = interp
+            .space
+            .produced
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
         assert_eq!(produced.len(), 64);
     }
 
@@ -2062,7 +2177,8 @@ mod tests {
             from_expr(Expr::GInt(2)),
             from_expr(Expr::GInt(3)),
         ])));
-        let diff = eval_expr_to_expr(&Expr::EMinusMinus(Box::new(s1), Box::new(s2)), &e, &cost).unwrap();
+        let diff =
+            eval_expr_to_expr(&Expr::EMinusMinus(Box::new(s1), Box::new(s2)), &e, &cost).unwrap();
         match diff {
             Expr::ESet(set) => {
                 assert_eq!(set.ps.len(), 1);

@@ -6,11 +6,13 @@
 //! the reducer.
 
 use rchain_models::ast::{
-    AlwaysEqual, Bundle, Connective, ConnectiveBody, EMethod, EList, ETuple, Expr, Match,
+    AlwaysEqual, Bundle, Connective, ConnectiveBody, EList, EMethod, ETuple, Expr, Match,
     MatchCase, Name, New, Par, ParMap, ParSet, Receive, ReceiveBind, Send, Sort, Var, VarRef,
 };
-use rchain_models::par_ops::{par_concat, prepend_connective, prepend_expr, single_bundle, until_free};
-use rchain_models::sorter::{sort_par_term, sort_pairs, sort_pars};
+use rchain_models::par_ops::{
+    par_concat, prepend_connective, prepend_expr, single_bundle, until_free,
+};
+use rchain_models::sorter::{sort_pairs, sort_par_term, sort_pars};
 
 use crate::accounting::{Chargeable, Cost, CostAccounting};
 use crate::env::Env;
@@ -159,7 +161,11 @@ pub fn substitute_par_no_sort<S: Sort>(
     Ok(par_concat(&t1, &rest))
 }
 
-pub fn substitute_par<S: Sort>(par: &Par<S>, depth: i32, env: &Env<Par>) -> Result<Par<S>, RholangError> {
+pub fn substitute_par<S: Sort>(
+    par: &Par<S>,
+    depth: i32,
+    env: &Env<Par>,
+) -> Result<Par<S>, RholangError> {
     Ok(sort_par_term(&substitute_par_no_sort(par, depth, env)?))
 }
 
@@ -174,7 +180,10 @@ pub fn substitute_par_and_charge<S: Sort>(
     let failure_cost = Cost::new(<Par<S> as Chargeable<Par<S>>>::cost(par), "substitution");
     match substitute_par(par, depth, env) {
         Ok(subst) => {
-            cost.charge(Cost::new(<Par<S> as Chargeable<Par<S>>>::cost(&subst), "substitution"))?;
+            cost.charge(Cost::new(
+                <Par<S> as Chargeable<Par<S>>>::cost(&subst),
+                "substitution",
+            ))?;
             Ok(subst)
         }
         Err(e) => {
@@ -239,11 +248,7 @@ pub fn substitute_receive_no_sort(
     })
 }
 
-pub fn substitute_new_no_sort(
-    new: &New,
-    depth: i32,
-    env: &Env<Par>,
-) -> Result<New, RholangError> {
+pub fn substitute_new_no_sort(new: &New, depth: i32, env: &Env<Par>) -> Result<New, RholangError> {
     let p_sub = substitute_par_no_sort(&new.p, depth, &env.shift(new.bind_count))?;
     Ok(New {
         bind_count: new.bind_count,
@@ -264,7 +269,11 @@ pub fn substitute_match_no_sort(
         .cases
         .iter()
         .map(|case| {
-            let par = substitute_par_no_sort(&case.source, depth, &env.shift(i32::from(case.free_count)))?;
+            let par = substitute_par_no_sort(
+                &case.source,
+                depth,
+                &env.shift(i32::from(case.free_count)),
+            )?;
             let sub_case = substitute_par_no_sort(&case.pattern, depth + 1, env)?;
             Ok(MatchCase {
                 pattern: Box::new(sub_case),

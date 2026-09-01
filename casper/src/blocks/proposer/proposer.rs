@@ -19,9 +19,9 @@ use rchain_models::block::state_hash::StateHash;
 use rchain_models::block_hash::BlockHash;
 use rchain_models::casper::protocol::casper_message::{BlockMessage, DeployData, SignedDeployData};
 use rchain_models::validator::Validator;
+use rchain_sdk::consensus::is_super_majority;
 use rchain_shared::log::{Log, LogSource};
 use rchain_shared::refined::{BlockHeight, NonNegI64};
-use rchain_sdk::consensus::is_super_majority;
 
 use super::block_creator::BlockCreator;
 use super::propose_result::{BlockCreatorResult, ProposeResult, ProposeStatus};
@@ -54,8 +54,9 @@ pub enum ProposerResult {
 pub struct Proposer {
     get_latest_seq_number: Arc<dyn Fn(Validator) -> BoxFuture<i64> + Send + Sync>,
     check_active_validator: Arc<dyn Fn(&ValidatorIdentity) -> BoxFuture<bool> + Send + Sync>,
-    create_block:
-        Arc<dyn Fn(&ValidatorIdentity) -> BoxFuture<Result<BlockCreatorResult, String>> + Send + Sync>,
+    create_block: Arc<
+        dyn Fn(&ValidatorIdentity) -> BoxFuture<Result<BlockCreatorResult, String>> + Send + Sync,
+    >,
     validate_block:
         Arc<dyn Fn(&BlockMessage) -> BoxFuture<Result<(), ValidateError>> + Send + Sync>,
     propose_effect: Arc<dyn Fn(&BlockMessage) -> BoxFuture<()> + Send + Sync>,
@@ -70,7 +71,9 @@ impl Proposer {
         get_latest_seq_number: Arc<dyn Fn(Validator) -> BoxFuture<i64> + Send + Sync>,
         check_active_validator: Arc<dyn Fn(&ValidatorIdentity) -> BoxFuture<bool> + Send + Sync>,
         create_block: Arc<
-            dyn Fn(&ValidatorIdentity) -> BoxFuture<Result<BlockCreatorResult, String>> + Send + Sync,
+            dyn Fn(&ValidatorIdentity) -> BoxFuture<Result<BlockCreatorResult, String>>
+                + Send
+                + Sync,
         >,
         validate_block: Arc<
             dyn Fn(&BlockMessage) -> BoxFuture<Result<(), ValidateError>> + Send + Sync,
@@ -235,38 +238,41 @@ impl Proposer {
             })
         };
 
-        let check_active_validator: Arc<dyn Fn(&ValidatorIdentity) -> BoxFuture<bool> + Send + Sync> =
-            {
+        let check_active_validator: Arc<
+            dyn Fn(&ValidatorIdentity) -> BoxFuture<bool> + Send + Sync,
+        > = {
+            let dag = dag.clone();
+            Arc::new(move |vi: &ValidatorIdentity| {
+                let sender = Validator::from_slice(vi.public_key.bytes());
                 let dag = dag.clone();
-                Arc::new(move |vi: &ValidatorIdentity| {
-                    let sender = Validator::from_slice(vi.public_key.bytes());
-                    let dag = dag.clone();
-                    Box::pin(async move {
-                        let dag_repr = dag.get_representation().await;
-                        let fringe = dag_repr.dag_message_state.latest_fringe();
-                        let bonds_map = if let Some(m) = fringe.iter().next() {
-                            m.bonds_map.clone()
-                        } else if let Some((_, hashes)) = dag_repr.height_map.iter().next() {
-                            match hashes.iter().next() {
-                                Some(h) => dag
-                                    .lookup(h)
-                                    .await
-                                    .ok()
-                                    .flatten()
-                                    .map(|m| m.bonds_map)
-                                    .unwrap_or_default(),
-                                None => Default::default(),
-                            }
-                        } else {
-                            Default::default()
-                        };
-                        bonds_map.contains_key(&sender)
-                    })
+                Box::pin(async move {
+                    let dag_repr = dag.get_representation().await;
+                    let fringe = dag_repr.dag_message_state.latest_fringe();
+                    let bonds_map = if let Some(m) = fringe.iter().next() {
+                        m.bonds_map.clone()
+                    } else if let Some((_, hashes)) = dag_repr.height_map.iter().next() {
+                        match hashes.iter().next() {
+                            Some(h) => dag
+                                .lookup(h)
+                                .await
+                                .ok()
+                                .flatten()
+                                .map(|m| m.bonds_map)
+                                .unwrap_or_default(),
+                            None => Default::default(),
+                        }
+                    } else {
+                        Default::default()
+                    };
+                    bonds_map.contains_key(&sender)
                 })
-            };
+            })
+        };
 
         let create_block: Arc<
-            dyn Fn(&ValidatorIdentity) -> BoxFuture<Result<BlockCreatorResult, String>> + Send + Sync,
+            dyn Fn(&ValidatorIdentity) -> BoxFuture<Result<BlockCreatorResult, String>>
+                + Send
+                + Sync,
         > = {
             let runtime = runtime.clone();
             let dag = dag.clone();
@@ -298,57 +304,52 @@ impl Proposer {
             })
         };
 
-        let validate_block: Arc<dyn Fn(&BlockMessage) -> BoxFuture<Result<(), ValidateError>> + Send + Sync> =
-            {
+        let validate_block: Arc<
+            dyn Fn(&BlockMessage) -> BoxFuture<Result<(), ValidateError>> + Send + Sync,
+        > = {
+            let runtime = runtime.clone();
+            let dag = dag.clone();
+            let block_store = block_store.clone();
+            let block_index = block_index.clone();
+            let shard_id = shard_id.clone();
+            Arc::new(move |block: &BlockMessage| {
                 let runtime = runtime.clone();
                 let dag = dag.clone();
                 let block_store = block_store.clone();
                 let block_index = block_index.clone();
+                let block = block.clone();
                 let shard_id = shard_id.clone();
-                Arc::new(move |block: &BlockMessage| {
-                    let runtime = runtime.clone();
-                    let dag = dag.clone();
-                    let block_store = block_store.clone();
-                    let block_index = block_index.clone();
-                    let block = block.clone();
-                    let shard_id = shard_id.clone();
-                    Box::pin(async move {
-                        match crate::multi_parent_casper::validate(
-                            dag.as_ref(),
-                            &block_store,
-                            runtime.as_ref(),
-                            &block,
-                            &shard_id,
-                            min_phlo_price,
-                            block_index.as_ref(),
-                        )
-                        .await
-                        {
-                            Ok(meta) => {
-                                // Persist the block body BEFORE recording it in the DAG. `insert`
-                                // writes the deploy index + DAG state but not the full block, so a
-                                // read landing between the two would otherwise hit "missing block".
-                                put_block(&block_store, block.clone())
-                                    .await
-                                    .map_err(|e| {
-                                        ValidateError::Internal(format!(
-                                            "failed to store block body: {e}"
-                                        ))
-                                    })?;
-                                dag.insert(meta, block.clone())
-                                    .await
-                                    .map_err(|e| {
-                                        ValidateError::Internal(format!(
-                                            "failed to insert block into DAG: {e}"
-                                        ))
-                                    })?;
-                                Ok(())
-                            }
-                            Err(err) => Err(err),
+                Box::pin(async move {
+                    match crate::multi_parent_casper::validate(
+                        dag.as_ref(),
+                        &block_store,
+                        runtime.as_ref(),
+                        &block,
+                        &shard_id,
+                        min_phlo_price,
+                        block_index.as_ref(),
+                    )
+                    .await
+                    {
+                        Ok(meta) => {
+                            // Persist the block body BEFORE recording it in the DAG. `insert`
+                            // writes the deploy index + DAG state but not the full block, so a
+                            // read landing between the two would otherwise hit "missing block".
+                            put_block(&block_store, block.clone()).await.map_err(|e| {
+                                ValidateError::Internal(format!("failed to store block body: {e}"))
+                            })?;
+                            dag.insert(meta, block.clone()).await.map_err(|e| {
+                                ValidateError::Internal(format!(
+                                    "failed to insert block into DAG: {e}"
+                                ))
+                            })?;
+                            Ok(())
                         }
-                    })
+                        Err(err) => Err(err),
+                    }
                 })
-            };
+            })
+        };
 
         Proposer::new(
             get_latest_seq_number,
@@ -363,7 +364,10 @@ impl Proposer {
     }
 }
 
-async fn get_block(block_store: &BlockStore, hash: &BlockHash) -> Result<Option<BlockMessage>, String> {
+async fn get_block(
+    block_store: &BlockStore,
+    hash: &BlockHash,
+) -> Result<Option<BlockMessage>, String> {
     let mut vals = block_store.get(&[*hash]).await?;
     Ok(vals.pop().flatten())
 }
@@ -393,8 +397,11 @@ where
         .max()
         .map(|m| m + NonNegI64::one())
         .unwrap_or_else(BlockHeight::zero);
-    let parent_hashes: Vec<BlockHash> =
-        pre_state.justifications.iter().map(|m| m.block_hash).collect();
+    let parent_hashes: Vec<BlockHash> = pre_state
+        .justifications
+        .iter()
+        .map(|m| m.block_hash)
+        .collect();
     let offenders: BTreeSet<Validator> = pre_state
         .justifications
         .iter()
@@ -552,7 +559,9 @@ mod tests {
         let check_active: Arc<dyn Fn(&ValidatorIdentity) -> BoxFuture<bool> + Send + Sync> =
             Arc::new(|_v| Box::pin(async { true }));
         let create_block: Arc<
-            dyn Fn(&ValidatorIdentity) -> BoxFuture<Result<BlockCreatorResult, String>> + Send + Sync,
+            dyn Fn(&ValidatorIdentity) -> BoxFuture<Result<BlockCreatorResult, String>>
+                + Send
+                + Sync,
         > = Arc::new(move |_v| {
             let create = create.clone();
             Box::pin(async move { Ok(create) })

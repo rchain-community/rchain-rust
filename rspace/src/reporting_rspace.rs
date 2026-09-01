@@ -84,17 +84,26 @@ where
             .push(ReportingEvent::Produce(ReportingProduce { channel, data }));
     }
 
-    pub fn record_consume(&self, channels: Vec<C>, patterns: Vec<P>, continuation: K, peeks: Vec<usize>) {
-        crate::lock::wlock(&self.soft_report)
-            .push(ReportingEvent::Consume(ReportingConsume {
-                channels,
-                patterns,
-                continuation,
-                peeks,
-            }));
+    pub fn record_consume(
+        &self,
+        channels: Vec<C>,
+        patterns: Vec<P>,
+        continuation: K,
+        peeks: Vec<usize>,
+    ) {
+        crate::lock::wlock(&self.soft_report).push(ReportingEvent::Consume(ReportingConsume {
+            channels,
+            patterns,
+            continuation,
+            peeks,
+        }));
     }
 
-    pub fn record_comm(&self, consume: ReportingConsume<C, P, K>, produces: Vec<ReportingProduce<C, A>>) {
+    pub fn record_comm(
+        &self,
+        consume: ReportingConsume<C, P, K>,
+        produces: Vec<ReportingProduce<C, A>>,
+    ) {
         crate::lock::wlock(&self.soft_report)
             .push(ReportingEvent::Comm(ReportingComm { consume, produces }));
     }
@@ -129,7 +138,10 @@ where
         continuation: K,
         persist: bool,
         peeks: BTreeSet<usize>,
-    ) -> std::result::Result<Option<(ContResult<C, P, K>, Vec<Result<C, A>>)>, crate::errors::RSpaceError> {
+    ) -> std::result::Result<
+        Option<(ContResult<C, P, K>, Vec<Result<C, A>>)>,
+        crate::errors::RSpaceError,
+    > {
         // Record the consume event (port of `logConsume`).
         let peeks_vec: Vec<usize> = peeks.iter().copied().collect();
         self.record_consume(
@@ -169,7 +181,10 @@ where
         channel: C,
         data: A,
         persist: bool,
-    ) -> std::result::Result<Option<(ContResult<C, P, K>, Vec<Result<C, A>>)>, crate::errors::RSpaceError> {
+    ) -> std::result::Result<
+        Option<(ContResult<C, P, K>, Vec<Result<C, A>>)>,
+        crate::errors::RSpaceError,
+    > {
         // Record the produce event (port of `logProduce`).
         self.record_produce(channel.clone(), data.clone());
 
@@ -216,7 +231,9 @@ where
     A: Clone + Serialize<A> + Send + Sync + 'static,
     K: Clone + Serialize<K> + Send + Sync + 'static,
 {
-    async fn create_checkpoint(&self) -> std::result::Result<crate::checkpoint::Checkpoint, String> {
+    async fn create_checkpoint(
+        &self,
+    ) -> std::result::Result<crate::checkpoint::Checkpoint, String> {
         let checkpoint = self.replay.create_checkpoint().await?;
         crate::lock::wlock(&self.soft_report).clear();
         crate::lock::wlock(&self.report).clear();
@@ -227,7 +244,10 @@ where
         self.replay.reset(root).await
     }
 
-    async fn get_data(&self, channel: &C) -> std::result::Result<Vec<Datum<A>>, crate::errors::RSpaceError> {
+    async fn get_data(
+        &self,
+        channel: &C,
+    ) -> std::result::Result<Vec<Datum<A>>, crate::errors::RSpaceError> {
         self.replay.get_data(channel).await
     }
 
@@ -238,7 +258,10 @@ where
         self.replay.get_waiting_continuations(channels).await
     }
 
-    async fn get_joins(&self, channel: &C) -> std::result::Result<Vec<Vec<C>>, crate::errors::RSpaceError> {
+    async fn get_joins(
+        &self,
+        channel: &C,
+    ) -> std::result::Result<Vec<Vec<C>>, crate::errors::RSpaceError> {
         self.replay.get_joins(channel).await
     }
 
@@ -272,7 +295,11 @@ where
         self.replay.rig(log).await;
     }
 
-    async fn rig_and_reset(&self, start_root: Blake2b256Hash, log: Log) -> std::result::Result<(), String> {
+    async fn rig_and_reset(
+        &self,
+        start_root: Blake2b256Hash,
+        log: Log,
+    ) -> std::result::Result<(), String> {
         self.replay.rig_and_reset(start_root, log).await
     }
 

@@ -114,10 +114,7 @@ pub async fn apply<F, Fut>(
             let result = match handle.await {
                 Ok(r) => r,
                 Err(e) => {
-                    log.error(
-                        source,
-                        &format!("validator task panicked: {e}"),
-                    );
+                    log.error(source, &format!("validator task panicked: {e}"));
                     continue;
                 }
             };
@@ -127,10 +124,7 @@ pub async fn apply<F, Fut>(
                 Err(ValidateError::Internal(e)) => {
                     log.error(
                         source,
-                        &format!(
-                            "Block {} processing error: {e}",
-                            block.block_hash.to_hex()
-                        ),
+                        &format!("Block {} processing error: {e}", block.block_hash.to_hex()),
                     );
                     continue;
                 }

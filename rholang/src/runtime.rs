@@ -36,11 +36,11 @@ use crate::system_processes::{BlockData, SystemProcesses};
 pub type RhoSpace = Arc<RSpace<SortedProc, BindPattern, ListParWithRandom, TaggedContinuation>>;
 
 /// The replay rspace type the replay runtime operates on (port of `RhoReplayISpace`).
-pub type RhoReplaySpace = Arc<ReplayRSpace<SortedProc, BindPattern, ListParWithRandom, TaggedContinuation>>;
+pub type RhoReplaySpace =
+    Arc<ReplayRSpace<SortedProc, BindPattern, ListParWithRandom, TaggedContinuation>>;
 
 /// The reducer type wired to the charging space and dispatcher.
-pub type RhoReducer =
-    DebruijnInterpreter<ChargingRSpace, Arc<RholangAndScalaDispatcher>>;
+pub type RhoReducer = DebruijnInterpreter<ChargingRSpace, Arc<RholangAndScalaDispatcher>>;
 
 /// Wire the reducer and dispatcher together (breaking their mutual recursion) and return the
 /// reducer.
@@ -108,7 +108,11 @@ async fn install_system_processes(
             patterns: (0..*arity)
                 .map(|i| SortedProc::new(from_expr(Expr::EVar(Box::new(Var::FreeVar(i))))))
                 .collect(),
-            remainder: if *remainder { Some(Var::FreeVar(*arity)) } else { None },
+            remainder: if *remainder {
+                Some(Var::FreeVar(*arity))
+            } else {
+                None
+            },
             free_count: if *remainder { *arity + 1 } else { *arity },
         }];
         let continuation = TaggedContinuation::ScalaBodyRef(*body_ref);
@@ -137,7 +141,9 @@ pub(crate) async fn build_runtime_core(
     native_store: Arc<InMemNativeStore>,
     concurrent: bool,
 ) -> std::io::Result<RuntimeCore> {
-    let cost = Arc::new(CostAccounting::from_initial(crate::accounting::Costs::unsafe_max()));
+    let cost = Arc::new(CostAccounting::from_initial(
+        crate::accounting::Costs::unsafe_max(),
+    ));
     let charging_space = ChargingRSpace::new(space.clone(), cost.clone());
     let block_data = Arc::new(Mutex::new(BlockData::empty()));
     let native_state = Arc::new(NativeSystemState::new(native_store));
@@ -217,7 +223,8 @@ impl RhoRuntime {
     ) -> std::io::Result<RhoRuntime> {
         let tuplespace: RhoTuplespace = space.clone();
         let native_store = space.native_store();
-        let core = build_runtime_core(&tuplespace, mergeable_tag_name, native_store, concurrent).await?;
+        let core =
+            build_runtime_core(&tuplespace, mergeable_tag_name, native_store, concurrent).await?;
         Ok(RhoRuntime {
             reducer: core.reducer,
             space,
@@ -292,7 +299,11 @@ impl RhoRuntime {
         install_system_processes(&ts, &self.proc_defs)
             .await
             .map_err(|e| e.to_string())?;
-        let checkpoint = self.space.create_checkpoint().await.map_err(|e| e.to_string())?;
+        let checkpoint = self
+            .space
+            .create_checkpoint()
+            .await
+            .map_err(|e| e.to_string())?;
         Ok(checkpoint.root)
     }
 
@@ -359,7 +370,10 @@ impl RhoRuntime {
         self.space.get_data(channel).await
     }
 
-    pub async fn get_joins(&self, channel: &SortedProc) -> Result<Vec<Vec<SortedProc>>, RSpaceError> {
+    pub async fn get_joins(
+        &self,
+        channel: &SortedProc,
+    ) -> Result<Vec<Vec<SortedProc>>, RSpaceError> {
         self.space.get_joins(channel).await
     }
 
@@ -373,7 +387,10 @@ impl RhoRuntime {
     /// Read all `Par`s at a channel (port of `getDataPar`).
     pub async fn get_data_par(&self, channel: &SortedProc) -> Result<Vec<Par>, RSpaceError> {
         let data = self.space.get_data(channel).await?;
-        Ok(data.into_iter().flat_map(|d| d.a.pars.into_iter().map(|p| p.as_par().clone())).collect())
+        Ok(data
+            .into_iter()
+            .flat_map(|d| d.a.pars.into_iter().map(|p| p.as_par().clone()))
+            .collect())
     }
 
     /// Read the waiting `ParBody` continuations as `(patterns, body)` (port of
@@ -400,7 +417,13 @@ impl RhoRuntime {
     ) -> Result<Option<(TaggedContinuation, Vec<ListParWithRandom>)>, RSpaceError> {
         let result = self
             .space
-            .consume(channels, patterns, TaggedContinuation::Empty, false, BTreeSet::new())
+            .consume(
+                channels,
+                patterns,
+                TaggedContinuation::Empty,
+                false,
+                BTreeSet::new(),
+            )
             .await?;
         Ok(result.map(|(cont, data)| {
             (
@@ -547,7 +570,10 @@ impl ReplayRhoRuntime {
     /// Read all `Par`s at a channel (port of `getDataPar`).
     pub async fn get_data_par(&self, channel: &SortedProc) -> Result<Vec<Par>, RSpaceError> {
         let data = self.space.get_data(channel).await?;
-        Ok(data.into_iter().flat_map(|d| d.a.pars.into_iter().map(|p| p.as_par().clone())).collect())
+        Ok(data
+            .into_iter()
+            .flat_map(|d| d.a.pars.into_iter().map(|p| p.as_par().clone()))
+            .collect())
     }
 
     /// Consume the result at a channel with a pattern (port of `consumeResult`).
@@ -558,7 +584,13 @@ impl ReplayRhoRuntime {
     ) -> Result<Option<(TaggedContinuation, Vec<ListParWithRandom>)>, RSpaceError> {
         let result = self
             .space
-            .consume(channels, patterns, TaggedContinuation::Empty, false, BTreeSet::new())
+            .consume(
+                channels,
+                patterns,
+                TaggedContinuation::Empty,
+                false,
+                BTreeSet::new(),
+            )
             .await?;
         Ok(result.map(|(cont, data)| {
             (
@@ -591,7 +623,9 @@ mod tests {
     }
 
     #[async_trait]
-    impl RSpaceTuplespace<SortedProc, BindPattern, ListParWithRandom, TaggedContinuation> for MockSpace {
+    impl RSpaceTuplespace<SortedProc, BindPattern, ListParWithRandom, TaggedContinuation>
+        for MockSpace
+    {
         async fn consume(
             &self,
             _channels: &[SortedProc],
@@ -621,7 +655,10 @@ mod tests {
             )>,
             RSpaceError,
         > {
-            self.produced.lock().unwrap_or_else(|p| p.into_inner()).push((channel, data, persist));
+            self.produced
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .push((channel, data, persist));
             Ok(None)
         }
 
@@ -640,13 +677,19 @@ mod tests {
         let mock = Arc::new(MockSpace {
             produced: Mutex::new(Vec::new()),
         });
-        let cost = Arc::new(CostAccounting::from_initial(crate::accounting::Costs::unsafe_max()));
+        let cost = Arc::new(CostAccounting::from_initial(
+            crate::accounting::Costs::unsafe_max(),
+        ));
         let charging = ChargingRSpace::new(mock.clone(), cost.clone());
         let reducer = setup_reducer(charging, cost.clone(), SortedProc::default());
 
         let send = rchain_models::ast::Send {
-            chan: Box::new(rchain_models::par_ops::from_expr(rchain_models::ast::Expr::GInt(1)).quote()),
-            data: vec![rchain_models::par_ops::from_expr(rchain_models::ast::Expr::GInt(2)).quote()],
+            chan: Box::new(
+                rchain_models::par_ops::from_expr(rchain_models::ast::Expr::GInt(1)).quote(),
+            ),
+            data: vec![
+                rchain_models::par_ops::from_expr(rchain_models::ast::Expr::GInt(2)).quote(),
+            ],
             persistent: false,
             locally_free: rchain_models::ast::AlwaysEqual(vec![]),
             connective_used: false,
@@ -664,8 +707,11 @@ mod tests {
 
         let produced = mock.produced.lock().unwrap_or_else(|p| p.into_inner());
         assert_eq!(produced.len(), 1);
-        assert_eq!(produced[0].1.pars, vec![SortedProc::new(rchain_models::par_ops::from_expr(
-            rchain_models::ast::Expr::GInt(2)
-        ))]);
+        assert_eq!(
+            produced[0].1.pars,
+            vec![SortedProc::new(rchain_models::par_ops::from_expr(
+                rchain_models::ast::Expr::GInt(2)
+            ))]
+        );
     }
 }

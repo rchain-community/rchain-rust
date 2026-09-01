@@ -142,9 +142,7 @@ fn http_get(url: &str) -> Option<String> {
     }
     let (host, port, path) = split_url(url)?;
     let mut stream = TcpStream::connect((host.as_str(), port)).ok()?;
-    stream
-        .set_read_timeout(Some(Duration::from_secs(5)))
-        .ok()?;
+    stream.set_read_timeout(Some(Duration::from_secs(5))).ok()?;
     let request = format!("GET {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n");
     stream.write_all(request.as_bytes()).ok()?;
     let mut response = Vec::new();
@@ -184,9 +182,7 @@ fn soap_post(control_url: &str, service_type: &str, action: &str, args: &str) ->
         body.len()
     );
     let mut stream = TcpStream::connect((host.as_str(), port)).ok()?;
-    stream
-        .set_read_timeout(Some(Duration::from_secs(5)))
-        .ok()?;
+    stream.set_read_timeout(Some(Duration::from_secs(5))).ok()?;
     stream.write_all(request.as_bytes()).ok()?;
     let mut response = Vec::new();
     stream.take(MAX_HTTP_BODY).read_to_end(&mut response).ok()?;
@@ -227,10 +223,11 @@ fn direct_text<'a, 'input>(node: &roxmltree::Node<'a, 'input>, name: &str) -> Op
 }
 
 fn wan_service<'a, 'input>(device: &roxmltree::Node<'a, 'input>) -> Option<(String, String)> {
-    let service_list = device
+    let service_list = device.children().find(|n| n.has_tag_name("serviceList"))?;
+    for service in service_list
         .children()
-        .find(|n| n.has_tag_name("serviceList"))?;
-    for service in service_list.children().filter(|n| n.has_tag_name("service")) {
+        .filter(|n| n.has_tag_name("service"))
+    {
         let service_type = direct_text(&service, "serviceType")?;
         if service_type == WAN_IP_SERVICE || service_type == WAN_PPP_SERVICE {
             let control_url = direct_text(&service, "controlURL")?;
@@ -500,15 +497,21 @@ mod tests {
 
     #[test]
     fn parse_device_rejects_non_gateway() {
-        let xml = DEVICE_XML.replace(IGD_DEVICE_TYPE, "urn:schemas-upnp-org:device:MediaRenderer:1");
+        let xml = DEVICE_XML.replace(
+            IGD_DEVICE_TYPE,
+            "urn:schemas-upnp-org:device:MediaRenderer:1",
+        );
         let info = parse_device(&xml).unwrap();
         assert_ne!(info.device_type, IGD_DEVICE_TYPE);
     }
 
     #[test]
     fn resolve_root_relative_control_url() {
-        let url = resolve_url("http://192.168.1.1:5000/rootDesc.xml", "/upnp/control/WANIPConn1")
-            .unwrap();
+        let url = resolve_url(
+            "http://192.168.1.1:5000/rootDesc.xml",
+            "/upnp/control/WANIPConn1",
+        )
+        .unwrap();
         assert_eq!(url, "http://192.168.1.1:5000/upnp/control/WANIPConn1");
     }
 
@@ -525,7 +528,10 @@ mod tests {
     #[test]
     fn xml_field_extracts_text() {
         let body = r#"<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"><s:Body><u:GetExternalIPAddressResponse xmlns:u="urn:schemas-upnp-org:service:WANIPConnection:1"><NewExternalIPAddress>1.2.3.4</NewExternalIPAddress></u:GetExternalIPAddressResponse></s:Body></s:Envelope>"#;
-        assert_eq!(xml_field(body, "NewExternalIPAddress"), Some("1.2.3.4".to_string()));
+        assert_eq!(
+            xml_field(body, "NewExternalIPAddress"),
+            Some("1.2.3.4".to_string())
+        );
     }
 
     #[test]

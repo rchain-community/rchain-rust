@@ -109,6 +109,9 @@ mod tests {
     #[test]
     fn to_message_list_prefixes_causes() {
         let e = TestError::with_cause("root", TestError::new("inner"));
-        assert_eq!(e.to_message_list("Caused by: "), vec!["root", "Caused by: inner"]);
+        assert_eq!(
+            e.to_message_list("Caused by: "),
+            vec!["root", "Caused by: inner"]
+        );
     }
 }

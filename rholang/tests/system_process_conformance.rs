@@ -46,7 +46,10 @@ async fn eval_out(
         "conformance term failed: {term:?}\nerrors: {:?}",
         res.errors
     );
-    let data = rt.get_data_par(&chan(out_name)).await.expect("read out channel");
+    let data = rt
+        .get_data_par(&chan(out_name))
+        .await
+        .expect("read out channel");
     assert!(
         !data.is_empty(),
         "term produced nothing at @{out_name:?}: {term:?}"
@@ -126,7 +129,10 @@ async fn qucalc_grant_and_verify_round_trip() {
         "out2",
     )
     .await;
-    assert!(RhoNil::unapply(&nil[0]), "qucalc:grant returns Nil for a non-ZFA history");
+    assert!(
+        RhoNil::unapply(&nil[0]),
+        "qucalc:grant returns Nil for a non-ZFA history"
+    );
 
     // The minted capability verifies; an unknown uri does not.
     let ok = eval_out(
@@ -171,7 +177,10 @@ async fn qucalc_fuse_returns_geometry_and_capability_or_nil() {
         .map(|p| RhoNumber::unapply(p).expect("twist number"))
         .collect();
     assert_eq!(twists, vec![0, 3, 2, 1]);
-    assert!(RhoUri::unapply(&parts[1]).is_some(), "fuse mints a capability uri");
+    assert!(
+        RhoUri::unapply(&parts[1]).is_some(),
+        "fuse mints a capability uri"
+    );
 
     // A subject/predicate whose residue is not ZFA-closed yields Nil.
     let nil = eval_out(
@@ -181,7 +190,10 @@ async fn qucalc_fuse_returns_geometry_and_capability_or_nil() {
         "out2",
     )
     .await;
-    assert!(RhoNil::unapply(&nil[0]), "qucalc:fuse returns Nil for a non-ZFA residue");
+    assert!(
+        RhoNil::unapply(&nil[0]),
+        "qucalc:fuse returns Nil for a non-ZFA residue"
+    );
 }
 
 #[tokio::test]
@@ -196,7 +208,10 @@ async fn gov_resolve_weights_reports_weight_map_from_tuple_shaped_inputs() {
         "out",
     )
     .await;
-    assert!(RhoMap::unapply(&weights[0]).is_some(), "resolveWeights returns a map");
+    assert!(
+        RhoMap::unapply(&weights[0]).is_some(),
+        "resolveWeights returns a map"
+    );
     assert_eq!(map_get_string_int(&weights[0], "A"), Some(2));
     assert_eq!(map_get_string_int(&weights[0], "C"), Some(1));
 }
@@ -213,7 +228,10 @@ async fn gov_trust_levels_reports_admin_rooted_level_map() {
         "out",
     )
     .await;
-    assert!(RhoMap::unapply(&levels[0]).is_some(), "trustLevels returns a map");
+    assert!(
+        RhoMap::unapply(&levels[0]).is_some(),
+        "trustLevels returns a map"
+    );
     assert_eq!(map_get_string_int(&levels[0], "Alice"), Some(5));
     assert_eq!(map_get_string_int(&levels[0], "Bob"), Some(3));
     assert_eq!(map_get_string_int(&levels[0], "Carol"), Some(2));
@@ -303,7 +321,10 @@ async fn registry_insert_arbitrary_and_lookup_round_trip() {
         "out3",
     )
     .await;
-    assert!(RhoNil::unapply(&missing[0]), "lookup of an unknown uri returns Nil");
+    assert!(
+        RhoNil::unapply(&missing[0]),
+        "lookup of an unknown uri returns Nil"
+    );
 }
 
 #[tokio::test]

@@ -138,30 +138,56 @@ fn is_wildcard_expr(expr: &Expr) -> bool {
 }
 
 fn with_sends(p: &Par, s: &[Send]) -> Par {
-    Par { sends: s.to_vec(), ..p.clone() }
+    Par {
+        sends: s.to_vec(),
+        ..p.clone()
+    }
 }
 fn with_receives(p: &Par, r: &[Receive]) -> Par {
-    Par { receives: r.to_vec(), ..p.clone() }
+    Par {
+        receives: r.to_vec(),
+        ..p.clone()
+    }
 }
 fn with_news(p: &Par, n: &[New]) -> Par {
-    Par { news: n.to_vec(), ..p.clone() }
+    Par {
+        news: n.to_vec(),
+        ..p.clone()
+    }
 }
 fn with_exprs(p: &Par, e: &[Expr]) -> Par {
-    Par { exprs: e.to_vec(), ..p.clone() }
+    Par {
+        exprs: e.to_vec(),
+        ..p.clone()
+    }
 }
 fn with_matches(p: &Par, m: &[Match]) -> Par {
-    Par { matches: m.to_vec(), ..p.clone() }
+    Par {
+        matches: m.to_vec(),
+        ..p.clone()
+    }
 }
 fn with_bundles(p: &Par, b: &[Bundle]) -> Par {
-    Par { bundles: b.to_vec(), ..p.clone() }
+    Par {
+        bundles: b.to_vec(),
+        ..p.clone()
+    }
 }
 fn with_unforgeables(p: &Par, u: &[GUnforgeable]) -> Par {
-    Par { unforgeables: u.to_vec(), ..p.clone() }
+    Par {
+        unforgeables: u.to_vec(),
+        ..p.clone()
+    }
 }
 
 /// The public entry point (port of `SpatialMatcher.spatialMatchResult`).
-pub fn spatial_match_result<S: Sort>(target: &Par<S>, pattern: &Par<S>) -> Result<Option<FreeMap>, RholangError> {
-    Ok(spatial_match(target, pattern, &FreeMap::new())?.into_iter().next())
+pub fn spatial_match_result<S: Sort>(
+    target: &Par<S>,
+    pattern: &Par<S>,
+) -> Result<Option<FreeMap>, RholangError> {
+    Ok(spatial_match(target, pattern, &FreeMap::new())?
+        .into_iter()
+        .next())
 }
 
 pub fn spatial_match<S: Sort>(target: &Par<S>, pattern: &Par<S>, fm: &FreeMap) -> MResult {
@@ -290,7 +316,11 @@ pub fn spatial_match<S: Sort>(target: &Par<S>, pattern: &Par<S>, fm: &FreeMap) -
     Ok(out)
 }
 
-pub fn spatial_match_connective<S: Sort>(target: &Par<S>, con: &Connective, fm: &FreeMap) -> MResult {
+pub fn spatial_match_connective<S: Sort>(
+    target: &Par<S>,
+    con: &Connective,
+    fm: &FreeMap,
+) -> MResult {
     match con {
         Connective::ConnAnd(ConnectiveBody { ps }) => {
             let mut states = vec![fm.clone()];
@@ -423,11 +453,7 @@ pub fn spatial_match_receive_bind(
     spatial_match(&target.source, &pattern.source, fm)
 }
 
-pub fn spatial_match_match_case(
-    target: &MatchCase,
-    pattern: &MatchCase,
-    fm: &FreeMap,
-) -> MResult {
+pub fn spatial_match_match_case(target: &MatchCase, pattern: &MatchCase, fm: &FreeMap) -> MResult {
     if target.pattern != pattern.pattern {
         return Ok(Vec::new());
     }
@@ -436,9 +462,17 @@ pub fn spatial_match_match_case(
 
 pub fn spatial_match_expr(target: &Expr, pattern: &Expr, fm: &FreeMap) -> MResult {
     match (target, pattern) {
-        (Expr::EList(EList { ps: tlist, .. }), Expr::EList(EList { ps: plist, remainder: rem, .. })) => {
+        (
+            Expr::EList(EList { ps: tlist, .. }),
+            Expr::EList(EList {
+                ps: plist,
+                remainder: rem,
+                ..
+            }),
+        ) => {
             let mut out = Vec::new();
-            for (matched_rem, fm1) in fold_match(tlist, plist, rem.as_deref(), fm, &spatial_match)? {
+            for (matched_rem, fm1) in fold_match(tlist, plist, rem.as_deref(), fm, &spatial_match)?
+            {
                 match rem.as_deref() {
                     Some(Var::FreeVar(level)) => {
                         let mut fm2 = fm1;
@@ -467,7 +501,11 @@ pub fn spatial_match_expr(target: &Expr, pattern: &Expr, fm: &FreeMap) -> MResul
             Ok(out)
         }
         (
-            Expr::ESet(ParSet { ps: tlist, remainder: rem, .. }),
+            Expr::ESet(ParSet {
+                ps: tlist,
+                remainder: rem,
+                ..
+            }),
             Expr::ESet(ParSet { ps: plist, .. }),
         ) => {
             let is_wildcard = matches!(rem.as_deref(), Some(Var::Wildcard));
@@ -475,16 +513,26 @@ pub fn spatial_match_expr(target: &Expr, pattern: &Expr, fm: &FreeMap) -> MResul
                 Some(Var::FreeVar(level)) => Some(*level),
                 _ => None,
             };
-            let merger: &dyn Fn(&Par, &[Par]) -> Par = &|p, r| {
-                Par {
-                    exprs: vec![Expr::ESet(par_set(r.to_vec()))],
-                    ..p.clone()
-                }
+            let merger: &dyn Fn(&Par, &[Par]) -> Par = &|p, r| Par {
+                exprs: vec![Expr::ESet(par_set(r.to_vec()))],
+                ..p.clone()
             };
-            list_match_single(tlist, plist, merger, remainder_var, is_wildcard, fm, &spatial_match)
+            list_match_single(
+                tlist,
+                plist,
+                merger,
+                remainder_var,
+                is_wildcard,
+                fm,
+                &spatial_match,
+            )
         }
         (
-            Expr::EMap(ParMap { kvs: tlist, remainder: rem, .. }),
+            Expr::EMap(ParMap {
+                kvs: tlist,
+                remainder: rem,
+                ..
+            }),
             Expr::EMap(ParMap { kvs: plist, .. }),
         ) => {
             let is_wildcard = matches!(rem.as_deref(), Some(Var::Wildcard));
@@ -492,11 +540,9 @@ pub fn spatial_match_expr(target: &Expr, pattern: &Expr, fm: &FreeMap) -> MResul
                 Some(Var::FreeVar(level)) => Some(*level),
                 _ => None,
             };
-            let merger: &dyn Fn(&Par, &[(Par, Par)]) -> Par = &|p, r| {
-                Par {
-                    exprs: vec![Expr::EMap(par_map(r.to_vec()))],
-                    ..p.clone()
-                }
+            let merger: &dyn Fn(&Par, &[(Par, Par)]) -> Par = &|p, r| Par {
+                exprs: vec![Expr::EMap(par_map(r.to_vec()))],
+                ..p.clone()
             };
             list_match_single(
                 tlist,
@@ -653,10 +699,26 @@ fn list_match_single<T: MatchableTerm>(
             // Scala falls through to `listMatch` here; `listMatch` then succeeds when `wildcard` is
             // set (the wildcard absorbs the leftover targets) or when there are no leftover targets.
             // Returning `Ok(Vec::new())` made a `_` wildcard pattern dead code.
-            None => list_match(targets, patterns, merger, remainder, wildcard, fm, spatial_match_fn),
+            None => list_match(
+                targets,
+                patterns,
+                merger,
+                remainder,
+                wildcard,
+                fm,
+                spatial_match_fn,
+            ),
         };
     }
-    list_match(targets, patterns, merger, remainder, wildcard, fm, spatial_match_fn)
+    list_match(
+        targets,
+        patterns,
+        merger,
+        remainder,
+        wildcard,
+        fm,
+        spatial_match_fn,
+    )
 }
 
 fn list_match<T: MatchableTerm>(
@@ -779,6 +841,9 @@ mod tests {
             ..Default::default()
         };
         let expected = FreeMap::from([(0, par(vec![Expr::GInt(42)]))]);
-        assert_eq!(spatial_match_result(&target, &pattern).unwrap(), Some(expected));
+        assert_eq!(
+            spatial_match_result(&target, &pattern).unwrap(),
+            Some(expected)
+        );
     }
 }

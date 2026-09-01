@@ -28,7 +28,9 @@ pub async fn run_cli(options: &Options) -> Result<(), Vec<String>> {
     let max_size = options.grpc_max_recv_message_size;
 
     match &options.subcommand {
-        Commands::Run(_) => Err(vec!["`run` is handled by the node, not the CLI client".to_string()]),
+        Commands::Run(_) => Err(vec![
+            "`run` is handled by the node, not the CLI client".to_string()
+        ]),
 
         Commands::Keygen { location } => {
             let mut console = StdioConsole;
@@ -130,8 +132,12 @@ pub async fn run_cli(options: &Options) -> Result<(), Vec<String>> {
                     depth,
                     show_justification_lines,
                 } => {
-                    DeployRuntime::visualize_dag(&deploy, depth.unwrap_or(-1), *show_justification_lines)
-                        .await
+                    DeployRuntime::visualize_dag(
+                        &deploy,
+                        depth.unwrap_or(-1),
+                        *show_justification_lines,
+                    )
+                    .await
                 }
                 Commands::Mvdag => DeployRuntime::machine_verifiable_dag(&deploy).await,
                 Commands::ListenDataAtName {
@@ -231,8 +237,8 @@ fn generate_key(console: &mut dyn ConsoleIo, path: &Path) -> Result<(), Vec<Stri
         return generate_key(console, path);
     }
 
-    let sig_algorithm =
-        from_algorithm(Secp256k1.name()).ok_or_else(|| vec!["Invalid algorithm name".to_string()])?;
+    let sig_algorithm = from_algorithm(Secp256k1.name())
+        .ok_or_else(|| vec!["Invalid algorithm name".to_string()])?;
     let (sk, pk) = sig_algorithm.new_key_pair();
     let private_path = path.join("rnode.key");
     let public_path = path.join("rnode.pub.pem");

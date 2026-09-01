@@ -18,13 +18,14 @@ use rchain_shared::typed_store::BytesCodec;
 /// store.
 pub async fn build_runtime_manager() -> RuntimeManager {
     let manager = InMemoryStoreManager::default();
-    let history =
-        create_history_repository::<SortedProc, BindPattern, ListParWithRandom, TaggedContinuation>(
-            &manager,
-            "rspace",
-        )
-        .await
-        .expect("history repository");
+    let history = create_history_repository::<
+        SortedProc,
+        BindPattern,
+        ListParWithRandom,
+        TaggedContinuation,
+    >(&manager, "rspace")
+    .await
+    .expect("history repository");
     let reader = history.get_history_reader(history.root()).await;
     let hot = Arc::new(InMemHotStore::new(reader.base()));
     let (play, replay) = RSpace::create_with_replay(history.clone(), hot, Arc::new(RhoMatch));

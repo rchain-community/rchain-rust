@@ -52,7 +52,12 @@ pub fn check_local_peer_node(
         None
     } else {
         log(format!("external IP address has changed to {a}"));
-        Some(PeerNode::from(peer_node.id, a, protocol_port, discovery_port))
+        Some(PeerNode::from(
+            peer_node.id,
+            a,
+            protocol_port,
+            discovery_port,
+        ))
     }
 }
 
@@ -88,7 +93,9 @@ fn check_all(external: Option<&str>, fetch: &dyn Fn(&str) -> Option<String>) -> 
     let r1 = check("AmazonAWS service", AMAZON, fetch);
     let r2 = check_next(r1, || check("WhatIsMyIP service", WHAT_IS_MY_IP, fetch));
     let r3 = check_next(r2, || upnp_ip_check(external));
-    let r4 = check_next(r3, || ("failed to guess".to_string(), Some("localhost".to_string())));
+    let r4 = check_next(r3, || {
+        ("failed to guess".to_string(), Some("localhost".to_string()))
+    });
     let (s, a) = r4;
     (s, a.unwrap_or_default())
 }

@@ -12,8 +12,6 @@
 //! `comm`/`casper` block-hashing (Law 16) needs it.
 
 pub mod ast;
-pub mod par_ops;
-pub mod rholang;
 pub mod block;
 pub mod block_hash;
 pub mod block_metadata;
@@ -24,8 +22,10 @@ pub mod errors;
 pub mod fringe_data;
 pub mod murmur_hash3;
 pub mod normalizer_env;
+pub mod par_ops;
 pub mod pretty;
 pub mod proto;
+pub mod rholang;
 pub mod runtime;
 pub mod sorted;
 pub mod sorter;

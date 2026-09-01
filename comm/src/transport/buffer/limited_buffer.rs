@@ -25,7 +25,10 @@ pub struct DropNewBuffer<A> {
 
 impl<A> DropNewBuffer<A> {
     pub fn new(buffer_size: usize) -> Self {
-        assert!(buffer_size > 0, "bufferSize must be a strictly positive number");
+        assert!(
+            buffer_size > 0,
+            "bufferSize must be a strictly positive number"
+        );
         DropNewBuffer {
             queue: ConcurrentQueue::limited(buffer_size),
             upstream_complete: AtomicBool::new(false),

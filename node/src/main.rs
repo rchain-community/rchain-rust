@@ -57,7 +57,8 @@ async fn async_main() {
         }
     };
 
-    let program = match node_runtime::setup_node_program(&node_conf, &id, Arc::new(StderrLog)).await {
+    let program = match node_runtime::setup_node_program(&node_conf, &id, Arc::new(StderrLog)).await
+    {
         Ok(p) => p,
         Err(e) => {
             eprintln!("Setup error: {e}");

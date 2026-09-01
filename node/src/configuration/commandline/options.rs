@@ -39,7 +39,12 @@ impl std::str::FromStr for Base16 {
 
 /// The CLI surface (port of the Scala `Options` scallop config).
 #[derive(Parser, Debug)]
-#[command(name = "rchain", version, about = "RChain node | gRPC client", disable_help_flag = true)]
+#[command(
+    name = "rchain",
+    version,
+    about = "RChain node | gRPC client",
+    disable_help_flag = true
+)]
 pub struct Options {
     /// Print help.
     #[arg(long = "help", action = clap::ArgAction::Help)]

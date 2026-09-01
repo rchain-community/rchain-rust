@@ -12,7 +12,6 @@ use rchain_models::ast::Par;
 use rchain_models::runtime::{BindPattern, ListParWithRandom, TaggedContinuation};
 use rchain_models::sorted::SortedProc;
 use rchain_models::types::Closed;
-use rchain_shared::store_manager::KeyValueStoreManager;
 use rchain_rspace::checkpoint::{Checkpoint, SoftCheckpoint};
 use rchain_rspace::errors::RSpaceError;
 use rchain_rspace::i_replay_space::IReplaySpace;
@@ -23,6 +22,7 @@ use rchain_rspace::reporting_rspace::{ReportingEvent, ReportingRspace};
 use rchain_rspace::trace::Log;
 use rchain_rspace::tuple_space::Tuplespace;
 use rchain_rspace::util::ReplayException;
+use rchain_shared::store_manager::KeyValueStoreManager;
 
 use crate::accounting::CostAccounting;
 use crate::env::Env;

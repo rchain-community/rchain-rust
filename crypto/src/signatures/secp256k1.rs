@@ -27,7 +27,9 @@ impl Secp256k1 {
     pub fn sign_bytes(data: &[u8], sec: &[u8]) -> Result<Vec<u8>, CryptoError> {
         let sk = SecretKey::from_slice(sec).map_err(|_| CryptoError::InvalidKey)?;
         let signing = SigningKey::from(&sk);
-        let sig: Signature = signing.sign_prehash(data).map_err(|_| CryptoError::InvalidKey)?;
+        let sig: Signature = signing
+            .sign_prehash(data)
+            .map_err(|_| CryptoError::InvalidKey)?;
         Ok(sig.to_der().as_bytes().to_vec())
     }
 
@@ -94,7 +96,11 @@ impl SignaturesAlg for Secp256k1 {
     fn new_key_pair(&self) -> (PrivateKey, PublicKey) {
         let signing = SigningKey::random(&mut OsRng);
         let sec = signing.to_bytes().to_vec();
-        let pub_key = signing.verifying_key().to_encoded_point(false).as_bytes().to_vec();
+        let pub_key = signing
+            .verifying_key()
+            .to_encoded_point(false)
+            .as_bytes()
+            .to_vec();
         (PrivateKey::new(sec), PublicKey::new(pub_key))
     }
 
@@ -137,7 +143,9 @@ mod tests {
     #[test]
     fn creates_known_ecdsa_signature() {
         let data = sha256::hash(b"testing");
-        let sec = base16::unsafe_decode("67E56582298859DDAE725F972992A07C6C4FB9F62A8FFF58CE3CA926A1063530");
+        let sec = base16::unsafe_decode(
+            "67E56582298859DDAE725F972992A07C6C4FB9F62A8FFF58CE3CA926A1063530",
+        );
         let sig = Secp256k1::sign_bytes(&data, &sec).expect("sign with valid secret key");
         assert_eq!(
             base16::encode(&sig).to_uppercase(),
@@ -147,13 +155,17 @@ mod tests {
 
     #[test]
     fn sec_key_verify() {
-        let sec = base16::unsafe_decode("67E56582298859DDAE725F972992A07C6C4FB9F62A8FFF58CE3CA926A1063530");
+        let sec = base16::unsafe_decode(
+            "67E56582298859DDAE725F972992A07C6C4FB9F62A8FFF58CE3CA926A1063530",
+        );
         assert!(Secp256k1::sec_key_verify(&sec));
     }
 
     #[test]
     fn computes_public_key_from_secret_key() {
-        let sec = base16::unsafe_decode("67E56582298859DDAE725F972992A07C6C4FB9F62A8FFF58CE3CA926A1063530");
+        let sec = base16::unsafe_decode(
+            "67E56582298859DDAE725F972992A07C6C4FB9F62A8FFF58CE3CA926A1063530",
+        );
         let pub_key = Secp256k1::to_public_bytes(&sec).expect("compute public key");
         assert_eq!(
             base16::encode(&pub_key).to_uppercase(),

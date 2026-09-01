@@ -12,7 +12,7 @@ use rchain_shared::typed_store::KeyValueTypedStore;
 use crate::history::history::History;
 use crate::history::history_action::HistoryAction;
 use crate::history::key_segment::KeySegment;
-use crate::history::radix_tree::{empty_root_hash, RadixTreeImpl, Node};
+use crate::history::radix_tree::{empty_root_hash, Node, RadixTreeImpl};
 
 /// The radix-tree `History` (port of `RadixHistory`).
 pub struct RadixHistory {
@@ -71,9 +71,11 @@ impl History for RadixHistory {
         let result = self.impl_.save_and_commit(&self.root_node, actions).await?;
         self.impl_.clear_read_cache();
         match result {
-            Some((new_root_node, new_root_hash)) => Ok(Arc::new(
-                self.copy(new_root_hash, new_root_node, self.impl_.clone()),
-            )),
+            Some((new_root_node, new_root_hash)) => Ok(Arc::new(self.copy(
+                new_root_hash,
+                new_root_node,
+                self.impl_.clone(),
+            ))),
             None => Ok(Arc::new(self.copy(
                 self.root_hash,
                 self.root_node.clone(),

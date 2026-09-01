@@ -39,7 +39,10 @@ where
 
 /// The max height of a justification's fringe members, or `None` when the fringe is empty (`None`
 /// sorts below any `Some` height, preserving the previous `-1` sentinel ordering).
-fn fringe_height<M, S>(msg_map: &BTreeMap<M, Message<M, S>>, j: &Message<M, S>) -> Option<BlockHeight>
+fn fringe_height<M, S>(
+    msg_map: &BTreeMap<M, Message<M, S>>,
+    j: &Message<M, S>,
+) -> Option<BlockHeight>
 where
     M: Ord + Clone,
     S: Clone,
@@ -60,8 +63,15 @@ where
     M: Ord + Clone,
     S: Ord + Clone,
 {
-    match justifications.iter().max_by_key(|j| fringe_height(msg_map, j)) {
-        Some(j) => j.fringe.iter().filter_map(|id| msg_at(msg_map, id)).collect(),
+    match justifications
+        .iter()
+        .max_by_key(|j| fringe_height(msg_map, j))
+    {
+        Some(j) => j
+            .fringe
+            .iter()
+            .filter_map(|id| msg_at(msg_map, id))
+            .collect(),
         None => BTreeSet::new(),
     }
 }
@@ -76,7 +86,11 @@ where
     S: Ord + Clone,
 {
     match msgs.iter().min_by_key(|j| fringe_height(msg_map, j)) {
-        Some(j) => j.fringe.iter().filter_map(|id| msg_at(msg_map, id)).collect(),
+        Some(j) => j
+            .fringe
+            .iter()
+            .filter_map(|id| msg_at(msg_map, id))
+            .collect(),
         None => BTreeSet::new(),
     }
 }
@@ -133,7 +147,8 @@ mod tests {
             parents: [0].into_iter().collect(),
             ..m0.clone()
         };
-        let map: BTreeMap<i32, Message<i32, i32>> = [(0, m0.clone()), (1, m1)].into_iter().collect();
+        let map: BTreeMap<i32, Message<i32, i32>> =
+            [(0, m0.clone()), (1, m1)].into_iter().collect();
         assert_eq!(find_with_empty_parents(&map).unwrap().id, 0);
     }
 
@@ -150,8 +165,9 @@ mod tests {
             fringe: [11].into_iter().collect(),
             ..msg(2, &[], &[])
         };
-        let map: BTreeMap<i32, Message<i32, i32>> =
-            [(10, f1), (11, f2), (1, j_low), (2, j_high)].into_iter().collect();
+        let map: BTreeMap<i32, Message<i32, i32>> = [(10, f1), (11, f2), (1, j_low), (2, j_high)]
+            .into_iter()
+            .collect();
         let justifications: BTreeSet<_> = [map[&1].clone(), map[&2].clone()].into_iter().collect();
         let latest = latest_fringe(&map, &justifications);
         assert_eq!(latest.len(), 1);

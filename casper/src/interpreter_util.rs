@@ -165,7 +165,9 @@ where
         let post_state_hash = Blake2b256Hash::from_byte_array(block.post_state_hash.as_bytes());
         // Fork a fresh replay runtime at the block's pre-state (read-only history fork) so block
         // validation is self-contained and can run concurrently with other blocks.
-        let forked = runtime.fork_replay_runtime(pre_state.pre_state_hash).await?;
+        let forked = runtime
+            .fork_replay_runtime(pre_state.pre_state_hash)
+            .await?;
         let replay_result = replay_block(runtime, &forked, block, &rand).await;
         let handled = handle_errors(&post_state_hash, replay_result)?;
         Ok(handled.is_some())
@@ -196,10 +198,7 @@ mod tests {
 
     #[test]
     fn handle_errors_accepts_matching_hash() {
-        assert_eq!(
-            handle_errors(&hash(1), Ok(hash(1))).unwrap(),
-            Some(hash(1))
-        );
+        assert_eq!(handle_errors(&hash(1), Ok(hash(1))).unwrap(), Some(hash(1)));
     }
 
     #[test]

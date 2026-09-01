@@ -47,7 +47,11 @@ struct NoopNativeReader;
 
 #[async_trait]
 impl NativeHistoryReader for NoopNativeReader {
-    async fn get_native(&self, _prefix: u8, _key: Blake2b256Hash) -> Result<Option<Vec<u8>>, String> {
+    async fn get_native(
+        &self,
+        _prefix: u8,
+        _key: Blake2b256Hash,
+    ) -> Result<Option<Vec<u8>>, String> {
         Ok(None)
     }
 }
@@ -89,7 +93,11 @@ impl InMemNativeStore {
                 return Ok(v.clone());
             }
         }
-        let reader = self.reader.read().unwrap_or_else(|p| p.into_inner()).clone();
+        let reader = self
+            .reader
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone();
         reader.get_native(prefix, *key).await
     }
 
@@ -131,7 +139,11 @@ impl InMemNativeStore {
     /// Capture the current overlay for a soft-checkpoint rollback.
     pub fn snapshot(&self) -> NativeStoreState {
         NativeStoreState {
-            overlay: self.overlay.lock().unwrap_or_else(|p| p.into_inner()).clone(),
+            overlay: self
+                .overlay
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .clone(),
         }
     }
 
@@ -155,7 +167,10 @@ mod tests {
         let store = InMemNativeStore::empty();
         let key = Blake2b256Hash::from_bytes([7u8; 32]);
         store.put(PREFIX_POS, key, vec![1, 2, 3]);
-        assert_eq!(store.get(PREFIX_POS, &key).await.unwrap(), Some(vec![1, 2, 3]));
+        assert_eq!(
+            store.get(PREFIX_POS, &key).await.unwrap(),
+            Some(vec![1, 2, 3])
+        );
     }
 
     #[tokio::test]
@@ -184,7 +199,13 @@ mod tests {
         store.delete(PREFIX_VAULT, &key);
         assert_eq!(store.get(PREFIX_VAULT, &key).await.unwrap(), None);
         let changes = store.drain_changes();
-        assert_eq!(changes, vec![NativeStoreAction::Delete { prefix: PREFIX_VAULT, key }]);
+        assert_eq!(
+            changes,
+            vec![NativeStoreAction::Delete {
+                prefix: PREFIX_VAULT,
+                key
+            }]
+        );
     }
 
     #[tokio::test]

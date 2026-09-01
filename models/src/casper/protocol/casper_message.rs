@@ -218,7 +218,9 @@ impl Event {
                 let consume = ce
                     .consume
                     .as_ref()
-                    .ok_or(crate::errors::ModelsError::Malformed("malformed CommEvent: missing consume"))?;
+                    .ok_or(crate::errors::ModelsError::Malformed(
+                        "malformed CommEvent: missing consume",
+                    ))?;
                 Ok(Event::Comm(CommEvent {
                     consume: ConsumeEvent {
                         channels_hashes: consume.channels_hashes.clone(),
@@ -244,7 +246,9 @@ impl Event {
                         .collect(),
                 }))
             }
-            None => Err(crate::errors::ModelsError::Malformed("malformed Event: empty")),
+            None => Err(crate::errors::ModelsError::Malformed(
+                "malformed Event: empty",
+            )),
         }
     }
 
@@ -311,11 +315,9 @@ pub enum SystemDeployData {
 impl SystemDeployData {
     pub fn from_proto(p: &SystemDeployDataProto) -> Result<Self, crate::errors::ModelsError> {
         match &p.system_deploy {
-            Some(system_deploy_data_proto::SystemDeploy::SlashSystemDeploy(sd)) => {
-                Ok(SystemDeployData::Slash(Validator::try_from(
-                    sd.slashed_validator.as_slice(),
-                )?))
-            }
+            Some(system_deploy_data_proto::SystemDeploy::SlashSystemDeploy(sd)) => Ok(
+                SystemDeployData::Slash(Validator::try_from(sd.slashed_validator.as_slice())?),
+            ),
             Some(system_deploy_data_proto::SystemDeploy::CloseBlockSystemDeploy(_)) => {
                 Ok(SystemDeployData::CloseBlock)
             }
@@ -339,7 +341,9 @@ impl SystemDeployData {
                     ),
                 ),
             },
-            SystemDeployData::Empty => SystemDeployDataProto { system_deploy: None },
+            SystemDeployData::Empty => SystemDeployDataProto {
+                system_deploy: None,
+            },
         }
     }
 }
@@ -420,7 +424,9 @@ impl ProcessedDeploy {
         let deploy = p
             .deploy
             .as_ref()
-            .ok_or(crate::errors::ModelsError::Malformed("malformed ProcessedDeploy: missing deploy"))?;
+            .ok_or(crate::errors::ModelsError::Malformed(
+                "malformed ProcessedDeploy: missing deploy",
+            ))?;
         let deploy_log: Result<Vec<Event>, crate::errors::ModelsError> =
             p.deploy_log.iter().map(Event::from_proto).collect();
         Ok(ProcessedDeploy {
@@ -490,8 +496,11 @@ impl RholangState {
     pub fn from_proto(p: &RholangStateProto) -> Result<Self, crate::errors::ModelsError> {
         let deploys: Result<Vec<ProcessedDeploy>, crate::errors::ModelsError> =
             p.deploys.iter().map(ProcessedDeploy::from_proto).collect();
-        let system_deploys: Result<Vec<ProcessedSystemDeploy>, crate::errors::ModelsError> =
-            p.system_deploys.iter().map(ProcessedSystemDeploy::from_proto).collect();
+        let system_deploys: Result<Vec<ProcessedSystemDeploy>, crate::errors::ModelsError> = p
+            .system_deploys
+            .iter()
+            .map(ProcessedSystemDeploy::from_proto)
+            .collect();
         Ok(RholangState {
             deploys: deploys?,
             system_deploys: system_deploys?,
@@ -540,7 +549,9 @@ impl BlockMessage {
         let state = bm
             .state
             .as_ref()
-            .ok_or(crate::errors::ModelsError::Malformed("malformed BlockMessage: missing state"))?;
+            .ok_or(crate::errors::ModelsError::Malformed(
+                "malformed BlockMessage: missing state",
+            ))?;
         Ok(BlockMessage {
             version: bm.version,
             shard_id: bm.shard_id.clone(),
@@ -630,7 +641,8 @@ impl BlockMessage {
     }
 
     pub fn from_bytes(bytes: &[u8]) -> Result<BlockMessage, crate::errors::ModelsError> {
-        let proto = BlockMessageProto::decode(bytes).map_err(|e| crate::errors::ModelsError::Decode(e.to_string()))?;
+        let proto = BlockMessageProto::decode(bytes)
+            .map_err(|e| crate::errors::ModelsError::Decode(e.to_string()))?;
         BlockMessage::from_proto(&proto)
     }
 }
@@ -667,7 +679,8 @@ impl FinalizedFringe {
         self.to_proto().encode_to_vec()
     }
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, crate::errors::ModelsError> {
-        let proto = FinalizedFringeProto::decode(bytes).map_err(|e| crate::errors::ModelsError::Decode(e.to_string()))?;
+        let proto = FinalizedFringeProto::decode(bytes)
+            .map_err(|e| crate::errors::ModelsError::Decode(e.to_string()))?;
         FinalizedFringe::from_proto(&proto)
     }
 }
@@ -750,7 +763,9 @@ impl ForkChoiceTipRequest {
 
 impl HasBlockRequest {
     pub fn from_proto(m: &HasBlockRequestProto) -> Self {
-        HasBlockRequest { hash: m.hash.clone() }
+        HasBlockRequest {
+            hash: m.hash.clone(),
+        }
     }
     pub fn to_proto(&self) -> HasBlockRequestProto {
         HasBlockRequestProto {
@@ -769,10 +784,14 @@ impl HasBlockRequest {
 
 impl HasBlock {
     pub fn from_proto(m: &HasBlockProto) -> Self {
-        HasBlock { hash: m.hash.clone() }
+        HasBlock {
+            hash: m.hash.clone(),
+        }
     }
     pub fn to_proto(&self) -> HasBlockProto {
-        HasBlockProto { hash: self.hash.clone() }
+        HasBlockProto {
+            hash: self.hash.clone(),
+        }
     }
     pub fn to_bytes(&self) -> Vec<u8> {
         self.to_proto().encode_to_vec()
@@ -786,7 +805,9 @@ impl HasBlock {
 
 impl BlockRequest {
     pub fn from_proto(m: &BlockRequestProto) -> Self {
-        BlockRequest { hash: m.hash.clone() }
+        BlockRequest {
+            hash: m.hash.clone(),
+        }
     }
     pub fn to_proto(&self) -> BlockRequestProto {
         BlockRequestProto {
@@ -866,7 +887,9 @@ pub struct StoreItemsMessageRequest {
 }
 
 impl StoreItemsMessageRequest {
-    pub fn from_proto(m: &StoreItemsMessageRequestProto) -> Result<Self, crate::errors::ModelsError> {
+    pub fn from_proto(
+        m: &StoreItemsMessageRequestProto,
+    ) -> Result<Self, crate::errors::ModelsError> {
         Ok(StoreItemsMessageRequest {
             start_path: m
                 .start_path
@@ -879,7 +902,11 @@ impl StoreItemsMessageRequest {
     }
     pub fn to_proto(&self) -> StoreItemsMessageRequestProto {
         StoreItemsMessageRequestProto {
-            start_path: self.start_path.iter().map(store_node_key_to_proto).collect(),
+            start_path: self
+                .start_path
+                .iter()
+                .map(store_node_key_to_proto)
+                .collect(),
             skip: self.skip,
             take: self.take,
         }
@@ -930,7 +957,11 @@ impl StoreItemsMessage {
     }
     pub fn to_proto(&self) -> StoreItemsMessageProto {
         StoreItemsMessageProto {
-            start_path: self.start_path.iter().map(store_node_key_to_proto).collect(),
+            start_path: self
+                .start_path
+                .iter()
+                .map(store_node_key_to_proto)
+                .collect(),
             last_path: self.last_path.iter().map(store_node_key_to_proto).collect(),
             history_items: self
                 .history_items
@@ -995,7 +1026,9 @@ pub enum CasperMessageProto {
 }
 
 impl CasperMessage {
-    pub fn from_proto(cm: &CasperMessageProto) -> Result<CasperMessage, crate::errors::ModelsError> {
+    pub fn from_proto(
+        cm: &CasperMessageProto,
+    ) -> Result<CasperMessage, crate::errors::ModelsError> {
         match cm {
             CasperMessageProto::BlockMessage(m) => {
                 Ok(CasperMessage::BlockMessage(BlockMessage::from_proto(m)?))
@@ -1006,9 +1039,9 @@ impl CasperMessage {
             CasperMessageProto::BlockHashMessage(m) => Ok(CasperMessage::BlockHashMessage(
                 BlockHashMessage::from_proto(m)?,
             )),
-            CasperMessageProto::HasBlock(m) => {
-                Ok(CasperMessage::HasBlock(HasBlock { hash: m.hash.clone() }))
-            }
+            CasperMessageProto::HasBlock(m) => Ok(CasperMessage::HasBlock(HasBlock {
+                hash: m.hash.clone(),
+            })),
             CasperMessageProto::HasBlockRequest(m) => {
                 Ok(CasperMessage::HasBlockRequest(HasBlockRequest {
                     hash: m.hash.clone(),
@@ -1026,14 +1059,12 @@ impl CasperMessage {
                     trim_state: m.trim_state,
                 }),
             ),
-            CasperMessageProto::StoreItemsMessageRequest(m) => {
-                Ok(CasperMessage::StoreItemsMessageRequest(
-                    StoreItemsMessageRequest::from_proto(m)?,
-                ))
-            }
-            CasperMessageProto::StoreItemsMessage(m) => {
-                Ok(CasperMessage::StoreItemsMessage(StoreItemsMessage::from_proto(m)?))
-            }
+            CasperMessageProto::StoreItemsMessageRequest(m) => Ok(
+                CasperMessage::StoreItemsMessageRequest(StoreItemsMessageRequest::from_proto(m)?),
+            ),
+            CasperMessageProto::StoreItemsMessage(m) => Ok(CasperMessage::StoreItemsMessage(
+                StoreItemsMessage::from_proto(m)?,
+            )),
         }
     }
 
@@ -1053,7 +1084,9 @@ impl CasperMessage {
                 hash: m.hash.clone(),
             }),
             CasperMessage::HasBlockRequest(m) => {
-                CasperMessageProto::HasBlockRequest(HasBlockRequestProto { hash: m.hash.clone() })
+                CasperMessageProto::HasBlockRequest(HasBlockRequestProto {
+                    hash: m.hash.clone(),
+                })
             }
             CasperMessage::ForkChoiceTipRequest(_) => {
                 CasperMessageProto::ForkChoiceTipRequest(ForkChoiceTipRequestProto {})
@@ -1131,16 +1164,17 @@ mod tests {
             (validator(1), 2.try_into().unwrap()),
             (validator(2), 3.try_into().unwrap()),
         ]);
-        block.rejected_blocks = [block_hash(9), block_hash(1)]
-            .into_iter()
-            .collect();
+        block.rejected_blocks = [block_hash(9), block_hash(1)].into_iter().collect();
         let proto = block.to_proto();
         // Bonds already iterated in key order (BTreeMap) and then sorted by validator bytes.
         let validators: Vec<u8> = proto.bonds.iter().map(|b| b.validator[0]).collect();
         assert_eq!(validators, vec![1, 2, 3]);
         assert_eq!(
             proto.rejected_blocks,
-            vec![block_hash(1).as_bytes().to_vec(), block_hash(9).as_bytes().to_vec()]
+            vec![
+                block_hash(1).as_bytes().to_vec(),
+                block_hash(9).as_bytes().to_vec()
+            ]
         );
     }
 
@@ -1208,8 +1242,8 @@ mod tests {
 
     fn signed_deploy_data(term: &str) -> SignedDeployData {
         use rchain_crypto::signatures::secp256k1::Secp256k1;
-        use rchain_crypto::signatures::signed::Signed;
         use rchain_crypto::signatures::signatures_alg::SignaturesAlg;
+        use rchain_crypto::signatures::signed::Signed;
         let (sec, _pk) = Secp256k1.new_key_pair();
         let data = DeployData {
             term: term.to_string(),

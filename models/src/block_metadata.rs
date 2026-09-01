@@ -59,8 +59,9 @@ impl BlockMetadata {
                 .bonds
                 .iter()
                 .map(|bond| {
-                    let stake = NonNegI64::try_from(bond.stake)
-                        .map_err(|_| crate::errors::ModelsError::Malformed("negative bond stake"))?;
+                    let stake = NonNegI64::try_from(bond.stake).map_err(|_| {
+                        crate::errors::ModelsError::Malformed("negative bond stake")
+                    })?;
                     Ok((Validator::try_from(bond.validator.as_slice())?, stake))
                 })
                 .collect::<Result<_, crate::errors::ModelsError>>()?,
@@ -123,7 +124,8 @@ impl BlockMetadata {
     }
 
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, crate::errors::ModelsError> {
-        let proto = BlockMetadataProto::decode(bytes).map_err(|e| crate::errors::ModelsError::Decode(e.to_string()))?;
+        let proto = BlockMetadataProto::decode(bytes)
+            .map_err(|e| crate::errors::ModelsError::Decode(e.to_string()))?;
         BlockMetadata::from_proto(&proto)
     }
 
@@ -201,7 +203,10 @@ mod tests {
         assert_eq!(meta.sender, validator(2));
         assert_eq!(meta.seq_num, 3.try_into().unwrap());
         assert_eq!(meta.justifications, [block_hash(2)].into_iter().collect());
-        assert_eq!(meta.bonds_map, BTreeMap::from([(validator(2), 100.try_into().unwrap())]));
+        assert_eq!(
+            meta.bonds_map,
+            BTreeMap::from([(validator(2), 100.try_into().unwrap())])
+        );
         assert!(!meta.validated);
     }
 }

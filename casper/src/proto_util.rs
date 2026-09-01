@@ -14,7 +14,9 @@ use rchain_shared::refined::{BlockHeight, NonNegI64, SeqNum};
 /// The maximum block number among the given metadata, or `-1` if empty (port of
 /// `maxBlockNumberMetadata`).
 pub fn max_block_number_metadata(blocks: &[BlockMetadata]) -> i64 {
-    blocks.iter().fold(-1, |acc, b| acc.max(i64::from(b.block_num)))
+    blocks
+        .iter()
+        .fold(-1, |acc, b| acc.max(i64::from(b.block_num)))
 }
 
 /// Look up a block's (non-failed) parent metadata (port of `ProtoUtil.getParentsMetadata`).

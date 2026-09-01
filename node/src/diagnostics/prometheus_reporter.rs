@@ -122,14 +122,15 @@ fn merge_distribution_into(
 ) {
     let key = (incoming.name.clone(), incoming.tags.clone());
     map.entry(key)
-        .and_modify(|acc| acc.distribution = merge_distribution(&acc.distribution, &incoming.distribution))
+        .and_modify(|acc| {
+            acc.distribution = merge_distribution(&acc.distribution, &incoming.distribution)
+        })
         .or_insert_with(|| incoming.clone());
 }
 
 /// Initial scrape payload before any snapshot has been reported (port of the reporter's initial
 /// `preparedScrapeData`).
-const EMPTY_SCRAPE_DATA: &str =
-    "# The kamon-prometheus module didn't receive any data just yet.\n";
+const EMPTY_SCRAPE_DATA: &str = "# The kamon-prometheus module didn't receive any data just yet.\n";
 
 /// Prometheus reporter (port of `NewPrometheusReporter`).
 pub struct NewPrometheusReporter {
@@ -206,8 +207,7 @@ mod tests {
 
     #[test]
     fn counters_accumulate_and_gauges_take_latest() {
-        let mut acc =
-            PeriodSnapshotAccumulator::new(Duration::from_secs(1), Duration::ZERO);
+        let mut acc = PeriodSnapshotAccumulator::new(Duration::from_secs(1), Duration::ZERO);
         acc.add(&snapshot(0, 1000, vec![1], vec![10]));
         acc.add(&snapshot(1000, 2000, vec![2], vec![99]));
 
@@ -243,8 +243,14 @@ mod tests {
         assert_eq!(
             merged.buckets,
             vec![
-                Bucket { value: 5, frequency: 2 },
-                Bucket { value: 15, frequency: 1 }
+                Bucket {
+                    value: 5,
+                    frequency: 2
+                },
+                Bucket {
+                    value: 15,
+                    frequency: 1
+                }
             ]
         );
     }
@@ -310,7 +316,10 @@ mod tests {
                         sum: 42,
                         min: 42,
                         max: 42,
-                        buckets: vec![Bucket { value: 42, frequency: 1 }],
+                        buckets: vec![Bucket {
+                            value: 42,
+                            frequency: 1,
+                        }],
                     },
                 }],
             },

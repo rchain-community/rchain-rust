@@ -5,8 +5,7 @@
 //! preserved faithfully.
 
 use rchain_models::ast::{
-    Sort,
-    Bundle, Connective, Expr, GUnforgeable, Match, MatchCase, New, Par, Receive, Send, Var,
+    Bundle, Connective, Expr, GUnforgeable, Match, MatchCase, New, Par, Receive, Send, Sort, Var,
 };
 use rchain_models::par_ops::is_nil;
 use rchain_models::sorter::{sort_pairs, sort_pars};
@@ -106,28 +105,67 @@ impl PrettyPrinter {
         }
         let mut groups: Vec<(&'static str, Vec<String>)> = Vec::new();
         if !p.bundles.is_empty() {
-            groups.push(("bundles", p.bundles.iter().map(|b| self.build_bundle(b, indent)).collect()));
+            groups.push((
+                "bundles",
+                p.bundles
+                    .iter()
+                    .map(|b| self.build_bundle(b, indent))
+                    .collect(),
+            ));
         }
         if !p.sends.is_empty() {
-            groups.push(("sends", p.sends.iter().map(|s| self.build_send(s, indent)).collect()));
+            groups.push((
+                "sends",
+                p.sends.iter().map(|s| self.build_send(s, indent)).collect(),
+            ));
         }
         if !p.receives.is_empty() {
-            groups.push(("receives", p.receives.iter().map(|r| self.build_receive(r, indent)).collect()));
+            groups.push((
+                "receives",
+                p.receives
+                    .iter()
+                    .map(|r| self.build_receive(r, indent))
+                    .collect(),
+            ));
         }
         if !p.news.is_empty() {
-            groups.push(("news", p.news.iter().map(|n| self.build_new(n, indent)).collect()));
+            groups.push((
+                "news",
+                p.news.iter().map(|n| self.build_new(n, indent)).collect(),
+            ));
         }
         if !p.exprs.is_empty() {
-            groups.push(("exprs", p.exprs.iter().map(|e| self.build_expr_inner(e)).collect()));
+            groups.push((
+                "exprs",
+                p.exprs.iter().map(|e| self.build_expr_inner(e)).collect(),
+            ));
         }
         if !p.matches.is_empty() {
-            groups.push(("matches", p.matches.iter().map(|m| self.build_match(m, indent)).collect()));
+            groups.push((
+                "matches",
+                p.matches
+                    .iter()
+                    .map(|m| self.build_match(m, indent))
+                    .collect(),
+            ));
         }
         if !p.unforgeables.is_empty() {
-            groups.push(("unforgeables", p.unforgeables.iter().map(|u| self.build_unforgeable_inner(u)).collect()));
+            groups.push((
+                "unforgeables",
+                p.unforgeables
+                    .iter()
+                    .map(|u| self.build_unforgeable_inner(u))
+                    .collect(),
+            ));
         }
         if !p.connectives.is_empty() {
-            groups.push(("connectives", p.connectives.iter().map(|c| self.build_connective(c)).collect()));
+            groups.push((
+                "connectives",
+                p.connectives
+                    .iter()
+                    .map(|c| self.build_connective(c))
+                    .collect(),
+            ));
         }
 
         let mut out = String::new();
@@ -151,7 +189,12 @@ impl PrettyPrinter {
 
     fn build_send(&self, s: &Send, indent: i32) -> String {
         let chan = self.build_channel_inner(&s.chan, indent);
-        let data = build_seq(&s.data.iter().map(|p| self.build_string(p)).collect::<Vec<_>>());
+        let data = build_seq(
+            &s.data
+                .iter()
+                .map(|p| self.build_string(p))
+                .collect::<Vec<_>>(),
+        );
         let op = if s.persistent { "!!(" } else { "!(" };
         format!("{chan}{op}{data})")
     }
@@ -277,47 +320,128 @@ impl PrettyPrinter {
         match e {
             Expr::ENeg(p) => format!("-{}", wrap_with_braces(&self.build_string(p))),
             Expr::ENot(p) => format!("~{}", wrap_with_braces(&self.build_string(p))),
-            Expr::EMult(p1, p2) => wrap_with_braces(&format!("{} * {}", self.build_string(p1), self.build_string(p2))),
-            Expr::EDiv(p1, p2) => wrap_with_braces(&format!("{} / {}", self.build_string(p1), self.build_string(p2))),
-            Expr::EMod(p1, p2) => wrap_with_braces(&format!("{} % {}", self.build_string(p1), self.build_string(p2))),
-            Expr::EPercentPercent(p1, p2) => {
-                wrap_with_braces(&format!("{} %% {}", self.build_string(p1), self.build_string(p2)))
-            }
-            Expr::EPlus(p1, p2) => wrap_with_braces(&format!("{} + {}", self.build_string(p1), self.build_string(p2))),
-            Expr::EPlusPlus(p1, p2) => {
-                wrap_with_braces(&format!("{} ++ {}", self.build_string(p1), self.build_string(p2)))
-            }
-            Expr::EMinus(p1, p2) => wrap_with_braces(&format!("{} - {}", self.build_string(p1), self.build_string(p2))),
-            Expr::EMinusMinus(p1, p2) => {
-                wrap_with_braces(&format!("{} -- {}", self.build_string(p1), self.build_string(p2)))
-            }
-            Expr::EAnd(p1, p2) => wrap_with_braces(&format!("{} and {}", self.build_string(p1), self.build_string(p2))),
-            Expr::EOr(p1, p2) => wrap_with_braces(&format!("{} or {}", self.build_string(p1), self.build_string(p2))),
-            Expr::EShortAnd(p1, p2) => {
-                wrap_with_braces(&format!("{} && {}", self.build_string(p1), self.build_string(p2)))
-            }
-            Expr::EShortOr(p1, p2) => {
-                wrap_with_braces(&format!("{} || {}", self.build_string(p1), self.build_string(p2)))
-            }
-            Expr::EEq(p1, p2) => wrap_with_braces(&format!("{} == {}", self.build_string(p1), self.build_string(p2))),
-            Expr::ENeq(p1, p2) => wrap_with_braces(&format!("{} != {}", self.build_string(p1), self.build_string(p2))),
-            Expr::EGt(p1, p2) => wrap_with_braces(&format!("{} > {}", self.build_string(p1), self.build_string(p2))),
-            Expr::EGte(p1, p2) => wrap_with_braces(&format!("{} >= {}", self.build_string(p1), self.build_string(p2))),
-            Expr::ELt(p1, p2) => wrap_with_braces(&format!("{} < {}", self.build_string(p1), self.build_string(p2))),
-            Expr::ELte(p1, p2) => wrap_with_braces(&format!("{} <= {}", self.build_string(p1), self.build_string(p2))),
-            Expr::EMatches(target, pattern) => {
-                wrap_with_braces(&format!("{} matches {}", self.build_string(target), self.build_string(pattern)))
-            }
+            Expr::EMult(p1, p2) => wrap_with_braces(&format!(
+                "{} * {}",
+                self.build_string(p1),
+                self.build_string(p2)
+            )),
+            Expr::EDiv(p1, p2) => wrap_with_braces(&format!(
+                "{} / {}",
+                self.build_string(p1),
+                self.build_string(p2)
+            )),
+            Expr::EMod(p1, p2) => wrap_with_braces(&format!(
+                "{} % {}",
+                self.build_string(p1),
+                self.build_string(p2)
+            )),
+            Expr::EPercentPercent(p1, p2) => wrap_with_braces(&format!(
+                "{} %% {}",
+                self.build_string(p1),
+                self.build_string(p2)
+            )),
+            Expr::EPlus(p1, p2) => wrap_with_braces(&format!(
+                "{} + {}",
+                self.build_string(p1),
+                self.build_string(p2)
+            )),
+            Expr::EPlusPlus(p1, p2) => wrap_with_braces(&format!(
+                "{} ++ {}",
+                self.build_string(p1),
+                self.build_string(p2)
+            )),
+            Expr::EMinus(p1, p2) => wrap_with_braces(&format!(
+                "{} - {}",
+                self.build_string(p1),
+                self.build_string(p2)
+            )),
+            Expr::EMinusMinus(p1, p2) => wrap_with_braces(&format!(
+                "{} -- {}",
+                self.build_string(p1),
+                self.build_string(p2)
+            )),
+            Expr::EAnd(p1, p2) => wrap_with_braces(&format!(
+                "{} and {}",
+                self.build_string(p1),
+                self.build_string(p2)
+            )),
+            Expr::EOr(p1, p2) => wrap_with_braces(&format!(
+                "{} or {}",
+                self.build_string(p1),
+                self.build_string(p2)
+            )),
+            Expr::EShortAnd(p1, p2) => wrap_with_braces(&format!(
+                "{} && {}",
+                self.build_string(p1),
+                self.build_string(p2)
+            )),
+            Expr::EShortOr(p1, p2) => wrap_with_braces(&format!(
+                "{} || {}",
+                self.build_string(p1),
+                self.build_string(p2)
+            )),
+            Expr::EEq(p1, p2) => wrap_with_braces(&format!(
+                "{} == {}",
+                self.build_string(p1),
+                self.build_string(p2)
+            )),
+            Expr::ENeq(p1, p2) => wrap_with_braces(&format!(
+                "{} != {}",
+                self.build_string(p1),
+                self.build_string(p2)
+            )),
+            Expr::EGt(p1, p2) => wrap_with_braces(&format!(
+                "{} > {}",
+                self.build_string(p1),
+                self.build_string(p2)
+            )),
+            Expr::EGte(p1, p2) => wrap_with_braces(&format!(
+                "{} >= {}",
+                self.build_string(p1),
+                self.build_string(p2)
+            )),
+            Expr::ELt(p1, p2) => wrap_with_braces(&format!(
+                "{} < {}",
+                self.build_string(p1),
+                self.build_string(p2)
+            )),
+            Expr::ELte(p1, p2) => wrap_with_braces(&format!(
+                "{} <= {}",
+                self.build_string(p1),
+                self.build_string(p2)
+            )),
+            Expr::EMatches(target, pattern) => wrap_with_braces(&format!(
+                "{} matches {}",
+                self.build_string(target),
+                self.build_string(pattern)
+            )),
             Expr::EList(list) => {
-                let seq = build_seq(&list.ps.iter().map(|p| self.build_string(p)).collect::<Vec<_>>());
+                let seq = build_seq(
+                    &list
+                        .ps
+                        .iter()
+                        .map(|p| self.build_string(p))
+                        .collect::<Vec<_>>(),
+                );
                 format!("[{seq}{}]", self.build_remainder(&list.remainder))
             }
             Expr::ETuple(tuple) => {
-                let seq = build_seq(&tuple.ps.iter().map(|p| self.build_string(p)).collect::<Vec<_>>());
+                let seq = build_seq(
+                    &tuple
+                        .ps
+                        .iter()
+                        .map(|p| self.build_string(p))
+                        .collect::<Vec<_>>(),
+                );
                 format!("({seq})")
             }
             Expr::ESet(set) => {
-                let seq = build_seq(&sort_pars(set.ps.clone()).iter().map(|p| self.build_string(p)).collect::<Vec<_>>());
+                let seq = build_seq(
+                    &sort_pars(set.ps.clone())
+                        .iter()
+                        .map(|p| self.build_string(p))
+                        .collect::<Vec<_>>(),
+                );
                 format!("Set({seq}{})", self.build_remainder(&set.remainder))
             }
             Expr::EMap(map) => {
@@ -340,8 +464,17 @@ impl PrettyPrinter {
             Expr::GUri(u) => format!("`{u}`"),
             Expr::GByteArray(bs) => base16::encode(bs),
             Expr::EMethod(m) => {
-                let args = m.arguments.iter().map(|p| self.build_string(p)).collect::<Vec<_>>().join(",");
-                format!("({}).{}({args})", self.build_string(&m.target), m.method_name)
+                let args = m
+                    .arguments
+                    .iter()
+                    .map(|p| self.build_string(p))
+                    .collect::<Vec<_>>()
+                    .join(",");
+                format!(
+                    "({}).{}({args})",
+                    self.build_string(&m.target),
+                    m.method_name
+                )
             }
         }
     }
@@ -366,7 +499,9 @@ impl PrettyPrinter {
         match u {
             GUnforgeable::GPrivate(p) => format!("Unforgeable(0x{})", base16::encode(&p.id)),
             GUnforgeable::GDeployId(id) => format!("DeployId(0x{})", base16::encode(&id.sig)),
-            GUnforgeable::GDeployerId(id) => format!("DeployerId(0x{})", base16::encode(&id.public_key)),
+            GUnforgeable::GDeployerId(id) => {
+                format!("DeployerId(0x{})", base16::encode(&id.public_key))
+            }
             GUnforgeable::GSysAuthToken => "GSysAuthTokenBody()".to_string(),
             GUnforgeable::Empty => "Nil".to_string(),
         }
@@ -380,10 +515,7 @@ impl PrettyPrinter {
         let b = if rendered.len() > 60 {
             rendered
         } else {
-            rendered
-                .split_whitespace()
-                .collect::<Vec<_>>()
-                .join(" ")
+            rendered.split_whitespace().collect::<Vec<_>>().join(" ")
         };
         if self.is_bound_new(p) {
             b
@@ -454,7 +586,13 @@ fn build_seq(items: &[String]) -> String {
     items
         .iter()
         .enumerate()
-        .map(|(i, s)| if i != items.len() - 1 { format!("{s}, ") } else { s.clone() })
+        .map(|(i, s)| {
+            if i != items.len() - 1 {
+                format!("{s}, ")
+            } else {
+                s.clone()
+            }
+        })
         .collect()
 }
 
@@ -498,7 +636,10 @@ mod tests {
         assert_eq!(p.build_expr(&Expr::GInt(42)), "42");
         assert_eq!(p.build_expr(&Expr::GString("hi".to_string())), "\"hi\"");
         assert_eq!(p.build_expr(&Expr::GBool(true)), "true");
-        assert_eq!(p.build_expr(&Expr::GUri("rho:io:stdout".to_string())), "`rho:io:stdout`");
+        assert_eq!(
+            p.build_expr(&Expr::GUri("rho:io:stdout".to_string())),
+            "`rho:io:stdout`"
+        );
     }
 
     #[test]

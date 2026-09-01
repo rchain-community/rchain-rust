@@ -177,7 +177,9 @@ impl Codec<i64> for I64Codec {
     }
 
     fn decode(&self, bytes: &[u8]) -> Result<i64, String> {
-        let arr: [u8; 8] = bytes.try_into().map_err(|_| "expected 8 bytes".to_string())?;
+        let arr: [u8; 8] = bytes
+            .try_into()
+            .map_err(|_| "expected 8 bytes".to_string())?;
         Ok(i64::from_be_bytes(arr))
     }
 }
@@ -188,23 +190,41 @@ mod tests {
     use crate::store::InMemoryKeyValueStore;
 
     fn in_memory() -> SharedStore {
-        Arc::new(tokio::sync::Mutex::new(Box::new(
-            InMemoryKeyValueStore::default(),
-        ) as Box<dyn KeyValueStore + Send + Sync>))
+        Arc::new(tokio::sync::Mutex::new(
+            Box::new(InMemoryKeyValueStore::default()) as Box<dyn KeyValueStore + Send + Sync>,
+        ))
     }
 
     #[tokio::test]
     async fn in_memory_round_trip() {
-        let codec = KeyValueTypedStoreCodec::new(
-            in_memory(),
-            Arc::new(StringCodec),
-            Arc::new(I64Codec),
-        );
-        codec.put(&[("a".to_string(), 1), ("b".to_string(), 2)]).await.unwrap();
-        let vals = codec.get(&["a".to_string(), "b".to_string(), "c".to_string()]).await.unwrap();
+        let codec =
+            KeyValueTypedStoreCodec::new(in_memory(), Arc::new(StringCodec), Arc::new(I64Codec));
+        codec
+            .put(&[("a".to_string(), 1), ("b".to_string(), 2)])
+            .await
+            .unwrap();
+        let vals = codec
+            .get(&["a".to_string(), "b".to_string(), "c".to_string()])
+            .await
+            .unwrap();
         assert_eq!(vals, vec![Some(1), Some(2), None]);
-        assert_eq!(codec.contains(&["a".to_string(), "c".to_string()]).await.unwrap(), vec![true, false]);
-        assert_eq!(codec.delete(&["a".to_string(), "c".to_string()]).await.unwrap(), 1);
-        assert_eq!(codec.to_map().await.unwrap(), BTreeMap::from([("b".to_string(), 2)]));
+        assert_eq!(
+            codec
+                .contains(&["a".to_string(), "c".to_string()])
+                .await
+                .unwrap(),
+            vec![true, false]
+        );
+        assert_eq!(
+            codec
+                .delete(&["a".to_string(), "c".to_string()])
+                .await
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            codec.to_map().await.unwrap(),
+            BTreeMap::from([("b".to_string(), 2)])
+        );
     }
 }

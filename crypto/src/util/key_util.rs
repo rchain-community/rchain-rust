@@ -98,8 +98,11 @@ pub fn write_keys(
 
     write_private_key(private_key_pem_path, private_pem.as_bytes())?;
     fs::write(public_key_pem_path, public_pem.as_bytes()).map_err(|e| e.to_string())?;
-    fs::write(public_key_hex_path, format!("{}\n", base16::encode(pk.bytes())))
-        .map_err(|e| e.to_string())?;
+    fs::write(
+        public_key_hex_path,
+        format!("{}\n", base16::encode(pk.bytes())),
+    )
+    .map_err(|e| e.to_string())?;
 
     Ok(())
 }

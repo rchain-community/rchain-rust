@@ -21,7 +21,10 @@ impl Ed25519 {
             expected: 32,
             actual: sec.len(),
         })?;
-        Ok(SigningKey::from_bytes(&arr).verifying_key().to_bytes().to_vec())
+        Ok(SigningKey::from_bytes(&arr)
+            .verifying_key()
+            .to_bytes()
+            .to_vec())
     }
 
     /// Sign `data` with a 32-byte secret (seed) key, returning a 64-byte signature.
@@ -118,6 +121,9 @@ mod tests {
         let sec = base16::unsafe_decode(
             "b18e1d0045995ec3d010c387ccfeb984d783af8fbb0f40fa7db126d889f6dadd",
         );
-        assert_eq!(Ed25519::sign_bytes(&data, &sec).expect("ed25519 sign"), expected);
+        assert_eq!(
+            Ed25519::sign_bytes(&data, &sec).expect("ed25519 sign"),
+            expected
+        );
     }
 }

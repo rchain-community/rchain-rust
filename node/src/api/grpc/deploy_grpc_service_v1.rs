@@ -41,7 +41,10 @@ impl DeployGrpcServiceV1 {
 
     /// Queue a deploy (port of `doDeploy`).
     pub async fn do_deploy(&self, deploy: &SignedDeployData) -> Result<String, ServiceError> {
-        self.block_api.deploy(deploy).await.map_err(ServiceError::new)
+        self.block_api
+            .deploy(deploy)
+            .await
+            .map_err(ServiceError::new)
     }
 
     /// Get a deploy's execution status by signature (port of `deployStatus`).
@@ -117,7 +120,11 @@ impl DeployGrpcServiceV1 {
         request: &DataAtNameByBlockQuery,
     ) -> Result<(Vec<Par>, LightBlockInfo), ServiceError> {
         self.block_api
-            .get_data_at_par(&request.par, &request.block_hash, request.use_pre_state_hash)
+            .get_data_at_par(
+                &request.par,
+                &request.block_hash,
+                request.use_pre_state_hash,
+            )
             .await
             .map_err(ServiceError::new)
     }
@@ -195,8 +202,8 @@ impl DeployGrpcServiceV1 {
                 request.hash
             ))
         })?;
-        let hash = BlockHash::try_from(bytes.as_slice())
-            .map_err(|e| ServiceError::new(e.to_string()))?;
+        let hash =
+            BlockHash::try_from(bytes.as_slice()).map_err(|e| ServiceError::new(e.to_string()))?;
         self.block_report_api
             .block_report(&hash, request.force_replay)
             .await

@@ -117,7 +117,10 @@ pub fn connective_used_of_expr(e: &Expr) -> bool {
 
 pub fn locally_free_of_connective(c: &Connective, depth: i32) -> BitSet {
     match c {
-        Connective::VarRef(VarRef { index, depth: var_depth }) if depth == *var_depth => {
+        Connective::VarRef(VarRef {
+            index,
+            depth: var_depth,
+        }) if depth == *var_depth => {
             vec![*index]
         }
         _ => Vec::new(),
@@ -137,7 +140,10 @@ pub fn connective_used_of_new(n: &New) -> bool {
 // --- Par builders (mirrors `prepend` / `++` / `single*`) --------------
 
 /// The Scala `p ++ that` (argument's fields first, then receiver's).
-pub fn par_concat<A: Sort + SortJoin<B>, B: Sort>(p: &Par<A>, that: &Par<B>) -> Par<<A as SortJoin<B>>::Output> {
+pub fn par_concat<A: Sort + SortJoin<B>, B: Sort>(
+    p: &Par<A>,
+    that: &Par<B>,
+) -> Par<<A as SortJoin<B>>::Output> {
     let mut sends = that.sends.clone();
     sends.extend(p.sends.iter().cloned());
     let mut receives = that.receives.clone();

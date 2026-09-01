@@ -71,9 +71,10 @@ impl KeyValueStoreManager for InMemoryStoreManager {
         Ok(state
             .entry(name.to_string())
             .or_insert_with(|| {
-                Arc::new(tokio::sync::Mutex::new(Box::new(
-                    InMemoryKeyValueStore::default(),
-                ) as Box<dyn KeyValueStore + Send + Sync>))
+                Arc::new(tokio::sync::Mutex::new(
+                    Box::new(InMemoryKeyValueStore::default())
+                        as Box<dyn KeyValueStore + Send + Sync>,
+                ))
             })
             .clone())
     }
@@ -119,6 +120,9 @@ mod tests {
         .await
         .unwrap();
         db.put(&[("k".to_string(), "v".to_string())]).await.unwrap();
-        assert_eq!(db.get(&["k".to_string()]).await.unwrap(), vec![Some("v".to_string())]);
+        assert_eq!(
+            db.get(&["k".to_string()]).await.unwrap(),
+            vec![Some("v".to_string())]
+        );
     }
 }

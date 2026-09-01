@@ -9,15 +9,15 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use num_bigint::BigInt;
 
 use rchain_models::ast::{
-    AlwaysEqual, Bundle, Connective, ConnectiveBody, EList, ETuple, Expr, Match, MatchCase, New,
-    NameSort, Par, ParMap, ParSet, Receive, ReceiveBind, Send, Var, VarRef,
+    AlwaysEqual, Bundle, Connective, ConnectiveBody, EList, ETuple, Expr, Match, MatchCase,
+    NameSort, New, Par, ParMap, ParSet, Receive, ReceiveBind, Send, Var, VarRef,
 };
-use rchain_models::types::{well_scoped, Closed, FreeCount};
 use rchain_models::par_ops::{
     from_expr, par_concat, prepend_bundle, prepend_connective, prepend_expr, prepend_match,
     prepend_new, prepend_receive, prepend_send, single_bundle, single_connective,
 };
 use rchain_models::sorter::{sort_par_term, sort_receive_binds_with};
+use rchain_models::types::{well_scoped, Closed, FreeCount};
 
 use crate::compiler::{
     BoundMapChain, CollectVisitInputs, CollectVisitOutputs, FreeMap, NameVisitInputs,
@@ -27,8 +27,8 @@ use crate::errors::{RholangError, SourcePosition};
 use crate::proc_ast::{
     BoolLiteral, Bundle as BundleKind, Case, Collection, Decl, Decls, Ground, KeyValuePair,
     LinearBind, Name, NameDecl, NameRemainder, NameSource, PeekBind, Proc, ProcRemainder, ProcVar,
-    Receipt, ReceiptLinearImpl, ReceiptPeekImpl, ReceiptRepeatedImpl, RepeatedBind, Send as SendKind,
-    SimpleType, SynchSendCont, Tuple, VarRefKind,
+    Receipt, ReceiptLinearImpl, ReceiptPeekImpl, ReceiptRepeatedImpl, RepeatedBind,
+    Send as SendKind, SimpleType, SynchSendCont, Tuple, VarRefKind,
 };
 
 fn pos() -> SourcePosition {
@@ -77,11 +77,7 @@ fn strip_uri(raw: &str) -> String {
 pub fn normalize_name(n: &Name, input: NameVisitInputs) -> Result<NameVisitOutputs, RholangError> {
     match n {
         Name::NameWildcard => Ok(NameVisitOutputs {
-            par: prepend_expr(
-                &Par::default(),
-                Expr::EVar(Box::new(Var::Wildcard)),
-                0,
-            ),
+            par: prepend_expr(&Par::default(), Expr::EVar(Box::new(Var::Wildcard)), 0),
             free_map: input.free_map.add_wildcard(pos()),
         }),
         Name::NameVar(var) => match input.bound_map_chain.get(var) {
@@ -102,10 +98,7 @@ pub fn normalize_name(n: &Name, input: NameVisitInputs) -> Result<NameVisitOutpu
             },
             None => match input.free_map.get(var) {
                 None => {
-                    let free_map =
-                        input
-                            .free_map
-                            .put(&(var.clone(), VarSort::NameSort, pos()));
+                    let free_map = input.free_map.put(&(var.clone(), VarSort::NameSort, pos()));
                     Ok(NameVisitOutputs {
                         par: prepend_expr(
                             &Par::default(),
@@ -129,8 +122,8 @@ pub fn normalize_name(n: &Name, input: NameVisitInputs) -> Result<NameVisitOutpu
                     par: Par::default(),
                     bound_map_chain: input.bound_map_chain,
                     free_map: input.free_map,
-                        env: input.env.clone(),
-    },
+                    env: input.env.clone(),
+                },
             )?;
             Ok(NameVisitOutputs {
                 par: result.par,
@@ -164,7 +157,14 @@ pub fn normalize_proc(p: &Proc, input: ProcVisitInputs) -> Result<ProcVisitOutpu
                 free_map,
                 env,
             } = input;
-            let name_result = normalize_name(name, NameVisitInputs { bound_map_chain, free_map, env })?;
+            let name_result = normalize_name(
+                name,
+                NameVisitInputs {
+                    bound_map_chain,
+                    free_map,
+                    env,
+                },
+            )?;
             Ok(ProcVisitOutputs {
                 par: par_concat(&par, &name_result.par),
                 free_map: name_result.free_map,
@@ -224,11 +224,15 @@ pub fn normalize_proc(p: &Proc, input: ProcVisitInputs) -> Result<ProcVisitOutpu
                 CollectVisitInputs {
                     bound_map_chain: input.bound_map_chain.clone(),
                     free_map: input.free_map.clone(),
-                        env: input.env.clone(),
-    },
+                    env: input.env.clone(),
+                },
             )?;
             Ok(ProcVisitOutputs {
-                par: prepend_expr(&input.par, collect_result.expr, input.bound_map_chain.depth()),
+                par: prepend_expr(
+                    &input.par,
+                    collect_result.expr,
+                    input.bound_map_chain.depth(),
+                ),
                 free_map: collect_result.free_map,
             })
         }
@@ -272,10 +276,7 @@ fn normalize_pvar(pv: &ProcVar, input: ProcVisitInputs) -> Result<ProcVisitOutpu
             },
             None => match input.free_map.get(var) {
                 None => {
-                    let free_map =
-                        input
-                            .free_map
-                            .put(&(var.clone(), VarSort::ProcSort, pos()));
+                    let free_map = input.free_map.put(&(var.clone(), VarSort::ProcSort, pos()));
                     Ok(ProcVisitOutputs {
                         par: with_connective_used(prepend_expr(
                             &input.par,
@@ -358,12 +359,16 @@ fn normalize_negation(
             par: Par::default(),
             bound_map_chain: input.bound_map_chain.clone(),
             free_map: FreeMap::empty(),
-                env: input.env.clone(),
-    },
+            env: input.env.clone(),
+        },
     )?;
     let connective = Connective::ConnNot(Box::new(body.par.clone()));
     Ok(ProcVisitOutputs {
-        par: prepend_connective(&input.par, connective.clone(), input.bound_map_chain.depth()),
+        par: prepend_connective(
+            &input.par,
+            connective.clone(),
+            input.bound_map_chain.depth(),
+        ),
         free_map: input.free_map.add_connective(connective, pos()),
     })
 }
@@ -379,8 +384,8 @@ fn normalize_conjunction(
             par: Par::default(),
             bound_map_chain: input.bound_map_chain.clone(),
             free_map: input.free_map.clone(),
-                env: input.env.clone(),
-    },
+            env: input.env.clone(),
+        },
     )?;
     let right = normalize_proc(
         r,
@@ -388,8 +393,8 @@ fn normalize_conjunction(
             par: Par::default(),
             bound_map_chain: input.bound_map_chain.clone(),
             free_map: left.free_map.clone(),
-                env: input.env.clone(),
-    },
+            env: input.env.clone(),
+        },
     )?;
     let connective = match single_connective(&left.par) {
         Some(Connective::ConnAnd(body)) => {
@@ -402,7 +407,11 @@ fn normalize_conjunction(
         }),
     };
     Ok(ProcVisitOutputs {
-        par: prepend_connective(&input.par, connective.clone(), input.bound_map_chain.depth()),
+        par: prepend_connective(
+            &input.par,
+            connective.clone(),
+            input.bound_map_chain.depth(),
+        ),
         free_map: right.free_map.add_connective(connective, pos()),
     })
 }
@@ -418,8 +427,8 @@ fn normalize_disjunction(
             par: Par::default(),
             bound_map_chain: input.bound_map_chain.clone(),
             free_map: FreeMap::empty(),
-                env: input.env.clone(),
-    },
+            env: input.env.clone(),
+        },
     )?;
     let right = normalize_proc(
         r,
@@ -427,8 +436,8 @@ fn normalize_disjunction(
             par: Par::default(),
             bound_map_chain: input.bound_map_chain.clone(),
             free_map: FreeMap::empty(),
-                env: input.env.clone(),
-    },
+            env: input.env.clone(),
+        },
     )?;
     let connective = match single_connective(&left.par) {
         Some(Connective::ConnOr(body)) => {
@@ -441,7 +450,11 @@ fn normalize_disjunction(
         }),
     };
     Ok(ProcVisitOutputs {
-        par: prepend_connective(&input.par, connective.clone(), input.bound_map_chain.depth()),
+        par: prepend_connective(
+            &input.par,
+            connective.clone(),
+            input.bound_map_chain.depth(),
+        ),
         free_map: input.free_map.add_connective(connective, pos()),
     })
 }
@@ -479,8 +492,8 @@ fn unary_exp(
             par: Par::default(),
             bound_map_chain: input.bound_map_chain.clone(),
             free_map: input.free_map.clone(),
-                env: input.env.clone(),
-    },
+            env: input.env.clone(),
+        },
     )?;
     Ok(ProcVisitOutputs {
         par: prepend_expr(
@@ -504,8 +517,8 @@ fn binary_exp(
             par: Par::default(),
             bound_map_chain: input.bound_map_chain.clone(),
             free_map: input.free_map.clone(),
-                env: input.env.clone(),
-    },
+            env: input.env.clone(),
+        },
     )?;
     let right = normalize_proc(
         r,
@@ -513,8 +526,8 @@ fn binary_exp(
             par: Par::default(),
             bound_map_chain: input.bound_map_chain.clone(),
             free_map: left.free_map.clone(),
-                env: input.env.clone(),
-    },
+            env: input.env.clone(),
+        },
     )?;
     Ok(ProcVisitOutputs {
         par: prepend_expr(
@@ -540,8 +553,8 @@ fn normalize_pmatches(
             par: Par::default(),
             bound_map_chain: bound_map_chain.clone(),
             free_map: input.free_map.clone(),
-                env: input.env.clone(),
-    },
+            env: input.env.clone(),
+        },
     )?;
     let right = normalize_proc(
         r,
@@ -549,8 +562,8 @@ fn normalize_pmatches(
             par: Par::default(),
             bound_map_chain: bound_map_chain.push(),
             free_map: FreeMap::empty(),
-                env: input.env.clone(),
-    },
+            env: input.env.clone(),
+        },
     )?;
     Ok(ProcVisitOutputs {
         par: prepend_expr(
@@ -613,7 +626,11 @@ fn union_free(a: &[i32], b: &[i32]) -> Vec<i32> {
 
 /// Keep levels `>= n` and shift them down by `n` (the Scala `BitSet.from(n).map(x => x - n)`).
 fn from_free(b: &[i32], n: i32) -> Vec<i32> {
-    b.iter().copied().filter(|&x| x >= n).map(|x| x - n).collect()
+    b.iter()
+        .copied()
+        .filter(|&x| x >= n)
+        .map(|x| x - n)
+        .collect()
 }
 
 /// Normalize a `new` (port of `PNewNormalizer.normalize`).
@@ -637,7 +654,10 @@ fn normalize_new(
         .iter()
         .map(|(_, var, p)| (var.clone(), VarSort::NameSort, p.clone()))
         .collect();
-    let uris: Vec<String> = tagged.iter().filter_map(|(uri, _, _)| uri.clone()).collect();
+    let uris: Vec<String> = tagged
+        .iter()
+        .filter_map(|(uri, _, _)| uri.clone())
+        .collect();
 
     let new_env = input.bound_map_chain.put_all(&new_bindings);
     let new_count = new_env.count() - input.bound_map_chain.count();
@@ -647,8 +667,8 @@ fn normalize_new(
             par: Par::default(),
             bound_map_chain: new_env,
             free_map: input.free_map.clone(),
-                env: input.env.clone(),
-    },
+            env: input.env.clone(),
+        },
     )?;
 
     let n = New {
@@ -677,8 +697,8 @@ fn normalize_match(
             par: Par::default(),
             bound_map_chain: bound_map_chain.clone(),
             free_map: input.free_map.clone(),
-                env: input.env.clone(),
-    },
+            env: input.env.clone(),
+        },
     )?;
 
     let mut match_cases: Vec<MatchCase> = Vec::new();
@@ -693,8 +713,8 @@ fn normalize_match(
                 par: Par::default(),
                 bound_map_chain: input.bound_map_chain.push(),
                 free_map: FreeMap::empty(),
-                    env: input.env.clone(),
-    },
+                env: input.env.clone(),
+            },
         )?;
         let case_env = input.bound_map_chain.absorb_free(&pattern_result.free_map);
         let bound_count = pattern_result.free_map.count_no_wildcards();
@@ -704,8 +724,8 @@ fn normalize_match(
                 par: Par::default(),
                 bound_map_chain: case_env,
                 free_map,
-                    env: input.env.clone(),
-    },
+                env: input.env.clone(),
+            },
         )?;
         // Written order is preserved (`resolve_match` takes the first case that matches); the Scala
         // normalizer prepends then reverses, which is the same thing.
@@ -772,8 +792,8 @@ fn normalize_contr(
         NameVisitInputs {
             bound_map_chain: input.bound_map_chain.clone(),
             free_map: input.free_map.clone(),
-                env: input.env.clone(),
-    },
+            env: input.env.clone(),
+        },
     )?;
 
     let mut formal_pars: Vec<Par> = Vec::new();
@@ -785,8 +805,8 @@ fn normalize_contr(
             NameVisitInputs {
                 bound_map_chain: input.bound_map_chain.push(),
                 free_map,
-                    env: input.env.clone(),
-    },
+                env: input.env.clone(),
+            },
         )?;
         fail_on_invalid_connective(&input, &res)?;
         formal_pars.insert(0, res.par.clone());
@@ -803,8 +823,8 @@ fn normalize_contr(
             par: Par::default(),
             bound_map_chain: new_env,
             free_map: name_result.free_map.clone(),
-                env: input.env.clone(),
-    },
+            env: input.env.clone(),
+        },
     )?;
 
     let receive = Receive {
@@ -842,8 +862,8 @@ fn normalize_send(
         NameVisitInputs {
             bound_map_chain: input.bound_map_chain.clone(),
             free_map: input.free_map.clone(),
-                env: input.env.clone(),
-    },
+            env: input.env.clone(),
+        },
     )?;
 
     let mut data_pars: Vec<Par> = Vec::new();
@@ -857,8 +877,8 @@ fn normalize_send(
                 par: Par::default(),
                 bound_map_chain: input.bound_map_chain.clone(),
                 free_map,
-                    env: input.env.clone(),
-    },
+                env: input.env.clone(),
+            },
         )?;
         data_pars.insert(0, result.par.clone());
         data_locally_free = union_free(&data_locally_free, &result.par.locally_free.0);
@@ -896,8 +916,8 @@ fn normalize_method(
             par: Par::default(),
             bound_map_chain: input.bound_map_chain.clone(),
             free_map: input.free_map.clone(),
-                env: input.env.clone(),
-    },
+            env: input.env.clone(),
+        },
     )?;
     let target = target_result.par.clone();
 
@@ -912,8 +932,8 @@ fn normalize_method(
                 par: Par::default(),
                 bound_map_chain: input.bound_map_chain.clone(),
                 free_map,
-                    env: input.env.clone(),
-    },
+                env: input.env.clone(),
+            },
         )?;
         arg_pars.insert(0, result.par.clone());
         arg_locally_free = union_free(&arg_locally_free, &result.par.locally_free.0);
@@ -1005,8 +1025,8 @@ fn normalize_bundle(
             par: Par::default(),
             bound_map_chain,
             free_map: input.free_map.clone(),
-                env: input.env.clone(),
-    },
+            env: input.env.clone(),
+        },
     )?;
 
     let (write_flag, read_flag) = match kind {
@@ -1075,10 +1095,7 @@ fn normalize_send_synch(
     let receive = Proc::PInput(vec![receipt], Box::new(continuation));
 
     let ppar = Proc::PPar(Box::new(send), Box::new(receive));
-    let pnew = Proc::PNew(
-        vec![NameDecl::NameDeclSimpl(identifier)],
-        Box::new(ppar),
-    );
+    let pnew = Proc::PNew(vec![NameDecl::NameDeclSimpl(identifier)], Box::new(ppar));
     normalize_proc(&pnew, input)
 }
 
@@ -1100,14 +1117,17 @@ fn normalize_input(
     }
     // Defense-in-depth: the parser rejects `for()` with zero receipts, but a hand-built
     // `PInput(vec![], …)` must not panic here.
-    let receipt = receipts
-        .first()
-        .ok_or_else(|| RholangError::SyntaxError("input requires at least one receipt".to_string()))?;
+    let receipt = receipts.first().ok_or_else(|| {
+        RholangError::SyntaxError("input requires at least one receipt".to_string())
+    })?;
 
     // Desugar complex input sources (`for(x <- y?)` / `for(x <- y!(z))`) into a `new` of sends +
     // a simple-source receive (port of `PInputNormalizer`, complex-source branch).
     if let Receipt::ReceiptLinear(ReceiptLinearImpl::LinearSimple(binds)) = receipt {
-        if binds.iter().any(|lb| !matches!(lb.2, NameSource::SimpleSource(_))) {
+        if binds
+            .iter()
+            .any(|lb| !matches!(lb.2, NameSource::SimpleSource(_)))
+        {
             let mut sends: Vec<Proc> = Vec::new();
             let mut continuation = body.clone();
             let mut new_binds: Vec<LinearBind> = Vec::new();
@@ -1143,11 +1163,7 @@ fn normalize_input(
                         name_decls.push(NameDecl::NameDeclSimpl(id.clone()));
                         let mut send_data = vec![Proc::PEval(Name::NameVar(id))];
                         send_data.extend(procs.clone());
-                        sends.push(Proc::PSend(
-                            name.clone(),
-                            SendKind::SendSingle,
-                            send_data,
-                        ));
+                        sends.push(Proc::PSend(name.clone(), SendKind::SendSingle, send_data));
                     }
                 }
             }
@@ -1167,46 +1183,50 @@ fn normalize_input(
     }
 
     // Extract (patterns, sources, persistent, peek).
-    let (patterns, sources, persistent, peek): (Vec<(Vec<Name>, NameRemainder)>, Vec<Name>, bool, bool) =
-        match receipt {
-            Receipt::ReceiptLinear(ReceiptLinearImpl::LinearSimple(binds)) => {
-                let mut patterns = Vec::new();
-                let mut sources = Vec::new();
-                for lb in binds {
-                    match &lb.2 {
-                        NameSource::SimpleSource(name) => {
-                            patterns.push((lb.0.clone(), lb.1.clone()));
-                            sources.push(name.clone());
-                        }
-                        // Unreachable: complex sources (`ReceiveSendSource`/`SendReceiveSource`) are
-                        // desugared above into a `new` of sends + a simple-source receive, so a
-                        // `LinearSimple` bind can only carry a `SimpleSource`.
-                        NameSource::ReceiveSendSource(_) | NameSource::SendReceiveSource(_, _) => {
-                            return Err(RholangError::BugFoundError(
-                                "complex input source was not desugared".to_string(),
-                            ))
-                        }
+    let (patterns, sources, persistent, peek): (
+        Vec<(Vec<Name>, NameRemainder)>,
+        Vec<Name>,
+        bool,
+        bool,
+    ) = match receipt {
+        Receipt::ReceiptLinear(ReceiptLinearImpl::LinearSimple(binds)) => {
+            let mut patterns = Vec::new();
+            let mut sources = Vec::new();
+            for lb in binds {
+                match &lb.2 {
+                    NameSource::SimpleSource(name) => {
+                        patterns.push((lb.0.clone(), lb.1.clone()));
+                        sources.push(name.clone());
+                    }
+                    // Unreachable: complex sources (`ReceiveSendSource`/`SendReceiveSource`) are
+                    // desugared above into a `new` of sends + a simple-source receive, so a
+                    // `LinearSimple` bind can only carry a `SimpleSource`.
+                    NameSource::ReceiveSendSource(_) | NameSource::SendReceiveSource(_, _) => {
+                        return Err(RholangError::BugFoundError(
+                            "complex input source was not desugared".to_string(),
+                        ))
                     }
                 }
-                (patterns, sources, false, false)
             }
-            Receipt::ReceiptRepeated(ReceiptRepeatedImpl::RepeatedSimple(binds)) => {
-                let patterns: Vec<(Vec<Name>, NameRemainder)> = binds
-                    .iter()
-                    .map(|rb: &RepeatedBind| (rb.0.clone(), rb.1.clone()))
-                    .collect();
-                let sources: Vec<Name> = binds.iter().map(|rb| rb.2.clone()).collect();
-                (patterns, sources, true, false)
-            }
-            Receipt::ReceiptPeek(ReceiptPeekImpl::PeekSimple(binds)) => {
-                let patterns: Vec<(Vec<Name>, NameRemainder)> = binds
-                    .iter()
-                    .map(|pb: &PeekBind| (pb.0.clone(), pb.1.clone()))
-                    .collect();
-                let sources: Vec<Name> = binds.iter().map(|pb| pb.2.clone()).collect();
-                (patterns, sources, false, true)
-            }
-        };
+            (patterns, sources, false, false)
+        }
+        Receipt::ReceiptRepeated(ReceiptRepeatedImpl::RepeatedSimple(binds)) => {
+            let patterns: Vec<(Vec<Name>, NameRemainder)> = binds
+                .iter()
+                .map(|rb: &RepeatedBind| (rb.0.clone(), rb.1.clone()))
+                .collect();
+            let sources: Vec<Name> = binds.iter().map(|rb| rb.2.clone()).collect();
+            (patterns, sources, true, false)
+        }
+        Receipt::ReceiptPeek(ReceiptPeekImpl::PeekSimple(binds)) => {
+            let patterns: Vec<(Vec<Name>, NameRemainder)> = binds
+                .iter()
+                .map(|pb: &PeekBind| (pb.0.clone(), pb.1.clone()))
+                .collect();
+            let sources: Vec<Name> = binds.iter().map(|pb| pb.2.clone()).collect();
+            (patterns, sources, false, true)
+        }
+    };
 
     // Process sources.
     let mut source_pars: Vec<Par> = Vec::new();
@@ -1219,8 +1239,8 @@ fn normalize_input(
             NameVisitInputs {
                 bound_map_chain: input.bound_map_chain.clone(),
                 free_map: sources_free,
-                    env: input.env.clone(),
-    },
+                env: input.env.clone(),
+            },
         )?;
         source_pars.push(res.par.clone());
         sources_free = res.free_map;
@@ -1240,8 +1260,8 @@ fn normalize_input(
                 NameVisitInputs {
                     bound_map_chain: input.bound_map_chain.push(),
                     free_map: pattern_free,
-                        env: input.env.clone(),
-    },
+                    env: input.env.clone(),
+                },
             )?;
             fail_on_invalid_connective(&input, &res)?;
             pattern_pars.push(res.par.clone());
@@ -1266,7 +1286,10 @@ fn normalize_input(
         sorted.iter().map(|(_, fm)| fm.clone()).collect();
 
     // Check for repeated channels.
-    let channels: BTreeSet<Par<NameSort>> = receive_binds.iter().map(|rb| (*rb.source).clone()).collect();
+    let channels: BTreeSet<Par<NameSort>> = receive_binds
+        .iter()
+        .map(|rb| (*rb.source).clone())
+        .collect();
     if channels.len() != receive_binds.len() {
         return Err(RholangError::ReceiveOnSameChannelsError { line: 0, col: 0 });
     }
@@ -1292,8 +1315,8 @@ fn normalize_input(
             par: Par::default(),
             bound_map_chain: input.bound_map_chain.absorb_free(&receive_binds_free_map),
             free_map: sources_free,
-                env: input.env.clone(),
-    },
+            env: input.env.clone(),
+        },
     )?;
 
     let bind_count = receive_binds_free_map.count_no_wildcards();
@@ -1348,7 +1371,8 @@ fn normalize_let(
             for cd in conc_decls {
                 all_decls.push(&cd.0);
             }
-            let identifiers: Vec<String> = (0..all_decls.len()).map(|_| fresh_identifier()).collect();
+            let identifiers: Vec<String> =
+                (0..all_decls.len()).map(|_| fresh_identifier()).collect();
             let mut sends: Vec<Proc> = Vec::new();
             let mut binds: Vec<LinearBind> = Vec::new();
             let mut name_decls: Vec<NameDecl> = Vec::new();
@@ -1388,8 +1412,8 @@ fn normalize_let(
             par: Par::default(),
             bound_map_chain: input.bound_map_chain.absorb_free(&pattern_par.free_map),
             free_map: value_par.free_map.clone(),
-                env: input.env.clone(),
-    },
+            env: input.env.clone(),
+        },
     )?;
 
     let m = Match {
@@ -1400,7 +1424,10 @@ fn normalize_let(
             free_count: FreeCount::from_nonneg(pattern_bound_count),
         }],
         locally_free: AlwaysEqual(union_free(
-            &union_free(&value_par.par.locally_free.0, &pattern_par.par.locally_free.0),
+            &union_free(
+                &value_par.par.locally_free.0,
+                &pattern_par.par.locally_free.0,
+            ),
             &from_free(&continuation.par.locally_free.0, pattern_bound_count),
         )),
         connective_used: value_par.par.connective_used || continuation.par.connective_used,
@@ -1427,8 +1454,8 @@ fn list_proc_to_elist(
                 par: Par::default(),
                 bound_map_chain: input.bound_map_chain.clone(),
                 free_map,
-                    env: input.env.clone(),
-    },
+                env: input.env.clone(),
+            },
         )?;
         pars.push(result.par.clone());
         locally_free = union_free(&locally_free, &result.par.locally_free.0);
@@ -1460,8 +1487,8 @@ fn list_name_to_elist(
             NameVisitInputs {
                 bound_map_chain: input.bound_map_chain.push(),
                 free_map,
-                    env: input.env.clone(),
-    },
+                env: input.env.clone(),
+            },
         )?;
         pars.push(res.par.clone());
         locally_free = union_free(&locally_free, &res.par.locally_free.0);
@@ -1495,8 +1522,8 @@ fn fold_collection(
                 par: Par::default(),
                 bound_map_chain: input.bound_map_chain.clone(),
                 free_map,
-                    env: input.env.clone(),
-    },
+                env: input.env.clone(),
+            },
         )?;
         pars.push(result.par.clone());
         locally_free = union_free(&locally_free, &result.par.locally_free.0);
@@ -1526,8 +1553,8 @@ fn fold_collection_map(
                 par: Par::default(),
                 bound_map_chain: input.bound_map_chain.clone(),
                 free_map,
-                    env: input.env.clone(),
-    },
+                env: input.env.clone(),
+            },
         )?;
         let val_result = normalize_proc(
             &kv.1,
@@ -1535,15 +1562,14 @@ fn fold_collection_map(
                 par: Par::default(),
                 bound_map_chain: input.bound_map_chain.clone(),
                 free_map: key_result.free_map.clone(),
-                    env: input.env.clone(),
-    },
+                env: input.env.clone(),
+            },
         )?;
         pairs.push((key_result.par.clone(), val_result.par.clone()));
         locally_free = union_free(&locally_free, &key_result.par.locally_free.0);
         locally_free = union_free(&locally_free, &val_result.par.locally_free.0);
-        connective_used = connective_used
-            || key_result.par.connective_used
-            || val_result.par.connective_used;
+        connective_used =
+            connective_used || key_result.par.connective_used || val_result.par.connective_used;
         free_map = val_result.free_map;
     }
     Ok(CollectVisitOutputs {
@@ -1644,7 +1670,10 @@ pub fn source_to_adt(source: &str) -> Result<Closed, RholangError> {
 }
 
 /// Parse + normalize source with an explicit normalizer environment.
-pub fn source_to_adt_with_env(source: &str, env: &BTreeMap<String, Par>) -> Result<Closed, RholangError> {
+pub fn source_to_adt_with_env(
+    source: &str,
+    env: &BTreeMap<String, Par>,
+) -> Result<Closed, RholangError> {
     let proc = source_to_ast(source)?;
     ast_to_adt(&proc, env)
 }
@@ -1671,7 +1700,9 @@ fn normalize_term(term: &Proc, env: &BTreeMap<String, Par>) -> Result<Par, Rhola
                 normalized.par,
             ))
         } else {
-            Err(RholangError::TopLevelWildcardsNotAllowedError(normalized.par))
+            Err(RholangError::TopLevelWildcardsNotAllowedError(
+                normalized.par,
+            ))
         }
     } else {
         Ok(normalized.par)
@@ -1728,12 +1759,15 @@ mod tests {
     #[test]
     fn ground_proc_normalizes() {
         let p = Proc::PGround(Ground::GroundInt("42".to_string()));
-        let out = normalize_proc(&p, ProcVisitInputs {
-            par: Par::default(),
-            bound_map_chain: crate::compiler::BoundMapChain::empty(),
-            free_map: FreeMap::empty(),
-            env: BTreeMap::new(),
-        })
+        let out = normalize_proc(
+            &p,
+            ProcVisitInputs {
+                par: Par::default(),
+                bound_map_chain: crate::compiler::BoundMapChain::empty(),
+                free_map: FreeMap::empty(),
+                env: BTreeMap::new(),
+            },
+        )
         .unwrap();
         assert_eq!(out.par.exprs, vec![Expr::GInt(42)]);
     }
@@ -1744,18 +1778,27 @@ mod tests {
             Box::new(Proc::PGround(Ground::GroundInt("1".to_string()))),
             Box::new(Proc::PGround(Ground::GroundInt("2".to_string()))),
         );
-        let out = normalize_proc(&p, ProcVisitInputs {
-            par: Par::default(),
-            bound_map_chain: crate::compiler::BoundMapChain::empty(),
-            free_map: FreeMap::empty(),
-            env: BTreeMap::new(),
-        })
+        let out = normalize_proc(
+            &p,
+            ProcVisitInputs {
+                par: Par::default(),
+                bound_map_chain: crate::compiler::BoundMapChain::empty(),
+                free_map: FreeMap::empty(),
+                env: BTreeMap::new(),
+            },
+        )
         .unwrap();
         assert_eq!(
             out.par.exprs,
             vec![Expr::EPlus(
-                Box::new(Par { exprs: vec![Expr::GInt(1)], ..Default::default() }),
-                Box::new(Par { exprs: vec![Expr::GInt(2)], ..Default::default() }),
+                Box::new(Par {
+                    exprs: vec![Expr::GInt(1)],
+                    ..Default::default()
+                }),
+                Box::new(Par {
+                    exprs: vec![Expr::GInt(2)],
+                    ..Default::default()
+                }),
             )]
         );
     }
@@ -1771,10 +1814,13 @@ mod tests {
         let par: Par = source_to_adt("new x in { x!(1) }").unwrap().into();
         assert_eq!(par.news.len(), 1);
         assert_eq!(par.news[0].p.sends.len(), 1);
-        assert_eq!(par.news[0].p.sends[0].data, vec![Par {
-            exprs: vec![Expr::GInt(1)],
-            ..Default::default()
-        }]);
+        assert_eq!(
+            par.news[0].p.sends[0].data,
+            vec![Par {
+                exprs: vec![Expr::GInt(1)],
+                ..Default::default()
+            }]
+        );
     }
 
     #[test]

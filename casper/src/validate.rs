@@ -73,7 +73,11 @@ pub fn transaction_expiration(b: &BlockMessage, expiration_threshold: i64) -> Bl
 
 /// Validate that all deploys belong to the validator's shard (port of `deploysShardIdentifier`).
 pub fn deploys_shard_identifier(b: &BlockMessage, shard_id: &str) -> BlockStatus {
-    if b.state.deploys.iter().all(|d| d.deploy.data.shard_id == shard_id) {
+    if b.state
+        .deploys
+        .iter()
+        .all(|d| d.deploy.data.shard_id == shard_id)
+    {
         BlockStatus::Valid
     } else {
         BlockStatus::InvalidDeployShardId
@@ -163,7 +167,9 @@ pub async fn justification_regressions(
     dag: &dyn BlockDagStorage,
     b: &BlockMessage,
 ) -> Result<ValidBlockProcessing, String> {
-    let valid = check_justification_regression(dag, b).await?.unwrap_or(true);
+    let valid = check_justification_regression(dag, b)
+        .await?
+        .unwrap_or(true);
     if valid {
         Ok(Ok(()))
     } else {
@@ -225,7 +231,12 @@ pub async fn neglected_invalid_block(
         .iter()
         .filter(|m| m.validation_failed)
         .map(|m| m.sender)
-        .any(|v| b.bonds.get(&v).map(|&stake| i64::from(stake) > 0).unwrap_or(false));
+        .any(|v| {
+            b.bonds
+                .get(&v)
+                .map(|&stake| i64::from(stake) > 0)
+                .unwrap_or(false)
+        });
     if neglected {
         Ok(Err(BlockStatus::NeglectedInvalidBlock))
     } else {
@@ -234,7 +245,10 @@ pub async fn neglected_invalid_block(
 }
 
 /// Look up a block from the block store, failing if absent (port of `BlockStore.getUnsafe`).
-async fn get_block_unsafe(block_store: &BlockStore, hash: &BlockHash) -> Result<BlockMessage, String> {
+async fn get_block_unsafe(
+    block_store: &BlockStore,
+    hash: &BlockHash,
+) -> Result<BlockMessage, String> {
     let mut vals = block_store.get(&[*hash]).await?;
     vals.pop()
         .flatten()
@@ -280,7 +294,10 @@ pub async fn repeat_deploy(
 
         let b = get_block_unsafe(block_store, &curr.block_hash).await?;
         if b.state.deploys.iter().any(|d| {
-            deploy_key_set.contains(&normalize_signature_low_s(&d.deploy.sig_algorithm, &d.deploy.sig))
+            deploy_key_set.contains(&normalize_signature_low_s(
+                &d.deploy.sig_algorithm,
+                &d.deploy.sig,
+            ))
         }) {
             return Ok(Err(BlockStatus::InvalidRepeatDeploy));
         }
@@ -351,7 +368,7 @@ mod tests {
     use std::collections::{BTreeMap, BTreeSet};
 
     use rchain_models::casper::protocol::casper_message::{
-        DeployData, ProcessedDeploy, RholangState, SignedDeployData, PCost,
+        DeployData, PCost, ProcessedDeploy, RholangState, SignedDeployData,
     };
     use rchain_models::validator::Validator;
 
@@ -443,7 +460,10 @@ mod tests {
         assert_eq!(future_transaction(&b), BlockStatus::ContainsFutureDeploy);
 
         b.state.deploys = vec![deploy(0, 10, "other")];
-        assert_eq!(deploys_shard_identifier(&b, "root"), BlockStatus::InvalidDeployShardId);
+        assert_eq!(
+            deploys_shard_identifier(&b, "root"),
+            BlockStatus::InvalidDeployShardId
+        );
 
         b.state.deploys = vec![deploy(5, 1, "root")];
         assert_eq!(phlo_price(&b, 10), BlockStatus::ContainsLowCostDeploy);
@@ -473,7 +493,13 @@ mod effectful_tests {
         BlockHash::new(bytes)
     }
 
-    fn meta(hash: BlockHash, block_num: i64, sender_byte: u8, seq: i64, failed: bool) -> BlockMetadata {
+    fn meta(
+        hash: BlockHash,
+        block_num: i64,
+        sender_byte: u8,
+        seq: i64,
+        failed: bool,
+    ) -> BlockMetadata {
         BlockMetadata {
             block_hash: hash,
             block_num: rchain_shared::refined::BlockHeight::try_from(block_num).unwrap(),
@@ -532,7 +558,12 @@ mod effectful_tests {
         }
     }
 
-    fn block(sender_byte: u8, block_num: i64, seq: i64, justifications: Vec<BlockHash>) -> BlockMessage {
+    fn block(
+        sender_byte: u8,
+        block_num: i64,
+        seq: i64,
+        justifications: Vec<BlockHash>,
+    ) -> BlockMessage {
         BlockMessage {
             version: 1,
             shard_id: "root".to_string(),
@@ -586,7 +617,8 @@ mod effectful_tests {
         let invalid = hash(1);
         let dag = mock(BTreeMap::from([(invalid, meta(invalid, 0, 1, 0, true))]));
         let mut b = block(2, 1, 0, vec![invalid]);
-        b.bonds.insert(Validator::new([1u8; 65]), 100.try_into().unwrap());
+        b.bonds
+            .insert(Validator::new([1u8; 65]), 100.try_into().unwrap());
         assert_eq!(
             neglected_invalid_block(&dag, &b).await.unwrap(),
             Err(BlockStatus::NeglectedInvalidBlock)

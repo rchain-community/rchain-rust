@@ -278,7 +278,9 @@ mod tests {
             bonds: vec![],
         };
         let bonded: BTreeSet<i32> = [1, 2].into_iter().collect();
-        assert!(!invalid_justification_follows(&view, &MockData, &msg, &bonded));
+        assert!(!invalid_justification_follows(
+            &view, &MockData, &msg, &bonded
+        ));
 
         let bonded_missing: BTreeSet<i32> = [1, 2, 3].into_iter().collect();
         assert!(invalid_justification_follows(

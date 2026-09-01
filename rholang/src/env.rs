@@ -35,7 +35,9 @@ impl<A: Clone> Env<A> {
 
     /// Resolve de Bruijn index `k` (the Scala `get`).
     pub fn get(&self, k: i32) -> Option<A> {
-        self.env_map.get(&((self.level + self.shift) - k - 1)).cloned()
+        self.env_map
+            .get(&((self.level + self.shift) - k - 1))
+            .cloned()
     }
 
     /// Offset the level lookup by `j` (the Scala `shift`).

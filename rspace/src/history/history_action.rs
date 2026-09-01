@@ -9,8 +9,13 @@ use crate::history::key_segment::KeySegment;
 /// A radix-tree insert or delete (port of `HistoryAction`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum HistoryAction {
-    Insert { key: KeySegment, hash: Blake2b256Hash },
-    Delete { key: KeySegment },
+    Insert {
+        key: KeySegment,
+        hash: Blake2b256Hash,
+    },
+    Delete {
+        key: KeySegment,
+    },
 }
 
 impl HistoryAction {

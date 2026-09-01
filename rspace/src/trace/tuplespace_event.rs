@@ -145,9 +145,10 @@ impl TuplespaceEvent {
             let both_peeks = self.incoming.cardinality == Cardinality::Peek
                 && other.incoming.cardinality == Cardinality::Peek;
             let both_matched_same_non_persistent = match (&self.matched, &other.matched) {
-                (Some(this_matched), Some(other_matched)) => {
-                    Some(this_matched == other_matched && other_matched.cardinality != Cardinality::NonLinear)
-                }
+                (Some(this_matched), Some(other_matched)) => Some(
+                    this_matched == other_matched
+                        && other_matched.cardinality != Cardinality::NonLinear,
+                ),
                 _ => None,
             };
             if both_peeks {

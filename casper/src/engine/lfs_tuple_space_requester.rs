@@ -372,7 +372,8 @@ pub async fn request_tuple_space_roots<I: RSpaceImporter>(
             match tuple_space_rx.recv().await {
                 Some(msg) => {
                     if let Err(e) =
-                        process_store_items(&st, &mut *importer, log, source, &request_tx, &msg).await
+                        process_store_items(&st, &mut *importer, log, source, &request_tx, &msg)
+                            .await
                     {
                         *error.lock().await = Some(e);
                         return;

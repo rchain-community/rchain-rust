@@ -140,8 +140,7 @@ pub fn write_to_disk_dir<E: RSpaceExporter>(
     let root = exporter
         .get_root()
         .ok_or_else(|| "exporter has no root to export".to_string())?;
-    let history_manager =
-        LmdbStoreManager::new(&dir.join("history"), 10 * 1024 * 1024 * 1024)?;
+    let history_manager = LmdbStoreManager::new(&dir.join("history"), 10 * 1024 * 1024 * 1024)?;
     let cold_manager = LmdbStoreManager::new(&dir.join("cold"), 10 * 1024 * 1024 * 1024)?;
     let mut history_store = history_manager.store_sync("db")?;
     let mut data_store = cold_manager.store_sync("db")?;

@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use rchain_models::runtime::{BindPattern, ListParWithRandom, TaggedContinuation};
 use rchain_models::sorted::SortedProc;
-use rchain_rholang::runtime::{RhoRuntime, ReplayRhoRuntime};
+use rchain_rholang::runtime::{ReplayRhoRuntime, RhoRuntime};
 use rchain_rholang::storage::RhoMatch;
 use rchain_rspace::factory::create_history_repository;
 use rchain_rspace::hot_store::InMemHotStore;
@@ -17,13 +17,14 @@ use rchain_shared::store_manager::InMemoryStoreManager;
 /// Assemble a play + replay runtime pair over a fresh in-memory store.
 pub async fn build_runtime_pair() -> (RhoRuntime, ReplayRhoRuntime) {
     let manager = InMemoryStoreManager::default();
-    let history =
-        create_history_repository::<SortedProc, BindPattern, ListParWithRandom, TaggedContinuation>(
-            &manager,
-            "rspace",
-        )
-        .await
-        .expect("history repository");
+    let history = create_history_repository::<
+        SortedProc,
+        BindPattern,
+        ListParWithRandom,
+        TaggedContinuation,
+    >(&manager, "rspace")
+    .await
+    .expect("history repository");
     let reader = history.get_history_reader(history.root()).await;
     let hot = Arc::new(InMemHotStore::new(reader.base()));
     let (play, replay) = RSpace::create_with_replay(history.clone(), hot, Arc::new(RhoMatch));
@@ -40,13 +41,14 @@ pub async fn build_runtime_pair() -> (RhoRuntime, ReplayRhoRuntime) {
 /// the concurrent-vs-sequential differential test).
 pub async fn build_runtime(concurrent: bool) -> RhoRuntime {
     let manager = InMemoryStoreManager::default();
-    let history =
-        create_history_repository::<SortedProc, BindPattern, ListParWithRandom, TaggedContinuation>(
-            &manager,
-            "rspace",
-        )
-        .await
-        .expect("history repository");
+    let history = create_history_repository::<
+        SortedProc,
+        BindPattern,
+        ListParWithRandom,
+        TaggedContinuation,
+    >(&manager, "rspace")
+    .await
+    .expect("history repository");
     let reader = history.get_history_reader(history.root()).await;
     let hot = Arc::new(InMemHotStore::new(reader.base()));
     let (play, _replay) = RSpace::create_with_replay(history.clone(), hot, Arc::new(RhoMatch));

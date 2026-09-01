@@ -107,8 +107,10 @@ impl CommUtil {
         msg_type_name: &str,
     ) {
         let msg = protocol_helper::packet(&self.conf.local, &self.conf.network_id, message.clone());
-        self.log
-            .info(self.log_source, &format!("Starting to request {msg_type_name}"));
+        self.log.info(
+            self.log_source,
+            &format!("Starting to request {msg_type_name}"),
+        );
         self.keep_on_requesting_till_running(peer, &msg, retry_after, msg_type_name)
             .await;
     }
@@ -166,7 +168,8 @@ impl CommUtil {
         let packet = BlockRequestSerde.mk_packet(&BlockRequest {
             hash: hash.as_bytes().to_vec(),
         });
-        transport_layer_syntax::send_to_peer(self.transport.as_ref(), &self.conf, peer, packet).await;
+        transport_layer_syntax::send_to_peer(self.transport.as_ref(), &self.conf, peer, packet)
+            .await;
     }
 
     // --- CommUtil syntax extensions (port of `CommUtilOps`) --------------------------------
@@ -179,8 +182,10 @@ impl CommUtil {
         };
         let packet = BlockHashMessageSerde.mk_packet(&msg);
         self.send_to_peers(&packet, None).await;
-        self.log
-            .info(self.log_source, &format!("Sent hash {} to peers", hash.to_hex()));
+        self.log.info(
+            self.log_source,
+            &format!("Sent hash {} to peers", hash.to_hex()),
+        );
     }
 
     /// Broadcast a has-block request to peers (port of `broadcastHasBlockRequest`).
@@ -222,8 +227,13 @@ impl CommUtil {
             trim_state,
         };
         let packet = FinalizedFringeRequestSerde.mk_packet(&msg);
-        self.send_with_retry(&packet, &bootstrap, Duration::from_secs(10), "FinalizedFringeRequest")
-            .await;
+        self.send_with_retry(
+            &packet,
+            &bootstrap,
+            Duration::from_secs(10),
+            "FinalizedFringeRequest",
+        )
+        .await;
         Ok(())
     }
 }

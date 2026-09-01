@@ -50,8 +50,9 @@ pub struct NetworkStatus {
 }
 
 /// A propose trigger (port of `ProposeFunction[F] = Boolean => F[ProposerResult]`).
-pub type ProposeFunction =
-    Box<dyn Fn(bool) -> Pin<Box<dyn Future<Output = ProposerResult> + Send + 'static>> + Send + Sync>;
+pub type ProposeFunction = Box<
+    dyn Fn(bool) -> Pin<Box<dyn Future<Output = ProposerResult> + Send + 'static>> + Send + Sync,
+>;
 
 /// A network-status provider (port of `getNetworkStatus`). Async so it can read the live connection
 /// cell and Kademlia discovery table (peers/nodes) rather than returning a fixed value.
@@ -176,7 +177,10 @@ impl BlockApiImpl {
     ) -> Result<Option<ContinuationsWithBlockInfo>, String> {
         if self.is_listening_name_reduced(block, sorted_names) {
             let state_hash = block.post_state_hash;
-            let continuations = self.runtime.get_continuation(&state_hash, sorted_names).await?;
+            let continuations = self
+                .runtime
+                .get_continuation(&state_hash, sorted_names)
+                .await?;
             let continuation_infos = continuations
                 .into_iter()
                 .map(|(patterns, cont)| WaitingContinuationInfo {
@@ -265,7 +269,9 @@ impl BlockApi for BlockApiImpl {
 
     async fn deploy(&self, deploy: &SignedDeployData) -> ApiErr<String> {
         if self.is_node_read_only {
-            return Err("Deploy was rejected because node is running in read-only mode.".to_string());
+            return Err(
+                "Deploy was rejected because node is running in read-only mode.".to_string(),
+            );
         }
         if !deploy.verify_signature() {
             return Err("Deploy signature is invalid.".to_string());
@@ -280,7 +286,9 @@ impl BlockApi for BlockApiImpl {
             ));
         }
         if self.system_public_keys.contains(&deploy.deployer) {
-            return Err("Deploy refused because it's signed with forbidden private key.".to_string());
+            return Err(
+                "Deploy refused because it's signed with forbidden private key.".to_string(),
+            );
         }
         if deploy.data.phlo_price < self.min_phlo_price {
             return Err(format!(
@@ -343,8 +351,9 @@ impl BlockApi for BlockApiImpl {
             })?;
             if !deploy.is_failed {
                 let deploy_id_ch = RhoDeployId::apply(deploy_id.clone());
-                let (par, light_block) =
-                    self.get_data_at_par_raw(&deploy_id_ch, &block_hash, false).await?;
+                let (par, light_block) = self
+                    .get_data_at_par_raw(&deploy_id_ch, &block_hash, false)
+                    .await?;
                 Ok(DeployExecStatus::ProcessedWithSuccess {
                     deploy_result: par,
                     block: light_block,
@@ -380,14 +389,19 @@ impl BlockApi for BlockApiImpl {
             ProposerResult::Empty => {
                 return Err("Failure: another propose is in progress".to_string());
             }
-            ProposerResult::Failure { status, seq_number, .. } => {
+            ProposerResult::Failure {
+                status, seq_number, ..
+            } => {
                 return Err(format!("Failure: {status} (seqNum {seq_number})"));
             }
             ProposerResult::Started { seq_number } => {
                 format!("Propose started (seqNum {seq_number})")
             }
             ProposerResult::Success { block, .. } => {
-                format!("Success! Block {} created and added.", block.block_hash.to_hex())
+                format!(
+                    "Success! Block {} created and added.",
+                    block.block_hash.to_hex()
+                )
             }
         })
     }
@@ -471,7 +485,10 @@ impl BlockApi for BlockApiImpl {
             heights += 1;
             for h in hashes {
                 let block = self.get_block_unsafe(h).await?;
-                if let Some(c) = self.get_continuations_with_block_info(&sorted, &block).await? {
+                if let Some(c) = self
+                    .get_continuations_with_block_info(&sorted, &block)
+                    .await?
+                {
                     out.push(c);
                 }
             }
@@ -541,7 +558,11 @@ impl BlockApi for BlockApiImpl {
                 id: to_hash_str(m.id.as_bytes()),
                 sender: to_hash_str(m.sender.as_bytes()),
                 height: i64::from(m.height),
-                justifications: m.parents.iter().map(|h| to_hash_str(h.as_bytes())).collect(),
+                justifications: m
+                    .parents
+                    .iter()
+                    .map(|h| to_hash_str(h.as_bytes()))
+                    .collect(),
                 fringe: m.fringe.iter().map(|h| to_hash_str(h.as_bytes())).collect(),
             })
             .collect();
@@ -568,7 +589,11 @@ impl BlockApi for BlockApiImpl {
             Ok::<Vec<BlockHash>, String>(block.justifications)
         })
         .await?;
-        Ok(edges.iter().map(|e| e.show()).collect::<Vec<_>>().join("\n"))
+        Ok(edges
+            .iter()
+            .map(|e| e.show())
+            .collect::<Vec<_>>()
+            .join("\n"))
     }
 
     async fn get_blocks(&self, depth: i32) -> ApiErr<Vec<LightBlockInfo>> {
@@ -611,35 +636,34 @@ impl BlockApi for BlockApiImpl {
 
     async fn get_block(&self, hash: &str) -> ApiErr<BlockInfo> {
         if hash.len() < 6 {
-            return Err(format!("Input hash value must be at least 6 characters: {hash}"));
+            return Err(format!(
+                "Input hash value must be at least 6 characters: {hash}"
+            ));
         }
         let hash_bytes = base16::decode(hash)
             .ok_or_else(|| format!("Input hash value is not valid hex string: {hash}"))?;
         let block_opt = if hash.len() == 64 {
             self.block_store
-                .get(&[BlockHash::try_from(hash_bytes.as_slice())
-                    .map_err(|e| e.to_string())?])
+                .get(&[BlockHash::try_from(hash_bytes.as_slice()).map_err(|e| e.to_string())?])
                 .await?
                 .pop()
                 .flatten()
         } else {
             let dag = self.dag.get_representation().await;
             match dag.find(hash) {
-                Some(h) => self
-                    .block_store
-                    .get(&[h])
-                    .await?
-                    .pop()
-                    .flatten(),
+                Some(h) => self.block_store.get(&[h]).await?.pop().flatten(),
                 None => None,
             }
         };
-        let block = block_opt.ok_or_else(|| format!("Error: Failure to find block with hash: {hash}"))?;
+        let block =
+            block_opt.ok_or_else(|| format!("Error: Failure to find block with hash: {hash}"))?;
         let dag = self.dag.get_representation().await;
         if dag.contains(&block.block_hash) {
             Ok(get_full_block_info(&block))
         } else {
-            Err(format!("Error: Block with hash {hash} received but not added yet"))
+            Err(format!(
+                "Error: Block with hash {hash} received but not added yet"
+            ))
         }
     }
 
@@ -649,9 +673,7 @@ impl BlockApi for BlockApiImpl {
         let block = self.get_block_unsafe(&hash).await?;
         let state_hash = block.post_state_hash;
         let bonds = self.runtime.compute_bonds(&state_hash).await?;
-        Ok(bonds.contains_key(
-            &Validator::try_from(public_key).map_err(|e| e.to_string())?,
-        ))
+        Ok(bonds.contains_key(&Validator::try_from(public_key).map_err(|e| e.to_string())?))
     }
 
     async fn exploratory_deploy(
@@ -661,9 +683,7 @@ impl BlockApi for BlockApiImpl {
         use_pre_state_hash: bool,
     ) -> ApiErr<(Vec<Par>, LightBlockInfo)> {
         if !(self.is_node_read_only || self.dev_mode) {
-            return Err(
-                "Exploratory deploy can only be executed on read-only RNode.".to_string(),
-            );
+            return Err("Exploratory deploy can only be executed on read-only RNode.".to_string());
         }
         let dag = self.dag.get_representation().await;
         let target: Option<BlockMessage> = match block_hash {
@@ -685,8 +705,7 @@ impl BlockApi for BlockApiImpl {
                 let bytes = base16::decode(h)
                     .ok_or_else(|| format!("Input hash value is not valid hex string: {h}"))?;
                 self.block_store
-                    .get(&[BlockHash::try_from(bytes.as_slice())
-                        .map_err(|e| e.to_string())?])
+                    .get(&[BlockHash::try_from(bytes.as_slice()).map_err(|e| e.to_string())?])
                     .await?
                     .pop()
                     .flatten()
@@ -700,7 +719,10 @@ impl BlockApi for BlockApiImpl {
                 } else {
                     b.post_state_hash
                 };
-                let res = self.runtime.play_exploratory_deploy(term, &state_hash).await?;
+                let res = self
+                    .runtime
+                    .play_exploratory_deploy(term, &state_hash)
+                    .await?;
                 let lbi = get_light_block_info(&b);
                 Ok((res, lbi))
             }
@@ -716,7 +738,8 @@ impl BlockApi for BlockApiImpl {
         let bytes = base16::decode(block_hash)
             .ok_or_else(|| format!("Invalid block hash base 16 encoding, {block_hash}"))?;
         let hash = BlockHash::try_from(bytes.as_slice()).map_err(|e| e.to_string())?;
-        self.get_data_at_par_raw(par, &hash, use_pre_state_hash).await
+        self.get_data_at_par_raw(par, &hash, use_pre_state_hash)
+            .await
     }
 
     async fn last_finalized_block(&self) -> ApiErr<BlockInfo> {

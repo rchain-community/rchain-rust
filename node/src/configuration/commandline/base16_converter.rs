@@ -27,7 +27,16 @@ mod tests {
     #[test]
     fn parse_returns_error_for_bad_characters() {
         let samples = [
-            "", "0", "ff", "abc", "0123456789abcdefABCDEF", "xyz", "12z4", "0x12", " ", "GG",
+            "",
+            "0",
+            "ff",
+            "abc",
+            "0123456789abcdefABCDEF",
+            "xyz",
+            "12z4",
+            "0x12",
+            " ",
+            "GG",
         ];
         for s in samples {
             let has_invalid = s.chars().any(|c| !c.is_ascii_hexdigit()) || s.len() % 2 != 0;
@@ -42,7 +51,7 @@ mod tests {
             parse(&[("key".to_string(), vec!["ff".to_string()])]).unwrap(),
             Some(vec![0xff])
         );
-        assert_eq!(parse(&[("key".to_string(), vec![])]) .unwrap(), None);
+        assert_eq!(parse(&[("key".to_string(), vec![])]).unwrap(), None);
         assert!(parse(&[("key".to_string(), vec!["a".to_string(), "b".to_string()])]).is_err());
     }
 }

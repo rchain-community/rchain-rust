@@ -153,15 +153,19 @@ impl Blake2b512Block {
             internal_state[pos_a] = internal_state[pos_a]
                 .wrapping_add(internal_state[pos_b])
                 .wrapping_add(m1);
-            internal_state[pos_d] = (internal_state[pos_d] ^ internal_state[pos_a]).rotate_right(32);
+            internal_state[pos_d] =
+                (internal_state[pos_d] ^ internal_state[pos_a]).rotate_right(32);
             internal_state[pos_c] = internal_state[pos_c].wrapping_add(internal_state[pos_d]);
-            internal_state[pos_b] = (internal_state[pos_b] ^ internal_state[pos_c]).rotate_right(24);
+            internal_state[pos_b] =
+                (internal_state[pos_b] ^ internal_state[pos_c]).rotate_right(24);
             internal_state[pos_a] = internal_state[pos_a]
                 .wrapping_add(internal_state[pos_b])
                 .wrapping_add(m2);
-            internal_state[pos_d] = (internal_state[pos_d] ^ internal_state[pos_a]).rotate_right(16);
+            internal_state[pos_d] =
+                (internal_state[pos_d] ^ internal_state[pos_a]).rotate_right(16);
             internal_state[pos_c] = internal_state[pos_c].wrapping_add(internal_state[pos_d]);
-            internal_state[pos_b] = (internal_state[pos_b] ^ internal_state[pos_c]).rotate_right(63);
+            internal_state[pos_b] =
+                (internal_state[pos_b] ^ internal_state[pos_c]).rotate_right(63);
         }
 
         // init
@@ -183,14 +187,78 @@ impl Blake2b512Block {
 
         for round in 0..ROUNDS {
             let s = &SIGMA[round];
-            g(&mut internal_state, m[s[0] as usize], m[s[1] as usize], 0, 4, 8, 12);
-            g(&mut internal_state, m[s[2] as usize], m[s[3] as usize], 1, 5, 9, 13);
-            g(&mut internal_state, m[s[4] as usize], m[s[5] as usize], 2, 6, 10, 14);
-            g(&mut internal_state, m[s[6] as usize], m[s[7] as usize], 3, 7, 11, 15);
-            g(&mut internal_state, m[s[8] as usize], m[s[9] as usize], 0, 5, 10, 15);
-            g(&mut internal_state, m[s[10] as usize], m[s[11] as usize], 1, 6, 11, 12);
-            g(&mut internal_state, m[s[12] as usize], m[s[13] as usize], 2, 7, 8, 13);
-            g(&mut internal_state, m[s[14] as usize], m[s[15] as usize], 3, 4, 9, 14);
+            g(
+                &mut internal_state,
+                m[s[0] as usize],
+                m[s[1] as usize],
+                0,
+                4,
+                8,
+                12,
+            );
+            g(
+                &mut internal_state,
+                m[s[2] as usize],
+                m[s[3] as usize],
+                1,
+                5,
+                9,
+                13,
+            );
+            g(
+                &mut internal_state,
+                m[s[4] as usize],
+                m[s[5] as usize],
+                2,
+                6,
+                10,
+                14,
+            );
+            g(
+                &mut internal_state,
+                m[s[6] as usize],
+                m[s[7] as usize],
+                3,
+                7,
+                11,
+                15,
+            );
+            g(
+                &mut internal_state,
+                m[s[8] as usize],
+                m[s[9] as usize],
+                0,
+                5,
+                10,
+                15,
+            );
+            g(
+                &mut internal_state,
+                m[s[10] as usize],
+                m[s[11] as usize],
+                1,
+                6,
+                11,
+                12,
+            );
+            g(
+                &mut internal_state,
+                m[s[12] as usize],
+                m[s[13] as usize],
+                2,
+                7,
+                8,
+                13,
+            );
+            g(
+                &mut internal_state,
+                m[s[14] as usize],
+                m[s[15] as usize],
+                3,
+                4,
+                9,
+                14,
+            );
         }
 
         for i in 0..CHAIN_VALUE_LENGTH {
@@ -223,7 +291,11 @@ impl Blake2b512Block {
         }
         let t0 = u64_from_le_at(bytes, 64);
         let t1 = u64_from_le_at(bytes, 72);
-        Ok(Self { chain_value, t0, t1 })
+        Ok(Self {
+            chain_value,
+            t0,
+            t1,
+        })
     }
 
     /// For testing only — will give invalid results otherwise.

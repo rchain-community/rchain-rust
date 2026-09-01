@@ -14,15 +14,25 @@ use crate::genesis::contracts::Vault;
 /// Parse a wallets file of `<REV_address>,<balance>` lines into genesis vaults (port of
 /// `VaultParser.parse(Path)`).
 pub fn parse(vaults_path: &Path) -> Result<Vec<Vault>, String> {
-    let content = fs::read_to_string(vaults_path)
-        .map_err(|e| format!("FAILED PARSING WALLETS FILE: {}\n{}", vaults_path.display(), e))?;
+    let content = fs::read_to_string(vaults_path).map_err(|e| {
+        format!(
+            "FAILED PARSING WALLETS FILE: {}\n{}",
+            vaults_path.display(),
+            e
+        )
+    })?;
     let mut vaults = Vec::new();
     for line in content.lines() {
         if line.trim().is_empty() {
             continue;
         }
-        let vault = parse_line(line)
-            .map_err(|e| format!("FAILED PARSING WALLETS FILE: {}\n{}", vaults_path.display(), e))?;
+        let vault = parse_line(line).map_err(|e| {
+            format!(
+                "FAILED PARSING WALLETS FILE: {}\n{}",
+                vaults_path.display(),
+                e
+            )
+        })?;
         vaults.push(vault);
     }
     Ok(vaults)
@@ -51,7 +61,9 @@ fn parse_line(line: &str) -> Result<Vault, String> {
             .bytes()
             .all(|b| (b'1'..=b'9').contains(&b) || b.is_ascii_alphabetic())
     {
-        return Err(format!("INVALID LINE FORMAT: `{line_format}`, actual: `{line}`"));
+        return Err(format!(
+            "INVALID LINE FORMAT: `{line_format}`, actual: `{line}`"
+        ));
     }
 
     let rev_address = RevAddress::parse(addr)
@@ -114,7 +126,9 @@ mod tests {
         assert!(parse_line("no-comma-here")
             .unwrap_err()
             .contains("INVALID LINE FORMAT"));
-        assert!(parse_line(",123").unwrap_err().contains("INVALID LINE FORMAT"));
+        assert!(parse_line(",123")
+            .unwrap_err()
+            .contains("INVALID LINE FORMAT"));
     }
 
     #[test]

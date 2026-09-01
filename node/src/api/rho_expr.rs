@@ -140,7 +140,9 @@ pub fn rho_expr_to_par(exp: &RhoExpr) -> Result<Par, String> {
     match exp {
         RhoExpr::ExprPar(data) => {
             let pars: Result<Vec<Par>, String> = data.iter().map(rho_expr_to_par).collect();
-            Ok(pars?.into_iter().fold(Par::default(), |acc, p| acc.par_merge(&p)))
+            Ok(pars?
+                .into_iter()
+                .fold(Par::default(), |acc, p| acc.par_merge(&p)))
         }
         RhoExpr::ExprTuple(data) => {
             let pars: Result<Vec<Par>, String> = data.iter().map(rho_expr_to_par).collect();
@@ -213,12 +215,18 @@ mod tests {
 
     #[test]
     fn collection_exprs_round_trip() {
-        round_trip(&RhoExpr::ExprTuple(vec![RhoExpr::ExprInt(1), RhoExpr::ExprBool(false)]));
+        round_trip(&RhoExpr::ExprTuple(vec![
+            RhoExpr::ExprInt(1),
+            RhoExpr::ExprBool(false),
+        ]));
         round_trip(&RhoExpr::ExprList(vec![
             RhoExpr::ExprString("a".to_string()),
             RhoExpr::ExprInt(2),
         ]));
-        round_trip(&RhoExpr::ExprSet(vec![RhoExpr::ExprInt(1), RhoExpr::ExprInt(2)]));
+        round_trip(&RhoExpr::ExprSet(vec![
+            RhoExpr::ExprInt(1),
+            RhoExpr::ExprInt(2),
+        ]));
         round_trip(&RhoExpr::ExprMap(vec![(
             "key".to_string(),
             RhoExpr::ExprInt(1),

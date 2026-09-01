@@ -32,12 +32,14 @@ const WIDE_SETUP: &str = include_str!("resources/wide-setup.rho");
 /// `rholang/tests/common/mod.rs::build_runtime_pair`).
 async fn build_runtime_pair() -> (RhoRuntime, ReplayRhoRuntime) {
     let manager = InMemoryStoreManager::default();
-    let history =
-        create_history_repository::<SortedProc, BindPattern, ListParWithRandom, TaggedContinuation>(
-            &manager, "rspace",
-        )
-        .await
-        .expect("history repository");
+    let history = create_history_repository::<
+        SortedProc,
+        BindPattern,
+        ListParWithRandom,
+        TaggedContinuation,
+    >(&manager, "rspace")
+    .await
+    .expect("history repository");
     let reader = history.get_history_reader(history.root()).await;
     let hot = Arc::new(InMemHotStore::new(reader.base()));
     let (play, replay) = RSpace::create_with_replay(history.clone(), hot, Arc::new(RhoMatch));
@@ -58,7 +60,10 @@ fn eval_bench(c: &mut Criterion) {
     c.bench_function("eval/mvcepp", |b| {
         b.iter(|| {
             rt.block_on(async {
-                runtime.evaluate(MVCEPP, &rand).await.expect("mvcepp reduce");
+                runtime
+                    .evaluate(MVCEPP, &rand)
+                    .await
+                    .expect("mvcepp reduce");
             })
         })
     });
@@ -72,7 +77,10 @@ fn wide_bench(c: &mut Criterion) {
         b.iter(|| {
             rt.block_on(async {
                 let (runtime, _replay) = build_runtime_pair().await;
-                runtime.evaluate(WIDE_SETUP, &rand).await.expect("wide setup");
+                runtime
+                    .evaluate(WIDE_SETUP, &rand)
+                    .await
+                    .expect("wide setup");
                 runtime.evaluate(WIDE, &rand).await.expect("wide reduce");
             })
         })
@@ -80,8 +88,9 @@ fn wide_bench(c: &mut Criterion) {
 }
 
 fn key_bench(c: &mut Criterion) {
-    let hashes: Vec<Blake2b256Hash> =
-        (0..1001).map(|i| Blake2b256Hash::create(&[i as u8; 32])).collect();
+    let hashes: Vec<Blake2b256Hash> = (0..1001)
+        .map(|i| Blake2b256Hash::create(&[i as u8; 32]))
+        .collect();
 
     c.bench_function("key/prepare_codec", |b| {
         b.iter(|| {

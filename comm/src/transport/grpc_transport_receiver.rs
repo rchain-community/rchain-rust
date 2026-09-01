@@ -76,9 +76,11 @@ fn ack(local: &PeerNode, network_id: &str) -> TlResponse {
 
 fn internal_server_error(msg: &str) -> TlResponse {
     TlResponse {
-        payload: Some(tl_response::Payload::InternalServerError(InternalServerError {
-            error: protocol_helper::to_protocol_bytes(msg),
-        })),
+        payload: Some(tl_response::Payload::InternalServerError(
+            InternalServerError {
+                error: protocol_helper::to_protocol_bytes(msg),
+            },
+        )),
     }
 }
 
@@ -131,10 +133,7 @@ pub struct GrpcTransportReceiver {
 
 #[async_trait]
 impl transport_layer_server::TransportLayer for GrpcTransportReceiver {
-    async fn send(
-        &self,
-        request: Request<TlRequest>,
-    ) -> Result<Response<TlResponse>, Status> {
+    async fn send(&self, request: Request<TlRequest>) -> Result<Response<TlResponse>, Status> {
         let protocol = request
             .into_inner()
             .protocol
@@ -235,9 +234,9 @@ impl transport_layer_server::TransportLayer for GrpcTransportReceiver {
                     let permit = match self.blob_slots.clone().try_acquire_owned() {
                         Ok(p) => p,
                         Err(_) => {
-                            return Ok(Response::new(internal_server_error(&stream_error_message(
-                                &StreamError::MaxSizeReached,
-                            ))));
+                            return Ok(Response::new(internal_server_error(
+                                &stream_error_message(&StreamError::MaxSizeReached),
+                            )));
                         }
                     };
                     let handle = self.handle_streamed.clone();
@@ -249,7 +248,9 @@ impl transport_layer_server::TransportLayer for GrpcTransportReceiver {
                 }
                 Err(e) => Ok(Response::new(internal_server_error(&e))),
             },
-            Err(e) => Ok(Response::new(internal_server_error(&stream_error_message(&e)))),
+            Err(e) => Ok(Response::new(internal_server_error(&stream_error_message(
+                &e,
+            )))),
         }
     }
 }

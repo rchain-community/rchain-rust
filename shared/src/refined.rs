@@ -93,7 +93,9 @@ impl TryFrom<i64> for BlockHeight {
         if v >= 0 {
             Ok(BlockHeight(v))
         } else {
-            Err(RefineError::new(format!("block height must be non-negative, got {v}")))
+            Err(RefineError::new(format!(
+                "block height must be non-negative, got {v}"
+            )))
         }
     }
 }
@@ -151,7 +153,9 @@ impl TryFrom<i64> for SeqNum {
         if v >= 0 {
             Ok(SeqNum(v))
         } else {
-            Err(RefineError::new(format!("sequence number must be non-negative, got {v}")))
+            Err(RefineError::new(format!(
+                "sequence number must be non-negative, got {v}"
+            )))
         }
     }
 }
@@ -401,7 +405,10 @@ mod tests {
         assert!(ByteLen::try_from(256).is_err());
         assert_eq!(u16::from(ShortLen::try_from(65535).unwrap()), 65535);
         assert!(ShortLen::try_from(65536).is_err());
-        assert_eq!(u32::from(WireLen::try_from(4_000_000_000usize).unwrap()), 4_000_000_000);
+        assert_eq!(
+            u32::from(WireLen::try_from(4_000_000_000usize).unwrap()),
+            4_000_000_000
+        );
         assert!(WireLen::try_from(usize::MAX).is_err());
     }
 

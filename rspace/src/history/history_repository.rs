@@ -57,63 +57,93 @@ where
     match action {
         HotStoreTrieAction::TrieInsertProduce(hash, data) => {
             let leaf = PersistedData::DataLeaf(encode_datums(data));
-            let leaf_hash = Blake2b256Hash::create(&crate::history::cold_store::encode_persisted_data(&leaf));
+            let leaf_hash =
+                Blake2b256Hash::create(&crate::history::cold_store::encode_persisted_data(&leaf));
             (
                 (leaf_hash, Some(leaf)),
-                HistoryAction::Insert { key: key_segment(PREFIX_DATUM, *hash), hash: leaf_hash },
+                HistoryAction::Insert {
+                    key: key_segment(PREFIX_DATUM, *hash),
+                    hash: leaf_hash,
+                },
             )
         }
         HotStoreTrieAction::TrieInsertConsume(hash, conts) => {
             let leaf = PersistedData::ContinuationsLeaf(encode_continuations(conts));
-            let leaf_hash = Blake2b256Hash::create(&crate::history::cold_store::encode_persisted_data(&leaf));
+            let leaf_hash =
+                Blake2b256Hash::create(&crate::history::cold_store::encode_persisted_data(&leaf));
             (
                 (leaf_hash, Some(leaf)),
-                HistoryAction::Insert { key: key_segment(PREFIX_KONT, *hash), hash: leaf_hash },
+                HistoryAction::Insert {
+                    key: key_segment(PREFIX_KONT, *hash),
+                    hash: leaf_hash,
+                },
             )
         }
         HotStoreTrieAction::TrieInsertJoins(hash, joins) => {
             let leaf = PersistedData::JoinsLeaf(encode_joins(joins));
-            let leaf_hash = Blake2b256Hash::create(&crate::history::cold_store::encode_persisted_data(&leaf));
+            let leaf_hash =
+                Blake2b256Hash::create(&crate::history::cold_store::encode_persisted_data(&leaf));
             (
                 (leaf_hash, Some(leaf)),
-                HistoryAction::Insert { key: key_segment(PREFIX_JOINS, *hash), hash: leaf_hash },
+                HistoryAction::Insert {
+                    key: key_segment(PREFIX_JOINS, *hash),
+                    hash: leaf_hash,
+                },
             )
         }
         HotStoreTrieAction::TrieInsertBinaryProduce(hash, data) => {
             let leaf = PersistedData::DataLeaf(encode_datums_binary(data));
-            let leaf_hash = Blake2b256Hash::create(&crate::history::cold_store::encode_persisted_data(&leaf));
+            let leaf_hash =
+                Blake2b256Hash::create(&crate::history::cold_store::encode_persisted_data(&leaf));
             (
                 (leaf_hash, Some(leaf)),
-                HistoryAction::Insert { key: key_segment(PREFIX_DATUM, *hash), hash: leaf_hash },
+                HistoryAction::Insert {
+                    key: key_segment(PREFIX_DATUM, *hash),
+                    hash: leaf_hash,
+                },
             )
         }
         HotStoreTrieAction::TrieInsertBinaryConsume(hash, conts) => {
             let leaf = PersistedData::ContinuationsLeaf(encode_continuations_binary(conts));
-            let leaf_hash = Blake2b256Hash::create(&crate::history::cold_store::encode_persisted_data(&leaf));
+            let leaf_hash =
+                Blake2b256Hash::create(&crate::history::cold_store::encode_persisted_data(&leaf));
             (
                 (leaf_hash, Some(leaf)),
-                HistoryAction::Insert { key: key_segment(PREFIX_KONT, *hash), hash: leaf_hash },
+                HistoryAction::Insert {
+                    key: key_segment(PREFIX_KONT, *hash),
+                    hash: leaf_hash,
+                },
             )
         }
         HotStoreTrieAction::TrieInsertBinaryJoins(hash, joins) => {
             let leaf = PersistedData::JoinsLeaf(encode_joins_binary(joins));
-            let leaf_hash = Blake2b256Hash::create(&crate::history::cold_store::encode_persisted_data(&leaf));
+            let leaf_hash =
+                Blake2b256Hash::create(&crate::history::cold_store::encode_persisted_data(&leaf));
             (
                 (leaf_hash, Some(leaf)),
-                HistoryAction::Insert { key: key_segment(PREFIX_JOINS, *hash), hash: leaf_hash },
+                HistoryAction::Insert {
+                    key: key_segment(PREFIX_JOINS, *hash),
+                    hash: leaf_hash,
+                },
             )
         }
         HotStoreTrieAction::TrieDeleteProduce(hash) => (
             (*hash, None),
-            HistoryAction::Delete { key: key_segment(PREFIX_DATUM, *hash) },
+            HistoryAction::Delete {
+                key: key_segment(PREFIX_DATUM, *hash),
+            },
         ),
         HotStoreTrieAction::TrieDeleteConsume(hash) => (
             (*hash, None),
-            HistoryAction::Delete { key: key_segment(PREFIX_KONT, *hash) },
+            HistoryAction::Delete {
+                key: key_segment(PREFIX_KONT, *hash),
+            },
         ),
         HotStoreTrieAction::TrieDeleteJoins(hash) => (
             (*hash, None),
-            HistoryAction::Delete { key: key_segment(PREFIX_JOINS, *hash) },
+            HistoryAction::Delete {
+                key: key_segment(PREFIX_JOINS, *hash),
+            },
         ),
     }
 }
@@ -127,12 +157,17 @@ fn calculate_native_storage_action(action: &NativeStoreAction) -> (ColdAction, H
                 Blake2b256Hash::create(&crate::history::cold_store::encode_persisted_data(&leaf));
             (
                 (leaf_hash, Some(leaf)),
-                HistoryAction::Insert { key: key_segment(*prefix, *key), hash: leaf_hash },
+                HistoryAction::Insert {
+                    key: key_segment(*prefix, *key),
+                    hash: leaf_hash,
+                },
             )
         }
         NativeStoreAction::Delete { prefix, key } => (
             (*key, None),
-            HistoryAction::Delete { key: key_segment(*prefix, *key) },
+            HistoryAction::Delete {
+                key: key_segment(*prefix, *key),
+            },
         ),
     }
 }
@@ -216,7 +251,8 @@ impl<C, P, A, K> HistoryRepository<C, P, A, K> {
     {
         let trie_actions: Vec<HotStoreTrieAction<C, P, A, K>> =
             actions.iter().map(transform).collect();
-        self.do_checkpoint_with_native(&trie_actions, native_actions).await
+        self.do_checkpoint_with_native(&trie_actions, native_actions)
+            .await
     }
 
     pub async fn do_checkpoint(
@@ -304,7 +340,10 @@ impl<C, P, A, K> HistoryRepository<C, P, A, K> {
         }))
     }
 
-    pub async fn get_history_reader(&self, state_hash: Blake2b256Hash) -> Arc<dyn HistoryReader<C, P, A, K>>
+    pub async fn get_history_reader(
+        &self,
+        state_hash: Blake2b256Hash,
+    ) -> Arc<dyn HistoryReader<C, P, A, K>>
     where
         C: Serialize<C> + Send + Sync + 'static,
         P: Serialize<P> + Send + Sync + 'static,
@@ -312,11 +351,17 @@ impl<C, P, A, K> HistoryRepository<C, P, A, K> {
         K: Serialize<K> + Send + Sync + 'static,
     {
         let history = self.current_history.reset(state_hash).await;
-        Arc::new(RSpaceHistoryReaderImpl::new(history, self.leaf_store.clone()))
+        Arc::new(RSpaceHistoryReaderImpl::new(
+            history,
+            self.leaf_store.clone(),
+        ))
     }
 
     /// A reader of native system-contract state rooted at `state_hash`.
-    pub async fn get_native_reader(&self, state_hash: Blake2b256Hash) -> Arc<dyn NativeHistoryReader>
+    pub async fn get_native_reader(
+        &self,
+        state_hash: Blake2b256Hash,
+    ) -> Arc<dyn NativeHistoryReader>
     where
         C: Serialize<C> + Send + Sync + 'static,
         P: Serialize<P> + Send + Sync + 'static,

@@ -44,7 +44,10 @@ impl NormalizerEnv {
     /// An environment binding the deploy id and deployer id (port of `NormalizerEnv.apply`).
     pub fn new(deploy: &SignedDeployData) -> Self {
         let mut env = BTreeMap::new();
-        env.insert(DEPLOY_ID_URI.to_string(), RhoDeployId::apply(deploy.sig.clone()));
+        env.insert(
+            DEPLOY_ID_URI.to_string(),
+            RhoDeployId::apply(deploy.sig.clone()),
+        );
         env.insert(
             DEPLOYER_ID_URI.to_string(),
             RhoDeployerId::apply(deploy.deployer.clone()),

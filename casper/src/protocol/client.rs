@@ -108,7 +108,9 @@ fn deploy_exec_status_from_wire(s: &wire::DeployExecStatus) -> Result<DeployExec
     }
 }
 
-fn data_with_block_info_from_wire(d: &wire::DataWithBlockInfo) -> Result<DataWithBlockInfo, String> {
+fn data_with_block_info_from_wire(
+    d: &wire::DataWithBlockInfo,
+) -> Result<DataWithBlockInfo, String> {
     let block = d.block.as_ref().ok_or("missing block")?;
     Ok(DataWithBlockInfo {
         post_block_data: d
@@ -124,7 +126,10 @@ fn data_with_block_info_from_wire(d: &wire::DataWithBlockInfo) -> Result<DataWit
 fn waiting_continuation_info_from_wire(
     w: &wire::WaitingContinuationInfo,
 ) -> Result<WaitingContinuationInfo, String> {
-    let cont = w.post_block_continuation.as_ref().ok_or("missing continuation")?;
+    let cont = w
+        .post_block_continuation
+        .as_ref()
+        .ok_or("missing continuation")?;
     Ok(WaitingContinuationInfo {
         post_block_patterns: w
             .post_block_patterns
@@ -172,7 +177,10 @@ async fn connect_channel(host: &str, port: i32) -> Result<Channel, String> {
 #[async_trait::async_trait]
 pub trait DeployService: Send + Sync {
     async fn deploy(&self, d: &SignedDeployData) -> Result<String, Vec<String>>;
-    async fn deploy_status(&self, deploy_id: &FindDeployQuery) -> Result<DeployExecStatus, Vec<String>>;
+    async fn deploy_status(
+        &self,
+        deploy_id: &FindDeployQuery,
+    ) -> Result<DeployExecStatus, Vec<String>>;
     async fn get_block(&self, q: &BlockQuery) -> Result<String, Vec<String>>;
     async fn get_blocks(&self, q: &BlocksQuery) -> Result<String, Vec<String>>;
     async fn visualize_dag(&self, q: &VisualizeDagQuery) -> Result<String, Vec<String>>;
@@ -224,7 +232,10 @@ impl DeployService for GrpcDeployService {
         }
     }
 
-    async fn deploy_status(&self, deploy_id: &FindDeployQuery) -> Result<DeployExecStatus, Vec<String>> {
+    async fn deploy_status(
+        &self,
+        deploy_id: &FindDeployQuery,
+    ) -> Result<DeployExecStatus, Vec<String>> {
         let mut client = self.client.clone();
         let response = client
             .deploy_status(wire::FindDeployQuery {
@@ -244,7 +255,9 @@ impl DeployService for GrpcDeployService {
     async fn get_block(&self, q: &BlockQuery) -> Result<String, Vec<String>> {
         let mut client = self.client.clone();
         let response = client
-            .get_block(wire::BlockQuery { hash: q.hash.clone() })
+            .get_block(wire::BlockQuery {
+                hash: q.hash.clone(),
+            })
             .await
             .map_err(|s| vec![s.to_string()])?;
         match response.into_inner().message {
@@ -309,7 +322,9 @@ impl DeployService for GrpcDeployService {
         while let Some(item) = stream.message().await.map_err(|s| vec![s.to_string()])? {
             match item.message {
                 Some(wire::visualize_blocks_response::Message::Content(c)) => contents.push(c),
-                Some(wire::visualize_blocks_response::Message::Error(e)) => errors.extend(e.messages),
+                Some(wire::visualize_blocks_response::Message::Error(e)) => {
+                    errors.extend(e.messages)
+                }
                 None => {}
             }
         }
@@ -417,7 +432,9 @@ impl DeployService for GrpcDeployService {
     async fn is_finalized(&self, q: &IsFinalizedQuery) -> Result<String, Vec<String>> {
         let mut client = self.client.clone();
         let response = client
-            .is_finalized(wire::IsFinalizedQuery { hash: q.hash.clone() })
+            .is_finalized(wire::IsFinalizedQuery {
+                hash: q.hash.clone(),
+            })
             .await
             .map_err(|s| vec![s.to_string()])?;
         match response.into_inner().message {
@@ -454,10 +471,7 @@ impl DeployService for GrpcDeployService {
 
     async fn status(&self) -> Result<String, Vec<String>> {
         let mut client = self.client.clone();
-        let response = client
-            .status(())
-            .await
-            .map_err(|s| vec![s.to_string()])?;
+        let response = client.status(()).await.map_err(|s| vec![s.to_string()])?;
         match response.into_inner().message {
             Some(wire::status_response::Message::Status(s)) => {
                 let domain = status_from_wire(&s).map_err(|e| vec![e])?;
@@ -614,7 +628,8 @@ impl DeployRuntime {
                 valid_after_block_number,
                 shard_id: shard_id.to_string(),
             };
-            let signed = Signed::new(data, &Secp256k1, private_key).map_err(|e| vec![e.to_string()])?;
+            let signed =
+                Signed::new(data, &Secp256k1, private_key).map_err(|e| vec![e.to_string()])?;
             let signed_deploy = SignedDeployData {
                 data: signed.data,
                 deployer: signed.pk.bytes().to_vec(),

@@ -282,7 +282,8 @@ impl PartialEq for Blake2b512Random {
             && self.path_position == other.path_position
             && self.position == other.position
             && self.last_block == other.last_block
-            && (self.position == 0 || self.hash_array[self.position..] == other.hash_array[self.position..])
+            && (self.position == 0
+                || self.hash_array[self.position..] == other.hash_array[self.position..])
     }
 }
 

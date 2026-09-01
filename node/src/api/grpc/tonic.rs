@@ -20,16 +20,16 @@ use rchain_models::casper::protocol::deploy_service::{
 };
 use rchain_models::casper::protocol::propose_service::{ProposeQuery, ProposeResultQuery};
 use rchain_models::casper::protocol::report::{
-    BlockEventInfo, DeployInfoWithEventData, ReportCommProto, ReportConsumeProto, ReportProduceProto,
-    ReportProto, SingleReport, SystemDeployInfoWithEventData,
+    BlockEventInfo, DeployInfoWithEventData, ReportCommProto, ReportConsumeProto,
+    ReportProduceProto, ReportProto, SingleReport, SystemDeployInfoWithEventData,
 };
+use rchain_models::proto::casper as wire;
 use rchain_models::proto::casper::deploy_service_server::DeployService;
 use rchain_models::proto::casper::propose_service_server::ProposeService;
 use rchain_models::proto::casper::{
     propose_response, propose_result_response, ProposeResponse, ProposeResultResponse,
     ServiceError as TonicServiceError,
 };
-use rchain_models::proto::casper as wire;
 use rchain_models::proto::repl::repl_server::Repl;
 use rchain_models::proto::repl::ReplResponse as TonicReplResponse;
 use rchain_models::wire::{
@@ -42,7 +42,9 @@ use super::propose_grpc_service_v1::ProposeGrpcServiceV1;
 use super::repl_grpc_service::{CmdRequest, EvalRequest, ReplGrpcService};
 
 fn to_tonic_service_error(e: ServiceError) -> TonicServiceError {
-    TonicServiceError { messages: e.messages }
+    TonicServiceError {
+        messages: e.messages,
+    }
 }
 
 fn propose_response(r: Result<String, ServiceError>) -> ProposeResponse {
@@ -210,13 +212,13 @@ fn deploy_exec_status_to_wire(s: &DeployExecStatus) -> wire::DeployExecStatus {
             deploy_error: deploy_error.clone(),
             block: Some(light_block_info_to_wire(block)),
         }),
-        DeployExecStatus::NotProcessed { status } => {
-            WireStatus::NotProcessed(wire::NotProcessed {
-                status: status.clone(),
-            })
-        }
+        DeployExecStatus::NotProcessed { status } => WireStatus::NotProcessed(wire::NotProcessed {
+            status: status.clone(),
+        }),
     };
-    wire::DeployExecStatus { status: Some(status) }
+    wire::DeployExecStatus {
+        status: Some(status),
+    }
 }
 
 fn data_with_block_info_to_wire(d: &DataWithBlockInfo) -> wire::DataWithBlockInfo {
@@ -475,7 +477,9 @@ impl DeployService for DeployGrpcServiceV1 {
             })
             .await;
         let message = match r {
-            Ok(s) => wire::deploy_status_response::Message::DeployExecStatus(deploy_exec_status_to_wire(&s)),
+            Ok(s) => wire::deploy_status_response::Message::DeployExecStatus(
+                deploy_exec_status_to_wire(&s),
+            ),
             Err(e) => wire::deploy_status_response::Message::Error(to_tonic_service_error(e)),
         };
         Ok(Response::new(wire::DeployStatusResponse {
@@ -579,8 +583,11 @@ impl DeployService for DeployGrpcServiceV1 {
     ) -> Result<Response<wire::ListeningNameDataResponse>, Status> {
         let req = request.into_inner();
         // The wire `Par` is the prost type; the domain query needs the domain `Par`.
-        let name = rchain_models::wire::par_from_proto(&req.name.ok_or_else(|| Status::invalid_argument("missing name"))?)
-            .map_err(|e| Status::invalid_argument(e.to_string()))?;
+        let name = rchain_models::wire::par_from_proto(
+            &req.name
+                .ok_or_else(|| Status::invalid_argument("missing name"))?,
+        )
+        .map_err(|e| Status::invalid_argument(e.to_string()))?;
         let r = self
             .listen_for_data_at_name(&DataAtNameQuery {
                 depth: req.depth,
@@ -588,14 +595,15 @@ impl DeployService for DeployGrpcServiceV1 {
             })
             .await;
         let message = match r {
-            Ok((block_info, length)) => {
-                wire::listening_name_data_response::Message::Payload(
-                    wire::ListeningNameDataPayload {
-                        block_info: block_info.iter().map(data_with_block_info_to_wire).collect(),
-                        length,
-                    },
-                )
-            }
+            Ok((block_info, length)) => wire::listening_name_data_response::Message::Payload(
+                wire::ListeningNameDataPayload {
+                    block_info: block_info
+                        .iter()
+                        .map(data_with_block_info_to_wire)
+                        .collect(),
+                    length,
+                },
+            ),
             Err(e) => wire::listening_name_data_response::Message::Error(to_tonic_service_error(e)),
         };
         Ok(Response::new(wire::ListeningNameDataResponse {
@@ -608,8 +616,11 @@ impl DeployService for DeployGrpcServiceV1 {
         request: Request<wire::DataAtNameByBlockQuery>,
     ) -> Result<Response<wire::RhoDataResponse>, Status> {
         let req = request.into_inner();
-        let par = rchain_models::wire::par_from_proto(&req.par.ok_or_else(|| Status::invalid_argument("missing par"))?)
-            .map_err(|e| Status::invalid_argument(e.to_string()))?;
+        let par = rchain_models::wire::par_from_proto(
+            &req.par
+                .ok_or_else(|| Status::invalid_argument("missing par"))?,
+        )
+        .map_err(|e| Status::invalid_argument(e.to_string()))?;
         let r = self
             .get_data_at_name(&DataAtNameByBlockQuery {
                 par,
@@ -649,17 +660,15 @@ impl DeployService for DeployGrpcServiceV1 {
             })
             .await;
         let message = match r {
-            Ok((continuations, length)) => {
-                wire::continuation_at_name_response::Message::Payload(
-                    wire::ContinuationAtNamePayload {
-                        block_results: continuations
-                            .iter()
-                            .map(continuations_with_block_info_to_wire)
-                            .collect(),
-                        length,
-                    },
-                )
-            }
+            Ok((continuations, length)) => wire::continuation_at_name_response::Message::Payload(
+                wire::ContinuationAtNamePayload {
+                    block_results: continuations
+                        .iter()
+                        .map(continuations_with_block_info_to_wire)
+                        .collect(),
+                    length,
+                },
+            ),
             Err(e) => {
                 wire::continuation_at_name_response::Message::Error(to_tonic_service_error(e))
             }
@@ -694,8 +703,12 @@ impl DeployService for DeployGrpcServiceV1 {
     ) -> Result<Response<wire::LastFinalizedBlockResponse>, Status> {
         let r = self.last_finalized_block().await;
         let message = match r {
-            Ok(b) => wire::last_finalized_block_response::Message::BlockInfo(block_info_to_wire(&b)),
-            Err(e) => wire::last_finalized_block_response::Message::Error(to_tonic_service_error(e)),
+            Ok(b) => {
+                wire::last_finalized_block_response::Message::BlockInfo(block_info_to_wire(&b))
+            }
+            Err(e) => {
+                wire::last_finalized_block_response::Message::Error(to_tonic_service_error(e))
+            }
         };
         Ok(Response::new(wire::LastFinalizedBlockResponse {
             message: Some(message),

@@ -89,7 +89,10 @@ impl SystemDeploy {
             normalizer_env: BTreeMap::new(),
             rand,
             return_channel: Par::default(),
-            op: Some(NativeSystemDeployOp::PreCharge { deployer: pk.to_owned(), amount }),
+            op: Some(NativeSystemDeployOp::PreCharge {
+                deployer: pk.to_owned(),
+                amount,
+            }),
         }
     }
 
@@ -119,7 +122,9 @@ impl SystemDeploy {
             normalizer_env: BTreeMap::new(),
             rand,
             return_channel: Par::default(),
-            op: Some(NativeSystemDeployOp::Slash { validator: *validator }),
+            op: Some(NativeSystemDeployOp::Slash {
+                validator: *validator,
+            }),
         }
     }
 }
@@ -159,7 +164,10 @@ mod tests {
         let d = SystemDeploy::pre_charge(100, &pk, rand);
         assert_eq!(
             d.op,
-            Some(NativeSystemDeployOp::PreCharge { deployer: pk, amount: 100 })
+            Some(NativeSystemDeployOp::PreCharge {
+                deployer: pk,
+                amount: 100
+            })
         );
     }
 

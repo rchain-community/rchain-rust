@@ -7,20 +7,20 @@
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, Weak};
 
+use qucalc::{achieves_zfa, dialectical_synthesis, pauli_phase};
 use rchain_crypto::hash::{blake2b256, keccak256, sha256};
 use rchain_crypto::public_key::PublicKey;
 use rchain_crypto::signatures::ed25519::Ed25519;
 use rchain_crypto::signatures::secp256k1::Secp256k1;
 use rchain_models::ast::Par;
 use rchain_models::casper::protocol::casper_message::BlockMessage;
-use rchain_shared::refined::{BlockHeight, NonNegI64, SeqNum};
 use rchain_models::rholang::RhoType::{
     RhoBoolean, RhoByteArray, RhoDeployerId, RhoList, RhoMap, RhoName, RhoNil, RhoNumber, RhoSet,
     RhoString, RhoSysAuthToken, RhoTupleN, RhoUri,
 };
 use rchain_models::runtime::ListParWithRandom;
 use rchain_models::validator::Validator;
-use qucalc::{achieves_zfa, dialectical_synthesis, pauli_phase};
+use rchain_shared::refined::{BlockHeight, NonNegI64, SeqNum};
 
 use crate::contract_call::ContractCall;
 use crate::dispatch::{RholangAndScalaDispatcher, ScalaBodyFn};
@@ -258,7 +258,11 @@ fn parse_member_list(p: &Par) -> Result<Vec<String>, RholangError> {
 
 fn parse_member_map(p: &Par) -> Result<BTreeMap<String, String>, RholangError> {
     RhoMap::unapply(p)
-        .and_then(|kvs| kvs.iter().map(|(k, v)| Some((member_id(k)?, member_id(v)?))).collect())
+        .and_then(|kvs| {
+            kvs.iter()
+                .map(|(k, v)| Some((member_id(k)?, member_id(v)?)))
+                .collect()
+        })
         .ok_or_else(|| illegal_arg("expected a map of member id -> member id"))
 }
 
@@ -281,7 +285,11 @@ fn parse_rating_list(p: &Par) -> Result<Vec<(String, String, i64)>, RholangError
                     if t.len() != 3 {
                         return None;
                     }
-                    Some((member_id(&t[0])?, member_id(&t[1])?, RhoNumber::unapply(&t[2])?))
+                    Some((
+                        member_id(&t[0])?,
+                        member_id(&t[1])?,
+                        RhoNumber::unapply(&t[2])?,
+                    ))
                 })
                 .collect()
         })
@@ -721,18 +729,22 @@ impl SystemProcesses {
         Box::new(move |args: Vec<ListParWithRandom>| {
             let cc = cc.clone();
             Box::pin(async move {
-                let (pars, rand) = cc
-                    .unapply(&args)
-                    .ok_or_else(|| illegal_arg(&format!("{name} expects a byte array and return channel")))?;
+                let (pars, rand) = cc.unapply(&args).ok_or_else(|| {
+                    illegal_arg(&format!("{name} expects a byte array and return channel"))
+                })?;
                 match pars.as_slice() {
                     [input, ack] => match RhoByteArray::unapply(input) {
                         Some(bytes) => {
                             let hash = algorithm(bytes);
                             cc.produce(&rand, &[RhoByteArray::apply(hash)], ack).await
                         }
-                        None => Err(illegal_arg(&format!("{name} expects a byte array and return channel"))),
+                        None => Err(illegal_arg(&format!(
+                            "{name} expects a byte array and return channel"
+                        ))),
                     },
-                    _ => Err(illegal_arg(&format!("{name} expects a byte array and return channel"))),
+                    _ => Err(illegal_arg(&format!(
+                        "{name} expects a byte array and return channel"
+                    ))),
                 }
             })
         })
@@ -783,10 +795,8 @@ impl SystemProcesses {
                             })?;
                         let zfa = achieves_zfa(&values);
                         let phase = pauli_phase(&values).map(|p| p.code()).unwrap_or(0);
-                        let result = RhoTupleN::apply(vec![
-                            RhoBoolean::apply(zfa),
-                            RhoNumber::apply(phase),
-                        ]);
+                        let result =
+                            RhoTupleN::apply(vec![RhoBoolean::apply(zfa), RhoNumber::apply(phase)]);
                         cc.produce(&rand, &[result], ack).await
                     }
                     _ => Err(illegal_arg("qucalc:zfa expects two arguments")),
@@ -802,9 +812,9 @@ impl SystemProcesses {
             let cc = cc.clone();
             let native = native.clone();
             Box::pin(async move {
-                let (pars, rand) = cc
-                    .unapply(&args)
-                    .ok_or_else(|| illegal_arg("qucalc:grant expects a twist list and return channel"))?;
+                let (pars, rand) = cc.unapply(&args).ok_or_else(|| {
+                    illegal_arg("qucalc:grant expects a twist list and return channel")
+                })?;
                 match pars.as_slice() {
                     [twists, ret] => {
                         let values = parse_twists(twists)?;
@@ -813,7 +823,10 @@ impl SystemProcesses {
                             // is the ZFA-balanced twist sequence. Persisted across deploys.
                             let uri = registry::build_uri(&blake2b256::hash(&values));
                             let stored = RhoList::apply(
-                                values.iter().map(|&v| RhoNumber::apply(i64::from(v))).collect(),
+                                values
+                                    .iter()
+                                    .map(|&v| RhoNumber::apply(i64::from(v)))
+                                    .collect(),
                             );
                             native.registry_insert(&uri, &stored);
                             cc.produce(&rand, &[RhoUri::apply(uri)], ret).await
@@ -821,7 +834,9 @@ impl SystemProcesses {
                             cc.produce(&rand, &[RhoNil::apply()], ret).await
                         }
                     }
-                    _ => Err(illegal_arg("qucalc:grant expects a twist list and return channel")),
+                    _ => Err(illegal_arg(
+                        "qucalc:grant expects a twist list and return channel",
+                    )),
                 }
             })
         })
@@ -834,16 +849,20 @@ impl SystemProcesses {
             let cc = cc.clone();
             let native = native.clone();
             Box::pin(async move {
-                let (pars, rand) = cc
-                    .unapply(&args)
-                    .ok_or_else(|| illegal_arg("qucalc:verify expects a capability uri and return channel"))?;
+                let (pars, rand) = cc.unapply(&args).ok_or_else(|| {
+                    illegal_arg("qucalc:verify expects a capability uri and return channel")
+                })?;
                 match pars.as_slice() {
                     [cap, ret] => {
                         let uri = RhoUri::unapply(cap)
                             .or_else(|| RhoString::unapply(cap))
                             .ok_or_else(|| illegal_arg("qucalc:verify expects a uri string"))?
                             .to_string();
-                        let ok = match native.registry_lookup(&uri).await.map_err(|e| illegal_arg(&e))? {
+                        let ok = match native
+                            .registry_lookup(&uri)
+                            .await
+                            .map_err(|e| illegal_arg(&e))?
+                        {
                             Some(stored) => parse_twists(&stored)
                                 .map(|v| achieves_zfa(&v))
                                 .unwrap_or(false),
@@ -851,7 +870,9 @@ impl SystemProcesses {
                         };
                         cc.produce(&rand, &[RhoBoolean::apply(ok)], ret).await
                     }
-                    _ => Err(illegal_arg("qucalc:verify expects a capability uri and return channel")),
+                    _ => Err(illegal_arg(
+                        "qucalc:verify expects a capability uri and return channel",
+                    )),
                 }
             })
         })
@@ -864,9 +885,9 @@ impl SystemProcesses {
             let cc = cc.clone();
             let native = native.clone();
             Box::pin(async move {
-                let (pars, rand) = cc
-                    .unapply(&args)
-                    .ok_or_else(|| illegal_arg("qucalc:fuse expects subject, predicate and return channel"))?;
+                let (pars, rand) = cc.unapply(&args).ok_or_else(|| {
+                    illegal_arg("qucalc:fuse expects subject, predicate and return channel")
+                })?;
                 match pars.as_slice() {
                     [subject, predicate, ret] => {
                         let s = parse_twists(subject)?;
@@ -876,7 +897,11 @@ impl SystemProcesses {
                             // Blanket fusion resolved to a stable fluxoid: mint it as a capability.
                             let uri = registry::build_uri(&blake2b256::hash(&synth.geometry));
                             let geometry = RhoList::apply(
-                                synth.geometry.iter().map(|&v| RhoNumber::apply(i64::from(v))).collect(),
+                                synth
+                                    .geometry
+                                    .iter()
+                                    .map(|&v| RhoNumber::apply(i64::from(v)))
+                                    .collect(),
                             );
                             native.registry_insert(&uri, &geometry);
                             let out = RhoTupleN::apply(vec![geometry, RhoUri::apply(uri)]);
@@ -885,7 +910,9 @@ impl SystemProcesses {
                             cc.produce(&rand, &[RhoNil::apply()], ret).await
                         }
                     }
-                    _ => Err(illegal_arg("qucalc:fuse expects subject, predicate and return channel")),
+                    _ => Err(illegal_arg(
+                        "qucalc:fuse expects subject, predicate and return channel",
+                    )),
                 }
             })
         })
@@ -924,11 +951,13 @@ impl SystemProcesses {
         Box::new(move |args: Vec<ListParWithRandom>| {
             let cc = cc.clone();
             Box::pin(async move {
-                let (pars, rand) = cc
-                    .unapply(&args)
-                    .ok_or_else(|| illegal_arg("gov:trustLevels expects ratings, admins and a return channel"))?;
+                let (pars, rand) = cc.unapply(&args).ok_or_else(|| {
+                    illegal_arg("gov:trustLevels expects ratings, admins and a return channel")
+                })?;
                 let [ratings, admins, ret] = pars.as_slice() else {
-                    return Err(illegal_arg("gov:trustLevels expects ratings, admins and a return channel"));
+                    return Err(illegal_arg(
+                        "gov:trustLevels expects ratings, admins and a return channel",
+                    ));
                 };
                 let r = parse_rating_list(ratings)?;
                 let a = parse_member_list(admins)?;
@@ -946,7 +975,9 @@ impl SystemProcesses {
             let cc = cc.clone();
             Box::pin(async move {
                 let (pars, rand) = cc.unapply(&args).ok_or_else(|| {
-                    illegal_arg("gov:censure expects censures, levels, vouchers and a return channel")
+                    illegal_arg(
+                        "gov:censure expects censures, levels, vouchers and a return channel",
+                    )
                 })?;
                 let [censures, levels, vouchers, ret] = pars.as_slice() else {
                     return Err(illegal_arg(
@@ -958,7 +989,8 @@ impl SystemProcesses {
                 let v = parse_voucher_list(vouchers)?;
                 let (disc, new_levels) = qucalc::gov::censure(&c, &lv, &v);
                 let disc_list: Vec<String> = disc.into_iter().collect();
-                let out = RhoTupleN::apply(vec![string_list(&disc_list), member_int_map(&new_levels)]);
+                let out =
+                    RhoTupleN::apply(vec![string_list(&disc_list), member_int_map(&new_levels)]);
                 cc.produce(&rand, &[out], ret).await
             })
         })
@@ -971,11 +1003,13 @@ impl SystemProcesses {
         Box::new(move |args: Vec<ListParWithRandom>| {
             let cc = cc.clone();
             Box::pin(async move {
-                let (pars, rand) = cc
-                    .unapply(&args)
-                    .ok_or_else(|| illegal_arg("gov:tally expects ballots, weights, mode and a return channel"))?;
+                let (pars, rand) = cc.unapply(&args).ok_or_else(|| {
+                    illegal_arg("gov:tally expects ballots, weights, mode and a return channel")
+                })?;
                 let [ballots, weights, mode, ret] = pars.as_slice() else {
-                    return Err(illegal_arg("gov:tally expects ballots, weights, mode and a return channel"));
+                    return Err(illegal_arg(
+                        "gov:tally expects ballots, weights, mode and a return channel",
+                    ));
                 };
                 let b = parse_ranked_ballots(ballots)?;
                 let w = parse_member_int_map(weights)?;
@@ -984,7 +1018,11 @@ impl SystemProcesses {
                 let winner = match mode {
                     "ranked" => qucalc::gov::tally_ranked(&b, &w),
                     "approval" => qucalc::gov::tally_approval(&b, &w),
-                    _ => return Err(illegal_arg("gov:tally mode must be \"ranked\" or \"approval\"")),
+                    _ => {
+                        return Err(illegal_arg(
+                            "gov:tally mode must be \"ranked\" or \"approval\"",
+                        ))
+                    }
                 };
                 match winner {
                     Some(name) => cc.produce(&rand, &[RhoString::apply(name)], ret).await,
@@ -1153,17 +1191,23 @@ impl SystemProcesses {
             let cc = cc.clone();
             let native = native.clone();
             Box::pin(async move {
-                let (pars, rand) = cc
-                    .unapply(&args)
-                    .ok_or_else(|| illegal_arg("registry lookup expects a uri and return channel"))?;
+                let (pars, rand) = cc.unapply(&args).ok_or_else(|| {
+                    illegal_arg("registry lookup expects a uri and return channel")
+                })?;
                 let [uri, ret] = pars.as_slice() else {
-                    return Err(illegal_arg("registry lookup expects a uri and return channel"));
+                    return Err(illegal_arg(
+                        "registry lookup expects a uri and return channel",
+                    ));
                 };
                 let uri_str = RhoUri::unapply(uri)
                     .or_else(|| RhoString::unapply(uri))
                     .ok_or_else(|| illegal_arg("registry lookup expects a uri string"))?
                     .to_string();
-                match native.registry_lookup(&uri_str).await.map_err(|e| illegal_arg(&e))? {
+                match native
+                    .registry_lookup(&uri_str)
+                    .await
+                    .map_err(|e| illegal_arg(&e))?
+                {
                     Some(value) => {
                         cc.produce(&rand, &[RhoTupleN::apply(vec![uri.clone(), value])], ret)
                             .await
@@ -1182,11 +1226,13 @@ impl SystemProcesses {
             let cc = cc.clone();
             let native = native.clone();
             Box::pin(async move {
-                let (pars, rand) = cc
-                    .unapply(&args)
-                    .ok_or_else(|| illegal_arg("insertArbitrary expects data and a return channel"))?;
+                let (pars, rand) = cc.unapply(&args).ok_or_else(|| {
+                    illegal_arg("insertArbitrary expects data and a return channel")
+                })?;
                 let [data, ret] = pars.as_slice() else {
-                    return Err(illegal_arg("insertArbitrary expects data and a return channel"));
+                    return Err(illegal_arg(
+                        "insertArbitrary expects data and a return channel",
+                    ));
                 };
                 let uri = registry::build_uri(&blake2b256::hash(&rand.to_bytes()));
                 native.registry_insert(&uri, data);
@@ -1205,16 +1251,17 @@ impl SystemProcesses {
             let native = native.clone();
             Box::pin(async move {
                 let (pars, rand) = cc.unapply(&args).ok_or_else(|| {
-                    illegal_arg("insertSigned expects (nonce, data), deployerID and a return channel")
+                    illegal_arg(
+                        "insertSigned expects (nonce, data), deployerID and a return channel",
+                    )
                 })?;
                 let [signed, deployer_id, ret] = pars.as_slice() else {
                     return Err(illegal_arg(
                         "insertSigned expects (nonce, data), deployerID and a return channel",
                     ));
                 };
-                let tuple = RhoTupleN::unapply(signed).ok_or_else(|| {
-                    illegal_arg("insertSigned expects a (nonce, data) tuple")
-                })?;
+                let tuple = RhoTupleN::unapply(signed)
+                    .ok_or_else(|| illegal_arg("insertSigned expects a (nonce, data) tuple"))?;
                 let [nonce_par, data] = tuple else {
                     return Err(illegal_arg("insertSigned expects a (nonce, data) tuple"));
                 };
@@ -1224,7 +1271,11 @@ impl SystemProcesses {
                     .ok_or_else(|| illegal_arg("insertSigned expects a deployerID"))?;
                 let uri = registry::build_uri(&blake2b256::hash(pub_key));
 
-                if let Some(stored) = native.registry_lookup(&uri).await.map_err(|e| illegal_arg(&e))? {
+                if let Some(stored) = native
+                    .registry_lookup(&uri)
+                    .await
+                    .map_err(|e| illegal_arg(&e))?
+                {
                     let old_nonce = RhoTupleN::unapply(&stored)
                         .and_then(|ps| ps.first())
                         .and_then(|n| RhoNumber::unapply(n))
@@ -1281,10 +1332,14 @@ impl SystemProcesses {
                     }
                     "getActiveValidators" => {
                         let [ret] = rest else {
-                            return Err(illegal_arg("getActiveValidators expects a return channel"));
+                            return Err(illegal_arg(
+                                "getActiveValidators expects a return channel",
+                            ));
                         };
-                        let validators =
-                            native.active_validators().await.map_err(|e| illegal_arg(&e))?;
+                        let validators = native
+                            .active_validators()
+                            .await
+                            .map_err(|e| illegal_arg(&e))?;
                         let ps: Vec<Par> = validators
                             .iter()
                             .map(|v| RhoByteArray::apply(v.as_bytes().to_vec()))
@@ -1308,8 +1363,14 @@ impl SystemProcesses {
                             NonNegI64::try_from(amount).map_err(|e| illegal_arg(&e.to_string()))?;
                         let validator = Validator::try_from(deployer_id)
                             .map_err(|e| illegal_arg(&e.to_string()))?;
-                        let out = match native.bond(&validator, amount).await.map_err(|e| illegal_arg(&e))? {
-                            Ok(()) => RhoTupleN::apply(vec![RhoBoolean::apply(true), RhoNil::apply()]),
+                        let out = match native
+                            .bond(&validator, amount)
+                            .await
+                            .map_err(|e| illegal_arg(&e))?
+                        {
+                            Ok(()) => {
+                                RhoTupleN::apply(vec![RhoBoolean::apply(true), RhoNil::apply()])
+                            }
                             Err(msg) => RhoTupleN::apply(vec![
                                 RhoBoolean::apply(false),
                                 RhoString::apply(msg),
@@ -1319,15 +1380,23 @@ impl SystemProcesses {
                     }
                     "withdraw" => {
                         let [deployer_id, ret] = rest else {
-                            return Err(illegal_arg("withdraw expects deployerId and return channel"));
+                            return Err(illegal_arg(
+                                "withdraw expects deployerId and return channel",
+                            ));
                         };
                         // Capability, not data (see `bond`).
                         let deployer_id = RhoDeployerId::unapply(deployer_id)
                             .ok_or_else(|| illegal_arg("withdraw expects a deployerId"))?;
                         let validator = Validator::try_from(deployer_id)
                             .map_err(|e| illegal_arg(&e.to_string()))?;
-                        let out = match native.withdraw(&validator).await.map_err(|e| illegal_arg(&e))? {
-                            Ok(()) => RhoTupleN::apply(vec![RhoBoolean::apply(true), RhoNil::apply()]),
+                        let out = match native
+                            .withdraw(&validator)
+                            .await
+                            .map_err(|e| illegal_arg(&e))?
+                        {
+                            Ok(()) => {
+                                RhoTupleN::apply(vec![RhoBoolean::apply(true), RhoNil::apply()])
+                            }
                             Err(msg) => RhoTupleN::apply(vec![
                                 RhoBoolean::apply(false),
                                 RhoString::apply(msg),
@@ -1364,11 +1433,17 @@ impl SystemProcesses {
                 match op {
                     "getBalance" => {
                         let [addr, ret] = rest else {
-                            return Err(illegal_arg("getBalance expects an address and return channel"));
+                            return Err(illegal_arg(
+                                "getBalance expects an address and return channel",
+                            ));
                         };
                         let addr = RhoString::unapply(addr)
                             .ok_or_else(|| illegal_arg("getBalance expects a string address"))?;
-                        let balance = match native.vault_balance(addr).await.map_err(|e| illegal_arg(&e))? {
+                        let balance = match native
+                            .vault_balance(addr)
+                            .await
+                            .map_err(|e| illegal_arg(&e))?
+                        {
                             Some(b) => b,
                             None => NonNegI64::zero(),
                         };
@@ -1402,11 +1477,14 @@ impl SystemProcesses {
                             .ok_or_else(|| illegal_arg("transfer expects a number amount"))?;
                         let amount =
                             NonNegI64::try_from(amount).map_err(|e| illegal_arg(&e.to_string()))?;
-                        let from_balance =
-                            match native.vault_balance(&from).await.map_err(|e| illegal_arg(&e))? {
-                                Some(b) => b,
-                                None => NonNegI64::zero(),
-                            };
+                        let from_balance = match native
+                            .vault_balance(&from)
+                            .await
+                            .map_err(|e| illegal_arg(&e))?
+                        {
+                            Some(b) => b,
+                            None => NonNegI64::zero(),
+                        };
                         if i64::from(from_balance) < i64::from(amount) {
                             return Err(illegal_arg("transfer: insufficient balance"));
                         }
@@ -1417,27 +1495,33 @@ impl SystemProcesses {
                         if from.as_str() == to {
                             return cc.produce(&rand, &[RhoNil::apply()], ret).await;
                         }
-                        let to_balance =
-                            match native.vault_balance(to).await.map_err(|e| illegal_arg(&e))? {
-                                Some(b) => b,
-                                None => NonNegI64::zero(),
-                            };
-                        let new_from = NonNegI64::try_from(i64::from(from_balance) - i64::from(amount))
-                            .map_err(|e| illegal_arg(&e.to_string()))?;
+                        let to_balance = match native
+                            .vault_balance(to)
+                            .await
+                            .map_err(|e| illegal_arg(&e))?
+                        {
+                            Some(b) => b,
+                            None => NonNegI64::zero(),
+                        };
+                        let new_from =
+                            NonNegI64::try_from(i64::from(from_balance) - i64::from(amount))
+                                .map_err(|e| illegal_arg(&e.to_string()))?;
                         // Accumulate in checked i64 so `to_balance + amount` cannot overflow (both are
                         // non-negative, so only an i64::MAX-exceeding sum overflows).
                         let new_to_i64 = i64::from(to_balance)
                             .checked_add(i64::from(amount))
                             .ok_or_else(|| illegal_arg("transfer: destination balance overflow"))?;
-                        let new_to =
-                            NonNegI64::try_from(new_to_i64).map_err(|e| illegal_arg(&e.to_string()))?;
+                        let new_to = NonNegI64::try_from(new_to_i64)
+                            .map_err(|e| illegal_arg(&e.to_string()))?;
                         native.set_vault_balance(&from, new_from);
                         native.set_vault_balance(to, new_to);
                         cc.produce(&rand, &[RhoNil::apply()], ret).await
                     }
                     "findOrCreate" => {
                         let [deployer_id, ret] = rest else {
-                            return Err(illegal_arg("findOrCreate expects deployerId and return channel"));
+                            return Err(illegal_arg(
+                                "findOrCreate expects deployerId and return channel",
+                            ));
                         };
                         // Capability, not data: the vault is created for the caller's own
                         // deployer-derived address only.
@@ -1451,10 +1535,8 @@ impl SystemProcesses {
                             .await
                             .map_err(|e| illegal_arg(&e))?;
                         // In the simplified address-keyed model the vault identifier is the address.
-                        let out = RhoTupleN::apply(vec![
-                            RhoBoolean::apply(true),
-                            RhoString::apply(addr),
-                        ]);
+                        let out =
+                            RhoTupleN::apply(vec![RhoBoolean::apply(true), RhoString::apply(addr)]);
                         cc.produce(&rand, &[out], ret).await
                     }
                     _ => Err(illegal_arg(&format!("revVault: unknown method {op}"))),
@@ -1472,7 +1554,9 @@ mod tests {
     use rchain_models::runtime::{BindPattern, ListParWithRandom, TaggedContinuation};
     use rchain_models::sorted::SortedProc;
     use rchain_rspace::errors::RSpaceError;
-    use rchain_rspace::tuple_space::{ContResult, Result as RSpaceResult, Tuplespace as RSpaceTuplespace};
+    use rchain_rspace::tuple_space::{
+        ContResult, Result as RSpaceResult, Tuplespace as RSpaceTuplespace,
+    };
     use std::collections::BTreeSet;
     use std::sync::{Arc, Mutex};
 
@@ -1481,7 +1565,9 @@ mod tests {
     }
 
     #[async_trait]
-    impl RSpaceTuplespace<SortedProc, BindPattern, ListParWithRandom, TaggedContinuation> for MockSpace {
+    impl RSpaceTuplespace<SortedProc, BindPattern, ListParWithRandom, TaggedContinuation>
+        for MockSpace
+    {
         async fn consume(
             &self,
             _channels: &[SortedProc],
@@ -1511,7 +1597,10 @@ mod tests {
             )>,
             RSpaceError,
         > {
-            self.produced.lock().unwrap_or_else(|p| p.into_inner()).push((channel, data, persist));
+            self.produced
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .push((channel, data, persist));
             Ok(None)
         }
 
@@ -1525,16 +1614,16 @@ mod tests {
         }
     }
 
-    fn mock_system_processes(
-        mock: &Arc<MockSpace>,
-    ) -> (SystemProcesses, Vec<Definition>) {
+    fn mock_system_processes(mock: &Arc<MockSpace>) -> (SystemProcesses, Vec<Definition>) {
         let charging = ChargingRSpace::new(
             mock.clone(),
             Arc::new(crate::accounting::CostAccounting::from_initial(
                 crate::accounting::Costs::unsafe_max(),
             )),
         );
-        let dispatcher = Arc::new(RholangAndScalaDispatcher::new(std::collections::BTreeMap::new()));
+        let dispatcher = Arc::new(RholangAndScalaDispatcher::new(
+            std::collections::BTreeMap::new(),
+        ));
         let block_data = Arc::new(Mutex::new(BlockData::empty()));
         let native_state = Arc::new(NativeSystemState::new(Arc::new(
             rchain_rspace::native_store::InMemNativeStore::empty(),
@@ -1570,7 +1659,12 @@ mod tests {
         let produced = mock.produced.lock().unwrap_or_else(|p| p.into_inner());
         assert_eq!(produced.len(), 1);
         assert_eq!(produced[0].0.as_par(), &ack);
-        assert_eq!(produced[0].1.pars, vec![SortedProc::new(RhoByteArray::apply(blake2b256::hash(&input)))]);
+        assert_eq!(
+            produced[0].1.pars,
+            vec![SortedProc::new(RhoByteArray::apply(blake2b256::hash(
+                &input
+            )))]
+        );
     }
 
     #[tokio::test]
@@ -1596,7 +1690,10 @@ mod tests {
             assert_eq!(produced[0].0.as_par(), &ret);
             produced[0].1.pars[0].clone()
         };
-        assert!(RhoUri::unapply(uri.as_par()).is_some(), "insertArbitrary returns a URI");
+        assert!(
+            RhoUri::unapply(uri.as_par()).is_some(),
+            "insertArbitrary returns a URI"
+        );
 
         let lookup = defs
             .iter()
@@ -1611,7 +1708,8 @@ mod tests {
         assert_eq!(produced.len(), 2);
         assert_eq!(produced[1].0.as_par(), &ret2);
         let tuple = &produced[1].1.pars[0];
-        let parts = RhoTupleN::unapply(tuple.as_par()).expect("lookup returns a (uri, value) tuple");
+        let parts =
+            RhoTupleN::unapply(tuple.as_par()).expect("lookup returns a (uri, value) tuple");
         assert_eq!(parts.len(), 2);
         assert_eq!(parts[0], *uri.as_par());
         assert_eq!(parts[1], data);
@@ -1642,12 +1740,17 @@ mod tests {
                 crate::accounting::Costs::unsafe_max(),
             )),
         );
-        let dispatcher = Arc::new(RholangAndScalaDispatcher::new(std::collections::BTreeMap::new()));
+        let dispatcher = Arc::new(RholangAndScalaDispatcher::new(
+            std::collections::BTreeMap::new(),
+        ));
         let block_data = Arc::new(Mutex::new(BlockData::empty()));
         let sp = SystemProcesses::new(charging, dispatcher, block_data, Arc::new(native));
         let defs = sp.definitions();
 
-        let pos = defs.iter().find(|d| d.body_ref == BodyRefs::POS).expect("pos definition");
+        let pos = defs
+            .iter()
+            .find(|d| d.body_ref == BodyRefs::POS)
+            .expect("pos definition");
         let ret = FixedChannels::stdout();
         let args = vec![lpw(vec![
             RhoString::apply("getBonds".to_string()),
@@ -1675,7 +1778,9 @@ mod tests {
                 crate::accounting::Costs::unsafe_max(),
             )),
         );
-        let dispatcher = Arc::new(RholangAndScalaDispatcher::new(std::collections::BTreeMap::new()));
+        let dispatcher = Arc::new(RholangAndScalaDispatcher::new(
+            std::collections::BTreeMap::new(),
+        ));
         let block_data = Arc::new(Mutex::new(BlockData::empty()));
         let native_store = Arc::new(rchain_rspace::native_store::InMemNativeStore::empty());
         let native_state = Arc::new(NativeSystemState::new(native_store));
@@ -1687,8 +1792,12 @@ mod tests {
             .expect("revVault definition");
 
         let alice_id = RhoDeployerId::apply(vec![1; 65]);
-        let alice = RevAddress::from_deployer_id(&[1; 65]).expect("alice address").to_base58();
-        let bob = RevAddress::from_deployer_id(&[2; 65]).expect("bob address").to_base58();
+        let alice = RevAddress::from_deployer_id(&[1; 65])
+            .expect("alice address")
+            .to_base58();
+        let bob = RevAddress::from_deployer_id(&[2; 65])
+            .expect("bob address")
+            .to_base58();
         native_state.set_vault_balance(&alice, NonNegI64::try_from(100).unwrap());
         native_state.set_vault_balance(&bob, NonNegI64::try_from(50).unwrap());
 
@@ -1696,7 +1805,11 @@ mod tests {
         let ret = FixedChannels::stdout();
         let err = (vault.handler)(vec![lpw(vec![
             RhoString::apply("deposit".to_string()),
-            RhoList::apply(vec![RhoString::apply(alice.clone()), RhoNumber::apply(100), ret]),
+            RhoList::apply(vec![
+                RhoString::apply(alice.clone()),
+                RhoNumber::apply(100),
+                ret,
+            ]),
         ])])
         .await
         .expect_err("deposit must be rejected");
@@ -1775,7 +1888,9 @@ mod tests {
                 crate::accounting::Costs::unsafe_max(),
             )),
         );
-        let dispatcher = Arc::new(RholangAndScalaDispatcher::new(std::collections::BTreeMap::new()));
+        let dispatcher = Arc::new(RholangAndScalaDispatcher::new(
+            std::collections::BTreeMap::new(),
+        ));
         let block_data = Arc::new(Mutex::new(BlockData::empty()));
         let native_state = Arc::new(NativeSystemState::new(Arc::new(
             rchain_rspace::native_store::InMemNativeStore::empty(),
@@ -1813,7 +1928,11 @@ mod tests {
             .await
             .expect("read balance")
             .expect("vault exists");
-        assert_eq!(i64::from(balance), 100, "self-transfer must not change the balance");
+        assert_eq!(
+            i64::from(balance),
+            100,
+            "self-transfer must not change the balance"
+        );
 
         // An amount above the balance must still fail (the guard sits after the balance check).
         let ret2 = FixedChannels::stdout();
@@ -1846,7 +1965,9 @@ mod tests {
 
         // ^v = [0, 1] = σ_y · −σ_y = −I: Pauli-closed AND count-balanced -> ZFA, phase −1.
         let twists = RhoList::apply(vec![RhoNumber::apply(0), RhoNumber::apply(1)]);
-        (zfa.handler)(vec![lpw(vec![twists, ack.clone()])]).await.unwrap();
+        (zfa.handler)(vec![lpw(vec![twists, ack.clone()])])
+            .await
+            .unwrap();
 
         let produced = mock.produced.lock().unwrap_or_else(|p| p.into_inner());
         assert_eq!(produced.len(), 1);
@@ -1876,7 +1997,9 @@ mod tests {
         // Deploy 1: mint a ZFA-balanced proof (^v) as a capability.
         let ret = FixedChannels::stdout();
         let twists = RhoList::apply(vec![RhoNumber::apply(0), RhoNumber::apply(1)]);
-        (grant.handler)(vec![lpw(vec![twists, ret.clone()])]).await.unwrap();
+        (grant.handler)(vec![lpw(vec![twists, ret.clone()])])
+            .await
+            .unwrap();
 
         let cap = {
             let produced = mock.produced.lock().unwrap_or_else(|p| p.into_inner());
@@ -1898,7 +2021,10 @@ mod tests {
         let produced = mock.produced.lock().unwrap_or_else(|p| p.into_inner());
         assert_eq!(produced.len(), 2);
         assert_eq!(produced[1].0.as_par(), &ret2);
-        assert_eq!(RhoBoolean::unapply(produced[1].1.pars[0].as_par()), Some(true));
+        assert_eq!(
+            RhoBoolean::unapply(produced[1].1.pars[0].as_par()),
+            Some(true)
+        );
     }
 
     #[tokio::test]
@@ -1929,7 +2055,10 @@ mod tests {
         assert_eq!(tuple.len(), 2);
         let geometry = parse_twists(&tuple[0]).expect("geometry is a twist list");
         assert_eq!(geometry, vec![0u8, 3, 2, 1]); // ^<>v
-        assert!(RhoUri::unapply(&tuple[1]).is_some(), "returns a capability uri");
+        assert!(
+            RhoUri::unapply(&tuple[1]).is_some(),
+            "returns a capability uri"
+        );
     }
 
     #[tokio::test]
@@ -1950,8 +2079,14 @@ mod tests {
             RhoString::apply("C".to_string()),
         ]);
         let delegations = RhoMap::apply(vec![
-            (RhoString::apply("B".to_string()), RhoString::apply("A".to_string())),
-            (RhoString::apply("C".to_string()), RhoString::apply("B".to_string())),
+            (
+                RhoString::apply("B".to_string()),
+                RhoString::apply("A".to_string()),
+            ),
+            (
+                RhoString::apply("C".to_string()),
+                RhoString::apply("B".to_string()),
+            ),
         ]);
         let trust = RhoMap::apply(vec![]);
         let ret = FixedChannels::stdout();
@@ -1995,7 +2130,11 @@ mod tests {
         assert_eq!(produced.len(), 1);
         assert_eq!(produced[0].0.as_par(), &ret);
         let w = parse_member_int_map(produced[0].1.pars[0].as_par()).expect("weights map");
-        assert_eq!(w.get(&a_id), Some(&2), "A carries its own + B's delegated weight");
+        assert_eq!(
+            w.get(&a_id),
+            Some(&2),
+            "A carries its own + B's delegated weight"
+        );
     }
 
     #[tokio::test]
@@ -2085,7 +2224,8 @@ mod tests {
         let produced = mock.produced.lock().unwrap_or_else(|p| p.into_inner());
         assert_eq!(produced.len(), 1);
         assert_eq!(produced[0].0.as_par(), &ret);
-        let tuple = RhoTupleN::unapply(produced[0].1.pars[0].as_par()).expect("(discredited, levels)");
+        let tuple =
+            RhoTupleN::unapply(produced[0].1.pars[0].as_par()).expect("(discredited, levels)");
         assert_eq!(tuple.len(), 2);
         let disc = parse_member_list(&tuple[0]).expect("discredited list");
         assert_eq!(disc, vec!["D".to_string()]);
@@ -2144,6 +2284,9 @@ mod tests {
         let produced = mock.produced.lock().unwrap_or_else(|p| p.into_inner());
         assert_eq!(produced.len(), 1);
         assert_eq!(produced[0].0.as_par(), &ret);
-        assert_eq!(RhoString::unapply(produced[0].1.pars[0].as_par()), Some("X"));
+        assert_eq!(
+            RhoString::unapply(produced[0].1.pars[0].as_par()),
+            Some("X")
+        );
     }
 }

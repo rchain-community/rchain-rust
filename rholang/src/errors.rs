@@ -56,7 +56,9 @@ pub enum RholangError {
     TopLevelWildcardsNotAllowedError(Par),
     TopLevelFreeVariablesNotAllowedError(Par),
     TopLevelLogicalConnectivesNotAllowedError(Par),
-    SubstituteError { term: Var },
+    SubstituteError {
+        term: Var,
+    },
     PatternReceiveError(String),
     SetupError(String),
     UnrecognizedInterpreterError(String),
@@ -84,7 +86,10 @@ pub enum RholangError {
         interpreter_errors: Vec<RholangError>,
         errors: Vec<String>,
     },
-    ReceiveOnSameChannelsError { line: i32, col: i32 },
+    ReceiveOnSameChannelsError {
+        line: i32,
+        col: i32,
+    },
 }
 
 impl fmt::Display for RholangError {

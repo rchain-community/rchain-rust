@@ -116,7 +116,10 @@ fn encode_len(len: usize, out: &mut Vec<u8>) {
         out.push(len as u8);
     } else {
         let bytes = len.to_be_bytes();
-        let start = bytes.iter().position(|&b| b != 0).unwrap_or(bytes.len() - 1);
+        let start = bytes
+            .iter()
+            .position(|&b| b != 0)
+            .unwrap_or(bytes.len() - 1);
         out.push(0x80 | (bytes.len() - start) as u8);
         out.extend_from_slice(&bytes[start..]);
     }
@@ -253,13 +256,17 @@ pub fn public_address_from_public_key(public_key: &p256::PublicKey) -> Vec<u8> {
 
 /// PEM-encode a certificate (`-----BEGIN CERTIFICATE-----`).
 pub fn print_certificate(certificate: &Certificate) -> Result<String, String> {
-    certificate.to_pem(LineEnding::LF).map_err(|e| e.to_string())
+    certificate
+        .to_pem(LineEnding::LF)
+        .map_err(|e| e.to_string())
 }
 
 /// PEM-encode a private key (`-----BEGIN PRIVATE KEY-----`, PKCS#8).
 pub fn print_private_key(private_key: &p256::SecretKey) -> Result<String, String> {
     let der = private_key.to_pkcs8_der().map_err(|e| e.to_string())?;
-    let pem = der.to_pem("PRIVATE KEY", LineEnding::LF).map_err(|e| e.to_string())?;
+    let pem = der
+        .to_pem("PRIVATE KEY", LineEnding::LF)
+        .map_err(|e| e.to_string())?;
     Ok(pem.to_string())
 }
 
@@ -305,11 +312,8 @@ mod tests {
     fn temp_dir(tag: &str) -> std::path::PathBuf {
         // A unique per-test suffix avoids the shared-dir race when libtest runs these tests in
         // parallel (a previous pid-only name made `remove_dir_all` delete another test's dir).
-        let dir = std::env::temp_dir().join(format!(
-            "rchain_cert_helper_{}_{}",
-            std::process::id(),
-            tag
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("rchain_cert_helper_{}_{}", std::process::id(), tag));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir

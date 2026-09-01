@@ -11,16 +11,21 @@ use crate::peer_node::PeerNode;
 use crate::transport::chunker::{chunk_it, Blob};
 
 /// Map a `TLResponse` to a unit result (port of `processResponse`).
-fn process_response(peer: &PeerNode, response: Result<Response<TlResponse>, Status>) -> CommErr<()> {
+fn process_response(
+    peer: &PeerNode,
+    response: Result<Response<TlResponse>, Status>,
+) -> CommErr<()> {
     process_error(peer, response).and_then(|tlr| match tlr.into_inner().payload {
         Some(tl_response::Payload::Ack(_)) => Ok(()),
-        Some(tl_response::Payload::InternalServerError(ise)) => Err(
-            CommError::InternalCommunicationError(format!(
+        Some(tl_response::Payload::InternalServerError(ise)) => {
+            Err(CommError::InternalCommunicationError(format!(
                 "Got response: {}",
                 String::from_utf8_lossy(&ise.error)
-            )),
-        ),
-        None => Err(CommError::ProtocolException("Malformed response".to_string())),
+            )))
+        }
+        None => Err(CommError::ProtocolException(
+            "Malformed response".to_string(),
+        )),
     })
 }
 
@@ -30,7 +35,9 @@ fn process_error<R>(peer: &PeerNode, response: Result<R, Status>) -> CommErr<R> 
         Code::DeadlineExceeded => CommError::TimeOut,
         Code::Unavailable => CommError::PeerUnavailable(peer.clone()),
         Code::ResourceExhausted => CommError::MessageTooLarge(peer.clone()),
-        Code::PermissionDenied => CommError::WrongNetwork(peer.clone(), status.message().to_string()),
+        Code::PermissionDenied => {
+            CommError::WrongNetwork(peer.clone(), status.message().to_string())
+        }
         _ => CommError::ProtocolException(status.message().to_string()),
     })
 }
@@ -41,7 +48,11 @@ pub async fn send(
     peer: &PeerNode,
     msg: Protocol,
 ) -> CommErr<()> {
-    let result = client.send(TlRequest { protocol: Some(msg) }).await;
+    let result = client
+        .send(TlRequest {
+            protocol: Some(msg),
+        })
+        .await;
     process_response(peer, result)
 }
 
@@ -62,11 +73,16 @@ pub async fn stream(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rchain_models::comm::protocol::tl_response;
     use crate::peer_node::NodeIdentifier;
+    use rchain_models::comm::protocol::tl_response;
 
     fn peer() -> PeerNode {
-        PeerNode::from(NodeIdentifier::new(vec![1, 2, 3]), "host".into(), rchain_shared::refined::Port::new(40400), rchain_shared::refined::Port::new(40404))
+        PeerNode::from(
+            NodeIdentifier::new(vec![1, 2, 3]),
+            "host".into(),
+            rchain_shared::refined::Port::new(40400),
+            rchain_shared::refined::Port::new(40404),
+        )
     }
 
     fn ack() -> TlResponse {
@@ -105,19 +121,16 @@ mod tests {
     #[test]
     fn process_error_maps_status_codes() {
         let p = peer();
-        let unavailable: Result<TlResponse, Status> =
-            Err(Status::unavailable("down"));
+        let unavailable: Result<TlResponse, Status> = Err(Status::unavailable("down"));
         assert_eq!(
             process_error(&p, unavailable),
             Err(CommError::PeerUnavailable(p.clone()))
         );
 
-        let deadline: Result<TlResponse, Status> =
-            Err(Status::deadline_exceeded("slow"));
+        let deadline: Result<TlResponse, Status> = Err(Status::deadline_exceeded("slow"));
         assert_eq!(process_error(&p, deadline), Err(CommError::TimeOut));
 
-        let too_large: Result<TlResponse, Status> =
-            Err(Status::resource_exhausted("big"));
+        let too_large: Result<TlResponse, Status> = Err(Status::resource_exhausted("big"));
         assert_eq!(
             process_error(&p, too_large),
             Err(CommError::MessageTooLarge(p.clone()))
@@ -127,7 +140,10 @@ mod tests {
             Err(Status::permission_denied("Wrong network id"));
         assert_eq!(
             process_error(&p, wrong_net),
-            Err(CommError::WrongNetwork(p.clone(), "Wrong network id".to_string()))
+            Err(CommError::WrongNetwork(
+                p.clone(),
+                "Wrong network id".to_string()
+            ))
         );
     }
 

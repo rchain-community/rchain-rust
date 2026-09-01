@@ -97,7 +97,9 @@ impl Census {
                 let mut ws = Vec::new();
                 for (class, cc) in classes {
                     ws.push(WeightedClass {
-                        class: class.parse().map_err(|_| format!("bad class id {class:?}"))?,
+                        class: class
+                            .parse()
+                            .map_err(|_| format!("bad class id {class:?}"))?,
                         signed: cc.signed,
                         ways: cc.ways,
                     });
@@ -137,15 +139,15 @@ type C = (i32, i32);
 fn twist_matrix(t: u8) -> (C, C, C, C) {
     // returns (a, b, c, d) for [[a, b], [c, d]]
     match t {
-        0 => ((0, 0), (0, -1), (0, 1), (0, 0)),   // +σ_y
-        1 => ((0, 0), (0, 1), (0, -1), (0, 0)),   // -σ_y
-        2 => ((0, 0), (1, 0), (1, 0), (0, 0)),    // +σ_x
-        3 => ((0, 0), (-1, 0), (-1, 0), (0, 0)),  // -σ_x
-        4 => ((1, 0), (0, 0), (0, 0), (-1, 0)),   // +σ_z
-        5 => ((-1, 0), (0, 0), (0, 0), (1, 0)),   // -σ_z
-        6 => ((1, 0), (0, 0), (0, 0), (1, 0)),    // +I
-        7 => ((-1, 0), (0, 0), (0, 0), (-1, 0)),  // -I
-        _ => ((1, 0), (0, 0), (0, 0), (1, 0)),    // defensive identity
+        0 => ((0, 0), (0, -1), (0, 1), (0, 0)),  // +σ_y
+        1 => ((0, 0), (0, 1), (0, -1), (0, 0)),  // -σ_y
+        2 => ((0, 0), (1, 0), (1, 0), (0, 0)),   // +σ_x
+        3 => ((0, 0), (-1, 0), (-1, 0), (0, 0)), // -σ_x
+        4 => ((1, 0), (0, 0), (0, 0), (-1, 0)),  // +σ_z
+        5 => ((-1, 0), (0, 0), (0, 0), (1, 0)),  // -σ_z
+        6 => ((1, 0), (0, 0), (0, 0), (1, 0)),   // +I
+        7 => ((-1, 0), (0, 0), (0, 0), (-1, 0)), // -I
+        _ => ((1, 0), (0, 0), (0, 0), (1, 0)),   // defensive identity
     }
 }
 
@@ -158,17 +160,19 @@ fn cadd(a: C, b: C) -> C {
 
 /// The Pauli matrix product (fold) of a twist history, left-to-right.
 pub fn pauli_fold(twists: &[u8]) -> (C, C, C, C) {
-    twists.iter().fold(((1, 0), (0, 0), (0, 0), (1, 0)), |acc, &t| {
-        let (a, b, c, d) = acc;
-        let (e, f, g, h) = twist_matrix(t);
-        // [[a,b],[c,d]] · [[e,f],[g,h]]
-        (
-            cadd(cmul(a, e), cmul(b, g)),
-            cadd(cmul(a, f), cmul(b, h)),
-            cadd(cmul(c, e), cmul(d, g)),
-            cadd(cmul(c, f), cmul(d, h)),
-        )
-    })
+    twists
+        .iter()
+        .fold(((1, 0), (0, 0), (0, 0), (1, 0)), |acc, &t| {
+            let (a, b, c, d) = acc;
+            let (e, f, g, h) = twist_matrix(t);
+            // [[a,b],[c,d]] · [[e,f],[g,h]]
+            (
+                cadd(cmul(a, e), cmul(b, g)),
+                cadd(cmul(a, f), cmul(b, h)),
+                cadd(cmul(c, e), cmul(d, g)),
+                cadd(cmul(c, f), cmul(d, h)),
+            )
+        })
 }
 
 /// The scalar phase of a Pauli-closed fold: {+I, −I, +iI, −iI}.
@@ -201,7 +205,12 @@ impl Phase {
     }
 }
 
-const PHASES: [Phase; 4] = [Phase::PlusI, Phase::MinusI, Phase::PlusImag, Phase::MinusImag];
+const PHASES: [Phase; 4] = [
+    Phase::PlusI,
+    Phase::MinusI,
+    Phase::PlusImag,
+    Phase::MinusImag,
+];
 
 /// The scalar phase of the fold, or `None` if it is not Pauli-closed.
 pub fn pauli_phase(twists: &[u8]) -> Option<Phase> {
@@ -219,9 +228,13 @@ pub fn pauli_closed(twists: &[u8]) -> bool {
 
 /// Count balance: `count_pos == count_neg` (even == odd twist values).
 pub fn count_balanced(twists: &[u8]) -> bool {
-    let (pos, neg) = twists
-        .iter()
-        .fold((0i64, 0i64), |(p, n), &t| if t % 2 == 0 { (p + 1, n) } else { (p, n + 1) });
+    let (pos, neg) = twists.iter().fold((0i64, 0i64), |(p, n), &t| {
+        if t % 2 == 0 {
+            (p + 1, n)
+        } else {
+            (p, n + 1)
+        }
+    });
     pos == neg
 }
 
@@ -533,7 +546,10 @@ pub mod gov {
     /// rater's own level), so two level-0 members cannot bootstrap each other.
     /// Admins are the trust root (level 5). Returns `member -> level` (unrated
     /// members are level 0).
-    pub fn trust_levels(ratings: &[(String, String, i64)], admins: &[String]) -> BTreeMap<String, i64> {
+    pub fn trust_levels(
+        ratings: &[(String, String, i64)],
+        admins: &[String],
+    ) -> BTreeMap<String, i64> {
         let mut universe: BTreeSet<String> = BTreeSet::new();
         for (r, e, _) in ratings {
             universe.insert(r.clone());
@@ -754,7 +770,11 @@ pub mod gov {
             assert_eq!(lv.get("Alice"), Some(&5));
             assert_eq!(lv.get("Bob"), Some(&3));
             assert_eq!(lv.get("Carol"), Some(&2));
-            assert_eq!(lv.get("Dave"), Some(&1), "capped below the rater's own level");
+            assert_eq!(
+                lv.get("Dave"),
+                Some(&1),
+                "capped below the rater's own level"
+            );
         }
 
         #[test]
@@ -769,19 +789,22 @@ pub mod gov {
         #[test]
         fn censure_quorum_and_slashing() {
             // Three admins (A, B, C at level 5), D at level 0. A and B censure D.
-            let levels = BTreeMap::from([
-                (m("A"), 5),
-                (m("B"), 5),
-                (m("C"), 5),
-                (m("D"), 0),
-            ]);
+            let levels = BTreeMap::from([(m("A"), 5), (m("B"), 5), (m("C"), 5), (m("D"), 0)]);
             let censures = vec![(m("A"), m("D")), (m("B"), m("D"))];
             let vouchers = vec![(m("A"), m("D"), 2), (m("B"), m("D"), 1)];
             let (disc, lv) = censure(&censures, &levels, &vouchers);
             assert!(disc.contains("D"));
             assert_eq!(lv.get("D"), Some(&0));
-            assert_eq!(lv.get("A"), Some(&3), "A slashed by the 2 levels they staked");
-            assert_eq!(lv.get("B"), Some(&4), "B slashed by the 1 level they staked");
+            assert_eq!(
+                lv.get("A"),
+                Some(&3),
+                "A slashed by the 2 levels they staked"
+            );
+            assert_eq!(
+                lv.get("B"),
+                Some(&4),
+                "B slashed by the 1 level they staked"
+            );
             assert_eq!(lv.get("C"), Some(&5));
         }
 
@@ -809,10 +832,7 @@ pub mod gov {
 
         #[test]
         fn tally_approval_weighted() {
-            let ballots = BTreeMap::from([
-                (m("A"), vec![m("X")]),
-                (m("B"), vec![m("X"), m("Y")]),
-            ]);
+            let ballots = BTreeMap::from([(m("A"), vec![m("X")]), (m("B"), vec![m("X"), m("Y")])]);
             let weights = BTreeMap::from([(m("A"), 2), (m("B"), 3)]);
             assert_eq!(tally_approval(&ballots, &weights).as_deref(), Some("X"));
         }

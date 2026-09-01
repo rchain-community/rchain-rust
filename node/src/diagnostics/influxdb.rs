@@ -25,7 +25,12 @@ fn double_to_string(value: f64) -> String {
     }
 }
 
-fn write_name_and_tags(builder: &mut String, name: &str, metric_tags: &Tags, additional_tags: &Tags) {
+fn write_name_and_tags(
+    builder: &mut String,
+    name: &str,
+    metric_tags: &Tags,
+    additional_tags: &Tags,
+) {
     builder.push_str(name);
     let mut tags = metric_tags.clone();
     for (k, v) in additional_tags {
@@ -136,7 +141,11 @@ impl<'a> MetricDataPacketBuffer<'a> {
     pub fn append_measurement(&mut self, measurement: &str) -> std::io::Result<()> {
         let separator = "\n";
         if self.fits_on_buffer(&format!("{separator}{measurement}")) {
-            let m_separator = if self.buffer.is_empty() { "" } else { separator };
+            let m_separator = if self.buffer.is_empty() {
+                ""
+            } else {
+                separator
+            };
             self.buffer.push_str(m_separator);
             self.buffer.push_str(measurement);
         } else {
@@ -356,15 +365,34 @@ mod tests {
                 min: 1,
                 max: 10,
                 buckets: vec![
-                    Bucket { value: 1, frequency: 1 },
-                    Bucket { value: 5, frequency: 1 },
-                    Bucket { value: 10, frequency: 1 },
+                    Bucket {
+                        value: 1,
+                        frequency: 1,
+                    },
+                    Bucket {
+                        value: 5,
+                        frequency: 1,
+                    },
+                    Bucket {
+                        value: 10,
+                        frequency: 1,
+                    },
                 ],
             },
         };
         let mut b = String::new();
-        write_metric_distribution(&mut b, &metric, &[0.5, 0.99], 1234567890, &Tags::new(), false);
-        assert_eq!(b, "hist count=3i,sum=16i,min=1i,p0.5=1.0,p0.99=5.0,max=10i 1234567890");
+        write_metric_distribution(
+            &mut b,
+            &metric,
+            &[0.5, 0.99],
+            1234567890,
+            &Tags::new(),
+            false,
+        );
+        assert_eq!(
+            b,
+            "hist count=3i,sum=16i,min=1i,p0.5=1.0,p0.99=5.0,max=10i 1234567890"
+        );
     }
 
     #[test]
@@ -391,6 +419,9 @@ mod tests {
             credentials: None,
             additional_tags: Tags::new(),
         });
-        assert_eq!(reporter.translate_to_line_protocol(&snapshot), "c count=1i 1234567890\n");
+        assert_eq!(
+            reporter.translate_to_line_protocol(&snapshot),
+            "c count=1i 1234567890\n"
+        );
     }
 }

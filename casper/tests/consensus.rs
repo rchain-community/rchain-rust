@@ -3,7 +3,9 @@
 mod common;
 
 use rchain_crypto::hash::blake2b512_random::Blake2b512Random;
-use rchain_models::casper::protocol::casper_message::{DeployData, ProcessedDeploy, SignedDeployData};
+use rchain_models::casper::protocol::casper_message::{
+    DeployData, ProcessedDeploy, SignedDeployData,
+};
 use rchain_rholang::system_processes::BlockData;
 
 use common::build_runtime_manager;
@@ -66,13 +68,20 @@ async fn genesis_deploy_replay_recomputes_state() {
         )
         .await
         .expect("replay_compute_state");
-    assert_eq!(post, replay_post, "replay must reproduce the play post-state");
+    assert_eq!(
+        post, replay_post,
+        "replay must reproduce the play post-state"
+    );
 }
 
 #[tokio::test]
 async fn empty_state_hash_fixed_matches_runtime() {
     let rm = build_runtime_manager().await;
-    let hash = rm.runtime().empty_state_hash().await.expect("empty state hash");
+    let hash = rm
+        .runtime()
+        .empty_state_hash()
+        .await
+        .expect("empty state hash");
     assert_eq!(
         hash,
         rchain_casper::interpreter_util::empty_state_hash_fixed(),
@@ -98,18 +107,23 @@ async fn deploy_exceeding_phlo_limit_fails_and_next_runs() {
         .await
         .expect("compute_genesis");
 
-    assert!(results[0].deploy.is_failed, "phlo-exhausted deploy must be failed");
     assert!(
-        results[0]
-            .eval_result
-            .errors
-            .iter()
-            .any(|e| matches!(e, rchain_rholang::errors::RholangError::OutOfPhlogistonsError)),
+        results[0].deploy.is_failed,
+        "phlo-exhausted deploy must be failed"
+    );
+    assert!(
+        results[0].eval_result.errors.iter().any(|e| matches!(
+            e,
+            rchain_rholang::errors::RholangError::OutOfPhlogistonsError
+        )),
         "failure must be an OutOfPhlogistonsError"
     );
 
     // The next deploy still runs: the per-deploy phlo `set` resets the balance.
-    assert!(!results[1].deploy.is_failed, "subsequent deploy must succeed");
+    assert!(
+        !results[1].deploy.is_failed,
+        "subsequent deploy must succeed"
+    );
 }
 
 #[tokio::test]
@@ -145,5 +159,8 @@ async fn replay_matches_play_for_persistent_and_peek() {
         )
         .await
         .expect("replay_compute_state");
-    assert_eq!(post, replay_post, "replay must reproduce the play post-state");
+    assert_eq!(
+        post, replay_post,
+        "replay must reproduce the play post-state"
+    );
 }

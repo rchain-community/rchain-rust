@@ -62,7 +62,9 @@ impl BlockStateManagerImpl {
 impl BlockStateManager for BlockStateManagerImpl {
     async fn is_empty(&self) -> bool {
         let dag = self.block_dag_storage.get_representation().await;
-        dag.topo_sort(0, Some(1)).map(|v| v.is_empty()).unwrap_or(true)
+        dag.topo_sort(0, Some(1))
+            .map(|v| v.is_empty())
+            .unwrap_or(true)
     }
 }
 

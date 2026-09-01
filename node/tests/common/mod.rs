@@ -18,7 +18,8 @@ use rchain_shared::base16;
 use rchain_shared::log::StderrLog;
 
 /// The default secp256k1 validator private key (hex), port of `ConstructDeploy.defaultSec`.
-pub const VALIDATOR_PRIV_HEX: &str = "a68a6e6cca30f81bd24a719f3145d20e8424bd7b396309b0708a16c7d8000b76";
+pub const VALIDATOR_PRIV_HEX: &str =
+    "a68a6e6cca30f81bd24a719f3145d20e8424bd7b396309b0708a16c7d8000b76";
 
 /// The deployer (validator-0) REV address, funded in the genesis wallets file. Derived from
 /// `VALIDATOR_PRIV_HEX`'s secp256k1 pubkey; a deploy signed with `VALIDATOR_PRIV_HEX` pays phlo from
@@ -29,11 +30,15 @@ pub const DEPLOYER_REV_ADDR: &str = "11112VYAt8rUGNRRZX3eJdgagaAhtWTK8Js7F7X5iqd
 /// protocol, grpc-external]`, with a bonded validator (`VALIDATOR_PRIV_HEX`) and a funded deployer
 /// wallet so signed deploys can pay phlo.
 pub fn deploy_conf(dir: &Path, ports: &[u16]) -> NodeConf {
-    assert!(ports.len() >= 5, "need [http, admin-http, grpc-internal, protocol, grpc-external]");
+    assert!(
+        ports.len() >= 5,
+        "need [http, admin-http, grpc-internal, protocol, grpc-external]"
+    );
     let mut conf = standalone_conf(dir, &ports[0..4], Some(VALIDATOR_PRIV_HEX));
     conf.api_server.port_grpc_external = ports[4] as i32;
     let wallets = conf.casper.genesis_block_data.wallets_file.clone();
-    std::fs::write(&wallets, format!("{DEPLOYER_REV_ADDR},1000000000000\n")).expect("write wallets");
+    std::fs::write(&wallets, format!("{DEPLOYER_REV_ADDR},1000000000000\n"))
+        .expect("write wallets");
     conf
 }
 
@@ -77,7 +82,10 @@ pub fn free_ports(n: usize) -> Vec<u16> {
 /// protocol]` ports. When `validator_hex` is set, a matching bonds file is written and wired into
 /// genesis so the validator is bonded.
 pub fn standalone_conf(dir: &Path, ports: &[u16], validator_hex: Option<&str>) -> NodeConf {
-    assert!(ports.len() >= 4, "need [http, admin-http, grpc-internal, protocol] ports");
+    assert!(
+        ports.len() >= 4,
+        "need [http, admin-http, grpc-internal, protocol] ports"
+    );
     let defaults = parse_defaults(dir.to_str().unwrap()).expect("parse defaults");
     let mut conf = node_conf_from_hocon(&defaults).expect("node conf from hocon");
 

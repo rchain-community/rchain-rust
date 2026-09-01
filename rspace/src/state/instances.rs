@@ -145,7 +145,9 @@ impl TrieImporter<Blake2b256Hash> for RSpaceImporterStore {
 
     fn set_root(&mut self, key: Blake2b256Hash) {
         let bytes = hash_bytes(&key);
-        let _ = self.roots_store.put(vec![(bytes.clone(), ROOT_TAG.to_vec())]);
+        let _ = self
+            .roots_store
+            .put(vec![(bytes.clone(), ROOT_TAG.to_vec())]);
         let _ = self.roots_store.put(vec![(CURRENT_ROOT.to_vec(), bytes)]);
     }
 }

@@ -108,6 +108,9 @@ mod tests {
             .unwrap(),
         );
         let addr = deployer_rev_address(&sk).unwrap();
-        assert_eq!(addr, "11112VYAt8rUGNRRZX3eJdgagaAhtWTK8Js7F7X5iqddMVqyDTtYau");
+        assert_eq!(
+            addr,
+            "11112VYAt8rUGNRRZX3eJdgagaAhtWTK8Js7F7X5iqddMVqyDTtYau"
+        );
     }
 }

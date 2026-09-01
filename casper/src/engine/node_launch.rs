@@ -206,7 +206,10 @@ pub async fn apply<I: RSpaceImporter + Send + 'static, E: RSpaceExporter>(
 
     let repr = dag.get_representation().await;
     if repr.dag_set.is_empty() && standalone {
-        log.info(source, "Starting as genesis master, creating genesis block...");
+        log.info(
+            source,
+            "Starting as genesis master, creating genesis block...",
+        );
         create_store_broadcast_genesis(
             validator_identity_opt.as_ref(),
             &conf,

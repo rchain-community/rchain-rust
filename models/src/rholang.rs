@@ -175,9 +175,7 @@ pub mod RhoType {
     pub struct RhoDeployerId;
     impl RhoDeployerId {
         pub fn apply(bytes: Vec<u8>) -> Par {
-            from_unforgeable(GUnforgeable::GDeployerId(GDeployerId {
-                public_key: bytes,
-            }))
+            from_unforgeable(GUnforgeable::GDeployerId(GDeployerId { public_key: bytes }))
         }
         pub fn unapply(p: &Par) -> Option<&[u8]> {
             match single_unforgeable(p) {

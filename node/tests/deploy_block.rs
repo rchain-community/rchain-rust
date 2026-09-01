@@ -9,7 +9,10 @@ mod common;
 
 use std::time::Duration;
 
-use rchain_casper::protocol::client::{build_par, DeployRuntime, DeployService, GrpcDeployService, GrpcProposeService, Name, ProposeService};
+use rchain_casper::protocol::client::{
+    build_par, DeployRuntime, DeployService, GrpcDeployService, GrpcProposeService, Name,
+    ProposeService,
+};
 use rchain_crypto::private_key::PrivateKey;
 use rchain_models::casper::protocol::deploy_service::{BlocksQuery, DataAtNameQuery};
 use rchain_shared::base16;
@@ -30,7 +33,10 @@ async fn wait_for_genesis(base: &str) {
                 }
             }
         }
-        assert!(tokio::time::Instant::now() < deadline, "genesis never appeared: {base}");
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "genesis never appeared: {base}"
+        );
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
 }
@@ -68,17 +74,30 @@ fn deploy_is_processed_into_a_block() {
         let propose = GrpcProposeService::connect("127.0.0.1", ports[2] as i32, 16 * 1024 * 1024)
             .await
             .expect("propose gRPC");
-        propose.propose(false).await.expect("propose produced a block");
+        propose
+            .propose(false)
+            .await
+            .expect("propose produced a block");
 
         // The proposed block (with the deploy) is in the DAG.
-        let blocks = deploy.get_blocks(&BlocksQuery { depth: 5 }).await.expect("blocks");
-        assert!(blocks.contains("block 1"), "proposed block missing from DAG:\n{blocks}");
+        let blocks = deploy
+            .get_blocks(&BlocksQuery { depth: 5 })
+            .await
+            .expect("blocks");
+        assert!(
+            blocks.contains("block 1"),
+            "proposed block missing from DAG:\n{blocks}"
+        );
 
         // The deploy's send must be observable: query the `"hello"` channel and assert the `"world"`
         // datum was recorded (exercises the deploy_log → is_listening_name_reduced path).
-        let query_par = build_par(&Name::PubName("\"hello\"".to_string())).expect("build query name");
+        let query_par =
+            build_par(&Name::PubName("\"hello\"".to_string())).expect("build query name");
         let data = deploy
-            .listen_for_data_at_name(&DataAtNameQuery { depth: 50, name: query_par })
+            .listen_for_data_at_name(&DataAtNameQuery {
+                depth: 50,
+                name: query_par,
+            })
             .await
             .expect("listen-data-at-name");
         let world = build_par(&Name::PubName("\"world\"".to_string())).expect("build world datum");

@@ -70,9 +70,7 @@ pub fn has_key(tls: &TlsConf) -> Result<(), InitializationException> {
 fn name(tls: &TlsConf) -> Result<NodeIdentifier, InitializationException> {
     generate_certificate_if_absent::node_address(tls)
         .map(NodeIdentifier::new)
-        .map_err(|e| {
-            InitializationException(format!("Failed to read the X.509 certificate: {e}"))
-        })
+        .map_err(|e| InitializationException(format!("Failed to read the X.509 certificate: {e}")))
 }
 
 /// Initialize the node environment and derive its identifier (port of `NodeEnvironment.create`).

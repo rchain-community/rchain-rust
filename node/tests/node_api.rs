@@ -50,7 +50,10 @@ async fn http_surface_without_genesis() {
                 break resp.text().await.unwrap();
             }
         }
-        assert!(tokio::time::Instant::now() < deadline, "HTTP server did not come up");
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "HTTP server did not come up"
+        );
         tokio::time::sleep(Duration::from_millis(100)).await;
     };
     assert!(version.contains("RChain Node"), "version = {version}");
@@ -75,39 +78,42 @@ async fn http_surface_without_genesis() {
 #[test]
 fn genesis_boot_exposes_block_over_http() {
     common::test_runtime().block_on(async {
-    let dir = temp_dir("genesis-boot");
-    let ports = free_ports(4);
-    let http_port = ports[0];
-    let conf = standalone_conf(&dir, &ports, Some(VALIDATOR_PRIV_HEX));
-    let node = start(&conf, ports[2], http_port).await;
-    let base = format!("http://127.0.0.1:{http_port}");
-    let client = reqwest::Client::new();
+        let dir = temp_dir("genesis-boot");
+        let ports = free_ports(4);
+        let http_port = ports[0];
+        let conf = standalone_conf(&dir, &ports, Some(VALIDATOR_PRIV_HEX));
+        let node = start(&conf, ports[2], http_port).await;
+        let base = format!("http://127.0.0.1:{http_port}");
+        let client = reqwest::Client::new();
 
-    // The HTTP server comes up before genesis is created; poll until `/version` responds.
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
-    let version = loop {
-        if let Ok(resp) = client.get(format!("{base}/version")).send().await {
-            if resp.status().is_success() {
-                break resp.text().await.unwrap();
+        // The HTTP server comes up before genesis is created; poll until `/version` responds.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+        let version = loop {
+            if let Ok(resp) = client.get(format!("{base}/version")).send().await {
+                if resp.status().is_success() {
+                    break resp.text().await.unwrap();
+                }
             }
-        }
-        assert!(tokio::time::Instant::now() < deadline, "HTTP server did not come up");
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    };
-    assert!(version.contains("RChain Node"), "version = {version}");
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "HTTP server did not come up"
+            );
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        };
+        assert!(version.contains("RChain Node"), "version = {version}");
 
-    // `GET /api/blocks` returns the genesis block once the genesis ceremony completes.
-    let blocks = poll_blocks(&client, &format!("{base}/api/blocks")).await;
+        // `GET /api/blocks` returns the genesis block once the genesis ceremony completes.
+        let blocks = poll_blocks(&client, &format!("{base}/api/blocks")).await;
 
-    let genesis = &blocks[0];
-    // The genesis block has no justifications.
-    assert_eq!(genesis["justifications"].as_array().unwrap().len(), 0);
-    // ... and carries the single bonded validator with stake 100.
-    let bonds = genesis["bonds"].as_array().unwrap();
-    assert_eq!(bonds.len(), 1);
-    assert_eq!(bonds[0]["stake"], 100);
+        let genesis = &blocks[0];
+        // The genesis block has no justifications.
+        assert_eq!(genesis["justifications"].as_array().unwrap().len(), 0);
+        // ... and carries the single bonded validator with stake 100.
+        let bonds = genesis["bonds"].as_array().unwrap();
+        assert_eq!(bonds.len(), 1);
+        assert_eq!(bonds[0]["stake"], 100);
 
-    node.shutdown();
-    let _ = std::fs::remove_dir_all(&dir);
+        node.shutdown();
+        let _ = std::fs::remove_dir_all(&dir);
     });
 }

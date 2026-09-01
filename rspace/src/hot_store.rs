@@ -73,11 +73,7 @@ pub trait HotStore<C, P, A, K>: Send + Sync {
         wc: WaitingContinuation<P, K>,
     ) -> Result<(), RSpaceError>;
     async fn install_continuation(&self, channels: &[C], wc: WaitingContinuation<P, K>);
-    async fn remove_continuation(
-        &self,
-        channels: &[C],
-        index: usize,
-    ) -> Result<(), RSpaceError>;
+    async fn remove_continuation(&self, channels: &[C], index: usize) -> Result<(), RSpaceError>;
 
     async fn get_data(&self, channel: &C) -> Result<Vec<Datum<A>>, RSpaceError>;
     async fn put_datum(&self, channel: &C, datum: Datum<A>) -> Result<(), RSpaceError>;
@@ -146,10 +142,7 @@ where
         Ok(result.clone())
     }
 
-    async fn get_data_from_history_store(
-        &self,
-        channel: &C,
-    ) -> Result<Vec<Datum<A>>, RSpaceError> {
+    async fn get_data_from_history_store(&self, channel: &C) -> Result<Vec<Datum<A>>, RSpaceError> {
         let cell = {
             let mut cache = self.cache.lock().await;
             cache
@@ -166,10 +159,7 @@ where
         Ok(result.clone())
     }
 
-    async fn get_joins_from_history_store(
-        &self,
-        channel: &C,
-    ) -> Result<Vec<Vec<C>>, RSpaceError> {
+    async fn get_joins_from_history_store(&self, channel: &C) -> Result<Vec<Vec<C>>, RSpaceError> {
         let cell = {
             let mut cache = self.cache.lock().await;
             cache
@@ -241,16 +231,10 @@ where
 
     async fn install_continuation(&self, channels: &[C], wc: WaitingContinuation<P, K>) {
         let mut state = self.state.lock().await;
-        state
-            .installed_continuations
-            .insert(channels.to_vec(), wc);
+        state.installed_continuations.insert(channels.to_vec(), wc);
     }
 
-    async fn remove_continuation(
-        &self,
-        channels: &[C],
-        index: usize,
-    ) -> Result<(), RSpaceError> {
+    async fn remove_continuation(&self, channels: &[C], index: usize) -> Result<(), RSpaceError> {
         let from_history = self.get_cont_from_history_store(channels).await?;
         let mut state = self.state.lock().await;
         let is_installed = state.installed_continuations.contains_key(channels);
@@ -304,13 +288,21 @@ where
         let mut state = self.state.lock().await;
         Ok(match state.joins.get(channel) {
             Some(joins) => {
-                let mut out = state.installed_joins.get(channel).cloned().unwrap_or_default();
+                let mut out = state
+                    .installed_joins
+                    .get(channel)
+                    .cloned()
+                    .unwrap_or_default();
                 out.extend(joins.clone());
                 out
             }
             None => {
                 state.joins.insert(channel.clone(), from_history.clone());
-                let mut out = state.installed_joins.get(channel).cloned().unwrap_or_default();
+                let mut out = state
+                    .installed_joins
+                    .get(channel)
+                    .cloned()
+                    .unwrap_or_default();
                 out.extend(from_history);
                 out
             }

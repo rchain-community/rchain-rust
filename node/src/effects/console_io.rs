@@ -161,7 +161,8 @@ impl ConsoleIo for RustylineConsole {
     }
 
     fn update_completion(&mut self, history: &[String]) {
-        self.editor.set_helper(Some(ReplHelper::new(history.to_vec())));
+        self.editor
+            .set_helper(Some(ReplHelper::new(history.to_vec())));
     }
 
     fn close(&mut self) {}

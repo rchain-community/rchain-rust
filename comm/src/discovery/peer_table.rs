@@ -97,7 +97,9 @@ impl<A: Keyed + Clone> PeerTable<A> {
         else {
             return;
         };
-        let mut bucket = self.buckets[index].lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut bucket = self.buckets[index]
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         if let Some(pos) = bucket.iter().position(|e| e.key == peer.key()) {
             bucket.remove(pos);
             bucket.push(PeerTableEntry::new(peer));
@@ -123,7 +125,9 @@ impl<A: Keyed + Clone> PeerTable<A> {
     pub fn remove(&self, key: &[u8]) {
         if let Some(index) = self.distance(&self.local_key, key) {
             if index < 8 * self.width {
-                let mut bucket = self.buckets[index].lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                let mut bucket = self.buckets[index]
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
                 if let Some(pos) = bucket.iter().position(|e| e.key == key) {
                     bucket.remove(pos);
                 }
@@ -142,21 +146,27 @@ impl<A: Keyed + Clone> PeerTable<A> {
             if entries.len() >= self.k {
                 break;
             }
-            let bucket = self.buckets[i].lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            let bucket = self.buckets[i]
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             entries.extend(bucket.iter().filter(|e| e.key != key).cloned());
         }
         for i in (0..index).rev() {
             if entries.len() >= self.k {
                 break;
             }
-            let bucket = self.buckets[i].lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            let bucket = self.buckets[i]
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             entries.extend(bucket.iter().cloned());
         }
 
-        entries.sort_by(|a, b| match (self.distance(key, &a.key), self.distance(key, &b.key)) {
-            (Some(d0), Some(d1)) => d1.cmp(&d0),
-            _ => Ordering::Equal,
-        });
+        entries.sort_by(
+            |a, b| match (self.distance(key, &a.key), self.distance(key, &b.key)) {
+                (Some(d0), Some(d1)) => d1.cmp(&d0),
+                _ => Ordering::Equal,
+            },
+        );
         entries.into_iter().take(self.k).map(|e| e.entry).collect()
     }
 
@@ -165,7 +175,8 @@ impl<A: Keyed + Clone> PeerTable<A> {
         let d = self.distance(&self.local_key, key)?;
         let bucket = self.buckets.get(d)?;
         bucket
-            .lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
             .iter()
             .find(|e| e.key == key)
             .map(|e| e.entry.clone())
@@ -176,7 +187,8 @@ impl<A: Keyed + Clone> PeerTable<A> {
         self.buckets
             .iter()
             .flat_map(|b| {
-                b.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+                b.lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
                     .iter()
                     .map(|e| e.entry.clone())
                     .collect::<Vec<_>>()
@@ -191,7 +203,14 @@ impl<A: Keyed + Clone> PeerTable<A> {
             .iter()
             .take(256)
             .enumerate()
-            .map(|(i, b)| (b.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).len(), i))
+            .map(|(i, b)| {
+                (
+                    b.lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .len(),
+                    i,
+                )
+            })
             .collect();
         indexed.sort_by(|a, b| a.0.cmp(&b.0));
         indexed.into_iter().map(|(_, i)| i).collect()

@@ -119,9 +119,14 @@ impl BlockReportApi {
     async fn replay_block(&self, block: &BlockMessage) -> Result<BlockEventInfo, String> {
         let report_result = self.reporting_casper.trace(block.clone()).await?;
         let light_block = get_light_block_info(block);
-        let deploys = create_deploy_report(&report_result.deploy_report_result, &self.report_transformer);
-        let system_deploys =
-            create_system_deploy_report(&report_result.system_deploy_report_result, &self.report_transformer);
+        let deploys = create_deploy_report(
+            &report_result.deploy_report_result,
+            &self.report_transformer,
+        );
+        let system_deploys = create_system_deploy_report(
+            &report_result.system_deploy_report_result,
+            &self.report_transformer,
+        );
         Ok(BlockEventInfo {
             block_info: light_block,
             deploys,
@@ -226,7 +231,10 @@ mod tests {
         assert_eq!(reports[0].deploy_info.term, "Nil");
         assert_eq!(reports[0].report.len(), 1);
         assert_eq!(reports[0].report[0].events.len(), 1);
-        assert!(matches!(reports[0].report[0].events[0], ReportProto::Produce(_)));
+        assert!(matches!(
+            reports[0].report[0].events[0],
+            ReportProto::Produce(_)
+        ));
     }
 
     #[test]

@@ -22,7 +22,11 @@ pub type DeployId = Vec<u8>;
 pub trait BlockDagStorage: Send + Sync {
     async fn get_representation(&self) -> DagRepresentation;
 
-    async fn insert(&self, block_metadata: BlockMetadata, block: BlockMessage) -> Result<(), String>;
+    async fn insert(
+        &self,
+        block_metadata: BlockMetadata,
+        block: BlockMessage,
+    ) -> Result<(), String>;
 
     async fn lookup(&self, block_hash: &BlockHash) -> Result<Option<BlockMetadata>, String>;
 

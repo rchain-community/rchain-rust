@@ -5,7 +5,6 @@ use async_trait::async_trait;
 
 use rchain_block_storage::dag::dag_storage::DeployId;
 use rchain_models::ast::Par;
-use rchain_shared::refined::NonNegI64;
 use rchain_models::block_metadata::BlockMetadata;
 use rchain_models::casper::protocol::casper_message::{BlockMessage, SignedDeployData};
 use rchain_models::casper::protocol::deploy_service::{
@@ -14,6 +13,7 @@ use rchain_models::casper::protocol::deploy_service::{
 };
 use rchain_models::validator::Validator;
 use rchain_shared::base16;
+use rchain_shared::refined::NonNegI64;
 use serde::{Deserialize, Serialize};
 
 /// A block-api error (the Scala `BlockApi.Error = String`).

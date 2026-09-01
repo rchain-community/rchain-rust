@@ -29,7 +29,10 @@ pub async fn get_block_unsafe(
     store: &BlockStore,
     hash: &BlockHash,
 ) -> Result<BlockMessage, BlockStoreInconsistencyError> {
-    let msg = format!("BlockStore is missing hash {}", build_string(hash.as_bytes()));
+    let msg = format!(
+        "BlockStore is missing hash {}",
+        build_string(hash.as_bytes())
+    );
     store
         .get(&[*hash])
         .await
@@ -53,7 +56,10 @@ pub async fn get_approved_block(store: &ApprovedStore) -> Result<Option<Finalize
 }
 
 /// Put the approved block (port of `ApprovedStoreSyntax.putApprovedBlock`).
-pub async fn put_approved_block(store: &ApprovedStore, block: FinalizedFringe) -> Result<(), String> {
+pub async fn put_approved_block(
+    store: &ApprovedStore,
+    block: FinalizedFringe,
+) -> Result<(), String> {
     store.put(&[(FINALIZED_FRINGE_KEY, block)]).await
 }
 
@@ -63,7 +69,10 @@ pub async fn lookup_unsafe(
     bds: &dyn BlockDagStorage,
     hash: &BlockHash,
 ) -> Result<BlockMetadata, BlockDagInconsistencyError> {
-    let msg = format!("DAG storage is missing hash {}", build_string(hash.as_bytes()));
+    let msg = format!(
+        "DAG storage is missing hash {}",
+        build_string(hash.as_bytes())
+    );
     bds.lookup(hash)
         .await
         .map_err(BlockDagInconsistencyError)?

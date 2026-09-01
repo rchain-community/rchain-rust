@@ -26,7 +26,10 @@ pub fn build_string_casper_message(message: &CasperMessage, short: bool) -> Stri
 
 /// Render a block-hash message (port of `buildString(BlockHashMessage)`).
 pub fn build_string_block_hash_message(bh: &BlockHashMessage) -> String {
-    format!("Block hash: {}", build_string_bytes(bh.block_hash.as_bytes()))
+    format!(
+        "Block hash: {}",
+        build_string_bytes(bh.block_hash.as_bytes())
+    )
 }
 
 /// Render a processed deploy (port of `buildString(ProcessedDeploy)`).
@@ -174,7 +177,10 @@ mod tests {
             valid_after_block_number: 5,
             shard_id: "root".to_string(),
         };
-        assert_eq!(build_string_deploy(&d), "DeployData #1000 -- new x in { x!(0) }");
+        assert_eq!(
+            build_string_deploy(&d),
+            "DeployData #1000 -- new x in { x!(0) }"
+        );
     }
 
     #[test]
@@ -198,6 +204,9 @@ mod tests {
             BlockHash::from_slice(&[0x01; 32]),
             BlockHash::from_slice(&[0x02; 32]),
         ];
-        assert_eq!(build_string_hashes(&hashes), "[0101010101... 0202020202...]");
+        assert_eq!(
+            build_string_hashes(&hashes),
+            "[0101010101... 0202020202...]"
+        );
     }
 }

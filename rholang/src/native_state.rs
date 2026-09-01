@@ -63,7 +63,8 @@ pub fn decode_bonds(bytes: &[u8]) -> Result<BTreeMap<Validator, NonNegI64>, Stri
             .try_into()
             .map_err(|_| "bonds encoding: invalid stake length".to_string())?;
         let stake = i64::from_le_bytes(stake_bytes);
-        let stake = NonNegI64::try_from(stake).map_err(|_| format!("negative bond stake {stake}"))?;
+        let stake =
+            NonNegI64::try_from(stake).map_err(|_| format!("negative bond stake {stake}"))?;
         out.insert(validator, stake);
     }
     Ok(out)
@@ -93,7 +94,8 @@ impl NativeSystemState {
 
     /// Write the bonds map (appends a native `Put` action).
     pub fn set_bonds(&self, bonds: &BTreeMap<Validator, NonNegI64>) {
-        self.store.put(PREFIX_POS, pos_bonds_key(), encode_bonds(bonds));
+        self.store
+            .put(PREFIX_POS, pos_bonds_key(), encode_bonds(bonds));
     }
 
     /// The active-validator set (derived: every bonded validator is active; the top-N-by-stake limit
@@ -112,9 +114,9 @@ impl NativeSystemState {
                     .as_slice()
                     .try_into()
                     .map_err(|_| format!("vault balance for {address} is {} bytes", bytes.len()))?;
-                NonNegI64::try_from(i64::from_le_bytes(arr)).map(Some).map_err(|_| {
-                    format!("vault balance for {address} is negative")
-                })
+                NonNegI64::try_from(i64::from_le_bytes(arr))
+                    .map(Some)
+                    .map_err(|_| format!("vault balance for {address} is negative"))
             }
             None => Ok(None),
         }
@@ -336,16 +338,17 @@ mod tests {
         let addr = RevAddress::from_public_key(&pk).unwrap().to_base58();
         native.set_vault_balance(&addr, NonNegI64::try_from(100).unwrap());
 
-        native.bond(&v, NonNegI64::try_from(40).unwrap()).await.unwrap().unwrap();
+        native
+            .bond(&v, NonNegI64::try_from(40).unwrap())
+            .await
+            .unwrap()
+            .unwrap();
 
         assert_eq!(
             i64::from(native.vault_balance(&addr).await.unwrap().unwrap()),
             60
         );
-        assert_eq!(
-            i64::from(native.bonds().await.unwrap()[&v]),
-            40
-        );
+        assert_eq!(i64::from(native.bonds().await.unwrap()[&v]), 40);
     }
 
     #[tokio::test]
@@ -356,8 +359,15 @@ mod tests {
         let addr = RevAddress::from_public_key(&pk).unwrap().to_base58();
         native.set_vault_balance(&addr, NonNegI64::try_from(100).unwrap());
 
-        native.bond(&v, NonNegI64::try_from(40).unwrap()).await.unwrap().unwrap();
-        let result = native.bond(&v, NonNegI64::try_from(10).unwrap()).await.unwrap();
+        native
+            .bond(&v, NonNegI64::try_from(40).unwrap())
+            .await
+            .unwrap()
+            .unwrap();
+        let result = native
+            .bond(&v, NonNegI64::try_from(10).unwrap())
+            .await
+            .unwrap();
         assert!(result.is_err(), "already bonded must be rejected");
     }
 
@@ -369,7 +379,11 @@ mod tests {
         let addr = RevAddress::from_public_key(&pk).unwrap().to_base58();
         native.set_vault_balance(&addr, NonNegI64::try_from(100).unwrap());
 
-        native.bond(&v, NonNegI64::try_from(40).unwrap()).await.unwrap().unwrap();
+        native
+            .bond(&v, NonNegI64::try_from(40).unwrap())
+            .await
+            .unwrap()
+            .unwrap();
         native.withdraw(&v).await.unwrap().unwrap();
 
         assert!(

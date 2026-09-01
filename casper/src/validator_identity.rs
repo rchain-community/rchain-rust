@@ -60,8 +60,7 @@ mod tests {
     #[test]
     fn from_hex_derives_public_key() {
         // A known secp256k1 private key (from the crypto differential vectors).
-        let priv_hex =
-            "67e56582298859ddae725f972992a07c6c4fb9f62a8fff58ce3ca926a1063530";
+        let priv_hex = "67e56582298859ddae725f972992a07c6c4fb9f62a8fff58ce3ca926a1063530";
         let identity = ValidatorIdentity::from_hex(priv_hex).unwrap();
         assert_eq!(identity.sig_algorithm, "secp256k1");
         assert_eq!(identity.private_key.bytes().len(), 32);

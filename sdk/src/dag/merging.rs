@@ -102,9 +102,13 @@ where
     for target in target_set {
         for source in source_set {
             if relation(target, source) && target != source {
-                acc.entry(source.clone()).or_default().insert(target.clone());
+                acc.entry(source.clone())
+                    .or_default()
+                    .insert(target.clone());
                 if !directed {
-                    acc.entry(target.clone()).or_default().insert(source.clone());
+                    acc.entry(target.clone())
+                        .or_default()
+                        .insert(source.clone());
                 }
             }
         }
@@ -145,8 +149,10 @@ pub fn compute_branches<D: Ord + Clone>(
     dependency_map: &BTreeMap<D, BTreeSet<D>>,
 ) -> BTreeMap<D, BTreeSet<D>> {
     let mut acc = dependency_map.clone();
-    let entries: Vec<(D, BTreeSet<D>)> =
-        dependency_map.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+    let entries: Vec<(D, BTreeSet<D>)> = dependency_map
+        .iter()
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
     for (root, depending) in &entries {
         let root_dependencies: Vec<D> = acc
             .iter()
@@ -161,7 +167,9 @@ pub fn compute_branches<D: Ord + Clone>(
                 .chain(std::iter::once(root.clone()))
                 .collect();
             for k in &root_dependencies {
-                acc.entry(k.clone()).or_default().extend(merged.iter().cloned());
+                acc.entry(k.clone())
+                    .or_default()
+                    .extend(merged.iter().cloned());
             }
         }
     }
@@ -233,7 +241,13 @@ pub fn compute_rejection_options<D: Ord + Clone>(
     let all_keys: Vec<D> = conflicts_map.keys().cloned().collect();
     let mut queue: VecDeque<(D, BTreeSet<D>, BTreeSet<D>)> = all_keys
         .iter()
-        .map(|k| (k.clone(), BTreeSet::new(), std::iter::once(k.clone()).collect()))
+        .map(|k| {
+            (
+                k.clone(),
+                BTreeSet::new(),
+                std::iter::once(k.clone()).collect(),
+            )
+        })
         .collect();
     let mut result: BTreeSet<BTreeSet<D>> = BTreeSet::new();
 
@@ -262,10 +276,7 @@ pub fn compute_rejection_options<D: Ord + Clone>(
 }
 
 /// Pick the rejection option minimizing (total cost, size, sorted set) lexicographically.
-pub fn compute_optimal_rejection<D, F>(
-    options: &BTreeSet<BTreeSet<D>>,
-    target_f: F,
-) -> BTreeSet<D>
+pub fn compute_optimal_rejection<D, F>(options: &BTreeSet<BTreeSet<D>>, target_f: F) -> BTreeSet<D>
 where
     D: Ord + Clone,
     F: Fn(&D) -> i64,
@@ -355,14 +366,24 @@ pub fn add_mergeable_overflow_rejections<D: Ord + Clone, CH: Ord + Clone>(
     mergeable_diffs: &BTreeMap<D, BTreeMap<CH, i64>>,
 ) -> BTreeSet<BTreeSet<D>> {
     if reject_options.is_empty() {
-        let r = fold_rejection(init_mergeable_values, conflict_set, dependency_map, mergeable_diffs);
+        let r = fold_rejection(
+            init_mergeable_values,
+            conflict_set,
+            dependency_map,
+            mergeable_diffs,
+        );
         std::iter::once(r).collect()
     } else {
         reject_options
             .iter()
             .map(|rj| {
                 let diff: BTreeSet<D> = conflict_set.difference(rj).cloned().collect();
-                let fr = fold_rejection(init_mergeable_values, &diff, dependency_map, mergeable_diffs);
+                let fr = fold_rejection(
+                    init_mergeable_values,
+                    &diff,
+                    dependency_map,
+                    mergeable_diffs,
+                );
                 rj.union(&fr).cloned().collect()
             })
             .collect()
@@ -387,11 +408,18 @@ where
     F: Fn(&D) -> i64,
 {
     let enforce_rejected = with_dependencies(
-        &incompatible_with_final(accepted_finally, rejected_finally, conflicts_map, dependency_map),
+        &incompatible_with_final(
+            accepted_finally,
+            rejected_finally,
+            conflicts_map,
+            dependency_map,
+        ),
         dependency_map,
     );
-    let conflict_set_compatible: BTreeSet<D> =
-        conflict_set.difference(&enforce_rejected).cloned().collect();
+    let conflict_set_compatible: BTreeSet<D> = conflict_set
+        .difference(&enforce_rejected)
+        .cloned()
+        .collect();
 
     let full_conflicts_map: BTreeMap<D, BTreeSet<D>> = conflicts_map
         .iter()
@@ -411,7 +439,10 @@ where
     );
     let resolved = compute_optimal_rejection(&mergeable_overflow_rejection_options, &cost);
     (
-        conflict_set_compatible.difference(&resolved).cloned().collect(),
+        conflict_set_compatible
+            .difference(&resolved)
+            .cloned()
+            .collect(),
         resolved.union(&enforce_rejected).cloned().collect(),
     )
 }
@@ -425,7 +456,9 @@ mod tests {
         items.into_iter().collect()
     }
 
-    fn map<D: Ord + Clone>(items: impl IntoIterator<Item = (D, BTreeSet<D>)>) -> BTreeMap<D, BTreeSet<D>> {
+    fn map<D: Ord + Clone>(
+        items: impl IntoIterator<Item = (D, BTreeSet<D>)>,
+    ) -> BTreeMap<D, BTreeSet<D>> {
         items.into_iter().collect()
     }
 
@@ -503,16 +536,18 @@ mod tests {
             (3, set([1])),
             (6, set([6])),
         ]);
-        let depends =
-            |target: &i32, maybe_dependency: &i32| {
-                dependency_map
-                    .get(maybe_dependency)
-                    .map(|s| s.contains(target))
-                    .unwrap_or(false)
-            };
+        let depends = |target: &i32, maybe_dependency: &i32| {
+            dependency_map
+                .get(maybe_dependency)
+                .map(|s| s.contains(target))
+                .unwrap_or(false)
+        };
         let mut expected = dependency_map.clone();
         expected.remove(&6);
-        assert_eq!(compute_dependency_map(&set_all, &set_all, depends), expected);
+        assert_eq!(
+            compute_dependency_map(&set_all, &set_all, depends),
+            expected
+        );
     }
 
     #[test]
@@ -542,8 +577,7 @@ mod tests {
         let depends_map = map([(2, set([1])), (3, set([2]))]);
         let conflicts =
             |a: &i32, b: &i32| conflicts_map.get(a).map(|s| s.contains(b)).unwrap_or(false);
-        let depends =
-            |t: &i32, m: &i32| depends_map.get(m).map(|s| s.contains(t)).unwrap_or(false);
+        let depends = |t: &i32, m: &i32| depends_map.get(m).map(|s| s.contains(t)).unwrap_or(false);
         let r = compute_relation_map_for_merge_set(&conflict_set, &final_set, conflicts, depends);
         assert_eq!(r, (conflicts_map, depends_map));
     }
@@ -567,7 +601,12 @@ mod tests {
                 (3, set([1, 2, 4])),
                 (4, set([1, 2, 3])),
             ])),
-            set([set([2, 3, 4]), set([1, 3, 4]), set([1, 2, 4]), set([1, 2, 3])])
+            set([
+                set([2, 3, 4]),
+                set([1, 3, 4]),
+                set([1, 2, 4]),
+                set([1, 2, 3])
+            ])
         );
 
         assert_eq!(
@@ -611,11 +650,20 @@ mod tests {
 
     #[test]
     fn compute_optimal_rejection_minimizes_cost_then_size() {
-        let rejection_options = set([set([1, 2, 3]), set([2, 3, 4]), set([1, 2]), set([2]), set([1])]);
+        let rejection_options = set([
+            set([1, 2, 3]),
+            set([2, 3, 4]),
+            set([1, 2]),
+            set([2]),
+            set([1]),
+        ]);
         // Every deploy costs 1; among the minimal-cost options the smallest set (then the
         // lexicographically smallest) wins — {1}.
         let cost_fn = |_d: &i32| 1i64;
-        assert_eq!(compute_optimal_rejection(&rejection_options, cost_fn), set([1]));
+        assert_eq!(
+            compute_optimal_rejection(&rejection_options, cost_fn),
+            set([1])
+        );
     }
 
     #[test]
@@ -645,7 +693,12 @@ mod tests {
     #[test]
     fn add_mergeable_overflow_rejections_rejects_dependent_tree() {
         let conflict_set = set([1, 2, 3, 4, 5, 6, 7, 12]);
-        let dependency_map = map([(1, set([2])), (2, set([12])), (3, set([4, 12])), (4, set([5]))]);
+        let dependency_map = map([
+            (1, set([2])),
+            (2, set([12])),
+            (3, set([4, 12])),
+            (4, set([5])),
+        ]);
         let reject_options: BTreeSet<BTreeSet<i32>> = set([]);
         let init: BTreeMap<String, i64> = [("a".to_string(), 5)].into_iter().collect();
         let mut md: BTreeMap<i32, BTreeMap<String, i64>> = BTreeMap::new();

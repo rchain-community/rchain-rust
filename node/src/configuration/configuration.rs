@@ -58,7 +58,9 @@ impl Configuration {
 
         let run = match &options.subcommand {
             Commands::Run(run) => run,
-            _ => return Err("`run` subcommand is required to build a node configuration".to_string()),
+            _ => {
+                return Err("`run` subcommand is required to build a node configuration".to_string())
+            }
         };
 
         let data_dir = run
@@ -322,8 +324,8 @@ mod tests {
 
     #[test]
     fn cli_options_override_defaults() {
-        use clap::Parser as _;
         use crate::configuration::commandline::options::Options;
+        use clap::Parser as _;
 
         let args = "\
             run --standalone --dev-mode \

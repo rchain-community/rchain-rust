@@ -42,7 +42,11 @@ impl GrpcReplClient {
         })
     }
 
-    fn eval_one(&self, file_name: &str, print_unmatched_sends_only: bool) -> Result<String, String> {
+    fn eval_one(
+        &self,
+        file_name: &str,
+        print_unmatched_sends_only: bool,
+    ) -> Result<String, String> {
         let content = std::fs::read_to_string(file_name)
             .map_err(|_| format!("File not found: {file_name}"))?;
         self.handle.block_on(async {

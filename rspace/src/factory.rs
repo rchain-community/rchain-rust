@@ -119,12 +119,10 @@ mod tests {
     #[tokio::test]
     async fn creates_reporting_rspace_from_in_memory_store() {
         let manager = InMemoryStoreManager::default();
-        let space = create_reporting_rspace::<String, String, String, String>(
-            &manager,
-            Arc::new(StrMatch),
-        )
-        .await
-        .unwrap();
+        let space =
+            create_reporting_rspace::<String, String, String, String>(&manager, Arc::new(StrMatch))
+                .await
+                .unwrap();
         assert!(space.get_report().is_empty());
     }
 }

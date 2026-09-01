@@ -7,7 +7,9 @@
 use rchain_crypto::hash::blake2b256_hash::Blake2b256Hash;
 use rchain_models::block_hash::BlockHash;
 use rchain_models::block_metadata::BlockMetadata;
-use rchain_models::casper::protocol::casper_message::{BlockMessage, FinalizedFringe, SignedDeployData};
+use rchain_models::casper::protocol::casper_message::{
+    BlockMessage, FinalizedFringe, SignedDeployData,
+};
 use rchain_models::fringe_data::FringeData;
 use rchain_shared::typed_store::Codec;
 

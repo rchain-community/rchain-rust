@@ -14,12 +14,16 @@ pub struct NodeCallCtx {
 impl NodeCallCtx {
     /// Fresh context seeded from the global counter (port of `NodeCallCtx.init`).
     pub fn init() -> Self {
-        NodeCallCtx { trace: Trace::next() }
+        NodeCallCtx {
+            trace: Trace::next(),
+        }
     }
 
     /// Advance to the next span id (port of `NodeCallCtx.next`).
     pub fn next(&self) -> Self {
-        NodeCallCtx { trace: Trace::next() }
+        NodeCallCtx {
+            trace: Trace::next(),
+        }
     }
 }
 

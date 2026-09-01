@@ -142,9 +142,17 @@ impl BlockDagStorage for BlockDagKeyValueStorage {
         self.representation.read().await.clone()
     }
 
-    async fn insert(&self, block_metadata: BlockMetadata, block: BlockMessage) -> Result<(), String> {
+    async fn insert(
+        &self,
+        block_metadata: BlockMetadata,
+        block: BlockMessage,
+    ) -> Result<(), String> {
         let _guard = self.lock.lock().await;
-        if self.block_metadata_store.contains(&block_metadata.block_hash).await {
+        if self
+            .block_metadata_store
+            .contains(&block_metadata.block_hash)
+            .await
+        {
             return Ok(());
         }
 
@@ -165,7 +173,9 @@ impl BlockDagStorage for BlockDagKeyValueStorage {
         }
 
         // Add block metadata to the index.
-        self.block_metadata_store.add(block_metadata.clone()).await?;
+        self.block_metadata_store
+            .add(block_metadata.clone())
+            .await?;
 
         // Index each deploy to this block, and remove it from the pending pool so
         // `pooled_deploys` no longer lists it (a deploy leaves the pool once included).
@@ -205,8 +215,10 @@ impl BlockDagStorage for BlockDagKeyValueStorage {
                 .ok_or_else(|| "fringe block not present in message map".to_string())?;
             fringe_seen.extend(msg.seen.iter().copied());
         }
-        let prev_seen: BTreeSet<BlockHash> =
-            prev_fringe.iter().flat_map(|m| m.seen.iter().copied()).collect();
+        let prev_seen: BTreeSet<BlockHash> = prev_fringe
+            .iter()
+            .flat_map(|m| m.seen.iter().copied())
+            .collect();
         let fringe_diff: BTreeSet<BlockHash> =
             fringe_seen.difference(&prev_seen).copied().collect();
 
@@ -214,7 +226,9 @@ impl BlockDagStorage for BlockDagKeyValueStorage {
             fringe_hash,
             fringe: block_metadata.fringe.clone(),
             fringe_diff: fringe_diff.clone(),
-            state_hash: Blake2b256Hash::from_byte_array(block_metadata.fringe_state_hash.as_bytes()),
+            state_hash: Blake2b256Hash::from_byte_array(
+                block_metadata.fringe_state_hash.as_bytes(),
+            ),
             rejected_deploys: block.rejected_deploys.clone(),
             rejected_blocks: block.rejected_blocks.clone(),
             rejected_senders: block.rejected_senders.clone(),
@@ -259,8 +273,12 @@ impl BlockDagStorage for BlockDagKeyValueStorage {
             // below the newly-finalized fringe.
             if !fringe_diff.is_empty() {
                 let msg_map = &repr.dag_message_state.msg_map;
-                let latest_msgs: BTreeSet<_> =
-                    repr.dag_message_state.latest_msgs.values().cloned().collect();
+                let latest_msgs: BTreeSet<_> = repr
+                    .dag_message_state
+                    .latest_msgs
+                    .values()
+                    .cloned()
+                    .collect();
                 let lowest = message_map::lowest_fringe(msg_map, &latest_msgs);
                 let lowest_ids: BTreeSet<BlockHash> = lowest.iter().map(|m| m.id).collect();
                 let prunable = message_map::prune_fringe(msg_map, &lowest_ids, &repr.child_map);
@@ -289,7 +307,9 @@ impl BlockDagStorage for BlockDagKeyValueStorage {
         if self.deploy_store.count().await? >= MAX_POOLED_DEPLOYS {
             return Err("deploy pool is full".to_string());
         }
-        self.deploy_store.put(&[(deploy.sig.clone(), deploy)]).await?;
+        self.deploy_store
+            .put(&[(deploy.sig.clone(), deploy)])
+            .await?;
         Ok(())
     }
 
@@ -395,9 +415,14 @@ mod tests {
                 Arc::new(SignedDeployDataCodec),
             ));
         Arc::new(
-            BlockDagKeyValueStorage::create(metadata_store, fringe_store, deploy_index, deploy_store)
-                .await
-                .unwrap(),
+            BlockDagKeyValueStorage::create(
+                metadata_store,
+                fringe_store,
+                deploy_index,
+                deploy_store,
+            )
+            .await
+            .unwrap(),
         )
     }
 
@@ -411,7 +436,12 @@ mod tests {
             .unwrap();
 
         assert_eq!(
-            storage.lookup(&genesis_hash).await.unwrap().unwrap().block_hash,
+            storage
+                .lookup(&genesis_hash)
+                .await
+                .unwrap()
+                .unwrap()
+                .block_hash,
             genesis_hash
         );
         assert!(storage.lookup(&hash(9)).await.unwrap().is_none());
@@ -461,7 +491,10 @@ mod tests {
         };
         storage.add_deploy(deploy.clone()).await.unwrap();
         assert!(storage.contains_deploy_in_pool(&deploy.sig).await.unwrap());
-        assert_eq!(storage.lookup_by_deploy_id(&deploy.sig).await.unwrap(), None);
+        assert_eq!(
+            storage.lookup_by_deploy_id(&deploy.sig).await.unwrap(),
+            None
+        );
 
         let pooled = storage.pooled_deploys().await.unwrap();
         assert_eq!(pooled[&deploy.sig], deploy);

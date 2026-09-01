@@ -25,7 +25,11 @@ pub struct KademliaNodeDiscovery {
 }
 
 impl KademliaNodeDiscovery {
-    pub fn new(id: NodeIdentifier, store: Arc<dyn KademliaStore>, rpc: Arc<dyn KademliaRpc>) -> Self {
+    pub fn new(
+        id: NodeIdentifier,
+        store: Arc<dyn KademliaStore>,
+        rpc: Arc<dyn KademliaRpc>,
+    ) -> Self {
         KademliaNodeDiscovery { id, store, rpc }
     }
 }

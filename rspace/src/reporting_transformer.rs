@@ -1,8 +1,6 @@
 //! Transforming reporting events into more readable forms (port of `ReportingTransformer.scala`).
 
-use crate::reporting_rspace::{
-    ReportingComm, ReportingConsume, ReportingEvent, ReportingProduce,
-};
+use crate::reporting_rspace::{ReportingComm, ReportingConsume, ReportingEvent, ReportingProduce};
 
 /// Transforms [`ReportingEvent`]s into some target type `E` (port of `ReportingTransformer`).
 pub trait ReportingTransformer<C, P, A, K, E> {
@@ -55,7 +53,9 @@ pub struct ReportingEventStringTransformer<C, P, A, K> {
     pub serialize_k: fn(&K) -> String,
 }
 
-impl<C, P, A, K> ReportingTransformer<C, P, A, K, RhoEvent> for ReportingEventStringTransformer<C, P, A, K> {
+impl<C, P, A, K> ReportingTransformer<C, P, A, K, RhoEvent>
+    for ReportingEventStringTransformer<C, P, A, K>
+{
     fn serialize_consume(&self, rc: &ReportingConsume<C, P, K>) -> RhoEvent {
         RhoEvent::Consume(self.consume_to_rho(rc))
     }
@@ -66,7 +66,11 @@ impl<C, P, A, K> ReportingTransformer<C, P, A, K, RhoEvent> for ReportingEventSt
 
     fn serialize_comm(&self, rc: &ReportingComm<C, P, A, K>) -> RhoEvent {
         let consume = self.consume_to_rho(&rc.consume);
-        let produces = rc.produces.iter().map(|rp| self.produce_to_rho(rp)).collect();
+        let produces = rc
+            .produces
+            .iter()
+            .map(|rp| self.produce_to_rho(rp))
+            .collect();
         RhoEvent::Comm(RhoComm { consume, produces })
     }
 }

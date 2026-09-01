@@ -46,7 +46,10 @@ pub struct StateChange {
 }
 
 /// Compute the added/removed raw bytes between a start and end value (port of `computeValueChange`).
-fn compute_value_change(start_value: Vec<Vec<u8>>, end_value: Vec<Vec<u8>>) -> ChannelChange<Vec<u8>> {
+fn compute_value_change(
+    start_value: Vec<Vec<u8>>,
+    end_value: Vec<Vec<u8>>,
+) -> ChannelChange<Vec<u8>> {
     let added = seq_diff(&end_value, &start_value);
     let removed = seq_diff(&start_value, &end_value);
     ChannelChange { added, removed }
@@ -77,13 +80,15 @@ impl StateChange {
         for history_pointer in produce_hashes {
             let start: Vec<Vec<u8>> = pre_state_reader
                 .get_data(history_pointer)
-                .await.map_err(|e| e.to_string())?
+                .await
+                .map_err(|e| e.to_string())?
                 .into_iter()
                 .map(|d| d.raw)
                 .collect();
             let end: Vec<Vec<u8>> = post_state_reader
                 .get_data(history_pointer)
-                .await.map_err(|e| e.to_string())?
+                .await
+                .map_err(|e| e.to_string())?
                 .into_iter()
                 .map(|d| d.raw)
                 .collect();
@@ -101,13 +106,15 @@ impl StateChange {
             let history_pointer = hash_hashes(&consume_channels);
             let start: Vec<Vec<u8>> = pre_state_reader
                 .get_continuations(history_pointer)
-                .await.map_err(|e| e.to_string())?
+                .await
+                .map_err(|e| e.to_string())?
                 .into_iter()
                 .map(|wc| wc.raw)
                 .collect();
             let end: Vec<Vec<u8>> = post_state_reader
                 .get_continuations(history_pointer)
-                .await.map_err(|e| e.to_string())?
+                .await
+                .map_err(|e| e.to_string())?
                 .into_iter()
                 .map(|wc| wc.raw)
                 .collect();
@@ -118,8 +125,14 @@ impl StateChange {
 
             // Recover the serialized join body matching these consume channels.
             let history_pointer = consume_channels[0];
-            let pre = pre_state_reader.get_joins(history_pointer).await.map_err(|e| e.to_string())?;
-            let post = post_state_reader.get_joins(history_pointer).await.map_err(|e| e.to_string())?;
+            let pre = pre_state_reader
+                .get_joins(history_pointer)
+                .await
+                .map_err(|e| e.to_string())?;
+            let post = post_state_reader
+                .get_joins(history_pointer)
+                .await
+                .map_err(|e| e.to_string())?;
             let err_msg = "Tuple space inconsistency found: channel of consume does not contain \
                            join record corresponding to the consume channels."
                 .to_string();
@@ -191,14 +204,20 @@ mod tests {
         let a = StateChange {
             datums_changes: BTreeMap::from([(
                 Blake2b256Hash::from_bytes([1; 32]),
-                ChannelChange { added: vec![vec![1]], removed: vec![] },
+                ChannelChange {
+                    added: vec![vec![1]],
+                    removed: vec![],
+                },
             )]),
             ..Default::default()
         };
         let b = StateChange {
             datums_changes: BTreeMap::from([(
                 Blake2b256Hash::from_bytes([1; 32]),
-                ChannelChange { added: vec![], removed: vec![vec![2]] },
+                ChannelChange {
+                    added: vec![],
+                    removed: vec![vec![2]],
+                },
             )]),
             ..Default::default()
         };
@@ -208,9 +227,13 @@ mod tests {
         // but the monoid law tested here is empty-is-identity.
         assert_eq!(StateChange::combine(&a, &StateChange::empty()), a);
         // both orders contain the same multiset of added/removed
-        let mut ab_added = ab.datums_changes[&Blake2b256Hash::from_bytes([1; 32])].added.clone();
+        let mut ab_added = ab.datums_changes[&Blake2b256Hash::from_bytes([1; 32])]
+            .added
+            .clone();
         ab_added.sort();
-        let mut ba_added = ba.datums_changes[&Blake2b256Hash::from_bytes([1; 32])].added.clone();
+        let mut ba_added = ba.datums_changes[&Blake2b256Hash::from_bytes([1; 32])]
+            .added
+            .clone();
         ba_added.sort();
         assert_eq!(ab_added, ba_added);
     }

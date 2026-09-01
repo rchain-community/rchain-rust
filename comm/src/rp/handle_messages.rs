@@ -101,9 +101,9 @@ pub async fn handle<T: TransportLayer + ?Sized>(
             });
             CommunicationResponse::handled_without_message()
         }
-        other => CommunicationResponse::not_handled(CommError::UnexpectedMessage(format!(
-            "{other:?}"
-        ))),
+        other => {
+            CommunicationResponse::not_handled(CommError::UnexpectedMessage(format!("{other:?}")))
+        }
     }
 }
 
@@ -133,7 +133,14 @@ mod tests {
 
     #[test]
     fn classifies_private_addresses_as_local() {
-        for host in ["0.0.0.0", "127.0.0.1", "10.0.0.1", "172.16.0.1", "172.31.255.255", "192.168.1.1"] {
+        for host in [
+            "0.0.0.0",
+            "127.0.0.1",
+            "10.0.0.1",
+            "172.16.0.1",
+            "172.31.255.255",
+            "192.168.1.1",
+        ] {
             assert!(is_local_address(host), "{host} should be local");
         }
     }

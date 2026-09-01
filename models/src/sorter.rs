@@ -286,7 +286,8 @@ fn sort_receive_bind(bind: &ReceiveBind) -> ScoredTerm<ReceiveBind> {
 }
 
 fn sort_receive(r: &Receive) -> ScoredTerm<Receive> {
-    let scored_binds: Vec<ScoredTerm<ReceiveBind>> = r.binds.iter().map(sort_receive_bind).collect();
+    let scored_binds: Vec<ScoredTerm<ReceiveBind>> =
+        r.binds.iter().map(sort_receive_bind).collect();
     let persistent_score = if r.persistent { 1 } else { 0 };
     let peek_score = if r.peek { 1 } else { 0 };
     let connective_used_score = if r.connective_used { 1 } else { 0 };
@@ -323,11 +324,8 @@ fn sort_new(n: &New) -> ScoredTerm<New> {
     };
     // The Scala iterates a HashMap in nondeterministic order; sort by key for determinism
     // (documented deviation, mirroring the `merging.rs` BTreeMap precedent).
-    let mut injections: Vec<(&String, ScoredTerm<Par>)> = n
-        .injections
-        .iter()
-        .map(|(k, v)| (k, sort_par(v)))
-        .collect();
+    let mut injections: Vec<(&String, ScoredTerm<Par>)> =
+        n.injections.iter().map(|(k, v)| (k, sort_par(v))).collect();
     injections.sort_by(|a, b| a.0.cmp(b.0));
     let injections_score: Vec<Tree> = if injections.is_empty() {
         vec![leaf_i64(ABSENT)]
@@ -708,7 +706,11 @@ fn sort_par<S: Sort>(par: &Par<S>) -> ScoredTerm<Par<S>> {
     let mut news = par.news.iter().map(sort_new).collect::<Vec<_>>();
     let mut matches = par.matches.iter().map(sort_match).collect::<Vec<_>>();
     let mut bundles = par.bundles.iter().map(sort_bundle).collect::<Vec<_>>();
-    let mut connectives = par.connectives.iter().map(sort_connective).collect::<Vec<_>>();
+    let mut connectives = par
+        .connectives
+        .iter()
+        .map(sort_connective)
+        .collect::<Vec<_>>();
     let mut unforgeables = par
         .unforgeables
         .iter()
@@ -1010,10 +1012,7 @@ mod tests {
             par_set(vec![g_int(1)]).into_expr(),
             par_set(vec![g_int(1), g_int(2)]).into_expr(),
         ]);
-        assert_eq!(
-            sort_par_term(&par_ground.into_expr()),
-            expected.into_expr()
-        );
+        assert_eq!(sort_par_term(&par_ground.into_expr()), expected.into_expr());
     }
 
     #[test]
@@ -1024,10 +1023,7 @@ mod tests {
             (g_int(1), g_int(1)),
         ]);
         let expected = par_map(vec![(g_int(1), g_int(1)), (g_int(2), g_int(1))]);
-        assert_eq!(
-            sort_par_term(&par_ground.into_expr()),
-            expected.into_expr()
-        );
+        assert_eq!(sort_par_term(&par_ground.into_expr()), expected.into_expr());
     }
 
     #[test]
@@ -1297,16 +1293,16 @@ mod tests {
         let par_expr: Par = Par {
             connectives: vec![
                 Connective::ConnAnd(ConnectiveBody {
-                    ps: vec![evar(0), Par {
-                        sends: vec![send(evar(1), vec![evar(2)], false)],
-                        ..Default::default()
-                    }],
+                    ps: vec![
+                        evar(0),
+                        Par {
+                            sends: vec![send(evar(1), vec![evar(2)], false)],
+                            ..Default::default()
+                        },
+                    ],
                 }),
                 Connective::ConnOr(ConnectiveBody {
-                    ps: vec![
-                        wildcard_new(1),
-                        wildcard_new(2),
-                    ],
+                    ps: vec![wildcard_new(1), wildcard_new(2)],
                 }),
                 Connective::ConnNot(Box::new(par())),
             ],
@@ -1317,16 +1313,16 @@ mod tests {
             connectives: vec![
                 Connective::ConnNot(Box::new(par())),
                 Connective::ConnAnd(ConnectiveBody {
-                    ps: vec![evar(0), Par {
-                        sends: vec![send(evar(1), vec![evar(2)], false)],
-                        ..Default::default()
-                    }],
+                    ps: vec![
+                        evar(0),
+                        Par {
+                            sends: vec![send(evar(1), vec![evar(2)], false)],
+                            ..Default::default()
+                        },
+                    ],
                 }),
                 Connective::ConnOr(ConnectiveBody {
-                    ps: vec![
-                        wildcard_new(1),
-                        wildcard_new(2),
-                    ],
+                    ps: vec![wildcard_new(1), wildcard_new(2)],
                 }),
             ],
             connective_used: true,

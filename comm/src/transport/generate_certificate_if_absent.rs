@@ -47,7 +47,9 @@ pub fn node_address(tls: &TlsConf) -> Result<Vec<u8>, String> {
     let key_pem = fs::read_to_string(&tls.key_path).map_err(|e| e.to_string())?;
     let key_pair = KeyPair::from_pem(&key_pem).map_err(|e| e.to_string())?;
     let raw = key_pair.public_key_raw();
-    Ok(rchain_crypto::util::certificate_helper::public_address(&raw[1..]))
+    Ok(rchain_crypto::util::certificate_helper::public_address(
+        &raw[1..],
+    ))
 }
 
 #[cfg(test)]

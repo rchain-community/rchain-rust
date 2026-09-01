@@ -16,7 +16,8 @@ fn main() {
         .or_else(|| std::env::var_os("QUCALC_CENSUS").map(PathBuf::from))
         .unwrap_or_else(|| PathBuf::from("census_inventory.json"));
 
-    let census = Census::load(&path).unwrap_or_else(|e| panic!("failed to load {}: {e}", path.display()));
+    let census =
+        Census::load(&path).unwrap_or_else(|e| panic!("failed to load {}: {e}", path.display()));
 
     // 1. The distribution of `ways` across every class in the inventory.
     let mut all_ways: Vec<u64> = census

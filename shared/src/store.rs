@@ -47,11 +47,18 @@ impl KeyValueStore for InMemoryKeyValueStore {
     }
 
     fn delete(&mut self, keys: &[Vec<u8>]) -> Result<usize, String> {
-        Ok(keys.iter().filter(|k| self.map.remove(*k).is_some()).count())
+        Ok(keys
+            .iter()
+            .filter(|k| self.map.remove(*k).is_some())
+            .count())
     }
 
     fn entries(&self) -> Result<Vec<(Vec<u8>, Vec<u8>)>, String> {
-        Ok(self.map.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
+        Ok(self
+            .map
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect())
     }
 
     fn num_records(&self) -> usize {
@@ -92,17 +99,30 @@ mod tests {
     #[test]
     fn get_put_delete_round_trip() {
         let mut store = InMemoryKeyValueStore::default();
-        store.put(vec![(k("a"), vec![1]), (k("b"), vec![2])]).unwrap();
-        assert_eq!(store.get(&[k("a"), k("b"), k("c")]).unwrap(), vec![Some(vec![1]), Some(vec![2]), None]);
+        store
+            .put(vec![(k("a"), vec![1]), (k("b"), vec![2])])
+            .unwrap();
+        assert_eq!(
+            store.get(&[k("a"), k("b"), k("c")]).unwrap(),
+            vec![Some(vec![1]), Some(vec![2]), None]
+        );
         assert_eq!(store.delete(&[k("a"), k("c")]).unwrap(), 1);
-        assert_eq!(store.get(&[k("a"), k("b")]).unwrap(), vec![None, Some(vec![2])]);
+        assert_eq!(
+            store.get(&[k("a"), k("b")]).unwrap(),
+            vec![None, Some(vec![2])]
+        );
     }
 
     #[test]
     fn entries_returns_all_pairs() {
         let mut store = InMemoryKeyValueStore::default();
-        store.put(vec![(k("b"), vec![2]), (k("a"), vec![1])]).unwrap();
-        assert_eq!(store.entries().unwrap(), vec![(k("a"), vec![1]), (k("b"), vec![2])]);
+        store
+            .put(vec![(k("b"), vec![2]), (k("a"), vec![1])])
+            .unwrap();
+        assert_eq!(
+            store.entries().unwrap(),
+            vec![(k("a"), vec![1]), (k("b"), vec![2])]
+        );
     }
 
     #[test]

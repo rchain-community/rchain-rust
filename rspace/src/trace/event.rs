@@ -35,7 +35,11 @@ impl Produce {
         }
     }
 
-    pub fn from_hash(channels_hash: Blake2b256Hash, hash: Blake2b256Hash, persistent: bool) -> Self {
+    pub fn from_hash(
+        channels_hash: Blake2b256Hash,
+        hash: Blake2b256Hash,
+        persistent: bool,
+    ) -> Self {
         Produce {
             channels_hash,
             hash,

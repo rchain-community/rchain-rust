@@ -11,8 +11,8 @@ enum Tok {
     Uri(String),
     Ident(String),
     Tilde,
-    Conj,  // /\
-    Disj,  // \/
+    Conj, // /\
+    Disj, // \/
     Star,
     Dot,
     LParen,
@@ -151,7 +151,11 @@ fn lex(src: &str) -> Result<Vec<Tok>, RholangError> {
         // (mirrors the BNFC `Var` token: `'_' (letter | digit | '_' | '\'')+`).
         let ident_continue = |c: char| c.is_ascii_alphanumeric() || c == '_' || c == '\'';
         if c.is_ascii_alphabetic()
-            || (c == '_' && chars.get(i + 1).map(|&n| ident_continue(n)).unwrap_or(false))
+            || (c == '_'
+                && chars
+                    .get(i + 1)
+                    .map(|&n| ident_continue(n))
+                    .unwrap_or(false))
         {
             let start = i;
             while i < chars.len() && ident_continue(chars[i]) {
@@ -263,7 +267,9 @@ impl Parser {
         self.depth += 1;
         if self.depth > MAX_PARSE_DEPTH {
             self.depth -= 1;
-            return Err(RholangError::SyntaxError("parse depth exceeded".to_string()));
+            return Err(RholangError::SyntaxError(
+                "parse depth exceeded".to_string(),
+            ));
         }
         let result = f(self);
         self.depth -= 1;
@@ -305,7 +311,11 @@ impl Parser {
 /// Parse a source string into a `Proc` (port of `Compiler.sourceToAST`).
 pub fn parse(source: &str) -> Result<Proc, RholangError> {
     let toks = lex(source)?;
-    let mut p = Parser { toks, pos: 0, depth: 0 };
+    let mut p = Parser {
+        toks,
+        pos: 0,
+        depth: 0,
+    };
     let proc = p.parse_proc()?;
     Ok(proc)
 }
@@ -819,7 +829,9 @@ impl Parser {
         match self.next() {
             Tok::Ident(s) => Ok(s),
             Tok::Underscore => Ok("_".to_string()),
-            t => Err(RholangError::SyntaxError(format!("expected variable, got {t:?}"))),
+            t => Err(RholangError::SyntaxError(format!(
+                "expected variable, got {t:?}"
+            ))),
         }
     }
 
@@ -851,7 +863,9 @@ impl Parser {
         match self.next() {
             Tok::Bang => Ok(Send::SendSingle),
             Tok::BangBang => Ok(Send::SendMultiple),
-            t => Err(RholangError::SyntaxError(format!("expected send, got {t:?}"))),
+            t => Err(RholangError::SyntaxError(format!(
+                "expected send, got {t:?}"
+            ))),
         }
     }
 
@@ -886,7 +900,9 @@ impl Parser {
             Tok::Uri(u) => Ok(Ground::GroundUri(u)),
             Tok::Ident(s) if s == "true" => Ok(Ground::GroundBool(BoolLiteral::BoolTrue)),
             Tok::Ident(s) if s == "false" => Ok(Ground::GroundBool(BoolLiteral::BoolFalse)),
-            t => Err(RholangError::SyntaxError(format!("unexpected ground {t:?}"))),
+            t => Err(RholangError::SyntaxError(format!(
+                "unexpected ground {t:?}"
+            ))),
         }
     }
 
@@ -922,7 +938,9 @@ impl Parser {
                     self.next();
                     if self.peek() == &Tok::RParen {
                         self.next();
-                        Ok(Collection::CollectTuple(Tuple::TupleSingle(Box::new(first))))
+                        Ok(Collection::CollectTuple(Tuple::TupleSingle(Box::new(
+                            first,
+                        ))))
                     } else {
                         let mut rest = Vec::new();
                         while self.peek() != &Tok::RParen {
@@ -941,7 +959,9 @@ impl Parser {
                     }
                 } else {
                     self.expect(Tok::RParen)?;
-                    Ok(Collection::CollectTuple(Tuple::TupleSingle(Box::new(first))))
+                    Ok(Collection::CollectTuple(Tuple::TupleSingle(Box::new(
+                        first,
+                    ))))
                 }
             }
             Tok::LBrace => {
@@ -1014,7 +1034,9 @@ impl Parser {
                 }
                 _ => Ok(Bundle::BundleReadWrite),
             },
-            t => Err(RholangError::SyntaxError(format!("expected bundle, got {t:?}"))),
+            t => Err(RholangError::SyntaxError(format!(
+                "expected bundle, got {t:?}"
+            ))),
         }
     }
 
@@ -1026,7 +1048,9 @@ impl Parser {
                 self.expect(Tok::RParen)?;
                 Ok(NameDecl::NameDeclUrn(var, u))
             } else {
-                Err(RholangError::SyntaxError("expected uri in name decl".into()))
+                Err(RholangError::SyntaxError(
+                    "expected uri in name decl".into(),
+                ))
             }
         } else {
             Ok(NameDecl::NameDeclSimpl(var))
@@ -1048,7 +1072,9 @@ impl Parser {
                     let s = self.parse_name_source()?;
                     binds.push(LinearBind(n, r, s));
                 }
-                Ok(Receipt::ReceiptLinear(ReceiptLinearImpl::LinearSimple(binds)))
+                Ok(Receipt::ReceiptLinear(ReceiptLinearImpl::LinearSimple(
+                    binds,
+                )))
             }
             Tok::LLArrow => {
                 self.next();
@@ -1074,7 +1100,9 @@ impl Parser {
                     let s = self.parse_name()?;
                     binds.push(RepeatedBind(n, r, s));
                 }
-                Ok(Receipt::ReceiptRepeated(ReceiptRepeatedImpl::RepeatedSimple(binds)))
+                Ok(Receipt::ReceiptRepeated(
+                    ReceiptRepeatedImpl::RepeatedSimple(binds),
+                ))
             }
             t => Err(RholangError::SyntaxError(format!(
                 "expected <-, <<-, or <=, got {t:?}"
@@ -1084,7 +1112,10 @@ impl Parser {
 
     fn parse_bind_head(&mut self) -> Result<(Vec<Name>, NameRemainder), RholangError> {
         let mut names = Vec::new();
-        while !matches!(self.peek(), Tok::LArrow | Tok::LLArrow | Tok::Lte | Tok::Ellipsis) {
+        while !matches!(
+            self.peek(),
+            Tok::LArrow | Tok::LLArrow | Tok::Lte | Tok::Ellipsis
+        ) {
             names.push(self.parse_name()?);
             if self.peek() == &Tok::Comma {
                 self.next();

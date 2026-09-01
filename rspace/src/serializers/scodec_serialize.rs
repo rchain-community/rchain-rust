@@ -214,8 +214,8 @@ fn read_datum<A>(r: &mut BitReader) -> Result<Datum<A>, RSpaceError>
 where
     A: Serialize<A>,
 {
-    let a = <A as Serialize<A>>::decode(&read_size_head(r))
-        .map_err(|_| RSpaceError::Codec("datum"))?;
+    let a =
+        <A as Serialize<A>>::decode(&read_size_head(r)).map_err(|_| RSpaceError::Codec("datum"))?;
     let persist = r.read_bit() != 0;
     let source = read_produce(r);
     Ok(Datum { a, persist, source })
@@ -297,8 +297,10 @@ where
     let mut encoded: Vec<Vec<u8>> = joins
         .iter()
         .map(|join| {
-            let mut channels: Vec<Vec<u8>> =
-                join.iter().map(|c| <C as Serialize<C>>::encode(c)).collect();
+            let mut channels: Vec<Vec<u8>> = join
+                .iter()
+                .map(|c| <C as Serialize<C>>::encode(c))
+                .collect();
             channels.sort_by(|a, b| crate::util::veccmp(a, b));
             encode_seq_byte_vectors(&channels)
         })
@@ -350,7 +352,9 @@ where
 }
 
 /// Decode a list of continuations (port of `decodeContinuations`).
-pub fn decode_continuations<P, K>(bytes: &[u8]) -> Result<Vec<WaitingContinuation<P, K>>, RSpaceError>
+pub fn decode_continuations<P, K>(
+    bytes: &[u8],
+) -> Result<Vec<WaitingContinuation<P, K>>, RSpaceError>
 where
     P: Serialize<P>,
     K: Serialize<K>,
@@ -371,9 +375,7 @@ where
         .map(|join_bytes| {
             decode_seq_byte_vectors(&join_bytes)
                 .into_iter()
-                .map(|c| {
-                    <C as Serialize<C>>::decode(&c).map_err(|_| RSpaceError::Codec("channel"))
-                })
+                .map(|c| <C as Serialize<C>>::decode(&c).map_err(|_| RSpaceError::Codec("channel")))
                 .collect::<Result<Vec<C>, RSpaceError>>()
         })
         .collect()

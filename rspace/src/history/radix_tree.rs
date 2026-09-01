@@ -329,7 +329,12 @@ impl RadixTreeImpl {
 
     /// Optimize and save a node, creating the item that points to it (port of
     /// `saveNodeAndCreateItem`).
-    fn save_node_and_create_item(&self, node: &Node, prefix: &KeySegment, compaction: bool) -> Item {
+    fn save_node_and_create_item(
+        &self,
+        node: &Node,
+        prefix: &KeySegment,
+        compaction: bool,
+    ) -> Item {
         if compaction {
             let mut non_empty: Vec<(usize, &Item)> = Vec::new();
             for (idx, item) in node.iter().enumerate() {
@@ -380,9 +385,7 @@ impl RadixTreeImpl {
     /// `constructNodeFromItem`).
     async fn construct_node_from_item(&self, item: &Item) -> Node {
         match item {
-            Item::NodePtr { prefix, ptr } if prefix.is_empty() => {
-                self.load_node(*ptr, false).await
-            }
+            Item::NodePtr { prefix, ptr } if prefix.is_empty() => self.load_node(*ptr, false).await,
             _ => Self::create_node_from_item(item),
         }
     }
@@ -448,8 +451,7 @@ impl RadixTreeImpl {
                     let child_item_idx = ins_prefix_rest.head() as usize;
                     let child_ins_prefix = ins_prefix_rest.tail();
                     let child_item = child_node[child_item_idx].clone();
-                    let child_item_opt =
-                        self.update(child_item, child_ins_prefix, ins_value).await;
+                    let child_item_opt = self.update(child_item, child_ins_prefix, ins_value).await;
                     child_item_opt.map(|new_child_item| {
                         let mut updated_child_node = child_node.clone();
                         updated_child_node[child_item_idx] = new_child_item;
@@ -477,7 +479,8 @@ impl RadixTreeImpl {
         match cur_item {
             Item::Empty => None,
             Item::Leaf {
-                prefix: leaf_prefix, ..
+                prefix: leaf_prefix,
+                ..
             } => {
                 if leaf_prefix == del_prefix {
                     Some(Item::Empty)
@@ -652,7 +655,13 @@ mod tests {
         let value = Blake2b256Hash::from_bytes([0x42; 32]);
 
         let (root1, _) = tree
-            .save_and_commit(&root, &[HistoryAction::Insert { key: key.clone(), hash: value }])
+            .save_and_commit(
+                &root,
+                &[HistoryAction::Insert {
+                    key: key.clone(),
+                    hash: value,
+                }],
+            )
             .await
             .unwrap()
             .unwrap();
@@ -661,7 +670,13 @@ mod tests {
         // update
         let value2 = Blake2b256Hash::from_bytes([0x43; 32]);
         let (root2, _) = tree
-            .save_and_commit(&root1, &[HistoryAction::Insert { key: key.clone(), hash: value2 }])
+            .save_and_commit(
+                &root1,
+                &[HistoryAction::Insert {
+                    key: key.clone(),
+                    hash: value2,
+                }],
+            )
             .await
             .unwrap()
             .unwrap();

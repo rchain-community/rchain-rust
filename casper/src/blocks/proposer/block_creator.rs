@@ -10,8 +10,8 @@ use rchain_models::casper::protocol::casper_message::{
     ProcessedDeploy, ProcessedSystemDeploy, RholangState, SignedDeployData,
 };
 use rchain_models::validator::Validator;
-use rchain_shared::refined::{BlockHeight, NonNegI64, SeqNum};
 use rchain_rholang::system_processes::BlockData;
+use rchain_shared::refined::{BlockHeight, NonNegI64, SeqNum};
 
 use crate::block_random_seed::BlockRandomSeed;
 use crate::interpreter_util::compute_deploys_checkpoint;
@@ -52,8 +52,11 @@ impl BlockCreator {
         suppress_attestation: bool,
     ) -> Result<BlockCreatorResult, String> {
         let pre_state_hash = pre_state.pre_state_hash;
-        let parents: Vec<BlockHash> =
-            pre_state.justifications.iter().map(|m| m.block_hash).collect();
+        let parents: Vec<BlockHash> = pre_state
+            .justifications
+            .iter()
+            .map(|m| m.block_hash)
+            .collect();
         let bonds_map = pre_state.fringe_bonds_map.clone();
         let block_num = pre_state
             .justifications
@@ -103,9 +106,8 @@ impl BlockCreator {
             let mut sorted_to_slash: Vec<&Validator> = to_slash.iter().collect();
             sorted_to_slash.sort();
             for (i, v) in sorted_to_slash.into_iter().enumerate() {
-                let seed = rand.split_byte(
-                    u8::try_from(selected.len() + i).map_err(|e| e.to_string())?,
-                );
+                let seed =
+                    rand.split_byte(u8::try_from(selected.len() + i).map_err(|e| e.to_string())?);
                 system_deploys.push(SystemDeploy::slash(v, seed));
             }
             let close_seed = rand.split_byte(

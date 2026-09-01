@@ -225,7 +225,10 @@ impl Costs {
     }
     pub fn new_bindings_cost(n: i64) -> Cost {
         Cost::new(
-            Self::new_binding_cost().mul(n).add(&Self::new_eval_cost()).value,
+            Self::new_binding_cost()
+                .mul(n)
+                .add(&Self::new_eval_cost())
+                .value,
             format!("{n} new bindings"),
         )
     }
@@ -255,7 +258,10 @@ impl Costs {
     /// Storage cost: the sum of the serialized sizes (port of `storageCost`).
     pub fn storage_cost<T: Serialize<T>>(terms: &[T]) -> Cost {
         Cost::new(
-            terms.iter().map(|a| <T as Serialize<T>>::encode(a).len() as i64).sum(),
+            terms
+                .iter()
+                .map(|a| <T as Serialize<T>>::encode(a).len() as i64)
+                .sum(),
             "storage cost",
         )
     }
@@ -378,16 +384,18 @@ impl CostAccounting {
     /// effect on the balance).
     pub fn charge(&self, amount: Cost) -> Result<(), RholangError> {
         let amount_value = amount.value;
-        match self.value.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |current| {
-            if current < 0 {
-                // Already exhausted: abort without changing the balance or logging.
-                None
-            } else {
-                // Clamp at 0 rather than leaving the cost cell negative on exhaustion (the error is
-                // still raised by the caller below).
-                Some((current - amount_value).max(0))
-            }
-        }) {
+        match self
+            .value
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |current| {
+                if current < 0 {
+                    // Already exhausted: abort without changing the balance or logging.
+                    None
+                } else {
+                    // Clamp at 0 rather than leaving the cost cell negative on exhaustion (the error is
+                    // still raised by the caller below).
+                    Some((current - amount_value).max(0))
+                }
+            }) {
             Ok(prev) => {
                 self.total.fetch_add(amount_value, Ordering::SeqCst);
                 if prev - amount_value < 0 {
@@ -450,8 +458,7 @@ mod tests {
     #[test]
     fn size_proportional_costs_match_serialized_size() {
         let par = rchain_models::par_ops::from_expr(rchain_models::ast::Expr::GInt(42));
-        let encoded =
-            <rchain_models::ast::Par as Serialize<rchain_models::ast::Par>>::encode(&par);
+        let encoded = <rchain_models::ast::Par as Serialize<rchain_models::ast::Par>>::encode(&par);
         let len = encoded.len() as i64;
 
         assert_eq!(Costs::to_byte_array_cost(&par).value, len);

@@ -35,11 +35,13 @@ const POS_RHOX: &str = include_str!("resources/Pos.rhox");
 const REGISTRY_PK: &str = "5a0bde2f5857124b1379c78535b07a278e3b9cefbcacc02e62ab3294c02765a1";
 const LIST_OPS_PK: &str = "867c21c6a3245865444d80e49cac08a1c11e23b35965b566bbe9f49bb9897511";
 const EITHER_PK: &str = "5248f8913f8572d8227a3c7787b54bd8263389f7209adc1422e36bb2beb160dc";
-const NON_NEGATIVE_NUMBER_PK: &str = "e33c9f1e925819d04733db4ec8539a84507c9e9abd32822059349449fe03997d";
+const NON_NEGATIVE_NUMBER_PK: &str =
+    "e33c9f1e925819d04733db4ec8539a84507c9e9abd32822059349449fe03997d";
 const MAKE_MINT_PK: &str = "de19d53f28d4cdee74bad062342d8486a90a652055f3de4b2efa5eb2fccc9d53";
 const AUTH_KEY_PK: &str = "f450b26bac63e5dd9343cd46f5fae1986d367a893cd21eedd98a4cb3ac699abc";
 const REV_VAULT_PK: &str = "27e5718bf55dd673cc09f13c2bcf12ed7949b178aef5dcb6cd492ad422d05e9d";
-const MULTI_SIG_REV_VAULT_PK: &str = "2a2eaa76d6fea9f502629e32b0f8eea19b9de8e2188ec0d589fcafa98fb1f031";
+const MULTI_SIG_REV_VAULT_PK: &str =
+    "2a2eaa76d6fea9f502629e32b0f8eea19b9de8e2188ec0d589fcafa98fb1f031";
 const POS_GENERATOR_PK: &str = "a9585a0687761139ab3587a4938fb5ab9fcba675c79fefba889859674046d4a5";
 const REV_GENERATOR_PK: &str = "a06959868e39bb3a8502846686a23119716ecd001700baf9e2ecfa0dbf1a3247";
 
@@ -130,11 +132,17 @@ impl StandardDeploys {
         ])
     }
 
-    pub fn registry_generator(registry: &Registry, shard_id: &str) -> Result<SignedDeployData, String> {
+    pub fn registry_generator(
+        registry: &Registry,
+        shard_id: &str,
+    ) -> Result<SignedDeployData, String> {
         let term = load_template(
             "Registry.rho",
             REGISTRY_RHO,
-            &[("systemContractPubKey", registry.system_contract_pub_key.as_str())],
+            &[(
+                "systemContractPubKey",
+                registry.system_contract_pub_key.as_str(),
+            )],
         );
         Self::to_deploy(term, REGISTRY_PK, REGISTRY_TIMESTAMP, shard_id)
     }
@@ -219,7 +227,10 @@ impl StandardDeploys {
             ("initialBonds", initial_bonds.as_str()),
             ("epochLength", epoch_length.as_str()),
             ("quarantineLength", quarantine_length.as_str()),
-            ("numberOfActiveValidators", number_of_active_validators.as_str()),
+            (
+                "numberOfActiveValidators",
+                number_of_active_validators.as_str(),
+            ),
             ("posMultiSigPublicKeys", pos_multi_sig_public_keys.as_str()),
             ("posMultiSigQuorum", pos_multi_sig_quorum.as_str()),
             ("posVaultPubKey", pos_vault_pub_key.as_str()),

@@ -156,7 +156,10 @@ async fn play_and_replay_agree_for_transfer_deploy_and_vault_writes_persist() {
     );
 
     // The transfer's vault writes must be visible at the committed post-state.
-    let fork = rm.fork_play_runtime(replay_state).await.expect("fork at replay state");
+    let fork = rm
+        .fork_play_runtime(replay_state)
+        .await
+        .expect("fork at replay state");
     fork.reset(replay_state).await.expect("reset fork");
     let native = NativeSystemState::new(fork.native_store());
     let target_balance = native
@@ -165,7 +168,10 @@ async fn play_and_replay_agree_for_transfer_deploy_and_vault_writes_persist() {
         .expect("read target balance")
         .map(|b| i64::from(b))
         .unwrap_or(0);
-    assert_eq!(target_balance, 30_000_000, "target vault must hold the transferred 30_000_000");
+    assert_eq!(
+        target_balance, 30_000_000,
+        "target vault must hold the transferred 30_000_000"
+    );
 }
 
 #[tokio::test]

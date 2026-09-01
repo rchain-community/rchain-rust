@@ -94,7 +94,17 @@ pub enum Var {
 /// `spec/RHO-CALCULUS.md`); it is a *compile-time* property, carried as a phantom parameter on
 /// [`Par`].
 pub trait Sort:
-    private::Sealed + Clone + Copy + std::fmt::Debug + Default + PartialEq + Eq + PartialOrd + Ord + Hash + 'static
+    private::Sealed
+    + Clone
+    + Copy
+    + std::fmt::Debug
+    + Default
+    + PartialEq
+    + Eq
+    + PartialOrd
+    + Ord
+    + Hash
+    + 'static
 {
 }
 mod private {

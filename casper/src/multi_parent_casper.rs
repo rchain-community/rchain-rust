@@ -75,12 +75,13 @@ pub async fn deploy(
     let normalizer_env = NormalizerEnv::new(deploy);
     rchain_rholang::normalizer::source_to_adt_with_env(&deploy.data.term, normalizer_env.to_env())
         .map_err(|e| parsing_error(format!("Error in parsing term: \n{e}")))?;
-    add_deploy(dag, deploy)
-        .await
-        .map_err(parsing_error)
+    add_deploy(dag, deploy).await.map_err(parsing_error)
 }
 
-async fn get_block_unsafe(block_store: &BlockStore, hash: &BlockHash) -> Result<BlockMessage, String> {
+async fn get_block_unsafe(
+    block_store: &BlockStore,
+    hash: &BlockHash,
+) -> Result<BlockMessage, String> {
     let mut vals = block_store.get(&[*hash]).await?;
     vals.pop()
         .flatten()
@@ -172,11 +173,12 @@ where
             let (m_scope, base_opt) =
                 MergeScope::from_dag(fringe, &prev_fringe_hashes, &dag_repr.child_map, msg_map)?;
             let base_state = match base_opt {
-                Some(h) => {
-                    Blake2b256Hash::from_byte_array(
-                        get_block_unsafe(block_store, &h).await?.post_state_hash.as_bytes(),
-                    )
-                }
+                Some(h) => Blake2b256Hash::from_byte_array(
+                    get_block_unsafe(block_store, &h)
+                        .await?
+                        .post_state_hash
+                        .as_bytes(),
+                ),
                 None => prev_fringe_state,
             };
             let result = MergeScope::merge(
@@ -200,8 +202,10 @@ where
         .map(|m| i64::from(m.block_num))
         .max()
         .unwrap_or(-1);
-    let max_seq_nums: BTreeMap<Validator, i64> =
-        justifications.iter().map(|m| (m.sender, i64::from(m.seq_num))).collect();
+    let max_seq_nums: BTreeMap<Validator, i64> = justifications
+        .iter()
+        .map(|m| (m.sender, i64::from(m.seq_num)))
+        .collect();
     let new_fringe = new_fringe_hashes.unwrap_or(prev_fringe_hashes);
 
     // Merge the conflict scope (non-finalized blocks above the fringe).
@@ -219,11 +223,12 @@ where
         let (m_scope, base_opt) =
             MergeScope::from_dag(parent_hashes, &new_fringe, &dag_repr.child_map, msg_map)?;
         let base_state = match base_opt {
-            Some(h) => {
-                Blake2b256Hash::from_byte_array(
-                    get_block_unsafe(block_store, &h).await?.post_state_hash.as_bytes(),
-                )
-            }
+            Some(h) => Blake2b256Hash::from_byte_array(
+                get_block_unsafe(block_store, &h)
+                    .await?
+                    .post_state_hash
+                    .as_bytes(),
+            ),
             None => fringe_state,
         };
         MergeScope::merge(
@@ -307,7 +312,11 @@ where
                 status,
             ))
         }
-        Err(e) => return Err(ValidateError::Internal(format!("block summary failed: {e}"))),
+        Err(e) => {
+            return Err(ValidateError::Internal(format!(
+                "block summary failed: {e}"
+            )))
+        }
     }
 
     // Replay validation.
@@ -352,7 +361,11 @@ where
                 status,
             ))
         }
-        Err(e) => return Err(ValidateError::Internal(format!("neglectedInvalidBlock failed: {e}"))),
+        Err(e) => {
+            return Err(ValidateError::Internal(format!(
+                "neglectedInvalidBlock failed: {e}"
+            )))
+        }
     }
 
     // Build/cache the block index.

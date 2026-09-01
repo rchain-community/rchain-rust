@@ -69,22 +69,15 @@ mod tests {
 
     #[tokio::test]
     async fn is_empty_conjoins_both() {
-        let both_empty = RNodeStateManagerImpl::new(
-            Arc::new(EmptyState),
-            Arc::new(EmptyBlocks),
-        );
+        let both_empty = RNodeStateManagerImpl::new(Arc::new(EmptyState), Arc::new(EmptyBlocks));
         assert!(both_empty.is_empty().await);
 
-        let rspace_nonempty = RNodeStateManagerImpl::new(
-            Arc::new(NonEmptyState),
-            Arc::new(EmptyBlocks),
-        );
+        let rspace_nonempty =
+            RNodeStateManagerImpl::new(Arc::new(NonEmptyState), Arc::new(EmptyBlocks));
         assert!(!rspace_nonempty.is_empty().await);
 
-        let blocks_nonempty = RNodeStateManagerImpl::new(
-            Arc::new(EmptyState),
-            Arc::new(NonEmptyBlocks),
-        );
+        let blocks_nonempty =
+            RNodeStateManagerImpl::new(Arc::new(EmptyState), Arc::new(NonEmptyBlocks));
         assert!(!blocks_nonempty.is_empty().await);
     }
 }

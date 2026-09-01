@@ -44,11 +44,18 @@ pub async fn handle_block_hash_message(
     ignore: bool,
 ) {
     if ignore {
-        log.debug(source, &format!("Ignoring {} hash broadcast", hash.to_hex()));
+        log.debug(
+            source,
+            &format!("Ignoring {} hash broadcast", hash.to_hex()),
+        );
     } else {
         log.debug(
             source,
-            &format!("Incoming BlockHashMessage {} from {}", hash.to_hex(), peer.endpoint.host),
+            &format!(
+                "Incoming BlockHashMessage {} from {}",
+                hash.to_hex(),
+                peer.endpoint.host
+            ),
         );
         let _ = block_retriever
             .admit_hash(hash, Some(peer), AdmitHashReason::HashBroadcastRecieved)
@@ -66,11 +73,18 @@ pub async fn handle_has_block_message(
     ignore: bool,
 ) {
     if ignore {
-        log.debug(source, &format!("Ignoring {} HasBlockMessage", hash.to_hex()));
+        log.debug(
+            source,
+            &format!("Ignoring {} HasBlockMessage", hash.to_hex()),
+        );
     } else {
         log.debug(
             source,
-            &format!("Incoming HasBlockMessage {} from {}", hash.to_hex(), peer.endpoint.host),
+            &format!(
+                "Incoming HasBlockMessage {} from {}",
+                hash.to_hex(),
+                peer.endpoint.host
+            ),
         );
         let _ = block_retriever
             .admit_hash(hash, Some(peer), AdmitHashReason::HasBlockMessageReceived)
@@ -149,7 +163,14 @@ pub async fn handle_block_request(
         .copied()
         .unwrap_or(false);
     if has_block {
-        if let Some(block) = block_store.get(&[hash]).await.unwrap_or_default().into_iter().flatten().next() {
+        if let Some(block) = block_store
+            .get(&[hash])
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .flatten()
+            .next()
+        {
             transport_layer_syntax::stream_to_peer(
                 transport,
                 conf,
@@ -160,7 +181,10 @@ pub async fn handle_block_request(
         }
         log.info(
             source,
-            &format!("Received request for block {} from {peer}. Response sent.", hash.to_hex()),
+            &format!(
+                "Received request for block {} from {peer}. Response sent.",
+                hash.to_hex()
+            ),
         );
     } else {
         log.info(
@@ -203,7 +227,10 @@ pub async fn handle_fork_choice_tip_request(
     source: LogSource,
     peer: &PeerNode,
 ) {
-    log.info(source, &format!("Received ForkChoiceTipRequest from {}", peer.endpoint.host));
+    log.info(
+        source,
+        &format!("Received ForkChoiceTipRequest from {}", peer.endpoint.host),
+    );
     let repr = dag.get_representation().await;
     let tips: Vec<BlockHash> = repr
         .dag_message_state
@@ -226,7 +253,10 @@ pub async fn handle_fork_choice_tip_request(
         source,
         &format!(
             "Sending tips {} to {}",
-            tips.iter().map(|t| t.to_hex()).collect::<Vec<_>>().join(" "),
+            tips.iter()
+                .map(|t| t.to_hex())
+                .collect::<Vec<_>>()
+                .join(" "),
             peer.endpoint.host
         ),
     );
@@ -241,7 +271,10 @@ pub async fn handle_finalized_fringe_request(
     peer: &PeerNode,
     fringe: &FinalizedFringe,
 ) {
-    log.info(source, &format!("Received FinalizedFringeRequest from {peer}"));
+    log.info(
+        source,
+        &format!("Received FinalizedFringeRequest from {peer}"),
+    );
     transport_layer_syntax::stream_to_peer(
         transport,
         conf,
@@ -296,7 +329,9 @@ impl<E: RSpaceExporter> NodeRunning<E> {
             log_source: LogSource::new("casper.engine.NodeRunning"),
             validator_id,
             incoming_blocks,
-            block_request_limit: Arc::new(PeerRateLimiter::new(DEFAULT_BLOCK_REQUEST_LIMIT_PER_SEC)),
+            block_request_limit: Arc::new(PeerRateLimiter::new(
+                DEFAULT_BLOCK_REQUEST_LIMIT_PER_SEC,
+            )),
             exporter,
         }
     }
@@ -307,8 +342,10 @@ impl<E: RSpaceExporter> NodeRunning<E> {
         // Validate-on-ingress: a negative skip/take would wrap to a huge `usize` via `as` and make
         // `get_nodes` iterate the whole trie.
         let (Ok(skip), Ok(take)) = (usize::try_from(req.skip), usize::try_from(req.take)) else {
-            self.log
-                .info(self.log_source, "Dropping store-items request with negative skip/take");
+            self.log.info(
+                self.log_source,
+                "Dropping store-items request with negative skip/take",
+            );
             return;
         };
         // Bound the walk: a peer-controlled `take` of i32::MAX would traverse and serialize the
@@ -321,8 +358,11 @@ impl<E: RSpaceExporter> NodeRunning<E> {
             return;
         }
         let nodes = self.exporter.get_nodes(&req.start_path, skip, take);
-        let history_keys: Vec<Blake2b256Hash> =
-            nodes.iter().filter(|n| !n.is_leaf).map(|n| n.hash).collect();
+        let history_keys: Vec<Blake2b256Hash> = nodes
+            .iter()
+            .filter(|n| !n.is_leaf)
+            .map(|n| n.hash)
+            .collect();
         let data_keys: Vec<Blake2b256Hash> =
             nodes.iter().filter(|n| n.is_leaf).map(|n| n.hash).collect();
         let history_items = self
@@ -422,7 +462,10 @@ impl<E: RSpaceExporter> NodeRunning<E> {
                     } else {
                         self.log.debug(
                             self.log_source,
-                            &format!("Incoming BlockMessage #{} from {}", b.block_number, peer.endpoint.host),
+                            &format!(
+                                "Incoming BlockMessage #{} from {}",
+                                b.block_number, peer.endpoint.host
+                            ),
                         );
                     }
                 }
@@ -444,14 +487,8 @@ impl<E: RSpaceExporter> NodeRunning<E> {
                 let repr = self.dag.get_representation().await;
                 let hash = BlockHash::from_slice(&hbr.hash);
                 let has_block = repr.contains(&hash);
-                handle_has_block_request(
-                    self.transport.as_ref(),
-                    &self.conf,
-                    peer,
-                    hbr,
-                    has_block,
-                )
-                .await;
+                handle_has_block_request(self.transport.as_ref(), &self.conf, peer, hbr, has_block)
+                    .await;
             }
             CasperMessage::HasBlock(hb) => {
                 let hash = BlockHash::from_slice(&hb.hash);
@@ -465,8 +502,14 @@ impl<E: RSpaceExporter> NodeRunning<E> {
                     .unwrap_or(false);
                 if known {
                     if not_validated(&self.block_store, self.dag.as_ref(), &hash).await {
-                        if let Some(block) =
-                            self.block_store.get(&[hash]).await.unwrap_or_default().into_iter().flatten().next()
+                        if let Some(block) = self
+                            .block_store
+                            .get(&[hash])
+                            .await
+                            .unwrap_or_default()
+                            .into_iter()
+                            .flatten()
+                            .next()
                         {
                             if self.incoming_blocks.try_send(block).is_err() {
                                 self.log.warn(
@@ -482,7 +525,11 @@ impl<E: RSpaceExporter> NodeRunning<E> {
                 } else {
                     self.log.debug(
                         self.log_source,
-                        &format!("Incoming HasBlockMessage {} from {}", hash.to_hex(), peer.endpoint.host),
+                        &format!(
+                            "Incoming HasBlockMessage {} from {}",
+                            hash.to_hex(),
+                            peer.endpoint.host
+                        ),
                     );
                     let _ = self
                         .block_retriever
@@ -528,12 +575,12 @@ impl<E: RSpaceExporter> NodeRunning<E> {
                         None => None,
                     }
                 } else {
-                    repr.fringe_states.get(&latest_fringe_hashes).map(|fringe_data| {
-                        FinalizedFringe {
+                    repr.fringe_states
+                        .get(&latest_fringe_hashes)
+                        .map(|fringe_data| FinalizedFringe {
                             hashes: latest_fringe_hashes.iter().copied().collect(),
                             state_hash: StateHash::from_slice(fringe_data.state_hash.as_bytes()),
-                        }
-                    })
+                        })
                 };
                 if let Some(fringe_response) = fringe_response {
                     handle_finalized_fringe_request(
@@ -688,7 +735,9 @@ mod tests {
             &log,
             LogSource::new("test"),
             &remote,
-            &BlockRequest { hash: h.as_bytes().to_vec() },
+            &BlockRequest {
+                hash: h.as_bytes().to_vec(),
+            },
             &PeerRateLimiter::new(100),
         )
         .await;
@@ -714,7 +763,9 @@ mod tests {
             &log,
             LogSource::new("test"),
             &remote,
-            &BlockRequest { hash: hash(1).as_bytes().to_vec() },
+            &BlockRequest {
+                hash: hash(1).as_bytes().to_vec(),
+            },
             &PeerRateLimiter::new(100),
         )
         .await;
@@ -732,7 +783,9 @@ mod tests {
             transport.as_ref(),
             &conf(&local),
             &remote,
-            &HasBlockRequest { hash: hash(1).as_bytes().to_vec() },
+            &HasBlockRequest {
+                hash: hash(1).as_bytes().to_vec(),
+            },
             true,
         )
         .await;
@@ -754,7 +807,9 @@ mod tests {
             transport.as_ref(),
             &conf(&local),
             &remote,
-            &HasBlockRequest { hash: hash(1).as_bytes().to_vec() },
+            &HasBlockRequest {
+                hash: hash(1).as_bytes().to_vec(),
+            },
             false,
         )
         .await;

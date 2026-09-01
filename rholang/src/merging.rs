@@ -27,7 +27,8 @@ pub type RhoHotStoreTrieAction =
     HotStoreTrieAction<SortedProc, BindPattern, ListParWithRandom, TaggedContinuation>;
 
 /// The concrete (decoded) history reader.
-pub type RhoHistoryReader = dyn HistoryReader<SortedProc, BindPattern, ListParWithRandom, TaggedContinuation>;
+pub type RhoHistoryReader =
+    dyn HistoryReader<SortedProc, BindPattern, ListParWithRandom, TaggedContinuation>;
 
 /// Extract the number + random state from a number-channel datum (port of `getNumberWithRnd`).
 pub fn get_number_with_rnd(
@@ -80,7 +81,8 @@ pub async fn calculate_number_channel_merge(
     channel_hash: Blake2b256Hash,
     diff: i64,
     changes: &ChannelChange<Vec<u8>>,
-    base_reader: &(dyn HistoryReader<SortedProc, BindPattern, ListParWithRandom, TaggedContinuation> + Sync),
+    base_reader: &(dyn HistoryReader<SortedProc, BindPattern, ListParWithRandom, TaggedContinuation>
+          + Sync),
 ) -> Result<RhoHotStoreTrieAction, String> {
     // Read the initial value of the number channel from the base state.
     let data = base_reader
@@ -143,7 +145,8 @@ pub async fn read_mergeable_values(
         let data = binary.get_data(*ch).await.map_err(|e| e.to_string())?;
         if data.len() > 1 {
             return Err(
-                "To calculate difference on a number channel, single value is expected.".to_string(),
+                "To calculate difference on a number channel, single value is expected."
+                    .to_string(),
             );
         }
         let num = match data.first() {
@@ -206,11 +209,7 @@ fn var_size_u16(bytes: &[u8]) -> Vec<u8> {
 }
 
 /// Encode the mergeable-store key (port of `codecMergeableKey`).
-pub fn encode_mergeable_key(
-    state_hash: &Blake2b256Hash,
-    creator: &[u8],
-    seq_num: i64,
-) -> Vec<u8> {
+pub fn encode_mergeable_key(state_hash: &Blake2b256Hash, creator: &[u8], seq_num: i64) -> Vec<u8> {
     let mut out = var_size_u16(state_hash.as_bytes());
     out.extend(var_size_u16(creator));
     out.extend(vlong_encode(seq_num));
@@ -326,12 +325,21 @@ mod tests {
     fn mergeable_data_round_trips() {
         let seq = vec![
             DeployMergeableData {
-                channels: vec![NumberChannel { hash: h(1), diff: 10 }],
+                channels: vec![NumberChannel {
+                    hash: h(1),
+                    diff: 10,
+                }],
             },
             DeployMergeableData {
                 channels: vec![
-                    NumberChannel { hash: h(1), diff: -5 },
-                    NumberChannel { hash: h(2), diff: 7 },
+                    NumberChannel {
+                        hash: h(1),
+                        diff: -5,
+                    },
+                    NumberChannel {
+                        hash: h(2),
+                        diff: 7,
+                    },
                 ],
             },
         ];
@@ -349,10 +357,13 @@ mod tests {
         ];
         let init = BTreeMap::from([(a, 10i64)]);
         let diffs = calculate_num_channel_diff(&values, &init);
-        assert_eq!(diffs, vec![
-            BTreeMap::from([(a, 10i64)]),
-            BTreeMap::from([(a, 5i64)]),
-            BTreeMap::from([(a, -10i64)]),
-        ]);
+        assert_eq!(
+            diffs,
+            vec![
+                BTreeMap::from([(a, 10i64)]),
+                BTreeMap::from([(a, 5i64)]),
+                BTreeMap::from([(a, -10i64)]),
+            ]
+        );
     }
 }

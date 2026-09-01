@@ -88,7 +88,8 @@ where
         let history_pointer = hash_hashes(consume_channels);
         let init: Vec<Vec<u8>> = base_reader
             .get_continuations(history_pointer)
-            .await.map_err(|e| e.to_string())?
+            .await
+            .map_err(|e| e.to_string())?
             .into_iter()
             .map(|wc| wc.raw)
             .collect();
@@ -127,7 +128,8 @@ where
             None => {
                 let init: Vec<Vec<u8>> = base_reader
                     .get_data(*history_pointer)
-                    .await.map_err(|e| e.to_string())?
+                    .await
+                    .map_err(|e| e.to_string())?
                     .into_iter()
                     .map(|d| d.raw)
                     .collect();
@@ -175,7 +177,8 @@ where
     for (history_pointer, channel_change) in &joins_changes {
         let init: Vec<Vec<u8>> = base_reader
             .get_joins(*history_pointer)
-            .await.map_err(|e| e.to_string())?
+            .await
+            .map_err(|e| e.to_string())?
             .into_iter()
             .map(|j| j.raw)
             .collect();

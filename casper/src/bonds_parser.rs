@@ -25,11 +25,11 @@ pub fn parse(path: &Path) -> Result<BTreeMap<PublicKey, NonNegI64>, String> {
         let (pk_str, stake_str) = line.split_once(' ').ok_or_else(|| {
             format!("INVALID LINE FORMAT: `<public_key> <stake>`, actual: `{line}`")
         })?;
-        let pk_bytes = base16::decode(pk_str)
-            .ok_or_else(|| format!("INVALID PUBLIC KEY: `{pk_str}`"))?;
-        let stake: i64 = stake_str
-            .parse()
-            .map_err(|_| format!("INVALID STAKE `{stake_str}`. Please put a non-negative number."))?;
+        let pk_bytes =
+            base16::decode(pk_str).ok_or_else(|| format!("INVALID PUBLIC KEY: `{pk_str}`"))?;
+        let stake: i64 = stake_str.parse().map_err(|_| {
+            format!("INVALID STAKE `{stake_str}`. Please put a non-negative number.")
+        })?;
         let stake = NonNegI64::try_from(stake)
             .map_err(|_| format!("NEGATIVE STAKE `{stake_str}`. Stake must be non-negative."))?;
         bonds.insert(PublicKey::new(pk_bytes), stake);
@@ -74,7 +74,11 @@ pub fn new_validators(
 
     let mut content = String::new();
     for (pk, stake) in &bonds {
-        content.push_str(&format!("{} {}\n", base16::encode(pk.bytes()), i64::from(*stake)));
+        content.push_str(&format!(
+            "{} {}\n",
+            base16::encode(pk.bytes()),
+            i64::from(*stake)
+        ));
     }
     let _ = std::fs::write(bonds_file_path, content);
     Ok(bonds)
@@ -99,7 +103,10 @@ mod tests {
         let bonds = parse(&path).unwrap();
         // Duplicate keys collapse to the last stake.
         assert_eq!(bonds.len(), 1);
-        assert_eq!(bonds.values().next().copied(), Some(200.try_into().unwrap()));
+        assert_eq!(
+            bonds.values().next().copied(),
+            Some(200.try_into().unwrap())
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }

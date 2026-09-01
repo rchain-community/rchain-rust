@@ -8,25 +8,24 @@ use rchain_crypto::hash::blake2b256_hash::Blake2b256Hash;
 use rchain_crypto::hash::blake2b512_random::Blake2b512Random;
 use rchain_crypto::public_key::PublicKey;
 use rchain_models::ast::{Expr, Par, Var};
-use rchain_shared::refined::NonNegI64;
 use rchain_models::block::state_hash::StateHash;
 use rchain_models::casper::protocol::casper_message::{
     Event, PCost, ProcessedDeploy, ProcessedSystemDeploy, SignedDeployData, SystemDeployData,
 };
 use rchain_models::normalizer_env::NormalizerEnv;
 use rchain_models::par_ops::from_expr;
-use rchain_models::types::count_free_vars;
 use rchain_models::rholang::RhoType::RhoName;
 use rchain_models::runtime::{BindPattern, ListParWithRandom, TaggedContinuation};
 use rchain_models::sorted::SortedProc;
+use rchain_models::types::count_free_vars;
 use rchain_models::validator::Validator;
 use rchain_rholang::accounting::Cost;
 use rchain_rholang::evaluate_result::EvaluateResult;
-use rchain_rholang::native_state::{decode_bonds, pos_bonds_key, NativeSystemState};
 use rchain_rholang::merging::{
     calculate_num_channel_diff, encode_mergeable_key, get_number_with_rnd, DeployMergeableData,
     NumberChannel,
 };
+use rchain_rholang::native_state::{decode_bonds, pos_bonds_key, NativeSystemState};
 use rchain_rholang::runtime::{ReplayRhoRuntime, RhoRuntime};
 use rchain_rholang::storage::{RhoHistoryRepository, RhoMatch};
 use rchain_rholang::system_processes::BlockData;
@@ -34,6 +33,7 @@ use rchain_rspace::hot_store::InMemHotStore;
 use rchain_rspace::merger::event_log_index::NumberChannelsDiff;
 use rchain_rspace::native_store::PREFIX_POS;
 use rchain_rspace::rspace::RSpace;
+use rchain_shared::refined::NonNegI64;
 use rchain_shared::typed_store::KeyValueTypedStore;
 
 use crate::event_converter::to_casper_event;
@@ -110,9 +110,13 @@ impl RuntimeManager {
         let hot = Arc::new(InMemHotStore::new(reader.base()));
         let (_play, replay) =
             RSpace::create_with_replay(self.history_repo.clone(), hot, Arc::new(RhoMatch));
-        ReplayRhoRuntime::create(Arc::new(replay), self.history_repo.clone(), SortedProc::default())
-            .await
-            .map_err(|e| e.to_string())
+        ReplayRhoRuntime::create(
+            Arc::new(replay),
+            self.history_repo.clone(),
+            SortedProc::default(),
+        )
+        .await
+        .map_err(|e| e.to_string())
     }
 
     /// Fork a fresh, isolated play runtime seeded at `root` (the play counterpart of
@@ -138,9 +142,11 @@ impl RuntimeManager {
         let state_hash = Blake2b256Hash::from_byte_array(state_hash);
         let key = encode_mergeable_key(&state_hash, creator, seq_num);
         let vals = self.mergeable_store.get(&[key]).await?;
-        let res = vals.into_iter().next().flatten().ok_or_else(|| {
-            format!("Mergeable store invalid state hash {:?}.", state_hash)
-        })?;
+        let res = vals
+            .into_iter()
+            .next()
+            .flatten()
+            .ok_or_else(|| format!("Mergeable store invalid state hash {:?}.", state_hash))?;
         Ok(res
             .into_iter()
             .map(|d| d.channels.into_iter().map(|c| (c.hash, c.diff)).collect())
@@ -188,7 +194,10 @@ impl RuntimeManager {
         }
         let mut init_values: BTreeMap<Blake2b256Hash, i64> = BTreeMap::new();
         for k in &keys {
-            let data = history_reader.get_data(*k).await.map_err(|e| e.to_string())?;
+            let data = history_reader
+                .get_data(*k)
+                .await
+                .map_err(|e| e.to_string())?;
             let num = match data.first() {
                 Some(d) => get_number_with_rnd(&d.a)?.0,
                 None => 0,
@@ -218,7 +227,10 @@ impl RuntimeManager {
     ) -> Result<Vec<(Vec<BindPattern>, Par)>, String> {
         let runtime = self.fork_play_runtime(to_blake(hash)).await?;
         runtime.reset(to_blake(hash)).await.map_err(|e| e)?;
-        let channels: Vec<SortedProc> = channels.iter().map(|c| SortedProc::new(c.clone())).collect();
+        let channels: Vec<SortedProc> = channels
+            .iter()
+            .map(|c| SortedProc::new(c.clone()))
+            .collect();
         runtime
             .get_continuation_par(&channels)
             .await
@@ -240,10 +252,12 @@ impl RuntimeManager {
         // balance is otherwise a single i32::MAX pool shared across the runtime's lifetime; seeding
         // it here both caps this deploy at `phlo_limit` and resets it between deploys, so one deploy
         // can no longer drain the pool and brick every subsequent deploy until restart.
-        self.runtime.cost().set(rchain_rholang::accounting::Cost::new(
-            deploy.data.phlo_limit,
-            "deploy",
-        ));
+        self.runtime
+            .cost()
+            .set(rchain_rholang::accounting::Cost::new(
+                deploy.data.phlo_limit,
+                "deploy",
+            ));
         let eval_result = self
             .runtime
             .evaluate_with_env(&deploy.data.term, normalizer_env.to_env(), rand)
@@ -329,7 +343,11 @@ impl RuntimeManager {
         let (pre_result, pre_eval) = self.eval_system_deploy(&pre_charge).await?;
         let pre_checkpoint = self.runtime.create_soft_checkpoint().await;
         collector = collector.add(
-            &pre_checkpoint.log.iter().map(to_casper_event).collect::<Vec<_>>(),
+            &pre_checkpoint
+                .log
+                .iter()
+                .map(to_casper_event)
+                .collect::<Vec<_>>(),
             &pre_eval.mergeable,
         );
 
@@ -429,13 +447,22 @@ impl RuntimeManager {
         let checkpoint = self.runtime.create_checkpoint().await.map_err(|e| e)?;
         let mergeable_chs: Vec<NumberChannelsDiff> =
             results.iter().map(|r| r.mergeable.clone()).collect();
-        self.save_mergeable_channels(checkpoint.root, &creator, seq_num, &mergeable_chs, pre_state_hash)
-            .await?;
+        self.save_mergeable_channels(
+            checkpoint.root,
+            &creator,
+            seq_num,
+            &mergeable_chs,
+            pre_state_hash,
+        )
+        .await?;
         Ok((pre_state_hash, checkpoint.root, results))
     }
 
     /// Run a system deploy's source (port of `evaluateSystemSource`).
-    async fn evaluate_system_source(&self, deploy: &SystemDeploy) -> Result<EvaluateResult, String> {
+    async fn evaluate_system_source(
+        &self,
+        deploy: &SystemDeploy,
+    ) -> Result<EvaluateResult, String> {
         self.runtime
             .evaluate_with_env(deploy.source, &deploy.normalizer_env, &deploy.rand)
             .await
@@ -448,14 +475,19 @@ impl RuntimeManager {
         &self,
         deploy: &SystemDeploy,
     ) -> Result<Option<(TaggedContinuation, Vec<ListParWithRandom>)>, String> {
-        let patterns = vec![SortedProc::new(from_expr(Expr::EVar(Box::new(Var::FreeVar(0)))))];
+        let patterns = vec![SortedProc::new(from_expr(Expr::EVar(Box::new(
+            Var::FreeVar(0),
+        ))))];
         let pattern = BindPattern {
             free_count: count_free_vars(patterns[0].as_par()),
             patterns,
             remainder: None,
         };
         self.runtime
-            .consume_result(&[SortedProc::new(deploy.return_channel.clone())], &[pattern])
+            .consume_result(
+                &[SortedProc::new(deploy.return_channel.clone())],
+                &[pattern],
+            )
             .await
             .map_err(|e| e.to_string())
     }
@@ -470,7 +502,10 @@ impl RuntimeManager {
         }
         let eval_result = self.evaluate_system_source(deploy).await?;
         if !eval_result.errors.is_empty() {
-            return Err(format!("Unexpected system errors: {:?}", eval_result.errors));
+            return Err(format!(
+                "Unexpected system errors: {:?}",
+                eval_result.errors
+            ));
         }
         let consumed = self.consume_system_result(deploy).await?;
         match consumed {
@@ -522,7 +557,9 @@ impl RuntimeManager {
             Ok(()) => {
                 let system_deploy = match &deploy.op {
                     Some(NativeSystemDeployOp::CloseBlock) => SystemDeployData::CloseBlock,
-                    Some(NativeSystemDeployOp::Slash { validator }) => SystemDeployData::Slash(*validator),
+                    Some(NativeSystemDeployOp::Slash { validator }) => {
+                        SystemDeployData::Slash(*validator)
+                    }
                     _ => SystemDeployData::Empty,
                 };
                 let processed = ProcessedSystemDeploy::Succeeded {
@@ -561,8 +598,9 @@ impl RuntimeManager {
         let creator = block_data.sender.bytes().to_vec();
         let seq_num = i64::from(block_data.seq_num);
         self.runtime.set_block_data(block_data);
-        let (mut state_hash, processed_deploys) =
-            self.play_deploys_with_cost_accounting(start_hash, terms, rand).await?;
+        let (mut state_hash, processed_deploys) = self
+            .play_deploys_with_cost_accounting(start_hash, terms, rand)
+            .await?;
         let mut processed_system_deploys = Vec::new();
         for sd in system_deploys {
             let (new_hash, processed) = self.play_system_deploy(&state_hash, sd).await?;
@@ -648,7 +686,8 @@ impl RuntimeManager {
         let rand = Blake2b512Random::default_random();
         let mut return_rand = rand.copy();
         let return_channel = RhoName::apply_bytes(return_rand.next());
-        self.capture_results(hash, term, &rand, &return_channel).await
+        self.capture_results(hash, term, &rand, &return_channel)
+            .await
     }
 
     async fn capture_results(
@@ -670,8 +709,11 @@ impl RuntimeManager {
             .cost()
             .set(Cost::new(EXPLORATORY_PHLO_LIMIT, "exploratory"));
         runtime.set_max_reduce_steps(EXPLORATORY_MAX_REDUCE_STEPS);
-        let eval = match tokio::time::timeout(EXPLORATORY_EVAL_TIMEOUT, runtime.evaluate(term, rand))
-            .await
+        let eval = match tokio::time::timeout(
+            EXPLORATORY_EVAL_TIMEOUT,
+            runtime.evaluate(term, rand),
+        )
+        .await
         {
             Ok(eval) => eval.map_err(|e| e.to_string())?,
             Err(_elapsed) => {
@@ -701,7 +743,10 @@ impl RuntimeManager {
     }
 
     /// Query the current bonds at `hash` (native PoS read, port of `computeBonds`).
-    pub async fn compute_bonds(&self, hash: &StateHash) -> Result<BTreeMap<Validator, NonNegI64>, String> {
+    pub async fn compute_bonds(
+        &self,
+        hash: &StateHash,
+    ) -> Result<BTreeMap<Validator, NonNegI64>, String> {
         let reader = self.history_repo.get_history_reader(to_blake(hash)).await;
         let bytes = reader
             .get_native(PREFIX_POS, pos_bonds_key())
@@ -745,9 +790,10 @@ mod tests {
         let rho = RhoRuntime::create(play, history.clone(), SortedProc::default())
             .await
             .unwrap();
-        let replay = ReplayRhoRuntime::create(Arc::new(replay), history.clone(), SortedProc::default())
-            .await
-            .unwrap();
+        let replay =
+            ReplayRhoRuntime::create(Arc::new(replay), history.clone(), SortedProc::default())
+                .await
+                .unwrap();
         let mergeable_store = Arc::new(
             database(
                 &manager,

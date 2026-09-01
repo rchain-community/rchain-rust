@@ -1,0 +1,103 @@
+name: CI
+
+on:
+  push:
+    branches: [dev]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_INCREMENTAL: "0"
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: "1"
+
+jobs:
+  quality:
+    name: Formatting and lints
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      # Existing port debt is explicit so every other rustc or Clippy warning is fatal.
+      # Remove an allowance as soon as its last occurrence is fixed.
+      CLIPPY_DEBT: >-
+        -A dead-code
+        -A clippy::await-holding-lock
+        -A clippy::bad-bit-mask
+        -A clippy::bool-comparison
+        -A clippy::clone-on-copy
+        -A clippy::cloned-ref-to-slice-refs
+        -A clippy::collapsible-str-replace
+        -A clippy::default-constructed-unit-structs
+        -A clippy::derivable-impls
+        -A clippy::doc-lazy-continuation
+        -A clippy::enum-variant-names
+        -A clippy::explicit-auto-deref
+        -A clippy::identity-op
+        -A clippy::if-same-then-else
+        -A clippy::io-other-error
+        -A clippy::items-after-test-module
+        -A clippy::large-enum-variant
+        -A clippy::manual-div-ceil
+        -A clippy::manual-is-multiple-of
+        -A clippy::map-identity
+        -A clippy::module-inception
+        -A clippy::needless-range-loop
+        -A clippy::needless-borrow
+        -A clippy::needless-return
+        -A clippy::explicit-counter-loop
+        -A clippy::new-ret-no-self
+        -A clippy::new-without-default
+        -A clippy::non-canonical-partial-ord-impl
+        -A clippy::redundant-closure
+        -A clippy::result-large-err
+        -A clippy::should-implement-trait
+        -A clippy::too-many-arguments
+        -A clippy::type-complexity
+        -A clippy::unnecessary-lazy-evaluations
+        -A clippy::unnecessary-cast
+        -A clippy::unnecessary-map-or
+        -A clippy::unnecessary-sort-by
+        -A clippy::unwrap-or-default
+        -A clippy::while-let-loop
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Install pinned Rust toolchain
+        run: |
+          rustup show active-toolchain
+          rustup component add --toolchain 1.95.0 rustfmt clippy
+
+      - name: Install protobuf compiler
+        run: sudo apt-get update && sudo apt-get install --no-install-recommends -y protobuf-compiler libprotobuf-dev
+
+      - name: Cache Cargo artifacts
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          cache-on-failure: false
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Run Clippy
+        run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings $CLIPPY_DEBT
+
+  dependencies:
+    name: Dependency audit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Audit Rust dependencies
+        uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2
+        with:
+          command: check advisories

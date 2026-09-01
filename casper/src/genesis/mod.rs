@@ -18,9 +18,9 @@ use rchain_shared::refined::NonNegI64;
 use crate::block_random_seed::BlockRandomSeed;
 use crate::genesis::contracts::{ProofOfStake, Registry, Vault};
 use crate::proto_util::unsigned_block_proto;
-use rchain_shared::refined::{BlockHeight, SeqNum};
 use crate::runtime_manager::RuntimeManager;
 use crate::validator_identity::ValidatorIdentity;
+use rchain_shared::refined::{BlockHeight, SeqNum};
 
 /// Genesis parameters (port of `Genesis`).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -130,7 +130,9 @@ pub async fn create_genesis_block(
         state_hash.into(),
         processed_deploys,
     )?;
-    let signed_block = validator.sign_block(&unsigned_block).map_err(|e| e.to_string())?;
+    let signed_block = validator
+        .sign_block(&unsigned_block)
+        .map_err(|e| e.to_string())?;
 
     // Signing must not change the block hash.
     if unsigned_block.block_hash != signed_block.block_hash {

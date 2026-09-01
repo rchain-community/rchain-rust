@@ -27,21 +27,11 @@ pub struct Transaction {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all_fields = "camelCase")]
 pub enum TransactionType {
-    PreCharge {
-        deploy_id: String,
-    },
-    UserDeploy {
-        deploy_id: String,
-    },
-    Refund {
-        deploy_id: String,
-    },
-    CloseBlock {
-        block_hash: String,
-    },
-    SlashingDeploy {
-        block_hash: String,
-    },
+    PreCharge { deploy_id: String },
+    UserDeploy { deploy_id: String },
+    Refund { deploy_id: String },
+    CloseBlock { block_hash: String },
+    SlashingDeploy { block_hash: String },
 }
 
 /// A transaction plus its type (port of `TransactionInfo`).
@@ -100,9 +90,30 @@ impl TransactionAPIImpl {
                     return None;
                 }
                 let produce = comm.produces.first()?;
-                let from_addr = produce.data.pars.first()?.as_par().exprs.first().and_then(expr_string)?;
-                let to_addr = produce.data.pars.get(2)?.as_par().exprs.first().and_then(expr_string)?;
-                let amount = produce.data.pars.get(3)?.as_par().exprs.first().and_then(expr_int)?;
+                let from_addr = produce
+                    .data
+                    .pars
+                    .first()?
+                    .as_par()
+                    .exprs
+                    .first()
+                    .and_then(expr_string)?;
+                let to_addr = produce
+                    .data
+                    .pars
+                    .get(2)?
+                    .as_par()
+                    .exprs
+                    .first()
+                    .and_then(expr_string)?;
+                let amount = produce
+                    .data
+                    .pars
+                    .get(3)?
+                    .as_par()
+                    .exprs
+                    .first()
+                    .and_then(expr_int)?;
                 let ret_unforgeable = produce.data.pars.get(5)?.as_par().clone();
                 Some(Transaction {
                     from_addr,
@@ -131,13 +142,19 @@ fn expr_int(e: &Expr) -> Option<i64> {
 }
 
 fn pre_charge(id: &str) -> TransactionType {
-    TransactionType::PreCharge { deploy_id: id.to_string() }
+    TransactionType::PreCharge {
+        deploy_id: id.to_string(),
+    }
 }
 fn user_deploy(id: &str) -> TransactionType {
-    TransactionType::UserDeploy { deploy_id: id.to_string() }
+    TransactionType::UserDeploy {
+        deploy_id: id.to_string(),
+    }
 }
 fn refund(id: &str) -> TransactionType {
-    TransactionType::Refund { deploy_id: id.to_string() }
+    TransactionType::Refund {
+        deploy_id: id.to_string(),
+    }
 }
 
 #[async_trait]

@@ -83,11 +83,18 @@ impl WebApi for WebApiImpl {
                 sig_algorithm: signed.sig_algorithm.name().to_string(),
             }
         };
-        self.block_api.deploy(&deploy).await.map_err(BlockApiException)
+        self.block_api
+            .deploy(&deploy)
+            .await
+            .map_err(BlockApiException)
     }
 
     async fn pooled_deploys(&self) -> Result<PooledDeploys, BlockApiException> {
-        let mut pooled = self.block_api.pooled_deploys().await.map_err(BlockApiException)?;
+        let mut pooled = self
+            .block_api
+            .pooled_deploys()
+            .await
+            .map_err(BlockApiException)?;
         // Most-recent-first: the pool's key order is the deploy signature bytes, not insertion time.
         pooled.sort_by_key(|d| std::cmp::Reverse(d.data.timestamp));
         let deploys = pooled.iter().map(to_pooled_deploy).collect();
@@ -138,7 +145,10 @@ impl WebApi for WebApiImpl {
             faucet::sign_faucet_deploy(sk, address, faucet::FAUCET_AMOUNT, &self.shard_id, vabn)
                 .map_err(BlockApiException)?;
         // `deploy` validates, pools, and (with propose-on-deploy) proposes the transfer.
-        self.block_api.deploy(&signed).await.map_err(BlockApiException)?;
+        self.block_api
+            .deploy(&signed)
+            .await
+            .map_err(BlockApiException)?;
         Ok(FaucetResponse {
             deploy_id: base16::encode(&signed.sig),
             amount: faucet::FAUCET_AMOUNT,
@@ -180,7 +190,10 @@ impl WebApi for WebApiImpl {
     }
 
     async fn get_block(&self, hash: &str) -> Result<BlockInfo, BlockApiException> {
-        self.block_api.get_block(hash).await.map_err(BlockApiException)
+        self.block_api
+            .get_block(hash)
+            .await
+            .map_err(BlockApiException)
     }
 
     async fn get_blocks(&self, depth: i32) -> Result<Vec<LightBlockInfo>, BlockApiException> {
@@ -192,7 +205,10 @@ impl WebApi for WebApiImpl {
 
     async fn find_deploy(&self, deploy_id: &str) -> Result<LightBlockInfo, BlockApiException> {
         let id = base16::decode(deploy_id).ok_or_else(invalid_deploy_id)?;
-        self.block_api.find_deploy(&id).await.map_err(BlockApiException)
+        self.block_api
+            .find_deploy(&id)
+            .await
+            .map_err(BlockApiException)
     }
 
     async fn exploratory_deploy(

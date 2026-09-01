@@ -54,7 +54,8 @@ impl ReplGrpcService {
 
     /// Evaluate a program (port of `eval`).
     pub async fn eval(&self, request: &EvalRequest) -> ReplResponse {
-        self.exec(&request.program, request.print_unmatched_sends_only).await
+        self.exec(&request.program, request.print_unmatched_sends_only)
+            .await
     }
 
     async fn exec(&self, source: &str, print_unmatched_sends_only: bool) -> ReplResponse {
@@ -66,24 +67,29 @@ impl ReplGrpcService {
             Ok(term) => {
                 // Port of `printNormalizedTerm`: echo the normalized term on the node console.
                 println!("\nEvaluating:");
-                println!("{}", PrettyPrinter::new().build_string(&Par::from(term.clone())));
+                println!(
+                    "{}",
+                    PrettyPrinter::new().build_string(&Par::from(term.clone()))
+                );
                 let rand = Blake2b512Random::default_random();
                 // Bound the Repl evaluation: a phlo cap (the reducer aborts when the balance is
                 // exhausted) + a wall-clock deadline.
                 self.runtime.cost().set(Cost::new(REPL_PHLO_LIMIT, "repl"));
-                let eval =
-                    match tokio::time::timeout(REPL_EVAL_TIMEOUT, self.runtime.evaluate(source, &rand))
-                        .await
-                    {
-                        Ok(res) => res,
-                        Err(_) => {
-                            return ReplResponse {
-                                output: format!(
-                                    "Error: evaluation timed out after {REPL_EVAL_TIMEOUT:?}"
-                                ),
-                            };
-                        }
-                    };
+                let eval = match tokio::time::timeout(
+                    REPL_EVAL_TIMEOUT,
+                    self.runtime.evaluate(source, &rand),
+                )
+                .await
+                {
+                    Ok(res) => res,
+                    Err(_) => {
+                        return ReplResponse {
+                            output: format!(
+                                "Error: evaluation timed out after {REPL_EVAL_TIMEOUT:?}"
+                            ),
+                        };
+                    }
+                };
                 let pretty_storage = if print_unmatched_sends_only {
                     pretty_print_unmatched_sends(self.runtime.as_ref()).await
                 } else {

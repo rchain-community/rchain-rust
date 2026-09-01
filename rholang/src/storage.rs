@@ -56,7 +56,11 @@ pub struct RhoMatch;
 impl Match<BindPattern, ListParWithRandom> for RhoMatch {
     fn get(&self, pattern: &BindPattern, data: &ListParWithRandom) -> Option<ListParWithRandom> {
         let data_pars: Vec<Par> = data.pars.iter().map(|p| p.as_par().clone()).collect();
-        let pattern_pars: Vec<Par> = pattern.patterns.iter().map(|p| p.as_par().clone()).collect();
+        let pattern_pars: Vec<Par> = pattern
+            .patterns
+            .iter()
+            .map(|p| p.as_par().clone())
+            .collect();
         let matches = fold_match(
             &data_pars,
             &pattern_pars,
@@ -112,7 +116,8 @@ impl Tuplespace for ChargingRSpace {
         data: ListParWithRandom,
         persist: bool,
     ) -> Result<Application, RholangError> {
-        self.cost.charge(Costs::storage_cost_produce(channel, &data))?;
+        self.cost
+            .charge(Costs::storage_cost_produce(channel, &data))?;
         let result = self
             .space
             .produce(channel.clone(), data, persist)
@@ -139,8 +144,11 @@ impl Tuplespace for ChargingRSpace {
         persist: bool,
         peeks: BTreeSet<usize>,
     ) -> Result<Application, RholangError> {
-        self.cost
-            .charge(Costs::storage_cost_consume(channels, patterns, &continuation))?;
+        self.cost.charge(Costs::storage_cost_consume(
+            channels,
+            patterns,
+            &continuation,
+        ))?;
         let result = self
             .space
             .consume(channels, patterns, continuation, persist, peeks)
@@ -192,7 +200,9 @@ mod tests {
     }
 
     #[async_trait]
-    impl RSpaceTuplespace<SortedProc, BindPattern, ListParWithRandom, TaggedContinuation> for MockSpace {
+    impl RSpaceTuplespace<SortedProc, BindPattern, ListParWithRandom, TaggedContinuation>
+        for MockSpace
+    {
         async fn consume(
             &self,
             _channels: &[SortedProc],
@@ -248,10 +258,17 @@ mod tests {
         let charging = ChargingRSpace::new(mock, cost.clone());
 
         charging
-            .produce(&SortedProc::new(par(vec![Expr::GInt(1)])), lpw(vec![par(vec![Expr::GInt(2)])]), false)
+            .produce(
+                &SortedProc::new(par(vec![Expr::GInt(1)])),
+                lpw(vec![par(vec![Expr::GInt(2)])]),
+                false,
+            )
             .await
             .unwrap();
-        assert!(cost.total_charged() > 0, "produce must charge storage/event cost");
+        assert!(
+            cost.total_charged() > 0,
+            "produce must charge storage/event cost"
+        );
 
         // A near-zero balance is exhausted by the upfront storage charge.
         let tiny_cost = Arc::new(CostAccounting::from_initial(Cost::new(1, "tiny")));
@@ -262,7 +279,11 @@ mod tests {
             tiny_cost,
         );
         let err = tiny
-            .produce(&SortedProc::new(par(vec![Expr::GInt(1)])), lpw(vec![par(vec![Expr::GInt(2)])]), false)
+            .produce(
+                &SortedProc::new(par(vec![Expr::GInt(1)])),
+                lpw(vec![par(vec![Expr::GInt(2)])]),
+                false,
+            )
             .await;
         assert!(err.is_err(), "exhausted balance must fail produce");
     }
@@ -283,7 +304,10 @@ mod tests {
             random_state: rchain_crypto::hash::blake2b512_random::Blake2b512Random::new_random(128),
         };
         let result = RhoMatch.get(&pattern, &data).unwrap();
-        assert_eq!(result.pars, vec![SortedProc::new(par(vec![Expr::GInt(42)]))]);
+        assert_eq!(
+            result.pars,
+            vec![SortedProc::new(par(vec![Expr::GInt(42)]))]
+        );
     }
 
     #[test]
@@ -295,18 +319,21 @@ mod tests {
             patterns: vec![],
             peek: true,
         };
-        let data = RSpaceResult {
-            channel: SortedProc::new(par(vec![Expr::GInt(1)])),
-            matched_datum: ListParWithRandom {
-                pars: vec![],
-                random_state: rchain_crypto::hash::blake2b512_random::Blake2b512Random::new_random(128),
-            },
-            removed_datum: ListParWithRandom {
-                pars: vec![],
-                random_state: rchain_crypto::hash::blake2b512_random::Blake2b512Random::new_random(128),
-            },
-            persistent: false,
-        };
+        let data =
+            RSpaceResult {
+                channel: SortedProc::new(par(vec![Expr::GInt(1)])),
+                matched_datum: ListParWithRandom {
+                    pars: vec![],
+                    random_state:
+                        rchain_crypto::hash::blake2b512_random::Blake2b512Random::new_random(128),
+                },
+                removed_datum: ListParWithRandom {
+                    pars: vec![],
+                    random_state:
+                        rchain_crypto::hash::blake2b512_random::Blake2b512Random::new_random(128),
+                },
+                persistent: false,
+            };
         let app = to_application(Some((cont, vec![data]))).unwrap();
         assert!(matches!(app.0, TaggedContinuation::Empty));
         assert!(app.2);

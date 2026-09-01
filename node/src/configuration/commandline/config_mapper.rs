@@ -43,7 +43,10 @@ fn opt_f64(e: &mut Entries, key: &str, v: Option<f64>) {
 
 fn opt_path(e: &mut Entries, key: &str, v: &Option<PathBuf>) {
     if let Some(v) = v {
-        e.push((key.to_string(), Hocon::String(v.to_string_lossy().into_owned())));
+        e.push((
+            key.to_string(),
+            Hocon::String(v.to_string_lossy().into_owned()),
+        ));
     }
 }
 
@@ -103,7 +106,11 @@ pub fn from_options(options: &Options) -> Hocon {
         flag(&mut e, "protocol-server.no-upnp", run.no_upnp);
         opt_str(&mut e, "protocol-server.host", &run.host);
         opt_i32(&mut e, "protocol-server.port", run.protocol_port);
-        flag(&mut e, "protocol-server.use-random-ports", run.use_random_ports);
+        flag(
+            &mut e,
+            "protocol-server.use-random-ports",
+            run.use_random_ports,
+        );
         flag(
             &mut e,
             "protocol-server.disable-state-exporter",
@@ -188,7 +195,11 @@ pub fn from_options(options: &Options) -> Hocon {
             "casper.height-constraint-threshold",
             run.height_constraint_threshold,
         );
-        opt_str(&mut e, "casper.validator-public-key", &run.validator_public_key);
+        opt_str(
+            &mut e,
+            "casper.validator-public-key",
+            &run.validator_public_key,
+        );
         opt_str(
             &mut e,
             "casper.validator-private-key",
@@ -301,15 +312,31 @@ pub fn from_options(options: &Options) -> Hocon {
         );
         opt_str(&mut e, "api-server.host", &run.api_host);
         opt_i32(&mut e, "api-server.port-http", run.api_port_http);
-        opt_i32(&mut e, "api-server.port-admin-http", run.api_port_admin_http);
-        flag(&mut e, "api-server.enable-reporting", run.api_enable_reporting);
+        opt_i32(
+            &mut e,
+            "api-server.port-admin-http",
+            run.api_port_admin_http,
+        );
+        flag(
+            &mut e,
+            "api-server.enable-reporting",
+            run.api_enable_reporting,
+        );
         flag(
             &mut e,
             "api-server.enable-devnet-cors",
             run.api_enable_devnet_cors,
         );
-        opt_i32(&mut e, "api-server.max-blocks-limit", run.api_max_blocks_limit);
-        opt_duration(&mut e, "api-server.keep-alive-time", run.api_keep_alive_time);
+        opt_i32(
+            &mut e,
+            "api-server.max-blocks-limit",
+            run.api_max_blocks_limit,
+        );
+        opt_duration(
+            &mut e,
+            "api-server.keep-alive-time",
+            run.api_keep_alive_time,
+        );
         opt_duration(
             &mut e,
             "api-server.keep-alive-timeout",

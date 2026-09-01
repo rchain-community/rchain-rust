@@ -31,14 +31,22 @@ fn chan(name: &str) -> SortedProc {
 
 /// Assert `hash` matches the committed golden vector for `case`.
 fn assert_state_hash(case: &str, hash: &[u8]) {
-    let want = load_golden(case, "execution").unwrap_or_else(|| panic!("missing golden case {case}"));
-    assert_eq!(rchain_shared::base16::encode(hash), want, "golden mismatch for {case}");
+    let want =
+        load_golden(case, "execution").unwrap_or_else(|| panic!("missing golden case {case}"));
+    assert_eq!(
+        rchain_shared::base16::encode(hash),
+        want,
+        "golden mismatch for {case}"
+    );
 }
 
 #[tokio::test]
 async fn execute_deploy_produces_datum() {
     let (rt, _replay) = build_runtime_pair().await;
-    let res = rt.evaluate(r#"@"chan"!(42)"#, &fixed_rand()).await.expect("evaluate");
+    let res = rt
+        .evaluate(r#"@"chan"!(42)"#, &fixed_rand())
+        .await
+        .expect("evaluate");
     assert!(res.succeeded(), "unexpected errors: {:?}", res.errors);
     let data = rt.get_data_par(&chan("chan")).await.expect("get_data_par");
     assert_eq!(data, vec![from_expr(Expr::GInt(42))]);
@@ -67,7 +75,9 @@ async fn replay_matches_play() {
     rrt.reset(empty_root_hash_value()).await.unwrap();
     rrt.rig(cp.log.clone()).await;
     rrt.evaluate(r#"@"chan"!(42)"#, &rand).await.unwrap();
-    rrt.check_replay_data().await.expect("replay data consistent");
+    rrt.check_replay_data()
+        .await
+        .expect("replay data consistent");
 
     let replay_cp = rrt.create_checkpoint().await.unwrap();
     assert_eq!(cp.root, replay_cp.root);
@@ -97,7 +107,9 @@ async fn failing_deploy_is_captured_not_propagated() {
     assert!(res.failed(), "expected a captured failure");
     assert!(!res.errors.is_empty());
     // The post-state is still checkpointable.
-    rt.create_checkpoint().await.expect("checkpoint after failed deploy");
+    rt.create_checkpoint()
+        .await
+        .expect("checkpoint after failed deploy");
 }
 
 #[tokio::test]
@@ -106,20 +118,32 @@ async fn peek_and_persistent_work() {
     let rand = fixed_rand();
 
     // Peek (`<<-`): read without consuming.
-    rt.evaluate(r#"new c in { c!(42) | for (@x <<- c) { @"peek"!(x) } }"#, &rand)
-        .await
-        .unwrap();
+    rt.evaluate(
+        r#"new c in { c!(42) | for (@x <<- c) { @"peek"!(x) } }"#,
+        &rand,
+    )
+    .await
+    .unwrap();
     assert_eq!(
         rt.get_data_par(&chan("peek")).await.unwrap(),
         vec![from_expr(Expr::GInt(42))]
     );
 
     // Persistent send (`!!`): datum stays across two consumes.
-    rt.evaluate(r#"new c in { c!!(42) | for (@x <- c) { @"p1"!(x) } | for (@y <- c) { @"p2"!(y) } }"#, &rand)
-        .await
-        .unwrap();
-    assert_eq!(rt.get_data_par(&chan("p1")).await.unwrap(), vec![from_expr(Expr::GInt(42))]);
-    assert_eq!(rt.get_data_par(&chan("p2")).await.unwrap(), vec![from_expr(Expr::GInt(42))]);
+    rt.evaluate(
+        r#"new c in { c!!(42) | for (@x <- c) { @"p1"!(x) } | for (@y <- c) { @"p2"!(y) } }"#,
+        &rand,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        rt.get_data_par(&chan("p1")).await.unwrap(),
+        vec![from_expr(Expr::GInt(42))]
+    );
+    assert_eq!(
+        rt.get_data_par(&chan("p2")).await.unwrap(),
+        vec![from_expr(Expr::GInt(42))]
+    );
 }
 
 #[tokio::test]
@@ -179,12 +203,23 @@ async fn concurrent_and_sequential_state_hashes_match() {
         let rt_s = build_runtime(false).await;
         let rand = fixed_rand();
         let rc = rt_c.evaluate(term, &rand).await.unwrap();
-        assert!(rc.succeeded(), "concurrent deploy errors for {term}: {:?}", rc.errors);
+        assert!(
+            rc.succeeded(),
+            "concurrent deploy errors for {term}: {:?}",
+            rc.errors
+        );
         let rs = rt_s.evaluate(term, &rand).await.unwrap();
-        assert!(rs.succeeded(), "sequential deploy errors for {term}: {:?}", rs.errors);
+        assert!(
+            rs.succeeded(),
+            "sequential deploy errors for {term}: {:?}",
+            rs.errors
+        );
         let hc = rt_c.create_checkpoint().await.unwrap().root;
         let hs = rt_s.create_checkpoint().await.unwrap().root;
-        assert_eq!(hc, hs, "concurrent vs sequential state hash mismatch for {term}");
+        assert_eq!(
+            hc, hs,
+            "concurrent vs sequential state hash mismatch for {term}"
+        );
     }
 }
 
@@ -241,7 +276,10 @@ async fn unbounded_recursion_hits_depth_limit_not_stack_overflow() {
         )
         .await
         .expect("evaluate returns Ok");
-    assert!(res.failed(), "expected the reduction-step budget to fail the deploy");
+    assert!(
+        res.failed(),
+        "expected the reduction-step budget to fail the deploy"
+    );
     assert!(
         res.errors
             .iter()

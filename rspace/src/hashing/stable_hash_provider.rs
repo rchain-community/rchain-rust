@@ -109,7 +109,10 @@ mod tests {
     fn join_hash_is_order_independent() {
         let a = ByteChannel(vec![1]);
         let b = ByteChannel(vec![2]);
-        assert_eq!(hash_channels(&[a.clone(), b.clone()]), hash_channels(&[b, a]));
+        assert_eq!(
+            hash_channels(&[a.clone(), b.clone()]),
+            hash_channels(&[b, a])
+        );
     }
 
     #[test]
@@ -206,8 +209,12 @@ mod differential {
         );
 
         let mut encoded2: Vec<Vec<u8>> = vec![
-            hash_channel(&ByteChannel(vec![0x01])).to_byte_array().to_vec(),
-            hash_channel(&ByteChannel(vec![0x02])).to_byte_array().to_vec(),
+            hash_channel(&ByteChannel(vec![0x01]))
+                .to_byte_array()
+                .to_vec(),
+            hash_channel(&ByteChannel(vec![0x02]))
+                .to_byte_array()
+                .to_vec(),
         ];
         encoded2.sort();
         assert_eq!(

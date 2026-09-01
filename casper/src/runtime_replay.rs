@@ -19,15 +19,14 @@ use rchain_models::casper::protocol::casper_message::{
 };
 use rchain_models::normalizer_env::NormalizerEnv;
 use rchain_models::par_ops::from_expr;
-use rchain_models::types::count_free_vars;
 use rchain_models::rholang::RhoType::RhoNumber;
 use rchain_models::runtime::{BindPattern, ListParWithRandom, TaggedContinuation};
 use rchain_models::sorted::SortedProc;
+use rchain_models::types::count_free_vars;
 use rchain_models::validator::Validator;
-use rchain_shared::refined::NonNegI64;
 use rchain_rholang::accounting::{Cost, CostAccounting};
-use rchain_rholang::evaluate_result::EvaluateResult;
 use rchain_rholang::errors::RholangError;
+use rchain_rholang::evaluate_result::EvaluateResult;
 use rchain_rholang::native_state::NativeSystemState;
 use rchain_rholang::reporting_runtime::ReportingRuntime;
 use rchain_rholang::runtime::ReplayRhoRuntime;
@@ -40,6 +39,7 @@ use rchain_rspace::merger::event_log_index::NumberChannelsDiff;
 use rchain_rspace::native_store::InMemNativeStore;
 use rchain_rspace::trace::Log;
 use rchain_rspace::util::ReplayException;
+use rchain_shared::refined::NonNegI64;
 
 use crate::event_converter::to_rspace_event;
 use crate::genesis::contracts::Vault;
@@ -64,7 +64,11 @@ pub trait ReplayRuntime {
 
     async fn reset(&self, root: Blake2b256Hash) -> Result<(), String>;
 
-    async fn evaluate(&self, term: &str, rand: &Blake2b512Random) -> Result<EvaluateResult, RholangError>;
+    async fn evaluate(
+        &self,
+        term: &str,
+        rand: &Blake2b512Random,
+    ) -> Result<EvaluateResult, RholangError>;
 
     async fn evaluate_with_env(
         &self,
@@ -86,7 +90,10 @@ pub trait ReplayRuntime {
 
     async fn check_replay_data(&self) -> Result<(), ReplayException>;
 
-    async fn get_data(&self, channel: &SortedProc) -> Result<Vec<Datum<ListParWithRandom>>, RSpaceError>;
+    async fn get_data(
+        &self,
+        channel: &SortedProc,
+    ) -> Result<Vec<Datum<ListParWithRandom>>, RSpaceError>;
 
     async fn consume_result(
         &self,
@@ -123,8 +130,16 @@ impl<'a, R: ReplayRuntime + ?Sized> RuntimeReplayOps<'a, R> {
         vaults: &[Vault],
     ) -> Result<(Blake2b256Hash, Vec<NumberChannelsDiff>), ReplayFailure> {
         self.runtime.set_block_data(block_data);
-        self.replay_deploys(start_hash, rand, terms, system_deploys, with_cost_accounting, bonds, vaults)
-            .await
+        self.replay_deploys(
+            start_hash,
+            rand,
+            terms,
+            system_deploys,
+            with_cost_accounting,
+            bonds,
+            vaults,
+        )
+        .await
     }
 
     /// Reset to `start_hash`, replay each deploy then each system deploy, and checkpoint (port of
@@ -158,25 +173,23 @@ impl<'a, R: ReplayRuntime + ?Sized> RuntimeReplayOps<'a, R> {
             mergeable.push(
                 self.replay_deploy_e(
                     term,
-                    rand.split_byte(
-                        u8::try_from(i)
-                            .map_err(|_| ReplayFailure::internal_error("deploy count exceeds 255".to_string()))?,
-                    ),
+                    rand.split_byte(u8::try_from(i).map_err(|_| {
+                        ReplayFailure::internal_error("deploy count exceeds 255".to_string())
+                    })?),
                     with_cost_accounting,
                 )
-                    .await?,
+                .await?,
             );
         }
         for (i, sd) in system_deploys.iter().enumerate() {
             mergeable.push(
                 self.replay_block_system_deploy(
                     sd,
-                    rand.split_byte(
-                        u8::try_from(terms.len() + i)
-                            .map_err(|_| ReplayFailure::internal_error("deploy count exceeds 255".to_string()))?,
-                    ),
+                    rand.split_byte(u8::try_from(terms.len() + i).map_err(|_| {
+                        ReplayFailure::internal_error("deploy count exceeds 255".to_string())
+                    })?),
                 )
-                    .await?,
+                .await?,
             );
         }
 
@@ -287,7 +300,8 @@ impl<'a, R: ReplayRuntime + ?Sized> RuntimeReplayOps<'a, R> {
             processed_deploy.refund_amount(),
             rand.split_byte(REFUND_SPLIT_INDEX),
         );
-        let (_refund_result, refund_eval) = self.replay_system_deploy_internal(&refund, None).await?;
+        let (_refund_result, refund_eval) =
+            self.replay_system_deploy_internal(&refund, None).await?;
         self.runtime.create_soft_checkpoint().await;
         if refund_eval.succeeded() {
             mergeable.extend(refund_eval.mergeable.iter().cloned());
@@ -337,11 +351,13 @@ impl<'a, R: ReplayRuntime + ?Sized> RuntimeReplayOps<'a, R> {
             ));
         }
         // Verify evaluation cost matches.
-        let recorded_cost = i64::try_from(processed_deploy.cost.cost).map_err(|_| {
-            ReplayFailure::replay_cost_mismatch(i64::MAX, result.cost.value)
-        })?;
+        let recorded_cost = i64::try_from(processed_deploy.cost.cost)
+            .map_err(|_| ReplayFailure::replay_cost_mismatch(i64::MAX, result.cost.value))?;
         if recorded_cost != result.cost.value {
-            return Err(ReplayFailure::replay_cost_mismatch(recorded_cost, result.cost.value));
+            return Err(ReplayFailure::replay_cost_mismatch(
+                recorded_cost,
+                result.cost.value,
+            ));
         }
         Ok(result)
     }
@@ -374,7 +390,8 @@ impl<'a, R: ReplayRuntime + ?Sized> RuntimeReplayOps<'a, R> {
         }
         let data = self.get_number_channels_data(&eval_res.mergeable).await?;
 
-        self.check_replay_data_with_fix(eval_res.succeeded()).await?;
+        self.check_replay_data_with_fix(eval_res.succeeded())
+            .await?;
 
         Ok(data)
     }
@@ -395,7 +412,8 @@ impl<'a, R: ReplayRuntime + ?Sized> RuntimeReplayOps<'a, R> {
             // Replayed successful execution.
             (None, Ok(())) => {}
             // Replayed failed execution with a matching error.
-            (Some(expected), Err(SystemDeployUserError(actual))) if expected == actual.as_str() => {}
+            (Some(expected), Err(SystemDeployUserError(actual))) if expected == actual.as_str() => {
+            }
             // Error messages differ.
             (Some(expected), Err(SystemDeployUserError(actual))) => {
                 return Err(ReplayFailure::system_deploy_error_mismatch(
@@ -429,7 +447,10 @@ impl<'a, R: ReplayRuntime + ?Sized> RuntimeReplayOps<'a, R> {
             .await
             .map_err(|e| e.to_string())?;
         if !eval_result.errors.is_empty() {
-            return Err(format!("Unexpected system errors: {:?}", eval_result.errors));
+            return Err(format!(
+                "Unexpected system errors: {:?}",
+                eval_result.errors
+            ));
         }
         let consumed = self.consume_system_result(deploy).await?;
         match consumed {
@@ -473,14 +494,19 @@ impl<'a, R: ReplayRuntime + ?Sized> RuntimeReplayOps<'a, R> {
         &self,
         deploy: &SystemDeploy,
     ) -> Result<Option<(TaggedContinuation, Vec<ListParWithRandom>)>, String> {
-        let patterns = vec![SortedProc::new(from_expr(Expr::EVar(Box::new(Var::FreeVar(0)))))];
+        let patterns = vec![SortedProc::new(from_expr(Expr::EVar(Box::new(
+            Var::FreeVar(0),
+        ))))];
         let pattern = BindPattern {
             free_count: count_free_vars(patterns[0].as_par()),
             patterns,
             remainder: None,
         };
         self.runtime
-            .consume_result(&[SortedProc::new(deploy.return_channel.clone())], &[pattern])
+            .consume_result(
+                &[SortedProc::new(deploy.return_channel.clone())],
+                &[pattern],
+            )
             .await
             .map_err(|e| e.to_string())
     }
@@ -555,9 +581,9 @@ impl<'a, R: ReplayRuntime + ?Sized> RuntimeReplayOps<'a, R> {
                 "Number channel must have singleton value.",
             ));
         }
-        let datum = data
-            .first()
-            .ok_or_else(|| ReplayFailure::internal_error("Number channel must have singleton value."))?;
+        let datum = data.first().ok_or_else(|| {
+            ReplayFailure::internal_error("Number channel must have singleton value.")
+        })?;
         let num = get_number_with_rnd(&datum.a).map_err(ReplayFailure::internal_error)?;
         let ch_hash = hash_channel(chan);
         Ok(Some((ch_hash, num)))
@@ -578,7 +604,11 @@ impl ReplayRuntime for ReplayRhoRuntime {
         ReplayRhoRuntime::reset(self, root).await
     }
 
-    async fn evaluate(&self, term: &str, rand: &Blake2b512Random) -> Result<EvaluateResult, RholangError> {
+    async fn evaluate(
+        &self,
+        term: &str,
+        rand: &Blake2b512Random,
+    ) -> Result<EvaluateResult, RholangError> {
         ReplayRhoRuntime::evaluate(self, term, rand).await
     }
 
@@ -612,7 +642,10 @@ impl ReplayRuntime for ReplayRhoRuntime {
         ReplayRhoRuntime::check_replay_data(self).await
     }
 
-    async fn get_data(&self, channel: &SortedProc) -> Result<Vec<Datum<ListParWithRandom>>, RSpaceError> {
+    async fn get_data(
+        &self,
+        channel: &SortedProc,
+    ) -> Result<Vec<Datum<ListParWithRandom>>, RSpaceError> {
         ReplayRhoRuntime::get_data(self, channel).await
     }
 
@@ -647,7 +680,11 @@ impl ReplayRuntime for ReportingRuntime {
         ReportingRuntime::reset(self, root).await
     }
 
-    async fn evaluate(&self, term: &str, rand: &Blake2b512Random) -> Result<EvaluateResult, RholangError> {
+    async fn evaluate(
+        &self,
+        term: &str,
+        rand: &Blake2b512Random,
+    ) -> Result<EvaluateResult, RholangError> {
         ReportingRuntime::evaluate(self, term, rand).await
     }
 
@@ -681,7 +718,10 @@ impl ReplayRuntime for ReportingRuntime {
         ReportingRuntime::check_replay_data(self).await
     }
 
-    async fn get_data(&self, channel: &SortedProc) -> Result<Vec<Datum<ListParWithRandom>>, RSpaceError> {
+    async fn get_data(
+        &self,
+        channel: &SortedProc,
+    ) -> Result<Vec<Datum<ListParWithRandom>>, RSpaceError> {
         ReportingRuntime::get_data(self, channel).await
     }
 

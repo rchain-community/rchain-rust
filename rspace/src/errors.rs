@@ -35,13 +35,17 @@ impl fmt::Display for RSpaceError {
         match self {
             RSpaceError::LockPoisoned => write!(f, "lock poisoned"),
             RSpaceError::Codec(what) => write!(f, "decode {what} failed"),
-            RSpaceError::UnexpectedLeaf(what) => write!(f, "unexpected leaf while looking for {what}"),
+            RSpaceError::UnexpectedLeaf(what) => {
+                write!(f, "unexpected leaf while looking for {what}")
+            }
             RSpaceError::HistoryCommitFailed => write!(f, "history commit failed"),
             RSpaceError::InstallNotAllowed => write!(f, "installing can be done only on startup"),
             RSpaceError::CachedKeyMissing => write!(f, "cached key must be present"),
             RSpaceError::EmptyPrefix => write!(f, "prefix must be non-empty"),
             RSpaceError::ReplayDataNotEmpty => write!(f, "replay data must be empty at checkpoint"),
-            RSpaceError::ReplayCommNotInTrace => write!(f, "COMM event was not contained in the trace"),
+            RSpaceError::ReplayCommNotInTrace => {
+                write!(f, "COMM event was not contained in the trace")
+            }
         }
     }
 }

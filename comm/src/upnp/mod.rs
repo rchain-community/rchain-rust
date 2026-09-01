@@ -152,7 +152,10 @@ fn try_open_ports(
     let res = add_ports(ports, gateway.as_ref(), log);
 
     if res.iter().any(|r| !r) {
-        log("Could not open the ports via UPnP. Please open it manually on your router!".to_string());
+        log(
+            "Could not open the ports via UPnP. Please open it manually on your router!"
+                .to_string(),
+        );
     } else {
         log("UPnP port forwarding was most likely successful!".to_string());
     }
@@ -167,7 +170,11 @@ fn try_open_ports(
     Some(gateway.external_ip_address())
 }
 
-fn remove_ports(mappings: &[PortMappingEntry], gateway: &dyn GatewayDevice, log: &mut dyn FnMut(String)) {
+fn remove_ports(
+    mappings: &[PortMappingEntry],
+    gateway: &dyn GatewayDevice,
+    log: &mut dyn FnMut(String),
+) {
     for m in mappings {
         let res = remove_port(gateway, m);
         let msg = if res.is_ok() { "[success]" } else { "[failed]" };

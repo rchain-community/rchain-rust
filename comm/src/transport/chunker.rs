@@ -39,9 +39,9 @@ pub fn chunk_it(
     };
 
     let buffer = 2 * 1024;
-    let chunk_size = max_message_size
-        .checked_sub(buffer)
-        .ok_or_else(|| format!("max_message_size {max_message_size} is too small (must exceed {buffer})"))?;
+    let chunk_size = max_message_size.checked_sub(buffer).ok_or_else(|| {
+        format!("max_message_size {max_message_size} is too small (must exceed {buffer})")
+    })?;
     let mut chunks = vec![header];
     for data in content.chunks(chunk_size) {
         chunks.push(Chunk {
@@ -86,7 +86,13 @@ mod tests {
         let chunks = chunk_it("testnet", &blob(), 4096).unwrap();
         // header + ceil(3 / (4096 - 2048)) = header + 1 data chunk.
         assert_eq!(chunks.len(), 2);
-        assert!(matches!(chunks[0].content.as_ref().unwrap(), chunk::Content::Header(_)));
-        assert!(matches!(chunks[1].content.as_ref().unwrap(), chunk::Content::Data(_)));
+        assert!(matches!(
+            chunks[0].content.as_ref().unwrap(),
+            chunk::Content::Header(_)
+        ));
+        assert!(matches!(
+            chunks[1].content.as_ref().unwrap(),
+            chunk::Content::Data(_)
+        ));
     }
 }

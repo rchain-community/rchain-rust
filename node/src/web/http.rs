@@ -28,11 +28,11 @@ use rchain_shared::rate_limiter::RateLimiter;
 use rchain_shared::refined::Port;
 
 use crate::api::admin_web_api::AdminWebApi;
-use crate::api::grpc::DEFAULT_API_RATE_LIMIT_PER_SEC;
 use crate::api::dto::{
     BlockApiException, DataAtNameByBlockHashRequest, DataAtNameRequest, DeployRequest,
     ExploreDeployRequest, FaucetRequest,
 };
+use crate::api::grpc::DEFAULT_API_RATE_LIMIT_PER_SEC;
 use crate::api::web_api::WebApi;
 use crate::diagnostics::NewPrometheusReporter;
 use crate::web::reporting::transform_result;
@@ -93,7 +93,8 @@ pub async fn status(State(state): State<HttpState>) -> Response {
             let connections = provider.connections.read().await;
             let discovered = provider.discovery.peers();
             let version = version_info::get(env!("CARGO_PKG_VERSION"), None);
-            let status = status_info::status(&version, &connections, &discovered, &provider.rp_conf);
+            let status =
+                status_info::status(&version, &connections, &discovered, &provider.rp_conf);
             (StatusCode::OK, Json(status)).into_response()
         }
         None => (StatusCode::NOT_FOUND, ()).into_response(),
@@ -126,7 +127,10 @@ async fn api_capabilities(State(state): State<HttpState>) -> Response {
 
 async fn api_deploy(State(state): State<HttpState>, Json(req): Json<DeployRequest>) -> Response {
     if !state.deploy_rate_limiter.allow() {
-        return (StatusCode::TOO_MANY_REQUESTS, Json("deploy rate limit exceeded".to_string()))
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            Json("deploy rate limit exceeded".to_string()),
+        )
             .into_response();
     }
     json_result(state.web_api.deploy(&req).await)
@@ -145,7 +149,10 @@ async fn api_faucet(State(state): State<HttpState>, Json(req): Json<FaucetReques
 
 async fn api_explore_deploy(State(state): State<HttpState>, Json(term): Json<String>) -> Response {
     if !state.deploy_rate_limiter.allow() {
-        return (StatusCode::TOO_MANY_REQUESTS, Json("deploy rate limit exceeded".to_string()))
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            Json("deploy rate limit exceeded".to_string()),
+        )
             .into_response();
     }
     json_result(state.web_api.exploratory_deploy(&term, None, false).await)
@@ -156,7 +163,10 @@ async fn api_explore_deploy_by_block_hash(
     Json(req): Json<ExploreDeployRequest>,
 ) -> Response {
     if !state.deploy_rate_limiter.allow() {
-        return (StatusCode::TOO_MANY_REQUESTS, Json("deploy rate limit exceeded".to_string()))
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            Json("deploy rate limit exceeded".to_string()),
+        )
             .into_response();
     }
     let block_hash = if req.block_hash.is_empty() {
@@ -223,10 +233,7 @@ async fn api_is_finalized(State(state): State<HttpState>, Path(hash): Path<Strin
     json_result(state.web_api.is_finalized(&hash).await)
 }
 
-async fn api_get_transaction(
-    State(state): State<HttpState>,
-    Path(hash): Path<String>,
-) -> Response {
+async fn api_get_transaction(State(state): State<HttpState>, Path(hash): Path<String>) -> Response {
     // Reporting is disabled by default (`api-server.enable-reporting = false`); the route answers
     // 404 unless explicitly enabled (M6 — the flag was read but never enforced for the transaction
     // route).
@@ -234,7 +241,10 @@ async fn api_get_transaction(
         return (StatusCode::NOT_FOUND, ()).into_response();
     }
     if !state.deploy_rate_limiter.allow() {
-        return (StatusCode::TOO_MANY_REQUESTS, Json("deploy rate limit exceeded".to_string()))
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            Json("deploy rate limit exceeded".to_string()),
+        )
             .into_response();
     }
     json_result(state.web_api.get_transaction(&hash).await)
@@ -477,8 +487,8 @@ const OPENAPI_JSON: &str = r##"{
 }"##;
 
 async fn api_v1_openapi() -> Response {
-    let doc: serde_json::Value = serde_json::from_str(OPENAPI_JSON)
-        .unwrap_or_else(|_| serde_json::Value::Null);
+    let doc: serde_json::Value =
+        serde_json::from_str(OPENAPI_JSON).unwrap_or_else(|_| serde_json::Value::Null);
     (StatusCode::OK, Json(doc)).into_response()
 }
 
@@ -502,7 +512,10 @@ async fn reporting_trace(
         return (StatusCode::NOT_FOUND, ()).into_response();
     }
     if !state.deploy_rate_limiter.allow() {
-        return (StatusCode::TOO_MANY_REQUESTS, Json("deploy rate limit exceeded".to_string()))
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            Json("deploy rate limit exceeded".to_string()),
+        )
             .into_response();
     }
     // Validate-on-ingress: a malformed block hash (non-hex / wrong length) must be a 400, not a
@@ -704,9 +717,9 @@ mod tests {
     }
 
     fn test_block_report_api() -> Arc<BlockReportApi> {
-        let store: SharedStore = Arc::new(tokio::sync::Mutex::new(
-            Box::new(InMemoryKeyValueStore::default()),
-        ));
+        let store: SharedStore = Arc::new(tokio::sync::Mutex::new(Box::new(
+            InMemoryKeyValueStore::default(),
+        )));
         let block_store = Arc::new(KeyValueTypedStoreCodec::new(
             store.clone(),
             Arc::new(BlockHashCodec),
@@ -838,7 +851,9 @@ mod tests {
             reporter: Arc::new(NewPrometheusReporter::new(Configuration::default())),
             web_api: Arc::new(MockWebApi {
                 status: test_status(),
-                pooled_deploys: PooledDeploys { deploys: Vec::new() },
+                pooled_deploys: PooledDeploys {
+                    deploys: Vec::new(),
+                },
             }),
             block_report_api: test_block_report_api(),
             status_provider: None,
@@ -908,7 +923,8 @@ mod tests {
 
     #[test]
     fn openapi_json_is_valid() {
-        let doc: serde_json::Value = serde_json::from_str(OPENAPI_JSON).expect("OPENAPI_JSON parses");
+        let doc: serde_json::Value =
+            serde_json::from_str(OPENAPI_JSON).expect("OPENAPI_JSON parses");
         assert_eq!(doc["openapi"], "3.0.0");
         assert!(doc["paths"].is_object());
         assert!(doc["components"]["schemas"].is_object());

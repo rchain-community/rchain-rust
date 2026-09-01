@@ -84,15 +84,13 @@ impl ParCount {
         let pc = ParCount::from_par(&no_frees(par));
         let wildcard = par.exprs.iter().any(ParCount::is_free_var);
         let min_init = pc.clone();
-        let max_init = if wildcard {
-            ParCount::max_count()
-        } else {
-            pc
-        };
-        par.connectives.iter().fold((min_init, max_init), |(min, max), con| {
-            let (cmin, cmax) = ParCount::min_max_connective(con);
-            (min.add(&cmin), max.add(&cmax))
-        })
+        let max_init = if wildcard { ParCount::max_count() } else { pc };
+        par.connectives
+            .iter()
+            .fold((min_init, max_init), |(min, max), con| {
+                let (cmin, cmax) = ParCount::min_max_connective(con);
+                (min.add(&cmin), max.add(&cmax))
+            })
     }
 
     pub fn min_max_connective(con: &Connective) -> (ParCount, ParCount) {
@@ -120,9 +118,7 @@ impl ParCount {
                 (min, max)
             }
             Connective::ConnNot(_) => (ParCount::default(), ParCount::max_count()),
-            Connective::Empty | Connective::VarRef(_) => {
-                (ParCount::default(), ParCount::default())
-            }
+            Connective::Empty | Connective::VarRef(_) => (ParCount::default(), ParCount::default()),
             Connective::ConnBool(_)
             | Connective::ConnInt(_)
             | Connective::ConnBigInt(_)

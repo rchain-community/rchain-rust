@@ -5,9 +5,9 @@
 
 use rchain_models::ast::{AlwaysEqual, Par, Receive, ReceiveBind, Send};
 use rchain_models::par_ops::{par_concat, prepend_receive, prepend_send};
-use rchain_models::types::FreeCount;
 use rchain_models::runtime::{BindPattern, ListParWithRandom, TaggedContinuation};
 use rchain_models::sorted::SortedProc;
+use rchain_models::types::FreeCount;
 use rchain_rspace::internal::{Datum, WaitingContinuation};
 
 use crate::pretty_printer::PrettyPrinter;
@@ -41,7 +41,10 @@ pub async fn pretty_print(runtime: &RhoRuntime) -> String {
     if pars.is_empty() {
         EMPTY_SPACE.to_string()
     } else {
-        let merged = pars.into_iter().reduce(|a, b| par_concat(&a, &b)).unwrap_or_else(|| Par::default());
+        let merged = pars
+            .into_iter()
+            .reduce(|a, b| par_concat(&a, &b))
+            .unwrap_or_else(|| Par::default());
         PrettyPrinter::new().build_string(&merged)
     }
 }
@@ -50,11 +53,17 @@ pub async fn pretty_print(runtime: &RhoRuntime) -> String {
 /// `StoragePrinter.prettyPrintUnmatchedSends(runtime)`).
 pub async fn pretty_print_unmatched_sends(runtime: &RhoRuntime) -> String {
     let mapped = runtime.get_hot_changes().await;
-    let pars: Vec<Par> = mapped.iter().map(|(channels, row)| to_sends(&row.data, channels)).collect();
+    let pars: Vec<Par> = mapped
+        .iter()
+        .map(|(channels, row)| to_sends(&row.data, channels))
+        .collect();
     if pars.is_empty() {
         NO_UNMATCHED_SENDS.to_string()
     } else {
-        let merged = pars.into_iter().reduce(|a, b| par_concat(&a, &b)).unwrap_or_else(|| Par::default());
+        let merged = pars
+            .into_iter()
+            .reduce(|a, b| par_concat(&a, &b))
+            .unwrap_or_else(|| Par::default());
         PrettyPrinter::new().build_string(&merged)
     }
 }
@@ -65,7 +74,12 @@ fn to_sends(data: &[Datum<ListParWithRandom>], channels: &[SortedProc]) -> Par {
         for channel in channels {
             let send = Send {
                 chan: Box::new(channel.as_par().clone().quote()),
-                data: datum.a.pars.iter().map(|p| p.as_par().clone().quote()).collect(),
+                data: datum
+                    .a
+                    .pars
+                    .iter()
+                    .map(|p| p.as_par().clone().quote())
+                    .collect(),
                 persistent: datum.persist,
                 locally_free: AlwaysEqual(vec![]),
                 connective_used: false,
@@ -76,14 +90,21 @@ fn to_sends(data: &[Datum<ListParWithRandom>], channels: &[SortedProc]) -> Par {
     acc
 }
 
-fn to_receive(wks: &[WaitingContinuation<BindPattern, TaggedContinuation>], channels: &[SortedProc]) -> Par {
+fn to_receive(
+    wks: &[WaitingContinuation<BindPattern, TaggedContinuation>],
+    channels: &[SortedProc],
+) -> Par {
     let mut acc = Par::default();
     for wk in wks {
         let binds: Vec<ReceiveBind> = channels
             .iter()
             .zip(wk.patterns.iter())
             .map(|(channel, pattern)| ReceiveBind {
-                patterns: pattern.patterns.iter().map(|p| p.as_par().clone().quote()).collect(),
+                patterns: pattern
+                    .patterns
+                    .iter()
+                    .map(|p| p.as_par().clone().quote())
+                    .collect(),
                 source: Box::new(channel.as_par().clone().quote()),
                 remainder: pattern.remainder.clone().map(Box::new),
                 free_count: FreeCount::from_nonneg(pattern.free_count),

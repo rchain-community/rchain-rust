@@ -25,7 +25,10 @@ pub fn to_rspace_event(event: &Event) -> REvent {
             pe.persistent,
         )),
         Event::Consume(ce) => REvent::Consume(Consume::from_hash(
-            ce.channels_hashes.iter().map(|b| bytes_to_hash(b)).collect(),
+            ce.channels_hashes
+                .iter()
+                .map(|b| bytes_to_hash(b))
+                .collect(),
             bytes_to_hash(&ce.hash),
             ce.persistent,
         )),
@@ -51,8 +54,11 @@ pub fn to_rspace_event(event: &Event) -> REvent {
             }
             let mut produces: Vec<Produce> = times_repeated.keys().cloned().collect();
             produces.sort_by_key(|p| (p.channels_hash, p.hash, p.persistent));
-            let peeks: BTreeSet<usize> =
-                comme.peeks.iter().map(|p| p.channel_index as usize).collect();
+            let peeks: BTreeSet<usize> = comme
+                .peeks
+                .iter()
+                .map(|p| p.channel_index as usize)
+                .collect();
             REvent::Comm(Comm {
                 consume,
                 produces,
@@ -79,7 +85,12 @@ pub fn to_casper_event(event: &REvent) -> Event {
         }),
         REvent::Comm(comm) => Event::Comm(CommEvent {
             consume: ConsumeEvent {
-                channels_hashes: comm.consume.channels_hashes.iter().map(hash_to_bytes).collect(),
+                channels_hashes: comm
+                    .consume
+                    .channels_hashes
+                    .iter()
+                    .map(hash_to_bytes)
+                    .collect(),
                 hash: hash_to_bytes(&comm.consume.hash),
                 persistent: comm.consume.persistent,
             },

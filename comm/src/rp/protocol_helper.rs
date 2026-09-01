@@ -28,7 +28,10 @@ pub fn node(n: &PeerNode) -> Node {
 
 pub fn sender(proto: &Protocol) -> CommErr<PeerNode> {
     let header = proto.header.as_ref().ok_or(CommError::HeaderNotAvailable)?;
-    let sender = header.sender.as_ref().ok_or(CommError::SenderNotAvailable)?;
+    let sender = header
+        .sender
+        .as_ref()
+        .ok_or(CommError::SenderNotAvailable)?;
     PeerNode::from_node(sender)
 }
 
@@ -45,7 +48,9 @@ pub fn protocol(src: &PeerNode, network_id: &str) -> Protocol {
 
 pub fn protocol_handshake(src: &PeerNode, network_id: &str) -> Protocol {
     Protocol {
-        message: Some(protocol::Message::ProtocolHandshake(ProtocolHandshake::default())),
+        message: Some(protocol::Message::ProtocolHandshake(
+            ProtocolHandshake::default(),
+        )),
         ..protocol(src, network_id)
     }
 }
@@ -120,10 +125,7 @@ pub fn to_disconnect(proto: &Protocol) -> CommErr<Disconnect> {
 pub fn blob(sender: PeerNode, type_id: String, content: Vec<u8>) -> Blob {
     Blob {
         sender,
-        packet: Packet {
-            type_id,
-            content,
-        },
+        packet: Packet { type_id, content },
     }
 }
 
@@ -133,14 +135,22 @@ mod tests {
     use crate::peer_node::NodeIdentifier;
 
     fn peer() -> PeerNode {
-        PeerNode::from(NodeIdentifier::new(vec![1, 2, 3]), "host".into(), rchain_shared::refined::Port::new(40400), rchain_shared::refined::Port::new(40404))
+        PeerNode::from(
+            NodeIdentifier::new(vec![1, 2, 3]),
+            "host".into(),
+            rchain_shared::refined::Port::new(40400),
+            rchain_shared::refined::Port::new(40404),
+        )
     }
 
     #[test]
     fn handshake_round_trips() {
         let proto = protocol_handshake(&peer(), "testnet");
         assert_eq!(sender(&proto), Ok(peer()));
-        assert_eq!(to_protocol_handshake(&proto).unwrap().nonce, Vec::<u8>::new());
+        assert_eq!(
+            to_protocol_handshake(&proto).unwrap().nonce,
+            Vec::<u8>::new()
+        );
     }
 
     #[test]
@@ -153,4 +163,3 @@ mod tests {
         assert_eq!(to_packet(&proto).unwrap(), p);
     }
 }
-

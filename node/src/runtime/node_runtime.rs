@@ -17,21 +17,22 @@ use tokio::sync::mpsc;
 use rchain_block_storage::approved_store::{self, ApprovedStore};
 use rchain_block_storage::block_store::{self, BlockStore};
 use rchain_block_storage::dag::codecs::{
-    Blake2b256HashCodec, BlockHashCodec, BlockMetadataCodec, FringeDataCodec,
-    SignedDeployDataCodec,
+    Blake2b256HashCodec, BlockHashCodec, BlockMetadataCodec, FringeDataCodec, SignedDeployDataCodec,
 };
 use rchain_block_storage::dag::dag_storage::{BlockDagStorage, DeployId};
-use rchain_casper::api::block_api_impl::{BlockApiImpl, NetworkStatus, NetworkStatusFn, ProposeFunction};
+use rchain_casper::api::block_api_impl::{
+    BlockApiImpl, NetworkStatus, NetworkStatusFn, ProposeFunction,
+};
 use rchain_casper::api::block_report_api::BlockReportApi;
-use rchain_casper::block_random_seed::BlockRandomSeed;
 use rchain_casper::block_metadata_store::BlockMetadataStore;
-use rchain_casper::blocks::block_receiver::{self, BlockReceiverState};
+use rchain_casper::block_random_seed::BlockRandomSeed;
 use rchain_casper::blocks::block_processor;
+use rchain_casper::blocks::block_receiver::{self, BlockReceiverState};
 use rchain_casper::blocks::block_retriever::BlockRetriever;
 use rchain_casper::blocks::proposer::proposer::{Proposer, ProposerResult};
-use rchain_casper::merging::BlockIndex;
 use rchain_casper::dag::BlockDagKeyValueStorage;
 use rchain_casper::engine::node_launch::{self, PeerMessage};
+use rchain_casper::merging::BlockIndex;
 use rchain_casper::protocol::comm_util::{CommUtil, ConnectionsCell};
 use rchain_casper::reporting::{rho_reporter, ReportingCasper};
 use rchain_casper::runtime_manager::RuntimeManager;
@@ -61,7 +62,9 @@ use rchain_crypto::hash::blake2b256_hash::Blake2b256Hash;
 use rchain_crypto::private_key::PrivateKey;
 use rchain_models::block_hash::BlockHash;
 use rchain_models::block_metadata::BlockMetadata;
-use rchain_models::casper::protocol::casper_message::{BlockMessage, CasperMessage, SignedDeployData};
+use rchain_models::casper::protocol::casper_message::{
+    BlockMessage, CasperMessage, SignedDeployData,
+};
 use rchain_models::casper::protocol::casper_message_protocol::to_casper_message_proto;
 use rchain_models::casper::protocol::report::BlockEventInfo;
 use rchain_models::comm::protocol::Protocol;
@@ -106,12 +109,10 @@ const AUTOPROPOSE_MAX_CONSECUTIVE_FAILURES: u64 = 3;
 /// Build the real block-reporting casper: each `trace` constructs a fresh, isolated reporting
 /// `ReplayRSpace` over the persistent store (the factory clones the store manager, which shares the
 /// underlying LMDB environments).
-fn reporting_casper(
-    store_manager: &LmdbDirStoreManager,
-    shard_id: &str,
-) -> impl ReportingCasper {
+fn reporting_casper(store_manager: &LmdbDirStoreManager, shard_id: &str) -> impl ReportingCasper {
     let store_manager = store_manager.clone();
-    let mergeable_tag_name = SortedProc::new(BlockRandomSeed::non_negative_mergeable_tag_name(shard_id));
+    let mergeable_tag_name =
+        SortedProc::new(BlockRandomSeed::non_negative_mergeable_tag_name(shard_id));
     rho_reporter(
         move || {
             let manager = store_manager.clone();
@@ -179,8 +180,7 @@ pub async fn create_comm_state(
         &key,
         usize::try_from(conf.protocol_client.grpc_max_recv_message_size)
             .map_err(|e| e.to_string())?,
-        usize::try_from(conf.protocol_client.grpc_stream_chunk_size)
-            .map_err(|e| e.to_string())?,
+        usize::try_from(conf.protocol_client.grpc_stream_chunk_size).map_err(|e| e.to_string())?,
         100,
     )?);
 
@@ -199,10 +199,8 @@ pub async fn create_comm_state(
         max_num_of_connections: usize::try_from(conf.protocol_client.batch_max_connections)
             .map_err(|e| e.to_string())?,
         clear_connections: ClearConnectionsConf {
-            num_of_connections_pinged: usize::try_from(
-                conf.peers_discovery.heartbeat_batch_size,
-            )
-            .map_err(|e| e.to_string())?,
+            num_of_connections_pinged: usize::try_from(conf.peers_discovery.heartbeat_batch_size)
+                .map_err(|e| e.to_string())?,
         },
     };
 
@@ -271,7 +269,8 @@ pub async fn create_comm_state(
                 discovery.discover().await;
                 let current = connections.read().await.clone();
                 let new_peers =
-                    find_and_connect(discovery.as_ref(), &rp_conf, transport.as_ref(), &current).await;
+                    find_and_connect(discovery.as_ref(), &rp_conf, transport.as_ref(), &current)
+                        .await;
                 if !new_peers.is_empty() {
                     let mut guard = connections.write().await;
                     *guard = add_conn(&guard, &new_peers);
@@ -382,8 +381,11 @@ impl NodeProgram {
                 .parse::<std::net::SocketAddr>()
                 .map_err(|e| e.to_string())?;
 
-        let grpc_external =
-            tokio::spawn(serve_deploy(deploy, grpc_external_addr, grpc_max_recv_message_size));
+        let grpc_external = tokio::spawn(serve_deploy(
+            deploy,
+            grpc_external_addr,
+            grpc_max_recv_message_size,
+        ));
         let grpc_internal = tokio::spawn(serve_internal(
             propose,
             repl,
@@ -433,7 +435,8 @@ impl NodeProgram {
                     .serve(protocol.dispatch, protocol.handle_streamed)
                     .await
             });
-            let (ge, gi, h, a, p) = tokio::join!(grpc_external, grpc_internal, http, admin, protocol);
+            let (ge, gi, h, a, p) =
+                tokio::join!(grpc_external, grpc_internal, http, admin, protocol);
             ge.map_err(|e| e.to_string())??;
             gi.map_err(|e| e.to_string())??;
             h.map_err(|e| e.to_string())??;
@@ -507,8 +510,9 @@ pub fn wire_block_processing(
     };
 
     // Block receiver: incoming + validated blocks → a queue of dependency-free block hashes.
-    let receiver_state =
-        Arc::new(tokio::sync::Mutex::new(BlockReceiverState::<BlockHash>::new()));
+    let receiver_state = Arc::new(tokio::sync::Mutex::new(
+        BlockReceiverState::<BlockHash>::new(),
+    ));
     let put_to_incoming_queue: Arc<dyn Fn(BlockMessage) + Send + Sync> = Arc::new({
         let incoming_blocks_tx = incoming_blocks_tx.clone();
         move |block| {
@@ -620,14 +624,18 @@ fn spawn_peer_message_stream(
     tokio::spawn(async move {
         while let Some(rm) = routing_rx.recv().await {
             let peer = rm.peer.clone();
-            match to_casper_message_proto(&rm.packet).and_then(|proto| CasperMessage::from_proto(&proto)) {
+            match to_casper_message_proto(&rm.packet)
+                .and_then(|proto| CasperMessage::from_proto(&proto))
+            {
                 Ok(message) => {
                     let _ = peer_message_tx.send(PeerMessage { peer, message }).await;
                 }
                 Err(err) => {
                     log.warn(
                         source,
-                        &format!("Could not extract casper message from packet sent by {peer}: {err}"),
+                        &format!(
+                            "Could not extract casper message from packet sent by {peer}: {err}"
+                        ),
                     );
                 }
             }
@@ -665,8 +673,14 @@ fn build_protocol_server(
             let connections = connections.clone();
             let routing_tx = routing_tx.clone();
             Box::pin(async move {
-                handle_messages::handle(proto, &rp_conf, transport.as_ref(), connections.as_ref(), &routing_tx)
-                    .await
+                handle_messages::handle(
+                    proto,
+                    &rp_conf,
+                    transport.as_ref(),
+                    connections.as_ref(),
+                    &routing_tx,
+                )
+                .await
             })
         })
     };
@@ -855,7 +869,9 @@ pub async fn setup_node_program(
             }
         };
         let propose_effect: Arc<
-            dyn Fn(&BlockMessage) -> Pin<Box<dyn Future<Output = ()> + Send + 'static>> + Send + Sync,
+            dyn Fn(&BlockMessage) -> Pin<Box<dyn Future<Output = ()> + Send + 'static>>
+                + Send
+                + Sync,
         > = {
             // The block body is persisted by `Proposer::validate_block` (before the DAG insert);
             // here we only broadcast the block hash to peers.
@@ -975,13 +991,14 @@ pub async fn setup(
     );
 
     // Runtime manager (play + replay runtimes + mergeable store).
-    let history =
-        create_history_repository::<SortedProc, BindPattern, ListParWithRandom, TaggedContinuation>(
-            &store_manager,
-            "rspace",
-        )
-        .await
-        .map_err(|e| e.to_string())?;
+    let history = create_history_repository::<
+        SortedProc,
+        BindPattern,
+        ListParWithRandom,
+        TaggedContinuation,
+    >(&store_manager, "rspace")
+    .await
+    .map_err(|e| e.to_string())?;
     let reader = history.get_history_reader(history.root()).await;
     let hot = Arc::new(InMemHotStore::new(reader.base()));
     let (play, replay) = RSpace::create_with_replay(history.clone(), hot, Arc::new(RhoMatch));
@@ -1010,13 +1027,14 @@ pub async fn setup(
 
     // Eval runtime for the Repl service — an isolated `eval-*` store set so REPL evaluation never
     // reads/writes the node's live chain state (port of Scala's `evalStores`).
-    let eval_history =
-        create_history_repository::<SortedProc, BindPattern, ListParWithRandom, TaggedContinuation>(
-            &store_manager,
-            "eval",
-        )
-        .await
-        .map_err(|e| e.to_string())?;
+    let eval_history = create_history_repository::<
+        SortedProc,
+        BindPattern,
+        ListParWithRandom,
+        TaggedContinuation,
+    >(&store_manager, "eval")
+    .await
+    .map_err(|e| e.to_string())?;
     let eval_reader = eval_history.get_history_reader(eval_history.root()).await;
     let eval_hot = Arc::new(InMemHotStore::new(eval_reader.base()));
     let (eval_play, _) =

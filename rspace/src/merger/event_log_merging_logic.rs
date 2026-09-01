@@ -147,7 +147,10 @@ pub fn conflicts(a: &EventLogIndex, b: &EventLogIndex) -> Vec<Blake2b256Hash> {
     races.extend(check(b, a));
 
     // Check #3: produces touching base joins.
-    for p in a.produces_touching_base_joins.union(&b.produces_touching_base_joins) {
+    for p in a
+        .produces_touching_base_joins
+        .union(&b.produces_touching_base_joins)
+    {
         races.push(p.channels_hash);
     }
 

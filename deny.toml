@@ -1,0 +1,5 @@
+# `hocon` depends on `java-properties`, which currently depends on the abandoned
+# `encoding` crate. There is no safe upgrade available upstream; keep this exception
+# visible and scoped to the specific RustSec advisory while the dependency is replaced.
+[advisories]
+ignore = ["RUSTSEC-2021-0153"]

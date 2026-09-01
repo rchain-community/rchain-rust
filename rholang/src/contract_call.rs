@@ -41,8 +41,10 @@ impl<T: Tuplespace, D: Dispatch> ContractCall<T, D> {
             )
             .await?;
         if let Some((continuation, data_list, _)) = result {
-            let data: Vec<ListParWithRandom> =
-                data_list.iter().map(|(_, matched, _, _)| matched.clone()).collect();
+            let data: Vec<ListParWithRandom> = data_list
+                .iter()
+                .map(|(_, matched, _, _)| matched.clone())
+                .collect();
             self.dispatcher.dispatch(continuation, data).await?;
         }
         Ok(())
@@ -55,7 +57,10 @@ impl<T: Tuplespace, D: Dispatch> ContractCall<T, D> {
         contract_args: &[ListParWithRandom],
     ) -> Option<(Vec<Par>, Blake2b512Random)> {
         if let [single] = contract_args {
-            Some((single.pars.iter().map(|p| p.as_par().clone()).collect(), single.random_state.clone()))
+            Some((
+                single.pars.iter().map(|p| p.as_par().clone()).collect(),
+                single.random_state.clone(),
+            ))
         } else {
             None
         }

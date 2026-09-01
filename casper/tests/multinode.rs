@@ -51,15 +51,14 @@ fn three_validators_converge_on_shared_view() {
     let state: DagMessageState<BlockHash, Validator> = DagMessageState::empty();
 
     // Genesis: a single message from v0 with empty justifications.
-    let genesis = state
-        .create_message(
-            msg_id(&v0, BlockHeight::zero()),
-            BlockHeight::zero(),
-            v0.clone(),
-            SeqNum::zero(),
-            bonds.clone(),
-            &BTreeSet::new(),
-        );
+    let genesis = state.create_message(
+        msg_id(&v0, BlockHeight::zero()),
+        BlockHeight::zero(),
+        v0.clone(),
+        SeqNum::zero(),
+        bonds.clone(),
+        &BTreeSet::new(),
+    );
     let mut state = state.insert_msg(&genesis);
 
     // Interleave proposals; each message justifies the current latest messages.
@@ -85,7 +84,11 @@ fn three_validators_converge_on_shared_view() {
     }
 
     // Law 15: one latest message per sender, and the retained one has the highest sender_seq.
-    let senders: BTreeSet<Validator> = state.latest_msgs.values().map(|m| m.sender.clone()).collect();
+    let senders: BTreeSet<Validator> = state
+        .latest_msgs
+        .values()
+        .map(|m| m.sender.clone())
+        .collect();
     assert_eq!(senders.len(), 3, "one latest message per validator");
     for m in state.latest_msgs.values() {
         let max_seq = ids
@@ -95,6 +98,9 @@ fn three_validators_converge_on_shared_view() {
             .map(|msg| msg.sender_seq)
             .max()
             .unwrap();
-        assert_eq!(m.sender_seq, max_seq, "latest message has the max sender_seq");
+        assert_eq!(
+            m.sender_seq, max_seq,
+            "latest message has the max sender_seq"
+        );
     }
 }

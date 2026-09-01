@@ -35,7 +35,9 @@ impl Blake2b256Hash {
 
     /// Hash the concatenation of `parts` and wrap the result.
     pub fn create_many(parts: &[&[u8]]) -> Self {
-        Self(Hash32::new(digest_to_array(super::blake2b256::hash_many(parts))))
+        Self(Hash32::new(digest_to_array(super::blake2b256::hash_many(
+            parts,
+        ))))
     }
 
     /// Wrap an existing 32-byte array without hashing.

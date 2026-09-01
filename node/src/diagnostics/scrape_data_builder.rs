@@ -141,13 +141,7 @@ impl ScrapeDataBuilder {
         }
     }
 
-    fn append_time_serie_value(
-        &mut self,
-        name: &str,
-        tags: &Tags,
-        value: &str,
-        suffix: &str,
-    ) {
+    fn append_time_serie_value(&mut self, name: &str, tags: &Tags, value: &str, suffix: &str) {
         self.push(name);
         self.push(suffix);
         self.append_tags(tags);
@@ -377,14 +371,25 @@ mod tests {
                 min: 1,
                 max: 10,
                 buckets: vec![
-                    Bucket { value: 1, frequency: 1 },
-                    Bucket { value: 5, frequency: 1 },
-                    Bucket { value: 10, frequency: 1 },
+                    Bucket {
+                        value: 1,
+                        frequency: 1,
+                    },
+                    Bucket {
+                        value: 5,
+                        frequency: 1,
+                    },
+                    Bucket {
+                        value: 10,
+                        frequency: 1,
+                    },
                 ],
             },
         };
         let mut config = Configuration::default();
-        config.custom_buckets.insert("hist".to_string(), vec![1.0, 5.0]);
+        config
+            .custom_buckets
+            .insert("hist".to_string(), vec![1.0, 5.0]);
 
         let mut b = ScrapeDataBuilder::new(config, Tags::new());
         b.append_histograms(&[hist]);

@@ -45,7 +45,10 @@ pub fn delete_directory(path: &Path, log: &dyn Log, source: LogSource) {
         Err(e) if e.kind() == io::ErrorKind::NotFound => {
             log.warn(
                 source,
-                &format!("Can't delete file or directory {}: No such file", path.display()),
+                &format!(
+                    "Can't delete file or directory {}: No such file",
+                    path.display()
+                ),
             );
             return;
         }

@@ -76,13 +76,11 @@ impl KademliaRpc for GrpcKademliaRpc {
                 .map_err(|e| e.to_string())
         };
         match tokio::time::timeout(self.timeout, result).await {
-            Ok(Ok(response)) if response.network_id == self.network_id => {
-                response
-                    .nodes
-                    .iter()
-                    .filter_map(|n| to_peer_node(n).ok())
-                    .collect()
-            }
+            Ok(Ok(response)) if response.network_id == self.network_id => response
+                .nodes
+                .iter()
+                .filter_map(|n| to_peer_node(n).ok())
+                .collect(),
             _ => Vec::new(),
         }
     }

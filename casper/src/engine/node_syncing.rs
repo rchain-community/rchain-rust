@@ -144,8 +144,10 @@ impl<I: RSpaceImporter + Send + 'static> NodeSyncing<I> {
             .map(|b| b == sender)
             .unwrap_or(false);
         if !sender_is_bootstrap {
-            self.log
-                .info(self.log_source, "Fringe message ignored, not received from bootstrap node.");
+            self.log.info(
+                self.log_source,
+                "Fringe message ignored, not received from bootstrap node.",
+            );
         }
 
         let start = if self.start_requester {
@@ -189,8 +191,10 @@ impl<I: RSpaceImporter + Send + 'static> NodeSyncing<I> {
             let importer = match self.importer.take() {
                 Some(importer) => importer,
                 None => {
-                    self.log
-                        .error(self.log_source, "LFS sync requested twice; importer already taken");
+                    self.log.error(
+                        self.log_source,
+                        "LFS sync requested twice; importer already taken",
+                    );
                     return Err("LFS sync already started: importer already taken".to_string());
                 }
             };
@@ -202,7 +206,8 @@ impl<I: RSpaceImporter + Send + 'static> NodeSyncing<I> {
                         "LFS sync requested twice; incoming-blocks receiver already taken",
                     );
                     return Err(
-                        "LFS sync already started: incoming-blocks receiver already taken".to_string(),
+                        "LFS sync already started: incoming-blocks receiver already taken"
+                            .to_string(),
                     );
                 }
             };
@@ -213,7 +218,9 @@ impl<I: RSpaceImporter + Send + 'static> NodeSyncing<I> {
                         self.log_source,
                         "LFS sync requested twice; tuple-space receiver already taken",
                     );
-                    return Err("LFS sync already started: tuple-space receiver already taken".to_string());
+                    return Err(
+                        "LFS sync already started: tuple-space receiver already taken".to_string(),
+                    );
                 }
             };
             tokio::spawn(async move {
@@ -293,8 +300,7 @@ async fn run_approved_state_sync<I: RSpaceImporter + Send + 'static>(
     // fringe root - request those too, or an observer's local history reader has no root to open for
     // anything but the exact fringe state once restore finishes.
     let fringe_root = Blake2b256Hash::from_byte_array(fringe.state_hash.as_bytes());
-    let block_roots =
-        collect_block_state_roots(&block_store, &block_st.height_map).await?;
+    let block_roots = collect_block_state_roots(&block_store, &block_st.height_map).await?;
     let extra_roots: Vec<Blake2b256Hash> = block_roots
         .into_iter()
         .filter(|root| *root != fringe_root)
@@ -321,7 +327,13 @@ async fn run_approved_state_sync<I: RSpaceImporter + Send + 'static>(
     }
 
     log.info(source, "Rholang state received and saved to store.");
-    populate_dag(dag.as_ref(), &block_store, log.as_ref(), &block_st.height_map).await?;
+    populate_dag(
+        dag.as_ref(),
+        &block_store,
+        log.as_ref(),
+        &block_st.height_map,
+    )
+    .await?;
     Ok(())
 }
 
@@ -377,7 +389,10 @@ async fn populate_dag(
             .next()
             .ok_or_else(|| format!("missing block {}", hash.to_hex()))?;
         let block_height = i64::from(block.block_number);
-        log.info(source, &format!("Adding #{} {}.", block.block_number, hash.to_hex()));
+        log.info(
+            source,
+            &format!("Adding #{} {}.", block.block_number, hash.to_hex()),
+        );
         if block_height == 0 {
             // Genesis block: insert with validated metadata (fringe empty, fringe_state =
             // pre_state), matching `insert_genesis`, so the validator is bonded and can build on
@@ -481,9 +496,14 @@ mod tests {
                 Arc::new(SignedDeployDataCodec),
             ));
         Arc::new(
-            BlockDagKeyValueStorage::create(metadata_store, fringe_store, deploy_index, deploy_store)
-                .await
-                .unwrap(),
+            BlockDagKeyValueStorage::create(
+                metadata_store,
+                fringe_store,
+                deploy_index,
+                deploy_store,
+            )
+            .await
+            .unwrap(),
         )
     }
 

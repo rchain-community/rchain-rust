@@ -51,23 +51,34 @@ fn fork_structure_advances_fringe() {
     .collect();
 
     let st: DagMessageState<BlockHash, Validator> = DagMessageState::empty();
-    let genesis =
-        st.create_message(id(255, 0), h(0), g, s(0), bonds.clone(), &BTreeSet::new());
+    let genesis = st.create_message(id(255, 0), h(0), g, s(0), bonds.clone(), &BTreeSet::new());
     let st = st.insert_msg(&genesis);
 
     // Layer 1: a three-way fork — each validator sees only genesis.
     let a1 = st.create_message(
-        id(0, 1), h(1), v0.clone(), s(1), bonds.clone(),
+        id(0, 1),
+        h(1),
+        v0.clone(),
+        s(1),
+        bonds.clone(),
         &[genesis.clone()].into_iter().collect(),
     );
     let st = st.insert_msg(&a1);
     let b1 = st.create_message(
-        id(1, 1), h(1), v1.clone(), s(1), bonds.clone(),
+        id(1, 1),
+        h(1),
+        v1.clone(),
+        s(1),
+        bonds.clone(),
         &[genesis.clone()].into_iter().collect(),
     );
     let st = st.insert_msg(&b1);
     let c1 = st.create_message(
-        id(2, 1), h(1), v2.clone(), s(1), bonds.clone(),
+        id(2, 1),
+        h(1),
+        v2.clone(),
+        s(1),
+        bonds.clone(),
         &[genesis.clone()].into_iter().collect(),
     );
     let st = st.insert_msg(&c1);
@@ -94,7 +105,10 @@ fn fork_structure_advances_fringe() {
     let l3: BTreeSet<_> = [a3.clone(), b3.clone(), c3.clone()].into_iter().collect();
     let a4 = st.create_message(id(0, 4), h(4), v0.clone(), s(4), bonds.clone(), &l3);
 
-    assert!(!a4.fringe.is_empty(), "fringe should advance past the empty genesis fringe");
+    assert!(
+        !a4.fringe.is_empty(),
+        "fringe should advance past the empty genesis fringe"
+    );
     assert_eq!(
         a4.fringe,
         [id(0, 1), id(1, 1), id(2, 1)].into_iter().collect(),
