@@ -184,7 +184,7 @@ mod tests {
             record_many(&mut forward, &ops).unwrap();
             record_many(&mut backward, &reverse).unwrap();
 
-            prop_assert_eq!(forward, backward);
+            prop_assert_eq!(&forward, &backward);
             let total_is_zero = ops
                 .iter()
                 .fold(BTreeMap::<u8, i64>::new(), |mut acc, &(c, d)| {
