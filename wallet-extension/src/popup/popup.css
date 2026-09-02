@@ -1,0 +1,166 @@
+:root {
+  color-scheme: dark;
+}
+
+body {
+  margin: 0;
+  width: 360px;
+  background: #0b0f14;
+  color: #e7eef5;
+  font: 14px/1.4 system-ui, sans-serif;
+}
+
+.popup {
+  display: grid;
+  gap: 10px;
+  padding: 16px;
+}
+
+h1 {
+  margin: 0;
+  font-size: 1.05rem;
+}
+
+h2 {
+  margin: 6px 0 0;
+  font-size: 0.85rem;
+  text-transform: uppercase;
+  color: #7f93a6;
+}
+
+.muted {
+  margin: 0;
+  color: #8fa0b0;
+  font-size: 0.85rem;
+}
+
+.error {
+  margin: 0;
+  color: #ff8a8a;
+  font-size: 0.85rem;
+}
+
+.origin {
+  margin: 0;
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: rgba(111, 255, 177, 0.1);
+  border: 1px solid rgba(111, 255, 177, 0.3);
+  font-weight: 700;
+  word-break: break-all;
+}
+
+.address {
+  margin: 0;
+  font-weight: 700;
+  word-break: break-all;
+}
+
+form {
+  display: grid;
+  gap: 8px;
+}
+
+label {
+  display: grid;
+  gap: 4px;
+  font-size: 0.85rem;
+}
+
+input,
+textarea {
+  background: #131a22;
+  border: 1px solid #2a3745;
+  border-radius: 6px;
+  padding: 8px;
+  color: inherit;
+  font: inherit;
+  word-break: break-all;
+}
+
+textarea {
+  resize: vertical;
+  font-family: ui-monospace, monospace;
+  font-size: 0.78rem;
+}
+
+button {
+  border-radius: 8px;
+  border: 1px solid #2a3745;
+  background: #131a22;
+  color: inherit;
+  padding: 8px 12px;
+  font: inherit;
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+button.link {
+  border: none;
+  background: none;
+  color: #7ab7ff;
+  padding: 0;
+  justify-self: start;
+}
+
+.actions {
+  display: flex;
+  gap: 8px;
+}
+
+.actions .approve {
+  flex: 1;
+  border-color: #6fffb1;
+  background: #6fffb1;
+  color: #061016;
+  font-weight: 700;
+}
+
+.actions .reject {
+  flex: 1;
+}
+
+.fields {
+  margin: 0;
+  display: grid;
+  gap: 4px;
+  font-size: 0.85rem;
+}
+
+.fields div {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.fields dt {
+  color: #8fa0b0;
+}
+
+.fields dd {
+  margin: 0;
+}
+
+.connections {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 6px;
+}
+
+.connections li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 8px;
+  border: 1px solid #2a3745;
+  border-radius: 8px;
+  font-size: 0.8rem;
+  word-break: break-all;
+}
