@@ -56,6 +56,7 @@
 - [Quantum operators → the ρ-calculus](qucalc/quantum-to-rho.md)
 - [Multi-stakeholder governance](qucalc/multi-stakeholder-governance.md)
 - [Architecture](qucalc/architecture.md)
+- [Experimental: TreeProc + zero-action ledger concurrent reducer](qucalc/zfa-concurrent-reducer.md)
 - [Using the extensions](qucalc/extensions.md)
 - [Examples](qucalc/examples.md)
 - [Upstream references](qucalc/references.md)
