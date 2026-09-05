@@ -6,17 +6,17 @@ license = "AGPL-3.0-only"
 description = "Faithful Rust port of the RChain models module (rholang AST + canonicalizing sorter)."
 
 [dependencies]
-num-bigint = { version = "0.4", features = ["serde"] }
+num-bigint = { version = "0.5", features = ["serde"] }
 num-traits = "0.2"
-prost = "0.13"
+prost = "0.14"
 serde = { version = "1", features = ["derive"] }
-tonic = "0.12"
+tonic = "0.14"
 rchain-crypto = { path = "../crypto" }
 rchain-shared = { path = "../shared" }
 
 [build-dependencies]
-prost-build = "0.13"
-tonic-build = "0.12"
+prost-build = "0.14"
+tonic-build = "0.14"
 
 [dev-dependencies]
 serde_json = "1"
