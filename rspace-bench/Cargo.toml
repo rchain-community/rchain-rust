@@ -15,7 +15,7 @@ rchain-shared = { path = "../shared" }
 tokio = { version = "1", features = ["full"] }
 
 [dev-dependencies]
-criterion = "0.5"
+criterion = "0.8"
 
 [[bench]]
 name = "rspace_bench"
