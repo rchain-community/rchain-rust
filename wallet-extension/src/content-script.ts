@@ -41,18 +41,35 @@ window.addEventListener("message", (event) => {
   const { id, method, params } = incoming;
   const request: PageRequestMessage = { channel: "page-request", origin: window.location.origin, id, method, params };
 
-  chrome.runtime.sendMessage(request, (response: { result?: unknown; error?: string } | undefined) => {
-    if (chrome.runtime.lastError) {
-      window.postMessage(
-        { source: EXTENSION_MESSAGE_SOURCE, id, error: chrome.runtime.lastError.message ?? "Extension error." },
-        window.location.origin
-      );
-      return;
-    }
-    if (response && "error" in response && response.error) {
-      window.postMessage({ source: EXTENSION_MESSAGE_SOURCE, id, error: response.error }, window.location.origin);
-    } else {
-      window.postMessage({ source: EXTENSION_MESSAGE_SOURCE, id, result: response?.result }, window.location.origin);
-    }
-  });
+  // chrome.runtime.sendMessage throws synchronously (rather than calling
+  // back with chrome.runtime.lastError) if the extension was reloaded/
+  // updated while this content script is still alive in the page -
+  // "Extension context invalidated." Without this catch, inject.ts's
+  // matching pendingCalls entry would sit unresolved until its own
+  // timeout, instead of failing immediately with a clear reason.
+  try {
+    chrome.runtime.sendMessage(request, (response: { result?: unknown; error?: string } | undefined) => {
+      if (chrome.runtime.lastError) {
+        window.postMessage(
+          { source: EXTENSION_MESSAGE_SOURCE, id, error: chrome.runtime.lastError.message ?? "Extension error." },
+          window.location.origin
+        );
+        return;
+      }
+      if (response && "error" in response && response.error) {
+        window.postMessage({ source: EXTENSION_MESSAGE_SOURCE, id, error: response.error }, window.location.origin);
+      } else {
+        window.postMessage({ source: EXTENSION_MESSAGE_SOURCE, id, result: response?.result }, window.location.origin);
+      }
+    });
+  } catch (error) {
+    window.postMessage(
+      {
+        source: EXTENSION_MESSAGE_SOURCE,
+        id,
+        error: error instanceof Error ? error.message : "Extension context invalidated - reload the page."
+      },
+      window.location.origin
+    );
+  }
 });

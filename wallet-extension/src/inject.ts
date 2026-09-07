@@ -22,6 +22,13 @@ import type {
 const EXTENSION_MESSAGE_SOURCE = "rev-wallet-extension";
 const PAGE_MESSAGE_SOURCE = "rev-wallet-page";
 
+// Generous enough not to interrupt a real human approving in the popup, but
+// bounded so a page's promise can never hang forever - e.g. if the popup is
+// closed in a way background.ts doesn't observe, or the extension context
+// goes away mid-request (content-script.ts handles the latter directly and
+// responds with an error immediately, but this is the backstop either way).
+const REQUEST_TIMEOUT_MS = 120_000;
+
 const pendingCalls = new Map<string, { resolve: (value: unknown) => void; reject: (reason: Error) => void }>();
 
 window.addEventListener("message", (event) => {
@@ -43,7 +50,20 @@ window.addEventListener("message", (event) => {
 function call(method: WalletMethod, params?: SignDeployFields): Promise<unknown> {
   const id = crypto.randomUUID();
   return new Promise((resolve, reject) => {
-    pendingCalls.set(id, { resolve, reject });
+    const timeoutId = setTimeout(() => {
+      pendingCalls.delete(id);
+      reject(new Error(`REV Wallet request "${method}" timed out after ${REQUEST_TIMEOUT_MS / 1000}s with no response from the extension.`));
+    }, REQUEST_TIMEOUT_MS);
+    pendingCalls.set(id, {
+      resolve: (value) => {
+        clearTimeout(timeoutId);
+        resolve(value);
+      },
+      reject: (reason) => {
+        clearTimeout(timeoutId);
+        reject(reason);
+      }
+    });
     window.postMessage({ source: PAGE_MESSAGE_SOURCE, id, method, params }, window.location.origin);
   });
 }
@@ -61,4 +81,14 @@ declare global {
   }
 }
 
-window.revWallet = revWalletProvider;
+// Never clobber another provider that got here first - e.g. a second copy
+// of this same extension injected twice, or (in principle) an unrelated
+// provider that happens to use this name. A real multi-provider pattern
+// (each wallet announcing itself, à la EIP-6963) is the fuller fix if this
+// ever needs to coexist with other RChain wallets, but isn't needed yet -
+// at minimum, don't silently overwrite what's already there.
+if (!window.revWallet) {
+  window.revWallet = revWalletProvider;
+} else {
+  console.warn("[REV Wallet] window.revWallet is already defined; not overwriting it.");
+}

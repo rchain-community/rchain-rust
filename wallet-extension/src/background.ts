@@ -71,16 +71,20 @@ async function openApprovalPopup(): Promise<void> {
 chrome.windows.onRemoved.addListener((windowId) => {
   if (windowId === popupWindowId) {
     popupWindowId = null;
+    // Only resolve here - requestApproval's own continuation clears
+    // `pending`, so there is exactly one place that does it.
     if (pending) {
       pending.resolve(false);
-      pending = null;
     }
   }
 });
 
 /** Sets the single in-flight approval request and opens the popup for it.
  * Only one request is ever pending at a time - a second concurrent request
- * from another tab/origin waits its turn rather than racing the popup UI. */
+ * from another tab/origin waits its turn rather than racing the popup UI.
+ * Clears `pending` itself once resolved, so callers never need to (and
+ * can't forget to) do it themselves - that used to be duplicated at each
+ * call site in handlePageRequest. */
 async function requestApproval(info: PendingRequestInfo): Promise<boolean> {
   while (pending) {
     await new Promise((resolve) => setTimeout(resolve, 250));
@@ -89,6 +93,7 @@ async function requestApproval(info: PendingRequestInfo): Promise<boolean> {
     pending = { info, resolve };
     void openApprovalPopup();
   });
+  pending = null;
   return approved;
 }
 
@@ -101,7 +106,6 @@ async function handlePageRequest(message: PageRequestMessage): Promise<{ result:
       if (!(await isConnected(origin))) {
         const id = crypto.randomUUID();
         const approved = await requestApproval({ id, kind: "connect", origin });
-        pending = null;
         if (!approved) throw new Error("Connection request rejected.");
         await connect(origin);
       }
@@ -122,7 +126,6 @@ async function handlePageRequest(message: PageRequestMessage): Promise<{ result:
       if (!params) throw new Error("Missing deploy fields.");
       const id = crypto.randomUUID();
       const approved = await requestApproval({ id, kind: "sign", origin, fields: params });
-      pending = null;
       if (!approved) throw new Error("Signing request rejected.");
       const privateKey = await getUnlockedPrivateKey();
       if (!privateKey) throw new Error("Wallet is locked.");
@@ -146,12 +149,28 @@ async function getState(): Promise<WalletBackgroundState> {
   };
 }
 
-chrome.runtime.onMessage.addListener((message: BackgroundInboundMessage, _sender, sendResponse) => {
+const POPUP_URL = chrome.runtime.getURL("popup.html");
+
+/** Only page-request may originate from a content script (any tab); every
+ * other channel is popup-only. Since only extension contexts can call
+ * chrome.runtime.sendMessage against this listener in the first place, a
+ * page itself cannot reach any of this today - but a compromised or
+ * mis-wired content script could otherwise forward an arbitrary channel
+ * (e.g. a spoofed "popup-decision": approved: true), so this is checked
+ * explicitly rather than relied on implicitly. */
+function isFromPopup(sender: chrome.runtime.MessageSender): boolean {
+  return sender.id === chrome.runtime.id && sender.url === POPUP_URL;
+}
+
+chrome.runtime.onMessage.addListener((message: BackgroundInboundMessage, sender, sendResponse) => {
   (async () => {
     if (message.channel === "page-request") {
+      if (sender.id !== chrome.runtime.id) return;
       sendResponse(await handlePageRequest(message));
       return;
     }
+
+    if (!isFromPopup(sender)) return;
 
     if (message.channel === "popup-decision") {
       if (pending && pending.info.id === message.requestId) {

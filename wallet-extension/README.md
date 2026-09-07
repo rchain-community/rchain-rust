@@ -61,6 +61,22 @@ one build - hence three separate Vite configs
 (`vite.config.ts` for background+popup, `vite.config.content-script.ts`,
 `vite.config.inject.ts`), chained in `npm run build`.
 
+## Origins: localhost-only by design, for now
+
+`manifest.json`'s `content_scripts.matches` currently lists only common local
+Vite dev ports on `127.0.0.1`/`localhost`. That's a deliberate limitation for
+this dev build, not an oversight - the manifest is intentionally
+least-privilege, and widening it to real dApp origins (or `<all_urls>`) is a
+real decision for whoever ships a build against a specific site, not a
+default to reach for casually.
+
+To point a build at a real origin: add that origin to **both**
+`content_scripts` entries in `manifest.json` (the `ISOLATED`-world
+content-script and the `MAIN`-world inject script both need it - a page only
+gets `window.revWallet` where both are injected), then rebuild
+(`npm run build`). There's no separate config file for this today; editing
+`manifest.json` directly is the documented path.
+
 ## Try it
 
 ```sh
