@@ -100,19 +100,21 @@ jobs:
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Install pinned Rust toolchain
-        run: rustup show active-toolchain
+        run: |
+          rustup show active-toolchain
+          rustup target add --toolchain 1.95.0 x86_64-unknown-linux-musl
 
-      - name: Install protobuf compiler
-        run: sudo apt-get update && sudo apt-get install --no-install-recommends -y protobuf-compiler libprotobuf-dev
+      - name: Install protobuf compiler and musl linker
+        run: sudo apt-get update && sudo apt-get install --no-install-recommends -y protobuf-compiler libprotobuf-dev musl-tools
 
-      - name: Build rnode (release)
-        run: cargo build --locked --release -p rchain-node --bin rnode
+      - name: Build rnode (release, musl)
+        run: cargo build --locked --release --target x86_64-unknown-linux-musl -p rchain-node --bin rnode
 
       - name: Upload rnode artifact
         uses: actions/upload-artifact@v4
         with:
           name: rnode-x86_64-unknown-linux-gnu
-          path: target/release/rnode
+          path: target/x86_64-unknown-linux-musl/release/rnode
           if-no-files-found: error
 
   dependencies:
