@@ -89,6 +89,32 @@ jobs:
       - name: Run Clippy
         run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings $CLIPPY_DEBT
 
+  build-rnode:
+    # Temporary job on this experimental branch: produces an rnode release artifact for
+    # download. Remove before any dev merge.
+    name: Build rnode artifact
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Install pinned Rust toolchain
+        run: rustup show active-toolchain
+
+      - name: Install protobuf compiler
+        run: sudo apt-get update && sudo apt-get install --no-install-recommends -y protobuf-compiler libprotobuf-dev
+
+      - name: Build rnode (release)
+        run: cargo build --locked --release -p rchain-node --bin rnode
+
+      - name: Upload rnode artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: rnode-x86_64-unknown-linux-gnu
+          path: target/release/rnode
+          if-no-files-found: error
+
   dependencies:
     name: Dependency audit
     runs-on: ubuntu-24.04
