@@ -24,6 +24,7 @@ pub mod reporting;
 pub mod rholang;
 pub mod runtime_manager;
 pub mod runtime_replay;
+pub mod shard_invoke;
 pub mod state;
 pub mod storage;
 pub mod system_deploy;
