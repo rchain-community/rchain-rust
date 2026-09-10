@@ -48,17 +48,19 @@ whose term is run *on the target shard*:
 ```rholang
 new lookup(`rho:registry:lookup`), cap in {
   lookup!(`rho:id:theOracle`, *cap) |
-  for (@(uri, target) <- cap) {
-    target!("getPrice", "ETH", `rho:rchain:deployId`)
+  for (@(_, target) <- cap) {
+    @target!("getPrice", "ETH", `rho:rchain:deployId`)
   }
 }
 ```
 
-- `lookup` resolves the registry URI. A miss returns `Nil`, the `for` does not
-  fire, and the deploy produces nothing — surfaced as a `shard-error` (below),
-  **never a hang**.
-- `target` is the capability name stored at the URI. Only someone who was *handed*
-  the URI can name it at all; the registry does not make a capability public.
+- `lookup` resolves the registry URI and replies with `(uri, value)` (or `Nil`).
+  A miss returns `Nil`, the `for` does not fire, and the deploy produces nothing —
+  surfaced as a `shard-error` (below), **never a hang**.
+- `target` is the capability name stored at the URI, invoked with the `@target!`
+  deref idiom (the same pattern the genesis `AuthKey.rho` uses to invoke a looked-up
+  contract). Only someone who was *handed* the URI can name it at all; the registry
+  does not make a capability public.
 - The reply channel is `` `rho:rchain:deployId` `` — the deploy's own signature.
   The far node binds it in the normalizer environment, and `deployStatus` reads the
   value produced there (`block_api_impl.rs`, `DeployExecStatus::ProcessedWithSuccess

@@ -61,8 +61,8 @@ pub fn invoke_term(target_uri: &str, method: &str, args: &[Par]) -> String {
     format!(
         "new lookup(`{REGISTRY_LOOKUP}`), cap in {{ \
            lookup!({uri_lit}, *cap) | \
-           for (@(uri, target) <- cap) {{ \
-             target!({payload}, `{REMOTE_REPLY_CHANNEL}`) \
+           for (@(_, target) <- cap) {{ \
+             @target!({payload}, `{REMOTE_REPLY_CHANNEL}`) \
            }} \
          }}"
     )
