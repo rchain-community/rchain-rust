@@ -61,37 +61,40 @@ new lookup(`rho:registry:lookup`), cap in {
   deref idiom (the same pattern the genesis `AuthKey.rho` uses to invoke a looked-up
   contract). Only someone who was *handed* the URI can name it at all; the registry
   does not make a capability public.
-- The reply channel is `` `rho:rchain:deployId` `` — the deploy's own signature.
-  The far node binds it in the normalizer environment, and `deployStatus` reads the
-  value produced there (`block_api_impl.rs`, `DeployExecStatus::ProcessedWithSuccess
-  { deploy_result }`).
+- The reply channel is `` `rho:rchain:deployId` `` — the deploy's own signature,
+  bound by the far node's normalizer environment (`NormalizerEnv`). The client
+  listens on it (`listenForDataAtName`); the value produced there *is* the reply.
 
-### Why the reply is the deploy result, not a caller channel
+### The reply is data on the deploy's channel — listen, don't poll
 
 `rho:shard:invoke(linkId, targetUri, method, args, *ret)` in the issue writes the
 reply to a caller-local `*ret`. A caller-local name cannot cross shards: it lives
 only in the home shard's tuple space, and the far deploy has no handle on it. The
-only channel a far deploy can *always* reach is its own `rho:rchain:deployId`,
-whose contents the deploy API returns to the caller. So:
+only channel a far deploy can *always* reach is its own `rho:rchain:deployId`.
+So:
 
-- **far side:** the invoked capability sends its reply to `` `rho:rchain:deployId` ``
-  (or to a `*r` the far contract was told to use, in which case the caller reads it
-  with `dataAtName` / `listenDataAtName`);
-- **caller side:** `$at(...)` yields the deploy result, so a local
-  `for (@price <- ret) { … }` is the *client's* continuation over that result — the
-  same ergonomics as a local `for`, implemented client-side.
+- **far side:** the invoked capability sends its reply to `` `rho:rchain:deployId` ``;
+- **caller side:** the client knows the deploy's signature (id), derives the reply
+  channel from it (`reply_channel`), and **listens on that channel** —
+  `listenForDataAtName` on the far node — resolving when the reply is produced.
+  No `deployStatus` polling: the reply is a channel event, so the caller waits on
+  the channel, exactly as a local `for` would.
+
+The node's `listenForDataAtName` is a one-shot query over recent blocks (the same
+shape as the Scala oracle, whose client waits with `listenAtNameUntilChanges`), so
+the client re-listens on the *channel* until the reply commits. A streaming listen
+is a possible transport improvement, not a change to this contract.
 
 ### Failure is a value
 
-The primitive never blocks indefinitely. The client maps the deploy status to a
-value:
+The listen resolves on the channel's value, or times out to a value — it never
+hangs forever:
 
-| far shard status | caller sees |
+| reply channel | caller sees |
 |---|---|
-| `ProcessedWithSuccess { deploy_result: [v, …] }` | `v` |
-| `ProcessedWithSuccess { deploy_result: [] }` | `("shard-error", "no reply …")` |
-| `ProcessedWithError { deploy_error }` | `("shard-error", deploy_error)` |
-| `NotProcessed { status }` | still pending — poll again |
+| data produced on `` `rho:rchain:deployId` `` | `v` |
+| no data before the caller's timeout | `("shard-error", "timed out …")` |
+| the far node rejects the deploy / the listen errors | `("shard-error", reason)` |
 
 `("shard-error", reason)` is an ordinary `(String, String)` tuple, so it composes
 with local rholang. A rejected signature never reaches a block: it fails at the
@@ -196,8 +199,8 @@ a precondition for a single atomic move; it is a *monitor* over the pair.
 ## The Rust primitive
 
 Because only the keyholder can sign, the primitive is a **client-side** helper: it
-builds the far-shard term, signs it with the caller's key, and maps the deploy
-status to a value. It lives at [`rchain_casper::shard_invoke`][module].
+builds the far-shard term, signs it with the caller's key, and listens on the reply
+channel for the response. It lives at [`rchain_casper::shard_invoke`][module].
 
 [module]: https://github.com/rchain-community/rchain-rust/blob/dev/casper/src/shard_invoke.rs
 
@@ -206,8 +209,11 @@ status to a value. It lives at [`rchain_casper::shard_invoke`][module].
 - `signed_invoke(term, caller_key, phlo, shard_id) -> Signed<DeployData>` — an
   ordinary deploy signed by the caller; `deployerId` on the far shard is
   `caller_key`'s public key.
-- `outcome(status) -> ShardOutcome` — `Value(Par)` / `ShardError(String)` /
-  `Pending(String)`, encoding `("shard-error", reason)`.
+- `reply_channel(deploy_id) -> Par` — the reply channel, derived from the deploy id.
+- `await_reply(service, deploy_id, listen_interval, timeout) -> ShardOutcome` —
+  listens on that channel until the reply appears, mapping it (or a timeout) to
+  `Value(Par)` / `Error(String)`; `into_value()` renders the latter as
+  `("shard-error", reason)`.
 
 There is no server-side `rho:shard:invoke` system process, and none is needed: the
 node already accepts signed deploys (`rnode --grpc-host <target> -p 40401 deploy …`,
