@@ -17,8 +17,13 @@ theorems (diamond/linearization, disjoint-commute, sharded-scheduler, replay det
 of `Rchain/Concurrent.lean`. **Effect-level correction:** the "disjoint-channel" reading of Law 9 is
 *insufficient* — sound concurrent *effect* scheduling requires disjoint **continuation closures**, not
 disjoint footprints; the channel-sharded scheduler is therefore unsound (see `Rchain/Effect.lean`, the
-proved counterexample `effect_reorder_diverges`, and `docs/src/formal/effect-scheduling.md` S.3/S.4). The
-reducer's only sound parallelism is Level 1 (pure-resolution fork-join).
+proved counterexample `effect_reorder_diverges`, and `docs/src/formal/effect-scheduling.md` S.3/S.4).
+Without further discipline the reducer's only sound parallelism is Level 1 (pure-resolution fork-join).
+**Scheduler expansion (Laws 20–22)** lifts that ceiling: a per-channel claim queue that commits ops in
+DFS path order (Law 20, "1 channel = 1 logical task"), the sequential-equivalent gate scheduler (Law 21),
+and dispatch-time closure computability (Law 22) are the only sound concurrent effect schedulers — see
+`Rchain/Scheduler.lean` and
+[`../docs/src/formal/channel-scheduler.md`](../docs/src/formal/channel-scheduler.md).
 
 **Status legend**
 
@@ -42,7 +47,7 @@ reducer's only sound parallelism is Level 1 (pure-resolution fork-join).
 | 6 | Rholang | **No globally free variables** in a program | `rholang/src/main/k/rholang/{free,program-restrictions}.k`, `models/.../HasLocallyFree.scala` | `models::types::Closed` (newtype) | `Rchain/FreeVars.lean` (`Closed` in `Ty.lean`) | **proven** (`Ty.lean`) |
 | 7 | RSpace | **Join commutativity** (channel keys hashed in sorted order) | `rspace/.../hashing/StableHashProvider.scala:18-22` | `rspace::hashing::StableHashProvider::hash_seq` (sorted) | `Rchain/RSpace/Join.lean` | **stated** |
 | 8 | RSpace | **Deterministic COMM** (candidate selection sorted-first by content hash; produce refs sorted; content-addressed events) | `rspace/.../trace/Event.scala:35-39`, `rspace/.../SpaceMatcher.scala` | `rspace::space_matcher` (sorted candidates) + `rspace::rspace` (sorted produce) + `Comm` event | `Rchain/RSpace/Comm.lean` | **stated** |
-| 9 | RSpace | **Merge is a monoid**; non-conflicting logs commute — *strengthened for effect scheduling*: disjoint **closure** (not footprint) ⇒ commute | `rspace/.../merger/{StateChange,ChannelChange,EventLogMergingLogic}.scala` | `rspace::merger::state_change_merger` (`compute_trie_actions`) | `Rchain/RSpace/Merge.lean`; `Rchain/Effect.lean` (`effect_reorder_diverges` proved; `effect_commute_of_disjoint_closure` stated) | **stated** |
+| 9 | RSpace | **Merge is a monoid**; non-conflicting logs commute — *strengthened for effect scheduling*: disjoint **closure** (not footprint) ⇒ commute | `rspace/.../merger/{StateChange,ChannelChange,EventLogMergingLogic}.scala` | `rspace::merger::state_change_merger` (`compute_trie_actions`) | `Rchain/RSpace/Merge.lean`; `Rchain/Effect.lean` (`effect_reorder_diverges` proved; `effect_commute_of_disjoint_closure` **proven** via locality) | **stated** (merge monoid stated; strengthened effect-level commute proven) |
 | 10 | RSpace | **Merkle determinism**: content-addressed radix trie, collision-free, empty-root | `rspace/.../history/RadixTree.scala:50-68` | `rspace::history::RadixTreeImpl` (`Node = [Item; 256]`) | `Rchain/RSpace/Merkle.lean` | **stated** |
 | 11 | RSpace | **Replay determinism**: recomputed COMM ⊆ recorded trace | `rspace/.../ReplayRSpace.scala:68-71` | `rspace::ReplayRSpace` | `Rchain/RSpace/Comm.lean` | **stated** |
 | 12 | Rosette | **Actor atomicity** (single-threaded `mbox.nextMsg`) | `rosette/README:27-35`, `roscala/.../ob/Actor.scala:52-61` | *deferred* (`rosette`/`roscala` orphaned) | *(none)* | **orphaned** (Rosette VM out of scope) |
@@ -53,6 +58,9 @@ reducer's only sound parallelism is Level 1 (pure-resolution fork-join).
 | 17 | Casper | **Merge determinism** (unique min-cost rejection); numeric channels non-negative/no-overflow; RNG merge commutative | `sdk/.../dag/merging/ConflictResolutionLogic.scala:200`, `rholang/.../merging/RholangMergingLogic.scala:90` | `NonNegI64` numeric channels; `Blake2b512Random` merge | `Rchain/Casper/Validate.lean` | **stated** |
 | 18 | Storage | **Height map contiguous** (no holes); **fringe identity order-independent** | `block-storage/.../BlockMetadataStore.scala:156`, `models/.../FringeData.scala:32` | `BlockHeight` + `block-storage::dag::metadata_store::validate_dag_state` | `Rchain/Casper/Validate.lean` | **stated** |
 | 19 | Crypto | Blake2b256 canonical hash; `Blake2b512Random` **associative splittable merge**; sig verify/sign; Curve25519 round-trip | `crypto/.../` (`Blake2b512Random`, `Secp256k1`, `Curve25519`) | `Blake2b256Hash` (over `Hash32`) + `Blake2b512Random` (**axiom**) | `Rchain/Crypto/{Random,Spec}.lean` | **axiom** (by design) |
+| 20 | Scheduler | **Channel-task linearization** ("1 channel = 1 logical task"): ops on a channel commit in DFS path order through a per-channel claim queue; at most one op executes per channel at any instant | this spec (`Rchain/Scheduler.lean`) + `docs/src/formal/channel-scheduler.md` | `rspace::concurrent::channel_queue::ChannelClaimQueue` (path-ordered claims, head-on-all commit) | `Rchain/Scheduler.lean` (`queue_commit_path_ordered` proven; `law20_deadlock_freedom` stated) | **stated** (per-channel path order proven; deadlock-freedom stated) |
+| 21 | Scheduler | **DFS-gate linearization**: the gate scheduler (op at DFS path `p` runs only after all ops at paths `< p` complete) refines sequential `Effect.apply`; one-hop next-step pruning is unsound (depth-2 counterexample) | this spec (`Rchain/Scheduler.lean`) + `docs/src/formal/channel-scheduler.md` | `rholang::scheduler::EffectMode::Gate` (task `i` awaits `JoinHandle`s `0..i−1`) | `Rchain/Scheduler.lean` (`gate_exec_refines_apply`, `one_hop_depth2_diverges`) | **proven** |
+| 22 | Scheduler | **Next-step closure is computable at dispatch** (matched data is concrete); `effect_commute_of_disjoint_closure` promoted axiom → **theorem** (locality induction) | `rholang/.../interpreter/Reduce.scala` (continuation dispatch) + this spec | dispatch-time footprint via `rholang::reduce::resolve_children` | `Rchain/Scheduler.lean` (`next_step_closure_computable`) + `Rchain/Effect.lean` | **proven** |
 
 ## Open questions
 
