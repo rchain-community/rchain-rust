@@ -36,6 +36,7 @@
 - [Sorted matching (proposal)](node/sorted-matching.md)
 - [Storage](node/storage.md)
 - [Operating the node](node/operating.md)
+- [Cross-shard invoke (remote deploy)](node/shard-invoke.md)
 - [Running a validator: hardware requirements](node/validator-requirements.md)
 - [Local devnet (Docker)](node/devnet.md)
 

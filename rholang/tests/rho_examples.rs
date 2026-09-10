@@ -23,6 +23,7 @@ const NEEDS_DEPLOYER: &[&str] = &[
     "qucalc/rholang/qucalc.rho",
     "qucalc/rholang/gov.rho",
     "qucalc/examples/multisig.rho",
+    "qucalc/examples/shard_exchange.rho",
 ];
 
 const EXAMPLES: &[&str] = &[
@@ -37,6 +38,7 @@ const EXAMPLES: &[&str] = &[
     "qucalc/examples/atomic_swap.rho",
     "qucalc/examples/dining_philosophers.rho",
     "qucalc/examples/liquid_democracy.rho",
+    "qucalc/examples/shard_exchange.rho",
 ];
 
 #[tokio::test]
