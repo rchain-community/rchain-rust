@@ -88,3 +88,6 @@ integration-tests.log
 .metals
 .history
 .vscode
+
+# Claude Code local (personal) settings
+.claude/settings.local.json
