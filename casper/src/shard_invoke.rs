@@ -10,27 +10,34 @@
 //! it is a client helper (the node performs no server-side invoke):
 //!
 //! * [`invoke_term`] builds the term that runs on the target shard. The reply is
-//!   written to `` `rho:rchain:deployId` `` — the only channel a far deploy can
-//!   always reach and whose contents the deploy service returns.
+//!   written to `` `rho:rchain:deployId` `` — the deploy's own id, which is the
+//!   reply *channel* the caller listens on.
 //! * [`signed_invoke`] signs that term with the caller's key.
-//! * [`outcome`] maps the far shard's [`DeployExecStatus`] to the caller-visible
-//!   value, turning every failure into `("shard-error", reason)` — never a hang.
+//! * [`await_reply`] awaits that reply channel with the node's listen
+//!   (`listenForDataAtName`), mapping the channel's value to the caller-visible
+//!   result. It does **not** poll `deployStatus`: a reply is data on a channel, so
+//!   the client listens for it.
 //!
 //! See `docs/src/node/shard-invoke.md` for the design and its consequences
 //! (client-orchestrated, non-atomic bilateral exchange; Layer 2 is out of scope).
+
+use std::time::Duration;
 
 use rchain_crypto::private_key::PrivateKey;
 use rchain_crypto::signatures::signed::Signed;
 use rchain_models::ast::Par;
 use rchain_models::casper::protocol::casper_message::DeployData;
-use rchain_models::casper::protocol::deploy_service::DeployExecStatus;
-use rchain_models::rholang::RhoType::{RhoString, RhoTupleN};
+use rchain_models::casper::protocol::deploy_service::{DataAtNameQuery, DataWithBlockInfo};
+use rchain_models::rholang::RhoType::{RhoDeployId, RhoString, RhoTupleN};
 use rchain_rholang::pretty_printer::PrettyPrinter;
+use tokio::time::{sleep, Instant};
 
 use crate::construct_deploy;
+use crate::protocol::client::DeployService;
 
-/// The unforgeable reply channel a remote deploy writes its result to. Bound by the
-/// far node's normalizer environment from the deploy signature.
+/// The unforgeable reply channel a remote deploy writes its result to. The far node
+/// binds it from the deploy signature, so the caller can listen on it once it knows
+/// the deploy id.
 pub const REMOTE_REPLY_CHANNEL: &str = "rho:rchain:deployId";
 
 /// The native registry-lookup system process used to resolve the target capability.
@@ -43,11 +50,11 @@ pub const SHARD_ERROR_TAG: &str = "shard-error";
 ///
 /// `args` are already-normalized rholang `Par`s; they are rendered with the pretty
 /// printer so names/data keep their rholang literal form. The invoked capability's
-/// reply is sent to `` `rho:rchain:deployId` `` and read back by the caller from the
-/// deploy result.
+/// reply is sent to `` `rho:rchain:deployId` `` — the reply channel the caller listens
+/// on (see [`reply_channel`] / [`await_reply`]).
 ///
 /// A registry miss yields `Nil`; the `for` then does not fire and the deploy produces
-/// nothing, which [`outcome`] reports as a `shard-error`.
+/// nothing on the reply channel, which [`await_reply`] reports as a `shard-error`.
 pub fn invoke_term(target_uri: &str, method: &str, args: &[Par]) -> String {
     let pp = PrettyPrinter::new();
     let uri_lit = pp.build_string(&RhoString::apply(target_uri.to_string()));
@@ -93,33 +100,30 @@ pub fn signed_invoke(
     )
 }
 
+/// The reply channel of a remote deploy: its own id (signature) as the unforgeable
+/// name `` `rho:rchain:deployId` `` resolves to on the far shard.
+pub fn reply_channel(deploy_id: &[u8]) -> Par {
+    RhoDeployId::apply(deploy_id.to_vec())
+}
+
 /// The caller-visible outcome of a remote invoke.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ShardOutcome {
-    /// The far shard committed and returned a reply.
+    /// The reply channel produced a value.
     Value(Par),
-    /// The invoke failed; the reason is rendered as `("shard-error", reason)` by
-    /// [`ShardOutcome::into_value`].
+    /// The invoke failed or the reply channel stayed empty; rendered as
+    /// `("shard-error", reason)` by [`ShardOutcome::into_value`].
     Error(String),
-    /// The far shard has not committed the deploy yet — poll again.
-    Pending(String),
 }
 
 impl ShardOutcome {
     /// The rholang value the caller's `for` observes: the reply, or
-    /// `("shard-error", reason)`. A pending status is also surfaced as a value so an
-    /// error is never confused with a hang.
+    /// `("shard-error", reason)`.
     pub fn into_value(self) -> Par {
         match self {
             ShardOutcome::Value(v) => v,
             ShardOutcome::Error(reason) => shard_error(&reason),
-            ShardOutcome::Pending(status) => shard_error(&format!("pending: {status}")),
         }
-    }
-
-    /// Whether the far shard has committed (successfully or not).
-    pub fn is_committed(&self) -> bool {
-        matches!(self, ShardOutcome::Value(_) | ShardOutcome::Error(_))
     }
 }
 
@@ -132,26 +136,57 @@ pub fn shard_error(reason: &str) -> Par {
     ])
 }
 
-/// Map a far-shard deploy status to the caller-visible outcome.
+/// The first value produced on the reply channel, from a listen result.
 ///
-/// * `ProcessedWithSuccess` with a reply -> [`ShardOutcome::Value`].
-/// * `ProcessedWithSuccess` with no reply (e.g. a registry miss, so the `for` never
-///   fired) -> [`ShardOutcome::Error`].
-/// * `ProcessedWithError` -> [`ShardOutcome::Error`] carrying the deploy error.
-/// * `NotProcessed` -> [`ShardOutcome::Pending`].
-pub fn outcome(status: &DeployExecStatus) -> ShardOutcome {
-    match status {
-        DeployExecStatus::ProcessedWithSuccess { deploy_result, .. } => match deploy_result
-            .as_slice()
-        {
-            [] => ShardOutcome::Error("no reply produced on the deploy result channel".to_string()),
-            [only] => ShardOutcome::Value(only.clone()),
-            [first, ..] => ShardOutcome::Value(first.clone()),
-        },
-        DeployExecStatus::ProcessedWithError { deploy_error, .. } => {
-            ShardOutcome::Error(deploy_error.clone())
+/// Data at the deploy's id channel *is* the reply; an empty result means the deploy
+/// has not produced one.
+pub fn reply_outcome(data: &[DataWithBlockInfo]) -> ShardOutcome {
+    match data.iter().find_map(|d| d.post_block_data.first()) {
+        Some(v) => ShardOutcome::Value(v.clone()),
+        None => ShardOutcome::Error("no reply on the deploy reply channel".to_string()),
+    }
+}
+
+/// Listen on a remote deploy's reply channel until the reply appears (or `timeout`
+/// elapses), returning the value or a `shard-error`.
+///
+/// This is the channel-wait the primitive is built on — **no `deployStatus` polling**.
+/// The node's `listenForDataAtName` is a one-shot query (the same shape as the Scala
+/// oracle, whose client waits with `listenAtNameUntilChanges`), so the await
+/// re-listens on the *channel* at `listen_interval` until the reply commits. Callers
+/// that want the wait in the transport should use a streaming listen instead.
+pub async fn await_reply(
+    service: &dyn DeployService,
+    deploy_id: &[u8],
+    listen_interval: Duration,
+    timeout: Duration,
+) -> ShardOutcome {
+    let query = DataAtNameQuery {
+        depth: i32::MAX,
+        name: reply_channel(deploy_id),
+    };
+    let interval = if listen_interval.is_zero() {
+        Duration::from_millis(250)
+    } else {
+        listen_interval
+    };
+    let deadline = Instant::now() + timeout;
+    loop {
+        match service.listen_for_data_at_name(&query).await {
+            Ok(data) => {
+                if data.iter().any(|d| !d.post_block_data.is_empty()) {
+                    return reply_outcome(&data);
+                }
+                if Instant::now() >= deadline {
+                    return ShardOutcome::Error(format!(
+                        "timed out listening on the reply channel of deploy {}",
+                        rchain_shared::base16::encode(deploy_id)
+                    ));
+                }
+                sleep(interval).await;
+            }
+            Err(errors) => return ShardOutcome::Error(errors.join("; ")),
         }
-        DeployExecStatus::NotProcessed { status } => ShardOutcome::Pending(status.clone()),
     }
 }
 
@@ -182,6 +217,13 @@ mod tests {
             block_size: "0".to_string(),
             deploy_count: 0,
             rejected_deploys: Vec::new(),
+        }
+    }
+
+    fn data_with(value: Option<Par>) -> DataWithBlockInfo {
+        DataWithBlockInfo {
+            post_block_data: value.into_iter().collect(),
+            block: light_block(),
         }
     }
 
@@ -225,37 +267,24 @@ mod tests {
     }
 
     #[test]
-    fn outcome_maps_success_error_and_pending() {
-        let success = DeployExecStatus::ProcessedWithSuccess {
-            deploy_result: vec![RhoString::apply("42".to_string())],
-            block: light_block(),
-        };
+    fn reply_channel_is_the_deploy_id() {
+        let sig = vec![7u8; 64];
+        let channel = reply_channel(&sig);
+        assert_eq!(RhoDeployId::unapply(&channel), Some(sig.as_slice()));
+    }
+
+    #[test]
+    fn reply_outcome_reads_the_channel_value() {
+        let reply = RhoString::apply("42".to_string());
         assert_eq!(
-            outcome(&success),
-            ShardOutcome::Value(RhoString::apply("42".to_string()))
+            reply_outcome(&[data_with(Some(reply.clone()))]),
+            ShardOutcome::Value(reply)
         );
-        assert!(outcome(&success).is_committed());
-
-        let empty = DeployExecStatus::ProcessedWithSuccess {
-            deploy_result: Vec::new(),
-            block: light_block(),
-        };
-        assert!(matches!(outcome(&empty), ShardOutcome::Error(_)));
-
-        let failed = DeployExecStatus::ProcessedWithError {
-            deploy_error: "boom".to_string(),
-            block: light_block(),
-        };
-        assert_eq!(outcome(&failed), ShardOutcome::Error("boom".to_string()));
-
-        let pending = DeployExecStatus::NotProcessed {
-            status: "Pooled".to_string(),
-        };
-        assert_eq!(
-            outcome(&pending),
-            ShardOutcome::Pending("Pooled".to_string())
-        );
-        assert!(!outcome(&pending).is_committed());
+        assert!(matches!(
+            reply_outcome(&[data_with(None)]),
+            ShardOutcome::Error(_)
+        ));
+        assert!(matches!(reply_outcome(&[]), ShardOutcome::Error(_)));
     }
 
     #[test]
@@ -265,13 +294,5 @@ mod tests {
         assert_eq!(tuple.len(), 2);
         assert_eq!(RhoString::unapply(&tuple[0]), Some(SHARD_ERROR_TAG));
         assert_eq!(RhoString::unapply(&tuple[1]), Some("no route"));
-    }
-
-    #[test]
-    fn pending_is_surfaced_as_a_value_not_a_hang() {
-        let value = ShardOutcome::Pending("Pooled".to_string()).into_value();
-        let tuple = RhoTupleN::unapply(&value).expect("pending is a shard-error tuple");
-        assert_eq!(RhoString::unapply(&tuple[0]), Some(SHARD_ERROR_TAG));
-        assert_eq!(RhoString::unapply(&tuple[1]), Some("pending: Pooled"));
     }
 }
