@@ -41,7 +41,19 @@ added). Only **3 of 12 crates have integration tests** (`rholang`, `casper`, `no
     hard-reject under `relaxed`; sequential succeeds) and
     `exploratory_path_stays_open_in_relaxed_mode`;
   - `rspace-bench/benches/rspace_bench.rs` `sched` group — pingpong/fanout workloads, the
-    dfs/gate/relaxed workers-1–8 sweep, and striped-vs-unstriped store contention (`make bench-scheduler`).
+    dfs/gate/relaxed/relaxed-validated workers-1–8 sweep, and striped-vs-unstriped store
+    contention (`make bench-scheduler`).
+- **Scheduler, on-chain (Laws 23–25)** — the Lean formalization
+  (`spec/Rchain/SchedulerOnchain.lean`, built by `cd spec && lake build`) states the Law 24
+  witnesses (`s3_pair_fails_validation`, `later_write_pollution_unsound`,
+  `trace_equality_without_serializability`). The Rust tests: `casper/tests/scheduler.rs`
+  `relaxed_validated_accepts_block_paths` (the mode passes the block-path entry points) and
+  `relaxed_validated_compute_state_matches_sequential` (post-state hash + per-channel COMM
+  multisets equal the sequential reference across the corpus, including the S.3 fallback term);
+  `rholang/tests/execution.rs` — the per-channel COMM-multiset oracle
+  (`relaxed_preserves_same_channel_order`) and `relaxed_validated_mode_runs_corpus_without_error`;
+  `rspace/src/concurrent/channel_queue.rs` `enqueue_window_sets_skew_and_version` and the
+  `property_tests.rs` `law24_skew_signal_and_version_counter` proptest.
 - **Differential/golden**: `models` wire bitset, `rspace` scodec + stable-hash TSV, `rholang`
   execution post-state hashes, and crypto known-answer vectors — the Scala-ground-truth tests.
 - **The 110 legacy `.rho`/`.rhox` contracts** under `legacy/` are **not referenced by any Rust test**;
@@ -120,7 +132,7 @@ For each gap: **code location** → **current test state** → **the seam a regr
 
 - [`AUDIT.md`](AUDIT.md) — the code findings register (the security fixes the tests must pin).
 - [`RUST-FIRST.md`](RUST-FIRST.md) — the native system-contract state model (G3/G5/G6 touch it).
-- [`RHO-CALCULUS.md`](RHO-CALCULUS.md) / [`INVENTORY.md`](INVENTORY.md) — the 22-law oracle the
+- [`RHO-CALCULUS.md`](RHO-CALCULUS.md) / [`INVENTORY.md`](INVENTORY.md) — the 25-law oracle the
   property + replay tests assert.
 
 ## Remediation status
