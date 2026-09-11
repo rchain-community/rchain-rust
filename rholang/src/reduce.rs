@@ -1958,7 +1958,9 @@ impl<T: Tuplespace + 'static, D: Dispatch + 'static> DebruijnInterpreter<T, D> {
                         let fut = if self_.cancelled.load(Ordering::SeqCst) {
                             Err(RholangError::ReduceError("reduction cancelled".to_string()))
                         } else {
-                            Ok(self_.clone().apply_effect_relaxed(effect, cost, effect_path))
+                            Ok(self_
+                                .clone()
+                                .apply_effect_relaxed(effect, cost, effect_path))
                         };
                         self_.enqueue_relaxed(fut);
                     }

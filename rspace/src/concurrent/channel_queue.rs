@@ -197,12 +197,12 @@ where
     fn try_acquire(&self) -> Result<HeadLease, ()> {
         let mut arcs: Vec<Arc<Mutex<ChannelQueue<P>>>> = Vec::with_capacity(self.channels.len());
         for channel in &self.channels {
-            let arc = self
-                .inner
-                .channels
-                .get(channel)
-                .expect("claimed channel entry exists")
-                .clone();
+            // The claim's channels are inserted at `claim`/`claim_more` time and only removed on
+            // guard drop, so a missing entry means this claim is being torn down concurrently — treat
+            // it as "not yet acquirable" and let `wait_at_head` re-check rather than panicking.
+            let Some(arc) = self.inner.channels.get(channel).map(|entry| entry.clone()) else {
+                return Err(());
+            };
             arcs.push(arc);
         }
 
