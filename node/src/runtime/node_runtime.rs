@@ -1032,13 +1032,19 @@ pub async fn setup(
         )
         .await?,
     );
-    let runtime_manager = Arc::new(RuntimeManager::new(
-        rho_runtime,
-        replay_runtime,
-        history,
-        mergeable_store,
-        effect_mode,
-    ));
+    let runtime_manager = Arc::new(
+        RuntimeManager::new(rho_runtime, replay_runtime, history, mergeable_store, effect_mode)
+            .with_genesis_pos(
+                // Only a genesis-ceremony node has the network genesis descriptors locally; a syncing
+                // observer inserts (does not replay) the genesis block.
+                if conf.standalone {
+                    rchain_casper::genesis::pos_genesis_from_config(&conf.casper)
+                        .unwrap_or_default()
+                } else {
+                    Default::default()
+                },
+            ),
+    );
 
     // Eval runtime for the Repl service — an isolated `eval-*` store set so REPL evaluation never
     // reads/writes the node's live chain state (port of Scala's `evalStores`).

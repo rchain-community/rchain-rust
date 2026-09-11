@@ -23,11 +23,10 @@ use rchain_models::rholang::RhoType::RhoNumber;
 use rchain_models::runtime::{BindPattern, ListParWithRandom, TaggedContinuation};
 use rchain_models::sorted::SortedProc;
 use rchain_models::types::count_free_vars;
-use rchain_models::validator::Validator;
 use rchain_rholang::accounting::{Cost, CostAccounting};
 use rchain_rholang::errors::RholangError;
 use rchain_rholang::evaluate_result::EvaluateResult;
-use rchain_rholang::native_state::NativeSystemState;
+use rchain_rholang::native_state::{NativeSystemState, PosGenesis};
 use rchain_rholang::reporting_runtime::ReportingRuntime;
 use rchain_rholang::runtime::ReplayRhoRuntime;
 use rchain_rholang::system_processes::BlockData;
@@ -39,7 +38,6 @@ use rchain_rspace::merger::event_log_index::NumberChannelsDiff;
 use rchain_rspace::native_store::InMemNativeStore;
 use rchain_rspace::trace::Log;
 use rchain_rspace::util::ReplayException;
-use rchain_shared::refined::NonNegI64;
 
 use crate::event_converter::to_rspace_event;
 use crate::genesis::contracts::Vault;
@@ -126,17 +124,19 @@ impl<'a, R: ReplayRuntime + ?Sized> RuntimeReplayOps<'a, R> {
         system_deploys: &[ProcessedSystemDeploy],
         block_data: BlockData,
         with_cost_accounting: bool,
-        bonds: &BTreeMap<Validator, NonNegI64>,
+        pos_genesis: &PosGenesis,
         vaults: &[Vault],
     ) -> Result<(Blake2b256Hash, Vec<NumberChannelsDiff>), ReplayFailure> {
+        let block_number = i64::from(block_data.block_number);
         self.runtime.set_block_data(block_data);
         self.replay_deploys(
             start_hash,
             rand,
             terms,
             system_deploys,
+            block_number,
             with_cost_accounting,
-            bonds,
+            pos_genesis,
             vaults,
         )
         .await
@@ -150,19 +150,21 @@ impl<'a, R: ReplayRuntime + ?Sized> RuntimeReplayOps<'a, R> {
         rand: &Blake2b512Random,
         terms: &[ProcessedDeploy],
         system_deploys: &[ProcessedSystemDeploy],
+        block_number: i64,
         with_cost_accounting: bool,
-        bonds: &BTreeMap<Validator, NonNegI64>,
+        pos_genesis: &PosGenesis,
         vaults: &[Vault],
     ) -> Result<(Blake2b256Hash, Vec<NumberChannelsDiff>), ReplayFailure> {
         self.runtime
             .reset(*start_hash)
             .await
             .map_err(ReplayFailure::internal_error)?;
-        // Genesis replay (no cost accounting): re-install the native bonds and vault balances so the
-        // replayed post-state hash matches the play genesis hash.
+        // Genesis replay (no cost accounting): re-install the native genesis PoS state (pool,
+        // trusted set, params, derived active set) and vault balances so the replayed post-state hash
+        // matches the play genesis hash.
         if !with_cost_accounting {
             let native = NativeSystemState::new(self.runtime.native_store());
-            native.set_bonds(bonds);
+            native.install_genesis(pos_genesis);
             for vault in vaults {
                 native.set_vault_balance(&vault.rev_address.to_base58(), vault.initial_balance);
             }
@@ -185,6 +187,7 @@ impl<'a, R: ReplayRuntime + ?Sized> RuntimeReplayOps<'a, R> {
             mergeable.push(
                 self.replay_block_system_deploy(
                     sd,
+                    block_number,
                     rand.split_byte(u8::try_from(terms.len() + i).map_err(|_| {
                         ReplayFailure::internal_error("deploy count exceeds 255".to_string())
                     })?),
@@ -366,6 +369,7 @@ impl<'a, R: ReplayRuntime + ?Sized> RuntimeReplayOps<'a, R> {
     pub(crate) async fn replay_block_system_deploy(
         &self,
         processed: &ProcessedSystemDeploy,
+        block_number: i64,
         rand: Blake2b512Random,
     ) -> Result<NumberChannelsDiff, ReplayFailure> {
         let system_deploy_data = match processed {
@@ -376,7 +380,7 @@ impl<'a, R: ReplayRuntime + ?Sized> RuntimeReplayOps<'a, R> {
         };
         let deploy = match system_deploy_data {
             SystemDeployData::Slash(validator) => SystemDeploy::slash(validator, rand),
-            SystemDeployData::CloseBlock => SystemDeploy::close_block(rand),
+            SystemDeployData::CloseBlock => SystemDeploy::close_block(block_number, rand),
             SystemDeployData::Empty => {
                 return Err(ReplayFailure::internal_error("Expected system deploy"));
             }
@@ -479,7 +483,9 @@ impl<'a, R: ReplayRuntime + ?Sized> RuntimeReplayOps<'a, R> {
                 native.pre_charge(deployer, *amount).await?
             }
             NativeSystemDeployOp::Refund { amount } => native.refund(*amount).await?,
-            NativeSystemDeployOp::CloseBlock => native.close_block().await?,
+            NativeSystemDeployOp::CloseBlock { block_number } => {
+                native.close_block(*block_number).await?
+            }
             NativeSystemDeployOp::Slash { validator } => native.slash(validator).await?,
         };
         let eval_result = EvaluateResult {

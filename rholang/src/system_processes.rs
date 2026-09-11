@@ -1309,9 +1309,11 @@ impl SystemProcesses {
     fn pos(&self) -> ScalaBodyFn {
         let cc = self.contract_call.clone();
         let native = self.native_state.clone();
+        let block_data = self.block_data.clone();
         Box::new(move |args: Vec<ListParWithRandom>, path: DfsPath| {
             let cc = cc.clone();
             let native = native.clone();
+            let block_data = block_data.clone();
             Box::pin(async move {
                 let (pars, rand) = cc
                     .unapply(&args)
@@ -1323,6 +1325,11 @@ impl SystemProcesses {
                     .ok_or_else(|| illegal_arg("pos method must be a string"))?;
                 let rest = RhoList::unapply(rest_par)
                     .ok_or_else(|| illegal_arg("pos arguments must be a list"))?;
+                // The current block number drives the bond/withdraw quarantine bookkeeping.
+                let block_number = {
+                    let bd = block_data.lock().unwrap_or_else(|p| p.into_inner());
+                    i64::from(bd.block_number)
+                };
                 match op {
                     "getBonds" => {
                         let [ret] = rest else {
@@ -1374,7 +1381,7 @@ impl SystemProcesses {
                         let validator = Validator::try_from(deployer_id)
                             .map_err(|e| illegal_arg(&e.to_string()))?;
                         let out = match native
-                            .bond(&validator, amount)
+                            .bond(&validator, amount, block_number)
                             .await
                             .map_err(|e| illegal_arg(&e))?
                         {
@@ -1400,10 +1407,41 @@ impl SystemProcesses {
                         let validator = Validator::try_from(deployer_id)
                             .map_err(|e| illegal_arg(&e.to_string()))?;
                         let out = match native
-                            .withdraw(&validator)
+                            .withdraw(&validator, block_number)
                             .await
                             .map_err(|e| illegal_arg(&e))?
                         {
+                            Ok(()) => {
+                                RhoTupleN::apply(vec![RhoBoolean::apply(true), RhoNil::apply()])
+                            }
+                            Err(msg) => RhoTupleN::apply(vec![
+                                RhoBoolean::apply(false),
+                                RhoString::apply(msg),
+                            ]),
+                        };
+                        cc.produce(&rand, &[out], ret, path).await
+                    }
+                    "trust" | "untrust" => {
+                        let [deployer_id, target, ret] = rest else {
+                            return Err(illegal_arg(
+                                "trust/untrust expects deployerId, target public key and return channel",
+                            ));
+                        };
+                        // Capability, not data (see `bond`): the caller must be the deployer.
+                        let caller = RhoDeployerId::unapply(deployer_id)
+                            .and_then(|bytes| Validator::try_from(bytes).ok())
+                            .ok_or_else(|| illegal_arg("trust/untrust expects a deployerId"))?;
+                        let target = RhoByteArray::unapply(target)
+                            .and_then(|bytes| Validator::try_from(bytes).ok())
+                            .ok_or_else(|| {
+                                illegal_arg("trust/untrust expects a 65-byte validator public key")
+                            })?;
+                        let result = if op == "trust" {
+                            native.trust(&caller, &target).await
+                        } else {
+                            native.untrust(&caller, &target).await
+                        };
+                        let out = match result.map_err(|e| illegal_arg(&e))? {
                             Ok(()) => {
                                 RhoTupleN::apply(vec![RhoBoolean::apply(true), RhoNil::apply()])
                             }
