@@ -269,6 +269,18 @@ impl RhoRuntime {
         *self.block_data.lock().unwrap_or_else(|p| p.into_inner()) = block_data;
     }
 
+    /// Set the effect-scheduler mode (forwards to the reducer, which also arms the Law 24
+    /// per-commit certificate for `RelaxedValidated`). Interior-mutable so the casper block
+    /// path can switch around the per-deploy sequential fallback re-run.
+    pub fn set_effect_mode(&self, mode: EffectMode) {
+        self.reducer.set_effect_mode(mode);
+    }
+
+    /// The current effect-scheduler mode.
+    pub fn effect_mode(&self) -> EffectMode {
+        self.reducer.effect_mode()
+    }
+
     /// Execute a `Closed` process in the given environment (port of `inj`). The `Closed` proof is
     /// discharged at this boundary; reduction then operates on the flat `Par` sub-terms.
     pub async fn inj(
@@ -303,6 +315,10 @@ impl RhoRuntime {
         let before = self.cost.total_charged();
         let errors = match self.inj(&par, &Env::new(), rand).await {
             Ok(()) => Vec::new(),
+            // Laws 23–25: a per-commit validation failure must escape as an error — it is the
+            // fail-fast signal the block path reads to fall back to the sequential reference.
+            // Landing it in the errors vec would mark the deploy failed instead.
+            Err(e @ RholangError::SpeculationInvalid { .. }) => return Err(e),
             Err(e) => vec![e],
         };
         let cost = self.cost.total_charged() - before;

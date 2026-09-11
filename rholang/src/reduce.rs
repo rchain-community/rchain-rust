@@ -1671,7 +1671,7 @@ pub struct DebruijnInterpreter<T: Tuplespace, D: Dispatch> {
     concurrent: bool,
     /// The effect-scheduler mode (Laws 20–22; see `crate::scheduler`). `Sequential` by default —
     /// the plain DFS loop, the sound reference the Gate and Relaxed modes must refine.
-    effect_mode: EffectMode,
+    effect_mode: Mutex<EffectMode>,
     /// Reduction steps taken in the current top-level evaluation (see [`DEFAULT_MAX_REDUCE_STEPS`]).
     steps: Arc<AtomicI64>,
     max_steps: Arc<AtomicI64>,
@@ -1706,7 +1706,7 @@ impl<T: Tuplespace + 'static, D: Dispatch + 'static> DebruijnInterpreter<T, D> {
             merge_chs: Arc::new(Mutex::new(Vec::new())),
             mergeable_tag_name,
             concurrent: true,
-            effect_mode: EffectMode::Sequential,
+            effect_mode: Mutex::new(EffectMode::Sequential),
             steps: Arc::new(AtomicI64::new(0)),
             max_steps: Arc::new(AtomicI64::new(DEFAULT_MAX_REDUCE_STEPS)),
             cancelled: Arc::new(AtomicBool::new(false)),
@@ -1735,9 +1735,18 @@ impl<T: Tuplespace + 'static, D: Dispatch + 'static> DebruijnInterpreter<T, D> {
 
     /// Set the effect-scheduler mode (Laws 20–22). Defaults to [`EffectMode::Sequential`]; the
     /// Gate (Phase 4) and Relaxed (Phase 5) modes replace the sequential `reduce_effects` loop
-    /// while preserving its DFS order semantics.
-    pub fn set_effect_mode(&mut self, mode: EffectMode) {
-        self.effect_mode = mode;
+    /// while preserving its DFS order semantics. The relaxed-validated mode additionally enables
+    /// the Law 24 per-commit certificate on the claim queue. Interior-mutable: the casper
+    /// block path switches it around the per-deploy sequential fallback re-run.
+    pub fn set_effect_mode(&self, mode: EffectMode) {
+        *self.effect_mode.lock().unwrap_or_else(|p| p.into_inner()) = mode;
+        self.claims
+            .set_validation_enabled(mode == EffectMode::RelaxedValidated);
+    }
+
+    /// The current effect-scheduler mode.
+    pub fn effect_mode(&self) -> EffectMode {
+        *self.effect_mode.lock().unwrap_or_else(|p| p.into_inner())
     }
 
     /// Evaluate a top-level `Par` (port of `Reduce.eval(par)`): reduce the process to normal form via
@@ -1752,6 +1761,14 @@ impl<T: Tuplespace + 'static, D: Dispatch + 'static> DebruijnInterpreter<T, D> {
     ) -> Result<(), RholangError> {
         self.steps.store(0, Ordering::SeqCst);
         self.cancelled.store(false, Ordering::SeqCst);
+        // Reset the write-record layer per evaluation: writes from a prior deploy in this
+        // runtime must not invalidate this deploy's commits.
+        if matches!(
+            self.effect_mode(),
+            EffectMode::Relaxed | EffectMode::RelaxedValidated
+        ) {
+            self.claims.reset_write_record();
+        }
         let result = self
             .clone()
             .reduce_par(
@@ -1763,7 +1780,7 @@ impl<T: Tuplespace + 'static, D: Dispatch + 'static> DebruijnInterpreter<T, D> {
             )
             .await;
         if matches!(
-            self.effect_mode,
+            self.effect_mode(),
             EffectMode::Relaxed | EffectMode::RelaxedValidated
         ) {
             result.and(self.drain_relaxed_tasks().await)
@@ -1904,7 +1921,7 @@ impl<T: Tuplespace + 'static, D: Dispatch + 'static> DebruijnInterpreter<T, D> {
         path: DfsPath,
     ) -> ReducerFuture {
         Box::pin(async move {
-            match self.effect_mode {
+            match self.effect_mode() {
                 // The sequential DFS loop — the sound reference.
                 EffectMode::Sequential | EffectMode::ForkJoin => {
                     for (i, effect) in effects.into_iter().enumerate() {
@@ -2239,6 +2256,10 @@ impl<T: Tuplespace + 'static, D: Dispatch + 'static> DebruijnInterpreter<T, D> {
                         }
                         None => application,
                     };
+                    // Law 24's record layer: the produce commits a write on its trigger —
+                    // phase-one store or phase-two store/match — with post-value `true`. Stamped
+                    // before the guard drops (the order the prefix-visibility check relies on).
+                    self.claims.record_write(&chan, &path.0, true);
                     if let Some((continuation, data_list, peek)) = application {
                         self.enqueue_relaxed(self.clone().dispatch_owned(
                             continuation,
@@ -2298,6 +2319,15 @@ impl<T: Tuplespace + 'static, D: Dispatch + 'static> DebruijnInterpreter<T, D> {
                         release,
                     } = scheduled;
                     if let Some((continuation, data_list, p)) = application {
+                        // Law 24's record layer: a matched, non-peek consume commits a removal
+                        // write (post-value `false`) on every source. An installing consume and
+                        // a peek match write nothing (the Lean `applyAt`). Stamped before the
+                        // guard drops.
+                        if !p {
+                            for s in &sources {
+                                self.claims.record_write(s, &path.0, false);
+                            }
+                        }
                         self.enqueue_relaxed(self.clone().dispatch_owned(
                             continuation,
                             data_list.clone(),

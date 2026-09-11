@@ -14,6 +14,7 @@ use rchain_models::sorted::SortedProc;
 use rchain_models::types::Closed;
 use rchain_rholang::accounting::Cost;
 use rchain_rholang::env::Env;
+use rchain_rholang::errors::RholangError;
 use rchain_rholang::registry::registry_bootstrap_ast;
 use rchain_rholang::scheduler::EffectMode;
 use rchain_rspace::history::history::empty_root_hash_value;
@@ -304,21 +305,24 @@ async fn relaxed_mode_runs_all_corpus_terms_without_error() {
 #[tokio::test(flavor = "multi_thread")]
 async fn relaxed_validated_mode_runs_corpus_without_error() {
     // The validated block-path mode (Laws 23–25) dispatches as relaxed at the rholang level —
-    // the sequential-reference oracle and fallback live on the casper block path
-    // (`RuntimeManager::validate_relaxed_block`) — so at this level it must reduce the whole
-    // corpus without error, exactly like the relaxed arm, including the free terms whose
-    // block-path runs fall back to the sequential trace.
+    // the sequential-reference fallback lives on the casper block path
+    // (`RuntimeManager::process_deploy`'s per-deploy re-run) — so at this level every corpus
+    // term either reduces without error or fails fast with `SpeculationInvalid`, the Law 24
+    // certificate signal the block path turns into the sequential fallback (the free terms'
+    // relaxed runs may read state no DFS-earlier effect produced, so either outcome is sound;
+    // casper/tests/scheduler.rs asserts the block path never diverges from the sequential
+    // reference regardless of which path fired). No other error may surface.
     for term in REDUCTION_CORPUS {
         let rt = build_runtime_with_mode(true, EffectMode::RelaxedValidated).await;
-        let res = rt.evaluate(term, &fixed_rand()).await.unwrap();
-        assert!(
-            res.succeeded(),
-            "relaxed-validated deploy errors for {term}: {:?}",
-            res.errors
-        );
-        rt.create_checkpoint()
-            .await
-            .expect("checkpoint after relaxed-validated deploy");
+        match rt.evaluate(term, &fixed_rand()).await {
+            Ok(res) => assert!(
+                res.succeeded(),
+                "relaxed-validated deploy errors for {term}: {:?}",
+                res.errors
+            ),
+            Err(RholangError::SpeculationInvalid { .. }) => {}
+            Err(e) => panic!("unexpected error for {term}: {e}"),
+        }
     }
 }
 
