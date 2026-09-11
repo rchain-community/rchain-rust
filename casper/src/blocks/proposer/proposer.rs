@@ -419,8 +419,12 @@ where
         .collect();
     let to_slash: BTreeSet<Validator> = offenders.intersection(&bonded).copied().collect();
 
-    let change_epoch =
-        i64::from(next_block_num) != 0 && epoch_length as i64 % i64::from(next_block_num) == 0;
+    // An epoch boundary is a block whose height is a positive multiple of `epoch_length` (matching
+    // the PoS contract's `blockNumber % epochLength == 0`). A non-positive `epoch_length` disables
+    // the epoch trigger (the native PoS lifecycle is otherwise block-driven).
+    let change_epoch = epoch_length > 0
+        && i64::from(next_block_num) != 0
+        && i64::from(next_block_num) % i64::from(epoch_length) == 0;
 
     // Attestation suppression: no new state transitions, or not yet a super-majority.
     let dag_repr = dag.get_representation().await;

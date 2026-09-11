@@ -49,7 +49,10 @@ pub async fn replay_block(
             rand,
             block_data,
             with_cost_accounting,
-            &block.bonds,
+            // Genesis PoS descriptors (pool/trusted/params) come from the network's genesis
+            // configuration; the trie is authoritative for every non-genesis block, so this value is
+            // only consumed on the trusted genesis replay path.
+            runtime.genesis_pos(),
             // Genesis vault balances are not carried on the block (they are installed at genesis
             // and re-derived only on the trusted genesis replay path); block replay here is always
             // cost-accounting (non-genesis), so no vault re-install is needed.

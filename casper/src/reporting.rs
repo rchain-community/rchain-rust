@@ -227,6 +227,7 @@ async fn replay_deploys(
         let r = ops
             .replay_block_system_deploy(
                 sd,
+                i64::from(block.block_number),
                 rand.split_byte(
                     u8::try_from(terms_len + i)
                         .map_err(|_| "deploy count exceeds 255".to_string())?,

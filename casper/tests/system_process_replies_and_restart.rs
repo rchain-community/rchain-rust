@@ -70,7 +70,7 @@ async fn system_process_replies_in_cost_accounted_block_and_restart_succeeds() {
             &[],
             &rand,
             BlockData::empty(),
-            &std::collections::BTreeMap::new(),
+            &rchain_rholang::native_state::PosGenesis::default(),
             &[seeded_vault()],
         )
         .await

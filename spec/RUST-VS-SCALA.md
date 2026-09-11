@@ -93,9 +93,11 @@ invariants.
 - **Formalization**: the 30 element-comparator axioms in `Rchain/Sort.lean` (Law 1's "total order"
   residual) remain to discharge — they need the sum-type `cmpSortable` laws proof (well-founded
   induction); the definition is in place. Everything else is proven or stated.
-- **Simplified native contracts**: the PoS/vault model is a "simplified balance map" — the vault
-  unforgeable-name capability, minimum/maximum-bond validation, and the epoch/quarantine/reward/Coop
-  vault machinery are deferred (documented in `spec/RUST-FIRST.md`).
+- **Native PoS lifecycle**: the dynamic-validator lifecycle is implemented natively — trusted
+  stakeholder admission (`trust`/`untrust`), minimum/maximum-bond validation, immediate pool/active-set
+  updates with a top-N active cap, quarantined withdrawals, and stake-confiscating slashing to the Coop
+  vault (documented in `spec/RUST-FIRST.md`). Still deferred: reward computation/distribution and the
+  vault unforgeable-name capability (the vault stays a balance map keyed by REV address).
 - **Accepted-faithful residuals** (by design, not defects — see `AUDIT.md` §5/§11): plaintext
   external-IP discovery (M7), the DAG `seen`-cache O(N²) (H6), and the rate-limited-but-plaintext
   Kademlia discovery bind.
