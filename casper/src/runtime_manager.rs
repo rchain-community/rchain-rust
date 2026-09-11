@@ -37,7 +37,7 @@ use rchain_rspace::rspace::RSpace;
 use rchain_shared::refined::NonNegI64;
 use rchain_shared::typed_store::KeyValueTypedStore;
 
-use crate::event_converter::to_casper_event;
+use crate::event_converter::{comm_multisets_match, to_casper_event};
 use crate::genesis::contracts::Vault;
 use crate::rholang::{ReplayFailure, SystemDeployRuntimeResult, UserDeployRuntimeResult};
 use crate::runtime_replay::RuntimeReplayOps;
@@ -269,15 +269,27 @@ impl RuntimeManager {
         deploy: &SignedDeployData,
         rand: &Blake2b512Random,
     ) -> Result<(ProcessedDeploy, EvaluateResult), String> {
-        // Hard-reject the relaxed scheduler on the block path (Laws 20–22): a relaxed schedule
-        // never reaches consensus, so a relaxed node refuses block work (off-chain only).
+        // Hard-reject the pure relaxed scheduler on the block path (Laws 20–22): a relaxed
+        // schedule never reaches consensus, so a relaxed node refuses block work (off-chain
+        // only). `RelaxedValidated` (Laws 23–25) passes: `compute_state` validates its run
+        // against the sequential reference and falls back on divergence.
         if self.effect_mode == EffectMode::Relaxed {
             return Err(
                 "relaxed effect scheduling is off-chain only: refusing block-path deploy execution"
                     .to_string(),
             );
         }
-        let fallback = self.runtime.create_soft_checkpoint().await;
+        Self::process_deploy_with(&self.runtime, deploy, rand).await
+    }
+
+    /// The body of `process_deploy`, parameterized on the runtime so the validation oracle can run
+    /// the same deploy sequence on a forked sequential runtime.
+    async fn process_deploy_with(
+        runtime: &RhoRuntime,
+        deploy: &SignedDeployData,
+        rand: &Blake2b512Random,
+    ) -> Result<(ProcessedDeploy, EvaluateResult), String> {
+        let fallback = runtime.create_soft_checkpoint().await;
         // Bind `rho:rchain:deployerId` (and `rho:rchain:deployId`) so the deploy's free URI names
         // resolve during normalization (port of `NormalizerEnv(deploy).toEnv`).
         let normalizer_env = NormalizerEnv::new(deploy);
@@ -285,18 +297,15 @@ impl RuntimeManager {
         // balance is otherwise a single i32::MAX pool shared across the runtime's lifetime; seeding
         // it here both caps this deploy at `phlo_limit` and resets it between deploys, so one deploy
         // can no longer drain the pool and brick every subsequent deploy until restart.
-        self.runtime
-            .cost()
-            .set(rchain_rholang::accounting::Cost::new(
-                deploy.data.phlo_limit,
-                "deploy",
-            ));
-        let eval_result = self
-            .runtime
+        runtime.cost().set(rchain_rholang::accounting::Cost::new(
+            deploy.data.phlo_limit,
+            "deploy",
+        ));
+        let eval_result = runtime
             .evaluate_with_env(&deploy.data.term, normalizer_env.to_env(), rand)
             .await
             .map_err(|e| e.to_string())?;
-        let checkpoint = self.runtime.create_soft_checkpoint().await;
+        let checkpoint = runtime.create_soft_checkpoint().await;
         let succeeded = eval_result.errors.is_empty();
         // Surface the reducer's failure reason in the processed deploy (issue #15): a failed user
         // deploy previously recorded only `errored: true` + cost, leaving the deployer no message.
@@ -321,7 +330,7 @@ impl RuntimeManager {
             system_deploy_error,
         };
         if !succeeded {
-            self.runtime.revert_to_soft_checkpoint(fallback).await;
+            runtime.revert_to_soft_checkpoint(fallback).await;
         }
         Ok((processed, eval_result))
     }
@@ -335,7 +344,8 @@ impl RuntimeManager {
         rand: &Blake2b512Random,
     ) -> Result<(Blake2b256Hash, Vec<UserDeployRuntimeResult>), String> {
         // Same hard-reject as `process_deploy` (belt and braces: the entry points of both block
-        // paths refuse the relaxed scheduler).
+        // paths refuse the pure relaxed scheduler; `RelaxedValidated` passes and is validated by
+        // `compute_state`).
         if self.effect_mode == EffectMode::Relaxed {
             return Err(
                 "relaxed effect scheduling is off-chain only: refusing block-path deploy execution"
@@ -371,6 +381,16 @@ impl RuntimeManager {
         deploy: &SignedDeployData,
         rand: &Blake2b512Random,
     ) -> Result<UserDeployRuntimeResult, String> {
+        Self::play_deploy_with_cost_accounting_with(&self.runtime, deploy, rand).await
+    }
+
+    /// The body of `play_deploy_with_cost_accounting`, parameterized on the runtime (the
+    /// validation oracle runs it on a forked sequential runtime).
+    async fn play_deploy_with_cost_accounting_with(
+        runtime: &RhoRuntime,
+        deploy: &SignedDeployData,
+        rand: &Blake2b512Random,
+    ) -> Result<UserDeployRuntimeResult, String> {
         let mut collector = EvalCollector::default();
 
         let pre_charge = SystemDeploy::pre_charge(
@@ -381,8 +401,8 @@ impl RuntimeManager {
             &PublicKey::new(deploy.deployer.clone()),
             rand.split_byte(0),
         );
-        let (pre_result, pre_eval) = self.eval_system_deploy(&pre_charge).await?;
-        let pre_checkpoint = self.runtime.create_soft_checkpoint().await;
+        let (pre_result, pre_eval) = Self::eval_system_deploy_with(runtime, &pre_charge).await?;
+        let pre_checkpoint = runtime.create_soft_checkpoint().await;
         collector = collector.add(
             &pre_checkpoint
                 .log
@@ -411,11 +431,12 @@ impl RuntimeManager {
             });
         }
 
-        let (mut processed, eval_result) = self.process_deploy(deploy, &rand.split_byte(1)).await?;
+        let (mut processed, eval_result) =
+            Self::process_deploy_with(runtime, deploy, &rand.split_byte(1)).await?;
         collector = collector.add(&processed.deploy_log, &eval_result.mergeable);
 
         let refund = SystemDeploy::refund(processed.refund_amount(), rand.split_byte(2));
-        let _ = self.eval_system_deploy(&refund).await?;
+        let _ = Self::eval_system_deploy_with(runtime, &refund).await?;
 
         processed.deploy_log = collector.event_log.clone();
         Ok(UserDeployRuntimeResult {
@@ -433,13 +454,23 @@ impl RuntimeManager {
         terms: &[SignedDeployData],
         rand: &Blake2b512Random,
     ) -> Result<(Blake2b256Hash, Vec<UserDeployRuntimeResult>), String> {
-        self.runtime.reset(*start_hash).await.map_err(|e| e)?;
+        Self::play_deploys_with_cost_accounting_with(&self.runtime, start_hash, terms, rand).await
+    }
+
+    /// The body of `play_deploys_with_cost_accounting`, parameterized on the runtime.
+    async fn play_deploys_with_cost_accounting_with(
+        runtime: &RhoRuntime,
+        start_hash: &Blake2b256Hash,
+        terms: &[SignedDeployData],
+        rand: &Blake2b512Random,
+    ) -> Result<(Blake2b256Hash, Vec<UserDeployRuntimeResult>), String> {
+        runtime.reset(*start_hash).await.map_err(|e| e)?;
         let mut results = Vec::new();
         for (i, d) in terms.iter().enumerate() {
             let r = rand.split_byte(u8::try_from(i).map_err(|e| e.to_string())?);
-            results.push(self.play_deploy_with_cost_accounting(d, &r).await?);
+            results.push(Self::play_deploy_with_cost_accounting_with(runtime, d, &r).await?);
         }
-        let checkpoint = self.runtime.create_checkpoint().await.map_err(|e| e)?;
+        let checkpoint = runtime.create_checkpoint().await.map_err(|e| e)?;
         Ok((checkpoint.root, results))
     }
 
@@ -500,11 +531,11 @@ impl RuntimeManager {
     }
 
     /// Run a system deploy's source (port of `evaluateSystemSource`).
-    async fn evaluate_system_source(
-        &self,
+    async fn evaluate_system_source_with(
+        runtime: &RhoRuntime,
         deploy: &SystemDeploy,
     ) -> Result<EvaluateResult, String> {
-        self.runtime
+        runtime
             .evaluate_with_env(deploy.source, &deploy.normalizer_env, &deploy.rand)
             .await
             .map_err(|e| e.to_string())
@@ -512,8 +543,8 @@ impl RuntimeManager {
 
     /// Consume the result produced on the system deploy's return channel (port of
     /// `consumeSystemResult`).
-    async fn consume_system_result(
-        &self,
+    async fn consume_system_result_with(
+        runtime: &RhoRuntime,
         deploy: &SystemDeploy,
     ) -> Result<Option<(TaggedContinuation, Vec<ListParWithRandom>)>, String> {
         let patterns = vec![SortedProc::new(from_expr(Expr::EVar(Box::new(
@@ -524,7 +555,7 @@ impl RuntimeManager {
             patterns,
             remainder: None,
         };
-        self.runtime
+        runtime
             .consume_result(
                 &[SortedProc::new(deploy.return_channel.clone())],
                 &[pattern],
@@ -538,17 +569,25 @@ impl RuntimeManager {
         &self,
         deploy: &SystemDeploy,
     ) -> Result<(Result<(), SystemDeployUserError>, EvaluateResult), String> {
+        Self::eval_system_deploy_with(&self.runtime, deploy).await
+    }
+
+    /// The body of `eval_system_deploy`, parameterized on the runtime.
+    async fn eval_system_deploy_with(
+        runtime: &RhoRuntime,
+        deploy: &SystemDeploy,
+    ) -> Result<(Result<(), SystemDeployUserError>, EvaluateResult), String> {
         if let Some(op) = &deploy.op {
-            return self.eval_native_system_deploy(op).await;
+            return Self::eval_native_system_deploy_with(runtime, op).await;
         }
-        let eval_result = self.evaluate_system_source(deploy).await?;
+        let eval_result = Self::evaluate_system_source_with(runtime, deploy).await?;
         if !eval_result.errors.is_empty() {
             return Err(format!(
                 "Unexpected system errors: {:?}",
                 eval_result.errors
             ));
         }
-        let consumed = self.consume_system_result(deploy).await?;
+        let consumed = Self::consume_system_result_with(runtime, deploy).await?;
         match consumed {
             Some((_, data)) => match data.as_slice() {
                 [single] if single.pars.len() == 1 => {
@@ -562,11 +601,11 @@ impl RuntimeManager {
     }
 
     /// Evaluate a native system deploy (rust-first replacement for the rholang PoS/registry sources).
-    async fn eval_native_system_deploy(
-        &self,
+    async fn eval_native_system_deploy_with(
+        runtime: &RhoRuntime,
         op: &NativeSystemDeployOp,
     ) -> Result<(Result<(), SystemDeployUserError>, EvaluateResult), String> {
-        let native = NativeSystemState::new(self.runtime.native_store());
+        let native = NativeSystemState::new(runtime.native_store());
         let result = match op {
             NativeSystemDeployOp::PreCharge { deployer, amount } => {
                 native.pre_charge(deployer, *amount).await?
@@ -589,11 +628,20 @@ impl RuntimeManager {
         state_hash: &Blake2b256Hash,
         deploy: &SystemDeploy,
     ) -> Result<(Blake2b256Hash, SystemDeployRuntimeResult), String> {
-        self.runtime.reset(*state_hash).await.map_err(|e| e)?;
-        let (result, _eval_result) = self.eval_system_deploy(deploy).await?;
-        let checkpoint = self.runtime.create_soft_checkpoint().await;
+        Self::play_system_deploy_with(&self.runtime, state_hash, deploy).await
+    }
+
+    /// The body of `play_system_deploy`, parameterized on the runtime.
+    async fn play_system_deploy_with(
+        runtime: &RhoRuntime,
+        state_hash: &Blake2b256Hash,
+        deploy: &SystemDeploy,
+    ) -> Result<(Blake2b256Hash, SystemDeployRuntimeResult), String> {
+        runtime.reset(*state_hash).await.map_err(|e| e)?;
+        let (result, _eval_result) = Self::eval_system_deploy_with(runtime, deploy).await?;
+        let checkpoint = runtime.create_soft_checkpoint().await;
         let event_list: Vec<Event> = checkpoint.log.iter().map(to_casper_event).collect();
-        let final_hash = self.runtime.create_checkpoint().await.map_err(|e| e)?.root;
+        let final_hash = runtime.create_checkpoint().await.map_err(|e| e)?.root;
         match result {
             Ok(()) => {
                 let system_deploy = match &deploy.op {
@@ -638,15 +686,35 @@ impl RuntimeManager {
     > {
         let creator = block_data.sender.bytes().to_vec();
         let seq_num = i64::from(block_data.seq_num);
-        self.runtime.set_block_data(block_data);
-        let (mut state_hash, processed_deploys) = self
-            .play_deploys_with_cost_accounting(start_hash, terms, rand)
-            .await?;
-        let mut processed_system_deploys = Vec::new();
-        for sd in system_deploys {
-            let (new_hash, processed) = self.play_system_deploy(&state_hash, sd).await?;
-            state_hash = new_hash;
-            processed_system_deploys.push(processed);
+        let (mut state_hash, mut processed_deploys, mut processed_system_deploys) = Self::block_on(
+            &self.runtime,
+            start_hash,
+            terms,
+            system_deploys,
+            rand,
+            &block_data,
+        )
+        .await?;
+        if self.effect_mode == EffectMode::RelaxedValidated {
+            // Laws 23–25 (on-chain validated speculation): validate the speculative run against
+            // the sequential DFS reference — post-state hash, per-channel COMM multisets, and
+            // Law 11 rig-replay of the shipped trace — and fall back to the reference's results
+            // on any divergence (the block then carries the sequential trace).
+            let (hash, user, sys) = self
+                .validate_relaxed_block(
+                    start_hash,
+                    terms,
+                    system_deploys,
+                    rand,
+                    &block_data,
+                    &processed_deploys,
+                    &processed_system_deploys,
+                    state_hash,
+                )
+                .await?;
+            state_hash = hash;
+            processed_deploys = user;
+            processed_system_deploys = sys;
         }
         let mut mergeable_chs: Vec<NumberChannelsDiff> = Vec::new();
         mergeable_chs.extend(processed_deploys.iter().map(|r| r.mergeable.clone()));
@@ -654,6 +722,110 @@ impl RuntimeManager {
         self.save_mergeable_channels(state_hash, &creator, seq_num, &mergeable_chs, *start_hash)
             .await?;
         Ok((state_hash, processed_deploys, processed_system_deploys))
+    }
+
+    /// Run user deploys + block-level system deploys on the given runtime, returning the
+    /// post-state hash and the processed results — the shared play-and-checkpoint fold of the
+    /// speculative run and the validation oracle.
+    async fn block_on(
+        runtime: &RhoRuntime,
+        start_hash: &Blake2b256Hash,
+        terms: &[SignedDeployData],
+        system_deploys: &[SystemDeploy],
+        rand: &Blake2b512Random,
+        block_data: &BlockData,
+    ) -> Result<
+        (
+            Blake2b256Hash,
+            Vec<UserDeployRuntimeResult>,
+            Vec<SystemDeployRuntimeResult>,
+        ),
+        String,
+    > {
+        runtime.set_block_data(block_data.clone());
+        let (mut state_hash, processed_deploys) =
+            Self::play_deploys_with_cost_accounting_with(runtime, start_hash, terms, rand).await?;
+        let mut processed_system_deploys = Vec::new();
+        for sd in system_deploys {
+            let (new_hash, processed) =
+                Self::play_system_deploy_with(runtime, &state_hash, sd).await?;
+            state_hash = new_hash;
+            processed_system_deploys.push(processed);
+        }
+        Ok((state_hash, processed_deploys, processed_system_deploys))
+    }
+
+    /// Validate a relaxed-validated block run against the sequential reference (Laws 23–25):
+    /// re-run the deploy set on a forked sequential runtime, require the post-state hash and the
+    /// per-channel COMM subsequences to agree, and Law 11-rig-replay the shipped trace. On any
+    /// divergence the reference's results are returned — the fallback the block carries.
+    #[allow(clippy::too_many_arguments)]
+    async fn validate_relaxed_block(
+        &self,
+        start_hash: &Blake2b256Hash,
+        terms: &[SignedDeployData],
+        system_deploys: &[SystemDeploy],
+        rand: &Blake2b512Random,
+        block_data: &BlockData,
+        relaxed_user: &[UserDeployRuntimeResult],
+        relaxed_sys: &[SystemDeployRuntimeResult],
+        relaxed_hash: Blake2b256Hash,
+    ) -> Result<
+        (
+            Blake2b256Hash,
+            Vec<UserDeployRuntimeResult>,
+            Vec<SystemDeployRuntimeResult>,
+        ),
+        String,
+    > {
+        let oracle = self.fork_play_runtime(*start_hash).await?;
+        let (oracle_hash, oracle_user, oracle_sys) =
+            Self::block_on(&oracle, start_hash, terms, system_deploys, rand, block_data).await?;
+        let logs_match = relaxed_user
+            .iter()
+            .zip(&oracle_user)
+            .all(|(r, o)| comm_multisets_match(&r.deploy.deploy_log, &o.deploy.deploy_log))
+            && relaxed_sys
+                .iter()
+                .zip(&oracle_sys)
+                .all(|(r, o)| match (&r.deploy, &o.deploy) {
+                    (
+                        ProcessedSystemDeploy::Succeeded { event_list: a, .. },
+                        ProcessedSystemDeploy::Succeeded { event_list: b, .. },
+                    ) => comm_multisets_match(a, b),
+                    _ => false,
+                });
+        let mut accepted = oracle_hash == relaxed_hash && logs_match;
+        if accepted {
+            // Law 11 backstop: the shipped (relaxed) trace must rig-replay to the shipped hash.
+            let processed: Vec<ProcessedDeploy> =
+                relaxed_user.iter().map(|r| r.deploy.clone()).collect();
+            let processed_sys: Vec<ProcessedSystemDeploy> =
+                relaxed_sys.iter().map(|r| r.deploy.clone()).collect();
+            accepted = match self.fork_replay_runtime(*start_hash).await {
+                Ok(replay) => self
+                    .replay_compute_state_with(
+                        &replay,
+                        start_hash,
+                        &processed,
+                        &processed_sys,
+                        rand,
+                        block_data.clone(),
+                        true,
+                        &BTreeMap::new(),
+                        &[],
+                    )
+                    .await
+                    .map(|(h, _)| h == relaxed_hash)
+                    .unwrap_or(false),
+                Err(_) => false,
+            };
+        }
+        if accepted {
+            Ok((relaxed_hash, relaxed_user.to_vec(), relaxed_sys.to_vec()))
+        } else {
+            Ok((oracle_hash, oracle_user, oracle_sys))
+        }
     }
 
     /// Replay processed deploys + system deploys and verify the replayed state hash + mergeable
