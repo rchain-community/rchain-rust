@@ -55,6 +55,11 @@ pub enum EffectMode {
     /// interleaving must never reach a block's event log (Law 11 replay / Law 16 content
     /// addressing).
     Relaxed,
+    /// Laws 23–25 (on-chain validated speculation): the relaxed scheduler on the block path,
+    /// where every block-path run is checked against the sequential DFS reference (state hash +
+    /// per-channel COMM subsequences) and falls back to the sequential trace on divergence.
+    /// `docs/src/formal/onchain-scheduling.md`.
+    RelaxedValidated,
 }
 
 impl std::str::FromStr for EffectMode {
@@ -64,7 +69,10 @@ impl std::str::FromStr for EffectMode {
             "dfs" => Ok(EffectMode::Sequential),
             "gate" => Ok(EffectMode::Gate),
             "relaxed" => Ok(EffectMode::Relaxed),
-            other => Err(format!("'{other}': expected one of dfs, gate, relaxed")),
+            "relaxed-validated" => Ok(EffectMode::RelaxedValidated),
+            other => Err(format!(
+                "'{other}': expected one of dfs, gate, relaxed, relaxed-validated"
+            )),
         }
     }
 }

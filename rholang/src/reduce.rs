@@ -1760,7 +1760,10 @@ impl<T: Tuplespace + 'static, D: Dispatch + 'static> DebruijnInterpreter<T, D> {
                 DfsPath::root(),
             )
             .await;
-        if matches!(self.effect_mode, EffectMode::Relaxed) {
+        if matches!(
+            self.effect_mode,
+            EffectMode::Relaxed | EffectMode::RelaxedValidated
+        ) {
             result.and(self.drain_relaxed_tasks().await)
         } else {
             result
@@ -1950,7 +1953,7 @@ impl<T: Tuplespace + 'static, D: Dispatch + 'static> DebruijnInterpreter<T, D> {
                 // Per-channel DFS order is preserved by the queues; cross-channel interleaving is
                 // free (the relaxed contract). This arm returns after enqueueing — the tasks run
                 // concurrently under the queues.
-                EffectMode::Relaxed => {
+                EffectMode::Relaxed | EffectMode::RelaxedValidated => {
                     for (i, effect) in effects.into_iter().enumerate() {
                         let self_ = self.clone();
                         let cost = cost.clone();
@@ -1958,7 +1961,9 @@ impl<T: Tuplespace + 'static, D: Dispatch + 'static> DebruijnInterpreter<T, D> {
                         let fut = if self_.cancelled.load(Ordering::SeqCst) {
                             Err(RholangError::ReduceError("reduction cancelled".to_string()))
                         } else {
-                            Ok(self_.clone().apply_effect_relaxed(effect, cost, effect_path))
+                            Ok(self_
+                                .clone()
+                                .apply_effect_relaxed(effect, cost, effect_path))
                         };
                         self_.enqueue_relaxed(fut);
                     }
