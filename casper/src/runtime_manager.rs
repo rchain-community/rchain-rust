@@ -800,18 +800,42 @@ impl RuntimeManager {
     > {
         let creator = block_data.sender.bytes().to_vec();
         let seq_num = i64::from(block_data.seq_num);
-        // Phase 3 note: a certificate invalidation escaping the per-deploy fallback surfaces as
-        // an error here; the whole-set sequential fallback (Phase 4) replaces this mapping.
-        let (mut state_hash, mut processed_deploys, mut processed_system_deploys) = Self::block_on(
-            &self.runtime,
-            start_hash,
-            terms,
-            system_deploys,
-            rand,
-            &block_data,
-        )
-        .await?;
-        if self.effect_mode == EffectMode::RelaxedValidated {
+        // Laws 23–25: the speculative run, with the whole-set safety net. A certificate
+        // invalidation escaping the per-deploy fallback (a block-level system deploy's
+        // speculative commit) re-runs the whole deploy set sequentially on a forked runtime
+        // from start_hash — the fork reset is the inverse-replay, the sequential fold the gate
+        // re-run — and the shipped result is the sequential reference's by construction.
+        let mut fell_back = false;
+        let (mut state_hash, mut processed_deploys, mut processed_system_deploys) =
+            match Self::block_on(
+                &self.runtime,
+                start_hash,
+                terms,
+                system_deploys,
+                rand,
+                &block_data,
+            )
+            .await
+            {
+                Ok(v) => v,
+                Err(RuntimeRunError::SpeculationInvalidated) => {
+                    let oracle = self.fork_play_runtime(*start_hash).await?;
+                    let v = Self::block_on(
+                        &oracle,
+                        start_hash,
+                        terms,
+                        system_deploys,
+                        rand,
+                        &block_data,
+                    )
+                    .await
+                    .map_err(String::from)?;
+                    fell_back = true;
+                    v
+                }
+                Err(RuntimeRunError::Other(e)) => return Err(e),
+            };
+        if self.effect_mode == EffectMode::RelaxedValidated && !fell_back {
             // Laws 23–25 (on-chain validated speculation): validate the speculative run against
             // the sequential DFS reference — post-state hash, per-channel COMM multisets, and
             // Law 11 rig-replay of the shipped trace — and fall back to the reference's results

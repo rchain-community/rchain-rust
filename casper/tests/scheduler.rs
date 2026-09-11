@@ -100,14 +100,24 @@ async fn exploratory_path_stays_open_in_relaxed_mode() {
     assert!(res.is_empty(), "no return-channel data expected");
 }
 
-/// Terms spanning the three validated-speculation outcomes (Laws 23–25): a single-channel term
+/// Terms spanning the validated-speculation outcomes (Laws 23–25): a single-channel term
 /// (relaxed and sequential logs agree), a re-entry term whose install/store events may interleave
-/// (the per-channel COMM oracle), and the S.3 term whose relaxed outcome is genuinely free (the
-/// validation must fall back to the sequential trace).
+/// (the per-channel COMM oracle), the S.3 term whose relaxed outcome is genuinely free (the
+/// validation must fall back to the sequential trace), the C/D pair whose relaxed run may read a
+/// DFS-later write while still reaching the same outcome (the certificate's own detection class —
+/// the oracle cannot see it, only prefix visibility can), and the persistent-produce pair (the
+/// former COMM-order inversion, now pinned by dispatch-time pre-claiming).
 const VALIDATED_CORPUS: &[&str] = &[
     r#"@"chan"!(42)"#,
     r#"new c in { c!(1) | for (@x <- c) { c!(x + 10) } | for (@y <- c) { @"out"!(y) } }"#,
     r#"new c, d in { c!(1) | d!(2) | d!(3) | for (@x <- c) { d!(x) } | for (@y <- d) { @"out"!(y) } }"#,
+    // The C/D pair (later_write_pollution_unsound): the `[1,0]` continuation's consume on `d`
+    // races the `[2]` sibling produce on `d`. Both interleavings COMM and reach `out=([1,2])` —
+    // the polluted one reads a DFS-later write and must fail the certificate (or land cleanly).
+    r#"new c, d in { c!(1) | for (@x <- c) { for (@y <- d) { @"out"!([x, y]) } } | d!(2) }"#,
+    // The persistent-produce pair: both receives' claims land at root dispatch in path order,
+    // so the two COMMs are pinned in the sequential order (pre-claiming).
+    r#"new c in { c!!(42) | for (@x <- c) { @"p1"!(x) } | for (@y <- c) { @"p2"!(y) } }"#,
 ];
 
 /// The validated mode passes the block-path entry points (no hard-reject), while the pure
@@ -182,5 +192,61 @@ async fn relaxed_validated_compute_state_matches_sequential() {
             comm_multisets_match(&vuser[0].deploy.deploy_log, &suser[0].deploy.deploy_log),
             "per-channel COMM multisets must match for {term}"
         );
+    }
+}
+
+/// Soundness regardless of which path fires: over repeated runs of the free-class terms (S.3,
+/// C/D, persistent-produce), the validated block path never diverges from the sequential
+/// reference — each run either accepts the relaxed trace (certificate-clean + oracle legs) or
+/// falls back (fail-fast at a deploy or the whole set), and both outcomes ship the sequential
+/// hash and COMM multisets. The invalidating interleaving is a tokio scheduling race
+/// (pre-claiming removed the structural late-landing case), so the deterministic fail-fast
+/// coverage lives at the queue level; this test pins the block-path outcome across many draws.
+#[tokio::test(flavor = "multi_thread")]
+async fn relaxed_validated_never_diverges_from_sequential() {
+    const ITERATIONS: usize = 20;
+    let free_terms: &[&str] = &[
+        VALIDATED_CORPUS[2],
+        VALIDATED_CORPUS[3],
+        VALIDATED_CORPUS[4],
+    ];
+    for term in free_terms {
+        let validated = build_runtime_manager_with_mode(EffectMode::RelaxedValidated).await;
+        let sequential = build_runtime_manager_with_mode(EffectMode::Sequential).await;
+        let vstart = seed_vault(&validated).await;
+        let sstart = seed_vault(&sequential).await;
+        assert_eq!(vstart, sstart, "seeded pre-states must match");
+        let d = deploy(term);
+        for i in 0..ITERATIONS {
+            let rand = fixed_rand().split_byte(i as u8);
+            let (vhash, vuser, _) = validated
+                .compute_state(
+                    &vstart,
+                    std::slice::from_ref(&d),
+                    &[],
+                    &rand,
+                    BlockData::empty(),
+                )
+                .await
+                .expect("validated compute_state");
+            let (shash, suser, _) = sequential
+                .compute_state(
+                    &sstart,
+                    std::slice::from_ref(&d),
+                    &[],
+                    &rand,
+                    BlockData::empty(),
+                )
+                .await
+                .expect("sequential compute_state");
+            assert_eq!(
+                vhash, shash,
+                "iteration {i}: validated vs sequential state hash mismatch for {term}"
+            );
+            assert!(
+                comm_multisets_match(&vuser[0].deploy.deploy_log, &suser[0].deploy.deploy_log),
+                "iteration {i}: per-channel COMM multisets must match for {term}"
+            );
+        }
     }
 }
