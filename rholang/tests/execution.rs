@@ -323,10 +323,10 @@ async fn relaxed_validated_mode_runs_corpus_without_error() {
 }
 
 // The former RELAXED_COMM_ONLY_TERMS classification — re-entry and root-sibling terms whose
-// standalone install/store events may interleave — is subsumed by the order-insensitive
-// COMM-multiset oracle: those terms' COMM multisets match the sequential reference regardless
-// of the landing order, so `relaxed_preserves_same_channel_order` asserts them together with
-// the rest of the corpus.
+// standalone install/store events may interleave — is subsumed by the COMM-only projection:
+// those terms' per-channel COMM sequences match the sequential reference (only COMM events are
+// compared at all), so `relaxed_preserves_same_channel_order` asserts them together with the
+// rest of the corpus.
 
 /// Corpus terms whose relaxed outcome is genuinely *free*: their final state — and for some,
 /// even their per-channel COMM order — depends on the landing order of independent tasks, so no
@@ -357,29 +357,40 @@ const RELAXED_FREE_TERMS: &[&str] = &[
     r#"new c in { c!(1) | c!(2) | c!(3) | for (@x <- c) { @"race"!(x) } }"#,
 ];
 
-/// Terms whose per-channel *COMM order* is also free: several root-level sibling tasks claim one
-/// channel, and a claim that lands late is absent from the queue when a later-path claim
-/// commits — the queue orders *pending* claims, not un-landed ones, so even the COMM order can
-/// invert (the persistent-produce pair: whichever receive task claims the channel first installs
-/// first and COMMs first). Their COMM *multiset* and post-state still match the sequential
-/// reference — which is exactly what the order-insensitive oracle asserts — and the validated
-/// block-path mode accepts them on that basis.
-const RELAXED_STATE_ONLY_TERMS: &[&str] = &[
-    // Persistent produce + two sibling receives: whichever receive task claims `c` first
-    // installs first and COMMs first, so the two COMMs can appear in either order.
-    r#"new c in { c!!(42) | for (@x <- c) { @"p1"!(x) } | for (@y <- c) { @"p2"!(y) } }"#,
-];
+/// Project both logs onto every touched channel and compare the per-channel COMM *sequences*
+/// (Law 20, `queue_commit_path_ordered`): same-channel commits follow the path-sorted claim
+/// order, so the per-channel COMM projections are equal in sequence, not just as multisets.
+/// Dispatch-time pre-claiming is what makes this executable — every claim lands in the queue at
+/// dispatch time, so a late-landing earlier-path claim (the former persistent-produce
+/// inversion) cannot occur. Only COMM events are compared at all: the standalone
+/// install/store events interleave around a `Comm` and are not part of the relaxed contract.
+fn assert_per_channel_comm_order(relaxed: &[Event], sequential: &[Event], label: &str) {
+    let is_comm = |e: &Event| matches!(e, Event::Comm(_));
+    let channels: BTreeSet<Blake2b256Hash> = sequential
+        .iter()
+        .chain(relaxed.iter())
+        .filter(|e| is_comm(e))
+        .flat_map(event_channels)
+        .collect();
+    for channel in &channels {
+        let relaxed_sub: Vec<&Event> = relaxed
+            .iter()
+            .filter(|e| is_comm(e) && event_channels(e).contains(channel))
+            .collect();
+        let sequential_sub: Vec<&Event> = sequential
+            .iter()
+            .filter(|e| is_comm(e) && event_channels(e).contains(channel))
+            .collect();
+        assert_eq!(
+            relaxed_sub, sequential_sub,
+            "per-channel COMM order mismatch for {label} on channel {channel:?}"
+        );
+    }
+}
 
-/// Project both logs onto every touched channel and compare the per-channel COMM *multisets*
-/// (Law 20/24, order-insensitive). Only COMM events are compared at all: dispatch is spawn-only,
-/// so a claim lands only when its task runs and the standalone `Produce`/`Consume` install/store
-/// events can interleave around a `Comm` — the standalone-event order is not part of the relaxed
-/// contract. And even the COMM order itself can invert: a late-landing earlier-path claim is
-/// absent from the queue when a later-path claim commits — the queue orders *pending* claims,
-/// not un-landed ones (the persistent-produce pair, RELAXED_STATE_ONLY_TERMS). The executable
-/// guarantee of the current implementation is therefore: same COMM multiset per channel + same
-/// post-state; the order-pinning upgrade is the dispatch-time pre-claiming of
-/// docs/src/formal/onchain-scheduling.md.
+/// The order-insensitive cross-check: the per-channel COMM *multisets* also match (implied by
+/// the sequence equality above; kept as the independent form the relaxed-validated block path's
+/// `comm_multisets_match` uses).
 fn assert_per_channel_comm_multiset(relaxed: &[Event], sequential: &[Event], label: &str) {
     let is_comm = |e: &Event| matches!(e, Event::Comm(_));
     let channels: BTreeSet<Blake2b256Hash> = sequential
@@ -409,14 +420,14 @@ fn assert_per_channel_comm_multiset(relaxed: &[Event], sequential: &[Event], lab
 #[tokio::test(flavor = "multi_thread")]
 async fn relaxed_preserves_same_channel_order() {
     // Law 20 (executable form): the relaxed scheduler reaches the sequential reference
-    // post-state and per-channel COMM *multiset*. Only COMM events are compared — spawn-only
-    // dispatch lets the standalone install/store events interleave around a Comm, which is not
-    // part of the relaxed contract — and even the COMM order itself can invert when a
-    // late-landing earlier-path claim commits after later-path claims (RELAXED_STATE_ONLY_TERMS;
-    // `queue_commit_path_ordered` pins the order of the claims that have landed), so the
-    // multiset plus the state hash is the sound executable oracle. The S.3 counterexample and
-    // the other free terms are asserted to reduce without error, never here — their final
-    // state is free.
+    // post-state and per-channel COMM *sequence* — same-channel commits follow the path-sorted
+    // claim order (`queue_commit_path_ordered`), pinned by dispatch-time pre-claiming: every
+    // claim lands in the queue at dispatch, so the persistent-produce inversion (a
+    // late-landing earlier-path claim) cannot occur. Only COMM events are compared — the
+    // standalone install/store events interleave around a Comm and are not part of the relaxed
+    // contract — and the multiset cross-check runs alongside. The S.3 counterexample and the
+    // other free terms are asserted to reduce without error, never here — their final state
+    // is free.
     for term in REDUCTION_CORPUS {
         if RELAXED_FREE_TERMS.contains(term) {
             continue;
@@ -443,6 +454,7 @@ async fn relaxed_preserves_same_channel_order() {
             cr.root, cs.root,
             "relaxed vs sequential state hash mismatch for {term}"
         );
+        assert_per_channel_comm_order(&cr.log, &cs.log, term);
         assert_per_channel_comm_multiset(&cr.log, &cs.log, term);
     }
 }

@@ -1954,7 +1954,10 @@ impl<T: Tuplespace + 'static, D: Dispatch + 'static> DebruijnInterpreter<T, D> {
                 // queues (spawn-only dispatch into `relaxed_tasks`; the root evaluation drains).
                 // Per-channel DFS order is preserved by the queues; cross-channel interleaving is
                 // free (the relaxed contract). This arm returns after enqueueing — the tasks run
-                // concurrently under the queues.
+                // concurrently under the queues. Each effect's claim is made at dispatch time
+                // (pre-claiming, inside `apply_effect_relaxed`), so this loop lands same-channel
+                // claims in path order before any task runs — a later-path task can never commit
+                // before an earlier-path claim has landed (the persistent-produce inversion).
                 EffectMode::Relaxed | EffectMode::RelaxedValidated => {
                     for (i, effect) in effects.into_iter().enumerate() {
                         let self_ = self.clone();
@@ -2191,18 +2194,29 @@ impl<T: Tuplespace + 'static, D: Dispatch + 'static> DebruijnInterpreter<T, D> {
     /// persistent/peek follow-on at `child(1)`, and only then drop the claim (the queue-level
     /// continuation-prepend). The produce's phase two claims the matched join set, re-waits at
     /// head, and commits with re-validation — see `rchain_rspace::scheduled_space`.
+    ///
+    /// The claim is made **at dispatch time**, before the task future is even built
+    /// (dispatch-time pre-claiming, `docs/src/formal/channel-scheduler.md`): every claim of a
+    /// dispatch list therefore lands in the queue in dispatch order, so a later-path task can
+    /// never commit before an earlier-path claim has landed — the persistent-produce COMM-order
+    /// inversion cannot occur. Continuation claims land at their parent's match time and are
+    /// ordered by the queue's path-ordered insert.
     fn apply_effect_relaxed(
         self: Arc<Self>,
         effect: Effect,
         cost: Arc<CostAccounting>,
         path: DfsPath,
     ) -> ReducerFuture {
-        Box::pin(async move {
-            match effect {
-                Effect::Par(par, env, rand) => self.reduce_par(par, env, rand, cost, path).await,
-                Effect::Produce(chan, data, persistent) => {
+        match effect {
+            Effect::Par(par, env, rand) => {
+                Box::pin(async move { self.reduce_par(par, env, rand, cost, path).await })
+            }
+            Effect::Produce(chan, data, persistent) => {
+                // Pre-claim at dispatch time (see the doc above): the guard is created now and
+                // moved into the task.
+                let mut guard = self.claims.claim(path.0.clone(), &[chan.clone()]);
+                Box::pin(async move {
                     self.update_mergeable_channels(&chan);
-                    let mut guard = self.claims.claim(path.0.clone(), &[chan.clone()]);
                     let _lease = Self::wait_at_head_or_invalidate(&guard, &path.0).await?;
                     let scheduled = self
                         .space
@@ -2250,19 +2264,23 @@ impl<T: Tuplespace + 'static, D: Dispatch + 'static> DebruijnInterpreter<T, D> {
                     // the explicit scope end).
                     let _ = release;
                     Ok(())
-                }
-                Effect::Consume(binds, body, persistent, peek) => {
-                    let patterns: Vec<BindPattern> = binds.iter().map(|(p, _)| p.clone()).collect();
-                    let sources: Vec<SortedProc> = binds.iter().map(|(_, s)| s.clone()).collect();
+                })
+            }
+            Effect::Consume(binds, body, persistent, peek) => {
+                // Pre-claim at dispatch time: the full static source set lands in the queue
+                // before any later-path task can acquire.
+                let patterns: Vec<BindPattern> = binds.iter().map(|(p, _)| p.clone()).collect();
+                let sources: Vec<SortedProc> = binds.iter().map(|(_, s)| s.clone()).collect();
+                let peeks: BTreeSet<usize> = if peek {
+                    (0..sources.len()).collect()
+                } else {
+                    BTreeSet::new()
+                };
+                let guard = self.claims.claim(path.0.clone(), &sources);
+                Box::pin(async move {
                     for s in &sources {
                         self.update_mergeable_channels(s);
                     }
-                    let peeks: BTreeSet<usize> = if peek {
-                        (0..sources.len()).collect()
-                    } else {
-                        BTreeSet::new()
-                    };
-                    let guard = self.claims.claim(path.0.clone(), &sources);
                     let _lease = Self::wait_at_head_or_invalidate(&guard, &path.0).await?;
                     let scheduled = self
                         .space
@@ -2301,29 +2319,31 @@ impl<T: Tuplespace + 'static, D: Dispatch + 'static> DebruijnInterpreter<T, D> {
                     }
                     let _ = release;
                     Ok(())
-                }
-                Effect::ProducePeeks(data_list) => {
-                    for (i, (chan, _, removed_data, persist)) in data_list.iter().enumerate() {
-                        if !persist {
-                            let self_ = self.clone();
-                            let cost = cost.clone();
-                            let effect_path = path.child(i as u16);
-                            let fut = if self_.cancelled.load(Ordering::SeqCst) {
-                                Err(RholangError::ReduceError("reduction cancelled".to_string()))
-                            } else {
-                                Ok(self_.clone().apply_effect_relaxed(
-                                    Effect::Produce(chan.clone(), removed_data.clone(), false),
-                                    cost,
-                                    effect_path,
-                                ))
-                            };
-                            self_.enqueue_relaxed(fut);
-                        }
-                    }
-                    Ok(())
-                }
+                })
             }
-        })
+            Effect::ProducePeeks(data_list) => Box::pin(async move {
+                // Each peek re-produce dispatches as an ordinary produce at its child path; its
+                // claim lands at that dispatch (the recursive apply_effect_relaxed pre-claims).
+                for (i, (chan, _, removed_data, persist)) in data_list.iter().enumerate() {
+                    if !persist {
+                        let self_ = self.clone();
+                        let cost = cost.clone();
+                        let effect_path = path.child(i as u16);
+                        let fut = if self_.cancelled.load(Ordering::SeqCst) {
+                            Err(RholangError::ReduceError("reduction cancelled".to_string()))
+                        } else {
+                            Ok(self_.clone().apply_effect_relaxed(
+                                Effect::Produce(chan.clone(), removed_data.clone(), false),
+                                cost,
+                                effect_path,
+                            ))
+                        };
+                        self_.enqueue_relaxed(fut);
+                    }
+                }
+                Ok(())
+            }),
+        }
     }
 
     /// The relaxed re-effect (persistent/peek follow-on) on a fresh task, charged against the same
