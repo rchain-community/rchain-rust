@@ -35,4 +35,4 @@ the stated-but-not-defined laws in `Rchain/{Subst,Reduce,Match,FreeVars}.lean`.
 | `sort` | `models/.../rholang/sorter/ordering.scala` |
 | `Proc` (binary Phase-0 form) | `models/src/main/protobuf/RhoTypes.proto` (`Par`/`Send`/`Receive`/`New`/`Match`) |
 
-See [`../INVENTORY.md`](../INVENTORY.md) for the full 22-law catalog.
+See [`../INVENTORY.md`](../INVENTORY.md) for the full 25-law catalog.

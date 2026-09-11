@@ -24,6 +24,11 @@ DFS path order (Law 20, "1 channel = 1 logical task"), the sequential-equivalent
 and dispatch-time closure computability (Law 22) are the only sound concurrent effect schedulers — see
 `Rchain/Scheduler.lean` and
 [`../docs/src/formal/channel-scheduler.md`](../docs/src/formal/channel-scheduler.md).
+The **on-chain extension (Laws 23–25)** makes the relaxed interleaving sound for the block path by
+**validated speculation**: commits may reorder iff each validates DFS-order serializability (Law 24's
+versioned write-record layer with prefix visibility), invalidated subtrees abort and re-run under the
+gate, so the published log is the sequential fold's — see `Rchain/SchedulerOnchain.lean` and
+[`../docs/src/formal/onchain-scheduling.md`](../docs/src/formal/onchain-scheduling.md).
 
 **Status legend**
 

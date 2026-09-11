@@ -5,7 +5,7 @@ This document is the **core** of the formal specification. It defines the reflec
 how the Rust port realizes it as a **safe-by-construction** type system — a Calculus of
 Constructions whose base sort is the ρ-calculus itself (see [`TYPE-SYSTEM.md`](TYPE-SYSTEM.md)).
 
-It is the foundation the 22 laws in [`INVENTORY.md`](INVENTORY.md) are stated *over*. The
+It is the foundation the 25 laws in [`INVENTORY.md`](INVENTORY.md) are stated *over*. The
 machine-checked realization lives in [`Rchain/Par.lean`](Rchain/Par.lean), [`Rchain/Rho.lean`](Rchain/Rho.lean),
 and [`Rchain/Ty.lean`](Rchain/Ty.lean).
 

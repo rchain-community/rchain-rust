@@ -290,7 +290,7 @@ Scala remains a *checklist* of required behavior only, never an implementation g
   maintained **by hand** (`reduce.rs:35-59`, `substitute.rs`) rather than carried by the type. A
   single inversion (the `normalize_contr` formal-order reversal, fixed in `5ae8dc4df`) silently broke
   list-as-channel matching — latent bugs are invisible until one contract exercises them. *How the
-  rewrite eliminates it:* the interpreter is re-derived from the 22 laws (`INVENTORY.md`) and the
+  rewrite eliminates it:* the interpreter is re-derived from the 25 laws (`INVENTORY.md`) and the
   grammar in `RHO-CALCULUS.md`, with the `Par<S>` sort split and the `Closed`/`WellScoped`/
   `BindsAtMostOnce` refinements carrying the invariants structurally (Phase 4).
 

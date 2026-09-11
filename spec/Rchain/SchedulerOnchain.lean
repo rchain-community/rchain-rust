@@ -18,7 +18,8 @@ that makes effect-level concurrency *sound on-chain*
   every commit read exactly the state the DFS-earlier effects produced. The Bool-presence
   `State` of `Rchain.Effect` cannot state this — the depth-2 pair's stale read has the same Bool
   value as the correct one — so this module adds the **versioned write-record layer**
-  `SpecState := Chan → Option (DfsPath × Nat)` (newest write = writer path + version).
+  `SpecState := Chan → Option (DfsPath × Nat × Bool)` (newest write = writer path + version +
+  polarity).
   `prefixVisible` / `ValidCommit` / `DFSSerializable` define the check; `s3_pair_fails_validation`
   shows the depth-2 pair's B-first interleaving fails it (at `[0,0,0]`'s produce), and
   `later_write_pollution_unsound` — the C/D pair — shows why the weaker "earlier writes
@@ -27,10 +28,10 @@ that makes effect-level concurrency *sound on-chain*
 * **Law 25 — validated speculation.** A scheduler may commit effects in any order iff each commit
   validates Law 24; invalidated subtrees abort, their writes are inverse-replayed, and they
   re-run under the gate, so the published log is the sequential fold's.
-  `validated_speculation_refines_apply` and `dfs_serializable_iff_log_equal` state the
-  publication theorems; `gate_replay_terminates` proves re-runs total; `abort_bounded` states
-  that each path aborts at most once (the path-ordered re-run coordinator of the Rust
-  realization).
+  `validated_speculation_refines_apply` and `dfs_serializable_implies_log_equal` state the
+  publication theorems — one-directional: `trace_equality_without_serializability` disproves the
+  converse; `gate_replay_terminates` proves re-runs total; `Published` (path-nodup) states that
+  each path commits at most once (the path-ordered re-run coordinator of the Rust realization).
 -/
 
 namespace Rchain
@@ -163,8 +164,9 @@ theorem read_state_determines_outcome (e : EffectWith) {s1 s2 : State}
 The depth-2 pair (`depth2A`/`depth2B`/`state1` of `Rchain.Scheduler`) as *dispatched commits*:
 each op is its own effect at its own path — A's chain `receive d` / `receive x` / `c!(v)` at
 `[0]` / `[0,0]` / `[0,0,0]`, B's `receive c` / `@"out"!()` at `[1]` / `[1,0]` — exactly as the
-reducer's `dispatch_owned` enqueues them. Each commit carries the record-layer snapshot its
-reads observed. -/
+reducer's `dispatch_owned` enqueues them. Each commit's read snapshot is the stepped state's
+record layer at commit time (`DFSSerializable` derives it — no snapshot is carried in the
+commit, so the check is faithful by construction). -/
 
 /-- The B-first interleaving, stepped by the model: B commits, then A's chain. -/
 def s3BSt1 := applyAt [1] (Effect.consume 0 Effect.stop) (state1, emptySpec)
@@ -505,8 +507,8 @@ def gateTrace : List (DfsPath × Effect) → State → List Event
   | [], _ => []
   | (_, e) :: rest, d => e.trace d ++ gateTrace rest (e.apply d)
 
-/-- The strict-lexicographic path comparator (the `qsort` key; `PathLt` is exactly its `true`
-    cases). -/
+/-- The strict-lexicographic path comparator (the `mergeSort` key; `PathLt` is exactly its
+    `true` cases). -/
 def pathLt : DfsPath → DfsPath → Bool
   | [], [] => false
   | [], _ :: _ => true
