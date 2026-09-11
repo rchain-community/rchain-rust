@@ -10,6 +10,7 @@ import Rchain.Match
 import Rchain.FreeVars
 import Rchain.Effect
 import Rchain.Scheduler
+import Rchain.SchedulerOnchain
 import Rchain.RSpace.Join
 import Rchain.RSpace.Comm
 import Rchain.RSpace.Merge

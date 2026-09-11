@@ -20,7 +20,10 @@ that is *usefully parallel*, all formalized in
 
 The Rust realization ships these as three `EffectMode`s — `dfs` (the sequential reference),
 `gate` (Law 21), `relaxed` (Law 20) — selected per runtime by the `--effect-scheduler` node flag.
-`relaxed` is **off-chain only**: the casper block paths hard-reject it.
+`relaxed` is **off-chain only**: the casper block paths hard-reject it. The extension that makes
+the relaxed interleaving *sound on-chain* — speculative execution with a Law 24 serializability
+certificate and a gate re-run fallback — is specified in
+[On-chain scheduling: validated speculation (Laws 23–25)](onchain-scheduling.md).
 
 ## DFS paths: the linearization key
 

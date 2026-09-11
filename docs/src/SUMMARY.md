@@ -27,6 +27,7 @@
 - [Concurrent reduction](formal/concurrent-reduction.md)
 - [Effect scheduling](formal/effect-scheduling.md)
 - [The channel scheduler (Laws 20–22)](formal/channel-scheduler.md)
+- [On-chain scheduling: validated speculation (Laws 23–25)](formal/onchain-scheduling.md)
 - [Substitution and matching](formal/substitution-matching.md)
 - [Closedness and the Calculus of Constructions](formal/closedness-coc.md)
 
