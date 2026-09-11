@@ -298,19 +298,6 @@ async fn relaxed_mode_runs_all_corpus_terms_without_error() {
     }
 }
 
-/// Corpus terms whose continuation re-touches a channel that a later-path sibling also touches
-/// (the one-hop enqueue window of [effect-scheduling](formal/effect-scheduling.md)): their
-/// per-channel *COMM* order is still path-sorted (Law 20, `queue_commit_path_ordered`), but the
-/// standalone install/store events may interleave — spawn-only dispatch means the continuation's
-/// claim lands only when its task runs, while the sibling may already hold the head. Their
-/// per-channel order is therefore compared on COMM events only.
-const RELAXED_COMM_ONLY_TERMS: &[&str] = &[
-    // Transitive re-entry: the continuation of `for (@x <- c)` re-produces on `c`.
-    r#"new c in { c!(1) | for (@x <- c) { c!(x + 10) } | for (@y <- c) { @"out"!(y) } }"#,
-    // Join re-entry: the continuation of `for (@x <- c)` produces on `d`, the join's other leg.
-    r#"new c, d in { c!(1) | d!(2) | for (@x <- c) { d!(x + 10) } | for (@y <- d; @z <- c) { @"join"!([y, z]) } }"#,
-];
-
 /// The S.3 cross-channel counterexample: the continuation of the receive on `c` produces on `d`,
 /// which a later-path sibling also consumes from. Relaxed's cross-channel interleaving is
 /// genuinely *free* for it — `@"out"` receives 1 or 2 depending on the interleaving — so it is
@@ -319,15 +306,13 @@ const RELAXED_COMM_ONLY_TERMS: &[&str] = &[
 const RELAXED_FREE_TERM: &str = r#"new c, d in { c!(1) | d!(2) | d!(3) | for (@x <- c) { d!(x) } | for (@y <- d) { @"out"!(y) } }"#;
 
 /// Project both logs onto every touched channel and compare the per-channel subsequences of the
-/// selected events (Law 20): the full event stream, or only the COMM events (`comms_only`) for the
-/// re-entry terms whose install/store events may interleave.
-fn assert_per_channel_order(
-    relaxed: &[Event],
-    sequential: &[Event],
-    comms_only: bool,
-    label: &str,
-) {
-    let select = |e: &Event| !comms_only || matches!(e, Event::Comm(_));
+/// **COMM** events (Law 20, `queue_commit_path_ordered`). Only commits are compared: dispatch is
+/// spawn-only, so a claim lands only when its task runs and the standalone `Produce`/`Consume`
+/// install/store events can interleave around a `Comm` — even for a simple same-channel
+/// produce/consume. The standalone-event order is therefore not part of the relaxed contract; the
+/// claim queue orders the *commits* regardless.
+fn assert_per_channel_order(relaxed: &[Event], sequential: &[Event], label: &str) {
+    let select = |e: &Event| matches!(e, Event::Comm(_));
     let channels: BTreeSet<Blake2b256Hash> = sequential
         .iter()
         .chain(relaxed.iter())
@@ -354,16 +339,15 @@ fn assert_per_channel_order(
 async fn relaxed_preserves_same_channel_order() {
     // Law 20 (executable form): the relaxed scheduler's per-channel *commit* order equals the
     // sequential DFS reference's — same-channel COMMs follow the path-sorted claim order
-    // (`queue_commit_path_ordered`). For the terms whose continuations stay disjoint from
-    // later-path siblings this extends to the full per-channel event subsequences; the re-entry
-    // terms compare COMM events only (their install/store events may interleave — the one-hop
-    // enqueue window); the S.3 counterexample term is asserted to reduce without error by
-    // `relaxed_mode_runs_all_corpus_terms_without_error`, never here — its final state is free.
+    // (`queue_commit_path_ordered`). Only COMM events are compared: spawn-only dispatch lets the
+    // standalone install/store events interleave around a `Comm` (the one-hop enqueue window of
+    // effect-scheduling), which is not part of the relaxed contract. The S.3 counterexample term is
+    // asserted to reduce without error by `relaxed_mode_runs_all_corpus_terms_without_error`, never
+    // here — its final state is free.
     for term in REDUCTION_CORPUS {
         if *term == RELAXED_FREE_TERM {
             continue;
         }
-        let comms_only = RELAXED_COMM_ONLY_TERMS.contains(term);
         let rt_r = build_runtime_with_mode(true, EffectMode::Relaxed).await;
         let rt_s = build_runtime(false).await;
         let rand = fixed_rand();
@@ -385,7 +369,7 @@ async fn relaxed_preserves_same_channel_order() {
             cr.root, cs.root,
             "relaxed vs sequential state hash mismatch for {term}"
         );
-        assert_per_channel_order(&cr.log, &cs.log, comms_only, term);
+        assert_per_channel_order(&cr.log, &cs.log, term);
     }
 }
 

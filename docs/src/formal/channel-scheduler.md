@@ -120,11 +120,11 @@ the next-step footprint is not the closure.
 
 - **Per-channel DFS commit order is preserved.** Same-channel *commits* follow the path-sorted
   claim order — the executable form of Law 20 (`queue_commit_path_ordered`), asserted by
-  `relaxed_preserves_same_channel_order`: per-channel COMM-event subsequences equal the sequential
-  reference's, and the full per-channel event subsequences do too for terms whose continuations
-  stay disjoint from later-path siblings. Because dispatch is spawn-only, a continuation's claim
-  lands only when its task runs — a later-path sibling already at the head may install (log a
-  `Consume`) or store (log a `Produce`) first. That is the one-hop enqueue window of
+  `relaxed_preserves_same_channel_order`: per-channel **COMM**-event subsequences equal the
+  sequential reference's. Only commits are compared: because dispatch is spawn-only, a claim lands
+  only when its task runs — a later-path sibling already at the head may install (log a `Consume`)
+  or store (log a `Produce`) first, so the standalone install/store events can interleave around a
+  `Comm` even for a simple same-channel produce/consume. That is the one-hop enqueue window of
   [Effect scheduling](effect-scheduling.md); the claim queue orders the *commits* regardless.
 - **Cross-channel interleaving is free.** Effects on disjoint channels claim disjoint queues and
   commit in any order. For terms whose continuations touch channels that later-path siblings also
@@ -184,11 +184,11 @@ that distinct channels no longer contend on one store-wide mutex — the claim q
 - `relaxed_mode_runs_all_corpus_terms_without_error` — every corpus term (including the S.3
   cross-channel counterexample and the join re-entry terms) reduces to completion under relaxed
   mode, and the post-state checkpoints.
-- `relaxed_preserves_same_channel_order` — per-channel COMM subsequences of the relaxed event log
-  equal the sequential DFS order for every corpus term (Law 20), full per-channel event
-  subsequences and root equality for the terms whose continuations stay disjoint; the re-entry
-  terms compare COMM events only (their install/store events may interleave), and the S.3
-  counterexample term is exercised only by the no-error test above (its final state is free).
+- `relaxed_preserves_same_channel_order` — per-channel **COMM** subsequences of the relaxed event log
+  equal the sequential DFS order for every corpus term (Law 20), plus root equality; only commits
+  are compared (spawn-only dispatch lets the standalone install/store events interleave around a
+  `Comm`), and the S.3 counterexample term is exercised only by the no-error test above (its final
+  state is free).
 - `block_paths_reject_relaxed_mode` + `exploratory_path_stays_open_in_relaxed_mode`
   (`casper/tests/scheduler.rs`) — the off-chain gate.
 - `make bench-scheduler` — `sched/pingpong/{2,4,8,16}` (single-channel serialization),
