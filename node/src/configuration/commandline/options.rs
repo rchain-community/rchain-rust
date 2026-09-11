@@ -38,9 +38,9 @@ impl std::str::FromStr for Base16 {
     }
 }
 
-/// The effect-scheduler mode (Laws 20–22): `dfs` → [`EffectMode::Sequential`], `gate` →
-/// [`EffectMode::Gate`], `relaxed` → [`EffectMode::Relaxed`]. Parsed by clap via `FromStr` (the
-/// `Base16` newtype pattern).
+/// The effect-scheduler mode (Laws 20–25): `dfs` → [`EffectMode::Sequential`], `gate` →
+/// [`EffectMode::Gate`], `relaxed` → [`EffectMode::Relaxed`], `relaxed-validated` →
+/// [`EffectMode::RelaxedValidated`]. Parsed by clap via `FromStr` (the `Base16` newtype pattern).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct EffectScheduler(pub EffectMode);
 
@@ -51,6 +51,7 @@ impl EffectScheduler {
             EffectMode::Sequential | EffectMode::ForkJoin => "dfs",
             EffectMode::Gate => "gate",
             EffectMode::Relaxed => "relaxed",
+            EffectMode::RelaxedValidated => "relaxed-validated",
         }
     }
 }
@@ -209,10 +210,11 @@ pub struct Run {
     #[arg(long = "thread-pool-size")]
     pub thread_pool_size: Option<i32>,
 
-    /// The effect scheduler (Laws 20–22): `dfs` (default, the sequential DFS loop), `gate` (the
-    /// DFS gate), or `relaxed` (per-channel claim queues). Relaxed is off-chain only: a relaxed
-    /// node refuses block-path deploy execution. Falls back to the config file's
-    /// `casper.effect-scheduler` (default `dfs`) when not given.
+    /// The effect scheduler (Laws 20–25): `dfs` (default, the sequential DFS loop), `gate` (the
+    /// DFS gate), `relaxed` (per-channel claim queues; off-chain only — a relaxed node refuses
+    /// block-path deploy execution), or `relaxed-validated` (Laws 23–25: relaxed on the block
+    /// path, validated against the sequential reference with sequential fallback). Falls back to
+    /// the config file's `casper.effect-scheduler` (default `dfs`) when not given.
     #[arg(long = "effect-scheduler", value_parser = clap::value_parser!(EffectScheduler))]
     pub effect_scheduler: Option<EffectScheduler>,
 
