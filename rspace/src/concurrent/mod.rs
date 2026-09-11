@@ -7,6 +7,7 @@ use std::pin::Pin;
 
 pub mod multi_lock;
 pub mod two_step_lock;
+pub mod zfa_ledger;
 
 /// A boxed `Send` future.
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
