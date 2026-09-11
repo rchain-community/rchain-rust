@@ -25,7 +25,7 @@ use rchain_rholang::merging::{
     calculate_num_channel_diff, encode_mergeable_key, get_number_with_rnd, DeployMergeableData,
     NumberChannel,
 };
-use rchain_rholang::native_state::{decode_bonds, pos_bonds_key, NativeSystemState};
+use rchain_rholang::native_state::{decode_bonds, pos_active_key, NativeSystemState, PosGenesis};
 use rchain_rholang::runtime::{ReplayRhoRuntime, RhoRuntime};
 use rchain_rholang::storage::{RhoHistoryRepository, RhoMatch};
 use rchain_rholang::system_processes::BlockData;
@@ -67,6 +67,10 @@ pub struct RuntimeManager {
     replay_runtime: ReplayRhoRuntime,
     history_repo: RhoHistoryRepository,
     mergeable_store: MergeableStore,
+    /// The network's genesis PoS descriptors (pool, trusted stakeholder set, params). Used to
+    /// re-install the genesis native state during the trusted genesis replay; the trie is
+    /// authoritative for every non-genesis block.
+    genesis_pos: PosGenesis,
 }
 
 impl RuntimeManager {
@@ -81,7 +85,19 @@ impl RuntimeManager {
             replay_runtime,
             history_repo,
             mergeable_store,
+            genesis_pos: PosGenesis::default(),
         }
+    }
+
+    /// Set the network's genesis PoS descriptors (builder form).
+    pub fn with_genesis_pos(mut self, genesis_pos: PosGenesis) -> Self {
+        self.genesis_pos = genesis_pos;
+        self
+    }
+
+    /// The network's genesis PoS descriptors.
+    pub fn genesis_pos(&self) -> &PosGenesis {
+        &self.genesis_pos
     }
 
     pub fn get_history_repo(&self) -> &RhoHistoryRepository {
@@ -404,15 +420,15 @@ impl RuntimeManager {
 
     /// Compute the genesis state from deploys (port of `computeGenesis`).
     ///
-    /// Rust-first: the PoS bonds and active-validator set are installed as native state (not derived
-    /// from an interpreted `Pos.rhox`), and `terms` is the (possibly empty) list of pure-library
-    /// deploys.
+    /// Rust-first: the PoS bond pool, trusted stakeholder set, parameters and the derived active
+    /// validator set are installed as native state (not derived from an interpreted `Pos.rhox`), and
+    /// `terms` is the (possibly empty) list of pure-library deploys.
     pub async fn compute_genesis(
         &self,
         terms: &[SignedDeployData],
         rand: &Blake2b512Random,
         block_data: BlockData,
-        bonds: &BTreeMap<Validator, NonNegI64>,
+        pos_genesis: &PosGenesis,
         vaults: &[Vault],
     ) -> Result<(Blake2b256Hash, Blake2b256Hash, Vec<UserDeployRuntimeResult>), String> {
         let creator = block_data.sender.bytes().to_vec();
@@ -438,7 +454,7 @@ impl RuntimeManager {
         // Install the native system-contract state before the final checkpoint so it is
         // content-addressed into the post-state hash.
         let native = NativeSystemState::new(self.runtime.native_store());
-        native.set_bonds(bonds);
+        native.install_genesis(pos_genesis);
         // Seed the initial REV vault balances from the genesis wallets file so pre-charge can
         // deduct phlo (the native vault map is otherwise empty, and every deploy fails pre-charge).
         for vault in vaults {
@@ -531,7 +547,9 @@ impl RuntimeManager {
                 native.pre_charge(deployer, *amount).await?
             }
             NativeSystemDeployOp::Refund { amount } => native.refund(*amount).await?,
-            NativeSystemDeployOp::CloseBlock => native.close_block().await?,
+            NativeSystemDeployOp::CloseBlock { block_number } => {
+                native.close_block(*block_number).await?
+            }
             NativeSystemDeployOp::Slash { validator } => native.slash(validator).await?,
         };
         let eval_result = EvaluateResult {
@@ -556,7 +574,7 @@ impl RuntimeManager {
         match result {
             Ok(()) => {
                 let system_deploy = match &deploy.op {
-                    Some(NativeSystemDeployOp::CloseBlock) => SystemDeployData::CloseBlock,
+                    Some(NativeSystemDeployOp::CloseBlock { .. }) => SystemDeployData::CloseBlock,
                     Some(NativeSystemDeployOp::Slash { validator }) => {
                         SystemDeployData::Slash(*validator)
                     }
@@ -625,7 +643,7 @@ impl RuntimeManager {
         rand: &Blake2b512Random,
         block_data: BlockData,
         with_cost_accounting: bool,
-        bonds: &BTreeMap<Validator, NonNegI64>,
+        pos_genesis: &PosGenesis,
         vaults: &[Vault],
     ) -> Result<(Blake2b256Hash, Vec<NumberChannelsDiff>), ReplayFailure> {
         self.replay_compute_state_with(
@@ -636,7 +654,7 @@ impl RuntimeManager {
             rand,
             block_data,
             with_cost_accounting,
-            bonds,
+            pos_genesis,
             vaults,
         )
         .await
@@ -654,7 +672,7 @@ impl RuntimeManager {
         rand: &Blake2b512Random,
         block_data: BlockData,
         with_cost_accounting: bool,
-        bonds: &BTreeMap<Validator, NonNegI64>,
+        pos_genesis: &PosGenesis,
         vaults: &[Vault],
     ) -> Result<(Blake2b256Hash, Vec<NumberChannelsDiff>), ReplayFailure> {
         let creator = block_data.sender.bytes().to_vec();
@@ -667,7 +685,7 @@ impl RuntimeManager {
                 system_deploys,
                 block_data,
                 with_cost_accounting,
-                bonds,
+                pos_genesis,
                 vaults,
             )
             .await?;
@@ -738,21 +756,23 @@ impl RuntimeManager {
 
     /// Query the current active validators at `hash` (native PoS read, port of `getActiveValidators`).
     pub async fn get_active_validators(&self, hash: &StateHash) -> Result<Vec<Validator>, String> {
-        // Active validators = every bonded validator (derived from the bonds leaf).
+        // Active validators = the consensus set (`pos:active`), which may be a strict subset of the
+        // bond pool once `number_of_active_validators` caps it.
         Ok(self.compute_bonds(hash).await?.into_keys().collect())
     }
 
-    /// Query the current bonds at `hash` (native PoS read, port of `computeBonds`).
+    /// Query the current *active* bonds at `hash` (native PoS read, port of `computeBonds`).
+    /// Consensus (supermajority, finality fringe, block bonds) uses this active set.
     pub async fn compute_bonds(
         &self,
         hash: &StateHash,
     ) -> Result<BTreeMap<Validator, NonNegI64>, String> {
         let reader = self.history_repo.get_history_reader(to_blake(hash)).await;
         let bytes = reader
-            .get_native(PREFIX_POS, pos_bonds_key())
+            .get_native(PREFIX_POS, pos_active_key())
             .await
             .map_err(|e| e.to_string())?
-            .ok_or_else(|| "bonds leaf not found in state".to_string())?;
+            .ok_or_else(|| "active-bonds leaf not found in state".to_string())?;
         decode_bonds(&bytes)
     }
 }
@@ -816,7 +836,7 @@ mod tests {
                 &Blake2b512Random::new_random(128),
                 BlockData::empty(),
                 false,
-                &BTreeMap::new(),
+                &PosGenesis::default(),
                 &[],
             )
             .await;

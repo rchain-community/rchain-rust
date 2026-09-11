@@ -488,7 +488,9 @@ impl BlockIndex {
                             &rand,
                             BlockData::from_block(&block),
                             with_cost_accounting,
-                            &block.bonds,
+                            // Genesis PoS descriptors; only consumed on the genesis replay path (this
+                            // is always non-genesis block replay). See `interpreter_util.rs`.
+                            runtime.genesis_pos(),
                             // Genesis vault balances are not carried on the block (installed at
                             // genesis, re-derived only on the trusted genesis replay path); this
                             // is always non-genesis block replay, so no vault re-install is

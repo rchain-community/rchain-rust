@@ -6,15 +6,13 @@
 
 mod common;
 
-use std::collections::BTreeMap;
-
 use rchain_casper::genesis::contracts::Vault;
 use rchain_crypto::hash::blake2b512_random::Blake2b512Random;
 use rchain_crypto::public_key::PublicKey;
 use rchain_models::casper::protocol::casper_message::{
     DeployData, ProcessedDeploy, ProcessedSystemDeploy, SignedDeployData,
 };
-use rchain_rholang::native_state::NativeSystemState;
+use rchain_rholang::native_state::{NativeSystemState, PosGenesis};
 use rchain_rholang::system_processes::BlockData;
 use rchain_rholang::util::rev_address::RevAddress;
 use rchain_shared::refined::NonNegI64;
@@ -54,7 +52,7 @@ async fn play_and_replay_agree_for_deployer_id_binding_deploy() {
             &[],
             &rand,
             BlockData::empty(),
-            &BTreeMap::new(),
+            &PosGenesis::default(),
             &[seeded_vault()],
         )
         .await
@@ -87,7 +85,7 @@ async fn play_and_replay_agree_for_deployer_id_binding_deploy() {
             &rand,
             BlockData::empty(),
             true,
-            &BTreeMap::new(),
+            &PosGenesis::default(),
             &[],
         )
         .await
@@ -109,7 +107,7 @@ async fn play_and_replay_agree_for_transfer_deploy_and_vault_writes_persist() {
             &[],
             &rand,
             BlockData::empty(),
-            &BTreeMap::new(),
+            &PosGenesis::default(),
             &[seeded_vault()],
         )
         .await
@@ -144,7 +142,7 @@ async fn play_and_replay_agree_for_transfer_deploy_and_vault_writes_persist() {
             &rand,
             BlockData::empty(),
             true,
-            &BTreeMap::new(),
+            &PosGenesis::default(),
             &[],
         )
         .await
@@ -187,7 +185,7 @@ async fn play_and_replay_agree_for_failed_user_deploy_with_recorded_error() {
             &[],
             &rand,
             BlockData::empty(),
-            &BTreeMap::new(),
+            &PosGenesis::default(),
             &[seeded_vault()],
         )
         .await
@@ -219,7 +217,7 @@ async fn play_and_replay_agree_for_failed_user_deploy_with_recorded_error() {
             &rand,
             BlockData::empty(),
             true,
-            &BTreeMap::new(),
+            &PosGenesis::default(),
             &[],
         )
         .await
@@ -241,7 +239,7 @@ async fn play_and_replay_agree_for_escrow_round_trip_deploy() {
             &[],
             &rand,
             BlockData::empty(),
-            &BTreeMap::new(),
+            &PosGenesis::default(),
             &[seeded_vault()],
         )
         .await
@@ -289,7 +287,7 @@ async fn play_and_replay_agree_for_escrow_round_trip_deploy() {
             &rand,
             BlockData::empty(),
             true,
-            &BTreeMap::new(),
+            &PosGenesis::default(),
             &[],
         )
         .await
