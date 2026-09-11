@@ -257,6 +257,7 @@ fn mode_label(mode: EffectMode) -> &'static str {
         EffectMode::Sequential | EffectMode::ForkJoin => "dfs",
         EffectMode::Gate => "gate",
         EffectMode::Relaxed => "relaxed",
+        EffectMode::RelaxedValidated => "relaxed-validated",
     }
 }
 
@@ -351,10 +352,14 @@ fn sched_bench(c: &mut Criterion) {
     // serialization) and fanout (cross-channel parallelism) across sizes.
     for n in [2usize, 4, 8, 16] {
         let term = pingpong_term(n);
+        // `relaxed-validated` (Laws 23–25) dispatches as relaxed at the rholang level — the
+        // validation oracle lives on the casper block path — so its rows pin dispatch parity
+        // with the pure relaxed arm.
         for mode in [
             EffectMode::Sequential,
             EffectMode::Gate,
             EffectMode::Relaxed,
+            EffectMode::RelaxedValidated,
         ] {
             sched_eval(c, &format!("pingpong/{n}"), &term, mode, num_workers());
         }
@@ -365,6 +370,7 @@ fn sched_bench(c: &mut Criterion) {
             EffectMode::Sequential,
             EffectMode::Gate,
             EffectMode::Relaxed,
+            EffectMode::RelaxedValidated,
         ] {
             sched_eval(c, &format!("fanout/{n}"), &term, mode, num_workers());
         }
@@ -377,6 +383,7 @@ fn sched_bench(c: &mut Criterion) {
             EffectMode::Sequential,
             EffectMode::Gate,
             EffectMode::Relaxed,
+            EffectMode::RelaxedValidated,
         ] {
             sched_eval(c, "sweep/fanout32", &sweep, mode, workers);
         }
