@@ -2,11 +2,20 @@
 
 mod common;
 
+use std::collections::BTreeSet;
+
+use rchain_casper::genesis::contracts::Vault;
 use rchain_crypto::hash::blake2b512_random::Blake2b512Random;
+use rchain_crypto::public_key::PublicKey;
+use rchain_models::block::state_hash::StateHash;
 use rchain_models::casper::protocol::casper_message::{
-    DeployData, ProcessedDeploy, SignedDeployData,
+    DeployData, ProcessedDeploy, ProcessedSystemDeploy, SignedDeployData,
 };
+use rchain_models::validator::Validator;
+use rchain_rholang::native_state::{PosGenesis, PosParams};
 use rchain_rholang::system_processes::BlockData;
+use rchain_rholang::util::rev_address::RevAddress;
+use rchain_shared::refined::NonNegI64;
 
 use common::build_runtime_manager;
 
@@ -45,7 +54,7 @@ async fn genesis_deploy_replay_recomputes_state() {
             &[deploy(r#"@"chan"!(42)"#)],
             &rand,
             BlockData::empty(),
-            &std::collections::BTreeMap::new(),
+            &PosGenesis::default(),
             &[],
         )
         .await
@@ -63,7 +72,7 @@ async fn genesis_deploy_replay_recomputes_state() {
             &rand,
             BlockData::empty(),
             false,
-            &std::collections::BTreeMap::new(),
+            &PosGenesis::default(),
             &[],
         )
         .await
@@ -101,7 +110,7 @@ async fn deploy_exceeding_phlo_limit_fails_and_next_runs() {
             &[starving, normal],
             &rand,
             BlockData::empty(),
-            &std::collections::BTreeMap::new(),
+            &PosGenesis::default(),
             &[],
         )
         .await
@@ -138,7 +147,7 @@ async fn replay_matches_play_for_persistent_and_peek() {
             &[deploy(term)],
             &rand,
             BlockData::empty(),
-            &std::collections::BTreeMap::new(),
+            &PosGenesis::default(),
             &[],
         )
         .await
@@ -154,7 +163,7 @@ async fn replay_matches_play_for_persistent_and_peek() {
             &rand,
             BlockData::empty(),
             false,
-            &std::collections::BTreeMap::new(),
+            &PosGenesis::default(),
             &[],
         )
         .await
@@ -162,5 +171,105 @@ async fn replay_matches_play_for_persistent_and_peek() {
     assert_eq!(
         post, replay_post,
         "replay must reproduce the play post-state"
+    );
+}
+
+/// A signed deploy with an explicit 65-byte deployer key (the bond path derives the validator from
+/// the deployer id).
+fn deploy_with_key(term: &str, deployer: Vec<u8>) -> SignedDeployData {
+    SignedDeployData {
+        data: DeployData {
+            term: term.to_string(),
+            timestamp: 0,
+            phlo_price: 1,
+            phlo_limit: 500_000,
+            valid_after_block_number: 0,
+            shard_id: "root".to_string(),
+        },
+        deployer,
+        sig: Vec::new(),
+        sig_algorithm: "secp256k1".to_string(),
+    }
+}
+
+/// The dynamic-validator lifecycle end to end: a trusted observer bonds, its stake enters the pool,
+/// it becomes an active validator, and replay reproduces the same post-state.
+#[tokio::test]
+async fn bond_deploy_updates_the_active_validator_set() {
+    let rm = build_runtime_manager().await;
+    let rand = fixed_rand();
+    let deployer = Validator::new([0u8; 65]);
+    let rev_address = RevAddress::from_public_key(&PublicKey::new(vec![0u8; 65]))
+        .expect("valid rev address");
+    let pos_genesis = PosGenesis {
+        bonds: std::collections::BTreeMap::new(),
+        trusted: BTreeSet::from([deployer]),
+        params: PosParams {
+            minimum_bond: 1,
+            ..PosParams::default()
+        },
+    };
+    let (_pre, post, _) = rm
+        .compute_genesis(
+            &[],
+            &rand,
+            BlockData::empty(),
+            &pos_genesis,
+            &[Vault {
+                rev_address,
+                initial_balance: NonNegI64::try_from(1_000_000_000).unwrap(),
+            }],
+        )
+        .await
+        .expect("compute_genesis");
+
+    let term = r#"new pos(`rho:rchain:pos`), deployerId(`rho:rchain:deployerId`), ret in {
+  pos!("bond", *deployerId, 30, *ret) |
+  for (_ <- ret) { Nil }
+}"#;
+    let (post_state, user_results, sys_results) = rm
+        .compute_state(
+            &post,
+            &[deploy_with_key(term, vec![0u8; 65])],
+            &[],
+            &rand,
+            BlockData::empty(),
+        )
+        .await
+        .expect("play compute_state");
+    assert!(
+        user_results[0].eval_result.succeeded(),
+        "bond deploy must succeed: {:?}",
+        user_results[0].eval_result.errors
+    );
+
+    let post_state_hash = StateHash::from_slice(post_state.as_bytes());
+    assert!(
+        rm.compute_bonds(&post_state_hash)
+            .await
+            .unwrap()
+            .contains_key(&deployer),
+        "the bonded observer is now an active validator"
+    );
+
+    let processed: Vec<ProcessedDeploy> = user_results.into_iter().map(|r| r.deploy).collect();
+    let processed_sys: Vec<ProcessedSystemDeploy> =
+        sys_results.into_iter().map(|r| r.deploy).collect();
+    let (replay_state, _) = rm
+        .replay_compute_state(
+            &post,
+            &processed,
+            &processed_sys,
+            &rand,
+            BlockData::empty(),
+            true,
+            &PosGenesis::default(),
+            &[],
+        )
+        .await
+        .expect("replay compute_state");
+    assert_eq!(
+        post_state, replay_state,
+        "replay must reproduce the bond post-state"
     );
 }

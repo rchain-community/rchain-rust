@@ -4,6 +4,7 @@ use std::collections::BTreeSet;
 
 use rchain_block_storage::dag::dag_storage::{BlockDagStorage, DeployId};
 use rchain_crypto::hash::blake2b256_hash::Blake2b256Hash;
+use rchain_models::block::state_hash::StateHash;
 use rchain_models::block_hash::BlockHash;
 use rchain_models::block_version::CURRENT;
 use rchain_models::casper::protocol::casper_message::{
@@ -57,7 +58,6 @@ impl BlockCreator {
             .iter()
             .map(|m| m.block_hash)
             .collect();
-        let bonds_map = pre_state.fringe_bonds_map.clone();
         let block_num = pre_state
             .justifications
             .iter()
@@ -113,7 +113,7 @@ impl BlockCreator {
             let close_seed = rand.split_byte(
                 u8::try_from(selected.len() + to_slash.len()).map_err(|e| e.to_string())?,
             );
-            system_deploys.push(SystemDeploy::close_block(close_seed));
+            system_deploys.push(SystemDeploy::close_block(i64::from(block_num), close_seed));
 
             Some(
                 compute_deploys_checkpoint(
@@ -144,6 +144,12 @@ impl BlockCreator {
                     deploys: processed_deploys,
                     system_deploys: processed_system_deploys,
                 };
+                // The block's bond cache is the *active* PoS set at the block's post-state. This is
+                // what `Validate::bonds_cache` recomputes, and it is what lets a block change the
+                // validator pool (bond/withdraw/slash) without the block being rejected.
+                let bonds_map = runtime
+                    .compute_bonds(&StateHash::from_slice(post_state_hash.as_bytes()))
+                    .await?;
                 let unsigned_block = unsigned_block_proto(
                     CURRENT,
                     self.shard_id.clone(),

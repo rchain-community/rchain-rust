@@ -78,7 +78,7 @@ pub struct SystemDeploy {
 pub enum NativeSystemDeployOp {
     PreCharge { deployer: PublicKey, amount: i64 },
     Refund { amount: i64 },
-    CloseBlock,
+    CloseBlock { block_number: i64 },
     Slash { validator: Validator },
 }
 
@@ -106,13 +106,13 @@ impl SystemDeploy {
         }
     }
 
-    pub fn close_block(rand: Blake2b512Random) -> SystemDeploy {
+    pub fn close_block(block_number: i64, rand: Blake2b512Random) -> SystemDeploy {
         SystemDeploy {
             source: "",
             normalizer_env: BTreeMap::new(),
             rand,
             return_channel: Par::default(),
-            op: Some(NativeSystemDeployOp::CloseBlock),
+            op: Some(NativeSystemDeployOp::CloseBlock { block_number }),
         }
     }
 

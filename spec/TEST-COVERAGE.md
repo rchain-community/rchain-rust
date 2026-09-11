@@ -57,10 +57,14 @@ For each gap: **code location** → **current test state** → **the seam a regr
   semaphore (`comm/src/transport/grpc_transport_receiver.rs`, `MAX_CONCURRENT_DISPATCH`). *Seam:*
   each is a pure function or an `Arc<Semaphore>`.
 
-- **G3 — PoS money-moving mutations are untested** (`rholang/src/native_state.rs:155-200`): `slash`,
-  `pre_charge` (incl. the insufficient-funds `Err` branch), `refund`, `close_block`, vault
-  `deposit`/`transfer`. Only the encode/decode helpers are tested. *Seam:*
-  `NativeSystemState` over `InMemNativeStore::empty()`.
+- **G3 — PoS lifecycle mutations** (`rholang/src/native_state.rs`): the dynamic-validator lifecycle is
+  covered — `bond` trust admission + min/max + funds + activation, `withdraw` deactivation + quarantine
+  refund via `close_block`, `slash`/`untrust` confiscation to the Coop vault, active-set top-N
+  selection, and genesis install. `pre_charge` (incl. insufficient funds) and the revVault
+  deposit/transfer paths are tested. *Seam:* `NativeSystemState` over `InMemNativeStore::empty()`, plus
+  `casper/tests/consensus.rs::bond_deploy_updates_the_active_validator_set` for the end-to-end
+  deploy → active-set → replay path. Not covered: `refund` (still a documented no-op) and reward
+  distribution (deferred).
 
 - **G4 — Gas-metering enforcement is under-tested.** `ChargingRSpace::produce/consume`
   (`rholang/src/storage.rs:106-131`) charge paths have no test; there is no end-to-end test that a
@@ -108,7 +112,7 @@ For each gap: **code location** → **current test state** → **the seam a regr
 |---|---|
 | G1 equivocation | ✅ regression test (`casper/dag.rs`) |
 | G2 DoS limits | ✅ RateLimiter + chunker + deploy-pool cap (R2) + decompression cap (R3) + parser depth guard (R9); ⏸ dispatch-semaphore (over tokio's tested primitive) |
-| G3 PoS mutations | ✅ `slash`/`pre_charge`/vault deposit/transfer |
+| G3 PoS mutations | ✅ `bond`/`withdraw`/`close_block`/`slash`/`trust`/`untrust` + active-set cap + end-to-end bond→active-set→replay (`casper/tests/consensus.rs`) |
 | G4 gas enforcement | ✅ `ChargingRSpace` + `phlo_limit` exhaustion end-to-end |
 | G5 state-sync | ✅ export→validate round-trip; ⏸ full store export→import→compare |
 | G6 history checkpoint/reset/rollback | ✅ `RSpace::create_checkpoint`/`reset`/`revert` |
