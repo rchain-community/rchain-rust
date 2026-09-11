@@ -12,9 +12,16 @@ use crate::errors::RSpaceError;
 use crate::internal::{Datum, Row, WaitingContinuation};
 use crate::tuple_space::Tuplespace;
 
-/// The RSpace interface (port of `ISpace[F]`).
+/// The RSpace interface (port of `ISpace[F]`). The bounds mirror
+/// [`Tuplespace`](crate::tuple_space::Tuplespace)'s — every implementor already carries them.
 #[async_trait]
-pub trait ISpace<C, P, A, K>: Tuplespace<C, P, A, K> {
+pub trait ISpace<
+    C: Send + Sync + 'static,
+    P: Send + Sync + 'static,
+    A: Send + Sync + 'static,
+    K: Send + Sync + 'static,
+>: Tuplespace<C, P, A, K>
+{
     async fn create_checkpoint(&self) -> Result<Checkpoint, String>;
 
     async fn reset(&self, root: Blake2b256Hash) -> Result<(), String>;

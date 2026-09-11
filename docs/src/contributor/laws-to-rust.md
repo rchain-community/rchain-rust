@@ -1,6 +1,6 @@
-# The 19 laws → Rust code
+# The 22 laws → Rust code
 
-A human-oriented walkthrough of how each of the [19 laws](../../../spec/INVENTORY.md) is realized as
+A human-oriented walkthrough of how each of the [22 laws](../../../spec/INVENTORY.md) is realized as
 **concrete Rust code** in this repository. This page exists because the mapping is obvious to a
 machine but not to a person: most laws don't live in one obvious place, and a few of the type names in
 the older docs were wrong or misleading. The canonical, terse table is
@@ -10,7 +10,7 @@ the older docs were wrong or misleading. The canonical, terse table is
 
 Three facts make the mapping intuitive once stated:
 
-1. **The oracle is the spec, not the Scala.** The 19 laws and the ρ→CoC type discipline
+1. **The oracle is the spec, not the Scala.** The 22 laws and the ρ→CoC type discipline
    ([`spec/TYPE-SYSTEM.md`](../../../spec/TYPE-SYSTEM.md)) are what the Rust code must satisfy. The
    `legacy/` Scala tree is *reference material* for behavior, and the Scala tests are *differential*
    reference vectors — never the thing to reproduce bug-for-bug.
@@ -52,6 +52,9 @@ cross-cutting "no silent partiality / no `unsafe`" discipline; it fails the buil
 | **17** | Merge conflict resolution is deterministic (unique min-cost rejection); numeric channels are non-negative/no-overflow; the RNG merge is commutative. | `shared/src/refined.rs` — `NonNegI64`; `crypto/src/hash/blake2b512_random.rs` `merge` (`:191`); `rholang/src/merging.rs` `NumberChannel`; min-cost rejection in `sdk/src/dag/merging.rs` | `cargo test -p rchain-sdk -p rchain-rholang` |
 | **18** | The height map is contiguous (no holes) and the fringe's identity is order-independent. | `block-storage/src/dag/metadata_store.rs` — `validate_dag_state` (`:77`) | `cargo test -p rchain-block-storage` |
 | **19** | Blake2b256 is a canonical hash; `Blake2b512Random` has an associative splittable merge; secp256k1 signs/verifies; Curve25519 round-trips. | `crypto/src/hash/blake2b256_hash.rs`, `crypto/src/hash/blake2b512_random.rs`, `crypto/src/signatures/secp256k1.rs`, `crypto/src/encryption/curve25519.rs` | `cargo test -p rchain-crypto` (known-answer vectors) |
+| **20** | Channel-task linearization ("1 channel = 1 logical task"): every channel owns a *claim queue*; an effect claims its channels at its DFS path and commits only as the head of **all** of them, so same-channel commits follow the path-sorted order. | `rspace/src/concurrent/channel_queue.rs` — `ChannelClaimQueue::{claim,claim_more,wait_at_head}` + the guard/`active`-mark exclusion; the produce phase-one/two split and re-validation under the full lock set in `rspace/src/scheduled_space.rs` | `cargo test -p rchain-rspace channel_queue` (queue proptests) + `relaxed_preserves_same_channel_order` (`rholang/tests/execution.rs`) |
+| **21** | DFS-gate linearization: running effect `i` only after effects `0..i−1` complete is exactly the sequential apply fold; the one-hop (next-step-footprint) variant is unsound. | `rholang/src/scheduler.rs` — `EffectMode::Gate` (and `DfsPath` whose lexicographic `Ord` *is* the DFS order); the gate arm of `reduce_effects` in `rholang/src/reduce.rs` | `gate_and_sequential_state_hashes_match` (`rholang/tests/execution.rs`) — gate state hash **and** event log equal the sequential reference |
+| **22** | The next-step closure is computable at dispatch (the matched datum is concrete); that computability does **not** make cross-channel pruning sound. | `rholang/src/reduce.rs` — `resolve_children` computes the continuation's first-step effects at dispatch; the relaxed arm enqueues those children at `path.child(i)` | the reduction-corpus differential tests above + `one_hop_depth2_diverges` (`spec/Rchain/Scheduler.lean`) |
 
 ---
 
@@ -94,8 +97,11 @@ the ρ-calculus's concurrency at three levels, each grounded in the laws:
   their *pure* resolution (substitution / spatial matching / `new`-allocation, Law 19) while applying the
   *effects* in DFS order (Law 4). — [`Concurrent reduction`](../formal/concurrent-reduction.md).
 - **Effect** (matching + scheduling): candidate selection is sorted-first (Law 8), and disjoint-channel
-  effects commute (Law 9) while same-channel effects keep DFS order (Law 4/8/11). —
-  [`Effect scheduling`](../formal/effect-scheduling.md).
+  effects commute (Law 9) while same-channel effects keep DFS order (Law 4/8/11). Static partitioning
+  is unsound (S.3/S.4), so the sound schedulers are dynamic: the **gate** (Law 21) runs effects
+  strictly in path order, and the **claim queue** (Law 20) enforces per-channel DFS order while
+  cross-channel commits interleave — the **relaxed** mode, off-chain only. —
+  [`Effect scheduling`](../formal/effect-scheduling.md), [`The channel scheduler`](../formal/channel-scheduler.md).
 - **Block** (validation): replay is verify-only (Law 11), so dependency-free blocks re-validate
   concurrently and insert serially. — the fork + batch processor above.
 
@@ -112,7 +118,7 @@ The whole model — and the soundness theorems it must satisfy — is specified 
   compile* (e.g. you can't build a `Closed` term from one with free variables, or a `NonNegI64` from a
   negative number).
 - **Run the machine gate**: `tools/audit-type-system.sh` confirms zero production
-  `panic!`/`unsafe`/silent-conversion — the cross-cutting discipline that underlies all 19 laws.
+  `panic!`/`unsafe`/silent-conversion — the cross-cutting discipline that underlies all 22 laws.
 
 The canonical (terse) version of this mapping, with per-law Scala source-of-truth and Lean targets, is
 [`spec/INVENTORY.md`](../../../spec/INVENTORY.md). The formal type discipline is

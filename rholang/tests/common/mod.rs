@@ -8,6 +8,7 @@ use std::sync::Arc;
 use rchain_models::runtime::{BindPattern, ListParWithRandom, TaggedContinuation};
 use rchain_models::sorted::SortedProc;
 use rchain_rholang::runtime::{ReplayRhoRuntime, RhoRuntime};
+use rchain_rholang::scheduler::EffectMode;
 use rchain_rholang::storage::RhoMatch;
 use rchain_rspace::factory::create_history_repository;
 use rchain_rspace::hot_store::InMemHotStore;
@@ -38,8 +39,15 @@ pub async fn build_runtime_pair() -> (RhoRuntime, ReplayRhoRuntime) {
 }
 
 /// Assemble a play runtime over a fresh in-memory store, with per-term concurrency toggled (used by
-/// the concurrent-vs-sequential differential test).
+/// the concurrent-vs-sequential differential test). The effect scheduler is the sequential
+/// reference.
 pub async fn build_runtime(concurrent: bool) -> RhoRuntime {
+    build_runtime_with_mode(concurrent, EffectMode::Sequential).await
+}
+
+/// Assemble a play runtime with both per-term concurrency and the effect-scheduler mode chosen
+/// (used by the gate/relaxed scheduler differential tests).
+pub async fn build_runtime_with_mode(concurrent: bool, mode: EffectMode) -> RhoRuntime {
     let manager = InMemoryStoreManager::default();
     let history = create_history_repository::<
         SortedProc,
@@ -52,7 +60,7 @@ pub async fn build_runtime(concurrent: bool) -> RhoRuntime {
     let reader = history.get_history_reader(history.root()).await;
     let hot = Arc::new(InMemHotStore::new(reader.base()));
     let (play, _replay) = RSpace::create_with_replay(history.clone(), hot, Arc::new(RhoMatch));
-    RhoRuntime::create_with_concurrency(play, history, SortedProc::default(), concurrent)
+    RhoRuntime::create_with_effect_mode(play, history, SortedProc::default(), concurrent, mode)
         .await
         .expect("rho runtime")
 }

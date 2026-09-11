@@ -20,12 +20,13 @@
 # Part II — The ρ-calculus, formally
 
 - [Grammar and sorts](formal/grammar-sorts.md)
-- [The 19 laws](formal/the-19-laws.md)
+- [The 22 laws](formal/the-19-laws.md)
 - [The concurrency model](formal/concurrency-model.md)
 - [Determinism of the block state transition](formal/determinism.md)
 - [Structural congruence and reduction](formal/congruence-reduction.md)
 - [Concurrent reduction](formal/concurrent-reduction.md)
 - [Effect scheduling](formal/effect-scheduling.md)
+- [The channel scheduler (Laws 20–22)](formal/channel-scheduler.md)
 - [Substitution and matching](formal/substitution-matching.md)
 - [Closedness and the Calculus of Constructions](formal/closedness-coc.md)
 
@@ -47,7 +48,7 @@
 
 - [Why Rust](contributor/why-rust.md)
 - [Architecture & port status](contributor/architecture.md)
-- [The 19 laws → Rust code](contributor/laws-to-rust.md)
+- [The 22 laws → Rust code](contributor/laws-to-rust.md)
 - [Formal specification & audit](contributor/spec.md)
 
 # Part VI — QuCalc: native AI & governance

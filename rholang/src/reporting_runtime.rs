@@ -29,6 +29,7 @@ use crate::env::Env;
 use crate::errors::RholangError;
 use crate::evaluate_result::EvaluateResult;
 use crate::runtime::{build_runtime_core, RhoReducer};
+use crate::scheduler::EffectMode;
 use crate::storage::RhoTuplespace;
 use crate::system_processes::BlockData;
 
@@ -65,7 +66,16 @@ impl ReportingRuntime {
     ) -> std::io::Result<ReportingRuntime> {
         let tuplespace: RhoTuplespace = space.clone();
         let native_store = space.native_store();
-        let core = build_runtime_core(&tuplespace, mergeable_tag_name, native_store, true).await?;
+        // Replay-side (event-recording) runtime: like `ReplayRhoRuntime`, it must re-derive the
+        // recorded trace, so only the sequential DFS effect loop may drive it.
+        let core = build_runtime_core(
+            &tuplespace,
+            mergeable_tag_name,
+            native_store,
+            true,
+            EffectMode::Sequential,
+        )
+        .await?;
         Ok(ReportingRuntime {
             reducer: core.reducer,
             space,

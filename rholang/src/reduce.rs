@@ -22,11 +22,14 @@ use rchain_models::par_ops::{from_expr, par_concat, single_bundle, single_expr, 
 use rchain_models::runtime::{BindPattern, ListParWithRandom, ParWithRandom, TaggedContinuation};
 use rchain_models::sorted::SortedProc;
 use rchain_models::sorter::{par_map, par_set};
+use rchain_rspace::concurrent::channel_queue::ChannelClaimQueue;
+use rchain_rspace::scheduled_space::ReleaseToken;
 
 use crate::accounting::{CostAccounting, Costs};
 use crate::env::Env;
 use crate::errors::RholangError;
 use crate::matcher::spatial_match_result;
+use crate::scheduler::{DfsPath, EffectMode};
 use crate::substitute::substitute_par_and_charge;
 
 fn union_free(a: Vec<i32>, b: Vec<i32>) -> Vec<i32> {
@@ -1265,6 +1268,44 @@ pub type Application = Option<(
     bool,
 )>;
 
+/// The produce between its two scheduled phases (the rholang view of
+/// `rchain_rspace::scheduled_space::PendingProduce`): what the phase-two commit needs to
+/// re-validate under the full lock set.
+#[derive(Debug, Clone)]
+pub struct PendingProduce {
+    /// The trigger channel the produce was made on.
+    pub trigger: SortedProc,
+    /// The in-flight datum (not yet stored; the commit re-extracts with it prepended).
+    pub data: ListParWithRandom,
+    pub persist: bool,
+}
+
+/// The result of the scheduled `produce_at` (Law 20): either the op committed inline
+/// (`phase_two: None`, the datum was stored and `application` is final), or the matched join
+/// channels are returned for the claim queue's `claim_more` and the commit is deferred to
+/// `commit_produce`.
+#[derive(Debug, Clone)]
+pub struct ScheduledProduce {
+    /// The matched continuation's channel set (the phase-two claim set). Empty when the datum was
+    /// stored with no match.
+    pub joins: Vec<SortedProc>,
+    /// Final when `phase_two` is `None`; a placeholder otherwise.
+    pub application: Application,
+    /// `Some` when the commit is deferred to `commit_produce`.
+    pub phase_two: Option<PendingProduce>,
+    /// Dropped by the caller after enqueueing the continuation's next-step effects.
+    pub release: ReleaseToken,
+}
+
+/// The result of the scheduled `consume_at` (no split: the full static source set was claimed
+/// before the op).
+#[derive(Debug, Clone)]
+pub struct ScheduledConsume {
+    pub application: Application,
+    /// Dropped by the caller after enqueueing the continuation's next-step effects.
+    pub release: ReleaseToken,
+}
+
 /// The tuplespace interface the evaluator produces/consumes against (port of `RhoTuplespace`).
 #[async_trait]
 pub trait Tuplespace: std::marker::Send + std::marker::Sync {
@@ -1283,15 +1324,66 @@ pub trait Tuplespace: std::marker::Send + std::marker::Sync {
         persist: bool,
         peeks: BTreeSet<usize>,
     ) -> Result<Application, RholangError>;
+
+    /// Produce *at* the given DFS path (the Law 20 scheduling entry point). The default is the
+    /// plain produce plus `ReleaseToken::detached()` — non-scheduling tuplespaces "don't
+    /// schedule": their ops complete inline and no phase-two claim set is returned.
+    async fn produce_at(
+        &self,
+        _path: Vec<u16>,
+        channel: &SortedProc,
+        data: ListParWithRandom,
+        persist: bool,
+    ) -> Result<ScheduledProduce, RholangError> {
+        let application = self.produce(channel, data, persist).await?;
+        Ok(ScheduledProduce {
+            joins: vec![],
+            application,
+            phase_two: None,
+            release: ReleaseToken::detached(),
+        })
+    }
+
+    /// Consume *at* the given DFS path. Default: the plain consume (no split is ever needed — the
+    /// full static source set is claimed before this is called).
+    async fn consume_at(
+        &self,
+        _path: Vec<u16>,
+        channels: &[SortedProc],
+        patterns: &[BindPattern],
+        continuation: TaggedContinuation,
+        persist: bool,
+        peeks: BTreeSet<usize>,
+    ) -> Result<ScheduledConsume, RholangError> {
+        let application = self
+            .consume(channels, patterns, continuation, persist, peeks)
+            .await?;
+        Ok(ScheduledConsume {
+            application,
+            release: ReleaseToken::detached(),
+        })
+    }
+
+    /// Commit the phase two of a scheduled produce (only the scheduling `RSpace` ever defers one;
+    /// the default is therefore unreachable and errors loudly).
+    async fn commit_produce(&self, _pending: PendingProduce) -> Result<Application, RholangError> {
+        Err(RholangError::ReduceError(
+            "commit_produce called on a non-scheduling tuplespace".to_string(),
+        ))
+    }
 }
 
-/// Dispatches a continuation with its matched data (port of `Dispatch`).
+/// Dispatches a continuation with its matched data, at its DFS path (port of `Dispatch`). The
+/// path is the scheduler's linearization key (Laws 20–22): the continuation subtree is ordered
+/// under the effect that dispatched it (`path.child(0)`), ahead of that effect's follow-on
+/// re-produce and the next sibling.
 #[async_trait]
 pub trait Dispatch: std::marker::Send + std::marker::Sync {
     async fn dispatch(
         &self,
         continuation: TaggedContinuation,
         data_list: Vec<ListParWithRandom>,
+        path: DfsPath,
     ) -> Result<(), RholangError>;
 }
 
@@ -1575,6 +1667,9 @@ pub struct DebruijnInterpreter<T: Tuplespace, D: Dispatch> {
     merge_chs: Arc<Mutex<Vec<SortedProc>>>,
     mergeable_tag_name: SortedProc,
     concurrent: bool,
+    /// The effect-scheduler mode (Laws 20–22; see `crate::scheduler`). `Sequential` by default —
+    /// the plain DFS loop, the sound reference the Gate and Relaxed modes must refine.
+    effect_mode: EffectMode,
     /// Reduction steps taken in the current top-level evaluation (see [`DEFAULT_MAX_REDUCE_STEPS`]).
     steps: Arc<AtomicI64>,
     max_steps: Arc<AtomicI64>,
@@ -1582,6 +1677,17 @@ pub struct DebruijnInterpreter<T: Tuplespace, D: Dispatch> {
     /// evaluation future (a `tokio::time::timeout`) does not stop the spawned continuation tasks;
     /// this flag lets the owner tell the in-flight task tree to unwind (issue #12).
     cancelled: Arc<AtomicBool>,
+    /// The per-runtime channel claim queue (Law 20). Every relaxed produce/consume task claims its
+    /// static footprint at its DFS path and holds the guard until the continuation's next-step
+    /// effects are enqueued — the queue-level continuation-prepend. Entries are inserted on claim
+    /// and removed on guard drop; the DashMap itself is never trimmed (fork-per-deploy bounds it).
+    claims: Arc<ChannelClaimQueue<SortedProc, Vec<u16>>>,
+    /// The relaxed-mode task set (Law 20's spawn-only dispatch): effects and continuations are
+    /// spawned into it, and only the root evaluation drains it. A produce/consume task must never
+    /// await continuation completion while holding its claims — `for(x <- c){ c!(x) }` would
+    /// self-deadlock (the continuation claims `c`, the producer holds it) — so relaxed dispatch
+    /// enqueues the continuation at `child(0)` and returns.
+    relaxed_tasks: Arc<Mutex<tokio::task::JoinSet<Result<(), RholangError>>>>,
 }
 
 impl<T: Tuplespace + 'static, D: Dispatch + 'static> DebruijnInterpreter<T, D> {
@@ -1598,9 +1704,12 @@ impl<T: Tuplespace + 'static, D: Dispatch + 'static> DebruijnInterpreter<T, D> {
             merge_chs: Arc::new(Mutex::new(Vec::new())),
             mergeable_tag_name,
             concurrent: true,
+            effect_mode: EffectMode::Sequential,
             steps: Arc::new(AtomicI64::new(0)),
             max_steps: Arc::new(AtomicI64::new(DEFAULT_MAX_REDUCE_STEPS)),
             cancelled: Arc::new(AtomicBool::new(false)),
+            claims: Arc::new(ChannelClaimQueue::new()),
+            relaxed_tasks: Arc::new(Mutex::new(tokio::task::JoinSet::new())),
         }
     }
 
@@ -1622,6 +1731,13 @@ impl<T: Tuplespace + 'static, D: Dispatch + 'static> DebruijnInterpreter<T, D> {
         self.concurrent = concurrent;
     }
 
+    /// Set the effect-scheduler mode (Laws 20–22). Defaults to [`EffectMode::Sequential`]; the
+    /// Gate (Phase 4) and Relaxed (Phase 5) modes replace the sequential `reduce_effects` loop
+    /// while preserving its DFS order semantics.
+    pub fn set_effect_mode(&mut self, mode: EffectMode) {
+        self.effect_mode = mode;
+    }
+
     /// Evaluate a top-level `Par` (port of `Reduce.eval(par)`): reduce the process to normal form via
     /// the recursive reducer. Resets the per-evaluation reduction-step counter and the cancellation
     /// flag.
@@ -1634,27 +1750,64 @@ impl<T: Tuplespace + 'static, D: Dispatch + 'static> DebruijnInterpreter<T, D> {
     ) -> Result<(), RholangError> {
         self.steps.store(0, Ordering::SeqCst);
         self.cancelled.store(false, Ordering::SeqCst);
-        self.reduce_par(
-            (*par).clone(),
-            (*env).clone(),
-            (*rand).clone(),
-            cost.clone(),
-        )
-        .await
+        let result = self
+            .clone()
+            .reduce_par(
+                (*par).clone(),
+                (*env).clone(),
+                (*rand).clone(),
+                cost.clone(),
+                DfsPath::root(),
+            )
+            .await;
+        if matches!(self.effect_mode, EffectMode::Relaxed) {
+            result.and(self.drain_relaxed_tasks().await)
+        } else {
+            result
+        }
+    }
+
+    /// Drain the relaxed task set to completion, propagating the first error (Law 20: only the
+    /// root reduction drains; the produce/consume tasks never join their continuations). Tasks
+    /// spawned during a drain land in the replacement set and are drained in the next round, so
+    /// the drain ends exactly when no task has enqueued another.
+    async fn drain_relaxed_tasks(&self) -> Result<(), RholangError> {
+        loop {
+            let mut set = {
+                let mut guard = self.relaxed_tasks.lock().unwrap_or_else(|p| p.into_inner());
+                if guard.is_empty() {
+                    return Ok(());
+                }
+                std::mem::take(&mut *guard)
+            };
+            while let Some(res) = set.join_next().await {
+                match res {
+                    Err(e) => {
+                        return Err(RholangError::ReduceError(format!(
+                            "relaxed task panicked: {e}"
+                        )))
+                    }
+                    Ok(Err(e)) => return Err(e),
+                    Ok(Ok(())) => {}
+                }
+            }
+        }
     }
 
     /// Reduce a `Par` (public: the continuation-dispatch hook used by the dispatcher's eval closure).
-    /// Resolves the `Par`'s sub-terms to effects, then reduces those effects in DFS order.
+    /// Resolves the `Par`'s sub-terms to effects, then reduces those effects in DFS order. `path`
+    /// addresses this `Par` node in the reduction tree; its terms are the children `path.child(i)`.
     pub fn reduce_par(
         self: Arc<Self>,
         par: Par,
         env: Env<Par>,
         rand: Blake2b512Random,
         cost: Arc<CostAccounting>,
+        path: DfsPath,
     ) -> ReducerFuture {
         Box::pin(async move {
             let effects = self.resolve_children(&par, &env, &rand, &cost).await?;
-            self.reduce_effects(effects, cost).await
+            self.reduce_effects(effects, cost, path).await
         })
     }
 
@@ -1736,35 +1889,109 @@ impl<T: Tuplespace + 'static, D: Dispatch + 'static> DebruijnInterpreter<T, D> {
         Ok(effects)
     }
 
-    /// Reduce a sequence of effects in DFS order. The sequential reference loop; the sharded
-    /// scheduler (disjoint-channel components run concurrently) is layered on top of this in the
-    /// next phase.
+    /// Reduce a sequence of effects in DFS order: the `i`th effect is applied at `path.child(i)`.
+    /// The sequential reference loop; the Gate (Law 21) and Relaxed (Law 20) schedulers replace it
+    /// under the same per-channel DFS order.
     fn reduce_effects(
         self: Arc<Self>,
         effects: Vec<Effect>,
         cost: Arc<CostAccounting>,
+        path: DfsPath,
     ) -> ReducerFuture {
         Box::pin(async move {
-            for effect in effects {
-                self.clone().apply_effect(effect, cost.clone()).await?;
+            match self.effect_mode {
+                // The sequential DFS loop — the sound reference.
+                EffectMode::Sequential | EffectMode::ForkJoin => {
+                    for (i, effect) in effects.into_iter().enumerate() {
+                        self.clone()
+                            .apply_effect(effect, cost.clone(), path.child(i as u16))
+                            .await?;
+                    }
+                    Ok(())
+                }
+                // Law 21 — the gate: the task for effect `i` runs only after the tasks for effects
+                // `0..i−1` have completed (subtree completion = handle completion), so the gate's
+                // execution is exactly the sequential `Effect.apply` fold
+                // (`gate_exec_refines_apply`). Not a speedup — the sound, sequential-equivalent
+                // carrier the Relaxed mode is measured against.
+                EffectMode::Gate => {
+                    // The gate chain: the task for effect `i` owns the handle of the task for
+                    // effect `i−1` and awaits it first, so (transitively) it runs only after
+                    // every earlier effect's subtree completed. Awaiting the immediate
+                    // predecessor alone suffices because that task itself awaits its own — a
+                    // linear chain of awaits, not the quadratic all-predecessors join.
+                    let mut predecessor: Option<tokio::task::JoinHandle<Result<(), RholangError>>> =
+                        None;
+                    for (i, effect) in effects.into_iter().enumerate() {
+                        let self_ = self.clone();
+                        let cost = cost.clone();
+                        let effect_path = path.child(i as u16);
+                        let handle = tokio::spawn(async move {
+                            if let Some(prev) = predecessor {
+                                prev.await.map_err(|e| {
+                                    RholangError::ReduceError(format!(
+                                        "gate predecessor task panicked: {e}"
+                                    ))
+                                })??;
+                            }
+                            self_.apply_effect(effect, cost, effect_path).await
+                        });
+                        predecessor = Some(handle);
+                    }
+                    if let Some(last) = predecessor {
+                        last.await.map_err(|e| {
+                            RholangError::ReduceError(format!("gate task panicked: {e}"))
+                        })??;
+                    }
+                    Ok(())
+                }
+                // Law 20 — the relaxed scheduler: every effect is a task on the per-channel claim
+                // queues (spawn-only dispatch into `relaxed_tasks`; the root evaluation drains).
+                // Per-channel DFS order is preserved by the queues; cross-channel interleaving is
+                // free (the relaxed contract). This arm returns after enqueueing — the tasks run
+                // concurrently under the queues.
+                EffectMode::Relaxed => {
+                    for (i, effect) in effects.into_iter().enumerate() {
+                        let self_ = self.clone();
+                        let cost = cost.clone();
+                        let effect_path = path.child(i as u16);
+                        let fut = if self_.cancelled.load(Ordering::SeqCst) {
+                            Err(RholangError::ReduceError("reduction cancelled".to_string()))
+                        } else {
+                            Ok(self_.clone().apply_effect_relaxed(effect, cost, effect_path))
+                        };
+                        self_.enqueue_relaxed(fut);
+                    }
+                    Ok(())
+                }
             }
-            Ok(())
         })
     }
 
-    /// Apply one effect: expand a nested `Par` (a scheduling barrier), or perform a produce/consume/
-    /// peek and reduce any matched continuation inline (the continuation-prepend invariant). The
-    /// persistent/peek re-produce is applied *after* the continuation subtree.
-    fn apply_effect(self: Arc<Self>, effect: Effect, cost: Arc<CostAccounting>) -> ReducerFuture {
+    /// Apply one effect at DFS path `path`: expand a nested `Par` (a scheduling barrier), or
+    /// perform a produce/consume/peek and reduce any matched continuation inline (the
+    /// continuation-prepend invariant). The continuation subtree is addressed at `path.child(0)`
+    /// and the persistent/peek follow-on re-produce at `path.child(1)`: both complete before the
+    /// next sibling at the parent, matching the sequential reducer's order.
+    fn apply_effect(
+        self: Arc<Self>,
+        effect: Effect,
+        cost: Arc<CostAccounting>,
+        path: DfsPath,
+    ) -> ReducerFuture {
         Box::pin(async move {
             match effect {
-                Effect::Par(par, env, rand) => self.reduce_par(par, env, rand, cost).await,
+                Effect::Par(par, env, rand) => self.reduce_par(par, env, rand, cost, path).await,
                 Effect::Produce(chan, data, persistent) => {
                     self.update_mergeable_channels(&chan);
                     let result = self.space.produce(&chan, data.clone(), persistent).await?;
                     if let Some((continuation, data_list, peek)) = result {
                         join_spawned(
-                            self.clone().dispatch_owned(continuation, data_list.clone()),
+                            self.clone().dispatch_owned(
+                                continuation,
+                                data_list.clone(),
+                                path.child(0),
+                            ),
                             "continuation dispatch",
                         )
                         .await?;
@@ -1773,6 +2000,7 @@ impl<T: Tuplespace + 'static, D: Dispatch + 'static> DebruijnInterpreter<T, D> {
                                 self.clone().apply_effect_spawned(
                                     Effect::Produce(chan.clone(), data.clone(), true),
                                     cost,
+                                    path.child(1),
                                 ),
                                 "persistent re-produce",
                             )
@@ -1782,6 +2010,7 @@ impl<T: Tuplespace + 'static, D: Dispatch + 'static> DebruijnInterpreter<T, D> {
                                 self.clone().apply_effect_spawned(
                                     Effect::ProducePeeks(data_list.clone()),
                                     cost,
+                                    path.child(1),
                                 ),
                                 "peek re-produce",
                             )
@@ -1813,7 +2042,11 @@ impl<T: Tuplespace + 'static, D: Dispatch + 'static> DebruijnInterpreter<T, D> {
                         .await?;
                     if let Some((continuation, data_list, p)) = result {
                         join_spawned(
-                            self.clone().dispatch_owned(continuation, data_list.clone()),
+                            self.clone().dispatch_owned(
+                                continuation,
+                                data_list.clone(),
+                                path.child(0),
+                            ),
                             "continuation dispatch",
                         )
                         .await?;
@@ -1822,6 +2055,7 @@ impl<T: Tuplespace + 'static, D: Dispatch + 'static> DebruijnInterpreter<T, D> {
                                 self.clone().apply_effect_spawned(
                                     Effect::Consume(binds.clone(), body.clone(), true, peek),
                                     cost,
+                                    path.child(1),
                                 ),
                                 "persistent re-consume",
                             )
@@ -1831,6 +2065,7 @@ impl<T: Tuplespace + 'static, D: Dispatch + 'static> DebruijnInterpreter<T, D> {
                                 self.clone().apply_effect_spawned(
                                     Effect::ProducePeeks(data_list.clone()),
                                     cost,
+                                    path.child(1),
                                 ),
                                 "peek re-produce",
                             )
@@ -1840,12 +2075,13 @@ impl<T: Tuplespace + 'static, D: Dispatch + 'static> DebruijnInterpreter<T, D> {
                     Ok(())
                 }
                 Effect::ProducePeeks(data_list) => {
-                    for (chan, _, removed_data, persist) in &data_list {
+                    for (i, (chan, _, removed_data, persist)) in data_list.iter().enumerate() {
                         if !persist {
                             self.clone()
                                 .apply_effect(
                                     Effect::Produce(chan.clone(), removed_data.clone(), false),
                                     cost.clone(),
+                                    path.child(i as u16),
                                 )
                                 .await?;
                         }
@@ -1864,6 +2100,7 @@ impl<T: Tuplespace + 'static, D: Dispatch + 'static> DebruijnInterpreter<T, D> {
         self: Arc<Self>,
         continuation: TaggedContinuation,
         data_list: Vec<(SortedProc, ListParWithRandom, ListParWithRandom, bool)>,
+        path: DfsPath,
     ) -> Result<ReducerFuture, RholangError> {
         if self.cancelled.load(Ordering::SeqCst) {
             return Err(RholangError::ReduceError("reduction cancelled".to_string()));
@@ -1878,7 +2115,7 @@ impl<T: Tuplespace + 'static, D: Dispatch + 'static> DebruijnInterpreter<T, D> {
         let fut = Box::pin(async move {
             let data: Vec<ListParWithRandom> =
                 data_list.iter().map(|(_, d, _, _)| d.clone()).collect();
-            self.dispatcher.dispatch(continuation, data).await
+            self.dispatcher.dispatch(continuation, data, path).await
         });
         Ok(fut)
     }
@@ -1891,6 +2128,7 @@ impl<T: Tuplespace + 'static, D: Dispatch + 'static> DebruijnInterpreter<T, D> {
         self: Arc<Self>,
         effect: Effect,
         cost: Arc<CostAccounting>,
+        path: DfsPath,
     ) -> Result<ReducerFuture, RholangError> {
         if self.cancelled.load(Ordering::SeqCst) {
             return Err(RholangError::ReduceError("reduction cancelled".to_string()));
@@ -1902,7 +2140,184 @@ impl<T: Tuplespace + 'static, D: Dispatch + 'static> DebruijnInterpreter<T, D> {
                 "reduction step budget exceeded ({max_steps} steps)"
             )));
         }
-        let fut = Box::pin(async move { self.apply_effect(effect, cost).await });
+        let fut = Box::pin(async move { self.apply_effect(effect, cost, path).await });
+        Ok(fut)
+    }
+
+    /// Enqueue a relaxed task into the shared set without awaiting it (the spawn-only dispatch
+    /// rule — see the `relaxed_tasks` field). A step-budget/cancellation error raised before the
+    /// future exists is enqueued as an immediately-failing task so the root drain sees it.
+    fn enqueue_relaxed(&self, fut: Result<ReducerFuture, RholangError>) {
+        let fut = match fut {
+            Ok(fut) => fut,
+            Err(e) => Box::pin(async move { Err(e) }),
+        };
+        self.relaxed_tasks
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .spawn(fut);
+    }
+
+    /// Apply one effect at DFS path `path` under the relaxed scheduler (Law 20): claim the
+    /// effect's static footprint at `path`, wait for the head lease, perform the op via the
+    /// scheduled `produce_at`/`consume_at`, enqueue the continuation at `child(0)` and the
+    /// persistent/peek follow-on at `child(1)`, and only then drop the claim (the queue-level
+    /// continuation-prepend). The produce's phase two claims the matched join set, re-waits at
+    /// head, and commits with re-validation — see `rchain_rspace::scheduled_space`.
+    fn apply_effect_relaxed(
+        self: Arc<Self>,
+        effect: Effect,
+        cost: Arc<CostAccounting>,
+        path: DfsPath,
+    ) -> ReducerFuture {
+        Box::pin(async move {
+            match effect {
+                Effect::Par(par, env, rand) => self.reduce_par(par, env, rand, cost, path).await,
+                Effect::Produce(chan, data, persistent) => {
+                    self.update_mergeable_channels(&chan);
+                    let mut guard = self.claims.claim(path.0.clone(), &[chan.clone()]);
+                    guard.wait_at_head().await;
+                    let scheduled = self
+                        .space
+                        .produce_at(path.0.clone(), &chan, data.clone(), persistent)
+                        .await?;
+                    let ScheduledProduce {
+                        joins,
+                        application,
+                        phase_two,
+                        release,
+                    } = scheduled;
+                    let application = match phase_two {
+                        Some(pending) => {
+                            // Phase two: claim the matched join set and re-wait at head (the
+                            // trigger passes through — it is already active under this claim),
+                            // then commit. The commit re-validates under the full lock set.
+                            guard.claim_more(&joins);
+                            guard.wait_at_head().await;
+                            self.space.commit_produce(pending).await?
+                        }
+                        None => application,
+                    };
+                    if let Some((continuation, data_list, peek)) = application {
+                        self.enqueue_relaxed(self.clone().dispatch_owned(
+                            continuation,
+                            data_list.clone(),
+                            path.child(0),
+                        ));
+                        if persistent {
+                            self.enqueue_relaxed(self.clone().apply_effect_relaxed_spawned(
+                                Effect::Produce(chan.clone(), data.clone(), true),
+                                cost,
+                                path.child(1),
+                            ));
+                        } else if peek {
+                            self.enqueue_relaxed(self.clone().apply_effect_relaxed_spawned(
+                                Effect::ProducePeeks(data_list.clone()),
+                                cost,
+                                path.child(1),
+                            ));
+                        }
+                    }
+                    // The token's scope is the claim's scope: released after the enqueue, together
+                    // with the guard (`ReleaseToken` is a `Copy` marker, so `let _ = release;` is
+                    // the explicit scope end).
+                    let _ = release;
+                    Ok(())
+                }
+                Effect::Consume(binds, body, persistent, peek) => {
+                    let patterns: Vec<BindPattern> = binds.iter().map(|(p, _)| p.clone()).collect();
+                    let sources: Vec<SortedProc> = binds.iter().map(|(_, s)| s.clone()).collect();
+                    for s in &sources {
+                        self.update_mergeable_channels(s);
+                    }
+                    let peeks: BTreeSet<usize> = if peek {
+                        (0..sources.len()).collect()
+                    } else {
+                        BTreeSet::new()
+                    };
+                    let guard = self.claims.claim(path.0.clone(), &sources);
+                    guard.wait_at_head().await;
+                    let scheduled = self
+                        .space
+                        .consume_at(
+                            path.0.clone(),
+                            &sources,
+                            &patterns,
+                            TaggedContinuation::ParBody(body.clone()),
+                            persistent,
+                            peeks.clone(),
+                        )
+                        .await?;
+                    let ScheduledConsume {
+                        application,
+                        release,
+                    } = scheduled;
+                    if let Some((continuation, data_list, p)) = application {
+                        self.enqueue_relaxed(self.clone().dispatch_owned(
+                            continuation,
+                            data_list.clone(),
+                            path.child(0),
+                        ));
+                        if persistent {
+                            self.enqueue_relaxed(self.clone().apply_effect_relaxed_spawned(
+                                Effect::Consume(binds.clone(), body.clone(), true, peek),
+                                cost,
+                                path.child(1),
+                            ));
+                        } else if p {
+                            self.enqueue_relaxed(self.clone().apply_effect_relaxed_spawned(
+                                Effect::ProducePeeks(data_list.clone()),
+                                cost,
+                                path.child(1),
+                            ));
+                        }
+                    }
+                    let _ = release;
+                    Ok(())
+                }
+                Effect::ProducePeeks(data_list) => {
+                    for (i, (chan, _, removed_data, persist)) in data_list.iter().enumerate() {
+                        if !persist {
+                            let self_ = self.clone();
+                            let cost = cost.clone();
+                            let effect_path = path.child(i as u16);
+                            let fut = if self_.cancelled.load(Ordering::SeqCst) {
+                                Err(RholangError::ReduceError("reduction cancelled".to_string()))
+                            } else {
+                                Ok(self_.clone().apply_effect_relaxed(
+                                    Effect::Produce(chan.clone(), removed_data.clone(), false),
+                                    cost,
+                                    effect_path,
+                                ))
+                            };
+                            self_.enqueue_relaxed(fut);
+                        }
+                    }
+                    Ok(())
+                }
+            }
+        })
+    }
+
+    /// The relaxed re-effect (persistent/peek follow-on) on a fresh task, charged against the same
+    /// per-evaluation step budget as `apply_effect_spawned`.
+    fn apply_effect_relaxed_spawned(
+        self: Arc<Self>,
+        effect: Effect,
+        cost: Arc<CostAccounting>,
+        path: DfsPath,
+    ) -> Result<ReducerFuture, RholangError> {
+        if self.cancelled.load(Ordering::SeqCst) {
+            return Err(RholangError::ReduceError("reduction cancelled".to_string()));
+        }
+        let step = self.steps.fetch_add(1, Ordering::SeqCst).saturating_add(1);
+        let max_steps = self.max_steps.load(Ordering::SeqCst);
+        if step > max_steps {
+            return Err(RholangError::ReduceError(format!(
+                "reduction step budget exceeded ({max_steps} steps)"
+            )));
+        }
+        let fut = Box::pin(async move { self.apply_effect_relaxed(effect, cost, path).await });
         Ok(fut)
     }
 
@@ -2050,6 +2465,7 @@ mod tests {
             &self,
             _continuation: TaggedContinuation,
             _data_list: Vec<ListParWithRandom>,
+            _path: DfsPath,
         ) -> Result<(), RholangError> {
             Ok(())
         }

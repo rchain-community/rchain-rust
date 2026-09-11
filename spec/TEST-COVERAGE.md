@@ -28,6 +28,20 @@ added). Only **3 of 12 crates have integration tests** (`rholang`, `casper`, `no
 
 - **Property tests**: only `rspace/src/property_tests.rs` (Laws 7–10: join commutativity, deterministic
   COMM, Merkle determinism, merge monoid).
+- **Scheduler (Laws 20–22)** — added after the table snapshot above:
+  - `rspace/src/concurrent/channel_queue.rs` unit tests (claim/`claim_more`/head-order/phase-two
+    re-wait) and `rspace/src/hot_store.rs` `striped_store_equals_unstriped` (the 64-shard store is
+    observably identical to the 1-shard store);
+  - `rholang/tests/execution.rs` — `gate_and_sequential_state_hashes_match` (gate state hash *and*
+    event log equal the sequential reference over the reduction corpus),
+    `relaxed_mode_runs_all_corpus_terms_without_error`, `relaxed_preserves_same_channel_order`
+    (per-channel COMM subsequences equal the sequential DFS order — full per-channel subsequences
+    for the disjoint-continuation subset; the S.3 counterexample term's final state is free);
+  - `casper/tests/scheduler.rs` — `block_paths_reject_relaxed_mode` (both block-path entry points
+    hard-reject under `relaxed`; sequential succeeds) and
+    `exploratory_path_stays_open_in_relaxed_mode`;
+  - `rspace-bench/benches/rspace_bench.rs` `sched` group — pingpong/fanout workloads, the
+    dfs/gate/relaxed workers-1–8 sweep, and striped-vs-unstriped store contention (`make bench-scheduler`).
 - **Differential/golden**: `models` wire bitset, `rspace` scodec + stable-hash TSV, `rholang`
   execution post-state hashes, and crypto known-answer vectors — the Scala-ground-truth tests.
 - **The 110 legacy `.rho`/`.rhox` contracts** under `legacy/` are **not referenced by any Rust test**;
@@ -95,6 +109,13 @@ For each gap: **code location** → **current test state** → **the seam a regr
   unit test; no gRPC/TLS handshake or message round-trip over real I/O. *Seam:* a loopback tonic
   server+client (precedent: `node/src/api/grpc/tonic.rs:968` `serves_and_answers_propose`).
 
+- **G12 — The scheduled-path cost charging is untested directly** (`rholang/src/storage.rs`
+  `ChargingRSpace::{produce_at,consume_at,commit_produce}`). The corpus tests exercise the paths
+  end-to-end, but no unit test pins *where* the storage/event/COMM charges land in the
+  phase-one/two split (up-front storage cost; produce event cost inline when `phase_two` is `None`,
+  else event+COMM costs at commit). *Seam:* `ChargingRSpace::new(space, cost)` with a tiny balance
+  + `produce_at`/`commit_produce` directly, mirroring the G4 charge-path tests.
+
 ## Cross-links
 
 - [`AUDIT.md`](AUDIT.md) — the code findings register (the security fixes the tests must pin).
@@ -117,5 +138,6 @@ For each gap: **code location** → **current test state** → **the seam a regr
 | G9 malformed input | ✅ `NodeIdentifier`/`KeySegment` + `BlockHash::try_from`/`try_from_hex` (R12) + deploy-signature verify (R1) |
 | G10 TLS trust-manager | ✅ wrong-hostname + stale-cert rejection |
 | G11 transport socket | ✅ loopback mutual-TLS gRPC send round-trip (`grpc_transport.rs`) |
+| G12 scheduled-path charging | ⏸ corpus tests cover it end-to-end; the charge-placement unit test is open |
 
 *(✅ = covered; ⏸ = deferred with the seam documented above.)*

@@ -21,12 +21,13 @@ use crate::internal::{
 use crate::match_::Match;
 use crate::native_store::{InMemNativeStore, NativeStoreState};
 use crate::replay_rspace::ReplayRSpace;
+use crate::scheduled_space::{PendingProduce, ScheduledConsume, ScheduledProduce};
 use crate::space_matcher::{extract_data_candidates, extract_first_match};
 use crate::trace::event::{Comm, Consume, Event, Produce};
 use crate::trace::Log;
 use crate::tuple_space::{ContResult, Result, Tuplespace};
 
-type MaybeActionResult<C, P, A, K> = std::result::Result<
+pub(crate) type MaybeActionResult<C, P, A, K> = std::result::Result<
     Option<(ContResult<C, P, K>, Vec<Result<C, A>>)>,
     crate::errors::RSpaceError,
 >;
@@ -40,7 +41,7 @@ pub struct RSpace<C, P, A, K> {
     event_log: RwLock<Log>,
     produce_counter: RwLock<BTreeMap<Produce, usize>>,
     installs: RwLock<BTreeMap<Vec<C>, Install<P, K>>>,
-    lock_f: Arc<TwoStepLock<Blake2b256Hash>>,
+    pub(crate) lock_f: Arc<TwoStepLock<Blake2b256Hash>>,
     matcher: Arc<dyn Match<P, A>>,
     native_store: Arc<InMemNativeStore>,
 }
@@ -128,7 +129,7 @@ where
         consume_ref
     }
 
-    fn log_produce(&self, produce_ref: Produce, persist: bool) -> Produce {
+    pub(crate) fn log_produce(&self, produce_ref: Produce, persist: bool) -> Produce {
         crate::lock::wlock(&self.event_log).insert(0, Event::Produce(produce_ref.clone()));
         if !persist {
             let mut counter = crate::lock::wlock(&self.produce_counter);
@@ -254,7 +255,7 @@ where
         )))
     }
 
-    async fn extract_produce_candidate(
+    pub(crate) async fn extract_produce_candidate(
         &self,
         grouped_channels: &[Vec<C>],
         bat_channel: &C,
@@ -296,7 +297,7 @@ where
         Ok(None)
     }
 
-    async fn process_match_found(
+    pub(crate) async fn process_match_found(
         &self,
         pc: ProduceCandidate<C, P, A, K>,
     ) -> MaybeActionResult<C, P, A, K> {
@@ -327,7 +328,7 @@ where
         self.wrap_result(&channels, &wk, &data_candidates)
     }
 
-    async fn locked_consume(
+    pub(crate) async fn locked_consume(
         &self,
         channels: &[C],
         patterns: &[P],
@@ -526,6 +527,34 @@ where
         self.lock_f
             .acquire(&hashes, Box::pin(async { Ok(hashes.clone()) }), thunk)
             .await?
+    }
+
+    async fn produce_at(
+        &self,
+        path: Vec<u16>,
+        channel: C,
+        data: A,
+        persist: bool,
+    ) -> std::result::Result<ScheduledProduce<C, P, A, K>, crate::errors::RSpaceError> {
+        self.scheduled_produce_at(path, channel, data, persist)
+            .await
+    }
+
+    async fn consume_at(
+        &self,
+        path: Vec<u16>,
+        channels: &[C],
+        patterns: &[P],
+        continuation: K,
+        persist: bool,
+        peeks: BTreeSet<usize>,
+    ) -> std::result::Result<ScheduledConsume<C, P, A, K>, crate::errors::RSpaceError> {
+        self.scheduled_consume_at(path, channels, patterns, continuation, persist, peeks)
+            .await
+    }
+
+    async fn commit_produce(&self, pending: PendingProduce<C, A>) -> MaybeActionResult<C, P, A, K> {
+        self.scheduled_produce_commit(pending).await
     }
 }
 

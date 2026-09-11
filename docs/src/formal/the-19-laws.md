@@ -1,6 +1,6 @@
-# The 19 laws
+# The 22 laws
 
-RChain's behavior is pinned by **19 laws** — one invariant per layer of the system. Each law maps a
+RChain's behavior is pinned by **22 laws** — one invariant per layer of the system. Each law maps a
 language or system feature to its formalization: a Lean theorem, a Coq axiom, the executable K rule,
 and the Rust realization. The canonical catalog is
 [`spec/INVENTORY.md`](../../../spec/INVENTORY.md); this page is the reader-facing rendering of the same
@@ -47,6 +47,14 @@ deferred); **axiom** = postulated by design (a cryptographic primitive).
 | **17** | merge determinism; numeric channels non-negative | merges | `Casper/Validate.lean` — `numeric_channels_nonneg` (**stated**) |
 | **18** | height map contiguous; fringe identity order-independent | storage | `Casper/Validate.lean` — `height_map_contiguous`, `fringe_identity_order_independent` (**stated**) |
 | **19** | Blake2b256 canonical; `Blake2b512Random` associative splittable merge; sig verify/sign; Curve25519 round-trip | crypto | `Crypto/Random.lean` `mergeRandom_assoc`/`comm`; `Crypto/Spec.lean` `blake2b256_collision_free`, `sign_verify_roundtrip`, `curve25519_roundtrip` (**axiom**, by design) |
+
+## Scheduler — the effect scheduler (Laws 20–22)
+
+| Law | Invariant | Feature | Lean |
+|---|---|---|---|
+| **20** | channel-task linearization ("1 channel = 1 logical task"): a per-channel claim queue keeps same-channel commits in DFS path order; the path-smallest pending claim is always committable | the claim queue | `Scheduler.lean` — `queue_commit_path_ordered` (**proven**), `law20_deadlock_freedom` (**stated**, bakery argument) |
+| **21** | DFS-gate linearization: running effect `i` only after effects `0..i−1` complete is exactly the sequential apply fold; the one-hop (next-step-footprint) variant is unsound | the gate scheduler | `Scheduler.lean` — `gate_exec_refines_apply` (**proven**), `one_hop_depth2_diverges` (**proven** counterexample) |
+| **22** | next-step closure is computable at dispatch (the matched datum is concrete); computability does *not* make cross-channel pruning sound | dispatch-time closure | `Scheduler.lean` — `next_step_closure_computable`, `depth2_next_step_disjoint` (**proven**) |
 
 ## Reading the formalization
 

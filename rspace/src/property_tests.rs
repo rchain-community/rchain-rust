@@ -12,6 +12,7 @@ use rchain_crypto::hash::blake2b256_hash::Blake2b256Hash;
 use rchain_shared::store::{InMemoryKeyValueStore, KeyValueStore};
 use rchain_shared::typed_store::{BytesCodec, KeyValueTypedStoreCodec};
 
+use crate::concurrent::channel_queue::ChannelClaimQueue;
 use crate::hashing::stable_hash_provider::hash_channels;
 use crate::history::codecs::Blake2b256HashCodec;
 use crate::history::history_action::HistoryAction;
@@ -170,5 +171,79 @@ proptest! {
         let a = state_change_from(&left_items);
         let b = state_change_from(&right_disjoint);
         prop_assert_eq!(StateChange::combine(&a, &b), StateChange::combine(&b, &a));
+    }
+
+    /// Law 20: on the claim queue, every channel's commit sequence is path-nondecreasing (ties in
+    /// arrival order) and at most one claim executes on a channel at any instant.
+    #[test]
+    fn law20_per_channel_path_order(
+        claims in prop::collection::vec(
+            (0u64..8, prop::collection::vec(0u8..4, 1..4)),
+            0..12,
+        )
+    ) {
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(4)
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let queue = Arc::new(ChannelClaimQueue::<u8, u64>::new());
+            let guards: Vec<_> = claims
+                .iter()
+                .map(|(path, channels)| queue.claim(*path, channels))
+                .collect();
+            let order: Arc<std::sync::Mutex<Vec<(u64, Vec<u8>)>>> =
+                Arc::new(std::sync::Mutex::new(Vec::new()));
+            let inside: Arc<std::sync::Mutex<BTreeMap<u8, usize>>> =
+                Arc::new(std::sync::Mutex::new(BTreeMap::new()));
+
+            let mut tasks = Vec::new();
+            for guard in guards {
+                let order = order.clone();
+                let inside = inside.clone();
+                tasks.push(tokio::spawn(async move {
+                    let _lease = guard.wait_at_head().await;
+                    {
+                        let mut marks = inside.lock().unwrap();
+                        for channel in guard.channels() {
+                            let mark = marks.entry(*channel).or_insert(0);
+                            assert_eq!(*mark, 0, "two claims ran on the same channel at once");
+                            *mark += 1;
+                        }
+                    }
+                    order
+                        .lock()
+                        .unwrap()
+                        .push((*guard.path(), guard.channels().to_vec()));
+                    tokio::task::yield_now().await;
+                    let mut marks = inside.lock().unwrap();
+                    for channel in guard.channels() {
+                        *marks.get_mut(channel).unwrap() -= 1;
+                    }
+                }));
+            }
+            for task in tasks {
+                tokio::time::timeout(std::time::Duration::from_secs(10), task)
+                    .await
+                    .expect("claim queue deadlocked (Law 20 deadlock freedom)")
+                    .unwrap();
+            }
+
+            let order = order.lock().unwrap();
+            let mut by_channel: BTreeMap<u8, Vec<u64>> = BTreeMap::new();
+            for (path, channels) in order.iter() {
+                for channel in channels {
+                    by_channel.entry(*channel).or_default().push(*path);
+                }
+            }
+            for (_, paths) in by_channel {
+                for window in paths.windows(2) {
+                    prop_assert!(window[0] <= window[1], "per-channel path order violated");
+                }
+            }
+            Ok(())
+        })
+        .unwrap();
     }
 }

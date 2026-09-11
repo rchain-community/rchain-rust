@@ -13,21 +13,28 @@ use rchain_models::runtime::{ListParWithRandom, TaggedContinuation};
 use crate::env::Env;
 use crate::errors::RholangError;
 use crate::reduce::Dispatch;
+use crate::scheduler::DfsPath;
 
-/// A built-in continuation handler (port of the dispatch-table function).
+/// A built-in continuation handler (port of the dispatch-table function), invoked at the DFS path
+/// of its `ScalaBodyRef` continuation. Handlers that reply through [`ContractCall`] pass the path
+/// on so the reply's matched continuation keeps its position in the scheduler's order (Laws 20–22).
 pub type ScalaBodyFn = Box<
-    dyn Fn(Vec<ListParWithRandom>) -> Pin<Box<dyn Future<Output = Result<(), RholangError>> + Send>>
+    dyn Fn(
+            Vec<ListParWithRandom>,
+            DfsPath,
+        ) -> Pin<Box<dyn Future<Output = Result<(), RholangError>> + Send>>
         + Send
         + Sync,
 >;
 
 /// The `ParBody` continuation evaluator: evals a body in the env built from the matched data with
-/// the merged random state.
+/// the merged random state, at the continuation's DFS path.
 pub type EvalBodyFn = Box<
     dyn Fn(
             Par,
             Env<Par>,
             Blake2b512Random,
+            DfsPath,
         ) -> Pin<Box<dyn Future<Output = Result<(), RholangError>> + Send>>
         + Send
         + Sync,
@@ -77,6 +84,7 @@ impl Dispatch for RholangAndScalaDispatcher {
         &self,
         continuation: TaggedContinuation,
         data_list: Vec<ListParWithRandom>,
+        path: DfsPath,
     ) -> Result<(), RholangError> {
         match &continuation {
             TaggedContinuation::ParBody(pwr) => {
@@ -94,7 +102,7 @@ impl Dispatch for RholangAndScalaDispatcher {
                     let f = eval.as_ref().ok_or_else(|| {
                         RholangError::BugFoundError("dispatcher eval not set".to_string())
                     })?;
-                    f(pwr.body.as_par().clone(), env, merged)
+                    f(pwr.body.as_par().clone(), env, merged, path)
                 };
                 fut.await
             }
@@ -105,7 +113,7 @@ impl Dispatch for RholangAndScalaDispatcher {
                         .lock()
                         .unwrap_or_else(|p| p.into_inner());
                     match table.get(r) {
-                        Some(f) => f(data_list),
+                        Some(f) => f(data_list, path),
                         None => {
                             return Err(RholangError::ReduceError(format!(
                                 "dispatch: no function for {r}"
@@ -126,8 +134,9 @@ impl Dispatch for Arc<RholangAndScalaDispatcher> {
         &self,
         continuation: TaggedContinuation,
         data_list: Vec<ListParWithRandom>,
+        path: DfsPath,
     ) -> Result<(), RholangError> {
-        self.as_ref().dispatch(continuation, data_list).await
+        self.as_ref().dispatch(continuation, data_list, path).await
     }
 }
 
@@ -140,10 +149,11 @@ impl Dispatch for Weak<RholangAndScalaDispatcher> {
         &self,
         continuation: TaggedContinuation,
         data_list: Vec<ListParWithRandom>,
+        path: DfsPath,
     ) -> Result<(), RholangError> {
         let dispatcher = self.upgrade().ok_or_else(|| {
             RholangError::BugFoundError("system dispatcher has been dropped".to_string())
         })?;
-        dispatcher.dispatch(continuation, data_list).await
+        dispatcher.dispatch(continuation, data_list, path).await
     }
 }

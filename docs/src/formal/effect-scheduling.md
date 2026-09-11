@@ -6,9 +6,12 @@ permitted anywhere inside `|`. This document moves down one level to the **effec
 *effect scheduler* may and may not do. It is grounded in the Lean model [`Rchain.Effect`](../../../spec/Rchain/Effect.lean),
 which is the oracle for this layer.
 
-> **Status: the naive reading of Law 9 is insufficient.** The channel-sharded effect scheduler (partition
-> a `Par`'s effects by *static channel footprint* and run disjoint parts concurrently) is **unsound**. This
-> document records the counterexample and the sound condition (`Rchain.Effect`).
+> **Status: the naive reading of Law 9 is insufficient — and the repair is dynamic, not static.** The
+> channel-sharded effect scheduler (partition a `Par`'s effects by *static channel footprint* and run
+> disjoint parts concurrently) is **unsound**. This document records the counterexample and the sound
+> condition (`Rchain.Effect`). The schedulers that *are* sound — the per-channel claim queue and the DFS
+> gate — are Laws 20–22, specified in [The channel scheduler](channel-scheduler.md) and realized as the
+> `gate`/`relaxed` effect modes.
 
 ## The effect level of reduction
 
@@ -45,6 +48,9 @@ Two effects are **independent** only when their **closures** are disjoint, not m
 | **8** | Deterministic COMM | candidate selection is sorted-first by content hash | `rspace/src/space_matcher.rs`, `rspace/src/rspace.rs` |
 | **11** | Replay determinism | the effect *order* is fixed — replay must reproduce the recorded trace | `rspace/src/replay_rspace.rs` |
 | **10** | Merkle determinism | the trie root is the state — a given effect *set* yields the same root | `rspace/src/history/*` |
+| **20** | `queue_commit_path_ordered` (+ bakery deadlock-freedom, stated) | same-channel commits follow the path-sorted claim order; a claim commits only as head of *all* its channels | `rspace/src/concurrent/channel_queue.rs` |
+| **21** | `gate_exec_refines_apply` | effect `i` runs only after `0..i−1` complete — exactly the sequential fold; the one-hop variant diverges (`one_hop_depth2_diverges`) | `rholang/src/scheduler.rs` (`EffectMode::Gate`), `rholang/src/reduce.rs` |
+| **22** | `next_step_closure_computable` | the matched datum is concrete at dispatch, so the continuation's first-step footprint is computable (`resolve_children`) | `rholang/src/reduce.rs` |
 
 The subtle point the rest of this document makes precise: sorted selection (Law 8) removes the
 order-sensitivity of *which stored candidate* a comm consumes, but **not** the *arrival order* — and, more
@@ -95,9 +101,11 @@ closure(e₁) ∩ closure(e₂) = ∅   ⇒   apply(e₁; e₂)  ≡  apply(e₂
 This is `Rchain.Effect.effect_commute_of_disjoint_closure`, the correct soundness criterion for
 concurrent effect scheduling: two effects may run concurrently only when their **closures** are disjoint.
 Because a continuation's closure is discovered only by running the trigger, this condition is not
-statically decidable. Consequently **no static footprint partition is sound**, and the sound maximum is
-**Level 1** — pure-resolution parallelism only (the reducer resolves a `Par`'s sub-terms concurrently,
-but applies the tuple-space effects in DFS order).
+statically decidable. Consequently **no static footprint partition is sound**. The sound schedulers
+replace prediction with *dynamic* ordering: the DFS gate runs effects strictly in path order (Law 21),
+and the per-channel claim queue (Law 20) enforces same-channel DFS order while cross-channel commits
+interleave freely — the **relaxed** mode, whose event log may differ from the sequential one and is
+therefore **off-chain only**. See [The channel scheduler](channel-scheduler.md).
 
 ## Realization map — theorem → mechanism
 
@@ -111,6 +119,9 @@ but applies the tuple-space effects in DFS order).
 | Law 8 (sorted selection) | candidate sort by content hash | `rspace/src/space_matcher.rs` |
 | Atomicity | per-channel `TwoStepLock` | `rspace/src/concurrent/{multi_lock,two_step_lock}.rs` |
 | Law 11 oracle | `ReplayRSpace` trace check | `rspace/src/replay_rspace.rs` |
+| Law 20 (claim queue) | `ChannelClaimQueue` (claim/claim_more/wait_at_head) | `rspace/src/concurrent/channel_queue.rs` |
+| Law 21 (gate) | `EffectMode::Gate` reduce_effects arm | `rholang/src/scheduler.rs`, `rholang/src/reduce.rs` |
+| Law 20 (relaxed, off-chain) | `EffectMode::Relaxed` + scheduled produce/consume + casper block-path hard-reject | `rspace/src/scheduled_space.rs`, `rholang/src/reduce.rs`, `casper/src/runtime_manager.rs` |
 
 ## The "continuation-prepend invariant" is necessary but not sufficient
 
@@ -119,7 +130,13 @@ target channel's queue (so they run before the remaining pending effects on that
 the *same-channel* ordering, but **not** the cross-channel case: a continuation's effect on channel `d`
 is enqueued only *after* the trigger on `c` runs, so a sibling effect already claimed on `d` can be
 applied first — exactly the S.3 race. The prepend invariant fixes the order *once both effects are in the
-queue*; it cannot stop the sibling from being claimed *before* the continuation is enqueued. Only the
-closure condition (S.4) is sufficient, and it is not statically checkable.
+queue*; it cannot stop the sibling from being claimed *before* the continuation is enqueued. This is the
+**one-hop enqueue race**: the scheduler may only compare effects that are *both enqueued* — and the
+gate scheduler's answer is to compare them by DFS path (Law 21), while the claim queue's answer is to
+let the per-channel head rule order them (Law 20). `Scheduler.lean` pins both: `one_hop_depth2_diverges`
+is the prepend race as a divergence proof, and `gate_exec_refines_apply` / `queue_commit_path_ordered`
+are the two repairs. Only the closure condition (S.4) would justify *more* than per-channel order, and
+it is not statically checkable.
 
-> Next: how the *data* moves in a comm — [Substitution and matching](substitution-matching.md).
+> Next: the scheduler itself — [The channel scheduler](channel-scheduler.md), then how the *data* moves
+> in a comm — [Substitution and matching](substitution-matching.md).

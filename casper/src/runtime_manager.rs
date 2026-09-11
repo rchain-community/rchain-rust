@@ -27,6 +27,7 @@ use rchain_rholang::merging::{
 };
 use rchain_rholang::native_state::{decode_bonds, pos_bonds_key, NativeSystemState};
 use rchain_rholang::runtime::{ReplayRhoRuntime, RhoRuntime};
+use rchain_rholang::scheduler::EffectMode;
 use rchain_rholang::storage::{RhoHistoryRepository, RhoMatch};
 use rchain_rholang::system_processes::BlockData;
 use rchain_rspace::hot_store::InMemHotStore;
@@ -67,6 +68,10 @@ pub struct RuntimeManager {
     replay_runtime: ReplayRhoRuntime,
     history_repo: RhoHistoryRepository,
     mergeable_store: MergeableStore,
+    /// The effect-scheduler mode the manager was created with (Laws 20–22). The block paths
+    /// hard-reject `Relaxed` — a relaxed schedule never reaches consensus, so relaxed deploys run
+    /// off-chain only (explore-deploy).
+    effect_mode: EffectMode,
 }
 
 impl RuntimeManager {
@@ -75,12 +80,14 @@ impl RuntimeManager {
         replay_runtime: ReplayRhoRuntime,
         history_repo: RhoHistoryRepository,
         mergeable_store: MergeableStore,
+        effect_mode: EffectMode,
     ) -> Self {
         RuntimeManager {
             runtime,
             replay_runtime,
             history_repo,
             mergeable_store,
+            effect_mode,
         }
     }
 
@@ -120,16 +127,34 @@ impl RuntimeManager {
     }
 
     /// Fork a fresh, isolated play runtime seeded at `root` (the play counterpart of
-    /// `fork_replay_runtime`). Read/exploration paths (data-at-name, explore-deploy) run on this so
-    /// they never mutate the shared play runtime the proposer is concurrently using to create blocks.
+    /// `fork_replay_runtime`), running the plain sequential scheduler. Read paths (data-at-name,
+    /// data-at-continuation) run on this so they never mutate the shared play runtime the proposer
+    /// is concurrently using to create blocks.
     pub async fn fork_play_runtime(&self, root: Blake2b256Hash) -> Result<RhoRuntime, String> {
+        self.fork_play_runtime_with_mode(root, EffectMode::Sequential)
+            .await
+    }
+
+    /// `fork_play_runtime` under the given effect-scheduler mode (the explore-deploy path passes
+    /// the manager's own mode, so a relaxed node explores off-chain under the relaxed scheduler).
+    pub async fn fork_play_runtime_with_mode(
+        &self,
+        root: Blake2b256Hash,
+        mode: EffectMode,
+    ) -> Result<RhoRuntime, String> {
         let reader = self.history_repo.get_history_reader(root).await;
         let hot = Arc::new(InMemHotStore::new(reader.base()));
         let (play, _replay) =
             RSpace::create_with_replay(self.history_repo.clone(), hot, Arc::new(RhoMatch));
-        RhoRuntime::create(play, self.history_repo.clone(), SortedProc::default())
-            .await
-            .map_err(|e| e.to_string())
+        RhoRuntime::create_with_effect_mode(
+            play,
+            self.history_repo.clone(),
+            SortedProc::default(),
+            true,
+            mode,
+        )
+        .await
+        .map_err(|e| e.to_string())
     }
 
     /// Load mergeable channels from the store (port of `loadMergeableChannels`).
@@ -244,6 +269,14 @@ impl RuntimeManager {
         deploy: &SignedDeployData,
         rand: &Blake2b512Random,
     ) -> Result<(ProcessedDeploy, EvaluateResult), String> {
+        // Hard-reject the relaxed scheduler on the block path (Laws 20–22): a relaxed schedule
+        // never reaches consensus, so a relaxed node refuses block work (off-chain only).
+        if self.effect_mode == EffectMode::Relaxed {
+            return Err(
+                "relaxed effect scheduling is off-chain only: refusing block-path deploy execution"
+                    .to_string(),
+            );
+        }
         let fallback = self.runtime.create_soft_checkpoint().await;
         // Bind `rho:rchain:deployerId` (and `rho:rchain:deployId`) so the deploy's free URI names
         // resolve during normalization (port of `NormalizerEnv(deploy).toEnv`).
@@ -301,6 +334,14 @@ impl RuntimeManager {
         terms: &[SignedDeployData],
         rand: &Blake2b512Random,
     ) -> Result<(Blake2b256Hash, Vec<UserDeployRuntimeResult>), String> {
+        // Same hard-reject as `process_deploy` (belt and braces: the entry points of both block
+        // paths refuse the relaxed scheduler).
+        if self.effect_mode == EffectMode::Relaxed {
+            return Err(
+                "relaxed effect scheduling is off-chain only: refusing block-path deploy execution"
+                    .to_string(),
+            );
+        }
         self.runtime.reset(*start_hash).await.map_err(|e| e)?;
         let mut results = Vec::new();
         for (i, d) in terms.iter().enumerate() {
@@ -700,7 +741,9 @@ impl RuntimeManager {
         // Fork a fresh, isolated play runtime at `start`: exploration must never mutate the shared
         // runtime the proposer uses to create blocks (a concurrent explore-deploy would otherwise
         // reset/re-evaluate the shared space mid-block and corrupt the block's post-state hash).
-        let runtime = self.fork_play_runtime(to_blake(start)).await?;
+        let runtime = self
+            .fork_play_runtime_with_mode(to_blake(start), self.effect_mode)
+            .await?;
         runtime.reset(to_blake(start)).await.map_err(|e| e)?;
         // Bound the exploratory evaluation (documented Scala deviation): a phlo cap + a
         // reduction-step budget (the operative bound; the legible "step budget exceeded" error must
@@ -804,7 +847,13 @@ mod tests {
             .await
             .unwrap(),
         );
-        let runtime = RuntimeManager::new(rho, replay, history, mergeable_store);
+        let runtime = RuntimeManager::new(
+            rho,
+            replay,
+            history,
+            mergeable_store,
+            EffectMode::Sequential,
+        );
 
         let forked = runtime.fork_replay_runtime(empty_root).await.unwrap();
         let result = runtime

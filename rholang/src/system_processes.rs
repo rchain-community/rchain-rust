@@ -28,6 +28,7 @@ use crate::errors::RholangError;
 use crate::native_state::NativeSystemState;
 use crate::pretty_printer::PrettyPrinter;
 use crate::registry;
+use crate::scheduler::DfsPath;
 use crate::storage::ChargingRSpace;
 use crate::util::rev_address::RevAddress;
 
@@ -605,7 +606,7 @@ impl SystemProcesses {
     fn stdout(&self) -> ScalaBodyFn {
         let cc = self.contract_call.clone();
         let pp = self.pretty_printer.clone();
-        Box::new(move |args: Vec<ListParWithRandom>| {
+        Box::new(move |args: Vec<ListParWithRandom>, _path: DfsPath| {
             let cc = cc.clone();
             let pp = pp.clone();
             Box::pin(async move {
@@ -626,7 +627,7 @@ impl SystemProcesses {
     fn stdout_ack(&self) -> ScalaBodyFn {
         let cc = self.contract_call.clone();
         let pp = self.pretty_printer.clone();
-        Box::new(move |args: Vec<ListParWithRandom>| {
+        Box::new(move |args: Vec<ListParWithRandom>, path: DfsPath| {
             let cc = cc.clone();
             let pp = pp.clone();
             Box::pin(async move {
@@ -636,7 +637,7 @@ impl SystemProcesses {
                 match pars.as_slice() {
                     [arg, ack] => {
                         println!("{}", pp.build_string(arg));
-                        cc.produce(&rand, &[Par::default()], ack).await
+                        cc.produce(&rand, &[Par::default()], ack, path).await
                     }
                     _ => Err(illegal_arg("stdoutAck expects two arguments")),
                 }
@@ -647,7 +648,7 @@ impl SystemProcesses {
     fn stderr(&self) -> ScalaBodyFn {
         let cc = self.contract_call.clone();
         let pp = self.pretty_printer.clone();
-        Box::new(move |args: Vec<ListParWithRandom>| {
+        Box::new(move |args: Vec<ListParWithRandom>, _path: DfsPath| {
             let cc = cc.clone();
             let pp = pp.clone();
             Box::pin(async move {
@@ -668,7 +669,7 @@ impl SystemProcesses {
     fn stderr_ack(&self) -> ScalaBodyFn {
         let cc = self.contract_call.clone();
         let pp = self.pretty_printer.clone();
-        Box::new(move |args: Vec<ListParWithRandom>| {
+        Box::new(move |args: Vec<ListParWithRandom>, path: DfsPath| {
             let cc = cc.clone();
             let pp = pp.clone();
             Box::pin(async move {
@@ -678,7 +679,7 @@ impl SystemProcesses {
                 match pars.as_slice() {
                     [arg, ack] => {
                         eprintln!("{}", pp.build_string(arg));
-                        cc.produce(&rand, &[Par::default()], ack).await
+                        cc.produce(&rand, &[Par::default()], ack, path).await
                     }
                     _ => Err(illegal_arg("stderrAck expects two arguments")),
                 }
@@ -694,7 +695,7 @@ impl SystemProcesses {
         algorithm: fn(&[u8], &[u8], &[u8]) -> bool,
     ) -> ScalaBodyFn {
         let cc = self.contract_call.clone();
-        Box::new(move |args: Vec<ListParWithRandom>| {
+        Box::new(move |args: Vec<ListParWithRandom>, path: DfsPath| {
             let cc = cc.clone();
             Box::pin(async move {
                 let (pars, rand) = cc.unapply(&args).ok_or_else(|| {
@@ -714,7 +715,7 @@ impl SystemProcesses {
                             )));
                         };
                         let verified = algorithm(d, s, p);
-                        cc.produce(&rand, &[RhoBoolean::apply(verified)], ack).await
+                        cc.produce(&rand, &[RhoBoolean::apply(verified)], ack, path).await
                     }
                     _ => Err(illegal_arg(&format!(
                         "{name} expects data, signature, public key (all as byte arrays), and an acknowledgement channel"
@@ -726,7 +727,7 @@ impl SystemProcesses {
 
     fn hash_contract(&self, name: &'static str, algorithm: fn(&[u8]) -> Vec<u8>) -> ScalaBodyFn {
         let cc = self.contract_call.clone();
-        Box::new(move |args: Vec<ListParWithRandom>| {
+        Box::new(move |args: Vec<ListParWithRandom>, path: DfsPath| {
             let cc = cc.clone();
             Box::pin(async move {
                 let (pars, rand) = cc.unapply(&args).ok_or_else(|| {
@@ -736,7 +737,8 @@ impl SystemProcesses {
                     [input, ack] => match RhoByteArray::unapply(input) {
                         Some(bytes) => {
                             let hash = algorithm(bytes);
-                            cc.produce(&rand, &[RhoByteArray::apply(hash)], ack).await
+                            cc.produce(&rand, &[RhoByteArray::apply(hash)], ack, path)
+                                .await
                         }
                         None => Err(illegal_arg(&format!(
                             "{name} expects a byte array and return channel"
@@ -772,7 +774,7 @@ impl SystemProcesses {
 
     fn qucalc_zfa(&self) -> ScalaBodyFn {
         let cc = self.contract_call.clone();
-        Box::new(move |args: Vec<ListParWithRandom>| {
+        Box::new(move |args: Vec<ListParWithRandom>, path: DfsPath| {
             let cc = cc.clone();
             Box::pin(async move {
                 let (pars, rand) = cc
@@ -797,7 +799,7 @@ impl SystemProcesses {
                         let phase = pauli_phase(&values).map(|p| p.code()).unwrap_or(0);
                         let result =
                             RhoTupleN::apply(vec![RhoBoolean::apply(zfa), RhoNumber::apply(phase)]);
-                        cc.produce(&rand, &[result], ack).await
+                        cc.produce(&rand, &[result], ack, path).await
                     }
                     _ => Err(illegal_arg("qucalc:zfa expects two arguments")),
                 }
@@ -808,7 +810,7 @@ impl SystemProcesses {
     fn qucalc_grant(&self) -> ScalaBodyFn {
         let cc = self.contract_call.clone();
         let native = self.native_state.clone();
-        Box::new(move |args: Vec<ListParWithRandom>| {
+        Box::new(move |args: Vec<ListParWithRandom>, path: DfsPath| {
             let cc = cc.clone();
             let native = native.clone();
             Box::pin(async move {
@@ -829,9 +831,9 @@ impl SystemProcesses {
                                     .collect(),
                             );
                             native.registry_insert(&uri, &stored);
-                            cc.produce(&rand, &[RhoUri::apply(uri)], ret).await
+                            cc.produce(&rand, &[RhoUri::apply(uri)], ret, path).await
                         } else {
-                            cc.produce(&rand, &[RhoNil::apply()], ret).await
+                            cc.produce(&rand, &[RhoNil::apply()], ret, path).await
                         }
                     }
                     _ => Err(illegal_arg(
@@ -845,7 +847,7 @@ impl SystemProcesses {
     fn qucalc_verify(&self) -> ScalaBodyFn {
         let cc = self.contract_call.clone();
         let native = self.native_state.clone();
-        Box::new(move |args: Vec<ListParWithRandom>| {
+        Box::new(move |args: Vec<ListParWithRandom>, path: DfsPath| {
             let cc = cc.clone();
             let native = native.clone();
             Box::pin(async move {
@@ -868,7 +870,7 @@ impl SystemProcesses {
                                 .unwrap_or(false),
                             None => false,
                         };
-                        cc.produce(&rand, &[RhoBoolean::apply(ok)], ret).await
+                        cc.produce(&rand, &[RhoBoolean::apply(ok)], ret, path).await
                     }
                     _ => Err(illegal_arg(
                         "qucalc:verify expects a capability uri and return channel",
@@ -881,7 +883,7 @@ impl SystemProcesses {
     fn qucalc_fuse(&self) -> ScalaBodyFn {
         let cc = self.contract_call.clone();
         let native = self.native_state.clone();
-        Box::new(move |args: Vec<ListParWithRandom>| {
+        Box::new(move |args: Vec<ListParWithRandom>, path: DfsPath| {
             let cc = cc.clone();
             let native = native.clone();
             Box::pin(async move {
@@ -905,9 +907,9 @@ impl SystemProcesses {
                             );
                             native.registry_insert(&uri, &geometry);
                             let out = RhoTupleN::apply(vec![geometry, RhoUri::apply(uri)]);
-                            cc.produce(&rand, &[out], ret).await
+                            cc.produce(&rand, &[out], ret, path).await
                         } else {
-                            cc.produce(&rand, &[RhoNil::apply()], ret).await
+                            cc.produce(&rand, &[RhoNil::apply()], ret, path).await
                         }
                     }
                     _ => Err(illegal_arg(
@@ -924,7 +926,7 @@ impl SystemProcesses {
     /// weights: `Map<directVoter, weight>`. Pure and deterministic (see `qucalc::gov`).
     fn gov_resolve_weights(&self) -> ScalaBodyFn {
         let cc = self.contract_call.clone();
-        Box::new(move |args: Vec<ListParWithRandom>| {
+        Box::new(move |args: Vec<ListParWithRandom>, path: DfsPath| {
             let cc = cc.clone();
             Box::pin(async move {
                 let (pars, rand) = cc.unapply(&args).ok_or_else(|| {
@@ -939,7 +941,7 @@ impl SystemProcesses {
                 let del = parse_member_map(delegations)?;
                 let tr = parse_member_int_map(trust)?;
                 let out = qucalc::gov::resolve_weights(&dv, &del, &tr);
-                cc.produce(&rand, &[member_int_map(&out)], ret).await
+                cc.produce(&rand, &[member_int_map(&out)], ret, path).await
             })
         })
     }
@@ -948,7 +950,7 @@ impl SystemProcesses {
     /// fixed point: `Map<member, level>`.
     fn gov_trust_levels(&self) -> ScalaBodyFn {
         let cc = self.contract_call.clone();
-        Box::new(move |args: Vec<ListParWithRandom>| {
+        Box::new(move |args: Vec<ListParWithRandom>, path: DfsPath| {
             let cc = cc.clone();
             Box::pin(async move {
                 let (pars, rand) = cc.unapply(&args).ok_or_else(|| {
@@ -962,7 +964,7 @@ impl SystemProcesses {
                 let r = parse_rating_list(ratings)?;
                 let a = parse_member_list(admins)?;
                 let out = qucalc::gov::trust_levels(&r, &a);
-                cc.produce(&rand, &[member_int_map(&out)], ret).await
+                cc.produce(&rand, &[member_int_map(&out)], ret, path).await
             })
         })
     }
@@ -971,7 +973,7 @@ impl SystemProcesses {
     /// newLevels)` via a ⅔ quorum (floored at 2) with voucher slashing.
     fn gov_censure(&self) -> ScalaBodyFn {
         let cc = self.contract_call.clone();
-        Box::new(move |args: Vec<ListParWithRandom>| {
+        Box::new(move |args: Vec<ListParWithRandom>, path: DfsPath| {
             let cc = cc.clone();
             Box::pin(async move {
                 let (pars, rand) = cc.unapply(&args).ok_or_else(|| {
@@ -991,7 +993,7 @@ impl SystemProcesses {
                 let disc_list: Vec<String> = disc.into_iter().collect();
                 let out =
                     RhoTupleN::apply(vec![string_list(&disc_list), member_int_map(&new_levels)]);
-                cc.produce(&rand, &[out], ret).await
+                cc.produce(&rand, &[out], ret, path).await
             })
         })
     }
@@ -1000,7 +1002,7 @@ impl SystemProcesses {
     /// tally. Returns the winning option string, or `Nil` when empty.
     fn gov_tally(&self) -> ScalaBodyFn {
         let cc = self.contract_call.clone();
-        Box::new(move |args: Vec<ListParWithRandom>| {
+        Box::new(move |args: Vec<ListParWithRandom>, path: DfsPath| {
             let cc = cc.clone();
             Box::pin(async move {
                 let (pars, rand) = cc.unapply(&args).ok_or_else(|| {
@@ -1025,8 +1027,11 @@ impl SystemProcesses {
                     }
                 };
                 match winner {
-                    Some(name) => cc.produce(&rand, &[RhoString::apply(name)], ret).await,
-                    None => cc.produce(&rand, &[RhoNil::apply()], ret).await,
+                    Some(name) => {
+                        cc.produce(&rand, &[RhoString::apply(name)], ret, path)
+                            .await
+                    }
+                    None => cc.produce(&rand, &[RhoNil::apply()], ret, path).await,
                 }
             })
         })
@@ -1037,7 +1042,7 @@ impl SystemProcesses {
     fn get_block_data(&self) -> ScalaBodyFn {
         let cc = self.contract_call.clone();
         let bd = self.block_data.clone();
-        Box::new(move |args: Vec<ListParWithRandom>| {
+        Box::new(move |args: Vec<ListParWithRandom>, path: DfsPath| {
             let cc = cc.clone();
             let bd = bd.clone();
             Box::pin(async move {
@@ -1054,7 +1059,7 @@ impl SystemProcesses {
                             RhoNumber::apply(block_number),
                             RhoByteArray::apply(sender_bytes),
                         ];
-                        cc.produce(&rand, &reply, ack).await
+                        cc.produce(&rand, &reply, ack, path).await
                     }
                     _ => Err(illegal_arg("blockData expects only a return channel")),
                 }
@@ -1064,7 +1069,7 @@ impl SystemProcesses {
 
     fn rev_address(&self) -> ScalaBodyFn {
         let cc = self.contract_call.clone();
-        Box::new(move |args: Vec<ListParWithRandom>| {
+        Box::new(move |args: Vec<ListParWithRandom>, path: DfsPath| {
             let cc = cc.clone();
             Box::pin(async move {
                 let (pars, rand) = cc
@@ -1104,14 +1109,14 @@ impl SystemProcesses {
                     },
                     _ => return Err(illegal_arg("revAddress: unknown operation")),
                 };
-                cc.produce(&rand, &[response], ack).await
+                cc.produce(&rand, &[response], ack, path).await
             })
         })
     }
 
     fn deployer_id_ops(&self) -> ScalaBodyFn {
         let cc = self.contract_call.clone();
-        Box::new(move |args: Vec<ListParWithRandom>| {
+        Box::new(move |args: Vec<ListParWithRandom>, path: DfsPath| {
             let cc = cc.clone();
             Box::pin(async move {
                 let (pars, rand) = cc
@@ -1129,14 +1134,14 @@ impl SystemProcesses {
                     },
                     _ => return Err(illegal_arg("deployerIdOps: unknown operation")),
                 };
-                cc.produce(&rand, &[response], ack).await
+                cc.produce(&rand, &[response], ack, path).await
             })
         })
     }
 
     fn registry_ops(&self) -> ScalaBodyFn {
         let cc = self.contract_call.clone();
-        Box::new(move |args: Vec<ListParWithRandom>| {
+        Box::new(move |args: Vec<ListParWithRandom>, path: DfsPath| {
             let cc = cc.clone();
             Box::pin(async move {
                 let (pars, rand) = cc
@@ -1154,14 +1159,14 @@ impl SystemProcesses {
                     },
                     _ => return Err(illegal_arg("registryOps: unknown operation")),
                 };
-                cc.produce(&rand, &[response], ack).await
+                cc.produce(&rand, &[response], ack, path).await
             })
         })
     }
 
     fn sys_auth_token_ops(&self) -> ScalaBodyFn {
         let cc = self.contract_call.clone();
-        Box::new(move |args: Vec<ListParWithRandom>| {
+        Box::new(move |args: Vec<ListParWithRandom>, path: DfsPath| {
             let cc = cc.clone();
             Box::pin(async move {
                 let (pars, rand) = cc
@@ -1176,7 +1181,7 @@ impl SystemProcesses {
                     Some("check") => RhoBoolean::apply(RhoSysAuthToken::unapply(arg)),
                     _ => return Err(illegal_arg("sysAuthTokenOps: unknown operation")),
                 };
-                cc.produce(&rand, &[response], ack).await
+                cc.produce(&rand, &[response], ack, path).await
             })
         })
     }
@@ -1187,7 +1192,7 @@ impl SystemProcesses {
     fn registry_lookup(&self) -> ScalaBodyFn {
         let cc = self.contract_call.clone();
         let native = self.native_state.clone();
-        Box::new(move |args: Vec<ListParWithRandom>| {
+        Box::new(move |args: Vec<ListParWithRandom>, path: DfsPath| {
             let cc = cc.clone();
             let native = native.clone();
             Box::pin(async move {
@@ -1209,10 +1214,15 @@ impl SystemProcesses {
                     .map_err(|e| illegal_arg(&e))?
                 {
                     Some(value) => {
-                        cc.produce(&rand, &[RhoTupleN::apply(vec![uri.clone(), value])], ret)
-                            .await
+                        cc.produce(
+                            &rand,
+                            &[RhoTupleN::apply(vec![uri.clone(), value])],
+                            ret,
+                            path,
+                        )
+                        .await
                     }
-                    None => cc.produce(&rand, &[RhoNil::apply()], ret).await,
+                    None => cc.produce(&rand, &[RhoNil::apply()], ret, path).await,
                 }
             })
         })
@@ -1222,7 +1232,7 @@ impl SystemProcesses {
     fn registry_insert_arbitrary(&self) -> ScalaBodyFn {
         let cc = self.contract_call.clone();
         let native = self.native_state.clone();
-        Box::new(move |args: Vec<ListParWithRandom>| {
+        Box::new(move |args: Vec<ListParWithRandom>, path: DfsPath| {
             let cc = cc.clone();
             let native = native.clone();
             Box::pin(async move {
@@ -1236,7 +1246,7 @@ impl SystemProcesses {
                 };
                 let uri = registry::build_uri(&blake2b256::hash(&rand.to_bytes()));
                 native.registry_insert(&uri, data);
-                cc.produce(&rand, &[RhoUri::apply(uri)], ret).await
+                cc.produce(&rand, &[RhoUri::apply(uri)], ret, path).await
             })
         })
     }
@@ -1246,7 +1256,7 @@ impl SystemProcesses {
     fn registry_insert_signed(&self) -> ScalaBodyFn {
         let cc = self.contract_call.clone();
         let native = self.native_state.clone();
-        Box::new(move |args: Vec<ListParWithRandom>| {
+        Box::new(move |args: Vec<ListParWithRandom>, path: DfsPath| {
             let cc = cc.clone();
             let native = native.clone();
             Box::pin(async move {
@@ -1281,14 +1291,14 @@ impl SystemProcesses {
                         .and_then(RhoNumber::unapply)
                         .unwrap_or(0);
                     if nonce <= old_nonce {
-                        return cc.produce(&rand, &[RhoNil::apply()], ret).await;
+                        return cc.produce(&rand, &[RhoNil::apply()], ret, path).await;
                     }
                 }
                 native.registry_insert(
                     &uri,
                     &RhoTupleN::apply(vec![RhoNumber::apply(nonce), data.clone()]),
                 );
-                cc.produce(&rand, &[RhoUri::apply(uri)], ret).await
+                cc.produce(&rand, &[RhoUri::apply(uri)], ret, path).await
             })
         })
     }
@@ -1299,7 +1309,7 @@ impl SystemProcesses {
     fn pos(&self) -> ScalaBodyFn {
         let cc = self.contract_call.clone();
         let native = self.native_state.clone();
-        Box::new(move |args: Vec<ListParWithRandom>| {
+        Box::new(move |args: Vec<ListParWithRandom>, path: DfsPath| {
             let cc = cc.clone();
             let native = native.clone();
             Box::pin(async move {
@@ -1328,7 +1338,7 @@ impl SystemProcesses {
                                 )
                             })
                             .collect();
-                        cc.produce(&rand, &[RhoMap::apply(kvs)], ret).await
+                        cc.produce(&rand, &[RhoMap::apply(kvs)], ret, path).await
                     }
                     "getActiveValidators" => {
                         let [ret] = rest else {
@@ -1344,7 +1354,7 @@ impl SystemProcesses {
                             .iter()
                             .map(|v| RhoByteArray::apply(v.as_bytes().to_vec()))
                             .collect();
-                        cc.produce(&rand, &[RhoSet::apply(ps)], ret).await
+                        cc.produce(&rand, &[RhoSet::apply(ps)], ret, path).await
                     }
                     "bond" => {
                         let [deployer_id, amount, ret] = rest else {
@@ -1376,7 +1386,7 @@ impl SystemProcesses {
                                 RhoString::apply(msg),
                             ]),
                         };
-                        cc.produce(&rand, &[out], ret).await
+                        cc.produce(&rand, &[out], ret, path).await
                     }
                     "withdraw" => {
                         let [deployer_id, ret] = rest else {
@@ -1402,7 +1412,7 @@ impl SystemProcesses {
                                 RhoString::apply(msg),
                             ]),
                         };
-                        cc.produce(&rand, &[out], ret).await
+                        cc.produce(&rand, &[out], ret, path).await
                     }
                     _ => Err(illegal_arg(&format!("pos: unknown method {op}"))),
                 }
@@ -1416,7 +1426,7 @@ impl SystemProcesses {
     fn rev_vault(&self) -> ScalaBodyFn {
         let cc = self.contract_call.clone();
         let native = self.native_state.clone();
-        Box::new(move |args: Vec<ListParWithRandom>| {
+        Box::new(move |args: Vec<ListParWithRandom>, path: DfsPath| {
             let cc = cc.clone();
             let native = native.clone();
             Box::pin(async move {
@@ -1447,7 +1457,7 @@ impl SystemProcesses {
                             Some(b) => b,
                             None => NonNegI64::zero(),
                         };
-                        cc.produce(&rand, &[RhoNumber::apply(i64::from(balance))], ret)
+                        cc.produce(&rand, &[RhoNumber::apply(i64::from(balance))], ret, path)
                             .await
                     }
                     "deposit" => {
@@ -1493,7 +1503,7 @@ impl SystemProcesses {
                         // fail. Without this guard the read-then-write below would double the balance
                         // when `from == to` (both writes target the same vault leaf).
                         if from.as_str() == to {
-                            return cc.produce(&rand, &[RhoNil::apply()], ret).await;
+                            return cc.produce(&rand, &[RhoNil::apply()], ret, path).await;
                         }
                         let to_balance = match native
                             .vault_balance(to)
@@ -1515,7 +1525,7 @@ impl SystemProcesses {
                             .map_err(|e| illegal_arg(&e.to_string()))?;
                         native.set_vault_balance(&from, new_from);
                         native.set_vault_balance(to, new_to);
-                        cc.produce(&rand, &[RhoNil::apply()], ret).await
+                        cc.produce(&rand, &[RhoNil::apply()], ret, path).await
                     }
                     "findOrCreate" => {
                         let [deployer_id, ret] = rest else {
@@ -1537,7 +1547,7 @@ impl SystemProcesses {
                         // In the simplified address-keyed model the vault identifier is the address.
                         let out =
                             RhoTupleN::apply(vec![RhoBoolean::apply(true), RhoString::apply(addr)]);
-                        cc.produce(&rand, &[out], ret).await
+                        cc.produce(&rand, &[out], ret, path).await
                     }
                     _ => Err(illegal_arg(&format!("revVault: unknown method {op}"))),
                 }
@@ -1654,7 +1664,7 @@ mod tests {
         let input = vec![1u8, 2, 3, 4];
         let ack = FixedChannels::stdout();
         let args = vec![lpw(vec![RhoByteArray::apply(input.clone()), ack.clone()])];
-        (handler.handler)(args).await.unwrap();
+        (handler.handler)(args, DfsPath::root()).await.unwrap();
 
         let produced = mock.produced.lock().unwrap_or_else(|p| p.into_inner());
         assert_eq!(produced.len(), 1);
@@ -1680,7 +1690,7 @@ mod tests {
             .expect("insertArbitrary definition");
         let data = RhoNumber::apply(42);
         let ret = FixedChannels::stdout();
-        (insert.handler)(vec![lpw(vec![data.clone(), ret.clone()])])
+        (insert.handler)(vec![lpw(vec![data.clone(), ret.clone()])], DfsPath::root())
             .await
             .unwrap();
 
@@ -1700,9 +1710,12 @@ mod tests {
             .find(|d| d.body_ref == BodyRefs::REG_LOOKUP)
             .expect("lookup definition");
         let ret2 = FixedChannels::stdout_ack();
-        (lookup.handler)(vec![lpw(vec![uri.as_par().clone(), ret2.clone()])])
-            .await
-            .unwrap();
+        (lookup.handler)(
+            vec![lpw(vec![uri.as_par().clone(), ret2.clone()])],
+            DfsPath::root(),
+        )
+        .await
+        .unwrap();
 
         let produced = mock.produced.lock().unwrap_or_else(|p| p.into_inner());
         assert_eq!(produced.len(), 2);
@@ -1756,7 +1769,7 @@ mod tests {
             RhoString::apply("getBonds".to_string()),
             RhoList::apply(vec![ret.clone()]),
         ])];
-        (pos.handler)(args).await.unwrap();
+        (pos.handler)(args, DfsPath::root()).await.unwrap();
 
         let produced = mock.produced.lock().unwrap_or_else(|p| p.into_inner());
         assert_eq!(produced.len(), 1);
@@ -1803,14 +1816,17 @@ mod tests {
 
         // deposit is a genesis-only mint now; a deploy call must be rejected.
         let ret = FixedChannels::stdout();
-        let err = (vault.handler)(vec![lpw(vec![
-            RhoString::apply("deposit".to_string()),
-            RhoList::apply(vec![
-                RhoString::apply(alice.clone()),
-                RhoNumber::apply(100),
-                ret,
-            ]),
-        ])])
+        let err = (vault.handler)(
+            vec![lpw(vec![
+                RhoString::apply("deposit".to_string()),
+                RhoList::apply(vec![
+                    RhoString::apply(alice.clone()),
+                    RhoNumber::apply(100),
+                    ret,
+                ]),
+            ])],
+            DfsPath::root(),
+        )
         .await
         .expect_err("deposit must be rejected");
         assert!(err.to_string().contains("deposit is not callable"), "{err}");
@@ -1818,31 +1834,40 @@ mod tests {
         // transfer(*aliceDeployerId, bob, 30, _) — the from-account is derived from the caller's
         // deployerId, not taken as a forgeable address string.
         let ret = FixedChannels::stdout();
-        (vault.handler)(vec![lpw(vec![
-            RhoString::apply("transfer".to_string()),
-            RhoList::apply(vec![
-                alice_id,
-                RhoString::apply(bob.clone()),
-                RhoNumber::apply(30),
-                ret,
-            ]),
-        ])])
+        (vault.handler)(
+            vec![lpw(vec![
+                RhoString::apply("transfer".to_string()),
+                RhoList::apply(vec![
+                    alice_id,
+                    RhoString::apply(bob.clone()),
+                    RhoNumber::apply(30),
+                    ret,
+                ]),
+            ])],
+            DfsPath::root(),
+        )
         .await
         .unwrap();
 
         // getBalance(alice, ret) and getBalance(bob, ret) — reads stay address-keyed.
         let alice_ret = FixedChannels::stdout_ack();
-        (vault.handler)(vec![lpw(vec![
-            RhoString::apply("getBalance".to_string()),
-            RhoList::apply(vec![RhoString::apply(alice.clone()), alice_ret.clone()]),
-        ])])
+        (vault.handler)(
+            vec![lpw(vec![
+                RhoString::apply("getBalance".to_string()),
+                RhoList::apply(vec![RhoString::apply(alice.clone()), alice_ret.clone()]),
+            ])],
+            DfsPath::root(),
+        )
         .await
         .unwrap();
         let bob_ret = FixedChannels::stdout();
-        (vault.handler)(vec![lpw(vec![
-            RhoString::apply("getBalance".to_string()),
-            RhoList::apply(vec![RhoString::apply(bob.clone()), bob_ret.clone()]),
-        ])])
+        (vault.handler)(
+            vec![lpw(vec![
+                RhoString::apply("getBalance".to_string()),
+                RhoList::apply(vec![RhoString::apply(bob.clone()), bob_ret.clone()]),
+            ])],
+            DfsPath::root(),
+        )
         .await
         .unwrap();
 
@@ -1863,15 +1888,18 @@ mod tests {
 
         // A forgeable byte array is not a deployerId: transfer must reject it.
         let ret = FixedChannels::stdout();
-        let err = (vault.handler)(vec![lpw(vec![
-            RhoString::apply("transfer".to_string()),
-            RhoList::apply(vec![
-                RhoByteArray::apply(vec![1; 65]),
-                RhoString::apply(bob),
-                RhoNumber::apply(1),
-                ret,
-            ]),
-        ])])
+        let err = (vault.handler)(
+            vec![lpw(vec![
+                RhoString::apply("transfer".to_string()),
+                RhoList::apply(vec![
+                    RhoByteArray::apply(vec![1; 65]),
+                    RhoString::apply(bob),
+                    RhoNumber::apply(1),
+                    ret,
+                ]),
+            ])],
+            DfsPath::root(),
+        )
         .await
         .expect_err("transfer with a byte array must be rejected");
         assert!(err.to_string().contains("deployerId"), "{err}");
@@ -1911,15 +1939,18 @@ mod tests {
         // transfer(alice, alice, 30, _) must succeed and leave the balance unchanged (the Scala
         // purse split/deposit nets to zero); without the guard the read-then-write would double it.
         let ret = FixedChannels::stdout();
-        (vault.handler)(vec![lpw(vec![
-            RhoString::apply("transfer".to_string()),
-            RhoList::apply(vec![
-                alice_id,
-                RhoString::apply(alice.clone()),
-                RhoNumber::apply(30),
-                ret,
-            ]),
-        ])])
+        (vault.handler)(
+            vec![lpw(vec![
+                RhoString::apply("transfer".to_string()),
+                RhoList::apply(vec![
+                    alice_id,
+                    RhoString::apply(alice.clone()),
+                    RhoNumber::apply(30),
+                    ret,
+                ]),
+            ])],
+            DfsPath::root(),
+        )
         .await
         .expect("self-transfer must succeed");
 
@@ -1936,15 +1967,18 @@ mod tests {
 
         // An amount above the balance must still fail (the guard sits after the balance check).
         let ret2 = FixedChannels::stdout();
-        let err = (vault.handler)(vec![lpw(vec![
-            RhoString::apply("transfer".to_string()),
-            RhoList::apply(vec![
-                RhoDeployerId::apply(vec![1; 65]),
-                RhoString::apply(alice.clone()),
-                RhoNumber::apply(200),
-                ret2,
-            ]),
-        ])])
+        let err = (vault.handler)(
+            vec![lpw(vec![
+                RhoString::apply("transfer".to_string()),
+                RhoList::apply(vec![
+                    RhoDeployerId::apply(vec![1; 65]),
+                    RhoString::apply(alice.clone()),
+                    RhoNumber::apply(200),
+                    ret2,
+                ]),
+            ])],
+            DfsPath::root(),
+        )
         .await
         .expect_err("self-transfer above balance must be rejected");
         assert!(err.to_string().contains("insufficient balance"), "{err}");
@@ -1965,7 +1999,7 @@ mod tests {
 
         // ^v = [0, 1] = σ_y · −σ_y = −I: Pauli-closed AND count-balanced -> ZFA, phase −1.
         let twists = RhoList::apply(vec![RhoNumber::apply(0), RhoNumber::apply(1)]);
-        (zfa.handler)(vec![lpw(vec![twists, ack.clone()])])
+        (zfa.handler)(vec![lpw(vec![twists, ack.clone()])], DfsPath::root())
             .await
             .unwrap();
 
@@ -1997,7 +2031,7 @@ mod tests {
         // Deploy 1: mint a ZFA-balanced proof (^v) as a capability.
         let ret = FixedChannels::stdout();
         let twists = RhoList::apply(vec![RhoNumber::apply(0), RhoNumber::apply(1)]);
-        (grant.handler)(vec![lpw(vec![twists, ret.clone()])])
+        (grant.handler)(vec![lpw(vec![twists, ret.clone()])], DfsPath::root())
             .await
             .unwrap();
 
@@ -2014,9 +2048,12 @@ mod tests {
 
         // Deploy 2: the capability persists in the native registry across deploys.
         let ret2 = FixedChannels::stdout_ack();
-        (verify.handler)(vec![lpw(vec![cap.as_par().clone(), ret2.clone()])])
-            .await
-            .unwrap();
+        (verify.handler)(
+            vec![lpw(vec![cap.as_par().clone(), ret2.clone()])],
+            DfsPath::root(),
+        )
+        .await
+        .unwrap();
 
         let produced = mock.produced.lock().unwrap_or_else(|p| p.into_inner());
         assert_eq!(produced.len(), 2);
@@ -2043,9 +2080,12 @@ mod tests {
         let subject = RhoList::apply(vec![RhoNumber::apply(0), RhoNumber::apply(3)]); // ^<
         let predicate = RhoList::apply(vec![RhoNumber::apply(2), RhoNumber::apply(1)]); // >v
         let ret = FixedChannels::stdout();
-        (fuse.handler)(vec![lpw(vec![subject, predicate, ret.clone()])])
-            .await
-            .unwrap();
+        (fuse.handler)(
+            vec![lpw(vec![subject, predicate, ret.clone()])],
+            DfsPath::root(),
+        )
+        .await
+        .unwrap();
 
         let produced = mock.produced.lock().unwrap_or_else(|p| p.into_inner());
         assert_eq!(produced.len(), 1);
@@ -2090,9 +2130,12 @@ mod tests {
         ]);
         let trust = RhoMap::apply(vec![]);
         let ret = FixedChannels::stdout();
-        (resolve.handler)(vec![lpw(vec![voters, delegations, trust, ret.clone()])])
-            .await
-            .unwrap();
+        (resolve.handler)(
+            vec![lpw(vec![voters, delegations, trust, ret.clone()])],
+            DfsPath::root(),
+        )
+        .await
+        .unwrap();
 
         let produced = mock.produced.lock().unwrap_or_else(|p| p.into_inner());
         assert_eq!(produced.len(), 1);
@@ -2122,9 +2165,12 @@ mod tests {
         let delegations = RhoMap::apply(vec![(b, a)]);
         let trust = RhoMap::apply(vec![]);
         let ret = FixedChannels::stdout();
-        (resolve.handler)(vec![lpw(vec![voters, delegations, trust, ret.clone()])])
-            .await
-            .unwrap();
+        (resolve.handler)(
+            vec![lpw(vec![voters, delegations, trust, ret.clone()])],
+            DfsPath::root(),
+        )
+        .await
+        .unwrap();
 
         let produced = mock.produced.lock().unwrap_or_else(|p| p.into_inner());
         assert_eq!(produced.len(), 1);
@@ -2163,9 +2209,12 @@ mod tests {
         ]);
         let admins = RhoList::apply(vec![RhoString::apply("Alice".to_string())]);
         let ret = FixedChannels::stdout();
-        (trust.handler)(vec![lpw(vec![ratings, admins, ret.clone()])])
-            .await
-            .unwrap();
+        (trust.handler)(
+            vec![lpw(vec![ratings, admins, ret.clone()])],
+            DfsPath::root(),
+        )
+        .await
+        .unwrap();
 
         let produced = mock.produced.lock().unwrap_or_else(|p| p.into_inner());
         assert_eq!(produced.len(), 1);
@@ -2217,9 +2266,12 @@ mod tests {
             ]),
         ]);
         let ret = FixedChannels::stdout();
-        (censure.handler)(vec![lpw(vec![censures, levels, vouchers, ret.clone()])])
-            .await
-            .unwrap();
+        (censure.handler)(
+            vec![lpw(vec![censures, levels, vouchers, ret.clone()])],
+            DfsPath::root(),
+        )
+        .await
+        .unwrap();
 
         let produced = mock.produced.lock().unwrap_or_else(|p| p.into_inner());
         assert_eq!(produced.len(), 1);
@@ -2277,9 +2329,12 @@ mod tests {
         ]);
         let mode = RhoString::apply("ranked".to_string());
         let ret = FixedChannels::stdout();
-        (tally.handler)(vec![lpw(vec![ballots, weights, mode, ret.clone()])])
-            .await
-            .unwrap();
+        (tally.handler)(
+            vec![lpw(vec![ballots, weights, mode, ret.clone()])],
+            DfsPath::root(),
+        )
+        .await
+        .unwrap();
 
         let produced = mock.produced.lock().unwrap_or_else(|p| p.into_inner());
         assert_eq!(produced.len(), 1);

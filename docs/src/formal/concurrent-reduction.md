@@ -6,12 +6,13 @@ document extends that to the *concurrent* dynamics.
 
 The ρ-calculus is a **concurrent** calculus: `|` is parallel composition, and the laws already grant
 the permission to reduce independent sub-processes simultaneously. The node's reducer
-(`rholang::reduce::DebruijnInterpreter`) exercises **only the Level-1 permission**: it resolves a `Par`'s
+(`rholang::reduce::DebruijnInterpreter`) exercises the Level-1 permission — it resolves a `Par`'s
 *pure* sub-terms (substitution, spatial matching, `new`-allocation) concurrently, then applies the
-tuple-space effects in DFS order. Effect-level parallelism (Level 3) is **unsound** — see
-[Effect scheduling](effect-scheduling.md) S.3 — so the reducer deliberately does not attempt it. This
-document is the specification of that concurrent execution model, **founded in the 19 laws**
-([`spec/INVENTORY.md`](../../../spec/INVENTORY.md)).
+tuple-space effects in DFS order — plus the effect-level modes of Laws 20–22 (`gate` and `relaxed`,
+see [The channel scheduler](channel-scheduler.md)). *Static* effect-level partitioning is
+**unsound** — see [Effect scheduling](effect-scheduling.md) S.3 — so the reducer deliberately does
+not attempt it. This document is the specification of that concurrent execution model, **founded in
+the 22 laws** ([`spec/INVENTORY.md`](../../../spec/INVENTORY.md)).
 
 Throughout, "sequential" and "concurrent" are about the *scheduler*: both reduce the same `⟶` relation
 and must land on the same canonical state. The difference is whether independent redexes fire one-at-a-time
@@ -27,7 +28,7 @@ Everything below is a spelling-out of that sentence: which laws *grant* the perm
 
 ---
 
-## A. Concurrency profile of the 19 laws
+## A. Concurrency profile of the 22 laws
 
 Each law is classified by its role for concurrent reduction. The citation is the Rust realization that
 currently carries it (from [`contributor/laws-to-rust.md`](../contributor/laws-to-rust.md)).
@@ -53,6 +54,9 @@ currently carries it (from [`contributor/laws-to-rust.md`](../contributor/laws-t
 | **11** | Replay determinism (recomputed COMM ⊆ recorded trace) | A re-execution — concurrent or not — reproduces the recorded trace | `rspace::ReplayRSpace` |
 | **12** | Actor atomicity (single-threaded `mbox.nextMsg`) | One actor/message at a time; the *analog* here is per-channel serialization | (orphaned; carried by `TwoStepLock`) |
 | **17** | Merge determinism (unique min-cost rejection); RNG merge commutative | Conflicting merges resolve to a unique winner | `NonNegI64` + `Blake2b512Random::merge` |
+| **20** | Channel-task linearization (claim queue, per-channel DFS commit order) | Same-channel commits are path-ordered; a claim commits only as head of all its channels | `rspace::concurrent::channel_queue::ChannelClaimQueue` |
+| **21** | DFS-gate linearization (`gate_exec_refines_apply`) | Effect `i` waits on `0..i−1` — the sequential fold, deterministically | `rholang::scheduler::EffectMode::Gate` |
+| **22** | Next-step closure computable at dispatch | The matched datum is concrete, so the continuation's first-step footprint is computed at dispatch (`resolve_children`) | `rholang::reduce` |
 
 ### The supporting set — "neutral, but load-bearing"
 
@@ -154,11 +158,16 @@ of parallel branches. The merge associativity/commutativity is already an **axio
 | C.2 Linearization | canonical order `Sorted<Par>` + sorted-first candidate selection | `models/src/sorted.rs`; `rspace/src/space_matcher.rs` |
 | C.3 Commutative merge | `StateChange`/`ChannelChange` monoid + `compute_trie_actions` | `rspace/src/merger/*` |
 | C.4 RNG determinism | `Blake2b512Random::{split_byte,split_short,merge}` | `crypto/src/hash/blake2b512_random.rs` |
+| C.5 Gate refinement | `EffectMode::Gate` (effect `i` after `0..i−1`) | `rholang/src/scheduler.rs`; `rholang/src/reduce.rs` |
+| C.6 Path-ordered commit | `ChannelClaimQueue` + the phase-one/two produce split | `rspace/src/concurrent/channel_queue.rs`; `rspace/src/scheduled_space.rs` |
 
-The one mechanism **not** present is an effect-level scheduler — and, per
+What is *not* present is a **static** effect-level partition — and, per
 [Effect scheduling](effect-scheduling.md) S.3/S.4, a sound one does not exist at the effect level (the
-sound condition is disjoint *closure*, which is not statically decidable). The reducer's only sound
-parallelism is Level 1 (pure resolution), already realized in `rholang/src/reduce.rs`.
+sound condition is disjoint *closure*, which is not statically decidable). The sound effect-level
+mechanisms are dynamic instead: the DFS gate (C.5) and the per-channel claim queue (C.6), whose
+**relaxed** mode trades cross-channel interleaving freedom for a non-sequential event log and is
+therefore off-chain only (the casper block paths hard-reject it). On-chain, the reducer's parallelism
+is Level 1 (pure resolution) plus the sequential-equivalent gate.
 
 ---
 

@@ -7,6 +7,7 @@ use rchain_models::sorted::SortedProc;
 
 use crate::errors::RholangError;
 use crate::reduce::{Dispatch, Tuplespace};
+use crate::scheduler::DfsPath;
 
 /// Unapplies a message sent to a system contract, returning the producer and the message content
 /// (port of `ContractCall`). The producer is separated into [`ContractCall::produce`] plus the
@@ -23,11 +24,14 @@ impl<T: Tuplespace, D: Dispatch> ContractCall<T, D> {
     }
 
     /// Send `values` through `ch`, dispatching any matched continuation (port of `produce`).
+    /// `path` addresses the handler invocation this reply is a child of; the dispatched
+    /// continuation is addressed at `path.child(0)` (the same convention as `apply_effect`).
     pub async fn produce(
         &self,
         rand: &Blake2b512Random,
         values: &[Par],
         ch: &Par,
+        path: DfsPath,
     ) -> Result<(), RholangError> {
         let result = self
             .space
@@ -45,7 +49,9 @@ impl<T: Tuplespace, D: Dispatch> ContractCall<T, D> {
                 .iter()
                 .map(|(_, matched, _, _)| matched.clone())
                 .collect();
-            self.dispatcher.dispatch(continuation, data).await?;
+            self.dispatcher
+                .dispatch(continuation, data, path.child(0))
+                .await?;
         }
         Ok(())
     }

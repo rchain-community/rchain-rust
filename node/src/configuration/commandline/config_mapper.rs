@@ -294,6 +294,12 @@ pub fn from_options(options: &Options) -> Hocon {
 
         opt_i32(&mut e, "casper.autogen-shard-size", run.autogen_shard_size);
         opt_i64(&mut e, "casper.min-phlo-price", run.min_phlo_price);
+        if let Some(mode) = &run.effect_scheduler {
+            e.push((
+                "casper.effect-scheduler".to_string(),
+                Hocon::String(mode.as_str().to_string()),
+            ));
+        }
 
         opt_i32(
             &mut e,

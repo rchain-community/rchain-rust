@@ -111,7 +111,7 @@ Because the hierarchy bottoms out in the Calculus of Constructions, the port's i
   functional and decidable, structural congruence is an equivalence, substitution preserves sort,
   reduction preserves sort and closedness, canonicalization commutes with typing, and totality is
   compositional.
-- [`spec/INVENTORY.md`](../../../spec/INVENTORY.md) is the **19-law invariant catalog** — one law per
+- [`spec/INVENTORY.md`](../../../spec/INVENTORY.md) is the **22-law invariant catalog** — one law per
   Rholang / RSpace / Rosette / Casper / Storage / Crypto invariant, each with a Scala source-of-truth
   pointer and a Lean/Coq formalization target.
 - [`spec/Rchain/`](../../../spec/Rchain/) (Lean 4) and [`spec/coq/`](../../../spec/coq/) (Coq) hold the
@@ -132,7 +132,7 @@ intuition; `spec/` is its machine-checked realization.
 
 The port is complete; the node is now a *faithful implementation of the ρ-calculus*. The motivation is
 memory safety and calculus-native expression, **not** a correctness repair of consensus behavior. The
-binding constraint is stated in [`AGENTS.md`](../../../AGENTS.md): the 19 laws in
+binding constraint is stated in [`AGENTS.md`](../../../AGENTS.md): the 22 laws in
 [`spec/INVENTORY.md`](../../../spec/INVENTORY.md) and the ρ→CoC type discipline in
 [`spec/TYPE-SYSTEM.md`](../../../spec/TYPE-SYSTEM.md) are the oracle. Rust carries those invariants
 structurally (refinement types, no silent partiality) rather than reproducing the JVM's patterns —

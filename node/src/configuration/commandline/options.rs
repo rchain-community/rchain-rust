@@ -5,6 +5,7 @@ use std::time::Duration;
 
 use clap::{Parser, Subcommand};
 use rchain_comm::peer_node::PeerNode;
+use rchain_rholang::scheduler::EffectMode;
 
 use super::super::hocon::parse_duration;
 
@@ -34,6 +35,30 @@ impl std::str::FromStr for Base16 {
     type Err = String;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         parse_base16(s).map(Base16)
+    }
+}
+
+/// The effect-scheduler mode (Laws 20–22): `dfs` → [`EffectMode::Sequential`], `gate` →
+/// [`EffectMode::Gate`], `relaxed` → [`EffectMode::Relaxed`]. Parsed by clap via `FromStr` (the
+/// `Base16` newtype pattern).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EffectScheduler(pub EffectMode);
+
+impl EffectScheduler {
+    /// The flag/config-file name of the mode (the inverse of `FromStr`).
+    pub fn as_str(&self) -> &'static str {
+        match self.0 {
+            EffectMode::Sequential | EffectMode::ForkJoin => "dfs",
+            EffectMode::Gate => "gate",
+            EffectMode::Relaxed => "relaxed",
+        }
+    }
+}
+
+impl std::str::FromStr for EffectScheduler {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        EffectMode::from_str(s).map(EffectScheduler)
     }
 }
 
@@ -179,9 +204,17 @@ pub struct Run {
     #[arg(short = 'c', long = "config-file")]
     pub config_file: Option<PathBuf>,
 
-    /// Number of threads allocated for main scheduler (hidden).
-    #[arg(long = "thread-pool-size", hide = true)]
+    /// Number of threads allocated for the main scheduler (the tokio worker threads; defaults to
+    /// the number of CPUs).
+    #[arg(long = "thread-pool-size")]
     pub thread_pool_size: Option<i32>,
+
+    /// The effect scheduler (Laws 20–22): `dfs` (default, the sequential DFS loop), `gate` (the
+    /// DFS gate), or `relaxed` (per-channel claim queues). Relaxed is off-chain only: a relaxed
+    /// node refuses block-path deploy execution. Falls back to the config file's
+    /// `casper.effect-scheduler` (default `dfs`) when not given.
+    #[arg(long = "effect-scheduler", value_parser = clap::value_parser!(EffectScheduler))]
+    pub effect_scheduler: Option<EffectScheduler>,
 
     /// Start a stand-alone node.
     #[arg(short = 's', long = "standalone")]
