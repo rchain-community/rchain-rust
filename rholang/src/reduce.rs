@@ -22,7 +22,9 @@ use rchain_models::par_ops::{from_expr, par_concat, single_bundle, single_expr, 
 use rchain_models::runtime::{BindPattern, ListParWithRandom, ParWithRandom, TaggedContinuation};
 use rchain_models::sorted::SortedProc;
 use rchain_models::sorter::{par_map, par_set};
-use rchain_rspace::concurrent::channel_queue::ChannelClaimQueue;
+use rchain_rspace::concurrent::channel_queue::{
+    AcquireError, ChannelClaimQueue, ClaimGuard, HeadLease,
+};
 use rchain_rspace::scheduled_space::ReleaseToken;
 
 use crate::accounting::{CostAccounting, Costs};
@@ -2163,6 +2165,26 @@ impl<T: Tuplespace + 'static, D: Dispatch + 'static> DebruijnInterpreter<T, D> {
             .spawn(fut);
     }
 
+    /// Wait for the head lease, mapping a Law 24 validation failure to the block-path fallback
+    /// error. `NotHead` is retried inside `wait_at_head` itself, so it never surfaces here.
+    async fn wait_at_head_or_invalidate(
+        guard: &ClaimGuard<SortedProc, Vec<u16>>,
+        at_path: &[u16],
+    ) -> Result<HeadLease, RholangError> {
+        match guard.wait_at_head().await {
+            Ok(lease) => Ok(lease),
+            Err(AcquireError::ValidationFailed {
+                channel,
+                writer_path,
+            }) => Err(RholangError::SpeculationInvalid {
+                channel,
+                writer_path,
+                at_path: at_path.to_vec(),
+            }),
+            Err(AcquireError::NotHead) => unreachable!("wait_at_head retries NotHead internally"),
+        }
+    }
+
     /// Apply one effect at DFS path `path` under the relaxed scheduler (Law 20): claim the
     /// effect's static footprint at `path`, wait for the head lease, perform the op via the
     /// scheduled `produce_at`/`consume_at`, enqueue the continuation at `child(0)` and the
@@ -2181,7 +2203,7 @@ impl<T: Tuplespace + 'static, D: Dispatch + 'static> DebruijnInterpreter<T, D> {
                 Effect::Produce(chan, data, persistent) => {
                     self.update_mergeable_channels(&chan);
                     let mut guard = self.claims.claim(path.0.clone(), &[chan.clone()]);
-                    guard.wait_at_head().await;
+                    let _lease = Self::wait_at_head_or_invalidate(&guard, &path.0).await?;
                     let scheduled = self
                         .space
                         .produce_at(path.0.clone(), &chan, data.clone(), persistent)
@@ -2198,7 +2220,7 @@ impl<T: Tuplespace + 'static, D: Dispatch + 'static> DebruijnInterpreter<T, D> {
                             // trigger passes through — it is already active under this claim),
                             // then commit. The commit re-validates under the full lock set.
                             guard.claim_more(&joins);
-                            guard.wait_at_head().await;
+                            let _lease = Self::wait_at_head_or_invalidate(&guard, &path.0).await?;
                             self.space.commit_produce(pending).await?
                         }
                         None => application,
@@ -2241,7 +2263,7 @@ impl<T: Tuplespace + 'static, D: Dispatch + 'static> DebruijnInterpreter<T, D> {
                         BTreeSet::new()
                     };
                     let guard = self.claims.claim(path.0.clone(), &sources);
-                    guard.wait_at_head().await;
+                    let _lease = Self::wait_at_head_or_invalidate(&guard, &path.0).await?;
                     let scheduled = self
                         .space
                         .consume_at(
