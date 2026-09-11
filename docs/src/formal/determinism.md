@@ -4,7 +4,7 @@
 > the post-state hash of a block is a *pure function* of its inputs, founded in the 22 laws
 > ([`spec/INVENTORY.md`](../../spec/INVENTORY.md)). It is the target the Lean formalization
 > (`spec/Rchain/`) proves, and the target the Rust port's `play` and `replay` paths both implement. The
-> prior documents specify the components: [The 22 laws](the-19-laws.md), [The concurrency model](concurrency-model.md),
+> prior documents specify the components: [The 22 laws](the-22-laws.md), [The concurrency model](concurrency-model.md),
 > and [Effect scheduling](effect-scheduling.md). This page fixes the *block* level: what the block
 > creator computes and what block validation must recompute, and why they must agree.
 

@@ -194,6 +194,6 @@ sequential one.
   `one_hop_depth2_diverges` (proven), and `next_step_closure_computable` /
   `depth2_next_step_disjoint` for Law 22.
 
-> **Formal.** The full per-law catalog is [The 22 laws](the-19-laws.md) /
+> **Formal.** The full per-law catalog is [The 22 laws](the-22-laws.md) /
 > [`spec/INVENTORY.md`](../../../spec/INVENTORY.md). The machine realization of each law is
 > [The 22 laws → Rust code](../contributor/laws-to-rust.md).

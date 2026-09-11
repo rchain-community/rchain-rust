@@ -38,7 +38,7 @@ For an agent that needs to *understand the language* (rather than port code), th
    [`docs/src/rholang/unforgeable-names.md`](docs/src/rholang/unforgeable-names.md) → the core
    constructs.
 3. [`docs/src/formal/grammar-sorts.md`](docs/src/formal/grammar-sorts.md) +
-   [`docs/src/formal/the-19-laws.md`](docs/src/formal/the-19-laws.md) → the precise semantics.
+   [`docs/src/formal/the-22-laws.md`](docs/src/formal/the-22-laws.md) → the precise semantics.
 4. [`docs/src/ai-entrypoint.md`](docs/src/ai-entrypoint.md) → any other goal (consensus, capabilities,
    the port).
 

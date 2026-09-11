@@ -45,4 +45,4 @@ is written, or none of it is. A crash mid-write leaves the previous state intact
 restarts from a consistent checkpoint.
 
 > **Formal.** Content addressing and the bonds cache are Law 16; the contiguous height map and
-> order-independent fringe identity are Law 18. See [The 19 laws](../formal/the-19-laws.md).
+> order-independent fringe identity are Law 18. See [The 22 laws](../formal/the-22-laws.md).

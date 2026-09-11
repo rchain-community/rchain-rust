@@ -20,7 +20,7 @@
 # Part II — The ρ-calculus, formally
 
 - [Grammar and sorts](formal/grammar-sorts.md)
-- [The 22 laws](formal/the-19-laws.md)
+- [The 22 laws](formal/the-22-laws.md)
 - [The concurrency model](formal/concurrency-model.md)
 - [Determinism of the block state transition](formal/determinism.md)
 - [Structural congruence and reduction](formal/congruence-reduction.md)

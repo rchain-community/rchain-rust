@@ -120,7 +120,7 @@ For each gap: **code location** → **current test state** → **the seam a regr
 
 - [`AUDIT.md`](AUDIT.md) — the code findings register (the security fixes the tests must pin).
 - [`RUST-FIRST.md`](RUST-FIRST.md) — the native system-contract state model (G3/G5/G6 touch it).
-- [`RHO-CALCULUS.md`](RHO-CALCULUS.md) / [`INVENTORY.md`](INVENTORY.md) — the 19-law oracle the
+- [`RHO-CALCULUS.md`](RHO-CALCULUS.md) / [`INVENTORY.md`](INVENTORY.md) — the 22-law oracle the
   property + replay tests assert.
 
 ## Remediation status

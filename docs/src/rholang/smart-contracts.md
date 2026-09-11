@@ -92,4 +92,4 @@ composable and auditable.
 
 > **Formal.** Merge determinism and non-negative numeric channels are **Law 17**; content addressing
 > and the bonds cache are **Law 16**; the fringe/finality these contracts live under is **Law 14**.
-> See [The 19 laws](../formal/the-19-laws.md) and [Consensus (Casper)](../node/consensus.md).
+> See [The 22 laws](../formal/the-22-laws.md) and [Consensus (Casper)](../node/consensus.md).

@@ -60,5 +60,5 @@ are merged does not affect the result. Replay is the reverse direction — re-de
 from a recorded trace — and is what makes the state auditable and re-verifiable.
 
 > **Formal.** Joins, deterministic COMM, merge, Merkle structure, and replay are Laws 7–11. See
-> [The 19 laws](../formal/the-19-laws.md) and the `RSpace` crate in
+> [The 22 laws](../formal/the-22-laws.md) and the `RSpace` crate in
 > [Architecture & port status](../contributor/architecture.md).

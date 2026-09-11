@@ -56,6 +56,9 @@ deferred); **axiom** = postulated by design (a cryptographic primitive).
 | **21** | DFS-gate linearization: running effect `i` only after effects `0..i−1` complete is exactly the sequential apply fold; the one-hop (next-step-footprint) variant is unsound | the gate scheduler | `Scheduler.lean` — `gate_exec_refines_apply` (**proven**), `one_hop_depth2_diverges` (**proven** counterexample) |
 | **22** | next-step closure is computable at dispatch (the matched datum is concrete); computability does *not* make cross-channel pruning sound | dispatch-time closure | `Scheduler.lean` — `next_step_closure_computable`, `depth2_next_step_disjoint` (**proven**) |
 
+The reader-facing story — the claim queue, the DFS gate, the relaxed mode, and the unsound one-hop
+variant — is [The channel scheduler](channel-scheduler.md).
+
 ## Reading the formalization
 
 - **Lean** (`spec/Rchain/*.lean`) owns the algebraic/order laws and the type-system fundamentals. Build:

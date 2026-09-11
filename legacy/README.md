@@ -23,7 +23,7 @@ preserved exactly, never "improved" upon.
 - **[AGENTS.md](AGENTS.md)** — the authoritative intent + formal specification (read before writing Rust).
 - **[spec/](spec/)** — the Lean 4 formalization (algebraic/order laws, canonicalization, merge monoids).
 - **[spec/coq/](spec/coq/)** — the Coq formalization (substitution / α-equivalence metatheory).
-- **[spec/INVENTORY.md](spec/INVENTORY.md)** — the 19-law invariant catalog; each law gates the Rust port via property + differential tests.
+- **[spec/INVENTORY.md](spec/INVENTORY.md)** — the 22-law invariant catalog; each law gates the Rust port via property + differential tests.
 
 ## Note on the use of this software
 This code has not yet completed a security review. We strongly recommend that you do not use it in production or to transfer items of material value. We take no responsibility for any loss you may incur through the use of this code.
