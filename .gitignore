@@ -88,3 +88,8 @@ integration-tests.log
 .metals
 .history
 .vscode
+
+# wallet-extension (Node/Vite subproject)
+###################
+wallet-extension/node_modules/
+wallet-extension/dist/
