@@ -28,6 +28,9 @@ pub enum RSpaceError {
     /// A recomputed COMM event was not present in the recorded replay trace (a peer-supplied
     /// event log is self-inconsistent — the block is invalid, not a reason to panic).
     ReplayCommNotInTrace,
+    /// A scheduled consume had an empty channel set or a channel/pattern arity mismatch (a caller
+    /// error at the scheduling boundary, not an internal invariant to panic on).
+    ConsumeArity(&'static str),
 }
 
 impl fmt::Display for RSpaceError {
@@ -46,6 +49,7 @@ impl fmt::Display for RSpaceError {
             RSpaceError::ReplayCommNotInTrace => {
                 write!(f, "COMM event was not contained in the trace")
             }
+            RSpaceError::ConsumeArity(what) => write!(f, "invalid scheduled consume: {what}"),
         }
     }
 }

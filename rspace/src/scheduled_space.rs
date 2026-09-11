@@ -219,12 +219,11 @@ where
         persist: bool,
         peeks: BTreeSet<usize>,
     ) -> std::result::Result<ScheduledConsume<C, P, A, K>, crate::errors::RSpaceError> {
-        assert!(!channels.is_empty(), "channels can't be empty");
-        assert_eq!(
-            channels.len(),
-            patterns.len(),
-            "channels.length must equal patterns.length"
-        );
+        if channels.is_empty() || channels.len() != patterns.len() {
+            return Err(crate::errors::RSpaceError::ConsumeArity(
+                "a scheduled consume requires a non-empty channel set with matching patterns",
+            ));
+        }
         let consume_ref = Consume::apply(channels, patterns, &continuation, persist);
         let hashes: Vec<_> = channels.iter().map(hash_channel).collect();
         let thunk = self.locked_consume(

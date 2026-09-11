@@ -35,8 +35,9 @@ added). Only **3 of 12 crates have integration tests** (`rholang`, `casper`, `no
   - `rholang/tests/execution.rs` — `gate_and_sequential_state_hashes_match` (gate state hash *and*
     event log equal the sequential reference over the reduction corpus),
     `relaxed_mode_runs_all_corpus_terms_without_error`, `relaxed_preserves_same_channel_order`
-    (per-channel COMM subsequences equal the sequential DFS order — full per-channel subsequences
-    for the disjoint-continuation subset; the S.3 counterexample term's final state is free);
+    (per-channel COMM subsequences equal the sequential DFS order; standalone install/store events
+    may interleave around a `Comm`, so only commits are compared; the S.3 counterexample term's
+    final state is free);
   - `casper/tests/scheduler.rs` — `block_paths_reject_relaxed_mode` (both block-path entry points
     hard-reject under `relaxed`; sequential succeeds) and
     `exploratory_path_stays_open_in_relaxed_mode`;

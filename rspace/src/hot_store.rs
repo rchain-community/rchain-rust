@@ -32,7 +32,10 @@ pub const SHARDS: usize = 64;
 /// The shard a 32-byte hash maps to (its first 8 bytes as a little-endian word, modulo the shard
 /// count — the hash is uniform, so any fixed window spreads evenly).
 fn shard_of(bytes: &[u8; 32], shards: usize) -> usize {
-    u64::from_le_bytes(bytes[..8].try_into().expect("32-byte hash holds 8 bytes")) as usize % shards
+    let mut word = [0u8; 8];
+    word.copy_from_slice(&bytes[..8]);
+    // `max(1)`: a zero shard count is clamped to the single (unstrided) shard rather than panicking.
+    (u64::from_le_bytes(word) as usize) % shards.max(1)
 }
 
 /// The shard of a single channel: the stable hash of its serialized form (Law 7).
@@ -140,10 +143,10 @@ where
         Self::with_shards(reader_base, SHARDS)
     }
 
-    /// Build the store with `shards` state shards (must be ≥ 1). `1` reproduces the unstrided
-    /// store exactly; the equality test relies on that.
+    /// Build the store with `shards` state shards (clamped to ≥ 1; `1` reproduces the unstrided
+    /// store exactly, which the equality test relies on).
     pub fn with_shards(reader_base: Arc<dyn HistoryReaderBase<C, P, A, K>>, shards: usize) -> Self {
-        assert!(shards > 0, "hot store shard count must be positive");
+        let shards = shards.max(1);
         InMemHotStore {
             state: (0..shards)
                 .map(|_| Mutex::new(HotStoreState::default()))
@@ -167,7 +170,7 @@ where
         reader_base: Arc<dyn HistoryReaderBase<C, P, A, K>>,
         shards: usize,
     ) -> Self {
-        assert!(shards > 0, "hot store shard count must be positive");
+        let shards = shards.max(1);
         let mut shard_states: Vec<HotStoreState<C, P, A, K>> =
             (0..shards).map(|_| HotStoreState::default()).collect();
         for (channels, wcs) in state.continuations {
