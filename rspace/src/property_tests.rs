@@ -246,4 +246,101 @@ proptest! {
         })
         .unwrap();
     }
+
+    /// Law 24 (instrumentation): the queue's skew signal flips exactly when a DFS-earlier claim
+    /// lands on a channel while a DFS-later claim holds the head lease there (the S.3 enqueue
+    /// window), never on an unheld channel or the holder's own phase-two re-insert — and the
+    /// per-channel version counter counts head acquisitions.
+    #[test]
+    fn law24_skew_signal_and_version_counter(
+        executing_path in 2u64..8,
+        burst in prop::collection::vec((0u64..10, 0u8..4), 0..8),
+    ) {
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let queue = Arc::new(ChannelClaimQueue::<u8, u64>::new());
+
+            // The executing claim holds the head lease on channels 0 and 1 while the burst
+            // lands — its entry stays at `entries[0]`, so only a strictly-smaller path can land
+            // at the front and trip the signal (equal paths land behind it).
+            let mut holder = queue.claim(executing_path, &[0u8, 1]);
+            let _lease = holder.wait_at_head().await;
+            prop_assert_eq!(
+                queue.channel_version(&0u8),
+                1,
+                "one acquisition on channel 0"
+            );
+            prop_assert_eq!(
+                queue.channel_version(&1u8),
+                1,
+                "one acquisition on channel 1"
+            );
+            prop_assert_eq!(
+                queue.channel_version(&2u8),
+                0,
+                "untouched channel stays at 0"
+            );
+            prop_assert!(!queue.observed_skew(), "no window before the burst");
+
+            // The burst: random-path claims on random channels while the lease is held. A claim
+            // flips the signal iff it lands at the front of a held channel — its path is
+            // strictly smaller than the executing claim's.
+            let expected_flip = burst
+                .iter()
+                .any(|(path, channel)| *channel <= 1 && *path < executing_path);
+            let mut burst_guards = Vec::new();
+            for (path, channel) in &burst {
+                burst_guards.push(queue.claim(*path, &[*channel]));
+            }
+            prop_assert_eq!(
+                queue.observed_skew(),
+                expected_flip,
+                "the skew signal must reflect the enqueue window exactly"
+            );
+
+            // The holder's own phase-two re-insert on fresh channels must not flip the signal
+            // (no other claim executes there).
+            let skew_before = queue.observed_skew();
+            holder.claim_more(&[2u8, 3]);
+            prop_assert_eq!(
+                queue.observed_skew(),
+                skew_before,
+                "the holder's own claim_more must not skew"
+            );
+
+            // Release the lease; every burst claim then acquires once in path order, and the
+            // version counter records exactly one acquisition per claim per channel.
+            drop(_lease);
+            drop(holder);
+            let mut tasks = Vec::new();
+            for guard in burst_guards {
+                tasks.push(tokio::spawn(async move {
+                    let _lease = guard.wait_at_head().await;
+                    // Guard dropped here: releases the channel for the next head.
+                }));
+            }
+            for task in tasks {
+                tokio::time::timeout(std::time::Duration::from_secs(10), task)
+                    .await
+                    .expect("burst claim deadlocked (Law 20 deadlock freedom)")
+                    .unwrap();
+            }
+            for channel in 0u8..4 {
+                let acquisitions = u64::from(channel <= 1)
+                    + burst.iter().filter(|(_, c)| *c == channel).count() as u64;
+                prop_assert_eq!(
+                    queue.channel_version(&channel),
+                    acquisitions,
+                    "version counter must count head acquisitions on channel {}",
+                    channel
+                );
+            }
+            Ok(())
+        })
+        .unwrap();
+    }
 }

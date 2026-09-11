@@ -19,7 +19,7 @@
 //! (`law20_deadlock_freedom` + stress tests; fallback: per-key `TwoStepLock`).
 
 use std::hash::Hash;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use dashmap::mapref::entry::Entry;
@@ -34,6 +34,9 @@ struct ChannelQueue<P> {
     /// claim may run on the channel — not even `entries[0]` — which keeps same-channel execution
     /// exclusive when a DFS-earlier claim overtakes a running head.
     active: Option<u64>,
+    /// The per-channel commit counter (the Laws 23–25 write-record layer's version): bumped at
+    /// each head acquisition, so a speculator can detect version skew between claim and commit.
+    version: u64,
 }
 
 impl<P> Default for ChannelQueue<P> {
@@ -41,6 +44,7 @@ impl<P> Default for ChannelQueue<P> {
         ChannelQueue {
             entries: Vec::new(),
             active: None,
+            version: 0,
         }
     }
 }
@@ -56,6 +60,9 @@ struct ClaimEntry<P> {
 struct QueueInner<K, P> {
     channels: DashMap<K, Arc<Mutex<ChannelQueue<P>>>>,
     next_id: AtomicU64,
+    /// Set when a DFS-earlier claim is inserted while another claim is executing (the S.3
+    /// enqueue window) — the Law 24 divergence signal the validated block path reads.
+    skewed: AtomicBool,
 }
 
 /// The per-channel claim queue (Law 20). Claims are keyed by channel `K` and ordered by path `P`.
@@ -73,6 +80,7 @@ where
             inner: Arc::new(QueueInner {
                 channels: DashMap::new(),
                 next_id: AtomicU64::new(0),
+                skewed: AtomicBool::new(false),
             }),
         }
     }
@@ -97,6 +105,23 @@ where
             notify,
         }
     }
+
+    /// The per-channel commit counter (the Laws 23–25 write-record layer's version): the number
+    /// of head acquisitions on `channel` so far.
+    pub fn channel_version(&self, channel: &K) -> u64 {
+        self.inner
+            .channels
+            .get(channel)
+            .map(|q| q.lock().unwrap_or_else(|p| p.into_inner()).version)
+            .unwrap_or(0)
+    }
+
+    /// Whether any channel observed the S.3 enqueue window — a DFS-earlier claim inserted while
+    /// another claim was executing. Lifetime signal of the runtime (reset per runtime, not per
+    /// evaluation); the validated block path reads it as the Law 24 divergence signal.
+    pub fn observed_skew(&self) -> bool {
+        self.inner.skewed.load(Ordering::Relaxed)
+    }
 }
 
 impl<K, P> QueueInner<K, P>
@@ -115,7 +140,9 @@ where
                 .clone(),
         };
         let mut queue = arc.lock().unwrap_or_else(|p| p.into_inner());
-        let at = queue.entries.partition_point(|e| e.path < *path);
+        // Ties keep arrival order (FIFO), so an equal-path claim lands *behind* the executing
+        // entry — only a strictly DFS-earlier path reaches the front of a held channel.
+        let at = queue.entries.partition_point(|e| e.path <= *path);
         queue.entries.insert(
             at,
             ClaimEntry {
@@ -124,6 +151,12 @@ where
                 notify: notify.clone(),
             },
         );
+        // The S.3 enqueue window: a DFS-earlier claim arriving while a later-path claim is
+        // executing (the phase-two re-wait inserts under its own `active` id and is excluded)
+        // is the divergence signal of Law 24 (`docs/src/formal/onchain-scheduling.md`).
+        if at == 0 && queue.active.is_some() && queue.active != Some(id) {
+            self.skewed.store(true, Ordering::Relaxed);
+        }
     }
 }
 
@@ -223,6 +256,7 @@ where
         }
         for queue in &mut locks {
             queue.active = Some(self.id);
+            queue.version += 1;
         }
         Ok(HeadLease { _private: () })
     }
@@ -448,6 +482,53 @@ mod tests {
         p.unwrap();
         c.unwrap();
         assert_eq!(*order.lock().unwrap(), vec![3, 5, 4]);
+    }
+
+    /// The S.3 enqueue window sets the skew signal and the commit counter: a DFS-earlier claim
+    /// inserted while a later-path claim is executing marks the channel (Law 24's divergence
+    /// signal), while the executing claim's own phase-two `claim_more` re-insert does not.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn enqueue_window_sets_skew_and_version() {
+        let queue = Arc::new(ChannelClaimQueue::<u8, u64>::new());
+        let acquired = Arc::new(Notify::new());
+        let release = Arc::new(Notify::new());
+
+        // The running head at path 5: acquired, holds the channel.
+        let head = queue.claim(5, &[1u8]);
+        let (h_acq, h_rel) = (acquired.clone(), release.clone());
+        let head_task = tokio::spawn(async move {
+            let _lease = head.wait_at_head().await;
+            h_acq.notify_one();
+            h_rel.notified().await;
+        });
+        acquired.notified().await;
+        assert_eq!(queue.channel_version(&1u8), 1);
+        assert!(!queue.observed_skew());
+
+        // A DFS-earlier claim arrives while the later-path head executes: the enqueue window.
+        let earlier = queue.claim(4, &[1u8]);
+        assert!(
+            queue.observed_skew(),
+            "the enqueue window must set the skew signal"
+        );
+
+        // The executing claim's own phase-two re-insert is not a divergence.
+        let mut self_claim = queue.claim(6, &[2u8]);
+        self_claim.wait_at_head().await; // channel 2 is free
+        let skew_before = queue.observed_skew();
+        self_claim.claim_more(&[1u8]); // re-insert on channel 1 under its own active id
+        assert_eq!(
+            queue.observed_skew(),
+            skew_before,
+            "phase-two re-wait must not skew"
+        );
+
+        release.notify_one();
+        let _ = earlier.wait_at_head().await;
+        head_task.await.unwrap();
+        // Channel 1 saw two acquisitions: the head at path 5, then the overtaking claim at 4.
+        // The phase-two re-insert acquires nothing until it re-waits, so the counter stays put.
+        assert_eq!(queue.channel_version(&1u8), 2);
     }
 
     /// Law 20's exclusion: with N claims on one channel, no two critical sections overlap and
