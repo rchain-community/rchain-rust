@@ -12,7 +12,7 @@ use rchain_crypto::hash::blake2b256_hash::Blake2b256Hash;
 use rchain_shared::store::{InMemoryKeyValueStore, KeyValueStore};
 use rchain_shared::typed_store::{BytesCodec, KeyValueTypedStoreCodec};
 
-use crate::concurrent::channel_queue::ChannelClaimQueue;
+use crate::concurrent::channel_queue::{ChannelClaimQueue, WriteRecord};
 use crate::hashing::stable_hash_provider::hash_channels;
 use crate::history::codecs::Blake2b256HashCodec;
 use crate::history::history_action::HistoryAction;
@@ -249,12 +249,16 @@ proptest! {
 
     /// Law 24 (instrumentation): the queue's skew signal flips exactly when a DFS-earlier claim
     /// lands on a channel while a DFS-later claim holds the head lease there (the S.3 enqueue
-    /// window), never on an unheld channel or the holder's own phase-two re-insert — and the
-    /// per-channel version counter counts head acquisitions.
+    /// window), never on an unheld channel or the holder's own phase-two re-insert — while the
+    /// Law 24 record layer validates each claim against its channel's newest write: with
+    /// validation enabled, a claim acquires iff every claimed channel's newest write is
+    /// strictly path-earlier (unwritten channels count as initial state), and the per-channel
+    /// version counter counts recorded writes, never acquisitions.
     #[test]
-    fn law24_skew_signal_and_version_counter(
+    fn law24_record_layer_and_validation(
         executing_path in 2u64..8,
         burst in prop::collection::vec((0u64..10, 0u8..4), 0..8),
+        writes in prop::collection::vec((0u8..4, 0u64..2, any::<bool>()), 0..6),
     ) {
         let rt = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
@@ -263,26 +267,32 @@ proptest! {
             .unwrap();
         rt.block_on(async {
             let queue = Arc::new(ChannelClaimQueue::<u8, u64>::new());
+            queue.set_validation_enabled(true);
+
+            // Seed the write-record layer. Every seeded write is strictly earlier than the
+            // executing claim (paths < 2), so the holder's own acquisitions always validate.
+            let mut expected_versions = [0u64; 4];
+            let mut newest: [Option<(u64, bool)>; 4] = [None; 4];
+            for (channel, path, polarity) in &writes {
+                queue.record_write(channel, path, *polarity);
+                expected_versions[*channel as usize] += 1;
+                newest[*channel as usize] = Some((*path, *polarity));
+            }
 
             // The executing claim holds the head lease on channels 0 and 1 while the burst
             // lands — its entry stays at `entries[0]`, so only a strictly-smaller path can land
             // at the front and trip the signal (equal paths land behind it).
             let mut holder = queue.claim(executing_path, &[0u8, 1]);
-            let _lease = holder.wait_at_head().await;
+            let _lease = holder.wait_at_head().await.unwrap();
             prop_assert_eq!(
                 queue.channel_version(&0u8),
-                1,
-                "one acquisition on channel 0"
-            );
-            prop_assert_eq!(
-                queue.channel_version(&1u8),
-                1,
-                "one acquisition on channel 1"
+                expected_versions[0],
+                "acquisitions must not bump the write count on channel 0"
             );
             prop_assert_eq!(
                 queue.channel_version(&2u8),
-                0,
-                "untouched channel stays at 0"
+                expected_versions[2],
+                "acquisitions must not bump the write count on channel 2"
             );
             prop_assert!(!queue.observed_skew(), "no window before the burst");
 
@@ -312,30 +322,52 @@ proptest! {
                 "the holder's own claim_more must not skew"
             );
 
-            // Release the lease; every burst claim then acquires once in path order, and the
-            // version counter records exactly one acquisition per claim per channel.
+            // Release the lease; each burst claim then acquires iff Law 24 validates it — its
+            // channel's newest write is strictly path-earlier (or the channel is unwritten).
+            // Outcomes are order-independent: the record only changes via `record_write`, and
+            // the test writes nothing during the burst.
             drop(_lease);
             drop(holder);
             let mut tasks = Vec::new();
-            for guard in burst_guards {
+            for (guard, (path, channel)) in burst_guards.into_iter().zip(burst.iter()) {
+                let (path, channel) = (*path, *channel);
+                let expected = newest[channel as usize]
+                    .map_or(true, |(writer, _)| writer < path);
                 tasks.push(tokio::spawn(async move {
-                    let _lease = guard.wait_at_head().await;
-                    // Guard dropped here: releases the channel for the next head.
+                    let acquired = guard.wait_at_head().await.is_ok();
+                    (acquired, expected, path, channel)
                 }));
             }
             for task in tasks {
-                tokio::time::timeout(std::time::Duration::from_secs(10), task)
-                    .await
-                    .expect("burst claim deadlocked (Law 20 deadlock freedom)")
-                    .unwrap();
+                let (acquired, expected, path, channel) =
+                    tokio::time::timeout(std::time::Duration::from_secs(10), task)
+                        .await
+                        .expect("burst claim deadlocked (Law 20 deadlock freedom)")
+                        .unwrap();
+                prop_assert_eq!(
+                    acquired,
+                    expected,
+                    "Law 24 validation outcome for path {} on channel {}",
+                    path,
+                    channel
+                );
             }
             for channel in 0u8..4 {
-                let acquisitions = u64::from(channel <= 1)
-                    + burst.iter().filter(|(_, c)| *c == channel).count() as u64;
                 prop_assert_eq!(
                     queue.channel_version(&channel),
-                    acquisitions,
-                    "version counter must count head acquisitions on channel {}",
+                    expected_versions[channel as usize],
+                    "version counter must count writes, not acquisitions, on channel {}",
+                    channel
+                );
+                let expected_newest = newest[channel as usize].map(|(path, polarity)| WriteRecord {
+                    path,
+                    version: expected_versions[channel as usize],
+                    polarity,
+                });
+                prop_assert_eq!(
+                    queue.last_write(&channel),
+                    expected_newest,
+                    "newest write on channel {}",
                     channel
                 );
             }
