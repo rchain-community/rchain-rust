@@ -85,4 +85,4 @@ lets a contract identify *who* invoked it. Others include `GDeployId` (a unique 
 > **Formal.** `new` is restriction (ν); unforgeable names are `GUnforgeable` (Law 4's `new`-freshness,
 > `reduce_freeVars_subset` in `spec/Rchain/Reduce.lean`; the K rule `new` in `processes-semantics.k`).
 > The freshness that makes them unforgeable is the Blake2b derivation (Law 19, axiomatized). See
-> [The 22 laws](../formal/the-22-laws.md).
+> [The 25 laws](../formal/the-25-laws.md).

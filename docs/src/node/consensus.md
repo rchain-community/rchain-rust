@@ -73,5 +73,5 @@ matching determinism (the canonical order of Law 1, the deterministic COMM of La
 stack — from a deploy to a finalized block — is deterministic end to end.
 
 > **Formal.** Finality and the fringe are Laws 14–15; block validity and merge determinism are Laws
-> 16–17; the height map is Law 18. See [The 22 laws](../formal/the-22-laws.md) and the DAG finalizer
+> 16–17; the height map is Law 18. See [The 25 laws](../formal/the-25-laws.md) and the DAG finalizer
 > in [`spec/INVENTORY.md`](../../../spec/INVENTORY.md).

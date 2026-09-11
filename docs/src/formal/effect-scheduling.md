@@ -30,7 +30,7 @@ Each effect has two notions of "which channels it touches":
 
 Two effects are **independent** only when their **closures** are disjoint, not merely their footprints.
 
-## Concurrency profile of the 22 laws (effect level)
+## Concurrency profile of the 25 laws (effect level)
 
 **Enables — "you may apply independent effects concurrently":**
 

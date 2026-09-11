@@ -77,4 +77,4 @@ state — a network of senders and receivers that never stops.
 
 > **Formal.** The process/name split is the `PSort` judgment (`HasSort`/`HasVarSort`); parallel
 > composition and `Nil` are the `parMerge`/`nilPar` of the flat `Par`. See
-> [Grammar and sorts](../formal/grammar-sorts.md) and Law 2 in [The 22 laws](../formal/the-22-laws.md).
+> [Grammar and sorts](../formal/grammar-sorts.md) and Law 2 in [The 25 laws](../formal/the-25-laws.md).

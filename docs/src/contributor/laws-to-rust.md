@@ -1,6 +1,6 @@
-# The 22 laws → Rust code
+# The 25 laws → Rust code
 
-A human-oriented walkthrough of how each of the [22 laws](../../../spec/INVENTORY.md) is realized as
+A human-oriented walkthrough of how each of the [25 laws](../../../spec/INVENTORY.md) is realized as
 **concrete Rust code** in this repository. This page exists because the mapping is obvious to a
 machine but not to a person: most laws don't live in one obvious place, and a few of the type names in
 the older docs were wrong or misleading. The canonical, terse table is
@@ -10,7 +10,7 @@ the older docs were wrong or misleading. The canonical, terse table is
 
 Three facts make the mapping intuitive once stated:
 
-1. **The oracle is the spec, not the Scala.** The 22 laws and the ρ→CoC type discipline
+1. **The oracle is the spec, not the Scala.** The 25 laws and the ρ→CoC type discipline
    ([`spec/TYPE-SYSTEM.md`](../../../spec/TYPE-SYSTEM.md)) are what the Rust code must satisfy. The
    `legacy/` Scala tree is *reference material* for behavior, and the Scala tests are *differential*
    reference vectors — never the thing to reproduce bug-for-bug.
@@ -55,6 +55,9 @@ cross-cutting "no silent partiality / no `unsafe`" discipline; it fails the buil
 | **20** | Channel-task linearization ("1 channel = 1 logical task"): every channel owns a *claim queue*; an effect claims its channels at its DFS path and commits only as the head of **all** of them, so same-channel commits follow the path-sorted order. | `rspace/src/concurrent/channel_queue.rs` — `ChannelClaimQueue::{claim,claim_more,wait_at_head}` + the guard/`active`-mark exclusion; the produce phase-one/two split and re-validation under the full lock set in `rspace/src/scheduled_space.rs` | `cargo test -p rchain-rspace channel_queue` (queue proptests) + `relaxed_preserves_same_channel_order` (`rholang/tests/execution.rs`) |
 | **21** | DFS-gate linearization: running effect `i` only after effects `0..i−1` complete is exactly the sequential apply fold; the one-hop (next-step-footprint) variant is unsound. | `rholang/src/scheduler.rs` — `EffectMode::Gate` (and `DfsPath` whose lexicographic `Ord` *is* the DFS order); the gate arm of `reduce_effects` in `rholang/src/reduce.rs` | `gate_and_sequential_state_hashes_match` (`rholang/tests/execution.rs`) — gate state hash **and** event log equal the sequential reference |
 | **22** | The next-step closure is computable at dispatch (the matched datum is concrete); that computability does **not** make cross-channel pruning sound. | `rholang/src/reduce.rs` — `resolve_children` computes the continuation's first-step effects at dispatch; the relaxed arm enqueues those children at `path.child(i)` | the reduction-corpus differential tests above + `one_hop_depth2_diverges` (`spec/Rchain/Scheduler.lean`) |
+| **23** | Read-determinism: an effect's chosen candidate, commit outcome and event trace are a deterministic function of the state it reads. | content-addressed candidate selection — `rspace/src/space_matcher.rs` sorted-first matching (Law 8 made total) | `read_state_determines_outcome` (`spec/Rchain/SchedulerOnchain.lean`) |
+| **24** | DFS-order serializability: a concurrent execution is sound for the block path iff every commit read the state the DFS-earlier effects produced (the versioned write-record layer's prefix visibility). | the block-path acceptance gate of `EffectMode::RelaxedValidated` (`rholang/src/scheduler.rs`); the validation certificate is the on-chain scheduling plan's Phase A/B realization target | the S.3 and C/D witnesses proven; `serializable_writer_chain` / `dfs_serializable_implies_log_equal` stated (`spec/Rchain/SchedulerOnchain.lean`) |
+| **25** | Validated speculation: commits may reorder iff each validates Law 24; invalidated subtrees abort and re-run under the gate, so the published log is the sequential fold's. | the block-path validated-relaxed coordinator (planned — Phases A–F of the on-chain scheduling plan, `docs/src/formal/onchain-scheduling.md`) | `validated_speculation_refines_apply` (from Law 24), `gate_replay_terminates` (proven), `Published` (`spec/Rchain/SchedulerOnchain.lean`) |
 
 ---
 
@@ -118,7 +121,7 @@ The whole model — and the soundness theorems it must satisfy — is specified 
   compile* (e.g. you can't build a `Closed` term from one with free variables, or a `NonNegI64` from a
   negative number).
 - **Run the machine gate**: `tools/audit-type-system.sh` confirms zero production
-  `panic!`/`unsafe`/silent-conversion — the cross-cutting discipline that underlies all 22 laws.
+  `panic!`/`unsafe`/silent-conversion — the cross-cutting discipline that underlies all 25 laws.
 
 The canonical (terse) version of this mapping, with per-law Scala source-of-truth and Lean targets, is
 [`spec/INVENTORY.md`](../../../spec/INVENTORY.md). The formal type discipline is

@@ -20,7 +20,7 @@
 # Part II — The ρ-calculus, formally
 
 - [Grammar and sorts](formal/grammar-sorts.md)
-- [The 22 laws](formal/the-22-laws.md)
+- [The 25 laws](formal/the-25-laws.md)
 - [The concurrency model](formal/concurrency-model.md)
 - [Determinism of the block state transition](formal/determinism.md)
 - [Structural congruence and reduction](formal/congruence-reduction.md)
@@ -49,7 +49,7 @@
 
 - [Why Rust](contributor/why-rust.md)
 - [Architecture & port status](contributor/architecture.md)
-- [The 22 laws → Rust code](contributor/laws-to-rust.md)
+- [The 25 laws → Rust code](contributor/laws-to-rust.md)
 - [Formal specification & audit](contributor/spec.md)
 
 # Part VI — QuCalc: native AI & governance

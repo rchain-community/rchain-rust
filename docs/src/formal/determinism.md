@@ -1,10 +1,10 @@
 # Determinism of the block state transition
 
 > This document is the **specification of the node's state-transition determinism** — the statement that
-> the post-state hash of a block is a *pure function* of its inputs, founded in the 22 laws
+> the post-state hash of a block is a *pure function* of its inputs, founded in the 25 laws
 > ([`spec/INVENTORY.md`](../../spec/INVENTORY.md)). It is the target the Lean formalization
 > (`spec/Rchain/`) proves, and the target the Rust port's `play` and `replay` paths both implement. The
-> prior documents specify the components: [The 22 laws](the-22-laws.md), [The concurrency model](concurrency-model.md),
+> prior documents specify the components: [The 25 laws](the-25-laws.md), [The concurrency model](concurrency-model.md),
 > and [Effect scheduling](effect-scheduling.md). This page fixes the *block* level: what the block
 > creator computes and what block validation must recompute, and why they must agree.
 
@@ -17,7 +17,7 @@
 
 Determinism is not a property of the raw `Reduce` relation (which is not even single-step deterministic
 up to `≡`); it is a property of the **chosen canonical schedule**, and of the port faithfully realizing
-*one* transition function in both the play and replay paths. The 22 laws turn that into a theorem:
+*one* transition function in both the play and replay paths. The 25 laws turn that into a theorem:
 
 | Law | What it guarantees for the block state transition |
 |-----|-----------------------------------------------------|

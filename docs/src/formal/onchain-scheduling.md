@@ -68,7 +68,10 @@ the commit actually read — no separate snapshot is carried, so the check is fa
 construction. The Rust realization *target* computes exactly this certificate on the block path: the
 committed effect's read set is its claimed footprint, and the record layer is the per-channel
 version counter of `rspace::concurrent::channel_queue::ChannelQueue` (writer path = claim path,
-version = commit counter).
+version = commit counter). The landed realization validates by **sequential-oracle re-execution**
+instead — re-running the deploy set under the sequential reference and comparing its outcome with
+the speculative run's — with the per-commit certificate kept as the upgrade path (see the map
+below).
 
 ## The witnesses
 
@@ -101,13 +104,16 @@ writes its own channel) — are proven.
 
 | Law element | Lean | Rust |
 |---|---|---|
-| write-record layer | `SpecState` / `applyAt` | per-channel version counter in `rspace::concurrent::channel_queue.rs` |
-| prefix visibility | `prefixVisible` / `ValidCommit` | certificate check at the block-path gate (`casper::runtime_manager::RuntimeManager`, the `RelaxedValidated` mode) |
-| DFS-serializability | `DFSSerializable` | per-deploy validation: recorded commit order vs path order |
-| abort / inverse-replay / gate re-run | Law 25 (`Published`, `gate_replay_terminates`) | soft-checkpoint rollback (`RSpace::revert_to_soft_checkpoint`) + sequential re-run on `fork_play_runtime` |
+| write-record layer | `SpecState` / `applyAt` | per-channel version counter + enqueue-window skew signal in `rspace::concurrent::channel_queue.rs` (the landed instrumentation; consumed by the per-commit certificate upgrade) |
+| prefix visibility | `prefixVisible` / `ValidCommit` | sequential-oracle comparison at the block-path gate (`RuntimeManager::validate_relaxed_block`, the `RelaxedValidated` mode): post-state hash equality + per-channel COMM multisets |
+| DFS-serializability | `DFSSerializable` | the COMM-multiset comparison (`event_converter.rs::comm_multisets_match`) + Law 11 rig-replay of the shipped trace; the per-commit recorded-order certificate is the upgrade path |
+| abort / inverse-replay / gate re-run | Law 25 (`Published`, `gate_replay_terminates`) | whole-run fallback: the deploy set is re-run sequentially on `fork_play_runtime`, which resets to `start_hash` and ships the reference trace |
 | published log = sequential fold | `validated_speculation_refines_apply` | block carries the sequential trace on fallback |
 
-The block path therefore runs: speculate under the claim queue (Law 20), check the certificate
-(Law 24), and on failure re-run under the gate (Law 25) — pure `Relaxed` remains off-chain only.
-The Rust realization of the certificate (the `RelaxedValidated` block-path mode, the per-channel
-version counters, and the abort/re-run coordinator) is the implementation target of this spec.
+The block path therefore runs: speculate under the claim queue (Law 20), validate the speculative
+run against the sequential reference (Law 24's check, by re-execution), and on divergence ship the
+reference's trace (Law 25's gate re-run) — pure `Relaxed` remains off-chain only. The Rust
+realization (the `RelaxedValidated` block-path mode, the per-channel version counters and skew
+signal, and the `validate_relaxed_block` oracle with sequential fallback) is implemented on
+`feature/channel-scheduler`; the per-commit recorded-order certificate remains the upgrade path
+for a lower-fallback-rate future.

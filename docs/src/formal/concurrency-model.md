@@ -1,7 +1,7 @@
 # The concurrency model
 
 > This document is the **specification of the node's concurrency model** — the statement of what may run
-> concurrently, what must serialize, and *why*, founded in the 22 laws. It is the target the Lean
+> concurrently, what must serialize, and *why*, founded in the 25 laws. It is the target the Lean
 > formalization (`spec/Rchain/`) proves. The prior documents spell out the machinery:
 > [Concurrent reduction](concurrent-reduction.md) (the reducer),
 > [Effect scheduling](effect-scheduling.md) (the tuple space), and
@@ -11,7 +11,7 @@
 ## The invariant in one line
 
 > **Concurrency is a scheduling freedom, never a semantics change.** Every concurrent execution — at
-> any layer — must reach the same canonical state as the purely-sequential execution. The 22 laws make
+> any layer — must reach the same canonical state as the purely-sequential execution. The 25 laws make
 > this a *theorem*, not a convention: the reducer picks a **canonical, deterministic schedule** (DFS +
 > content-sorted selection, Laws 4/8/11), and the state is content-addressed (Law 10). The *raw*
 > nondeterministic `Reduce` relation is not even single-step deterministic up to `≡`, and is not
@@ -194,6 +194,6 @@ sequential one.
   `one_hop_depth2_diverges` (proven), and `next_step_closure_computable` /
   `depth2_next_step_disjoint` for Law 22.
 
-> **Formal.** The full per-law catalog is [The 22 laws](the-22-laws.md) /
+> **Formal.** The full per-law catalog is [The 25 laws](the-25-laws.md) /
 > [`spec/INVENTORY.md`](../../../spec/INVENTORY.md). The machine realization of each law is
-> [The 22 laws → Rust code](../contributor/laws-to-rust.md).
+> [The 25 laws → Rust code](../contributor/laws-to-rust.md).

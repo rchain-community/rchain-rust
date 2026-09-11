@@ -12,7 +12,7 @@ tuple-space effects in DFS order — plus the effect-level modes of Laws 20–22
 see [The channel scheduler](channel-scheduler.md)). *Static* effect-level partitioning is
 **unsound** — see [Effect scheduling](effect-scheduling.md) S.3 — so the reducer deliberately does
 not attempt it. This document is the specification of that concurrent execution model, **founded in
-the 22 laws** ([`spec/INVENTORY.md`](../../../spec/INVENTORY.md)).
+the 25 laws** ([`spec/INVENTORY.md`](../../../spec/INVENTORY.md)).
 
 Throughout, "sequential" and "concurrent" are about the *scheduler*: both reduce the same `⟶` relation
 and must land on the same canonical state. The difference is whether independent redexes fire one-at-a-time
@@ -28,7 +28,7 @@ Everything below is a spelling-out of that sentence: which laws *grant* the perm
 
 ---
 
-## A. Concurrency profile of the 22 laws
+## A. Concurrency profile of the 25 laws
 
 Each law is classified by its role for concurrent reduction. The citation is the Rust realization that
 currently carries it (from [`contributor/laws-to-rust.md`](../contributor/laws-to-rust.md)).

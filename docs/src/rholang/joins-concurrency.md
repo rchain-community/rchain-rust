@@ -83,5 +83,5 @@ same story: private channels are both the concurrency mechanism and the security
 
 > **Formal.** Joins are multi-channel receives; join **commutativity** (the channel set is hashed in
 > sorted order, so the join key is order-independent) is **Law 7** (`spec/Rchain/RSpace/Join.lean`).
-> Deterministic pairing of sends/receives is **Law 8**. See [The 22 laws](../formal/the-22-laws.md)
+> Deterministic pairing of sends/receives is **Law 8**. See [The 25 laws](../formal/the-25-laws.md)
 > and [The tuple space (RSpace)](../node/rspace.md).
