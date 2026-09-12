@@ -2186,7 +2186,9 @@ impl<T: Tuplespace + 'static, D: Dispatch + 'static> DebruijnInterpreter<T, D> {
     }
 
     /// Wait for the head lease, mapping a Law 24 validation failure to the block-path fallback
-    /// error. `NotHead` is retried inside `wait_at_head` itself, so it never surfaces here.
+    /// error. `NotHead` is retried inside `wait_at_head` itself, so it never surfaces here —
+    /// if it ever does (a future queue change), report it as a deploy error rather than
+    /// panicking the node (the type-system audit bans panics in production code).
     async fn wait_at_head_or_invalidate(
         guard: &ClaimGuard<SortedProc, Vec<u16>>,
         at_path: &[u16],
@@ -2201,7 +2203,9 @@ impl<T: Tuplespace + 'static, D: Dispatch + 'static> DebruijnInterpreter<T, D> {
                 writer_path,
                 at_path: at_path.to_vec(),
             }),
-            Err(AcquireError::NotHead) => unreachable!("wait_at_head retries NotHead internally"),
+            Err(AcquireError::NotHead) => Err(RholangError::BugFoundError(
+                "wait_at_head retried NotHead internally".to_string(),
+            )),
         }
     }
 
