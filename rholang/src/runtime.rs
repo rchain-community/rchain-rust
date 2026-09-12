@@ -281,6 +281,12 @@ impl RhoRuntime {
         self.reducer.effect_mode()
     }
 
+    /// Whether the current evaluation observed a scheduling skew (the S.3 enqueue window). Read by
+    /// the casper block path after evaluation to trigger the sequential fallback.
+    pub fn observed_skew(&self) -> bool {
+        self.reducer.observed_skew()
+    }
+
     /// Execute a `Closed` process in the given environment (port of `inj`). The `Closed` proof is
     /// discharged at this boundary; reduction then operates on the flat `Par` sub-terms.
     pub async fn inj(

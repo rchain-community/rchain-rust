@@ -324,14 +324,9 @@ impl RuntimeManager {
         match Self::process_deploy_with(&self.runtime, deploy, rand).await {
             Ok(v) => Ok(v),
             Err(RuntimeRunError::SpeculationInvalidated) => {
-                // Law 25, deploy boundary (whole-run fallback for this deploy's run): revert the
-                // speculative partial state — rspace soft checkpoint *and* native-store overlay —
-                // and re-run sequentially (the gate). Sequential cannot invalidate, so the retry
-                // always returns a plain result.
-                let pre = self.runtime.create_soft_checkpoint().await;
-                let native_pre = self.runtime.native_store().snapshot();
-                self.runtime.revert_to_soft_checkpoint(pre).await;
-                self.runtime.native_store().revert(native_pre);
+                // Law 25, deploy boundary: `process_deploy_with` already reverted to its pre-deploy
+                // checkpoint; just switch to the sequential reference and re-run. Sequential cannot
+                // invalidate, so the retry always returns a plain result.
                 let mode = self.runtime.effect_mode();
                 self.runtime.set_effect_mode(EffectMode::Sequential);
                 let retried = Self::process_deploy_with(&self.runtime, deploy, rand).await;
@@ -361,13 +356,27 @@ impl RuntimeManager {
             deploy.data.phlo_limit,
             "deploy",
         ));
-        let eval_result = runtime
+        let eval_result = match runtime
             .evaluate_with_env(&deploy.data.term, normalizer_env.to_env(), rand)
             .await
-            .map_err(|e| match e {
-                RholangError::SpeculationInvalid { .. } => RuntimeRunError::SpeculationInvalidated,
-                e => RuntimeRunError::Other(e.to_string()),
-            })?;
+        {
+            Ok(v) => v,
+            Err(RholangError::SpeculationInvalid { .. }) => {
+                // Revert the speculative partial state before the error escapes, so the caller's
+                // sequential re-run starts from the pre-deploy state (not the aborted run's commits).
+                runtime.revert_to_soft_checkpoint(fallback).await;
+                return Err(RuntimeRunError::SpeculationInvalidated);
+            }
+            Err(e) => return Err(RuntimeRunError::Other(e.to_string())),
+        };
+        // Laws 23–25: the write-record certificate fails fast on a DFS-later read; the skew signal
+        // is the complementary heuristic for the certificate's blind spot (a DFS-earlier writer
+        // landing while a DFS-later op held the channel). Either way, roll back and let the caller
+        // fall back to the sequential reference.
+        if runtime.observed_skew() {
+            runtime.revert_to_soft_checkpoint(fallback).await;
+            return Err(RuntimeRunError::SpeculationInvalidated);
+        }
         let checkpoint = runtime.create_soft_checkpoint().await;
         let succeeded = eval_result.errors.is_empty();
         // Surface the reducer's failure reason in the processed deploy (issue #15): a failed user
@@ -456,20 +465,22 @@ impl RuntimeManager {
     /// The body of `play_deploy_with_cost_accounting`, parameterized on the runtime (the
     /// validation oracle runs it on a forked sequential runtime), with the Law 25 per-deploy
     /// fallback: if the certificate invalidates any commit of this deploy's unit, the whole
-    /// unit — pre-charge, user deploy, refund — reverts (rspace soft checkpoint + native-store
-    /// overlay) and re-runs sequentially, then the validated mode is restored. Sequential
-    /// cannot invalidate, so the retry always returns a plain result.
+    /// unit — pre-charge, user deploy, refund — reverts to the pre-unit soft checkpoint and
+    /// re-runs sequentially, then the validated mode is restored. Sequential cannot invalidate,
+    /// so the retry always returns a plain result.
     async fn play_deploy_with_cost_accounting_with(
         runtime: &RhoRuntime,
         deploy: &SignedDeployData,
         rand: &Blake2b512Random,
     ) -> Result<UserDeployRuntimeResult, RuntimeRunError> {
+        // Capture the pre-unit state BEFORE the speculative run, so an invalidation can roll back
+        // the whole unit (pre-charge → deploy → refund). The event log is empty at each unit start
+        // (`play_deploys_with_cost_accounting_with` resets to `start_hash` first), so this drain is
+        // a no-op on the success path.
+        let pre = runtime.create_soft_checkpoint().await;
         match Self::play_deploy_with_cost_accounting_once(runtime, deploy, rand).await {
             Err(RuntimeRunError::SpeculationInvalidated) => {
-                let pre = runtime.create_soft_checkpoint().await;
-                let native_pre = runtime.native_store().snapshot();
                 runtime.revert_to_soft_checkpoint(pre).await;
-                runtime.native_store().revert(native_pre);
                 let mode = runtime.effect_mode();
                 runtime.set_effect_mode(EffectMode::Sequential);
                 let retried =

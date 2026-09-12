@@ -83,7 +83,9 @@ struct QueueInner<K, P> {
     validation_enabled: AtomicBool,
     next_id: AtomicU64,
     /// Set when a DFS-earlier claim is inserted while another claim is executing (the S.3
-    /// enqueue window) — the Law 24 divergence signal the validated block path reads.
+    /// enqueue window) — a heuristic divergence signal. Reset per evaluation via `reset_skew`; the
+    /// validated block path reads it after evaluation as a fallback trigger (not a sound
+    /// replacement for the whole-set sequential oracle).
     skewed: AtomicBool,
 }
 
@@ -170,6 +172,12 @@ where
         self.inner.writes.clear();
     }
 
+    /// Clear the S.3 enqueue-window skew signal. Reset per evaluation by the reducer (alongside
+    /// `reset_write_record`) so a skew in one deploy doesn't spuriously invalidate the next.
+    pub fn reset_skew(&self) {
+        self.inner.skewed.store(false, Ordering::Relaxed);
+    }
+
     /// Enable or disable the Law 24 prefix-visibility check in `try_acquire` (the
     /// relaxed-validated block-path mode enables it; every other mode leaves it off).
     pub fn set_validation_enabled(&self, enabled: bool) {
@@ -179,8 +187,9 @@ where
     }
 
     /// Whether any channel observed the S.3 enqueue window — a DFS-earlier claim inserted while
-    /// another claim was executing. Lifetime signal of the runtime (reset per runtime, not per
-    /// evaluation); the validated block path reads it as the Law 24 divergence signal.
+    /// another claim was executing. Reset per evaluation via `reset_skew`; the validated block path
+    /// reads it after evaluation as a heuristic fallback trigger (the certificate's blind-spot
+    /// complement, not a sound replacement for the whole-set sequential oracle).
     pub fn observed_skew(&self) -> bool {
         self.inner.skewed.load(Ordering::Relaxed)
     }
@@ -645,6 +654,43 @@ mod tests {
                 polarity: true
             })
         );
+    }
+
+    /// `reset_skew` clears the S.3 enqueue-window signal: trip it with a DFS-earlier claim landing
+    /// while a later-path claim holds the lease, then reset and observe it cleared (per-evaluation
+    /// reset so one deploy's skew doesn't invalidate the next).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn reset_skew_clears_the_signal() {
+        let queue = Arc::new(ChannelClaimQueue::<u8, u64>::new());
+        let acquired = Arc::new(Notify::new());
+        let release = Arc::new(Notify::new());
+
+        // A later-path claim holds the head lease on channel 1.
+        let head = queue.claim(5, &[1u8]);
+        let (h_acq, h_rel) = (acquired.clone(), release.clone());
+        let head_task = tokio::spawn(async move {
+            let _lease = head.wait_at_head().await.unwrap();
+            h_acq.notify_one();
+            h_rel.notified().await;
+        });
+        acquired.notified().await;
+
+        // A DFS-earlier claim lands while the later-path head executes: the enqueue window.
+        let earlier = queue.claim(4, &[1u8]);
+        assert!(
+            queue.observed_skew(),
+            "the enqueue window must set the skew signal"
+        );
+
+        queue.reset_skew();
+        assert!(
+            !queue.observed_skew(),
+            "reset_skew must clear the skew signal"
+        );
+
+        release.notify_one();
+        let _ = earlier.wait_at_head().await.unwrap();
+        head_task.await.unwrap();
     }
 
     /// Law 24's certificate: with validation enabled, a claim whose channel's newest write is

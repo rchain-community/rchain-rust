@@ -1749,6 +1749,12 @@ impl<T: Tuplespace + 'static, D: Dispatch + 'static> DebruijnInterpreter<T, D> {
         *self.effect_mode.lock().unwrap_or_else(|p| p.into_inner())
     }
 
+    /// Whether the current evaluation observed the S.3 enqueue window (a DFS-earlier claim landing
+    /// while a DFS-later claim held the channel) — the skew divergence signal the block path reads.
+    pub fn observed_skew(&self) -> bool {
+        self.claims.observed_skew()
+    }
+
     /// Evaluate a top-level `Par` (port of `Reduce.eval(par)`): reduce the process to normal form via
     /// the recursive reducer. Resets the per-evaluation reduction-step counter and the cancellation
     /// flag.
@@ -1768,6 +1774,7 @@ impl<T: Tuplespace + 'static, D: Dispatch + 'static> DebruijnInterpreter<T, D> {
             EffectMode::Relaxed | EffectMode::RelaxedValidated
         ) {
             self.claims.reset_write_record();
+            self.claims.reset_skew();
         }
         let result = self
             .clone()

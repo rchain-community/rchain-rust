@@ -250,3 +250,48 @@ async fn relaxed_validated_never_diverges_from_sequential() {
         }
     }
 }
+
+/// The unmasked `process_deploy` path (used by `compute_genesis`) falls back correctly: when the
+/// certificate or the skew heuristic invalidates a speculative run, the deploy is rolled back and
+/// re-run sequentially, so the post-deploy state hash and per-channel COMM order match a fresh
+/// sequential run — with no whole-set oracle masking the per-deploy fallback. The invalidating
+/// interleaving is a tokio scheduling race (as in `relaxed_validated_never_diverges_from_sequential`),
+/// so this pins the outcome across many draws rather than deterministically forcing the fallback.
+#[tokio::test(flavor = "multi_thread")]
+async fn relaxed_validated_process_deploy_matches_sequential() {
+    const ITERATIONS: usize = 20;
+    let free_terms: &[&str] = &[
+        VALIDATED_CORPUS[2],
+        VALIDATED_CORPUS[3],
+        VALIDATED_CORPUS[4],
+    ];
+    for term in free_terms {
+        let validated = build_runtime_manager_with_mode(EffectMode::RelaxedValidated).await;
+        let sequential = build_runtime_manager_with_mode(EffectMode::Sequential).await;
+        let vstart = seed_vault(&validated).await;
+        let sstart = seed_vault(&sequential).await;
+        assert_eq!(vstart, sstart, "seeded pre-states must match");
+        let d = deploy(term);
+        for i in 0..ITERATIONS {
+            let rand = fixed_rand().split_byte(i as u8);
+            let (vproc, _) = validated
+                .process_deploy(&d, &rand)
+                .await
+                .expect("validated process_deploy");
+            let (sproc, _) = sequential
+                .process_deploy(&d, &rand)
+                .await
+                .expect("sequential process_deploy");
+            let vhash = validated.runtime().create_checkpoint().await.unwrap().root;
+            let shash = sequential.runtime().create_checkpoint().await.unwrap().root;
+            assert_eq!(
+                vhash, shash,
+                "iteration {i}: post-deploy state hash mismatch for {term}"
+            );
+            assert!(
+                comm_multisets_match(&vproc.deploy_log, &sproc.deploy_log),
+                "iteration {i}: per-channel COMM multisets must match for {term}"
+            );
+        }
+    }
+}
