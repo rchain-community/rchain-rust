@@ -341,7 +341,7 @@ where
             // and the claim's own trigger write stamps at its own — equal — path).
             if self.inner.validation_enabled.load(Ordering::Relaxed) && !already_running {
                 if let Some(w) = self.inner.writes.get(channel) {
-                    if !(w.path < self.path) {
+                    if w.path >= self.path {
                         return Err(AcquireError::ValidationFailed {
                             channel: channel.clone(),
                             writer_path: w.path.clone(),

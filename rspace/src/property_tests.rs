@@ -322,11 +322,11 @@ proptest! {
                 "the holder's own claim_more must not skew"
             );
 
-            // Release the lease; each burst claim then acquires iff Law 24 validates it — its
-            // channel's newest write is strictly path-earlier (or the channel is unwritten).
+            // Release the lease (dropping the holder); `HeadLease` is a `Copy` token, so
+            // dropping it is a no-op. Each burst claim then acquires iff Law 24 validates it —
+            // its channel's newest write is strictly path-earlier (or the channel is unwritten).
             // Outcomes are order-independent: the record only changes via `record_write`, and
             // the test writes nothing during the burst.
-            drop(_lease);
             drop(holder);
             let mut tasks = Vec::new();
             for (guard, (path, channel)) in burst_guards.into_iter().zip(burst.iter()) {

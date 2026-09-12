@@ -109,11 +109,11 @@ pub fn comm_multisets_match(a: &[Event], b: &[Event]) -> bool {
     channels.iter().all(|c| {
         let mut a_sub: Vec<&Event> = a
             .iter()
-            .filter(|e| is_comm(e) && event_channels(e).iter().any(|h| *h == c.as_slice()))
+            .filter(|e| is_comm(e) && event_channels(e).contains(&c.as_slice()))
             .collect();
         let mut b_sub: Vec<&Event> = b
             .iter()
-            .filter(|e| is_comm(e) && event_channels(e).iter().any(|h| *h == c.as_slice()))
+            .filter(|e| is_comm(e) && event_channels(e).contains(&c.as_slice()))
             .collect();
         a_sub.sort_by_key(|e| format!("{e:?}"));
         b_sub.sort_by_key(|e| format!("{e:?}"));
