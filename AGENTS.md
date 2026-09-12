@@ -245,17 +245,21 @@ must be a literal IP (`SocketAddr::from_str` rejects hostnames like `localhost`)
   `gate_exec_refines_apply`, `next_step_closure_computable`, `one_hop_depth2_diverges`) was
   committed in the Phase 0 spec work; the reader-facing spec is
   [`docs/src/formal/channel-scheduler.md`](docs/src/formal/channel-scheduler.md).
-- **On-chain scheduling (Laws 23–25) — implemented**: the laws catalog, the Lean formalization
-  (`spec/Rchain/SchedulerOnchain.lean` — Law 23 proven, Law 24 witnesses + supporting lemmas proven,
-  Law 25 stated), and the reader-facing spec
-  ([`docs/src/formal/onchain-scheduling.md`](docs/src/formal/onchain-scheduling.md)) are in place.
-  The Rust realization is the `relaxed-validated` block-path mode: relaxed speculation under the
-  claim queue, validated against a forked sequential oracle (`RuntimeManager::validate_relaxed_block`
-  — post-state hash + per-channel COMM multisets + Law 11 rig-replay) with sequential fallback on
-  divergence, plus the queue's per-channel version counter + enqueue-window skew signal as
-  instrumentation toward the per-commit certificate upgrade. Pure `relaxed` stays hard-rejected on
-  the block paths. Tests written (differential + acceptance + proptest); full machine verification
-  pending (6.5 GiB/no-swap box — see the feature-branch notes).
+- **On-chain scheduling (Laws 23–25) — implemented and proven**: the Lean formalization
+  (`spec/Rchain/SchedulerOnchain.lean`) closes the Law 24/25 argument with no axioms remaining —
+  the writer chain (`serializable_writer_chain`, path-nodup + initial-record hypotheses), the
+  pinned publication theorem (`dfs_serializable_implies_log_equal`), the coordinator refinement
+  (`validated_speculation_refines_apply`), and the boundary witnesses
+  (`dispatched_serializable_log_inequality`, `certificate_blind_late_writer_diverges`,
+  `writer_chain_needs_nodup`) that settle the statement shapes. The Rust realization is the
+  `relaxed-validated` block-path mode: relaxed speculation under the claim queue with
+  dispatch-time pre-claiming, the per-commit certificate in `try_acquire` (the write-record
+  layer's prefix-visibility check, fail-fast into the per-deploy sequential fallback with a
+  whole-set safety net in `compute_state`), and the forked sequential oracle legs on the accept
+  path (`RuntimeManager::validate_relaxed_block` — post-state hash + per-channel COMM multisets +
+  Law 11 rig-replay); certificate and oracle are complementary, each with a decided witness.
+  Pure `relaxed` stays hard-rejected on the block paths. Phase-by-phase account:
+  [`docs/src/contributor/onchain-validation-phases.md`](docs/src/contributor/onchain-validation-phases.md).
 - **Rewrite — complete**: all eleven crates (`sdk`, `shared`, `crypto`, `graphz`, `models`,
   `block-storage`, `rspace`, `rholang`, `casper`, `comm`, `node`) are ported at the
   workspace root. The proofs-first *pause* was lifted in practice; the port was written against the

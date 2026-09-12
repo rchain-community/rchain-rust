@@ -23,11 +23,12 @@ in [`spec/Rchain/SchedulerOnchain.lean`](../../../spec/Rchain/SchedulerOnchain.l
   reads is **prefix-visible** — its newest write was recorded by a DFS-earlier path.
 
 - **Law 25 — validated speculation.** A scheduler may commit effects in any order iff each commit
-  validates Law 24; invalidated subtrees abort, inverse-replay their writes, and re-run under the
-  gate, so the published log is the sequential fold's (`validated_speculation_refines_apply`).
-  The gate re-run is total (`gate_replay_terminates`), and a published run commits each path at
-  most once (`Published`: each path validates, or aborts at most once and then commits via the
-  path-ordered re-run queue).
+  validates Law 24; a run that fails validation falls back to the whole-run gate re-run, so the
+  published state is the sequential fold's (`validated_speculation_refines_apply`, proven). The
+  gate re-run is total (`gate_replay_terminates`), a published run commits each path at most once
+  (`Published`: each path validates, or aborts at most once and then commits via the path-ordered
+  re-run queue), and the fallback's sorted re-run queue preserves that invariant
+  (`fallback_rerun_published`, proven).
 
 ## The versioned write-record layer
 
@@ -65,17 +66,26 @@ def DFSSerializable (st0 : State × SpecState) : List (DfsPath × Effect) → Pr
 
 `DFSSerializable` steps the state in *commit* order and validates each commit against the record
 the commit actually read — no separate snapshot is carried, so the check is faithful by
-construction. The Rust realization *target* computes exactly this certificate on the block path: the
-committed effect's read set is its claimed footprint, and the record layer is the per-channel
-version counter of `rspace::concurrent::channel_queue::ChannelQueue` (writer path = claim path,
-version = commit counter). The landed realization validates by **sequential-oracle re-execution**
-instead — re-running the deploy set under the sequential reference and comparing its outcome with
-the speculative run's — with the per-commit certificate kept as the upgrade path (see the map
-below).
+construction. The Rust realization computes exactly this certificate on the block path: the
+committed effect's read set is its claimed footprint, and the record layer is the write-record
+layer of `rspace::concurrent::channel_queue::ChannelQueue` — `record_write`/`last_write` over a
+per-channel `WriteRecord` (writer path = claim path, version = write count, polarity = post-value),
+armed by `set_validation_enabled` for `RelaxedValidated` only. `try_acquire` performs the prefix
+visibility check under the held channel locks (the gap-free linearization point), rejecting with
+`AcquireError::ValidationFailed` — the fail-fast certificate.
+
+The certificate is **not** the acceptance gate by itself: it is a per-commit detector, and the
+sequential-oracle legs remain on the accept path. The two checks are complementary, each with a
+decided witness: the certificate is the only detector for the C/D pair and the persistent-produce
+COMM inversion (oracle-blind — identical multisets and state), while the oracle is the only
+detector for a DFS-earlier writer committing *after* a DFS-later reader
+(`certificate_blind_late_writer_diverges` — both commits validate, yet the commit-order fold
+diverges from the gate fold). A certificate failure fails *fast* into the sequential fallback
+without running the oracle; certificate-clean runs still pass all three oracle legs.
 
 ## The witnesses
 
-The four witness theorems pin the check's shape, all proven in
+The witness theorems pin the check's shape, all proven in
 `spec/Rchain/SchedulerOnchain.lean`:
 
 - `s3_pair_fails_validation` — the depth-2 pair's B-first interleaving is **not** serializable:
@@ -90,30 +100,52 @@ The four witness theorems pin the check's shape, all proven in
   produce-only pair publishes the same trace as the path-order fold yet fails validation. Log
   equality is a necessary consequence, never a sufficient certificate.
 
-## The publication theorem
+Three further boundary witnesses — each a decided counterexample — settle the corrected
+statements below:
 
-`dfs_serializable_implies_log_equal` (stated): a serializable run publishes the sequential fold's
-trace — the commit-order fold equals the path-order fold. The proof obligation is the writer-chain
-lemma (`serializable_writer_chain`, stated): prefix visibility forces each channel's writers to
-commit in strictly increasing path order, so the commit-time data state equals the path-order
-fold's, and Law 23's read-determinism lifts state equality to trace equality. The supporting
-lemmas — `record_determines_value` and `dispatched_record_at` (a dispatched commit only ever
-writes its own channel) — are proven.
+- `dispatched_serializable_log_inequality` — literal log equality between the commit-order fold
+  and the path-order fold is false even for dispatched, serializable runs (two independent
+  produces committed out of path order). The published log is the *path-ordered drain*; the
+  publication theorem must relate each commit's trace to the gate's per-path trace.
+- `certificate_blind_late_writer_diverges` — the certificate's blind spot above.
+- `writer_chain_needs_nodup` — one path committing twice on different channels is serializable,
+  yet the writer path list repeats; the writer chain needs the path-nodup hypothesis (the
+  coordinator's `Published` invariant).
+
+## The publication theorems (proven)
+
+- `serializable_writer_chain` — prefix visibility forces each channel's writers to commit in
+  strictly increasing path order, from the initial (empty) record layer and with path-nodup.
+- `dfs_serializable_implies_log_equal` — the pinned publication theorem: a dispatched,
+  path-nodup run whose commits are **per-channel path-pinned** (`Pinned`: each channel's commits
+  already appear in path order — what dispatch-time pre-claiming gives within one dispatch list)
+  reaches the gate fold's state, and each commit emits exactly the gate's trace at its path; the
+  published log — the path-ordered drain — is the gate's trace, event for event. The pin is the
+  load-bearing hypothesis.
+- `validated_speculation_refines_apply` — the coordinator refinement: on the accept path the
+  oracle's own verdict is the state equality, on the fallback path the deploy set re-runs under
+  the gate from the start state (which is the gate fold by construction); either way the
+  sequential fold ships. The supporting lemmas — `record_determines_value`, `dispatched_record_at`
+  (a dispatched commit only ever writes its own channel), `gate_replay_terminates`, and
+  `fallback_rerun_published` (the path-sorted re-run queue keeps `Published`) — are proven. No
+  axioms remain.
 
 ## Rust realization map
 
 | Law element | Lean | Rust |
 |---|---|---|
-| write-record layer | `SpecState` / `applyAt` | per-channel version counter + enqueue-window skew signal in `rspace::concurrent::channel_queue.rs` (the landed instrumentation; consumed by the per-commit certificate upgrade) |
-| prefix visibility | `prefixVisible` / `ValidCommit` | sequential-oracle comparison at the block-path gate (`RuntimeManager::validate_relaxed_block`, the `RelaxedValidated` mode): post-state hash equality + per-channel COMM multisets |
-| DFS-serializability | `DFSSerializable` | the COMM-multiset comparison (`event_converter.rs::comm_multisets_match`) + Law 11 rig-replay of the shipped trace; the per-commit recorded-order certificate is the upgrade path |
-| abort / inverse-replay / gate re-run | Law 25 (`Published`, `gate_replay_terminates`) | whole-run fallback: the deploy set is re-run sequentially on `fork_play_runtime`, which resets to `start_hash` and ships the reference trace |
-| published log = sequential fold | `validated_speculation_refines_apply` | block carries the sequential trace on fallback |
+| write-record layer | `SpecState` / `applyAt` | per-channel `WriteRecord` (path, version = write count, polarity) in `rspace::concurrent::channel_queue.rs`: `record_write`/`last_write`/`reset_write_record`, armed by `set_validation_enabled` |
+| prefix visibility | `prefixVisible` / `ValidCommit` | the certificate in `try_acquire` — `AcquireError::ValidationFailed` rejects a commit whose read is not prefix-visible, under the held channel locks (the gap-free linearization point) — **plus** the sequential-oracle legs on the accept path (`RuntimeManager::validate_relaxed_block`: post-state hash + per-channel COMM multisets + Law 11 rig-replay) |
+| DFS-serializability | `DFSSerializable` | the certificate + oracle pair above: the certificate catches the C/D pair and the persistent-produce COMM inversion (oracle-blind); the oracle catches the late-earlier-writer divergence (certificate-blind) |
+| abort / inverse-replay / gate re-run | Law 25 (`Published`, `gate_replay_terminates`, `fallback_rerun_published`) | per-deploy fallback: `SpeculationInvalid` reverts to the deploy's soft checkpoint and re-runs it sequentially; whole-set safety net: `compute_state` re-runs the deploy set on `fork_play_runtime` from `start_hash` |
+| published log = sequential fold | `validated_speculation_refines_apply` | block carries the sequential trace either way: the oracle-verified relaxed trace on accept, the gate re-run's trace on fallback |
 
-The block path therefore runs: speculate under the claim queue (Law 20), validate the speculative
-run against the sequential reference (Law 24's check, by re-execution), and on divergence ship the
-reference's trace (Law 25's gate re-run) — pure `Relaxed` remains off-chain only. The Rust
-realization (the `RelaxedValidated` block-path mode, the per-channel version counters and skew
-signal, and the `validate_relaxed_block` oracle with sequential fallback) is implemented on
-`feature/channel-scheduler`; the per-commit recorded-order certificate remains the upgrade path
-for a lower-fallback-rate future.
+The block path therefore runs: speculate under the claim queue (Law 20) with dispatch-time
+pre-claiming pinning per-channel commit order, fail fast into the sequential fallback on a
+certificate rejection (Law 24's check), validate certificate-clean runs against the sequential
+reference (the oracle legs), and on divergence ship the reference's results (Law 25's gate
+re-run) — pure `Relaxed` remains off-chain only. The realization (the `RelaxedValidated`
+block-path mode, the write-record layer with its `try_acquire` certificate, dispatch-time
+pre-claiming, per-deploy fail-fast with the whole-set safety net, and the `validate_relaxed_block`
+oracle) is implemented on `feature/channel-scheduler`; the phase-by-phase account is
+[the on-chain validation phase plan](../contributor/onchain-validation-phases.md).
