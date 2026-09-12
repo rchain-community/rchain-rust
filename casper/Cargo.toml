@@ -10,7 +10,7 @@ async-trait = "0.1"
 serde = "1"
 serde_json = "1"
 tokio = { version = "1", features = ["sync", "rt", "time"] }
-tonic = { version = "0.12", features = ["transport"] }
+tonic = { version = "0.14", features = ["transport"] }
 rchain-models = { path = "../models" }
 rchain-crypto = { path = "../crypto" }
 rchain-graphz = { path = "../graphz" }

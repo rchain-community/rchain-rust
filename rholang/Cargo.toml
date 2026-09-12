@@ -7,7 +7,7 @@ description = "Faithful Rust port of the RChain rholang interpreter (core: Env, 
 
 [dependencies]
 async-trait = "0.1"
-num-bigint = "0.4"
+num-bigint = "0.5"
 num-traits = "0.2"
 qucalc = { path = "../qucalc" }
 rchain-models = { path = "../models" }
