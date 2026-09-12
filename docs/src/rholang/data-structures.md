@@ -95,5 +95,5 @@ It is not itself a channel; to build state out of collections you combine them w
 contracts, which is the subject of [Control flow and state](control-flow.md).
 
 > **Formal.** Commutativity of `ESet`/`EMap` and the canonical order are **Law 1** (`sort` idempotent,
-> `sort(p|q) = sort(q|p)`). See [The 19 laws](../formal/the-19-laws.md) and
+> `sort(p|q) = sort(q|p)`). See [The 25 laws](../formal/the-25-laws.md) and
 > [Grammar and sorts](../formal/grammar-sorts.md).

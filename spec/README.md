@@ -38,10 +38,14 @@ spec/
     Reduce.lean        Law 4: determinism + `new` freshness
     Match.lean         Law 5: `BindsAtMostOnce` + decidable spatial matching
     FreeVars.lean      Law 6: `freeVarOf` + `Closed ↔ no free vars`
+    Effect.lean        Law 9 (effect level): disjoint-closure commute + `effect_reorder_diverges`
+    Scheduler.lean     Laws 20–22: claim-queue path order, gate refinement, depth-2 counterexample
+    Concurrent.lean    concurrency-model soundness theorems (standalone, not imported by the root)
+    Tree.lean          tree-model confluence up to `StrCongT` (standalone)
     RSpace/            Laws 7–11: Join/Comm/Merge/Merkle (stated)
     Casper/            Laws 14–18: Stake/Fringe/Validate (stated)
     Crypto/            Law 19: Random/Spec (axiomatized by design)
-  INVENTORY.md         the 19-law catalog: source-of-truth → theorem → Rust test
+  INVENTORY.md         the law catalog (Laws 1–22): source-of-truth → theorem → Rust test
 ```
 
 Laws 12–13 (Rosette) are **orphaned**: the `rosette`/`roscala` VM is out of scope (not wired into
@@ -51,8 +55,14 @@ Laws 12–13 (Rosette) are **orphaned**: the `rosette`/`roscala` VM is out of sc
 
 - **Proven**: Law 1 (`sortPar_idempotent`, `sortPar_comm` in `Rchain/Sort.lean`), Law 2's core
   (`StrCong` ≡ in `Rchain/Rho.lean`), Law 4's core (`Reduce` ⟶ COMM in `Rchain/Rho.lean` +
-  `reduce_closed` in `Rchain/Ty.lean`), and Law 6 (`Closed` + the preservation fundamentals in
-  `Rchain/Ty.lean`). The one residual of Law 1 is the lawfulness of the 10 element comparators
+  `reduce_closed` in `Rchain/Ty.lean`), Law 6 (`Closed` + the preservation fundamentals in
+  `Rchain/Ty.lean`), Law 9's effect-level strengthening (`effect_commute_of_disjoint_closure` and
+  `effect_reorder_diverges` in `Rchain/Effect.lean` — the disjoint-closure commute was an axiom and
+  is now proven by locality induction), Law 20's per-channel path-order core
+  (`queue_commit_path_ordered` in `Rchain/Scheduler.lean`), Law 21 (`gate_exec_refines_apply` and
+  the depth-2 counterexample `one_hop_depth2_diverges` in `Rchain/Scheduler.lean`), and Law 22
+  (`next_step_closure_computable` in `Rchain/Scheduler.lean`). The one residual of Law 1 is the
+  lawfulness of the 10 element comparators
   (`cmpPar`/`cmpSend`/…/`cmpConnective`), declared as 30
   `cmpX_eq_iff`/`cmpX_swap`/`cmpX_lt_trans` axioms in `Rchain/Sort.lean` (the 12 list-comparator and
   `cmpGUnforgeable` laws are proven by direct induction). The remaining element laws need mutual
@@ -63,6 +73,8 @@ Laws 12–13 (Rosette) are **orphaned**: the `rosette`/`roscala` VM is out of sc
   (`Reduce.lean`), 5 (`Match.lean`), 7–11 (`RSpace/*`), 14–18 (`Casper/*`). Each states the law's
   signature over the `Par`/abstract data types; the definitions (capture-avoiding substitution,
   α-equivalence) are Coq's obligation, the RSpace/Casper definitions are later phases.
+  Law 20's liveness half (`law20_deadlock_freedom` in `Rchain/Scheduler.lean`) is stated; its
+  per-channel path-order core (`queue_commit_path_ordered`) is proven.
 - **Axiomatized** (never proven, by design): Law 19's cryptographic primitives (Blake2b, secp256k1,
   Curve25519) are modeled as abstract interfaces whose required properties are *postulated*
   (`Crypto/Random.lean`, `Crypto/Spec.lean`). Proving real crypto is out of scope.

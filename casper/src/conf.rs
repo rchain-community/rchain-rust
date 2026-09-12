@@ -20,6 +20,12 @@ pub struct CasperConf {
     pub genesis_block_data: GenesisBlockData,
     pub autogen_shard_size: i32,
     pub min_phlo_price: i64,
+    /// The effect-scheduler mode (Laws 20–25): `dfs` (default), `gate`, `relaxed`, or
+    /// `relaxed-validated`. Parsed via `FromStr` at consumption (`EffectMode`); the block paths
+    /// hard-reject `relaxed` (off-chain only) and accept `relaxed-validated` with
+    /// sequential-reference validation (Laws 23–25,
+    /// `docs/src/formal/onchain-scheduling.md`).
+    pub effect_mode: String,
 }
 
 /// Genesis-block data configuration (port of the Scala `GenesisBlockData` case class).

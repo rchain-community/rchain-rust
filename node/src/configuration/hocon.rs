@@ -311,6 +311,8 @@ fn casper_conf_from_hocon(h: &Hocon) -> Result<CasperConf, String> {
         genesis_block_data: genesis_block_data_from_hocon(get(h, "genesis-block-data")?)?,
         autogen_shard_size: to_i32(get(h, "autogen-shard-size")?)?,
         min_phlo_price: to_i64(get(h, "min-phlo-price")?)?,
+        effect_mode: to_optional_string(h, "effect-scheduler")?
+            .unwrap_or_else(|| "dfs".to_string()),
     })
 }
 

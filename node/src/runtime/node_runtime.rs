@@ -74,6 +74,7 @@ use rchain_models::sorted::SortedProc;
 use rchain_rholang::merging::DeployMergeableDataCodec;
 use rchain_rholang::reporting_runtime::create_reporting_rspace;
 use rchain_rholang::runtime::{ReplayRhoRuntime, RhoRuntime};
+use rchain_rholang::scheduler::EffectMode;
 use rchain_rholang::storage::RhoMatch;
 use rchain_rspace::factory::create_history_repository;
 use rchain_rspace::hot_store::InMemHotStore;
@@ -990,7 +991,14 @@ pub async fn setup(
         .map_err(|e| e.to_string())?,
     );
 
-    // Runtime manager (play + replay runtimes + mergeable store).
+    // Runtime manager (play + replay runtimes + mergeable store). The configured effect-scheduler
+    // mode (Laws 20–22) applies to the play runtime and is recorded on the manager for the
+    // block-path hard-reject of `relaxed`; the replay runtime stays sequential.
+    let effect_mode = conf
+        .casper
+        .effect_mode
+        .parse::<EffectMode>()
+        .map_err(|e| format!("invalid casper.effect-scheduler: {e}"))?;
     let history = create_history_repository::<
         SortedProc,
         BindPattern,
@@ -1002,9 +1010,15 @@ pub async fn setup(
     let reader = history.get_history_reader(history.root()).await;
     let hot = Arc::new(InMemHotStore::new(reader.base()));
     let (play, replay) = RSpace::create_with_replay(history.clone(), hot, Arc::new(RhoMatch));
-    let rho_runtime = RhoRuntime::create(play.clone(), history.clone(), SortedProc::default())
-        .await
-        .map_err(|e| e.to_string())?;
+    let rho_runtime = RhoRuntime::create_with_effect_mode(
+        play.clone(),
+        history.clone(),
+        SortedProc::default(),
+        true,
+        effect_mode,
+    )
+    .await
+    .map_err(|e| e.to_string())?;
     let replay_runtime =
         ReplayRhoRuntime::create(Arc::new(replay), history.clone(), SortedProc::default())
             .await
@@ -1019,17 +1033,22 @@ pub async fn setup(
         .await?,
     );
     let runtime_manager = Arc::new(
-        RuntimeManager::new(rho_runtime, replay_runtime, history, mergeable_store)
-            .with_genesis_pos(
-                // Only a genesis-ceremony node has the network genesis descriptors locally; a syncing
-                // observer inserts (does not replay) the genesis block.
-                if conf.standalone {
-                    rchain_casper::genesis::pos_genesis_from_config(&conf.casper)
-                        .unwrap_or_default()
-                } else {
-                    Default::default()
-                },
-            ),
+        RuntimeManager::new(
+            rho_runtime,
+            replay_runtime,
+            history,
+            mergeable_store,
+            effect_mode,
+        )
+        .with_genesis_pos(
+            // Only a genesis-ceremony node has the network genesis descriptors locally; a syncing
+            // observer inserts (does not replay) the genesis block.
+            if conf.standalone {
+                rchain_casper::genesis::pos_genesis_from_config(&conf.casper).unwrap_or_default()
+            } else {
+                Default::default()
+            },
+        ),
     );
 
     // Eval runtime for the Repl service — an isolated `eval-*` store set so REPL evaluation never

@@ -28,6 +28,40 @@ added). Only **3 of 12 crates have integration tests** (`rholang`, `casper`, `no
 
 - **Property tests**: only `rspace/src/property_tests.rs` (Laws 7–10: join commutativity, deterministic
   COMM, Merkle determinism, merge monoid).
+- **Scheduler (Laws 20–22)** — added after the table snapshot above:
+  - `rspace/src/concurrent/channel_queue.rs` unit tests (claim/`claim_more`/head-order/phase-two
+    re-wait) and `rspace/src/hot_store.rs` `striped_store_equals_unstriped` (the 64-shard store is
+    observably identical to the 1-shard store);
+  - `rholang/tests/execution.rs` — `gate_and_sequential_state_hashes_match` (gate state hash *and*
+    event log equal the sequential reference over the reduction corpus),
+    `relaxed_mode_runs_all_corpus_terms_without_error`, `relaxed_preserves_same_channel_order`
+    (per-channel COMM subsequences equal the sequential DFS order; standalone install/store events
+    may interleave around a `Comm`, so only commits are compared; the S.3 counterexample term's
+    final state is free);
+  - `casper/tests/scheduler.rs` — `block_paths_reject_relaxed_mode` (both block-path entry points
+    hard-reject under `relaxed`; sequential succeeds) and
+    `exploratory_path_stays_open_in_relaxed_mode`;
+  - `rspace-bench/benches/rspace_bench.rs` `sched` group — pingpong/fanout workloads, the
+    dfs/gate/relaxed/relaxed-validated workers-1–8 sweep, and striped-vs-unstriped store
+    contention (`make bench-scheduler`).
+- **Scheduler, on-chain (Laws 23–25)** — the Lean formalization
+  (`spec/Rchain/SchedulerOnchain.lean`, built by `cd spec && lake build`) proves the Law 24
+  witnesses (`s3_pair_fails_validation`, `later_write_pollution_unsound`,
+  `trace_equality_without_serializability`, plus the boundary witnesses
+  `dispatched_serializable_log_inequality`, `certificate_blind_late_writer_diverges`,
+  `writer_chain_needs_nodup`), the writer chain (`serializable_writer_chain`), the pinned
+  publication theorem (`dfs_serializable_implies_log_equal`), and the Law 25 coordinator
+  refinement (`validated_speculation_refines_apply`, `fallback_rerun_published`) — no axioms.
+  The Rust tests: `casper/tests/scheduler.rs` `relaxed_validated_accepts_block_paths` (the mode
+  passes the block-path entry points), `relaxed_validated_compute_state_matches_sequential`
+  (post-state hash + per-channel COMM multisets equal the sequential reference across the
+  corpus — now including the C/D and persistent-produce pairs — with the S.3 fallback term),
+  and `relaxed_validated_never_diverges_from_sequential` (20 draws of each free-class term
+  against the sequential manager); `rholang/tests/execution.rs` — the per-channel COMM-multiset
+  oracle (`relaxed_preserves_same_channel_order`) and
+  `relaxed_validated_mode_runs_corpus_without_error`;
+  `rspace/src/concurrent/channel_queue.rs` `enqueue_window_sets_skew_and_version` and the
+  `property_tests.rs` `law24_skew_signal_and_version_counter` proptest.
 - **Differential/golden**: `models` wire bitset, `rspace` scodec + stable-hash TSV, `rholang`
   execution post-state hashes, and crypto known-answer vectors — the Scala-ground-truth tests.
 - **The 110 legacy `.rho`/`.rhox` contracts** under `legacy/` are **not referenced by any Rust test**;
@@ -99,11 +133,18 @@ For each gap: **code location** → **current test state** → **the seam a regr
   unit test; no gRPC/TLS handshake or message round-trip over real I/O. *Seam:* a loopback tonic
   server+client (precedent: `node/src/api/grpc/tonic.rs:968` `serves_and_answers_propose`).
 
+- **G12 — The scheduled-path cost charging is untested directly** (`rholang/src/storage.rs`
+  `ChargingRSpace::{produce_at,consume_at,commit_produce}`). The corpus tests exercise the paths
+  end-to-end, but no unit test pins *where* the storage/event/COMM charges land in the
+  phase-one/two split (up-front storage cost; produce event cost inline when `phase_two` is `None`,
+  else event+COMM costs at commit). *Seam:* `ChargingRSpace::new(space, cost)` with a tiny balance
+  + `produce_at`/`commit_produce` directly, mirroring the G4 charge-path tests.
+
 ## Cross-links
 
 - [`AUDIT.md`](AUDIT.md) — the code findings register (the security fixes the tests must pin).
 - [`RUST-FIRST.md`](RUST-FIRST.md) — the native system-contract state model (G3/G5/G6 touch it).
-- [`RHO-CALCULUS.md`](RHO-CALCULUS.md) / [`INVENTORY.md`](INVENTORY.md) — the 19-law oracle the
+- [`RHO-CALCULUS.md`](RHO-CALCULUS.md) / [`INVENTORY.md`](INVENTORY.md) — the 25-law oracle the
   property + replay tests assert.
 
 ## Remediation status
@@ -121,5 +162,6 @@ For each gap: **code location** → **current test state** → **the seam a regr
 | G9 malformed input | ✅ `NodeIdentifier`/`KeySegment` + `BlockHash::try_from`/`try_from_hex` (R12) + deploy-signature verify (R1) |
 | G10 TLS trust-manager | ✅ wrong-hostname + stale-cert rejection |
 | G11 transport socket | ✅ loopback mutual-TLS gRPC send round-trip (`grpc_transport.rs`) |
+| G12 scheduled-path charging | ⏸ corpus tests cover it end-to-end; the charge-placement unit test is open |
 
 *(✅ = covered; ⏸ = deferred with the seam documented above.)*

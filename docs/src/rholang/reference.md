@@ -92,4 +92,4 @@ Some surface features are known incomplete in the reference semantics (see
 [`legacy/rholang/README.md`](../../../legacy/rholang/README.md) "what's broken"): guarded patterns, and
 certain 0-arity/match-case pre-evaluation edge cases. Treat the K semantics under
 [`legacy/rholang/src/main/k/rholang/`](../../../legacy/rholang/src/main/k/rholang/) as the executable
-reference, and the [19 laws](../formal/the-19-laws.md) as the authoritative invariants.
+reference, and the [25 laws](../formal/the-25-laws.md) as the authoritative invariants.

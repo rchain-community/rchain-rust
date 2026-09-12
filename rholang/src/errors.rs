@@ -3,6 +3,7 @@
 use std::fmt;
 
 use rchain_models::ast::{Par, Var};
+use rchain_models::sorted::SortedProc;
 
 /// A source position (port of `compiler.SourcePosition`).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -64,6 +65,18 @@ pub enum RholangError {
     UnrecognizedInterpreterError(String),
     SortMatchError(String),
     ReduceError(String),
+    /// Laws 23–25: a relaxed-validated commit failed Law 24 prefix visibility — the claimed
+    /// channel's newest committed write was made by a DFS-later (or equal) path, so the
+    /// speculative run read state no DFS-earlier effect produced. Permanent for the run: the
+    /// block path must fall back to the sequential reference.
+    SpeculationInvalid {
+        /// The channel whose newest write invalidates the claim.
+        channel: SortedProc,
+        /// The invalidating writer's path.
+        writer_path: Vec<u16>,
+        /// The invalidated commit's own path.
+        at_path: Vec<u16>,
+    },
     MethodNotDefined {
         method: String,
         other_type: String,
@@ -96,6 +109,14 @@ impl fmt::Display for RholangError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             RholangError::BugFoundError(m) => write!(f, "{m}"),
+            RholangError::SpeculationInvalid {
+                channel,
+                writer_path,
+                at_path,
+            } => write!(
+                f,
+                "speculation invalid (Law 24): newest write on {channel:?} at {writer_path:?} is not DFS-earlier than the committing path {at_path:?}"
+            ),
             RholangError::NormalizerError(m) => write!(f, "{m}"),
             RholangError::SyntaxError(m) => write!(f, "{m}"),
             RholangError::LexerError(m) => write!(f, "{m}"),

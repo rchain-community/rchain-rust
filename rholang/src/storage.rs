@@ -13,6 +13,10 @@ use rchain_models::runtime::{BindPattern, ListParWithRandom, TaggedContinuation}
 use rchain_models::sorted::SortedProc;
 use rchain_rspace::history::history_repository::HistoryRepository;
 use rchain_rspace::match_::Match;
+use rchain_rspace::scheduled_space::{
+    PendingProduce as RspacePendingProduce, ScheduledConsume as RspaceScheduledConsume,
+    ScheduledProduce as RspaceScheduledProduce,
+};
 use rchain_rspace::tuple_space::{
     ContResult, Result as RSpaceResult, Tuplespace as RSpaceTuplespace,
 };
@@ -20,7 +24,7 @@ use rchain_rspace::tuple_space::{
 use crate::accounting::{CostAccounting, Costs};
 use crate::errors::RholangError;
 use crate::matcher::{fold_match, spatial_match, FreeMap};
-use crate::reduce::{Application, Tuplespace};
+use crate::reduce::{Application, PendingProduce, ScheduledConsume, ScheduledProduce, Tuplespace};
 
 /// The rholang history repository (port of `RhoHistoryRepository`).
 pub type RhoHistoryRepository =
@@ -162,6 +166,111 @@ impl Tuplespace for ChargingRSpace {
                 if !persist {
                     self.cost
                         .charge(Costs::event_storage_cost(channels.len() as i64))?;
+                }
+                self.cost
+                    .charge(Costs::comm_event_storage_cost(cont.channels.len() as i64))?;
+            }
+        }
+        Ok(to_application(result))
+    }
+
+    async fn produce_at(
+        &self,
+        path: Vec<u16>,
+        channel: &SortedProc,
+        data: ListParWithRandom,
+        persist: bool,
+    ) -> Result<ScheduledProduce, RholangError> {
+        self.cost
+            .charge(Costs::storage_cost_produce(channel, &data))?;
+        let scheduled = self
+            .space
+            .produce_at(path, channel.clone(), data, persist)
+            .await
+            .map_err(|e| RholangError::ReduceError(e.to_string()))?;
+        let RspaceScheduledProduce {
+            joins,
+            result,
+            phase_two,
+            release,
+        } = scheduled;
+        // Propagate the op's error before charging (mirror of the plain `produce` override).
+        let result = result.map_err(|e| RholangError::ReduceError(e.to_string()))?;
+        if phase_two.is_none() {
+            // Phase one stored the datum inline (no match), so the produce event cost lands with
+            // phase one; a deferred commit charges its event/COMM costs in `commit_produce`.
+            self.cost.charge(Costs::event_storage_cost(1))?;
+        }
+        Ok(ScheduledProduce {
+            joins,
+            application: to_application(result),
+            phase_two: phase_two.map(|p| PendingProduce {
+                trigger: p.trigger,
+                data: p.data,
+                persist: p.persist,
+            }),
+            release,
+        })
+    }
+
+    async fn consume_at(
+        &self,
+        path: Vec<u16>,
+        channels: &[SortedProc],
+        patterns: &[BindPattern],
+        continuation: TaggedContinuation,
+        persist: bool,
+        peeks: BTreeSet<usize>,
+    ) -> Result<ScheduledConsume, RholangError> {
+        self.cost.charge(Costs::storage_cost_consume(
+            channels,
+            patterns,
+            &continuation,
+        ))?;
+        let scheduled = self
+            .space
+            .consume_at(path, channels, patterns, continuation, persist, peeks)
+            .await
+            .map_err(|e| RholangError::ReduceError(e.to_string()))?;
+        let RspaceScheduledConsume { result, release } = scheduled;
+        // Propagate the op's error before charging (mirror of the plain `consume` override).
+        let result = result.map_err(|e| RholangError::ReduceError(e.to_string()))?;
+        match &result {
+            None => self
+                .cost
+                .charge(Costs::event_storage_cost(channels.len() as i64))?,
+            Some((cont, _)) => {
+                if !persist {
+                    self.cost
+                        .charge(Costs::event_storage_cost(channels.len() as i64))?;
+                }
+                self.cost
+                    .charge(Costs::comm_event_storage_cost(cont.channels.len() as i64))?;
+            }
+        }
+        Ok(ScheduledConsume {
+            application: to_application(result),
+            release,
+        })
+    }
+
+    async fn commit_produce(&self, pending: PendingProduce) -> Result<Application, RholangError> {
+        let persist = pending.persist;
+        let result = self
+            .space
+            .commit_produce(RspacePendingProduce {
+                trigger: pending.trigger,
+                data: pending.data,
+                persist,
+            })
+            .await
+            .map_err(|e| RholangError::ReduceError(e.to_string()))?;
+        // The event/COMM costs land with the commit (the op's completion, phase two).
+        match &result {
+            None => self.cost.charge(Costs::event_storage_cost(1))?,
+            Some((cont, _)) => {
+                if !persist {
+                    self.cost.charge(Costs::event_storage_cost(1))?;
                 }
                 self.cost
                     .charge(Costs::comm_event_storage_cost(cont.channels.len() as i64))?;

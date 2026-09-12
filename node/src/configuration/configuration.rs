@@ -300,6 +300,7 @@ mod tests {
                 },
                 autogen_shard_size: 5,
                 min_phlo_price: 1,
+                effect_mode: "dfs".to_string(),
             },
             metrics: Metrics {
                 prometheus: false,
@@ -457,6 +458,7 @@ mod tests {
                 },
                 autogen_shard_size: 111111,
                 min_phlo_price: 1,
+                effect_mode: "dfs".to_string(),
             },
             metrics: Metrics {
                 prometheus: true,
