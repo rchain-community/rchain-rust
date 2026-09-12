@@ -64,6 +64,7 @@ Commands:
   query <name>                   listen for data at a public name
   faucet <rev-address>           transfer 0.3 REV from the funded dev wallet to <rev-address>
   propose [--admin]              force the bootstrap to propose (gRPC, or admin HTTP with --admin)
+  demo                           deploy the complex wallet contract and assert its round-trip
   cli <node> <rnode subcommand…> run the Rust client inside a node container
   help                           this message
 
@@ -424,6 +425,28 @@ cmd_query() {
   node_cli "$BOOTSTRAP" listen-data-at-name -t pub -c "\"$name\""
 }
 
+# One-shot run of the second (complex) contract: deploy examples/wallet.rho, which derives the
+# deployer's REV address, keeps a per-address codeDict map, round-trips save/load, and publishes the
+# loaded value on the public name "wallet"; assert the round-trip landed.
+cmd_demo() {
+  echo "==> deploying the complex wallet contract (examples/wallet.rho)"
+  cmd_deploy wallet.rho
+
+  echo "==> waiting for the round-tripped value on the public name 'wallet'"
+  local out
+  if ! out="$(timeout 120 node_cli "$BOOTSTRAP" listen-data-at-name -t pub -c '"wallet"')"; then
+    echo "ERROR: query timed out or failed" >&2
+    return 1
+  fi
+  echo "$out"
+  if ! grep -q 'world' <<<"$out"; then
+    echo "ERROR: expected the wallet contract to round-trip 'world', got:" >&2
+    echo "$out" >&2
+    return 1
+  fi
+  echo "==> wallet contract round-trip OK"
+}
+
 cmd_faucet() {
   local addr="${1:?REV address required}"
   if ! docker ps --format '{{.Names}}' | grep -q "^${BOOTSTRAP}$"; then
@@ -461,6 +484,7 @@ case "${1:-}" in
   eval) shift; cmd_eval "$@" ;;
   query) shift; cmd_query "$@" ;;
   faucet) shift; cmd_faucet "$@" ;;
+  demo) cmd_demo ;;
   propose) shift; cmd_propose "${1:-}" ;;
   cli) shift; cmd_cli "$@" ;;
   help|--help|-h) help ;;
