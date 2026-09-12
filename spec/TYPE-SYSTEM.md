@@ -6,7 +6,7 @@ discipline* of the Rust port's own code over that core. It is guided by
 machine-checked Lean 4 proofs (in [`Rchain/Rho.lean`](Rchain/Rho.lean) and
 [`Rchain/Ty.lean`](Rchain/Ty.lean)) that embed the ρ-calculus as the base sort of a Calculus of
 Constructions (Lean's CIC) and prove the *fundamentals* below. It is **not** a behavior change and
-does not pre-empt Laws 1–19 in [`INVENTORY.md`](INVENTORY.md); it hardens the port against silent
+does not pre-empt Laws 1–25 in [`INVENTORY.md`](INVENTORY.md); it hardens the port against silent
 partiality.
 
 ---

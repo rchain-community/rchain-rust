@@ -130,6 +130,8 @@ tools/devnet.sh build --fresh         # force a clean rebuild (--no-cache --pull
 tools/devnet.sh up --validators 1     # single validator, autoproposing
 tools/devnet.sh deploy hello.rho      # signed deploy (examples/hello.rho sends "world")
 tools/devnet.sh query hello           # -> "world"
+tools/devnet.sh demo                  # deploy examples/wallet.rho + assert its save/load round-trip
+python3 tools/devnet-fuzz.py --validators 3   # robustness + determinism fuzz against a live devnet
 
 # bare network topology:
 tools/devnet.sh up --nodes 3          # bootstrap + 2 peers, manual propose

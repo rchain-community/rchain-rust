@@ -8,7 +8,7 @@ gates it) is in [`../docs/src/contributor/laws-to-rust.md`](../docs/src/contribu
 **Type system.** The port's own type discipline — the ρ-calculus embedded as the base sort of a
 Calculus of Constructions, with no silent partiality — is specified in [`TYPE-SYSTEM.md`](TYPE-SYSTEM.md),
 guided by `Rchain/Rho.lean` and `Rchain/Ty.lean`. It is **not** a new law and does not pre-empt Laws
-1–19 below.
+1–25 below.
 
 **Concurrency model.** How Laws 1, 2, 4, 7, 8, 9, 10, 11, 19 combine to allow concurrent reduction — and
 what must serialize, and why — is specified in
