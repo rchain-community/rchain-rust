@@ -434,7 +434,8 @@ cmd_demo() {
 
   echo "==> waiting for the round-tripped value on the public name 'wallet'"
   local out
-  if ! out="$(timeout 120 node_cli "$BOOTSTRAP" listen-data-at-name -t pub -c '"wallet"')"; then
+  if ! out="$(timeout 120 docker exec -i "$BOOTSTRAP" rnode --grpc-host localhost \
+      listen-data-at-name -t pub -c '"wallet"')"; then
     echo "ERROR: query timed out or failed" >&2
     return 1
   fi
