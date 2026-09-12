@@ -75,7 +75,7 @@ specified.
 The rest of Part I teaches the language from these first principles: processes and names, sends and
 receives, quoting and dereferencing, unforgeable names, pattern matching, data structures, control
 flow, concurrency, object capabilities, and finally the real contracts the node ships with. Each
-chapter ends with a pointer into [Part II](../formal/the-19-laws.md), where the same material is
+chapter ends with a pointer into [Part II](../formal/the-25-laws.md), where the same material is
 stated precisely — as grammar and as law — and mapped to its machine-checked proof.
 
 > **Lineage.** The ρ-calculus is Meredith & Radestock, *A Reflective Higher-Order Calculus* (2005);

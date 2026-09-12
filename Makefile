@@ -7,7 +7,7 @@
 #   test-all          unit + integration (default)
 #   coverage          line/region coverage via cargo-llvm-cov (excludes the flaky crypto crate)
 
-.PHONY: test test-unit test-integration test-multinode test-all coverage
+.PHONY: test test-unit test-integration test-multinode test-all coverage bench-scheduler spec
 
 test: test-all
 
@@ -24,3 +24,12 @@ test-all: test-unit test-integration
 
 coverage:
 	cargo llvm-cov --workspace --exclude rchain-crypto
+
+# The channel-scheduler benchmarks (Laws 20–22): pingpong/fanout workloads, the dfs/gate/relaxed
+# mode sweep, and the striped-vs-unstriped hot-store comparison. Run with cargo and lake strictly
+# serialized (each peaks ~6.5 GiB RAM).
+bench-scheduler:
+	cargo bench -p rspace-bench -- sched/
+
+spec:
+	cd spec && lake build

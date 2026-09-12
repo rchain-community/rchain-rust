@@ -28,6 +28,7 @@ pub mod replay_rspace;
 pub mod reporting_rspace;
 pub mod reporting_transformer;
 pub mod rspace;
+pub mod scheduled_space;
 pub mod serializers;
 pub mod space_matcher;
 pub mod state;

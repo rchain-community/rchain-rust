@@ -6,6 +6,7 @@
 
 mod common;
 
+use rchain_crypto::hash::blake2b256_hash::Blake2b256Hash;
 use rchain_crypto::hash::blake2b512_random::Blake2b512Random;
 use rchain_models::ast::Expr;
 use rchain_models::par_ops::from_expr;
@@ -13,12 +14,16 @@ use rchain_models::sorted::SortedProc;
 use rchain_models::types::Closed;
 use rchain_rholang::accounting::Cost;
 use rchain_rholang::env::Env;
+use rchain_rholang::errors::RholangError;
 use rchain_rholang::registry::registry_bootstrap_ast;
+use rchain_rholang::scheduler::EffectMode;
 use rchain_rspace::history::history::empty_root_hash_value;
+use rchain_rspace::trace::event::Event;
+use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::time::Duration;
 
-use common::{build_runtime, build_runtime_pair, load_golden};
+use common::{build_runtime, build_runtime_pair, build_runtime_with_mode, load_golden};
 
 /// A fixed, deterministic random seed so post-state hashes are reproducible.
 fn fixed_rand() -> Blake2b512Random {
@@ -164,41 +169,48 @@ async fn list_channel_matches() {
     );
 }
 
+/// The reduction corpus shared by the scheduler differential tests: same-channel races, joins,
+/// re-entry, nested barriers, persistent/peek re-produces, and the S.3 cross-channel
+/// counterexample term.
+const REDUCTION_CORPUS: &[&str] = &[
+    r#"@"chan"!(42)"#,
+    r#"new c in { c!(42) | for (@x <- c) { @"out"!(x) } }"#,
+    r#"new c in { c!!(42) | for (@x <- c) { @"p1"!(x) } | for (@y <- c) { @"p2"!(y) } }"#,
+    r#"new c in { c!(42) | for (@x <<- c) { @"peek"!(x) } }"#,
+    r#"new storeToken, Make in { contract Make(@initVal, @node) = { @[node, *storeToken]!(initVal) } | Make!(7, "key") | for (@x <- @["key", *storeToken]) { @"listch"!(x) } }"#,
+    r#"@"a"!(1) | @"b"!(2) | @"c"!(3) | @"d"!(4) | @"e"!(5) | @"f"!(6) | @"g"!(7) | @"h"!(8) | @"i"!(9) | @"j"!(10)"#,
+    // Same-channel race: several produces compete for one receive. Sorted (content-addressed)
+    // selection picks the same sorted-first datum under both schedulers when the receive
+    // commits consume-side; under relaxed a produce-side match prepends the in-flight datum,
+    // so the matched datum is landing-order dependent — the final state is free (the term
+    // sits in RELAXED_FREE_TERMS).
+    r#"new c in { c!(1) | c!(2) | c!(3) | for (@x <- c) { @"race"!(x) } }"#,
+    // Join: a multi-channel receive overlapping two sibling sends on disjoint channels.
+    r#"new c, d in { c!(1) | d!(2) | for (@x <- c; @y <- d) { @"join"!([x, y]) } }"#,
+    // Join race: multiple data on both join channels; sorted selection fixes the winner.
+    r#"new c, d in { c!(1) | c!(2) | d!(10) | d!(20) | for (@x <- c; @y <- d) { @"joinrace"!([x, y]) } }"#,
+    // Transitive re-entry: a continuation sends back on its trigger channel before the next sibling.
+    r#"new c in { c!(1) | for (@x <- c) { c!(x + 10) } | for (@y <- c) { @"out"!(y) } }"#,
+    // Nested `new` is a scheduling barrier between disjoint sibling effects.
+    r#"new x in { @"a"!(1) | new y in { @"b"!(2) } | @"c"!(3) }"#,
+    // Persistent re-produce lands after the continuation subtree, before the disjoint sibling.
+    r#"new c in { c!!(42) | for (@x <- c) { @"p"!(x) } | @"after"!(0) }"#,
+    // Disjoint-channel continuations reduce independently.
+    r#"new c, d in { c!(1) | d!(2) | for (@x <- c) { @"oc"!(x) } | for (@y <- d) { @"od"!(y) } }"#,
+    // Cross-channel race (the continuation-footprint counterexample): the receive on `c` produces
+    // on `d`, a channel a *disjoint-looking* sibling also touches. A static channel-sharded
+    // fork-join would let the `for(@y<-d)` consume before `d!(x)` lands; the path-ordered scheduler
+    // must instead apply d!(2), d!(3), d!(1), then the receive, so `@"out"` gets 1 (sorted-first).
+    r#"new c, d in { c!(1) | d!(2) | d!(3) | for (@x <- c) { d!(x) } | for (@y <- d) { @"out"!(y) } }"#,
+    // Cross-channel re-entry into a join: a continuation feeds a sibling join's channel.
+    r#"new c, d in { c!(1) | d!(2) | for (@x <- c) { d!(x + 10) } | for (@y <- d; @z <- c) { @"join"!([y, z]) } }"#,
+];
+
 #[tokio::test(flavor = "multi_thread")]
 async fn concurrent_and_sequential_state_hashes_match() {
     // The concurrent reducer (fork-join) must produce the same post-state hash as the sequential
     // reference (concurrency off) — the executable form of the linearization theorem (Laws 4/8).
-    let terms: &[&str] = &[
-        r#"@"chan"!(42)"#,
-        r#"new c in { c!(42) | for (@x <- c) { @"out"!(x) } }"#,
-        r#"new c in { c!!(42) | for (@x <- c) { @"p1"!(x) } | for (@y <- c) { @"p2"!(y) } }"#,
-        r#"new c in { c!(42) | for (@x <<- c) { @"peek"!(x) } }"#,
-        r#"new storeToken, Make in { contract Make(@initVal, @node) = { @[node, *storeToken]!(initVal) } | Make!(7, "key") | for (@x <- @["key", *storeToken]) { @"listch"!(x) } }"#,
-        r#"@"a"!(1) | @"b"!(2) | @"c"!(3) | @"d"!(4) | @"e"!(5) | @"f"!(6) | @"g"!(7) | @"h"!(8) | @"i"!(9) | @"j"!(10)"#,
-        // Same-channel race: several produces compete for one receive. Sorted (content-addressed)
-        // selection must pick the same sorted-first datum under both schedulers.
-        r#"new c in { c!(1) | c!(2) | c!(3) | for (@x <- c) { @"race"!(x) } }"#,
-        // Join: a multi-channel receive overlapping two sibling sends on disjoint channels.
-        r#"new c, d in { c!(1) | d!(2) | for (@x <- c; @y <- d) { @"join"!([x, y]) } }"#,
-        // Join race: multiple data on both join channels; sorted selection fixes the winner.
-        r#"new c, d in { c!(1) | c!(2) | d!(10) | d!(20) | for (@x <- c; @y <- d) { @"joinrace"!([x, y]) } }"#,
-        // Transitive re-entry: a continuation sends back on its trigger channel before the next sibling.
-        r#"new c in { c!(1) | for (@x <- c) { c!(x + 10) } | for (@y <- c) { @"out"!(y) } }"#,
-        // Nested `new` is a scheduling barrier between disjoint sibling effects.
-        r#"new x in { @"a"!(1) | new y in { @"b"!(2) } | @"c"!(3) }"#,
-        // Persistent re-produce lands after the continuation subtree, before the disjoint sibling.
-        r#"new c in { c!!(42) | for (@x <- c) { @"p"!(x) } | @"after"!(0) }"#,
-        // Disjoint-channel continuations reduce independently.
-        r#"new c, d in { c!(1) | d!(2) | for (@x <- c) { @"oc"!(x) } | for (@y <- d) { @"od"!(y) } }"#,
-        // Cross-channel race (the continuation-footprint counterexample): the receive on `c` produces
-        // on `d`, a channel a *disjoint-looking* sibling also touches. A static channel-sharded
-        // fork-join would let the `for(@y<-d)` consume before `d!(x)` lands; the path-ordered scheduler
-        // must instead apply d!(2), d!(3), d!(1), then the receive, so `@"out"` gets 1 (sorted-first).
-        r#"new c, d in { c!(1) | d!(2) | d!(3) | for (@x <- c) { d!(x) } | for (@y <- d) { @"out"!(y) } }"#,
-        // Cross-channel re-entry into a join: a continuation feeds a sibling join's channel.
-        r#"new c, d in { c!(1) | d!(2) | for (@x <- c) { d!(x + 10) } | for (@y <- d; @z <- c) { @"join"!([y, z]) } }"#,
-    ];
-    for term in terms {
+    for term in REDUCTION_CORPUS {
         let rt_c = build_runtime(true).await;
         let rt_s = build_runtime(false).await;
         let rand = fixed_rand();
@@ -220,6 +232,234 @@ async fn concurrent_and_sequential_state_hashes_match() {
             hc, hs,
             "concurrent vs sequential state hash mismatch for {term}"
         );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn gate_and_sequential_state_hashes_match() {
+    // Law 21 (`gate_exec_refines_apply`): the gate scheduler — the task for effect `i` runs only
+    // after the tasks for effects `0..i−1` complete — must reach the sequential reducer's state
+    // exactly, including the event log (the executable half of the gate-equivalence proof).
+    for term in REDUCTION_CORPUS {
+        let rt_g = build_runtime_with_mode(true, EffectMode::Gate).await;
+        let rt_s = build_runtime(false).await;
+        let rand = fixed_rand();
+        let rg = rt_g.evaluate(term, &rand).await.unwrap();
+        assert!(
+            rg.succeeded(),
+            "gate deploy errors for {term}: {:?}",
+            rg.errors
+        );
+        let rs = rt_s.evaluate(term, &rand).await.unwrap();
+        assert!(
+            rs.succeeded(),
+            "sequential deploy errors for {term}: {:?}",
+            rs.errors
+        );
+        let cg = rt_g.create_checkpoint().await.unwrap();
+        let cs = rt_s.create_checkpoint().await.unwrap();
+        assert_eq!(
+            cg.root, cs.root,
+            "gate vs sequential state hash mismatch for {term}"
+        );
+        assert_eq!(
+            cg.log, cs.log,
+            "gate vs sequential event log mismatch for {term}"
+        );
+    }
+}
+
+/// The channels an event touches (the per-channel projection of the event log, Law 20): the
+/// trigger channel of a produce, the full source set of a consume, and both for a COMM.
+fn event_channels(event: &Event) -> Vec<Blake2b256Hash> {
+    match event {
+        Event::Produce(p) => vec![p.channels_hash],
+        Event::Consume(c) => c.channels_hashes.clone(),
+        Event::Comm(comm) => {
+            let mut channels = comm.consume.channels_hashes.clone();
+            channels.extend(comm.produces.iter().map(|p| p.channels_hash));
+            channels
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn relaxed_mode_runs_all_corpus_terms_without_error() {
+    // The relaxed scheduler must reduce every corpus term to completion without error — including
+    // the S.3 cross-channel counterexample and the join re-entry terms — and `evaluate` returns
+    // only after the root drain has joined every spawned task, leaving a checkpointable post-state.
+    for term in REDUCTION_CORPUS {
+        let rt = build_runtime_with_mode(true, EffectMode::Relaxed).await;
+        let res = rt.evaluate(term, &fixed_rand()).await.unwrap();
+        assert!(
+            res.succeeded(),
+            "relaxed deploy errors for {term}: {:?}",
+            res.errors
+        );
+        rt.create_checkpoint()
+            .await
+            .expect("checkpoint after relaxed deploy");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn relaxed_validated_mode_runs_corpus_without_error() {
+    // The validated block-path mode (Laws 23–25) dispatches as relaxed at the rholang level —
+    // the sequential-reference fallback lives on the casper block path
+    // (`RuntimeManager::process_deploy`'s per-deploy re-run) — so at this level every corpus
+    // term either reduces without error or fails fast with `SpeculationInvalid`, the Law 24
+    // certificate signal the block path turns into the sequential fallback (the free terms'
+    // relaxed runs may read state no DFS-earlier effect produced, so either outcome is sound;
+    // casper/tests/scheduler.rs asserts the block path never diverges from the sequential
+    // reference regardless of which path fired). No other error may surface.
+    for term in REDUCTION_CORPUS {
+        let rt = build_runtime_with_mode(true, EffectMode::RelaxedValidated).await;
+        match rt.evaluate(term, &fixed_rand()).await {
+            Ok(res) => assert!(
+                res.succeeded(),
+                "relaxed-validated deploy errors for {term}: {:?}",
+                res.errors
+            ),
+            Err(RholangError::SpeculationInvalid { .. }) => {}
+            Err(e) => panic!("unexpected error for {term}: {e}"),
+        }
+    }
+}
+
+// The former RELAXED_COMM_ONLY_TERMS classification — re-entry and root-sibling terms whose
+// standalone install/store events may interleave — is subsumed by the COMM-only projection:
+// those terms' per-channel COMM sequences match the sequential reference (only COMM events are
+// compared at all), so `relaxed_preserves_same_channel_order` asserts them together with the
+// rest of the corpus.
+
+/// Corpus terms whose relaxed outcome is genuinely *free*: their final state — and for some,
+/// even their per-channel COMM order — depends on the landing order of independent tasks, so no
+/// sequential-reference assertion can be made. They are asserted only to reduce without error
+/// (`relaxed_mode_runs_all_corpus_terms_without_error`); the validated block-path mode
+/// (`EffectMode::RelaxedValidated`) ships the sequential fallback trace for exactly these.
+///
+/// The S.3 cross-channel counterexample: the continuation of the receive on `c` produces on
+/// `d`, which a later-path sibling also consumes from — `@"out"` receives 1 or 2 depending on
+/// the interleaving.
+const RELAXED_FREE_TERMS: &[&str] = &[
+    r#"new c, d in { c!(1) | d!(2) | d!(3) | for (@x <- c) { d!(x) } | for (@y <- d) { @"out"!(y) } }"#,
+    // Join race: whichever produce lands first on `c` (or `d`) determines which pair the join
+    // consumes, so the final state itself is free — the S.3 class, join form.
+    r#"new c, d in { c!(1) | c!(2) | d!(10) | d!(20) | for (@x <- c; @y <- d) { @"joinrace"!([x, y]) } }"#,
+    // Transitive re-entry: the produce matches whichever of the two receives installed first,
+    // so the consumed datum (and which continuation fires) is landing-order dependent — the
+    // final state is free, the S.3 class, re-entry form.
+    r#"new c in { c!(1) | for (@x <- c) { c!(x + 10) } | for (@y <- c) { @"out"!(y) } }"#,
+    // Cross-channel re-entry into a join: the join may match the raw `c!(1)`/`d!(2)` pair
+    // before the re-entry continuation fires, so whether the continuation ever runs (and the
+    // final join output) is landing-order dependent — the final state is free.
+    r#"new c, d in { c!(1) | d!(2) | for (@x <- c) { d!(x + 10) } | for (@y <- d; @z <- c) { @"join"!([y, z]) } }"#,
+    // Same-channel race: whichever produce lands first after the receive installs COMMs first
+    // (a produce-side match prepends the in-flight datum, so the matched datum is
+    // landing-order dependent, not sorted-first) — the final state is free, the S.3 class,
+    // same-channel form.
+    r#"new c in { c!(1) | c!(2) | c!(3) | for (@x <- c) { @"race"!(x) } }"#,
+];
+
+/// Project both logs onto every touched channel and compare the per-channel COMM *sequences*
+/// (Law 20, `queue_commit_path_ordered`): same-channel commits follow the path-sorted claim
+/// order, so the per-channel COMM projections are equal in sequence, not just as multisets.
+/// Dispatch-time pre-claiming is what makes this executable — every claim lands in the queue at
+/// dispatch time, so a late-landing earlier-path claim (the former persistent-produce
+/// inversion) cannot occur. Only COMM events are compared at all: the standalone
+/// install/store events interleave around a `Comm` and are not part of the relaxed contract.
+fn assert_per_channel_comm_order(relaxed: &[Event], sequential: &[Event], label: &str) {
+    let is_comm = |e: &Event| matches!(e, Event::Comm(_));
+    let channels: BTreeSet<Blake2b256Hash> = sequential
+        .iter()
+        .chain(relaxed.iter())
+        .filter(|e| is_comm(e))
+        .flat_map(event_channels)
+        .collect();
+    for channel in &channels {
+        let relaxed_sub: Vec<&Event> = relaxed
+            .iter()
+            .filter(|e| is_comm(e) && event_channels(e).contains(channel))
+            .collect();
+        let sequential_sub: Vec<&Event> = sequential
+            .iter()
+            .filter(|e| is_comm(e) && event_channels(e).contains(channel))
+            .collect();
+        assert_eq!(
+            relaxed_sub, sequential_sub,
+            "per-channel COMM order mismatch for {label} on channel {channel:?}"
+        );
+    }
+}
+
+/// The order-insensitive cross-check: the per-channel COMM *multisets* also match (implied by
+/// the sequence equality above; kept as the independent form the relaxed-validated block path's
+/// `comm_multisets_match` uses).
+fn assert_per_channel_comm_multiset(relaxed: &[Event], sequential: &[Event], label: &str) {
+    let is_comm = |e: &Event| matches!(e, Event::Comm(_));
+    let channels: BTreeSet<Blake2b256Hash> = sequential
+        .iter()
+        .chain(relaxed.iter())
+        .filter(|e| is_comm(e))
+        .flat_map(event_channels)
+        .collect();
+    for channel in &channels {
+        let mut relaxed_sub: Vec<&Event> = relaxed
+            .iter()
+            .filter(|e| is_comm(e) && event_channels(e).contains(channel))
+            .collect();
+        let mut sequential_sub: Vec<&Event> = sequential
+            .iter()
+            .filter(|e| is_comm(e) && event_channels(e).contains(channel))
+            .collect();
+        relaxed_sub.sort_by_key(|e| format!("{e:?}"));
+        sequential_sub.sort_by_key(|e| format!("{e:?}"));
+        assert_eq!(
+            relaxed_sub, sequential_sub,
+            "per-channel COMM multiset mismatch for {label} on channel {channel:?}"
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn relaxed_preserves_same_channel_order() {
+    // Law 20 (executable form): the relaxed scheduler reaches the sequential reference
+    // post-state and per-channel COMM *sequence* — same-channel commits follow the path-sorted
+    // claim order (`queue_commit_path_ordered`), pinned by dispatch-time pre-claiming: every
+    // claim lands in the queue at dispatch, so the persistent-produce inversion (a
+    // late-landing earlier-path claim) cannot occur. Only COMM events are compared — the
+    // standalone install/store events interleave around a Comm and are not part of the relaxed
+    // contract — and the multiset cross-check runs alongside. The S.3 counterexample and the
+    // other free terms are asserted to reduce without error, never here — their final state
+    // is free.
+    for term in REDUCTION_CORPUS {
+        if RELAXED_FREE_TERMS.contains(term) {
+            continue;
+        }
+        let rt_r = build_runtime_with_mode(true, EffectMode::Relaxed).await;
+
+        let rt_s = build_runtime(false).await;
+        let rand = fixed_rand();
+        let rr = rt_r.evaluate(term, &rand).await.unwrap();
+        assert!(
+            rr.succeeded(),
+            "relaxed deploy errors for {term}: {:?}",
+            rr.errors
+        );
+        let rs = rt_s.evaluate(term, &rand).await.unwrap();
+        assert!(
+            rs.succeeded(),
+            "sequential deploy errors for {term}: {:?}",
+            rs.errors
+        );
+        let cr = rt_r.create_checkpoint().await.unwrap();
+        let cs = rt_s.create_checkpoint().await.unwrap();
+        assert_eq!(
+            cr.root, cs.root,
+            "relaxed vs sequential state hash mismatch for {term}"
+        );
+        assert_per_channel_comm_order(&cr.log, &cs.log, term);
+        assert_per_channel_comm_multiset(&cr.log, &cs.log, term);
     }
 }
 

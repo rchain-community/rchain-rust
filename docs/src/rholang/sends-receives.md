@@ -100,4 +100,4 @@ language.
 > **Formal.** Send/receive are the `Send`/`Receive` fields of the flat `Par`; `!!`/`<=` are the
 > `persistent`/`peek` flags. COMM is the `Reduce` relation in `spec/Rchain/Rho.lean`, and the
 > tuplespace pairing is `sending-receiving.k` + `persistent-sending-receiving.k`. See
-> [The 19 laws](../formal/the-19-laws.md) (Law 4).
+> [The 25 laws](../formal/the-25-laws.md) (Law 4).

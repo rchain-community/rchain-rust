@@ -117,4 +117,4 @@ internal invariants; equivocation rejection and finalizer fringe advancement now
 - [`AUDIT.md`](AUDIT.md) — the adversarial findings register and Scala-deviation log.
 - [`TYPE-SYSTEM.md`](TYPE-SYSTEM.md) — the ρ→CoC type discipline and refinement types.
 - [`RHO-CALCULUS.md`](RHO-CALCULUS.md) — the ρ-calculus grammar, sorts, and operations.
-- [`INVENTORY.md`](INVENTORY.md) — the 19-law invariant catalog.
+- [`INVENTORY.md`](INVENTORY.md) — the 25-law invariant catalog.

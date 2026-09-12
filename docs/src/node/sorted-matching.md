@@ -130,5 +130,5 @@ vectors have no multi-candidate comms).
 5. Activation: dev-only for now — the change alters post-state hashes for multi-candidate deploys and
    must be versioned if the node is ever on a live chain.
 
-> **Formal.** See [The 19 laws](../formal/the-19-laws.md) (Laws 4, 7, 8, 10) and the [RSpace
+> **Formal.** See [The 25 laws](../formal/the-25-laws.md) (Laws 4, 7, 8, 10) and the [RSpace
 > overview](rspace.md).

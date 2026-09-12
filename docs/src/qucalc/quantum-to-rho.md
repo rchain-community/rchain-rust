@@ -136,7 +136,7 @@ rho:qucalc:fuse(subject, predicate, ret)   →   (geometry, capUri) | Nil
 
 Quantum superpositions carry a *ways* coefficient — a closure class with N ways
 is **one term**, not N terms. In the ρ-calculus this is the **merge monoid**
-(Law 9 of the [19 laws](../formal/the-19-laws.md)): identical terms collapse into
+(Law 9 of the [25 laws](../formal/the-25-laws.md)): identical terms collapse into
 a term plus a multiplicity, never duplicated. Merging two 600M-way terms is one
 integer add, not 600M term copies — the same invariant that keeps the tuple
 space canonical.

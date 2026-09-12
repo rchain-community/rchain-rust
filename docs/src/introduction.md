@@ -30,7 +30,7 @@ decade.
   builds up to object-capability smart contracts. Each chapter leads with intuition and ends with a
   pointer into the formal treatment.
 - **Part II — The ρ-calculus, formally** is the precise semantics: the grammar, the sorts, and the
-  **19 laws** that govern the language, each mapped to its machine-checked formalization.
+  **25 laws** that govern the language, each mapped to its machine-checked formalization.
 - **Part III — The node** describes the software that executes rholang: the tuple space, the Merkle
   state, and the Casper consensus protocol.
 - **Part IV — Building applications** is the developer guide: stand up the local Docker devnet and
@@ -43,5 +43,5 @@ decade.
 If you are an AI agent (or want the shortest path to a specific fact), start at
 [Navigation for AI agents](ai-entrypoint.md) — a goal-indexed map of this book and the machine-checked
 specification it links to. The authoritative formal specification lives outside this book, in the
-[`spec/`](../../spec/) tree (the 19-law catalog and the Lean/Coq proofs); this book explains it, it does
+[`spec/`](../../spec/) tree (the 25-law catalog and the Lean/Coq proofs); this book explains it, it does
 not duplicate it.
