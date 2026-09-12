@@ -37,6 +37,8 @@ decade.
   configure your app's endpoints to deploy rholang and read back the results.
 - **Part V — Contributor / port** is the engineering appendix: why the node is written in Rust, and
   the module-by-module status of the implementation.
+- **Part VI — QuCalc: native AI & governance** is the Rust-first extension: quantum operators mapped
+  into the ρ-calculus, multi-stakeholder governance, and the experimental concurrent reducers.
 
 ## For AI agents
 

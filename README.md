@@ -26,8 +26,13 @@ The documentation is served as a book (`mdbook serve docs`). It is organized sof
   speculation (Laws 23–25) — mapped to their machine-checked proofs.
 - **Part III — The node** ([`docs/src/node/`](docs/src/node/)) — consensus, the tuple space, storage,
   and operation.
-- **Part IV — Contributor / port** ([`docs/src/contributor/`](docs/src/contributor/)) — why Rust, and
+- **Part IV — Building applications** ([`docs/src/developer/`](docs/src/developer/)) — building
+  rholang applications on the local devnet.
+- **Part V — Contributor / port** ([`docs/src/contributor/`](docs/src/contributor/)) — why Rust, and
   the per-module status.
+- **Part VI — QuCalc: native AI & governance** ([`docs/src/qucalc/`](docs/src/qucalc/)) — the
+  Rust-first quantum-to-ρ operators, multi-stakeholder governance, and the concurrent-reducer
+  experiments.
 
 The entry point for the book is [`docs/src/introduction.md`](docs/src/introduction.md); the
 goal-indexed map for readers and AI agents is
@@ -77,7 +82,7 @@ the **Rho Vision (formerly RChain Community)** collective:
 The Cargo workspace has thirteen members — twelve crates ported from the original sbt modules
 (`sdk`, `shared`, `crypto`, `graphz`, `models`, `block-storage`, `comm`, `rspace`, `rholang`,
 `casper`, `node`, `rspace-bench`) plus `qucalc`, the Rust-first native AI + governance crate
-(Part V of the book). The per-crate status, the layer map, the rewrite order, and the remaining work
+(Part VI of the book). The per-crate status, the layer map, the rewrite order, and the remaining work
 are consolidated in
 [docs/src/contributor/architecture.md](docs/src/contributor/architecture.md).
 
