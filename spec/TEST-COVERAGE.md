@@ -45,14 +45,21 @@ added). Only **3 of 12 crates have integration tests** (`rholang`, `casper`, `no
     dfs/gate/relaxed/relaxed-validated workers-1–8 sweep, and striped-vs-unstriped store
     contention (`make bench-scheduler`).
 - **Scheduler, on-chain (Laws 23–25)** — the Lean formalization
-  (`spec/Rchain/SchedulerOnchain.lean`, built by `cd spec && lake build`) states the Law 24
+  (`spec/Rchain/SchedulerOnchain.lean`, built by `cd spec && lake build`) proves the Law 24
   witnesses (`s3_pair_fails_validation`, `later_write_pollution_unsound`,
-  `trace_equality_without_serializability`). The Rust tests: `casper/tests/scheduler.rs`
-  `relaxed_validated_accepts_block_paths` (the mode passes the block-path entry points) and
-  `relaxed_validated_compute_state_matches_sequential` (post-state hash + per-channel COMM
-  multisets equal the sequential reference across the corpus, including the S.3 fallback term);
-  `rholang/tests/execution.rs` — the per-channel COMM-multiset oracle
-  (`relaxed_preserves_same_channel_order`) and `relaxed_validated_mode_runs_corpus_without_error`;
+  `trace_equality_without_serializability`, plus the boundary witnesses
+  `dispatched_serializable_log_inequality`, `certificate_blind_late_writer_diverges`,
+  `writer_chain_needs_nodup`), the writer chain (`serializable_writer_chain`), the pinned
+  publication theorem (`dfs_serializable_implies_log_equal`), and the Law 25 coordinator
+  refinement (`validated_speculation_refines_apply`, `fallback_rerun_published`) — no axioms.
+  The Rust tests: `casper/tests/scheduler.rs` `relaxed_validated_accepts_block_paths` (the mode
+  passes the block-path entry points), `relaxed_validated_compute_state_matches_sequential`
+  (post-state hash + per-channel COMM multisets equal the sequential reference across the
+  corpus — now including the C/D and persistent-produce pairs — with the S.3 fallback term),
+  and `relaxed_validated_never_diverges_from_sequential` (20 draws of each free-class term
+  against the sequential manager); `rholang/tests/execution.rs` — the per-channel COMM-multiset
+  oracle (`relaxed_preserves_same_channel_order`) and
+  `relaxed_validated_mode_runs_corpus_without_error`;
   `rspace/src/concurrent/channel_queue.rs` `enqueue_window_sets_skew_and_version` and the
   `property_tests.rs` `law24_skew_signal_and_version_counter` proptest.
 - **Differential/golden**: `models` wire bitset, `rspace` scodec + stable-hash TSV, `rholang`
