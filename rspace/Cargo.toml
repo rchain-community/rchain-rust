@@ -12,7 +12,7 @@ lmdb = ["rchain-shared/lmdb"]
 [dependencies]
 async-recursion = "1"
 async-trait = "0.1"
-dashmap = "5"
+dashmap = "6"
 rchain-crypto = { path = "../crypto" }
 rchain-shared = { path = "../shared" }
 tokio = { version = "1", features = ["sync"] }
