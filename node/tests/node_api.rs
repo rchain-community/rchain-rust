@@ -110,6 +110,22 @@ fn genesis_boot_exposes_block_over_http() {
         // block receiver and the deploy API all use the full id, so a genesis block stamped with
         // "root" would carry an id no later block or deploy shares.
         assert_eq!(genesis["shardId"], "/root");
+
+        // `GET /api/v1/shards` reports the node's memberships. A single-shard node has exactly one,
+        // and it is the primary — the same shard `/api/status` and the genesis block report. (The
+        // membership list is deliberately not folded into `/api/status`.)
+        let shards_resp = client
+            .get(format!("{base}/api/v1/shards"))
+            .send()
+            .await
+            .expect("GET /api/v1/shards");
+        assert_eq!(shards_resp.status(), 200);
+        let shards: Value = shards_resp.json().await.expect("shards json");
+        assert_eq!(shards["primaryShard"], "/root");
+        assert_eq!(shards["shardCount"], 1);
+        assert_eq!(shards["shards"][0]["shardId"], "/root");
+        assert_eq!(shards["shards"][0]["primary"], true);
+
         // The genesis block has no justifications.
         assert_eq!(genesis["justifications"].as_array().unwrap().len(), 0);
         // ... and carries the single bonded validator with stake 100.

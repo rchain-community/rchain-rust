@@ -93,12 +93,15 @@ use rchain_shared::typed_store::{BytesCodec, Codec, KeyValueTypedStore};
 use crate::api::admin_web_api::AdminWebApi;
 use crate::api::admin_web_api_impl::AdminWebApiImpl;
 use crate::api::grpc::{serve_deploy, serve_internal, GrpcServices};
+use crate::api::shard_routing::ShardRoutingBlockApi;
 use crate::api::web_api::WebApi;
 use crate::api::web_api_impl::WebApiImpl;
 use crate::configuration::model::NodeConf;
 use crate::diagnostics::NewPrometheusReporter;
 use crate::instances::proposer_instance;
-use crate::web::http::{acquire_admin_http_server, acquire_http_server, StatusProvider};
+use crate::web::http::{
+    acquire_admin_http_server, acquire_http_server, ShardRegistry, StatusProvider,
+};
 use crate::web::transaction::TransactionAPIImpl;
 
 /// Interval between `--autopropose` timer ticks. Together with the dev-mode dummy deploy this makes a
@@ -330,6 +333,8 @@ pub struct NodeProgram {
     grpc_services: GrpcServices,
     web_api: Arc<dyn WebApi>,
     admin_web_api: Arc<dyn AdminWebApi>,
+    /// The shards this node validates for, for the `GET /api/v1/shards` route.
+    shards: Arc<ShardRegistry>,
     block_report_api: Arc<BlockReportApi>,
     reporter: Arc<NewPrometheusReporter>,
     host: String,
@@ -352,6 +357,7 @@ impl NodeProgram {
             grpc_services,
             web_api,
             admin_web_api,
+            shards,
             block_report_api,
             reporter,
             host,
@@ -406,6 +412,7 @@ impl NodeProgram {
                     reporter,
                     web_api,
                     block_report_api,
+                    shards,
                     status_provider,
                     max_connection_idle,
                     enable_reporting,
@@ -471,11 +478,10 @@ pub struct ShardParts {
     pub validator_identity_opt: Option<ValidatorIdentity>,
     pub proposer: Option<ProposerParts>,
     /// This shard's client-facing APIs. Held here rather than in `NodeProgram` so a multi-shard
-    /// node can dispatch a request to the shard that owns it.
+    /// node can dispatch a request to the shard that owns it (`ShardRoutingBlockApi`).
     pub block_api: Arc<dyn BlockApi>,
     pub block_report_api: Arc<BlockReportApi>,
-    pub web_api: Arc<dyn WebApi>,
-    pub admin_web_api: Arc<dyn AdminWebApi>,
+    pub transaction_api: Arc<TransactionAPIImpl>,
 }
 
 /// The proposer request queue + shared state (port of the `proposerQueue`/`proposerStateRefOpt` in
@@ -803,23 +809,57 @@ pub async fn setup_node_program(
     };
     tokio::spawn(request_deps);
 
-    // The client-facing servers still serve the *primary* shard; routing a request to the other
-    // members is layered on top of these handles.
+    // The client surface is one set of servers over all the members: `ShardRoutingBlockApi` sends
+    // each request to the shard that owns it, so the gRPC/HTTP services above it need no shard
+    // awareness of their own.
+    let primary_id = conf.casper.shards.primary().shard_id.clone();
+    let shard_apis: BTreeMap<ShardId, Arc<dyn BlockApi>> = shards
+        .iter()
+        .map(|(shard_id, rt)| (shard_id.clone(), rt.parts.block_api.clone()))
+        .collect();
+    let routing: Arc<dyn BlockApi> =
+        Arc::new(ShardRoutingBlockApi::new(shard_apis, primary_id.clone())?);
     let primary = shards
-        .get(&conf.casper.shards.primary().shard_id)
+        .get(&primary_id)
         .ok_or_else(|| "the primary shard was not assembled".to_string())?;
     let primary_parts = &primary.parts;
+
+    // The faucet signs transfers with the dev deployer key (only present in dev mode; `None`
+    // disables the faucet). The funds come from the deployer vault seeded at genesis via wallets.txt.
+    let faucet_deployer_key = conf
+        .dev
+        .deployer_private_key
+        .as_deref()
+        .and_then(|hex| base16::decode(hex))
+        .map(PrivateKey::new);
+    let web_api: Arc<dyn WebApi> = Arc::new(WebApiImpl::new(
+        routing.clone(),
+        primary_parts.transaction_api.clone(),
+        faucet_deployer_key,
+        primary_id.to_string(),
+    ));
+    let admin_web_api: Arc<dyn AdminWebApi> = Arc::new(AdminWebApiImpl::new(routing.clone()));
     let grpc_services = GrpcServices::build(
-        primary_parts.block_api.clone(),
+        routing.clone(),
         primary_parts.block_report_api.clone(),
         eval_runtime,
         conf.api_server.enable_reporting,
     );
+    // The membership, for the `GET /api/v1/shards` route: what the node validates for, primary
+    // first, each with the API that reads its head.
+    let registry = Arc::new(ShardRegistry {
+        primary: primary_id.clone(),
+        members: shards
+            .iter()
+            .map(|(shard_id, rt)| (shard_id.clone(), rt.parts.block_api.clone()))
+            .collect(),
+    });
 
     Ok(NodeProgram {
         grpc_services,
-        web_api: primary_parts.web_api.clone(),
-        admin_web_api: primary_parts.admin_web_api.clone(),
+        web_api,
+        admin_web_api,
+        shards: registry,
         block_report_api: primary_parts.block_report_api.clone(),
         reporter: Arc::new(NewPrometheusReporter::new(
             crate::diagnostics::scrape_data_builder::Configuration::default(),
@@ -1315,28 +1355,13 @@ pub async fn setup_shard(
         validator_opt.clone(),
     ));
 
-    // The gRPC service bundle is node-level (deploy/propose/repl share one server set) and is built
-    // by `setup_node_program` from this shard's APIs.
+    // The transaction API is shard-scoped: its `transfer_unforgeable` is derived from the shard's
+    // genesis random, so each shard reads its own REV transfers.
     let transfer_unforgeable = BlockRandomSeed::transfer_unforgeable(&shard_id);
     let transaction_api = Arc::new(TransactionAPIImpl::new(
         block_report_api.clone(),
         transfer_unforgeable,
     ));
-    // The faucet signs transfers with the dev deployer key (only present in dev mode; `None`
-    // disables the faucet). The funds come from the deployer vault seeded at genesis via wallets.txt.
-    let faucet_deployer_key = conf
-        .dev
-        .deployer_private_key
-        .as_deref()
-        .and_then(|hex| base16::decode(hex))
-        .map(PrivateKey::new);
-    let web_api: Arc<dyn WebApi> = Arc::new(WebApiImpl::new(
-        block_api.clone(),
-        transaction_api,
-        faucet_deployer_key,
-        shard_id.clone(),
-    ));
-    let admin_web_api: Arc<dyn AdminWebApi> = Arc::new(AdminWebApiImpl::new(block_api.clone()));
 
     // Claim this shard's data directory before anything else touches it: a directory that belonged
     // to a different shard must fail startup, not read as an empty chain.
@@ -1353,8 +1378,7 @@ pub async fn setup_shard(
         proposer: proposer_parts,
         block_api,
         block_report_api,
-        web_api,
-        admin_web_api,
+        transaction_api,
     })
 }
 

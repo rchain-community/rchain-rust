@@ -16,16 +16,18 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use tower_http::cors::CorsLayer;
 use tower_http::timeout::TimeoutLayer;
 
+use rchain_casper::api::block_api::BlockApi;
 use rchain_casper::api::block_report_api::BlockReportApi;
 use rchain_casper::protocol::comm_util::ConnectionsCell;
 use rchain_comm::discovery::NodeDiscovery;
 use rchain_comm::rp::rp_conf::RPConf;
 use rchain_models::block_hash::BlockHash;
 use rchain_shared::rate_limiter::RateLimiter;
-use rchain_shared::refined::Port;
+use rchain_shared::refined::{Port, ShardId};
 
 use crate::api::admin_web_api::AdminWebApi;
 use crate::api::dto::{
@@ -52,6 +54,15 @@ pub struct StatusProvider {
     pub discovery: Arc<dyn NodeDiscovery>,
 }
 
+/// The shards a node validates for, primary first, each with the API that reads its head. Served by
+/// `GET /api/v1/shards` — deliberately *not* folded into `/api/status`, whose `shardId` field
+/// existing tooling extracts with a single greedy match.
+#[derive(Clone)]
+pub struct ShardRegistry {
+    pub primary: ShardId,
+    pub members: Vec<(ShardId, Arc<dyn BlockApi>)>,
+}
+
 /// State shared by the public HTTP server (port of the `webApi` + `prometheusReporter` +
 /// `blockReportAPI` arguments of `acquireHttpServer`).
 #[derive(Clone)]
@@ -59,6 +70,7 @@ pub struct HttpState {
     pub reporter: Arc<NewPrometheusReporter>,
     pub web_api: Arc<dyn WebApi>,
     pub block_report_api: Arc<BlockReportApi>,
+    pub shards: Arc<ShardRegistry>,
     pub status_provider: Option<StatusProvider>,
     pub enable_reporting: bool,
     /// Rate limiter for the unauthenticated deploy/explore-deploy routes (documented Scala
@@ -123,6 +135,27 @@ async fn api_deploys(State(state): State<HttpState>) -> Response {
 
 async fn api_capabilities(State(state): State<HttpState>) -> Response {
     json_result(state.web_api.capabilities().await)
+}
+
+/// `GET /api/v1/shards` — the shards this node is a member of (a gateway is a member of several),
+/// primary first, each with the height of its own chain. A client that needs to address a specific
+/// shard reads the ids here; a deploy already names its shard in `DeployData.shardId`.
+async fn api_shards(State(state): State<HttpState>) -> Response {
+    let mut shards = Vec::with_capacity(state.shards.members.len());
+    for (shard_id, api) in &state.shards.members {
+        let status = api.status().await;
+        shards.push(json!({
+            "shardId": shard_id.to_string(),
+            "primary": *shard_id == state.shards.primary,
+            "latestBlockNumber": status.latest_block_number,
+        }));
+    }
+    Json(json!({
+        "primaryShard": state.shards.primary.to_string(),
+        "shardCount": shards.len(),
+        "shards": shards,
+    }))
+    .into_response()
 }
 
 async fn api_deploy(State(state): State<HttpState>, Json(req): Json<DeployRequest>) -> Response {
@@ -276,6 +309,15 @@ const OPENAPI_JSON: &str = r##"{
         }
       }
     },
+    "/shards": {
+      "get": {
+        "summary": "The shards this node is a member of",
+        "description": "Primary shard first, each with the height of its own chain. A gateway node is a member of several. Deploys name their target shard in `DeployRequest.data.shardId`.",
+        "responses": {
+          "200": { "description": "Membership list", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ShardsResponse" } } } }
+        }
+      }
+    },
     "/deploy": {
       "post": {
         "summary": "Deploy a signed rholang term",
@@ -360,6 +402,24 @@ const OPENAPI_JSON: &str = r##"{
         "properties": {
           "api": { "type": "string" },
           "node": { "type": "string" }
+        }
+      },
+      "ShardsResponse": {
+        "type": "object",
+        "properties": {
+          "primaryShard": { "type": "string", "description": "The default target for requests that do not name a shard" },
+          "shardCount": { "type": "integer" },
+          "shards": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "shardId": { "type": "string" },
+                "primary": { "type": "boolean" },
+                "latestBlockNumber": { "type": "integer" }
+              }
+            }
+          }
         }
       },
       "ApiStatus": {
@@ -555,6 +615,7 @@ pub fn router(state: HttpState) -> Router {
         .route("/api/trace", get(reporting_trace))
         .route("/api/status", get(api_status))
         .route("/api/capabilities", get(api_capabilities))
+        .route("/api/shards", get(api_shards))
         .route("/api/deploys", get(api_deploys))
         .route("/api/deploy", post(api_deploy))
         .route("/api/faucet", post(api_faucet))
@@ -578,6 +639,7 @@ pub fn router(state: HttpState) -> Router {
         .route("/api/transactions/:hash", get(api_get_transaction))
         .route("/api/v1/status", get(api_status))
         .route("/api/v1/capabilities", get(api_capabilities))
+        .route("/api/v1/shards", get(api_shards))
         .route("/api/v1/deploys", get(api_deploys))
         .route("/api/v1/deploy", post(api_deploy))
         .route("/api/v1/faucet", post(api_faucet))
@@ -621,12 +683,14 @@ pub fn admin_router(state: AdminState) -> Router {
 
 /// Bind and serve the public HTTP routes (port of `web/acquireHttpServer`), with a CORS layer and a
 /// per-request timeout (`api-server.max-connection-idle`).
+#[allow(clippy::too_many_arguments)]
 pub async fn acquire_http_server(
     host: &str,
     port: Port,
     reporter: Arc<NewPrometheusReporter>,
     web_api: Arc<dyn WebApi>,
     block_report_api: Arc<BlockReportApi>,
+    shards: Arc<ShardRegistry>,
     status_provider: Option<StatusProvider>,
     max_connection_idle: Duration,
     enable_reporting: bool,
@@ -642,6 +706,7 @@ pub async fn acquire_http_server(
         reporter,
         web_api,
         block_report_api,
+        shards,
         status_provider,
         enable_reporting,
         deploy_rate_limiter: Arc::new(RateLimiter::new(DEFAULT_API_RATE_LIMIT_PER_SEC)),
@@ -856,6 +921,11 @@ mod tests {
                 },
             }),
             block_report_api: test_block_report_api(),
+            // The HTTP tests drive the routes, not the shard list; one member stands in.
+            shards: Arc::new(ShardRegistry {
+                primary: rchain_shared::refined::ShardId::try_from("/root".to_string()).unwrap(),
+                members: Vec::new(),
+            }),
             status_provider: None,
             enable_reporting: true,
             deploy_rate_limiter: Arc::new(RateLimiter::new(DEFAULT_API_RATE_LIMIT_PER_SEC)),
