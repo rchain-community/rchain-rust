@@ -949,3 +949,33 @@ The oracle for every one of these is the BNFC grammar the Scala node's Java pars
   scodec layer) — a change worth doing deliberately, not as a side effect of a test sweep. Pinned by
   `a_truncated_mergeable_datum_panics` (`#[should_panic]`), so giving the reader a `Result` fails that
   test and is a deliberate change.
+
+## 17. Census-sweep findings (the untested-file sweep)
+
+The sweep this section belongs to enumerates every source file without a test and writes one
+(`spec/TEST-COVERAGE.md`, definition of done item 10). Its findings are recorded here in the same
+form as the other passes: what the code did, why it is wrong rather than merely surprising, what the
+oracle is, and the test that pins the fix.
+
+- **C16 — the deploy-execution-status enum serialized its variant *fields* in snake_case, in the
+  middle of a camelCase API response.** `models/src/casper/protocol/deploy_service.rs` declares
+  `#[serde(rename_all = "camelCase")]` on `DeployExecStatus`, which renames the *variants*
+  (`processedWithSuccess` ✓) but — in serde, and this is the easy mistake — **not the fields of struct
+  variants**. Those need `rename_all_fields` (serde ≥ 1.0.181), which the repo already uses in
+  `node/src/api/dto.rs` and `node/src/web/transaction.rs` for exactly this reason. So
+  `GET /api/...`'s deploy status emitted
+
+  ```json
+  {"processedWithSuccess":{"deploy_result":[],"block":{"blockHash":"…","preStateHash":"…"}}}
+  ```
+
+  — every sibling field camelCased, the two variant fields not. The oracle is the Scala the API
+  mirrors: `DeployExecStatus.ProcessedWithSuccess(deployResult, block)` is a case class whose field
+  names are the JSON keys, and they are `deployResult`/`deployError`. **Not a cosmetic difference**:
+  the API is a published client contract, and a client reading `deployResult` against this node gets
+  nothing. **Fix:** `rename_all_fields = "camelCase"` on the enum. Verified:
+  `the_api_types_deserialize_what_they_serialize` asserts the variant key *and* its fields by name
+  (the failure message prints the whole JSON, which is how the wire spelling was read off rather than
+  guessed). The two other `rename_all` enums in the models crate (`ReportProto`,
+  `SystemDeployData`) were checked and carry only tuple/unit variants, so they have no such field —
+  this was the only instance.
