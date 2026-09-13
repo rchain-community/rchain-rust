@@ -290,6 +290,40 @@ linter reports it.
 | T1 | `rspace/src/history/roots_store.rs` | `validate_and_set_refuses_an_unknown_root` |
 | T1 | `rspace/src/history/root_repository.rs` | `an_unknown_root_is_an_error_and_does_not_move_the_current_root` |
 | T1 | `rspace/src/replay_rspace.rs` | `a_rig_whose_comm_never_happens_is_reported` |
+| T1 | `rspace/src/scheduled_space.rs` | `a_commit_whose_candidate_vanished_stores_instead_of_delivering` |
+| T1 | `casper/src/engine/lfs_block_requester.rs` | — |
+| T1 | `models/src/validator.rs` | — |
+| T1 | `rspace/src/history/history_action.rs` | — |
+| T1 | `rspace/src/history/codecs.rs` | — |
+| T1 | `rholang/src/contract_call.rs` | — |
+| T2 | `rspace/src/merger/mod.rs` | `seq_diff_removes_the_first_occurrence_and_preserves_order` |
+| T2 | `rspace/src/merger/event_log_merging_logic.rs` | — |
+| T2 | `comm/src/transport/grpc_transport_receiver.rs` | — |
+| T2 | `comm/src/transport/grpc_transport_client.rs` | — |
+| T2 | `comm/src/discovery/kademlia_node_discovery.rs` | — |
+| T2 | `comm/src/discovery/grpc_kademlia_rpc.rs` | — |
+| T2 | `comm/src/discovery/grpc_kademlia_rpc_server.rs` | — |
+| T2 | `comm/src/discovery/mod.rs` | — |
+| T2 | `node/src/api/grpc/deploy_grpc_service_v1.rs` | — |
+| T2 | `rholang/src/reporting_runtime.rs` | — |
+| T3 | `rholang/src/storage_printer.rs` | — |
+| T3 | `node/src/api/grpc/repl_grpc_service.rs` | — |
+| T3 | `models/src/errors.rs` | — |
+
+### The census behind these rows
+
+The rows marked `—` came from a **second pass**: the first tier table was written from the completion
+plan's prose list (~25 modules), but `spec/TEST-COVERAGE.md`'s own "absent rows" check only covered
+files the table named. A census of the Stage 3 directories (`rspace/src/{merger,state,history}`,
+`models/src`, `casper/src/{protocol,engine,api}`, `rholang/src`, `comm/src/{discovery,transport}`,
+`node/src/{api/grpc,configuration,web}`) for files with **no test at all**, then a read of each to
+separate "has branching/error logic" from "trait or data declaration", produced 19 more testable
+modules — the ~17 above, plus the two closed in this pass. Two of the earlier "untestable" calls were
+**wrong** and were corrected here: `rspace/src/scheduled_space.rs` (5 async functions, including the
+phase-two re-validation that makes relaxed scheduling sound) and
+`casper/src/blocks/proposer/block_creator.rs` (a 120-line `create`). Both were mis-called by a grep
+that anchored `fn` at column 0 and so missed every indented method — a reminder that "no test is
+expected" deserves the same evidence as any other claim.
 | T1 | `shared/src/rate_limiter.rs` | `zero_never_admits` |
 | T1 | `rholang/src/scheduler.rs` | `effect_mode_rejects_an_unknown_name_and_names_the_alternatives` |
 | T1 | `rholang/src/dispatch.rs` | `a_par_body_without_an_evaluator_is_a_bug_not_a_silent_no_op` |
@@ -309,10 +343,10 @@ linter reports it.
 | T3 | `graphz/src/lib.rs` | `an_embedded_quote_is_not_escaped` |
 | T3 | `node/src/web/status_info.rs` | `a_lone_node_reports_zero_peers_and_its_own_address` |
 
-### Named exception: reachable only with a live peer
+### Named exceptions (harness-bound)
 
-One branch in the list above resists a cargo test by construction, and is recorded here rather than
-left as an open row or dropped silently:
+Two things in the sections above resist a cargo test by construction, and are recorded here rather
+than left as open rows or dropped silently. Both are *covered*, at the level above the file:
 
 - **`casper/src/engine/node_launch.rs`'s LFS-syncing branch** (`apply` with an empty DAG and
   `standalone = false`) blocks on a `packet_rx` stream fed by a real peer's handshake, so a test
@@ -323,6 +357,15 @@ left as an open row or dropped silently:
   is pinned at the unit below it (`request_finalized_fringe_is_an_error_when_there_is_no_bootstrap`).
   What remains unpinned is genuinely "a live peer is required", which the Docker devnet covers and
   which no PR gate can (`spec/TEST-COVERAGE.md`'s decision that nothing docker-based gates a PR).
+
+- **`casper/src/blocks/proposer/block_creator.rs`'s `BlockCreator::create`** is reachable only through
+  `Proposer` with a live `RuntimeManager`, DAG and deploy pool, so a unit test would rebuild the
+  proposer's whole fixture. The path is covered end to end — `casper/tests/consensus.rs` and
+  `node/tests/deploy_block.rs` (`deploy_is_processed_into_a_block`) both produce a real block through
+  it — but the file's own arms (the slash/close seed indices computed from the *selected* deploy
+  count, and the `u8::try_from` bound that rejects a block with more than 255 system deploys) are not
+  pinned. An earlier version of this table claimed the file had "no function"; it has a 120-line
+  one, which is how the claim was caught.
 
 ### Rows removed as untestable
 
@@ -335,10 +378,9 @@ recorded here rather than only in the commit that did it.
 |---|---|
 | `sdk/src/block.rs` | A trait declaration with no implementation in the file (tested through its implementors). |
 | `sdk/src/dag.rs` | A module-declaration file (`pub mod data/merging/syntax`) with no items of its own; the three submodules carry 15 tests. |
+| `rspace/src/history/history.rs`, `history_reader.rs` | Trait declarations (`async_trait` methods have default bodies in their *implementors*, not here) plus `empty_root_hash_value`, a one-line delegation to `radix_tree::empty_root_hash`. The interface is pinned through `HistoryRepository`, whose tests are in the tier table. |
 | `models/src/proto.rs` | `include!` of the prost-generated wire types — no hand-written behaviour; the types are pinned where they are used (round trips and the `BTreeMap` determinism trap). |
 | `rspace/src/checkpoint.rs` | Plain data carriers (`SoftCheckpoint` and friends); the checkpoint *behaviour* lives in `rspace/src/rspace.rs`. |
-| `rspace/src/scheduled_space.rs` | A trait plus `ReleaseToken`, a `Copy` unit marker: the release itself happens in the scheduler's bookkeeping (`reduce.rs`). |
-| `casper/src/blocks/proposer/block_creator.rs` | No function in the file (a re-export/naming module); block creation is tested through `casper/src/blocks/proposer.rs`. |
 | `rholang/src/proc_ast.rs` | 266 lines of pure `enum`/`struct` declarations with no `impl` block: there is no behaviour, so a test could only assert that a value equals itself. The AST's behaviour is pinned where it is produced (`rholang/src/parser.rs`) and consumed (the normalizer + reducer). |
 | `node/src/api/admin_web_api.rs` | A 13-line trait declaration (two method signatures, no default bodies) — the same class as `sdk/src/block.rs`. Its two callers (`propose`/`propose_result`) are tested at the HTTP layer. |
 
