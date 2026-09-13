@@ -37,6 +37,21 @@ laws** carrying a randomized property test and **10 benchmark functions** in 6 C
 | `qucalc` | 20 | — | — | — |
 | `rspace-bench` | — | — | — | 10 |
 
+**Measured line coverage: 73.68%** (`cargo llvm-cov --workspace --all-features`, 21651 of 82260
+lines missed), which sets CI's floor to 71 — two points below the measurement, per the plan's rule
+that the floor is a tripwire raised only *after* measuring. The per-file report is the place to look
+for the next tier's work, not this table:
+
+```sh
+cargo llvm-cov --workspace --all-features --summary-only   # then read the lowest percentages
+```
+
+At the time of writing the thinnest *behavioural* files (as opposed to error-enum `Display` arms,
+which read as 1% because nothing formats them) were `rspace/src/history/history.rs`,
+`block-storage/src/approved_store.rs` (the finalized fringe — consensus-critical),
+`casper/src/block_status.rs` and `comm/src/discovery/kademlia_handle_rpc.rs`. Prioritise those over
+the `errors.rs` files, whose percentages are a formatting artifact rather than missing behaviour.
+
 The counts are a **floor, not a target**: the linter fails only when the register claims *more* than
 the tree holds, so this table may lag as tests are added (it reports the drift) but can never
 overstate coverage.

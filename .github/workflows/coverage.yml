@@ -1,7 +1,8 @@
 # Test + audit gate + coverage gate.
 #
-# Runs the full test suite, the type-system audit gate, and cargo-llvm-cov with a minimum line-
-# coverage threshold. Raise the threshold as coverage improves.
+# Runs the full test suite, the type-system audit gate, the coverage-register gate, and
+# cargo-llvm-cov with a minimum line-coverage threshold. The threshold is raised only after
+# measuring, to two points below the measured value -- never to a number the plan hopes to reach.
 
 name: test & coverage
 
@@ -42,7 +43,11 @@ jobs:
         # llvm-cov executes the complete workspace test suite while collecting coverage, so this
         # is both the test gate and the coverage gate. Keep one test execution path to avoid
         # spending CI time running the same suite twice.
-        run: cargo llvm-cov --workspace --all-features --lcov --output-path lcov.info --fail-under-lines 50
+        # The floor is a regression tripwire, not a target: it is raised only *after* measuring, to
+        # two points below the measured value, so it can never become a schedule.
+        # Measured 73.68% lines (21651/82260 missed) after the coverage-completion plan's Stages 0-2
+        # and the first Tier-1 modules -> floor 71.
+        run: cargo llvm-cov --workspace --all-features --lcov --output-path lcov.info --fail-under-lines 71
 
       - name: Upload coverage
         uses: codecov/codecov-action@v7
