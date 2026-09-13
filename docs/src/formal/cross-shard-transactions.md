@@ -153,16 +153,20 @@ replay re-derive it.
 
 ## Rust realization (status)
 
-- **Today** (`casper/src/shard_invoke.rs`): the transport — `invoke_term` → `signed_invoke` →
-  submit → `await_reply` on `rho:rchain:deployId`. The legs exist; the *discipline* (coordinator,
-  vote, decision, recovery) does not.
+- **Participant** (`rholang/src/system_processes.rs` `rho:txn`, `rholang/src/native_state.rs`
+  `PREFIX_TXN`): the per-shard REV escrow — `prepare` (lock + vote), `commit` (apply), `abort`
+  (compensate), `recover` (query), idempotent under `txn_id` (Law 28) and coordinator-gated via
+  `RhoDeployerId` (the `bond` capability pattern).
+- **Coordinator** (`casper/src/txn_coordinator.rs`): the client-side driver — `txn_term` builds the
+  phase terms and `TxnCoordinator::run_2pc` signs → submits → collects the `prepare` votes → commits
+  all or aborts the prepared legs (Law 27). The transport is the existing
+  `casper/src/shard_invoke.rs` primitive (`invoke_term` → `signed_invoke` → submit → `await_reply`).
 - **Shard scoping** (`casper/src/block_random_seed.rs`, `casper/src/validate.rs`,
   `casper/src/api/block_api_impl.rs`): the shard id is in the RNG seed and the unforgeable names, and
   the boundary is enforced at admission/validation — but the id is an untyped `String`.
-- **Deferred** (specified here, not yet built): the coordinator and its durable record; the
-  `ShardId` newtype and the `parent-shard-id` hierarchy. These are the "Layer 2" gateway that the
-  invoke design record explicitly left out of `rnode`.
+- **Deferred** (specified here, not yet built): the `ShardId` newtype and the `parent-shard-id`
+  hierarchy. The coordinator is an *off-chain client* that signs deploys to each shard; a node that
+  is itself a member of multiple shards (the "gateway") remains out of scope for `rnode`.
 
-Until the coordinator ships, cross-shard code must keep the non-atomic discipline of the
-[invoke design record](shard-invoke.md) — independently-conserved, idempotent legs — and treat Laws
-26–29 as the target the coordinator must satisfy.
+The end-to-end two-shard path — uniform commit, and abort on partial failure — is exercised by
+`casper/tests/cross_shard_txn.rs` over a `DeployService` test double.
