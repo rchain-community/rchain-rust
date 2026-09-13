@@ -5,15 +5,24 @@ companion to [`AUDIT.md`](AUDIT.md) (the *code* findings register): `AUDIT.md` r
 does wrong; this page records what the tests fail to catch.
 
 **The register is machine-checked.** [`tools/audit-test-register.sh`](../tools/audit-test-register.sh)
-recomputes every number below, verifies that every test the register names actually exists, and fails
-on any still-deferred row. It exists because this page drifted: it claimed an `#[ignore]`d test that
-no longer existed, "110 legacy contracts" when the tree held 165, and per-crate counts several
-releases stale. Run it after changing this file:
+recomputes every number below, verifies that every test the register names actually exists, requires
+every source file to be tested or exempt with a reason class, and fails on any still-deferred row. It
+exists because this page drifted: it claimed an `#[ignore]`d test that no longer existed, "110 legacy
+contracts" when the tree held 165, and per-crate counts several releases stale. Run it after changing
+this file:
 
 ```sh
-tools/audit-test-register.sh              # hard: no deferred rows, no open tier items
-tools/audit-test-register.sh --deferred-ok # while the tiered work is in flight
+tools/audit-test-register.sh              # hard: no deferred rows, no open tier items, no untested file
+tools/audit-test-register.sh --deferred-ok # while the sweep is in flight (prints the burn-down list)
 ```
+
+### The census: files, not per-crate totals
+
+The counts below were the register's only measure for most of its life, and a per-crate total cannot
+see a file that has *no* test. A census of every `*.rs` under `*/src` — **354 files** — shows what the
+totals hid: **242 files carry at least one test, 57 are exempt** (the table in `## Exempt modules`),
+and **55 have no test and no exemption** — 21 of them with real behaviour, the rest thin
+newtype/helper files. The plan to close them is recorded in items 10–11 of the definition of done.
 
 ## Inventory
 
@@ -422,29 +431,87 @@ than left as open rows or dropped silently. Both are *covered*, at the level abo
   pinned. An earlier version of this table claimed the file had "no function"; it has a 120-line
   one, which is how the claim was caught.
 
-### Rows removed as untestable
+## Exempt modules
 
-Eight modules were listed as tier rows and then **removed**, because a row that can never close is
-worse than no row: the behaviour they appear to name is either absent or tested where it actually
-lives. Removing a row is the one edit to this table that the linter cannot check, so the reasons are
-recorded here rather than only in the commit that did it.
+The linter's seventh check enumerates every `*/src/**/*.rs` (excluding `legacy/`, `spec/`, `docs/`,
+`target/`) and requires each file to either contain a test attribute or appear in the table below with a
+**reason class**. A row is a claim like any other: the class must be one of `data` (declarations with no
+behaviour), `generated` (`include!`d prost/tonic output), `dev-tool` (an entry-point binary with no logic
+of its own) or `peer-bound` (needs a live peer); the file must exist; and a file that *gains* a test while
+still holding a row **fails** the check. The table burns down — it is not a permanent allowlist. A
+`peer-bound` row must name its covering test as `path::test`, and the linter verifies that the test
+exists, like every other named test in this register.
 
-| Module | Why no test is expected |
-|---|---|
-| `sdk/src/block.rs` | A trait declaration with no implementation in the file (tested through its implementors). |
-| `sdk/src/dag.rs` | A module-declaration file (`pub mod data/merging/syntax`) with no items of its own; the three submodules carry 15 tests. |
-| `rspace/src/history/history.rs`, `history_reader.rs` | Trait declarations (`async_trait` methods have default bodies in their *implementors*, not here) plus `empty_root_hash_value`, a one-line delegation to `radix_tree::empty_root_hash`. The interface is pinned through `HistoryRepository`, whose tests are in the tier table. |
-| `models/src/proto.rs` | `include!` of the prost-generated wire types — no hand-written behaviour; the types are pinned where they are used (round trips and the `BTreeMap` determinism trap). |
-| `rspace/src/checkpoint.rs` | Plain data carriers (`SoftCheckpoint` and friends); the checkpoint *behaviour* lives in `rspace/src/rspace.rs`. |
-| `rholang/src/proc_ast.rs` | 266 lines of pure `enum`/`struct` declarations with no `impl` block: there is no behaviour, so a test could only assert that a value equals itself. The AST's behaviour is pinned where it is produced (`rholang/src/parser.rs`) and consumed (the normalizer + reducer). |
-| `node/src/api/admin_web_api.rs` | A 13-line trait declaration (two method signatures, no default bodies) — the same class as `sdk/src/block.rs`. Its two callers (`propose`/`propose_result`) are tested at the HTTP layer. |
+Some of these rows were listed in an earlier version of the tier table and then **removed**, because a
+row that can never close is worse than no row: the behaviour they appear to name is either absent or
+tested where it actually lives. Removing a row is the one edit to this register the linter cannot check,
+so the reason is recorded here rather than only in the commit that did it.
+
+| Class | Module | Why no test is expected | Covering test |
+|---|---|---|---|
+| `data` | `sdk/src/block.rs` | A trait declaration with no implementation in the file (tested through its implementors). | — |
+| `data` | `sdk/src/dag.rs` | A module-declaration file (`pub mod data/merging/syntax`) with no items of its own; the three submodules carry 15 tests. | — |
+| `data` | `sdk/src/lib.rs` | Module-declaration shim (`pub mod` re-exports only); the submodules carry the tests. | — |
+| `data` | `shared/src/lib.rs` | Module-declaration shim (`pub mod` re-exports only); the submodules carry the tests. | — |
+| `data` | `shared/src/state.rs` | Trait declarations (`TrieExporter`/`TrieImporter`/`StateManager`, no default bodies) and one data carrier; the interface is pinned through its implementors. | — |
+| `data` | `crypto/src/lib.rs` | Module-declaration shim (`pub mod` re-exports only); the submodules carry the tests. | — |
+| `data` | `crypto/src/encryption/mod.rs` | Module-declaration shim (`pub mod` re-exports only); the submodules carry the tests. | — |
+| `data` | `crypto/src/hash/mod.rs` | Module-declaration shim (`pub mod` re-exports only); the submodules carry the tests. | — |
+| `data` | `crypto/src/signatures/mod.rs` | Module-declaration shim (`pub mod` re-exports only); the submodules carry the tests. | — |
+| `data` | `crypto/src/util/mod.rs` | Module-declaration shim (`pub mod` re-exports only); the submodules carry the tests. | — |
+| `data` | `crypto/src/util/secure_random_util.rs` | A single re-export of the OS CSPRNG (`pub use rand::rngs::OsRng;`) — no code of its own; the RNG is exercised through the key generation it feeds. | — |
+| `data` | `models/src/lib.rs` | Module-declaration shim (`pub mod` re-exports only); the submodules carry the tests. | — |
+| `data` | `models/src/proto.rs` | `include!` of the prost-generated wire types — no hand-written behaviour; the types are pinned where they are used (round trips and the `BTreeMap` determinism trap). | — |
+| `data` | `models/src/block/mod.rs` | Module-declaration shim (`pub mod` re-exports only); the submodules carry the tests. | — |
+| `data` | `models/src/block_version.rs` | Two consensus constants (`CURRENT`, `SUPPORTED`) and no function; they are read through the block-version checks that consume them. | — |
+| `data` | `models/src/casper/mod.rs` | Module-declaration shim (`pub mod` re-exports only); the submodules carry the tests. | — |
+| `data` | `models/src/casper/protocol/mod.rs` | Module-declaration shim (`pub mod` re-exports only); the submodules carry the tests. | — |
+| `data` | `models/src/casper/protocol/propose_service.rs` | Plain data carriers (`struct`, no `impl` block): two query messages with derive-only behaviour. | — |
+| `data` | `models/src/casper/protocol/report.rs` | Plain data carriers (`struct`/`enum`, no `impl` block): field declarations with derive-only behaviour, exercised where they are built and read. | — |
+| `data` | `models/src/comm/mod.rs` | Module-declaration shim (`pub mod` re-exports only); the submodules carry the tests. | — |
+| `data` | `models/src/comm/discovery/mod.rs` | A re-export of the prost/tonic-generated Kademlia wire types (`pub use crate::proto::discovery::*`) — those are generated, and these are pinned where `comm` encodes and decodes them. | — |
+| `data` | `comm/src/lib.rs` | Module-declaration shim (`pub mod` re-exports only); the submodules carry the tests. | — |
+| `data` | `comm/src/rp/mod.rs` | Module-declaration shim (`pub mod` re-exports only); the submodules carry the tests. | — |
+| `data` | `comm/src/rp/rp_conf.rs` | Plain data carriers (`struct`, no `impl`): field declarations with derive-only behaviour, exercised where they are built and read. | — |
+| `data` | `comm/src/transport/mod.rs` | Module-declaration shim (`pub mod` re-exports only); the submodules carry the tests. | — |
+| `data` | `comm/src/transport/buffer/mod.rs` | Module-declaration shim (`pub mod` re-exports only); the submodules carry the tests. | — |
+| `data` | `comm/src/transport/tls_conf.rs` | Plain data carriers (`struct`, no `impl`): field declarations with derive-only behaviour, exercised where they are built and read. | — |
+| `data` | `node/src/lib.rs` | Module-declaration shim (`pub mod` re-exports only); the submodules carry the tests. | — |
+| `data` | `node/src/api/mod.rs` | Module-declaration shim (`pub mod` re-exports only); the submodules carry the tests. | — |
+| `data` | `node/src/api/admin_web_api.rs` | A 13-line trait declaration (two method signatures, no default bodies) — the same class as `sdk/src/block.rs`. Its two callers (`propose`/`propose_result`) are tested at the HTTP layer. | — |
+| `data` | `node/src/configuration/mod.rs` | Module-declaration shim (`pub mod` re-exports only); the submodules carry the tests. | — |
+| `data` | `node/src/configuration/commandline/mod.rs` | Module-declaration shim (`pub mod` re-exports only); the submodules carry the tests. | — |
+| `data` | `node/src/configuration/model.rs` | Plain data carriers (`struct`/`enum`, no `impl` block): HOCON field declarations with derive-only behaviour, exercised where the configuration is parsed and read. | — |
+| `data` | `node/src/diagnostics/mod.rs` | Module-declaration shim (`pub mod` re-exports only); the submodules carry the tests. | — |
+| `data` | `node/src/effects/mod.rs` | Module-declaration shim (`pub mod` re-exports only); the submodules carry the tests. | — |
+| `data` | `node/src/instances/mod.rs` | Module-declaration shim (`pub mod` re-exports only); the submodules carry the tests. | — |
+| `data` | `node/src/runtime/mod.rs` | Module-declaration shim (`pub mod` re-exports only); the submodules carry the tests. | — |
+| `data` | `node/src/state/mod.rs` | Module-declaration shim (`pub mod` re-exports only); the submodules carry the tests. | — |
+| `data` | `node/src/web/mod.rs` | Module-declaration shim (`pub mod` re-exports only); the submodules carry the tests. | — |
+| `data` | `block-storage/src/lib.rs` | Module-declaration shim (`pub mod` re-exports only); the submodules carry the tests. | — |
+| `data` | `block-storage/src/dag/mod.rs` | Module-declaration shim (`pub mod` re-exports only); the submodules carry the tests. | — |
+| `data` | `rholang/src/lib.rs` | Module-declaration shim (`pub mod` re-exports only); the submodules carry the tests. | — |
+| `data` | `rholang/src/util/mod.rs` | Module-declaration shim (`pub mod` re-exports only); the submodules carry the tests. | — |
+| `data` | `rholang/src/matcher/mod.rs` | Module-declaration shim (`pub mod` re-exports only); the submodules carry the tests. | — |
+| `data` | `rholang/src/proc_ast.rs` | 266 lines of pure `enum`/`struct` declarations with no `impl` block: there is no behaviour, so a test could only assert that a value equals itself. The AST's behaviour is pinned where it is produced (`rholang/src/parser.rs`) and consumed (the normalizer + reducer). | — |
+| `data` | `rspace/src/lib.rs` | Module-declaration shim (`pub mod` re-exports only); the submodules carry the tests. | — |
+| `data` | `rspace/src/checkpoint.rs` | Plain data carriers (`SoftCheckpoint` and friends); the checkpoint *behaviour* lives in `rspace/src/rspace.rs`. | — |
+| `data` | `rspace/src/concurrent/mod.rs` | Module-declaration shim (`pub mod` re-exports only); the submodules carry the tests. | — |
+| `data` | `rspace/src/hashing/mod.rs` | Module-declaration shim (`pub mod` re-exports only); the submodules carry the tests. | — |
+| `data` | `rspace/src/history/mod.rs` | Module-declaration shim (`pub mod` re-exports only); the submodules carry the tests. | — |
+| `data` | `rspace/src/history/history.rs`, `rspace/src/history/history_reader.rs` | Trait declarations (`async_trait` methods have default bodies in their *implementors*, not here) plus `empty_root_hash_value`, a one-line delegation to `radix_tree::empty_root_hash`. The interface is pinned through `HistoryRepository`, whose tests are in the tier table. | — |
+| `data` | `rspace/src/history/instances/mod.rs` | Module-declaration shim (`pub mod` re-exports only); the submodules carry the tests. | — |
+| `data` | `rspace/src/hot_store_action.rs` | A plain data carrier (`enum`, no `impl`): there is no behaviour to pin; it is exercised where it is produced and consumed. | — |
+| `data` | `rspace/src/hot_store_trie_action.rs` | A plain data carrier (`enum`, no `impl`): there is no behaviour to pin; it is exercised where it is produced and consumed. | — |
+| `data` | `rspace/src/serializers/mod.rs` | Module-declaration shim (`pub mod` re-exports only); the submodules carry the tests. | — |
+| `data` | `rspace/src/trace/mod.rs` | Module-declaration shim (`pub mod` re-exports only); the submodules carry the tests. | — |
 
 ## Definition of done — where each item stands
 
 | Item | State |
 |---|---|
 | 1. No deferred gap rows (the register's own marker); every ✅ names a findable test | **done** — the linter's hard mode passes with no deferred rows and no open tier rows |
-| 2. The register linter recomputes counts, verifies named tests, fails on a bare tier module | **done** — `tools/audit-test-register.sh` (five checks; hard mode green) |
+| 2. The register linter recomputes counts, verifies named tests, fails on a bare tier module | **done** — `tools/audit-test-register.sh` (seven checks; hard mode green) |
 | 3. Every law has a property test or a recorded exemption | **done** — the matrix in Inventory; exempt: 12/13 (orphaned), 19 (axiom, KAT-pinned), 22/23 (stated reason), 28 (unit idempotency) |
 | 4. `make test-unit` runs `--all-features` | **done** (with `test-integration`) |
 | 5. The coverage floor raised after measuring (three times) | **done** — 73.68 ⇒ 71, 79.69 ⇒ 77, 81.30 ⇒ 79 |
@@ -452,6 +519,8 @@ recorded here rather than only in the commit that did it.
 | 7. `parsed + skipped == 165` for the legacy corpus, closed-enum skip reasons | **done** — `rholang/tests/legacy_contracts.rs` |
 | 8. `gen-differential-goldens.sh` completes or fails loudly; every committed TSV row is consumed | **done** — provenance columns + a per-file drift guard; the script exits 2 without sbt |
 | 9. The Stage 1 audit list appears verbatim in the register, each entry mapped to a test | **done** — the machine-checked claims table |
+| 10. Every `*/src/**/*.rs` is tested or exempt with a reason class (linter check 7) | **in progress** — a census of all 354 source files: 242 have a test, 57 are exempted by the table in `## Exempt modules`, **55 are still to test**. Hard mode prints those 55; `--deferred-ok`, which CI runs, reports them as the burn-down list. The earlier tier table could not have caught this: it was checked against itself, not against the tree. |
+| 11. The thin-coverage files' unreached failure arms are pinned | **not started** — the second track, ordered by uncovered lines. First `node/src/api/grpc/tonic.rs` (972 lines, 1 test, 26 `*_to_wire`/`*_from_wire` conversions with no test), then `casper/src/runtime_manager.rs` (1219 lines, 1 test) and the rest. Check 7 does not cover these files — they already have a test — which is why they are a separate item rather than part of 10. |
 
 ## Production changes made under this plan
 

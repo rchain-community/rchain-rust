@@ -20,6 +20,13 @@
 #   4. **Legacy contract count** — the `.rho`/`.rhox` counts must match the filesystem, so the
 #      contract corpus cannot silently grow or shrink past the register.
 #   5. **Tier table modules exist** — every path in the per-module tier table must be a real file.
+#   6. **Tier table rows are pinned** — a row's named test must exist in the named file, and no row may
+#      be left with a `—` test cell (that is a registered open item).
+#   7. **Every source file is tested or exempt** — each `<crate>/src/**/*.rs` either contains a test
+#      attribute or is a row of the `## Exempt modules` table with a valid reason class. A file that
+#      gains a test while still holding a row fails, so the table burns down instead of rotting into an
+#      allowlist. Under `--deferred-ok` the still-unlisted files are reported (the burn-down list)
+#      rather than failing, exactly like the deferred-gap and open-tier checks.
 #
 # What it does NOT check: whether a named test *really pins* the behaviour it claims (only that it
 # exists), and whether a module's test is a failure-arm test rather than a happy path. Those are
@@ -207,6 +214,85 @@ else
     else
       fail "$open tier module(s) have no test recorded; close them, or pass --deferred-ok while the work is open"
     fi
+  fi
+fi
+
+# --- 7. every source file is tested or exempt --------------------------------
+#
+# The census that motivates this check: files have tests, but not every *file* does, and a per-module
+# table written from memory only ever covers what it thought to list. So the register is checked
+# against the tree instead of against itself.
+#
+# Rows look like:  | `data` | `rspace/src/checkpoint.rs` | why | — |
+# A row whose file has a test is a failure (the exemption is stale — delete the row); a class outside
+# the closed set is a failure (it means the vocabulary is being invented per-row); a `peer-bound` row
+# must name its covering test as `path::test` and the linter checks that test exists, because
+# "covered elsewhere" is a claim like any other. One cell may list several paths, comma-separated.
+printf '\n== exempt modules ==\n'
+exempt_section="$(awk '/^## Exempt modules/,/^## [^E]/' "$REGISTER" || true)"
+if [[ -z "$exempt_section" ]]; then
+  fail "no '## Exempt modules' table found (expected between '## Exempt modules' and the next '## ')"
+else
+  declare -A exempt=()
+  rows=0
+  bad=0
+  while IFS='|' read -r _ class paths why covering _; do
+    class="$(printf '%s' "$class" | tr -d ' `')"
+    covering="$(printf '%s' "$covering" | tr -d ' `')"
+    [[ -n "$class" ]] || continue
+    rows=$((rows + 1))
+    case "$class" in
+      data|generated|dev-tool|peer-bound) ;;
+      *) fail "exempt row has unknown class '$class' (want data|generated|dev-tool|peer-bound)"; bad=$((bad + 1)); continue ;;
+    esac
+    # `IFS=,` splits the path cell; a single path is the common case.
+    while read -r path; do
+      path="$(printf '%s' "$path" | tr -d ' `')"
+      [[ -n "$path" ]] || continue
+      if [[ ! -f "$ROOT/$path" ]]; then
+        fail "exempt row: $path does not exist"
+        bad=$((bad + 1))
+        continue
+      fi
+      if grep -qE '(^|[[:space:]{};])#\[(tokio::)?test' "$ROOT/$path"; then
+        fail "$path is exempted as '$class' but has a test — delete the row"
+        bad=$((bad + 1))
+        continue
+      fi
+      if [[ "$class" == "peer-bound" ]]; then
+        cfile="${covering%%::*}"
+        ctest="${covering##*::}"
+        if [[ -z "$cfile" || "$ctest" == "$covering" || ! -f "$ROOT/$cfile" ]]; then
+          fail "peer-bound $path must name its covering test as path::test (got '$covering')"
+          bad=$((bad + 1))
+        elif ! grep -qE "(async )?fn[[:space:]]+$ctest\b" "$ROOT/$cfile"; then
+          fail "peer-bound $path: '$ctest' not found in $cfile"
+          bad=$((bad + 1))
+        fi
+      fi
+      exempt["$path"]=1
+    done < <(printf '%s\n' "$paths" | tr ',' '\n')
+  done < <(printf '%s\n' "$exempt_section" | grep -E '^\| `' || true)
+
+  # The census. `*/src/*` rather than a crate list, so a new crate is covered the day it appears.
+  bare=()
+  while IFS= read -r f; do
+    rel="${f#"$ROOT"/}"
+    grep -qE '(^|[[:space:]{};])#\[(tokio::)?test' "$f" && continue
+    [[ -n "${exempt[$rel]:-}" ]] && continue
+    bare+=("$rel")
+  done < <(find "$ROOT" -path "$ROOT/*/src/*" -name '*.rs' -not -path '*/target/*' | sort)
+
+  if (( ${#bare[@]} > 0 )); then
+    if (( DEFERRED_OK )); then
+      info "--deferred-ok: ${#bare[@]} source file(s) still have no test and no exemption row:"
+      printf '      %s\n' "${bare[@]}"
+    else
+      fail "${#bare[@]} source file(s) have no test and no exemption row:"
+      printf '      %s\n' "${bare[@]}"
+    fi
+  elif (( bad == 0 )); then
+    ok "$rows exemption row(s) verified; every source file is tested or exempt"
   fi
 fi
 
