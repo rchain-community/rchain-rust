@@ -14,6 +14,7 @@ pub mod construct_deploy;
 pub mod dag;
 pub mod engine;
 pub mod event_converter;
+pub mod gateway;
 pub mod genesis;
 pub mod interpreter_util;
 pub mod merging;

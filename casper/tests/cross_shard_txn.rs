@@ -342,6 +342,102 @@ async fn two_shard_2pc_aborts_all_when_a_leg_fails() {
     assert_eq!(native_b.vault_balance(&destination).await.unwrap(), None);
 }
 
+/// Law 27 on a **retry**: re-running a transaction whose legs are already committed must not turn
+/// it into a mixed outcome.
+///
+/// A participant is idempotent under `txn_id`, so a second `prepare` on a committed leg replies
+/// `"committed"` rather than `"ready"`. Reading that as "not ready" would decide *abort* and
+/// compensate the other legs — one shard committed, one aborted. This is the path the gateway's
+/// restart recovery makes reachable, so the retry has to be safe.
+#[tokio::test]
+async fn re_running_a_committed_2pc_stays_uniform() {
+    let rand = fixed_rand();
+    let (coordinator_sec, coordinator_pub) = construct_deploy::default_key_pair().unwrap();
+    let coordinator_addr = RevAddress::from_public_key(&coordinator_pub)
+        .unwrap()
+        .to_base58();
+    let destination = "destRevAddress".to_string();
+
+    let shard_a = Arc::new(build_runtime_manager().await);
+    let shard_b = Arc::new(build_runtime_manager().await);
+    fund(&shard_a, &coordinator_addr, 100);
+    fund(&shard_b, &coordinator_addr, 100);
+
+    let mut service = InProcDeployService::new(rand);
+    service.register("shard-a", shard_a.clone());
+    service.register("shard-b", shard_b.clone());
+
+    let coordinator = TxnCoordinator::new(coordinator_sec, coordinator_pub);
+    let legs = vec![
+        TxnLeg {
+            shard_id: "shard-a".to_string(),
+            amount: 30,
+            to: destination.clone(),
+        },
+        TxnLeg {
+            shard_id: "shard-b".to_string(),
+            amount: 40,
+            to: destination.clone(),
+        },
+    ];
+    let txn_id: &[u8] = b"e2e-txn-retry";
+
+    // First run commits both legs.
+    let first = coordinator.run_2pc(&service, txn_id, &legs).await.unwrap();
+    for outcome in &first {
+        match outcome {
+            ShardOutcome::Value(p) => assert_eq!(RhoString::unapply(p), Some("committed")),
+            other => panic!("expected committed, got {other:?}"),
+        }
+    }
+
+    // Second run with the same txn id: the legs are already committed, so every leg must still be
+    // committed — never compensated.
+    let second = coordinator.run_2pc(&service, txn_id, &legs).await.unwrap();
+    for outcome in &second {
+        match outcome {
+            ShardOutcome::Value(p) => assert_eq!(
+                RhoString::unapply(p),
+                Some("committed"),
+                "a retry must not abort an already-committed leg"
+            ),
+            other => panic!("expected committed on the retry, got {other:?}"),
+        }
+    }
+
+    // The escrow moved exactly once: 30 and 40 credited, the coordinator debited exactly once.
+    let native_a = NativeSystemState::new(shard_a.runtime().native_store());
+    let native_b = NativeSystemState::new(shard_b.runtime().native_store());
+    assert_eq!(
+        i64::from(native_a.vault_balance(&destination).await.unwrap().unwrap()),
+        30
+    );
+    assert_eq!(
+        i64::from(native_b.vault_balance(&destination).await.unwrap().unwrap()),
+        40
+    );
+    assert_eq!(
+        i64::from(
+            native_a
+                .vault_balance(&coordinator_addr)
+                .await
+                .unwrap()
+                .unwrap()
+        ),
+        70
+    );
+    assert_eq!(
+        i64::from(
+            native_b
+                .vault_balance(&coordinator_addr)
+                .await
+                .unwrap()
+                .unwrap()
+        ),
+        60
+    );
+}
+
 /// Law 29 (determinism), on the block path: a `rho:txn` `prepare` + `commit` run through
 /// `compute_state` and then replayed through `replay_compute_state` must re-derive the *same*
 /// post-state hash. The escrow and the transaction record live in the native mergeable state, which

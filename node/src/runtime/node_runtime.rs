@@ -103,6 +103,8 @@ use crate::web::http::{
     acquire_admin_http_server, acquire_http_server, ShardRegistry, StatusProvider,
 };
 use crate::web::transaction::TransactionAPIImpl;
+use rchain_casper::gateway::ledger::TxnLedger;
+use rchain_casper::gateway::{GatewayTxn, LocalShard, LocalShardDeployService};
 
 /// Interval between `--autopropose` timer ticks. Together with the dev-mode dummy deploy this makes a
 /// fresh devnet produce blocks on its own (a lone validator has no peer/deploy to kick the
@@ -855,6 +857,12 @@ pub async fn setup_node_program(
             .collect(),
     });
 
+    // The 2PC gateway (Laws 26–29): a node that is a member of several shards can drive a
+    // cross-shard transaction itself. It exists only where it can act — more than one membership
+    // and a signing key — so a single-shard or key-less node is untouched.
+    // Held for the gateway's HTTP surface, which is mounted next; recovery is already spawned.
+    let _gateway = build_gateway(conf, &shards, &primary_parts.store_manager, &log).await?;
+
     Ok(NodeProgram {
         grpc_services,
         web_api,
@@ -884,6 +892,93 @@ pub async fn setup_node_program(
             discovery: comm_state.discovery.clone(),
         }),
     })
+}
+
+/// Build the on-node 2PC gateway, if this node can act as one.
+///
+/// It needs **more than one membership** (a single-shard node has nothing to coordinate across) and
+/// a signing key (every participant gates `commit`/`abort` on the coordinator's key, and the legs
+/// must be able to pay phlo on each shard). Without either, the gateway is absent rather than
+/// present-and-failing.
+///
+/// On success the in-flight records are resumed in the background: a prepared participant holds its
+/// escrow until the coordinator finishes, so a restart must finish or abort what it started. It is
+/// spawned rather than awaited so a slow leg cannot stall startup.
+async fn build_gateway(
+    conf: &NodeConf,
+    shards: &BTreeMap<ShardId, ShardRuntime>,
+    store_manager: &LmdbDirStoreManager,
+    log: &Arc<dyn Log>,
+) -> Result<Option<Arc<GatewayTxn>>, String> {
+    if shards.len() < 2 {
+        return Ok(None);
+    }
+    let Some(identity) = shards
+        .values()
+        .next()
+        .and_then(|rt| rt.parts.validator_identity_opt.clone())
+    else {
+        log.warn(
+            LogSource::new("coop.rchain.node.runtime.Setup"),
+            "This node is a member of several shards but has no validator key, so it cannot act as \
+             a cross-shard coordinator",
+        );
+        return Ok(None);
+    };
+    let key = match conf
+        .casper
+        .validator_private_key
+        .as_deref()
+        .and_then(|hex| base16::decode(hex))
+    {
+        Some(bytes) => PrivateKey::new(bytes),
+        None => return Ok(None),
+    };
+
+    let mut locals: BTreeMap<ShardId, LocalShard> = BTreeMap::new();
+    for (shard_id, rt) in shards {
+        locals.insert(
+            shard_id.clone(),
+            LocalShard {
+                shard_id: shard_id.clone(),
+                block_api: rt.parts.block_api.clone(),
+                max_listen_depth: conf.api_server.max_blocks_limit,
+            },
+        );
+    }
+    let ledger = Arc::new(TxnLedger::open(store_manager).await?);
+    let gateway = Arc::new(GatewayTxn::new(
+        Arc::new(LocalShardDeployService::new(locals)),
+        ledger,
+        key,
+        identity.public_key.clone(),
+        Duration::from_secs(30),
+    ));
+
+    let recovery = gateway.clone();
+    let recovery_log = log.clone();
+    tokio::spawn(async move {
+        match recovery.recover_in_flight().await {
+            Ok(records) if records.is_empty() => {}
+            Ok(records) => {
+                let ids: Vec<String> = records.iter().map(|r| base16::encode(&r.txn_id)).collect();
+                recovery_log.info(
+                    LogSource::new("coop.rchain.node.runtime.Setup"),
+                    &format!(
+                        "Resumed {} cross-shard transaction(s) left in flight: {}",
+                        records.len(),
+                        ids.join(", ")
+                    ),
+                );
+            }
+            Err(err) => recovery_log.error(
+                LogSource::new("coop.rchain.node.runtime.Setup"),
+                &format!("Could not resume in-flight cross-shard transactions: {err}"),
+            ),
+        }
+    });
+
+    Ok(Some(gateway))
 }
 
 /// One member shard's assembled state: its handles plus the channel the peer-message router feeds.

@@ -12,6 +12,11 @@ use rchain_shared::store_manager::{Db, LmdbEnvConfig, GB, TB};
 /// silently re-point a shard at another shard's chain. See `node`'s `check_shard_data_dir`.
 pub const SHARD_ID_MARKER: &str = "shard-id";
 
+/// The gateway's durable coordinator-record database ([`crate::gateway::ledger`]). Node-local: it
+/// is deliberately **not** part of a shard's content-addressed state, because a coordinator's votes
+/// and decision belong to one node and must not enter another shard's state hash.
+pub const GATEWAY_TXN_DB: &str = "gateway-txn";
+
 /// The data directory of the shard at `index` in the node's membership list.
 ///
 /// The primary membership (index 0) keeps `root` itself, so every existing single-shard deployment
@@ -101,6 +106,13 @@ pub fn rnode_db_mapping() -> Vec<(Db, LmdbEnvConfig)> {
         (
             Db::new("eval-cold"),
             LmdbEnvConfig::new("eval/cold", 1 * TB),
+        ),
+        // The gateway's durable coordinator records (node-local, never consensus state). Its own
+        // environment, so opening it over the primary shard's manager writes one extra directory
+        // (`<data-dir>/gateway/`) rather than sharing a shard's.
+        (
+            Db::new(GATEWAY_TXN_DB),
+            LmdbEnvConfig::new("gateway", 1 * GB),
         ),
     ]
 }

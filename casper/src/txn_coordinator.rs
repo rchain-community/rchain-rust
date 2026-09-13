@@ -93,8 +93,44 @@ impl TxnCoordinator {
         data_args: &[Par],
         needs_deployer: bool,
     ) -> Result<ShardOutcome, String> {
+        self.run_phase_at(
+            service,
+            method,
+            txn_id,
+            shard_id,
+            data_args,
+            needs_deployer,
+            0,
+        )
+        .await
+    }
+
+    /// Sign, submit and await one phase, anchoring the deploy at the shard's height.
+    ///
+    /// `valid_after_block_number` must be the *target shard's* current height: a deploy anchored at
+    /// 0 is born expired once that chain is more than `DEPLOY_LIFESPAN` blocks past genesis, and the
+    /// participant would never see the phase at all.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn run_phase_at(
+        &self,
+        service: &dyn DeployService,
+        method: &str,
+        txn_id: &[u8],
+        shard_id: &str,
+        data_args: &[Par],
+        needs_deployer: bool,
+        valid_after_block_number: i64,
+    ) -> Result<ShardOutcome, String> {
         let term = txn_term(method, txn_id, data_args, needs_deployer);
-        let signed = signed_invoke(&term, &self.key, 0, 1_000_000, 1, 0, shard_id)?;
+        let signed = signed_invoke(
+            &term,
+            &self.key,
+            0,
+            1_000_000,
+            1,
+            valid_after_block_number,
+            shard_id,
+        )?;
         let deploy = SignedDeployData {
             data: signed.data,
             deployer: signed.pk.bytes().to_vec(),
@@ -112,7 +148,7 @@ impl TxnCoordinator {
     }
 
     /// Drive the full 2PC over `legs`: prepare every leg, collect the votes, then commit (if every
-    /// participant voted `ready`) or abort. Returns the phase-two outcome per leg.
+    /// participant voted ready) or abort. Returns the phase-two outcome per leg.
     pub async fn run_2pc(
         &self,
         service: &dyn DeployService,
@@ -138,15 +174,12 @@ impl TxnCoordinator {
             votes.push(outcome);
         }
 
-        let ready: Vec<bool> = votes
-            .iter()
-            .map(|v| matches!(v, ShardOutcome::Value(p) if RhoString::unapply(p) == Some("ready")))
-            .collect();
+        let ready: Vec<bool> = votes.iter().map(vote_from_reply).collect();
         let all_ready = ready.iter().all(|&b| b);
         let decision = if all_ready { "commit" } else { "abort" };
 
-        // Phase 2 applies only to the legs that actually prepared (voted `ready`): a leg that voted
-        // `abort` never locked resources, so it has nothing to commit or compensate.
+        // Phase 2 applies only to the legs that actually prepared (voted ready): a leg that voted
+        // abort never locked resources, so it has nothing to commit or compensate.
         let mut outcomes = Vec::with_capacity(legs.len());
         for (i, leg) in legs.iter().enumerate() {
             if ready[i] {
@@ -159,6 +192,27 @@ impl TxnCoordinator {
             }
         }
         Ok(outcomes)
+    }
+}
+
+/// Whether a participant's phase-one reply counts as a *ready* vote.
+///
+/// The participant is idempotent under `txn_id`, so a re-run can be answered with an
+/// **already-terminal** state instead of `ready`:
+///
+/// * `committed` means the leg is applied and the transaction is committed — counting it as ready
+///   keeps the decision uniform. Reading it as "not ready" would abort the other legs and leave one
+///   shard committed and another aborted, breaking Law 27 on exactly the retry path that recovery
+///   makes reachable;
+/// * `prepared` means an earlier attempt locked the escrow — also ready;
+/// * anything else (`abort`, `aborted`, an unexpected value, a timeout) is an abort vote.
+pub fn vote_from_reply(outcome: &ShardOutcome) -> bool {
+    match outcome {
+        ShardOutcome::Value(p) => matches!(
+            RhoString::unapply(p),
+            Some("ready") | Some("prepared") | Some("committed")
+        ),
+        ShardOutcome::Error(_) => false,
     }
 }
 
