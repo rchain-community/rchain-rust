@@ -106,6 +106,10 @@ fn genesis_boot_exposes_block_over_http() {
         let blocks = poll_blocks(&client, &format!("{base}/api/blocks")).await;
 
         let genesis = &blocks[0];
+        // The genesis block carries the *full* shard id, not the bare shard name: the proposer, the
+        // block receiver and the deploy API all use the full id, so a genesis block stamped with
+        // "root" would carry an id no later block or deploy shares.
+        assert_eq!(genesis["shardId"], "/root");
         // The genesis block has no justifications.
         assert_eq!(genesis["justifications"].as_array().unwrap().len(), 0);
         // ... and carries the single bonded validator with stake 100.

@@ -105,9 +105,17 @@ pub async fn create_genesis_block_from_config(
     runtime: &RuntimeManager,
 ) -> Result<BlockMessage, String> {
     let gbd = &conf.genesis_block_data;
+    // The block's shard id is the validated *full* id (`{parent-shard-id}/{shard-name}`), matching
+    // the proposer (`Proposer::apply`), the block receiver's `check_if_of_interest` and both deploy
+    // APIs. Passing the bare `shard_name` here made the genesis block carry an id ("root") that no
+    // later block or deploy shares ("/root"), so a genesis block received from a peer was dropped by
+    // the receiver's equality check. It also seeds the genesis RNG
+    // (`BlockRandomSeed::random_generator_from_shard_id`), so the two disagreed on the genesis
+    // unforgeable names as well.
+    let shard_id = conf.full_shard_id()?;
     create_genesis_block(
         validator,
-        &conf.shard_name,
+        &shard_id.to_string(),
         gbd.genesis_block_number,
         &gbd.bonds_file,
         conf.autogen_shard_size,
