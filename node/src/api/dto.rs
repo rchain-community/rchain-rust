@@ -221,6 +221,83 @@ mod tests {
         let e = SignatureException("bad sig".to_string());
         assert_eq!(e.to_string(), "bad sig");
     }
+
+    /// Every field of a coordinator record survives the DTO mapping — including the aborted shape,
+    /// which is the one an operator reads when a transaction fails.
+    #[test]
+    fn txn_record_dto_maps_every_field() {
+        use rchain_casper::gateway::ledger::{CoordRecord, CoordState, LegRecord, Vote};
+        use rchain_crypto::public_key::PublicKey;
+        use rchain_shared::refined::{NonNegI64, ShardId};
+
+        let shard = |id: &str| ShardId::try_from(id.to_string()).unwrap();
+        let mut record = CoordRecord {
+            txn_id: vec![0xAA, 0xBB],
+            state: CoordState::Proposed,
+            coordinator: PublicKey::new(vec![7u8; 65]),
+            legs: vec![LegRecord {
+                shard_id: shard("/root"),
+                amount: NonNegI64::try_from(30).unwrap(),
+                to: "dest".to_string(),
+            }],
+            votes: Vec::new(),
+            reason: None,
+        };
+
+        // Proposed: no votes, no reason.
+        let dto = TxnRecordDto::from_record(&record);
+        assert_eq!(dto.txn_id, "aabb");
+        assert_eq!(dto.state, "proposed");
+        assert_eq!(dto.coordinator.len(), 130, "65 bytes as hex");
+        assert_eq!(dto.legs.len(), 1);
+        assert_eq!(dto.legs[0].shard_id, "/root");
+        assert_eq!(dto.legs[0].amount, 30);
+        assert_eq!(dto.legs[0].to, "dest");
+        assert!(dto.votes.is_empty());
+        assert!(dto.reason.is_none());
+        assert_eq!(dto.record_hash.len(), 64, "the record's content address");
+
+        // Aborted with a reason: the terminal shape a client has to interpret.
+        record.record_vote(shard("/root"), Vote::Abort, Some("short".to_string()));
+        let dto = TxnRecordDto::from_record(&record);
+        assert_eq!(dto.state, "aborted");
+        assert_eq!(dto.votes.len(), 1);
+        assert_eq!(dto.votes[0].shard_id, "/root");
+        assert_eq!(dto.votes[0].vote, "abort");
+        assert_eq!(dto.reason.as_deref(), Some("short"));
+    }
+
+    /// The API speaks `camelCase` both ways, so a client's request and the response it reads back
+    /// use the same names.
+    #[test]
+    fn txn_dtos_round_trip_through_json() {
+        let request: TxnRequest = serde_json::from_str(
+            r#"{"txnId":"aabb","legs":[{"shardId":"/root","amount":30,"to":"dest"}]}"#,
+        )
+        .expect("request parses");
+        assert_eq!(request.txn_id, "aabb");
+        assert_eq!(request.legs[0].shard_id, "/root");
+        assert_eq!(request.legs[0].amount, 30);
+
+        let record = TxnRecordDto {
+            txn_id: "aabb".to_string(),
+            state: "committed".to_string(),
+            coordinator: "00".to_string(),
+            record_hash: "11".to_string(),
+            legs: request.legs.clone(),
+            votes: vec![TxnVoteDto {
+                shard_id: "/root".to_string(),
+                vote: "ready".to_string(),
+            }],
+            reason: None,
+        };
+        let json = serde_json::to_string(&record).expect("serializes");
+        assert!(json.contains("\"recordHash\""), "{json}");
+        assert!(json.contains("\"txnId\""), "{json}");
+        assert!(json.contains("\"shardId\""), "{json}");
+        let back: TxnRecordDto = serde_json::from_str(&json).expect("round trip");
+        assert_eq!(back, record);
+    }
 }
 
 /// A deploy execution status (port of the `DeployExecStatus` ADT in `WebApi.scala`).
