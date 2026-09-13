@@ -214,6 +214,7 @@ fn light_block(shard_id: &str) -> LightBlockInfo {
         block_size: "0".to_string(),
         deploy_count: 0,
         rejected_deploys: Vec::new(),
+        timestamp: 0,
     }
 }
 
