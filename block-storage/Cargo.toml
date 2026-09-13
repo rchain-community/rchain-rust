@@ -15,3 +15,6 @@ rchain-shared = { path = "../shared" }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt"] }
+# The property sweep (Laws 15/18). Already in `Cargo.lock` — a dev-dependency addition, not a new
+# external dependency.
+proptest = "1"

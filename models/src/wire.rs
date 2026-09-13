@@ -1038,19 +1038,66 @@ mod differential {
     use super::*;
     use rchain_shared::base16;
 
-    fn load(case: &str) -> String {
+    /// The golden file's rows are `id<TAB>value<TAB>provenance`; `#` lines are its legend. The
+    /// *value* column is read by position, so adding the provenance column (and any later one)
+    /// cannot corrupt a vector.
+    fn rows() -> Vec<(String, String, String)> {
         let path = concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/testdata/differential/wire.tsv"
         );
-        let data = std::fs::read_to_string(path).unwrap();
-        for line in data.lines() {
-            let (id, hex) = line.split_once('\t').unwrap_or((line, ""));
-            if id == case {
-                return hex.to_string();
-            }
+        std::fs::read_to_string(path)
+            .expect("the golden file")
+            .lines()
+            .filter(|l| !l.trim().is_empty() && !l.starts_with('#'))
+            .map(|l| {
+                let mut f = l.split('\t');
+                (
+                    f.next().unwrap_or_default().to_string(),
+                    f.next().unwrap_or_default().to_string(),
+                    f.next().unwrap_or_default().to_string(),
+                )
+            })
+            .collect()
+    }
+
+    fn load(case: &str) -> String {
+        rows()
+            .into_iter()
+            .find(|(id, _, _)| id == case)
+            .unwrap_or_else(|| panic!("missing differential case: {case}"))
+            .1
+    }
+
+    /// **Golden-drift guard.** Every row of the file must be consumed by a test in this module, and
+    /// every case the tests load must exist — a file that grows a row nobody asserts on (or a test
+    /// that starts reading a row that was deleted) fails here rather than passing quietly.
+    #[test]
+    fn every_golden_row_is_consumed() {
+        const CONSUMED: &[&str] = &[
+            "bitset_empty",
+            "bitset_0",
+            "bitset_7",
+            "bitset_8",
+            "bitset_64",
+            "par_empty",
+        ];
+        let ids: Vec<String> = rows().into_iter().map(|(id, _, _)| id).collect();
+        assert_eq!(ids.len(), CONSUMED.len(), "row count: {ids:?}");
+        for case in CONSUMED {
+            assert!(ids.iter().any(|id| id == case), "{case} is not in the file");
+            assert!(
+                !load(case).is_empty() || *case == "bitset_empty" || *case == "par_empty",
+                "{case} has an empty value and no empty-value case expects one"
+            );
         }
-        panic!("missing differential case: {case}");
+        // Every row is `scala-rule-transcribed`: the wire format comes from the proto, not a run.
+        for (id, _, provenance) in rows() {
+            assert_eq!(
+                provenance, "scala-rule-transcribed",
+                "{id} lost its provenance"
+            );
+        }
     }
 
     fn hex(bytes: &[u8]) -> String {

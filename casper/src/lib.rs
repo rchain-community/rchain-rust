@@ -36,3 +36,6 @@ pub mod validator_identity;
 pub mod vault_parser;
 
 pub use conf::{CasperConf, GenesisBlockData, ShardMemberships, ShardSpec};
+
+#[cfg(test)]
+mod property_tests;

@@ -17,30 +17,31 @@ tools/audit-test-register.sh --deferred-ok # while the tiered work is in flight
 
 ## Inventory
 
-**1029 `#[test]`/`#[tokio::test]` unit functions + 82 integration tests** across 13 crates, with **6
+**1149 `#[test]`/`#[tokio::test]` unit functions + 82 integration tests** across 13 crates, with **6
 laws** carrying a randomized property test and **10 benchmark functions** in 6 Criterion groups. Only
 **3 of 12 crates have integration tests** (`rholang`, `casper`, `node`).
 
 | Crate | Unit | Integration | Property (laws) | Bench |
 |---|---|---|---|---|
-| `sdk` | 35 | — | — | — |
+| `sdk` | 43 | — | 2 | — |
 | `shared` | 80 | — | — | — |
 | `crypto` | 53 | — | — | — |
 | `graphz` | 18 | — | — | — |
-| `models` | 124 | — | — | — |
-| `block-storage` | 17 | — | — | — |
+| `models` | 131 | — | 5 | — |
+| `block-storage` | 24 | — | 3 | — |
 | `comm` | 94 | — | — | — |
-| `rspace` | 114 | — | 6 | — |
-| `rholang` | 149 | 35 | — | — |
-| `casper` | 189 | 38 | — | — |
+| `rspace` | 117 | — | 7 | — |
+| `rholang` | 159 | 37 | 7 | — |
+| `casper` | 196 | 38 | 3 | — |
 | `node` | 136 | 9 | — | — |
 | `qucalc` | 20 | — | — | — |
 | `rspace-bench` | — | — | — | 10 |
 
-**Measured line coverage: 73.68%** (`cargo llvm-cov --workspace --all-features`, 21651 of 82260
-lines missed), which sets CI's floor to 71 — two points below the measurement, per the plan's rule
-that the floor is a tripwire raised only *after* measuring. The per-file report is the place to look
-for the next tier's work, not this table:
+**Measured line coverage: 79.69%** (`cargo llvm-cov --workspace --all-features`, 17917 of 88234
+lines missed), which sets CI's floor to **77** — two points below the measurement, per the plan's rule
+that the floor is a tripwire raised only *after* measuring. It has now been raised twice: 73.68% ⇒ 71
+after Stages 0–2, and 79.69% ⇒ 77 after Stages 3–4 (the legacy corpus, the tier sweep and the property
+sweep). The per-file report is the place to look for the next tier's work, not this table:
 
 ```sh
 cargo llvm-cov --workspace --all-features --summary-only   # then read the lowest percentages
@@ -58,11 +59,48 @@ The counts are a **floor, not a target**: the linter fails only when the registe
 the tree holds, so this table may lag as tests are added (it reports the drift) but can never
 overstate coverage.
 
-- **Property tests** — `rspace/src/property_tests.rs` only: 7 property functions over **6 distinct
-  laws** (7 join commutativity, 8 deterministic COMM, 9 merge monoid, 10 Merkle determinism, 20
-  per-channel path order, 24 the write-record layer). `proptest` is not a dependency of any other
-  crate, so `AGENTS.md`'s "property test per law" is satisfied for 6 of 29 laws — see
-  [Risk tiers](#risk-tiers-per-module) and the completion plan.
+- **Property tests** — every law where randomized input is meaningful now has one, in a
+  `property_tests.rs` per crate (`proptest` is a dev-dependency of `models`, `rspace`, `rholang`,
+  `sdk`, `block-storage` and `casper`; it was already in `Cargo.lock`, so these are dev-dependency
+  additions rather than new external dependencies). The matrix below is the whole 29-law oracle, with
+  the evidence for each and the reason for the four laws that have none.
+
+| Law | Layer | Randomized property | Other evidence |
+|---|---|---|---|
+| 1 | Rholang | `models/src/property_tests.rs` `law1_sorting_is_idempotent`, `law1_parallel_composition_sorts_commutatively` | Lean `Sort.lean`; `sorter.rs` unit tests |
+| 2 | Rholang | `law2_canonical_equality_agrees_with_canonical_hashing`, `law2_sorting_a_sequence_depends_only_on_its_elements` | `Rho.lean` (≡ core) |
+| 3 | Rholang | `rholang/src/property_tests.rs` `law3_substituting_a_closed_value_keeps_the_term_closed`, `law3_substitution_and_sorting_commute` | Lean `Subst.lean` |
+| 4 | Rholang | `law4_the_same_program_reduces_to_the_same_state` | `casper/tests/determinism.rs`; Lean `Reduce.lean` |
+| 5 | Rholang | `law5_a_pattern_that_binds_a_variable_twice_never_matches`, `law5_a_variable_bind_pattern_matches_any_datum`, `law5_a_ground_pattern_matches_only_itself` | Lean `Match.lean` |
+| 6 | Rholang | `law6_a_closed_term_is_accepted_and_the_predicate_agrees` | Lean `Ty.lean` |
+| 7 | RSpace | `rspace/src/property_tests.rs` `law7_join_hash_commutes` | Lean `Join.lean` |
+| 8 | RSpace | `law8_comm_sorts_produces` | Lean `Comm.lean` |
+| 9 | RSpace | `law9_disjoint_state_changes_commute` | Lean `Merge.lean` |
+| 10 | RSpace | `law10_merkle_root_is_insertion_order_independent` | Lean `Merkle.lean` |
+| 11 | RSpace | `law11_a_replayed_script_matches_its_recording` | `rspace/src/replay_rspace.rs`, `casper/tests/determinism.rs` |
+| 12 | Rosette | **none — the law is orphaned** (the Rosette VM is out of scope; no Rust obligation) | — |
+| 13 | Rosette | **none — orphaned** (as above) | — |
+| 14 | Casper | `sdk/src/property_tests.rs` `law14_super_majority_is_strictly_more_than_two_thirds`, `law14_super_majority_is_monotone_in_support`, `law14_the_two_thirds_boundary_survives_past_the_f64_mantissa` | Lean `Stake.lean`/`Fringe.lean` |
+| 15 | Casper | `block-storage/src/property_tests.rs` `law15_adding_blocks_only_grows_the_state` | Lean `Fringe.lean` |
+| 16 | Casper | (no randomized form: the law is about a fixed hash construction) `models/src/casper/protocol/casper_message.rs` `law16_to_proto_*`; `casper/src/proto_util.rs` `hash_block_is_deterministic_and_ignores_sig` | Lean `Validate.lean` |
+| 17 | Casper | `sdk/src/property_tests.rs` `law17_the_chosen_rejection_is_one_of_the_options`, `law17_the_chosen_rejection_minimizes_the_total_cost`, `law17_the_survivors_of_a_rejection_option_are_conflict_free`, `law17_deploys_without_conflicts_need_no_rejection` | Lean `Validate.lean` |
+| 18 | Storage | `block-storage/src/property_tests.rs` `law18_a_contiguous_chain_validates`, `law18_a_chain_with_a_hole_in_the_middle_is_refused`, `law18_a_missing_lowest_height_is_not_a_hole`, `law18_a_validation_failed_tip_is_not_indexed`, `law18_the_state_does_not_depend_on_insertion_order`, `law18_the_empty_dag_and_a_lone_block_are_contiguous` | `models/src/fringe_data.rs` `law18_fringe_hash_is_order_independent`; Lean `Validate.lean` |
+| 19 | Crypto | **none by design — the law is an axiom**; the crypto KATs (Blake2b256, `Blake2b512Random` split/merge, secp256k1 sign/verify, Curve25519) pin the implementations | Lean `Crypto/Random.lean` (axiom) |
+| 20 | Scheduler | `law20_per_channel_path_order` | Lean `Scheduler.lean` (`queue_commit_path_ordered`) |
+| 21 | Scheduler | `rholang/src/property_tests.rs` `law21_the_gate_scheduler_refines_the_sequential_reference` (16 randomized programs, gate vs sequential state hash + event log) | Lean `gate_exec_refines_apply`; `rholang/tests/execution.rs` `gate_and_sequential_state_hashes_match` |
+| 22 | Scheduler | **exemption: harness-heavy** — `rholang/src/reduce.rs` `law22_the_next_step_closure_is_computable_at_dispatch` pins the structural half (one effect per term, no space I/O, arities 1–6); a full property over the effect stream was spiked at >150 lines and the integration suite already asserts on it | Lean `next_step_closure_computable` |
+| 23 | Scheduler | **exemption: covered by Law 8's property** — the law's Rust realization *is* content-addressed candidate selection, which `law8_comm_sorts_produces` randomizes (`read_state_determines_outcome` is Lean-proven) | Lean `SchedulerOnchain.lean` |
+| 24 | Scheduler | `law24_record_layer_and_validation` | Lean `SchedulerOnchain.lean` |
+| 25 | Scheduler | `rholang/src/property_tests.rs` `law25_the_validated_relaxed_scheduler_refines_sequential` | Lean `validated_speculation_refines_apply`; `casper/tests/scheduler.rs` |
+| 26 | Cross-shard | `casper/src/property_tests.rs` `law26_a_shard_id_is_accepted_exactly_when_nonempty_ascii`, `law26_invalid_shard_names_are_refused`, `law26_a_child_id_nests_under_its_parent` | Lean `shard_scope_deterministic`; `casper/src/conf.rs` unit tests |
+| 27 | Cross-shard | `law27_an_abort_vote_prevents_a_later_commit`, `law27_and_law29_the_state_agrees_with_the_votes`, `law27_a_legless_record_cannot_commit` | Lean `txn_atomic`; `casper/tests/cross_shard_txn.rs`, `gateway_faults.rs` |
+| 28 | Cross-shard | `rholang/src/native_state.rs` `law28_txn_prepare_rejects_overdraw_and_is_idempotent` (idempotency is a *unit* property here: the verbs are async and the state is the store) | Lean `leg_idempotent` |
+| 29 | Cross-shard | `law29_a_terminal_record_never_changes_again` (+ `law27_and_law29_…`) | Lean `commit_record_deterministic`; `casper/src/gateway/ledger.rs` |
+
+  Two laws therefore have **no** randomized evidence, both deliberately: 12 and 13 are orphaned with
+  the Rosette VM, and 19 is an axiom whose implementations are KAT-pinned. Law 22 and 23 have a
+  stated exemption rather than a silently empty cell.
+
 - **Scheduler (Laws 20–22)** — `rspace/src/concurrent/channel_queue.rs` unit tests (claim/`claim_more`/
   head-order/phase-two re-wait) and `rspace/src/hot_store.rs` `striped_store_equals_unstriped` (the
   64-shard store is observably identical to the 1-shard store); `rholang/tests/execution.rs`
@@ -78,10 +116,24 @@ overstate coverage.
   `relaxed_validated_never_diverges_from_sequential`; `rholang/tests/execution.rs`
   `relaxed_validated_mode_runs_corpus_without_error`; `rspace/src/concurrent/channel_queue.rs`
   `enqueue_window_sets_skew_and_version` and the `law24_skew_signal_and_version_counter` proptest.
-- **Differential/golden** — `models/testdata/differential/wire.tsv`, `rspace/testdata/differential/
-  {stable_hash,scodec}.tsv`, `rholang/testdata/differential/execution.tsv` (3 rows), and the crypto
-  known-answer vectors. These are *captured* Scala vectors, not a live Scala-vs-Rust harness; the
-  generator is `legacy/scripts/gen-differential-goldens.sh` (see the [open gap](#deferred-and-blocked)).
+- **Differential/golden** — four TSVs under `*/testdata/differential/`, each row now
+  `id<TAB>value<TAB>provenance` with a `#` legend, and each guarded by a test that asserts **every
+  row is consumed** and that the provenance is the declared one:
+
+  | File | Rows | Provenance |
+  |---|---|---|
+  | `models/testdata/differential/wire.tsv` | 6 | `scala-rule-transcribed` (proto schema + the scalapb `bitSetToByteString` rule) |
+  | `rspace/testdata/differential/stable_hash.tsv` | 7 | `scala-ground-truth` (`StableHashOracle`) |
+  | `rspace/testdata/differential/scodec.tsv` | 14 | `scala-ground-truth` (`ScodecOracle`) |
+  | `rholang/testdata/differential/execution.tsv` | 3 | `rust-regression-pinned` — **no Scala oracle exists** for the rholang pipeline |
+
+  The distinction is load-bearing and now asserted (`the_execution_goldens_declare_their_provenance`):
+  the rholang rows pin the port against its own past behaviour and are *not* evidence of Scala
+  agreement. `legacy/scripts/gen-differential-goldens.sh` was rewritten to match `legacy/` (it wrote
+  to a `crates/` directory that no longer exists), to **fail loudly without sbt** naming the
+  prerequisite (`sbt` is absent here, so the script is checkable but not runnable in this
+  environment), and to write the provenance column itself; it deliberately does not touch the
+  rholang file. What it would add is a rholang `ExecutionOracle.scala`, which does not exist.
 - **The legacy `.rho`/`.rhox` contract corpus** — **165 `.rho` + 1 `.rhox`** under `legacy/`, now
   driven by `rholang/tests/legacy_contracts.rs`. The one `.rhox`
   (`legacy/casper/src/main/resources/Pos.rhox`) is a Scala-side macro template, not a program.
@@ -386,6 +438,20 @@ recorded here rather than only in the commit that did it.
 | `rholang/src/proc_ast.rs` | 266 lines of pure `enum`/`struct` declarations with no `impl` block: there is no behaviour, so a test could only assert that a value equals itself. The AST's behaviour is pinned where it is produced (`rholang/src/parser.rs`) and consumed (the normalizer + reducer). |
 | `node/src/api/admin_web_api.rs` | A 13-line trait declaration (two method signatures, no default bodies) — the same class as `sdk/src/block.rs`. Its two callers (`propose`/`propose_result`) are tested at the HTTP layer. |
 
+## Definition of done — where each item stands
+
+| Item | State |
+|---|---|
+| 1. No deferred gap rows (the register's own marker); every ✅ names a findable test | **done** — the linter's hard mode passes with no deferred rows and no open tier rows |
+| 2. The register linter recomputes counts, verifies named tests, fails on a bare tier module | **done** — `tools/audit-test-register.sh` (five checks; hard mode green) |
+| 3. Every law has a property test or a recorded exemption | **done** — the matrix in Inventory; exempt: 12/13 (orphaned), 19 (axiom, KAT-pinned), 22/23 (stated reason), 28 (unit idempotency) |
+| 4. `make test-unit` runs `--all-features` | **done** (with `test-integration`) |
+| 5. The coverage floor raised twice, each after measuring | **done** — 73.68 ⇒ 71 (Stages 0–2), 79.69 ⇒ 77 (Stages 3–4) |
+| 6. `rspace-bench`'s Criterion groups are smoke-run | **done** — `make bench-smoke` |
+| 7. `parsed + skipped == 165` for the legacy corpus, closed-enum skip reasons | **done** — `rholang/tests/legacy_contracts.rs` |
+| 8. `gen-differential-goldens.sh` completes or fails loudly; every committed TSV row is consumed | **done** — provenance columns + a per-file drift guard; the script exits 2 without sbt |
+| 9. The Stage 1 audit list appears verbatim in the register, each entry mapped to a test | **done** — the machine-checked claims table |
+
 ## Production changes made under this plan
 
 The plan allows production changes but requires each to be listed explicitly and kept out of a
@@ -401,6 +467,30 @@ green diff. These are all of them.
 
 Everything else this plan has touched is a test, the register itself, the audit register, the linter,
 or a `Makefile`/CI target.
+
+## The Docker fuzzer (what it asserts, and why it is not a PR gate)
+
+`tools/devnet-fuzz.py` drives a running Docker devnet (`tools/devnet.sh up`) and asserts four things,
+one per `--mode`. `devnet.sh` grew an `--effect-scheduler` flag so the node's mode (Laws 20–25) can be
+swept end to end;
+
+| Mode | Assertion | In-process equivalent (what gates a PR) |
+|---|---|---|
+| `valid` (default) | random valid terms reduce without a 5xx, signed deploys keep 3 validators in lock-step | `casper/tests/determinism.rs`, `casper/tests/consensus.rs` |
+| `malformed` | truncation, spliced delimiters, nesting past `MAX_PARSE_DEPTH`, huge integers and non-UTF-8 bodies are all 4xx, never 5xx, and every node still answers `/api/v1/status` afterwards | `rholang/src/parser.rs` `rejects_excessive_nesting_depth`; the R-series input guards |
+| `scheduler` | the corpus reduces under the configured `--effect-scheduler` mode (including `relaxed`, which the *block* path must reject at runtime) | `casper/tests/scheduler.rs::block_paths_reject_relaxed_mode`, `rholang/tests/execution.rs` |
+| `gateway` | a single-shard devnet reports exactly one shard and does **not** serve the txn routes — the "single-shard surface unchanged" claim at process level | `node/tests/gateway_routes.rs` (404s), `gateway.rs` |
+
+`.github/workflows/devnet-fuzz.yml` runs `--mode all` nightly (`23 3 * * *`, off the hour) and on
+`workflow_dispatch`, with the mode, scheduler and iteration count as inputs. It has **no
+`pull_request` trigger by design**: it needs Docker, a built image and a live network, so a flaky
+harness in the PR path would cost more than the coverage it adds. Nothing in it is required for a
+merge.
+
+**Not run in this environment**: the devnet modes need `docker` with a built `rnode:local` image (a
+full Rust build in a container) and a live network, so they are written, syntactically checked
+(`bash -n`, `ast.parse`) and dry-run where possible (`--dry-run` prints the malformed corpus) but not
+executed here. The in-process suites above are what was run.
 
 ## Blocked and out of scope (by decision)
 

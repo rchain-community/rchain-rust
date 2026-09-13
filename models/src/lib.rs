@@ -33,3 +33,6 @@ pub mod string_syntax;
 pub mod types;
 pub mod validator;
 pub mod wire;
+
+#[cfg(test)]
+mod property_tests;

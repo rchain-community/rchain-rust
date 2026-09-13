@@ -3152,6 +3152,63 @@ mod tests {
         }
     }
 
+    /// **Law 22 (`next_step_closure_computable`).** The next-step closure is computable *at
+    /// dispatch*, from the term alone: `resolve_children` turns each top-level term of a par into one
+    /// effect (a produce, a consume, or a nested `Par` to walk) without touching the tuple space, so
+    /// a scheduler can compute an effect's static footprint before committing to it. The spike for a
+    /// full property harness measured >150 lines (it needs the effect stream the integration tests
+    /// already assert on), so this is the structural half: one effect per term, no space I/O, for
+    /// every arity from one term to six.
+    #[tokio::test]
+    async fn law22_the_next_step_closure_is_computable_at_dispatch() {
+        let interp = Arc::new(DebruijnInterpreter::new(
+            MockSpace {
+                produced: Mutex::new(Vec::new()),
+            },
+            MockDispatch,
+            BTreeMap::new(),
+            SortedProc::default(),
+        ));
+        let cost = Arc::new(CostAccounting::from_initial(Costs::unsafe_max()));
+        let env = Env::new();
+        let rand = Blake2b512Random::from_init(&[0u8; 32]);
+
+        for n in 1..=6usize {
+            let sends: Vec<Send> = (0..n)
+                .map(|i| Send {
+                    chan: Box::new(from_expr(Expr::GInt(i as i64)).quote()),
+                    data: vec![from_expr(Expr::GInt(1)).quote()],
+                    persistent: false,
+                    locally_free: AlwaysEqual(vec![]),
+                    connective_used: false,
+                })
+                .collect();
+            let par = Par {
+                sends: sends.clone(),
+                ..Default::default()
+            };
+
+            let effects = interp
+                .resolve_children(&par, &env, &rand, &cost)
+                .await
+                .expect("the closure resolves");
+            assert_eq!(
+                effects.len(),
+                n,
+                "one effect per top-level term ({n} term(s))"
+            );
+            assert!(
+                interp
+                    .space
+                    .produced
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .is_empty(),
+                "computing the closure must not touch the tuple space"
+            );
+        }
+    }
+
     #[tokio::test]
     async fn eval_send_produces_on_evaluated_channel() {
         let space = MockSpace {

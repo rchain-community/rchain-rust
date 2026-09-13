@@ -1509,7 +1509,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn txn_prepare_rejects_overdraw_and_is_idempotent() {
+    async fn law28_txn_prepare_rejects_overdraw_and_is_idempotent() {
         let native = NativeSystemState::new(Arc::new(InMemNativeStore::empty()));
         let coordinator = PublicKey::new(vec![4u8; 65]);
         let from = "fromAddr".to_string();

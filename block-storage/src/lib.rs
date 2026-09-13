@@ -14,3 +14,6 @@ pub mod block_store;
 pub mod dag;
 pub mod errors;
 pub mod syntax;
+
+#[cfg(test)]
+mod property_tests;

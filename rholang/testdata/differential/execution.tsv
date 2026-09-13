@@ -1,3 +1,5 @@
-empty_state	ece1d87691c7e0e74a0b50a3c8e9de3a9233a931aaccbac33c1bcc7c8f5529fa
-exec_deploy_42	1917ce455aa21f655d76ca538ceebac9b0cfd6369874f45fc0e0f76dcb81b43b
-replay_deploy_42	1917ce455aa21f655d76ca538ceebac9b0cfd6369874f45fc0e0f76dcb81b43b
+# id	value	provenance
+# NO Scala oracle exists for the rholang execution pipeline (legacy/ has none), so these rows record the Rust port's own behaviour: a regression pin, NOT a differential vector. Do not cite them as evidence of Scala agreement.
+empty_state	ece1d87691c7e0e74a0b50a3c8e9de3a9233a931aaccbac33c1bcc7c8f5529fa	rust-regression-pinned
+exec_deploy_42	1917ce455aa21f655d76ca538ceebac9b0cfd6369874f45fc0e0f76dcb81b43b	rust-regression-pinned
+replay_deploy_42	1917ce455aa21f655d76ca538ceebac9b0cfd6369874f45fc0e0f76dcb81b43b	rust-regression-pinned
