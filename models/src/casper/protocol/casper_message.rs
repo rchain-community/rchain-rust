@@ -542,6 +542,9 @@ pub struct BlockMessage {
     pub state: RholangState,
     pub sig_algorithm: String,
     pub sig: Vec<u8>,
+    /// Proposer's wall clock (ms since the Unix epoch) at block creation. Informational only: it is
+    /// not a consensus input (validators ignore it); applications read it via `rho:block:data`.
+    pub timestamp: i64,
 }
 
 impl BlockMessage {
@@ -587,6 +590,7 @@ impl BlockMessage {
             state: RholangState::from_proto(state)?,
             sig_algorithm: bm.sig_algorithm.clone(),
             sig: bm.sig.clone(),
+            timestamp: bm.timestamp,
         })
     }
 
@@ -633,6 +637,7 @@ impl BlockMessage {
             state: Some(self.state.to_proto()),
             sig_algorithm: self.sig_algorithm.clone(),
             sig: self.sig.clone(),
+            timestamp: self.timestamp,
         }
     }
 
@@ -1138,7 +1143,18 @@ mod tests {
             state: RholangState::default(),
             sig_algorithm: "secp256k1".to_string(),
             sig: Vec::new(),
+            timestamp: 0,
         }
+    }
+
+    #[test]
+    fn block_message_round_trip_preserves_timestamp() {
+        // The informational timestamp is carried in the header proto, so every node (and replay)
+        // decodes the same value.
+        let mut block = empty_block();
+        block.timestamp = 1_700_000_000_000;
+        let round = BlockMessage::from_bytes(&block.to_bytes()).expect("round trip");
+        assert_eq!(round.timestamp, block.timestamp);
     }
 
     #[test]

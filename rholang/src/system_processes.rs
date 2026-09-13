@@ -173,6 +173,9 @@ pub struct BlockData {
     pub block_number: BlockHeight,
     pub sender: PublicKey,
     pub seq_num: SeqNum,
+    /// The block's informational timestamp (proposer's wall clock, ms since the Unix epoch). It is
+    /// not a consensus input; it is exposed here for RChain applications.
+    pub timestamp: i64,
 }
 
 impl BlockData {
@@ -181,6 +184,7 @@ impl BlockData {
             block_number: BlockHeight::zero(),
             sender: PublicKey::new(vec![0]),
             seq_num: SeqNum::zero(),
+            timestamp: 0,
         }
     }
 
@@ -190,6 +194,7 @@ impl BlockData {
             block_number: block.block_number,
             sender: PublicKey::new(block.sender.as_bytes().to_vec()),
             seq_num: block.seq_num,
+            timestamp: block.timestamp,
         }
     }
 }
@@ -1063,13 +1068,18 @@ impl SystemProcesses {
                     .ok_or_else(|| illegal_arg("blockData expects only a return channel"))?;
                 match pars.as_slice() {
                     [ack] => {
-                        let (block_number, sender_bytes) = {
+                        let (block_number, sender_bytes, timestamp) = {
                             let data = bd.lock().unwrap_or_else(|p| p.into_inner());
-                            (i64::from(data.block_number), data.sender.bytes().to_vec())
+                            (
+                                i64::from(data.block_number),
+                                data.sender.bytes().to_vec(),
+                                data.timestamp,
+                            )
                         };
                         let reply = vec![
                             RhoNumber::apply(block_number),
                             RhoByteArray::apply(sender_bytes),
+                            RhoNumber::apply(timestamp),
                         ];
                         cc.produce(&rand, &reply, ack, path).await
                     }
@@ -1633,8 +1643,9 @@ impl SystemProcesses {
                         };
                         let txn_id = RhoByteArray::unapply(txn_id)
                             .ok_or_else(|| illegal_arg("prepare expects a byte-array txnId"))?;
-                        let coordinator = RhoByteArray::unapply(coordinator)
-                            .ok_or_else(|| illegal_arg("prepare expects a byte-array coordinator"))?;
+                        let coordinator = RhoByteArray::unapply(coordinator).ok_or_else(|| {
+                            illegal_arg("prepare expects a byte-array coordinator")
+                        })?;
                         let coordinator_pk = PublicKey::new(coordinator.to_vec());
                         let amount = RhoNumber::unapply(amount)
                             .ok_or_else(|| illegal_arg("prepare expects a number amount"))?;
@@ -1668,15 +1679,24 @@ impl SystemProcesses {
                             .ok_or_else(|| illegal_arg("commit expects a byte-array txnId"))?;
                         let deployer_id = RhoDeployerId::unapply(deployer_id)
                             .ok_or_else(|| illegal_arg("commit expects a deployerId"))?;
-                        let Some(rec) = native.txn(txn_id).await.map_err(|e| illegal_arg(&e))? else {
+                        let Some(rec) = native.txn(txn_id).await.map_err(|e| illegal_arg(&e))?
+                        else {
                             return Err(illegal_arg("commit: unknown transaction"));
                         };
                         if deployer_id != rec.coordinator.bytes() {
                             return Err(illegal_arg("commit: not the coordinator"));
                         }
-                        let state = native.txn_commit(txn_id).await.map_err(|e| illegal_arg(&e))?;
-                        cc.produce(&rand, &[RhoString::apply(txn_state_string(state))], ret, path)
+                        let state = native
+                            .txn_commit(txn_id)
                             .await
+                            .map_err(|e| illegal_arg(&e))?;
+                        cc.produce(
+                            &rand,
+                            &[RhoString::apply(txn_state_string(state))],
+                            ret,
+                            path,
+                        )
+                        .await
                     }
                     "abort" => {
                         let [txn_id, deployer_id, ret] = rest else {
@@ -1688,15 +1708,24 @@ impl SystemProcesses {
                             .ok_or_else(|| illegal_arg("abort expects a byte-array txnId"))?;
                         let deployer_id = RhoDeployerId::unapply(deployer_id)
                             .ok_or_else(|| illegal_arg("abort expects a deployerId"))?;
-                        let Some(rec) = native.txn(txn_id).await.map_err(|e| illegal_arg(&e))? else {
+                        let Some(rec) = native.txn(txn_id).await.map_err(|e| illegal_arg(&e))?
+                        else {
                             return Err(illegal_arg("abort: unknown transaction"));
                         };
                         if deployer_id != rec.coordinator.bytes() {
                             return Err(illegal_arg("abort: not the coordinator"));
                         }
-                        let state = native.txn_abort(txn_id).await.map_err(|e| illegal_arg(&e))?;
-                        cc.produce(&rand, &[RhoString::apply(txn_state_string(state))], ret, path)
+                        let state = native
+                            .txn_abort(txn_id)
                             .await
+                            .map_err(|e| illegal_arg(&e))?;
+                        cc.produce(
+                            &rand,
+                            &[RhoString::apply(txn_state_string(state))],
+                            ret,
+                            path,
+                        )
+                        .await
                     }
                     "recover" => {
                         let [txn_id, ret] = rest else {

@@ -415,6 +415,7 @@ mod tests {
             },
             sig_algorithm: "secp256k1".to_string(),
             sig: vec![1],
+            timestamp: 0,
         }
     }
 
@@ -581,6 +582,7 @@ mod effectful_tests {
             state: rchain_models::casper::protocol::casper_message::RholangState::default(),
             sig_algorithm: "secp256k1".to_string(),
             sig: vec![1],
+            timestamp: 0,
         }
     }
 

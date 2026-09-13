@@ -666,6 +666,7 @@ mod tests {
             state: rchain_models::casper::protocol::casper_message::RholangState::default(),
             sig_algorithm: "secp256k1".to_string(),
             sig: vec![],
+            timestamp: 0,
         }
     }
 

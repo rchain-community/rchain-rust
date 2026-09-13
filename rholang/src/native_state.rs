@@ -151,9 +151,7 @@ fn encode_txn(rec: &TxnRecord) -> Vec<u8> {
 
 /// Read a length-prefixed (u32 LE) string at `off`, advancing it.
 fn read_len_prefixed(bytes: &[u8], off: &mut usize) -> Result<String, String> {
-    let len_end = off
-        .checked_add(4)
-        .ok_or("txn record: offset overflow")?;
+    let len_end = off.checked_add(4).ok_or("txn record: offset overflow")?;
     if len_end > bytes.len() {
         return Err("txn record truncated".to_string());
     }
@@ -163,9 +161,7 @@ fn read_len_prefixed(bytes: &[u8], off: &mut usize) -> Result<String, String> {
     let len = usize::try_from(u32::from_le_bytes(len_bytes))
         .map_err(|_| "txn record: length does not fit usize".to_string())?;
     *off = len_end;
-    let s_end = off
-        .checked_add(len)
-        .ok_or("txn record: length overflow")?;
+    let s_end = off.checked_add(len).ok_or("txn record: length overflow")?;
     if s_end > bytes.len() {
         return Err("txn record truncated".to_string());
     }
@@ -822,7 +818,10 @@ impl NativeSystemState {
             TxnState::Aborted => return Err("txn commit: already aborted".to_string()),
             TxnState::Prepared => {}
         }
-        let to_balance = self.vault_balance(&rec.to).await?.unwrap_or(NonNegI64::zero());
+        let to_balance = self
+            .vault_balance(&rec.to)
+            .await?
+            .unwrap_or(NonNegI64::zero());
         let new_to = NonNegI64::try_from(
             i64::from(to_balance)
                 .checked_add(i64::from(rec.amount))
@@ -851,7 +850,10 @@ impl NativeSystemState {
             TxnState::Committed => return Err("txn abort: already committed".to_string()),
             TxnState::Prepared => {}
         }
-        let from_balance = self.vault_balance(&rec.from).await?.unwrap_or(NonNegI64::zero());
+        let from_balance = self
+            .vault_balance(&rec.from)
+            .await?
+            .unwrap_or(NonNegI64::zero());
         let new_from = NonNegI64::try_from(
             i64::from(from_balance)
                 .checked_add(i64::from(rec.amount))
@@ -1354,7 +1356,13 @@ mod tests {
 
         // Prepare escrows 40 REV from `from`.
         let state = native
-            .txn_prepare(id, &coordinator, NonNegI64::try_from(40).unwrap(), &from, &to)
+            .txn_prepare(
+                id,
+                &coordinator,
+                NonNegI64::try_from(40).unwrap(),
+                &from,
+                &to,
+            )
             .await
             .unwrap();
         assert_eq!(state, TxnState::Prepared);
@@ -1387,7 +1395,13 @@ mod tests {
 
         native.set_vault_balance(&from, NonNegI64::try_from(100).unwrap());
         native
-            .txn_prepare(id, &coordinator, NonNegI64::try_from(30).unwrap(), &from, &to)
+            .txn_prepare(
+                id,
+                &coordinator,
+                NonNegI64::try_from(30).unwrap(),
+                &from,
+                &to,
+            )
             .await
             .unwrap();
 
@@ -1412,7 +1426,13 @@ mod tests {
 
         // Overdraw is rejected and leaves the vault untouched.
         assert!(native
-            .txn_prepare(id, &coordinator, NonNegI64::try_from(51).unwrap(), &from, &to)
+            .txn_prepare(
+                id,
+                &coordinator,
+                NonNegI64::try_from(51).unwrap(),
+                &from,
+                &to
+            )
             .await
             .is_err());
         assert_eq!(
@@ -1422,11 +1442,23 @@ mod tests {
 
         // A successful prepare is idempotent (a duplicate re-deducts nothing).
         native
-            .txn_prepare(id, &coordinator, NonNegI64::try_from(40).unwrap(), &from, &to)
+            .txn_prepare(
+                id,
+                &coordinator,
+                NonNegI64::try_from(40).unwrap(),
+                &from,
+                &to,
+            )
             .await
             .unwrap();
         let state = native
-            .txn_prepare(id, &coordinator, NonNegI64::try_from(40).unwrap(), &from, &to)
+            .txn_prepare(
+                id,
+                &coordinator,
+                NonNegI64::try_from(40).unwrap(),
+                &from,
+                &to,
+            )
             .await
             .unwrap();
         assert_eq!(state, TxnState::Prepared);
