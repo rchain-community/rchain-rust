@@ -17,7 +17,7 @@ tools/audit-test-register.sh --deferred-ok # while the tiered work is in flight
 
 ## Inventory
 
-**969 `#[test]`/`#[tokio::test]` unit functions + 82 integration tests** across 13 crates, with **6
+**996 `#[test]`/`#[tokio::test]` unit functions + 82 integration tests** across 13 crates, with **6
 laws** carrying a randomized property test and **10 benchmark functions** in 6 Criterion groups. Only
 **3 of 12 crates have integration tests** (`rholang`, `casper`, `node`).
 
@@ -27,11 +27,11 @@ laws** carrying a randomized property test and **10 benchmark functions** in 6 C
 | `shared` | 80 | — | — | — |
 | `crypto` | 53 | — | — | — |
 | `graphz` | 18 | — | — | — |
-| `models` | 120 | — | — | — |
+| `models` | 124 | — | — | — |
 | `block-storage` | 17 | — | — | — |
-| `comm` | 67 | — | — | — |
-| `rspace` | 104 | — | 6 | — |
-| `rholang` | 139 | 35 | — | — |
+| `comm` | 76 | — | — | — |
+| `rspace` | 114 | — | 6 | — |
+| `rholang` | 143 | 35 | — | — |
 | `casper` | 189 | 38 | — | — |
 | `node` | 127 | 9 | — | — |
 | `qucalc` | 20 | — | — | — |
@@ -299,18 +299,18 @@ linter reports it.
 | T1 | `rspace/src/history/codecs.rs` | `decode_rejects_a_wrong_length` |
 | T1 | `rholang/src/contract_call.rs` | `a_matched_reply_dispatches_at_the_child_path` |
 | T2 | `rspace/src/merger/mod.rs` | `seq_diff_removes_the_first_occurrence_and_preserves_order` |
-| T2 | `rspace/src/merger/event_log_merging_logic.rs` | — |
+| T2 | `rspace/src/merger/event_log_merging_logic.rs` | `a_shared_destroyed_produce_conflicts_unless_it_is_mergeable_on_both_sides` |
 | T2 | `comm/src/transport/grpc_transport_receiver.rs` | — |
 | T2 | `comm/src/transport/grpc_transport_client.rs` | — |
-| T2 | `comm/src/discovery/kademlia_node_discovery.rs` | — |
+| T2 | `comm/src/discovery/kademlia_node_discovery.rs` | `each_lookup_targets_the_bit_flip_of_its_bucket` |
 | T2 | `comm/src/discovery/grpc_kademlia_rpc.rs` | — |
 | T2 | `comm/src/discovery/grpc_kademlia_rpc_server.rs` | — |
-| T2 | `comm/src/discovery/mod.rs` | — |
+| T2 | `comm/src/discovery/mod.rs` | `an_out_of_range_port_is_rejected_by_name` |
 | T2 | `node/src/api/grpc/deploy_grpc_service_v1.rs` | — |
 | T2 | `rholang/src/reporting_runtime.rs` | — |
-| T3 | `rholang/src/storage_printer.rs` | — |
+| T3 | `rholang/src/storage_printer.rs` | `a_non_par_body_continuation_renders_an_empty_body` |
 | T3 | `node/src/api/grpc/repl_grpc_service.rs` | — |
-| T3 | `models/src/errors.rs` | — |
+| T3 | `models/src/errors.rs` | `the_length_remap_keeps_got_and_expected_the_right_way_round` |
 
 ### The census behind these rows
 

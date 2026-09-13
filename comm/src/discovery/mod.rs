@@ -44,3 +44,75 @@ pub fn to_node(peer: &PeerNode) -> Node {
         udp_port: u32::from(peer.endpoint.udp_port),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn node(id: &[u8], host: &[u8], tcp: u32, udp: u32) -> Node {
+        Node {
+            id: id.to_vec(),
+            host: host.to_vec(),
+            tcp_port: tcp,
+            udp_port: udp,
+        }
+    }
+
+    fn peer(name: &str) -> PeerNode {
+        PeerNode::from(
+            NodeIdentifier::new(name.as_bytes().to_vec()),
+            "host".to_string(),
+            Port::new(40400),
+            Port::new(40404),
+        )
+    }
+
+    /// The proto boundary round trips: the id is the raw key, the host is UTF-8 text, and the two
+    /// ports keep their kinds (`tcp_port`/`udp_port`) — a swap here would break every handshake.
+    #[test]
+    fn a_peer_node_round_trips_through_the_proto() {
+        let p = peer("alpha");
+        let wire = to_node(&p);
+        assert_eq!(wire.id, b"alpha");
+        assert_eq!(wire.tcp_port, 40400);
+        assert_eq!(wire.udp_port, 40404);
+        assert_eq!(to_peer_node(&wire).expect("round trip"), p);
+    }
+
+    /// A non-UTF-8 host is carried lossily rather than failing the conversion (the proto field is
+    /// byte-oriented), matching the Scala `new String(host)` shape. The ports are what can fail.
+    #[test]
+    fn a_non_utf8_host_is_carried_lossily() {
+        let wire = node(b"id", &[0xff, 0xfe], 1, 2);
+        let p = to_peer_node(&wire).expect("a bad host is not an error");
+        assert!(!p.endpoint.host.is_empty(), "{p:?}");
+    }
+
+    /// **The two error arms.** A port outside `u16` is rejected, and the message says *which* port —
+    /// a peer advertising a bad Kademlia port must not be accepted with a truncated one.
+    #[test]
+    fn an_out_of_range_port_is_rejected_by_name() {
+        let bad_tcp = node(b"id", b"host", 70_000, 40404);
+        let err = to_peer_node(&bad_tcp).expect_err("tcp port out of range");
+        assert!(format!("{err}").contains("invalid tcp port"), "{err}");
+
+        let bad_udp = node(b"id", b"host", 40400, 70_000);
+        let err = to_peer_node(&bad_udp).expect_err("udp port out of range");
+        assert!(format!("{err}").contains("invalid udp port"), "{err}");
+    }
+
+    /// The boundary accepts the whole valid range, inclusive — an off-by-one here would reject a
+    /// legitimate port 65535.
+    #[test]
+    fn the_port_boundary_is_inclusive() {
+        assert!(
+            to_peer_node(&node(b"id", b"h", 0, 0)).is_ok(),
+            "zero is a port"
+        );
+        assert!(
+            to_peer_node(&node(b"id", b"h", 65_535, 65_535)).is_ok(),
+            "65535 is a port"
+        );
+        assert!(to_peer_node(&node(b"id", b"h", 65_536, 0)).is_err());
+    }
+}

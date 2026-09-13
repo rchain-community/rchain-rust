@@ -130,3 +130,147 @@ fn to_receive(
     }
     acc
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::BTreeSet;
+
+    use rchain_crypto::hash::blake2b512_random::Blake2b512Random;
+    use rchain_models::ast::Expr;
+    use rchain_models::par_ops::from_expr;
+    use rchain_models::runtime::ParWithRandom;
+    use rchain_rspace::trace::event::{Consume, Produce};
+
+    fn channel(name: &str) -> SortedProc {
+        SortedProc::new(from_expr(Expr::GString(name.to_string())))
+    }
+
+    fn datum(values: &[i64], persist: bool) -> Datum<ListParWithRandom> {
+        Datum {
+            a: ListParWithRandom {
+                pars: values
+                    .iter()
+                    .map(|v| SortedProc::new(from_expr(Expr::GInt(*v))))
+                    .collect(),
+                random_state: Blake2b512Random::from_init(&[0u8; 32]),
+            },
+            persist,
+            source: Produce::apply(&"c".to_string(), &"d".to_string(), persist),
+        }
+    }
+
+    fn waiting(
+        continuum: TaggedContinuation,
+        persist: bool,
+        peek: bool,
+        free_counts: &[i32],
+    ) -> WaitingContinuation<BindPattern, TaggedContinuation> {
+        WaitingContinuation {
+            patterns: free_counts
+                .iter()
+                .map(|fc| BindPattern {
+                    patterns: vec![SortedProc::new(from_expr(Expr::GInt(0)))],
+                    remainder: None,
+                    free_count: *fc,
+                })
+                .collect(),
+            continuation: continuum,
+            persist,
+            peeks: if peek {
+                [0].into_iter().collect()
+            } else {
+                BTreeSet::new()
+            },
+            source: Consume::apply(
+                &["c".to_string()],
+                &["p".to_string()],
+                &"k".to_string(),
+                persist,
+            ),
+        }
+    }
+
+    /// A datum on two channels renders as **one send per channel** (the snapshot is per-channel),
+    /// with the datum's pars as the payload and its persistence carried over.
+    #[test]
+    fn a_datum_renders_as_one_send_per_channel() {
+        let rendered = to_sends(&[datum(&[1, 2], true)], &[channel("a"), channel("b")]);
+        assert_eq!(
+            rendered.sends.len(),
+            2,
+            "one send per channel: {rendered:?}"
+        );
+        for send in &rendered.sends {
+            assert!(send.persistent, "the datum's persistence is rendered");
+            assert_eq!(
+                send.data,
+                vec![
+                    from_expr(Expr::GInt(1)).quote(),
+                    from_expr(Expr::GInt(2)).quote()
+                ],
+                "the payload is the datum's pars, quoted into names"
+            );
+        }
+        // An empty snapshot renders nothing.
+        assert_eq!(to_sends(&[], &[]), Par::default());
+    }
+
+    /// A waiting continuation renders as a `for` whose **body** is the continuation and whose
+    /// `bind_count` is the sum of the patterns' free counts — the number the receiver's binder needs.
+    #[test]
+    fn a_waiting_continuation_renders_its_body_and_bind_count() {
+        let body = from_expr(Expr::GInt(7));
+        let wk = waiting(
+            TaggedContinuation::ParBody(ParWithRandom {
+                body: SortedProc::new(body.clone()),
+                random_state: Blake2b512Random::from_init(&[0u8; 32]),
+            }),
+            false,
+            false,
+            &[1, 2],
+        );
+
+        let rendered = to_receive(&[wk], &[channel("a"), channel("b")]);
+        assert_eq!(rendered.receives.len(), 1);
+        let receive = &rendered.receives[0];
+        assert_eq!(*receive.body, body, "the continuation is the loop body");
+        assert_eq!(
+            receive.bind_count, 3,
+            "the sum of the patterns' free counts"
+        );
+        assert!(!receive.peek, "not a peek");
+        assert_eq!(receive.binds.len(), 2, "one bind per channel");
+    }
+
+    /// **The non-`ParBody` arm**: a continuation that is not rholang code (a built-in reference, or
+    /// the empty one) has no term to print, so the body is `Nil` and the bind count is zero. A
+    /// printer that unwrapped it anyway would print a built-in's ref as if it were source.
+    #[test]
+    fn a_non_par_body_continuation_renders_an_empty_body() {
+        for continuum in [
+            TaggedContinuation::Empty,
+            TaggedContinuation::ScalaBodyRef(3),
+        ] {
+            let wk = waiting(continuum, true, true, &[5]);
+            let rendered = to_receive(&[wk], &[channel("a")]);
+            let receive = &rendered.receives[0];
+            assert_eq!(
+                *receive.body,
+                Par::default(),
+                "a non-rholang continuation has no body to print"
+            );
+            assert_eq!(receive.bind_count, 0, "…and no binders to count");
+            assert!(receive.persistent, "its persistence is still rendered");
+            assert!(receive.peek, "…and so is its peeking");
+        }
+    }
+
+    /// The two fixed messages are what an RPC caller sees for an empty space, so they are part of
+    /// the interface rather than decoration — pinned so they cannot drift.
+    #[test]
+    fn the_empty_space_messages_are_fixed() {
+        assert_eq!(NO_UNMATCHED_SENDS, "No unmatched sends.");
+        assert!(EMPTY_SPACE.starts_with("The space is empty."));
+    }
+}
