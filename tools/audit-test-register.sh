@@ -89,14 +89,17 @@ ok "inventory counts do not overstate the tree"
 #
 # Rows look like:  | G1 | casper/src/dag.rs | insert_rejects_equivocation_same_seq_num |
 printf '\n== named tests ==\n'
-# Only rows whose first cell looks like an id (`G1`, `T1`, `1`) — otherwise the table's own header
-# row parses as a claim whose "file" is the literal `File`.
-claims="$(awk '/^## Machine-checked claims/,/^## [^M]/' "$REGISTER" | grep -E '^\| [A-Z]+[0-9]+ ' || true)"
+# A claim is any row of the table whose *file* cell looks like a path. Keying on the id column was
+# fragile in both directions: it silently ignored rows whose id has no digit (`| corpus | …`), and
+# it needed an alphabet-specific pattern to avoid parsing the header row. A path in the second cell
+# is what makes a row a claim, and the header's second cell is the literal `File`.
+claims="$(awk '/^## Machine-checked claims/,/^## [^M]/' "$REGISTER" | grep -E '^\| [^|]*\| [^|]*[./][^|]*\|' || true)"
 if [[ -z "$claims" ]]; then
   fail "no machine-checked claims table found (expected between '## Machine-checked claims' and the next '## ')"
 else
   checked=0
   while IFS='|' read -r _ id file test _; do
+    id="$(printf '%s' "$id" | tr -d ' ')"
     file="$(printf '%s' "$file" | tr -d ' `')"
     test="$(printf '%s' "$test" | tr -d ' `')"
     [[ -n "$file" && -n "$test" ]] || continue
@@ -108,6 +111,11 @@ else
       checked=$((checked + 1))
     fi
   done < <(printf '%s\n' "$claims" || true)
+  # Every claim row must have been checked: a row this loop skipped is a claim nobody verifies.
+  rows=$(printf '%s\n' "$claims" | grep -c '^|' || true)
+  if (( checked != rows )); then
+    fail "$((rows - checked)) claim row(s) were not checked (a malformed row is silently skipped)"
+  fi
   ok "$checked named test(s) verified"
 fi
 

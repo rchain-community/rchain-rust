@@ -794,3 +794,92 @@ partial fix of an earlier security remediation.
   (`crypto/src/util/key_util.rs`) asserts the created mode *and* the re-write case; the second
   assertion fails without the `set_permissions` call (`left: 420 (0o644), right: 384 (0o600)`), which
   is how the defect was found.
+
+## 16. Rholang syntax findings (the legacy-corpus sweep)
+
+The 165 `.rho` files under `legacy/` had never been parsed by the Rust port (`spec/TEST-COVERAGE.md`,
+"the largest single untested surface"). Running them through the real parser/reducer
+(`rholang/tests/legacy_contracts.rs`) found three defects in the **grammar** — not in the reducer —
+each of which silently changed the meaning of valid rholang. All three are fixed and pinned.
+
+The oracle for every one of these is the BNFC grammar the Scala node's Java parser is generated from,
+`legacy/rholang/src/main/bnfc/rholang_mercury.cf`.
+
+- **C9 — `(x)` was parsed as a one-element tuple; it is a group.** The grammar has *both* a grouping
+  production and two tuple productions, and they are distinguished by content:
+
+  ```
+  PExprs.          Proc11 ::= "(" Proc4 ")" ;              -- a parenthesised expression
+  TupleSingle.     Tuple  ::= "(" Proc ",)" ;              -- a tuple, comma mandatory
+  TupleMultiple.   Tuple  ::= "(" Proc "," [Proc] ")" ;
+  ```
+
+  The Rust parser had no `PExprs` at all: any `(` in collection position became a tuple, so
+  `(3 + 5)` parsed as `TupleSingle(3 + 5)` and `2 * (3 + 5)` failed at *reduce* time with "operator
+  `*` expects Int, got Tuple". Worse, it accepted forms the grammar rejects — `(a!(b))` and
+  `(a | b)` — as one-element tuples, because `parse_collection` never required the comma. Measured
+  payoff: `casper/src/genesis/resources/Registry.rho` (the node's own registry contract, a depth-4
+  keccak-256 nybble trie) **could not be reduced at all** before the fix; it reduces cleanly now, as
+  does `Registry.rho`, `tut-parens.rho` and any deploy using arithmetic in parentheses. **Fix:** a
+  group is now parsed at its own level (`parse_proc11_head`, `PExprs ::= "(" Proc4 ")"`, tried
+  speculatively and rewound when the interior is followed by a comma), and the collection path
+  requires the comma. Verified: `a_parenthesised_expression_is_a_group_not_a_one_element_tuple`,
+  `a_group_may_not_contain_a_send_or_a_parallel`; with the old branch restored the first fails with
+  the AST it used to build, `CollectTuple(TupleSingle(PAdd(3, 5)))`.
+
+- **C10 — the logical connectives were swapped, and disjunction was unparseable.** The grammar spells
+  them `PConjunction ::= Proc14 "/\\" Proc15` and `PDisjunction ::= Proc13 "\\/" Proc14` — conjunction
+  is `/` then `\`, disjunction is `\` then `/`. The lexer matched `\` + `/` as **Conj** (the
+  disjunction spelling, labelled as conjunction) and `\` + `\` — not an operator in the grammar at
+  all — as `Disj`, while the parser consumed `Tok::Conj` as `PConjunction` and never consumed
+  `Tok::Disj`. So `a \/ b` parsed as **`a /\ b`** and reduced to `ConnAnd`, and `a /\ b` did not lex
+  (`/` was taken as division, the `\` was then an illegal character). `Proc::PDisjunction` and the
+  normalizer's `normalize_disjunction` were already written and therefore unreachable. This is a
+  silent *semantic* swap on a ρ-calculus connective (Law 4), not a parse failure: a Scala-produced
+  block using `\/` would be re-parsed by a Rust node as a conjunction and diverge. **Fix:** the lexer
+  spells both connectives as the grammar does (longest match, so `/` alone is still division) and
+  `parse_proc13` grew the disjunction level. Verified:
+  `the_logical_connectives_lex_and_parse_in_their_grammar_spelling` (also pins the precedence —
+  `/\` binds tighter — and that `\\` no longer lexes); with the swapped arms restored the test fails.
+
+- **C11 — `++` had no Map or Set arm.** `Reduce.scala`'s `EPlusPlusBody` defines five arms: String,
+  `GByteArray`, `EList`, `EMapBody` (union) and `ESetBody` (union), reporting
+  `OperatorExpectedError("++", "Map"/"Set", …)` for a mismatched operand. The port had only the first
+  three, so `Set(1) ++ Set(2)` and `{"a": 1} ++ {"b": 2}` — both valid rholang, and both used by the
+  standard contracts — errored instead of reducing, and a `Map`/`Set` left operand was reported as
+  `OperatorNotDefined` rather than the expected-type error. **Fix:** the Map/Set arms reuse the same
+  `par_set`/`par_map` canonicalisation as the `union` *method* (which was already implemented), and
+  the two error arms match Scala's. Verified:
+  `plus_plus_concatenates_byte_arrays_and_unions_maps_and_sets` (values, the right-biased map
+  collision, and all four error arms by variant).
+
+### Documented (not a defect)
+
+- **`OperatorExpectedError` prints the same message as `OperatorNotDefined`.** Both format as
+  "Error: Operator `op` is not defined on type." in `legacy/rholang/.../errors.scala` — the Scala
+  `expected` field is carried but never rendered. The port is faithful, so a test that asserts the
+  *type* is in the message would be asserting an infidelity; the C11 test asserts the enum variant
+  instead. Recorded because it is surprising enough to be "fixed" by accident.
+- **The `src/main/k/rholang/tests/*.rho` files are K-framework semantics tests**, not programs: they
+  are the fixtures for the K definition (`legacy/rholang/src/main/k/`), written in an older dialect.
+  They are classified, not "supported" (see the register's skip table).
+- **C12 — `+` and `-` had no collection arms.** `Reduce.scala`'s `EPlusBody` has
+  `case (lhs: ESetBody, rhs) => add(lhs, List[Par](rhs))` — inserting into a set — and `EMinusBody`
+  has an arm each for `EMapBody` and `ESetBody`, both calling `delete`. The port implemented `+` and
+  `-` as integer arithmetic only, so `Set(1, 2) + 3`, `Set(1, 2) - 1` and `{"a": 1} - "a"` — all
+  valid rholang, exercised by `convenience_methods_test.rho` in the Mercury tutorial — errored as
+  `OperatorNotDefined`. Both call the *same* `add`/`delete` the corresponding methods do, so the port
+  was already carrying the semantics one dispatch away. **Fix:** the arms are added and the shared
+  bodies extracted into `set_add`/`collection_delete`, used by both the operators and the methods so
+  the two cannot drift. Verified: `plus_and_minus_also_insert_into_and_delete_from_collections`
+  (insert, duplicate insert, set delete, map delete by key, and the unchanged arithmetic and error
+  arms).
+- **The parse-depth guard bounds nesting, not stack.** `MAX_PARSE_DEPTH = 128` (`rholang/src/parser.rs`)
+  accepts depth 128 because each level enters ~16 nested `parse_procN` functions, so the guard's
+  limit costs ~3 MiB of stack in a debug build and under 2 MiB in release (measured: a `new x in`
+  term 124 levels deep parses at 3 MiB debug / 2 MiB release, and a 200-level term is rejected).
+  `casper/src/genesis/resources/MakeMint.rho` — one of the node's own genesis contracts — reaches
+  parse depth 64, so the margin is real but not large: a debug build cannot run the corpus on a
+  default 2 MiB thread stack. No action for the node (it ships release, where the limit fits), but
+  the corpus test sets an explicit stack so the requirement is stated where it bites rather than in
+  a `RUST_MIN_STACK` invocation.

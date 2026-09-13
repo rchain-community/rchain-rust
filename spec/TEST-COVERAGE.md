@@ -17,7 +17,7 @@ tools/audit-test-register.sh --deferred-ok # while the tiered work is in flight
 
 ## Inventory
 
-**938 `#[test]`/`#[tokio::test]` unit functions + 79 integration tests** across 13 crates, with **6
+**944 `#[test]`/`#[tokio::test]` unit functions + 82 integration tests** across 13 crates, with **6
 laws** carrying a randomized property test and **10 benchmark functions** in 6 Criterion groups. Only
 **3 of 12 crates have integration tests** (`rholang`, `casper`, `node`).
 
@@ -31,7 +31,7 @@ laws** carrying a randomized property test and **10 benchmark functions** in 6 C
 | `block-storage` | 17 | — | — | — |
 | `comm` | 67 | — | — | — |
 | `rspace` | 92 | — | 6 | — |
-| `rholang` | 129 | 32 | — | — |
+| `rholang` | 135 | 35 | — | — |
 | `casper` | 185 | 38 | — | — |
 | `node` | 127 | 9 | — | — |
 | `qucalc` | 20 | — | — | — |
@@ -80,11 +80,14 @@ overstate coverage.
   {stable_hash,scodec}.tsv`, `rholang/testdata/differential/execution.tsv` (3 rows), and the crypto
   known-answer vectors. These are *captured* Scala vectors, not a live Scala-vs-Rust harness; the
   generator is `legacy/scripts/gen-differential-goldens.sh` (see the [open gap](#deferred-and-blocked)).
-- **The legacy `.rho`/`.rhox` contract corpus** — **165 `.rho` + 1 `.rhox`** under `legacy/`. The one
-  `.rhox` (`legacy/casper/src/main/resources/Pos.rhox`) is a Scala-side macro template, not a program.
-  **None is referenced by any Rust test**: the parser and reducer are exercised only against inline
-  strings and the `qucalc`/`examples` `.rho` files. This is the largest single untested surface — the
-  Rust parser has never seen 165 real programs (see [Risk tiers](#risk-tiers-per-module)).
+- **The legacy `.rho`/`.rhox` contract corpus** — **165 `.rho` + 1 `.rhox`** under `legacy/`, now
+  driven by `rholang/tests/legacy_contracts.rs`. The one `.rhox`
+  (`legacy/casper/src/main/resources/Pos.rhox`) is a Scala-side macro template, not a program.
+  **75 of the 165 reduce cleanly**; the other 90 are listed in that test's `SKIPS` with a reason from
+  a closed enum (56 in a dialect the BNFC grammar does not have, 17 needing a Scala-test-harness
+  native, 8 templates, 4 meant to fail or needing a live context, 5 past the fuel bound), and the
+  test asserts `attempted + skipped == 165` so the corpus cannot shrink silently. Running it found
+  four defects in the port — see `AUDIT.md` §16.
 
 ### There are no `#[ignore]`d tests
 
@@ -129,6 +132,14 @@ not found in that file. Coverage claims live here rather than in prose so they c
 | G9 | `rspace/src/history/key_segment.rs` | `try_from_rejects_oversized_segment` |
 | G10 | `comm/src/transport/hostname_trust_manager.rs` | `server_verifier_rejects_wrong_hostname` |
 | G11 | `comm/src/transport/grpc_transport.rs` | `send_round_trips_over_socket` |
+| corpus | `rholang/tests/legacy_contracts.rs` | `legacy_contracts_parse_and_reduce` |
+| corpus | `rholang/tests/legacy_contracts.rs` | `the_corpus_is_the_size_the_register_records` |
+| corpus | `rholang/tests/legacy_contracts.rs` | `every_skip_entry_names_a_real_corpus_file` |
+| syntax | `rholang/src/parser.rs` | `a_parenthesised_expression_is_a_group_not_a_one_element_tuple` |
+| syntax | `rholang/src/parser.rs` | `a_group_may_not_contain_a_send_or_a_parallel` |
+| syntax | `rholang/src/parser.rs` | `the_logical_connectives_lex_and_parse_in_their_grammar_spelling` |
+| syntax | `rholang/src/reduce.rs` | `plus_plus_concatenates_byte_arrays_and_unions_maps_and_sets` |
+| syntax | `rholang/src/reduce.rs` | `plus_and_minus_also_insert_into_and_delete_from_collections` |
 
 ## Gap analysis (severity-ordered)
 
