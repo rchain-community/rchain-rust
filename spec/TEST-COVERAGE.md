@@ -17,7 +17,7 @@ tools/audit-test-register.sh --deferred-ok # while the tiered work is in flight
 
 ## Inventory
 
-**996 `#[test]`/`#[tokio::test]` unit functions + 82 integration tests** across 13 crates, with **6
+**1029 `#[test]`/`#[tokio::test]` unit functions + 82 integration tests** across 13 crates, with **6
 laws** carrying a randomized property test and **10 benchmark functions** in 6 Criterion groups. Only
 **3 of 12 crates have integration tests** (`rholang`, `casper`, `node`).
 
@@ -29,11 +29,11 @@ laws** carrying a randomized property test and **10 benchmark functions** in 6 C
 | `graphz` | 18 | — | — | — |
 | `models` | 124 | — | — | — |
 | `block-storage` | 17 | — | — | — |
-| `comm` | 76 | — | — | — |
+| `comm` | 94 | — | — | — |
 | `rspace` | 114 | — | 6 | — |
-| `rholang` | 143 | 35 | — | — |
+| `rholang` | 149 | 35 | — | — |
 | `casper` | 189 | 38 | — | — |
-| `node` | 127 | 9 | — | — |
+| `node` | 136 | 9 | — | — |
 | `qucalc` | 20 | — | — | — |
 | `rspace-bench` | — | — | — | 10 |
 
@@ -300,16 +300,16 @@ linter reports it.
 | T1 | `rholang/src/contract_call.rs` | `a_matched_reply_dispatches_at_the_child_path` |
 | T2 | `rspace/src/merger/mod.rs` | `seq_diff_removes_the_first_occurrence_and_preserves_order` |
 | T2 | `rspace/src/merger/event_log_merging_logic.rs` | `a_shared_destroyed_produce_conflicts_unless_it_is_mergeable_on_both_sides` |
-| T2 | `comm/src/transport/grpc_transport_receiver.rs` | — |
-| T2 | `comm/src/transport/grpc_transport_client.rs` | — |
+| T2 | `comm/src/transport/grpc_transport_receiver.rs` | `a_sender_from_another_network_is_refused_and_not_dispatched` |
+| T2 | `comm/src/transport/grpc_transport_client.rs` | `an_over_long_peer_id_is_a_parse_error` |
 | T2 | `comm/src/discovery/kademlia_node_discovery.rs` | `each_lookup_targets_the_bit_flip_of_its_bucket` |
-| T2 | `comm/src/discovery/grpc_kademlia_rpc.rs` | — |
-| T2 | `comm/src/discovery/grpc_kademlia_rpc_server.rs` | — |
+| T2 | `comm/src/discovery/grpc_kademlia_rpc.rs` | `a_peer_that_accepts_but_stalls_is_given_up_on` |
+| T2 | `comm/src/discovery/grpc_kademlia_rpc_server.rs` | `a_ping_claiming_a_local_host_never_reaches_the_handler` |
 | T2 | `comm/src/discovery/mod.rs` | `an_out_of_range_port_is_rejected_by_name` |
-| T2 | `node/src/api/grpc/deploy_grpc_service_v1.rs` | — |
-| T2 | `rholang/src/reporting_runtime.rs` | — |
+| T2 | `node/src/api/grpc/deploy_grpc_service_v1.rs` | `a_non_hex_report_hash_is_refused_by_name` |
+| T2 | `rholang/src/reporting_runtime.rs` | `a_reduce_error_is_captured_in_the_result` |
 | T3 | `rholang/src/storage_printer.rs` | `a_non_par_body_continuation_renders_an_empty_body` |
-| T3 | `node/src/api/grpc/repl_grpc_service.rs` | — |
+| T3 | `node/src/api/grpc/repl_grpc_service.rs` | `a_syntax_error_is_reported_without_evaluating` |
 | T3 | `models/src/errors.rs` | `the_length_remap_keeps_got_and_expected_the_right_way_round` |
 
 ### The census behind these rows
@@ -397,6 +397,7 @@ green diff. These are all of them.
 | `casper/src/gateway/ledger.rs::CoordRecord::record_vote` — a terminal record is absorbing | A late `Ready` could resurrect an aborted (compensated) transaction (AUDIT §15 C1) | `an_abort_is_absorbing`, `a_commit_is_absorbing` |
 | `comm/src/transport/grpc_transport_receiver.rs` — `ConcurrencyLimits` + `serve_with_limits` | `MAX_CONCURRENT_DISPATCH` was a constant with no seam, so the DoS bound could not be tested at all | `a_full_dispatch_queue_is_rejected_and_recovers` |
 | `crypto/src/util/key_util.rs::write_with_mode` — apply `0o600` with `set_permissions` after the write | `OpenOptions::mode` applies only at creation, so the R6 private-key fix was ineffective on a pre-existing key file (AUDIT §15 C8) | `the_private_key_file_is_owner_only` |
+| `comm/src/transport/grpc_transport_receiver.rs::GrpcTransportReceiver::for_test` — a `#[cfg(test)]`-only constructor | The inbound guards (network-id rejection, dispatch bound, missing protocol) are otherwise reachable only over a socket, because production builds the receiver behind the TLS accept loop | `a_sender_from_another_network_is_refused_and_not_dispatched`, `a_full_dispatch_queue_is_refused` |
 
 Everything else this plan has touched is a test, the register itself, the audit register, the linter,
 or a `Makefile`/CI target.

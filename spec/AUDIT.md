@@ -896,3 +896,15 @@ The oracle for every one of these is the BNFC grammar the Scala node's Java pars
   `a_requested_block_with_a_forged_hash_is_rejected` (the rejection, the absence from both the
   normal and the resend request sets, and `!is_finished()`), so a future guard in either place fails
   a test instead of changing behaviour silently.
+- **OPEN QUESTION — `ReportingRuntime::consume_result` never matches.** Calling it with the same
+  binder `BindPattern` and on the same channel as a datum that `get_data` reports as present returns
+  `None` *and* leaves the datum in place: it neither matches nor consumes. The same pattern and datum
+  match in isolation (`rho_match_binds_free_vars` in `rholang/src/storage.rs`), so the gap is in the
+  path, not the matcher — `ReportingRspace::consume` records the event and delegates to
+  `ReplayRSpace::consume`, and the reporting runtime is the only caller of this entry point. Recorded
+  rather than fixed or asserted-as-correct because I could not establish the intent: `consume_result`
+  may be a reporting placeholder that was never wired to matching, or the delegation may be losing
+  something. The test
+  (`an_unmatched_consume_result_is_none_and_leaves_a_waiter`, `rholang/src/reporting_runtime.rs`)
+  pins what is observed, so closing the gap will fail it and force the update. No consensus impact:
+  the reporting runtime is read-only tooling (`/reporting` routes), not the deploy path.

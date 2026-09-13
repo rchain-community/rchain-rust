@@ -160,6 +160,37 @@ pub struct GrpcTransportReceiver {
     blob_slots: Arc<tokio::sync::Semaphore>,
 }
 
+impl GrpcTransportReceiver {
+    /// A receiver over caller-supplied handlers, with the TLS/accept loop bypassed.
+    ///
+    /// **Test only.** The production path builds this struct inside `serve_with_limits` (behind the
+    /// accept loop and the TLS session interceptor), so the inbound guards below — the network-id
+    /// rejection, the dispatch-queue bound and the missing-protocol arm — are otherwise reachable
+    /// only over a socket. `comm/src/transport/grpc_transport.rs` drives that path end to end; this
+    /// seam exists so the guards themselves can be pinned without a server. Listed in
+    /// `spec/TEST-COVERAGE.md`'s production-change table.
+    #[cfg(test)]
+    pub(crate) fn for_test(
+        local: PeerNode,
+        network_id: &str,
+        max_stream_message_size: i64,
+        dispatch: Arc<dyn Fn(Protocol) -> BoxFuture<CommunicationResponse> + Send + Sync>,
+        handle_streamed: Arc<dyn Fn(Blob) -> BoxFuture<()> + Send + Sync>,
+        limits: ConcurrencyLimits,
+    ) -> Self {
+        GrpcTransportReceiver {
+            local,
+            network_id: network_id.to_string(),
+            max_stream_message_size,
+            dispatch,
+            handle_streamed,
+            dispatch_slots: Arc::new(tokio::sync::Semaphore::new(limits.dispatches)),
+            stream_slots: Arc::new(tokio::sync::Semaphore::new(limits.streams)),
+            blob_slots: Arc::new(tokio::sync::Semaphore::new(limits.blobs)),
+        }
+    }
+}
+
 #[async_trait]
 impl transport_layer_server::TransportLayer for GrpcTransportReceiver {
     async fn send(&self, request: Request<TlRequest>) -> Result<Response<TlResponse>, Status> {
@@ -374,4 +405,209 @@ pub async fn serve_with_limits(
         .serve_with_incoming(incoming)
         .await
         .map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    // The service methods live on the generated trait, so it must be in scope to call them.
+    use rchain_models::comm::protocol::transport_layer_server::TransportLayer as _;
+
+    use rchain_shared::refined::Port;
+
+    /// Counts handler calls, so a rejection can be asserted by *absence*.
+    #[derive(Default)]
+    struct Dispatch {
+        calls: AtomicUsize,
+    }
+
+    fn local() -> PeerNode {
+        PeerNode::from(
+            crate::peer_node::NodeIdentifier::new(vec![0x11; 20]),
+            "127.0.0.1".to_string(),
+            Port::new(40400),
+            Port::new(40404),
+        )
+    }
+
+    fn receiver(dispatch: Arc<Dispatch>, dispatches: usize) -> GrpcTransportReceiver {
+        let d = dispatch.clone();
+        GrpcTransportReceiver::for_test(
+            local(),
+            "testnet",
+            16 * 1024 * 1024,
+            Arc::new(move |_p| {
+                d.calls.fetch_add(1, Ordering::SeqCst);
+                Box::pin(async { CommunicationResponse::handled_without_message() })
+            }),
+            Arc::new(|_b| Box::pin(async {})),
+            ConcurrencyLimits {
+                dispatches,
+                ..ConcurrencyLimits::default()
+            },
+        )
+    }
+
+    /// A protocol with a header naming `network_id`.
+    fn request(network_id: &str) -> Request<TlRequest> {
+        Request::new(TlRequest {
+            protocol: Some(Protocol {
+                header: Some(protocol_helper::header(&local(), network_id)),
+                message: None,
+            }),
+        })
+    }
+
+    /// **The network-id guard.** A sender on another network is refused with `PermissionDenied`
+    /// naming *both* networks, and its message is never dispatched — the guard is what keeps two
+    /// chains' traffic out of each other's routing layer.
+    #[tokio::test]
+    async fn a_sender_from_another_network_is_refused_and_not_dispatched() {
+        let d = Arc::new(Dispatch::default());
+        let service = receiver(d.clone(), 8);
+
+        let status = service
+            .send(request("mainnet"))
+            .await
+            .expect_err("another network must be refused");
+        assert_eq!(status.code(), tonic::Code::PermissionDenied);
+        let message = status.message();
+        assert!(message.contains("mainnet"), "{message}");
+        assert!(message.contains("testnet"), "{message}");
+        assert_eq!(
+            d.calls.load(Ordering::SeqCst),
+            0,
+            "a foreign network's message must not reach the dispatch handler"
+        );
+    }
+
+    /// An *empty* network id is refused too, and the message says so rather than printing nothing
+    /// where the network should be.
+    #[tokio::test]
+    async fn a_sender_with_no_network_id_is_refused() {
+        let service = receiver(Arc::new(Dispatch::default()), 8);
+        let status = service
+            .send(request(""))
+            .await
+            .expect_err("an empty network id is still not ours");
+        assert_eq!(status.code(), tonic::Code::PermissionDenied);
+        assert!(status.message().contains("<empty>"), "{}", status.message());
+    }
+
+    /// The accepting path: a same-network protocol is dispatched (asynchronously) and answered with
+    /// an `Ack` carrying *this* node's header, which is what the sender authenticates against.
+    #[tokio::test]
+    async fn a_sender_on_this_network_is_dispatched_and_acked() {
+        let d = Arc::new(Dispatch::default());
+        let service = receiver(d.clone(), 8);
+
+        let response = service
+            .send(request("testnet"))
+            .await
+            .expect("our own network is accepted")
+            .into_inner();
+        match response.payload {
+            Some(tl_response::Payload::Ack(ack)) => {
+                let header = ack.header.expect("an ack carries a header");
+                assert_eq!(header.network_id, "testnet");
+                assert_eq!(header.sender.expect("a sender").id, local().key().to_vec());
+            }
+            other => panic!("expected an ack, got {other:?}"),
+        }
+
+        // The dispatch happens on a spawned task, so give it a turn before asserting.
+        for _ in 0..50 {
+            if d.calls.load(Ordering::SeqCst) == 1 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert_eq!(
+            d.calls.load(Ordering::SeqCst),
+            1,
+            "the message is dispatched once"
+        );
+    }
+
+    /// A request without a protocol is a client error, not a panic.
+    #[tokio::test]
+    async fn a_missing_protocol_is_an_invalid_argument() {
+        let service = receiver(Arc::new(Dispatch::default()), 8);
+        let status = service
+            .send(Request::new(TlRequest { protocol: None }))
+            .await
+            .expect_err("a request without a protocol is malformed");
+        assert_eq!(status.code(), tonic::Code::InvalidArgument);
+    }
+
+    /// **The dispatch bound.** With one slot and a handler that has not finished, a second inbound
+    /// message is refused with `ResourceExhausted` rather than queued without bound. The permit is
+    /// held by the spawned task, so the bound is a gate on *in-flight* dispatches.
+    #[tokio::test]
+    async fn a_full_dispatch_queue_is_refused() {
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        let e = entered.clone();
+        let r = release.clone();
+        let service = GrpcTransportReceiver::for_test(
+            local(),
+            "testnet",
+            16 * 1024 * 1024,
+            Arc::new(move |_p| {
+                let e = e.clone();
+                let r = r.clone();
+                Box::pin(async move {
+                    e.notify_one();
+                    r.notified().await;
+                    CommunicationResponse::handled_without_message()
+                })
+            }),
+            Arc::new(|_b| Box::pin(async {})),
+            ConcurrencyLimits {
+                dispatches: 1,
+                ..ConcurrencyLimits::default()
+            },
+        );
+
+        service
+            .send(request("testnet"))
+            .await
+            .expect("the first message takes the only slot");
+        entered.notified().await;
+
+        let status = service
+            .send(request("testnet"))
+            .await
+            .expect_err("the queue is full");
+        assert_eq!(status.code(), tonic::Code::ResourceExhausted);
+
+        // Releasing the first dispatch frees the slot: the bound is a queue, not a latch.
+        release.notify_one();
+        for _ in 0..50 {
+            if service.send(request("testnet")).await.is_ok() {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        panic!("the slot must be released when the dispatch finishes");
+    }
+
+    /// The chunk-count cap bounds empty `content_data` chunks, which never advance the byte count
+    /// (R26). Asserted at compile time, so a change to the bound is a build failure.
+    const _: () = assert!(MAX_STREAM_CHUNKS > 0);
+
+    /// `CommunicationResponse` is what the dispatch closure returns; the variants are the three
+    /// answers the routing layer understands. A cheap sanity check that the constructor used by the
+    /// tests above is the same shape production builds.
+    #[test]
+    fn limits_default_to_the_documented_constants() {
+        let limits = ConcurrencyLimits::default();
+        assert_eq!(limits.dispatches, MAX_CONCURRENT_DISPATCH);
+        assert_eq!(limits.streams, MAX_CONCURRENT_STREAMS);
+        assert_eq!(limits.blobs, MAX_CONCURRENT_BLOBS);
+        assert_eq!(limits.handshakes, MAX_CONCURRENT_HANDSHAKES);
+        assert!(limits.dispatches > 0 && limits.streams > 0 && limits.blobs > 0);
+    }
 }

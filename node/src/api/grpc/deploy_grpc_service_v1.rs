@@ -226,3 +226,301 @@ impl DeployGrpcServiceV1 {
         self.block_api.status().await
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::marker::PhantomData;
+    use std::sync::Mutex;
+
+    use rchain_block_storage::block_store::BlockStore;
+    use rchain_block_storage::dag::codecs::{BlockHashCodec, BlockMessageCodec};
+    use rchain_block_storage::dag::dag_storage::DeployId;
+    use rchain_casper::api::block_api::{ApiErr, Capabilities};
+    use rchain_casper::api::block_report_api::{BlockReportApi, ReportStore};
+    use rchain_casper::reporting::noop;
+    use rchain_models::block_metadata::BlockMetadata;
+    use rchain_models::casper::protocol::deploy_service::{
+        BlockInfo, DataWithBlockInfo, VersionInfo,
+    };
+    use rchain_models::casper::protocol::report::BlockEventInfo;
+    use rchain_shared::store::InMemoryKeyValueStore;
+    use rchain_shared::typed_store::{Codec, KeyValueTypedStoreCodec, SharedStore};
+
+    /// The report store's codec, copied from `node/src/web/http.rs`'s fixture (the plan's
+    /// deliberate duplication over a shared `#[cfg(test)] pub` module).
+    struct JsonCodec<T>(PhantomData<T>);
+
+    impl<T: serde::Serialize + serde::de::DeserializeOwned + Send + Sync> Codec<T> for JsonCodec<T> {
+        fn encode(&self, value: &T) -> Vec<u8> {
+            serde_json::to_vec(value).expect("json encode")
+        }
+
+        fn decode(&self, bytes: &[u8]) -> Result<T, String> {
+            serde_json::from_slice(bytes).map_err(|e| e.to_string())
+        }
+    }
+
+    /// The block API double: every method refuses, except the ones a test drives. A double that
+    /// answered everything would let a delegation bug pass, since a wrong call would still return a
+    /// plausible value.
+    #[derive(Default)]
+    struct StubBlockApi {
+        /// Records `exploratory_deploy`'s arguments, which is what distinguishes the empty-hash arm.
+        exploratory: Mutex<Vec<(String, Option<String>, bool)>>,
+    }
+
+    #[async_trait::async_trait]
+    impl BlockApi for StubBlockApi {
+        async fn status(&self) -> Status {
+            Status {
+                version: VersionInfo {
+                    api: String::new(),
+                    node: String::new(),
+                },
+                address: String::new(),
+                network_id: String::new(),
+                shard_id: String::new(),
+                peers: 0,
+                nodes: 0,
+                min_phlo_price: 0,
+                latest_block_number: 0,
+            }
+        }
+        async fn deploy(&self, _deploy: &SignedDeployData) -> ApiErr<String> {
+            unimplemented!("not driven by these tests")
+        }
+        async fn deploy_status(&self, _deploy_id: &DeployId) -> ApiErr<DeployExecStatus> {
+            unimplemented!("not driven by these tests")
+        }
+        async fn pooled_deploys(&self) -> ApiErr<Vec<SignedDeployData>> {
+            unimplemented!("not driven by these tests")
+        }
+        async fn capabilities(&self) -> Capabilities {
+            unimplemented!("not driven by these tests")
+        }
+        async fn create_block(&self, _is_async: bool) -> ApiErr<String> {
+            unimplemented!("not driven by these tests")
+        }
+        async fn get_propose_result(&self) -> ApiErr<String> {
+            unimplemented!("not driven by these tests")
+        }
+        async fn get_listening_name_data_response(
+            &self,
+            _depth: i32,
+            _listening_name: &Par,
+        ) -> ApiErr<(Vec<DataWithBlockInfo>, i32)> {
+            unimplemented!("not driven by these tests")
+        }
+        async fn get_listening_name_continuation_response(
+            &self,
+            _depth: i32,
+            _listening_names: &[Par],
+        ) -> ApiErr<(Vec<ContinuationsWithBlockInfo>, i32)> {
+            unimplemented!("not driven by these tests")
+        }
+        async fn get_blocks_by_heights(
+            &self,
+            _start_block_number: i64,
+            _end_block_number: i64,
+        ) -> ApiErr<Vec<LightBlockInfo>> {
+            unimplemented!("not driven by these tests")
+        }
+        async fn visualize_dag(
+            &self,
+            _depth: i32,
+            _start_block_number: i32,
+            _show_justification_lines: bool,
+        ) -> ApiErr<Vec<String>> {
+            unimplemented!("not driven by these tests")
+        }
+        async fn machine_verifiable_dag(&self, _depth: i32) -> ApiErr<String> {
+            unimplemented!("not driven by these tests")
+        }
+        async fn get_blocks(&self, _depth: i32) -> ApiErr<Vec<LightBlockInfo>> {
+            unimplemented!("not driven by these tests")
+        }
+        async fn find_deploy(&self, _id: &DeployId) -> ApiErr<LightBlockInfo> {
+            unimplemented!("not driven by these tests")
+        }
+        async fn get_block(&self, _hash: &str) -> ApiErr<BlockInfo> {
+            unimplemented!("not driven by these tests")
+        }
+        async fn bond_status(&self, _public_key: &[u8]) -> ApiErr<bool> {
+            unimplemented!("not driven by these tests")
+        }
+        async fn exploratory_deploy(
+            &self,
+            term: &str,
+            block_hash: Option<&str>,
+            use_pre_state_hash: bool,
+        ) -> ApiErr<(Vec<Par>, LightBlockInfo)> {
+            self.exploratory.lock().unwrap().push((
+                term.to_string(),
+                block_hash.map(str::to_string),
+                use_pre_state_hash,
+            ));
+            Ok((Vec::new(), light_block()))
+        }
+        async fn get_data_at_par(
+            &self,
+            _par: &Par,
+            _block_hash: &str,
+            _use_pre_state_hash: bool,
+        ) -> ApiErr<(Vec<Par>, LightBlockInfo)> {
+            unimplemented!("not driven by these tests")
+        }
+        async fn last_finalized_block(&self) -> ApiErr<BlockInfo> {
+            unimplemented!("not driven by these tests")
+        }
+        async fn is_finalized(&self, _hash: &str) -> ApiErr<bool> {
+            unimplemented!("not driven by these tests")
+        }
+        async fn get_latest_message(&self) -> ApiErr<BlockMetadata> {
+            unimplemented!("not driven by these tests")
+        }
+    }
+
+    fn light_block() -> LightBlockInfo {
+        LightBlockInfo {
+            version: 1,
+            shard_id: "root".to_string(),
+            block_hash: String::new(),
+            block_number: 0,
+            sender: String::new(),
+            seq_num: 0,
+            pre_state_hash: String::new(),
+            post_state_hash: String::new(),
+            justifications: vec![],
+            bonds: vec![],
+            sig_algorithm: String::new(),
+            sig: String::new(),
+            block_size: String::new(),
+            deploy_count: 0,
+            rejected_deploys: vec![],
+            timestamp: 0,
+        }
+    }
+
+    /// An in-memory report API (the fixture shape `node/src/web/http.rs` uses).
+    fn report_api() -> Arc<BlockReportApi> {
+        let store: SharedStore = Arc::new(tokio::sync::Mutex::new(Box::new(
+            InMemoryKeyValueStore::default(),
+        )));
+        let block_store: BlockStore = Arc::new(KeyValueTypedStoreCodec::new(
+            store.clone(),
+            Arc::new(BlockHashCodec),
+            Arc::new(BlockMessageCodec),
+        ));
+        let report_store: ReportStore = Arc::new(KeyValueTypedStoreCodec::new(
+            store,
+            Arc::new(BlockHashCodec),
+            Arc::new(JsonCodec::<BlockEventInfo>(PhantomData)),
+        ));
+        Arc::new(BlockReportApi::new(
+            block_store,
+            Arc::new(noop()),
+            report_store,
+            None,
+        ))
+    }
+
+    fn service() -> (DeployGrpcServiceV1, Arc<StubBlockApi>) {
+        let api = Arc::new(StubBlockApi::default());
+        (
+            DeployGrpcServiceV1::new(api.clone(), report_api(), false),
+            api,
+        )
+    }
+
+    /// **`getEventByHash`'s validation, arm one:** a hash that is not hex is refused *by name*,
+    /// before the report API is reached — the request is remote input, and the message has to say
+    /// what was wrong with it.
+    #[tokio::test]
+    async fn a_non_hex_report_hash_is_refused_by_name() {
+        let (service, _) = service();
+        let err = service
+            .get_event_by_hash(&ReportQuery {
+                hash: "zz not hex".to_string(),
+                force_replay: false,
+            })
+            .await
+            .expect_err("a non-hex hash is a client error");
+        let message = err.messages.join("; ");
+        assert!(message.contains("zz not hex"), "{message}");
+        assert!(message.contains("not valid hex string"), "{message}");
+    }
+
+    /// **Arm two:** hex of the wrong length. The `BlockHash` conversion rejects it, so a short hash
+    /// cannot be silently zero-padded into a lookup for a different block.
+    #[tokio::test]
+    async fn a_wrong_length_report_hash_is_refused() {
+        let (service, _) = service();
+        let err = service
+            .get_event_by_hash(&ReportQuery {
+                hash: "ab".to_string(),
+                force_replay: false,
+            })
+            .await
+            .expect_err("a short hash is a client error");
+        assert!(
+            err.messages.join("; ").contains("expected 32 bytes, got 1"),
+            "{err:?}"
+        );
+    }
+
+    /// The valid path reaches the report API and surfaces *its* error: the report store here is
+    /// empty, so the block is unknown — which is the delegation this arm pins (the validation above
+    /// must not be the only thing that runs).
+    #[tokio::test]
+    async fn a_valid_report_hash_reaches_the_report_api() {
+        let (service, _) = service();
+        let err = service
+            .get_event_by_hash(&ReportQuery {
+                hash: rchain_shared::base16::encode(&[7u8; 32]),
+                force_replay: false,
+            })
+            .await
+            .expect_err("the report store is empty");
+        let message = err.messages.join("; ");
+        assert!(
+            !message.contains("not valid hex string"),
+            "it must get past validation: {message}"
+        );
+    }
+
+    /// `exploratoryDeploy`'s one branch: an **empty** `block_hash` means "the latest state" and is
+    /// passed as `None`; anything else is passed through as the hash to deploy against. Passing
+    /// `Some("")` instead would look up a block whose hash is the empty string.
+    #[tokio::test]
+    async fn an_empty_block_hash_means_the_latest_state() {
+        let (service, api) = service();
+
+        let (_, info) = service
+            .exploratory_deploy(&ExploratoryDeployQuery {
+                term: "Nil".to_string(),
+                block_hash: String::new(),
+                use_pre_state_hash: false,
+            })
+            .await
+            .expect("the stub answers");
+        assert_eq!(info.block_number, 0);
+
+        let (_, info) = service
+            .exploratory_deploy(&ExploratoryDeployQuery {
+                term: "Nil".to_string(),
+                block_hash: "abc123".to_string(),
+                use_pre_state_hash: true,
+            })
+            .await
+            .expect("the stub answers");
+        assert_eq!(info.shard_id, "root");
+
+        let calls = api.exploratory.lock().unwrap();
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0].1, None, "an empty hash must become `None`");
+        assert!(!calls[0].2, "the flag is passed through");
+        assert_eq!(calls[1].1.as_deref(), Some("abc123"));
+        assert!(calls[1].2);
+    }
+}
