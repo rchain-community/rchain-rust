@@ -301,3 +301,104 @@ async fn play_and_replay_agree_for_escrow_round_trip_deploy() {
         "play and replay post-state hashes must agree for the escrow round-trip deploy"
     );
 }
+
+/// **The negative replay path** (the register's G7): a deploy whose replay does not reproduce the
+/// recorded state must be **rejected by the validating caller**, not accepted.
+///
+/// Two things this test establishes, one of which is a finding:
+///
+/// 1. Tampering with a *processed* deploy — the public `ProcessedDeploy`, no production change —
+///    makes the replay produce a **different post-state hash**. The replay itself returns that hash
+///    rather than an error, which is by design: `replay_compute_state` computes, and the caller
+///    decides.
+/// 2. The decision is `interpreter_util::handle_errors`, which compares the replayed hash against
+///    the block's claimed `post_state_hash` and returns `Ok(None)` on a mismatch. **That comparison
+///    is what carries the invariant**: the inner trace check (`check_replay_data_with_fix`) returns
+///    `Ok` for a term tamper here, because it deliberately swallows mismatch for a deploy that is not
+///    "eval successful" (the documented RCHAIN-3505 workaround). A test asserting only the inner
+///    check would therefore pass while a tampered block was accepted.
+#[tokio::test]
+async fn a_tampered_deploy_replays_to_a_rejected_state_hash() {
+    let rm = common::build_runtime_manager().await;
+    let rand = Blake2b512Random::from_init(&[0u8; 32]);
+
+    let (_pre, post, _) = rm
+        .compute_genesis(
+            &[],
+            &rand,
+            BlockData::empty(),
+            &PosGenesis::default(),
+            &[seeded_vault()],
+        )
+        .await
+        .expect("compute_genesis");
+
+    let term = r#"new deployerId(`rho:rchain:deployerId`) in { @"marker"!(42) }"#;
+    let (post_state, user_results, sys_results) = rm
+        .compute_state(&post, &[deploy(term)], &[], &rand, BlockData::empty())
+        .await
+        .expect("play compute_state");
+    assert!(
+        user_results[0].eval_result.succeeded(),
+        "the recorded deploy must succeed: {:?}",
+        user_results[0].eval_result.errors
+    );
+    let mut processed: Vec<ProcessedDeploy> = user_results.into_iter().map(|r| r.deploy).collect();
+    let processed_sys: Vec<ProcessedSystemDeploy> =
+        sys_results.into_iter().map(|r| r.deploy).collect();
+
+    // Control: the untouched set replays to the recorded hash, and the validating comparison accepts
+    // it (it returns the hash rather than `None`).
+    let (clean_hash, _) = rm
+        .replay_compute_state(
+            &post,
+            &processed,
+            &processed_sys,
+            &rand,
+            BlockData::empty(),
+            true,
+            &PosGenesis::default(),
+            &[],
+        )
+        .await
+        .expect("a clean replay succeeds");
+    assert_eq!(
+        clean_hash, post_state,
+        "a clean replay reproduces the state"
+    );
+    assert_eq!(
+        rchain_casper::interpreter_util::handle_errors(&post_state, Ok(clean_hash))
+            .expect("no internal error"),
+        Some(clean_hash),
+        "the clean replay is accepted"
+    );
+
+    // Tamper: the processed deploy claims to be a term that did not run.
+    processed[0].deploy.data.term =
+        r#"new deployerId(`rho:rchain:deployerId`) in { @"other"!(99) }"#.to_string();
+
+    let (tampered_hash, _) = rm
+        .replay_compute_state(
+            &post,
+            &processed,
+            &processed_sys,
+            &rand,
+            BlockData::empty(),
+            true,
+            &PosGenesis::default(),
+            &[],
+        )
+        .await
+        .expect("the replay computes a hash; the caller judges it");
+
+    assert_ne!(
+        tampered_hash, post_state,
+        "a tampered deploy must not replay to the recorded state"
+    );
+    assert_eq!(
+        rchain_casper::interpreter_util::handle_errors(&post_state, Ok(tampered_hash))
+            .expect("no internal error"),
+        None,
+        "the validating comparison must reject a state that does not match the block's claim"
+    );
+}

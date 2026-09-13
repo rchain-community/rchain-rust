@@ -1608,4 +1608,17 @@ mod tests {
             .unwrap());
         assert_eq!(native.http_records().await.unwrap().len(), 2);
     }
+
+    /// `refund` is a **documented no-op**: the refund vault is not modeled yet. Pinning it means a
+    /// future half-implementation — one that debits or credits something without the vault behind it
+    /// — trips here rather than silently changing the phlo accounting.
+    #[tokio::test]
+    async fn refund_is_a_documented_no_op() {
+        let native = NativeSystemState::new(std::sync::Arc::new(InMemNativeStore::empty()));
+        assert!(matches!(native.refund(0).await, Ok(Ok(()))));
+        assert!(
+            matches!(native.refund(1_000).await, Ok(Ok(()))),
+            "a no-op succeeds for any amount, including a large one"
+        );
+    }
 }

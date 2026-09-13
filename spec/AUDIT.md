@@ -715,3 +715,16 @@ deviation.
   attempted", so a leg whose commit never landed holds its escrow until recovery re-drives it.
   Verified: `a_failed_phase_two_leaves_the_decision_intact` (both legs prepare, the decision is
   written, leg B's commit is rejected, the record stays `Committed`).
+
+- **C3 — the inner replay trace check does not fire for a term tamper; the state-hash comparison
+  does.** `casper/src/runtime_replay.rs::check_replay_data_with_fix` returns `Ok(())` when the
+  RSpace trace check fails **and** the deploy was not "eval successful" — the deliberate
+  RCHAIN-3505 workaround (`// TODO: temp fix for replay error mismatch (RCHAIN-3505)`). Measured:
+  replaying a deploy whose processed `data.term` was rewritten to a different term does **not**
+  produce a `ReplayFailure`; it produces a *different post-state hash*. The invariant is carried one
+  level up, by `casper/src/interpreter_util.rs::handle_errors`, which compares the replayed hash
+  against the block's claimed `post_state_hash` and returns `Ok(None)` on a mismatch. **Assessed
+  faithful** (it is the ported Scala behaviour), recorded because a test written against the inner
+  check alone would pass while a tampered block was accepted. Verified:
+  `a_tampered_deploy_replays_to_a_rejected_state_hash` (`casper/tests/determinism.rs`) pins both the
+  divergence and the rejection — and would fail if the comparison were removed.

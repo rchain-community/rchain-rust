@@ -90,16 +90,23 @@ not found in that file. Coverage claims live here rather than in prose so they c
 | G2 | `casper/src/dag.rs` | `add_deploy_rejects_when_pool_full` |
 | G2 | `comm/src/transport/chunker.rs` | `chunk_it_rejects_too_small_max_message_size` |
 | G2 | `comm/src/transport/stream_handler.rs` | `restore_rejects_oversized_decompressed_content` |
+| G2 | `shared/src/rate_limiter.rs` | `admits_exactly_max_per_window_then_refuses` |
+| G2 | `node/src/web/http.rs` | `api_deploy_returns_429_when_the_limiter_is_exhausted` |
 | G2 | `rholang/src/parser.rs` | `rejects_excessive_nesting_depth` |
 | G3 | `rholang/src/native_state.rs` | `bond_requires_trust_admission` |
 | G3 | `casper/tests/consensus.rs` | `bond_deploy_updates_the_active_validator_set` |
+| G3 | `rholang/src/native_state.rs` | `refund_is_a_documented_no_op` |
 | G4 | `casper/tests/consensus.rs` | `deploy_exceeding_phlo_limit_fails_and_next_runs` |
 | G5 | `rspace/src/state/mod.rs` | `validate_state_items_accepts_valid_round_trip` |
 | G5 | `rspace/src/state/mod.rs` | `validate_state_items_rejects_corrupted_data` |
+| G5 | `rspace/src/state/instances.rs` | `a_populated_store_export_import_round_trips` |
 | G6 | `rspace/src/rspace.rs` | `checkpoint_reset_returns_persisted_data` |
 | G6 | `rspace/src/rspace.rs` | `soft_checkpoint_revert_rolls_back_produces` |
 | G7 | `casper/tests/consensus.rs` | `replay_matches_play_for_persistent_and_peek` |
 | G7 | `rholang/tests/execution.rs` | `replay_matches_play` |
+| G7 | `casper/tests/determinism.rs` | `a_tampered_deploy_replays_to_a_rejected_state_hash` |
+| G12 | `rholang/src/storage.rs` | `produce_at_charges_the_storage_up_front` |
+| G12 | `rholang/src/storage.rs` | `commit_produce_charges_the_event_at_the_commit` |
 | G8 | `block-storage/src/dag/finalizer.rs` | `calculate_finalization_advances_fringe_on_fork` |
 | G9 | `comm/src/peer_node.rs` | `from_hex_rejects_malformed_input` |
 | G9 | `comm/src/peer_node.rs` | `from_address_rejects_malformed_uris` |
@@ -123,10 +130,11 @@ A `⏸` marks a gap that is still open; the completion plan closes these.
   `restore_rejects_oversized_decompressed_content`), and the parser depth guard
   (`rholang/src/parser.rs` `rejects_excessive_nesting_depth`, plus the end-to-end
   `rholang/tests/execution.rs` `unbounded_recursion_hits_depth_limit_not_stack_overflow`).
-  **⏸ Two legs are open, and an earlier revision of this register wrongly marked them covered:**
-  the `RateLimiter` itself (`shared/src/rate_limiter.rs` — the struct has **no test anywhere**, and
-  no test asserts a 429 on the unauthenticated deploy/faucet/explore routes) and the dispatch
-  semaphore (`comm/src/transport/grpc_transport_receiver.rs`, `MAX_CONCURRENT_DISPATCH`).
+  The `RateLimiter` leg is now ✅ too (`admits_exactly_max_per_window_then_refuses`,
+  `resets_after_its_window`, `zero_never_admits`, plus a 429 asserted through the deploy route) — an
+  earlier revision of this register wrongly marked it covered when nothing tested it. **⏸ One leg
+  remains:** the dispatch semaphore (`comm/src/transport/grpc_transport_receiver.rs`,
+  `MAX_CONCURRENT_DISPATCH`).
   *Seams:* the rate limiter is pure (`new(max_per_sec)`/`allow()`) — window/reset/zero unit tests,
   plus a 429 assertion through the HTTP routes. The semaphore is local to a spawned task, so the
   honest test is **socket-level** (open `MAX+K` streams and assert the last is unanswered; precedent
@@ -192,32 +200,33 @@ A `⏸` marks a gap that is still open; the completion plan closes these.
 | Gap | Status |
 |---|---|
 | G1 equivocation | ✅ `insert_rejects_equivocation_same_seq_num` |
-| G2 DoS limits | ✅ chunker underflow guard, deploy-pool cap, decompression cap, parser depth guard (named in the claims table); ⏸ **`RateLimiter` itself is untested** — an earlier revision wrongly marked it covered — and ⏸ the dispatch semaphore (socket-level test preferred over a production accessor) |
-| G3 PoS mutations | ✅ lifecycle + end-to-end bond→active-set→replay; ⏸ `refund` no-op pin; reward distribution **out of scope** (feature) |
+| G2 DoS limits | ✅ chunker underflow guard, deploy-pool cap, decompression cap, parser depth guard, and the `RateLimiter` (window/zero/reset + a 429 through the route); ⏸ the dispatch semaphore (socket-level test preferred over a production accessor) |
+| G3 PoS mutations | ✅ lifecycle + end-to-end bond→active-set→replay + the `refund` no-op pin; reward distribution **out of scope** (feature) |
 | G4 gas enforcement | ✅ end-to-end phlo exhaustion; unit charge paths land with G12 |
-| G5 state-sync | ✅ `validate_state_items_{accepts_valid_round_trip,rejects_corrupted_data}`; ⏸ full store export→import→compare |
+| G5 state-sync | ✅ `validate_state_items_{accepts_valid_round_trip,rejects_corrupted_data}` + a populated store's export→import→compare (`a_populated_store_export_import_round_trips`) |
 | G6 history checkpoint/reset/rollback | ✅ `RSpace::create_checkpoint`/`reset`/`revert`; ⏸ history internals (T1 tier) |
-| G7 replay | ✅ `replay_matches_play{,_for_persistent_and_peek}`; ⏸ `check_replay_data` negative path |
+| G7 replay | ✅ `replay_matches_play{,_for_persistent_and_peek}`; ✅ the negative path — with a finding (AUDIT.md §15 C3): the inner trace check does not fire for a term tamper, so the state-hash comparison in `handle_errors` is what carries the invariant, and `a_tampered_deploy_replays_to_a_rejected_state_hash` pins both halves |
 | G8 finalizer | ✅ `calculate_finalization` fork/lockstep |
 | G9 malformed input | ✅ `NodeIdentifier`/`KeySegment`/`BlockHash` + deploy-signature verify |
 | G10 TLS trust-manager | ✅ wrong-hostname + stale-cert rejection |
 | G11 transport socket | ✅ loopback mutual-TLS gRPC round trip |
-| G12 scheduled-path charging | ⏸ corpus-covered end-to-end; the charge-placement unit test is open |
+| G12 scheduled-path charging | ✅ `produce_at_charges_the_storage_up_front`, `produce_at_fails_before_storing_when_the_balance_is_spent`, `commit_produce_charges_the_event_at_the_commit` |
 
 *(✅ = covered; ⏸ = deferred with the seam documented above.)*
 
 ### Deferred-gap seam classification
 
-Each ⏸ gap was read to decide whether closing it is a **test gap** (the behaviour is reachable
-through existing public APIs) or a **seam gap** (production code must change first). All four are
-**test gaps** — no production change is needed to close them:
+Each gap was read to decide whether closing it is a **test gap** (the behaviour is reachable through
+existing public APIs) or a **seam gap** (production code must change first). Every one was a **test
+gap** — closing them needed **no production change at all**, which is worth recording because the
+opposite was the plan's standing assumption:
 
 | Gap | Classification | Why |
 |---|---|---|
-| G2 dispatch semaphore | test gap | the semaphore bounds *socket* concurrency, so the honest test is socket-level (open `MAX+K` streams) and needs no accessor. Extracting one would be a production change for a test — rejected |
-| G5 full store round-trip | test gap | the concrete `RSpaceExporterStore`/`RSpaceImporterStore` are public and already used by the node (`create_rspace_exporter`/`create_rspace_importer`) |
-| G7 replay negative path | test gap | `check_replay_data` is public on `ReplayRhoRuntime`, and `ProcessedDeploy` is public and constructible in tests — a test can replay a *tampered* processed deploy and assert the divergence, which is exactly the missing-COMM / divergent-value path |
-| G12 charge placement | test gap | `ChargingRSpace::new` is public; the phase-split charge points are reachable directly |
+| G2 dispatch semaphore | test gap — **still open** | the semaphore bounds *socket* concurrency, so the honest test is socket-level (open `MAX+K` streams) and needs no accessor. Extracting one would be a production change for a test — rejected |
+| G5 full store round-trip | test gap — **closed** | the concrete `RSpaceExporterStore`/`RSpaceImporterStore` are public and already used by the node (`create_rspace_exporter`/`create_rspace_importer`); `a_populated_store_export_import_round_trips` drives them with a populated store |
+| G7 replay negative path | test gap — **closed, with a finding** | `ProcessedDeploy` is public, so a test can replay a tampered deploy. The spike found that the *inner* check does not fire for a term tamper (AUDIT.md §15 C3), so the test pins the state-hash comparison in `handle_errors` — the check that actually carries the invariant |
+| G12 charge placement | test gap — **closed** | `ChargingRSpace::new` is public and `PendingProduce`'s fields are public, so both the phase-one and the commit charge points are reachable directly |
 
 This matters for sequencing: Stage 2 is de-risked, and any future gap that *does* need a production
 seam is called out here before it is written rather than smuggled into a test commit.

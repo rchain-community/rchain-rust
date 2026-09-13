@@ -358,6 +358,97 @@ mod tests {
         }
     }
 
+    /// A mock space plus a fresh cost account, for the scheduled-path charge tests.
+    fn charging_space(initial: i64) -> (ChargingRSpace, Arc<CostAccounting>, Arc<MockSpace>) {
+        let mock = Arc::new(MockSpace {
+            produced: Mutex::new(Vec::new()),
+        });
+        let cost = Arc::new(CostAccounting::from_initial(Cost::new(initial, "init")));
+        let charging = ChargingRSpace::new(mock.clone() as RhoTuplespace, cost.clone());
+        (charging, cost, mock)
+    }
+
+    fn sample_channel() -> SortedProc {
+        SortedProc::new(par(vec![Expr::GInt(1)]))
+    }
+
+    /// Where the storage cost lands on the scheduled path: **up front**, with phase one. The corpus
+    /// tests exercise `produce_at` end-to-end but cannot say *where* a charge lands, which is what
+    /// this pins.
+    #[tokio::test]
+    async fn produce_at_charges_the_storage_up_front() {
+        let (charging, cost, _) = charging_space(1_000_000);
+        let channel = sample_channel();
+        let data = lpw(vec![par(vec![Expr::GInt(2)])]);
+
+        charging
+            .produce_at(Vec::new(), &channel, data.clone(), false)
+            .await
+            .expect("produce_at");
+
+        // The mock never matches, so phase one stored the datum inline and the produce event cost
+        // lands with it rather than being deferred to a commit. The expected total is built by
+        // charging a reference account the same two costs, rather than by arithmetic on `Cost`.
+        let reference = CostAccounting::from_initial(Cost::new(1_000_000, "init"));
+        reference
+            .charge(Costs::storage_cost_produce(&channel, &data))
+            .expect("storage cost");
+        reference
+            .charge(Costs::event_storage_cost(1))
+            .expect("event cost");
+        assert_eq!(cost.total_charged(), reference.total_charged());
+    }
+
+    /// An exhausted balance fails **before** the datum is stored — the charge is not a flush after
+    /// the fact, so a caller cannot get a free store out of an underfunded deploy.
+    #[tokio::test]
+    async fn produce_at_fails_before_storing_when_the_balance_is_spent() {
+        let (charging, _, mock) = charging_space(1);
+        let err = charging
+            .produce_at(
+                Vec::new(),
+                &sample_channel(),
+                lpw(vec![par(vec![Expr::GInt(2)])]),
+                false,
+            )
+            .await
+            .expect_err("an exhausted balance must fail");
+        assert!(!err.to_string().is_empty());
+        assert!(
+            mock.produced.lock().unwrap().is_empty(),
+            "nothing may be stored when the storage charge fails"
+        );
+    }
+
+    /// The other half of the split: when a produce defers to phase two, the event cost is charged at
+    /// the **commit**, not up front — so an aborted phase two does not pay for an event it never
+    /// produced.
+    #[tokio::test]
+    async fn commit_produce_charges_the_event_at_the_commit() {
+        let (charging, cost, _) = charging_space(1_000_000);
+        let before = cost.total_charged();
+
+        charging
+            .commit_produce(PendingProduce {
+                trigger: sample_channel(),
+                data: lpw(vec![par(vec![Expr::GInt(2)])]),
+                persist: false,
+            })
+            .await
+            .expect("commit_produce");
+
+        let charged = cost.total_charged() - before;
+        let reference = CostAccounting::from_initial(Cost::new(1_000_000, "init"));
+        reference
+            .charge(Costs::event_storage_cost(1))
+            .expect("event cost");
+        assert_eq!(
+            charged,
+            reference.total_charged(),
+            "the commit charges the event cost for the produce it completes"
+        );
+    }
+
     #[tokio::test]
     async fn charging_rspace_charges_and_enforces_balance() {
         let mock: RhoTuplespace = Arc::new(MockSpace {

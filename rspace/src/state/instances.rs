@@ -240,4 +240,69 @@ mod tests {
             .unwrap();
         assert_eq!(current, root.to_byte_array().to_vec());
     }
+
+    /// A **populated** store exports and imports: every history item and the root survive a round
+    /// trip through the real `RSpaceExporterStore`/`RSpaceImporterStore` rather than a mock leaf. The
+    /// register's G5 deferred exactly this ("full store export→import→compare"); the tests here
+    /// previously covered only a single leaf and the empty case.
+    #[test]
+    fn a_populated_store_export_import_round_trips() {
+        let items: Vec<(Blake2b256Hash, Vec<u8>)> = (0u8..5)
+            .map(|i| (Blake2b256Hash::from_bytes([i; 32]), vec![i, i + 1, i + 2]))
+            .collect();
+        let hashes: Vec<Blake2b256Hash> = items.iter().map(|(h, _)| *h).collect();
+        let root = Blake2b256Hash::from_bytes([0xEE; 32]);
+
+        // Source stores, as the on-chain history would hold them.
+        let mut history = InMemoryKeyValueStore::default();
+        history
+            .put(
+                items
+                    .iter()
+                    .map(|(h, v)| (h.to_byte_array().to_vec(), v.clone()))
+                    .collect(),
+            )
+            .unwrap();
+        let mut roots = InMemoryKeyValueStore::default();
+        roots
+            .put(vec![(CURRENT_ROOT.to_vec(), root.to_byte_array().to_vec())])
+            .unwrap();
+        let exporter = RSpaceExporterStore::new(Box::new(history), store(), Box::new(roots));
+
+        assert_eq!(exporter.get_root(), Some(root));
+        let exported: Vec<(Blake2b256Hash, Vec<u8>)> =
+            exporter.get_history_items(&hashes, |bytes: &[u8]| bytes.to_vec());
+        assert_eq!(exported.len(), items.len(), "every item was exported");
+
+        // Import the exported set into fresh stores, then compare item for item and the root.
+        let mut importer = RSpaceImporterStore::new(store(), store(), store());
+        // `get_history_items` already returns key/value pairs, so the exported set is what is
+        // imported — no re-association, which is where a round-trip test could quietly drift.
+        importer.set_history_items(&exported, |v: &Vec<u8>| v.clone());
+        importer.set_root(root);
+
+        // The importer records the root under `current-root` (it has no `get_root` of its own), so
+        // read it back the way the store holds it.
+        let recorded = importer
+            .roots_store
+            .get(&[CURRENT_ROOT.to_vec()])
+            .expect("roots read")
+            .into_iter()
+            .next()
+            .flatten()
+            .expect("a root was recorded");
+        assert_eq!(recorded, root.to_byte_array().to_vec());
+        for (hash, value) in &items {
+            assert_eq!(
+                importer.get_history_item(*hash).as_ref(),
+                Some(value),
+                "item {hash:?} must survive the round trip"
+            );
+        }
+        // An item that was never exported is absent rather than fabricated.
+        assert_eq!(
+            importer.get_history_item(Blake2b256Hash::from_bytes([0x7F; 32])),
+            None
+        );
+    }
 }

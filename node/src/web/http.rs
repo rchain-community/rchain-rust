@@ -1217,6 +1217,30 @@ mod tests {
         assert_eq!(json["nodes"], 0);
     }
 
+    /// The deploy route is rate-limited, and an exhausted limiter is a 429 — not a silent drop and
+    /// not an unbounded accept. (A limiter configured to zero is closed, so this needs no sleep.)
+    #[tokio::test]
+    async fn api_deploy_returns_429_when_the_limiter_is_exhausted() {
+        let mut s = state();
+        s.deploy_rate_limiter = Arc::new(RateLimiter::new(0));
+        let request: DeployRequest = serde_json::from_value(serde_json::json!({
+            "data": {
+                "term": "Nil",
+                "timestamp": 0,
+                "phloPrice": 1,
+                "phloLimit": 1,
+                "validAfterBlockNumber": 0,
+                "shardId": "/root"
+            },
+            "deployer": "",
+            "signature": "",
+            "sigAlgorithm": "secp256k1"
+        }))
+        .expect("deploy request");
+        let response = api_deploy(State(s), Json(request)).await;
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+    }
+
     // --- the shard list and the cross-shard transaction routes (Laws 26–29) ---
 
     /// A `BlockApi` for the transaction-route tests: only the three methods the gateway's phase
