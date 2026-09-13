@@ -34,7 +34,7 @@ use rchain_shared::refined::NonNegI64;
 use rchain_shared::serialize::Serialize;
 
 use rchain_rspace::native_store::{
-    InMemNativeStore, PREFIX_POS, PREFIX_REGISTRY, PREFIX_TXN, PREFIX_VAULT,
+    InMemNativeStore, PREFIX_HTTP, PREFIX_POS, PREFIX_REGISTRY, PREFIX_TXN, PREFIX_VAULT,
 };
 
 use crate::util::rev_address::RevAddress;
@@ -80,6 +80,11 @@ pub fn pos_params_key() -> Blake2b256Hash {
 /// Leaf key for the Coop slashing vault (confiscated stake).
 pub fn pos_coop_key() -> Blake2b256Hash {
     Blake2b256Hash::create(b"pos:coop")
+}
+
+/// Leaf key for the HTTP-result oracle table (`url → (value, captured block)`); RCHIP #54.
+pub fn http_records_key() -> Blake2b256Hash {
+    Blake2b256Hash::create(b"http:records")
 }
 
 /// Leaf key for a registry URI (the URI string, hashed).
@@ -229,6 +234,57 @@ pub fn decode_bonds(bytes: &[u8]) -> Result<BTreeMap<Validator, NonNegI64>, Stri
         let stake =
             NonNegI64::try_from(stake).map_err(|_| format!("negative bond stake {stake}"))?;
         out.insert(validator, stake);
+    }
+    Ok(out)
+}
+
+// --- HTTP-result oracle (RCHIP #54) -----------------------------------------
+
+/// A recorded HTTP value: the captured body and the block height at which it was captured.
+pub type HttpRecord = (String, i64);
+
+/// Canonically encode the HTTP-record table (sorted by URL; length-prefixed strings and a
+/// little-endian capture block).
+pub fn encode_http_records(records: &BTreeMap<String, HttpRecord>) -> Vec<u8> {
+    let mut out = Vec::new();
+    out.extend_from_slice(&(records.len() as u32).to_le_bytes());
+    for (url, (value, block_number)) in records {
+        out.extend_from_slice(&(url.len() as u32).to_le_bytes());
+        out.extend_from_slice(url.as_bytes());
+        out.extend_from_slice(&(value.len() as u32).to_le_bytes());
+        out.extend_from_slice(value.as_bytes());
+        out.extend_from_slice(&block_number.to_le_bytes());
+    }
+    out
+}
+
+/// Decode the HTTP-record table (inverse of [`encode_http_records`]).
+pub fn decode_http_records(bytes: &[u8]) -> Result<BTreeMap<String, HttpRecord>, String> {
+    if bytes.len() < 4 {
+        return Err("http records: truncated count".to_string());
+    }
+    let count_bytes: [u8; 4] = bytes[..4]
+        .try_into()
+        .map_err(|_| "http records: invalid count".to_string())?;
+    let count = usize::try_from(u32::from_le_bytes(count_bytes))
+        .map_err(|_| "http records: count does not fit usize".to_string())?;
+    let mut out = BTreeMap::new();
+    let mut off = 4usize;
+    for _ in 0..count {
+        let url = read_len_prefixed(bytes, &mut off)?;
+        let value = read_len_prefixed(bytes, &mut off)?;
+        let bn_end = off.checked_add(8).ok_or("http records: offset overflow")?;
+        if bn_end > bytes.len() {
+            return Err("http records: truncated block number".to_string());
+        }
+        let block_bytes: [u8; 8] = bytes[off..bn_end]
+            .try_into()
+            .map_err(|_| "http records: invalid block number".to_string())?;
+        off = bn_end;
+        out.insert(url, (value, i64::from_le_bytes(block_bytes)));
+    }
+    if off != bytes.len() {
+        return Err("http records: trailing bytes".to_string());
     }
     Ok(out)
 }
@@ -428,6 +484,44 @@ impl NativeSystemState {
     pub fn set_bonds(&self, bonds: &BTreeMap<Validator, NonNegI64>) {
         self.store
             .put(PREFIX_POS, pos_bonds_key(), encode_bonds(bonds));
+    }
+
+    // --- HTTP-result oracle (RCHIP #54) -----------------------------------------------------
+
+    /// Read the whole HTTP-record table (`url → (value, captured block)`).
+    pub async fn http_records(&self) -> Result<BTreeMap<String, HttpRecord>, String> {
+        match self.store.get(PREFIX_HTTP, &http_records_key()).await? {
+            Some(bytes) => decode_http_records(&bytes),
+            None => Ok(BTreeMap::new()),
+        }
+    }
+
+    /// Read a recorded HTTP value (`None` if the URL was never captured).
+    pub async fn http_record(&self, url: &str) -> Result<Option<HttpRecord>, String> {
+        Ok(self.http_records().await?.get(url).cloned())
+    }
+
+    /// Capture `value` for `url` — **first writer wins**. Returns `true` if this call recorded the
+    /// value, `false` if a record already existed (which is left untouched). Recording is a pure
+    /// function of the deploy, so replay is deterministic; later deploys compare against the record
+    /// rather than re-fetching, which is what makes an HTTP value usable under consensus.
+    pub async fn record_http(
+        &self,
+        url: &str,
+        value: &str,
+        block_number: i64,
+    ) -> Result<bool, String> {
+        let mut records = self.http_records().await?;
+        if records.contains_key(url) {
+            return Ok(false);
+        }
+        records.insert(url.to_string(), (value.to_string(), block_number));
+        self.store.put(
+            PREFIX_HTTP,
+            http_records_key(),
+            encode_http_records(&records),
+        );
+        Ok(true)
     }
 
     /// Read the *active* validator bond map (the consensus set).
@@ -1466,5 +1560,52 @@ mod tests {
             i64::from(native.vault_balance(&from).await.unwrap().unwrap()),
             10
         );
+    }
+
+    #[test]
+    fn http_records_round_trip() {
+        let mut records = BTreeMap::new();
+        records.insert(
+            "https://example.com/price".to_string(),
+            ("42.5".to_string(), 7i64),
+        );
+        records.insert(
+            "https://example.com/time".to_string(),
+            ("".to_string(), 0i64),
+        );
+        let bytes = encode_http_records(&records);
+        assert_eq!(decode_http_records(&bytes).unwrap(), records);
+        assert!(decode_http_records(&bytes[..bytes.len() - 1]).is_err());
+        assert!(decode_http_records(&[]).is_err());
+    }
+
+    #[tokio::test]
+    async fn http_record_is_first_writer_wins() {
+        let native = NativeSystemState::new(Arc::new(InMemNativeStore::empty()));
+        let url = "https://example.com/price";
+
+        // Nothing recorded yet.
+        assert_eq!(native.http_record(url).await.unwrap(), None);
+
+        // First capture wins and records the capture height.
+        assert!(native.record_http(url, "42.5", 7).await.unwrap());
+        assert_eq!(
+            native.http_record(url).await.unwrap(),
+            Some(("42.5".to_string(), 7))
+        );
+
+        // A later capture does not overwrite (this is what makes `check` meaningful).
+        assert!(!native.record_http(url, "99.9", 8).await.unwrap());
+        assert_eq!(
+            native.http_record(url).await.unwrap(),
+            Some(("42.5".to_string(), 7))
+        );
+
+        // Distinct URLs are independent.
+        assert!(native
+            .record_http("https://example.com/other", "x", 9)
+            .await
+            .unwrap());
+        assert_eq!(native.http_records().await.unwrap().len(), 2);
     }
 }

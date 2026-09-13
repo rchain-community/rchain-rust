@@ -130,6 +130,9 @@ impl FixedChannels {
     pub fn txn() -> Par {
         byte_name(30)
     }
+    pub fn http() -> Par {
+        byte_name(31)
+    }
 }
 
 /// The dispatch-table ids (port of `SystemProcesses.BodyRefs`).
@@ -165,6 +168,7 @@ impl BodyRefs {
     pub const GOV_CENSURE: i64 = 29;
     pub const GOV_TALLY: i64 = 30;
     pub const TXN: i64 = 31;
+    pub const HTTP: i64 = 32;
 }
 
 /// Per-block data exposed to the `rho:block:data` contract (port of `SystemProcesses.BlockData`).
@@ -614,6 +618,14 @@ impl SystemProcesses {
                 remainder: true,
                 body_ref: BodyRefs::TXN,
                 handler: self.txn(),
+            },
+            Definition {
+                urn: "rho:io:http".to_string(),
+                fixed_channel: FixedChannels::http(),
+                arity: 1,
+                remainder: true,
+                body_ref: BodyRefs::HTTP,
+                handler: self.http(),
             },
         ]
     }
@@ -1475,6 +1487,115 @@ impl SystemProcesses {
                         cc.produce(&rand, &[out], ret, path).await
                     }
                     _ => Err(illegal_arg(&format!("pos: unknown method {op}"))),
+                }
+            })
+        })
+    }
+
+    // --- native HTTP-result oracle (RCHIP #54) ---------------------------
+
+    /// `rho:io:http` — the deterministic HTTP-result oracle, framed as a **Git pull request** on
+    /// external data:
+    ///
+    /// * `record(url, value)` — *capture* a value the deployer fetched off-chain. First writer
+    ///   wins; a later capture of an already-recorded URL is a no-op returning `false`. This is the
+    ///   "initial value", asserted inside a signed deploy, so the chain records *who* claimed *what*.
+    /// * `get(url)` — read the recorded value (or `Nil`), deterministically.
+    /// * `check(url, expected)` — is the record equal to `expected`?
+    /// * `height(url)` — the block at which the value was captured (or `Nil`).
+    ///
+    /// Consensus safety comes from the capture being **part of the deploy**: replay/validation
+    /// never performs a network fetch, so the result is a pure function of the deploy and the
+    /// recorded state. (A proposer-side live fetch would have to commit its value into the block
+    /// for validators to reproduce it; that is a follow-up that changes the block format.)
+    fn http(&self) -> ScalaBodyFn {
+        let cc = self.contract_call.clone();
+        let native = self.native_state.clone();
+        let block_data = self.block_data.clone();
+        Box::new(move |args: Vec<ListParWithRandom>, path: DfsPath| {
+            let cc = cc.clone();
+            let native = native.clone();
+            let block_data = block_data.clone();
+            Box::pin(async move {
+                let (pars, rand) = cc
+                    .unapply(&args)
+                    .ok_or_else(|| illegal_arg("http expects a method and arguments"))?;
+                let [op, rest_par] = pars.as_slice() else {
+                    return Err(illegal_arg("http expects a method and arguments"));
+                };
+                let op = RhoString::unapply(op)
+                    .ok_or_else(|| illegal_arg("http method must be a string"))?;
+                let rest = RhoList::unapply(rest_par)
+                    .ok_or_else(|| illegal_arg("http arguments must be a list"))?;
+                let block_number = {
+                    let bd = block_data.lock().unwrap_or_else(|p| p.into_inner());
+                    i64::from(bd.block_number)
+                };
+                match op {
+                    "record" => {
+                        let [url_par, value_par, ret] = rest else {
+                            return Err(illegal_arg(
+                                "http record expects url, value and a return channel",
+                            ));
+                        };
+                        let url = RhoString::unapply(url_par)
+                            .ok_or_else(|| illegal_arg("http record expects a string url"))?;
+                        let value = RhoString::unapply(value_par)
+                            .ok_or_else(|| illegal_arg("http record expects a string value"))?;
+                        let recorded = native
+                            .record_http(url, value, block_number)
+                            .await
+                            .map_err(|e| illegal_arg(&e))?;
+                        cc.produce(&rand, &[RhoBoolean::apply(recorded)], ret, path)
+                            .await
+                    }
+                    "get" => {
+                        let [url_par, ret] = rest else {
+                            return Err(illegal_arg("http get expects a url and a return channel"));
+                        };
+                        let url = RhoString::unapply(url_par)
+                            .ok_or_else(|| illegal_arg("http get expects a string url"))?;
+                        let out =
+                            match native.http_record(url).await.map_err(|e| illegal_arg(&e))? {
+                                Some((value, _)) => RhoString::apply(value),
+                                None => RhoNil::apply(),
+                            };
+                        cc.produce(&rand, &[out], ret, path).await
+                    }
+                    "check" => {
+                        let [url_par, expected_par, ret] = rest else {
+                            return Err(illegal_arg(
+                                "http check expects url, an expected value and a return channel",
+                            ));
+                        };
+                        let url = RhoString::unapply(url_par)
+                            .ok_or_else(|| illegal_arg("http check expects a string url"))?;
+                        let expected = RhoString::unapply(expected_par)
+                            .ok_or_else(|| illegal_arg("http check expects a string value"))?;
+                        let consistent =
+                            match native.http_record(url).await.map_err(|e| illegal_arg(&e))? {
+                                Some((value, _)) => value == expected,
+                                None => false,
+                            };
+                        cc.produce(&rand, &[RhoBoolean::apply(consistent)], ret, path)
+                            .await
+                    }
+                    "height" => {
+                        let [url_par, ret] = rest else {
+                            return Err(illegal_arg(
+                                "http height expects a url and a return channel",
+                            ));
+                        };
+                        let url = RhoString::unapply(url_par)
+                            .ok_or_else(|| illegal_arg("http height expects a string url"))?;
+                        let out =
+                            match native.http_record(url).await.map_err(|e| illegal_arg(&e))? {
+                                Some((_, block)) => RhoNumber::apply(block),
+                                None => RhoNil::apply(),
+                            };
+                        cc.produce(&rand, &[out], ret, path).await
+                    }
+                    _ => Err(illegal_arg(&format!("http: unknown method {op}"))),
                 }
             })
         })
