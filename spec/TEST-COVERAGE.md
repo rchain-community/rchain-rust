@@ -17,7 +17,7 @@ tools/audit-test-register.sh --deferred-ok # while the tiered work is in flight
 
 ## Inventory
 
-**944 `#[test]`/`#[tokio::test]` unit functions + 82 integration tests** across 13 crates, with **6
+**969 `#[test]`/`#[tokio::test]` unit functions + 82 integration tests** across 13 crates, with **6
 laws** carrying a randomized property test and **10 benchmark functions** in 6 Criterion groups. Only
 **3 of 12 crates have integration tests** (`rholang`, `casper`, `node`).
 
@@ -27,12 +27,12 @@ laws** carrying a randomized property test and **10 benchmark functions** in 6 C
 | `shared` | 80 | — | — | — |
 | `crypto` | 53 | — | — | — |
 | `graphz` | 18 | — | — | — |
-| `models` | 115 | — | — | — |
+| `models` | 120 | — | — | — |
 | `block-storage` | 17 | — | — | — |
 | `comm` | 67 | — | — | — |
-| `rspace` | 92 | — | 6 | — |
-| `rholang` | 135 | 35 | — | — |
-| `casper` | 185 | 38 | — | — |
+| `rspace` | 104 | — | 6 | — |
+| `rholang` | 139 | 35 | — | — |
+| `casper` | 189 | 38 | — | — |
 | `node` | 127 | 9 | — | — |
 | `qucalc` | 20 | — | — | — |
 | `rspace-bench` | — | — | — | 10 |
@@ -47,10 +47,12 @@ cargo llvm-cov --workspace --all-features --summary-only   # then read the lowes
 ```
 
 At the time of writing the thinnest *behavioural* files (as opposed to error-enum `Display` arms,
-which read as 1% because nothing formats them) were `rspace/src/history/history.rs`,
-`block-storage/src/approved_store.rs` (the finalized fringe — consensus-critical),
-`casper/src/block_status.rs` and `comm/src/discovery/kademlia_handle_rpc.rs`. Prioritise those over
-the `errors.rs` files, whose percentages are a formatting artifact rather than missing behaviour.
+which read as 1% because nothing formats them, and to trait/`mod` declaration files, which have no
+behaviour to cover) are the tier table's open rows below — `comm/src/transport/grpc_transport_receiver.rs`
+and `grpc_transport_client.rs`, `comm/src/discovery/*`, `node/src/api/grpc/*` and
+`rholang/src/reporting_runtime.rs`. `rspace/src/history/history.rs` and
+`comm/src/discovery/kademlia_handle_rpc.rs` read as thin because they *are* declarations plus
+delegations; they are recorded in the removed-rows table rather than left to mislead this list.
 
 The counts are a **floor, not a target**: the linter fails only when the register claims *more* than
 the tree holds, so this table may lag as tests are added (it reports the drift) but can never
@@ -291,11 +293,11 @@ linter reports it.
 | T1 | `rspace/src/history/root_repository.rs` | `an_unknown_root_is_an_error_and_does_not_move_the_current_root` |
 | T1 | `rspace/src/replay_rspace.rs` | `a_rig_whose_comm_never_happens_is_reported` |
 | T1 | `rspace/src/scheduled_space.rs` | `a_commit_whose_candidate_vanished_stores_instead_of_delivering` |
-| T1 | `casper/src/engine/lfs_block_requester.rs` | — |
-| T1 | `models/src/validator.rs` | — |
-| T1 | `rspace/src/history/history_action.rs` | — |
-| T1 | `rspace/src/history/codecs.rs` | — |
-| T1 | `rholang/src/contract_call.rs` | — |
+| T1 | `casper/src/engine/lfs_block_requester.rs` | `a_requested_block_with_a_forged_hash_is_rejected` |
+| T1 | `models/src/validator.rs` | `try_from_rejects_a_wrong_length_and_names_both` |
+| T1 | `rspace/src/history/history_action.rs` | `trimming_an_empty_key_panics` |
+| T1 | `rspace/src/history/codecs.rs` | `decode_rejects_a_wrong_length` |
+| T1 | `rholang/src/contract_call.rs` | `a_matched_reply_dispatches_at_the_child_path` |
 | T2 | `rspace/src/merger/mod.rs` | `seq_diff_removes_the_first_occurrence_and_preserves_order` |
 | T2 | `rspace/src/merger/event_log_merging_logic.rs` | — |
 | T2 | `comm/src/transport/grpc_transport_receiver.rs` | — |
@@ -318,7 +320,7 @@ files the table named. A census of the Stage 3 directories (`rspace/src/{merger,
 `models/src`, `casper/src/{protocol,engine,api}`, `rholang/src`, `comm/src/{discovery,transport}`,
 `node/src/{api/grpc,configuration,web}`) for files with **no test at all**, then a read of each to
 separate "has branching/error logic" from "trait or data declaration", produced 19 more testable
-modules — the ~17 above, plus the two closed in this pass. Two of the earlier "untestable" calls were
+modules — 17 above (five of them T1), plus the two closed in an earlier pass. Two of the earlier "untestable" calls were
 **wrong** and were corrected here: `rspace/src/scheduled_space.rs` (5 async functions, including the
 phase-two re-validation that makes relaxed scheduling sound) and
 `casper/src/blocks/proposer/block_creator.rs` (a 120-line `create`). Both were mis-called by a grep

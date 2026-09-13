@@ -883,3 +883,16 @@ The oracle for every one of these is the BNFC grammar the Scala node's Java pars
   default 2 MiB thread stack. No action for the node (it ships release, where the limit fits), but
   the corpus test sets an explicit stack so the requirement is stated where it bites rather than in
   a `RUST_MIN_STACK` invocation.
+- **A forged block stalls LFS sync for that hash (faithful to Scala — recorded, not fixed).**
+  `casper/src/engine/lfs_block_requester.rs::validate_received_block` marks the key `Received` via
+  `LfsState::received` *before* it checks the hash, and `LfsState::get_next(resend)` only ever
+  re-requests keys in `Init` or `Requested` status. So a peer that answers a request with a block
+  whose `block_hash` does not match its content leaves that key `Received`, neither saved (`done` is
+  only called on acceptance, and only `done` removes the key) nor re-requestable — even by the idle
+  resend. The requester then never reports `is_finished()`. **Assessed faithful**: the Scala
+  `LfsBlockRequester.validateReceivedBlock`/`ST.getNext` have exactly this ordering and this
+  predicate, so the port is not the source of the behaviour, and a divergence here would be worse
+  than the wart. The residual is a liveness one on a sync that a hostile peer can stall. Pinned by
+  `a_requested_block_with_a_forged_hash_is_rejected` (the rejection, the absence from both the
+  normal and the resend request sets, and `!is_finished()`), so a future guard in either place fails
+  a test instead of changing behaviour silently.
