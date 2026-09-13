@@ -24,7 +24,7 @@ use tokio::sync::mpsc;
 
 use crate::blocks::block_retriever::BlockRetriever;
 use crate::bonds_parser;
-use crate::conf::CasperConf;
+use crate::conf::{CasperConf, ShardSpec};
 use crate::engine::node_running::NodeRunning;
 use crate::engine::node_syncing::NodeSyncing;
 use crate::genesis::contracts::{ProofOfStake, Registry, Validator};
@@ -97,28 +97,26 @@ pub async fn create_genesis_block(
     crate::genesis::create_genesis_block(validator, &genesis, runtime).await
 }
 
-/// Create the genesis block from a [`CasperConf`] (port of
+/// Create one shard's genesis block from its [`ShardSpec`] (port of
 /// `NodeLaunch.createGenesisBlockFromConfig`).
 pub async fn create_genesis_block_from_config(
     validator: &ValidatorIdentity,
-    conf: &CasperConf,
+    spec: &ShardSpec,
     runtime: &RuntimeManager,
 ) -> Result<BlockMessage, String> {
-    let gbd = &conf.genesis_block_data;
-    // The block's shard id is the validated *full* id (`{parent-shard-id}/{shard-name}`), matching
-    // the proposer (`Proposer::apply`), the block receiver's `check_if_of_interest` and both deploy
-    // APIs. Passing the bare `shard_name` here made the genesis block carry an id ("root") that no
-    // later block or deploy shares ("/root"), so a genesis block received from a peer was dropped by
-    // the receiver's equality check. It also seeds the genesis RNG
-    // (`BlockRandomSeed::random_generator_from_shard_id`), so the two disagreed on the genesis
-    // unforgeable names as well.
-    let shard_id = conf.full_shard_id()?;
+    let gbd = &spec.genesis_block_data;
+    // The block's shard id is the spec's validated *full* id (`{parent-shard-id}/{shard-name}`),
+    // matching the proposer (`Proposer::apply`), the block receiver's `check_if_of_interest` and
+    // both deploy APIs. Passing the bare `shard_name` here made the genesis block carry an id
+    // ("root") that no later block or deploy shares ("/root"), so a genesis block received from a
+    // peer was dropped by the receiver's equality check.
+    let shard_id = spec.shard_id.to_string();
     create_genesis_block(
         validator,
-        &shard_id.to_string(),
+        &shard_id,
         gbd.genesis_block_number,
         &gbd.bonds_file,
-        conf.autogen_shard_size,
+        spec.autogen_shard_size,
         &gbd.wallets_file,
         gbd.bond_minimum,
         gbd.bond_maximum,
@@ -146,10 +144,11 @@ async fn wait_for_first_connection(connections: &ConnectionsCell, log: &dyn Log)
     }
 }
 
-/// Create, store and broadcast the genesis block (port of `createStoreBroadcastGenesis`).
+/// Create, store and broadcast one shard's genesis block (port of
+/// `createStoreBroadcastGenesis`).
 async fn create_store_broadcast_genesis(
     validator_identity_opt: Option<&ValidatorIdentity>,
-    conf: &CasperConf,
+    spec: &ShardSpec,
     runtime_manager: &RuntimeManager,
     block_store: &BlockStore,
     approved_store: &ApprovedStore,
@@ -162,7 +161,7 @@ async fn create_store_broadcast_genesis(
         "To create genesis block node must provide validator private key".to_string()
     })?;
 
-    let genesis_block = create_genesis_block_from_config(validator, conf, runtime_manager).await?;
+    let genesis_block = create_genesis_block_from_config(validator, spec, runtime_manager).await?;
     log.info(
         source,
         &format!(
@@ -220,7 +219,7 @@ pub async fn apply<I: RSpaceImporter + Send + 'static, E: RSpaceExporter>(
         );
         create_store_broadcast_genesis(
             validator_identity_opt.as_ref(),
-            &conf,
+            conf.shards.primary(),
             runtime_manager.as_ref(),
             &block_store,
             &approved_store,

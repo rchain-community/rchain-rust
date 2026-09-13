@@ -36,7 +36,13 @@ pub fn deploy_conf(dir: &Path, ports: &[u16]) -> NodeConf {
     );
     let mut conf = standalone_conf(dir, &ports[0..4], Some(VALIDATOR_PRIV_HEX));
     conf.api_server.port_grpc_external = ports[4] as i32;
-    let wallets = conf.casper.genesis_block_data.wallets_file.clone();
+    let wallets = conf
+        .casper
+        .shards
+        .primary()
+        .genesis_block_data
+        .wallets_file
+        .clone();
     std::fs::write(&wallets, format!("{DEPLOYER_REV_ADDR},1000000000000\n"))
         .expect("write wallets");
     conf
@@ -106,7 +112,11 @@ pub fn standalone_conf(dir: &Path, ports: &[u16], validator_hex: Option<&str>) -
         let pub_hex = base16::encode(identity.public_key.bytes());
         let bonds = dir.join("bonds.txt");
         std::fs::write(&bonds, format!("{pub_hex} 100\n")).expect("write bonds file");
-        conf.casper.genesis_block_data.bonds_file = bonds.to_string_lossy().into_owned();
+        conf.casper
+            .shards
+            .primary_mut()
+            .genesis_block_data
+            .bonds_file = bonds.to_string_lossy().into_owned();
     }
 
     // `create_genesis_block` calls `vault_parser::parse` (not `parse_if_exists`), so the wallets
@@ -115,7 +125,11 @@ pub fn standalone_conf(dir: &Path, ports: &[u16], validator_hex: Option<&str>) -
     if !wallets.exists() {
         std::fs::write(&wallets, "").expect("write wallets file");
     }
-    conf.casper.genesis_block_data.wallets_file = wallets.to_string_lossy().into_owned();
+    conf.casper
+        .shards
+        .primary_mut()
+        .genesis_block_data
+        .wallets_file = wallets.to_string_lossy().into_owned();
 
     conf
 }

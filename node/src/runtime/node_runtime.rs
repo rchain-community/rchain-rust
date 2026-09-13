@@ -728,7 +728,10 @@ pub async fn setup_node_program(
     let importer = create_rspace_importer(&parts.store_manager).await?;
     let exporter = create_rspace_exporter(&parts.store_manager).await?;
 
-    let shard_id = conf.casper.full_shard_id()?.to_string();
+    // The primary shard: the node's own shard, and the default target for shard-selector-less
+    // queries until the per-shard assembly generalizes this (see `ShardMemberships`).
+    let shard = conf.casper.shards.primary();
+    let shard_id = shard.shard_id.to_string();
     let min_phlo_price = conf.casper.min_phlo_price;
 
     // Extract the proposer queue/state before wiring block processing, so the autopropose tap can
@@ -898,9 +901,9 @@ pub async fn setup_node_program(
 
         let proposer = Proposer::apply(
             validator,
-            conf.casper.full_shard_id()?.to_string(),
+            shard.shard_id.to_string(),
             conf.casper.min_phlo_price,
-            conf.casper.genesis_block_data.epoch_length,
+            shard.genesis_block_data.epoch_length,
             dummy_deploy_opt,
             parts.dag.clone(),
             parts.block_store.clone(),
@@ -1042,9 +1045,11 @@ pub async fn setup(
         )
         .with_genesis_pos(
             // Only a genesis-ceremony node has the network genesis descriptors locally; a syncing
-            // observer inserts (does not replay) the genesis block.
+            // observer inserts (does not replay) the genesis block. A failure here (an unreadable
+            // bonds file) is fatal: silently falling back to a default PoS genesis would make the
+            // node replay the genesis block against the wrong validator set.
             if conf.standalone {
-                rchain_casper::genesis::pos_genesis_from_config(&conf.casper).unwrap_or_default()
+                rchain_casper::genesis::pos_genesis_from_config(conf.casper.shards.primary())?
             } else {
                 Default::default()
             },
@@ -1110,7 +1115,7 @@ pub async fn setup(
         });
 
     let network_id = conf.protocol_server.network_id.clone();
-    let shard_id = conf.casper.full_shard_id()?.to_string();
+    let shard_id = conf.casper.shards.primary().shard_id.to_string();
     let network_status: NetworkStatusFn = Box::new({
         let id = id.clone();
         let connections = connections.clone();

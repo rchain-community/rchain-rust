@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use hocon::Hocon;
-use rchain_casper::{CasperConf, GenesisBlockData};
+use rchain_casper::{CasperConf, GenesisBlockData, ShardMemberships, ShardSpec};
 use rchain_comm::peer_node::PeerNode;
 use rchain_comm::transport::tls_conf::TlsConf;
 
@@ -292,13 +292,66 @@ fn genesis_block_data_from_hocon(h: &Hocon) -> Result<GenesisBlockData, String> 
     })
 }
 
+/// Overlay a `genesis-block-data` block's *present* keys onto `default`, field by field — the same
+/// field-level fallback HOCON applies across config layers. A shard entry that sets only
+/// `bonds-file` must not have to restate the other twelve fields.
+fn genesis_block_data_over(
+    h: &Hocon,
+    default: &GenesisBlockData,
+) -> Result<GenesisBlockData, String> {
+    let mut out = default.clone();
+    if let Some(v) = get_opt(h, "genesis-data-dir") {
+        out.genesis_data_dir = to_path(v)?;
+    }
+    if let Some(v) = get_opt(h, "bonds-file") {
+        out.bonds_file = to_string(v)?;
+    }
+    if let Some(v) = get_opt(h, "wallets-file") {
+        out.wallets_file = to_string(v)?;
+    }
+    if let Some(v) = get_opt(h, "bond-minimum") {
+        out.bond_minimum = to_i64(v)?;
+    }
+    if let Some(v) = get_opt(h, "bond-maximum") {
+        out.bond_maximum = to_i64(v)?;
+    }
+    if let Some(v) = get_opt(h, "epoch-length") {
+        out.epoch_length = to_i32(v)?;
+    }
+    if let Some(v) = get_opt(h, "quarantine-length") {
+        out.quarantine_length = to_i32(v)?;
+    }
+    if let Some(v) = get_opt(h, "genesis-block-number") {
+        out.genesis_block_number = to_i64(v)?;
+    }
+    if let Some(v) = get_opt(h, "number-of-active-validators") {
+        out.number_of_active_validators = to_i32(v)?;
+    }
+    if let Some(v) = get_opt(h, "pos-multi-sig-public-keys") {
+        out.pos_multi_sig_public_keys = to_string_list(v)?;
+    }
+    if let Some(v) = get_opt(h, "pos-multi-sig-quorum") {
+        out.pos_multi_sig_quorum = to_i32(v)?;
+    }
+    if let Some(v) = get_opt(h, "pos-vault-pub-key") {
+        out.pos_vault_pub_key = to_string(v)?;
+    }
+    if let Some(v) = get_opt(h, "system-contract-pub-key") {
+        out.system_contract_pub_key = to_string(v)?;
+    }
+    Ok(out)
+}
+
 fn casper_conf_from_hocon(h: &Hocon) -> Result<CasperConf, String> {
+    // The node-level `genesis-block-data` / `autogen-shard-size` are the defaults for every
+    // membership; a `casper.shards` entry may override them wholesale.
+    let default_genesis = genesis_block_data_from_hocon(get(h, "genesis-block-data")?)?;
+    let default_autogen_shard_size = to_i32(get(h, "autogen-shard-size")?)?;
     Ok(CasperConf {
         validator_public_key: to_optional_string(h, "validator-public-key")?,
         validator_private_key: to_optional_string(h, "validator-private-key")?,
         validator_private_key_path: to_optional_path(h, "validator-private-key-path")?,
-        shard_name: to_string(get(h, "shard-name")?)?,
-        parent_shard_id: to_string(get(h, "parent-shard-id")?)?,
+        shards: shard_memberships_from_hocon(h, default_genesis, default_autogen_shard_size)?,
         casper_loop_interval: to_duration(get(h, "casper-loop-interval")?)?,
         requested_blocks_timeout: to_duration(get(h, "requested-blocks-timeout")?)?,
         max_number_of_parents: to_i32(get(h, "max-number-of-parents")?)?,
@@ -309,12 +362,96 @@ fn casper_conf_from_hocon(h: &Hocon) -> Result<CasperConf, String> {
         )?)?,
         synchrony_constraint_threshold: to_f64(get(h, "synchrony-constraint-threshold")?)?,
         height_constraint_threshold: to_i64(get(h, "height-constraint-threshold")?)?,
-        genesis_block_data: genesis_block_data_from_hocon(get(h, "genesis-block-data")?)?,
-        autogen_shard_size: to_i32(get(h, "autogen-shard-size")?)?,
         min_phlo_price: to_i64(get(h, "min-phlo-price")?)?,
         effect_mode: to_optional_string(h, "effect-scheduler")?
             .unwrap_or_else(|| "dfs".to_string()),
     })
+}
+
+/// The node's shard memberships (Law 26).
+///
+/// `casper.shards` — an array of `{ shard-name, parent-shard-id, genesis-block-data?,
+/// autogen-shard-size? }` objects — is the multi-shard form, and its first entry is the primary
+/// shard. When it is absent, the legacy top-level `shard-name`/`parent-shard-id` (with the
+/// node-level genesis data) define a one-element list, so a single-shard node's configuration —
+/// including every command-line flag, which keeps mapping into those scalar keys — is unchanged.
+///
+/// An *array* rather than a name-keyed object: order carries meaning (the first entry is the
+/// primary), and it does not depend on the `LinkedHashMap` iteration order of `Hocon::Hash`.
+fn shard_memberships_from_hocon(
+    h: &Hocon,
+    default_genesis: GenesisBlockData,
+    default_autogen_shard_size: i32,
+) -> Result<ShardMemberships, String> {
+    match get_opt(h, "shards") {
+        None => {
+            let spec = ShardSpec::new(
+                to_string(get(h, "shard-name")?)?,
+                to_string(get(h, "parent-shard-id")?)?,
+                default_genesis,
+                default_autogen_shard_size,
+            )?;
+            ShardMemberships::new(vec![spec])
+        }
+        Some(Hocon::Array(entries)) => {
+            let specs = entries
+                .iter()
+                .enumerate()
+                .map(|(i, entry)| {
+                    shard_spec_from_hocon(entry, &default_genesis, default_autogen_shard_size)
+                        .map_err(|e| format!("casper.shards[{i}]: {e}"))
+                })
+                .collect::<Result<Vec<ShardSpec>, String>>()?;
+            ShardMemberships::new(specs)
+        }
+        Some(other) => err("an array of shard objects", other),
+    }
+}
+
+/// One `casper.shards` entry. An entry-level `genesis-block-data` overlays the node-level one field
+/// by field; `autogen-shard-size` likewise falls back to the node-level value.
+fn shard_spec_from_hocon(
+    h: &Hocon,
+    default_genesis: &GenesisBlockData,
+    default_autogen_shard_size: i32,
+) -> Result<ShardSpec, String> {
+    let genesis_block_data = match get_opt(h, "genesis-block-data") {
+        Some(entry) => genesis_block_data_over(entry, default_genesis)?,
+        None => default_genesis.clone(),
+    };
+    let autogen_shard_size = match get_opt(h, "autogen-shard-size") {
+        Some(entry) => to_i32(entry)?,
+        None => default_autogen_shard_size,
+    };
+    ShardSpec::new(
+        to_string(get(h, "shard-name")?)?,
+        to_string(get(h, "parent-shard-id")?)?,
+        genesis_block_data,
+        autogen_shard_size,
+    )
+}
+
+/// Reject an operator configuration that sets both the multi-shard list and the legacy scalar shard
+/// keys — silently letting one win would run a different set of shards than the operator wrote.
+///
+/// Checked per operator-supplied layer, before merging: `defaults.conf` always sets
+/// `casper.shard-name`, so its presence in the merged tree is not a conflict. `source` names the
+/// layer for the error message.
+pub fn check_shard_config_exclusivity(config: &Hocon, source: &str) -> Result<(), String> {
+    let Some(casper) = get_opt(config, "casper") else {
+        return Ok(());
+    };
+    let has_shards = get_opt(casper, "shards").is_some();
+    let has_scalar =
+        get_opt(casper, "shard-name").is_some() || get_opt(casper, "parent-shard-id").is_some();
+    if has_shards && has_scalar {
+        return Err(format!(
+            "{source}: `casper.shards` and `casper.shard-name`/`casper.parent-shard-id` are \
+             mutually exclusive; use `casper.shards` (an array) for a multi-shard node and leave \
+             the scalar keys unset"
+        ));
+    }
+    Ok(())
 }
 
 /// Build a `NodeConf` from a merged `Hocon` tree (port of `mergedConf.load[NodeConf]`).
