@@ -158,6 +158,7 @@ mod tests {
             block_size: "0".to_string(),
             deploy_count: 0,
             rejected_deploys: vec![],
+            timestamp: 0,
         }
     }
 

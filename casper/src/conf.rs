@@ -37,8 +37,7 @@ impl CasperConf {
     /// The full shard id `{parent_shard_id}/{shard_name}` — a validated, hierarchical path
     /// (Law 26). The root's parent is `/`, so the default `root` shard is `/root`.
     pub fn full_shard_id(&self) -> Result<ShardId, String> {
-        let parent =
-            ShardId::try_from(self.parent_shard_id.clone()).map_err(|e| e.to_string())?;
+        let parent = ShardId::try_from(self.parent_shard_id.clone()).map_err(|e| e.to_string())?;
         Ok(parent.child(&self.shard_name))
     }
 }

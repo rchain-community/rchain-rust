@@ -538,6 +538,9 @@ mod tests {
             "/root"
         );
         // A bare name (no `/` separator) has no parent — `parent()` must not panic on it.
-        assert_eq!(ShardId::try_from("root".to_string()).unwrap().parent(), None);
+        assert_eq!(
+            ShardId::try_from("root".to_string()).unwrap().parent(),
+            None
+        );
     }
 }

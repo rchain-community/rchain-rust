@@ -35,6 +35,9 @@ pub struct LightBlockInfo {
     pub block_size: String,
     pub deploy_count: i32,
     pub rejected_deploys: Vec<String>,
+    /// Informational block header timestamp (proposer's wall clock, ms since the Unix epoch). Not a
+    /// consensus input; exposed for RChain applications.
+    pub timestamp: i64,
 }
 
 /// Deploy metadata (port of `DeployInfo`).
@@ -259,6 +262,7 @@ pub fn light_block_info_from_wire(b: &wire::LightBlockInfo) -> LightBlockInfo {
         block_size: b.block_size.clone(),
         deploy_count: b.deploy_count,
         rejected_deploys: b.rejected_deploys.clone(),
+        timestamp: b.timestamp,
     }
 }
 
