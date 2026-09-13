@@ -184,6 +184,31 @@ impl Costs {
     pub fn take_cost(to: i64) -> Cost {
         Cost::new(to, "take")
     }
+    /// Cost of a string transform that walks the input once (`toLowerCase`, `toUpperCase`,
+    /// `capitalize`, `reverse`, `trim`).
+    pub fn string_transform_cost(len: i64, what: &str) -> Cost {
+        Cost::new(len, what)
+    }
+    /// Cost of a substring search (`indexOf`, `contains`, `startsWith`, `endsWith`).
+    pub fn string_search_cost(haystack: i64, needle: i64, what: &str) -> Cost {
+        Cost::new(haystack.saturating_add(needle), what)
+    }
+    /// Cost of `replace` (walk the input, build the output).
+    pub fn string_replace_cost(input: i64, old: i64, new: i64) -> Cost {
+        Cost::new(input.saturating_add(old).saturating_add(new), "replace")
+    }
+    /// Cost of `split` (walk the input and the separator).
+    pub fn string_split_cost(input: i64, sep: i64) -> Cost {
+        Cost::new(input.saturating_add(sep), "split")
+    }
+    /// Cost of `format` (walk the format string once per argument).
+    pub fn string_format_cost(format_len: i64, args: i64) -> Cost {
+        Cost::new(format_len.saturating_mul(args.max(1)), "format")
+    }
+    /// Cost of converting a value to its string form (the inverse of `toInt`/`toBigInt`).
+    pub fn to_string_cost(len: i64) -> Cost {
+        Cost::new(len, "toString")
+    }
     pub fn to_list_cost(size: i64) -> Cost {
         Cost::new(size, "toList")
     }

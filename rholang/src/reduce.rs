@@ -726,6 +726,67 @@ fn check_arity(method: &str, expected: usize, actual: usize) -> Result<(), Rhola
     }
 }
 
+/// Arity check for the methods that accept a range of arguments (e.g. `substring(i[, j])`).
+/// The error reports the minimum accepted count.
+fn check_arity_between(
+    method: &str,
+    min: usize,
+    max: usize,
+    actual: usize,
+) -> Result<(), RholangError> {
+    if actual < min || actual > max {
+        Err(RholangError::MethodArgumentNumberMismatch {
+            method: method.to_string(),
+            expected: min as i32,
+            actual: actual as i32,
+        })
+    } else {
+        Ok(())
+    }
+}
+
+/// Require an evaluated `Expr` to be a string.
+fn expect_string(method: &str, e: Expr) -> Result<String, RholangError> {
+    match e {
+        Expr::GString(s) => Ok(s),
+        other => Err(method_not_defined(method, &other)),
+    }
+}
+
+/// Evaluate `p` and require a string.
+fn string_arg(
+    method: &str,
+    p: &Par,
+    env: &Env<Par>,
+    cost: &CostAccounting,
+) -> Result<String, RholangError> {
+    expect_string(method, eval_single_expr(p, env, cost)?)
+}
+
+/// Require an already-evaluated `Par` to hold a string (used where the argument was evaluated as a
+/// `Par`, e.g. `contains`, so it is not evaluated — and charged — twice).
+fn expect_string_par(method: &str, p: &Par) -> Result<String, RholangError> {
+    match single_expr(p) {
+        Some(Expr::GString(s)) => Ok(s.clone()),
+        Some(other) => Err(method_not_defined(method, other)),
+        None => Err(RholangError::ReduceError(format!(
+            "Error: {method} expects a string argument"
+        ))),
+    }
+}
+
+/// The string form of a value, for `toString`/`format` (the inverse of `toInt`/`toBigInt`).
+fn expr_to_string(method: &str, e: &Expr) -> Result<String, RholangError> {
+    match e {
+        Expr::GString(s) => Ok(s.clone()),
+        Expr::GInt(v) => Ok(v.to_string()),
+        Expr::GBigInt(v) => Ok(v.to_string()),
+        Expr::GBool(b) => Ok(if *b { "true" } else { "false" }.to_string()),
+        Expr::GUri(u) => Ok(u.clone()),
+        other => Err(method_not_defined(method, other)),
+    }
+}
+
 fn hex_encode(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
@@ -1006,6 +1067,16 @@ fn eval_method(
                         b.kvs.iter().any(|(k, _)| k == &element),
                     )))
                 }
+                Expr::GString(s) => {
+                    // `S.contains(T)` (RCHIP #37): is `T` a substring of `S`.
+                    let needle = expect_string_par("contains", &element)?;
+                    cost.charge(Costs::string_search_cost(
+                        s.chars().count() as i64,
+                        needle.chars().count() as i64,
+                        "contains",
+                    ))?;
+                    Ok(from_expr(Expr::GBool(s.contains(&needle))))
+                }
                 other => Err(method_not_defined("contains", other)),
             }
         }
@@ -1089,7 +1160,9 @@ fn eval_method(
             let base = eval_single_expr(target, env, cost)?;
             cost.charge(Costs::length_method_cost())?;
             let n = match &base {
-                Expr::GString(s) => s.len(),
+                // Characters, not UTF-8 bytes (RCHIP #37: "the length of the string in
+                // characters"), consistent with `slice`/`substring`, which index by character.
+                Expr::GString(s) => s.chars().count(),
                 Expr::GByteArray(b) => b.len(),
                 Expr::EList(EList { ps, .. }) => ps.len(),
                 other => return Err(method_not_defined("length", other)),
@@ -1255,6 +1328,223 @@ fn eval_method(
                 }
                 other => Err(method_not_defined("toMap", &other)),
             }
+        }
+        // --- String methods (RCHIP #37 "Add string functions") --------------------------
+        // All string methods index/count by character (Unicode scalar values), matching
+        // `length`/`slice`.
+        "substring" => {
+            check_arity_between("substring", 1, 2, args.len())?;
+            let s = string_arg("substring", target, env, cost)?;
+            let from_i = eval_to_long(&args[0], env, cost)?;
+            let until_i = if args.len() == 2 {
+                eval_to_long(&args[1], env, cost)?
+            } else {
+                s.chars().count() as i64
+            };
+            let from = from_i.max(0);
+            let until = until_i.max(0);
+            cost.charge(Costs::slice_cost(from.max(until)))?;
+            // `i64::saturating_sub` clamps at `i64::MIN`, not 0, so clamp explicitly: a negative
+            // length cast to `usize` wraps and would take the whole tail.
+            let len = if until > from {
+                (until - from) as usize
+            } else {
+                0
+            };
+            let out: String = s.chars().skip(from as usize).take(len).collect();
+            Ok(from_expr(Expr::GString(out)))
+        }
+        "indexOf" => {
+            check_arity_between("indexOf", 1, 2, args.len())?;
+            let s = string_arg("indexOf", target, env, cost)?;
+            let needle = string_arg("indexOf", &args[0], env, cost)?;
+            let from_i = if args.len() == 2 {
+                eval_to_long(&args[1], env, cost)?
+            } else {
+                0
+            };
+            cost.charge(Costs::string_search_cost(
+                s.chars().count() as i64,
+                needle.chars().count() as i64,
+                "indexOf",
+            ))?;
+            let hay: Vec<char> = s.chars().collect();
+            let ndl: Vec<char> = needle.chars().collect();
+            let start = from_i.max(0) as usize;
+            let found = if ndl.is_empty() {
+                if start <= hay.len() {
+                    Some(start)
+                } else {
+                    None
+                }
+            } else if ndl.len() > hay.len() || start > hay.len() - ndl.len() {
+                None
+            } else {
+                hay[start..]
+                    .windows(ndl.len())
+                    .position(|w| w == ndl.as_slice())
+                    .map(|i| start + i)
+            };
+            Ok(from_expr(Expr::GInt(found.map(|i| i as i64).unwrap_or(-1))))
+        }
+        "toLowerCase" => {
+            check_arity("toLowerCase", 0, args.len())?;
+            let s = string_arg("toLowerCase", target, env, cost)?;
+            cost.charge(Costs::string_transform_cost(
+                s.chars().count() as i64,
+                "toLowerCase",
+            ))?;
+            Ok(from_expr(Expr::GString(s.to_lowercase())))
+        }
+        "toUpperCase" => {
+            check_arity("toUpperCase", 0, args.len())?;
+            let s = string_arg("toUpperCase", target, env, cost)?;
+            cost.charge(Costs::string_transform_cost(
+                s.chars().count() as i64,
+                "toUpperCase",
+            ))?;
+            Ok(from_expr(Expr::GString(s.to_uppercase())))
+        }
+        "capitalize" => {
+            check_arity("capitalize", 0, args.len())?;
+            let s = string_arg("capitalize", target, env, cost)?;
+            cost.charge(Costs::string_transform_cost(
+                s.chars().count() as i64,
+                "capitalize",
+            ))?;
+            let out: String = match s.chars().next() {
+                Some(first) => first.to_uppercase().collect::<String>() + &s[first.len_utf8()..],
+                None => String::new(),
+            };
+            Ok(from_expr(Expr::GString(out)))
+        }
+        "reverse" => {
+            check_arity("reverse", 0, args.len())?;
+            let s = string_arg("reverse", target, env, cost)?;
+            cost.charge(Costs::string_transform_cost(
+                s.chars().count() as i64,
+                "reverse",
+            ))?;
+            Ok(from_expr(Expr::GString(s.chars().rev().collect())))
+        }
+        "trim" => {
+            check_arity("trim", 0, args.len())?;
+            let s = string_arg("trim", target, env, cost)?;
+            cost.charge(Costs::string_transform_cost(
+                s.chars().count() as i64,
+                "trim",
+            ))?;
+            Ok(from_expr(Expr::GString(s.trim().to_string())))
+        }
+        "isEmpty" => {
+            check_arity("isEmpty", 0, args.len())?;
+            let s = string_arg("isEmpty", target, env, cost)?;
+            Ok(from_expr(Expr::GBool(s.is_empty())))
+        }
+        "nonEmpty" => {
+            check_arity("nonEmpty", 0, args.len())?;
+            let s = string_arg("nonEmpty", target, env, cost)?;
+            Ok(from_expr(Expr::GBool(!s.is_empty())))
+        }
+        "startsWith" => {
+            check_arity("startsWith", 1, args.len())?;
+            let s = string_arg("startsWith", target, env, cost)?;
+            let prefix = string_arg("startsWith", &args[0], env, cost)?;
+            cost.charge(Costs::string_search_cost(
+                s.chars().count() as i64,
+                prefix.chars().count() as i64,
+                "startsWith",
+            ))?;
+            Ok(from_expr(Expr::GBool(s.starts_with(&prefix))))
+        }
+        "endsWith" => {
+            check_arity("endsWith", 1, args.len())?;
+            let s = string_arg("endsWith", target, env, cost)?;
+            let suffix = string_arg("endsWith", &args[0], env, cost)?;
+            cost.charge(Costs::string_search_cost(
+                s.chars().count() as i64,
+                suffix.chars().count() as i64,
+                "endsWith",
+            ))?;
+            Ok(from_expr(Expr::GBool(s.ends_with(&suffix))))
+        }
+        "replace" => {
+            check_arity("replace", 2, args.len())?;
+            let s = string_arg("replace", target, env, cost)?;
+            let old = string_arg("replace", &args[0], env, cost)?;
+            let new = string_arg("replace", &args[1], env, cost)?;
+            cost.charge(Costs::string_replace_cost(
+                s.chars().count() as i64,
+                old.chars().count() as i64,
+                new.chars().count() as i64,
+            ))?;
+            // An empty `old` would splice `new` between every character; leave the input as-is.
+            let out = if old.is_empty() {
+                s
+            } else {
+                s.replace(&old, &new)
+            };
+            Ok(from_expr(Expr::GString(out)))
+        }
+        "split" => {
+            check_arity("split", 1, args.len())?;
+            let s = string_arg("split", target, env, cost)?;
+            let sep = string_arg("split", &args[0], env, cost)?;
+            cost.charge(Costs::string_split_cost(
+                s.chars().count() as i64,
+                sep.chars().count() as i64,
+            ))?;
+            let parts: Vec<Par> = if sep.is_empty() {
+                s.chars()
+                    .map(|c| from_expr(Expr::GString(c.to_string())))
+                    .collect()
+            } else {
+                s.split(sep.as_str())
+                    .map(|p| from_expr(Expr::GString(p.to_string())))
+                    .collect()
+            };
+            Ok(from_expr(Expr::EList(EList {
+                ps: parts,
+                ..Default::default()
+            })))
+        }
+        "format" => {
+            // Variadic: a single list/tuple argument is flattened, so both `S.format(a, b)` and
+            // `S.format([a, b])` work. `%s` placeholders are replaced in order; extras are left.
+            let s = string_arg("format", target, env, cost)?;
+            let mut arg_pars: Vec<Par> = Vec::new();
+            if args.len() == 1 {
+                match eval_single_expr(&args[0], env, cost)? {
+                    Expr::EList(EList { ps, .. }) | Expr::ETuple(ETuple { ps, .. }) => {
+                        arg_pars.extend(ps)
+                    }
+                    other => arg_pars.push(from_expr(other)),
+                }
+            } else {
+                arg_pars.extend_from_slice(args);
+            }
+            cost.charge(Costs::string_format_cost(
+                s.chars().count() as i64,
+                arg_pars.len() as i64,
+            ))?;
+            let mut out = String::with_capacity(s.len());
+            let mut rest = s.as_str();
+            for p in &arg_pars {
+                let Some(i) = rest.find("%s") else { break };
+                out.push_str(&rest[..i]);
+                let v = eval_single_expr(p, env, cost)?;
+                out.push_str(&expr_to_string("format", &v)?);
+                rest = &rest[i + 2..];
+            }
+            out.push_str(rest);
+            Ok(from_expr(Expr::GString(out)))
+        }
+        "toString" => {
+            check_arity("toString", 0, args.len())?;
+            let v = eval_single_expr(target, env, cost)?;
+            let out = expr_to_string("toString", &v)?;
+            cost.charge(Costs::to_string_cost(out.chars().count() as i64))?;
+            Ok(from_expr(Expr::GString(out)))
         }
         _ => Err(RholangError::ReduceError(format!(
             "Unimplemented method: {method}"
@@ -2690,5 +2980,66 @@ mod tests {
             }
             _ => panic!("expected a set"),
         }
+    }
+
+    #[test]
+    fn string_methods_from_rchip_37() {
+        let cost = CostAccounting::from_initial(Costs::unsafe_max());
+        let e = Env::new();
+        let s = |v: &str| from_expr(Expr::GString(v.to_string()));
+        let i = |v: i64| from_expr(Expr::GInt(v));
+        let b = |v: bool| from_expr(Expr::GBool(v));
+        let call = |m: &str, target: &Par, args: &[Par]| {
+            eval_method(m, target, args, &e, &cost).expect("method call")
+        };
+
+        // substring(i) / substring(i, j)
+        assert_eq!(call("substring", &s("hello"), &[i(1)]), s("ello"));
+        assert_eq!(call("substring", &s("hello"), &[i(1), i(3)]), s("el"));
+        assert_eq!(call("substring", &s("hello"), &[i(3), i(1)]), s(""));
+        // length counts characters, not UTF-8 bytes
+        assert_eq!(call("length", &s("héllo"), &[]), i(5));
+        // indexOf(T) / indexOf(T, i)
+        assert_eq!(call("indexOf", &s("banana"), &[s("na")]), i(2));
+        assert_eq!(call("indexOf", &s("banana"), &[s("na"), i(3)]), i(4));
+        assert_eq!(call("indexOf", &s("banana"), &[s("zz")]), i(-1));
+        // case, reverse, trim
+        assert_eq!(call("toUpperCase", &s("aBc"), &[]), s("ABC"));
+        assert_eq!(call("toLowerCase", &s("aBc"), &[]), s("abc"));
+        assert_eq!(call("capitalize", &s("abc"), &[]), s("Abc"));
+        assert_eq!(call("reverse", &s("abc"), &[]), s("cba"));
+        assert_eq!(call("trim", &s("  x  "), &[]), s("x"));
+        // predicates
+        assert_eq!(call("isEmpty", &s(""), &[]), b(true));
+        assert_eq!(call("nonEmpty", &s("x"), &[]), b(true));
+        assert_eq!(call("startsWith", &s("hello"), &[s("he")]), b(true));
+        assert_eq!(call("endsWith", &s("hello"), &[s("lo")]), b(true));
+        assert_eq!(call("contains", &s("hello"), &[s("ell")]), b(true));
+        assert_eq!(call("contains", &s("hello"), &[s("zz")]), b(false));
+        // replace / split
+        assert_eq!(call("replace", &s("a-b-c"), &[s("-"), s("+")]), s("a+b+c"));
+        assert_eq!(
+            call("split", &s("a,b,c"), &[s(",")]),
+            from_expr(Expr::EList(EList {
+                ps: vec![s("a"), s("b"), s("c")],
+                ..Default::default()
+            }))
+        );
+        // toString: the value -> string conversion (so `42.toString() ++ " units"` works)
+        assert_eq!(call("toString", &i(42), &[]), s("42"));
+        assert_eq!(call("toString", &b(false), &[]), s("false"));
+        // format: variadic and single-list forms
+        assert_eq!(call("format", &s("a=%s b=%s"), &[i(1), i(2)]), s("a=1 b=2"));
+        assert_eq!(
+            call(
+                "format",
+                &s("x=%s"),
+                &[from_expr(Expr::EList(EList {
+                    ps: vec![i(7)],
+                    ..Default::default()
+                }))]
+            ),
+            s("x=7")
+        );
     }
 }
