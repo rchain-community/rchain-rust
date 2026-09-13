@@ -7,14 +7,14 @@ description = "Faithful Rust port of the RChain node module (glue: configuration
 
 [dependencies]
 async-trait = "0.1"
-axum = "0.7"
+axum = "0.8"
 clap = { version = "4", features = ["derive"] }
 futures-util = "0.3"
 hocon = { version = "0.9", default-features = false }
 linked-hash-map = "0.5"
-prost = "0.13"
+prost = "0.14"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
-rustyline = { version = "14", features = ["derive"] }
+rustyline = { version = "18", features = ["derive"] }
 rchain-block-storage = { path = "../block-storage" }
 rchain-casper = { path = "../casper" }
 rchain-comm = { path = "../comm" }
@@ -28,9 +28,9 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["full"] }
 tokio-stream = "0.1"
-tonic = { version = "0.12", features = ["transport"] }
-tower = { version = "0.4", features = ["timeout"] }
-tower-http = { version = "0.5", features = ["cors", "timeout"] }
+tonic = { version = "0.14", features = ["transport"] }
+tower = { version = "0.5", features = ["timeout"] }
+tower-http = { version = "0.6", features = ["cors", "timeout"] }
 
 [dev-dependencies]
 

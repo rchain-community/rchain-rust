@@ -13,7 +13,7 @@ lmdb = ["tokio", "dep:lmdb-rkv"]
 [dependencies]
 tokio = { version = "1", features = ["sync", "rt"], optional = true }
 async-trait = { version = "0.1", optional = true }
-lz4_flex = { version = "0.11", optional = true }
+lz4_flex = { version = "0.14", optional = true }
 lmdb-rkv = { version = "0.14", optional = true }
 
 [dev-dependencies]
