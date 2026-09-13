@@ -218,6 +218,50 @@ fn int_bigop(
     Ok(Expr::GBigInt(big(l, r)?))
 }
 
+/// `set + x` — insert `x` into the set, re-canonicalised. This is the `add` **method**'s body,
+/// shared with the `+` operator exactly as Scala shares them (`EPlusBody`'s
+/// `case (lhs: ESetBody, rhs) => add(lhs, List[Par](rhs))` calls the same `add` the `.add(x)`
+/// method does), so the two cannot drift apart.
+fn set_add(b: &ParSet, element: Par, cost: &CostAccounting) -> Result<Expr, RholangError> {
+    cost.charge(Costs::add_cost())?;
+    let element_conn = element.connective_used;
+    let element_lf = element.locally_free.0.clone();
+    let mut ps = b.ps.clone();
+    ps.push(element);
+    let mut s = par_set(ps);
+    s.connective_used = b.connective_used || element_conn;
+    s.locally_free = AlwaysEqual(union_free(b.locally_free.0.clone(), element_lf));
+    s.remainder = None;
+    Ok(Expr::ESet(s))
+}
+
+/// `collection - x` — `delete` for sets and maps (Scala's `EMinusBody` has an arm for each, both
+/// calling `delete`), shared with the `.delete(x)` method for the same reason as [`set_add`].
+fn collection_delete(
+    base: &Expr,
+    element: &Par,
+    cost: &CostAccounting,
+) -> Result<Expr, RholangError> {
+    match base {
+        Expr::ESet(b) => {
+            cost.charge(Costs::remove_cost().mul(b.ps.len() as i64))?;
+            let ps: Vec<Par> = b.ps.iter().filter(|p| *p != element).cloned().collect();
+            Ok(Expr::ESet(par_set(ps)))
+        }
+        Expr::EMap(b) => {
+            cost.charge(Costs::remove_cost().mul(b.kvs.len() as i64))?;
+            let kvs: Vec<(Par, Par)> = b
+                .kvs
+                .iter()
+                .filter(|(k, _)| k != element)
+                .cloned()
+                .collect();
+            Ok(Expr::EMap(par_map(kvs)))
+        }
+        other => Err(method_not_defined("delete", other)),
+    }
+}
+
 fn relop(
     p1: &Par,
     p2: &Par,
@@ -422,6 +466,14 @@ fn eval_expr_to_expr(
         Expr::EPlus(p1, p2) => {
             let v1 = eval_single_expr(p1, env, cost)?;
             let v2 = eval_single_expr(p2, env, cost)?;
+            // `Set + x` inserts (Scala: `case (lhs: ESetBody, rhs) => add(lhs, …)`), charged
+            // `OP_CALL_COST` for the dispatch before `add`'s own cost. The arm was missing, so
+            // `Set(1) + 2` — valid rholang, and what `convenience_methods_test.rho` exercises —
+            // errored as `OperatorNotDefined`.
+            if let Expr::ESet(b) = &v1 {
+                cost.charge(Costs::op_call_cost())?;
+                return set_add(b, from_expr(v2), cost);
+            }
             int_binop(
                 "+",
                 &v1,
@@ -436,6 +488,11 @@ fn eval_expr_to_expr(
         Expr::EMinus(p1, p2) => {
             let v1 = eval_single_expr(p1, env, cost)?;
             let v2 = eval_single_expr(p2, env, cost)?;
+            // `Set - x` / `Map - x` remove (Scala's `EMinusBody` calls `delete` for each).
+            if matches!(v1, Expr::ESet(_) | Expr::EMap(_)) {
+                cost.charge(Costs::op_call_cost())?;
+                return collection_delete(&v1, &from_expr(v2), cost);
+            }
             int_binop(
                 "-",
                 &v1,
@@ -610,6 +667,37 @@ fn eval_expr_to_expr(
                         ..Default::default()
                     }))
                 }
+                (Expr::ESet(l), Expr::ESet(r)) => {
+                    // Set union (the `union` method's semantics, `ParSet.union`): the Scala `++`
+                    // union-s the two sets, charging `unionCost(otherPs.size)`.
+                    cost.charge(Costs::union_cost(r.ps.len() as i64))?;
+                    let mut ps = l.ps.clone();
+                    ps.extend(r.ps.clone());
+                    let mut s = par_set(ps);
+                    s.connective_used = l.connective_used || r.connective_used;
+                    s.locally_free = AlwaysEqual(union_free(
+                        l.locally_free.0.clone(),
+                        r.locally_free.0.clone(),
+                    ));
+                    s.remainder = None;
+                    Ok(Expr::ESet(s))
+                }
+                (Expr::EMap(l), Expr::EMap(r)) => {
+                    // Map union (`baseMap ++ otherMap`, right-biased: the other map's value wins on
+                    // a colliding key — which is what `par_map`'s canonicalisation gives, since it
+                    // keeps the last of each key).
+                    cost.charge(Costs::union_cost(r.kvs.len() as i64))?;
+                    let mut kvs = l.kvs.clone();
+                    kvs.extend(r.kvs.clone());
+                    let mut m = par_map(kvs);
+                    m.connective_used = l.connective_used || r.connective_used;
+                    m.locally_free = AlwaysEqual(union_free(
+                        l.locally_free.0.clone(),
+                        r.locally_free.0.clone(),
+                    ));
+                    m.remainder = None;
+                    Ok(Expr::EMap(m))
+                }
                 (Expr::GString(_), o) => Err(RholangError::OperatorExpectedError {
                     op: "++".to_string(),
                     expected: "String".to_string(),
@@ -618,6 +706,16 @@ fn eval_expr_to_expr(
                 (Expr::EList(_), o) => Err(RholangError::OperatorExpectedError {
                     op: "++".to_string(),
                     expected: "List".to_string(),
+                    other_type: typ(o).to_string(),
+                }),
+                (Expr::EMap(_), o) => Err(RholangError::OperatorExpectedError {
+                    op: "++".to_string(),
+                    expected: "Map".to_string(),
+                    other_type: typ(o).to_string(),
+                }),
+                (Expr::ESet(_), o) => Err(RholangError::OperatorExpectedError {
+                    op: "++".to_string(),
+                    expected: "Set".to_string(),
                     other_type: typ(o).to_string(),
                 }),
                 (o, _) => Err(RholangError::OperatorNotDefined {
@@ -1035,44 +1133,16 @@ fn eval_method(
             check_arity("add", 1, args.len())?;
             let base = eval_single_expr(target, env, cost)?;
             let element = eval_expr(&args[0], env, cost)?;
-            cost.charge(Costs::add_cost())?;
-            match base {
-                Expr::ESet(b) => {
-                    let element_conn = element.connective_used;
-                    let element_lf = element.locally_free.0.clone();
-                    let mut ps = b.ps.clone();
-                    ps.push(element);
-                    let mut s = par_set(ps);
-                    s.connective_used = b.connective_used || element_conn;
-                    s.locally_free = AlwaysEqual(union_free(b.locally_free.0.clone(), element_lf));
-                    s.remainder = None;
-                    Ok(from_expr(Expr::ESet(s)))
-                }
-                other => Err(method_not_defined("add", &other)),
+            match &base {
+                Expr::ESet(b) => set_add(b, element, cost).map(from_expr),
+                other => Err(method_not_defined("add", other)),
             }
         }
         "delete" => {
             check_arity("delete", 1, args.len())?;
             let base = eval_single_expr(target, env, cost)?;
             let element = eval_expr(&args[0], env, cost)?;
-            match &base {
-                Expr::ESet(b) => {
-                    cost.charge(Costs::remove_cost().mul(b.ps.len() as i64))?;
-                    let ps: Vec<Par> = b.ps.iter().filter(|p| *p != &element).cloned().collect();
-                    Ok(from_expr(Expr::ESet(par_set(ps))))
-                }
-                Expr::EMap(b) => {
-                    cost.charge(Costs::remove_cost().mul(b.kvs.len() as i64))?;
-                    let kvs: Vec<(Par, Par)> = b
-                        .kvs
-                        .iter()
-                        .filter(|(k, _)| k != &element)
-                        .cloned()
-                        .collect();
-                    Ok(from_expr(Expr::EMap(par_map(kvs))))
-                }
-                other => Err(method_not_defined("delete", other)),
-            }
+            collection_delete(&base, &element, cost).map(from_expr)
         }
         "contains" => {
             check_arity("contains", 1, args.len())?;
@@ -2755,6 +2825,137 @@ mod tests {
             Box::new(from_expr(Expr::GInt(3))),
         ));
         assert_eq!(eval_single_expr(&p, &e, &cost).unwrap(), Expr::GInt(5));
+    }
+
+    /// `++` is defined for String, ByteArray, List, **Map** and **Set** (`Reduce.scala`'s
+    /// `EPlusPlusBody`: the Map/Set arms go through `union`). The Map/Set arms were missing in the
+    /// port, so `Set(1) ++ Set(2)` and `{"a": 1} ++ {"b": 2}` — both valid rholang — errored instead
+    /// of reducing, which is a replay divergence on any block that uses them.
+    #[tokio::test]
+    async fn plus_plus_concatenates_byte_arrays_and_unions_maps_and_sets() {
+        let cost = CostAccounting::from_initial(Costs::unsafe_max());
+        let e = Env::new();
+        let eval = |src: &str| {
+            // `source_to_adt` yields the typed `Closed`; the consuming `From` is how a term reaches
+            // the reducer, so the test crosses the same boundary the runtime does.
+            let p: Par = crate::normalizer::source_to_adt(src).expect("parse").into();
+            eval_single_expr(&p, &e, &cost)
+        };
+
+        // Byte arrays concatenate (`GByteArray(lhs) ++ GByteArray(rhs)`). Built as an AST rather
+        // than parsed: rholang has no byte-array *literal* (the BNFC `Ground` is Bool/Int/BigInt/
+        // String/Uri only), so a byte array reaches the reducer from a native such as
+        // `keccak256Hash` — which the corpus exercises, and which has no syntax to write here.
+        let bytes = from_expr(Expr::EPlusPlus(
+            Box::new(from_expr(Expr::GByteArray(vec![97, 98]))),
+            Box::new(from_expr(Expr::GByteArray(vec![99, 100]))),
+        ));
+        assert_eq!(
+            eval_single_expr(&bytes, &e, &cost).expect("byte arrays"),
+            Expr::GByteArray(vec![97, 98, 99, 100])
+        );
+
+        // Sets union and are re-canonicalised (the duplicate `2` collapses).
+        let set = eval("Set(1, 2) ++ Set(2, 3)").expect("set union");
+        let Expr::ESet(s) = &set else {
+            panic!("expected a set, got {set:?}")
+        };
+        assert_eq!(s.ps.len(), 3, "the duplicate element is not kept twice");
+
+        // Maps union, right-biased on a colliding key (Scala `baseMap ++ otherMap`).
+        let Expr::EMap(m) = eval("{\"a\": 1} ++ {\"a\": 2}").expect("map union") else {
+            panic!("expected a map")
+        };
+        assert_eq!(m.kvs.len(), 1, "one key, not two");
+        assert_eq!(m.kvs[0].1, from_expr(Expr::GInt(2)), "the other map wins");
+
+        // A mismatched operand reports the type the *left* operand established, as Scala's
+        // `OperatorExpectedError` does for each of its four arms. The variant is asserted rather
+        // than the message, because the message does **not** contain `expected`: Scala's
+        // `OperatorExpectedError` formats identically to `OperatorNotDefined` (both are
+        // "Operator `op` is not defined on type."), and the port is faithful to that — so a
+        // `contains("Set")` assertion would be testing the port's *unfaithfulness*.
+        for (src, expected) in [
+            ("Set(1) ++ [2]", "Set"),
+            ("{\"a\": 1} ++ 3", "Map"),
+            ("[1] ++ 3", "List"),
+            ("\"a\" ++ 3", "String"),
+        ] {
+            let err = eval(src).expect_err("a mismatched operand must be a type error");
+            match &err {
+                RholangError::OperatorExpectedError {
+                    op,
+                    expected: got,
+                    other_type,
+                } => {
+                    assert_eq!(op, "++", "{src}: wrong operator");
+                    assert_eq!(got, expected, "{src}: wrong expected type");
+                    assert!(!other_type.is_empty(), "{src}: the offending type is named");
+                }
+                other => panic!("{src}: expected an OperatorExpectedError, got {other:?}"),
+            }
+        }
+
+        // A `ByteArray` left operand has no arm in Scala either (the four arms are String, List,
+        // Map, Set), so it falls through to `OperatorNotDefined` — the same shape here.
+        let err = eval("3 ++ 4").expect_err("int ++ int");
+        assert!(
+            matches!(&err, RholangError::OperatorNotDefined { op, .. } if op == "++"),
+            "{err:?}"
+        );
+    }
+
+    /// `+` and `-` are not only arithmetic: Scala's `EPlusBody` has a `(lhs: ESetBody, rhs)` arm
+    /// that inserts, and `EMinusBody` has arms for both sets and maps that remove — each calling the
+    /// *same* `add`/`delete` the corresponding method does. The port had neither, so
+    /// `Set(1, 2) + 3`, `Set(1, 2) - 1` and `{"a": 1} - "a"` — all valid rholang — errored as
+    /// `OperatorNotDefined`, which is the failure `convenience_methods_test.rho` reports.
+    #[tokio::test]
+    async fn plus_and_minus_also_insert_into_and_delete_from_collections() {
+        let cost = CostAccounting::from_initial(Costs::unsafe_max());
+        let e = Env::new();
+        let eval = |src: &str| {
+            let p: Par = crate::normalizer::source_to_adt(src).expect("parse").into();
+            eval_single_expr(&p, &e, &cost)
+        };
+        let set_len = |src: &str| match eval(src).expect("a set") {
+            Expr::ESet(s) => s.ps.len(),
+            other => panic!("expected a set, got {other:?}"),
+        };
+
+        // Insert: a new element grows the set, an existing one does not (it is re-canonicalised).
+        assert_eq!(set_len("Set(1, 2) + 3"), 3);
+        assert_eq!(
+            set_len("Set(1, 2) + 1"),
+            2,
+            "inserting a duplicate is a no-op"
+        );
+        // Delete: from a set, and from a map by key.
+        assert_eq!(set_len("Set(1, 2, 3) - 2"), 2);
+        assert_eq!(
+            set_len("Set(1, 2) - 9"),
+            2,
+            "deleting an absent element is a no-op"
+        );
+        let Expr::EMap(m) = eval("{\"a\": 1, \"b\": 2} - \"a\"").expect("a map") else {
+            panic!("expected a map")
+        };
+        assert_eq!(m.kvs.len(), 1);
+        assert_eq!(m.kvs[0].0, from_expr(Expr::GString("b".to_string())));
+
+        // Arithmetic is untouched (the collection arm is checked first, so this is the arm order).
+        assert_eq!(eval("1 + 2").expect("int sum"), Expr::GInt(3));
+        assert_eq!(eval("5 - 3").expect("int difference"), Expr::GInt(2));
+        // And a non-integer, non-collection operand still reports the right error per operand:
+        // `GInt` + other is `OperatorExpectedError`, anything else is `OperatorNotDefined`.
+        assert!(matches!(
+            eval("1 + \"a\"").expect_err("int + string"),
+            RholangError::OperatorExpectedError { ref op, .. } if op == "+"
+        ));
+        assert!(matches!(
+            eval("\"a\" + 1").expect_err("string + int"),
+            RholangError::OperatorNotDefined { ref op, .. } if op == "+"
+        ));
     }
 
     #[test]
