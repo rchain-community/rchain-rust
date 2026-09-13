@@ -24,7 +24,7 @@ use tokio::sync::mpsc;
 
 use crate::blocks::block_retriever::BlockRetriever;
 use crate::bonds_parser;
-use crate::conf::{CasperConf, ShardSpec};
+use crate::conf::ShardSpec;
 use crate::engine::node_running::NodeRunning;
 use crate::engine::node_syncing::NodeSyncing;
 use crate::genesis::contracts::{ProofOfStake, Registry, Validator};
@@ -189,7 +189,7 @@ async fn create_store_broadcast_genesis(
 pub async fn apply<I: RSpaceImporter + Send + 'static, E: RSpaceExporter>(
     mut packet_rx: mpsc::Receiver<PeerMessage>,
     incoming_blocks: mpsc::Sender<BlockMessage>,
-    conf: CasperConf,
+    spec: ShardSpec,
     trim_state: bool,
     // The store-items response is served unconditionally; `disable_state_exporter` would gate it,
     // but the config flag is not yet threaded through, so it is accepted and ignored for now.
@@ -219,7 +219,7 @@ pub async fn apply<I: RSpaceImporter + Send + 'static, E: RSpaceExporter>(
         );
         create_store_broadcast_genesis(
             validator_identity_opt.as_ref(),
-            conf.shards.primary(),
+            &spec,
             runtime_manager.as_ref(),
             &block_store,
             &approved_store,
