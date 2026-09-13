@@ -39,13 +39,16 @@ pub fn write_private_key(path: &Path, bytes: impl AsRef<[u8]>) -> Result<(), Str
 
 #[cfg(unix)]
 fn write_with_mode(path: &Path, bytes: &[u8], mode: u32) -> Result<(), String> {
-    use std::os::unix::fs::OpenOptionsExt;
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
     let mut opts = fs::OpenOptions::new();
     opts.write(true).create(true).truncate(true).mode(mode);
-    opts.open(path)
-        .map_err(|e| e.to_string())?
-        .write_all(bytes)
-        .map_err(|e| e.to_string())
+    let mut file = opts.open(path).map_err(|e| e.to_string())?;
+    file.write_all(bytes).map_err(|e| e.to_string())?;
+    // `OpenOptions::mode` only applies when the file is *created*, so a write over a pre-existing
+    // file (an `rnode.key` copied in by hand, or one this code wrote before R6 narrowed the mode)
+    // would keep whatever permissions it had. Narrow it explicitly, after the write so the content
+    // is never briefly readable under the wider mode.
+    fs::set_permissions(path, fs::Permissions::from_mode(mode)).map_err(|e| e.to_string())
 }
 
 #[cfg(not(unix))]
@@ -121,6 +124,16 @@ mod tests {
         dir
     }
 
+    /// A directory of its own, so a test that also removes its directory on the way out cannot
+    /// delete another test's files (the tests run in parallel, and `temp_dir` is keyed by pid).
+    fn temp_dir_named(tag: &str) -> std::path::PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("rchain_key_util_{}_{tag}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
     #[test]
     fn write_keys_round_trips() {
         let dir = temp_dir();
@@ -165,6 +178,50 @@ mod tests {
             secret2.to_bytes(),
             SecretKey::from_slice(sk.bytes()).unwrap().to_bytes()
         );
+
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// The private key file must be owner-only (R6 in `spec/AUDIT.md` §11: it was written with the
+    /// process umask, so on a default `0022` it landed world-readable). The public key files are
+    /// deliberately not restricted — they are meant to be shared — so the two modes are asserted
+    /// together, and a `write` swapped back in for `write_private_key` fails this test.
+    #[cfg(unix)]
+    #[test]
+    fn the_private_key_file_is_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = temp_dir_named("mode");
+        let (sk, pk) = Secp256k1.new_key_pair();
+        let private_path = dir.join("private.pem");
+        write_keys(
+            &sk,
+            &pk,
+            &Secp256k1,
+            "password",
+            &private_path,
+            &dir.join("public.pem"),
+            &dir.join("public.hex"),
+        )
+        .unwrap();
+
+        let mode = fs::metadata(&private_path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600, "private key mode was {mode:o}");
+        // The mode is set at creation, not by a later chmod, so a re-write over an existing
+        // wider-open file must also narrow it.
+        fs::set_permissions(&private_path, fs::Permissions::from_mode(0o644)).unwrap();
+        write_keys(
+            &sk,
+            &pk,
+            &Secp256k1,
+            "password",
+            &private_path,
+            &dir.join("public.pem"),
+            &dir.join("public.hex"),
+        )
+        .unwrap();
+        let mode = fs::metadata(&private_path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600, "re-write left mode {mode:o}");
 
         fs::remove_dir_all(&dir).unwrap();
     }
