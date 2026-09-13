@@ -130,3 +130,163 @@ pub fn normalize_signature_low_s(algorithm: &str, signature: &[u8]) -> Vec<u8> {
         _ => signature.to_vec(),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::util::certificate_helper::{decode_signature_der_to_rs, encode_signature_rs_to_der};
+    use rchain_shared::base16;
+
+    /// A low-S `secp256k1` signature from `secp256k1.rs`'s own vectors, so this module's tests and
+    /// the algorithm's stay pinned to the same bytes.
+    const LOW_S_DER: &str = "3044022079BE667EF9DCBBAC55A06295CE870B07029BFCDB2DCE28D959F2815B16F817980220294F14E883B3F525B5367756C2A11EF6CF84B730B36C17CB0C56F0AAB2C98589";
+
+    fn rs_of(der: &[u8]) -> Vec<u8> {
+        decode_signature_der_to_rs(der).expect("a well-formed DER signature")
+    }
+
+    /// The registry: names resolve case-insensitively to the algorithm that reports that name back,
+    /// and **`ed25519` is deliberately absent** (RCHAIN-3560). A lookup that started resolving it
+    /// would put a disabled algorithm back on the signature-verification path.
+    #[test]
+    fn the_registry_resolves_the_two_enabled_algorithms_and_refuses_ed25519() {
+        for name in ["secp256k1", "SECP256K1", "Secp256k1"] {
+            assert_eq!(
+                from_algorithm(name).map(|a| a.name()),
+                Some("secp256k1"),
+                "{name}"
+            );
+        }
+        for name in ["secp256k1:eth", "SECP256K1:ETH", "Secp256k1:Eth"] {
+            assert_eq!(
+                from_algorithm(name).map(|a| a.name()),
+                Some("secp256k1:eth"),
+                "{name}"
+            );
+        }
+        assert!(
+            from_algorithm("ed25519").is_none(),
+            "disabled by RCHAIN-3560"
+        );
+        assert!(from_algorithm("").is_none());
+        assert!(from_algorithm("secp256r1").is_none());
+        assert!(from_algorithm("secp256k1 ").is_none(), "no trimming");
+    }
+
+    /// The declared signature lengths: 32 for secp256k1's `s` half (the DER wrapper is carried
+    /// separately) and the same for the eth variant, which shares the curve.
+    #[test]
+    fn the_declared_signature_lengths_are_the_curve_element_size() {
+        assert_eq!(from_algorithm("secp256k1").expect("alg").sig_length(), 32);
+        assert_eq!(from_algorithm("secp256k1:eth").expect("alg").sig_length(), 32);
+    }
+
+    /// `n/2` is the low-S threshold and the comparison is **strict**: exactly `n/2` is already low-S
+    /// (`n` is odd, so `n/2` has no twin), one above it is high.
+    #[test]
+    fn is_high_s_is_strict_at_the_half_order_boundary() {
+        assert!(!is_high_s(&SECP256K1_ORDER_HALF), "n/2 is not above n/2");
+        assert!(!is_high_s(&[0u8; 32]), "zero is low");
+        assert!(is_high_s(&SECP256K1_ORDER), "n exceeds n/2");
+
+        let mut above = SECP256K1_ORDER_HALF;
+        above[31] += 1;
+        assert!(is_high_s(&above), "n/2 + 1 is the first high value");
+
+        let mut below = SECP256K1_ORDER_HALF;
+        below[31] -= 1;
+        assert!(!is_high_s(&below));
+
+        // The comparison is over the whole 32-byte scalar, not just its tail: the decisive byte is
+        // the first that differs, so a high head wins even with a low tail.
+        let mut high_head = SECP256K1_ORDER_HALF;
+        high_head[0] += 1;
+        high_head[31] = 0;
+        assert!(is_high_s(&high_head));
+    }
+
+    /// `negate_mod_order` is `n − s`: it maps the order to zero, is an involution, and preserves the
+    /// 32-byte big-endian width.
+    #[test]
+    fn negate_mod_order_is_n_minus_s() {
+        assert_eq!(negate_mod_order(&SECP256K1_ORDER), [0u8; 32], "n − n = 0");
+        assert_eq!(
+            negate_mod_order(&[0u8; 32]),
+            SECP256K1_ORDER,
+            "n − 0 = n"
+        );
+
+        let mut one = [0u8; 32];
+        one[31] = 1;
+        let mut n_minus_one = SECP256K1_ORDER;
+        n_minus_one[31] -= 1;
+        assert_eq!(negate_mod_order(&one), n_minus_one);
+
+        // Twice is the identity, for a value that borrows down every byte.
+        let s = [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x7F, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+            0xFF, 0xFF, 0xFF, 0xFF];
+        assert_eq!(negate_mod_order(&negate_mod_order(&s)), s);
+    }
+
+    /// Normalizing a low-S signature is the identity, and normalizing is **idempotent**: the
+    /// malleability fix must not move an already-canonical signature, which is what makes the deploy
+    /// dedup key stable.
+    #[test]
+    fn a_low_s_signature_is_left_alone() {
+        let der = base16::unsafe_decode(LOW_S_DER);
+        assert_eq!(normalize_signature_low_s("secp256k1", &der), der);
+        assert_eq!(normalize_signature_low_s("secp256k1:eth", &rs_of(&der)), rs_of(&der));
+    }
+
+    /// The high-S form of that same signature — `s` replaced by `n − s` — is rewritten back to the
+    /// low-S one, in both encodings. This is the malleability fix (R28): without it the same
+    /// signature could be re-encoded and produce a second dedup key.
+    #[test]
+    fn the_high_s_twin_is_normalized_back_to_the_low_s_form() {
+        let der = base16::unsafe_decode(LOW_S_DER);
+        let low = rs_of(&der);
+
+        let mut high = low.clone();
+        high[32..].copy_from_slice(&negate_mod_order(&low[32..]));
+        assert!(is_high_s(&high[32..]), "the twin is high-S by construction");
+
+        let high_der = encode_signature_rs_to_der(&high).expect("64 bytes");
+        assert_ne!(high_der, der, "the twin is a different encoding");
+        assert_eq!(
+            normalize_signature_low_s("secp256k1", &high_der),
+            der,
+            "the DER form is rewritten to the canonical low-S encoding"
+        );
+        assert_eq!(
+            normalize_signature_low_s("secp256k1:eth", &high),
+            low,
+            "the raw RS form is rewritten in place"
+        );
+        // Idempotent in both directions.
+        assert_eq!(
+            normalize_signature_low_s("secp256k1", &normalize_signature_low_s("secp256k1", &high_der)),
+            der
+        );
+    }
+
+    /// Everything that is **not** a signature this function understands is returned unchanged: a
+    /// 64-byte check for the eth form, a DER decode failure for the secp256k1 form, and any
+    /// unregistered algorithm name. Best-effort, never lossy.
+    #[test]
+    fn anything_it_cannot_decode_is_returned_unchanged() {
+        // The eth form is raw RS: any other length cannot be split into r and s.
+        let short = vec![0xFFu8; 63];
+        assert_eq!(normalize_signature_low_s("secp256k1:eth", &short), short);
+
+        // Not a DER SEQUENCE.
+        let garbage = vec![0x01, 0x02, 0x03];
+        assert_eq!(normalize_signature_low_s("secp256k1", &garbage), garbage);
+        assert_eq!(normalize_signature_low_s("secp256k1", &[]), Vec::<u8>::new());
+
+        // An unregistered name (or one that is merely registered *elsewhere*) is a passthrough.
+        let rs = vec![0xFFu8; 64];
+        assert_eq!(normalize_signature_low_s("ed25519", &rs), rs);
+        assert_eq!(normalize_signature_low_s("", &rs), rs);
+    }
+}
