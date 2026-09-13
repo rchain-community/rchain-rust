@@ -144,3 +144,101 @@ mod tests {
         assert!(chain.is_empty());
     }
 }
+
+#[cfg(test)]
+mod chain_tests {
+    use super::*;
+
+    /// A DAG over `i32` where each message's justification is its predecessor, and the sender can be
+    /// made to change at a chosen index — so a chain can be walked across a sender boundary.
+    struct ChainData {
+        /// Messages at or above this value have a *different* sender.
+        boundary: i32,
+    }
+
+    impl DagData<i32, i32, i32, i32> for ChainData {
+        fn mid(&self, m: &i32) -> i32 {
+            *m
+        }
+        fn seq_num(&self, m: &i32) -> i64 {
+            *m as i64
+        }
+        fn block_num(&self, m: &i32) -> i64 {
+            *m as i64
+        }
+        fn justifications(&self, m: &i32) -> Vec<i32> {
+            if *m == 0 {
+                vec![]
+            } else {
+                vec![m - 1]
+            }
+        }
+        fn sender(&self, m: &i32) -> i32 {
+            i32::from(*m >= self.boundary)
+        }
+        fn bonds_map(&self, _m: &i32) -> Vec<(i32, NonNegNumeric)> {
+            vec![]
+        }
+        fn sid(&self, s: &i32) -> i32 {
+            *s
+        }
+    }
+
+    type NonNegNumeric = rchain_shared::refined::NonNegI64;
+
+    struct ChainView;
+
+    impl DagView<i32, i32, i32, i32> for ChainView {
+        fn seen_by(&self) -> i32 {
+            0
+        }
+        fn messages(&self) -> Vec<(i32, Vec<i32>)> {
+            vec![]
+        }
+        fn load_message(&self, mid: &i32) -> i32 {
+            *mid
+        }
+        fn load_sender(&self, sid: &i32) -> i32 {
+            *sid
+        }
+    }
+
+    /// The chain walks one same-sender justification at a time and **excludes the seed message** — it
+    /// is the ancestry list a caller appends to the message it started from.
+    #[test]
+    fn the_chain_excludes_the_seed_and_walks_to_the_root() {
+        let data = ChainData { boundary: 0 };
+        let chain = self_justification_chain(&ChainView, &data, 3);
+        assert_eq!(
+            chain,
+            vec![2, 1, 0],
+            "3's same-sender ancestry, newest first"
+        );
+        assert!(
+            !chain.contains(&3),
+            "the seed message is not part of its own chain"
+        );
+    }
+
+    /// A message whose justification belongs to **another sender** contributes nothing: the chain
+    /// stops at the sender boundary (the LFS sync's per-validator walk would otherwise cross into
+    /// another validator's chain).
+    #[test]
+    fn the_chain_stops_at_a_sender_boundary() {
+        // Messages 3 and above are sender 1, below are sender 0: from 3 the only justification (2)
+        // belongs to another sender, so the chain is empty.
+        let data = ChainData { boundary: 3 };
+        assert!(self_justification_chain(&ChainView, &data, 3).is_empty());
+
+        // From 2 (sender 0), the justification 1 is the same sender, so the chain continues.
+        let data = ChainData { boundary: 3 };
+        assert_eq!(self_justification_chain(&ChainView, &data, 2), vec![1, 0]);
+    }
+
+    /// A message with no justifications at all (the genesis shape) has an empty chain.
+    #[test]
+    fn a_root_message_has_an_empty_chain() {
+        let data = ChainData { boundary: 0 };
+        assert!(self_justification_chain(&ChainView, &data, 0).is_empty());
+    }
+}

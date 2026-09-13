@@ -129,3 +129,135 @@ impl DagRepresentation {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn hash(byte: u8) -> BlockHash {
+        BlockHash::new([byte; 32])
+    }
+
+    /// A representation with a small chain 0 → 1 → 2 at heights 0..=2.
+    fn chain() -> DagRepresentation {
+        let (b0, b1, b2) = (hash(0), hash(1), hash(2));
+        DagRepresentation {
+            dag_set: [b0, b1, b2].into_iter().collect(),
+            child_map: [
+                (b0, [b1].into_iter().collect()),
+                (b1, [b2].into_iter().collect()),
+                (b2, BTreeSet::new()),
+            ]
+            .into_iter()
+            .collect(),
+            height_map: [
+                (
+                    BlockHeight::try_from(0).unwrap(),
+                    [b0].into_iter().collect(),
+                ),
+                (
+                    BlockHeight::try_from(1).unwrap(),
+                    [b1].into_iter().collect(),
+                ),
+                (
+                    BlockHeight::try_from(2).unwrap(),
+                    [b2].into_iter().collect(),
+                ),
+            ]
+            .into_iter()
+            .collect(),
+            dag_message_state: DagMessageState::empty(),
+            fringe_states: BTreeMap::new(),
+        }
+    }
+
+    /// An empty DAG has no last finalized block, and the `_unsafe` variant says so by name rather
+    /// than panicking — the arm a caller reads when the fringe is not available yet.
+    #[test]
+    fn an_empty_dag_has_no_last_finalized_block() {
+        let dag = DagRepresentation {
+            dag_set: BTreeSet::new(),
+            child_map: BTreeMap::new(),
+            height_map: BTreeMap::new(),
+            dag_message_state: DagMessageState::empty(),
+            fringe_states: BTreeMap::new(),
+        };
+        assert_eq!(dag.last_finalized_block_hash(), None);
+        assert_eq!(
+            dag.last_finalized_block_unsafe().expect_err("no fringe"),
+            "Finalized fringe is not available."
+        );
+        assert_eq!(dag.latest_block_number(), 0);
+        assert!(dag.latest_fringe().is_empty());
+        assert!(dag.finalized_blocks_set().is_empty());
+    }
+
+    /// The height index drives `latest_block_number` (one past the highest height) and the range
+    /// query: the end bound is clamped to the DAG's height, so a caller asking beyond the tip gets
+    /// the tip's group rather than an error.
+    #[test]
+    fn the_height_index_drives_the_range_query() {
+        let dag = chain();
+        assert_eq!(dag.latest_block_number(), 3, "one past height 2");
+
+        let all = dag.topo_sort(0, None).expect("a valid range");
+        assert_eq!(all, vec![vec![hash(0)], vec![hash(1)], vec![hash(2)]]);
+
+        // A start beyond the tip is an *invalid* range (`start > end`), not an empty answer.
+        assert_eq!(dag.topo_sort(9, None), None);
+        // A negative start is clamped to zero, so it is valid.
+        assert_eq!(dag.topo_sort(-5, None).expect("clamped").len(), 3);
+        // An end beyond the tip is clamped.
+        assert_eq!(dag.topo_sort(0, Some(99)).expect("clamped").len(), 3);
+        // A sub-range.
+        assert_eq!(
+            dag.topo_sort(1, Some(1)).expect("valid"),
+            vec![vec![hash(1)]]
+        );
+        let err = dag
+            .topo_sort_unsafe(9, Some(1))
+            .expect_err("an invalid range is an error");
+        assert!(format!("{err}").contains("topo-sort"), "{err}");
+    }
+
+    /// `find` resolves a hex prefix, and **rejects non-hex input rather than dropping the bad
+    /// characters** (the validate-on-ingress rule): an odd-length prefix still resolves, but a
+    /// malformed one finds nothing instead of matching a different block.
+    #[test]
+    fn find_resolves_a_hex_prefix_and_rejects_junk() {
+        let dag = chain();
+        let full = hash(2).to_hex();
+
+        assert_eq!(dag.find(&full), Some(hash(2)));
+        assert_eq!(dag.find(&full[..8]), Some(hash(2)), "an even-length prefix");
+        // Odd length: the last nibble is compared as text.
+        assert_eq!(dag.find(&full[..9]), Some(hash(2)));
+        let odd_junk = format!("{}z", &full[..8]);
+        assert_eq!(dag.find(&odd_junk), None, "not hex");
+        assert_eq!(
+            dag.find(""),
+            Some(hash(0)),
+            "the empty prefix matches the first block"
+        );
+        assert_eq!(dag.find("ffffff"), None, "no block starts with that");
+    }
+
+    /// `contains`/`children`/`is_finalized` are the DAG queries the block processor uses.
+    #[test]
+    fn membership_and_children_queries() {
+        let dag = chain();
+        assert!(dag.contains(&hash(1)));
+        assert!(!dag.contains(&hash(9)));
+        assert_eq!(
+            dag.children(&hash(0)),
+            Some(&[hash(1)].into_iter().collect())
+        );
+        assert_eq!(
+            dag.children(&hash(9)),
+            None,
+            "an unknown block has no children"
+        );
+        // With no fringe state, nothing is finalized.
+        assert!(!dag.is_finalized(&hash(0)));
+    }
+}

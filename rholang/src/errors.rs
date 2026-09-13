@@ -222,3 +222,205 @@ impl std::error::Error for RholangError {}
 
 /// Convenience result alias.
 pub type Result<A> = std::result::Result<A, RholangError>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use rchain_models::ast::Par;
+
+    fn pos(row: i32, column: i32) -> SourcePosition {
+        SourcePosition { row, column }
+    }
+
+    /// **Every `Display` arm, formatted.** These strings are what an operator reads in a failed
+    /// deploy's error field (and what the register noted read as ~1% coverage "because nothing
+    /// formats them"), so each variant is constructed and its message pinned — including the four
+    /// that take a `Par` and the two that stringify a source position.
+    #[test]
+    fn every_variant_renders_its_message() {
+        let par = Box::new(Par::default());
+        let cases: Vec<(RholangError, &str)> = vec![
+            // The pass-through variants carry their own message verbatim (faithful to Scala).
+            (RholangError::BugFoundError("bug".into()), "bug"),
+            (RholangError::NormalizerError("norm".into()), "norm"),
+            (RholangError::SyntaxError("syntax".into()), "syntax"),
+            (RholangError::LexerError("lex".into()), "lex"),
+            (RholangError::ParserError("parse".into()), "parse"),
+            (RholangError::UnexpectedBundleContent("bundle".into()), "bundle"),
+            (RholangError::UnrecognizedNormalizerError("unk".into()), "unk"),
+            (RholangError::SetupError("setup".into()), "setup"),
+            (RholangError::SortMatchError("sort".into()), "sort"),
+            (RholangError::ReduceError("reduce".into()), "reduce"),
+            // The typed variants build their message from the fields.
+            (
+                RholangError::UnboundVariableRef {
+                    var_name: "x".into(),
+                    line: 1,
+                    col: 2,
+                },
+                "Variable reference: =x at 1:2 is unbound.",
+            ),
+            (
+                RholangError::UnexpectedNameContext {
+                    var_name: "x".into(),
+                    proc_var_source_position: pos(1, 0),
+                    name_source_position: pos(0, 0),
+                },
+                "Proc variable: x at 1:0 used in Name context at 0:0",
+            ),
+            (
+                RholangError::UnexpectedReuseOfNameContextFree {
+                    var_name: "x".into(),
+                    first_use: pos(0, 0),
+                    second_use: pos(0, 0),
+                },
+                "Free variable x is used twice as a binder (at 0:0 and 0:0) in name context.",
+            ),
+            (
+                RholangError::UnexpectedProcContext {
+                    var_name: "x".into(),
+                    name_var_source_position: pos(0, 0),
+                    process_source_position: pos(0, 0),
+                },
+                "Name variable: x at 0:0 used in process context at 0:0",
+            ),
+            (
+                RholangError::UnexpectedReuseOfProcContextFree {
+                    var_name: "x".into(),
+                    first_use: pos(0, 0),
+                    second_use: pos(0, 0),
+                },
+                "Free variable x is used twice as a binder (at 0:0 and 0:0) in process context.",
+            ),
+            (
+                RholangError::OutOfPhlogistonsError,
+                "Computation ran out of phlogistons.",
+            ),
+            (
+                RholangError::TopLevelWildcardsNotAllowedError(par.clone()),
+                "Top level wildcards are not allowed:",
+            ),
+            (
+                RholangError::TopLevelFreeVariablesNotAllowedError(par.clone()),
+                "Top level free variables are not allowed:",
+            ),
+            (
+                RholangError::TopLevelLogicalConnectivesNotAllowedError(par.clone()),
+                "Top level logical connectives are not allowed:",
+            ),
+            (
+                RholangError::SubstituteError {
+                    term: rchain_models::ast::Var::Wildcard,
+                },
+                "Illegal Substitution [Wildcard]",
+            ),
+            (
+                RholangError::PatternReceiveError("\\/ (disjunction)".into()),
+                "Invalid pattern in the receive: \\/ (disjunction). Only logical AND is allowed.",
+            ),
+            (
+                RholangError::UnrecognizedInterpreterError("whatever".into()),
+                "Unrecognized interpreter error",
+            ),
+            (
+                RholangError::MethodNotDefined {
+                    method: "foo".into(),
+                    other_type: "Int".into(),
+                },
+                "Error: Method `foo` is not defined on Int.",
+            ),
+            (
+                RholangError::MethodArgumentNumberMismatch {
+                    method: "foo".into(),
+                    expected: 1,
+                    actual: 2,
+                },
+                "Error: Method `foo` expects 1 Par argument(s), but got 2 argument(s).",
+            ),
+            (
+                RholangError::OperatorNotDefined {
+                    op: "%".into(),
+                    other_type: "Tuple".into(),
+                },
+                "Error: Operator `%` is not defined on Tuple.",
+            ),
+            // `expected` is carried but *not* rendered — faithful to the Scala message (see
+            // AUDIT.md §16), so the assertion deliberately expects the same text as
+            // `OperatorNotDefined`.
+            (
+                RholangError::OperatorExpectedError {
+                    op: "++".into(),
+                    expected: "Set".into(),
+                    other_type: "List".into(),
+                },
+                "Error: Operator `++` is not defined on List.",
+            ),
+            (
+                RholangError::ReceiveOnSameChannelsError { line: 3, col: 4 },
+                "Receiving on the same channels is currently not allowed (at 3:4). Ref. RCHAIN-4032.",
+            ),
+            (
+                RholangError::SpeculationInvalid {
+                    channel: rchain_models::sorted::SortedProc::new(
+                        rchain_models::par_ops::from_expr(rchain_models::ast::Expr::GString(
+                            "c".to_string(),
+                        )),
+                    ),
+                    writer_path: vec![0],
+                    at_path: vec![1],
+                },
+                "speculation invalid (Law 24)",
+            ),
+        ];
+
+        for (error, expected) in cases {
+            let rendered = error.to_string();
+            assert!(
+                rendered.contains(expected),
+                "arm for {error:?} rendered {rendered:?}, expected it to contain {expected:?}"
+            );
+            assert!(!rendered.is_empty());
+        }
+    }
+
+    /// `AggregateError` is the one arm that is not a single `write!`: it leads with its own line and
+    /// then appends every collected error, interpreter errors first. A dropped inner error would make
+    /// a multi-error deploy report only part of the failure.
+    #[test]
+    fn an_aggregate_error_renders_every_inner_error() {
+        let error = RholangError::AggregateError {
+            interpreter_errors: vec![RholangError::ReduceError("first".to_string())],
+            errors: vec!["second".to_string()],
+        };
+        let rendered = error.to_string();
+        let lines: Vec<&str> = rendered.lines().collect();
+        assert_eq!(lines[0], "Error: Aggregate Error");
+        assert_eq!(lines[1], "first");
+        assert_eq!(
+            lines[2], "second",
+            "interpreter errors come first, then the others"
+        );
+    }
+
+    /// `SourcePosition` renders `row:column` — the shape every position-bearing message depends on.
+    #[test]
+    fn a_source_position_renders_row_and_column() {
+        assert_eq!(pos(7, 11).to_string(), "7:11");
+        assert_eq!(pos(0, 0).to_string(), "0:0");
+        // The two-position elements of a `Display` (`first_use`, `second_use`) are `i32` pairs, and
+        // they are rendered through this same `Display`.
+        assert_eq!(format!("{} and {}", pos(1, 2), pos(3, 4)), "1:2 and 3:4");
+    }
+
+    /// The error type is a real `std::error::Error`, so `?` and `Box<dyn Error>` sinks work — and it
+    /// is `Clone`/`PartialEq`, which is what lets callers match on it (the `?` operator's `From`
+    /// conversions included).
+    #[test]
+    fn it_is_a_std_error() {
+        let error = RholangError::ReduceError("nope".into());
+        let boxed: Box<dyn std::error::Error> = Box::new(error.clone());
+        assert_eq!(boxed.to_string(), "nope");
+        assert_eq!(error.clone(), error);
+    }
+}

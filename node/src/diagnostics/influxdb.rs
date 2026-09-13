@@ -425,3 +425,195 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod line_protocol_tests {
+    use super::*;
+
+    use super::super::model::{Bucket, Dimension, Distribution, MeasurementUnit};
+
+    fn tags(pairs: &[(&str, &str)]) -> Tags {
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
+    }
+
+    fn counter(name: &str, value: i64) -> MetricValue {
+        MetricValue {
+            name: name.to_string(),
+            tags: tags(&[("node", "n1")]),
+            value,
+            unit: MeasurementUnit::NONE,
+        }
+    }
+
+    /// Line-protocol escaping: `space`, `=` and `,` are the three characters that would otherwise
+    /// split a key or a value into extra parts.
+    #[test]
+    fn escaping_covers_space_equals_and_comma() {
+        assert_eq!(escape_string("a b"), "a\\ b");
+        assert_eq!(escape_string("a=b"), "a\\=b");
+        assert_eq!(escape_string("a,b"), "a\\,b");
+        assert_eq!(escape_string("plain"), "plain");
+        assert_eq!(escape_string("a b=c,d"), "a\\ b\\=c\\,d");
+    }
+
+    /// A Java `Double.toString` keeps an integral double distinguishable from an integer (`1.0`, not
+    /// `1`), which is how InfluxDB tells a float field from an int field.
+    #[test]
+    fn a_double_is_rendered_with_its_decimal_point() {
+        assert_eq!(double_to_string(1.0), "1.0");
+        assert_eq!(double_to_string(-3.0), "-3.0");
+        assert_eq!(double_to_string(1.5), "1.5");
+        assert_eq!(double_to_string(0.0), "0.0");
+    }
+
+    /// A counter or gauge becomes `<name>,<tags> <field>=<value>i <timestamp>`, with the value marked
+    /// as an integer (`i`) and the tags sorted (they come from a `BTreeMap`).
+    #[test]
+    fn a_metric_value_renders_a_line_protocol_record() {
+        let mut out = String::new();
+        write_metric_value(
+            &mut out,
+            &counter("my.counter", 7),
+            "value",
+            1234,
+            &Tags::new(),
+            true,
+        );
+        assert_eq!(out, "my.counter,node=n1 value=7i 1234\n");
+
+        // Without a newline the record is left open for the next one; extra tags are merged and win
+        // over the metric's own.
+        let mut out = String::new();
+        write_metric_value(
+            &mut out,
+            &counter("my.counter", 7),
+            "value",
+            1234,
+            &tags(&[("node", "override"), ("extra", "x")]),
+            false,
+        );
+        assert_eq!(out, "my.counter,extra=x,node=override value=7i 1234");
+    }
+
+    /// A distribution renders `count`, `sum`, `min`, one field per percentile, and `max` — each
+    /// followed by a comma because the field list continues.
+    #[test]
+    fn a_distribution_renders_every_aggregate() {
+        let distribution = MetricDistribution {
+            name: "my.histogram".to_string(),
+            tags: tags(&[("k", "v")]),
+            unit: MeasurementUnit {
+                dimension: Dimension::Time,
+                magnitude: 1.0,
+            },
+            distribution: Distribution {
+                count: 4,
+                sum: 10,
+                min: 1,
+                max: 4,
+                buckets: vec![
+                    Bucket {
+                        value: 1,
+                        frequency: 1,
+                    },
+                    Bucket {
+                        value: 2,
+                        frequency: 2,
+                    },
+                    Bucket {
+                        value: 4,
+                        frequency: 1,
+                    },
+                ],
+            },
+        };
+        let mut out = String::new();
+        write_metric_distribution(
+            &mut out,
+            &distribution,
+            &[0.5, 0.99],
+            99,
+            &Tags::new(),
+            true,
+        );
+
+        assert!(out.starts_with("my.histogram,k=v "), "{out}");
+        assert!(out.contains("count=4i,"), "{out}");
+        assert!(out.contains("sum=10i,"), "{out}");
+        assert!(out.contains("min=1i,"), "{out}");
+        assert!(out.contains("p0.5="), "{out}");
+        assert!(out.contains("p0.99="), "{out}");
+        assert!(out.contains("max=4i "), "{out}");
+        assert!(out.ends_with(" 99\n"), "{out}");
+    }
+
+    /// The percentile rendering uses `double_to_string` for the field *name* too, so `p1` is spelled
+    /// `p1.0` — the same shape a float field needs.
+    #[test]
+    fn a_percentile_field_name_keeps_its_decimal_point() {
+        let distribution = MetricDistribution {
+            name: "h".to_string(),
+            tags: Tags::new(),
+            unit: MeasurementUnit::NONE,
+            distribution: Distribution {
+                count: 1,
+                sum: 5,
+                min: 5,
+                max: 5,
+                buckets: vec![Bucket {
+                    value: 5,
+                    frequency: 1,
+                }],
+            },
+        };
+        let mut out = String::new();
+        write_metric_distribution(&mut out, &distribution, &[1.0], 1, &Tags::new(), false);
+        assert!(out.contains("p1.0="), "{out}");
+        assert!(!out.contains("p1="), "{out}");
+    }
+
+    /// The packet buffer sends when the measurement no longer fits in the configured packet, and
+    /// keeps the remainder buffered otherwise — the bound that keeps a UDP datagram legal. A socket
+    /// bound to an ephemeral port is the whole harness (the packet goes to a port nobody reads).
+    #[test]
+    fn the_packet_buffer_flushes_when_the_measurement_would_overflow() {
+        let socket = UdpSocket::bind("127.0.0.1:0").expect("bind");
+        let remote: SocketAddr = "127.0.0.1:9".parse().expect("addr");
+
+        // A generous packet size: nothing flushes until asked.
+        let mut buffer = MetricDataPacketBuffer::new(1024, &socket, remote);
+        buffer.append_measurement("m v=1i 1\n").expect("append");
+        buffer.flush().expect("flush");
+
+        // A packet size smaller than one measurement: the first append fits nothing, so it flushes
+        // and keeps the measurement for the next pack.
+        let mut tiny = MetricDataPacketBuffer::new(4, &socket, remote);
+        tiny.append_measurement("long.measurement v=1i 1\n")
+            .expect("append");
+        tiny.flush().expect("flush");
+    }
+
+    /// A UDP reporter can be constructed from its settings, and a period snapshot with no metrics
+    /// reports successfully (the empty-snapshot arm).
+    #[test]
+    fn an_empty_snapshot_is_reported_without_error() {
+        let settings = UdpSettings {
+            address: "127.0.0.1:9".parse().expect("addr"),
+            max_packet_size: 1024,
+            percentiles: vec![0.5],
+            additional_tags: Tags::new(),
+        };
+        let reporter = UdpInfluxDbReporter::new(settings).expect("reporter");
+        let snapshot = PeriodSnapshot {
+            from: 0,
+            to: 1,
+            metrics: super::super::model::MetricSnapshot::default(),
+        };
+        reporter
+            .report_period_snapshot(&snapshot)
+            .expect("an empty snapshot reports");
+    }
+}

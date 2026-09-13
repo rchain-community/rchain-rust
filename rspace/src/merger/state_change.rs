@@ -238,3 +238,305 @@ mod tests {
         assert_eq!(ab_added, ba_added);
     }
 }
+
+/// A `HistoryReaderBinary` over canned rows: the diff in `StateChange::apply` is a pure function of
+/// two readers, so a three-map double is the whole harness (the trait has three methods).
+#[cfg(test)]
+mod diff_tests {
+    use super::*;
+
+    use crate::internal::{Datum, WaitingContinuation};
+    use crate::serializers::scodec_serialize::{DatumB, JoinsB, WaitingContinuationB};
+    use crate::trace::event::{Consume, Produce};
+
+    #[derive(Default)]
+    struct MockReader {
+        data: BTreeMap<Blake2b256Hash, Vec<DatumB<String>>>,
+        konts: BTreeMap<Blake2b256Hash, Vec<WaitingContinuationB<String, String>>>,
+        joins: BTreeMap<Blake2b256Hash, Vec<JoinsB<String>>>,
+        /// When set, every read fails with this message.
+        fail: bool,
+    }
+
+    #[async_trait::async_trait]
+    impl HistoryReaderBinary<String, String, String, String> for MockReader {
+        async fn get_data(
+            &self,
+            key: Blake2b256Hash,
+        ) -> Result<Vec<DatumB<String>>, crate::errors::RSpaceError> {
+            if self.fail {
+                return Err(crate::errors::RSpaceError::Codec("test reader failure"));
+            }
+            Ok(self.data.get(&key).cloned().unwrap_or_default())
+        }
+        async fn get_continuations(
+            &self,
+            key: Blake2b256Hash,
+        ) -> Result<Vec<WaitingContinuationB<String, String>>, crate::errors::RSpaceError> {
+            if self.fail {
+                return Err(crate::errors::RSpaceError::Codec("test reader failure"));
+            }
+            Ok(self.konts.get(&key).cloned().unwrap_or_default())
+        }
+        async fn get_joins(
+            &self,
+            key: Blake2b256Hash,
+        ) -> Result<Vec<JoinsB<String>>, crate::errors::RSpaceError> {
+            if self.fail {
+                return Err(crate::errors::RSpaceError::Codec("test reader failure"));
+            }
+            Ok(self.joins.get(&key).cloned().unwrap_or_default())
+        }
+    }
+
+    fn hash(byte: u8) -> Blake2b256Hash {
+        Blake2b256Hash::from_bytes([byte; 32])
+    }
+
+    fn produce(byte: u8) -> Produce {
+        Produce::apply(&format!("chan{byte}"), &format!("datum{byte}"), false)
+    }
+
+    fn consume(byte: u8) -> Consume {
+        Consume::apply(
+            &[format!("chan{byte}"), format!("chan{}", byte + 1)],
+            &[format!("pat{byte}"), format!("pat{}", byte + 1)],
+            &format!("cont{byte}"),
+            false,
+        )
+    }
+
+    fn datum_b(raw: u8) -> DatumB<String> {
+        DatumB {
+            decoded: Datum {
+                a: format!("datum{raw}"),
+                persist: false,
+                source: produce(raw),
+            },
+            raw: vec![raw],
+        }
+    }
+
+    fn kont_b(raw: u8) -> WaitingContinuationB<String, String> {
+        WaitingContinuationB {
+            decoded: WaitingContinuation {
+                patterns: vec![format!("pat{raw}")],
+                continuation: format!("cont{raw}"),
+                persist: false,
+                peeks: Default::default(),
+                source: consume(raw),
+            },
+            raw: vec![raw],
+        }
+    }
+
+    fn joins_b(raw: u8, channels: Vec<String>) -> JoinsB<String> {
+        JoinsB {
+            decoded: channels,
+            raw: vec![raw],
+        }
+    }
+
+    /// An event log that touches exactly one produce and one consume.
+    fn log_with(produce_byte: u8, consume_byte: u8) -> EventLogIndex {
+        EventLogIndex {
+            produces_linear: [produce(produce_byte)].into_iter().collect(),
+            consumes_linear_and_peeks: [consume(consume_byte)].into_iter().collect(),
+            ..Default::default()
+        }
+    }
+
+    /// **A datum added between the snapshots** is reported as `added`, keyed by the produce's
+    /// channels hash (the merge's unit of change).
+    #[tokio::test]
+    async fn an_added_datum_is_reported_as_added() {
+        let p = produce(1);
+        // The consume half must diff non-empty as well, or `apply` fails its own consistency check.
+        let c = consume(2);
+        let kont_pointer = crate::hashing::stable_hash_provider::hash_hashes(&c.channels_hashes);
+
+        let pre = MockReader::default();
+        let post = MockReader {
+            data: [(p.channels_hash, vec![datum_b(9)])].into_iter().collect(),
+            konts: [(kont_pointer, vec![kont_b(3)])].into_iter().collect(),
+            joins: [(
+                c.channels_hashes[0],
+                vec![joins_b(4, vec![format!("chan2"), format!("chan3")])],
+            )]
+            .into_iter()
+            .collect(),
+            fail: false,
+        };
+
+        let change = StateChange::apply(&pre, &post, &log_with(1, 2))
+            .await
+            .expect("apply");
+        let datums = change
+            .datums_changes
+            .get(&p.channels_hash)
+            .expect("the produce");
+        assert_eq!(datums.added, vec![vec![9]]);
+        assert!(datums.removed.is_empty());
+
+        let konts = change
+            .kont_changes
+            .get(&c.channels_hashes)
+            .expect("the consume");
+        assert_eq!(konts.added, vec![vec![3]]);
+        // The join body matching the consume channels is recovered (sorted comparison).
+        assert_eq!(
+            change
+                .consume_channels_to_join_serialized_map
+                .get(&c.channels_hashes),
+            Some(&vec![4u8])
+        );
+    }
+
+    /// A datum **removed** between the snapshots is reported as `removed` — the direction matters:
+    /// the merge replays one branch onto the other and must know which way the change went.
+    #[tokio::test]
+    async fn a_removed_datum_is_reported_as_removed() {
+        let p = produce(1);
+        let c = consume(2);
+        let kont_pointer = crate::hashing::stable_hash_provider::hash_hashes(&c.channels_hashes);
+        let pre = MockReader {
+            data: [(p.channels_hash, vec![datum_b(9)])].into_iter().collect(),
+            konts: [(kont_pointer, vec![kont_b(3)])].into_iter().collect(),
+            joins: [(
+                c.channels_hashes[0],
+                vec![joins_b(4, vec![format!("chan2"), format!("chan3")])],
+            )]
+            .into_iter()
+            .collect(),
+            fail: false,
+        };
+        let post = MockReader::default();
+
+        let change = StateChange::apply(&pre, &post, &log_with(1, 2))
+            .await
+            .expect("apply");
+        let datums = change
+            .datums_changes
+            .get(&p.channels_hash)
+            .expect("the produce");
+        assert!(datums.added.is_empty());
+        assert_eq!(datums.removed, vec![vec![9]]);
+    }
+
+    /// **A no-op diff is an error.** `apply` is called for the channels an event log *touched*, so a
+    /// channel whose pre and post states agree means the caller's index and its readers disagree —
+    /// silently reporting "no change" would let a merge skip a real one.
+    #[tokio::test]
+    async fn an_unchanged_produce_is_a_logic_error() {
+        let p = produce(1);
+        let c = consume(2);
+        let kont_pointer = crate::hashing::stable_hash_provider::hash_hashes(&c.channels_hashes);
+        let same_data: BTreeMap<_, _> = [(p.channels_hash, vec![datum_b(9)])].into_iter().collect();
+        let konts: BTreeMap<_, _> = [(kont_pointer, vec![kont_b(3)])].into_iter().collect();
+        let pre = MockReader {
+            data: same_data.clone(),
+            konts: konts.clone(),
+            joins: [(
+                c.channels_hashes[0],
+                vec![joins_b(4, vec![format!("chan2"), format!("chan3")])],
+            )]
+            .into_iter()
+            .collect(),
+            fail: false,
+        };
+        let post = MockReader {
+            data: same_data,
+            konts,
+            joins: pre.joins.clone(),
+            fail: false,
+        };
+
+        let err = StateChange::apply(&pre, &post, &log_with(1, 2))
+            .await
+            .expect_err("an unchanged channel is a logic error");
+        assert!(err.contains("empty channel change for produce"), "{err}");
+    }
+
+    /// **The join invariant.** A consume whose channel set has no join record in either snapshot means
+    /// the tuplespace is inconsistent — the merge refuses rather than producing a change nobody can
+    /// replay.
+    #[tokio::test]
+    async fn a_consume_without_a_join_record_is_refused() {
+        let p = produce(1);
+        let c = consume(2);
+        let kont_pointer = crate::hashing::stable_hash_provider::hash_hashes(&c.channels_hashes);
+        let post = MockReader {
+            data: [(p.channels_hash, vec![datum_b(9)])].into_iter().collect(),
+            konts: [(kont_pointer, vec![kont_b(3)])].into_iter().collect(),
+            // A join exists, but for a *different* channel set.
+            joins: [(
+                c.channels_hashes[0],
+                vec![joins_b(4, vec![format!("other")])],
+            )]
+            .into_iter()
+            .collect(),
+            fail: false,
+        };
+
+        let err = StateChange::apply(&MockReader::default(), &post, &log_with(1, 2))
+            .await
+            .expect_err("no matching join");
+        assert!(err.contains("Tuple space inconsistency"), "{err}");
+    }
+
+    /// A reader failure propagates with its message rather than being reported as "no change".
+    #[tokio::test]
+    async fn a_reader_error_propagates() {
+        let failing = MockReader {
+            fail: true,
+            ..Default::default()
+        };
+        let err = StateChange::apply(&failing, &MockReader::default(), &log_with(1, 2))
+            .await
+            .expect_err("a reader error must propagate");
+        assert!(err.contains("test reader failure"), "{err}");
+    }
+
+    /// `combine` is a monoid: the empty change is the identity on **both** sides (the existing unit
+    /// test checks one), and a colliding join key is right-biased (the later change wins).
+    #[test]
+    fn combine_has_an_identity_and_a_right_biased_join_map() {
+        let a = StateChange {
+            datums_changes: [(
+                hash(1),
+                ChannelChange {
+                    added: vec![vec![1]],
+                    removed: vec![],
+                },
+            )]
+            .into_iter()
+            .collect(),
+            consume_channels_to_join_serialized_map: [(vec![hash(5)], vec![1u8])]
+                .into_iter()
+                .collect(),
+            ..Default::default()
+        };
+        let b = StateChange {
+            consume_channels_to_join_serialized_map: [(vec![hash(5)], vec![2u8])]
+                .into_iter()
+                .collect(),
+            ..Default::default()
+        };
+
+        assert_eq!(StateChange::combine(&a, &StateChange::empty()), a);
+        assert_eq!(StateChange::combine(&StateChange::empty(), &a), a);
+        assert_eq!(
+            StateChange::combine(&a, &b)
+                .consume_channels_to_join_serialized_map
+                .get(&vec![hash(5)]),
+            Some(&vec![2u8]),
+            "the later change's join body wins"
+        );
+        // The datum changes are *concatenated*, not overwritten: nothing is lost.
+        let ab = StateChange::combine(&a, &b);
+        assert_eq!(
+            ab.datums_changes.get(&hash(1)).expect("key").added,
+            vec![vec![1]]
+        );
+    }
+}

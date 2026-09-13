@@ -17,31 +17,32 @@ tools/audit-test-register.sh --deferred-ok # while the tiered work is in flight
 
 ## Inventory
 
-**1149 `#[test]`/`#[tokio::test]` unit functions + 82 integration tests** across 13 crates, with **6
+**1144 `#[test]`/`#[tokio::test]` unit functions + 84 integration tests** across 13 crates, with **6
 laws** carrying a randomized property test and **10 benchmark functions** in 6 Criterion groups. Only
 **3 of 12 crates have integration tests** (`rholang`, `casper`, `node`).
 
 | Crate | Unit | Integration | Property (laws) | Bench |
 |---|---|---|---|---|
-| `sdk` | 43 | — | 2 | — |
+| `sdk` | 46 | — | 2 | — |
 | `shared` | 80 | — | — | — |
-| `crypto` | 53 | — | — | — |
+| `crypto` | 58 | — | — | — |
 | `graphz` | 18 | — | — | — |
 | `models` | 131 | — | 5 | — |
-| `block-storage` | 24 | — | 3 | — |
-| `comm` | 94 | — | — | — |
-| `rspace` | 117 | — | 7 | — |
-| `rholang` | 159 | 37 | 7 | — |
-| `casper` | 196 | 38 | 3 | — |
-| `node` | 136 | 9 | — | — |
+| `block-storage` | 28 | — | 3 | — |
+| `comm` | 108 | — | — | — |
+| `rspace` | 129 | — | 7 | — |
+| `rholang` | 169 | 37 | 7 | — |
+| `casper` | 210 | 38 | 3 | — |
+| `node` | 147 | 9 | — | — |
 | `qucalc` | 20 | — | — | — |
 | `rspace-bench` | — | — | — | 10 |
 
-**Measured line coverage: 79.69%** (`cargo llvm-cov --workspace --all-features`, 17917 of 88234
-lines missed), which sets CI's floor to **77** — two points below the measurement, per the plan's rule
-that the floor is a tripwire raised only *after* measuring. It has now been raised twice: 73.68% ⇒ 71
-after Stages 0–2, and 79.69% ⇒ 77 after Stages 3–4 (the legacy corpus, the tier sweep and the property
-sweep). The per-file report is the place to look for the next tier's work, not this table:
+**Measured line coverage: 81.30%** (`cargo llvm-cov --workspace --all-features`, 16868 of 90208
+lines missed), which sets CI's floor to **79** — two points below the measurement, per the plan's rule
+that the floor is a tripwire raised only *after* measuring. Raised three times: 73.68% ⇒ 71 (Stages
+0–2), 79.69% ⇒ 77 (Stages 3–4: the legacy corpus, the tier sweep, the property sweep), 81.30% ⇒ 79
+(the low-coverage sweep, which also found the printer and UPnP defects in AUDIT §16 C13/C14). The
+per-file report is the place to look for the next tier's work, not this table:
 
 ```sh
 cargo llvm-cov --workspace --all-features --summary-only   # then read the lowest percentages
@@ -446,7 +447,7 @@ recorded here rather than only in the commit that did it.
 | 2. The register linter recomputes counts, verifies named tests, fails on a bare tier module | **done** — `tools/audit-test-register.sh` (five checks; hard mode green) |
 | 3. Every law has a property test or a recorded exemption | **done** — the matrix in Inventory; exempt: 12/13 (orphaned), 19 (axiom, KAT-pinned), 22/23 (stated reason), 28 (unit idempotency) |
 | 4. `make test-unit` runs `--all-features` | **done** (with `test-integration`) |
-| 5. The coverage floor raised twice, each after measuring | **done** — 73.68 ⇒ 71 (Stages 0–2), 79.69 ⇒ 77 (Stages 3–4) |
+| 5. The coverage floor raised after measuring (three times) | **done** — 73.68 ⇒ 71, 79.69 ⇒ 77, 81.30 ⇒ 79 |
 | 6. `rspace-bench`'s Criterion groups are smoke-run | **done** — `make bench-smoke` |
 | 7. `parsed + skipped == 165` for the legacy corpus, closed-enum skip reasons | **done** — `rholang/tests/legacy_contracts.rs` |
 | 8. `gen-differential-goldens.sh` completes or fails loudly; every committed TSV row is consumed | **done** — provenance columns + a per-file drift guard; the script exits 2 without sbt |
@@ -464,6 +465,9 @@ green diff. These are all of them.
 | `comm/src/transport/grpc_transport_receiver.rs` — `ConcurrencyLimits` + `serve_with_limits` | `MAX_CONCURRENT_DISPATCH` was a constant with no seam, so the DoS bound could not be tested at all | `a_full_dispatch_queue_is_rejected_and_recovers` |
 | `crypto/src/util/key_util.rs::write_with_mode` — apply `0o600` with `set_permissions` after the write | `OpenOptions::mode` applies only at creation, so the R6 private-key fix was ineffective on a pre-existing key file (AUDIT §15 C8) | `the_private_key_file_is_owner_only` |
 | `comm/src/transport/grpc_transport_receiver.rs::GrpcTransportReceiver::for_test` — a `#[cfg(test)]`-only constructor | The inbound guards (network-id rejection, dispatch bound, missing protocol) are otherwise reachable only over a socket, because production builds the receiver behind the TLS accept loop | `a_sender_from_another_network_is_refused_and_not_dispatched`, `a_full_dispatch_queue_is_refused` |
+| `rholang/src/pretty_printer.rs::build_par` — the separator flag is per *group*, not per item | A group with two or more items printed `a |\n |\nb`, which is not parsable rholang (AUDIT §16 C13) | `printing_and_reparsing_is_the_identity` |
+| `rholang/src/pretty_printer.rs::build_bundle` — print the `bundle` keyword with Scala's 8-column padding | Bundles printed as `0{ … }`, losing the keyword (AUDIT §16 C13) | `printing_and_reparsing_is_the_identity` |
+| `comm/src/upnp/gateway.rs::split_authority` — a bracket-aware authority split, shared by the SSRF guard and the URL splitter | The guard read `[::1]` as the host `"["`, allowing a loopback discovery URL (AUDIT §16 C14) | `the_url_guard_allows_private_gateways_and_refuses_ssrf_targets` |
 
 Everything else this plan has touched is a test, the register itself, the audit register, the linter,
 or a `Makefile`/CI target.

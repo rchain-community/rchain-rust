@@ -878,3 +878,226 @@ mod tests {
         assert_eq!(base, Some(g.id));
     }
 }
+
+#[cfg(test)]
+mod merge_relation_tests {
+    use super::*;
+
+    use rchain_rspace::trace::event::Produce as RProduce;
+
+    fn hash(byte: u8) -> Blake2b256Hash {
+        Blake2b256Hash::from_bytes([byte; 32])
+    }
+
+    fn deploy_id(byte: u8, cost: i64) -> DeployIdWithCost {
+        DeployIdWithCost {
+            id: vec![byte],
+            cost,
+        }
+    }
+
+    /// A deploy index whose event log touches one produce (so conflicts/dependencies can be built).
+    fn deploy_index(id: Vec<u8>, cost: i64, channel: u8) -> DeployIndex {
+        let produce = RProduce::apply(&format!("chan{channel}"), &format!("datum{channel}"), false);
+        DeployIndex {
+            deploy_id: id,
+            cost,
+            event_log_index: EventLogIndex {
+                produces_linear: [produce.clone()].into_iter().collect(),
+                ..Default::default()
+            },
+        }
+    }
+
+    fn chain(host: u8, post: u8, deploys: &[(u8, i64, u8)]) -> DeployChainIndex {
+        DeployChainIndex {
+            host_block: hash(host),
+            deploys_with_cost: deploys
+                .iter()
+                .map(|(id, cost, _)| deploy_id(*id, *cost))
+                .collect(),
+            pre_state_hash: hash(0),
+            post_state_hash: hash(post),
+            event_log_index: deploys
+                .iter()
+                .fold(EventLogIndex::empty(), |acc, (_, _, ch)| {
+                    EventLogIndex::combine(&acc, &deploy_index(vec![1], 0, *ch).event_log_index)
+                }),
+            state_changes: StateChange::empty(),
+        }
+    }
+
+    /// `DeployIndex` orders by **deploy id**, not cost: the rejection-option search sorts deploys by
+    /// id, so two deploys with the same cost are distinguished only by their id.
+    #[test]
+    fn a_deploy_index_orders_by_id() {
+        let a = deploy_index(vec![1], 100, 1);
+        let b = deploy_index(vec![2], 1, 2);
+        assert!(a < b, "id 1 sorts before id 2 regardless of cost");
+        assert_eq!(
+            a.deploy_id,
+            vec![1],
+            "the ordering key is the id field itself"
+        );
+        assert_eq!(DeployIndex::sys_slash_deploy_id(), vec![1]);
+        assert_eq!(DeployIndex::sys_close_block_deploy_id(), vec![2]);
+        assert_eq!(DeployIndex::sys_empty_deploy_id(), vec![3]);
+        assert_eq!(DeployIndex::SYS_SLASH_DEPLOY_COST, 0);
+    }
+
+    /// **`DeployChainIndex`'s equality and ordering are over *different* fields** — equality over the
+    /// deploy set (the Scala override, to speed up rejection-option computation), ordering over
+    /// `(host_block, post_state_hash)`. That mismatch is faithful to the Scala, and it is a real
+    /// hazard for a Rust `BTreeSet<DeployChainIndex>` (which uses `Ord`), because `Ord` is supposed to
+    /// agree with `Eq`: a set can then hold two members that compare unequal yet `==` each other.
+    /// Pinned here so the mismatch is visible rather than latent.
+    #[test]
+    fn chain_equality_is_over_the_deploys_and_ordering_over_the_hashes() {
+        let same_deploys_different_hashes = chain(1, 2, &[(1, 10, 1)]);
+        let mut other = chain(9, 8, &[(1, 10, 1)]);
+        other.pre_state_hash = hash(7);
+
+        assert_eq!(
+            same_deploys_different_hashes, other,
+            "equality is over the deploy set"
+        );
+        assert_ne!(
+            same_deploys_different_hashes.cmp(&other),
+            Ordering::Equal,
+            "…while the ordering is over (host_block, post_state_hash): the two notions disagree"
+        );
+
+        // The same deploy set with the *same* hashes agrees on both.
+        let identical = chain(1, 2, &[(1, 10, 1)]);
+        assert_eq!(same_deploys_different_hashes, identical);
+        assert_eq!(
+            same_deploys_different_hashes.cmp(&identical),
+            Ordering::Equal
+        );
+
+        // A different deploy set orders by the hash pair, not by the deploys.
+        let different = chain(1, 3, &[(2, 5, 1)]);
+        assert_ne!(same_deploys_different_hashes, different);
+        assert!(
+            same_deploys_different_hashes < different,
+            "post state hash 2 < 3"
+        );
+    }
+
+    /// `deploy_chain_cost` is the sum of the member costs (the merge's cost objective).
+    #[test]
+    fn the_chain_cost_is_the_sum_of_its_deploys() {
+        let c = chain(1, 2, &[(1, 10, 1), (2, 5, 2), (3, 0, 3)]);
+        assert_eq!(DeployChainIndex::deploy_chain_cost(&c), 15);
+        assert_eq!(DeployChainIndex::deploy_chain_cost(&chain(1, 2, &[])), 0);
+    }
+
+    /// Two chains that share a deploy id conflict (the same deploy cannot be in both branches), and
+    /// so do two chains whose event logs conflict — but *disjoint, non-conflicting* chains do not.
+    #[test]
+    fn chain_conflicts_cover_the_id_overlap_and_the_event_relation() {
+        let a = chain(1, 2, &[(1, 10, 1)]);
+        let shared_id = chain(3, 4, &[(1, 10, 9)]);
+        let disjoint = chain(5, 6, &[(2, 10, 2)]);
+
+        assert!(
+            DeployChainIndex::deploys_are_conflicting(&a, &shared_id),
+            "a shared deploy id is a conflict"
+        );
+        assert!(
+            !DeployChainIndex::deploys_are_conflicting(&a, &disjoint),
+            "disjoint deploys on different channels do not conflict"
+        );
+
+        // Two chains that destroy the *same* produce (different ids, same channel) conflict through
+        // their event logs, not through their ids — the second half of the relation.
+        let produced = RProduce::apply(&"shared".to_string(), &"datum".to_string(), false);
+        let destroys = |id: u8, host: u8, produced: RProduce| DeployChainIndex {
+            host_block: hash(host),
+            deploys_with_cost: [deploy_id(id, 0)].into_iter().collect(),
+            pre_state_hash: hash(0),
+            post_state_hash: hash(host),
+            event_log_index: EventLogIndex {
+                produces_consumed: [produced].into_iter().collect(),
+                ..Default::default()
+            },
+            state_changes: StateChange::empty(),
+        };
+        let first = destroys(10, 1, produced.clone());
+        let second = destroys(11, 2, produced.clone());
+        assert!(
+            DeployChainIndex::deploys_are_conflicting(&first, &second),
+            "both destroy the same produce: a conflict with no shared id"
+        );
+        assert!(
+            !DeployChainIndex::deploys_are_conflicting(&first, &disjoint),
+            "and a chain that touches neither the produce nor the id does not conflict"
+        );
+    }
+
+    /// `branches_are_conflicting` lifts the same test to *sets* of chains: a shared id anywhere in
+    /// either branch is a conflict, and so is a conflicting pair of combined event logs.
+    #[test]
+    fn branch_conflicts_lift_the_chain_relation() {
+        let a: BTreeSet<DeployChainIndex> = [chain(1, 2, &[(1, 10, 1)])].into_iter().collect();
+        let b: BTreeSet<DeployChainIndex> = [chain(3, 4, &[(1, 10, 9)])].into_iter().collect();
+        let c: BTreeSet<DeployChainIndex> = [chain(5, 6, &[(2, 10, 2)])].into_iter().collect();
+
+        assert!(DeployChainIndex::branches_are_conflicting(&a, &b));
+        assert!(!DeployChainIndex::branches_are_conflicting(&a, &c));
+        // An empty branch conflicts with nothing.
+        assert!(!DeployChainIndex::branches_are_conflicting(
+            &BTreeSet::new(),
+            &a
+        ));
+    }
+
+    /// `depends` between chains is the event-log dependency: a target that consumed what the source
+    /// created depends on it. With disjoint logs it does not.
+    #[test]
+    fn chain_dependency_follows_the_event_logs() {
+        let produce = RProduce::apply(&"chan".to_string(), &"datum".to_string(), false);
+        let source = DeployChainIndex {
+            host_block: hash(1),
+            deploys_with_cost: [deploy_id(1, 0)].into_iter().collect(),
+            pre_state_hash: hash(0),
+            post_state_hash: hash(1),
+            event_log_index: EventLogIndex {
+                produces_linear: [produce.clone()].into_iter().collect(),
+                ..Default::default()
+            },
+            state_changes: StateChange::empty(),
+        };
+        // The target consumed the same produce.
+        let target = DeployChainIndex {
+            host_block: hash(2),
+            deploys_with_cost: [deploy_id(2, 0)].into_iter().collect(),
+            pre_state_hash: hash(1),
+            post_state_hash: hash(2),
+            event_log_index: EventLogIndex {
+                produces_consumed: [produce].into_iter().collect(),
+                ..Default::default()
+            },
+            state_changes: StateChange::empty(),
+        };
+
+        assert!(DeployChainIndex::depends(&target, &source));
+        assert!(!DeployChainIndex::depends(&source, &target));
+        assert!(!DeployChainIndex::depends(&source, &source));
+    }
+
+    /// The deploy id is what the wire types carry too: `DeployIdWithCost` hashes and orders by both
+    /// fields (the pair), unlike `DeployIndex` which orders by the id alone.
+    #[test]
+    fn a_deploy_with_cost_orders_by_id_then_cost() {
+        let a = deploy_id(1, 100);
+        let b = deploy_id(1, 5);
+        let c = deploy_id(2, 0);
+        assert!(b < a, "same id: the lower cost sorts first");
+        assert!(a < c, "a lower id sorts first regardless of cost");
+        // Hashing covers both fields (a `HashSet` keyed by the pair).
+        let mut set = std::collections::HashSet::new();
+        set.insert(a.clone());
+        assert!(set.contains(&a));
+    }
+}

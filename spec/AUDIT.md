@@ -908,3 +908,32 @@ The oracle for every one of these is the BNFC grammar the Scala node's Java pars
   (`an_unmatched_consume_result_is_none_and_leaves_a_waiter`, `rholang/src/reporting_runtime.rs`)
   pins what is observed, so closing the gap will fail it and force the update. No consensus impact:
   the reporting runtime is read-only tooling (`/reporting` routes), not the deploy path.
+
+- **C13 — the pretty printer emitted two `|` separators between the first two items of a group, and
+  dropped the `bundle` keyword.** Both are **port** defects (the Scala renders both correctly), and
+  both were found by a round-trip test (`printing_and_reparsing_is_the_identity`): printing a parsed
+  term and re-parsing the result must give the same term back.
+  1. `rholang/src/pretty_printer.rs::build_par` tracked "an item has been printed" *inside* the item
+     loop, where the Scala tracks it per *group* (`PrettyPrinter.scala:288-302`'s `prevNonEmpty`), so
+     any group with two or more items printed `a |\n |\nb` — the two sends of `@"a"!(1) | @"b"!(2)`,
+     the most ordinary shape there is, printed as unparsable rholang.
+  2. `build_bundle` printed only the bundle *sign* (`0`, `+`, `-`) and not the keyword, where Scala's
+     `BundleOps.showInstance` is `"%-8s".format(s"bundle$sign")` — so a bundle printed as `0{ … }`
+     instead of `bundle0 { … }`. The eight-column padding is faithful and is reproduced.
+  Both are fixed and the round trip now covers 36 terms. Two *faithful* warts remain, both inherited
+  from the Scala printer and both pinned rather than fixed (`the_documented_warts_print_what_the_
+  grammar_cannot_read_back`): a one-element tuple prints as a group (`(1,)` ⇒ `(1)`, which is `1`),
+  and `not x` prints as `~(x)`, which is not valid rholang at all. Printed output for those two forms
+  must not be pasted back as source.
+
+- **C14 — the UPnP SSRF guard could be bypassed with a bracketed IPv6 URL (fixed).**
+  `comm/src/upnp/gateway.rs::is_safe_url` — the guard that refuses loopback/link-local/unspecified/
+  multicast discovery URLs — extracted the host with `authority.split(':').next()`. For a bracketed
+  literal (`http://[::1]/desc.xml`) that yields the host `"["`, which is not a parseable IP, so
+  `is_ssrf_unsafe_host` answered `false` and the guard **allowed** a loopback URL; `split_url` then
+  produced the same broken host, so no request was actually made (the connect failed on the name
+  `"["`), which is why the hole was latent rather than live — the guard's *decision* was wrong and the
+  second bug masked its effect. **Fixed** with one `split_authority` helper (bracket-aware, shared by
+  the guard and the URL splitter), so `[::1]`/`[fe80::1]` are refused and an IPv6 gateway literal is
+  split correctly. Found by `the_url_guard_allows_private_gateways_and_refuses_ssrf_targets`, which
+  lists `http://[::1]/desc.xml` among the URLs that must be refused.

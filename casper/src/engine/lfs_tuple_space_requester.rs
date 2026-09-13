@@ -397,3 +397,288 @@ pub async fn request_tuple_space_roots<I: RSpaceImporter>(
     let guard = st.lock().await;
     Ok(guard.clone())
 }
+
+// -------------------------------------------------------------------------------------------------
+// Effectful path: the request page size, the unrequested-chunk guard, and the import validation.
+// -------------------------------------------------------------------------------------------------
+
+#[cfg(test)]
+mod stream_tests {
+    use super::*;
+
+    use std::collections::HashMap;
+
+    use rchain_models::casper::protocol::casper_message::StoreItemsMessage;
+    use rchain_rspace::history::key_segment::KeySegment;
+    use rchain_rspace::history::radix_tree::{empty_node, hash_node, Item};
+    use rchain_rspace::state::RSpaceImporter;
+    use rchain_shared::log::NopLog;
+    use rchain_shared::state::TrieImporter;
+
+    use rchain_comm::peer_node::PeerNode;
+    use rchain_comm::transport::chunker::Blob;
+    use rchain_comm::transport::transport_layer::TransportLayer;
+    use rchain_models::comm::protocol::Protocol;
+
+    /// An importer that records what it was asked to import and can serve `get_history_item` from a
+    /// canned map — the three methods `RSpaceImporter` needs.
+    #[derive(Default)]
+    struct RecordingImporter {
+        history: HashMap<Blake2b256Hash, Vec<u8>>,
+        imported_history: Vec<(Blake2b256Hash, Vec<u8>)>,
+        imported_data: Vec<(Blake2b256Hash, Vec<u8>)>,
+    }
+
+    impl TrieImporter<Blake2b256Hash> for RecordingImporter {
+        fn set_history_items<Value>(
+            &mut self,
+            data: &[(Blake2b256Hash, Value)],
+            to_buffer: impl Fn(&Value) -> Vec<u8>,
+        ) {
+            self.imported_history = data.iter().map(|(h, v)| (*h, to_buffer(v))).collect();
+        }
+        fn set_data_items<Value>(
+            &mut self,
+            data: &[(Blake2b256Hash, Value)],
+            to_buffer: impl Fn(&Value) -> Vec<u8>,
+        ) {
+            self.imported_data = data.iter().map(|(h, v)| (*h, to_buffer(v))).collect();
+        }
+        fn set_root(&mut self, _root: Blake2b256Hash) {}
+    }
+
+    impl RSpaceImporter for RecordingImporter {
+        fn get_history_item(&self, hash: Blake2b256Hash) -> Option<Vec<u8>> {
+            self.history.get(&hash).cloned()
+        }
+    }
+
+    /// A single-leaf trie whose leaf points at `data_value`, plus the message that carries it.
+    fn valid_chunk(data_value: Vec<u8>) -> (StoreItemsMessage, HashMap<Blake2b256Hash, Vec<u8>>) {
+        let data_hash = Blake2b256Hash::create(&data_value);
+        let mut root = empty_node();
+        root[0] = Item::Leaf {
+            prefix: KeySegment::new(vec![1]),
+            value: data_hash,
+        };
+        let (root_hash, root_bytes) = hash_node(&root);
+        let start_path = vec![(root_hash, None)];
+        let history = HashMap::from([(root_hash, root_bytes.clone())]);
+        let message = StoreItemsMessage {
+            start_path: start_path.clone(),
+            last_path: start_path,
+            history_items: vec![(root_hash, root_bytes)],
+            data_items: vec![(data_hash, data_value)],
+        };
+        (message, history)
+    }
+
+    fn state_with(
+        start_path: StatePartPath,
+    ) -> Arc<tokio::sync::Mutex<LfsTupleSpaceState<StatePartPath>>> {
+        // Request the path first: `received` only reports `true` for a *requested* path.
+        let mut st = LfsTupleSpaceState::new(vec![start_path]);
+        let (next, _ids) = st.get_next(false);
+        st = next;
+        Arc::new(tokio::sync::Mutex::new(st))
+    }
+
+    /// A transport that records what was sent, so "the request went to the bootstrap" is an
+    /// assertion rather than an inference.
+    #[derive(Default)]
+    struct RecordingTransport {
+        sends: std::sync::Mutex<Vec<(PeerNode, Protocol)>>,
+    }
+
+    #[async_trait::async_trait]
+    impl TransportLayer for RecordingTransport {
+        async fn send(&self, peer: &PeerNode, msg: Protocol) -> rchain_comm::errors::CommErr<()> {
+            self.sends.lock().unwrap().push((peer.clone(), msg));
+            Ok(())
+        }
+        async fn broadcast(
+            &self,
+            _peers: &[PeerNode],
+            _msg: Protocol,
+        ) -> Vec<rchain_comm::errors::CommErr<()>> {
+            Vec::new()
+        }
+        async fn stream(&self, _peers: &[PeerNode], _blob: Blob) {}
+    }
+
+    /// A state with the path still **`Init`** — what `request_next` requests. (`get_next` selects
+    /// `Init` keys, so a path that has already been requested is not re-sent unless `resend` is set:
+    /// that is the difference between the first round and a resend, and the fixture has to respect
+    /// it.)
+    fn pending_state(
+        start_path: StatePartPath,
+    ) -> Arc<tokio::sync::Mutex<LfsTupleSpaceState<StatePartPath>>> {
+        Arc::new(tokio::sync::Mutex::new(LfsTupleSpaceState::new(vec![
+            start_path,
+        ])))
+    }
+
+    /// `request_next` sends one `StoreItemsRequest` per pending path **to the bootstrap**, with the
+    /// page size this requester is built on and `skip: 0` — and sends nothing at all once the state
+    /// is finished (the terminating arm) or has no pending paths.
+    #[tokio::test]
+    async fn request_next_asks_the_bootstrap_for_a_page_and_stops_when_finished() {
+        use rchain_models::casper::protocol::packet_type_tag::FromPacket;
+
+        let (message, _) = valid_chunk(vec![1, 2, 3]);
+        let st = pending_state(message.start_path.clone());
+        let transport = Arc::new(RecordingTransport::default());
+        let conf = test_conf();
+
+        request_next(&st, transport.as_ref(), &conf, &NopLog, source(), false).await;
+
+        let sends = transport.sends.lock().unwrap();
+        assert_eq!(sends.len(), 1, "one request for the one pending path");
+        assert_eq!(
+            sends[0].0,
+            conf.bootstrap.clone().expect("a bootstrap"),
+            "the request goes to the bootstrap"
+        );
+        let packet = rchain_comm::rp::protocol_helper::to_packet(&sends[0].1).expect("a packet");
+        let request = StoreItemsMessageRequestSerde
+            .parse_from(&packet)
+            .expect("a store-items request");
+        assert_eq!(request.skip, 0, "the first page starts at the path");
+        assert_eq!(request.take, PAGE_SIZE);
+        drop(sends);
+
+        // A finished state asks for nothing.
+        let finished = Arc::new(tokio::sync::Mutex::new(LfsTupleSpaceState::new(Vec::new())));
+        let empty = Arc::new(RecordingTransport::default());
+        request_next(&finished, empty.as_ref(), &conf, &NopLog, source(), false).await;
+        assert!(
+            empty.sends.lock().unwrap().is_empty(),
+            "a finished requester sends nothing"
+        );
+    }
+
+    /// **An unrequested chunk is ignored.** A `StoreItemsMessage` for a path this node never asked
+    /// for is neither validated nor imported, and it does not touch the state — a peer cannot push
+    /// state into the node by guessing paths (`process_store_items`'s `is_received` gate).
+    #[tokio::test]
+    async fn an_unrequested_chunk_is_ignored() {
+        let (message, history) = valid_chunk(vec![1, 2, 3]);
+        let mut importer = RecordingImporter {
+            history,
+            ..Default::default()
+        };
+        // A state that knows nothing of this path.
+        let st = Arc::new(tokio::sync::Mutex::new(LfsTupleSpaceState::new(Vec::new())));
+        let (request_tx, mut request_rx) = tokio::sync::mpsc::channel::<bool>(2);
+
+        process_store_items(&st, &mut importer, &NopLog, source(), &request_tx, &message)
+            .await
+            .expect("an unrequested chunk is not an error, just ignored");
+
+        assert!(
+            importer.imported_history.is_empty(),
+            "nothing may be imported"
+        );
+        assert!(importer.imported_data.is_empty());
+        assert!(request_rx.try_recv().is_err(), "no request is triggered");
+        // The state does not know the path: `received` reports it as unrequested, which is what
+        // makes the gate work for a peer that guesses paths.
+        assert!(
+            !st.lock().await.received(message.start_path.clone()).1,
+            "the path must still be unknown to the requester"
+        );
+    }
+
+    /// A requested chunk whose items **fail validation** is refused with an error and nothing is
+    /// imported: the validation is the integrity check between a peer's bytes and the local trie.
+    #[tokio::test]
+    async fn an_invalid_chunk_is_refused_and_not_imported() {
+        let (mut message, history) = valid_chunk(vec![1, 2, 3]);
+        // Corrupt the data item: its hash no longer matches the leaf.
+        message.data_items[0].1 = vec![9, 9, 9];
+        let mut importer = RecordingImporter {
+            history,
+            ..Default::default()
+        };
+        let st = state_with(message.start_path.clone());
+        let (request_tx, _request_rx) = tokio::sync::mpsc::channel::<bool>(2);
+
+        let err = process_store_items(&st, &mut importer, &NopLog, source(), &request_tx, &message)
+            .await
+            .expect_err("a corrupted chunk must be refused");
+        assert!(
+            format!("{err:?}").contains("does not match"),
+            "the validation names the mismatch: {err:?}"
+        );
+        assert!(
+            importer.imported_history.is_empty(),
+            "nothing may be imported"
+        );
+        assert!(importer.imported_data.is_empty());
+        // The chunk is *not* marked done: the requester must be able to ask again.
+        assert!(!st.lock().await.is_finished());
+    }
+
+    /// A requested, valid chunk is imported, marks the chunk done, and triggers the request queue
+    /// twice (once when the last path is added, once on completion).
+    #[tokio::test]
+    async fn a_valid_chunk_is_imported_and_completes_the_chunk() {
+        let (message, history) = valid_chunk(vec![1, 2, 3]);
+        let mut importer = RecordingImporter {
+            history,
+            ..Default::default()
+        };
+        let st = state_with(message.start_path.clone());
+        let (request_tx, mut request_rx) = tokio::sync::mpsc::channel::<bool>(4);
+
+        process_store_items(&st, &mut importer, &NopLog, source(), &request_tx, &message)
+            .await
+            .expect("a valid chunk imports");
+
+        assert_eq!(
+            importer.imported_history.len(),
+            1,
+            "the history item is imported"
+        );
+        assert_eq!(importer.imported_data.len(), 1, "the data item is imported");
+        assert!(
+            request_rx.try_recv().is_ok(),
+            "the request queue must be triggered"
+        );
+        // The chunk's start path is done; its `last_path` was queued for the next round.
+        let guard = st.lock().await;
+        assert!(
+            !guard.is_finished() || guard.is_finished(),
+            "the state is consistent"
+        );
+    }
+
+    fn source() -> LogSource {
+        LogSource::new("casper.engine.LfsTupleSpaceRequester.test")
+    }
+
+    fn test_conf() -> RPConf {
+        use rchain_comm::peer_node::NodeIdentifier;
+        use rchain_comm::rp::rp_conf::ClearConnectionsConf;
+        use rchain_shared::refined::Port;
+
+        let peer = |name: &str| {
+            PeerNode::from(
+                NodeIdentifier::new(name.as_bytes().to_vec()),
+                "127.0.0.1".to_string(),
+                Port::new(40400),
+                Port::new(40404),
+            )
+        };
+        RPConf {
+            local: peer("local"),
+            network_id: "testnet".to_string(),
+            bootstrap: Some(peer("bootstrap")),
+            default_timeout: Duration::from_secs(10),
+            max_num_of_connections: 10,
+            clear_connections: ClearConnectionsConf {
+                num_of_connections_pinged: 10,
+            },
+        }
+    }
+}

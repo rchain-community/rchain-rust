@@ -79,15 +79,36 @@ fn header(text: &str, name: &str) -> Option<String> {
 // Minimal HTTP client (mirrors `who_am_i.rs::check_from_real`)
 // -------------------------------------------------------------------------------------------------
 
+/// Split an authority into `(host, Some(port))`, handling **bracketed IPv6 literals**: `[::1]:80`,
+/// `[::1]` and `host:80` all split correctly, while splitting on the first `:` alone turns `[::1]`
+/// into the host `"["` — which silently *bypassed* the SSRF guard (a `[::1]` URL read as "not an IP
+/// literal") and would have connected to a name rather than the address. See `spec/AUDIT.md` §16 C14.
+fn split_authority(authority: &str) -> (&str, Option<&str>) {
+    if let Some(rest) = authority.strip_prefix('[') {
+        match rest.split_once(']') {
+            Some((host, tail)) => (host, tail.strip_prefix(':').filter(|p| !p.is_empty())),
+            // An unterminated bracket: treat the whole authority as the host (the parse below
+            // refuses it).
+            None => (authority, None),
+        }
+    } else {
+        match authority.split_once(':') {
+            Some((host, port)) => (host, Some(port)),
+            None => (authority, None),
+        }
+    }
+}
+
 /// Split a `http://host[:port]/path` URL into `(host, port, path)`.
 fn split_url(url: &str) -> Option<(String, u16, String)> {
     let rest = url.strip_prefix("http://")?;
     let (authority, path) = rest.split_once('/').unwrap_or((rest, ""));
-    let (host, port) = match authority.split_once(':') {
-        Some((h, p)) => (h.to_string(), p.parse::<u16>().ok()?),
-        None => (authority.to_string(), 80),
+    let (host, port) = split_authority(authority);
+    let port = match port {
+        Some(p) => p.parse::<u16>().ok()?,
+        None => 80,
     };
-    Some((host, port, format!("/{path}")))
+    Some((host.to_string(), port, format!("/{path}")))
 }
 
 /// Whether a discovery URL is safe to contact: the scheme must be plain http(s) and the host must
@@ -105,7 +126,7 @@ fn is_safe_url(url: &str) -> bool {
         None => return false,
     };
     let authority = rest.split('/').next().unwrap_or("");
-    let host = authority.split(':').next().unwrap_or("");
+    let (host, _port) = split_authority(authority);
     !is_ssrf_unsafe_host(host)
 }
 
@@ -536,5 +557,193 @@ mod tests {
             header(resp, "LOCATION"),
             Some("http://1.2.3.4/desc.xml".to_string())
         );
+    }
+}
+
+#[cfg(test)]
+mod discovery_tests {
+    use super::*;
+
+    /// A header is matched **case-insensitively** (`LOCATION:` and `location:` are the same header)
+    /// and its value is trimmed — SSDP responses are inconsistent about both.
+    #[test]
+    fn a_header_is_matched_case_insensitively() {
+        let response =
+            "HTTP/1.1 200 OK\r\nLOcation: http://192.168.1.1:1900/desc.xml\r\nServer: x\r\n";
+        assert_eq!(
+            header(response, "location").as_deref(),
+            Some("http://192.168.1.1:1900/desc.xml")
+        );
+        assert_eq!(
+            header(response, "Location").as_deref(),
+            Some("http://192.168.1.1:1900/desc.xml")
+        );
+        assert_eq!(header(response, "server").as_deref(), Some("x"));
+        assert_eq!(header(response, "missing"), None);
+        // A line without a colon is skipped rather than ending the search.
+        assert_eq!(
+            header("not-a-header\r\nthing: v\r\n", "thing").as_deref(),
+            Some("v")
+        );
+    }
+
+    /// A URL without a port defaults to 80, and the path is always absolute — the shape the raw HTTP
+    /// request line needs.
+    #[test]
+    fn a_url_splits_into_host_port_and_path() {
+        assert_eq!(
+            split_url("http://192.168.1.1/desc.xml"),
+            Some(("192.168.1.1".to_string(), 80, "/desc.xml".to_string()))
+        );
+        assert_eq!(
+            split_url("http://192.168.1.1:5000/upnp/control"),
+            Some(("192.168.1.1".to_string(), 5000, "/upnp/control".to_string()))
+        );
+        // No path at all.
+        assert_eq!(
+            split_url("http://192.168.1.1"),
+            Some(("192.168.1.1".to_string(), 80, "/".to_string()))
+        );
+        // A non-http scheme, a bad port, and a non-numeric port are all refused.
+        assert_eq!(split_url("https://192.168.1.1/x"), None);
+        assert_eq!(split_url("192.168.1.1/x"), None);
+        assert_eq!(split_url("http://192.168.1.1:notaport/x"), None);
+        assert_eq!(split_url("http://host:70000/x"), None);
+    }
+
+    /// **The SSRF guard is the point of `is_safe_url`**: a `LOCATION` from an attacker-influenced SSDP
+    /// response must not be used to reach the node's own loopback, the cloud-metadata endpoint, or a
+    /// multicast address — while a *private* gateway address is exactly what UPnP is for and must be
+    /// allowed.
+    #[test]
+    fn the_url_guard_allows_private_gateways_and_refuses_ssrf_targets() {
+        // Allowed: a real gateway on the local network, over http or https.
+        assert!(is_safe_url("http://192.168.1.1/desc.xml"));
+        assert!(is_safe_url("http://10.0.0.1:5000/upnp/control"));
+        assert!(is_safe_url("https://172.16.0.1/desc.xml"));
+        // Refused: SSRF targets.
+        for url in [
+            "http://127.0.0.1/desc.xml",
+            "http://127.0.0.1:8080/desc.xml",
+            "http://169.254.169.254/latest/meta-data/",
+            "http://0.0.0.0/desc.xml",
+            "http://224.0.0.1/desc.xml",
+            "http://[::1]/desc.xml",
+            "http://[fe80::1]/desc.xml",
+        ] {
+            assert!(!is_safe_url(url), "{url} must be refused");
+        }
+        // Refused: anything that is not plain http(s) — a `file:`/`gopher:` URL never reaches a
+        // socket in this client, but the guard is what says so.
+        assert!(!is_safe_url("ftp://192.168.1.1/x"));
+        assert!(!is_safe_url("file:///etc/passwd"));
+        assert!(!is_safe_url("/relative/path"));
+    }
+
+    /// A **hostname** is not classified as an SSRF target by the IP check (it is not an IP literal),
+    /// which is why the guard is documented as IP-based: a name that resolves to loopback is out of
+    /// its scope, and the request still goes to a name the SSDP response supplied.
+    #[test]
+    fn the_ssrf_check_classifies_ip_literals_not_names() {
+        assert!(is_ssrf_unsafe_host("127.0.0.1"));
+        assert!(is_ssrf_unsafe_host("169.254.169.254"));
+        assert!(is_ssrf_unsafe_host("::1"));
+        assert!(is_ssrf_unsafe_host("fe80::1"));
+        assert!(
+            !is_ssrf_unsafe_host("192.168.1.1"),
+            "a private gateway is not unsafe"
+        );
+        assert!(
+            !is_ssrf_unsafe_host("203.0.113.7"),
+            "a public address is not unsafe either"
+        );
+        assert!(!is_ssrf_unsafe_host("gateway.local"));
+        assert!(!is_ssrf_unsafe_host(""));
+    }
+
+    /// A control URL is resolved against the device's `LOCATION` base: an absolute URL passes
+    /// through, a root-relative one is joined onto the authority, and a location that is not http is
+    /// refused (there is no base to resolve against).
+    #[test]
+    fn a_control_url_is_resolved_against_the_location() {
+        assert_eq!(
+            resolve_url(
+                "http://192.168.1.1/desc.xml",
+                "http://192.168.1.1/other.xml"
+            )
+            .as_deref(),
+            Some("http://192.168.1.1/other.xml")
+        );
+        assert_eq!(
+            resolve_url("http://192.168.1.1:5000/desc.xml", "/upnp/control").as_deref(),
+            Some("http://192.168.1.1:5000/upnp/control")
+        );
+        // A relative path keeps the location's directory (the port included).
+        assert_eq!(
+            resolve_url("http://192.168.1.1:5000/upnp/desc.xml", "control").as_deref(),
+            Some("http://192.168.1.1:5000/upnp/desc.xmlcontrol"),
+        );
+        assert_eq!(resolve_url("not-a-url", "/upnp/control"), None);
+    }
+
+    /// `xml_field` reads the text of the first matching element, and a malformed document yields
+    /// `None` rather than a panic.
+    #[test]
+    fn an_xml_field_is_extracted_by_tag_name() {
+        let xml = r#"<?xml version="1.0"?><root><NewExternalIPAddress>203.0.113.7</NewExternalIPAddress><Other>x</Other></root>"#;
+        assert_eq!(
+            xml_field(xml, "NewExternalIPAddress").as_deref(),
+            Some("203.0.113.7")
+        );
+        assert_eq!(xml_field(xml, "Other").as_deref(), Some("x"));
+        assert_eq!(xml_field(xml, "Missing"), None);
+        assert_eq!(xml_field("<not closed", "x"), None);
+    }
+
+    /// `parse_device` reads the device-description document: the friendly name/model fields and the
+    /// **WAN service's** control URL. A description whose service list has no WAN service yields
+    /// `None` (the device cannot forward ports), and so does an unparsable document.
+    #[test]
+    fn a_device_description_is_parsed_and_needs_a_wan_service() {
+        let xml = r#"<?xml version="1.0"?>
+<root xmlns="urn:schemas-upnp-org:device-1-0">
+  <device>
+    <deviceType>urn:schemas-upnp-org:device:InternetGatewayDevice:1</deviceType>
+    <friendlyName>Test Gateway</friendlyName>
+    <manufacturer>ACME</manufacturer>
+    <modelName>Router-1</modelName>
+    <modelDescription>A router</modelDescription>
+    <serviceList>
+      <service>
+        <serviceType>urn:schemas-upnp-org:service:Layer3Forwarding:1</serviceType>
+        <controlURL>/ctl/L3F</controlURL>
+      </service>
+      <service>
+        <serviceType>urn:schemas-upnp-org:service:WANIPConnection:1</serviceType>
+        <controlURL>/ctl/IPConn</controlURL>
+      </service>
+    </serviceList>
+  </device>
+</root>"#;
+        let info = parse_device(xml).expect("a description with a WAN service");
+        assert_eq!(info.friendly_name, "Test Gateway");
+        assert_eq!(info.manufacturer, "ACME");
+        assert_eq!(info.model_name, "Router-1");
+        assert_eq!(info.model_description, "A router");
+        assert_eq!(
+            info.control_url, "/ctl/IPConn",
+            "the WAN service's control URL wins"
+        );
+        assert!(
+            info.service_type.contains("WANIPConnection"),
+            "{}",
+            info.service_type
+        );
+
+        // No WAN service: nothing to forward with.
+        let no_wan = xml.replace("WANIPConnection", "Layer3Forwarding");
+        assert!(parse_device(&no_wan).is_none());
+        // Not XML at all.
+        assert!(parse_device("not xml").is_none());
     }
 }

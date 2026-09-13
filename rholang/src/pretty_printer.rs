@@ -168,21 +168,30 @@ impl PrettyPrinter {
             ));
         }
 
+        // The separator is emitted **once per item, before it** (`intersperse`), and the
+        // between-groups separator once per non-empty group — the shape the Scala `buildStringM(Par)`
+        // uses (`PrettyPrinter.scala:288-302`, where `prevNonEmpty` is the *group* accumulator). A
+        // version that set the "previous item was printed" flag inside the item loop emitted two
+        // separators between the first two items of a group (`a |\n |\nb`), which is not parsable
+        // rholang — the round-trip test below caught it.
         let mut out = String::new();
-        let mut prev = false;
+        let mut prev_group = false;
         for (_, items) in groups {
+            if items.is_empty() {
+                continue;
+            }
+            if prev_group {
+                out.push_str(" |\n");
+                out.push_str(&INDENT.repeat(indent as usize));
+            }
             for (i, item) in items.iter().enumerate() {
-                if prev {
-                    out.push_str(" |\n");
-                    out.push_str(&INDENT.repeat(indent as usize));
-                }
                 out.push_str(item);
                 if i != items.len() - 1 {
                     out.push_str(" |\n");
                     out.push_str(&INDENT.repeat(indent as usize));
                 }
-                prev = true;
             }
+            prev_group = true;
         }
         out
     }
@@ -240,7 +249,12 @@ impl PrettyPrinter {
     }
 
     fn build_bundle(&self, b: &Bundle, indent: i32) -> String {
-        let flag = if b.read_flag && b.write_flag {
+        // The Scala `BundleOps.showInstance` is `"%-8s".format(s"bundle$sign")`: the keyword is part
+        // of the rendering and the whole prefix is **padded to eight columns**, so a bundle prints as
+        // `bundle0 { … }` (with one space from the padding) and a read-write bundle as `bundle  { … }`
+        // (`BundleReadWrite ::= "bundle"` — the signless spelling is in the grammar). Printing only
+        // the sign produced `0{ … }`, which does not re-parse; the round-trip test below caught it.
+        let sign = if b.read_flag && b.write_flag {
             ""
         } else if b.read_flag && !b.write_flag {
             "-"
@@ -249,8 +263,9 @@ impl PrettyPrinter {
         } else {
             "0"
         };
+        let prefix = format!("{:<8}", format!("bundle{sign}"));
         format!(
-            "{flag}{{ {}{} }}",
+            "{prefix}{{ {}{} }}",
             INDENT.repeat((indent + 1) as usize),
             self.build_par(&b.body, indent + 1)
         )
@@ -664,5 +679,196 @@ mod tests {
         assert_eq!(increment("a"), "b");
         assert_eq!(increment("z"), "aa");
         assert_eq!(increment("az"), "ba");
+    }
+}
+
+#[cfg(test)]
+mod printer_tests {
+    use super::*;
+
+    use rchain_models::par_ops::from_expr;
+
+    /// `wrapWithBraces` wraps a sub-expression in parentheses **unless** it is already a bare integer
+    /// or already parenthesised. The bare-integer case is why `1 + 2` prints without redundant
+    /// brackets, and the already-parenthesised case is what keeps a nested print stable.
+    #[test]
+    fn wrap_with_braces_leaves_integers_and_parenthesised_subexpressions_alone() {
+        assert_eq!(wrap_with_braces("42"), "42");
+        assert_eq!(
+            wrap_with_braces("-7"),
+            "-7",
+            "a negative integer is still an integer"
+        );
+        assert_eq!(wrap_with_braces("(1 + 2)"), "(1 + 2)");
+        assert_eq!(wrap_with_braces("1 + 2"), "(1 + 2)");
+        assert_eq!(wrap_with_braces("a"), "(a)");
+        // Only a *bare* integer is exempt: a number with a suffix or a decimal point is not.
+        assert_eq!(wrap_with_braces("1n"), "(1n)");
+        assert_eq!(wrap_with_braces("1.0"), "(1.0)");
+    }
+
+    /// The empty process prints as `Nil`; a ground value prints as itself.
+    #[test]
+    fn nil_and_grounds_print_plainly() {
+        let printer = PrettyPrinter::new();
+        assert_eq!(
+            printer.build_string(&Par::<rchain_models::ast::ProcSort>::default()),
+            "Nil"
+        );
+        assert_eq!(printer.build_string(&from_expr(Expr::GInt(42))), "42");
+        assert_eq!(
+            printer.build_string(&from_expr(Expr::GString("hi".to_string()))),
+            "\"hi\""
+        );
+        assert_eq!(printer.build_string(&from_expr(Expr::GBool(true))), "true");
+    }
+
+    /// **The round trip is the printer's real contract**: printing a parsed term and parsing the
+    /// result must give back the same term. An assertion on the exact text would pin a formatting
+    /// choice; this pins *fidelity*, across every construct the printer handles — sends (persistent
+    /// and not), receives, `new`, `match`, collections, connectives, bundles and arithmetic.
+    #[test]
+    fn printing_and_reparsing_is_the_identity() {
+        let corpus = [
+            // Grounds and collections.
+            "42",
+            "\"str\"",
+            "true",
+            "[1, 2, 3]",
+            "(1, 2)",
+            "Set(1, 2)",
+            "{\"k\": 1}",
+            "[]",
+            // Sends and receives.
+            "@\"c\"!(1)",
+            "@\"c\"!!(1)",
+            "@\"c\"!(1, 2)",
+            "for (@x <- @\"c\") { Nil }",
+            "for (@x <= @\"c\") { Nil }",
+            "for (@x <- @\"a\" & @y <- @\"b\") { Nil }",
+            // Binding and control.
+            "new x in { x!(1) }",
+            "new x, y in { x!(*y) }",
+            "contract @\"c\"(@x) = { Nil }",
+            "if (true) { Nil } else { Nil }",
+            "match 1 { 0 => Nil _ => Nil }",
+            // Arithmetic and connectives.
+            "1 + 2 * 3",
+            "1 - 2",
+            "-1",
+            "1 < 2",
+            "1 == 2",
+            "true and false",
+            "true or false",
+            "\"a\" ++ \"b\"",
+            "[1] ++ [2]",
+            "1 % 2",
+            "1 / 2",
+            // Parallel composition and references.
+            "@\"a\"!(1) | @\"b\"!(2)",
+            "bundle0 { Nil }",
+            "bundle+ { Nil }",
+        ];
+
+        // The printer renders a *normalized* term, so the corpus is closed terms (the normalizer
+        // rejects a globally free variable) and the comparison is between two normalized pars.
+        for src in corpus {
+            let first: Par = crate::normalizer::source_to_adt(src)
+                .unwrap_or_else(|e| panic!("the corpus term {src:?} must parse: {e}"))
+                .into();
+            let printed = PrettyPrinter::new().build_string(&first);
+            let second: Par = crate::normalizer::source_to_adt(&printed)
+                .unwrap_or_else(|e| {
+                    panic!("printing {src:?} produced {printed:?}, which does not parse: {e}")
+                })
+                .into();
+            assert_eq!(
+                second, first,
+                "printing {src:?} produced {printed:?}, which reparses differently"
+            );
+        }
+    }
+
+    /// A bound variable is printed with a **generated name**, not its de Bruijn index: the printer
+    /// walks `new`s and receives and emits `a`, `b`, … so a printed term is re-parsable source rather
+    /// than internal indices. The free variables get the `free` prefix.
+    #[test]
+    fn variables_are_printed_with_generated_names() {
+        let printer = PrettyPrinter::new();
+        let term: Par = crate::normalizer::source_to_adt("new x in { x!(1) }")
+            .expect("parse")
+            .into();
+        let printed = printer.build_string(&term);
+        assert!(printed.contains("new "), "{printed}");
+        assert!(
+            !printed.contains("BoundVar"),
+            "indices must not leak: {printed}"
+        );
+
+        // A free variable prints with the `free` prefix (the Scala `freeId`).
+        let free = printer.build_string(&from_expr(Expr::EVar(Box::new(Var::FreeVar(0)))));
+        assert!(free.starts_with("free"), "{free}");
+        // A bound variable with no binder in scope prints as a *generated* name (`x-1`), which is
+        // re-parsable as a variable — never as its internal index.
+        let bound = printer.build_string(&from_expr(Expr::EVar(Box::new(Var::BoundVar(0)))));
+        assert_eq!(bound, "x-1", "{bound}");
+        assert!(crate::parser::parse(&bound).is_ok(), "{bound} must reparse");
+    }
+
+    /// A channel is printed as a **quoted name** (`@`), which is what makes the output re-parsable in
+    /// name position — a send whose channel lost its `@` would reparse as a variable reference.
+    #[test]
+    fn a_channel_is_printed_as_a_quoted_name() {
+        let term: Par = crate::normalizer::source_to_adt("@\"c\"!(1)")
+            .expect("parse")
+            .into();
+        let printed = PrettyPrinter::new().build_string(&term);
+        // A ground channel is printed **braced** (`@{"c"}`), which is what keeps the output
+        // unambiguous when re-parsed (the braces are a group around the same ground name).
+        assert!(printed.contains("@{\"c\"}"), "{printed}");
+        assert!(printed.contains("!("), "{printed}");
+    }
+
+    /// **Two faithful printer warts, both inherited from the Scala `PrettyPrinter`.** Each renders a
+    /// term as something the grammar does not read back as the same term, so a printed term must not
+    /// be pasted into the REPL as source:
+    ///
+    /// * a **one-element tuple** `(1,)` renders `(1)` — the trailing comma is dropped
+    ///   (`PrettyPrinter.scala:117`: `"(" buildSeq ")"`), and `(1)` is the *group* `1`;
+    /// * `not x` renders `~(x)` (`PrettyPrinter.scala:75`: `"~" buildString(p).wrapWithBraces`), and
+    ///   `~` is the *process* negation whose operand is parsed below the parenthesised-expression
+    ///   level, so `~(x)` is a syntax error, not a parenthesised operand.
+    ///
+    /// Both are recorded in `spec/AUDIT.md` §16 and pinned here, so making the output re-parsable is a
+    /// deliberate change with a test to update rather than an accident.
+    #[test]
+    fn the_documented_warts_print_what_the_grammar_cannot_read_back() {
+        // The one-element tuple.
+        let tuple: Par = crate::normalizer::source_to_adt("(1,)")
+            .expect("parse")
+            .into();
+        let printed = PrettyPrinter::new().build_string(&tuple);
+        assert_eq!(printed, "(1)", "the trailing comma is dropped, as in Scala");
+        let reparsed: Par = crate::normalizer::source_to_adt(&printed)
+            .expect("the printed form still parses")
+            .into();
+        assert_ne!(
+            reparsed, tuple,
+            "the round trip is not the identity for a one-element tuple"
+        );
+
+        // The boolean negation.
+        let negated: Par = crate::normalizer::source_to_adt("not true")
+            .expect("parse")
+            .into();
+        let printed = PrettyPrinter::new().build_string(&negated);
+        assert_eq!(
+            printed, "~(true)",
+            "`not` is printed as the tilde, as in Scala"
+        );
+        assert!(
+            crate::normalizer::source_to_adt(&printed).is_err(),
+            "…and the printed form is not valid rholang: {printed}"
+        );
     }
 }
