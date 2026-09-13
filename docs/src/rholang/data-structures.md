@@ -8,7 +8,7 @@ methods. (A complete method table is in the [Language reference](reference.md).)
 
 | Kind | Syntax | Example |
 |---|---|---|
-| Integer | `42`, `-7` | arithmetic `+ - * / %`, comparisons `< <= > >= == !=` |
+| Integer | `42`, `-7` | arithmetic `+ - * / %`, comparisons `< <= > >= == !=`; exact — overflow promotes to BigInt |
 | Big integer | arbitrary precision | same operators |
 | Boolean | `true`, `false` | `and`, `or`, `not` |
 | String | `"hello"` | `++` concatenation, `${…}` interpolation |
@@ -79,6 +79,24 @@ Strings are matched literally and concatenated with `++`:
 ```
 
 Interpolation embeds values: `` "the answer is ${x}" ``.
+
+Strings carry a standard method library (all indices and counts are **characters**, by
+Unicode scalar value):
+
+| Method | Result |
+|---|---|
+| `s.length()` | the number of characters |
+| `s.slice(from, to)` / `s.substring(i)` / `s.substring(i, j)` | a substring (clamped) |
+| `s.indexOf(t)` / `s.indexOf(t, i)` | the index of `t`, or `-1` |
+| `s.contains(t)` | is `t` a substring |
+| `s.startsWith(t)` / `s.endsWith(t)` | prefix / suffix test |
+| `s.toUpperCase()` / `s.toLowerCase()` / `s.capitalize()` | case transforms |
+| `s.reverse()` / `s.trim()` | reversed / whitespace-trimmed |
+| `s.isEmpty()` / `s.nonEmpty()` | length tests |
+| `s.replace(t1, t2)` | replace every occurrence |
+| `s.split(t)` | the pieces around the separator `t` |
+| `s.format(a, …)` | `%s` placeholders filled from the arguments |
+| `s.toString()` | `s` itself; also converts `Int`/`BigInt`/`Bool`/`Uri` (`42.toString() ++ " units"`) |
 
 Byte arrays are the bridge to hashing and signatures (used throughout the crypto contracts):
 
