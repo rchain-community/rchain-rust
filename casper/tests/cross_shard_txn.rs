@@ -13,21 +13,27 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use rchain_casper::construct_deploy;
+use rchain_casper::genesis::contracts::Vault;
 use rchain_casper::protocol::client::DeployService;
 use rchain_casper::runtime_manager::RuntimeManager;
-use rchain_casper::shard_invoke::ShardOutcome;
-use rchain_casper::txn_coordinator::{TxnCoordinator, TxnLeg};
+use rchain_casper::shard_invoke::{signed_invoke, ShardOutcome};
+use rchain_casper::txn_coordinator::{txn_term, TxnCoordinator, TxnLeg};
 use rchain_crypto::hash::blake2b512_random::Blake2b512Random;
-use rchain_models::casper::protocol::casper_message::SignedDeployData;
+use rchain_crypto::private_key::PrivateKey;
+use rchain_crypto::public_key::PublicKey;
+use rchain_models::casper::protocol::casper_message::{
+    ProcessedDeploy, ProcessedSystemDeploy, SignedDeployData,
+};
 use rchain_models::casper::protocol::deploy_service::{
     BlockQuery, BlocksQuery, BondStatusQuery, ContinuationAtNameQuery, ContinuationsWithBlockInfo,
     DataAtNameQuery, DataWithBlockInfo, DeployExecStatus, FindDeployQuery, IsFinalizedQuery,
     LightBlockInfo, MachineVerifyQuery, VisualizeDagQuery,
 };
 use rchain_models::normalizer_env::NormalizerEnv;
-use rchain_models::rholang::RhoType::{RhoDeployId, RhoString};
+use rchain_models::rholang::RhoType::{RhoByteArray, RhoDeployId, RhoNumber, RhoString};
 use rchain_models::sorted::SortedProc;
-use rchain_rholang::native_state::NativeSystemState;
+use rchain_rholang::native_state::{NativeSystemState, PosGenesis};
+use rchain_rholang::system_processes::BlockData;
 use rchain_rholang::util::rev_address::RevAddress;
 use rchain_shared::base16;
 use rchain_shared::refined::NonNegI64;
@@ -170,6 +176,25 @@ impl DeployService for InProcDeployService {
 fn fund(rm: &RuntimeManager, address: &str, amount: i64) {
     NativeSystemState::new(rm.runtime().native_store())
         .set_vault_balance(address, NonNegI64::try_from(amount).expect("non-negative"));
+}
+
+/// A genesis vault for `address`, funded with `balance`.
+fn genesis_vault(address: &str, balance: i64) -> Vault {
+    Vault {
+        rev_address: RevAddress::parse(address).expect("valid rev address"),
+        initial_balance: NonNegI64::try_from(balance).expect("non-negative"),
+    }
+}
+
+/// Sign `term` into a block-pipeline deploy as `key` (the shape the coordinator submits).
+fn signed_deploy(term: &str, key: &PrivateKey, pk: &PublicKey) -> SignedDeployData {
+    let signed = signed_invoke(term, key, 0, 1_000_000, 1, 0, "/root").expect("sign deploy");
+    SignedDeployData {
+        data: signed.data,
+        deployer: pk.bytes().to_vec(),
+        sig: signed.sig.clone(),
+        sig_algorithm: "secp256k1".to_string(),
+    }
 }
 
 /// Both legs funded and ready ⇒ every shard commits and the escrowed REV moves to the destination.
@@ -315,4 +340,102 @@ async fn two_shard_2pc_aborts_all_when_a_leg_fails() {
     );
     assert_eq!(native_a.vault_balance(&destination).await.unwrap(), None);
     assert_eq!(native_b.vault_balance(&destination).await.unwrap(), None);
+}
+
+/// Law 29 (determinism), on the block path: a `rho:txn` `prepare` + `commit` run through
+/// `compute_state` and then replayed through `replay_compute_state` must re-derive the *same*
+/// post-state hash. The escrow and the transaction record live in the native mergeable state, which
+/// feeds the state hash — so a nondeterministic write on the 2PC path fails here, not in consensus.
+#[tokio::test]
+async fn two_shard_2pc_replay_rederives_the_post_state_hash() {
+    let rand = fixed_rand();
+    let (coordinator_sec, coordinator_pub) = construct_deploy::default_key_pair().unwrap();
+    let coordinator_addr = RevAddress::from_public_key(&coordinator_pub)
+        .unwrap()
+        .to_base58();
+    let destination = "destRevAddress".to_string();
+    let txn_id: &[u8] = b"replay-txn";
+
+    let shard = build_runtime_manager().await;
+    let (_pre, post, _) = shard
+        .compute_genesis(
+            &[],
+            &rand,
+            BlockData::empty(),
+            &PosGenesis::default(),
+            // Comfortably above the phase deploys' phlo pre-charge.
+            &[genesis_vault(&coordinator_addr, 1_000_000_000)],
+        )
+        .await
+        .expect("compute_genesis");
+
+    // The production phase terms (both phases on one shard), submitted as ordinary signed deploys.
+    let prepare = txn_term(
+        "prepare",
+        txn_id,
+        &[
+            RhoByteArray::apply(coordinator_pub.bytes().to_vec()),
+            RhoNumber::apply(30),
+            RhoString::apply(destination.clone()),
+        ],
+        true,
+    );
+    let commit = txn_term("commit", txn_id, &[], true);
+    let deploys = [
+        signed_deploy(&prepare, &coordinator_sec, &coordinator_pub),
+        signed_deploy(&commit, &coordinator_sec, &coordinator_pub),
+    ];
+
+    let (post_state, user_results, sys_results) = shard
+        .compute_state(&post, &deploys, &[], &rand, BlockData::empty())
+        .await
+        .expect("play compute_state");
+    for (phase, result) in ["prepare", "commit"].iter().zip(&user_results) {
+        // `eval_result.succeeded()` alone would pass for a deploy rejected at pre-charge (the
+        // reducer never ran), so the rejection flag is the load-bearing half of this check.
+        assert!(
+            !result.deploy.is_failed,
+            "{phase} deploy must be processed, not rejected: {:?}",
+            result.deploy.system_deploy_error
+        );
+        assert!(
+            result.eval_result.succeeded(),
+            "{phase} deploy must succeed: {:?}",
+            result.eval_result.errors
+        );
+    }
+
+    let processed: Vec<ProcessedDeploy> = user_results.into_iter().map(|r| r.deploy).collect();
+    let processed_sys: Vec<ProcessedSystemDeploy> =
+        sys_results.into_iter().map(|r| r.deploy).collect();
+
+    let (replay_state, _) = shard
+        .replay_compute_state(
+            &post,
+            &processed,
+            &processed_sys,
+            &rand,
+            BlockData::empty(),
+            true,
+            &PosGenesis::default(),
+            &[],
+        )
+        .await
+        .expect("replay compute_state");
+
+    assert_ne!(
+        post_state, post,
+        "the 2PC phases must actually move state (a rejected deploy would leave the hash unchanged)"
+    );
+    assert_eq!(
+        post_state, replay_state,
+        "replay must re-derive the 2PC post-state hash (Law 29)"
+    );
+
+    // The replay agreed on a state that actually moved the escrowed REV to the destination.
+    let native = NativeSystemState::new(shard.runtime().native_store());
+    assert_eq!(
+        i64::from(native.vault_balance(&destination).await.unwrap().unwrap()),
+        30
+    );
 }

@@ -172,4 +172,8 @@ replay re-derive it.
   shards (the "gateway") remains out of scope for `rnode`.
 
 The end-to-end two-shard path — uniform commit, and abort on partial failure — is exercised by
-`casper/tests/cross_shard_txn.rs` over a `DeployService` test double.
+`casper/tests/cross_shard_txn.rs` over a `DeployService` test double. The same file also takes the
+*production* phase terms (`txn_coordinator::txn_term`) through the block pipeline
+(`compute_state` → `replay_compute_state`) and asserts the replay re-derives the play post-state hash
+(Law 29): the escrow and the transaction record live in the native mergeable state that feeds the
+state hash, so a nondeterministic 2PC write fails there rather than in consensus.

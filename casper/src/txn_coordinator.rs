@@ -39,7 +39,10 @@ fn render_arg(p: &Par) -> String {
 /// Build the term that runs a `rho:txn` phase on a far shard. `data_args` are the phase's data
 /// arguments (rendered to rholang literals); the caller's `*deployerId` and the reply channel
 /// `` `rho:rchain:deployId` `` are appended automatically.
-fn txn_term(method: &str, txn_id: &[u8], data_args: &[Par], needs_deployer: bool) -> String {
+///
+/// Public so the block-pipeline replay tests can drive the *production* phase terms through
+/// `compute_state`/`replay_compute_state` rather than re-spelling the template.
+pub fn txn_term(method: &str, txn_id: &[u8], data_args: &[Par], needs_deployer: bool) -> String {
     let mut args = vec![
         format!("\"{method}\""),
         format!("\"{}\".hexToBytes()", base16::encode(txn_id)),
