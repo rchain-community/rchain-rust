@@ -12,221 +12,19 @@
 mod common;
 
 use std::collections::BTreeMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
-use async_trait::async_trait;
-
-use rchain_block_storage::dag::dag_storage::DeployId;
-use rchain_casper::api::block_api::{ApiErr, BlockApi, Capabilities};
 use rchain_casper::construct_deploy;
 use rchain_casper::gateway::ledger::{CoordState, TxnLedger, Vote};
 use rchain_casper::gateway::{GatewayLeg, GatewayTxn, LocalShard, LocalShardDeployService};
-use rchain_models::ast::Par;
-use rchain_models::block_metadata::BlockMetadata;
 use rchain_models::casper::protocol::casper_message::{DeployData, SignedDeployData};
-use rchain_models::casper::protocol::deploy_service::{
-    BlockInfo, ContinuationsWithBlockInfo, DataWithBlockInfo, DeployExecStatus, LightBlockInfo,
-    Status,
-};
-use rchain_models::normalizer_env::NormalizerEnv;
-use rchain_models::sorted::SortedProc;
 use rchain_rholang::native_state::NativeSystemState;
-use rchain_rholang::runtime::RhoRuntime;
 use rchain_rholang::util::rev_address::RevAddress;
-use rchain_shared::refined::{NonNegI64, ShardId};
+use rchain_shared::refined::NonNegI64;
 use rchain_shared::store_manager::InMemoryStoreManager;
 
-use common::build_runtime_manager;
-
-/// A `BlockApi` for one in-process shard: "deploying" evaluates the term on that shard's runtime,
-/// and a reply is read back from the runtime's own channel — enough to exercise the coordinator
-/// without standing up the whole node.
-struct TestShardApi {
-    shard_id: String,
-    runtime: Arc<rchain_casper::runtime_manager::RuntimeManager>,
-    /// The height this shard reports (a leg is anchored at it).
-    height: Mutex<i64>,
-}
-
-impl TestShardApi {
-    fn new(shard_id: &str, runtime: Arc<rchain_casper::runtime_manager::RuntimeManager>) -> Self {
-        TestShardApi {
-            shard_id: shard_id.to_string(),
-            runtime,
-            height: Mutex::new(0),
-        }
-    }
-}
-
-#[async_trait]
-impl BlockApi for TestShardApi {
-    async fn status(&self) -> Status {
-        unreachable!("the gateway does not call status")
-    }
-
-    async fn deploy(&self, d: &SignedDeployData) -> ApiErr<String> {
-        let env = NormalizerEnv::new(d);
-        let rand = rchain_crypto::hash::blake2b512_random::Blake2b512Random::from_init(&[0u8; 32]);
-        let result = self
-            .runtime
-            .runtime()
-            .evaluate_with_env(&d.data.term, env.to_env(), &rand)
-            .await
-            .map_err(|e| e.to_string())?;
-        if !result.errors.is_empty() {
-            return Err(result
-                .errors
-                .iter()
-                .map(|e| e.to_string())
-                .collect::<Vec<_>>()
-                .join("; "));
-        }
-        // A deploy that arrived means this shard produced a block for it.
-        if let Ok(mut height) = self.height.lock() {
-            *height += 1;
-        }
-        Ok(rchain_shared::base16::encode(&d.sig))
-    }
-
-    async fn get_listening_name_data_response(
-        &self,
-        _depth: i32,
-        listening_name: &Par,
-    ) -> ApiErr<(Vec<DataWithBlockInfo>, i32)> {
-        let data = self
-            .runtime
-            .runtime()
-            .get_data_par(&SortedProc::new(listening_name.clone()))
-            .await
-            .map_err(|e| e.to_string())?;
-        Ok((
-            vec![DataWithBlockInfo {
-                post_block_data: data,
-                block: light_block(&self.shard_id),
-            }],
-            0,
-        ))
-    }
-
-    async fn get_latest_message(&self) -> ApiErr<BlockMetadata> {
-        let height = self.height.lock().map(|h| *h).unwrap_or(0);
-        Ok(BlockMetadata {
-            block_hash: rchain_models::block_hash::BlockHash::new([0u8; 32]),
-            block_num: rchain_shared::refined::BlockHeight::try_from(height)
-                .map_err(|e| e.to_string())?,
-            sender: rchain_models::validator::Validator::from_slice(&[0u8; 65]),
-            seq_num: rchain_shared::refined::SeqNum::zero(),
-            justifications: std::collections::BTreeSet::new(),
-            bonds_map: std::collections::BTreeMap::new(),
-            validated: true,
-            validation_failed: false,
-            member_of_fringe: None,
-            fringe: std::collections::BTreeSet::new(),
-            fringe_state_hash: rchain_crypto::hash::blake2b256_hash::Blake2b256Hash::from_bytes(
-                [0u8; 32],
-            )
-            .into(),
-        })
-    }
-
-    async fn deploy_status(&self, _: &DeployId) -> ApiErr<DeployExecStatus> {
-        Err("not used by the gateway".to_string())
-    }
-    async fn pooled_deploys(&self) -> ApiErr<Vec<SignedDeployData>> {
-        Err("not used by the gateway".to_string())
-    }
-    async fn capabilities(&self) -> Capabilities {
-        unreachable!("the gateway does not call capabilities")
-    }
-    async fn create_block(&self, _: bool) -> ApiErr<String> {
-        Err("not used by the gateway".to_string())
-    }
-    async fn get_propose_result(&self) -> ApiErr<String> {
-        Err("not used by the gateway".to_string())
-    }
-    async fn get_listening_name_continuation_response(
-        &self,
-        _: i32,
-        _: &[Par],
-    ) -> ApiErr<(Vec<ContinuationsWithBlockInfo>, i32)> {
-        Err("not used by the gateway".to_string())
-    }
-    async fn get_blocks_by_heights(&self, _: i64, _: i64) -> ApiErr<Vec<LightBlockInfo>> {
-        Err("not used by the gateway".to_string())
-    }
-    async fn visualize_dag(&self, _: i32, _: i32, _: bool) -> ApiErr<Vec<String>> {
-        Err("not used by the gateway".to_string())
-    }
-    async fn machine_verifiable_dag(&self, _: i32) -> ApiErr<String> {
-        Err("not used by the gateway".to_string())
-    }
-    async fn get_blocks(&self, _: i32) -> ApiErr<Vec<LightBlockInfo>> {
-        Err("not used by the gateway".to_string())
-    }
-    async fn find_deploy(&self, _: &DeployId) -> ApiErr<LightBlockInfo> {
-        Err("not used by the gateway".to_string())
-    }
-    async fn get_block(&self, _: &str) -> ApiErr<BlockInfo> {
-        Err("not used by the gateway".to_string())
-    }
-    async fn bond_status(&self, _: &[u8]) -> ApiErr<bool> {
-        Err("not used by the gateway".to_string())
-    }
-    async fn exploratory_deploy(
-        &self,
-        _: &str,
-        _: Option<&str>,
-        _: bool,
-    ) -> ApiErr<(Vec<Par>, LightBlockInfo)> {
-        Err("not used by the gateway".to_string())
-    }
-    async fn get_data_at_par(
-        &self,
-        _: &Par,
-        _: &str,
-        _: bool,
-    ) -> ApiErr<(Vec<Par>, LightBlockInfo)> {
-        Err("not used by the gateway".to_string())
-    }
-    async fn last_finalized_block(&self) -> ApiErr<BlockInfo> {
-        Err("not used by the gateway".to_string())
-    }
-    async fn is_finalized(&self, _: &str) -> ApiErr<bool> {
-        Err("not used by the gateway".to_string())
-    }
-}
-
-fn light_block(shard_id: &str) -> LightBlockInfo {
-    LightBlockInfo {
-        version: 1,
-        shard_id: shard_id.to_string(),
-        block_hash: String::new(),
-        block_number: 0,
-        sender: String::new(),
-        seq_num: 0,
-        pre_state_hash: String::new(),
-        post_state_hash: String::new(),
-        justifications: Vec::new(),
-        bonds: Vec::new(),
-        sig_algorithm: String::new(),
-        sig: String::new(),
-        block_size: "0".to_string(),
-        deploy_count: 0,
-        rejected_deploys: Vec::new(),
-        timestamp: 0,
-    }
-}
-
-fn shard(id: &str) -> ShardId {
-    ShardId::try_from(id.to_string()).unwrap()
-}
-
-/// Fund an address's vault on a shard.
-fn fund(runtime: &RhoRuntime, address: &str, amount: i64) {
-    NativeSystemState::new(runtime.native_store())
-        .set_vault_balance(address, NonNegI64::try_from(amount).expect("non-negative"));
-}
+use common::{build_runtime_manager, fund, shard, txn_legs, TestShardApi};
 
 /// The two-shard fixture: shard A and B, each with a runtime and its own `BlockApi`.
 struct Fixture {
@@ -292,31 +90,13 @@ async fn fixture(manager: Arc<InMemoryStoreManager>) -> Fixture {
         rm_b,
     }
 }
-
-fn legs(destination: &str) -> Vec<GatewayLeg> {
-    vec![
-        GatewayLeg {
-            shard_id: shard("/root"),
-            amount: 30,
-            to: destination.to_string(),
-        },
-        GatewayLeg {
-            shard_id: shard("/root/child"),
-            amount: 40,
-            to: destination.to_string(),
-        },
-    ]
-}
-
-/// A two-leg transaction against the node's own two shards commits on both, and the durable record
-/// says so (Law 29's biconditional: committed exactly when every vote is ready).
 #[tokio::test]
 async fn gateway_commits_a_two_shard_transaction_and_records_the_decision() {
     let fx = fixture(Arc::new(InMemoryStoreManager::default())).await;
 
     let record = fx
         .gateway
-        .run(b"gw-commit", &legs(&fx.destination))
+        .run(b"gw-commit", &txn_legs(&fx.destination))
         .await
         .expect("run");
 
@@ -337,7 +117,7 @@ async fn gateway_moves_the_escrow_on_every_leg() {
     let fx = fixture(Arc::new(InMemoryStoreManager::default())).await;
 
     fx.gateway
-        .run(b"gw-balances", &legs(&fx.destination))
+        .run(b"gw-balances", &txn_legs(&fx.destination))
         .await
         .expect("run");
 
@@ -430,7 +210,7 @@ async fn gateway_aborts_every_leg_when_one_cannot_prepare() {
     );
 
     let record = gateway
-        .run(b"gw-abort", &legs(&destination))
+        .run(b"gw-abort", &txn_legs(&destination))
         .await
         .expect("run");
     assert_eq!(record.state, CoordState::Aborted);
@@ -478,25 +258,25 @@ async fn gateway_is_idempotent_under_txn_id() {
 
     let first = fx
         .gateway
-        .run(b"gw-idempotent", &legs(&fx.destination))
+        .run(b"gw-idempotent", &txn_legs(&fx.destination))
         .await
         .expect("first run");
     let second = fx
         .gateway
-        .run(b"gw-idempotent", &legs(&fx.destination))
+        .run(b"gw-idempotent", &txn_legs(&fx.destination))
         .await
         .expect("second run");
 
     assert_eq!(first, second);
     assert_eq!(second.state, CoordState::Committed);
     // A terminal record is returned without contacting a shard, so no further block was produced.
-    let height_after_first = *fx.shard_a.height.lock().unwrap();
+    let height_after_first = fx.shard_a.height();
     fx.gateway
-        .run(b"gw-idempotent", &legs(&fx.destination))
+        .run(b"gw-idempotent", &txn_legs(&fx.destination))
         .await
         .expect("third run");
     assert_eq!(
-        *fx.shard_a.height.lock().unwrap(),
+        fx.shard_a.height(),
         height_after_first,
         "a retry must not submit another deploy"
     );

@@ -703,3 +703,15 @@ deviation.
   without the fix with `left: Committed, right: Aborted`), `a_commit_is_absorbing` (a late abort
   cannot un-commit; fails without the fix), `record_vote_overwrites_a_repeated_shard_vote`,
   `record_vote_does_not_set_a_reason_for_a_ready_vote`.
+
+### Documented (assessed faithful / residual)
+
+- **C2 — a phase-two failure is discarded.** `casper/src/gateway/mod.rs::apply_phase_two` ignores
+  each `commit`/`abort` deploy's outcome (`let _ = self.phase(...)`). Faithful to the coordinator
+  model: the decision is already durable (written *before* phase two), a failed delivery is re-driven
+  by `recover_in_flight` on the next boot or by a re-issued `run` with the same `txn_id`, and the
+  participants are idempotent under `txn_id` (Law 28) — so a lost phase two is not a lost decision.
+  The residual is that the record does not distinguish "phase two delivered" from "phase two
+  attempted", so a leg whose commit never landed holds its escrow until recovery re-drives it.
+  Verified: `a_failed_phase_two_leaves_the_decision_intact` (both legs prepare, the decision is
+  written, leg B's commit is rejected, the record stays `Committed`).

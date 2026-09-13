@@ -233,8 +233,8 @@ linter reports it.
 | Tier | Module | Test pinning a failure path |
 |---|---|---|
 | T1 | `casper/src/conf.rs` | — |
-| T1 | `casper/src/gateway/ledger.rs` | — |
-| T1 | `casper/src/gateway/mod.rs` | — |
+| T1 | `casper/src/gateway/ledger.rs` | `an_abort_is_absorbing` |
+| T1 | `casper/src/gateway/mod.rs` | `apply_phase_two_skips_legs_that_did_not_vote_ready` |
 | T1 | `casper/src/multi_parent_casper.rs` | — |
 | T1 | `casper/src/blocks/block_processor.rs` | — |
 | T1 | `casper/src/runtime_replay.rs` | — |
