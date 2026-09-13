@@ -32,6 +32,37 @@ async fn poll_json(client: &reqwest::Client, url: &str, what: &str) -> Value {
     }
 }
 
+/// Wait until **every** member shard has a chain.
+///
+/// The HTTP surface is up before the shards' genesis ceremonies finish (by design — a node serves
+/// while it boots), so `/api/v1/shards` answering is not readiness. A shard reports
+/// `latestBlockNumber: 0` with an empty DAG and `1` once its genesis block exists, which is the
+/// signal a client can actually act on — transacting earlier races the genesis ceremony.
+async fn wait_for_shards_ready(client: &reqwest::Client, base: &str) {
+    let url = format!("{base}/api/v1/shards");
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+    loop {
+        if let Ok(resp) = client.get(&url).send().await {
+            if let Ok(value) = resp.json::<Value>().await {
+                if let Some(shards) = value["shards"].as_array() {
+                    let all_have_genesis = !shards.is_empty()
+                        && shards
+                            .iter()
+                            .all(|s| s["latestBlockNumber"].as_i64().is_some_and(|n| n >= 1));
+                    if all_have_genesis {
+                        return;
+                    }
+                }
+            }
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "not every member shard reached genesis within the deadline"
+        );
+        tokio::time::sleep(Duration::from_millis(150)).await;
+    }
+}
+
 /// Two shards in one node: both reach genesis under their **own** full shard id, and the membership
 /// is reported with the primary first.
 #[test]
@@ -46,6 +77,7 @@ fn gateway_node_runs_two_shards_with_their_own_genesis() {
         let base = format!("http://127.0.0.1:{http_port}");
         let client = reqwest::Client::new();
 
+        wait_for_shards_ready(&client, &base).await;
         let shards = poll_json(&client, &format!("{base}/api/v1/shards"), "shards").await;
         assert_eq!(shards["shardCount"], 2);
         assert_eq!(shards["primaryShard"], "/root");
@@ -53,12 +85,13 @@ fn gateway_node_runs_two_shards_with_their_own_genesis() {
         assert_eq!(shards["shards"][0]["primary"], true);
         assert_eq!(shards["shards"][1]["shardId"], "/root/child");
         assert_eq!(shards["shards"][1]["primary"], false);
-        // Each shard has its own chain (genesis at least), which is the regression for the genesis
-        // shard-id fix: a genesis stamped with the bare name would match no membership.
+        // Each shard has its own chain: `/api/v1/shards` only reports a height once that shard's
+        // genesis block exists, so a genesis stamped with the bare name — matching no membership —
+        // would leave a shard stuck at 0.
         for shard in shards["shards"].as_array().unwrap() {
             assert!(
-                shard["latestBlockNumber"].as_i64().is_some(),
-                "each shard must report a height: {shard}"
+                shard["latestBlockNumber"].as_i64().is_some_and(|n| n >= 1),
+                "each shard must have its own genesis: {shard}"
             );
         }
         // `/api/status` still reports the primary shard's id (unchanged for existing tooling).
@@ -83,8 +116,8 @@ fn gateway_node_coordinates_a_two_shard_transaction() {
         let base = format!("http://127.0.0.1:{http_port}");
         let client = reqwest::Client::new();
 
-        // Wait for both shards to be up before transacting.
-        poll_json(&client, &format!("{base}/api/v1/shards"), "shards").await;
+        // Transacting before both shards have a chain would race their genesis ceremonies.
+        wait_for_shards_ready(&client, &base).await;
 
         let txn_id = "aabbccdd";
         let body = json!({
@@ -151,7 +184,7 @@ fn gateway_node_refuses_a_non_member_shard() {
         let node = start(&conf, ports[2], http_port).await;
         let base = format!("http://127.0.0.1:{http_port}");
         let client = reqwest::Client::new();
-        poll_json(&client, &format!("{base}/api/v1/shards"), "shards").await;
+        wait_for_shards_ready(&client, &base).await;
 
         let resp = client
             .post(format!("{base}/api/v1/txn"))
