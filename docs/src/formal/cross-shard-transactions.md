@@ -30,7 +30,9 @@ same terminal outcome. That is the atomicity the primitive lacks.
 ## Roles
 
 - **Coordinator** — a gateway that can sign deploys to every participant shard (the "merger"). It
-  owns a durable, content-addressed **transaction record**.
+  owns a durable, content-addressed **transaction record**. A coordinator may be an off-chain client
+  (`casper/src/txn_coordinator.rs`) or the node itself when it is a member of the shards involved
+  (`casper/src/gateway/`).
 - **Initiator** — the client that opens the transaction (the "author").
 - **Participant** — a shard whose state the transaction spans (a "branch"); usually two: source and
   target.
@@ -43,9 +45,16 @@ inductive TxnState where
 ```
 
 - `proposed` — the coordinator recorded the transaction's legs (the PR is open).
-- `prepared` — every participant has locked its resources and voted (both branches staged).
-- `committed` — the coordinator decided COMMIT (the merge).
-- `aborted` — the coordinator decided ABORT (the close).
+- `prepared` — phase one is **in flight**: at least one participant has voted, but not yet all of
+  them. (A *participant* is separately "prepared" once its own escrow is locked — the two use the
+  same word for different scopes.)
+- `committed` — the coordinator decided COMMIT (the merge): every leg has voted `ready`.
+- `aborted` — the coordinator decided ABORT (the close): a leg voted `abort`, errored, or timed out.
+
+The coordinator's mapping keeps `commit_record_deterministic` exact: `committed` is written only
+when every leg has voted `ready`, so a `prepared` record can never hold a complete all-`ready` vote
+list, and the biconditional holds verbatim on a stored record
+(`casper/src/gateway/ledger.rs`, `CoordRecord::decision_is_deterministic`).
 
 ## Messages
 
@@ -78,9 +87,11 @@ the record must be durable, so recovery always terminates.
 - **Law 26 — shard scope determinism.** A deploy/block's effects bind to exactly one shard; the shard
   id is a validated, ordered value, and the RNG seed + unforgeable names are shard-scoped. This is
   the *sharding* half: the id is the typed `ShardId` newtype (`shared/src/refined.rs`) — non-empty
-  ASCII, ordered, with the `parent-shard-id`/`shard-name` hierarchy realized by
-  `CasperConf::full_shard_id` (`/root` for the default `root` shard, `/root/rootchild` for its child)
-  — and the boundary is enforced at deploy admission and block validation (`casper/src/validate.rs`).
+  ASCII, ordered, with the `parent-shard-id`/`shard-name` hierarchy resolved into a full id by
+  `ShardSpec` (`/root` for the default `root` shard, `/root/rootchild` for its child) — and the
+  boundary is enforced at deploy admission and block validation (`casper/src/validate.rs`).
+  A node's *memberships* are a non-empty, duplicate-free list (`ShardMemberships`), which is what
+  lets one node validate several shards while every request still resolves to exactly one.
 
 - **Law 27 — cross-shard atomicity (2PC).** A transaction commits on every participant or aborts on
   every participant — no run leaves a strict subset committed.
@@ -162,18 +173,37 @@ replay re-derive it.
   phase terms and `TxnCoordinator::run_2pc` signs → submits → collects the `prepare` votes → commits
   all or aborts the prepared legs (Law 27). The transport is the existing
   `casper/src/shard_invoke.rs` primitive (`invoke_term` → `signed_invoke` → submit → `await_reply`).
-- **Shard scoping** (`shared/src/refined.rs` `ShardId`, `casper/src/conf.rs` `full_shard_id`,
+- **Shard scoping** (`shared/src/refined.rs` `ShardId`, `casper/src/conf.rs` `ShardSpec`/`ShardMemberships`,
   `casper/src/block_random_seed.rs`, `casper/src/validate.rs`,
   `casper/src/api/block_api_impl.rs`): the shard id is a validated, ordered newtype in the RNG seed
   and the unforgeable names, the full id is derived from the `parent-shard-id`/`shard-name`
   hierarchy, and the boundary is enforced at admission/validation.
-- **Deferred** (specified here, not yet built): only the *multi-shard gateway*. The coordinator is an
-  *off-chain client* that signs deploys to each shard; a node that is itself a member of multiple
-  shards (the "gateway") remains out of scope for `rnode`.
+- **Gateway** (`casper/src/gateway/`): a node that is itself a member of several shards can drive the
+  transaction **on the node**, with no off-chain client. `GatewayTxn` submits each leg to the shard
+  that owns it (`LocalShardDeployService`, over that shard's real `BlockApi` — a pooled deploy, not a
+  side evaluation), collects the votes, decides, and applies phase two. `casper/src/conf.rs`'s
+  `ShardMemberships` and the node's per-shard assembly (`node/src/runtime/node_runtime.rs`) supply the
+  memberships; `node/src/api/shard_routing.rs` routes the one client surface across them. Reachable as
+  `POST /api/v1/txn` (plus `GET /api/v1/txn` and `/api/v1/txn/{txnId}`), served only on a node that
+  is a gateway.
+- **The coordinator's record is durable but *not* consensus state**
+  (`casper/src/gateway/ledger.rs`): votes and the commit decision belong to one node — no other
+  validator runs a coordinator — so they live in a node-local database (`<data-dir>/gateway/`) rather
+  than the content-addressed RSpace trie, where they would make a shard's state hash depend on one
+  node's off-chain coordination. Law 29 asks for *durable*, not *consensus*. On boot the gateway
+  re-issues what an interrupted transaction still needs (`recover_in_flight`), so a participant that
+  locked its escrow is not left holding it.
+- **Still deferred**: relaying a deploy to a shard this node does **not** validate (an explicit
+  non-goal, [`../node/shard-invoke.md`](../node/shard-invoke.md)), and per-shard bootstrap — a
+  multi-shard node must therefore start from its own genesis or from existing state, since the LFS
+  fringe exchange carries no shard id.
 
 The end-to-end two-shard path — uniform commit, and abort on partial failure — is exercised by
 `casper/tests/cross_shard_txn.rs` over a `DeployService` test double. The same file also takes the
 *production* phase terms (`txn_coordinator::txn_term`) through the block pipeline
 (`compute_state` → `replay_compute_state`) and asserts the replay re-derives the play post-state hash
 (Law 29): the escrow and the transaction record live in the native mergeable state that feeds the
-state hash, so a nondeterministic 2PC write fails there rather than in consensus.
+state hash, so a nondeterministic 2PC write fails there rather than in consensus. The gateway itself
+is covered by `casper/tests/gateway_txn.rs` (commit, compensation, idempotency under a repeated
+`txn_id`, restart recovery from the ledger) and by `node/tests/gateway.rs`, which runs one `rnode`
+over two shards and drives the transaction through `POST /api/v1/txn`.

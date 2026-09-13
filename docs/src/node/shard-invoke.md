@@ -142,8 +142,12 @@ and cannot participate in the home shard's reduction. Consequences:
   contract runs on the two escrows' committed facts, using `rho:qucalc:verify`
   (already exposed by the node). It is a verification, not a transport guarantee.
 - Achieving atomic, single-closure composition is Layer 2's job (a gateway peer
-  that is a member of both shards, or promise pipelining). It is deliberately not
-  in rnode. See [Exchange support](#exchange-support) and Layer 2 below.
+  that is a member of both shards, or promise pipelining). A node that *is* a
+  member of several shards can now do it: see
+  [cross-shard transactions](../formal/cross-shard-transactions.md) for the
+  two-phase commit and `POST /api/v1/txn` for the node-side coordinator.
+  Promise pipelining and relay to a shard the node does *not* validate remain
+  out of scope. See [Exchange support](#exchange-support) and Layer 2 below.
 
 This is the price of "no new consensus", and it is the right trade for Layer 1:
 most uses need same-account signed reach, not cross-shard atomicity. `#32`'s
@@ -226,7 +230,11 @@ expansion end-to-end is a follow-up, not a node change.
 - Shared state or cross-shard consensus. A cross-shard call is a deploy.
 - A relay, a signed-envelope wire protocol, or a replicated link table.
 - Delegated / revocable proxies, promise pipelining, three-party handoff, gateway
-  routing, non-RChain chains — all Layer 2 (`quantum-os#173`), built over this.
+  routing (relaying a deploy to a shard this node is **not** a member of),
+  non-RChain chains — all Layer 2 (`quantum-os#173`), built over this. Serving
+  several shards in one node *is* implemented (the gateway): the node has a
+  membership list, routes each request to the shard that owns it, and
+  coordinates a two-phase commit across its own shards. Relay stays out.
 - Light state proofs, arbitrary-pre-state replay — dropped in `#32`.
 
 ## Related
