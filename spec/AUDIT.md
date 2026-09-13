@@ -680,3 +680,26 @@ invariant (#18/#23).
 - `cargo clippy -p rchain-rspace -p rchain-rholang --all-targets` — no new warnings on the changed
   files (the pre-existing clone-on-copy / await-holding-lock warnings in test modules remain).
 
+
+## 15. Multi-shard gateway findings (pass 6)
+
+The multi-shard gateway (`casper/src/gateway/`, Laws 26–29) was audited for its own failure paths
+while completing its test coverage. One latent bug was found and fixed; one behaviour is a documented
+deviation.
+
+### Fixed
+
+- **C1 — a decided coordinator record could be resurrected by a late vote.**
+  `casper/src/gateway/ledger.rs::CoordRecord::record_vote` overwrote a leg's vote in place and then
+  re-derived the state. An `Abort` recorded for a leg could therefore be overwritten by a later
+  `Ready`, and once *every* leg held a `Ready` vote the `else if` branch set the record back to
+  `Committed` — resurrecting a transaction whose compensation had already run and whose escrow had
+  been returned. Root cause: the phase-one state mapping treated the vote list as mutable input
+  rather than as a record of a decision that, once taken, is durable (Law 29). **Fix:** a terminal
+  record is absorbing — `record_vote` returns immediately when `state.is_terminal()`, so a decided
+  transaction cannot be moved and its votes stay consistent with the state it committed to. The path
+  was **latent, not live**: `GatewayTxn::drive` breaks the collection loop on the first abort and
+  never re-prepares a terminal record. **Pure bug fix.** Verified: `an_abort_is_absorbing` (fails
+  without the fix with `left: Committed, right: Aborted`), `a_commit_is_absorbing` (a late abort
+  cannot un-commit; fails without the fix), `record_vote_overwrites_a_repeated_shard_vote`,
+  `record_vote_does_not_set_a_reason_for_a_ready_vote`.

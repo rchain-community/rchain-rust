@@ -146,7 +146,19 @@ impl CoordRecord {
     /// `Committed` is written only once every leg has voted `Ready`; any `Abort` makes the record
     /// `Aborted` immediately. A record can therefore never be `Prepared` with a complete all-ready
     /// vote list, which is what makes `commit_record_deterministic`'s biconditional exact.
+    ///
+    /// **A decided record is absorbing.** Once a record is terminal the decision is durable (Law 29)
+    /// — the escrow has been applied or compensated — so a later vote is ignored rather than allowed
+    /// to move it. That is not a theoretical concern: overwriting a leg's `Abort` with a later
+    /// `Ready` used to re-derive `Committed` once every leg was ready, resurrecting a transaction
+    /// whose compensation had already run. The path was unreachable through `GatewayTxn::drive` (an
+    /// abort breaks the collection loop and a terminal record is never re-prepared), which is why it
+    /// was latent rather than live; ignoring votes once terminal closes it and keeps the votes
+    /// consistent with the state the record already committed to.
     pub fn record_vote(&mut self, shard_id: ShardId, vote: Vote, reason: Option<String>) {
+        if self.state.is_terminal() {
+            return;
+        }
         match self.votes.iter_mut().find(|(id, _)| *id == shard_id) {
             Some(entry) => entry.1 = vote,
             None => self.votes.push((shard_id, vote)),
@@ -538,5 +550,259 @@ mod tests {
         let pending = ledger.in_flight().await.expect("in flight");
         assert_eq!(pending.len(), 1);
         assert_eq!(pending[0].txn_id, b"txn-1".to_vec());
+    }
+
+    // --- encoding arms the round-trip test does not reach ---------------------
+
+    /// An aborted record carries both an `Abort` vote and a reason; neither survives a round trip
+    /// unless the encoder's reason arm and the vote discriminant are both exercised.
+    #[test]
+    fn encode_decode_round_trips_an_aborted_record_with_a_reason() {
+        let mut record = sample();
+        record.record_vote(shard("/root"), Vote::Ready, None);
+        record.record_vote(
+            shard("/root/child"),
+            Vote::Abort,
+            Some("timeout".to_string()),
+        );
+        assert_eq!(record.state, CoordState::Aborted);
+
+        let decoded = decode_coord(&encode_coord(&record)).expect("round trip");
+        assert_eq!(decoded, record);
+        assert_eq!(decoded.votes[1].1, Vote::Abort);
+        assert_eq!(decoded.reason.as_deref(), Some("timeout"));
+    }
+
+    /// A record with no votes is still encodable (it is what a first write stores).
+    #[test]
+    fn encode_decode_round_trips_a_proposed_record_with_no_votes() {
+        let record = sample();
+        assert_eq!(record.state, CoordState::Proposed);
+        let decoded = decode_coord(&encode_coord(&record)).expect("round trip");
+        assert_eq!(decoded, record);
+        assert!(decoded.votes.is_empty());
+        assert!(decoded.reason.is_none());
+    }
+
+    /// A byte offset of the encoded form, so the malformed-input tests can target a field without
+    /// hardcoding the whole layout.
+    fn offset_of(bytes: &[u8], needle: &[u8]) -> usize {
+        bytes
+            .windows(needle.len())
+            .position(|w| w == needle)
+            .unwrap_or_else(|| panic!("{needle:?} not found in the encoding"))
+    }
+
+    /// A non-UTF8 string and an empty (invalid) shard id are distinct decode arms.
+    #[test]
+    fn decode_rejects_a_non_utf8_shard_id() {
+        let mut bytes = encode_coord(&sample());
+        let at = offset_of(&bytes, b"/root/child");
+        bytes[at] = 0xFF;
+        let err = decode_coord(&bytes).expect_err("non-UTF8 must not decode");
+        assert!(err.contains("non-UTF8"), "{err}");
+    }
+
+    #[test]
+    fn decode_rejects_an_empty_shard_id() {
+        let mut bytes = encode_coord(&sample());
+        let at = offset_of(&bytes, b"/root/child");
+        // Zero the 4-byte length prefix that precedes the id: the decoder then reads an empty
+        // string, which `ShardId::try_from` rejects (Law 26: a shard id is non-empty).
+        bytes[at - 4..at].copy_from_slice(&0u32.to_le_bytes());
+        let err = decode_coord(&bytes).expect_err("an empty shard id must not decode");
+        assert!(err.contains("shard id"), "{err}");
+    }
+
+    #[test]
+    fn decode_rejects_a_negative_amount() {
+        let mut bytes = encode_coord(&sample());
+        let at = offset_of(&bytes, &30_i64.to_le_bytes());
+        bytes[at..at + 8].copy_from_slice(&(-30_i64).to_le_bytes());
+        let err = decode_coord(&bytes).expect_err("a negative amount must not decode");
+        assert!(err.contains("negative amount"), "{err}");
+    }
+
+    /// The last two bytes of a one-vote record are the vote discriminant and the reason flag.
+    #[test]
+    fn decode_rejects_an_unknown_vote_discriminant() {
+        let mut record = sample();
+        record.record_vote(shard("/root"), Vote::Ready, None);
+        let mut bytes = encode_coord(&record);
+        let last = bytes.len();
+        bytes[last - 2] = 0xEE;
+        let err = decode_coord(&bytes).expect_err("an unknown vote must not decode");
+        assert!(err.contains("unknown vote"), "{err}");
+    }
+
+    #[test]
+    fn decode_rejects_an_invalid_reason_flag() {
+        let mut record = sample();
+        record.record_vote(shard("/root"), Vote::Abort, Some("x".to_string()));
+        let mut bytes = encode_coord(&record);
+        // The tail of a one-vote record with a reason is
+        //   `… vote-discriminant | reason-flag | reason-len(4) | reason-bytes`,
+        // so the flag sits five bytes before the end. (Searching for the byte `b"x"` instead would
+        // find the `x` inside the txn id `txn-1` — the encoder is a flat byte string.)
+        let flag = bytes.len() - 5 - 1;
+        bytes[flag] = 0x02;
+        let err = decode_coord(&bytes).expect_err("an invalid reason flag must not decode");
+        assert!(err.contains("reason flag"), "{err}");
+    }
+
+    /// `push_len` cannot represent a length beyond `u32`; the fallback is a saturated length, which
+    /// decodes as "longer than the record" rather than as a silent wrap to a small number.
+    #[test]
+    fn push_len_falls_back_to_u32_max() {
+        let mut out = Vec::new();
+        push_len(&mut out, usize::MAX);
+        assert_eq!(out, u32::MAX.to_le_bytes());
+    }
+
+    /// The decoder's offset arithmetic is `checked_add`. The guard that makes it unreachable is
+    /// `Reader::len`, which rejects a length longer than the bytes that remain — so a hostile record
+    /// cannot walk `off` past the end. Constructing a reader with a maximal `off` shows the
+    /// `checked_add` arm itself does not panic.
+    #[test]
+    fn a_reader_at_the_end_of_its_buffer_errors_rather_than_overflowing() {
+        let bytes = encode_coord(&sample());
+        let mut reader = Reader {
+            bytes: &bytes,
+            off: bytes.len(),
+        };
+        assert!(reader.u8().is_err(), "reading past the end must error");
+        let mut extreme = Reader {
+            bytes: &bytes,
+            off: usize::MAX,
+        };
+        assert!(
+            extreme.take(1).is_err(),
+            "an offset at usize::MAX must error, not overflow"
+        );
+    }
+
+    // --- vote bookkeeping ----------------------------------------------------
+
+    /// The vote list is one entry per leg: re-voting a shard replaces its entry rather than
+    /// appending a second one, which would break the "one vote per leg" shape the Lean record has.
+    #[test]
+    fn record_vote_overwrites_a_repeated_shard_vote() {
+        let mut record = sample();
+        record.record_vote(shard("/root"), Vote::Ready, None);
+        record.record_vote(shard("/root"), Vote::Ready, None);
+        assert_eq!(record.votes.len(), 1);
+        assert_eq!(record.vote_for(&shard("/root")), Some(Vote::Ready));
+    }
+
+    /// Only an abort carries a reason: a `Ready` vote must not clear or set one.
+    #[test]
+    fn record_vote_does_not_set_a_reason_for_a_ready_vote() {
+        let mut record = sample();
+        record.record_vote(shard("/root"), Vote::Ready, Some("ignored".to_string()));
+        assert_eq!(record.reason, None);
+        assert_eq!(record.state, CoordState::Prepared);
+    }
+
+    /// **The absorbing-decision fix.** Abort-then-Ready used to re-derive `Committed` once every leg
+    /// was ready, resurrecting a transaction whose compensation had already run. A decided record now
+    /// ignores later votes, so its votes stay consistent with its state (which is also what keeps
+    /// `decision_is_deterministic` true for it).
+    #[test]
+    fn an_abort_is_absorbing() {
+        let mut record = sample();
+        record.record_vote(shard("/root"), Vote::Abort, Some("underfunded".to_string()));
+        assert_eq!(record.state, CoordState::Aborted);
+
+        // The same leg, and the other leg, both try to flip it back.
+        record.record_vote(shard("/root"), Vote::Ready, None);
+        record.record_vote(shard("/root/child"), Vote::Ready, None);
+
+        assert_eq!(
+            record.state,
+            CoordState::Aborted,
+            "a compensated transaction must not be resurrected"
+        );
+        assert_eq!(record.reason.as_deref(), Some("underfunded"));
+        assert_eq!(record.vote_for(&shard("/root")), Some(Vote::Abort));
+        assert_eq!(record.vote_for(&shard("/root/child")), None);
+        assert!(record.decision_is_deterministic());
+    }
+
+    /// A committed record is likewise final: a late abort cannot un-commit an applied transaction.
+    #[test]
+    fn a_commit_is_absorbing() {
+        let mut record = sample();
+        record.record_vote(shard("/root"), Vote::Ready, None);
+        record.record_vote(shard("/root/child"), Vote::Ready, None);
+        assert_eq!(record.state, CoordState::Committed);
+
+        record.record_vote(shard("/root"), Vote::Abort, Some("late".to_string()));
+        assert_eq!(record.state, CoordState::Committed);
+        assert_eq!(record.reason, None);
+        assert!(record.decision_is_deterministic());
+    }
+
+    /// A record with no legs can never be "committed" by votes, so the biconditional's `!is_empty`
+    /// guard is load-bearing rather than defensive noise.
+    #[test]
+    fn decision_is_deterministic_holds_for_a_legless_record() {
+        let mut record = sample();
+        record.legs.clear();
+        assert_eq!(record.state, CoordState::Proposed);
+        assert!(record.decision_is_deterministic());
+        // A vote with no leg to belong to must not produce a bogus "committed".
+        record.record_vote(shard("/root"), Vote::Ready, None);
+        assert_eq!(record.state, CoordState::Prepared);
+        assert!(record.decision_is_deterministic());
+    }
+
+    /// `in_flight` reports every non-terminal record in `txn_id` order, not insertion or map order.
+    #[test]
+    fn in_flight_orders_records_by_txn_id() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .expect("runtime");
+        runtime.block_on(async {
+            let manager = rchain_shared::store_manager::InMemoryStoreManager::default();
+            let ledger = TxnLedger::open(&manager).await.expect("open ledger");
+
+            for id in [b"txn-c".as_slice(), b"txn-a", b"txn-b"] {
+                let mut record = sample();
+                record.txn_id = id.to_vec();
+                record.record_vote(shard("/root"), Vote::Ready, None); // stays Prepared
+                ledger.put(&record).await.expect("put");
+            }
+            let pending = ledger.in_flight().await.expect("in flight");
+            let ids: Vec<&[u8]> = pending.iter().map(|r| r.txn_id.as_slice()).collect();
+            assert_eq!(ids, vec![b"txn-a".as_slice(), b"txn-b", b"txn-c"]);
+        });
+    }
+
+    /// A stored record that cannot be decoded surfaces as an error, not a panic — the ledger is a
+    /// durable store that a corrupt disk or a future format change can violate.
+    #[test]
+    fn get_on_corrupt_bytes_is_an_error_not_a_panic() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .expect("runtime");
+        runtime.block_on(async {
+            let manager = rchain_shared::store_manager::InMemoryStoreManager::default();
+            let ledger = TxnLedger::open(&manager).await.expect("open ledger");
+            // Write a well-formed record, then corrupt it in place through the same store the ledger
+            // reads, which is what a truncated write or a future format change would look like.
+            let record = sample();
+            ledger.put(&record).await.expect("put");
+            ledger
+                .store
+                .put(&[(txn_key(&record.txn_id), vec![0xFF, 0xFF])])
+                .await
+                .expect("corrupt");
+
+            let err = ledger
+                .get(&record.txn_id)
+                .await
+                .expect_err("corrupt bytes must not decode");
+            assert!(!err.is_empty());
+        });
     }
 }
