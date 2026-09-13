@@ -398,6 +398,10 @@ pub struct Run {
     #[arg(long = "shard-name")]
     pub shard_name: Option<String>,
 
+    /// ID of the parent shard (`/` for the root). The full shard id is `{parent-shard-id}/{shard-name}`.
+    #[arg(long = "parent-shard-id")]
+    pub parent_shard_id: Option<String>,
+
     /// Base16 encoding of the public key for signing proposed blocks.
     #[arg(long = "validator-public-key")]
     pub validator_public_key: Option<String>,

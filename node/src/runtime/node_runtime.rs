@@ -728,7 +728,7 @@ pub async fn setup_node_program(
     let importer = create_rspace_importer(&parts.store_manager).await?;
     let exporter = create_rspace_exporter(&parts.store_manager).await?;
 
-    let shard_id = conf.casper.shard_name.clone();
+    let shard_id = conf.casper.full_shard_id()?.to_string();
     let min_phlo_price = conf.casper.min_phlo_price;
 
     // Extract the proposer queue/state before wiring block processing, so the autopropose tap can
@@ -898,7 +898,7 @@ pub async fn setup_node_program(
 
         let proposer = Proposer::apply(
             validator,
-            conf.casper.shard_name.clone(),
+            conf.casper.full_shard_id()?.to_string(),
             conf.casper.min_phlo_price,
             conf.casper.genesis_block_data.epoch_length,
             dummy_deploy_opt,
@@ -1110,7 +1110,7 @@ pub async fn setup(
         });
 
     let network_id = conf.protocol_server.network_id.clone();
-    let shard_id = conf.casper.shard_name.clone();
+    let shard_id = conf.casper.full_shard_id()?.to_string();
     let network_status: NetworkStatusFn = Box::new({
         let id = id.clone();
         let connections = connections.clone();

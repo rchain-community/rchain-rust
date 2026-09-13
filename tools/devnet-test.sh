@@ -32,10 +32,10 @@ BOOTSTRAP=devnet-bootstrap
 DEPLOYER_PRIV="a68a6e6cca30f81bd24a719f3145d20e8424bd7b396309b0708a16c7d8000b76"
 
 # Precomputed signed DeployRequest (term "Nil", timestamp 1700000000000, phloPrice 1, phloLimit
-# 1000000, validAfterBlockNumber 0, shardId "root"), signed by the devnet deployer key. Generated
+# 1000000, validAfterBlockNumber 0, shardId "/root"), signed by the devnet deployer key. Generated
 # once via `cargo run -p rchain-node --example gen_deploy_fixture` (deleted); the signature is valid
 # regardless of block number because the HTTP deploy endpoint does not check future/expired at submit.
-DEPLOY_FIXTURE='{"data":{"term":"Nil","timestamp":1700000000000,"phloPrice":1,"phloLimit":1000000,"validAfterBlockNumber":0,"shardId":"root"},"deployer":"04f700a417754b775d95421973bdbdadb2d23c8a5af46f1829b1431f5c136e549e8a0d61aa0c793f1a614f8e437711c7758473c6ceb0859ac7e9e07911ca66b5c4","signature":"304402202944bf281b273bbfa0bda94f19b6c53d61c95ac6c52de80960875bc4e12388af02202b3e1b91443e6a4c1cddebe593e18602b69644b3025f7e034afc84cc14daf984","sigAlgorithm":"secp256k1"}'
+DEPLOY_FIXTURE='{"data":{"term":"Nil","timestamp":1700000000000,"phloPrice":1,"phloLimit":1000000,"validAfterBlockNumber":0,"shardId":"/root"},"deployer":"04f700a417754b775d95421973bdbdadb2d23c8a5af46f1829b1431f5c136e549e8a0d61aa0c793f1a614f8e437711c7758473c6ceb0859ac7e9e07911ca66b5c4","signature":"3044022041ebc32bae0195d167310362dd6539d3e2a750512d03ca075c0308bc75744e1002206338157bde1b385ff76ebc1840cdccb942158cff6e377b3053a1a2e9389d6ad8","sigAlgorithm":"secp256k1"}'
 
 FAILURES=0
 
@@ -105,7 +105,7 @@ for _ in $(seq 1 90); do
   sleep 1
 done
 check "GET /api/status returns 200" '[[ "$HTTP_CODE" == "200" ]]'
-check "shardId == root" '[[ "$shard" == "root" ]]'
+check "shardId == /root" '[[ "$shard" == "/root" ]]'
 check "minPhloPrice set" '[[ -n "$minphlo" ]]'
 
 start="$block"
@@ -144,7 +144,7 @@ docker exec -i "$BOOTSTRAP" sh -c 'printf "Nil\n" > /tmp/nil.rho' || true
 deploy_out="$(docker exec -i "$BOOTSTRAP" rnode --grpc-host localhost deploy \
   --phlo-limit 1000000 --phlo-price 1 \
   --valid-after-block-number "$block" \
-  --private-key "$DEPLOYER_PRIV" --shard-id root /tmp/nil.rho 2>&1 || true)"
+  --private-key "$DEPLOYER_PRIV" --shard-id /root /tmp/nil.rho 2>&1 || true)"
 deploy_id="$(printf '%s' "$deploy_out" | sed -n 's/.*DeployId is: \([0-9a-f]*\).*/\1/p')"
 check "gRPC deploy accepted (DeployId captured)" '[[ -n "$deploy_id" ]]'
 

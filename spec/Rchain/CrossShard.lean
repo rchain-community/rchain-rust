@@ -28,9 +28,10 @@ namespace Rchain
 
 /-! ## Shard identity — Law 26 -/
 
-/-- A shard id: the name of one chain/tuple-space. The Rust realization is `DeployData.shard_id` /
-    `BlockMessage.shard_id` (today a bare `String`, default `"root"`); Law 26 makes it a validated,
-    ordered newtype. -/
+/-- A shard id: the name of one chain/tuple-space. The Rust realization is the `ShardId` newtype
+    (`shared/src/refined.rs`) — a validated, ordered `/`-separated path (`/root`), with the hierarchy
+    `parent-shard-id`/`shard-name` computed by `CasperConf::full_shard_id`. The model abstracts it as a
+    `String`; `ValidShardId` is the non-empty half of the validation. -/
 abbrev ShardId := String
 
 /-- A shard id is valid when it is non-empty (the "validated" half of the newtype). -/

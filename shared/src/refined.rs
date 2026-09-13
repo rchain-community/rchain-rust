@@ -358,6 +358,91 @@ impl std::fmt::Display for Hash32 {
     }
 }
 
+/// A shard id — a validated, ordered, `/`-separated path identifying one shard in the hierarchy
+/// (Law 26). The root is `/`; a child named `root` is `/root`; a grandchild is `/root/rootchild`
+/// (`node/src/configuration/defaults.conf` documents the `{parent-shard-id}/{shard-name}` scheme).
+///
+/// The "no type escape" convention applies: no `Deref`, no public `.get()`. Construction is
+/// [`TryFrom<String>`](TryFrom) (validates non-empty ASCII); discharge is `From<ShardId> for String`.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ShardId(String);
+
+impl ShardId {
+    /// The root shard id (`/`).
+    pub fn root() -> Self {
+        ShardId("/".to_string())
+    }
+
+    /// The shard id formed by naming a child `name` under this shard (port of
+    /// `{parent-shard-id}/{shard-name}`).
+    pub fn child(&self, name: &str) -> ShardId {
+        if self.0 == "/" {
+            ShardId(format!("/{name}"))
+        } else {
+            ShardId(format!("{}/{name}", self.0))
+        }
+    }
+
+    /// This shard's parent, or `None` when it is the root (or a bare name with no separator).
+    pub fn parent(&self) -> Option<ShardId> {
+        if self.0 == "/" {
+            None
+        } else {
+            match self.0.rfind('/') {
+                None => None,
+                Some(0) => Some(ShardId::root()),
+                Some(cut) => Some(ShardId(self.0[..cut].to_string())),
+            }
+        }
+    }
+
+    /// Whether this shard is the root.
+    pub fn is_root(&self) -> bool {
+        self.0 == "/"
+    }
+
+    /// Whether this shard is `other` or a descendant of it.
+    pub fn is_descendant_of(&self, other: &ShardId) -> bool {
+        if other.is_root() {
+            true
+        } else {
+            self.0 == other.0 || self.0.starts_with(&format!("{}/", other.0))
+        }
+    }
+
+    /// The path segments (the shard names from the root down).
+    pub fn segments(&self) -> Vec<&str> {
+        self.0.split('/').filter(|s| !s.is_empty()).collect()
+    }
+}
+
+impl TryFrom<String> for ShardId {
+    type Error = RefineError;
+    fn try_from(v: String) -> Result<Self, Self::Error> {
+        if v.is_empty() {
+            return Err(RefineError::new("shard id must be non-empty"));
+        }
+        if !v.is_ascii() {
+            return Err(RefineError::new(format!(
+                "shard id must be ASCII, got {v:?}"
+            )));
+        }
+        Ok(ShardId(v))
+    }
+}
+
+impl From<ShardId> for String {
+    fn from(v: ShardId) -> String {
+        v.0
+    }
+}
+
+impl std::fmt::Display for ShardId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -420,5 +505,39 @@ mod tests {
         assert!(Hash32::try_from(&[0u8; 31][..]).is_err());
         assert!(h.starts_with(&[0xab, 0xab]));
         assert!(!h.starts_with(&[0xcd]));
+    }
+
+    #[test]
+    fn shard_id_hierarchy() {
+        let root = ShardId::root();
+        assert!(root.is_root());
+        assert_eq!(root.segments(), Vec::<&str>::new());
+        assert_eq!(root.parent(), None);
+
+        let child = root.child("root");
+        assert_eq!(child.to_string(), "/root");
+        assert_eq!(child.parent(), Some(root.clone()));
+        assert_eq!(child.segments(), vec!["root"]);
+        assert!(child.is_descendant_of(&root));
+
+        let grandchild = child.child("rootchild");
+        assert_eq!(grandchild.to_string(), "/root/rootchild");
+        assert_eq!(grandchild.parent(), Some(child.clone()));
+        assert!(grandchild.is_descendant_of(&child));
+        assert!(grandchild.is_descendant_of(&root));
+        assert!(!child.is_descendant_of(&grandchild));
+    }
+
+    #[test]
+    fn shard_id_validation() {
+        assert!(ShardId::try_from("/root".to_string()).is_ok());
+        assert!(ShardId::try_from("".to_string()).is_err());
+        assert!(ShardId::try_from("röot".to_string()).is_err());
+        assert_eq!(
+            String::from(ShardId::try_from("/root".to_string()).unwrap()),
+            "/root"
+        );
+        // A bare name (no `/` separator) has no parent — `parent()` must not panic on it.
+        assert_eq!(ShardId::try_from("root".to_string()).unwrap().parent(), None);
     }
 }

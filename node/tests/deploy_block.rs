@@ -65,7 +65,7 @@ fn deploy_is_processed_into_a_block() {
             -1,
             &PrivateKey::new(base16::decode(VALIDATOR_PRIV_HEX).expect("decode key")),
             rho.to_str().expect("rho path"),
-            "root",
+            "/root",
         )
         .await
         .expect("deploy accepted");

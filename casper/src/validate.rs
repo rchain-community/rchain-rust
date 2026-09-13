@@ -3,6 +3,7 @@
 use rchain_models::block_hash::BlockHash;
 use rchain_models::block_version::SUPPORTED;
 use rchain_models::casper::protocol::casper_message::BlockMessage;
+use rchain_shared::refined::ShardId;
 
 use crate::block_status::BlockStatus;
 use crate::proto_util::hash_block;
@@ -15,11 +16,10 @@ pub fn format_of_fields(b: &BlockMessage) -> bool {
         false
     } else if b.sig_algorithm.is_empty() {
         false
-    } else if b.shard_id.is_empty() {
-        false
-    } else if !b.shard_id.is_ascii() {
-        // Non-ASCII shard ids are rejected at ingress rather than asserted inside
-        // `BlockRandomSeed::new` (which only `debug_assert!`s the invariant).
+    } else if ShardId::try_from(b.shard_id.clone()).is_err() {
+        // A non-empty, ASCII shard id (Law 26) — the validated constructor is the single ingress
+        // check, rather than the empty + non-ASCII pair it replaces (and the `debug_assert!` inside
+        // `BlockRandomSeed::new`).
         false
     } else {
         true

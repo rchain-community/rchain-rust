@@ -298,6 +298,7 @@ fn casper_conf_from_hocon(h: &Hocon) -> Result<CasperConf, String> {
         validator_private_key: to_optional_string(h, "validator-private-key")?,
         validator_private_key_path: to_optional_path(h, "validator-private-key-path")?,
         shard_name: to_string(get(h, "shard-name")?)?,
+        parent_shard_id: to_string(get(h, "parent-shard-id")?)?,
         casper_loop_interval: to_duration(get(h, "casper-loop-interval")?)?,
         requested_blocks_timeout: to_duration(get(h, "requested-blocks-timeout")?)?,
         max_number_of_parents: to_i32(get(h, "max-number-of-parents")?)?,

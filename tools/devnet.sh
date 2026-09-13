@@ -407,7 +407,7 @@ cmd_deploy() {
   node_cli "$node" deploy \
     --phlo-limit 1000000 --phlo-price 1 \
     --private-key "$DEPLOYER_PRIV" \
-    --shard-id root \
+    --shard-id /root \
     --valid-after-block-number "${height:-0}" \
     "/contracts/$base"
 }

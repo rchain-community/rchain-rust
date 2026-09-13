@@ -3,6 +3,8 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
+use rchain_shared::refined::ShardId;
+
 /// Consensus configuration (port of the Scala `CasperConf` case class).
 #[derive(Clone, Debug, PartialEq)]
 pub struct CasperConf {
@@ -10,6 +12,9 @@ pub struct CasperConf {
     pub validator_private_key: Option<String>,
     pub validator_private_key_path: Option<PathBuf>,
     pub shard_name: String,
+    /// The parent shard's id (the `/`-separated path this shard nests under). The full shard id is
+    /// `{parent_shard_id}/{shard_name}`; the root's parent is `/` (Law 26).
+    pub parent_shard_id: String,
     pub casper_loop_interval: Duration,
     pub requested_blocks_timeout: Duration,
     pub max_number_of_parents: i32,
@@ -26,6 +31,16 @@ pub struct CasperConf {
     /// sequential-reference validation (Laws 23–25,
     /// `docs/src/formal/onchain-scheduling.md`).
     pub effect_mode: String,
+}
+
+impl CasperConf {
+    /// The full shard id `{parent_shard_id}/{shard_name}` — a validated, hierarchical path
+    /// (Law 26). The root's parent is `/`, so the default `root` shard is `/root`.
+    pub fn full_shard_id(&self) -> Result<ShardId, String> {
+        let parent =
+            ShardId::try_from(self.parent_shard_id.clone()).map_err(|e| e.to_string())?;
+        Ok(parent.child(&self.shard_name))
+    }
 }
 
 /// Genesis-block data configuration (port of the Scala `GenesisBlockData` case class).

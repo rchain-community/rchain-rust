@@ -77,9 +77,10 @@ the record must be durable, so recovery always terminates.
 
 - **Law 26 — shard scope determinism.** A deploy/block's effects bind to exactly one shard; the shard
   id is a validated, ordered value, and the RNG seed + unforgeable names are shard-scoped. This is
-  the *sharding* half: today `shard_id` is a bare `String` (`DeployData.shard_id`, default `"root"`),
-  the hierarchy `parent-shard-id` is documented but unimplemented, and the boundary is enforced at
-  deploy admission and block validation. The law makes the id a typed newtype and pins the scope.
+  the *sharding* half: the id is the typed `ShardId` newtype (`shared/src/refined.rs`) — non-empty
+  ASCII, ordered, with the `parent-shard-id`/`shard-name` hierarchy realized by
+  `CasperConf::full_shard_id` (`/root` for the default `root` shard, `/root/rootchild` for its child)
+  — and the boundary is enforced at deploy admission and block validation (`casper/src/validate.rs`).
 
 - **Law 27 — cross-shard atomicity (2PC).** A transaction commits on every participant or aborts on
   every participant — no run leaves a strict subset committed.
@@ -161,12 +162,14 @@ replay re-derive it.
   phase terms and `TxnCoordinator::run_2pc` signs → submits → collects the `prepare` votes → commits
   all or aborts the prepared legs (Law 27). The transport is the existing
   `casper/src/shard_invoke.rs` primitive (`invoke_term` → `signed_invoke` → submit → `await_reply`).
-- **Shard scoping** (`casper/src/block_random_seed.rs`, `casper/src/validate.rs`,
-  `casper/src/api/block_api_impl.rs`): the shard id is in the RNG seed and the unforgeable names, and
-  the boundary is enforced at admission/validation — but the id is an untyped `String`.
-- **Deferred** (specified here, not yet built): the `ShardId` newtype and the `parent-shard-id`
-  hierarchy. The coordinator is an *off-chain client* that signs deploys to each shard; a node that
-  is itself a member of multiple shards (the "gateway") remains out of scope for `rnode`.
+- **Shard scoping** (`shared/src/refined.rs` `ShardId`, `casper/src/conf.rs` `full_shard_id`,
+  `casper/src/block_random_seed.rs`, `casper/src/validate.rs`,
+  `casper/src/api/block_api_impl.rs`): the shard id is a validated, ordered newtype in the RNG seed
+  and the unforgeable names, the full id is derived from the `parent-shard-id`/`shard-name`
+  hierarchy, and the boundary is enforced at admission/validation.
+- **Deferred** (specified here, not yet built): only the *multi-shard gateway*. The coordinator is an
+  *off-chain client* that signs deploys to each shard; a node that is itself a member of multiple
+  shards (the "gateway") remains out of scope for `rnode`.
 
 The end-to-end two-shard path — uniform commit, and abort on partial failure — is exercised by
 `casper/tests/cross_shard_txn.rs` over a `DeployService` test double.

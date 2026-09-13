@@ -180,6 +180,7 @@ pub fn from_options(options: &Options) -> Hocon {
         opt_path(&mut e, "storage.data-dir", &run.data_dir);
 
         opt_str(&mut e, "casper.shard-name", &run.shard_name);
+        opt_str(&mut e, "casper.parent-shard-id", &run.parent_shard_id);
         opt_i32(
             &mut e,
             "casper.max-number-of-parents",
