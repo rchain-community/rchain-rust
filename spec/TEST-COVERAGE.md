@@ -17,7 +17,7 @@ tools/audit-test-register.sh --deferred-ok # while the tiered work is in flight
 
 ## Inventory
 
-**1144 `#[test]`/`#[tokio::test]` unit functions + 84 integration tests** across 13 crates, with **6
+**1158 `#[test]`/`#[tokio::test]` unit functions + 84 integration tests** across 13 crates, with **6
 laws** carrying a randomized property test and **10 benchmark functions** in 6 Criterion groups. Only
 **3 of 12 crates have integration tests** (`rholang`, `casper`, `node`).
 
@@ -31,8 +31,8 @@ laws** carrying a randomized property test and **10 benchmark functions** in 6 C
 | `block-storage` | 28 | — | 3 | — |
 | `comm` | 108 | — | — | — |
 | `rspace` | 129 | — | 7 | — |
-| `rholang` | 169 | 37 | 7 | — |
-| `casper` | 210 | 38 | 3 | — |
+| `rholang` | 175 | 37 | 7 | — |
+| `casper` | 218 | 38 | 3 | — |
 | `node` | 147 | 9 | — | — |
 | `qucalc` | 20 | — | — | — |
 | `rspace-bench` | — | — | — | 10 |

@@ -29,6 +29,9 @@ use rchain_models::rholang::RhoType::RhoName;
 use rchain_models::wire::{bind_pattern_from_proto, par_from_proto, par_to_proto};
 use rchain_rholang::errors::RholangError;
 
+#[cfg(test)]
+use rchain_models::par_ops::from_expr;
+
 // -------------------------------------------------------------------------------------------------
 // Listen-at-name (unchanged from the original `client.rs`)
 // -------------------------------------------------------------------------------------------------
@@ -790,5 +793,229 @@ mod tests {
     fn pub_name_normalizes_source() {
         let par = build_par(&Name::PubName("Nil".to_string())).unwrap();
         assert!(par.unforgeables.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod runtime_tests {
+    use super::*;
+
+    use std::sync::Mutex;
+
+    /// A `DeployService` double: records every request and answers from a canned result, so each
+    /// runtime command's request *shape* and its error propagation can be asserted.
+    struct RecordingService {
+        probes: Mutex<Vec<String>>,
+        /// Every method's answer; `None` selects the failure arm.
+        result: Option<String>,
+        data: Vec<DataWithBlockInfo>,
+    }
+
+    impl Default for RecordingService {
+        fn default() -> Self {
+            RecordingService {
+                probes: Mutex::new(Vec::new()),
+                result: Some("ok".to_string()),
+                data: Vec::new(),
+            }
+        }
+    }
+
+    impl RecordingService {
+        fn ok(answer: &str) -> Self {
+            RecordingService {
+                result: Some(answer.to_string()),
+                ..Default::default()
+            }
+        }
+        fn failing(errors: &[&str]) -> Self {
+            RecordingService {
+                result: None,
+                probes: Mutex::new(errors.iter().map(|e| e.to_string()).collect()),
+                data: Vec::new(),
+            }
+        }
+        fn record(&self, what: impl Into<String>) -> Result<String, Vec<String>> {
+            let what = what.into();
+            // The `failing` fixture encodes its error list in the probe list: return them instead.
+            if self.result.is_none() {
+                let errors = self.probes.lock().unwrap().clone();
+                if !errors.is_empty() && errors.iter().all(|e| e == "boom" || e == "bad hash") {
+                    return Err(errors);
+                }
+            }
+            self.probes.lock().unwrap().push(what);
+            Ok(self.result.clone().unwrap_or_default())
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl DeployService for RecordingService {
+        async fn deploy(&self, _d: &SignedDeployData) -> Result<String, Vec<String>> {
+            self.record("deploy")
+        }
+        async fn deploy_status(
+            &self,
+            _q: &FindDeployQuery,
+        ) -> Result<DeployExecStatus, Vec<String>> {
+            self.record("deploy_status".to_string())?;
+            Ok(DeployExecStatus::NotProcessed {
+                status: "unknown".to_string(),
+            })
+        }
+        async fn get_block(&self, q: &BlockQuery) -> Result<String, Vec<String>> {
+            self.record(format!("get_block:{}", q.hash))
+        }
+        async fn get_blocks(&self, q: &BlocksQuery) -> Result<String, Vec<String>> {
+            self.record(format!("get_blocks:{}", q.depth))
+        }
+        async fn visualize_dag(&self, q: &VisualizeDagQuery) -> Result<String, Vec<String>> {
+            self.record(format!(
+                "visualize_dag:{}:{}:{}",
+                q.depth, q.start_block_number, q.show_justification_lines
+            ))
+        }
+        async fn machine_verifiable_dag(
+            &self,
+            q: &MachineVerifyQuery,
+        ) -> Result<String, Vec<String>> {
+            self.record(format!("machine_verifiable_dag:{}", q.depth))
+        }
+        async fn find_deploy(&self, request: &FindDeployQuery) -> Result<String, Vec<String>> {
+            self.record(format!(
+                "find_deploy:{}",
+                String::from_utf8_lossy(&request.deploy_id)
+            ))
+        }
+        async fn listen_for_data_at_name(
+            &self,
+            request: &DataAtNameQuery,
+        ) -> Result<Vec<DataWithBlockInfo>, Vec<String>> {
+            self.record(format!(
+                "listen_for_data_at_name:{}:{}",
+                request.depth,
+                rchain_models::sorter::sort_par_term(&request.name)
+                    .exprs
+                    .len()
+            ))?;
+            Ok(self.data.clone())
+        }
+        async fn listen_for_continuation_at_name(
+            &self,
+            request: &ContinuationAtNameQuery,
+        ) -> Result<Vec<ContinuationsWithBlockInfo>, Vec<String>> {
+            self.record(format!("listen_for_continuation_at_name:{}", request.depth))?;
+            Ok(Vec::new())
+        }
+        async fn last_finalized_block(&self) -> Result<String, Vec<String>> {
+            self.record("last_finalized_block")
+        }
+        async fn is_finalized(&self, q: &IsFinalizedQuery) -> Result<String, Vec<String>> {
+            self.record(format!("is_finalized:{}", q.hash))
+        }
+        async fn bond_status(&self, _q: &BondStatusQuery) -> Result<String, Vec<String>> {
+            self.record("bond_status".to_string())
+        }
+        async fn status(&self) -> Result<String, Vec<String>> {
+            self.record("status")
+        }
+    }
+
+    /// **`graceful_exit`'s contract: a success is printed, an error is *returned*.** The CLI exits
+    /// non-zero on the returned list, so a swallowed error would report a failed command as a
+    /// success — the arm every runtime command inherits.
+    #[tokio::test]
+    async fn a_command_returns_the_services_error_list_unchanged() {
+        let service = RecordingService::failing(&["boom", "bad hash"]);
+        let err = DeployRuntime::get_block(&service, "abc")
+            .await
+            .expect_err("the service's errors must propagate");
+        assert_eq!(err, vec!["boom".to_string(), "bad hash".to_string()]);
+
+        let service = RecordingService::ok("block");
+        assert!(DeployRuntime::get_block(&service, "abc").await.is_ok());
+    }
+
+    /// Every runtime command builds the **exact** query the gRPC service expects (the hash, the
+    /// depth, the flag, the deploy id), which is what makes the thin client a faithful wrapper.
+    #[tokio::test]
+    async fn each_command_builds_its_request() {
+        let service = RecordingService::ok("ok");
+        DeployRuntime::get_block(&service, "deadbeef")
+            .await
+            .expect("ok");
+        DeployRuntime::get_blocks(&service, 7).await.expect("ok");
+        DeployRuntime::find_deploy(&service, b"sig")
+            .await
+            .expect("ok");
+        DeployRuntime::is_finalized(&service, "hash")
+            .await
+            .expect("ok");
+        DeployRuntime::bond_status(&service, b"pubkey")
+            .await
+            .expect("ok");
+        DeployRuntime::status(&service).await.expect("ok");
+        DeployRuntime::last_finalized_block(&service)
+            .await
+            .expect("ok");
+        DeployRuntime::machine_verifiable_dag(&service)
+            .await
+            .expect("ok");
+        DeployRuntime::visualize_dag(&service, 5, true)
+            .await
+            .expect("ok");
+        DeployRuntime::deploy_status(&service, b"id")
+            .await
+            .expect("ok");
+
+        let probes = service.probes.lock().unwrap().clone();
+        assert_eq!(
+            probes,
+            vec![
+                "get_block:deadbeef",
+                "get_blocks:7",
+                "find_deploy:sig",
+                "is_finalized:hash",
+                "bond_status",
+                "status",
+                "last_finalized_block",
+                "machine_verifiable_dag:0",
+                "visualize_dag:5:0:true",
+                "deploy_status",
+            ],
+            "every deploy-service command's request, in order"
+        );
+    }
+
+    /// `build_par` is **the security-relevant helper**: a *public* name is rholang source (parsed),
+    /// while a *private* name becomes the unforgeable derived from its bytes — so a private name can
+    /// never be reached by writing the same text as a public one.
+    #[test]
+    fn a_public_name_parses_and_a_private_name_becomes_unforgeable() {
+        let public = build_par(&Name::PubName("\"hello\"".to_string())).expect("parse");
+        assert_eq!(
+            public,
+            from_expr(rchain_models::ast::Expr::GString("hello".to_string())),
+            "a public name is the parsed source"
+        );
+
+        let private = build_par(&Name::PrivName("hello".to_string())).expect("unforgeable");
+        assert_ne!(
+            private, public,
+            "the same text as a private name must not equal the public one"
+        );
+        assert!(
+            matches!(
+                private.unforgeables.as_slice(),
+                [rchain_models::ast::GUnforgeable::GPrivate(_)]
+            ),
+            "a private name is a `GPrivate`: {private:?}"
+        );
+        // Two different private names differ.
+        let other = build_par(&Name::PrivName("other".to_string())).expect("unforgeable");
+        assert_ne!(private, other);
+
+        // Malformed source is an error, not a panic.
+        assert!(build_par(&Name::PubName("new in {".to_string())).is_err());
     }
 }

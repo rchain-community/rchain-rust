@@ -273,3 +273,139 @@ mod tests {
         assert_eq!(StandardDeploys::system_public_keys().unwrap().len(), 10);
     }
 }
+
+/// The standard-contract builders, asserted as a table: each must produce a **signed** deploy for
+/// the requested shard, carrying a non-empty term — the essence of "the genesis deploy set is
+/// complete and shard-scoped" (Law 26).
+#[cfg(test)]
+mod builder_tests {
+    use super::*;
+
+    use crate::genesis::contracts::{ProofOfStake, Validator};
+
+    /// Assert the shared shape of a standard deploy: the term is non-empty, the shard id is the one
+    /// asked for, it is signed by the contract's own key (which is what `system_public_keys`
+    /// advertises), the phlo limit is the maximum (a genesis deploy must not run out) and the phlo
+    /// price is zero.
+    fn assert_standard(deploy: &SignedDeployData, shard_id: &str) {
+        assert!(
+            !deploy.data.term.is_empty(),
+            "a standard deploy must carry a term"
+        );
+        assert_eq!(deploy.data.shard_id, shard_id);
+        assert_eq!(deploy.data.phlo_price, 0, "genesis deploys are free");
+        assert_eq!(deploy.data.phlo_limit, MAX_VALUE, "…and unbounded in phlo");
+        assert!(!deploy.sig.is_empty(), "the deploy is signed");
+        assert_eq!(deploy.sig_algorithm, "secp256k1");
+        assert_eq!(deploy.deployer.len(), 65, "an uncompressed public key");
+        assert!(
+            crate::construct_deploy::source_deploy(
+                &deploy.data.term,
+                deploy.data.timestamp,
+                deploy.data.phlo_limit,
+                deploy.data.phlo_price,
+                &PrivateKey::new(vec![1u8; 32]),
+                deploy.data.valid_after_block_number,
+                &deploy.data.shard_id,
+            )
+            .is_ok(),
+            "the term is well-formed enough to sign"
+        );
+    }
+
+    /// Every parameterless builder (the ten standard contracts) produces a standard deploy.
+    #[test]
+    fn every_standard_contract_builder_produces_a_signed_deploy() {
+        let builders: Vec<(&str, SignedDeployData)> = vec![
+            (
+                "registry",
+                StandardDeploys::registry_generator(
+                    &Registry {
+                        system_contract_pub_key: "aa".repeat(65),
+                    },
+                    "/root",
+                )
+                .expect("registry"),
+            ),
+            (
+                "list_ops",
+                StandardDeploys::list_ops("/root").expect("list_ops"),
+            ),
+            ("either", StandardDeploys::either("/root").expect("either")),
+            (
+                "non_negative_number",
+                StandardDeploys::non_negative_number("/root").expect("non_negative_number"),
+            ),
+            (
+                "make_mint",
+                StandardDeploys::make_mint("/root").expect("make_mint"),
+            ),
+            (
+                "auth_key",
+                StandardDeploys::auth_key("/root").expect("auth_key"),
+            ),
+            (
+                "rev_vault",
+                StandardDeploys::rev_vault("/root").expect("rev_vault"),
+            ),
+            (
+                "multi_sig_rev_vault",
+                StandardDeploys::multi_sig_rev_vault("/root").expect("multi_sig_rev_vault"),
+            ),
+        ];
+        // Each builder signs with a *different* key, so a copy-paste that reused one key would show
+        // up as a repeated deployer.
+        let mut deployers: Vec<Vec<u8>> = Vec::new();
+        for (name, deploy) in &builders {
+            assert_standard(deploy, "/root");
+            assert!(
+                !deployers.contains(&deploy.deployer),
+                "{name} reuses another contract's key"
+            );
+            deployers.push(deploy.deployer.clone());
+        }
+        assert_eq!(builders.len(), 8);
+    }
+
+    /// The two parameterised generators: `pos_generator` substitutes the PoS parameters into the
+    /// `Pos.rhox` template (so the term must contain them), and `rev_generator` renders the vault
+    /// list — both scoped to the requested shard.
+    #[test]
+    fn the_pos_and_rev_generators_substitute_their_parameters() {
+        let pos = ProofOfStake {
+            minimum_bond: 3,
+            maximum_bond: 100,
+            validators: vec![Validator {
+                pk: PublicKey::new(rchain_shared::base16::unsafe_decode(&"ab".repeat(65))),
+                stake: rchain_shared::refined::NonNegI64::try_from(42).expect("non-negative"),
+            }],
+            epoch_length: 10,
+            quarantine_length: 5,
+            number_of_active_validators: 7,
+            pos_multi_sig_public_keys: Vec::new(),
+            pos_multi_sig_quorum: 1,
+            pos_vault_pub_key: "cd".repeat(65),
+        };
+        let deploy = StandardDeploys::pos_generator(&pos, "/root/child").expect("pos_generator");
+        assert_standard(&deploy, "/root/child");
+        for expected in ["10", "5", "7"] {
+            assert!(
+                deploy.data.term.contains(expected),
+                "the template must carry the PoS parameter {expected}"
+            );
+        }
+
+        // The vault generator takes the vault list, the timestamp it is given and the
+        // last-batch flag; an empty list is a legal call (a shard with no initial vaults).
+        let deploy =
+            StandardDeploys::rev_generator(&[], 1234, false, "/root").expect("rev_generator");
+        assert_standard(&deploy, "/root");
+        assert_eq!(deploy.data.timestamp, 1234, "the timestamp is the caller's");
+        let closing =
+            StandardDeploys::rev_generator(&[], 1234, true, "/root").expect("rev_generator");
+        assert_ne!(
+            deploy.data.term, closing.data.term,
+            "the last batch renders differently from an intermediate one"
+        );
+    }
+}

@@ -937,3 +937,15 @@ The oracle for every one of these is the BNFC grammar the Scala node's Java pars
   the guard and the URL splitter), so `[::1]`/`[fe80::1]` are refused and an IPv6 gateway literal is
   split correctly. Found by `the_url_guard_allows_private_gateways_and_refuses_ssrf_targets`, which
   lists `http://[::1]/desc.xml` among the URLs that must be refused.
+
+- **C15 — the bit-level decoder panics on a truncated bit stream (latent, pinned).**
+  `rspace/src/serializers/scodec_serialize.rs::BitReader::read_bit` indexes `bytes[bit_pos / 8]`
+  without a bounds check, so decoding a truncated blob panics with an index-out-of-bounds instead of
+  returning a decode error — `decode_rnd(b"")` is the smallest case. **Latent, not live**: the bytes it
+  decodes come from the node's own mergeable store (written from its own replay), so the exposure is a
+  corrupted or truncated *local* entry aborting the merge rather than a peer-supplied one; the
+  peer-facing decoders (`Packet`/protobuf) go through prost and return `Result`s. Recorded rather than
+  fixed because a `Result` has to be threaded through every `read_bit`/`read_bits` caller (the whole
+  scodec layer) — a change worth doing deliberately, not as a side effect of a test sweep. Pinned by
+  `a_truncated_mergeable_datum_panics` (`#[should_panic]`), so giving the reader a `Result` fails that
+  test and is a deliberate change.
