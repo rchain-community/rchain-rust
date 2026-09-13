@@ -418,6 +418,48 @@ mod tests {
         );
     }
 
+    /// A nested hierarchy resolves in order, with the first entry the primary — the ordering the
+    /// per-shard data directories and the request default both depend on.
+    #[test]
+    fn three_memberships_resolve_in_order() {
+        let config = node_conf_from_hocon(&merge(
+            parse_hocon_str(
+                r#"casper { shards = [
+                     { shard-name = root, parent-shard-id = / }
+                     { shard-name = child, parent-shard-id = /root }
+                     { shard-name = leaf, parent-shard-id = /root/child }
+                   ] }"#,
+            ),
+            parse_defaults("/var/lib/rnode").unwrap(),
+        ))
+        .expect("three memberships");
+
+        let ids: Vec<String> = config
+            .casper
+            .shards
+            .iter()
+            .map(|s| s.shard_id.to_string())
+            .collect();
+        assert_eq!(ids, vec!["/root", "/root/child", "/root/child/leaf"]);
+        assert_eq!(config.casper.shards.len(), 3);
+        assert_eq!(config.casper.shards.primary().shard_id.to_string(), "/root");
+    }
+
+    /// The transaction API is off unless an operator turns it on: a gateway node must not serve the
+    /// routes by virtue of being a gateway.
+    #[test]
+    fn enable_txn_api_defaults_off_and_parses_on() {
+        let off = node_conf_from_hocon(&parse_defaults("/var/lib/rnode").unwrap()).unwrap();
+        assert!(!off.api_server.enable_txn_api);
+
+        let on = node_conf_from_hocon(&merge(
+            parse_hocon_str("api-server { enable-txn-api = true }"),
+            parse_defaults("/var/lib/rnode").unwrap(),
+        ))
+        .unwrap();
+        assert!(on.api_server.enable_txn_api);
+    }
+
     /// Setting both the array and the scalar keys is an error rather than a silent precedence rule.
     #[test]
     fn shards_and_scalar_keys_are_mutually_exclusive() {

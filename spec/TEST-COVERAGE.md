@@ -232,7 +232,7 @@ linter reports it.
 
 | Tier | Module | Test pinning a failure path |
 |---|---|---|
-| T1 | `casper/src/conf.rs` | — |
+| T1 | `casper/src/conf.rs` | `a_spec_rejects_an_illegal_name_or_parent` |
 | T1 | `casper/src/gateway/ledger.rs` | `an_abort_is_absorbing` |
 | T1 | `casper/src/gateway/mod.rs` | `apply_phase_two_skips_legs_that_did_not_vote_ready` |
 | T1 | `casper/src/txn_coordinator.rs` | `vote_from_reply_maps_every_reply` |

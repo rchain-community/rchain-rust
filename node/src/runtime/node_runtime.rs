@@ -1680,6 +1680,195 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    // --- the peer-message router (Law 26) ------------------------------------
+
+    /// A block whose shard id is `shard_id`, minimal but well-formed.
+    fn block_for(shard_id: &str) -> rchain_models::casper::protocol::casper_message::BlockMessage {
+        use rchain_models::block::state_hash::StateHash;
+        use rchain_models::casper::protocol::casper_message::RholangState;
+        use rchain_models::validator::Validator;
+        use rchain_shared::refined::{BlockHeight, SeqNum};
+
+        rchain_casper::proto_util::unsigned_block_proto(
+            1,
+            shard_id.to_string(),
+            BlockHeight::try_from(1).expect("height"),
+            Validator::from_slice(&[0u8; 65]),
+            SeqNum::zero(),
+            StateHash::from(
+                rchain_crypto::hash::blake2b256_hash::Blake2b256Hash::from_bytes([0u8; 32]),
+            ),
+            StateHash::from(
+                rchain_crypto::hash::blake2b256_hash::Blake2b256Hash::from_bytes([1u8; 32]),
+            ),
+            Vec::new(),
+            std::collections::BTreeMap::new(),
+            std::collections::BTreeSet::new(),
+            RholangState {
+                deploys: Vec::new(),
+                system_deploys: Vec::new(),
+            },
+            0,
+        )
+    }
+
+    fn a_peer() -> rchain_comm::peer_node::PeerNode {
+        rchain_comm::peer_node::PeerNode::from(
+            NodeIdentifier::new(vec![1u8]),
+            "127.0.0.1".to_string(),
+            Port::try_from(40400).expect("port"),
+            Port::try_from(40404).expect("port"),
+        )
+    }
+
+    /// Drive the router once with `message` and report which shard channels received it.
+    async fn route_once(
+        packet: rchain_models::comm::protocol::Packet,
+        members: &[&str],
+    ) -> Vec<(String, bool)> {
+        let mut shards: std::collections::BTreeMap<String, mpsc::Sender<PeerMessage>> =
+            std::collections::BTreeMap::new();
+        let mut receivers = Vec::new();
+        for member in members {
+            let (tx, rx) = mpsc::channel::<PeerMessage>(5);
+            shards.insert(member.to_string(), tx);
+            receivers.push((member.to_string(), rx));
+        }
+
+        let (routing_tx, routing_rx) = mpsc::channel::<RoutingMessage>(5);
+        spawn_peer_message_router(routing_rx, shards, Arc::new(rchain_shared::log::StderrLog));
+        routing_tx
+            .send(RoutingMessage {
+                peer: a_peer(),
+                packet,
+            })
+            .await
+            .expect("route");
+        drop(routing_tx);
+
+        // Give the router a moment, then read whatever was delivered.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        receivers
+            .into_iter()
+            .map(|(member, mut rx)| (member, rx.try_recv().is_ok()))
+            .collect()
+    }
+
+    /// A block goes to the member that owns its shard — and only that member.
+    #[tokio::test]
+    async fn the_router_delivers_a_block_to_its_shard() {
+        use rchain_casper::protocol::casper_message_protocol::BlockMessageSerde;
+        use rchain_models::casper::protocol::packet_type_tag::ToPacket;
+        let delivered = route_once(
+            BlockMessageSerde.mk_packet(&block_for("/root/child")),
+            &["/root", "/root/child"],
+        )
+        .await;
+        assert_eq!(
+            delivered,
+            vec![
+                ("/root".to_string(), false),
+                ("/root/child".to_string(), true)
+            ],
+            "a block must reach exactly the shard it names"
+        );
+    }
+
+    /// A block for a shard this node is not a member of is dropped, not relayed — relaying is an
+    /// explicit non-goal, and delivering it to a member would be a cross-shard corruption.
+    #[tokio::test]
+    async fn the_router_drops_a_block_for_a_foreign_shard() {
+        use rchain_casper::protocol::casper_message_protocol::BlockMessageSerde;
+        use rchain_models::casper::protocol::packet_type_tag::ToPacket;
+        let delivered = route_once(
+            BlockMessageSerde.mk_packet(&block_for("/somewhere-else")),
+            &["/root", "/root/child"],
+        )
+        .await;
+        assert!(
+            delivered.iter().all(|(_, got)| !got),
+            "a foreign block must reach no member: {delivered:?}"
+        );
+    }
+
+    /// Hash-keyed messages fan out to every member, which is self-selecting: only the shard holding
+    /// the hash answers. Sending them to one member would leave the block unfindable from the others.
+    #[tokio::test]
+    async fn the_router_fans_out_a_hash_keyed_message() {
+        use rchain_casper::protocol::casper_message_protocol::BlockHashMessageSerde;
+        use rchain_models::casper::protocol::packet_type_tag::ToPacket;
+        let packet = BlockHashMessageSerde.mk_packet(
+            &rchain_models::casper::protocol::casper_message::BlockHashMessage {
+                block_hash: rchain_models::block_hash::BlockHash::new([9u8; 32]),
+                block_creator: vec![0u8; 65],
+            },
+        );
+        let delivered = route_once(packet, &["/root", "/root/child"]).await;
+        assert_eq!(
+            delivered,
+            vec![
+                ("/root".to_string(), true),
+                ("/root/child".to_string(), true)
+            ],
+            "a hash-keyed request must reach every member"
+        );
+    }
+
+    /// The guard's other half: a directory whose marker is *missing* but which already holds a
+    /// chain must still be checked, so an upgraded node (or a directory copied between shards) cannot
+    /// adopt a foreign chain just because the marker was not there yet.
+    #[tokio::test]
+    async fn a_directory_holding_a_foreign_chain_is_refused_without_a_marker() {
+        use rchain_models::block_metadata::BlockMetadata;
+        use rchain_models::validator::Validator;
+        use rchain_shared::refined::{BlockHeight, SeqNum};
+
+        let dir = temp_dir("node-runtime-foreign-chain");
+        let conf = test_conf(&dir);
+        let id = NodeIdentifier::new(vec![1u8]);
+        let spec = conf.casper.shards.primary().clone();
+
+        // Assemble the shard once, then plant a block belonging to a different shard.
+        let (connections, discovery) = noop_comm();
+        let parts = setup_shard(&conf, &spec, 0, &id, connections, discovery, None)
+            .await
+            .expect("first assembly");
+        let foreign = block_for("/someone-elses-shard");
+        rchain_block_storage::syntax::put_block(&parts.block_store, foreign.clone())
+            .await
+            .expect("store the block body");
+        parts
+            .dag
+            .insert(
+                BlockMetadata {
+                    block_hash: foreign.block_hash,
+                    block_num: BlockHeight::try_from(1).expect("height"),
+                    sender: Validator::from_slice(foreign.sender.as_bytes()),
+                    seq_num: SeqNum::zero(),
+                    justifications: std::collections::BTreeSet::new(),
+                    bonds_map: std::collections::BTreeMap::new(),
+                    validated: true,
+                    validation_failed: false,
+                    member_of_fringe: None,
+                    fringe: std::collections::BTreeSet::new(),
+                    fringe_state_hash: foreign.post_state_hash,
+                },
+                foreign,
+            )
+            .await
+            .expect("insert into the dag");
+        std::fs::remove_file(dir.join(SHARD_ID_MARKER)).expect("remove the marker");
+
+        let (connections, discovery) = noop_comm();
+        let err = match setup_shard(&conf, &spec, 0, &id, connections, discovery, None).await {
+            Ok(_) => panic!("a directory holding a foreign chain must be refused"),
+            Err(err) => err,
+        };
+        assert!(err.contains("holds shard"), "{err}");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[tokio::test]
     async fn create_rspace_importer_round_trips_over_lmdb() {
         use rchain_rspace::state::RSpaceImporter;

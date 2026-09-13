@@ -159,3 +159,120 @@ pub struct GenesisBlockData {
     pub pos_vault_pub_key: String,
     pub system_contract_pub_key: String,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn genesis() -> GenesisBlockData {
+        GenesisBlockData {
+            genesis_data_dir: PathBuf::from("/genesis"),
+            bonds_file: "/genesis/bonds.txt".to_string(),
+            wallets_file: "/genesis/wallets.txt".to_string(),
+            bond_minimum: 1,
+            bond_maximum: 100,
+            epoch_length: 10,
+            quarantine_length: 10,
+            genesis_block_number: 0,
+            number_of_active_validators: 10,
+            pos_multi_sig_public_keys: Vec::new(),
+            pos_multi_sig_quorum: 0,
+            pos_vault_pub_key: String::new(),
+            system_contract_pub_key: String::new(),
+        }
+    }
+
+    fn spec(name: &str, parent: &str) -> ShardSpec {
+        ShardSpec::new(name.to_string(), parent.to_string(), genesis(), 5).expect("valid spec")
+    }
+
+    /// A shard id must be non-empty and ASCII (Law 26), and `ShardId::child` does not check its
+    /// argument — so a spec that skipped this validation could carry an id that `format_of_fields`
+    /// would later reject at block validation.
+    #[test]
+    fn a_spec_rejects_an_illegal_name_or_parent() {
+        let err = ShardSpec::new(String::new(), "/".to_string(), genesis(), 5)
+            .expect_err("an empty name must be rejected");
+        assert!(err.contains("invalid shard-name"), "{err}");
+
+        let err = ShardSpec::new("røøt".to_string(), "/".to_string(), genesis(), 5)
+            .expect_err("a non-ASCII name must be rejected");
+        assert!(err.contains("invalid shard-name"), "{err}");
+
+        let err = ShardSpec::new("root".to_string(), String::new(), genesis(), 5)
+            .expect_err("an empty parent must be rejected");
+        assert!(err.contains("invalid parent-shard-id"), "{err}");
+    }
+
+    /// The full id is the parent path plus the name, with the root's parent `/` collapsing so the
+    /// default shard is `/root` rather than `//root`.
+    #[test]
+    fn a_spec_resolves_its_full_id_from_the_hierarchy() {
+        assert_eq!(spec("root", "/").shard_id.to_string(), "/root");
+        assert_eq!(spec("child", "/root").shard_id.to_string(), "/root/child");
+        assert_eq!(
+            spec("leaf", "/root/child").shard_id.to_string(),
+            "/root/child/leaf"
+        );
+    }
+
+    /// A membership set is never empty, and `primary` is total *because* of that — the property the
+    /// per-shard assembly and the request router both rely on.
+    #[test]
+    fn memberships_are_never_empty_and_primary_is_the_first() {
+        let memberships = ShardMemberships::new(vec![spec("root", "/")]).expect("one shard");
+        assert_eq!(memberships.len(), 1);
+        assert!(
+            !memberships.is_empty(),
+            "a membership set always has a primary"
+        );
+        assert_eq!(memberships.primary().shard_id.to_string(), "/root");
+
+        let err = ShardMemberships::new(Vec::new())
+            .expect_err("a node must be a member of at least one shard");
+        assert!(err.contains("at least one shard"), "{err}");
+    }
+
+    #[test]
+    fn memberships_keep_their_order_and_reject_duplicates() {
+        let memberships = ShardMemberships::new(vec![
+            spec("root", "/"),
+            spec("child", "/root"),
+            spec("leaf", "/root/child"),
+        ])
+        .expect("three shards");
+        let ids: Vec<String> = memberships.iter().map(|s| s.shard_id.to_string()).collect();
+        assert_eq!(ids, vec!["/root", "/root/child", "/root/child/leaf"]);
+        assert_eq!(memberships.primary().shard_id.to_string(), "/root");
+
+        let duplicate = ShardMemberships::new(vec![spec("root", "/"), spec("root", "/")]);
+        let err = duplicate.expect_err("two memberships with one id must be rejected");
+        assert!(err.contains("duplicate shard membership"), "{err}");
+    }
+
+    /// `get` distinguishes a member from a non-member — the lookup the deploy router is built on.
+    #[test]
+    fn get_finds_a_member_and_reports_a_non_member() {
+        let memberships =
+            ShardMemberships::new(vec![spec("root", "/"), spec("child", "/root")]).expect("two");
+        let root = ShardId::try_from("/root".to_string()).unwrap();
+        let elsewhere = ShardId::try_from("/elsewhere".to_string()).unwrap();
+        assert_eq!(
+            memberships.get(&root).map(|s| s.shard_name.as_str()),
+            Some("root")
+        );
+        assert!(memberships.get(&elsewhere).is_none());
+    }
+
+    /// `primary_mut` edits the primary in place — how the test harnesses point a shard at a
+    /// temporary genesis file.
+    #[test]
+    fn primary_mut_updates_the_primary_in_place() {
+        let mut memberships = ShardMemberships::new(vec![spec("root", "/")]).expect("one");
+        memberships.primary_mut().genesis_block_data.bonds_file = "/tmp/bonds".to_string();
+        assert_eq!(
+            memberships.primary().genesis_block_data.bonds_file,
+            "/tmp/bonds"
+        );
+    }
+}

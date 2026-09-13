@@ -163,6 +163,14 @@ mod tests {
         assert!(ids.contains(&"blocks"));
         assert!(ids.contains(&"rspace-history"));
         assert!(ids.contains(&"mergeable-channel-cache"));
+        // The gateway's coordinator ledger is node-local and in its own environment, so opening it
+        // writes one extra directory rather than sharing a shard's.
+        assert!(ids.contains(&GATEWAY_TXN_DB));
+        let gateway = mapping
+            .iter()
+            .find(|(db, _)| db.id == GATEWAY_TXN_DB)
+            .map(|(_, c)| c.name.clone());
+        assert_eq!(gateway.as_deref(), Some("gateway"));
         // History and roots share an environment name.
         let history = mapping
             .iter()
