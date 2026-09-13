@@ -135,3 +135,110 @@ impl Codec<SignedDeployData> for SignedDeployDataCodec {
         SignedDeployData::from_bytes(bytes).map_err(|e| e.to_string())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_support::{block, block_metadata, fringe, fringe_data, signed_deploy};
+
+    /// Both raw-hash codecs are exactly 32 bytes wide, and a wrong length is an error naming the
+    /// number that arrived — never a panic and never a zero-fill. This is the store boundary, so a
+    /// truncation here would be read back as a *different* hash.
+    #[test]
+    fn the_raw_hash_codecs_take_exactly_32_bytes() {
+        let hash = BlockHash::new([1u8; 32]);
+        let encoded = BlockHashCodec.encode(&hash);
+        assert_eq!(encoded.len(), 32);
+        assert_eq!(encoded, vec![1u8; 32]);
+        assert_eq!(BlockHashCodec.decode(&encoded).expect("32 bytes"), hash);
+
+        let digest = Blake2b256Hash::from_bytes([2u8; 32]);
+        let encoded = Blake2b256HashCodec.encode(&digest);
+        assert_eq!(encoded, vec![2u8; 32]);
+        assert_eq!(
+            Blake2b256HashCodec.decode(&encoded).expect("32 bytes"),
+            digest
+        );
+
+        for bad in [0usize, 31, 33] {
+            let err = BlockHashCodec.decode(&vec![0u8; bad]).expect_err("wrong length");
+            assert_eq!(err, format!("expected 32 bytes, got {bad}"));
+            assert!(Blake2b256HashCodec
+                .decode(&vec![0u8; bad])
+                .expect_err("wrong length")
+                .contains(&bad.to_string()));
+        }
+    }
+
+    /// The approved-store key codec is exactly one byte, and the error reports the length that
+    /// arrived — the key is a `Byte` in the Scala, so `[1, 2]` must not be read as `1`.
+    #[test]
+    fn the_byte_codec_is_exactly_one_byte() {
+        assert_eq!(ByteCodec.encode(&42), vec![42]);
+        assert_eq!(ByteCodec.decode(&[42]).expect("one byte"), 42);
+        assert_eq!(ByteCodec.decode(&[0]).expect("one byte"), 0);
+        assert_eq!(
+            ByteCodec.decode(&[]).expect_err("empty"),
+            "expected 1 byte, got 0"
+        );
+        assert_eq!(
+            ByteCodec.decode(&[1, 2]).expect_err("two"),
+            "expected 1 byte, got 2"
+        );
+    }
+
+    /// The block-message codec is LZ4-over-protobuf, and it is **not** the identity on the protobuf
+    /// bytes: the stored form is compressed. Decoding a buffer that was never compressed is an error
+    /// rather than a silent partial read.
+    #[test]
+    fn the_block_message_codec_compresses_on_the_way_in() {
+        let block = block();
+        let stored = BlockMessageCodec.encode(&block);
+        assert_eq!(stored, crate::block_store::block_message_to_bytes(&block));
+        assert_eq!(
+            stored,
+            crate::block_store::compress_bytes(&block.to_bytes()),
+            "LZ4 over the protobuf encoding"
+        );
+        assert_eq!(BlockMessageCodec.decode(&stored).expect("round trip"), block);
+
+        // A 4-byte size prefix claiming more bytes than are present cannot decompress.
+        assert!(BlockMessageCodec.decode(&[0, 0, 0, 10]).is_err());
+        assert!(BlockMessageCodec.decode(&[]).is_err());
+    }
+
+    /// The four protobuf codecs round-trip their values, and malformed bytes are an error rather
+    /// than a default-valued message (which a store would then serve as real metadata).
+    #[test]
+    fn the_protobuf_codecs_round_trip_and_reject_malformed_bytes() {
+        let metadata = BlockMetadataCodec
+            .decode(&BlockMetadataCodec.encode(&block_metadata()))
+            .expect("round trip");
+        assert_eq!(metadata, block_metadata());
+        assert_eq!(metadata.block_hash, block().block_hash);
+
+        assert_eq!(
+            FringeCodec.decode(&FringeCodec.encode(&fringe())).expect("round trip"),
+            fringe()
+        );
+        assert_eq!(
+            FringeDataCodec
+                .decode(&FringeDataCodec.encode(&fringe_data()))
+                .expect("round trip"),
+            fringe_data()
+        );
+        assert_eq!(
+            SignedDeployDataCodec
+                .decode(&SignedDeployDataCodec.encode(&signed_deploy()))
+                .expect("round trip"),
+            signed_deploy()
+        );
+
+        // A field tag of `0xFF` is not a valid protobuf tag (wire type 7), so all four refuse it.
+        let junk = [0xFFu8; 8];
+        assert!(BlockMetadataCodec.decode(&junk).is_err());
+        assert!(FringeCodec.decode(&junk).is_err());
+        assert!(FringeDataCodec.decode(&junk).is_err());
+        assert!(SignedDeployDataCodec.decode(&junk).is_err());
+    }
+}

@@ -20,13 +20,13 @@ tools/audit-test-register.sh --deferred-ok # while the sweep is in flight (print
 
 The counts below were the register's only measure for most of its life, and a per-crate total cannot
 see a file that has *no* test. A census of every `*.rs` under `*/src` — **354 files** — shows what the
-totals hid: **242 files carry at least one test, 57 are exempt** (the table in `## Exempt modules`),
-and **43 have no test and no exemption** — 21 of them with real behaviour, the rest thin
+totals hid: **256 files carry at least one test, 59 are exempt** (the table in `## Exempt modules`),
+and **39 have no test and no exemption** — 21 of them with real behaviour, the rest thin
 newtype/helper files. The plan to close them is recorded in items 10–11 of the definition of done.
 
 ## Inventory
 
-**1201 `#[test]`/`#[tokio::test]` unit functions + 84 integration tests** across 13 crates, with **6
+**1213 `#[test]`/`#[tokio::test]` unit functions + 84 integration tests** across 13 crates, with **6
 laws** carrying a randomized property test and **10 benchmark functions** in 6 Criterion groups. Only
 **3 of 12 crates have integration tests** (`rholang`, `casper`, `node`).
 
@@ -37,7 +37,7 @@ laws** carrying a randomized property test and **10 benchmark functions** in 6 C
 | `crypto` | 86 | — | — | — |
 | `graphz` | 18 | — | — | — |
 | `models` | 143 | — | 5 | — |
-| `block-storage` | 28 | — | 3 | — |
+| `block-storage` | 40 | — | 3 | — |
 | `comm` | 108 | — | — | — |
 | `rspace` | 129 | — | 7 | — |
 | `rholang` | 175 | 37 | 7 | — |
@@ -492,6 +492,8 @@ so the reason is recorded here rather than only in the commit that did it.
 | `data` | `node/src/web/mod.rs` | Module-declaration shim (`pub mod` re-exports only); the submodules carry the tests. | — |
 | `data` | `block-storage/src/lib.rs` | Module-declaration shim (`pub mod` re-exports only); the submodules carry the tests. | — |
 | `data` | `block-storage/src/dag/mod.rs` | Module-declaration shim (`pub mod` re-exports only); the submodules carry the tests. | — |
+| `data` | `block-storage/src/dag/dag_storage.rs` | A trait declaration (`BlockDagStorage`, seven signatures, no default bodies) plus the `DeployId` alias: there is no behaviour in the file. The contract is pinned through its implementors — `StubDagStorage` in `syntax.rs`'s tests (the `lookup`/`insert` arms) and casper's `BlockDagKeyValueStorage`, whose tests are in the tier table. | — |
+| `data` | `block-storage/src/test_support.rs` | A `#[cfg(test)]`-only fixture module: value constructors, no behaviour, and absent from a release build (declared in the production-changes table when it was added). | — |
 | `data` | `rholang/src/lib.rs` | Module-declaration shim (`pub mod` re-exports only); the submodules carry the tests. | — |
 | `data` | `rholang/src/util/mod.rs` | Module-declaration shim (`pub mod` re-exports only); the submodules carry the tests. | — |
 | `data` | `rholang/src/matcher/mod.rs` | Module-declaration shim (`pub mod` re-exports only); the submodules carry the tests. | — |
@@ -521,7 +523,7 @@ so the reason is recorded here rather than only in the commit that did it.
 | 7. `parsed + skipped == 165` for the legacy corpus, closed-enum skip reasons | **done** — `rholang/tests/legacy_contracts.rs` |
 | 8. `gen-differential-goldens.sh` completes or fails loudly; every committed TSV row is consumed | **done** — provenance columns + a per-file drift guard; the script exits 2 without sbt |
 | 9. The Stage 1 audit list appears verbatim in the register, each entry mapped to a test | **done** — the machine-checked claims table |
-| 10. Every `*/src/**/*.rs` is tested or exempt with a reason class (linter check 7) | **in progress** — a census of all 354 source files: 254 have a test, 57 are exempted by the table in `## Exempt modules`, **43 are still to test**. Hard mode prints those 43; `--deferred-ok`, which CI runs, reports them as the burn-down list. The earlier tier table could not have caught this: it was checked against itself, not against the tree. |
+| 10. Every `*/src/**/*.rs` is tested or exempt with a reason class (linter check 7) | **in progress** — a census of all 354 source files: 256 have a test, 59 are exempted by the table in `## Exempt modules`, **39 are still to test**. Hard mode prints those 39; `--deferred-ok`, which CI runs, reports them as the burn-down list. The earlier tier table could not have caught this: it was checked against itself, not against the tree. |
 | 11. The thin-coverage files' unreached failure arms are pinned | **not started** — the second track, ordered by uncovered lines. First `node/src/api/grpc/tonic.rs` (972 lines, 1 test, 26 `*_to_wire`/`*_from_wire` conversions with no test), then `casper/src/runtime_manager.rs` (1219 lines, 1 test) and the rest. Check 7 does not cover these files — they already have a test — which is why they are a separate item rather than part of 10. |
 
 ## Production changes made under this plan
@@ -545,6 +547,7 @@ green diff. These are all of them.
 | Change | Why | Pinned by |
 |---|---|---|
 | `models/src/casper/protocol/deploy_service.rs::DeployExecStatus` — `rename_all_fields = "camelCase"` added beside `rename_all` | `rename_all` renames an enum's *variants*, not the fields of its struct variants, so the API emitted `deploy_result`/`deploy_error` in snake_case inside an otherwise camelCase response — a break against the Scala case-class field names the API mirrors (AUDIT §17 C16) | `the_api_types_deserialize_what_they_serialize` |
+| `block-storage/src/test_support.rs` (`#[cfg(test)] pub mod test_support;` in `lib.rs`) — shared fixtures for the crate's unit tests | `BlockMessage` has 17 fields and no `Default`, so three test modules were carrying three copies of the same 20-line fixture; a fixture that drifts between copies makes two tests disagree about what "a block" is without either failing. **`#[cfg(test)]`-only: it does not exist in a release build and is not reachable from another crate.** Listed here because "it is only a test seam" is how a test seam becomes a production seam | `codecs.rs`, `syntax.rs`, `approved_store.rs`, `block_store.rs` tests all construct through it |
 
 Everything else this plan has touched is a test, the register itself, the audit register, the linter,
 or a `Makefile`/CI target.
