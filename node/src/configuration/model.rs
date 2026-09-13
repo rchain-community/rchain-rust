@@ -73,6 +73,9 @@ pub struct ApiServer {
     pub port_admin_http: i32,
     pub max_blocks_limit: i32,
     pub enable_reporting: bool,
+    /// Serve the cross-shard transaction routes (`/api/v1/txn*`). Off by default; a node that is not
+    /// a gateway answers 404 either way.
+    pub enable_txn_api: bool,
     pub enable_devnet_cors: bool,
     pub keep_alive_time: Duration,
     pub keep_alive_timeout: Duration,

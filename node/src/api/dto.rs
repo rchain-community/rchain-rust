@@ -271,3 +271,83 @@ pub struct RhoDataResponse {
     pub expr: Vec<RhoExpr>,
     pub block: LightBlockInfo,
 }
+
+// --- Cross-shard transactions (the multi-shard gateway, Laws 26–29) ---
+
+/// `POST /api/v1/txn` — open (or resume) a cross-shard transaction on this node.
+///
+/// `txn_id` is caller-supplied rather than generated: a retried request must be the *same*
+/// transaction, so the coordinator's idempotency (Law 28 at the API boundary) applies to it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TxnRequest {
+    pub txn_id: String,
+    pub legs: Vec<TxnLegDto>,
+}
+
+/// One leg: which shard escrows, how much REV, and where a commit credits it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TxnLegDto {
+    pub shard_id: String,
+    pub amount: i64,
+    pub to: String,
+}
+
+/// A recorded vote, as reported.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TxnVoteDto {
+    pub shard_id: String,
+    pub vote: String,
+}
+
+/// The coordinator's durable record, as reported by `POST /api/v1/txn` and `GET /api/v1/txn/:id`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TxnRecordDto {
+    pub txn_id: String,
+    /// `proposed` | `prepared` | `committed` | `aborted`.
+    pub state: String,
+    /// The coordinator key the participants gate `commit`/`abort` on.
+    pub coordinator: String,
+    /// The record's content address — the same decision on two nodes hashes the same, and nothing
+    /// about it is consensus state.
+    pub record_hash: String,
+    pub legs: Vec<TxnLegDto>,
+    pub votes: Vec<TxnVoteDto>,
+    /// Why an abort happened (a participant error or a timeout), when one did.
+    pub reason: Option<String>,
+}
+
+impl TxnRecordDto {
+    /// Render a coordinator record for the API.
+    pub fn from_record(record: &rchain_casper::gateway::ledger::CoordRecord) -> Self {
+        TxnRecordDto {
+            txn_id: rchain_shared::base16::encode(&record.txn_id),
+            state: record.state.as_str().to_string(),
+            coordinator: rchain_shared::base16::encode(record.coordinator.bytes()),
+            record_hash: rchain_shared::base16::encode(
+                rchain_casper::gateway::ledger::record_hash(record).as_bytes(),
+            ),
+            legs: record
+                .legs
+                .iter()
+                .map(|leg| TxnLegDto {
+                    shard_id: leg.shard_id.to_string(),
+                    amount: i64::from(leg.amount),
+                    to: leg.to.clone(),
+                })
+                .collect(),
+            votes: record
+                .votes
+                .iter()
+                .map(|(shard_id, vote)| TxnVoteDto {
+                    shard_id: shard_id.to_string(),
+                    vote: vote.as_str().to_string(),
+                })
+                .collect(),
+            reason: record.reason.clone(),
+        }
+    }
+}

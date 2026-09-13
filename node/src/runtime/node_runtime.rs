@@ -337,6 +337,8 @@ pub struct NodeProgram {
     admin_web_api: Arc<dyn AdminWebApi>,
     /// The shards this node validates for, for the `GET /api/v1/shards` route.
     shards: Arc<ShardRegistry>,
+    /// The on-node cross-shard 2PC coordinator, when this node is a multi-shard gateway.
+    gateway: Option<Arc<GatewayTxn>>,
     block_report_api: Arc<BlockReportApi>,
     reporter: Arc<NewPrometheusReporter>,
     host: String,
@@ -347,6 +349,7 @@ pub struct NodeProgram {
     grpc_max_recv_message_size: usize,
     max_connection_idle: Duration,
     enable_reporting: bool,
+    enable_txn_api: bool,
     enable_devnet_cors: bool,
     protocol_server: Option<ProtocolServer>,
     status_provider: Option<StatusProvider>,
@@ -370,9 +373,11 @@ impl NodeProgram {
             grpc_max_recv_message_size,
             max_connection_idle,
             enable_reporting,
+            enable_txn_api,
             enable_devnet_cors,
             protocol_server,
             status_provider,
+            gateway,
         } = self;
 
         let GrpcServices {
@@ -415,9 +420,11 @@ impl NodeProgram {
                     web_api,
                     block_report_api,
                     shards,
+                    gateway,
                     status_provider,
                     max_connection_idle,
                     enable_reporting,
+                    enable_txn_api,
                 )
                 .await
             }
@@ -860,8 +867,7 @@ pub async fn setup_node_program(
     // The 2PC gateway (Laws 26–29): a node that is a member of several shards can drive a
     // cross-shard transaction itself. It exists only where it can act — more than one membership
     // and a signing key — so a single-shard or key-less node is untouched.
-    // Held for the gateway's HTTP surface, which is mounted next; recovery is already spawned.
-    let _gateway = build_gateway(conf, &shards, &primary_parts.store_manager, &log).await?;
+    let gateway = build_gateway(conf, &shards, &primary_parts.store_manager, &log).await?;
 
     Ok(NodeProgram {
         grpc_services,
@@ -884,6 +890,7 @@ pub async fn setup_node_program(
             .map_err(|e| e.to_string())?,
         max_connection_idle: conf.api_server.max_connection_idle,
         enable_reporting: conf.api_server.enable_reporting,
+        enable_txn_api: conf.api_server.enable_txn_api,
         enable_devnet_cors: conf.api_server.enable_devnet_cors,
         protocol_server: Some(build_protocol_server(conf, &comm_state, routing_tx)?),
         status_provider: Some(StatusProvider {
@@ -891,6 +898,7 @@ pub async fn setup_node_program(
             rp_conf: comm_state.rp_conf.clone(),
             discovery: comm_state.discovery.clone(),
         }),
+        gateway,
     })
 }
 

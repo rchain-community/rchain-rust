@@ -126,6 +126,32 @@ fn genesis_boot_exposes_block_over_http() {
         assert_eq!(shards["shards"][0]["shardId"], "/root");
         assert_eq!(shards["shards"][0]["primary"], true);
 
+        // This node is not a gateway (one shard), so the cross-shard transaction routes are not
+        // available: 404, the same convention the reporting routes use. A single-shard node's
+        // surface is otherwise unchanged.
+        assert_eq!(
+            client
+                .get(format!("{base}/api/v1/txn"))
+                .send()
+                .await
+                .expect("GET /api/v1/txn")
+                .status(),
+            404
+        );
+        assert_eq!(
+            client
+                .post(format!("{base}/api/v1/txn"))
+                .json(&serde_json::json!({
+                    "txnId": "aabb",
+                    "legs": [{ "shardId": "/root", "amount": 1, "to": "d" }]
+                }))
+                .send()
+                .await
+                .expect("POST /api/v1/txn")
+                .status(),
+            404
+        );
+
         // The genesis block has no justifications.
         assert_eq!(genesis["justifications"].as_array().unwrap().len(), 0);
         // ... and carries the single bonded validator with stake 100.

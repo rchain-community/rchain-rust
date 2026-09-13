@@ -22,17 +22,19 @@ use tower_http::timeout::TimeoutLayer;
 
 use rchain_casper::api::block_api::BlockApi;
 use rchain_casper::api::block_report_api::BlockReportApi;
+use rchain_casper::gateway::GatewayTxn;
 use rchain_casper::protocol::comm_util::ConnectionsCell;
 use rchain_comm::discovery::NodeDiscovery;
 use rchain_comm::rp::rp_conf::RPConf;
 use rchain_models::block_hash::BlockHash;
+use rchain_shared::base16;
 use rchain_shared::rate_limiter::RateLimiter;
 use rchain_shared::refined::{Port, ShardId};
 
 use crate::api::admin_web_api::AdminWebApi;
 use crate::api::dto::{
     BlockApiException, DataAtNameByBlockHashRequest, DataAtNameRequest, DeployRequest,
-    ExploreDeployRequest, FaucetRequest,
+    ExploreDeployRequest, FaucetRequest, TxnRecordDto, TxnRequest,
 };
 use crate::api::grpc::DEFAULT_API_RATE_LIMIT_PER_SEC;
 use crate::api::web_api::WebApi;
@@ -71,6 +73,11 @@ pub struct HttpState {
     pub web_api: Arc<dyn WebApi>,
     pub block_report_api: Arc<BlockReportApi>,
     pub shards: Arc<ShardRegistry>,
+    /// The on-node cross-shard 2PC coordinator, present only when this node is a multi-shard
+    /// gateway (several memberships and a signing key).
+    pub gateway: Option<Arc<GatewayTxn>>,
+    /// Whether the cross-shard transaction routes are enabled (`api-server.enable-txn-api`).
+    pub enable_txn_api: bool,
     pub status_provider: Option<StatusProvider>,
     pub enable_reporting: bool,
     /// Rate limiter for the unauthenticated deploy/explore-deploy routes (documented Scala
@@ -156,6 +163,101 @@ async fn api_shards(State(state): State<HttpState>) -> Response {
         "shards": shards,
     }))
     .into_response()
+}
+
+/// The gateway, or the standard not-available response.
+///
+/// Mirrors the `enable-reporting` convention: the route is mounted unconditionally and answers 404
+/// when the feature is off, so a single-shard node's surface is unchanged and a client can tell
+/// "not a gateway" from "bad request".
+fn gateway_or_not_found(state: &HttpState) -> Result<Arc<GatewayTxn>, Response> {
+    match (&state.gateway, state.enable_txn_api) {
+        (Some(gateway), true) => Ok(gateway.clone()),
+        _ => Err((StatusCode::NOT_FOUND, ()).into_response()),
+    }
+}
+
+/// `POST /api/v1/txn` — open (or resume) a cross-shard transaction and drive it to a terminal state.
+///
+/// The legs are ordinary deploys on this node's own shards, so the call returns once each leg has
+/// been included in a block — seconds, not microseconds — and can fail by timeout. It is
+/// idempotent under `txnId`: re-issuing a completed transaction returns its record and moves no
+/// funds.
+async fn api_txn_run(State(state): State<HttpState>, Json(req): Json<TxnRequest>) -> Response {
+    let gateway = match gateway_or_not_found(&state) {
+        Ok(gateway) => gateway,
+        Err(response) => return response,
+    };
+    let txn_id = match base16::decode(&req.txn_id) {
+        Some(bytes) if !bytes.is_empty() && bytes.len() <= 64 => bytes,
+        _ => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json("txnId must be non-empty hex of at most 64 bytes".to_string()),
+            )
+                .into_response()
+        }
+    };
+    let mut legs = Vec::with_capacity(req.legs.len());
+    for leg in &req.legs {
+        match rchain_shared::refined::ShardId::try_from(leg.shard_id.clone()) {
+            Ok(shard_id) => legs.push(rchain_casper::gateway::GatewayLeg {
+                shard_id,
+                amount: leg.amount,
+                to: leg.to.clone(),
+            }),
+            Err(e) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(format!("invalid shardId '{}': {e}", leg.shard_id)),
+                )
+                    .into_response()
+            }
+        }
+    }
+
+    match gateway.run(&txn_id, &legs).await {
+        Ok(record) => (StatusCode::OK, Json(TxnRecordDto::from_record(&record))).into_response(),
+        Err(err) => (StatusCode::BAD_REQUEST, Json(err)).into_response(),
+    }
+}
+
+/// `GET /api/v1/txn/:txnId` — the durable record of a transaction, or 404 when this node has none.
+async fn api_txn_status(State(state): State<HttpState>, Path(txn_id): Path<String>) -> Response {
+    let gateway = match gateway_or_not_found(&state) {
+        Ok(gateway) => gateway,
+        Err(response) => return response,
+    };
+    let Some(txn_id) = base16::decode(&txn_id) else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json("txnId must be hex".to_string()),
+        )
+            .into_response();
+    };
+    match gateway.status(&txn_id).await {
+        Ok(Some(record)) => {
+            (StatusCode::OK, Json(TxnRecordDto::from_record(&record))).into_response()
+        }
+        Ok(None) => (StatusCode::NOT_FOUND, ()).into_response(),
+        Err(err) => (StatusCode::INTERNAL_SERVER_ERROR, Json(err)).into_response(),
+    }
+}
+
+/// `GET /api/v1/txn` — the transactions this node is still coordinating.
+async fn api_txn_list(State(state): State<HttpState>) -> Response {
+    let gateway = match gateway_or_not_found(&state) {
+        Ok(gateway) => gateway,
+        Err(response) => return response,
+    };
+    match gateway.list().await {
+        Ok(records) => {
+            let records: Vec<TxnRecordDto> =
+                records.iter().map(TxnRecordDto::from_record).collect();
+            Json(json!({ "inFlight": records })).into_response()
+        }
+        Err(err) => (StatusCode::INTERNAL_SERVER_ERROR, Json(err)).into_response(),
+    }
 }
 
 async fn api_deploy(State(state): State<HttpState>, Json(req): Json<DeployRequest>) -> Response {
@@ -318,6 +420,36 @@ const OPENAPI_JSON: &str = r##"{
         }
       }
     },
+    "/txn": {
+      "post": {
+        "summary": "Open or resume a cross-shard transaction",
+        "description": "Runs a two-phase commit across this node's own member shards: each leg is an ordinary deploy on the shard that owns it, so the call returns once every leg is in a block (seconds) and can fail by timeout. Idempotent under `txnId`: re-issuing a completed transaction returns its record and moves no funds. 404 when this node is not a multi-shard gateway.",
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/TxnRequest" } } } },
+        "responses": {
+          "200": { "description": "The durable coordinator record", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/TxnRecord" } } } },
+          "400": { "description": "Invalid txnId, a non-member shard, or a failed leg" },
+          "404": { "description": "This node is not a gateway (`api-server.enable-txn-api` is off, or it has a single shard)" }
+        }
+      },
+      "get": {
+        "summary": "Transactions this node is still coordinating",
+        "responses": {
+          "200": { "description": "The in-flight records", "content": { "application/json": { "schema": { "type": "object", "properties": { "inFlight": { "type": "array", "items": { "$ref": "#/components/schemas/TxnRecord" } } } } } } },
+          "404": { "description": "This node is not a gateway" }
+        }
+      }
+    },
+    "/txn/{txnId}": {
+      "get": {
+        "summary": "A cross-shard transaction's durable record",
+        "parameters": [ { "name": "txnId", "in": "path", "required": true, "schema": { "type": "string" }, "description": "Hex-encoded transaction id" } ],
+        "responses": {
+          "200": { "description": "The coordinator record", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/TxnRecord" } } } },
+          "400": { "description": "txnId is not hex" },
+          "404": { "description": "Unknown transaction, or this node is not a gateway" }
+        }
+      }
+    },
     "/deploy": {
       "post": {
         "summary": "Deploy a signed rholang term",
@@ -402,6 +534,40 @@ const OPENAPI_JSON: &str = r##"{
         "properties": {
           "api": { "type": "string" },
           "node": { "type": "string" }
+        }
+      },
+      "TxnLeg": {
+        "type": "object",
+        "properties": {
+          "shardId": { "type": "string", "description": "The member shard that escrows this leg" },
+          "amount": { "type": "integer", "description": "REV to escrow" },
+          "to": { "type": "string", "description": "The REV address a commit credits" }
+        }
+      },
+      "TxnRequest": {
+        "type": "object",
+        "properties": {
+          "txnId": { "type": "string", "description": "Hex; caller-supplied so a retry is the same transaction" },
+          "legs": { "type": "array", "items": { "$ref": "#/components/schemas/TxnLeg" } }
+        }
+      },
+      "TxnVote": {
+        "type": "object",
+        "properties": {
+          "shardId": { "type": "string" },
+          "vote": { "type": "string", "enum": ["ready", "abort"] }
+        }
+      },
+      "TxnRecord": {
+        "type": "object",
+        "properties": {
+          "txnId": { "type": "string" },
+          "state": { "type": "string", "enum": ["proposed", "prepared", "committed", "aborted"] },
+          "coordinator": { "type": "string", "description": "The key the participants gate commit/abort on" },
+          "recordHash": { "type": "string", "description": "The record's content address" },
+          "legs": { "type": "array", "items": { "$ref": "#/components/schemas/TxnLeg" } },
+          "votes": { "type": "array", "items": { "$ref": "#/components/schemas/TxnVote" } },
+          "reason": { "type": "string", "nullable": true, "description": "Why an abort happened, when one did" }
         }
       },
       "ShardsResponse": {
@@ -616,6 +782,8 @@ pub fn router(state: HttpState) -> Router {
         .route("/api/status", get(api_status))
         .route("/api/capabilities", get(api_capabilities))
         .route("/api/shards", get(api_shards))
+        .route("/api/txn", get(api_txn_list).post(api_txn_run))
+        .route("/api/txn/:txn_id", get(api_txn_status))
         .route("/api/deploys", get(api_deploys))
         .route("/api/deploy", post(api_deploy))
         .route("/api/faucet", post(api_faucet))
@@ -640,6 +808,8 @@ pub fn router(state: HttpState) -> Router {
         .route("/api/v1/status", get(api_status))
         .route("/api/v1/capabilities", get(api_capabilities))
         .route("/api/v1/shards", get(api_shards))
+        .route("/api/v1/txn", get(api_txn_list).post(api_txn_run))
+        .route("/api/v1/txn/:txn_id", get(api_txn_status))
         .route("/api/v1/deploys", get(api_deploys))
         .route("/api/v1/deploy", post(api_deploy))
         .route("/api/v1/faucet", post(api_faucet))
@@ -691,9 +861,11 @@ pub async fn acquire_http_server(
     web_api: Arc<dyn WebApi>,
     block_report_api: Arc<BlockReportApi>,
     shards: Arc<ShardRegistry>,
+    gateway: Option<Arc<GatewayTxn>>,
     status_provider: Option<StatusProvider>,
     max_connection_idle: Duration,
     enable_reporting: bool,
+    enable_txn_api: bool,
 ) -> Result<(), String> {
     let port = u16::from(port); // single discharge at the bind boundary
     let addr: SocketAddr = format!("{host}:{port}")
@@ -707,6 +879,8 @@ pub async fn acquire_http_server(
         web_api,
         block_report_api,
         shards,
+        gateway,
+        enable_txn_api,
         status_provider,
         enable_reporting,
         deploy_rate_limiter: Arc::new(RateLimiter::new(DEFAULT_API_RATE_LIMIT_PER_SEC)),
@@ -926,6 +1100,9 @@ mod tests {
                 primary: rchain_shared::refined::ShardId::try_from("/root".to_string()).unwrap(),
                 members: Vec::new(),
             }),
+            // No gateway in these tests: the transaction routes answer 404.
+            gateway: None,
+            enable_txn_api: false,
             status_provider: None,
             enable_reporting: true,
             deploy_rate_limiter: Arc::new(RateLimiter::new(DEFAULT_API_RATE_LIMIT_PER_SEC)),
