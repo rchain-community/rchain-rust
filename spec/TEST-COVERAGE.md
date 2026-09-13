@@ -20,13 +20,13 @@ tools/audit-test-register.sh --deferred-ok # while the sweep is in flight (print
 
 The counts below were the register's only measure for most of its life, and a per-crate total cannot
 see a file that has *no* test. A census of every `*.rs` under `*/src` — **354 files** — shows what the
-totals hid: **256 files carry at least one test, 59 are exempt** (the table in `## Exempt modules`),
-and **39 have no test and no exemption** — 21 of them with real behaviour, the rest thin
-newtype/helper files. The plan to close them is recorded in items 10–11 of the definition of done.
+totals hid: **264 files carry at least one test, 63 are exempt** (the table in `## Exempt modules`),
+and **27 have no test and no exemption**.
+The count is falling batch by batch; the linter prints the live list, which is the work list. The plan to close them is recorded in items 10–11 of the definition of done.
 
 ## Inventory
 
-**1213 `#[test]`/`#[tokio::test]` unit functions + 84 integration tests** across 13 crates, with **6
+**1250 `#[test]`/`#[tokio::test]` unit functions + 84 integration tests** across 13 crates, with **6
 laws** carrying a randomized property test and **10 benchmark functions** in 6 Criterion groups. Only
 **3 of 12 crates have integration tests** (`rholang`, `casper`, `node`).
 
@@ -39,7 +39,7 @@ laws** carrying a randomized property test and **10 benchmark functions** in 6 C
 | `models` | 143 | — | 5 | — |
 | `block-storage` | 40 | — | 3 | — |
 | `comm` | 108 | — | — | — |
-| `rspace` | 129 | — | 7 | — |
+| `rspace` | 166 | — | 7 | — |
 | `rholang` | 175 | 37 | 7 | — |
 | `casper` | 218 | 38 | 3 | — |
 | `node` | 147 | 9 | — | — |
@@ -505,6 +505,7 @@ so the reason is recorded here rather than only in the commit that did it.
 | `data` | `rspace/src/history/mod.rs` | Module-declaration shim (`pub mod` re-exports only); the submodules carry the tests. | — |
 | `data` | `rspace/src/history/history.rs`, `rspace/src/history/history_reader.rs` | Trait declarations (`async_trait` methods have default bodies in their *implementors*, not here) plus `empty_root_hash_value`, a one-line delegation to `radix_tree::empty_root_hash`. The interface is pinned through `HistoryRepository`, whose tests are in the tier table. | — |
 | `data` | `rspace/src/history/instances/mod.rs` | Module-declaration shim (`pub mod` re-exports only); the submodules carry the tests. | — |
+| `data` | `rspace/src/i_space.rs`, `rspace/src/i_replay_space.rs`, `rspace/src/tuple_space.rs`, `rspace/src/match_.rs` | Trait declarations with no default bodies (`ISpace` 9 signatures, `IReplaySpace` 3, `ITupleSpace` 6, `Match` 1): there is no behaviour in the files. The contracts are pinned through their implementors — `rspace.rs`, `replay_rspace.rs`, `reporting_rspace.rs`, `rspace_history_reader_impl.rs` — whose tests are in the tier table and in this sweep. | — |
 | `data` | `rspace/src/hot_store_action.rs` | A plain data carrier (`enum`, no `impl`): there is no behaviour to pin; it is exercised where it is produced and consumed. | — |
 | `data` | `rspace/src/hot_store_trie_action.rs` | A plain data carrier (`enum`, no `impl`): there is no behaviour to pin; it is exercised where it is produced and consumed. | — |
 | `data` | `rspace/src/serializers/mod.rs` | Module-declaration shim (`pub mod` re-exports only); the submodules carry the tests. | — |
@@ -523,7 +524,7 @@ so the reason is recorded here rather than only in the commit that did it.
 | 7. `parsed + skipped == 165` for the legacy corpus, closed-enum skip reasons | **done** — `rholang/tests/legacy_contracts.rs` |
 | 8. `gen-differential-goldens.sh` completes or fails loudly; every committed TSV row is consumed | **done** — provenance columns + a per-file drift guard; the script exits 2 without sbt |
 | 9. The Stage 1 audit list appears verbatim in the register, each entry mapped to a test | **done** — the machine-checked claims table |
-| 10. Every `*/src/**/*.rs` is tested or exempt with a reason class (linter check 7) | **in progress** — a census of all 354 source files: 256 have a test, 59 are exempted by the table in `## Exempt modules`, **39 are still to test**. Hard mode prints those 39; `--deferred-ok`, which CI runs, reports them as the burn-down list. The earlier tier table could not have caught this: it was checked against itself, not against the tree. |
+| 10. Every `*/src/**/*.rs` is tested or exempt with a reason class (linter check 7) | **in progress** — a census of all 354 source files: 264 have a test, 63 are exempted by the table in `## Exempt modules`, **27 are still to test**. Hard mode prints those 27; `--deferred-ok`, which CI runs, reports them as the burn-down list. The earlier tier table could not have caught this: it was checked against itself, not against the tree. |
 | 11. The thin-coverage files' unreached failure arms are pinned | **not started** — the second track, ordered by uncovered lines. First `node/src/api/grpc/tonic.rs` (972 lines, 1 test, 26 `*_to_wire`/`*_from_wire` conversions with no test), then `casper/src/runtime_manager.rs` (1219 lines, 1 test) and the rest. Check 7 does not cover these files — they already have a test — which is why they are a separate item rather than part of 10. |
 
 ## Production changes made under this plan

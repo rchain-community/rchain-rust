@@ -58,3 +58,69 @@ impl std::error::Error for RSpaceError {}
 
 /// Convenience result alias.
 pub type Result<A> = std::result::Result<A, RSpaceError>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every variant renders, and the three that carry a `&'static str` interpolate it — an error
+    /// that dropped its detail would leave a reader with "decode  failed" and no idea which decoder.
+    #[test]
+    fn every_variant_renders_and_the_carrying_variants_keep_their_detail() {
+        let cases: [(RSpaceError, &str); 10] = [
+            (RSpaceError::LockPoisoned, "lock poisoned"),
+            (RSpaceError::Codec("rnd"), "decode rnd failed"),
+            (
+                RSpaceError::UnexpectedLeaf("produces"),
+                "unexpected leaf while looking for produces",
+            ),
+            (RSpaceError::HistoryCommitFailed, "history commit failed"),
+            (
+                RSpaceError::InstallNotAllowed,
+                "installing can be done only on startup",
+            ),
+            (
+                RSpaceError::CachedKeyMissing,
+                "cached key must be present",
+            ),
+            (RSpaceError::EmptyPrefix, "prefix must be non-empty"),
+            (
+                RSpaceError::ReplayDataNotEmpty,
+                "replay data must be empty at checkpoint",
+            ),
+            (
+                RSpaceError::ReplayCommNotInTrace,
+                "COMM event was not contained in the trace",
+            ),
+            (
+                RSpaceError::ConsumeArity("2 channels, 1 pattern"),
+                "invalid scheduled consume: 2 channels, 1 pattern",
+            ),
+        ];
+
+        for (error, expected) in cases {
+            assert_eq!(error.to_string(), expected);
+            // The detail is not a constant: two errors of the same variant differ.
+            assert!(!error.to_string().contains("{}"), "no unformatted placeholder");
+        }
+        assert_ne!(
+            RSpaceError::Codec("a").to_string(),
+            RSpaceError::Codec("b").to_string()
+        );
+    }
+
+    /// It is a real `Error` value (so `?` into `Box<dyn Error>` works) and it compares structurally,
+    /// which is what lets callers assert on a specific failure.
+    #[test]
+    fn it_is_an_error_value_that_compares_structurally() {
+        let boxed: Box<dyn std::error::Error> = Box::new(RSpaceError::EmptyPrefix);
+        assert_eq!(boxed.to_string(), "prefix must be non-empty");
+
+        assert_eq!(RSpaceError::Codec("x"), RSpaceError::Codec("x"));
+        assert_ne!(RSpaceError::Codec("x"), RSpaceError::Codec("y"));
+        assert_ne!(
+            RSpaceError::CachedKeyMissing,
+            RSpaceError::HistoryCommitFailed
+        );
+    }
+}
