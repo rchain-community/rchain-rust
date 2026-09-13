@@ -285,11 +285,21 @@ mod tests {
     use std::sync::Mutex;
 
     use rchain_models::casper::protocol::casper_message::DeployData;
+    use rchain_models::casper::protocol::deploy_service::{
+        BlockInfo, ContinuationsWithBlockInfo, DataWithBlockInfo, DeployExecStatus, LightBlockInfo,
+        Status,
+    };
+    use rchain_models::rholang::RhoType::RhoString;
+    use rchain_shared::refined::BlockHeight;
 
-    /// A [`BlockApi`] stub that records the deploys it is handed and answers one block hash.
+    /// A [`BlockApi`] stub for one shard. It **records every call it receives** and answers with a
+    /// value carrying its own shard id, so a test can prove *which* member a routed request reached —
+    /// the property the router exists to provide, and one that a returned value alone cannot show
+    /// when two shards would answer identically.
     struct StubApi {
         shard_id: String,
         deployed: Mutex<Vec<String>>,
+        calls: Mutex<Vec<&'static str>>,
     }
 
     impl StubApi {
@@ -297,121 +307,241 @@ mod tests {
             StubApi {
                 shard_id: shard_id.to_string(),
                 deployed: Mutex::new(Vec::new()),
+                calls: Mutex::new(Vec::new()),
             }
+        }
+
+        fn record(&self, method: &'static str) {
+            self.calls.lock().unwrap().push(method);
+        }
+
+        fn calls(&self) -> Vec<&'static str> {
+            self.calls.lock().unwrap().clone()
         }
 
         fn deployed(&self) -> Vec<String> {
             self.deployed.lock().unwrap().clone()
         }
+
+        /// A light block marked with this shard's id.
+        fn marked_block(&self) -> LightBlockInfo {
+            LightBlockInfo {
+                version: 1,
+                shard_id: self.shard_id.clone(),
+                block_hash: format!("{}-hash", self.shard_id),
+                block_number: 1,
+                sender: String::new(),
+                seq_num: 0,
+                pre_state_hash: String::new(),
+                post_state_hash: String::new(),
+                justifications: Vec::new(),
+                bonds: Vec::new(),
+                sig_algorithm: String::new(),
+                sig: String::new(),
+                block_size: "0".to_string(),
+                deploy_count: 0,
+                rejected_deploys: Vec::new(),
+                timestamp: 0,
+            }
+        }
     }
 
     #[async_trait]
     impl BlockApi for StubApi {
+        // --- the methods the router forwards to the primary ---
         async fn status(&self) -> Status {
-            unreachable!("not used in these tests")
-        }
-        async fn deploy(&self, deploy: &SignedDeployData) -> ApiErr<String> {
-            self.deployed.lock().unwrap().push(deploy.data.term.clone());
-            Ok(format!("{}:{}", self.shard_id, deploy.data.term))
-        }
-        async fn deploy_status(&self, _: &DeployId) -> ApiErr<DeployExecStatus> {
-            Err(format!("{} has no such deploy", self.shard_id))
+            self.record("status");
+            Status {
+                version: rchain_models::casper::protocol::deploy_service::VersionInfo {
+                    api: "1".to_string(),
+                    node: self.shard_id.clone(),
+                },
+                address: self.shard_id.clone(),
+                network_id: "testnet".to_string(),
+                shard_id: self.shard_id.clone(),
+                peers: 0,
+                nodes: 0,
+                min_phlo_price: 1,
+                latest_block_number: 1,
+            }
         }
         async fn pooled_deploys(&self) -> ApiErr<Vec<SignedDeployData>> {
-            unreachable!("not used in these tests")
+            self.record("pooled_deploys");
+            Ok(vec![self.marked_deploy()])
         }
         async fn capabilities(&self) -> Capabilities {
-            unreachable!("not used in these tests")
+            self.record("capabilities");
+            // `dev_mode` is the only free boolean that does not imply a devnet, so it carries the
+            // marker for "which shard answered".
+            Capabilities {
+                autopropose: self.shard_id.ends_with("root"),
+                propose_on_deploy: false,
+                manual_propose: true,
+                admin_http: false,
+                dev_mode: false,
+            }
         }
         async fn create_block(&self, _: bool) -> ApiErr<String> {
-            unreachable!("not used in these tests")
+            self.record("create_block");
+            Ok(self.shard_id.clone())
         }
         async fn get_propose_result(&self) -> ApiErr<String> {
-            unreachable!("not used in these tests")
+            self.record("get_propose_result");
+            Ok(self.shard_id.clone())
         }
         async fn get_listening_name_data_response(
             &self,
-            _: i32,
+            depth: i32,
             _: &Par,
         ) -> ApiErr<(Vec<DataWithBlockInfo>, i32)> {
-            unreachable!("not used in these tests")
+            self.record("get_listening_name_data_response");
+            Ok((
+                vec![DataWithBlockInfo {
+                    post_block_data: vec![RhoString::apply(self.shard_id.clone())],
+                    block: self.marked_block(),
+                }],
+                depth,
+            ))
         }
         async fn get_listening_name_continuation_response(
             &self,
             _: i32,
             _: &[Par],
         ) -> ApiErr<(Vec<ContinuationsWithBlockInfo>, i32)> {
-            unreachable!("not used in these tests")
+            self.record("get_listening_name_continuation_response");
+            // The router forwards this one; the shard is proven by the call recording, so an empty
+            // answer is enough.
+            Ok((Vec::new(), 0))
         }
         async fn get_blocks_by_heights(&self, _: i64, _: i64) -> ApiErr<Vec<LightBlockInfo>> {
-            unreachable!("not used in these tests")
+            self.record("get_blocks_by_heights");
+            Ok(vec![self.marked_block()])
         }
         async fn visualize_dag(&self, _: i32, _: i32, _: bool) -> ApiErr<Vec<String>> {
-            unreachable!("not used in these tests")
+            self.record("visualize_dag");
+            Ok(vec![self.shard_id.clone()])
         }
         async fn machine_verifiable_dag(&self, _: i32) -> ApiErr<String> {
-            unreachable!("not used in these tests")
+            self.record("machine_verifiable_dag");
+            Ok(self.shard_id.clone())
         }
         async fn get_blocks(&self, _: i32) -> ApiErr<Vec<LightBlockInfo>> {
-            unreachable!("not used in these tests")
+            self.record("get_blocks");
+            Ok(vec![self.marked_block()])
+        }
+        async fn bond_status(&self, _: &[u8]) -> ApiErr<bool> {
+            self.record("bond_status");
+            Ok(self.shard_id.ends_with("root"))
+        }
+        async fn last_finalized_block(&self) -> ApiErr<BlockInfo> {
+            self.record("last_finalized_block");
+            Ok(BlockInfo {
+                block_info: self.marked_block(),
+                deploys: Vec::new(),
+            })
+        }
+        async fn get_latest_message(&self) -> ApiErr<BlockMetadata> {
+            self.record("get_latest_message");
+            Ok(BlockMetadata {
+                block_hash: rchain_models::block_hash::BlockHash::new([0u8; 32]),
+                block_num: BlockHeight::try_from(1).map_err(|e| e.to_string())?,
+                sender: rchain_models::validator::Validator::from_slice(&[0u8; 65]),
+                seq_num: rchain_shared::refined::SeqNum::zero(),
+                justifications: std::collections::BTreeSet::new(),
+                bonds_map: std::collections::BTreeMap::new(),
+                validated: true,
+                validation_failed: false,
+                member_of_fringe: None,
+                fringe: std::collections::BTreeSet::new(),
+                fringe_state_hash:
+                    rchain_crypto::hash::blake2b256_hash::Blake2b256Hash::from_bytes([0u8; 32])
+                        .into(),
+            })
+        }
+
+        // --- the routed / probed methods ---
+        async fn deploy(&self, deploy: &SignedDeployData) -> ApiErr<String> {
+            self.record("deploy");
+            self.deployed.lock().unwrap().push(deploy.data.term.clone());
+            Ok(format!("{}:{}", self.shard_id, deploy.data.term))
+        }
+        async fn deploy_status(&self, _: &DeployId) -> ApiErr<DeployExecStatus> {
+            self.record("deploy_status");
+            Err(format!("{} has no such deploy", self.shard_id))
         }
         async fn find_deploy(&self, _: &DeployId) -> ApiErr<LightBlockInfo> {
+            self.record("find_deploy");
             Err(format!("{} has no such deploy", self.shard_id))
         }
         async fn get_block(&self, hash: &str) -> ApiErr<BlockInfo> {
-            if hash == format!("{}hash", self.shard_id) {
+            self.record("get_block");
+            if hash == format!("{}-hash", self.shard_id) {
                 Ok(BlockInfo {
-                    block_info: LightBlockInfo {
-                        version: 1,
-                        shard_id: self.shard_id.clone(),
-                        block_hash: hash.to_string(),
-                        block_number: 1,
-                        sender: String::new(),
-                        seq_num: 0,
-                        pre_state_hash: String::new(),
-                        post_state_hash: String::new(),
-                        justifications: Vec::new(),
-                        bonds: Vec::new(),
-                        sig_algorithm: String::new(),
-                        sig: String::new(),
-                        block_size: "0".to_string(),
-                        deploy_count: 0,
-                        rejected_deploys: Vec::new(),
-                        timestamp: 0,
-                    },
+                    block_info: self.marked_block(),
                     deploys: Vec::new(),
                 })
             } else {
                 Err(format!("{} has no block {hash}", self.shard_id))
             }
         }
-        async fn bond_status(&self, _: &[u8]) -> ApiErr<bool> {
-            unreachable!("not used in these tests")
+        async fn is_finalized(&self, hash: &str) -> ApiErr<bool> {
+            self.record("is_finalized");
+            if hash == format!("{}-hash", self.shard_id) {
+                Ok(true)
+            } else {
+                Err(format!("{} has no block {hash}", self.shard_id))
+            }
+        }
+        async fn get_data_at_par(
+            &self,
+            par: &Par,
+            block_hash: &str,
+            _: bool,
+        ) -> ApiErr<(Vec<Par>, LightBlockInfo)> {
+            self.record("get_data_at_par");
+            if block_hash == format!("{}-hash", self.shard_id) {
+                Ok((vec![par.clone()], self.marked_block()))
+            } else {
+                Err(format!("{} has no block {block_hash}", self.shard_id))
+            }
         }
         async fn exploratory_deploy(
             &self,
             _: &str,
-            _: Option<&str>,
+            block_hash: Option<&str>,
             _: bool,
         ) -> ApiErr<(Vec<Par>, LightBlockInfo)> {
-            unreachable!("not used in these tests")
+            self.record("exploratory_deploy");
+            match block_hash {
+                None => Ok((
+                    vec![RhoString::apply(self.shard_id.clone())],
+                    self.marked_block(),
+                )),
+                Some(hash) if hash == format!("{}-hash", self.shard_id) => Ok((
+                    vec![RhoString::apply(self.shard_id.clone())],
+                    self.marked_block(),
+                )),
+                Some(hash) => Err(format!("{} has no block {hash}", self.shard_id)),
+            }
         }
-        async fn get_data_at_par(
-            &self,
-            _: &Par,
-            _: &str,
-            _: bool,
-        ) -> ApiErr<(Vec<Par>, LightBlockInfo)> {
-            unreachable!("not used in these tests")
-        }
-        async fn last_finalized_block(&self) -> ApiErr<BlockInfo> {
-            unreachable!("not used in these tests")
-        }
-        async fn is_finalized(&self, _: &str) -> ApiErr<bool> {
-            Err("unknown block".to_string())
-        }
-        async fn get_latest_message(&self) -> ApiErr<BlockMetadata> {
-            unreachable!("not used in these tests")
+    }
+
+    impl StubApi {
+        /// A deploy marked with this shard's id, for the pooled-deploys marker.
+        fn marked_deploy(&self) -> SignedDeployData {
+            SignedDeployData {
+                data: DeployData {
+                    term: self.shard_id.clone(),
+                    timestamp: 0,
+                    phlo_price: 1,
+                    phlo_limit: 1,
+                    valid_after_block_number: 0,
+                    shard_id: self.shard_id.clone(),
+                },
+                deployer: vec![0u8; 65],
+                sig: Vec::new(),
+                sig_algorithm: "secp256k1".to_string(),
+            }
         }
     }
 
@@ -481,31 +611,165 @@ mod tests {
         assert!(child.deployed().is_empty());
     }
 
-    /// A keyed lookup finds the member that owns the value, in either direction.
+    /// Every keyed lookup probes the members — primary first, then the rest — and finds the shard
+    /// that owns the value. Only `get_block` was covered before; the other four exercise the same
+    /// generic `probe`, so this is a table over all five.
     #[tokio::test]
-    async fn keyed_lookups_probe_the_members() {
-        let (api, _, _) = router();
-        assert_eq!(
-            api.get_block("/root/childhash")
-                .await
-                .unwrap()
-                .block_info
-                .shard_id,
-            "/root/child"
+    async fn every_keyed_lookup_probes_the_members() {
+        let (api, _, child) = router();
+
+        // A value only the child holds, in each of the five keyed shapes.
+        let child_hash = "/root/child-hash";
+
+        let block = api.get_block(child_hash).await.expect("child block");
+        assert_eq!(block.block_info.shard_id, "/root/child");
+
+        assert!(api.is_finalized(child_hash).await.expect("finality"));
+
+        let (data, block) = api
+            .get_data_at_par(&RhoString::apply("x".to_string()), child_hash, false)
+            .await
+            .expect("data at par");
+        assert_eq!(block.shard_id, "/root/child");
+        assert_eq!(data.len(), 1);
+
+        let (data, block) = api
+            .exploratory_deploy("Nil", Some(child_hash), false)
+            .await
+            .expect("exploratory at hash");
+        assert_eq!(block.shard_id, "/root/child");
+        assert_eq!(data.len(), 1);
+
+        // `deploy_status` and `find_deploy` are errors on every member in this stub, so the probe
+        // can only be observed as "it asked the child too".
+        assert!(api.deploy_status(&vec![1u8, 2]).await.is_err());
+        assert!(api.find_deploy(&vec![1u8, 2]).await.is_err());
+        assert!(
+            child
+                .calls()
+                .iter()
+                .any(|c| *c == "deploy_status" || *c == "find_deploy"),
+            "the probe must reach the non-primary members: {:?}",
+            child.calls()
         );
+    }
+
+    /// When no member has the key, the reported error is the **primary's** — not an invented one and
+    /// not the last member's.
+    #[tokio::test]
+    async fn an_unknown_key_reports_the_primaries_error() {
+        let (api, primary, _) = router();
+        let err = api
+            .get_block("nowhere")
+            .await
+            .expect_err("an unknown hash must be reported");
+        assert!(err.starts_with("/root"), "{err}");
+        assert_eq!(primary.calls(), vec!["get_block"]);
+    }
+
+    /// `exploratory_deploy` with no block hash is not a keyed lookup: it runs against the primary's
+    /// head, and must not probe the other members.
+    #[tokio::test]
+    async fn exploratory_deploy_without_a_hash_uses_the_primary() {
+        let (api, primary, child) = router();
+        let (_, block) = api
+            .exploratory_deploy("Nil", None, false)
+            .await
+            .expect("exploratory");
+        assert_eq!(block.shard_id, "/root");
+        assert_eq!(primary.calls(), vec!["exploratory_deploy"]);
+        assert!(
+            child.calls().is_empty(),
+            "an unrouted request must not reach other members: {:?}",
+            child.calls()
+        );
+    }
+
+    /// The other **fourteen** `BlockApi` methods are not shard-selecting: they answer for the
+    /// primary. The test asserts that by *which stub recorded the call* — the only way to tell when
+    /// both members would answer with something plausible. (`exploratory_deploy` is the fifteenth
+    /// unrouted call but only when it carries no block hash, so it has its own test above.)
+    #[tokio::test]
+    async fn the_primary_answers_every_unrouted_method() {
+        let (api, primary, child) = router();
+
+        // Each entry drives one method and asserts the primary's marker comes back (where the shape
+        // carries one) — and, for all of them, that the child was never called.
+        assert_eq!(api.status().await.shard_id, "/root");
+        assert_eq!(api.pooled_deploys().await.unwrap()[0].data.term, "/root");
+        assert!(api.capabilities().await.autopropose, "the primary's value");
+        assert_eq!(api.create_block(true).await.unwrap(), "/root");
+        assert_eq!(api.get_propose_result().await.unwrap(), "/root");
+        let (data, _) = api
+            .get_listening_name_data_response(1, &RhoString::apply("n".to_string()))
+            .await
+            .unwrap();
+        assert!(matches!(
+            RhoString::unapply(&data[0].post_block_data[0]),
+            Some("/root")
+        ));
+        assert!(api
+            .get_listening_name_continuation_response(1, &[])
+            .await
+            .is_ok());
         assert_eq!(
-            api.get_block("/roothash")
+            api.get_blocks_by_heights(0, 1).await.unwrap()[0].shard_id,
+            "/root"
+        );
+        assert_eq!(api.visualize_dag(1, 0, false).await.unwrap(), vec!["/root"]);
+        assert_eq!(api.machine_verifiable_dag(1).await.unwrap(), "/root");
+        assert_eq!(api.get_blocks(1).await.unwrap()[0].shard_id, "/root");
+        assert!(api.bond_status(&[0u8; 65]).await.unwrap());
+        assert_eq!(
+            api.last_finalized_block()
                 .await
                 .unwrap()
                 .block_info
                 .shard_id,
             "/root"
         );
-        let err = api
-            .get_block("nowhere")
-            .await
-            .expect_err("an unknown hash must be reported");
-        assert!(err.contains("nowhere"), "{err}");
+        assert_eq!(
+            i64::from(api.get_latest_message().await.unwrap().block_num),
+            1
+        );
+
+        assert!(
+            child.calls().is_empty(),
+            "no unrouted method may reach a non-primary member: {:?}",
+            child.calls()
+        );
+        assert_eq!(
+            primary.calls().len(),
+            14,
+            "every unrouted method reached the primary exactly once: {:?}",
+            primary.calls()
+        );
+    }
+
+    /// A one-member router is the identity: every request goes to the single shard, which is what
+    /// makes a single-shard node's behaviour unchanged by this layer.
+    #[tokio::test]
+    async fn a_one_member_router_is_the_identity() {
+        let only = Arc::new(StubApi::new("/root"));
+        let mut shards: BTreeMap<ShardId, Arc<dyn BlockApi>> = BTreeMap::new();
+        shards.insert(shard("/root"), only.clone());
+        let api = ShardRoutingBlockApi::new(shards, shard("/root")).unwrap();
+
+        assert_eq!(
+            api.deploy(&deploy_to("/root", "term")).await.unwrap(),
+            "/root:term"
+        );
+        assert_eq!(api.status().await.shard_id, "/root");
+        assert_eq!(
+            api.get_block("/root-hash")
+                .await
+                .unwrap()
+                .block_info
+                .shard_id,
+            "/root"
+        );
+        // And a request for a shard it is not a member of is still refused.
+        assert!(api.deploy(&deploy_to("/elsewhere", "t")).await.is_err());
     }
 
     #[tokio::test]
