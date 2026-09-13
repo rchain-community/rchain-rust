@@ -28,6 +28,13 @@ jobs:
       - name: Type-system audit gate
         run: tools/audit-type-system.sh
 
+      - name: Test-coverage register gate
+        # `spec/TEST-COVERAGE.md` must match the tree: no overstated counts, no named test that does
+        # not exist, no phantom `#[ignore]` section. `--deferred-ok` tolerates the four gaps the
+        # completion plan has not closed yet; drop the flag when the last one closes, so that moment
+        # is a visible diff rather than somebody's memory.
+        run: tools/audit-test-register.sh --deferred-ok
+
       - name: Install protoc
         run: sudo apt-get update -qq && sudo apt-get install -y -qq protobuf-compiler
 
