@@ -9,7 +9,7 @@ use rchain_models::comm::protocol::Protocol;
 use crate::peer_node::PeerNode;
 use crate::transport::chunker::Blob;
 use crate::transport::communication_response::CommunicationResponse;
-use crate::transport::grpc_transport_receiver::{self, BoxFuture};
+use crate::transport::grpc_transport_receiver::{self, BoxFuture, ConcurrencyLimits};
 use crate::transport::hostname_trust_manager;
 
 /// The server-side transport (port of `TransportLayerServer` / `GrpcTransportServer`).
@@ -47,7 +47,23 @@ impl TransportLayerServer {
         D: Fn(Protocol) -> BoxFuture<CommunicationResponse> + Send + Sync + 'static,
         S: Fn(Blob) -> BoxFuture<()> + Send + Sync + 'static,
     {
-        grpc_transport_receiver::serve(
+        self.serve_with_limits(dispatch, handle_streamed, ConcurrencyLimits::default())
+            .await
+    }
+
+    /// Serve the transport with explicit concurrency bounds (see [`ConcurrencyLimits`]), so a test
+    /// can exhaust a bound at a scale it can afford.
+    pub async fn serve_with_limits<D, S>(
+        &self,
+        dispatch: D,
+        handle_streamed: S,
+        limits: ConcurrencyLimits,
+    ) -> Result<(), String>
+    where
+        D: Fn(Protocol) -> BoxFuture<CommunicationResponse> + Send + Sync + 'static,
+        S: Fn(Blob) -> BoxFuture<()> + Send + Sync + 'static,
+    {
+        grpc_transport_receiver::serve_with_limits(
             self.local.clone(),
             self.network_id.clone(),
             self.port,
@@ -55,6 +71,7 @@ impl TransportLayerServer {
             self.max_stream_message_size,
             Arc::new(dispatch),
             Arc::new(handle_streamed),
+            limits,
         )
         .await
     }

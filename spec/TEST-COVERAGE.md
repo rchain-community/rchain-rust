@@ -92,6 +92,7 @@ not found in that file. Coverage claims live here rather than in prose so they c
 | G2 | `comm/src/transport/stream_handler.rs` | `restore_rejects_oversized_decompressed_content` |
 | G2 | `shared/src/rate_limiter.rs` | `admits_exactly_max_per_window_then_refuses` |
 | G2 | `node/src/web/http.rs` | `api_deploy_returns_429_when_the_limiter_is_exhausted` |
+| G2 | `comm/src/transport/grpc_transport.rs` | `a_full_dispatch_queue_is_rejected_and_recovers` |
 | G2 | `rholang/src/parser.rs` | `rejects_excessive_nesting_depth` |
 | G3 | `rholang/src/native_state.rs` | `bond_requires_trust_admission` |
 | G3 | `casper/tests/consensus.rs` | `bond_deploy_updates_the_active_validator_set` |
@@ -117,7 +118,11 @@ not found in that file. Coverage claims live here rather than in prose so they c
 ## Gap analysis (severity-ordered)
 
 For each gap: **code location** → **current test state** → **the seam a regression test attaches to**.
-A `⏸` marks a gap that is still open; the completion plan closes these.
+**No gap row is deferred any more.** All four ⏸ rows at the time of writing (G2's semaphore, G5, G7,
+G12) were closed by the completion plan's Stage 2 — and G6's history internals were moved into the
+risk-tier table below, where an open module is a defect the linter reports rather than a note. A `⏸`
+now appears only if a *new* gap is deliberately left open, and `tools/audit-test-register.sh` fails on
+it unless `--deferred-ok` is passed (which today tolerates only the tier table's open items).
 
 - **G1 — Equivocation rejection** (`casper/src/dag.rs`). The H-1 fix rejects a second block by the
   same sender reusing `seq_num`. ✅ `insert_rejects_equivocation_same_seq_num`. *Seam:*
@@ -132,18 +137,13 @@ A `⏸` marks a gap that is still open; the completion plan closes these.
   `rholang/tests/execution.rs` `unbounded_recursion_hits_depth_limit_not_stack_overflow`).
   The `RateLimiter` leg is now ✅ too (`admits_exactly_max_per_window_then_refuses`,
   `resets_after_its_window`, `zero_never_admits`, plus a 429 asserted through the deploy route) — an
-  earlier revision of this register wrongly marked it covered when nothing tested it. **⏸ One leg
-  remains, and it is a size problem rather than a seam problem:** the dispatch semaphore
-  (`comm/src/transport/grpc_transport_receiver.rs`, `MAX_CONCURRENT_DISPATCH = 1024`). The mechanism
-  is a `tokio::sync::Semaphore` whose `try_acquire` failure becomes `ResourceExhausted`, and reaching
-  it faithfully means **1025 concurrent TLS streams** against a dispatch handler that blocks — a test
-  far heavier and flakier than the bound it would pin, at whatever scale the constant happens to
-  have. Three honest options, none taken yet: *(a)* write it at that scale; *(b)* make the bound
-  injectable (`GrpcTransportReceiver::new` takes the limits) so a test can use a small one — a small,
-  standard **production change**, but production nonetheless and therefore to be approved rather than
-  slipped in; *(c)* record it here as accepted risk, which is what this row does for now. The cheap
-  sibling worth covering first is `MAX_CONCURRENT_BLOBS = 16` — the same mechanism at a scale a test
-  can afford.
+  earlier revision of this register wrongly marked it covered when nothing tested it. The dispatch
+  bound is ✅ too, but not by testing at 1024: reaching that honestly means **1025 concurrent TLS
+  streams**, so `ConcurrencyLimits` makes the bound a parameter (a small production change, approved
+  explicitly) and `a_full_dispatch_queue_is_rejected_and_recovers` saturates it at 1 — asserting both
+  the refusal and that a released slot admits the next message, i.e. a queue rather than a latch.
+  That test also surfaced a diagnostic wart worth knowing: the refusal reaches callers as
+  `MessageTooLarge`, because `process_error` maps `ResourceExhausted` to it (AUDIT.md §15 C4).
   *Seams:* the rate limiter is pure (`new(max_per_sec)`/`allow()`) — window/reset/zero unit tests,
   plus a 429 assertion through the HTTP routes. The semaphore is local to a spawned task, so the
   honest test is **socket-level** (open `MAX+K` streams and assert the last is unanswered; precedent
@@ -164,8 +164,10 @@ A `⏸` marks a gap that is still open; the completion plan closes these.
   *Seam for the remaining unit leg:* `ChargingRSpace::new(space, cost)` with a tiny balance, and
   `RuntimeManager::process_deploy` with a low `phlo_limit`.
 
-- **G5 — State-sync export/import round-trip** (`rspace/src/state/*`). ⏸ *Full store
-  export→import→compare* is open; the export→validate round-trip is ✅. *Seam:* real `RSpaceExporter`
+- **G5 — State-sync export/import round-trip** (`rspace/src/state/*`). ✅ The export→validate
+  round-trip *and* a populated store's export→import→compare
+  (`a_populated_store_export_import_round_trips`: five items and a root through the real exporter and
+  importer). *Seam:* real `RSpaceExporter`
   → real `RSpaceImporter`, K distinct channels, compare the root hash and spot leaves. Extend
   `rspace/src/state/exporters.rs`'s in-file tests (today only `MockExporter`).
 
@@ -177,8 +179,8 @@ A `⏸` marks a gap that is still open; the completion plan closes these.
 
 - **G7 — Replay internals** (`casper/src/runtime_replay.rs`, `rspace/src/replay_rspace.rs` — note this
   register previously named a non-existent `rholang/src/runtime_replay.rs`). ✅ persistent + peek
-  replay matches play, over non-trivial deploys. ⏸ *`check_replay_data`'s negative path* (a missing
-  COMM, a divergent value). *Seam:* drive the *recorded* trace into divergence. **Spike:** whether the
+  replay matches play, over non-trivial deploys. ✅ The negative path too, with a finding: see
+  AUDIT.md §15 C3 and `a_tampered_deploy_replays_to_a_rejected_state_hash`. *Seam:* drive the *recorded* trace into divergence. **Spike:** whether the
   recorded trace is mutable from a test; if not, a `#[cfg(test)]` accessor is the minimal change and
   must be listed before writing.
 
@@ -198,10 +200,11 @@ A `⏸` marks a gap that is still open; the completion plan closes these.
   transport/discovery subtree is still pure-function-only — see the T2 tier.
 
 - **G12 — Scheduled-path cost charging** (`rholang/src/storage.rs`
-  `ChargingRSpace::{produce_at,consume_at,commit_produce}`). ⏸ The corpus tests exercise the paths
-  end-to-end, but no unit test pins *where* the storage/event/COMM charges land in the phase-one/two
-  split (up-front storage cost; produce event cost inline when `phase_two` is `None`, else event+COMM
-  costs at commit). *Seam:* `ChargingRSpace::new(space, cost)` with a tiny balance +
+  `ChargingRSpace::{produce_at,consume_at,commit_produce}`). ✅ The placement is pinned: the storage
+  cost lands up front, the produce event inline when phase one stores without a match, and the
+  event+COMM costs at the commit — `produce_at_charges_the_storage_up_front`,
+  `produce_at_fails_before_storing_when_the_balance_is_spent`,
+  `commit_produce_charges_the_event_at_the_commit`. *Seam:* `ChargingRSpace::new(space, cost)` with a tiny balance +
   `produce_at`/`commit_produce` directly, mirroring the G4 charge-path tests.
 
 ## Remediation status
@@ -209,11 +212,11 @@ A `⏸` marks a gap that is still open; the completion plan closes these.
 | Gap | Status |
 |---|---|
 | G1 equivocation | ✅ `insert_rejects_equivocation_same_seq_num` |
-| G2 DoS limits | ✅ chunker underflow guard, deploy-pool cap, decompression cap, parser depth guard, and the `RateLimiter` (window/zero/reset + a 429 through the route); ⏸ the dispatch semaphore (socket-level test preferred over a production accessor) |
+| G2 DoS limits | ✅ chunker underflow guard, deploy-pool cap, decompression cap, parser depth guard, the `RateLimiter` (window/zero/reset + a 429 through the route), and the dispatch bound (saturation *and* recovery) — the last via an injectable limit, since the production 1024 would need 1025 concurrent TLS streams |
 | G3 PoS mutations | ✅ lifecycle + end-to-end bond→active-set→replay + the `refund` no-op pin; reward distribution **out of scope** (feature) |
 | G4 gas enforcement | ✅ end-to-end phlo exhaustion; unit charge paths land with G12 |
 | G5 state-sync | ✅ `validate_state_items_{accepts_valid_round_trip,rejects_corrupted_data}` + a populated store's export→import→compare (`a_populated_store_export_import_round_trips`) |
-| G6 history checkpoint/reset/rollback | ✅ `RSpace::create_checkpoint`/`reset`/`revert`; ⏸ history internals (T1 tier) |
+| G6 history checkpoint/reset/rollback | ✅ `RSpace::create_checkpoint`/`reset`/`revert`. The history *internals* (`history_repository.rs`, `roots_store.rs`, `root_repository.rs`) are not a gap row of their own: they are T1 tier entries in the table below, which the linter enforces, so an open one is a defect rather than a deferred note |
 | G7 replay | ✅ `replay_matches_play{,_for_persistent_and_peek}`; ✅ the negative path — with a finding (AUDIT.md §15 C3): the inner trace check does not fire for a term tamper, so the state-hash comparison in `handle_errors` is what carries the invariant, and `a_tampered_deploy_replays_to_a_rejected_state_hash` pins both halves |
 | G8 finalizer | ✅ `calculate_finalization` fork/lockstep |
 | G9 malformed input | ✅ `NodeIdentifier`/`KeySegment`/`BlockHash` + deploy-signature verify |
@@ -232,7 +235,7 @@ opposite was the plan's standing assumption:
 
 | Gap | Classification | Why |
 |---|---|---|
-| G2 dispatch semaphore | test gap — **still open, at a size problem** | it bounds *socket* concurrency, so the honest test is socket-level and needs no accessor — but the bound is 1024, so that test needs 1025 concurrent TLS streams. Recorded rather than forced (see the G2 bullet for the three options) |
+| G2 dispatch semaphore | test gap — **closed via an injectable limit** | the bound is 1024, so the honest socket test would need 1025 concurrent TLS streams. `ConcurrencyLimits` makes the bound a parameter (a small production change, approved), so the test saturates at 1 and observes both the refusal and the recovery |
 | G5 full store round-trip | test gap — **closed** | the concrete `RSpaceExporterStore`/`RSpaceImporterStore` are public and already used by the node (`create_rspace_exporter`/`create_rspace_importer`); `a_populated_store_export_import_round_trips` drives them with a populated store |
 | G7 replay negative path | test gap — **closed, with a finding** | `ProcessedDeploy` is public, so a test can replay a tampered deploy. The spike found that the *inner* check does not fire for a term tamper (AUDIT.md §15 C3), so the test pins the state-hash comparison in `handle_errors` — the check that actually carries the invariant |
 | G12 charge placement | test gap — **closed** | `ChargingRSpace::new` is public and `PendingProduce`'s fields are public, so both the phase-one and the commit charge points are reachable directly |

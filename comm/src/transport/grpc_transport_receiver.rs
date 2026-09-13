@@ -115,6 +115,35 @@ const MAX_CONCURRENT_BLOBS: usize = 16;
 /// Wall-clock bound on a single inbound TLS handshake, so a stalled ClientHello cannot hold a
 /// handshake slot (and its socket) indefinitely.
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// The receiver's concurrency bounds, in one value.
+///
+/// Parameterised for one reason: the production values (1024 dispatch slots, 1024 streams, 16 blobs)
+/// can only be exhausted by a test that opens a thousand concurrent TLS streams, which costs far more
+/// than the bound it would pin. `serve` uses [`ConcurrencyLimits::default`]; `serve_with_limits` lets
+/// a test set a small bound and observe saturation deterministically.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ConcurrencyLimits {
+    /// Concurrent inbound unary dispatches (`send`); exhaustion is `ResourceExhausted`.
+    pub dispatches: usize,
+    /// Concurrent inbound `stream` RPCs.
+    pub streams: usize,
+    /// Concurrent decompressed blobs in flight (the aggregate decompressed-memory budget).
+    pub blobs: usize,
+    /// Concurrent in-flight TLS handshakes, and the depth of the accepted-stream channel.
+    pub handshakes: usize,
+}
+
+impl Default for ConcurrencyLimits {
+    fn default() -> Self {
+        ConcurrencyLimits {
+            dispatches: MAX_CONCURRENT_DISPATCH,
+            streams: MAX_CONCURRENT_STREAMS,
+            blobs: MAX_CONCURRENT_BLOBS,
+            handshakes: MAX_CONCURRENT_HANDSHAKES,
+        }
+    }
+}
 /// Bound on the number of chunks accepted per inbound `stream`. Empty `content_data` chunks never
 /// advance the byte counter, so without this a peer could stream an unbounded number of them.
 const MAX_STREAM_CHUNKS: usize = 100_000;
@@ -265,6 +294,31 @@ pub async fn serve(
     dispatch: Arc<dyn Fn(Protocol) -> BoxFuture<CommunicationResponse> + Send + Sync>,
     handle_streamed: Arc<dyn Fn(Blob) -> BoxFuture<()> + Send + Sync>,
 ) -> Result<(), String> {
+    serve_with_limits(
+        local,
+        network_id,
+        port,
+        tls,
+        max_stream_message_size,
+        dispatch,
+        handle_streamed,
+        ConcurrencyLimits::default(),
+    )
+    .await
+}
+
+/// Serve the transport with explicit concurrency bounds (see [`ConcurrencyLimits`]).
+#[allow(clippy::too_many_arguments)]
+pub async fn serve_with_limits(
+    local: PeerNode,
+    network_id: String,
+    port: u16,
+    tls: Arc<rustls::ServerConfig>,
+    max_stream_message_size: i64,
+    dispatch: Arc<dyn Fn(Protocol) -> BoxFuture<CommunicationResponse> + Send + Sync>,
+    handle_streamed: Arc<dyn Fn(Blob) -> BoxFuture<()> + Send + Sync>,
+    limits: ConcurrencyLimits,
+) -> Result<(), String> {
     // Faithful to Scala: the protocol server binds to `0.0.0.0` (the `protocol-server.host` config
     // is the *advertised* address, not the bind address). The bind is left as-is; the fix here is
     // concurrent (not serialized) TLS handshakes.
@@ -276,11 +330,11 @@ pub async fn serve(
     // Concurrent TLS handshakes (M1): accept connections in a tight loop, hand off each handshake to
     // a spawned task, and feed the accepted TLS streams to tonic through a bounded channel. A slow
     // handshake no longer blocks the accept loop.
-    let (tx, rx) = mpsc::channel::<Result<TlsIo, std::io::Error>>(MAX_CONCURRENT_HANDSHAKES);
+    let (tx, rx) = mpsc::channel::<Result<TlsIo, std::io::Error>>(limits.handshakes);
     // Bound *in-flight* handshakes (not just the completed ones the channel bounds): acquire a slot
     // before spawning, so a peer opening thousands of idle connections cannot spawn that many
     // handshake tasks each holding a socket + rustls state until the TCP timeout (R14).
-    let handshake_slots = Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_HANDSHAKES));
+    let handshake_slots = Arc::new(tokio::sync::Semaphore::new(limits.handshakes));
     tokio::spawn(async move {
         loop {
             let tcp = match listener.accept().await {
@@ -310,9 +364,9 @@ pub async fn serve(
         max_stream_message_size,
         dispatch,
         handle_streamed,
-        dispatch_slots: Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_DISPATCH)),
-        stream_slots: Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_STREAMS)),
-        blob_slots: Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_BLOBS)),
+        dispatch_slots: Arc::new(tokio::sync::Semaphore::new(limits.dispatches)),
+        stream_slots: Arc::new(tokio::sync::Semaphore::new(limits.streams)),
+        blob_slots: Arc::new(tokio::sync::Semaphore::new(limits.blobs)),
     };
 
     tonic::transport::Server::builder()

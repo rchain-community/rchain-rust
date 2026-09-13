@@ -728,3 +728,15 @@ deviation.
   check alone would pass while a tampered block was accepted. Verified:
   `a_tampered_deploy_replays_to_a_rejected_state_hash` (`casper/tests/determinism.rs`) pins both the
   divergence and the rejection — and would fail if the comparison were removed.
+
+- **C4 — a saturated inbound queue is reported to callers as `MessageTooLarge`.**
+  `comm/src/transport/grpc_transport.rs::process_error` maps a gRPC `ResourceExhausted` to
+  `CommError::MessageTooLarge(peer)` (the ported `processError`), and the receiver answers
+  `ResourceExhausted` for **two different causes**: a genuinely oversized message and a saturated
+  concurrency bound — the dispatch queue (`MAX_CONCURRENT_DISPATCH`), the stream slots, and the
+  decompressed-blob budget. Both fail closed, so this is a diagnostic wart rather than a hazard: an
+  operator reading `MessageTooLarge` cannot tell congestion from size, and the refusal's own message
+  (`"dispatch queue full"`) is discarded by the mapping. **Documented deviation** (the mapping is
+  faithful to Scala; the second cause is the Rust-first DoS bound). Verified:
+  `a_full_dispatch_queue_is_rejected_and_recovers` (`comm/src/transport/grpc_transport.rs`) pins the
+  refusal *and* the recovery — the bound is a queue, not a latch.

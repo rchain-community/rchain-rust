@@ -13,9 +13,10 @@
 #      claiming tests that do not exist is not.
 #   2. **Named tests exist** — every row of the "machine-checked claims" table names a file and a
 #      test function; the function must be found in that file.
-#   3. **No deferred gaps** — a `⏸` row means a documented, still-open gap. `--deferred-ok` downgrades
-#      those to a warning; the flag must be dropped when the last deferred gap closes (Stage 2 of the
-#      completion plan), which makes that moment visible in the tree rather than in someone's memory.
+#   3. **No deferred gaps** — a `⏸` row means a documented, still-open gap. Every gap row was closed
+#      by Stage 2 of the completion plan, so this check is now expected to pass outright; a new `⏸`
+#      is a deliberate act. `--deferred-ok` also tolerates the risk-tier table's open items, which
+#      is the only thing that flag still covers while the tiered work is in flight.
 #   4. **Legacy contract count** — the `.rho`/`.rhox` counts must match the filesystem, so the
 #      contract corpus cannot silently grow or shrink past the register.
 #   5. **Tier table modules exist** — every path in the per-module tier table must be a real file.
@@ -112,7 +113,9 @@ fi
 
 # --- 3. deferred gaps --------------------------------------------------------
 printf '\n== deferred gaps ==\n'
-deferred="$(grep -n '⏸' "$REGISTER" || true)"
+# Only bullets and table rows count as deferred *claims*; the prose that defines the marker and the
+# legend that explains it are not gaps (counting them inflated this list by three).
+deferred="$(grep -nE '^(- |\| ).*⏸' "$REGISTER" || true)"
 if [[ -n "$deferred" ]]; then
   if (( DEFERRED_OK )); then
     info "--deferred-ok: $(printf '%s\n' "$deferred" | wc -l | tr -d ' ') still-deferred row(s):"
