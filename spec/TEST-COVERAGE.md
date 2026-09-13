@@ -20,13 +20,13 @@ tools/audit-test-register.sh --deferred-ok # while the sweep is in flight (print
 
 The counts below were the register's only measure for most of its life, and a per-crate total cannot
 see a file that has *no* test. A census of every `*.rs` under `*/src` — **354 files** — shows what the
-totals hid: **273 files carry at least one test, 66 are exempt** (the table in `## Exempt modules`),
-and **15 have no test and no exemption**.
+totals hid: **274 files carry at least one test, 72 are exempt** (the table in `## Exempt modules`),
+and **8 have no test and no exemption**.
 The count is falling batch by batch; the linter prints the live list, which is the work list. The plan to close them is recorded in items 10–11 of the definition of done.
 
 ## Inventory
 
-**1278 `#[test]`/`#[tokio::test]` unit functions + 84 integration tests** across 13 crates, with **6
+**1281 `#[test]`/`#[tokio::test]` unit functions + 84 integration tests** across 13 crates, with **6
 laws** carrying a randomized property test and **10 benchmark functions** in 6 Criterion groups. Only
 **3 of 12 crates have integration tests** (`rholang`, `casper`, `node`).
 
@@ -41,7 +41,7 @@ laws** carrying a randomized property test and **10 benchmark functions** in 6 C
 | `comm` | 123 | — | — | — |
 | `rspace` | 166 | — | 7 | — |
 | `rholang` | 188 | 37 | 7 | — |
-| `casper` | 218 | 38 | 3 | — |
+| `casper` | 221 | 38 | 3 | — |
 | `node` | 147 | 9 | — | — |
 | `qucalc` | 20 | — | — | — |
 | `rspace-bench` | — | — | — | 10 |
@@ -439,7 +439,8 @@ The linter's seventh check enumerates every `*/src/**/*.rs` (excluding `legacy/`
 `target/`) and requires each file to either contain a test attribute or appear in the table below with a
 **reason class**. A row is a claim like any other: the class must be one of `data` (declarations with no
 behaviour), `generated` (`include!`d prost/tonic output), `dev-tool` (an entry-point binary with no logic
-of its own) or `peer-bound` (needs a live peer); the file must exist; and a file that *gains* a test while
+of its own), `peer-bound` (needs a live peer) or `harness-bound` (needs the whole node as a fixture);
+the file must exist; and a file that *gains* a test while
 still holding a row **fails** the check. The table burns down — it is not a permanent allowlist. A
 `peer-bound` row must name its covering test as `path::test`, and the linter verifies that the test
 exists, like every other named test in this register.
@@ -451,6 +452,8 @@ so the reason is recorded here rather than only in the commit that did it.
 
 | Class | Module | Why no test is expected | Covering test |
 |---|---|---|---|
+| `data` | `casper/src/lib.rs`, `casper/src/api/mod.rs`, `casper/src/blocks/mod.rs`, `casper/src/blocks/proposer/mod.rs`, `casper/src/protocol/mod.rs` | Module-declaration shims (`pub mod` re-exports plus `lib.rs`'s four `pub use conf::{…}` re-exports); the submodules carry the tests. | — |
+| `harness-bound` | `casper/src/blocks/proposer/block_creator.rs` | `BlockCreator::create` takes a live `RuntimeManager` — the interpreter over an RSpace over a history over a store — so a unit test would rebuild the proposer's whole fixture. The path is covered end to end by `casper/tests/consensus.rs`'s `ESCROW`-driven block production and `node/tests/deploy_block.rs`'s `deploy_is_processed_into_a_block`, both of which produce a real block through it. What is **not** pinned at the unit level: the slash/close seed indices (computed from the *selected* deploy count, not the requested id list) and the `u8::try_from` bound that rejects a block with more than 255 system deploys. Recorded rather than dropped — see "Named exceptions (harness-bound)" above for the full note. | `node/tests/deploy_block.rs::deploy_is_processed_into_a_block` |
 | `data` | `sdk/src/block.rs` | A trait declaration with no implementation in the file (tested through its implementors). | — |
 | `data` | `sdk/src/dag.rs` | A module-declaration file (`pub mod data/merging/syntax`) with no items of its own; the three submodules carry 15 tests. | — |
 | `data` | `sdk/src/lib.rs` | Module-declaration shim (`pub mod` re-exports only); the submodules carry the tests. | — |
@@ -526,7 +529,7 @@ so the reason is recorded here rather than only in the commit that did it.
 | 7. `parsed + skipped == 165` for the legacy corpus, closed-enum skip reasons | **done** — `rholang/tests/legacy_contracts.rs` |
 | 8. `gen-differential-goldens.sh` completes or fails loudly; every committed TSV row is consumed | **done** — provenance columns + a per-file drift guard; the script exits 2 without sbt |
 | 9. The Stage 1 audit list appears verbatim in the register, each entry mapped to a test | **done** — the machine-checked claims table |
-| 10. Every `*/src/**/*.rs` is tested or exempt with a reason class (linter check 7) | **in progress** — a census of all 354 source files: 273 have a test, 66 are exempted by the table in `## Exempt modules`, **15 are still to test**. Hard mode prints those 15; `--deferred-ok`, which CI runs, reports them as the burn-down list. The earlier tier table could not have caught this: it was checked against itself, not against the tree. |
+| 10. Every `*/src/**/*.rs` is tested or exempt with a reason class (linter check 7) | **in progress** — a census of all 354 source files: 274 have a test, 72 are exempted by the table in `## Exempt modules`, **8 are still to test**. Hard mode prints those 8; `--deferred-ok`, which CI runs, reports them as the burn-down list. The earlier tier table could not have caught this: it was checked against itself, not against the tree. |
 | 11. The thin-coverage files' unreached failure arms are pinned | **not started** — the second track, ordered by uncovered lines. First `node/src/api/grpc/tonic.rs` (972 lines, 1 test, 26 `*_to_wire`/`*_from_wire` conversions with no test), then `casper/src/runtime_manager.rs` (1219 lines, 1 test) and the rest. Check 7 does not cover these files — they already have a test — which is why they are a separate item rather than part of 10. |
 
 ## Production changes made under this plan

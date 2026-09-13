@@ -28,6 +28,10 @@
 #      allowlist. Under `--deferred-ok` the still-unlisted files are reported (the burn-down list)
 #      rather than failing, exactly like the deferred-gap and open-tier checks.
 #
+# The class vocabulary is **closed** because a row that can invent its own reason is not a reason:
+# a `peer-bound` or `harness-bound` row must name its covering test as `path::test`, and the linter
+# verifies that test exists like any other named test in this register.
+#
 # What it does NOT check: whether a named test *really pins* the behaviour it claims (only that it
 # exists), and whether a module's test is a failure-arm test rather than a happy path. Those are
 # human judgements; the register records them, and the plan's Stage 1 records a manual
@@ -242,8 +246,8 @@ else
     [[ -n "$class" ]] || continue
     rows=$((rows + 1))
     case "$class" in
-      data|generated|dev-tool|peer-bound) ;;
-      *) fail "exempt row has unknown class '$class' (want data|generated|dev-tool|peer-bound)"; bad=$((bad + 1)); continue ;;
+      data|generated|dev-tool|peer-bound|harness-bound) ;;
+      *) fail "exempt row has unknown class '$class' (want data|generated|dev-tool|peer-bound|harness-bound)"; bad=$((bad + 1)); continue ;;
     esac
     # `IFS=,` splits the path cell; a single path is the common case.
     while read -r path; do
@@ -259,7 +263,9 @@ else
         bad=$((bad + 1))
         continue
       fi
-      if [[ "$class" == "peer-bound" ]]; then
+      # `peer-bound` and `harness-bound` both mean "covered above this file, by the test named
+      # here"; the linter holds them to the same evidence.
+      if [[ "$class" == "peer-bound" || "$class" == "harness-bound" ]]; then
         cfile="${covering%%::*}"
         ctest="${covering##*::}"
         if [[ -z "$cfile" || "$ctest" == "$covering" || ! -f "$ROOT/$cfile" ]]; then
