@@ -29,9 +29,10 @@ test-multinode:
 test-all: test-unit test-integration
 
 # The coverage register must match the tree: no overstated counts, no phantom tests, no deferred
-# rows. Drop `--deferred-ok` when the last deferred gap closes (the completion plan's Stage 2).
+# rows, and **no source file without a test or a declared exemption** (the census-sweep finish line).
+# This runs the linter in hard mode: every check fails the build rather than reporting.
 check-register:
-	tools/audit-test-register.sh --deferred-ok
+	tools/audit-test-register.sh
 
 # Coverage. CI (`.github/workflows/coverage.yml`) has always run the whole workspace with
 # `--all-features` and no exclusions, and is green on every PR — so the crypto crate is *not* flaky

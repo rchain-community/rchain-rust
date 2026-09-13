@@ -31,10 +31,11 @@ jobs:
 
       - name: Test-coverage register gate
         # `spec/TEST-COVERAGE.md` must match the tree: no overstated counts, no named test that does
-        # not exist, no phantom `#[ignore]` section. `--deferred-ok` tolerates the four gaps the
-        # completion plan has not closed yet; drop the flag when the last one closes, so that moment
-        # is a visible diff rather than somebody's memory.
-        run: tools/audit-test-register.sh --deferred-ok
+        # not exist, no phantom `#[ignore]` section, and no source file that is neither tested nor
+        # an exemption row with a reason class. Hard mode: every check fails the build. (The flag
+        # this used to carry — `--deferred-ok` — was dropped when the census sweep closed, so that
+        # moment is a visible diff rather than somebody's memory.)
+        run: tools/audit-test-register.sh
 
       - name: Install protoc
         run: sudo apt-get update -qq && sudo apt-get install -y -qq protobuf-compiler

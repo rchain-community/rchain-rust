@@ -55,12 +55,405 @@ impl WebApiImpl {
     }
 }
 
+fn invalid_deploy_id() -> BlockApiException {
+    BlockApiException("Deploy id is not valid base16 format.".to_string())
+}
+
 /// Maximum faucet drips any single address may receive (0.3 REV each). Bounds the dev-wallet drain
 /// a single caller can cause before other developers are starved.
 const FAUCET_MAX_DRIPS_PER_ADDRESS: u32 = 10;
 
-fn invalid_deploy_id() -> BlockApiException {
-    BlockApiException("Deploy id is not valid base16 format.".to_string())
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Mutex as StdMutex;
+
+    use rchain_block_storage::dag::dag_storage::DeployId;
+    use rchain_casper::api::block_api::{ApiErr, Capabilities};
+    use rchain_models::ast::Par;
+    use rchain_models::block_metadata::BlockMetadata;
+    use rchain_models::casper::protocol::casper_message::DeployData;
+    use rchain_models::casper::protocol::deploy_service::{
+        BlockInfo, ContinuationsWithBlockInfo, DataWithBlockInfo, DeployExecStatus as DomainExecStatus,
+        LightBlockInfo, Status, VersionInfo,
+    };
+
+    /// A block API that answers from its fields and records what it was asked — the `StubBlockApi`
+    /// pattern `deploy_grpc_service_v1.rs` and `tonic.rs`'s tests use. The methods this file never
+    /// calls are `unreachable!`: a stub that returns a plausible value there would hide a call the
+    /// implementation is not supposed to make.
+    struct StubBlockApi {
+        caps: Capabilities,
+        pooled: Vec<SignedDeployData>,
+        deploy_status: ApiErr<DomainExecStatus>,
+        /// What `deploy` was asked to pool, shared by handle so a test can read it after the stub
+        /// has been boxed behind `Arc<dyn BlockApi>`.
+        deployed: Arc<StdMutex<Vec<SignedDeployData>>>,
+    }
+
+    impl Default for StubBlockApi {
+        fn default() -> Self {
+            StubBlockApi {
+                caps: Capabilities {
+                    autopropose: false,
+                    propose_on_deploy: false,
+                    manual_propose: true,
+                    admin_http: false,
+                    dev_mode: true,
+                },
+                pooled: Vec::new(),
+                deploy_status: Ok(DomainExecStatus::NotProcessed {
+                    status: "pending".to_string(),
+                }),
+                deployed: Arc::new(StdMutex::new(Vec::new())),
+            }
+        }
+    }
+
+    fn block_status() -> Status {
+        Status {
+            version: VersionInfo {
+                api: "1".to_string(),
+                node: "2".to_string(),
+            },
+            address: "addr".to_string(),
+            network_id: "net".to_string(),
+            shard_id: "root".to_string(),
+            peers: 3,
+            nodes: 4,
+            min_phlo_price: 5,
+            latest_block_number: 42,
+        }
+    }
+
+    fn deploy_with(sig: u8, timestamp: i64) -> SignedDeployData {
+        SignedDeployData {
+            data: DeployData {
+                term: format!("term-{sig}"),
+                timestamp,
+                phlo_price: 1,
+                phlo_limit: 2,
+                valid_after_block_number: 0,
+                shard_id: "root".to_string(),
+            },
+            deployer: vec![sig; 65],
+            sig: vec![sig],
+            sig_algorithm: "secp256k1".to_string(),
+        }
+    }
+
+    /// The trait's method list, copied signature-for-signature: every method this file does not
+    /// call is `unreachable!`, so a call the implementation is not supposed to make fails loudly
+    /// instead of being answered by a plausible stub value.
+    #[async_trait]
+    impl BlockApi for StubBlockApi {
+        async fn status(&self) -> Status {
+            block_status()
+        }
+
+        async fn deploy(&self, deploy: &SignedDeployData) -> ApiErr<String> {
+            self.deployed.lock().unwrap().push(deploy.clone());
+            Ok(base16::encode(&deploy.sig))
+        }
+
+        async fn deploy_status(&self, _: &DeployId) -> ApiErr<DomainExecStatus> {
+            self.deploy_status.clone()
+        }
+
+        async fn pooled_deploys(&self) -> ApiErr<Vec<SignedDeployData>> {
+            Ok(self.pooled.clone())
+        }
+
+        async fn capabilities(&self) -> Capabilities {
+            self.caps.clone()
+        }
+
+        async fn create_block(&self, _: bool) -> ApiErr<String> {
+            unreachable!("WebApiImpl does not create blocks")
+        }
+        async fn get_propose_result(&self) -> ApiErr<String> {
+            unreachable!("WebApiImpl does not read propose results")
+        }
+        async fn get_listening_name_data_response(
+            &self,
+            _: i32,
+            _: &Par,
+        ) -> ApiErr<(Vec<DataWithBlockInfo>, i32)> {
+            unreachable!("not exercised here")
+        }
+        async fn get_listening_name_continuation_response(
+            &self,
+            _: i32,
+            _: &[Par],
+        ) -> ApiErr<(Vec<ContinuationsWithBlockInfo>, i32)> {
+            unreachable!("not exercised here")
+        }
+        async fn get_blocks_by_heights(&self, _: i64, _: i64) -> ApiErr<Vec<LightBlockInfo>> {
+            unreachable!("not exercised here")
+        }
+        async fn visualize_dag(&self, _: i32, _: i32, _: bool) -> ApiErr<Vec<String>> {
+            unreachable!("not exercised here")
+        }
+        async fn machine_verifiable_dag(&self, _: i32) -> ApiErr<String> {
+            unreachable!("not exercised here")
+        }
+        async fn get_blocks(&self, _: i32) -> ApiErr<Vec<LightBlockInfo>> {
+            unreachable!("not exercised here")
+        }
+        async fn find_deploy(&self, _: &DeployId) -> ApiErr<LightBlockInfo> {
+            unreachable!("not exercised here")
+        }
+        async fn get_block(&self, _: &str) -> ApiErr<BlockInfo> {
+            unreachable!("not exercised here")
+        }
+        async fn bond_status(&self, _: &[u8]) -> ApiErr<bool> {
+            unreachable!("not exercised here")
+        }
+        async fn exploratory_deploy(
+            &self,
+            _: &str,
+            _: Option<&str>,
+            _: bool,
+        ) -> ApiErr<(Vec<Par>, LightBlockInfo)> {
+            unreachable!("not exercised here")
+        }
+        async fn get_data_at_par(
+            &self,
+            _: &Par,
+            _: &str,
+            _: bool,
+        ) -> ApiErr<(Vec<Par>, LightBlockInfo)> {
+            unreachable!("not exercised here")
+        }
+        async fn last_finalized_block(&self) -> ApiErr<BlockInfo> {
+            unreachable!("not exercised here")
+        }
+        async fn is_finalized(&self, _: &str) -> ApiErr<bool> {
+            unreachable!("not exercised here")
+        }
+        async fn get_latest_message(&self) -> ApiErr<BlockMetadata> {
+            unreachable!("not exercised here")
+        }
+    }
+
+    struct StubTransactionApi;
+    #[async_trait]
+    impl TransactionApi for StubTransactionApi {
+        async fn get_transaction(
+            &self,
+            _: &Blake2b256Hash,
+        ) -> Result<Vec<crate::web::transaction::TransactionInfo>, String> {
+            unreachable!("WebApiImpl's get_transaction is not exercised here")
+        }
+    }
+
+    /// A deploy-mode key pair and a REV address derived from it — the address the faucet will
+    /// accept, since a REV address is checked for its checksum and prefix, not merely its length.
+    fn key_and_address() -> (PrivateKey, String) {
+        let alg = rchain_crypto::signatures::signatures_alg::from_algorithm("secp256k1")
+            .expect("secp256k1 is registered");
+        let (sk, pk) = alg.new_key_pair();
+        let address = RevAddress::from_public_key(&pk).expect("an address from the key");
+        (sk, address.to_base58())
+    }
+
+    fn api(block_api: StubBlockApi, deployer_key: Option<PrivateKey>) -> WebApiImpl {
+        WebApiImpl::new(
+            Arc::new(block_api),
+            Arc::new(StubTransactionApi),
+            deployer_key,
+            "root".to_string(),
+        )
+    }
+
+    /// `capabilities` reports the faucet as available only when **both** dev mode and a deployer key
+    /// are configured: advertising it with no key would send a wallet at a 500.
+    #[tokio::test]
+    async fn the_faucet_is_advertised_only_with_dev_mode_and_a_key() {
+        let (sk, _) = key_and_address();
+
+        for (dev_mode, has_key, expected) in [
+            (true, true, true),
+            (true, false, false),
+            (false, true, false),
+            (false, false, false),
+        ] {
+            let mut block_api = StubBlockApi::default();
+            block_api.caps.dev_mode = dev_mode;
+            let key = if has_key { Some(sk.clone()) } else { None };
+            let caps = api(block_api, key)
+                .capabilities()
+                .await
+                .expect("capabilities");
+            assert_eq!(
+                caps.faucet, expected,
+                "dev_mode = {dev_mode}, key = {has_key}"
+            );
+        }
+    }
+
+    /// A non-hex deploy id is refused **by name** before the block API is consulted — the id comes
+    /// from a URL path, so it is untrusted input.
+    #[tokio::test]
+    async fn a_non_hex_deploy_id_is_refused_by_name() {
+        let err = api(StubBlockApi::default(), None)
+            .deploy_status("not-hex!")
+            .await
+            .expect_err("not base16");
+        assert_eq!(err, BlockApiException("Deploy id is not valid base16 format.".to_string()));
+
+        // Odd-length hex is not base16 either.
+        assert!(api(StubBlockApi::default(), None)
+            .deploy_status("abc")
+            .await
+            .is_err());
+    }
+
+    /// A hex id reaches the block API, and the returned status is converted — the stub's status
+    /// comes back as the API's own `NotProcessed` variant with its message intact.
+    #[tokio::test]
+    async fn a_valid_deploy_id_returns_the_converted_status() {
+        let status = api(StubBlockApi::default(), None)
+            .deploy_status("aabb")
+            .await
+            .expect("a valid id");
+        match status {
+            DeployExecStatus::NotProcessed { status } => assert_eq!(status, "pending"),
+            other => panic!("expected NotProcessed, got {other:?}"),
+        }
+    }
+
+    /// Pooled deploys are returned **most-recent-first**, by the deploy's own timestamp: the pool's
+    /// key order is the signature bytes, so without the sort the API's order would look random to a
+    /// client (and change between calls).
+    #[tokio::test]
+    async fn pooled_deploys_come_back_most_recent_first() {
+        let mut block_api = StubBlockApi::default();
+        block_api.pooled = vec![
+            deploy_with(1, 500),
+            deploy_with(2, 900),
+            deploy_with(3, 100),
+        ];
+        let pooled = api(block_api, None).pooled_deploys().await.expect("pooled");
+
+        let timestamps: Vec<i64> = pooled.deploys.iter().map(|d| d.timestamp).collect();
+        assert_eq!(timestamps, vec![900, 500, 100]);
+        assert_eq!(pooled.deploys[0].deploy_id, base16::encode(&[2u8]));
+        assert_eq!(pooled.deploys[1].term, "term-1");
+    }
+
+    /// The faucet validates the REV address **before** spending anything: an invalid address is an
+    /// error naming it (a valid REV address has a checksum and a coin prefix, so a plausible-looking
+    /// string is not enough).
+    #[tokio::test]
+    async fn the_faucet_refuses_an_invalid_address_by_name() {
+        let (sk, _) = key_and_address();
+        let err = api(StubBlockApi::default(), Some(sk))
+            .faucet("rBdXnotARealAddress")
+            .await
+            .expect_err("invalid");
+        assert_eq!(
+            err,
+            BlockApiException("Invalid REV address: rBdXnotARealAddress".to_string())
+        );
+    }
+
+    /// The faucet's per-address budget (R17) is enforced: ten drips for one address, the eleventh
+    /// refused by name — the fix for a single caller draining the dev wallet.
+    #[tokio::test]
+    async fn the_faucet_enforces_its_per_address_budget() {
+        let (sk, address) = key_and_address();
+        let web = api(StubBlockApi::default(), Some(sk));
+
+        for i in 0..FAUCET_MAX_DRIPS_PER_ADDRESS {
+            let response = web.faucet(&address).await.expect("a drip");
+            assert_eq!(response.amount, faucet::FAUCET_AMOUNT);
+            assert_eq!(response.to, address);
+            assert!(!response.deploy_id.is_empty(), "drip {i} has an id");
+        }
+
+        let err = web.faucet(&address).await.expect_err("the budget is spent");
+        assert_eq!(
+            err,
+            BlockApiException(format!(
+                "faucet: address {address} has reached its drip budget ({FAUCET_MAX_DRIPS_PER_ADDRESS})"
+            ))
+        );
+
+        // A *different* address still has its own budget.
+        let (_, other) = key_and_address();
+        assert!(other != address, "the two keys differ");
+        web.faucet(&other).await.expect("another address drips");
+    }
+
+    /// With no deployer key the faucet refuses — but **after** charging the drip, because the
+    /// budget is taken before the key is checked. Pinned as behaviour (the message is the one an
+    /// operator needs: which flags to pass), with the ordering noted so it is a deliberate choice
+    /// rather than a surprise: a dev node without `--deployer-private-key` burns its drips without
+    /// serving any.
+    #[tokio::test]
+    async fn the_faucet_without_a_key_names_the_flags_it_needs() {
+        let (_, address) = key_and_address();
+        let err = api(StubBlockApi::default(), None)
+            .faucet(&address)
+            .await
+            .expect_err("no key");
+        assert_eq!(
+            err,
+            BlockApiException("faucet requires --dev-mode --deployer-private-key".to_string())
+        );
+
+        // The drip was charged, so wiring a key afterwards still leaves one fewer.
+        let (sk, _) = key_and_address();
+        let web = api(StubBlockApi::default(), Some(sk));
+        for _ in 0..FAUCET_MAX_DRIPS_PER_ADDRESS {
+            web.faucet(&address).await.expect("a drip");
+        }
+        assert!(web.faucet(&address).await.is_err(), "the budget is spent");
+    }
+
+    /// A successful drip signs a transfer and hands it to the block API. The deploy the API
+    /// received carries the **public key derived from the deployer's secret** (the node's `deployer`
+    /// field is what the vault's `transfer` derives `from` from), the configured shard, and a
+    /// non-empty signature — so the receipt's deploy id is the signature's hex.
+    #[tokio::test]
+    async fn a_drip_signs_a_transfer_and_pools_it() {
+        let (sk, address) = key_and_address();
+        let stub = StubBlockApi::default();
+        let deployed = stub.deployed.clone();
+        let web = api(stub, Some(sk.clone()));
+
+        let response = web.faucet(&address).await.expect("a drip");
+        assert_eq!(response.amount, faucet::FAUCET_AMOUNT);
+        assert_eq!(response.to, address);
+
+        let recorded = deployed.lock().unwrap();
+        assert_eq!(recorded.len(), 1, "the deploy reached the block API");
+        assert_eq!(recorded[0].sig_algorithm, "secp256k1");
+        assert!(!recorded[0].sig.is_empty(), "it is signed");
+        assert_eq!(recorded[0].data.shard_id, "root", "the node's shard");
+        assert_eq!(recorded[0].data.valid_after_block_number, 42, "anchored to the chain height");
+
+        let alg = rchain_crypto::signatures::signatures_alg::from_algorithm("secp256k1")
+            .expect("registered");
+        let expected_deployer = alg.to_public(&sk).expect("public key").bytes().to_vec();
+        assert_eq!(
+            recorded[0].deployer, expected_deployer,
+            "the deployer is the public key of the signing key"
+        );
+        assert_eq!(
+            response.deploy_id,
+            base16::encode(&recorded[0].sig),
+            "the receipt's id is the deploy's signature"
+        );
+
+        // The transfer term names the recipient, so the drip actually pays the address asked for.
+        assert!(
+            recorded[0].data.term.contains(&address),
+            "the term is a transfer to {address}: {}",
+            recorded[0].data.term
+        );
+    }
 }
 
 #[async_trait]
