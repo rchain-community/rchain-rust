@@ -76,3 +76,63 @@ impl std::str::FromStr for EffectMode {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every configured name maps to the mode it names, and the reducer's reference is the default —
+    /// so a node that says nothing about scheduling gets the sequential loop rather than a
+    /// speculative one.
+    #[test]
+    fn effect_mode_parses_its_configured_names() {
+        assert_eq!("dfs".parse::<EffectMode>().unwrap(), EffectMode::Sequential);
+        assert_eq!("gate".parse::<EffectMode>().unwrap(), EffectMode::Gate);
+        assert_eq!(
+            "relaxed".parse::<EffectMode>().unwrap(),
+            EffectMode::Relaxed
+        );
+        assert_eq!(
+            "relaxed-validated".parse::<EffectMode>().unwrap(),
+            EffectMode::RelaxedValidated
+        );
+        assert_eq!(EffectMode::default(), EffectMode::Sequential);
+    }
+
+    /// A typo is rejected with the alternatives named, rather than silently falling back to a mode
+    /// the operator did not ask for. This is the difference between a loud config error and a node
+    /// quietly running the wrong scheduler.
+    #[test]
+    fn effect_mode_rejects_an_unknown_name_and_names_the_alternatives() {
+        for bad in [
+            "",
+            "Dfs",
+            "sequential",
+            "relaxed_validated",
+            "relaxed-validated ",
+            "gate ",
+        ] {
+            let err = bad.parse::<EffectMode>().expect_err("must be rejected");
+            assert!(err.contains("expected one of"), "{bad:?} -> {err}");
+            assert!(err.contains("relaxed-validated"), "{bad:?} -> {err}");
+        }
+        // No silent fallback to the default.
+        assert_ne!(
+            "nonsense".parse::<EffectMode>().ok(),
+            Some(EffectMode::Sequential)
+        );
+    }
+
+    /// `ForkJoin` exists as a mode but **no string selects it**: it is reachable from the reducer,
+    /// not from configuration. Pinned so that giving it a configured name is a deliberate act rather
+    /// than an accident of a later refactor.
+    #[test]
+    fn fork_join_is_not_name_addressable() {
+        for name in ["fork-join", "forkjoin", "fork_join", "fork-join-only"] {
+            assert!(
+                name.parse::<EffectMode>().is_err(),
+                "{name:?} must not select a mode"
+            );
+        }
+    }
+}

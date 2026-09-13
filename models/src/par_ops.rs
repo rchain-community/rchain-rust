@@ -341,3 +341,97 @@ pub fn typ(expr: &Expr) -> &'static str {
         _ => "Unit",
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ast::Par;
+
+    /// `until_free` keeps the levels *below* `n`, and the boundary is not a special case: at `n = 0`
+    /// (and below) nothing survives, which is what makes "free at depth 0" mean what it says.
+    #[test]
+    fn until_free_keeps_only_lower_levels() {
+        assert_eq!(until_free(&[0, 1, 2, 3], 3), vec![0, 1, 2]);
+        assert_eq!(until_free(&[0, 1, 2, 3], 0), Vec::<i32>::new());
+        assert_eq!(until_free(&[0, 1, 2, 3], -1), Vec::<i32>::new());
+        assert_eq!(until_free(&[], 5), Vec::<i32>::new());
+    }
+
+    /// A bound variable is free only at depth 0: inside a binder it is bound, so it contributes
+    /// nothing. Getting this backwards would make every `new` leak its variables into the enclosing
+    /// free set, which Law 6's `Closed` and the merge join both read.
+    #[test]
+    fn a_bound_variable_is_free_only_at_depth_zero() {
+        assert_eq!(locally_free_of_var(&Var::BoundVar(3), 0), vec![3]);
+        assert_eq!(locally_free_of_var(&Var::BoundVar(3), 1), Vec::<i32>::new());
+        // A free variable is not free *of the enclosing binder* at any depth: it is already free.
+        assert_eq!(locally_free_of_var(&Var::FreeVar(3), 0), Vec::<i32>::new());
+        assert!(locally_free_of_var(&Var::Wildcard, 0).is_empty());
+    }
+
+    /// Only a free variable or a wildcard is a connective: a bound variable is a reference to a
+    /// binder, not a place a `COMM` can join.
+    #[test]
+    fn connective_used_is_true_only_for_free_vars_and_wildcards() {
+        assert!(connective_used_of_var(&Var::FreeVar(0)));
+        assert!(connective_used_of_var(&Var::Wildcard));
+        assert!(!connective_used_of_var(&Var::BoundVar(0)));
+        assert!(!connective_used_of_var(&Var::Empty));
+    }
+
+    /// The free set of a concatenation is the union of the parts — the property the mergeability
+    /// check reads, and the one a `that`-vs-`p` ordering mistake would break.
+    #[test]
+    fn par_concat_unions_the_free_sets_regardless_of_side() {
+        let mut a = Par::<crate::ast::ProcSort>::default();
+        a.locally_free = AlwaysEqual(vec![1, 2]);
+        let mut b = Par::<crate::ast::ProcSort>::default();
+        b.locally_free = AlwaysEqual(vec![2, 3]);
+
+        let ab = par_concat(&a, &b);
+        assert_eq!(ab.locally_free.0, vec![1, 2, 3]);
+        assert!(!ab.connective_used);
+
+        let mut connective = Par::<crate::ast::ProcSort>::default();
+        connective.connective_used = true;
+        assert!(
+            par_concat(&a, &connective).connective_used,
+            "either side being connective makes the whole connective"
+        );
+    }
+
+    /// **Canonical form survives concatenation** (Law 1): two pars built in opposite orders are the
+    /// same par once sorted, so a merge cannot be perturbed by the order it happened to concatenate
+    /// in — which is the whole reason `par_concat` needs no ordering of its own.
+    #[test]
+    fn par_concat_preserves_the_canonical_form() {
+        use crate::sorted::Sorted;
+
+        let mut a = Par::<crate::ast::ProcSort>::default();
+        a.locally_free = AlwaysEqual(vec![1]);
+        let mut b = Par::<crate::ast::ProcSort>::default();
+        b.locally_free = AlwaysEqual(vec![2]);
+
+        let ab = Sorted::new(par_concat(&a, &b));
+        let ba = Sorted::new(par_concat(&b, &a));
+        assert_eq!(
+            ab, ba,
+            "concatenation order must not change canonical identity"
+        );
+        // The sorted form is what is hashed (its `Hash` is canonical by construction), so the two
+        // concatenation orders agree on the hash as well as on equality — which is the property the
+        // mineable/state hash depends on.
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        fn hash_of<S: crate::ast::Sort + Hash>(sorted: &Sorted<S>) -> u64 {
+            let mut hasher = DefaultHasher::new();
+            sorted.hash(&mut hasher);
+            hasher.finish()
+        }
+        assert_eq!(
+            hash_of(&ab),
+            hash_of(&ba),
+            "canonical identity covers the hash, not just equality"
+        );
+    }
+}
