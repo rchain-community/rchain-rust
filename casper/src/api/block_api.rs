@@ -174,6 +174,7 @@ fn construct_light_block_info(block: &BlockMessage) -> LightBlockInfo {
             .iter()
             .map(|d| base16::encode(d))
             .collect(),
+        timestamp: block.timestamp,
     }
 }
 
@@ -202,7 +203,7 @@ mod tests {
             state: RholangState::default(),
             sig_algorithm: "secp256k1".to_string(),
             sig: vec![0xee],
-            timestamp: 0,
+            timestamp: 1_700_000_000_000,
         }
     }
 
@@ -215,6 +216,8 @@ mod tests {
         assert_eq!(info.bonds.len(), 1);
         assert_eq!(info.bonds[0].stake, 100);
         assert!(info.block_hash.starts_with("0101"));
+        // The new block format's informational timestamp is exposed to clients.
+        assert_eq!(info.timestamp, 1_700_000_000_000);
     }
 
     #[test]

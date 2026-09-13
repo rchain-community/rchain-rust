@@ -149,6 +149,7 @@ fn light_block_info_to_wire(b: &LightBlockInfo) -> wire::LightBlockInfo {
         block_size: b.block_size.clone(),
         deploy_count: b.deploy_count,
         rejected_deploys: b.rejected_deploys.clone(),
+        timestamp: b.timestamp,
     }
 }
 

@@ -113,6 +113,9 @@ message LightBlockInfo {
   string blockSize = 13;
   int32 deployCount = 14;
   repeated string rejectedDeploys = 16;
+  // Informational block header timestamp (proposer's wall clock, ms since the Unix epoch). Not a
+  // consensus input; exposed for RChain applications.
+  int64 timestamp = 17;
 }
 
 message BlockInfo {
