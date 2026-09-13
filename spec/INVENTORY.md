@@ -8,7 +8,7 @@ gates it) is in [`../docs/src/contributor/laws-to-rust.md`](../docs/src/contribu
 **Type system.** The port's own type discipline — the ρ-calculus embedded as the base sort of a
 Calculus of Constructions, with no silent partiality — is specified in [`TYPE-SYSTEM.md`](TYPE-SYSTEM.md),
 guided by `Rchain/Rho.lean` and `Rchain/Ty.lean`. It is **not** a new law and does not pre-empt Laws
-1–25 below.
+1–29 below.
 
 **Concurrency model.** How Laws 1, 2, 4, 7, 8, 9, 10, 11, 19 combine to allow concurrent reduction — and
 what must serialize, and why — is specified in
@@ -29,6 +29,12 @@ The **on-chain extension (Laws 23–25)** makes the relaxed interleaving sound f
 versioned write-record layer with prefix visibility), invalidated subtrees abort and re-run under the
 gate, so the published log is the sequential fold's — see `Rchain/SchedulerOnchain.lean` and
 [`../docs/src/formal/onchain-scheduling.md`](../docs/src/formal/onchain-scheduling.md).
+The **cross-shard extension (Laws 26–29)** lifts that discipline from one shard to many: shard scope
+is deterministic (Law 26, a typed `ShardId`), and a cross-shard transaction is a **two-phase commit** —
+a Git-pull-request flow (propose → stage → review → merge, or close) whose coordinator commits on
+every participant or aborts on every one (Law 27), with idempotent legs (Law 28) and a durable,
+content-addressed decision record (Law 29) — see `Rchain/CrossShard.lean` and
+[`../docs/src/formal/cross-shard-transactions.md`](../docs/src/formal/cross-shard-transactions.md).
 
 **Status legend**
 
@@ -70,6 +76,10 @@ gate, so the published log is the sequential fold's — see `Rchain/SchedulerOnc
 | 23 | Scheduler | **Read-determinism**: an effect's chosen candidate, commit outcome, and event trace are a deterministic function of the state it reads (two states agreeing on the effect's closure yield identical traces) | this spec (`Rchain/SchedulerOnchain.lean`) | content-addressed selection (`rspace/src/rspace.rs` sorted-first matching) | `Rchain/SchedulerOnchain.lean` (`read_state_determines_outcome`) | **proven** |
 | 24 | Scheduler | **DFS-order serializability**: a concurrent execution is sound for the block path iff every commit read exactly the state the DFS-earlier effects produced — the versioned write-record layer (`SpecState := Chan → Option (DfsPath × Nat × Bool)`) witnesses reads that Bool values alone cannot (the depth-2 stale read); the S.3 B-first interleaving and the C/D later-write pollution both fail prefix visibility, the DFS order itself validates; the writer chain (`serializable_writer_chain`, path-nodup + initial-record hypotheses, each forced by a decided boundary witness) and the pinned publication theorem (`dfs_serializable_implies_log_equal`: dispatched + path-nodup + per-channel path-pinned commit order ⇒ the commit-order fold reaches the gate fold's state and each commit emits the gate's trace; the converse is disproved by the produce-only witness) are proven | this spec (`Rchain/SchedulerOnchain.lean`) + `docs/src/formal/onchain-scheduling.md` | block-path acceptance gate of `rholang::scheduler::EffectMode::RelaxedValidated` (validation certificate) | `Rchain/SchedulerOnchain.lean` (`prefixVisible`/`ValidCommit`/`DFSSerializable`, witnesses proven; `record_determines_value`/`dispatched_record_at` proven; `serializable_writer_chain` + `dfs_serializable_implies_log_equal` proven) | **proven** (certificate positive content + pinned publication; the certificate's blind spot — `certificate_blind_late_writer_diverges` — keeps the oracle backstop load-bearing) |
 | 25 | Scheduler | **Validated speculation**: a scheduler may commit effects in any order iff each commit validates Law 24; invalidated runs fall back to the whole-run gate re-run, so the published state is the sequential fold's — certificate fail-fast + oracle accept + fallback re-run (`validated_speculation_refines_apply`) | this spec (`Rchain/SchedulerOnchain.lean`) + `docs/src/formal/onchain-scheduling.md` | block-path validated-relaxed mode (speculative run + certificate + gate re-run fallback) | `Rchain/SchedulerOnchain.lean` (`validated_speculation_refines_apply` proven, `gate_replay_terminates`, `Published` (path-nodup coordinator invariant) + `fallback_rerun_published` proven) | **proven** (coordinator refinement by cases; no axioms remain) |
+| 26 | Cross-shard | **Shard scope determinism**: a deploy/block's effects bind to exactly one shard; the shard id is a validated, ordered value; the RNG seed + unforgeable names are shard-scoped | this spec (`Rchain/CrossShard.lean`) + `docs/src/formal/cross-shard-transactions.md` | shard-scoped seed/unforgeable names (`casper/src/block_random_seed.rs`); deploy admission + block validation shard checks (`casper/src/api/block_api_impl.rs`, `casper/src/validate.rs`); a future `ShardId` newtype | `Rchain/CrossShard.lean` (`shard_scope_deterministic`) | **stated** |
+| 27 | Cross-shard | **Cross-shard atomicity (2PC)**: a transaction commits on every participant or aborts on every participant — no run leaves a strict subset committed | this spec (`Rchain/CrossShard.lean`) + `docs/src/formal/cross-shard-transactions.md` | the (deferred) 2PC coordinator / gateway over the `casper/src/shard_invoke.rs` remote-deploy primitive | `Rchain/CrossShard.lean` (`txn_atomic`) | **stated** |
+| 28 | Cross-shard | **Leg idempotency**: `prepare`/`commit`/`abort` are idempotent under the transaction id (re-delivery and client retry are safe) | this spec (`Rchain/CrossShard.lean`) + `docs/src/formal/cross-shard-transactions.md` | idempotent-per-deploy legs (`casper/src/shard_invoke.rs`, `qucalc/examples/shard_exchange.rho`) | `Rchain/CrossShard.lean` (`leg_idempotent`) | **stated** |
+| 29 | Cross-shard | **Decision durability & record determinism**: the coordinator's decision is a durable, content-addressed record; a prepared participant can always recover it; the merge/close record is re-derivable on replay | this spec (`Rchain/CrossShard.lean`) + `docs/src/formal/cross-shard-transactions.md` | the coordinator's content-addressed record (deferred); content-addressing analog of Laws 11/16 | `Rchain/CrossShard.lean` (`commit_record_deterministic`) | **stated** |
 
 ## Open questions
 

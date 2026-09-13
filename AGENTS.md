@@ -13,12 +13,12 @@ IV.
 | Content | Canonical location |
 |---|---|
 | The rholang language & the ρ-calculus (the software) | [`docs/src/rholang/`](docs/src/rholang/) (book Part I) |
-| The ρ-calculus, formally — grammar, sorts, the 25-law mapping | [`docs/src/formal/`](docs/src/formal/) (book Part II) |
+| The ρ-calculus, formally — grammar, sorts, the 29-law mapping | [`docs/src/formal/`](docs/src/formal/) (book Part II) |
 | The node — consensus, RSpace, storage, operation | [`docs/src/node/`](docs/src/node/) (book Part III) |
 | Running/operating the node — REPL, standalone genesis, ports, Docker network | [`docs/src/node/operating.md`](docs/src/node/operating.md) |
 | Reader/agent navigation map (goal-indexed) | [`docs/src/ai-entrypoint.md`](docs/src/ai-entrypoint.md) |
 | The ρ-calculus core spec (grammar, sorts, operations, refinements) | [`spec/RHO-CALCULUS.md`](spec/RHO-CALCULUS.md) |
-| The 25-law invariant catalog | [`spec/INVENTORY.md`](spec/INVENTORY.md) |
+| The 29-law invariant catalog | [`spec/INVENTORY.md`](spec/INVENTORY.md) |
 | Human-facing walkthrough: each law → concrete Rust file/type/function + test | [`docs/src/contributor/laws-to-rust.md`](docs/src/contributor/laws-to-rust.md) |
 | The ρ→CoC type-system spec | [`spec/TYPE-SYSTEM.md`](spec/TYPE-SYSTEM.md) |
 | How Rust made the Scala fragility explicit (bugs caught, production-readiness) | [`spec/RUST-VS-SCALA.md`](spec/RUST-VS-SCALA.md) |
@@ -38,7 +38,7 @@ For an agent that needs to *understand the language* (rather than port code), th
    [`docs/src/rholang/unforgeable-names.md`](docs/src/rholang/unforgeable-names.md) → the core
    constructs.
 3. [`docs/src/formal/grammar-sorts.md`](docs/src/formal/grammar-sorts.md) +
-   [`docs/src/formal/the-25-laws.md`](docs/src/formal/the-25-laws.md) → the precise semantics.
+   [`docs/src/formal/the-29-laws.md`](docs/src/formal/the-29-laws.md) → the precise semantics.
 4. [`docs/src/ai-entrypoint.md`](docs/src/ai-entrypoint.md) → any other goal (consensus, capabilities,
    the port).
 
@@ -52,7 +52,7 @@ node (λ → π → ρ → Calculus of Constructions) — is laid out in
 [`docs/src/contributor/why-rust.md`](docs/src/contributor/why-rust.md).
 
 **Prime directive:** the Scala/JVM + Rosette *port* is complete; the node is now a **faithful
-implementation of the ρ-calculus**. The oracle is the mathematical specification — the 25 laws in
+implementation of the ρ-calculus**. The oracle is the mathematical specification — the 29 laws in
 [`spec/INVENTORY.md`](spec/INVENTORY.md) and the ρ→CoC type discipline in
 [`spec/TYPE-SYSTEM.md`](spec/TYPE-SYSTEM.md) — **not** the Scala code. Implement each law using Rust's
 strengths: carry the invariants *structurally* in the type system (refinement types, no silent
@@ -78,7 +78,7 @@ For any component you are about to write in Rust:
 |-------|-------|----------|-------|
 | **Lean 4** (primary) | algebraic/order laws, canonicalization, merge monoids, consensus arithmetic | [`spec/`](spec/) | `cd spec && lake build` |
 | **Coq** | substitution, α-equivalence, and programming-language metatheory (Autosubst in Phase 1) | [`spec/coq/`](spec/coq/) | `make -C spec/coq` |
-| **Inventory** | the 25 laws, each with source-of-truth + formalization status | [`spec/INVENTORY.md`](spec/INVENTORY.md) | — |
+| **Inventory** | the 29 laws, each with source-of-truth + formalization status | [`spec/INVENTORY.md`](spec/INVENTORY.md) | — |
 | **Type system** | the port's own type discipline: ρ-calculus as the base sort of a Calculus of Constructions, no silent partiality | [`spec/TYPE-SYSTEM.md`](spec/TYPE-SYSTEM.md), `Rchain/Rho.lean`, `Rchain/Ty.lean` | `cd spec && lake build` |
 
 The **type-system spec** ([`spec/TYPE-SYSTEM.md`](spec/TYPE-SYSTEM.md)) overlaps the Lean/Coq split
@@ -132,7 +132,7 @@ Per-law proof status lives in [`spec/INVENTORY.md`](spec/INVENTORY.md).
 
 ## What must be preserved
 
-The full 25-law table (with per-law formalization status and line-level source pointers) lives in
+The full 29-law table (with per-law formalization status and line-level source pointers) lives in
 [`spec/INVENTORY.md`](spec/INVENTORY.md); it is the canonical catalog and is not repeated here.
 
 **Proven vs. axiomatized:** the algebraic/combinatorial laws are provable statements — Law 1
@@ -234,7 +234,7 @@ must be a literal IP (`SocketAddr::from_str` rejects hostnames like `localhost`)
 
 ## Status
 
-- **Phase 0 — complete**: Lean 4 skeleton (`spec/`), Coq skeleton (`spec/coq/`), the 25-law
+- **Phase 0 — complete**: Lean 4 skeleton (`spec/`), Coq skeleton (`spec/coq/`), the 29-law
   inventory, and this document.
 - **Channel scheduler (Laws 20–22) — implemented**: the per-channel claim queue (`rspace/src/
   concurrent/channel_queue.rs`), the DFS gate and relaxed effect modes (`rholang/src/scheduler.rs`

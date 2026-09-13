@@ -22,7 +22,7 @@ The documentation is served as a book (`mdbook serve docs`). It is organized sof
   what it is, why it fits a blockchain, and from processes and names through object-capability smart
   contracts.
 - **Part II — The ρ-calculus, formally** ([`docs/src/formal/`](docs/src/formal/)) — the grammar, the
-  sorts, and the 25 laws — including the channel scheduler (Laws 20–22) and on-chain validated
+  sorts, and the 29 laws — including the channel scheduler (Laws 20–22) and on-chain validated
   speculation (Laws 23–25) — mapped to their machine-checked proofs.
 - **Part III — The node** ([`docs/src/node/`](docs/src/node/)) — consensus, the tuple space, storage,
   and operation.
@@ -63,9 +63,9 @@ documentation is also served as a book: `mdbook serve docs`.
 ## Governance
 
 The rewrite is governed by [`AGENTS.md`](AGENTS.md) — the binding intent + formal specification —
-and the machine-checked formalizations in [`spec/`](spec/) (the 25-law invariant inventory in
+and the machine-checked formalizations in [`spec/`](spec/) (the 29-law invariant inventory in
 [`spec/INVENTORY.md`](spec/INVENTORY.md), plus the Lean/Coq tracks). The prime directive is a
-**faithful implementation of the ρ-calculus**: the 25 laws are the oracle; the Scala node was the
+**faithful implementation of the ρ-calculus**: the 29 laws are the oracle; the Scala node was the
 port reference.
 
 ## Funding

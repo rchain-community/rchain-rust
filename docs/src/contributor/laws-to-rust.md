@@ -1,6 +1,6 @@
-# The 25 laws → Rust code
+# The 29 laws → Rust code
 
-A human-oriented walkthrough of how each of the [25 laws](../../../spec/INVENTORY.md) is realized as
+A human-oriented walkthrough of how each of the [29 laws](../../../spec/INVENTORY.md) is realized as
 **concrete Rust code** in this repository. This page exists because the mapping is obvious to a
 machine but not to a person: most laws don't live in one obvious place, and a few of the type names in
 the older docs were wrong or misleading. The canonical, terse table is
@@ -10,7 +10,7 @@ the older docs were wrong or misleading. The canonical, terse table is
 
 Three facts make the mapping intuitive once stated:
 
-1. **The oracle is the spec, not the Scala.** The 25 laws and the ρ→CoC type discipline
+1. **The oracle is the spec, not the Scala.** The 29 laws and the ρ→CoC type discipline
    ([`spec/TYPE-SYSTEM.md`](../../../spec/TYPE-SYSTEM.md)) are what the Rust code must satisfy. The
    `legacy/` Scala tree is *reference material* for behavior, and the Scala tests are *differential*
    reference vectors — never the thing to reproduce bug-for-bug.
@@ -58,6 +58,10 @@ cross-cutting "no silent partiality / no `unsafe`" discipline; it fails the buil
 | **23** | Read-determinism: an effect's chosen candidate, commit outcome and event trace are a deterministic function of the state it reads. | content-addressed candidate selection — `rspace/src/space_matcher.rs` sorted-first matching (Law 8 made total) | `read_state_determines_outcome` (`spec/Rchain/SchedulerOnchain.lean`) |
 | **24** | DFS-order serializability: a concurrent execution is sound for the block path iff every commit read the state the DFS-earlier effects produced (the versioned write-record layer's prefix visibility). | the write-record layer + `try_acquire` certificate of the claim queue (`AcquireError::ValidationFailed`), armed for `EffectMode::RelaxedValidated` — see [the on-chain validation phase plan](onchain-validation-phases.md) | the S.3/C/D witnesses and the boundary witnesses proven; `serializable_writer_chain` (path-nodup + initial record) and the pinned publication theorem `dfs_serializable_implies_log_equal` proven (`spec/Rchain/SchedulerOnchain.lean`) |
 | **25** | Validated speculation: commits may reorder iff each validates Law 24; invalidated runs fall back to the gate re-run, so the published state is the sequential fold's. | the block-path validated-relaxed coordinator: certificate fail-fast + oracle legs + per-deploy fallback with the whole-set safety net — see [the on-chain validation phase plan](onchain-validation-phases.md) | `validated_speculation_refines_apply` proven (coordinator by cases), `gate_replay_terminates`, `Published` + `fallback_rerun_published` (`spec/Rchain/SchedulerOnchain.lean`) |
+| **26** | A deploy/block's effects bind to exactly one shard; the shard id is a validated, ordered value; the RNG seed + unforgeable names are shard-scoped. | `casper/src/block_random_seed.rs` (shard in the seed/unforgeable names); shard-bound admission + validation (`casper/src/api/block_api_impl.rs`, `casper/src/validate.rs`); a future `ShardId` newtype | `shard_scope_deterministic` (`spec/Rchain/CrossShard.lean`) — stated |
+| **27** | Cross-shard atomicity (2PC): a transaction commits on every participant or aborts on every one — no run leaves a strict subset committed. | the (deferred) 2PC coordinator/gateway over the `casper/src/shard_invoke.rs` remote-deploy primitive | `txn_atomic` (`spec/Rchain/CrossShard.lean`) — stated |
+| **28** | `prepare`/`commit`/`abort` are idempotent under the transaction id, so re-delivery and client retry are safe. | idempotent-per-deploy legs (`casper/src/shard_invoke.rs`, `qucalc/examples/shard_exchange.rho`) | `leg_idempotent` (`spec/Rchain/CrossShard.lean`) — stated |
+| **29** | The coordinator's decision is a durable, content-addressed record; a prepared participant can always recover it; the merge/close record is re-derivable on replay. | the coordinator's content-addressed record (deferred); content-addressing analog of Laws 11/16 | `commit_record_deterministic` (`spec/Rchain/CrossShard.lean`) — stated |
 
 ---
 
@@ -121,7 +125,7 @@ The whole model — and the soundness theorems it must satisfy — is specified 
   compile* (e.g. you can't build a `Closed` term from one with free variables, or a `NonNegI64` from a
   negative number).
 - **Run the machine gate**: `tools/audit-type-system.sh` confirms zero production
-  `panic!`/`unsafe`/silent-conversion — the cross-cutting discipline that underlies all 25 laws.
+  `panic!`/`unsafe`/silent-conversion — the cross-cutting discipline that underlies all 29 laws.
 
 The canonical (terse) version of this mapping, with per-law Scala source-of-truth and Lean targets, is
 [`spec/INVENTORY.md`](../../../spec/INVENTORY.md). The formal type discipline is

@@ -275,6 +275,6 @@ wins; Law 8's sorted-first candidate selection and DFS order choose that.
   (`parLeft`/`parRight`) and the linearization obligation.
 - [Effect scheduling](../formal/effect-scheduling.md) — S.3/S.4, the soundness boundary
   this branch must respect.
-- [The 25 laws](../formal/the-25-laws.md) — Laws 1, 4, 7, 8, 9, 11 are the invariants each
+- [The 29 laws](../formal/the-29-laws.md) — Laws 1, 4, 7, 8, 9, 11 are the invariants each
   phase tests.
 - [`spec/INVENTORY.md`](../../../spec/INVENTORY.md) — canonical per-law source of truth.

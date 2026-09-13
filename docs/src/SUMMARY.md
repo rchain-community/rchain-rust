@@ -20,7 +20,7 @@
 # Part II — The ρ-calculus, formally
 
 - [Grammar and sorts](formal/grammar-sorts.md)
-- [The 25 laws](formal/the-25-laws.md)
+- [The 29 laws](formal/the-29-laws.md)
 - [The concurrency model](formal/concurrency-model.md)
 - [Determinism of the block state transition](formal/determinism.md)
 - [Structural congruence and reduction](formal/congruence-reduction.md)
@@ -28,6 +28,7 @@
 - [Effect scheduling](formal/effect-scheduling.md)
 - [The channel scheduler (Laws 20–22)](formal/channel-scheduler.md)
 - [On-chain scheduling: validated speculation (Laws 23–25)](formal/onchain-scheduling.md)
+- [Cross-shard transactions: two-phase commit (Laws 26–29)](formal/cross-shard-transactions.md)
 - [Substitution and matching](formal/substitution-matching.md)
 - [Closedness and the Calculus of Constructions](formal/closedness-coc.md)
 
@@ -50,7 +51,7 @@
 
 - [Why Rust](contributor/why-rust.md)
 - [Architecture & port status](contributor/architecture.md)
-- [The 25 laws → Rust code](contributor/laws-to-rust.md)
+- [The 29 laws → Rust code](contributor/laws-to-rust.md)
 - [On-chain validation phases (Laws 23–25)](contributor/onchain-validation-phases.md)
 - [Formal specification & audit](contributor/spec.md)
 

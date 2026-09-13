@@ -40,12 +40,14 @@ spec/
     FreeVars.lean      Law 6: `freeVarOf` + `Closed ↔ no free vars`
     Effect.lean        Law 9 (effect level): disjoint-closure commute + `effect_reorder_diverges`
     Scheduler.lean     Laws 20–22: claim-queue path order, gate refinement, depth-2 counterexample
+    SchedulerOnchain.lean  Laws 23–25: validated speculation (write-record layer + certificate + fallback)
+    CrossShard.lean    Laws 26–29: shard scope determinism + 2PC cross-shard atomicity
     Concurrent.lean    concurrency-model soundness theorems (standalone, not imported by the root)
     Tree.lean          tree-model confluence up to `StrCongT` (standalone)
     RSpace/            Laws 7–11: Join/Comm/Merge/Merkle (stated)
     Casper/            Laws 14–18: Stake/Fringe/Validate (stated)
     Crypto/            Law 19: Random/Spec (axiomatized by design)
-  INVENTORY.md         the law catalog (Laws 1–22): source-of-truth → theorem → Rust test
+  INVENTORY.md         the law catalog (Laws 1–29): source-of-truth → theorem → Rust test
 ```
 
 Laws 12–13 (Rosette) are **orphaned**: the `rosette`/`roscala` VM is out of scope (not wired into
@@ -74,7 +76,9 @@ Laws 12–13 (Rosette) are **orphaned**: the `rosette`/`roscala` VM is out of sc
   signature over the `Par`/abstract data types; the definitions (capture-avoiding substitution,
   α-equivalence) are Coq's obligation, the RSpace/Casper definitions are later phases.
   Law 20's liveness half (`law20_deadlock_freedom` in `Rchain/Scheduler.lean`) is stated; its
-  per-channel path-order core (`queue_commit_path_ordered`) is proven.
+  per-channel path-order core (`queue_commit_path_ordered`) is proven. Laws 26–29
+  (`CrossShard.lean`) state the sharding + two-phase-commit cross-shard model; the coordinator is a
+  deferred Layer-2 gateway, so all four are `stated`.
 - **Axiomatized** (never proven, by design): Law 19's cryptographic primitives (Blake2b, secp256k1,
   Curve25519) are modeled as abstract interfaces whose required properties are *postulated*
   (`Crypto/Random.lean`, `Crypto/Spec.lean`). Proving real crypto is out of scope.

@@ -1,6 +1,6 @@
-# The 25 laws
+# The 29 laws
 
-RChain's behavior is pinned by **25 laws** — one invariant per layer of the system. Each law maps a
+RChain's behavior is pinned by **29 laws** — one invariant per layer of the system. Each law maps a
 language or system feature to its formalization: a Lean theorem, a Coq axiom, the executable K rule,
 and the Rust realization. The canonical catalog is
 [`spec/INVENTORY.md`](../../../spec/INVENTORY.md); this page is the reader-facing rendering of the same
@@ -48,7 +48,7 @@ deferred); **axiom** = postulated by design (a cryptographic primitive).
 | **18** | height map contiguous; fringe identity order-independent | storage | `Casper/Validate.lean` — `height_map_contiguous`, `fringe_identity_order_independent` (**stated**) |
 | **19** | Blake2b256 canonical; `Blake2b512Random` associative splittable merge; sig verify/sign; Curve25519 round-trip | crypto | `Crypto/Random.lean` `mergeRandom_assoc`/`comm`; `Crypto/Spec.lean` `blake2b256_collision_free`, `sign_verify_roundtrip`, `curve25519_roundtrip` (**axiom**, by design) |
 
-## Scheduler — the effect scheduler (Laws 20–22)
+## Scheduler — the effect scheduler (Laws 20–25)
 
 | Law | Invariant | Feature | Lean |
 |---|---|---|---|
@@ -62,6 +62,18 @@ deferred); **axiom** = postulated by design (a cryptographic primitive).
 The reader-facing story — the claim queue, the DFS gate, the relaxed mode, and the unsound one-hop
 variant — is [The channel scheduler](channel-scheduler.md); the on-chain extension is
 [On-chain scheduling: validated speculation](onchain-scheduling.md).
+
+## Cross-shard — two-phase commit (Laws 26–29)
+
+| Law | Invariant | Feature | Lean |
+|---|---|---|---|
+| **26** | shard scope determinism: a deploy/block's effects bind to exactly one shard; the shard id is a validated, ordered value; the RNG seed + unforgeable names are shard-scoped | the shard boundary | `CrossShard.lean` — `shard_scope_deterministic` (**stated**) |
+| **27** | cross-shard atomicity (2PC): a transaction commits on every participant or aborts on every one — no run leaves a strict subset committed | the coordinator | `CrossShard.lean` — `txn_atomic` (**stated**) |
+| **28** | leg idempotency: `prepare`/`commit`/`abort` are idempotent under the transaction id | re-delivery / retry | `CrossShard.lean` — `leg_idempotent` (**stated**) |
+| **29** | decision durability & record determinism: the coordinator's decision is a durable, content-addressed record; a prepared participant recovers it; re-derivable on replay | the merge/close record | `CrossShard.lean` — `commit_record_deterministic` (**stated**) |
+
+The reader-facing story — the Git pull-request flow, the roles, the state machine, and the 2PC
+recovery caveat — is [Cross-shard transactions: two-phase commit](cross-shard-transactions.md).
 
 ## Reading the formalization
 

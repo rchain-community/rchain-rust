@@ -4,7 +4,7 @@ This page is a goal-indexed map of the documentation and the machine-checked spe
 first, then jump to the single page that answers your question. It mirrors the documentation map in
 [`AGENTS.md`](../../AGENTS.md) but is organized by *goal* rather than by artifact.
 
-The **authoritative formal specification** is the [`spec/`](../../spec/) tree — the 25-law catalog
+The **authoritative formal specification** is the [`spec/`](../../spec/) tree — the 29-law catalog
 ([`spec/INVENTORY.md`](../../spec/INVENTORY.md)), the ρ-calculus core
 ([`spec/RHO-CALCULUS.md`](../../spec/RHO-CALCULUS.md)), and the ρ→CoC type discipline
 ([`spec/TYPE-SYSTEM.md`](../../spec/TYPE-SYSTEM.md)). This book explains those; it never duplicates them.
@@ -20,7 +20,7 @@ The **authoritative formal specification** is the [`spec/`](../../spec/) tree �
 | Understand pattern matching / spatial matching | [Patterns and matching](rholang/patterns-matching.md) |
 | Build a secure contract (facets, revocation, sealer/unsealer, multisig) | [Object capabilities](rholang/object-capabilities.md), [Smart contracts](rholang/smart-contracts.md) |
 | See the exact grammar and sorts | [Grammar and sorts](formal/grammar-sorts.md) |
-| Map a language feature to its **law** and its proof | [The 25 laws](formal/the-25-laws.md) |
+| Map a language feature to its **law** and its proof | [The 29 laws](formal/the-29-laws.md) |
 | Understand how concurrent effects are linearized (claim queues, the DFS gate, the relaxed mode) | [The channel scheduler](formal/channel-scheduler.md) |
 | Understand how effect concurrency becomes sound on-chain (validated speculation, the Law 24 certificate) | [On-chain scheduling: validated speculation](formal/onchain-scheduling.md) |
 | Understand `≡` and `⟶` precisely | [Structural congruence and reduction](formal/congruence-reduction.md) |
@@ -34,7 +34,7 @@ The **authoritative formal specification** is the [`spec/`](../../spec/) tree �
 
 ## The invariant catalog, in one screen
 
-RChain's behavior is pinned by **25 laws** (see [The 25 laws](formal/the-25-laws.md) and
+RChain's behavior is pinned by **29 laws** (see [The 29 laws](formal/the-29-laws.md) and
 [`spec/INVENTORY.md`](../../spec/INVENTORY.md)). They group as:
 
 - **Rholang (Laws 1–6)** — canonicalization, α-equivalence, substitution, reduction, spatial matching,
@@ -57,5 +57,5 @@ RChain's behavior is pinned by **25 laws** (see [The 25 laws](formal/the-25-laws
 |---|---|---|
 | `spec/Rchain/*.lean` (Lean 4) | Law 1, `≡`/`⟶` core, `Closed`, totality fundamentals **proven**; Laws 3–5, 7–18 **stated**; Laws 20–22 **proven** in `Scheduler.lean` (except `law20_deadlock_freedom`, **stated**); Laws 23–25 in `SchedulerOnchain.lean` — Law 23 proven, Law 24 witnesses + supporting lemmas proven (publication **stated**), Law 25 **stated** + `gate_replay_terminates` proven; crypto **axiomatized** | `cd spec && lake build` |
 | `spec/coq/*.v` (Coq) | Laws 2–6 (substitution / α-equivalence metatheory) **stated** | `make -C spec/coq` |
-| `spec/INVENTORY.md` | the 25-law catalog with source-of-truth + status | — |
+| `spec/INVENTORY.md` | the 29-law catalog with source-of-truth + status | — |
 | `spec/TYPE-SYSTEM.md` | the ρ→CoC type discipline (totality, refinements) | — |
