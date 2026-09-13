@@ -20,6 +20,8 @@ pub const PREFIX_REGISTRY: u8 = 0x03;
 pub const PREFIX_POS: u8 = 0x04;
 /// Trie prefix for native vault state (`rev-address -> balance`).
 pub const PREFIX_VAULT: u8 = 0x05;
+/// Trie prefix for native cross-shard transaction state (`txn-id -> TxnRecord`).
+pub const PREFIX_TXN: u8 = 0x06;
 
 /// A native-state mutation, folded into the trie at checkpoint (port of a `NativeStoreAction`).
 #[derive(Clone, Debug, PartialEq, Eq)]

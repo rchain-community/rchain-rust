@@ -366,3 +366,20 @@ async fn registry_insert_signed_binds_deployer_id_from_the_normalizer_env() {
     assert_eq!(RhoNumber::unapply(&stored[0]), Some(1));
     assert_eq!(RhoString::unapply(&stored[1]), Some("data"));
 }
+
+#[tokio::test]
+async fn txn_recover_unknown_returns_nil() {
+    let (rt, _replay) = build_runtime_pair().await;
+    let data = eval_out(
+        &rt,
+        r#"new txn(`rho:txn`), ret in { txn!("recover", "deadbeef".hexToBytes(), *ret) | for (@r <- ret) { @"out"!(r) } }"#,
+        &BTreeMap::new(),
+        "out",
+    )
+    .await;
+    assert_eq!(data.len(), 1);
+    assert!(
+        RhoNil::unapply(&data[0]),
+        "recover on an unknown transaction must return Nil"
+    );
+}

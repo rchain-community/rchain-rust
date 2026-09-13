@@ -25,7 +25,7 @@ use rchain_shared::refined::{BlockHeight, NonNegI64, SeqNum};
 use crate::contract_call::ContractCall;
 use crate::dispatch::{RholangAndScalaDispatcher, ScalaBodyFn};
 use crate::errors::RholangError;
-use crate::native_state::NativeSystemState;
+use crate::native_state::{NativeSystemState, TxnState};
 use crate::pretty_printer::PrettyPrinter;
 use crate::registry;
 use crate::scheduler::DfsPath;
@@ -127,6 +127,9 @@ impl FixedChannels {
     pub fn gov_tally() -> Par {
         byte_name(29)
     }
+    pub fn txn() -> Par {
+        byte_name(30)
+    }
 }
 
 /// The dispatch-table ids (port of `SystemProcesses.BodyRefs`).
@@ -161,6 +164,7 @@ impl BodyRefs {
     pub const GOV_TRUST_LEVELS: i64 = 28;
     pub const GOV_CENSURE: i64 = 29;
     pub const GOV_TALLY: i64 = 30;
+    pub const TXN: i64 = 31;
 }
 
 /// Per-block data exposed to the `rho:block:data` contract (port of `SystemProcesses.BlockData`).
@@ -597,6 +601,14 @@ impl SystemProcesses {
                 remainder: false,
                 body_ref: BodyRefs::GOV_TALLY,
                 handler: self.gov_tally(),
+            },
+            Definition {
+                urn: "rho:txn".to_string(),
+                fixed_channel: FixedChannels::txn(),
+                arity: 1,
+                remainder: true,
+                body_ref: BodyRefs::TXN,
+                handler: self.txn(),
             },
         ]
     }
@@ -1591,6 +1603,132 @@ impl SystemProcesses {
                 }
             })
         })
+    }
+
+    /// The cross-shard two-phase-commit participant (Laws 26–29): a per-shard REV escrow that a
+    /// coordinator drives via `prepare` (lock + vote) → `commit` (apply) / `abort` (compensate).
+    fn txn(&self) -> ScalaBodyFn {
+        let cc = self.contract_call.clone();
+        let native = self.native_state.clone();
+        Box::new(move |args: Vec<ListParWithRandom>, path: DfsPath| {
+            let cc = cc.clone();
+            let native = native.clone();
+            Box::pin(async move {
+                let (pars, rand) = cc
+                    .unapply(&args)
+                    .ok_or_else(|| illegal_arg("txn expects a method and arguments"))?;
+                let [op, rest_par] = pars.as_slice() else {
+                    return Err(illegal_arg("txn expects a method and arguments"));
+                };
+                let op = RhoString::unapply(op)
+                    .ok_or_else(|| illegal_arg("txn method must be a string"))?;
+                let rest = RhoList::unapply(rest_par)
+                    .ok_or_else(|| illegal_arg("txn arguments must be a list"))?;
+                match op {
+                    "prepare" => {
+                        let [txn_id, coordinator, amount, to, deployer_id, ret] = rest else {
+                            return Err(illegal_arg(
+                                "prepare expects txnId, coordinator, amount, to, deployerId and return channel",
+                            ));
+                        };
+                        let txn_id = RhoByteArray::unapply(txn_id)
+                            .ok_or_else(|| illegal_arg("prepare expects a byte-array txnId"))?;
+                        let coordinator = RhoByteArray::unapply(coordinator)
+                            .ok_or_else(|| illegal_arg("prepare expects a byte-array coordinator"))?;
+                        let coordinator_pk = PublicKey::new(coordinator.to_vec());
+                        let amount = RhoNumber::unapply(amount)
+                            .ok_or_else(|| illegal_arg("prepare expects a number amount"))?;
+                        let amount =
+                            NonNegI64::try_from(amount).map_err(|e| illegal_arg(&e.to_string()))?;
+                        let to = RhoString::unapply(to)
+                            .ok_or_else(|| illegal_arg("prepare expects a string to-address"))?;
+                        let deployer_id = RhoDeployerId::unapply(deployer_id)
+                            .ok_or_else(|| illegal_arg("prepare expects a deployerId"))?;
+                        let from = RevAddress::from_deployer_id(deployer_id)
+                            .ok_or_else(|| illegal_arg("prepare: invalid deployerId"))?
+                            .to_base58();
+                        let vote = match native
+                            .txn_prepare(txn_id, &coordinator_pk, amount, &from, to)
+                            .await
+                        {
+                            Ok(TxnState::Prepared) => "ready".to_string(),
+                            Ok(state) => txn_state_string(state),
+                            Err(_) => "abort".to_string(),
+                        };
+                        cc.produce(&rand, &[RhoString::apply(vote)], ret, path)
+                            .await
+                    }
+                    "commit" => {
+                        let [txn_id, deployer_id, ret] = rest else {
+                            return Err(illegal_arg(
+                                "commit expects txnId, deployerId and return channel",
+                            ));
+                        };
+                        let txn_id = RhoByteArray::unapply(txn_id)
+                            .ok_or_else(|| illegal_arg("commit expects a byte-array txnId"))?;
+                        let deployer_id = RhoDeployerId::unapply(deployer_id)
+                            .ok_or_else(|| illegal_arg("commit expects a deployerId"))?;
+                        let Some(rec) = native.txn(txn_id).await.map_err(|e| illegal_arg(&e))? else {
+                            return Err(illegal_arg("commit: unknown transaction"));
+                        };
+                        if deployer_id != rec.coordinator.bytes() {
+                            return Err(illegal_arg("commit: not the coordinator"));
+                        }
+                        let state = native.txn_commit(txn_id).await.map_err(|e| illegal_arg(&e))?;
+                        cc.produce(&rand, &[RhoString::apply(txn_state_string(state))], ret, path)
+                            .await
+                    }
+                    "abort" => {
+                        let [txn_id, deployer_id, ret] = rest else {
+                            return Err(illegal_arg(
+                                "abort expects txnId, deployerId and return channel",
+                            ));
+                        };
+                        let txn_id = RhoByteArray::unapply(txn_id)
+                            .ok_or_else(|| illegal_arg("abort expects a byte-array txnId"))?;
+                        let deployer_id = RhoDeployerId::unapply(deployer_id)
+                            .ok_or_else(|| illegal_arg("abort expects a deployerId"))?;
+                        let Some(rec) = native.txn(txn_id).await.map_err(|e| illegal_arg(&e))? else {
+                            return Err(illegal_arg("abort: unknown transaction"));
+                        };
+                        if deployer_id != rec.coordinator.bytes() {
+                            return Err(illegal_arg("abort: not the coordinator"));
+                        }
+                        let state = native.txn_abort(txn_id).await.map_err(|e| illegal_arg(&e))?;
+                        cc.produce(&rand, &[RhoString::apply(txn_state_string(state))], ret, path)
+                            .await
+                    }
+                    "recover" => {
+                        let [txn_id, ret] = rest else {
+                            return Err(illegal_arg("recover expects txnId and return channel"));
+                        };
+                        let txn_id = RhoByteArray::unapply(txn_id)
+                            .ok_or_else(|| illegal_arg("recover expects a byte-array txnId"))?;
+                        let out = match native.txn(txn_id).await.map_err(|e| illegal_arg(&e))? {
+                            Some(rec) => RhoTupleN::apply(vec![
+                                RhoString::apply(txn_state_string(rec.state)),
+                                RhoByteArray::apply(rec.coordinator.bytes().to_vec()),
+                                RhoNumber::apply(i64::from(rec.amount)),
+                                RhoString::apply(rec.from),
+                                RhoString::apply(rec.to),
+                            ]),
+                            None => RhoNil::apply(),
+                        };
+                        cc.produce(&rand, &[out], ret, path).await
+                    }
+                    _ => Err(illegal_arg(&format!("txn: unknown method {op}"))),
+                }
+            })
+        })
+    }
+}
+
+/// Render a cross-shard transaction state as its rholang reply string.
+fn txn_state_string(state: TxnState) -> String {
+    match state {
+        TxnState::Prepared => "prepared".to_string(),
+        TxnState::Committed => "committed".to_string(),
+        TxnState::Aborted => "aborted".to_string(),
     }
 }
 

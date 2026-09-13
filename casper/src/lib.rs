@@ -29,6 +29,7 @@ pub mod state;
 pub mod storage;
 pub mod system_deploy;
 pub mod tools;
+pub mod txn_coordinator;
 pub mod validate;
 pub mod validator_identity;
 pub mod vault_parser;

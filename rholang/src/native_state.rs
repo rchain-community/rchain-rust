@@ -33,7 +33,9 @@ use rchain_models::validator::Validator;
 use rchain_shared::refined::NonNegI64;
 use rchain_shared::serialize::Serialize;
 
-use rchain_rspace::native_store::{InMemNativeStore, PREFIX_POS, PREFIX_REGISTRY, PREFIX_VAULT};
+use rchain_rspace::native_store::{
+    InMemNativeStore, PREFIX_POS, PREFIX_REGISTRY, PREFIX_TXN, PREFIX_VAULT,
+};
 
 use crate::util::rev_address::RevAddress;
 
@@ -88,6 +90,117 @@ fn registry_key(uri: &str) -> Blake2b256Hash {
 /// Leaf key for a vault balance (the REV address base58 string, hashed).
 fn vault_key(address: &str) -> Blake2b256Hash {
     Blake2b256Hash::create(address.as_bytes())
+}
+
+/// Leaf key for a cross-shard transaction record (the `txn_id` bytes, hashed).
+fn txn_key(id: &[u8]) -> Blake2b256Hash {
+    Blake2b256Hash::create(id)
+}
+
+/// The state of a cross-shard two-phase-commit transaction record.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TxnState {
+    Prepared,
+    Committed,
+    Aborted,
+}
+
+impl TxnState {
+    fn discriminant(self) -> u8 {
+        match self {
+            TxnState::Prepared => 0,
+            TxnState::Committed => 1,
+            TxnState::Aborted => 2,
+        }
+    }
+
+    fn from_discriminant(b: u8) -> Option<Self> {
+        match b {
+            0 => Some(TxnState::Prepared),
+            1 => Some(TxnState::Committed),
+            2 => Some(TxnState::Aborted),
+            _ => None,
+        }
+    }
+}
+
+/// A cross-shard 2PC transaction record: the escrowed REV, its source and destination, and the
+/// coordinator key authorized to drive commit/abort.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TxnRecord {
+    pub state: TxnState,
+    pub coordinator: PublicKey,
+    pub amount: NonNegI64,
+    pub from: String,
+    pub to: String,
+}
+
+/// Canonically encode a transaction record: 1-byte state, 65-byte coordinator key, 8-byte LE amount,
+/// then two length-prefixed (u32 LE) REV addresses.
+fn encode_txn(rec: &TxnRecord) -> Vec<u8> {
+    let mut out = Vec::with_capacity(1 + VALIDATOR_LEN + 8 + 8 + rec.from.len() + rec.to.len());
+    out.push(rec.state.discriminant());
+    out.extend_from_slice(rec.coordinator.bytes());
+    out.extend_from_slice(&i64::from(rec.amount).to_le_bytes());
+    for addr in [&rec.from, &rec.to] {
+        out.extend_from_slice(&(addr.len() as u32).to_le_bytes());
+        out.extend_from_slice(addr.as_bytes());
+    }
+    out
+}
+
+/// Read a length-prefixed (u32 LE) string at `off`, advancing it.
+fn read_len_prefixed(bytes: &[u8], off: &mut usize) -> Result<String, String> {
+    let len_end = off
+        .checked_add(4)
+        .ok_or("txn record: offset overflow")?;
+    if len_end > bytes.len() {
+        return Err("txn record truncated".to_string());
+    }
+    let len_bytes: [u8; 4] = bytes[*off..len_end]
+        .try_into()
+        .map_err(|_| "txn record: invalid length prefix".to_string())?;
+    let len = usize::try_from(u32::from_le_bytes(len_bytes))
+        .map_err(|_| "txn record: length does not fit usize".to_string())?;
+    *off = len_end;
+    let s_end = off
+        .checked_add(len)
+        .ok_or("txn record: length overflow")?;
+    if s_end > bytes.len() {
+        return Err("txn record truncated".to_string());
+    }
+    let s = String::from_utf8(bytes[*off..s_end].to_vec())
+        .map_err(|_| "txn record: non-UTF8 address".to_string())?;
+    *off = s_end;
+    Ok(s)
+}
+
+/// Decode a transaction record (inverse of [`encode_txn`]).
+fn decode_txn(bytes: &[u8]) -> Result<TxnRecord, String> {
+    if bytes.len() < 1 + VALIDATOR_LEN + 8 + 4 + 4 {
+        return Err("txn record too short".to_string());
+    }
+    let state = TxnState::from_discriminant(bytes[0])
+        .ok_or_else(|| format!("txn record: unknown state {}", bytes[0]))?;
+    let coordinator = PublicKey::new(bytes[1..1 + VALIDATOR_LEN].to_vec());
+    let amount_bytes: [u8; 8] = bytes[1 + VALIDATOR_LEN..1 + VALIDATOR_LEN + 8]
+        .try_into()
+        .map_err(|_| "txn record: invalid amount".to_string())?;
+    let amount = NonNegI64::try_from(i64::from_le_bytes(amount_bytes))
+        .map_err(|_| "txn record: negative amount".to_string())?;
+    let mut off = 1 + VALIDATOR_LEN + 8;
+    let from = read_len_prefixed(bytes, &mut off)?;
+    let to = read_len_prefixed(bytes, &mut off)?;
+    if off != bytes.len() {
+        return Err("txn record has trailing bytes".to_string());
+    }
+    Ok(TxnRecord {
+        state,
+        coordinator,
+        amount,
+        from,
+        to,
+    })
 }
 
 // --- Canonical encoders ------------------------------------------------------
@@ -650,6 +763,112 @@ impl NativeSystemState {
         Ok(())
     }
 
+    // --- Cross-shard 2PC transactions ----------------------------------------
+
+    /// Read a cross-shard transaction record, if present.
+    pub async fn txn(&self, id: &[u8]) -> Result<Option<TxnRecord>, String> {
+        match self.store.get(PREFIX_TXN, &txn_key(id)).await? {
+            Some(bytes) => decode_txn(&bytes).map(Some),
+            None => Ok(None),
+        }
+    }
+
+    /// Write a cross-shard transaction record.
+    fn set_txn(&self, id: &[u8], rec: &TxnRecord) {
+        self.store.put(PREFIX_TXN, txn_key(id), encode_txn(rec));
+    }
+
+    /// Escrow `amount` REV from `from`'s vault and record a `Prepared` transaction. Idempotent under
+    /// the transaction id (Law 28): a duplicate `prepare` returns the existing state unchanged.
+    pub async fn txn_prepare(
+        &self,
+        id: &[u8],
+        coordinator: &PublicKey,
+        amount: NonNegI64,
+        from: &str,
+        to: &str,
+    ) -> Result<TxnState, String> {
+        if let Some(existing) = self.txn(id).await? {
+            return Ok(existing.state);
+        }
+        let from_balance = self.vault_balance(from).await?.unwrap_or(NonNegI64::zero());
+        if i64::from(from_balance) < i64::from(amount) {
+            return Err("txn prepare: insufficient balance".to_string());
+        }
+        let new_from = NonNegI64::try_from(i64::from(from_balance) - i64::from(amount))
+            .map_err(|e| e.to_string())?;
+        self.set_vault_balance(from, new_from);
+        self.set_txn(
+            id,
+            &TxnRecord {
+                state: TxnState::Prepared,
+                coordinator: coordinator.clone(),
+                amount,
+                from: from.to_string(),
+                to: to.to_string(),
+            },
+        );
+        Ok(TxnState::Prepared)
+    }
+
+    /// Commit a prepared transaction: transfer the escrow to `to`. Idempotent (a committed record is
+    /// returned unchanged); committing an aborted transaction is an error.
+    pub async fn txn_commit(&self, id: &[u8]) -> Result<TxnState, String> {
+        let Some(rec) = self.txn(id).await? else {
+            return Err("txn commit: unknown transaction".to_string());
+        };
+        match rec.state {
+            TxnState::Committed => return Ok(TxnState::Committed),
+            TxnState::Aborted => return Err("txn commit: already aborted".to_string()),
+            TxnState::Prepared => {}
+        }
+        let to_balance = self.vault_balance(&rec.to).await?.unwrap_or(NonNegI64::zero());
+        let new_to = NonNegI64::try_from(
+            i64::from(to_balance)
+                .checked_add(i64::from(rec.amount))
+                .ok_or("txn commit: destination balance overflow")?,
+        )
+        .map_err(|e| e.to_string())?;
+        self.set_vault_balance(&rec.to, new_to);
+        self.set_txn(
+            id,
+            &TxnRecord {
+                state: TxnState::Committed,
+                ..rec.clone()
+            },
+        );
+        Ok(TxnState::Committed)
+    }
+
+    /// Abort a prepared transaction: return the escrow to `from`. Idempotent (an aborted record is
+    /// returned unchanged); aborting a committed transaction is an error.
+    pub async fn txn_abort(&self, id: &[u8]) -> Result<TxnState, String> {
+        let Some(rec) = self.txn(id).await? else {
+            return Err("txn abort: unknown transaction".to_string());
+        };
+        match rec.state {
+            TxnState::Aborted => return Ok(TxnState::Aborted),
+            TxnState::Committed => return Err("txn abort: already committed".to_string()),
+            TxnState::Prepared => {}
+        }
+        let from_balance = self.vault_balance(&rec.from).await?.unwrap_or(NonNegI64::zero());
+        let new_from = NonNegI64::try_from(
+            i64::from(from_balance)
+                .checked_add(i64::from(rec.amount))
+                .ok_or("txn abort: source balance overflow")?,
+        )
+        .map_err(|e| e.to_string())?;
+        self.set_vault_balance(&rec.from, new_from);
+        self.set_txn(
+            id,
+            &TxnRecord {
+                state: TxnState::Aborted,
+                ..rec.clone()
+            },
+        );
+        Ok(TxnState::Aborted)
+    }
+
     // --- Registry ------------------------------------------------------------
 
     /// Look up a registered `Par` by URI.
@@ -1107,6 +1326,113 @@ mod tests {
         assert_eq!(
             i64::from(native.vault_balance(&addr).await.unwrap().unwrap()),
             42
+        );
+    }
+
+    #[test]
+    fn txn_record_round_trip() {
+        let rec = TxnRecord {
+            state: TxnState::Committed,
+            coordinator: PublicKey::new(vec![7u8; 65]),
+            amount: NonNegI64::try_from(12345).unwrap(),
+            from: "fromRevAddress".to_string(),
+            to: "toRevAddress".to_string(),
+        };
+        let encoded = encode_txn(&rec);
+        assert_eq!(decode_txn(&encoded).unwrap(), rec);
+    }
+
+    #[tokio::test]
+    async fn txn_prepare_commit_round_trip() {
+        let native = NativeSystemState::new(Arc::new(InMemNativeStore::empty()));
+        let coordinator = PublicKey::new(vec![4u8; 65]);
+        let from = "fromAddr".to_string();
+        let to = "toAddr".to_string();
+        let id: &[u8] = b"txn-1";
+
+        native.set_vault_balance(&from, NonNegI64::try_from(100).unwrap());
+
+        // Prepare escrows 40 REV from `from`.
+        let state = native
+            .txn_prepare(id, &coordinator, NonNegI64::try_from(40).unwrap(), &from, &to)
+            .await
+            .unwrap();
+        assert_eq!(state, TxnState::Prepared);
+        assert_eq!(
+            i64::from(native.vault_balance(&from).await.unwrap().unwrap()),
+            60
+        );
+
+        // Commit transfers 40 REV to `to`, and is idempotent.
+        let state = native.txn_commit(id).await.unwrap();
+        assert_eq!(state, TxnState::Committed);
+        assert_eq!(
+            i64::from(native.vault_balance(&to).await.unwrap().unwrap()),
+            40
+        );
+        assert_eq!(native.txn_commit(id).await.unwrap(), TxnState::Committed);
+        assert_eq!(
+            i64::from(native.vault_balance(&to).await.unwrap().unwrap()),
+            40
+        );
+    }
+
+    #[tokio::test]
+    async fn txn_prepare_abort_returns_escrow() {
+        let native = NativeSystemState::new(Arc::new(InMemNativeStore::empty()));
+        let coordinator = PublicKey::new(vec![4u8; 65]);
+        let from = "fromAddr".to_string();
+        let to = "toAddr".to_string();
+        let id: &[u8] = b"txn-2";
+
+        native.set_vault_balance(&from, NonNegI64::try_from(100).unwrap());
+        native
+            .txn_prepare(id, &coordinator, NonNegI64::try_from(30).unwrap(), &from, &to)
+            .await
+            .unwrap();
+
+        // Abort returns the escrow to `from`, and is idempotent.
+        assert_eq!(native.txn_abort(id).await.unwrap(), TxnState::Aborted);
+        assert_eq!(
+            i64::from(native.vault_balance(&from).await.unwrap().unwrap()),
+            100
+        );
+        assert_eq!(native.txn_abort(id).await.unwrap(), TxnState::Aborted);
+    }
+
+    #[tokio::test]
+    async fn txn_prepare_rejects_overdraw_and_is_idempotent() {
+        let native = NativeSystemState::new(Arc::new(InMemNativeStore::empty()));
+        let coordinator = PublicKey::new(vec![4u8; 65]);
+        let from = "fromAddr".to_string();
+        let to = "toAddr".to_string();
+        let id: &[u8] = b"txn-3";
+
+        native.set_vault_balance(&from, NonNegI64::try_from(50).unwrap());
+
+        // Overdraw is rejected and leaves the vault untouched.
+        assert!(native
+            .txn_prepare(id, &coordinator, NonNegI64::try_from(51).unwrap(), &from, &to)
+            .await
+            .is_err());
+        assert_eq!(
+            i64::from(native.vault_balance(&from).await.unwrap().unwrap()),
+            50
+        );
+
+        // A successful prepare is idempotent (a duplicate re-deducts nothing).
+        native
+            .txn_prepare(id, &coordinator, NonNegI64::try_from(40).unwrap(), &from, &to)
+            .await
+            .unwrap();
+        let state = native
+            .txn_prepare(id, &coordinator, NonNegI64::try_from(40).unwrap(), &from, &to)
+            .await
+            .unwrap();
+        assert_eq!(state, TxnState::Prepared);
+        assert_eq!(
+            i64::from(native.vault_balance(&from).await.unwrap().unwrap()),
+            10
         );
     }
 }
