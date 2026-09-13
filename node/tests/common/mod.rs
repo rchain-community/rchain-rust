@@ -3,6 +3,10 @@
 //! Assembles a real standalone node in-process (mirroring `main.rs`: `Configuration::build` →
 //! `node_environment::create` → `setup_node_program` → `serve`) over an ephemeral data dir and
 //! loopback ports, then drives its gRPC + HTTP surfaces.
+//!
+//! Each `node/tests/*.rs` binary compiles this module separately, so helpers a given binary does not
+//! use would warn there — hence the module-wide allowance.
+#![allow(dead_code)]
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -172,13 +176,24 @@ pub async fn start(conf: &NodeConf, grpc_port: u16, http_port: u16) -> TestNode 
 /// `propose-on-deploy` is on because a cross-shard leg is an ordinary deploy: it takes effect when a
 /// block containing it is produced, which is what the gateway's coordinator waits for.
 pub fn gateway_conf(dir: &Path, ports: &[u16], validator_hex: &str) -> NodeConf {
+    gateway_conf_with_txn_api(dir, ports, validator_hex, true)
+}
+
+/// As [`gateway_conf`], with the cross-shard transaction API switched on or off — the flag an
+/// operator controls, and therefore a gate a test has to drive from a real config.
+pub fn gateway_conf_with_txn_api(
+    dir: &Path,
+    ports: &[u16],
+    validator_hex: &str,
+    enable_txn_api: bool,
+) -> NodeConf {
     assert!(
         ports.len() >= 4,
         "need [http, admin-http, grpc-internal, protocol]"
     );
     let mut conf = standalone_conf(dir, ports, Some(validator_hex));
     conf.propose_on_deploy = true;
-    conf.api_server.enable_txn_api = true;
+    conf.api_server.enable_txn_api = enable_txn_api;
 
     let identity = ValidatorIdentity::from_hex(validator_hex).expect("validator identity");
     let pub_hex = base16::encode(identity.public_key.bytes());
