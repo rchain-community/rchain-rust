@@ -133,6 +133,7 @@ mod tests {
             state: RholangState::default(),
             sig_algorithm: "secp256k1".to_string(),
             sig: vec![0x44; 64],
+            timestamp: 0,
         }
     }
 

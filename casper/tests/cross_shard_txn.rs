@@ -139,10 +139,7 @@ impl DeployService for InProcDeployService {
     async fn visualize_dag(&self, _: &VisualizeDagQuery) -> Result<String, Vec<String>> {
         Err(vec!["not implemented".to_string()])
     }
-    async fn machine_verifiable_dag(
-        &self,
-        _: &MachineVerifyQuery,
-    ) -> Result<String, Vec<String>> {
+    async fn machine_verifiable_dag(&self, _: &MachineVerifyQuery) -> Result<String, Vec<String>> {
         Err(vec!["not implemented".to_string()])
     }
     async fn find_deploy(&self, _: &FindDeployQuery) -> Result<String, Vec<String>> {
@@ -170,10 +167,8 @@ impl DeployService for InProcDeployService {
 
 /// Fund an address's vault on a shard's runtime.
 fn fund(rm: &RuntimeManager, address: &str, amount: i64) {
-    NativeSystemState::new(rm.runtime().native_store()).set_vault_balance(
-        address,
-        NonNegI64::try_from(amount).expect("non-negative"),
-    );
+    NativeSystemState::new(rm.runtime().native_store())
+        .set_vault_balance(address, NonNegI64::try_from(amount).expect("non-negative"));
 }
 
 /// Both legs funded and ready ⇒ every shard commits and the escrowed REV moves to the destination.
@@ -234,11 +229,23 @@ async fn two_shard_2pc_commits_all() {
         40
     );
     assert_eq!(
-        i64::from(native_a.vault_balance(&coordinator_addr).await.unwrap().unwrap()),
+        i64::from(
+            native_a
+                .vault_balance(&coordinator_addr)
+                .await
+                .unwrap()
+                .unwrap()
+        ),
         70
     );
     assert_eq!(
-        i64::from(native_b.vault_balance(&coordinator_addr).await.unwrap().unwrap()),
+        i64::from(
+            native_b
+                .vault_balance(&coordinator_addr)
+                .await
+                .unwrap()
+                .unwrap()
+        ),
         60
     );
 }
@@ -286,19 +293,25 @@ async fn two_shard_2pc_aborts_all_when_a_leg_fails() {
     let native_a = NativeSystemState::new(shard_a.runtime().native_store());
     let native_b = NativeSystemState::new(shard_b.runtime().native_store());
     assert_eq!(
-        i64::from(native_a.vault_balance(&coordinator_addr).await.unwrap().unwrap()),
+        i64::from(
+            native_a
+                .vault_balance(&coordinator_addr)
+                .await
+                .unwrap()
+                .unwrap()
+        ),
         100
     );
     assert_eq!(
-        i64::from(native_b.vault_balance(&coordinator_addr).await.unwrap().unwrap()),
+        i64::from(
+            native_b
+                .vault_balance(&coordinator_addr)
+                .await
+                .unwrap()
+                .unwrap()
+        ),
         10
     );
-    assert_eq!(
-        native_a.vault_balance(&destination).await.unwrap(),
-        None
-    );
-    assert_eq!(
-        native_b.vault_balance(&destination).await.unwrap(),
-        None
-    );
+    assert_eq!(native_a.vault_balance(&destination).await.unwrap(), None);
+    assert_eq!(native_b.vault_balance(&destination).await.unwrap(), None);
 }

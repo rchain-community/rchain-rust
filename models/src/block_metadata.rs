@@ -196,6 +196,7 @@ mod tests {
             state: Default::default(),
             sig_algorithm: "secp256k1".to_string(),
             sig: vec![],
+            timestamp: 0,
         };
         let meta = BlockMetadata::from_block(&block);
         assert_eq!(meta.block_hash, block_hash(1));

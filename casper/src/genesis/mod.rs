@@ -132,6 +132,8 @@ fn create_block_with_processed_deploys(
         bonds,
         BTreeSet::new(),
         state,
+        // Genesis carries a fixed timestamp (0) so every node agrees; informational only.
+        0,
     ))
 }
 
@@ -165,6 +167,8 @@ pub async fn create_genesis_block(
         block_number: BlockHeight::try_from(genesis.block_number).map_err(|e| e.to_string())?,
         sender: genesis.sender.clone(),
         seq_num: SeqNum::zero(),
+        // Genesis carries a fixed timestamp (0) so every node agrees; informational only.
+        timestamp: 0,
     };
     let rand = BlockRandomSeed::random_generator_from_shard_id(&genesis.shard_id);
     let pos_genesis = build_pos_genesis(&genesis.proof_of_stake);

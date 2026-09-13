@@ -13,6 +13,7 @@ use rchain_models::casper::protocol::casper_message::{
 use rchain_models::validator::Validator;
 use rchain_rholang::system_processes::BlockData;
 use rchain_shared::refined::{BlockHeight, NonNegI64, SeqNum};
+use rchain_shared::time::current_millis;
 
 use crate::block_random_seed::BlockRandomSeed;
 use crate::interpreter_util::compute_deploys_checkpoint;
@@ -73,10 +74,15 @@ impl BlockCreator {
             .find(|m| m.sender == creators_validator)
             .map(|m| m.seq_num + NonNegI64::one())
             .unwrap_or_else(SeqNum::zero);
+        // Informational block timestamp: the proposer's wall clock, chosen once and used both for
+        // the block header and for `rho:block:data` during evaluation, so a contract that reads it
+        // sees exactly the value a replayer will (determinism).
+        let block_timestamp = current_millis();
         let block_data = BlockData {
             block_number: block_num,
             sender: creators_pk.clone(),
             seq_num,
+            timestamp: block_timestamp,
         };
         let should_propose = !deploys.is_empty() || !to_slash.is_empty() || change_epoch;
         let finalization = pre_state.fringe_rejected_deploys.clone();
@@ -162,6 +168,7 @@ impl BlockCreator {
                     bonds_map,
                     finalization,
                     state,
+                    block_timestamp,
                 );
                 let signed_block = self
                     .id

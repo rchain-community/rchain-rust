@@ -90,6 +90,7 @@ mod tests {
             std::collections::BTreeMap::new(),
             std::collections::BTreeSet::new(),
             rchain_models::casper::protocol::casper_message::RholangState::default(),
+            0,
         );
         let signed = identity.sign_block(&block).unwrap();
         assert_eq!(signed.block_hash, hash_block(&block));

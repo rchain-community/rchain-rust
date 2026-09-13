@@ -59,6 +59,10 @@ message BlockMessageProto {
   RholangStateProto state          = 14;
   string sigAlgorithm   = 15;
   bytes  sig            = 16;
+  // Proposer's wall clock (ms since the Unix epoch) at block creation. Informational only: it is
+  // NOT a consensus input (validators ignore it), and it is exposed to RChain applications via
+  // `rho:block:data`. It is part of the header, so it is covered by the block hash.
+  int64  timestamp      = 17;
 }
 
 message DeployDataProto {
