@@ -27,7 +27,7 @@ use rchain_rspace::concurrent::channel_queue::{
 };
 use rchain_rspace::scheduled_space::ReleaseToken;
 
-use crate::accounting::{CostAccounting, Costs};
+use crate::accounting::{Cost, CostAccounting, Costs};
 use crate::env::Env;
 use crate::errors::RholangError;
 use crate::matcher::spatial_match_result;
@@ -112,6 +112,11 @@ fn eval_to_bool(par: &Par, env: &Env<Par>, cost: &CostAccounting) -> Result<bool
 fn eval_to_long(par: &Par, env: &Env<Par>, cost: &CostAccounting) -> Result<i64, RholangError> {
     match eval_single_expr(par, env, cost)? {
         Expr::GInt(v) => Ok(v),
+        // RCHIP #51: a `BigInt` that fits in `i64` is a valid index/count.
+        Expr::GBigInt(v) => v
+            .to_string()
+            .parse::<i64>()
+            .map_err(|_| RholangError::ReduceError(format!("Error: value out of range: {v}"))),
         other => Err(RholangError::ReduceError(format!(
             "Error: expected Int, got {}",
             typ(&other)
@@ -142,6 +147,77 @@ pub fn eval_single_expr<S: Sort>(
     }
 }
 
+/// The integer value of an `Int`/`BigInt` expression (RCHIP #51: one integer domain).
+fn as_integer(e: &Expr) -> Option<BigInt> {
+    match e {
+        Expr::GInt(v) => Some(BigInt::from(*v)),
+        Expr::GBigInt(v) => Some(v.clone()),
+        _ => None,
+    }
+}
+
+fn is_zero(e: &Expr) -> bool {
+    match e {
+        Expr::GInt(v) => *v == 0,
+        Expr::GBigInt(v) => *v == BigInt::from(0),
+        _ => false,
+    }
+}
+
+/// Numeric equality spanning `Int`/`BigInt` (so `2 == 2n`); `None` when not both are integers.
+fn numeric_eq(a: &Par, b: &Par) -> Option<bool> {
+    let x = as_integer(single_expr(a)?)?;
+    let y = as_integer(single_expr(b)?)?;
+    Some(x == y)
+}
+
+/// A binary integer operation: an `i64` fast path (`checked`) that **never wraps** — on overflow it
+/// promotes both operands and computes exactly in `BigInt` (RCHIP #51). Mixed `Int`/`BigInt`
+/// operands promote too. `big` must never be called with a zero divisor.
+fn int_binop(
+    op: &str,
+    v1: &Expr,
+    v2: &Expr,
+    cost: &CostAccounting,
+    checked: fn(i64, i64) -> Option<i64>,
+    big: fn(&BigInt, &BigInt) -> Result<BigInt, RholangError>,
+    int_cost: Cost,
+    big_cost: fn(&BigInt, &BigInt) -> Cost,
+) -> Result<Expr, RholangError> {
+    match (v1, v2) {
+        (Expr::GInt(l), Expr::GInt(r)) => match checked(*l, *r) {
+            Some(value) => {
+                cost.charge(int_cost)?;
+                Ok(Expr::GInt(value))
+            }
+            None => int_bigop(&BigInt::from(*l), &BigInt::from(*r), cost, big, big_cost),
+        },
+        (Expr::GInt(l), Expr::GBigInt(r)) => int_bigop(&BigInt::from(*l), r, cost, big, big_cost),
+        (Expr::GBigInt(l), Expr::GInt(r)) => int_bigop(l, &BigInt::from(*r), cost, big, big_cost),
+        (Expr::GBigInt(l), Expr::GBigInt(r)) => int_bigop(l, r, cost, big, big_cost),
+        (Expr::GInt(_) | Expr::GBigInt(_), o) => Err(RholangError::OperatorExpectedError {
+            op: op.to_string(),
+            expected: "Int".to_string(),
+            other_type: typ(o).to_string(),
+        }),
+        (o, _) => Err(RholangError::OperatorNotDefined {
+            op: op.to_string(),
+            other_type: typ(o).to_string(),
+        }),
+    }
+}
+
+fn int_bigop(
+    l: &BigInt,
+    r: &BigInt,
+    cost: &CostAccounting,
+    big: fn(&BigInt, &BigInt) -> Result<BigInt, RholangError>,
+    big_cost: fn(&BigInt, &BigInt) -> Cost,
+) -> Result<Expr, RholangError> {
+    cost.charge(big_cost(l, r))?;
+    Ok(Expr::GBigInt(big(l, r)?))
+}
+
 fn relop(
     p1: &Par,
     p2: &Par,
@@ -166,6 +242,17 @@ fn relop(
         (Expr::GBigInt(b1), Expr::GBigInt(b2)) => {
             cost.charge(Costs::big_int_comparison(b1, b2))?;
             Expr::GBool(relopbi(b1, b2))
+        }
+        // Mixed `Int`/`BigInt` comparisons promote (RCHIP #51).
+        (Expr::GInt(i1), Expr::GBigInt(b2)) => {
+            let b1 = BigInt::from(*i1);
+            cost.charge(Costs::big_int_comparison(&b1, b2))?;
+            Expr::GBool(relopbi(&b1, b2))
+        }
+        (Expr::GBigInt(b1), Expr::GInt(i2)) => {
+            let b2 = BigInt::from(*i2);
+            cost.charge(Costs::big_int_comparison(b1, &b2))?;
+            Expr::GBool(relopbi(b1, &b2))
         }
         (Expr::GString(s1), Expr::GString(s2)) => {
             cost.charge(Costs::comparison_cost())?;
@@ -264,7 +351,15 @@ fn eval_expr_to_expr(
         Expr::ENeg(p) => {
             let v = eval_single_expr(p, env, cost)?;
             match v {
-                Expr::GInt(hs) => Ok(Expr::GInt(hs.wrapping_neg())),
+                // `-i64::MIN` overflows `i64`: promote instead of wrapping (RCHIP #51).
+                Expr::GInt(hs) => match hs.checked_neg() {
+                    Some(value) => Ok(Expr::GInt(value)),
+                    None => {
+                        let r = -BigInt::from(hs);
+                        cost.charge(Costs::big_int_negation(&r))?;
+                        Ok(Expr::GBigInt(r))
+                    }
+                },
                 Expr::GBigInt(hs) => {
                     let r = -hs;
                     cost.charge(Costs::big_int_negation(&r))?;
@@ -279,160 +374,78 @@ fn eval_expr_to_expr(
         Expr::EMult(p1, p2) => {
             let v1 = eval_single_expr(p1, env, cost)?;
             let v2 = eval_single_expr(p2, env, cost)?;
-            match (&v1, &v2) {
-                (Expr::GInt(l), Expr::GInt(r)) => {
-                    cost.charge(Costs::multiplication_cost())?;
-                    Ok(Expr::GInt(l.wrapping_mul(*r)))
-                }
-                (Expr::GBigInt(l), Expr::GBigInt(r)) => {
-                    cost.charge(Costs::big_int_multiplication(l, r))?;
-                    Ok(Expr::GBigInt(l * r))
-                }
-                (Expr::GInt(_), o) => Err(RholangError::OperatorExpectedError {
-                    op: "*".to_string(),
-                    expected: "Int".to_string(),
-                    other_type: typ(o).to_string(),
-                }),
-                (Expr::GBigInt(_), o) => Err(RholangError::OperatorExpectedError {
-                    op: "*".to_string(),
-                    expected: "BigInt".to_string(),
-                    other_type: typ(o).to_string(),
-                }),
-                (o, _) => Err(RholangError::OperatorNotDefined {
-                    op: "*".to_string(),
-                    other_type: typ(o).to_string(),
-                }),
-            }
+            int_binop(
+                "*",
+                &v1,
+                &v2,
+                cost,
+                i64::checked_mul,
+                |l, r| Ok(l * r),
+                Costs::multiplication_cost(),
+                Costs::big_int_multiplication,
+            )
         }
         Expr::EDiv(p1, p2) => {
             let v1 = eval_single_expr(p1, env, cost)?;
             let v2 = eval_single_expr(p2, env, cost)?;
-            match (&v1, &v2) {
-                (Expr::GInt(l), Expr::GInt(r)) => {
-                    if *r == 0 {
-                        return Err(RholangError::ReduceError("/ by zero".to_string()));
-                    }
-                    if *l == i64::MIN && *r == -1 {
-                        return Err(RholangError::ReduceError("division overflow".to_string()));
-                    }
-                    cost.charge(Costs::division_cost())?;
-                    Ok(Expr::GInt(l / r))
-                }
-                (Expr::GBigInt(l), Expr::GBigInt(r)) => {
-                    if *r == BigInt::from(0i64) {
-                        return Err(RholangError::ReduceError("/ by zero".to_string()));
-                    }
-                    cost.charge(Costs::big_int_division(l, r))?;
-                    Ok(Expr::GBigInt(l / r))
-                }
-                (Expr::GInt(_), o) => Err(RholangError::OperatorExpectedError {
-                    op: "/".to_string(),
-                    expected: "Int".to_string(),
-                    other_type: typ(o).to_string(),
-                }),
-                (Expr::GBigInt(_), o) => Err(RholangError::OperatorExpectedError {
-                    op: "/".to_string(),
-                    expected: "BigInt".to_string(),
-                    other_type: typ(o).to_string(),
-                }),
-                (o, _) => Err(RholangError::OperatorNotDefined {
-                    op: "/".to_string(),
-                    other_type: typ(o).to_string(),
-                }),
+            if is_zero(&v2) {
+                return Err(RholangError::ReduceError("/ by zero".to_string()));
             }
+            int_binop(
+                "/",
+                &v1,
+                &v2,
+                cost,
+                i64::checked_div,
+                |l, r| Ok(l / r),
+                Costs::division_cost(),
+                Costs::big_int_division,
+            )
         }
         Expr::EMod(p1, p2) => {
             let v1 = eval_single_expr(p1, env, cost)?;
             let v2 = eval_single_expr(p2, env, cost)?;
-            match (&v1, &v2) {
-                (Expr::GInt(l), Expr::GInt(r)) => {
-                    if *r == 0 {
-                        return Err(RholangError::ReduceError("/ by zero".to_string()));
-                    }
-                    if *l == i64::MIN && *r == -1 {
-                        return Err(RholangError::ReduceError("modulo overflow".to_string()));
-                    }
-                    cost.charge(Costs::modulo_cost())?;
-                    Ok(Expr::GInt(l % r))
-                }
-                (Expr::GBigInt(l), Expr::GBigInt(r)) => {
-                    if *r == BigInt::from(0i64) {
-                        return Err(RholangError::ReduceError("/ by zero".to_string()));
-                    }
-                    cost.charge(Costs::big_int_modulo(l, r))?;
-                    Ok(Expr::GBigInt(l % r))
-                }
-                (Expr::GInt(_), o) => Err(RholangError::OperatorExpectedError {
-                    op: "%".to_string(),
-                    expected: "Int".to_string(),
-                    other_type: typ(o).to_string(),
-                }),
-                (Expr::GBigInt(_), o) => Err(RholangError::OperatorExpectedError {
-                    op: "%".to_string(),
-                    expected: "BigInt".to_string(),
-                    other_type: typ(o).to_string(),
-                }),
-                (o, _) => Err(RholangError::OperatorNotDefined {
-                    op: "%".to_string(),
-                    other_type: typ(o).to_string(),
-                }),
+            if is_zero(&v2) {
+                return Err(RholangError::ReduceError("/ by zero".to_string()));
             }
+            int_binop(
+                "%",
+                &v1,
+                &v2,
+                cost,
+                i64::checked_rem,
+                |l, r| Ok(l % r),
+                Costs::modulo_cost(),
+                Costs::big_int_modulo,
+            )
         }
         Expr::EPlus(p1, p2) => {
             let v1 = eval_single_expr(p1, env, cost)?;
             let v2 = eval_single_expr(p2, env, cost)?;
-            match (&v1, &v2) {
-                (Expr::GInt(l), Expr::GInt(r)) => {
-                    cost.charge(Costs::sum_cost())?;
-                    Ok(Expr::GInt(l.wrapping_add(*r)))
-                }
-                (Expr::GBigInt(l), Expr::GBigInt(r)) => {
-                    cost.charge(Costs::big_int_sum(l, r))?;
-                    Ok(Expr::GBigInt(l + r))
-                }
-                (Expr::GInt(_), o) => Err(RholangError::OperatorExpectedError {
-                    op: "+".to_string(),
-                    expected: "Int".to_string(),
-                    other_type: typ(o).to_string(),
-                }),
-                (Expr::GBigInt(_), o) => Err(RholangError::OperatorExpectedError {
-                    op: "+".to_string(),
-                    expected: "BigInt".to_string(),
-                    other_type: typ(o).to_string(),
-                }),
-                (o, _) => Err(RholangError::OperatorNotDefined {
-                    op: "+".to_string(),
-                    other_type: typ(o).to_string(),
-                }),
-            }
+            int_binop(
+                "+",
+                &v1,
+                &v2,
+                cost,
+                i64::checked_add,
+                |l, r| Ok(l + r),
+                Costs::sum_cost(),
+                Costs::big_int_sum,
+            )
         }
         Expr::EMinus(p1, p2) => {
             let v1 = eval_single_expr(p1, env, cost)?;
             let v2 = eval_single_expr(p2, env, cost)?;
-            match (&v1, &v2) {
-                (Expr::GInt(l), Expr::GInt(r)) => {
-                    cost.charge(Costs::subtraction_cost())?;
-                    Ok(Expr::GInt(l.wrapping_sub(*r)))
-                }
-                (Expr::GBigInt(l), Expr::GBigInt(r)) => {
-                    cost.charge(Costs::big_int_subtraction(l, r))?;
-                    Ok(Expr::GBigInt(l - r))
-                }
-                (Expr::GInt(_), o) => Err(RholangError::OperatorExpectedError {
-                    op: "-".to_string(),
-                    expected: "Int".to_string(),
-                    other_type: typ(o).to_string(),
-                }),
-                (Expr::GBigInt(_), o) => Err(RholangError::OperatorExpectedError {
-                    op: "-".to_string(),
-                    expected: "BigInt".to_string(),
-                    other_type: typ(o).to_string(),
-                }),
-                (o, _) => Err(RholangError::OperatorNotDefined {
-                    op: "-".to_string(),
-                    other_type: typ(o).to_string(),
-                }),
-            }
+            int_binop(
+                "-",
+                &v1,
+                &v2,
+                cost,
+                i64::checked_sub,
+                |l, r| Ok(l - r),
+                Costs::subtraction_cost(),
+                Costs::big_int_subtraction,
+            )
         }
         Expr::ELt(p1, p2) => relop(
             p1,
@@ -480,7 +493,12 @@ fn eval_expr_to_expr(
             let sv1 = substitute_par_and_charge(&v1, 0, env, cost)?;
             let sv2 = substitute_par_and_charge(&v2, 0, env, cost)?;
             cost.charge(Costs::equality_check_cost(&sv1, &sv2))?;
-            Ok(Expr::GBool(sv1 == sv2))
+            // RCHIP #51: `Int`/`BigInt` with the same value are equal (`2 == 2n`).
+            let equal = match numeric_eq(&sv1, &sv2) {
+                Some(equal) => equal,
+                None => sv1 == sv2,
+            };
+            Ok(Expr::GBool(equal))
         }
         Expr::ENeq(p1, p2) => {
             let v1 = eval_expr(p1, env, cost)?;
@@ -488,7 +506,11 @@ fn eval_expr_to_expr(
             let sv1 = substitute_par_and_charge(&v1, 0, env, cost)?;
             let sv2 = substitute_par_and_charge(&v2, 0, env, cost)?;
             cost.charge(Costs::equality_check_cost(&sv1, &sv2))?;
-            Ok(Expr::GBool(sv1 != sv2))
+            let equal = match numeric_eq(&sv1, &sv2) {
+                Some(equal) => equal,
+                None => sv1 == sv2,
+            };
+            Ok(Expr::GBool(!equal))
         }
         Expr::EAnd(p1, p2) => {
             let b1 = eval_to_bool(p1, env, cost)?;
@@ -2766,7 +2788,9 @@ mod tests {
     }
 
     #[test]
-    fn division_and_modulo_overflow_are_errors() {
+    fn division_and_modulo_overflow_promote_to_bigint() {
+        // RCHIP #51: `i64::MIN / -1` and `i64::MIN % -1` overflow `i64`; they are now computed
+        // exactly (2^63 and 0) instead of erroring.
         let cost = CostAccounting::from_initial(Costs::unsafe_max());
         let e = Env::new();
 
@@ -2774,13 +2798,91 @@ mod tests {
             Box::new(from_expr(Expr::GInt(i64::MIN))),
             Box::new(from_expr(Expr::GInt(-1))),
         ));
-        assert!(eval_single_expr(&div_overflow, &e, &cost).is_err());
+        assert_eq!(
+            eval_single_expr(&div_overflow, &e, &cost).unwrap(),
+            Expr::GBigInt(-BigInt::from(i64::MIN))
+        );
 
         let mod_overflow = from_expr(Expr::EMod(
             Box::new(from_expr(Expr::GInt(i64::MIN))),
             Box::new(from_expr(Expr::GInt(-1))),
         ));
-        assert!(eval_single_expr(&mod_overflow, &e, &cost).is_err());
+        assert_eq!(
+            eval_single_expr(&mod_overflow, &e, &cost).unwrap(),
+            Expr::GBigInt(BigInt::from(0))
+        );
+    }
+
+    #[test]
+    fn integer_arithmetic_never_wraps_and_mixes_types() {
+        let cost = CostAccounting::from_initial(Costs::unsafe_max());
+        let e = Env::new();
+        let i = |v: i64| from_expr(Expr::GInt(v));
+        let bi = |v: i64| from_expr(Expr::GBigInt(BigInt::from(v)));
+        let eval = |ex: Expr| eval_expr_to_expr(&ex, &e, &cost).unwrap();
+
+        // `i64::MAX + 1` promotes instead of wrapping to `i64::MIN`.
+        assert_eq!(
+            eval(Expr::EPlus(Box::new(i(i64::MAX)), Box::new(i(1)))),
+            Expr::GBigInt(BigInt::from(i64::MAX) + BigInt::from(1))
+        );
+        // `i64::MIN - 1` promotes instead of wrapping to `i64::MAX`.
+        assert_eq!(
+            eval(Expr::EMinus(Box::new(i(i64::MIN)), Box::new(i(1)))),
+            Expr::GBigInt(BigInt::from(i64::MIN) - BigInt::from(1))
+        );
+        // `i64::MAX * 2` promotes instead of wrapping.
+        assert_eq!(
+            eval(Expr::EMult(Box::new(i(i64::MAX)), Box::new(i(2)))),
+            Expr::GBigInt(BigInt::from(i64::MAX) * BigInt::from(2))
+        );
+        // `-i64::MIN` promotes instead of staying `i64::MIN`.
+        assert_eq!(
+            eval(Expr::ENeg(Box::new(i(i64::MIN)))),
+            Expr::GBigInt(-BigInt::from(i64::MIN))
+        );
+        // Small results stay `Int` on the fast path.
+        assert_eq!(
+            eval(Expr::EPlus(Box::new(i(2)), Box::new(i(3)))),
+            Expr::GInt(5)
+        );
+
+        // Mixed `Int`/`BigInt` operands work (the small operand promotes).
+        assert_eq!(
+            eval(Expr::EPlus(Box::new(i(2)), Box::new(bi(3)))),
+            Expr::GBigInt(BigInt::from(5))
+        );
+        assert_eq!(
+            eval(Expr::EMult(Box::new(bi(3)), Box::new(i(4)))),
+            Expr::GBigInt(BigInt::from(12))
+        );
+
+        // Comparisons and equality span both integer forms.
+        assert_eq!(
+            eval(Expr::ELt(Box::new(i(1)), Box::new(bi(2)))),
+            Expr::GBool(true)
+        );
+        assert_eq!(
+            eval(Expr::EGte(Box::new(bi(2)), Box::new(i(2)))),
+            Expr::GBool(true)
+        );
+        assert_eq!(
+            eval(Expr::EEq(Box::new(i(2)), Box::new(bi(2)))),
+            Expr::GBool(true)
+        );
+        assert_eq!(
+            eval(Expr::ENeq(Box::new(i(2)), Box::new(bi(3)))),
+            Expr::GBool(true)
+        );
+
+        // Division by zero is still an error, in both forms.
+        assert!(eval_expr_to_expr(&Expr::EDiv(Box::new(i(1)), Box::new(i(0))), &e, &cost).is_err());
+        assert!(
+            eval_expr_to_expr(&Expr::EDiv(Box::new(i(1)), Box::new(bi(0))), &e, &cost).is_err()
+        );
+        assert!(
+            eval_expr_to_expr(&Expr::EMod(Box::new(i(1)), Box::new(bi(0))), &e, &cost).is_err()
+        );
     }
 
     #[test]
