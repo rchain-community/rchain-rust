@@ -740,3 +740,16 @@ deviation.
   faithful to Scala; the second cause is the Rust-first DoS bound). Verified:
   `a_full_dispatch_queue_is_rejected_and_recovers` (`comm/src/transport/grpc_transport.rs`) pins the
   refusal *and* the recovery — the bound is a queue, not a latch.
+
+- **C5 — a `ParBody` continuation dispatched with no matched data panics in the random merge.**
+  `rholang/src/dispatch.rs` always prepends the continuation's own random state to the matched data's
+  random states before calling `Blake2b512Random::merge`, which **asserts at least two inputs**
+  (`crypto/src/hash/blake2b512_random.rs`). With zero matched data the list has one element and the
+  merge panics — a reducer-path panic rather than a reported error. **Latent, not live**: the reducer
+  never dispatches a `ParBody` with empty data today (a receive always matches at least the datum that
+  triggered it, and a match with nothing to run becomes `TaggedContinuation::Empty`, which is a
+  deliberate no-op). Recorded rather than fixed because the fix is a judgement about what an empty
+  data list *means* (dispatch with the continuation's own random? refuse?), and the path is
+  unreachable. Pinned by `a_par_body_with_no_matched_data_panics_in_merge`
+  (`#[should_panic(expected = "at least 2 inputs")]`), so a change in reachability — or a guard —
+  fails a test instead of surfacing as a node crash.
