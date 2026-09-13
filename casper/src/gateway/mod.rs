@@ -416,3 +416,454 @@ fn vote_of(outcome: &ShardOutcome) -> Vote {
         Vote::Abort
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Mutex;
+
+    use super::*;
+    use crate::api::block_api::{ApiErr, Capabilities};
+    use crate::construct_deploy;
+    use rchain_crypto::hash::blake2b256_hash::Blake2b256Hash;
+    use rchain_models::ast::Par;
+    use rchain_models::block_metadata::BlockMetadata;
+    use rchain_models::casper::protocol::deploy_service::{
+        BlockInfo, ContinuationsWithBlockInfo, DeployExecStatus, LightBlockInfo, Status,
+    };
+    use rchain_shared::refined::{BlockHeight, NonNegI64, SeqNum};
+
+    /// A [`BlockApi`] for one shard that records what the gateway asks it to do. The counts are the
+    /// point: several gateway branches are only observable by *how many* deploys a phase produced.
+    struct CountingShard {
+        deployed: Mutex<Vec<String>>,
+        listen_depths: Mutex<Vec<i32>>,
+        latest_message: Result<i64, String>,
+    }
+
+    impl CountingShard {
+        fn new(height: Result<i64, String>) -> Self {
+            CountingShard {
+                deployed: Mutex::new(Vec::new()),
+                listen_depths: Mutex::new(Vec::new()),
+                latest_message: height,
+            }
+        }
+
+        fn deploy_count(&self) -> usize {
+            self.deployed.lock().unwrap().len()
+        }
+
+        fn last_depth(&self) -> Option<i32> {
+            self.listen_depths.lock().unwrap().last().copied()
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl BlockApi for CountingShard {
+        async fn deploy(&self, deploy: &SignedDeployData) -> ApiErr<String> {
+            self.deployed.lock().unwrap().push(deploy.data.term.clone());
+            Ok("deployed".to_string())
+        }
+
+        async fn get_latest_message(&self) -> ApiErr<BlockMetadata> {
+            let height = self.latest_message.clone()?;
+            Ok(BlockMetadata {
+                block_hash: rchain_models::block_hash::BlockHash::new([0u8; 32]),
+                block_num: BlockHeight::try_from(height).map_err(|e| e.to_string())?,
+                sender: rchain_models::validator::Validator::from_slice(&[0u8; 65]),
+                seq_num: SeqNum::zero(),
+                justifications: std::collections::BTreeSet::new(),
+                bonds_map: std::collections::BTreeMap::new(),
+                validated: true,
+                validation_failed: false,
+                member_of_fringe: None,
+                fringe: std::collections::BTreeSet::new(),
+                fringe_state_hash: Blake2b256Hash::from_bytes([0u8; 32]).into(),
+            })
+        }
+
+        async fn get_listening_name_data_response(
+            &self,
+            depth: i32,
+            _listening_name: &Par,
+        ) -> ApiErr<(Vec<DataWithBlockInfo>, i32)> {
+            self.listen_depths.lock().unwrap().push(depth);
+            Ok((Vec::new(), depth))
+        }
+
+        // Not used by the paths under test.
+        async fn status(&self) -> Status {
+            unreachable!("not used")
+        }
+        async fn deploy_status(
+            &self,
+            _: &rchain_block_storage::dag::dag_storage::DeployId,
+        ) -> ApiErr<DeployExecStatus> {
+            Err("not used".to_string())
+        }
+        async fn pooled_deploys(&self) -> ApiErr<Vec<SignedDeployData>> {
+            Err("not used".to_string())
+        }
+        async fn capabilities(&self) -> Capabilities {
+            unreachable!("not used")
+        }
+        async fn create_block(&self, _: bool) -> ApiErr<String> {
+            Err("not used".to_string())
+        }
+        async fn get_propose_result(&self) -> ApiErr<String> {
+            Err("not used".to_string())
+        }
+        async fn get_listening_name_continuation_response(
+            &self,
+            _: i32,
+            _: &[Par],
+        ) -> ApiErr<(Vec<ContinuationsWithBlockInfo>, i32)> {
+            Err("not used".to_string())
+        }
+        async fn get_blocks_by_heights(&self, _: i64, _: i64) -> ApiErr<Vec<LightBlockInfo>> {
+            Err("not used".to_string())
+        }
+        async fn visualize_dag(&self, _: i32, _: i32, _: bool) -> ApiErr<Vec<String>> {
+            Err("not used".to_string())
+        }
+        async fn machine_verifiable_dag(&self, _: i32) -> ApiErr<String> {
+            Err("not used".to_string())
+        }
+        async fn get_blocks(&self, _: i32) -> ApiErr<Vec<LightBlockInfo>> {
+            Err("not used".to_string())
+        }
+        async fn find_deploy(
+            &self,
+            _: &rchain_block_storage::dag::dag_storage::DeployId,
+        ) -> ApiErr<LightBlockInfo> {
+            Err("not used".to_string())
+        }
+        async fn get_block(&self, _: &str) -> ApiErr<BlockInfo> {
+            Err("not used".to_string())
+        }
+        async fn bond_status(&self, _: &[u8]) -> ApiErr<bool> {
+            Err("not used".to_string())
+        }
+        async fn exploratory_deploy(
+            &self,
+            _: &str,
+            _: Option<&str>,
+            _: bool,
+        ) -> ApiErr<(Vec<Par>, LightBlockInfo)> {
+            Err("not used".to_string())
+        }
+        async fn get_data_at_par(
+            &self,
+            _: &Par,
+            _: &str,
+            _: bool,
+        ) -> ApiErr<(Vec<Par>, LightBlockInfo)> {
+            Err("not used".to_string())
+        }
+        async fn last_finalized_block(&self) -> ApiErr<BlockInfo> {
+            Err("not used".to_string())
+        }
+        async fn is_finalized(&self, _: &str) -> ApiErr<bool> {
+            Err("not used".to_string())
+        }
+    }
+
+    fn shard(id: &str) -> ShardId {
+        ShardId::try_from(id.to_string()).unwrap()
+    }
+
+    /// A record with two legs and no votes.
+    fn record() -> CoordRecord {
+        CoordRecord {
+            txn_id: b"txn".to_vec(),
+            state: CoordState::Proposed,
+            coordinator: PublicKey::new(vec![7u8; 65]),
+            legs: vec![
+                LegRecord {
+                    shard_id: shard("/root"),
+                    amount: NonNegI64::try_from(30).unwrap(),
+                    to: "dest".to_string(),
+                },
+                LegRecord {
+                    shard_id: shard("/root/child"),
+                    amount: NonNegI64::try_from(40).unwrap(),
+                    to: "dest".to_string(),
+                },
+            ],
+            votes: Vec::new(),
+            reason: None,
+        }
+    }
+
+    /// A gateway over two counting shards, with the counting handles handed back.
+    async fn gateway_with_counters() -> (
+        GatewayTxn,
+        Arc<CountingShard>,
+        Arc<CountingShard>,
+        Arc<LocalShardDeployService>,
+    ) {
+        let api_a = Arc::new(CountingShard::new(Ok(7)));
+        let api_b = Arc::new(CountingShard::new(Ok(3)));
+        let mut shards = BTreeMap::new();
+        shards.insert(
+            shard("/root"),
+            LocalShard {
+                shard_id: shard("/root"),
+                block_api: api_a.clone(),
+                max_listen_depth: 50,
+            },
+        );
+        shards.insert(
+            shard("/root/child"),
+            LocalShard {
+                shard_id: shard("/root/child"),
+                block_api: api_b.clone(),
+                max_listen_depth: 50,
+            },
+        );
+        let local = Arc::new(LocalShardDeployService::new(shards));
+        let (key, pub_key) = construct_deploy::default_key_pair().unwrap();
+        let manager = rchain_shared::store_manager::InMemoryStoreManager::default();
+        let ledger = Arc::new(TxnLedger::open(&manager).await.expect("ledger"));
+        let gateway = GatewayTxn::new(
+            local.clone(),
+            ledger,
+            key,
+            pub_key,
+            Duration::from_millis(50),
+        );
+        (gateway, api_a, api_b, local)
+    }
+
+    /// Phase one's reply mapping: `ready`/`prepared`/`committed` are the three ways a participant
+    /// says yes (the last because it is idempotent under `txn_id`), everything else is a no.
+    #[test]
+    fn vote_of_maps_every_shard_outcome() {
+        let value = |s: &str| ShardOutcome::Value(RhoString::apply(s.to_string()));
+        for yes in ["ready", "prepared", "committed"] {
+            assert_eq!(vote_of(&value(yes)), Vote::Ready, "{yes} must vote ready");
+        }
+        for no in ["abort", "aborted", "weird", ""] {
+            assert_eq!(vote_of(&value(no)), Vote::Abort, "{no} must vote abort");
+        }
+        // A non-string reply and a transport error are both aborts.
+        assert_eq!(
+            vote_of(&ShardOutcome::Value(RhoNumber::apply(1))),
+            Vote::Abort
+        );
+        assert_eq!(
+            vote_of(&ShardOutcome::Error("timeout".to_string())),
+            Vote::Abort
+        );
+    }
+
+    /// Every `DeployService` query the gateway does not drive reports itself rather than answering
+    /// wrongly — an unsupported query must never look like a successful empty reply.
+    #[tokio::test]
+    async fn local_deploy_service_reports_every_unsupported_query() {
+        let (_, _, _, local) = gateway_with_counters().await;
+        let par = RhoString::apply("x".to_string());
+        let deploy_id = vec![1u8, 2, 3];
+
+        let errors = vec![
+            local
+                .deploy_status(&FindDeployQuery {
+                    deploy_id: deploy_id.clone(),
+                })
+                .await
+                .err(),
+            local
+                .get_block(&BlockQuery {
+                    hash: "h".to_string(),
+                })
+                .await
+                .err(),
+            local.get_blocks(&BlocksQuery { depth: 1 }).await.err(),
+            local
+                .visualize_dag(&VisualizeDagQuery {
+                    depth: 1,
+                    show_justification_lines: false,
+                    start_block_number: 0,
+                })
+                .await
+                .err(),
+            local
+                .machine_verifiable_dag(&MachineVerifyQuery { depth: 1 })
+                .await
+                .err(),
+            local
+                .find_deploy(&FindDeployQuery {
+                    deploy_id: deploy_id.clone(),
+                })
+                .await
+                .err(),
+            local
+                .listen_for_continuation_at_name(&ContinuationAtNameQuery {
+                    depth: 1,
+                    names: vec![par.clone()],
+                })
+                .await
+                .err(),
+            local.last_finalized_block().await.err(),
+            local
+                .is_finalized(&IsFinalizedQuery {
+                    hash: "h".to_string(),
+                })
+                .await
+                .err(),
+            local
+                .bond_status(&BondStatusQuery {
+                    public_key: deploy_id.clone(),
+                })
+                .await
+                .err(),
+            local.status().await.err(),
+        ];
+        for (i, error) in errors.iter().enumerate() {
+            let error = error
+                .as_ref()
+                .unwrap_or_else(|| panic!("query {i} must error"));
+            assert!(
+                error.join(" ").contains("not used by the gateway"),
+                "query {i}: {error:?}"
+            );
+        }
+    }
+
+    /// Phase two must not fire for a record that has not been decided — otherwise a `Proposed`
+    /// record would send commits for legs that never locked anything.
+    #[tokio::test]
+    async fn apply_phase_two_returns_early_for_an_undecided_record() {
+        let (gateway, api_a, api_b, _) = gateway_with_counters().await;
+        gateway.apply_phase_two(&record()).await; // Proposed
+        assert_eq!(api_a.deploy_count(), 0);
+        assert_eq!(api_b.deploy_count(), 0);
+
+        let mut prepared = record();
+        prepared.record_vote(shard("/root"), Vote::Ready, None);
+        assert_eq!(prepared.state, CoordState::Prepared);
+        gateway.apply_phase_two(&prepared).await;
+        assert_eq!(api_a.deploy_count(), 0, "Prepared is not a decision");
+    }
+
+    /// Phase two reaches exactly the legs that voted ready: the others never locked an escrow, so
+    /// committing or compensating them would be a no-op at best and a double-spend at worst.
+    #[tokio::test]
+    async fn apply_phase_two_skips_legs_that_did_not_vote_ready() {
+        let (gateway, api_a, api_b, _) = gateway_with_counters().await;
+
+        let mut record = record();
+        record.record_vote(shard("/root"), Vote::Ready, None);
+        record.record_vote(shard("/root/child"), Vote::Abort, Some("short".to_string()));
+        assert_eq!(record.state, CoordState::Aborted);
+
+        gateway.apply_phase_two(&record).await;
+        assert_eq!(api_a.deploy_count(), 1, "the locked leg is compensated");
+        assert_eq!(api_b.deploy_count(), 0, "the aborting leg never locked");
+    }
+
+    /// A phase deploy is anchored at its shard's head: `valid_after = 0` would make it born expired
+    /// once the chain passes `DEPLOY_LIFESPAN`.
+    #[tokio::test]
+    async fn current_height_reads_the_shards_head() {
+        let (_, _, _, local) = gateway_with_counters().await;
+        assert_eq!(local.current_height(&shard("/root")).await, 7);
+        assert_eq!(local.current_height(&shard("/root/child")).await, 3);
+    }
+
+    /// An unknown shard and a shard whose head cannot be read both fall back to 0 (the most
+    /// permissive anchor) rather than failing the phase before it is submitted.
+    #[tokio::test]
+    async fn current_height_is_zero_when_the_shard_is_unknown_or_errors() {
+        let api = Arc::new(CountingShard::new(Err("no head".to_string())));
+        let mut shards = BTreeMap::new();
+        shards.insert(
+            shard("/root"),
+            LocalShard {
+                shard_id: shard("/root"),
+                block_api: api,
+                max_listen_depth: 50,
+            },
+        );
+        let local = LocalShardDeployService::new(shards);
+        assert_eq!(local.current_height(&shard("/root")).await, 0);
+        assert_eq!(local.current_height(&shard("/elsewhere")).await, 0);
+    }
+
+    /// The reply channel must be a deploy id: anything else is a caller mistake, reported rather
+    /// than answered from some arbitrary shard.
+    #[tokio::test]
+    async fn listen_for_data_at_name_rejects_a_name_that_is_not_a_deploy_id() {
+        let (_, _, _, local) = gateway_with_counters().await;
+        let err = local
+            .listen_for_data_at_name(&DataAtNameQuery {
+                depth: 1,
+                name: RhoString::apply("not-a-deploy-id".to_string()),
+            })
+            .await
+            .expect_err("a non-deploy-id name must be rejected");
+        assert!(err.join(" ").contains("not a deploy id"), "{err:?}");
+    }
+
+    /// A deploy id the gateway never submitted has no shard to read from — reported, not guessed.
+    #[tokio::test]
+    async fn listen_for_data_at_name_rejects_an_unknown_deploy_id() {
+        let (_, _, _, local) = gateway_with_counters().await;
+        let err = local
+            .listen_for_data_at_name(&DataAtNameQuery {
+                depth: 1,
+                name: RhoDeployId::apply(vec![9u8; 64]),
+            })
+            .await
+            .expect_err("an unknown deploy id must be reported");
+        assert!(err.join(" ").contains("no shard is known"), "{err:?}");
+    }
+
+    /// `await_reply` asks for the maximum depth, which the block API rejects outright; the service
+    /// must clamp it to the shard's configured limit or no reply is ever seen.
+    #[tokio::test]
+    async fn listen_for_data_at_name_clamps_the_depth() {
+        let (gateway, api_a, _, local) = gateway_with_counters().await;
+
+        // Submit one phase deploy to the primary so the service knows which shard the id belongs to.
+        let record = record();
+        let leg = record.legs[0].clone();
+        gateway.phase(&record, &leg, "prepare").await;
+        assert_eq!(api_a.deploy_count(), 1);
+
+        let sig = {
+            // The deploy id the service recorded is the signature of the last submitted deploy; the
+            // counting shard does not model signatures, so drive the map directly through a submit.
+            let deployed = local.deployed.lock().unwrap();
+            deployed.keys().next().cloned().expect("a submitted deploy")
+        };
+        let _ = local
+            .listen_for_data_at_name(&DataAtNameQuery {
+                depth: i32::MAX,
+                name: RhoDeployId::apply(sig),
+            })
+            .await
+            .expect("the listen itself succeeds");
+        assert_eq!(
+            api_a.last_depth(),
+            Some(50),
+            "the depth must be clamped to the shard's limit"
+        );
+    }
+
+    /// A poisoned submit-map lock must degrade to "unknown shard" rather than aborting the node.
+    #[tokio::test]
+    async fn shard_of_returns_none_for_a_poisoned_lock() {
+        let (_, _, _, local) = gateway_with_counters().await;
+        let poisoner = local.clone();
+        let handle = std::thread::spawn(move || {
+            let _guard = poisoner.deployed.lock().expect("lock to poison");
+            panic!("poison the map");
+        });
+        assert!(handle.join().is_err(), "the poisoner must panic");
+        assert!(
+            local.shard_of(&[1, 2, 3]).is_none(),
+            "a poisoned lock reads as unknown, not as a panic"
+        );
+    }
+}
