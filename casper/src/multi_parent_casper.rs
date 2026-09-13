@@ -381,3 +381,78 @@ fn mark_failed(meta: &BlockMetadata) -> BlockMetadata {
         ..meta.clone()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The deploy lifespan is a **consensus-visible parameter**: it decides which deploys a block may
+    /// still include, so two nodes disagreeing on it disagree about validity. Pinned as a value, not
+    /// merely as a constant, because a silent change here is a chain split rather than a tuning
+    /// choice.
+    #[test]
+    fn the_deploy_lifespan_is_pinned() {
+        assert_eq!(DEPLOY_LIFESPAN, 50);
+    }
+
+    /// A parsing error keeps the details it was built from — the only thing that makes a malformed
+    /// block or deploy debuggable once the raw bytes are gone.
+    #[test]
+    fn a_parsing_error_carries_its_details() {
+        let err = parsing_error("bad justification list");
+        assert!(
+            err.0.contains("bad justification list"),
+            "the details must survive: {:?}",
+            err.0
+        );
+        assert!(
+            err.0.starts_with("Parsing error:"),
+            "and be labelled as a parsing failure: {:?}",
+            err.0
+        );
+    }
+
+    /// `ValidateError` distinguishes the two outcomes a validator can have, and the distinction is
+    /// load-bearing: a block that **fails validation is still a block** (its metadata and status are
+    /// returned so the DAG can record it), whereas an internal error has no block outcome at all. A
+    /// refactor that collapsed the two would make a store failure look like an invalid block.
+    #[test]
+    fn validate_error_separates_an_invalid_block_from_an_internal_failure() {
+        let status = BlockStatus::InvalidStateHash;
+        let metadata = BlockMetadata {
+            block_hash: BlockHash::new([0u8; 32]),
+            block_num: rchain_shared::refined::BlockHeight::try_from(1).expect("height"),
+            sender: rchain_models::validator::Validator::from_slice(&[0u8; 65]),
+            seq_num: rchain_shared::refined::SeqNum::zero(),
+            justifications: std::collections::BTreeSet::new(),
+            bonds_map: std::collections::BTreeMap::new(),
+            validated: false,
+            validation_failed: true,
+            member_of_fringe: None,
+            fringe: std::collections::BTreeSet::new(),
+            fringe_state_hash: rchain_crypto::hash::blake2b256_hash::Blake2b256Hash::from_bytes(
+                [0u8; 32],
+            )
+            .into(),
+        };
+
+        let invalid = ValidateError::ValidationFailed(metadata.clone(), status);
+        match invalid {
+            ValidateError::ValidationFailed(returned, returned_status) => {
+                assert_eq!(returned.block_hash, metadata.block_hash);
+                assert_eq!(returned_status, status);
+                assert!(
+                    returned.validation_failed,
+                    "an invalid block is still returned, marked failed"
+                );
+            }
+            ValidateError::Internal(_) => panic!("a validation failure must not read as internal"),
+        }
+
+        let internal = ValidateError::Internal("store unavailable".to_string());
+        assert!(
+            matches!(internal, ValidateError::Internal(message) if message.contains("store")),
+            "an internal error carries its cause and no block outcome"
+        );
+    }
+}

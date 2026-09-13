@@ -759,3 +759,43 @@ fn get_number_with_rnd(par_with_rnd: &ListParWithRandom) -> Result<i64, String> 
         )),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rchain_crypto::hash::blake2b512_random::Blake2b512Random;
+    use rchain_models::ast::Par;
+    use rchain_models::rholang::RhoType::{RhoNumber, RhoString};
+    use rchain_models::sorted::SortedProc;
+
+    fn with_pars(pars: Vec<Par>) -> ListParWithRandom {
+        ListParWithRandom {
+            pars: pars.into_iter().map(SortedProc::new).collect(),
+            random_state: Blake2b512Random::new_random(128),
+        }
+    }
+
+    /// A number channel carries exactly one integer. Both malformed shapes are **errors**, not
+    /// coerced values: a channel with two datums and a datum that is not a number are each a sign the
+    /// reducer and the replay disagree about what the channel holds, and silently taking the first
+    /// would turn that into a wrong number.
+    #[test]
+    fn get_number_with_rnd_rejects_a_malformed_number_channel() {
+        assert_eq!(
+            get_number_with_rnd(&with_pars(vec![RhoNumber::apply(42)])).unwrap(),
+            42
+        );
+
+        let err = get_number_with_rnd(&with_pars(vec![RhoNumber::apply(1), RhoNumber::apply(2)]))
+            .expect_err("two datums on a number channel must be rejected");
+        assert!(err.contains("found 2 pars"), "{err}");
+
+        let err = get_number_with_rnd(&with_pars(vec![]))
+            .expect_err("an empty number channel must be rejected");
+        assert!(err.contains("found 0 pars"), "{err}");
+
+        let err = get_number_with_rnd(&with_pars(vec![RhoString::apply("nope".to_string())]))
+            .expect_err("a non-number datum on a number channel must be rejected");
+        assert!(err.contains("single Int term"), "{err}");
+    }
+}
