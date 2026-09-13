@@ -225,6 +225,9 @@ fn get_validator_password(console: &mut dyn ConsoleIo) -> String {
 }
 
 /// Generate a validator key pair and write it to `path` (port of `NodeMain.generateKey`).
+///
+/// An empty or mismatched password re-prompts by recursing, with no attempt limit — faithful to
+/// Scala, and bounded in practice by the operator at the terminal (`spec/AUDIT.md` §15 C7).
 fn generate_key(console: &mut dyn ConsoleIo, path: &Path) -> Result<(), Vec<String>> {
     let password = console.read_password("Enter password for keyfile: ");
     let password_repeat = console.read_password("Repeat password: ");
@@ -262,4 +265,196 @@ fn generate_key(console: &mut dyn ConsoleIo, path: &Path) -> Result<(), Vec<Stri
         hex_path.display()
     ));
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::VecDeque;
+    use std::path::PathBuf;
+
+    /// A console that answers `read_password` from a script and records what was printed, so the
+    /// retry loops can be driven without a terminal.
+    #[derive(Default)]
+    struct ScriptedConsole {
+        passwords: std::cell::RefCell<VecDeque<String>>,
+        printed: std::cell::RefCell<Vec<String>>,
+    }
+
+    impl ScriptedConsole {
+        fn new(passwords: &[&str]) -> Self {
+            ScriptedConsole {
+                passwords: std::cell::RefCell::new(
+                    passwords.iter().map(|s| s.to_string()).collect(),
+                ),
+                printed: std::cell::RefCell::new(Vec::new()),
+            }
+        }
+        fn printed(&self) -> Vec<String> {
+            self.printed.borrow().clone()
+        }
+    }
+
+    impl ConsoleIo for ScriptedConsole {
+        fn read_line(&mut self) -> Option<String> {
+            None
+        }
+        fn read_password(&mut self, _prompt: &str) -> String {
+            self.passwords.borrow_mut().pop_front().unwrap_or_default()
+        }
+        fn println(&mut self, s: &str) {
+            self.printed.borrow_mut().push(s.to_string());
+        }
+        fn println_colored(&mut self, s: &rchain_shared::string_ops::ColoredString) {
+            self.printed.borrow_mut().push(s.colorize());
+        }
+        fn update_completion(&mut self, _history: &[String]) {}
+        fn close(&mut self) {}
+    }
+
+    fn temp_dir(tag: &str) -> PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("rchain_node_main_{}_{tag}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// The `--listen-at-name` converter is one of the few CLI values that is *validated*, and the
+    /// error must name both accepted spellings — an operator who typed `private` gets told `priv`.
+    #[test]
+    fn the_name_converter_accepts_only_pub_and_priv() {
+        assert_eq!(
+            build_single_name("priv", &["x".to_string()]).unwrap(),
+            Name::PrivName("x".to_string())
+        );
+        assert_eq!(
+            build_single_name("pub", &["x".to_string()]).unwrap(),
+            Name::PubName("x".to_string())
+        );
+        // The `SINGLE` form takes the first element and tolerates an empty list.
+        assert_eq!(
+            build_single_name("priv", &[]).unwrap(),
+            Name::PrivName(String::new())
+        );
+
+        for bad in ["Priv", "private", ""] {
+            let err = build_single_name(bad, &["x".to_string()]).expect_err("let it error");
+            assert_eq!(err.len(), 1);
+            assert!(err[0].contains("\"pub\" or \"priv\""), "{err:?}");
+        }
+        // The `LIST` form maps every element, and rejects the same way.
+        assert_eq!(
+            build_names("pub", &["a".to_string(), "b".to_string()]).unwrap(),
+            vec![
+                Name::PubName("a".to_string()),
+                Name::PubName("b".to_string())
+            ]
+        );
+        assert!(build_names("nope", &["a".to_string()]).is_err());
+        assert_eq!(build_names("priv", &[]).unwrap(), Vec::new());
+    }
+
+    /// The three arms of key resolution: an inline hex key wins, a path is decrypted through the
+    /// console, and neither is an error rather than a panic (the node must be told to supply one).
+    #[test]
+    fn a_private_key_comes_from_hex_a_path_or_nowhere() {
+        let mut console = ScriptedConsole::default();
+        // A valid 32-byte scalar, hex-encoded.
+        let hex = rchain_shared::base16::encode(&[7u8; 32]);
+        let key = resolve_private_key(Some(&hex), None, &mut console).expect("hex key");
+        assert_eq!(key.bytes(), &[7u8; 32]);
+
+        // An inline key takes precedence even when a path is also given (the flag wins over the
+        // default), so no file is touched and the console is not read.
+        let key = resolve_private_key(Some(&hex), Some(Path::new("/nonexistent")), &mut console)
+            .expect("hex key wins");
+        assert_eq!(key.bytes(), &[7u8; 32]);
+        assert!(console.printed().is_empty());
+
+        let err = resolve_private_key(Some("not hex!"), None, &mut console).expect_err("bad hex");
+        assert_eq!(err, vec!["Invalid base16 private key".to_string()]);
+
+        let err = resolve_private_key(None, None, &mut console).expect_err("no key");
+        assert_eq!(err, vec!["Private key is missing".to_string()]);
+
+        // A path that does not exist surfaces the parse error rather than silently succeeding.
+        let err = resolve_private_key(
+            None,
+            Some(Path::new("/nonexistent/rnode.key")),
+            &mut console,
+        )
+        .expect_err("bad path");
+        assert_eq!(err.len(), 1, "{err:?}");
+    }
+
+    /// `--generate-key` refuses an empty password and re-prompts on a mismatch, so a mistyped
+    /// password cannot produce a key file nobody can decrypt. The retry is a real branch: the
+    /// scripted console answers twice and the recursive call must consume both answers.
+    #[test]
+    fn generate_key_reprompts_on_a_mismatch_and_refuses_an_empty_password() {
+        let dir = temp_dir("generate");
+        // Mismatch, then a matching pair.
+        let mut console = ScriptedConsole::new(&["first", "second", "agreed", "agreed"]);
+        generate_key(&mut console, &dir).expect("eventually consistent passwords");
+
+        let printed = console.printed();
+        assert!(
+            printed.iter().any(|p| p.contains("Passwords do not match")),
+            "the mismatch must be reported: {printed:?}"
+        );
+        assert!(
+            printed.iter().any(|p| p.contains("Success!")),
+            "{printed:?}"
+        );
+        assert!(dir.join("rnode.key").exists());
+        assert!(dir.join("rnode.pub.pem").exists());
+        assert!(dir.join("rnode.pub.hex").exists());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// An empty password is refused with its own message, and the scripted console then supplies a
+    /// real one — so "refuse and retry" is distinguished from "refuse and give up".
+    #[test]
+    fn generate_key_retries_after_an_empty_password() {
+        let dir = temp_dir("empty");
+        let mut console = ScriptedConsole::new(&["", "", "chosen", "chosen"]);
+        generate_key(&mut console, &dir).expect("a real password arrives eventually");
+
+        let printed = console.printed();
+        assert!(
+            printed.iter().any(|p| p.contains("Password is empty")),
+            "{printed:?}"
+        );
+        assert!(
+            printed.iter().any(|p| p.contains("Success!")),
+            "{printed:?}"
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A console that never supplies a usable password recurses until the stack runs out: the
+    /// retry is `generate_key` calling itself with no attempt counter (Scala's `NodeMain.generateKey`
+    /// does the same). Deliberately **not** a test — a stack-overflow probe aborts the test process
+    /// and would pin nothing a reader could not see from the code; the shape is recorded in
+    /// `spec/AUDIT.md` §15 C7 instead. Interactively the retry is bounded by the operator, which is
+    /// why the port keeps it.
+    #[test]
+    fn a_mismatch_message_names_the_retry_rather_than_the_mismatch_alone() {
+        let dir = temp_dir("message");
+        let mut console = ScriptedConsole::new(&["a", "b", "c", "c"]);
+        generate_key(&mut console, &dir).expect("recovers");
+        let printed = console.printed();
+        // The prompt is re-issued on each attempt, so the operator sees why they are being asked
+        // again — the message is the only feedback the recursion gives.
+        assert_eq!(
+            printed
+                .iter()
+                .filter(|p| p.contains("Passwords do not match"))
+                .count(),
+            1,
+            "{printed:?}"
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 }

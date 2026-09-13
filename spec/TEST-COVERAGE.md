@@ -17,23 +17,23 @@ tools/audit-test-register.sh --deferred-ok # while the tiered work is in flight
 
 ## Inventory
 
-**769 `#[test]`/`#[tokio::test]` unit functions + 67 integration tests** across 13 crates, with **6
+**938 `#[test]`/`#[tokio::test]` unit functions + 79 integration tests** across 13 crates, with **6
 laws** carrying a randomized property test and **10 benchmark functions** in 6 Criterion groups. Only
 **3 of 12 crates have integration tests** (`rholang`, `casper`, `node`).
 
 | Crate | Unit | Integration | Property (laws) | Bench |
 |---|---|---|---|---|
 | `sdk` | 35 | — | — | — |
-| `shared` | 77 | — | — | — |
-| `crypto` | 52 | — | — | — |
-| `graphz` | 11 | — | — | — |
-| `models` | 104 | — | — | — |
+| `shared` | 80 | — | — | — |
+| `crypto` | 53 | — | — | — |
+| `graphz` | 18 | — | — | — |
+| `models` | 115 | — | — | — |
 | `block-storage` | 17 | — | — | — |
-| `comm` | 59 | — | — | — |
-| `rspace` | 79 | — | 6 | — |
-| `rholang` | 107 | 32 | — | — |
-| `casper` | 128 | 29 | — | — |
-| `node` | 80 | 6 | — | — |
+| `comm` | 67 | — | — | — |
+| `rspace` | 92 | — | 6 | — |
+| `rholang` | 129 | 32 | — | — |
+| `casper` | 185 | 38 | — | — |
+| `node` | 127 | 9 | — | — |
 | `qucalc` | 20 | — | — | — |
 | `rspace-bench` | — | — | — | 10 |
 
@@ -283,16 +283,68 @@ linter reports it.
 | T1 | `rholang/src/scheduler.rs` | `effect_mode_rejects_an_unknown_name_and_names_the_alternatives` |
 | T1 | `rholang/src/dispatch.rs` | `a_par_body_without_an_evaluator_is_a_bug_not_a_silent_no_op` |
 | T1 | `models/src/par_ops.rs` | `par_concat_preserves_the_canonical_form` |
-| T2 | `rspace/src/merger/state_change_merger.rs` | — |
-| T2 | `models/src/rholang.rs` | — |
-| T2 | `casper/src/protocol/comm_util.rs` | — |
-| T2 | `rholang/src/proc_ast.rs` | — |
+| T1 | `crypto/src/util/key_util.rs` | `the_private_key_file_is_owner_only` |
+| T2 | `rspace/src/merger/state_change_merger.rs` | `an_empty_channel_change_is_reported_as_an_error` |
+| T2 | `models/src/rholang.rs` | `an_accessor_rejects_another_types_par` |
+| T2 | `models/src/runtime.rs` | `the_random_state_is_not_carried_through_serde` |
+| T2 | `casper/src/protocol/comm_util.rs` | `send_with_retry_gives_up_after_the_bounded_number_of_attempts` |
+| T2 | `casper/src/engine/node_launch.rs` | `the_connection_wait_blocks_while_there_are_no_peers` |
+| T2 | `rholang/src/env.rs` | `an_unbound_index_resolves_to_none` |
+| T2 | `node/src/configuration/hocon.rs` | `parse_size_rejects_what_it_cannot_parse` |
 | T2 | `node/src/configuration/configuration.rs` | `shards_and_scalar_keys_are_mutually_exclusive` |
-| T2 | `node/src/configuration/commandline/config_mapper.rs` | — |
-| T2 | `node/src/api/admin_web_api.rs` | — |
-| T2 | `comm/src/discovery/kademlia_store.rs` | — |
-| T3 | `graphz/src/lib.rs` | — |
-| T3 | `node/src/web/status_info.rs` | — |
+| T2 | `node/src/configuration/commandline/config_mapper.rs` | `an_explicit_shard_flag_is_visible_to_the_exclusivity_check` |
+| T2 | `node/src/runtime/node_main.rs` | `generate_key_reprompts_on_a_mismatch_and_refuses_an_empty_password` |
+| T2 | `comm/src/discovery/kademlia_store.rs` | `an_unknown_key_is_not_found` |
+| T3 | `graphz/src/lib.rs` | `an_embedded_quote_is_not_escaped` |
+| T3 | `node/src/web/status_info.rs` | `a_lone_node_reports_zero_peers_and_its_own_address` |
+
+### Named exception: reachable only with a live peer
+
+One branch in the list above resists a cargo test by construction, and is recorded here rather than
+left as an open row or dropped silently:
+
+- **`casper/src/engine/node_launch.rs`'s LFS-syncing branch** (`apply` with an empty DAG and
+  `standalone = false`) blocks on a `packet_rx` stream fed by a real peer's handshake, so a test
+  would have to stand up a second node. The **genesis branch is covered end to end** — a real
+  standalone validator is booted by `node/tests/deploy_block.rs` (`deploy_is_processed_into_a_block`)
+  and `node/tests/node_api.rs`, which walks `create_store_broadcast_genesis` →
+  `create_genesis_block_from_config` → `create_genesis_block` — and the syncing branch's failure arm
+  is pinned at the unit below it (`request_finalized_fringe_is_an_error_when_there_is_no_bootstrap`).
+  What remains unpinned is genuinely "a live peer is required", which the Docker devnet covers and
+  which no PR gate can (`spec/TEST-COVERAGE.md`'s decision that nothing docker-based gates a PR).
+
+### Rows removed as untestable
+
+Eight modules were listed as tier rows and then **removed**, because a row that can never close is
+worse than no row: the behaviour they appear to name is either absent or tested where it actually
+lives. Removing a row is the one edit to this table that the linter cannot check, so the reasons are
+recorded here rather than only in the commit that did it.
+
+| Module | Why no test is expected |
+|---|---|
+| `sdk/src/block.rs` | A trait declaration with no implementation in the file (tested through its implementors). |
+| `sdk/src/dag.rs` | A module-declaration file (`pub mod data/merging/syntax`) with no items of its own; the three submodules carry 15 tests. |
+| `models/src/proto.rs` | `include!` of the prost-generated wire types — no hand-written behaviour; the types are pinned where they are used (round trips and the `BTreeMap` determinism trap). |
+| `rspace/src/checkpoint.rs` | Plain data carriers (`SoftCheckpoint` and friends); the checkpoint *behaviour* lives in `rspace/src/rspace.rs`. |
+| `rspace/src/scheduled_space.rs` | A trait plus `ReleaseToken`, a `Copy` unit marker: the release itself happens in the scheduler's bookkeeping (`reduce.rs`). |
+| `casper/src/blocks/proposer/block_creator.rs` | No function in the file (a re-export/naming module); block creation is tested through `casper/src/blocks/proposer.rs`. |
+| `rholang/src/proc_ast.rs` | 266 lines of pure `enum`/`struct` declarations with no `impl` block: there is no behaviour, so a test could only assert that a value equals itself. The AST's behaviour is pinned where it is produced (`rholang/src/parser.rs`) and consumed (the normalizer + reducer). |
+| `node/src/api/admin_web_api.rs` | A 13-line trait declaration (two method signatures, no default bodies) — the same class as `sdk/src/block.rs`. Its two callers (`propose`/`propose_result`) are tested at the HTTP layer. |
+
+## Production changes made under this plan
+
+The plan allows production changes but requires each to be listed explicitly and kept out of a
+"test-only" commit, so that a reviewer sees every behaviour change rather than inferring it from a
+green diff. These are all of them.
+
+| Change | Why | Pinned by |
+|---|---|---|
+| `casper/src/gateway/ledger.rs::CoordRecord::record_vote` — a terminal record is absorbing | A late `Ready` could resurrect an aborted (compensated) transaction (AUDIT §15 C1) | `an_abort_is_absorbing`, `a_commit_is_absorbing` |
+| `comm/src/transport/grpc_transport_receiver.rs` — `ConcurrencyLimits` + `serve_with_limits` | `MAX_CONCURRENT_DISPATCH` was a constant with no seam, so the DoS bound could not be tested at all | `a_full_dispatch_queue_is_rejected_and_recovers` |
+| `crypto/src/util/key_util.rs::write_with_mode` — apply `0o600` with `set_permissions` after the write | `OpenOptions::mode` applies only at creation, so the R6 private-key fix was ineffective on a pre-existing key file (AUDIT §15 C8) | `the_private_key_file_is_owner_only` |
+
+Everything else this plan has touched is a test, the register itself, the audit register, the linter,
+or a `Makefile`/CI target.
 
 ## Blocked and out of scope (by decision)
 

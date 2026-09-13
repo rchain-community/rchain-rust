@@ -288,3 +288,73 @@ pub async fn apply<I: RSpaceImporter + Send + 'static, E: RSpaceExporter>(
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rchain_comm::peer_node::NodeIdentifier;
+    use rchain_shared::log::NopLog;
+    use rchain_shared::refined::Port;
+
+    fn peer(name: &str) -> PeerNode {
+        PeerNode::from(
+            NodeIdentifier::new(name.as_bytes().to_vec()),
+            "host".to_string(),
+            Port::new(40400),
+            Port::new(40404),
+        )
+    }
+
+    fn connections(peers: Vec<PeerNode>) -> ConnectionsCell {
+        Arc::new(tokio::sync::RwLock::new(peers))
+    }
+
+    /// The wait ends as soon as a peer is there — the check is the first thing the loop does, so an
+    /// already-connected node does not spend a poll interval idle before creating its genesis.
+    #[tokio::test]
+    async fn the_connection_wait_returns_immediately_when_a_peer_exists() {
+        let conns = connections(vec![peer("p")]);
+        tokio::time::timeout(
+            Duration::from_secs(1),
+            wait_for_first_connection(&conns, &NopLog),
+        )
+        .await
+        .expect("a connected node must not wait");
+    }
+
+    /// With no peers the wait does **not** proceed: it polls, and the caller (`apply`) must not
+    /// fall through to genesis creation or to running. The empty cell is never written to, so the
+    /// future cannot complete — the timeout is the assertion, not a race.
+    #[tokio::test]
+    async fn the_connection_wait_blocks_while_there_are_no_peers() {
+        let conns = connections(Vec::new());
+        let result = tokio::time::timeout(
+            // Comfortably beyond one poll interval, so the loop has had several chances to exit.
+            Duration::from_millis(900),
+            wait_for_first_connection(&conns, &NopLog),
+        )
+        .await;
+        assert!(
+            result.is_err(),
+            "an unconnected node must keep waiting, not proceed"
+        );
+    }
+
+    /// A peer arriving *after* the wait started releases it, which is the case the standalone
+    /// detection depends on: the node is started, the wait begins, then the first peer connects.
+    #[tokio::test]
+    async fn the_connection_wait_is_released_by_a_late_peer() {
+        let conns = connections(Vec::new());
+        let writer = Arc::clone(&conns);
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            writer.write().await.push(peer("late"));
+        });
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            wait_for_first_connection(&conns, &NopLog),
+        )
+        .await
+        .expect("the late peer must release the wait");
+    }
+}

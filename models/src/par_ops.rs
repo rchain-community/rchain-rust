@@ -383,17 +383,23 @@ mod tests {
     /// check reads, and the one a `that`-vs-`p` ordering mistake would break.
     #[test]
     fn par_concat_unions_the_free_sets_regardless_of_side() {
-        let mut a = Par::<crate::ast::ProcSort>::default();
-        a.locally_free = AlwaysEqual(vec![1, 2]);
-        let mut b = Par::<crate::ast::ProcSort>::default();
-        b.locally_free = AlwaysEqual(vec![2, 3]);
+        let a = Par::<crate::ast::ProcSort> {
+            locally_free: AlwaysEqual(vec![1, 2]),
+            ..Default::default()
+        };
+        let b = Par::<crate::ast::ProcSort> {
+            locally_free: AlwaysEqual(vec![2, 3]),
+            ..Default::default()
+        };
 
         let ab = par_concat(&a, &b);
         assert_eq!(ab.locally_free.0, vec![1, 2, 3]);
         assert!(!ab.connective_used);
 
-        let mut connective = Par::<crate::ast::ProcSort>::default();
-        connective.connective_used = true;
+        let connective = Par::<crate::ast::ProcSort> {
+            connective_used: true,
+            ..Default::default()
+        };
         assert!(
             par_concat(&a, &connective).connective_used,
             "either side being connective makes the whole connective"
@@ -407,10 +413,14 @@ mod tests {
     fn par_concat_preserves_the_canonical_form() {
         use crate::sorted::Sorted;
 
-        let mut a = Par::<crate::ast::ProcSort>::default();
-        a.locally_free = AlwaysEqual(vec![1]);
-        let mut b = Par::<crate::ast::ProcSort>::default();
-        b.locally_free = AlwaysEqual(vec![2]);
+        let a = Par::<crate::ast::ProcSort> {
+            locally_free: AlwaysEqual(vec![1]),
+            ..Default::default()
+        };
+        let b = Par::<crate::ast::ProcSort> {
+            locally_free: AlwaysEqual(vec![2]),
+            ..Default::default()
+        };
 
         let ab = Sorted::new(par_concat(&a, &b));
         let ba = Sorted::new(par_concat(&b, &a));

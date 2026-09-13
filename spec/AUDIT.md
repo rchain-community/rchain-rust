@@ -753,3 +753,44 @@ deviation.
   unreachable. Pinned by `a_par_body_with_no_matched_data_panics_in_merge`
   (`#[should_panic(expected = "at least 2 inputs")]`), so a change in reachability — or a guard —
   fails a test instead of surfacing as a node crash.
+
+### Findings from the coverage sweep (pass 6, continued)
+
+These three came out of Stage 3's tier sweep — two are faithful-port notes pinned by a test, one is a
+partial fix of an earlier security remediation.
+
+- **C6 — `graphz` does not escape its input.** `graphz/src/lib.rs::quote` wraps a label in quotes
+  only when it does not already start with one, and `head` interpolates the graph name unescaped, so
+  a name or label containing `"` emits malformed DOT (a name of `G"x` yields `graph "G"x" {`, an edge
+  label of `a"b` yields `"a"b"`). The inputs are block-derived strings in the documentation/SVG
+  pipeline, so the impact is a broken diagram, not injection into anything executed. **Assessed
+  faithful** (Scala's `Graphz.quote` is the same two-line function; adding escaping would change
+  generated output for every existing caller). Pinned by `an_embedded_quote_is_not_escaped`
+  (`graphz/src/lib.rs`), so the day escaping is added the test fails and is updated deliberately.
+  Related: `Graphz::node` writes its `label` through unquoted while `Graphz::apply` quotes a label —
+  the Scala asymmetry, pinned by `a_node_label_is_written_through_without_quoting`.
+
+- **C7 — `generate_key`'s password retry recurses without a bound.**
+  `node/src/runtime/node_main.rs::generate_key` re-prompts by calling itself on an empty or
+  mismatched password, with no attempt counter and no depth limit, so a console that always returns
+  an empty string would grow the stack until it overflows. **Assessed faithful** (port of
+  `NodeMain.generateKey`, which recurses the same way) and bounded in practice by an interactive
+  operator, so the port keeps it. Deliberately **not** pinned by a test — a stack-overflow probe
+  aborts the test process and would assert nothing a reader cannot see; the doc comment on the
+  function records the shape. The retry *behaviour* (re-prompt, distinct messages for empty and
+  mismatched) is pinned by `generate_key_reprompts_on_a_mismatch_and_refuses_an_empty_password` and
+  `generate_key_retries_after_an_empty_password`.
+
+- **C8 — the R6 private-key file mode was applied only at creation (fixed here).**
+  `crypto/src/util/key_util.rs::write_with_mode` passed `0o600` to `OpenOptions::mode`, which the
+  kernel applies **only when the file is created**. Writing over an existing `rnode.key` therefore
+  kept whatever permissions it already had — so a key file that predates the R6 remediation (or one
+  an operator copied in with `cp`, which preserves the source mode) stayed world-readable through
+  every subsequent `--generate-key`. The R6 fix was therefore only half-effective: correct on a fresh
+  data directory, silently ineffective on an upgrade. **Fixed** — the mode is now also applied with
+  an explicit `fs::set_permissions` *after* the write, so the content is never briefly readable under
+  the wider mode. **Production change** (one function, `crypto/src/util/key_util.rs`), listed in the
+  register's production-change list. Verified: `the_private_key_file_is_owner_only`
+  (`crypto/src/util/key_util.rs`) asserts the created mode *and* the re-write case; the second
+  assertion fails without the `set_permissions` call (`left: 420 (0o644), right: 384 (0o600)`), which
+  is how the defect was found.
