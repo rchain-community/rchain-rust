@@ -133,8 +133,17 @@ A `⏸` marks a gap that is still open; the completion plan closes these.
   The `RateLimiter` leg is now ✅ too (`admits_exactly_max_per_window_then_refuses`,
   `resets_after_its_window`, `zero_never_admits`, plus a 429 asserted through the deploy route) — an
   earlier revision of this register wrongly marked it covered when nothing tested it. **⏸ One leg
-  remains:** the dispatch semaphore (`comm/src/transport/grpc_transport_receiver.rs`,
-  `MAX_CONCURRENT_DISPATCH`).
+  remains, and it is a size problem rather than a seam problem:** the dispatch semaphore
+  (`comm/src/transport/grpc_transport_receiver.rs`, `MAX_CONCURRENT_DISPATCH = 1024`). The mechanism
+  is a `tokio::sync::Semaphore` whose `try_acquire` failure becomes `ResourceExhausted`, and reaching
+  it faithfully means **1025 concurrent TLS streams** against a dispatch handler that blocks — a test
+  far heavier and flakier than the bound it would pin, at whatever scale the constant happens to
+  have. Three honest options, none taken yet: *(a)* write it at that scale; *(b)* make the bound
+  injectable (`GrpcTransportReceiver::new` takes the limits) so a test can use a small one — a small,
+  standard **production change**, but production nonetheless and therefore to be approved rather than
+  slipped in; *(c)* record it here as accepted risk, which is what this row does for now. The cheap
+  sibling worth covering first is `MAX_CONCURRENT_BLOBS = 16` — the same mechanism at a scale a test
+  can afford.
   *Seams:* the rate limiter is pure (`new(max_per_sec)`/`allow()`) — window/reset/zero unit tests,
   plus a 429 assertion through the HTTP routes. The semaphore is local to a spawned task, so the
   honest test is **socket-level** (open `MAX+K` streams and assert the last is unanswered; precedent
@@ -223,7 +232,7 @@ opposite was the plan's standing assumption:
 
 | Gap | Classification | Why |
 |---|---|---|
-| G2 dispatch semaphore | test gap — **still open** | the semaphore bounds *socket* concurrency, so the honest test is socket-level (open `MAX+K` streams) and needs no accessor. Extracting one would be a production change for a test — rejected |
+| G2 dispatch semaphore | test gap — **still open, at a size problem** | it bounds *socket* concurrency, so the honest test is socket-level and needs no accessor — but the bound is 1024, so that test needs 1025 concurrent TLS streams. Recorded rather than forced (see the G2 bullet for the three options) |
 | G5 full store round-trip | test gap — **closed** | the concrete `RSpaceExporterStore`/`RSpaceImporterStore` are public and already used by the node (`create_rspace_exporter`/`create_rspace_importer`); `a_populated_store_export_import_round_trips` drives them with a populated store |
 | G7 replay negative path | test gap — **closed, with a finding** | `ProcessedDeploy` is public, so a test can replay a tampered deploy. The spike found that the *inner* check does not fire for a term tamper (AUDIT.md §15 C3), so the test pins the state-hash comparison in `handle_errors` — the check that actually carries the invariant |
 | G12 charge placement | test gap — **closed** | `ChargingRSpace::new` is public and `PendingProduce`'s fields are public, so both the phase-one and the commit charge points are reachable directly |
