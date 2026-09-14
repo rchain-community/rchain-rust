@@ -87,6 +87,7 @@ promotes to `BigInt`, mixed `Int`/`BigInt` operands interoperate, and `2 == 2n` 
 | `rho:registry:insertArbitrary` | insert a value (unauthenticated) |
 | `rho:registry:insertSigned:secp256k1` | insert a value, signed |
 | `rho:rchain:deployerId` | the unforgeable id of the deployer (who invoked the contract) |
+| `rho:attachment:N` | the *N*-th (1-based) binary attachment of the deploy, as a `ByteArray` (RCHIP #39) |
 | `rho:rchain:revVault` | the REV vault contract |
 | `rho:rchain:pos` | the proof-of-stake contract |
 | `rho:block:data` | the current block's number, sender and informational timestamp |

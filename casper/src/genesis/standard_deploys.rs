@@ -100,6 +100,7 @@ impl StandardDeploys {
     ) -> Result<SignedDeployData, String> {
         let sk = PrivateKey::new(base16::unsafe_decode(private_key_hex));
         let data = DeployData {
+            attachments: Vec::new(),
             term,
             timestamp,
             phlo_price: 0,

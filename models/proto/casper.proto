@@ -75,6 +75,10 @@ message DeployDataProto {
   int64  phloLimit             = 8;
   int64  validAfterBlockNumber = 10;
   string shardId               = 11;
+  // Binary attachments (RCHIP #39). Signed as part of the deploy data; referenced from rholang as
+  // `rho:attachment:1`, `rho:attachment:2`, … (1-based) yielding a ByteArray. Deploys without
+  // attachments encode exactly as before, so existing signatures/ids are unchanged.
+  repeated bytes attachments  = 12;
 }
 
 // Inlined from RhoTypes.proto.

@@ -171,6 +171,7 @@ mod tests {
     #[test]
     fn deploy_string() {
         let d = DeployData {
+            attachments: Vec::new(),
             term: "new x in { x!(0) }".to_string(),
             timestamp: 1000,
             phlo_price: 1,

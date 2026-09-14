@@ -263,6 +263,7 @@ mod to_signed_deploy_tests {
     fn deploy_request(deployer: &str, sig_algorithm: &str) -> DeployRequest {
         DeployRequest {
             data: DeployData {
+                attachments: Vec::new(),
                 term: "Nil".to_string(),
                 timestamp: 0,
                 phlo_price: 1,

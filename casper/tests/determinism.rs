@@ -20,6 +20,7 @@ use rchain_shared::refined::NonNegI64;
 fn deploy(term: &str) -> SignedDeployData {
     SignedDeployData {
         data: DeployData {
+            attachments: Vec::new(),
             term: term.to_string(),
             timestamp: 0,
             phlo_price: 1,

@@ -511,6 +511,7 @@ where
                 i64::from(next_block_num)
             );
             let data = DeployData {
+                attachments: Vec::new(),
                 term: term.clone(),
                 timestamp: std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)

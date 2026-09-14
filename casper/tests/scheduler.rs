@@ -41,6 +41,7 @@ async fn seed_vault(rm: &RuntimeManager) -> Blake2b256Hash {
 fn deploy(term: &str) -> SignedDeployData {
     SignedDeployData {
         data: DeployData {
+            attachments: Vec::new(),
             term: term.to_string(),
             timestamp: 0,
             phlo_price: 1,

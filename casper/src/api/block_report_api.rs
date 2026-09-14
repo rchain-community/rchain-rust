@@ -200,6 +200,7 @@ mod tests {
         ProcessedDeploy {
             deploy: SignedDeployData {
                 data: DeployData {
+                    attachments: Vec::new(),
                     term: "Nil".to_string(),
                     timestamp: 0,
                     phlo_price: 1,

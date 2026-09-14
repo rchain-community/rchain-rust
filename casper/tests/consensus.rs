@@ -32,6 +32,7 @@ fn deploy(term: &str) -> SignedDeployData {
 fn deploy_with_limit(term: &str, limit: i64) -> SignedDeployData {
     SignedDeployData {
         data: DeployData {
+            attachments: Vec::new(),
             term: term.to_string(),
             timestamp: 0,
             phlo_price: 1,
@@ -179,6 +180,7 @@ async fn replay_matches_play_for_persistent_and_peek() {
 fn deploy_with_key(term: &str, deployer: Vec<u8>) -> SignedDeployData {
     SignedDeployData {
         data: DeployData {
+            attachments: Vec::new(),
             term: term.to_string(),
             timestamp: 0,
             phlo_price: 1,

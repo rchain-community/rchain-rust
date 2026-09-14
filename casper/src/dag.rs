@@ -479,6 +479,7 @@ mod tests {
         let storage = build_storage().await;
         let deploy = SignedDeployData {
             data: rchain_models::casper::protocol::casper_message::DeployData {
+                attachments: Vec::new(),
                 term: "Nil".to_string(),
                 timestamp: 0,
                 phlo_price: 1,
@@ -534,6 +535,7 @@ mod tests {
     fn deploy_with_id(id: usize) -> SignedDeployData {
         SignedDeployData {
             data: rchain_models::casper::protocol::casper_message::DeployData {
+                attachments: Vec::new(),
                 term: "Nil".to_string(),
                 timestamp: 0,
                 phlo_price: 1,

@@ -58,6 +58,7 @@ pub fn source_deploy(
     shard_id: &str,
 ) -> Result<Signed<DeployData>, String> {
     let data = DeployData {
+        attachments: Vec::new(),
         term: source.to_string(),
         timestamp,
         phlo_price,
