@@ -166,6 +166,7 @@ mod tests {
     fn dto_fields_are_accessible() {
         let deploy = DeployRequest {
             data: DeployData {
+                attachments: Vec::new(),
                 term: "Nil".to_string(),
                 timestamp: 0,
                 phlo_price: 1,

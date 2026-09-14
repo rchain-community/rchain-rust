@@ -55,6 +55,40 @@ pub struct DeployData {
     pub phlo_limit: i64,
     pub valid_after_block_number: i64,
     pub shard_id: String,
+    /// Binary attachments (RCHIP #39), hex-encoded in JSON. They are part of the signed deploy data
+    /// and are exposed to rholang as `rho:attachment:1`, `rho:attachment:2`, … (1-based, yielding a
+    /// `ByteArray`). Empty for an ordinary deploy — which still encodes exactly as before, so
+    /// existing signatures and deploy ids are unchanged.
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        with = "hex_attachments"
+    )]
+    pub attachments: Vec<Vec<u8>>,
+}
+
+/// Serde helper: attachments are hex strings in JSON, the API convention for bytes elsewhere
+/// (`deployer`, `signature`, hashes).
+mod hex_attachments {
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S: Serializer>(value: &[Vec<u8>], s: S) -> Result<S::Ok, S::Error> {
+        let hex: Vec<String> = value
+            .iter()
+            .map(|bytes| rchain_shared::base16::encode(bytes))
+            .collect();
+        s.collect_seq(hex)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<Vec<u8>>, D::Error> {
+        let hex = Vec::<String>::deserialize(d)?;
+        hex.into_iter()
+            .map(|h| {
+                rchain_shared::base16::decode(&h)
+                    .ok_or_else(|| serde::de::Error::custom("attachment is not valid hex"))
+            })
+            .collect()
+    }
 }
 
 impl DeployData {
@@ -74,6 +108,7 @@ impl DeployData {
             phlo_limit: p.phlo_limit,
             valid_after_block_number: p.valid_after_block_number,
             shard_id: p.shard_id.clone(),
+            attachments: p.attachments.clone(),
         }
     }
 
@@ -85,6 +120,7 @@ impl DeployData {
             phlo_limit: self.phlo_limit,
             valid_after_block_number: self.valid_after_block_number,
             shard_id: self.shard_id.clone(),
+            attachments: self.attachments.clone(),
             ..DeployDataProto::default()
         }
     }
@@ -1262,6 +1298,7 @@ mod tests {
         use rchain_crypto::signatures::signed::Signed;
         let (sec, _pk) = Secp256k1.new_key_pair();
         let data = DeployData {
+            attachments: Vec::new(),
             term: term.to_string(),
             timestamp: 0,
             phlo_price: 1,
@@ -1297,9 +1334,81 @@ mod tests {
         assert!(!sd.verify_signature());
     }
 
+    fn signed_deploy_with_attachments(attachments: Vec<Vec<u8>>) -> SignedDeployData {
+        use rchain_crypto::signatures::secp256k1::Secp256k1;
+        use rchain_crypto::signatures::signatures_alg::SignaturesAlg;
+        use rchain_crypto::signatures::signed::Signed;
+        let (sec, _pk) = Secp256k1.new_key_pair();
+        let data = DeployData {
+            term: "Nil".to_string(),
+            timestamp: 0,
+            phlo_price: 1,
+            phlo_limit: 100,
+            valid_after_block_number: 0,
+            shard_id: "root".to_string(),
+            attachments,
+        };
+        let signed = Signed::new(data, &Secp256k1, &sec).unwrap();
+        SignedDeployData {
+            data: signed.data,
+            deployer: signed.pk.bytes().to_vec(),
+            sig: signed.sig,
+            sig_algorithm: signed.sig_algorithm.name().to_string(),
+        }
+    }
+
+    #[test]
+    fn attachments_are_part_of_the_signature() {
+        // RCHIP #39: attachments live in the signed deploy data, so neither tampering with nor
+        // stripping them can pass verification.
+        let sd = signed_deploy_with_attachments(vec![vec![1, 2, 3]]);
+        assert!(sd.verify_signature());
+
+        let mut tampered = sd.clone();
+        tampered.data.attachments = vec![vec![9, 9, 9]];
+        assert!(!tampered.verify_signature());
+
+        let mut stripped = sd;
+        stripped.data.attachments.clear();
+        assert!(!stripped.verify_signature());
+    }
+
+    #[test]
+    fn attachments_round_trip_proto_and_json() {
+        let deploy = DeployData {
+            term: "Nil".to_string(),
+            timestamp: 0,
+            phlo_price: 1,
+            phlo_limit: 1,
+            valid_after_block_number: 0,
+            shard_id: "root".to_string(),
+            attachments: vec![vec![1, 2, 3], vec![]],
+        };
+
+        // The proto round-trip preserves the attachments (including an empty one).
+        let bytes = <DeployData as Serialize<DeployData>>::encode(&deploy);
+        assert_eq!(
+            <DeployData as Serialize<DeployData>>::decode(&bytes).unwrap(),
+            deploy
+        );
+
+        // JSON carries them as hex strings, and an ordinary deploy omits the field entirely.
+        let json = serde_json::to_value(&deploy).unwrap();
+        assert_eq!(json["attachments"], serde_json::json!(["010203", ""]));
+        assert_eq!(serde_json::from_value::<DeployData>(json).unwrap(), deploy);
+
+        let mut plain = deploy;
+        plain.attachments.clear();
+        assert!(serde_json::to_value(&plain)
+            .unwrap()
+            .get("attachments")
+            .is_none());
+    }
+
     #[test]
     fn total_phlo_charge_does_not_wrap_on_overflow() {
         let mut d = DeployData {
+            attachments: Vec::new(),
             term: "Nil".to_string(),
             timestamp: 0,
             phlo_price: i64::MAX,

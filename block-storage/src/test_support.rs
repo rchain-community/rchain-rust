@@ -79,6 +79,7 @@ pub fn fringe_data() -> FringeData {
 pub fn signed_deploy() -> SignedDeployData {
     SignedDeployData {
         data: DeployData {
+            attachments: Vec::new(),
             term: "new x in { x!(1) }".to_string(),
             timestamp: 5,
             phlo_price: 6,

@@ -129,6 +129,7 @@ mod tests {
     fn deploy_with(sig: u8, timestamp: i64) -> SignedDeployData {
         SignedDeployData {
             data: DeployData {
+                attachments: Vec::new(),
                 term: format!("term-{sig}"),
                 timestamp,
                 phlo_price: 1,

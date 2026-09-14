@@ -531,6 +531,7 @@ mod tests {
         fn marked_deploy(&self) -> SignedDeployData {
             SignedDeployData {
                 data: DeployData {
+                    attachments: Vec::new(),
                     term: self.shard_id.clone(),
                     timestamp: 0,
                     phlo_price: 1,
@@ -552,6 +553,7 @@ mod tests {
     fn deploy_to(shard_id: &str, term: &str) -> SignedDeployData {
         SignedDeployData {
             data: DeployData {
+                attachments: Vec::new(),
                 term: term.to_string(),
                 timestamp: 0,
                 phlo_price: 1,

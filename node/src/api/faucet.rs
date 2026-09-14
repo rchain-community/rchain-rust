@@ -61,6 +61,7 @@ pub fn sign_faucet_deploy(
     valid_after_block_number: i64,
 ) -> Result<SignedDeployData, String> {
     let data = DeployData {
+        attachments: Vec::new(),
         term: build_transfer_term(to, amount),
         timestamp: SystemTime::now()
             .duration_since(UNIX_EPOCH)

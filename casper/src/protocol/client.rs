@@ -624,6 +624,7 @@ impl DeployRuntime {
                 .map(|d| d.as_millis() as i64)
                 .unwrap_or(0);
             let data = DeployData {
+                attachments: Vec::new(),
                 term: code,
                 timestamp,
                 phlo_price,
