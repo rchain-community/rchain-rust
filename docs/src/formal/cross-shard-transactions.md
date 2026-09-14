@@ -88,7 +88,8 @@ the record must be durable, so recovery always terminates.
   id is a validated, ordered value, and the RNG seed + unforgeable names are shard-scoped. This is
   the *sharding* half: the id is the typed `ShardId` newtype (`shared/src/refined.rs`) — non-empty
   ASCII, ordered, with the `parent-shard-id`/`shard-name` hierarchy resolved into a full id by
-  `ShardSpec` (`/root` for the default `root` shard, `/root/rootchild` for its child) — and the
+  `ShardSpec` (`/root` for the default `root` shard, `/root/child` for a child named `child`; the
+  depth is unbounded, e.g. `/root/child/leaf`) — and the
   boundary is enforced at deploy admission and block validation (`casper/src/validate.rs`).
   A node's *memberships* are a non-empty, duplicate-free list (`ShardMemberships`), which is what
   lets one node validate several shards while every request still resolves to exactly one.
@@ -206,4 +207,7 @@ The end-to-end two-shard path — uniform commit, and abort on partial failure �
 state hash, so a nondeterministic 2PC write fails there rather than in consensus. The gateway itself
 is covered by `casper/tests/gateway_txn.rs` (commit, compensation, idempotency under a repeated
 `txn_id`, restart recovery from the ledger) and by `node/tests/gateway.rs`, which runs one `rnode`
-over two shards and drives the transaction through `POST /api/v1/txn`.
+over two shards and drives the transaction through `POST /api/v1/txn`. `casper/tests/gateway_faults.rs`
+takes the *failure* half of that surface — a deploy rejected, a reply that never comes, a head that
+cannot be read, a ledger that cannot be written — since those branches are the ones that decide
+whether a cross-shard transaction can leave funds stranded.

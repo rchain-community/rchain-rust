@@ -208,16 +208,21 @@ channel for the response. It lives at [`rchain_casper::shard_invoke`][module].
 
 [module]: https://github.com/rchain-community/rchain-rust/blob/dev/casper/src/shard_invoke.rs
 
-- `invoke_term(target_uri, method, args) -> String` — the expansion above, with
+- `invoke_term(target_uri, method, args: &[Par]) -> String` — the expansion above, with
   `` `rho:rchain:deployId` `` as the reply channel.
-- `signed_invoke(term, caller_key, phlo, shard_id) -> Signed<DeployData>` — an
-  ordinary deploy signed by the caller; `deployerId` on the far shard is
-  `caller_key`'s public key.
+- `signed_invoke(term, caller_key, timestamp, phlo_limit, phlo_price, valid_after_block_number,
+  shard_id) -> Result<Signed<DeployData>, String>` — an ordinary deploy signed by the
+  caller (`shard_id` must be the *target* shard's, or the far node rejects the
+  `DeployData.shardId`); `deployerId` on the far shard is `caller_key`'s public key.
 - `reply_channel(deploy_id) -> Par` — the reply channel, derived from the deploy id.
 - `await_reply(service, deploy_id, listen_interval, timeout) -> ShardOutcome` —
   listens on that channel until the reply appears, mapping it (or a timeout) to
   `Value(Par)` / `Error(String)`; `into_value()` renders the latter as
   `("shard-error", reason)`.
+- `reply_outcome(data: &[DataWithBlockInfo]) -> ShardOutcome` — the same mapping over
+  an already-fetched listen result (the first value produced, else an error), and
+  `shard_error(reason) -> Par` — the `("shard-error", reason)` tuple on its own, for a
+  caller that already has a reason string.
 
 There is no server-side `rho:shard:invoke` system process, and none is needed: the
 node already accepts signed deploys (`rnode --grpc-host <target> -p 40401 deploy …`,

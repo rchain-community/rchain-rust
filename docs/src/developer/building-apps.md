@@ -103,14 +103,22 @@ Content-Type: application/json
     "timestamp": 1724500000000,
     "phloPrice": 1,
     "phloLimit": 1000000,
-    "validAfterBlockNumber": -1,
-    "shardId": "root"
+    "validAfterBlockNumber": 0,
+    "shardId": "/root"
   },
   "deployer": "<base16 secp256k1 public key>",
   "signature": "<base16 secp256k1 signature>",
   "sigAlgorithm": "secp256k1"
 }
 ```
+
+Two fields are the ones a client gets wrong, so they are given the values the node's own tested
+fixture uses (`tools/devnet-test.sh`): `shardId` is the **full shard id** — `/root` for the default
+shard, `/root/child` for its child — *not* the bare `shard-name` from the config, and a mismatch is
+rejected with "Deploy shardId '…' is not as expected network shard '…'". And
+`validAfterBlockNumber` must be at or above the current block height minus the 50-block deploy
+lifespan: `0` is always valid on a fresh chain, whereas `-1` is *expired* once the node is past
+height 50, which is why the faucet anchors its deploys to the tip.
 
 The response is the **deploy signature** (a hex string); keep it to poll status. The `signature` is a
 secp256k1 signature over the protobuf-serialized `data` object; `deployer` is the signer's public key
