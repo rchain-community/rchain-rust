@@ -292,17 +292,24 @@ impl Codec<Vec<DeployMergeableData>> for DeployMergeableDataCodec {
 /// Convert final number-channel values to per-deploy diffs (port of `calculateNumChannelDiff`).
 ///
 /// `init_values` are the pre-state values for every channel key (default `0` when absent).
+///
+/// The subtraction is **checked**: a difference outside `i64` is an error, not a silent wraparound.
+/// Wrapping here would corrupt the merged state — the same bug class as RCHIP #51 (and the Scala
+/// oracle wraps, so this is a deliberate deviation, recorded in `spec/AUDIT.md` §6).
 pub fn calculate_num_channel_diff(
     channel_values: &[BTreeMap<Blake2b256Hash, i64>],
     init_values: &BTreeMap<Blake2b256Hash, i64>,
-) -> Vec<BTreeMap<Blake2b256Hash, i64>> {
+) -> Result<Vec<BTreeMap<Blake2b256Hash, i64>>, String> {
     let mut prev_vals = init_values.clone();
     let mut result = Vec::with_capacity(channel_values.len());
     for end_vals in channel_values {
         let mut diff_map = BTreeMap::new();
         for (ch, end_val) in end_vals {
             if let Some(prev) = prev_vals.get(ch) {
-                diff_map.insert(*ch, end_val.wrapping_sub(*prev));
+                let diff = end_val.checked_sub(*prev).ok_or_else(|| {
+                    format!("number channel diff overflow: {end_val} - {prev} does not fit i64")
+                })?;
+                diff_map.insert(*ch, diff);
             }
         }
         for (ch, end_val) in end_vals {
@@ -310,7 +317,7 @@ pub fn calculate_num_channel_diff(
         }
         result.push(diff_map);
     }
-    result
+    Ok(result)
 }
 
 #[cfg(test)]
@@ -356,7 +363,7 @@ mod tests {
             BTreeMap::from([(a, 15i64)]),
         ];
         let init = BTreeMap::from([(a, 10i64)]);
-        let diffs = calculate_num_channel_diff(&values, &init);
+        let diffs = calculate_num_channel_diff(&values, &init).unwrap();
         assert_eq!(
             diffs,
             vec![
@@ -364,6 +371,33 @@ mod tests {
                 BTreeMap::from([(a, 5i64)]),
                 BTreeMap::from([(a, -10i64)]),
             ]
+        );
+    }
+
+    #[test]
+    fn calculate_diff_rejects_i64_overflow_instead_of_wrapping() {
+        // A diff outside `i64` (here `i64::MAX - i64::MIN`) must be an error: wrapping it would
+        // corrupt the merged state (issue #52).
+        let a = h(1);
+        let values = vec![BTreeMap::from([(a, i64::MAX)])];
+        let init = BTreeMap::from([(a, i64::MIN)]);
+        let err = calculate_num_channel_diff(&values, &init).unwrap_err();
+        assert!(err.contains("overflow"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn calculate_diff_handles_negative_and_absent_keys() {
+        let (a, b) = (h(1), h(2));
+        // `b` is absent from the pre-state: its diff is not computed for that deploy.
+        let values = vec![
+            BTreeMap::from([(a, -5i64)]),
+            BTreeMap::from([(a, -3i64), (b, 4i64)]),
+        ];
+        let init = BTreeMap::from([(a, 0i64)]);
+        let diffs = calculate_num_channel_diff(&values, &init).unwrap();
+        assert_eq!(
+            diffs,
+            vec![BTreeMap::from([(a, -5i64)]), BTreeMap::from([(a, 2i64)]),]
         );
     }
 }
