@@ -123,12 +123,12 @@ mod tests {
         );
 
         // The prefix itself: 0x19, then the ASCII phrase, then the decimal length, then the data.
-        assert_eq!(
-            eth_prefix(5),
-            b"\x19Ethereum Signed Message:\n5".to_vec()
-        );
+        assert_eq!(eth_prefix(5), b"\x19Ethereum Signed Message:\n5".to_vec());
         assert_eq!(eth_prefix(0), b"\x19Ethereum Signed Message:\n0".to_vec());
-        assert_eq!(eth_prefix(100).len(), b"\x19Ethereum Signed Message:\n".len() + 3);
+        assert_eq!(
+            eth_prefix(100).len(),
+            b"\x19Ethereum Signed Message:\n".len() + 3
+        );
     }
 
     /// A `Signed` value round-trips: signing and then reconstructing from the parts verifies, and
@@ -175,7 +175,10 @@ mod tests {
         )
         .is_some());
         assert_eq!(
-            signature_hash("secp256k1", &<String as Serialize<String>>::encode(&signed.data)),
+            signature_hash(
+                "secp256k1",
+                &<String as Serialize<String>>::encode(&signed.data)
+            ),
             crate::hash::blake2b256::hash(b"payload"),
             "the secp256k1 hash of the same payload is a different hash, and would not verify"
         );
@@ -210,22 +213,11 @@ mod tests {
         );
 
         assert!(
-            Signed::from_signed_data(
-                signed.data.clone(),
-                pk.clone(),
-                signed.sig.clone(),
-                eth()
-            )
-            .is_none(),
+            Signed::from_signed_data(signed.data.clone(), pk.clone(), signed.sig.clone(), eth())
+                .is_none(),
             "the eth variant verifies a different hash, so the secp signature does not carry over"
         );
 
-        assert!(Signed::from_signed_data(
-            signed.data.clone(),
-            pk,
-            vec![0u8; 64],
-            secp()
-        )
-        .is_none());
+        assert!(Signed::from_signed_data(signed.data.clone(), pk, vec![0u8; 64], secp()).is_none());
     }
 }

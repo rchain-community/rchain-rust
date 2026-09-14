@@ -20,6 +20,7 @@ use rchain_models::casper::protocol::casper_message::{
 };
 use rchain_models::fringe_data::FringeData;
 use rchain_models::validator::Validator;
+use rchain_shared::refined::{BlockHeight, SeqNum};
 
 /// A valid block with distinct values per field, so a codec or conversion that transposes two of
 /// them fails a round trip instead of silently agreeing with itself.
@@ -28,9 +29,9 @@ pub fn block() -> BlockMessage {
         version: 1,
         shard_id: "root".to_string(),
         block_hash: BlockHash::new([1u8; 32]),
-        block_number: 0.try_into().unwrap(),
+        block_number: BlockHeight::zero(),
         sender: Validator::new([2u8; 65]),
-        seq_num: 0.try_into().unwrap(),
+        seq_num: SeqNum::zero(),
         pre_state_hash: StateHash::new([3u8; 32]),
         post_state_hash: StateHash::new([4u8; 32]),
         justifications: vec![BlockHash::new([5u8; 32])],

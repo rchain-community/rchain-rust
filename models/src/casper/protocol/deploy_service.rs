@@ -514,7 +514,10 @@ mod tests {
 
         let deploy = deploy_info_from_wire(&wire_deploy_info());
         let text = serde_json::to_string(&deploy).expect("ser");
-        assert_eq!(serde_json::from_str::<DeployInfo>(&text).expect("de"), deploy);
+        assert_eq!(
+            serde_json::from_str::<DeployInfo>(&text).expect("de"),
+            deploy
+        );
 
         let bond = BondInfo {
             validator: "v".to_string(),

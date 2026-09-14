@@ -54,7 +54,11 @@ mod tests {
         let pinger = peer(2);
         handle_ping(store.as_ref(), pinger.clone());
 
-        assert_eq!(store.peers(), vec![pinger.clone()], "the sender is now known");
+        assert_eq!(
+            store.peers(),
+            vec![pinger.clone()],
+            "the sender is now known"
+        );
 
         // Pinging again refreshes the entry rather than duplicating it.
         handle_ping(store.as_ref(), pinger.clone());
@@ -89,7 +93,11 @@ mod tests {
             !found.contains(&target),
             "a key's own peer is never in the answer to a lookup for that key: {found:?}"
         );
-        assert_eq!(found, vec![asker], "the asker is the target's only neighbour");
+        assert_eq!(
+            found,
+            vec![asker],
+            "the asker is the target's only neighbour"
+        );
 
         // …and a lookup for a key nobody holds returns the whole table, the target included.
         let found = handle_lookup(store.as_ref(), peer(9), &[0x55; 32]);

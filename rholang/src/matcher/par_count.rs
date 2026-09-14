@@ -187,17 +187,11 @@ mod tests {
         };
 
         let min = a.min(&b);
-        assert_eq!(
-            (min.sends, min.receives, min.news, min.exprs),
-            (1, 2, 3, 2)
-        );
+        assert_eq!((min.sends, min.receives, min.news, min.exprs), (1, 2, 3, 2));
         assert_eq!((min.matches, min.unforgeables, min.bundles), (1, 4, 0));
 
         let max = a.max(&b);
-        assert_eq!(
-            (max.sends, max.receives, max.news, max.exprs),
-            (6, 5, 3, 8)
-        );
+        assert_eq!((max.sends, max.receives, max.news, max.exprs), (6, 5, 3, 8));
         assert_eq!((max.matches, max.unforgeables, max.bundles), (9, 4, 7));
 
         let sum = a.add(&b);
@@ -233,16 +227,32 @@ mod tests {
         assert_eq!(saturating_add(i32::MIN, i32::MIN), 0);
 
         let mut full = ParCount::max_count();
-        assert_eq!(full.add(&ParCount { sends: 1, ..ParCount::default() }).sends, i32::MAX);
+        assert_eq!(
+            full.add(&ParCount {
+                sends: 1,
+                ..ParCount::default()
+            })
+            .sends,
+            i32::MAX
+        );
         full.sends = i32::MAX - 1;
-        assert_eq!(full.add(&ParCount { sends: 5, ..ParCount::default() }).sends, i32::MAX);
+        assert_eq!(
+            full.add(&ParCount {
+                sends: 5,
+                ..ParCount::default()
+            })
+            .sends,
+            i32::MAX
+        );
     }
 
     /// `from_par` counts the seven fields of a par, each from its own list.
     #[test]
     fn from_par_counts_each_field() {
-        let mut par: Par = Par::default();
-        par.exprs = vec![bound_var()];
+        let par: Par = Par {
+            exprs: vec![bound_var()],
+            ..Par::default()
+        };
         let c = ParCount::from_par(&par);
         assert_eq!(c.exprs, 1);
         assert_eq!(c.sends, 0);
@@ -277,14 +287,18 @@ mod tests {
     /// count of everything *else*. A bound variable is not free and is counted normally.
     #[test]
     fn a_free_variable_widens_only_the_maximum() {
-        let mut par: Par = Par::default();
-        par.exprs = vec![bound_var()];
+        let par: Par = Par {
+            exprs: vec![bound_var()],
+            ..Par::default()
+        };
         let (min, max) = ParCount::min_max(&par);
         assert_eq!(min, count_exprs(1));
         assert_eq!(max, count_exprs(1), "a bound var is counted");
 
-        let mut par: Par = Par::default();
-        par.exprs = vec![free_var()];
+        let par: Par = Par {
+            exprs: vec![free_var()],
+            ..Par::default()
+        };
         let (min, max) = ParCount::min_max(&par);
         assert_eq!(
             min,
@@ -293,8 +307,10 @@ mod tests {
         );
         assert_eq!(max, ParCount::max_count(), "…but it can match anything");
 
-        let mut par: Par = Par::default();
-        par.exprs = vec![wildcard()];
+        let par: Par = Par {
+            exprs: vec![wildcard()],
+            ..Par::default()
+        };
         let (min, max) = ParCount::min_max(&par);
         assert_eq!(min, ParCount::default());
         assert_eq!(max, ParCount::max_count());
@@ -306,10 +322,9 @@ mod tests {
     /// classic error here, and it silently admits or rejects spatial matches.
     #[test]
     fn conjunction_and_disjunction_take_opposite_folds() {
-        let two = |n: i32| {
-            let mut p: Par = Par::default();
-            p.exprs = vec![bound_var(); n as usize];
-            p
+        let two = |n: i32| Par {
+            exprs: vec![bound_var(); n as usize],
+            ..Par::default()
         };
 
         let and = Connective::ConnAnd(ConnectiveBody {
@@ -323,7 +338,10 @@ mod tests {
             ps: vec![two(1), two(4)],
         });
         let (min, max) = ParCount::min_max_connective(&or);
-        assert_eq!(min.exprs, 1, "a disjunction demands only the smaller minimum");
+        assert_eq!(
+            min.exprs, 1,
+            "a disjunction demands only the smaller minimum"
+        );
         assert_eq!(max.exprs, 4, "…and admits up to the larger maximum");
 
         // A single-part connective is that part, for both.
@@ -334,7 +352,10 @@ mod tests {
         // An empty one folds from the identity of each side: `add`'s zero for the minimum and
         // `max_count` for the maximum.
         let empty_and = Connective::ConnAnd(ConnectiveBody { ps: Vec::new() });
-        assert_eq!(ParCount::min_max_connective(&empty_and).0, ParCount::default());
+        assert_eq!(
+            ParCount::min_max_connective(&empty_and).0,
+            ParCount::default()
+        );
         assert_eq!(
             ParCount::min_max_connective(&empty_and).1,
             ParCount::max_count()
@@ -345,7 +366,7 @@ mod tests {
     /// structural connectives (a `var` reference, the empty connective) contribute nothing.
     #[test]
     fn the_remaining_connectives_have_their_own_counts() {
-        let negated = Connective::ConnNot(Box::new(Par::default()));
+        let negated = Connective::ConnNot(Box::default());
         assert_eq!(
             ParCount::min_max_connective(&negated),
             (ParCount::default(), ParCount::max_count())
@@ -382,15 +403,16 @@ mod tests {
     /// one connective carries both — the sum is where an off-by-one in the fold would show.
     #[test]
     fn a_pars_own_count_adds_to_its_connectives() {
-        let mut par: Par = Par::default();
-        par.exprs = vec![bound_var(), bound_var()];
-        par.connectives = vec![Connective::ConnAnd(ConnectiveBody {
-            ps: vec![{
-                let mut p: Par = Par::default();
-                p.exprs = vec![bound_var()];
-                p
-            }],
-        })];
+        let par: Par = Par {
+            exprs: vec![bound_var(), bound_var()],
+            connectives: vec![Connective::ConnAnd(ConnectiveBody {
+                ps: vec![Par {
+                    exprs: vec![bound_var()],
+                    ..Par::default()
+                }],
+            })],
+            ..Par::default()
+        };
 
         let (min, max) = ParCount::min_max(&par);
         assert_eq!(min.exprs, 3, "two of its own plus one from the connective");
@@ -398,15 +420,16 @@ mod tests {
 
         // A free variable in the par's own exprs makes the whole maximum unbounded, connectives
         // included.
-        let mut par: Par = Par::default();
-        par.exprs = vec![free_var(), bound_var()];
-        par.connectives = vec![Connective::ConnAnd(ConnectiveBody {
-            ps: vec![{
-                let mut p: Par = Par::default();
-                p.exprs = vec![bound_var()];
-                p
-            }],
-        })];
+        let par: Par = Par {
+            exprs: vec![free_var(), bound_var()],
+            connectives: vec![Connective::ConnAnd(ConnectiveBody {
+                ps: vec![Par {
+                    exprs: vec![bound_var()],
+                    ..Par::default()
+                }],
+            })],
+            ..Par::default()
+        };
         let (min, max) = ParCount::min_max(&par);
         assert_eq!(min.exprs, 2, "the bound var and the connective's par");
         assert_eq!(max, ParCount::max_count());

@@ -101,7 +101,10 @@ mod tests {
         );
         assert_eq!(
             CommError::MessageTooLarge(peer()).message(),
-            format!("Message rejected by peer {} because it was too large", peer())
+            format!(
+                "Message rejected by peer {} because it was too large",
+                peer()
+            )
         );
         assert_eq!(
             CommError::PongNotReceivedForPing(peer()).message(),
@@ -140,7 +143,9 @@ mod tests {
             format!("{:?}", CommError::HeaderNotAvailable)
         );
         assert!(!CommError::BootstrapNotProvided.message().is_empty());
-        assert!(CommError::UpstreamNotAvailable.message().contains("UpstreamNotAvailable"));
+        assert!(CommError::UpstreamNotAvailable
+            .message()
+            .contains("UpstreamNotAvailable"));
         assert!(CommError::SenderNotAvailable
             .message()
             .contains("SenderNotAvailable"));

@@ -161,7 +161,10 @@ mod tests {
     #[tokio::test]
     async fn recording_is_soft_until_collected_and_an_empty_collect_adds_no_batch() {
         let space = space().await;
-        assert!(space.get_report().is_empty(), "a fresh space reports nothing");
+        assert!(
+            space.get_report().is_empty(),
+            "a fresh space reports nothing"
+        );
 
         space.record_produce("chan".to_string(), "datum".to_string());
         // The soft report is private; `collect_report` is the only way to see it, and collecting
@@ -174,7 +177,11 @@ mod tests {
 
         // A collect with an empty soft report does not add a batch…
         space.collect_report();
-        assert_eq!(space.get_report().len(), 0, "…and `get_report` drained the first");
+        assert_eq!(
+            space.get_report().len(),
+            0,
+            "…and `get_report` drained the first"
+        );
 
         // …but a *recorded* event after a drain starts a new batch.
         space.record_produce("chan".to_string(), "second".to_string());

@@ -158,8 +158,14 @@ mod tests {
         assert_ne!(a.root(), empty_root(), "the root moved");
 
         // The committed values are readable at the new root…
-        assert_eq!(a.read(&key(1)).await, Some(Blake2b256Hash::from_bytes([0x11; 32])));
-        assert_eq!(a.read(&key(2)).await, Some(Blake2b256Hash::from_bytes([0x22; 32])));
+        assert_eq!(
+            a.read(&key(1)).await,
+            Some(Blake2b256Hash::from_bytes([0x11; 32]))
+        );
+        assert_eq!(
+            a.read(&key(2)).await,
+            Some(Blake2b256Hash::from_bytes([0x22; 32]))
+        );
         // …and the history it came from is unchanged: `process` returns a *new* history.
         assert_eq!(first.root(), empty_root());
         assert_eq!(first.read(&key(1)).await, None);
@@ -203,10 +209,7 @@ mod tests {
             "different values on one key are still a duplicate"
         );
         assert!(
-            !has_no_duplicates(&[
-                insert(1, 0x11),
-                HistoryAction::Delete { key: key(1) }
-            ]),
+            !has_no_duplicates(&[insert(1, 0x11), HistoryAction::Delete { key: key(1) }]),
             "an insert and a delete on one key are the ambiguous pair"
         );
     }

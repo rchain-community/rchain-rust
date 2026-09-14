@@ -175,7 +175,10 @@ mod tests {
         assert_eq!(streams[0].0, vec![target], "a one-element peer list");
         // `Blob` carries no `Debug`, so the parts are compared rather than the whole.
         assert_eq!(streams[0].1.sender, blob.sender);
-        assert_eq!(streams[0].1.packet, blob.packet, "the blob is carried unchanged");
+        assert_eq!(
+            streams[0].1.packet, blob.packet,
+            "the blob is carried unchanged"
+        );
     }
 
     /// `stream_to_peer` builds the blob from the configuration: the sender is the local peer, so a
@@ -192,9 +195,15 @@ mod tests {
         let streams = transport.streams.lock().unwrap();
         assert_eq!(streams.len(), 1);
         assert_eq!(streams[0].0, vec![remote]);
-        assert_eq!(streams[0].1.sender, local, "the blob's sender is `conf.local`");
+        assert_eq!(
+            streams[0].1.sender, local,
+            "the blob's sender is `conf.local`"
+        );
         assert_eq!(streams[0].1.packet, packet());
-        assert!(transport.sends.lock().unwrap().is_empty(), "streaming, not sending");
+        assert!(
+            transport.sends.lock().unwrap().is_empty(),
+            "streaming, not sending"
+        );
     }
 
     /// `send_to_bootstrap` sends **nothing** when no bootstrap is configured — the `if let` is the

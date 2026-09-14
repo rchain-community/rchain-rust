@@ -198,7 +198,9 @@ mod tests {
         let b = block();
         put_block(&store, b.clone()).await.expect("put");
         assert_eq!(
-            get_block_unsafe(&store, &b.block_hash).await.expect("present"),
+            get_block_unsafe(&store, &b.block_hash)
+                .await
+                .expect("present"),
             b
         );
 

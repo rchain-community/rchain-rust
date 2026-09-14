@@ -67,7 +67,10 @@ mod tests {
     #[test]
     fn the_default_worker_count_is_at_least_one() {
         let threads = default_worker_threads();
-        assert!(threads >= 1, "a runtime needs at least one worker: {threads}");
+        assert!(
+            threads >= 1,
+            "a runtime needs at least one worker: {threads}"
+        );
         assert!(
             threads <= 1024,
             "a sane machine has fewer than 1024 cores: {threads}"

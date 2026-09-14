@@ -126,7 +126,10 @@ mod tests {
         assert_eq!(names.len(), ALL.len());
         // The names are the Scala `entryName`s, so they are the variant names verbatim.
         assert_eq!(PacketTypeTag::FinalizedFringe.tag(), "FinalizedFringe");
-        assert_eq!(PacketTypeTag::StoreItemsMessageRequest.tag(), "StoreItemsMessageRequest");
+        assert_eq!(
+            PacketTypeTag::StoreItemsMessageRequest.tag(),
+            "StoreItemsMessageRequest"
+        );
     }
 
     /// An unknown name is `None` rather than an error or a guess, and the match is exact — the
@@ -155,11 +158,9 @@ mod tests {
     }
     impl FromPacket<u32> for U32Packet {
         fn parse(&self, content: &[u8]) -> PacketParseResult<u32> {
-            let arr: [u8; 4] = content.try_into().map_err(|_| {
-                ModelsError::Length {
-                    got: content.len(),
-                    expected: 4,
-                }
+            let arr: [u8; 4] = content.try_into().map_err(|_| ModelsError::Length {
+                got: content.len(),
+                expected: 4,
             })?;
             Ok(u32::from_be_bytes(arr))
         }
@@ -171,7 +172,10 @@ mod tests {
         let packet = U32Packet.mk_packet(&0xDEAD_BEEF);
         assert_eq!(packet.type_id, "HasBlock");
         assert_eq!(packet.content, vec![0xDE, 0xAD, 0xBE, 0xEF]);
-        assert_eq!(U32Packet.parse_from(&packet).expect("tag matches"), 0xDEAD_BEEF);
+        assert_eq!(
+            U32Packet.parse_from(&packet).expect("tag matches"),
+            0xDEAD_BEEF
+        );
     }
 
     /// A packet whose tag is a *different* registered type is refused by name — never handed to the
@@ -190,7 +194,10 @@ mod tests {
                 expected: "HasBlock".to_string(),
             }
         );
-        assert_eq!(err.to_string(), "Got FinalizedFringe packet - need HasBlock packet");
+        assert_eq!(
+            err.to_string(),
+            "Got FinalizedFringe packet - need HasBlock packet"
+        );
 
         // The parse error itself is surfaced unchanged when the tag does match.
         let short = Packet {

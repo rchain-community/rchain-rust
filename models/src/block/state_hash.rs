@@ -84,7 +84,10 @@ mod tests {
     #[test]
     fn try_from_rejects_a_wrong_length_and_names_both() {
         let ok = StateHash::try_from(bytes(7).as_slice()).expect("32 bytes");
-        assert_eq!(ok.as_bytes(), &<[u8; LENGTH]>::try_from(bytes(7).as_slice()).unwrap());
+        assert_eq!(
+            ok.as_bytes(),
+            &<[u8; LENGTH]>::try_from(bytes(7).as_slice()).unwrap()
+        );
 
         for bad in [0usize, 31, 33, 64] {
             let err = StateHash::try_from(vec![0u8; bad].as_slice()).expect_err(&format!("{bad}"));
@@ -118,7 +121,11 @@ mod tests {
 
         let raw: Hash32 = hash.into();
         assert_eq!(raw.as_bytes(), &arr, "Hash32 keeps the bytes");
-        assert_eq!(StateHash::from(raw), hash, "…and the round trip is the identity");
+        assert_eq!(
+            StateHash::from(raw),
+            hash,
+            "…and the round trip is the identity"
+        );
 
         let digest: rchain_crypto::hash::blake2b256_hash::Blake2b256Hash = hash.into();
         assert_eq!(digest.as_bytes(), &arr, "Blake2b256Hash keeps the bytes");

@@ -977,9 +977,7 @@ mod tests {
         use super::*;
         use rchain_crypto::hash::blake2b512_random::Blake2b512Random;
         use rchain_models::ast::{Expr, Par};
-        use rchain_models::casper::protocol::deploy_service::{
-            BondInfo, DeployInfo, VersionInfo,
-        };
+        use rchain_models::casper::protocol::deploy_service::{BondInfo, DeployInfo, VersionInfo};
         use rchain_models::casper::protocol::report::{
             ReportCommProto, ReportConsumeProto, ReportProduceProto, ReportProto, SingleReport,
         };
@@ -989,9 +987,10 @@ mod tests {
         /// A par carrying a distinct integer, so two pars in one message are distinguishable —
         /// `Par::default()` is the same empty par for every field, which would let a swap pass.
         fn par_of(n: i64) -> Par {
-            let mut par = Par::default();
-            par.exprs = vec![Expr::GInt(n)];
-            par
+            Par {
+                exprs: vec![Expr::GInt(n)],
+                ..Par::default()
+            }
         }
 
         fn sorted(n: i64) -> Sorted<rchain_models::ast::ProcSort> {
@@ -1138,13 +1137,16 @@ mod tests {
             assert_eq!(data.post_block_data.len(), 2);
             assert_eq!(data.block.expect("block").timestamp, 7000);
 
-            let continuations = continuations_with_block_info_to_wire(&ContinuationsWithBlockInfo {
-                post_block_continuations: vec![rchain_models::casper::protocol::deploy_service::WaitingContinuationInfo {
-                    post_block_patterns: vec![bind_pattern(9)],
-                    post_block_continuation: par_of(10),
-                }],
-                block: block_info(),
-            });
+            let continuations =
+                continuations_with_block_info_to_wire(&ContinuationsWithBlockInfo {
+                    post_block_continuations: vec![
+                        rchain_models::casper::protocol::deploy_service::WaitingContinuationInfo {
+                            post_block_patterns: vec![bind_pattern(9)],
+                            post_block_continuation: par_of(10),
+                        },
+                    ],
+                    block: block_info(),
+                });
             assert_eq!(continuations.post_block_continuations.len(), 1);
             assert!(continuations.post_block_continuations[0]
                 .post_block_continuation
@@ -1204,7 +1206,9 @@ mod tests {
             let consume = ReportConsumeProto {
                 channels: vec![par_of(3), par_of(4)],
                 patterns: vec![bind_pattern(5)],
-                peeks: vec![rchain_models::casper::protocol::casper_message::Peek { channel_index: 1 }],
+                peeks: vec![rchain_models::casper::protocol::casper_message::Peek {
+                    channel_index: 1,
+                }],
             };
             let comm = ReportCommProto {
                 consume: consume.clone(),
@@ -1223,11 +1227,15 @@ mod tests {
             // The variant tags are the wire's own, one per domain variant.
             assert!(matches!(
                 wire_report.events[0].report,
-                Some(rchain_models::proto::casper::report_proto::Report::Produce(_))
+                Some(rchain_models::proto::casper::report_proto::Report::Produce(
+                    _
+                ))
             ));
             assert!(matches!(
                 wire_report.events[1].report,
-                Some(rchain_models::proto::casper::report_proto::Report::Consume(_))
+                Some(rchain_models::proto::casper::report_proto::Report::Consume(
+                    _
+                ))
             ));
             assert!(matches!(
                 wire_report.events[2].report,
@@ -1266,8 +1274,10 @@ mod tests {
                 report_produce_from_wire(&empty_produce).expect_err("no channel"),
                 "missing channel"
             );
-            let mut with_channel = wire::ReportProduceProto::default();
-            with_channel.channel = Some(Default::default());
+            let with_channel = wire::ReportProduceProto {
+                channel: Some(Default::default()),
+                ..Default::default()
+            };
             assert_eq!(
                 report_produce_from_wire(&with_channel).expect_err("no data"),
                 "missing data"
@@ -1320,15 +1330,17 @@ mod tests {
         fn the_block_event_info_round_trips_with_its_nested_parts() {
             let info = BlockEventInfo {
                 block_info: block_info(),
-                deploys: vec![rchain_models::casper::protocol::report::DeployInfoWithEventData {
-                    deploy_info: deploy_info(),
-                    report: vec![SingleReport {
-                        events: vec![ReportProto::Produce(ReportProduceProto {
-                            channel: par_of(1),
-                            data: list_par(2),
-                        })],
-                    }],
-                }],
+                deploys: vec![
+                    rchain_models::casper::protocol::report::DeployInfoWithEventData {
+                        deploy_info: deploy_info(),
+                        report: vec![SingleReport {
+                            events: vec![ReportProto::Produce(ReportProduceProto {
+                                channel: par_of(1),
+                                data: list_par(2),
+                            })],
+                        }],
+                    },
+                ],
                 system_deploys: Vec::new(),
                 post_state_hash: b"POST-STATE".to_vec(),
             };

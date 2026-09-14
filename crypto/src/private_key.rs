@@ -48,6 +48,10 @@ mod tests {
             s.finish()
         };
         assert_eq!(h(&key), h(&PrivateKey::new(bytes)));
-        assert_eq!(key.bytes().len(), 3, "`bytes` is a view, not a copy of the length");
+        assert_eq!(
+            key.bytes().len(),
+            3,
+            "`bytes` is a view, not a copy of the length"
+        );
     }
 }

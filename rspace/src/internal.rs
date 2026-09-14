@@ -273,7 +273,10 @@ mod tests {
     #[test]
     fn a_binding_is_a_multiset_entry_not_a_set_member() {
         let mut bindings: MultisetMultiMap<&str, &str> = MultisetMultiMap::empty();
-        assert_eq!(format!("{bindings:?}"), format!("{:?}", MultisetMultiMap::<&str, &str>::default()));
+        assert_eq!(
+            format!("{bindings:?}"),
+            format!("{:?}", MultisetMultiMap::<&str, &str>::default())
+        );
 
         bindings.add_binding("k", "v");
         bindings.add_binding("k", "v");

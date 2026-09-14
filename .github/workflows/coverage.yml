@@ -46,13 +46,13 @@ jobs:
         # spending CI time running the same suite twice.
         # The floor is a regression tripwire, not a target: it is raised only *after* measuring, to
         # two points below the measured value, so it can never become a schedule.
-        # Measured 81.30% lines (16868/90208 missed) after the coverage-completion plan's Stages 0-5
-        # plus the low-coverage sweep (the pretty printer's round trip -- which found three printer
-        # defects -- the UPnP discovery helpers, the tuple-space requester, the ed25519 and deploy
-        # builders, and the merge-event types). The measurement history is 73.68% (floor 71), 79.69%
-        # (floor 77), 81.30% (floor 79) -- always two points below, so ordinary churn does not trip
-        # the tripwire.
-        run: cargo llvm-cov --workspace --all-features --lcov --output-path lcov.info --fail-under-lines 79
+        # Measured 84.07% lines (15530/97490 missed) after the census sweep -- every source file
+        # either tested or an exemption row with a reason class, plus the node gRPC wire
+        # conversions, the faucet budget, the history readers and the transport server's config
+        # path. The measurement history is 73.68% (floor 71), 79.69% (floor 77), 81.30% (floor 79),
+        # 84.07% (floor 82) -- always two points below, so ordinary churn does not trip the
+        # tripwire.
+        run: cargo llvm-cov --workspace --all-features --lcov --output-path lcov.info --fail-under-lines 82
 
       - name: Upload coverage
         uses: codecov/codecov-action@v7

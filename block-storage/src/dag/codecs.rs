@@ -161,7 +161,9 @@ mod tests {
         );
 
         for bad in [0usize, 31, 33] {
-            let err = BlockHashCodec.decode(&vec![0u8; bad]).expect_err("wrong length");
+            let err = BlockHashCodec
+                .decode(&vec![0u8; bad])
+                .expect_err("wrong length");
             assert_eq!(err, format!("expected 32 bytes, got {bad}"));
             assert!(Blake2b256HashCodec
                 .decode(&vec![0u8; bad])
@@ -200,7 +202,10 @@ mod tests {
             crate::block_store::compress_bytes(&block.to_bytes()),
             "LZ4 over the protobuf encoding"
         );
-        assert_eq!(BlockMessageCodec.decode(&stored).expect("round trip"), block);
+        assert_eq!(
+            BlockMessageCodec.decode(&stored).expect("round trip"),
+            block
+        );
 
         // A 4-byte size prefix claiming more bytes than are present cannot decompress.
         assert!(BlockMessageCodec.decode(&[0, 0, 0, 10]).is_err());
@@ -218,7 +223,9 @@ mod tests {
         assert_eq!(metadata.block_hash, block().block_hash);
 
         assert_eq!(
-            FringeCodec.decode(&FringeCodec.encode(&fringe())).expect("round trip"),
+            FringeCodec
+                .decode(&FringeCodec.encode(&fringe()))
+                .expect("round trip"),
             fringe()
         );
         assert_eq!(

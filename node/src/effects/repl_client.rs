@@ -109,7 +109,10 @@ mod tests {
 
     #[tonic::async_trait]
     impl Repl for EchoRepl {
-        async fn run(&self, request: Request<CmdRequest>) -> Result<Response<ReplResponse>, Status> {
+        async fn run(
+            &self,
+            request: Request<CmdRequest>,
+        ) -> Result<Response<ReplResponse>, Status> {
             let line = request.into_inner().line;
             self.seen.lock().unwrap().push(line.clone());
             Ok(Response::new(ReplResponse {

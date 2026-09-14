@@ -35,7 +35,10 @@ mod tests {
         assert_eq!(42u8.to_task(), 42);
         assert_eq!(u8::from_task(42), 42);
         assert_eq!("text".to_string().to_task(), "text");
-        assert_eq!(<String as Monixable<String>>::from_task("x".to_string()), "x");
+        assert_eq!(
+            <String as Monixable<String>>::from_task("x".to_string()),
+            "x"
+        );
         assert_eq!(Vec::<u8>::new().to_task(), Vec::<u8>::new());
     }
 

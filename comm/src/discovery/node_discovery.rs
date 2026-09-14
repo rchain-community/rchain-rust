@@ -147,9 +147,7 @@ mod tests {
         let discovery = discovery(rpc.clone());
 
         // Seed the table the way the connection path does.
-        discovery
-            .store
-            .update_last_seen(peer(2));
+        discovery.store.update_last_seen(peer(2));
         assert_eq!(discovery.peers(), vec![peer(2)]);
 
         discovery.discover().await;
@@ -158,8 +156,12 @@ mod tests {
         assert_eq!(lookups.len(), 1, "one lookup, from the one seed peer");
         assert_eq!(lookups[0].1, peer(2), "asked of the seed peer");
         let target = &lookups[0].0;
-        let local = vec![1u8; 32];
-        assert_eq!(target.len(), local.len(), "the target is a key of the same width");
+        let local = [1u8; 32];
+        assert_eq!(
+            target.len(),
+            local.len(),
+            "the target is a key of the same width"
+        );
         let differing_bits: u32 = target
             .iter()
             .zip(local.iter())

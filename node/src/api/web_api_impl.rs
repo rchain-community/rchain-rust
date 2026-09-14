@@ -74,8 +74,8 @@ mod tests {
     use rchain_models::block_metadata::BlockMetadata;
     use rchain_models::casper::protocol::casper_message::DeployData;
     use rchain_models::casper::protocol::deploy_service::{
-        BlockInfo, ContinuationsWithBlockInfo, DataWithBlockInfo, DeployExecStatus as DomainExecStatus,
-        LightBlockInfo, Status, VersionInfo,
+        BlockInfo, ContinuationsWithBlockInfo, DataWithBlockInfo,
+        DeployExecStatus as DomainExecStatus, LightBlockInfo, Status, VersionInfo,
     };
 
     /// A block API that answers from its fields and records what it was asked — the `StubBlockApi`
@@ -300,7 +300,10 @@ mod tests {
             .deploy_status("not-hex!")
             .await
             .expect_err("not base16");
-        assert_eq!(err, BlockApiException("Deploy id is not valid base16 format.".to_string()));
+        assert_eq!(
+            err,
+            BlockApiException("Deploy id is not valid base16 format.".to_string())
+        );
 
         // Odd-length hex is not base16 either.
         assert!(api(StubBlockApi::default(), None)
@@ -328,12 +331,14 @@ mod tests {
     /// client (and change between calls).
     #[tokio::test]
     async fn pooled_deploys_come_back_most_recent_first() {
-        let mut block_api = StubBlockApi::default();
-        block_api.pooled = vec![
-            deploy_with(1, 500),
-            deploy_with(2, 900),
-            deploy_with(3, 100),
-        ];
+        let block_api = StubBlockApi {
+            pooled: vec![
+                deploy_with(1, 500),
+                deploy_with(2, 900),
+                deploy_with(3, 100),
+            ],
+            ..StubBlockApi::default()
+        };
         let pooled = api(block_api, None).pooled_deploys().await.expect("pooled");
 
         let timestamps: Vec<i64> = pooled.deploys.iter().map(|d| d.timestamp).collect();
@@ -432,7 +437,10 @@ mod tests {
         assert_eq!(recorded[0].sig_algorithm, "secp256k1");
         assert!(!recorded[0].sig.is_empty(), "it is signed");
         assert_eq!(recorded[0].data.shard_id, "root", "the node's shard");
-        assert_eq!(recorded[0].data.valid_after_block_number, 42, "anchored to the chain height");
+        assert_eq!(
+            recorded[0].data.valid_after_block_number, 42,
+            "anchored to the chain height"
+        );
 
         let alg = rchain_crypto::signatures::signatures_alg::from_algorithm("secp256k1")
             .expect("registered");

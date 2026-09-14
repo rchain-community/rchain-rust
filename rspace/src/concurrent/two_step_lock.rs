@@ -143,7 +143,7 @@ mod tests {
                         counter.fetch_sub(1, Ordering::SeqCst);
                         Ok(vec![1u8])
                     });
-                lock.acquire(&[1], phase_two, async { () }).await
+                lock.acquire(&[1], phase_two, async {}).await
             }
         };
         // Task 2 tries the same phase-A key: it cannot start phase two until task 1 finishes.
@@ -159,7 +159,7 @@ mod tests {
                         counter.fetch_sub(1, Ordering::SeqCst);
                         Ok(vec![1u8])
                     });
-                lock.acquire(&[1], phase_two, async { () }).await
+                lock.acquire(&[1], phase_two, async {}).await
             }
         };
 

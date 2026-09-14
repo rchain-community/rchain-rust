@@ -66,7 +66,7 @@ mod tests {
         assert!(PublicKey::new(vec![0x01, 0x02]) < PublicKey::new(vec![0x01, 0x03]));
 
         // `sort` must produce the same order the comparison defines, not the unsigned one.
-        let mut keys = vec![
+        let mut keys = [
             PublicKey::new(vec![0x00]),
             PublicKey::new(vec![0xFF]),
             PublicKey::new(vec![0x7F]),

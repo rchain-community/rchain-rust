@@ -329,7 +329,9 @@ mod tests {
     /// The 128-byte message block these tests feed to `update`: a fixed pattern, distinct per
     /// 8-byte word so an offset mistake cannot pass unnoticed.
     fn message(len: usize) -> Vec<u8> {
-        (0..len).map(|i| (i as u8).wrapping_mul(7).wrapping_add(3)).collect()
+        (0..len)
+            .map(|i| (i as u8).wrapping_mul(7).wrapping_add(3))
+            .collect()
     }
 
     fn word_of(bytes: &[u8], index: usize) -> u64 {
@@ -368,12 +370,23 @@ mod tests {
             one.iter().zip(two.iter()).filter(|(a, b)| a != b).count(),
             1,
             "only the fanout byte differs: {}",
-            one.iter().zip(two.iter()).position(|(a, b)| a != b).unwrap()
+            one.iter()
+                .zip(two.iter())
+                .position(|(a, b)| a != b)
+                .unwrap()
         );
         let iv0 = IV[0].to_le_bytes();
-        assert_eq!(one[2], iv0[2] ^ 1, "fanout 1 in PARAM_VALUE_0's second byte");
+        assert_eq!(
+            one[2],
+            iv0[2] ^ 1,
+            "fanout 1 in PARAM_VALUE_0's second byte"
+        );
         assert_eq!(two[2], iv0[2] ^ 2, "…and 2 for fanout 2");
-        assert_eq!(one[0], iv0[0] ^ 0x40, "the digest length (64) is the low byte");
+        assert_eq!(
+            one[0],
+            iv0[0] ^ 0x40,
+            "the digest length (64) is the low byte"
+        );
     }
 
     /// `from_block` is a **copy constructor**: mutating the copy must not disturb the original,
@@ -509,7 +522,10 @@ mod tests {
         state.tweak_t0();
         let printed = state.debug_str();
         assert!(printed.starts_with("chainValue: "), "{printed}");
-        assert!(printed.contains(&format!("\nt0: {}\n", u64::MAX)), "{printed}");
+        assert!(
+            printed.contains(&format!("\nt0: {}\n", u64::MAX)),
+            "{printed}"
+        );
         assert!(printed.contains("\nt1: 0\n"), "{printed}");
     }
 

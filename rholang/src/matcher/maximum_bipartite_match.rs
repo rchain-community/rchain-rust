@@ -147,7 +147,10 @@ mod tests {
         // Two patterns competing for one target: only one can have it.
         assert_eq!(find_matches(&["a", "a"], &["a"], &match_fn), None);
         // No patterns at all is a trivially satisfied match.
-        assert_eq!(find_matches::<&str, &str, String>(&[], &["a"], &match_fn), Some(Vec::new()));
+        assert_eq!(
+            find_matches::<&str, &str, String>(&[], &["a"], &match_fn),
+            Some(Vec::new())
+        );
         // …and a pattern with no target to try is unmatchable too (its candidate list is empty).
         assert_eq!(find_matches(&["a"], &[], &match_fn), None);
     }
@@ -165,11 +168,20 @@ mod tests {
         let out = find_matches(&["t0|t1", "t0"], &["t0", "t1"], &match_fn)
             .expect("both are matchable — the flexible pattern must give way");
         assert_eq!(out.len(), 2);
-        assert_eq!(out[0].0, "t0", "the fixed pattern keeps the target it needs");
+        assert_eq!(
+            out[0].0, "t0",
+            "the fixed pattern keeps the target it needs"
+        );
         assert_eq!(out[0].1, "t0");
-        assert_eq!(out[1].0, "t1", "the flexible one was pushed to the other target");
+        assert_eq!(
+            out[1].0, "t1",
+            "the flexible one was pushed to the other target"
+        );
         assert_eq!(out[1].1, "t0|t1");
-        assert_eq!(out[1].2, "t1", "the result is for the target it actually got");
+        assert_eq!(
+            out[1].2, "t1",
+            "the result is for the target it actually got"
+        );
 
         // The mirror order: a pattern that can only take `t1` while the flexible one still starts
         // at `t0` — no reassignment is needed and both keep what they took first.
@@ -206,7 +218,10 @@ mod tests {
         let mut targets: Vec<&str> = out.iter().map(|(t, _, _)| *t).collect();
         targets.sort();
         targets.dedup();
-        assert_eq!(targets, vec!["a", "b", "c"], "each target claimed exactly once");
+        assert_eq!(
+            targets,
+            vec!["a", "b", "c"],
+            "each target claimed exactly once"
+        );
     }
-
 }

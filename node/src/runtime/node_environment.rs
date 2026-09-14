@@ -151,7 +151,10 @@ mod tests {
         let file = dir.join("a-file");
         std::fs::write(&file, b"data").expect("write");
 
-        assert!(have_access_to_data_dir(&file).is_err(), "a file is not a dir");
+        assert!(
+            have_access_to_data_dir(&file).is_err(),
+            "a file is not a dir"
+        );
         assert!(have_access_to_data_dir(&dir.join("absent")).is_err());
         have_access_to_data_dir(&dir).expect("the directory itself");
 
@@ -173,7 +176,10 @@ mod tests {
         let err = has_certificate(&tls).expect_err("no certificate yet");
         assert_eq!(
             err.to_string(),
-            format!("Certificate file {} not found", tls.certificate_path.display())
+            format!(
+                "Certificate file {} not found",
+                tls.certificate_path.display()
+            )
         );
         let err = has_key(&tls).expect_err("no key yet");
         assert_eq!(
@@ -209,7 +215,11 @@ mod tests {
         has_key(&tls).expect("the key was written");
 
         let first = generate_certificate_if_absent::node_address(&tls).expect("address");
-        assert_eq!(first.len(), 20, "a keccak-256 address, truncated to 20 bytes");
+        assert_eq!(
+            first.len(),
+            20,
+            "a keccak-256 address, truncated to 20 bytes"
+        );
         let second = generate_certificate_if_absent::node_address(&tls).expect("address again");
         assert_eq!(first, second, "the identity is stable across reads");
 

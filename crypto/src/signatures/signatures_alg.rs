@@ -178,7 +178,10 @@ mod tests {
     #[test]
     fn the_declared_signature_lengths_are_the_curve_element_size() {
         assert_eq!(from_algorithm("secp256k1").expect("alg").sig_length(), 32);
-        assert_eq!(from_algorithm("secp256k1:eth").expect("alg").sig_length(), 32);
+        assert_eq!(
+            from_algorithm("secp256k1:eth").expect("alg").sig_length(),
+            32
+        );
     }
 
     /// `n/2` is the low-S threshold and the comparison is **strict**: exactly `n/2` is already low-S
@@ -210,11 +213,7 @@ mod tests {
     #[test]
     fn negate_mod_order_is_n_minus_s() {
         assert_eq!(negate_mod_order(&SECP256K1_ORDER), [0u8; 32], "n − n = 0");
-        assert_eq!(
-            negate_mod_order(&[0u8; 32]),
-            SECP256K1_ORDER,
-            "n − 0 = n"
-        );
+        assert_eq!(negate_mod_order(&[0u8; 32]), SECP256K1_ORDER, "n − 0 = n");
 
         let mut one = [0u8; 32];
         one[31] = 1;
@@ -223,9 +222,11 @@ mod tests {
         assert_eq!(negate_mod_order(&one), n_minus_one);
 
         // Twice is the identity, for a value that borrows down every byte.
-        let s = [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        let s = [
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
             0x00, 0x00, 0x7F, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
-            0xFF, 0xFF, 0xFF, 0xFF];
+            0xFF, 0xFF, 0xFF, 0xFF,
+        ];
         assert_eq!(negate_mod_order(&negate_mod_order(&s)), s);
     }
 
@@ -236,7 +237,10 @@ mod tests {
     fn a_low_s_signature_is_left_alone() {
         let der = base16::unsafe_decode(LOW_S_DER);
         assert_eq!(normalize_signature_low_s("secp256k1", &der), der);
-        assert_eq!(normalize_signature_low_s("secp256k1:eth", &rs_of(&der)), rs_of(&der));
+        assert_eq!(
+            normalize_signature_low_s("secp256k1:eth", &rs_of(&der)),
+            rs_of(&der)
+        );
     }
 
     /// The high-S form of that same signature — `s` replaced by `n − s` — is rewritten back to the
@@ -265,7 +269,10 @@ mod tests {
         );
         // Idempotent in both directions.
         assert_eq!(
-            normalize_signature_low_s("secp256k1", &normalize_signature_low_s("secp256k1", &high_der)),
+            normalize_signature_low_s(
+                "secp256k1",
+                &normalize_signature_low_s("secp256k1", &high_der)
+            ),
             der
         );
     }
@@ -282,7 +289,10 @@ mod tests {
         // Not a DER SEQUENCE.
         let garbage = vec![0x01, 0x02, 0x03];
         assert_eq!(normalize_signature_low_s("secp256k1", &garbage), garbage);
-        assert_eq!(normalize_signature_low_s("secp256k1", &[]), Vec::<u8>::new());
+        assert_eq!(
+            normalize_signature_low_s("secp256k1", &[]),
+            Vec::<u8>::new()
+        );
 
         // An unregistered name (or one that is merely registered *elsewhere*) is a passthrough.
         let rs = vec![0xFFu8; 64];

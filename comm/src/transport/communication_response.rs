@@ -50,7 +50,10 @@ mod tests {
 
         assert_eq!(with, CommunicationResponse::HandledWithMessage(protocol()));
         assert_eq!(without, CommunicationResponse::HandledWithoutMessage);
-        assert_eq!(failed, CommunicationResponse::NotHandled(CommError::TimeOut));
+        assert_eq!(
+            failed,
+            CommunicationResponse::NotHandled(CommError::TimeOut)
+        );
 
         assert_ne!(with, without);
         assert_ne!(without, failed);

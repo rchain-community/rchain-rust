@@ -45,11 +45,13 @@ laws** carrying a randomized property test and **10 benchmark functions** in 6 C
 | `qucalc` | 20 | — | — | — |
 | `rspace-bench` | — | — | — | 10 |
 
-**Measured line coverage: 81.30%** (`cargo llvm-cov --workspace --all-features`, 16868 of 90208
-lines missed), which sets CI's floor to **79** — two points below the measurement, per the plan's rule
-that the floor is a tripwire raised only *after* measuring. Raised three times: 73.68% ⇒ 71 (Stages
+**Measured line coverage: 84.07%** (`cargo llvm-cov --workspace --all-features`, 15530 of 97490
+lines missed), which sets CI's floor to **82** — two points below the measurement, per the plan's rule
+that the floor is a tripwire raised only *after* measuring. Raised four times: 73.68% ⇒ 71 (Stages
 0–2), 79.69% ⇒ 77 (Stages 3–4: the legacy corpus, the tier sweep, the property sweep), 81.30% ⇒ 79
-(the low-coverage sweep, which also found the printer and UPnP defects in AUDIT §16 C13/C14). The
+(the low-coverage sweep, which found the printer and UPnP defects in AUDIT §16 C13/C14), 84.07% ⇒ 82
+(the census sweep: every source file tested or exempt, plus the node gRPC wire conversions, the
+faucet budget, the history readers and the transport server's configuration path). The
 per-file report is the place to look for the next tier's work, not this table:
 
 ```sh

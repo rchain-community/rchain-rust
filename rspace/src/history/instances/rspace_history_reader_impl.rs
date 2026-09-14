@@ -258,9 +258,7 @@ mod tests {
     use rchain_shared::store_manager::{database, InMemoryStoreManager};
 
     use crate::history::codecs::Blake2b256HashCodec;
-    use crate::history::cold_store::{
-        encode_persisted_data, PersistedData, PersistedDataCodec,
-    };
+    use crate::history::cold_store::{encode_persisted_data, PersistedData, PersistedDataCodec};
     use crate::history::history_action::HistoryAction;
     use crate::history::instances::radix_history::{empty_root, RadixHistory};
     use crate::history::radix_tree::empty_root_hash;
@@ -304,10 +302,12 @@ mod tests {
         }
 
         fn reader(&self) -> StdArc<dyn HistoryReader<String, String, String, String>> {
-            StdArc::new(RSpaceHistoryReaderImpl::<String, String, String, String>::new(
-                self.history.clone(),
-                self.cold.clone(),
-            ))
+            StdArc::new(
+                RSpaceHistoryReaderImpl::<String, String, String, String>::new(
+                    self.history.clone(),
+                    self.cold.clone(),
+                ),
+            )
         }
 
         fn concrete(&self) -> RSpaceHistoryReaderImpl<String, String, String, String> {
@@ -349,15 +349,26 @@ mod tests {
         let reader = rig.reader();
 
         assert_eq!(reader.root(), empty_root_hash());
-        assert!(reader.get_data(channel_hash()).await.expect("data").is_empty());
+        assert!(reader
+            .get_data(channel_hash())
+            .await
+            .expect("data")
+            .is_empty());
         assert!(reader
             .get_continuations(channel_hash())
             .await
             .expect("continuations")
             .is_empty());
-        assert!(reader.get_joins(channel_hash()).await.expect("joins").is_empty());
+        assert!(reader
+            .get_joins(channel_hash())
+            .await
+            .expect("joins")
+            .is_empty());
         assert_eq!(
-            reader.get_native(0x07, channel_hash()).await.expect("native"),
+            reader
+                .get_native(0x07, channel_hash())
+                .await
+                .expect("native"),
             None,
             "the native reader distinguishes absence (None) from a wrong leaf (Err)"
         );
@@ -376,8 +387,12 @@ mod tests {
         let mut rig = Rig::new().await;
         let channel = CHANNEL.to_string();
         let datum: Datum<String> = Datum::create(&channel, "value".to_string(), true);
-        rig.commit(PREFIX_DATUM, channel_hash(), PersistedData::DataLeaf(encode_datums(&[datum])))
-            .await;
+        rig.commit(
+            PREFIX_DATUM,
+            channel_hash(),
+            PersistedData::DataLeaf(encode_datums(&[datum])),
+        )
+        .await;
         rig.commit(
             PREFIX_KONT,
             channel_hash(),
@@ -441,11 +456,17 @@ mod tests {
 
         let reader = rig.reader();
         assert_eq!(
-            reader.get_data(channel_hash()).await.expect_err("wrong kind"),
+            reader
+                .get_data(channel_hash())
+                .await
+                .expect_err("wrong kind"),
             RSpaceError::UnexpectedLeaf("data")
         );
         assert_eq!(
-            reader.get_native(0x07, channel_hash()).await.expect_err("wrong kind"),
+            reader
+                .get_native(0x07, channel_hash())
+                .await
+                .expect_err("wrong kind"),
             RSpaceError::UnexpectedLeaf("native")
         );
         assert_eq!(
@@ -470,12 +491,19 @@ mod tests {
     async fn a_native_leaf_round_trips_under_its_own_prefix() {
         let mut rig = Rig::new().await;
         let payload = vec![0xDE, 0xAD, 0xBE, 0xEF];
-        rig.commit(0x07, channel_hash(), PersistedData::NativeLeaf(payload.clone()))
-            .await;
+        rig.commit(
+            0x07,
+            channel_hash(),
+            PersistedData::NativeLeaf(payload.clone()),
+        )
+        .await;
 
         let reader = rig.reader();
         assert_eq!(
-            reader.get_native(0x07, channel_hash()).await.expect("native"),
+            reader
+                .get_native(0x07, channel_hash())
+                .await
+                .expect("native"),
             Some(payload.clone())
         );
         assert_eq!(
@@ -485,7 +513,13 @@ mod tests {
             Some(payload)
         );
         // The same key under a *different* native prefix is a different leaf.
-        assert_eq!(reader.get_native(0x08, channel_hash()).await.expect("other prefix"), None);
+        assert_eq!(
+            reader
+                .get_native(0x08, channel_hash())
+                .await
+                .expect("other prefix"),
+            None
+        );
     }
 
     /// `base()` hashes the channel itself, so it reaches the same leaf as the raw reader given the
@@ -548,13 +582,21 @@ mod tests {
         let rig = Rig::new().await;
         let binary = rig.reader().reader_binary();
 
-        assert!(binary.get_data(channel_hash()).await.expect("absent").is_empty());
+        assert!(binary
+            .get_data(channel_hash())
+            .await
+            .expect("absent")
+            .is_empty());
         assert!(binary
             .get_continuations(channel_hash())
             .await
             .expect("absent")
             .is_empty());
-        assert!(binary.get_joins(channel_hash()).await.expect("absent").is_empty());
+        assert!(binary
+            .get_joins(channel_hash())
+            .await
+            .expect("absent")
+            .is_empty());
 
         // The typed reader reads a leaf the binary reader cannot decode, from the same store — the
         // difference is in the decode, not in the trie walk. (The panic that decode produces is
@@ -624,6 +666,9 @@ mod tests {
     /// state a previous build wrote.
     #[test]
     fn the_leaf_prefixes_are_the_documented_constants() {
-        assert_eq!((PREFIX_DATUM, PREFIX_KONT, PREFIX_JOINS), (0x00, 0x01, 0x02));
+        assert_eq!(
+            (PREFIX_DATUM, PREFIX_KONT, PREFIX_JOINS),
+            (0x00, 0x01, 0x02)
+        );
     }
 }

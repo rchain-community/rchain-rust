@@ -79,10 +79,7 @@ mod tests {
                 RSpaceError::InstallNotAllowed,
                 "installing can be done only on startup",
             ),
-            (
-                RSpaceError::CachedKeyMissing,
-                "cached key must be present",
-            ),
+            (RSpaceError::CachedKeyMissing, "cached key must be present"),
             (RSpaceError::EmptyPrefix, "prefix must be non-empty"),
             (
                 RSpaceError::ReplayDataNotEmpty,
@@ -101,7 +98,10 @@ mod tests {
         for (error, expected) in cases {
             assert_eq!(error.to_string(), expected);
             // The detail is not a constant: two errors of the same variant differ.
-            assert!(!error.to_string().contains("{}"), "no unformatted placeholder");
+            assert!(
+                !error.to_string().contains("{}"),
+                "no unformatted placeholder"
+            );
         }
         assert_ne!(
             RSpaceError::Codec("a").to_string(),

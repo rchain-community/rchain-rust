@@ -158,13 +158,25 @@ mod tests {
         let d = distribution(10, &[(1, 2), (3, 5), (9, 3)], 9);
 
         assert_eq!(d.percentile(0.0), 1, "the lowest value");
-        assert_eq!(d.percentile(0.2), 1, "target 2, reached by the first bucket");
+        assert_eq!(
+            d.percentile(0.2),
+            1,
+            "target 2, reached by the first bucket"
+        );
         assert_eq!(d.percentile(0.21), 1, "target 2 (truncated)");
         assert_eq!(d.percentile(0.3), 3, "target 3, the second bucket");
         assert_eq!(d.percentile(0.5), 3);
-        assert_eq!(d.percentile(0.7), 3, "cumulative 7 is still the second bucket");
+        assert_eq!(
+            d.percentile(0.7),
+            3,
+            "cumulative 7 is still the second bucket"
+        );
         assert_eq!(d.percentile(0.8), 9, "target 8 needs the third bucket");
-        assert_eq!(d.percentile(1.0), 9, "the highest bucket carries the last count");
+        assert_eq!(
+            d.percentile(1.0),
+            9,
+            "the highest bucket carries the last count"
+        );
     }
 
     /// When the buckets do not account for every count, a percentile past their total falls back to
@@ -173,7 +185,11 @@ mod tests {
     fn a_percentile_past_the_buckets_falls_back_to_the_maximum() {
         let d = distribution(100, &[(1, 2), (3, 2)], 42);
         assert_eq!(d.percentile(0.01), 1, "inside the buckets");
-        assert_eq!(d.percentile(0.04), 3, "the last bucket covers targets up to 4");
+        assert_eq!(
+            d.percentile(0.04),
+            3,
+            "the last bucket covers targets up to 4"
+        );
         assert_eq!(
             d.percentile(0.5),
             42,
