@@ -877,6 +877,117 @@ mod tests {
         assert_eq!(scope.conflict_scope, [c.id].into_iter().collect());
         assert_eq!(base, Some(g.id));
     }
+
+    /// A non-empty final fringe: the final scope is what the final fringe has *seen* (a block's
+    /// `seen` set includes itself, so the fringe block is in it), there is no base block to return,
+    /// and the conflict scope is the merge fringe's own ancestors minus the final scope — here
+    /// empty, because the merge fringe is the final fringe.
+    #[test]
+    fn merge_scope_with_a_final_fringe_has_no_base() {
+        let g = msg(1, &[], &[1]);
+        let c = msg(2, &[1], &[1, 2]);
+        let dag = BTreeMap::from([(g.id, g.clone()), (c.id, c.clone())]);
+
+        let (scope, base) = MergeScope::from_fringes(
+            &[c.id].into_iter().collect(),
+            &[c.id].into_iter().collect(),
+            &BTreeSet::new(),
+            &dag,
+        )
+        .expect("a well-formed dag");
+
+        assert_eq!(
+            scope.final_scope,
+            [g.id, c.id].into_iter().collect::<BTreeSet<_>>(),
+            "the final scope is what the final fringe has seen"
+        );
+        assert!(
+            scope.conflict_scope.is_empty(),
+            "the merge fringe is the final fringe, so nothing is left to merge"
+        );
+        assert_eq!(base, None, "a non-empty final scope has no base block");
+    }
+
+    /// A merge fringe that has *seen* a block the final fringe has not: that block is the conflict
+    /// scope, because it is what merging has to reconcile.
+    #[test]
+    fn merge_scope_conflicts_are_the_fringe_blocks_the_final_fringe_has_not_seen() {
+        // g <- a <- b, with `a` seen only by `b`; the final fringe is `a`, the merge fringe is `b`.
+        let g = msg(1, &[], &[1]);
+        let a = msg(2, &[1], &[1, 2]);
+        let b = msg(3, &[2], &[1, 2, 3]);
+        let dag = BTreeMap::from([(g.id, g.clone()), (a.id, a.clone()), (b.id, b.clone())]);
+
+        let (scope, base) = MergeScope::from_fringes(
+            &[b.id].into_iter().collect(),
+            &[a.id].into_iter().collect(),
+            &BTreeSet::new(),
+            &dag,
+        )
+        .expect("a well-formed dag");
+
+        assert_eq!(
+            scope.final_scope,
+            [g.id, a.id].into_iter().collect::<BTreeSet<_>>()
+        );
+        assert_eq!(
+            scope.conflict_scope,
+            [b.id].into_iter().collect::<BTreeSet<_>>(),
+            "b is seen by the merge fringe only, so it is what must be merged"
+        );
+        assert_eq!(base, None);
+    }
+
+    /// A fringe hash that is **not in the DAG** is an error naming which fringe and which hash —
+    /// never a silent omission, which would merge a scope that is quietly missing a branch.
+    #[test]
+    fn a_fringe_hash_absent_from_the_dag_is_an_error_naming_the_fringe() {
+        let g = msg(1, &[], &[1]);
+        let c = msg(2, &[1], &[1, 2]);
+        let dag = BTreeMap::from([(g.id, g.clone()), (c.id, c.clone())]);
+        let missing = BlockHash::new([9u8; 32]);
+
+        let err = MergeScope::from_fringes(
+            &[missing].into_iter().collect(),
+            &BTreeSet::new(),
+            &BTreeSet::new(),
+            &dag,
+        )
+        .expect_err("the merge fringe is not in the dag");
+        assert!(
+            err.starts_with("merge fringe not in dag: "),
+            "the error names the fringe: {err}"
+        );
+        assert!(err.contains(&missing.to_hex()), "{err}");
+
+        let err = MergeScope::from_fringes(
+            &BTreeSet::new(),
+            &[missing].into_iter().collect(),
+            &BTreeSet::new(),
+            &dag,
+        )
+        .expect_err("the final fringe is not in the dag");
+        assert!(err.starts_with("final fringe not in dag: "), "{err}");
+
+        let err = MergeScope::from_fringes(
+            &BTreeSet::new(),
+            &BTreeSet::new(),
+            &[missing].into_iter().collect(),
+            &dag,
+        )
+        .expect_err("the prune fringe is not in the dag");
+        assert!(err.starts_with("prune fringe not in dag: "), "{err}");
+    }
+
+    /// `prune_cache` is advisory: with nothing cached it returns without touching anything, and the
+    /// hashes it is given are simply not there. The interesting property is that it never panics on
+    /// a hashes-not-present input — it runs on the finalization path, where a panic would stop the
+    /// node.
+    #[test]
+    fn pruning_a_cache_that_holds_nothing_is_a_no_op() {
+        BlockIndex::prune_cache(&[]);
+        BlockIndex::prune_cache(&[BlockHash::new([1u8; 32]), BlockHash::new([2u8; 32])]);
+    }
 }
 
 #[cfg(test)]
