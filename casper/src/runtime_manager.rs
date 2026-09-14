@@ -271,7 +271,7 @@ impl RuntimeManager {
             };
             init_values.insert(*k, num);
         }
-        Ok(calculate_num_channel_diff(channels_data, &init_values))
+        calculate_num_channel_diff(channels_data, &init_values)
     }
 
     /// Read the `Par`s at a channel in the state identified by `hash` (port of `getData`). Runs on a
