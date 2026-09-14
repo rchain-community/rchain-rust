@@ -3253,7 +3253,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn concurrent_term_resolution_matches_sequential_count() {
-        // Many independent sends resolve concurrently (fork-join in `expand_par`); the produce
+        // Many independent sends resolve concurrently (the fork-join in `reduce_par`); the produce
         // effects are applied in DFS order, so none are lost or duplicated.
         let space = MockSpace {
             produced: Mutex::new(Vec::new()),

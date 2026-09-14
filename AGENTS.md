@@ -22,9 +22,9 @@ IV.
 | Human-facing walkthrough: each law → concrete Rust file/type/function + test | [`docs/src/contributor/laws-to-rust.md`](docs/src/contributor/laws-to-rust.md) |
 | The ρ→CoC type-system spec | [`spec/TYPE-SYSTEM.md`](spec/TYPE-SYSTEM.md) |
 | How Rust made the Scala fragility explicit (bugs caught, production-readiness) | [`spec/RUST-VS-SCALA.md`](spec/RUST-VS-SCALA.md) |
-| Adversarial-audit findings register (incl. §9 rust-first fragility audit, §10 full-system HAZOP, §11 red-team re-audit) | [`spec/AUDIT.md`](spec/AUDIT.md) |
+| Adversarial-audit findings register — every audit pass's findings and Scala-deviations, by section (type-system findings, the red-team passes, the full-system HAZOP, the legacy-corpus syntax findings, the census-sweep findings) | [`spec/AUDIT.md`](spec/AUDIT.md) |
 | Native system contracts (registry/PoS/vault state model + replay determinism) | [`spec/RUST-FIRST.md`](spec/RUST-FIRST.md) |
-| Test-coverage audit & gap analysis | [`spec/TEST-COVERAGE.md`](spec/TEST-COVERAGE.md) |
+| Test-coverage audit & gap analysis — machine-checked: the per-crate inventory, the 29-law property matrix, the risk tiers, the exempt-module table, and the census that requires every source file to be tested or exempt | [`spec/TEST-COVERAGE.md`](spec/TEST-COVERAGE.md) |
 | Machine-checked Lean/Coq definitions & proofs | [`spec/`](spec/) |
 | Why the rewrite + layer map / module status (port appendix) | [`docs/src/contributor/why-rust.md`](docs/src/contributor/why-rust.md), [`docs/src/contributor/architecture.md`](docs/src/contributor/architecture.md) |
 

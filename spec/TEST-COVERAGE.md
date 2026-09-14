@@ -215,7 +215,10 @@ For each gap: **code location** → **current test state** → **the seam a regr
 G12) were closed by the completion plan's Stage 2 — and G6's history internals were moved into the
 risk-tier table below, where an open module is a defect the linter reports rather than a note. A `⏸`
 now appears only if a *new* gap is deliberately left open, and `tools/audit-test-register.sh` fails on
-it unless `--deferred-ok` is passed (which today tolerates only the tier table's open items).
+every one of them in hard mode — the default that `make check-register` and CI run. `--deferred-ok`
+is now only a burn-down *view*: it tolerates the three work-in-flight classes (deferred gap rows,
+tier rows with no test, and source files with neither a test nor an exemption row) and prints what
+hard mode would fail on, so that a half-finished sweep is legible instead of invisible.
 
 - **G1 — Equivocation rejection** (`casper/src/dag.rs`). The H-1 fix rejects a second block by the
   same sender reusing `seq_num`. ✅ `insert_rejects_equivocation_same_seq_num`. *Seam:*
@@ -528,7 +531,7 @@ so the reason is recorded here rather than only in the commit that did it.
 | 2. The register linter recomputes counts, verifies named tests, fails on a bare tier module | **done** — `tools/audit-test-register.sh` (seven checks; hard mode green) |
 | 3. Every law has a property test or a recorded exemption | **done** — the matrix in Inventory; exempt: 12/13 (orphaned), 19 (axiom, KAT-pinned), 22/23 (stated reason), 28 (unit idempotency) |
 | 4. `make test-unit` runs `--all-features` | **done** (with `test-integration`) |
-| 5. The coverage floor raised after measuring (three times) | **done** — 73.68 ⇒ 71, 79.69 ⇒ 77, 81.30 ⇒ 79 |
+| 5. The coverage floor raised after measuring (four times) | **done** — 73.68 ⇒ 71, 79.69 ⇒ 77, 81.30 ⇒ 79, 84.07 ⇒ 82 |
 | 6. `rspace-bench`'s Criterion groups are smoke-run | **done** — `make bench-smoke` |
 | 7. `parsed + skipped == 165` for the legacy corpus, closed-enum skip reasons | **done** — `rholang/tests/legacy_contracts.rs` |
 | 8. `gen-differential-goldens.sh` completes or fails loudly; every committed TSV row is consumed | **done** — provenance columns + a per-file drift guard; the script exits 2 without sbt |

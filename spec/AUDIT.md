@@ -79,15 +79,27 @@ list cannot exceed 255; config durations/sizes cannot exceed `Long` range). Chan
   (e.g. a Law-5 `BugFoundError`) as "no match". Now the error is recorded and propagated when the
   bipartite search finds no matching.
 - **Documented (sanctioned design)** — the flat `Par` ADT **erases** the quote `@`/eval `*`
-  distinction (`rholang/src/normalizer.rs:131-145,166-178`); the Name/Proc sort is recovered
+  distinction (the `VarSort::ProcSort` arms of `rholang/src/normalizer.rs`); the Name/Proc sort is recovered
   structurally by `classify`/`is_pure_name` (`models/src/types.rs`), per `TYPE-SYSTEM.md` §1.1 and
   the Lean `Par.lean` flat record.
-- **Stubbed semantics** (honest inventory for the formal spec): set difference `--`
-  (`rholang/src/reduce.rs:516-518`); normalizer `defer(...)` cases — `process` dispatch, `complex
-  input source`, `concurrent let` (`normalizer.rs`); `substituteAndCharge`/`Chargeable` deferrals
-  (`substitute.rs:5`, `accounting.rs:5`, `storage.rs:88`).
+- **Stubbed or deferred semantics** (honest inventory for the formal spec; re-verified against the
+  tree, since the previous version of this list had itself gone stale — everything it named is now
+  implemented). What is deferred **today**, none of it on the reduction path:
+  - the `.rho`/`.rhox` genesis-template *loading* (`CompiledRholangSource`/`CompiledRholangTemplate`)
+    — only the parameter types and the pure source-string builders are ported
+    (`casper/src/genesis/contracts.rs`);
+  - three Java/scodec conveniences with no Rust analog in the string/byte syntax helpers
+    (`ByteStringSyntax.toDirectByteBuffer`, `toByteVector`, `toBlake2b256Hash`) —
+    `models/src/string_syntax.rs`;
+  - the Magnolia-derived `Pretty[A]` typeclass — the pure escaping/indentation helpers are ported
+    (`models/src/pretty.rs`);
+  - the effect-machinery readers (`NodeCallCtxReader`, `VersionInfo.get`'s sbt-buildinfo input) —
+    `node/src/runtime/node_call_ctx.rs`, `node/src/web/version_info.rs`.
+  Set difference `--` is **implemented** (`rholang/src/reduce.rs:727`, with both error arms), and the
+  normalizer's `defer(...)` cases, `substituteAndCharge` and the proto-size `Costs`/`Chargeable`
+  instances are all in place (see F4 below, which records the fix).
 - **Deliberate Scala deviations (determinism):** `New.injections` sorted by key
-  (`models/src/sorter.rs:324-327`); `locally_free` excluded from equality/hash via `AlwaysEqual`
+  (`models/src/sorter.rs`'s par reconstruction); `locally_free` excluded from equality/hash via `AlwaysEqual`
   (`models/src/ast.rs:35-77`).
 
 ---
@@ -314,7 +326,7 @@ Scala remains a *checklist* of required behavior only, never an implementation g
   `compute_bonds` becomes a single native read (`HistoryReader::get_native(PREFIX_POS, …)`), total and
   typed (Phase 2).
 
-- **F4 — Gas metering is unwired.** `ChargingRSpace` (`rholang/src/storage.rs:88`) is a pure
+- **F4 — Gas metering is unwired.** `ChargingRSpace` (`rholang/src/storage.rs:103`) is a pure
   passthrough (storage/event charging deferred); `substituteAndCharge` (`substitute.rs:5`) and the
   proto-size cost table (`accounting.rs:5`) are deferred; `Chargeable` has no instances. *Why
   fragile:* the node's primary DoS defense (phlo) is not actually enforced against untrusted deploy
@@ -580,25 +592,25 @@ reuses §11's P0–P3 model. Findings are deduplicated across clusters.
 ### High (P1)
 
 - **R14 (F2) — unbounded concurrent TLS handshakes.** `grpc_transport_receiver.rs:248-263` spawns one accept task per TCP connection with no timeout; the 128-slot channel bounds only *completed* handshakes. A peer opening thousands of idle connections holds sockets/rustls state until TCP timeouts. **Fixed** — a `handshake_slots` semaphore (`MAX_CONCURRENT_HANDSHAKES`) is acquired before each spawn (excess connections are dropped), and `acceptor.accept` is wrapped in a 10 s timeout.
-- **R15 (C1) — unbounded block-validation pipeline.** `node/src/runtime/node_runtime.rs:533` feeds replay validation through an `unbounded_channel`; the bounded ingress (S18) is upstream of it, so a peer streaming valid-signed blocks fills memory faster than replay drains. **Fixed** — the processor-input channel is now `mpsc::channel(MAX_PENDING_BLOCKS)` with backpressure (`send().await`), and `block_processor::apply` takes the bounded `Receiver`.
-- **R16 (C2) — unbounded `StoreItemsMessageRequest.take`.** `casper/src/engine/node_running.rs:307` bounds only the *sign* of `skip`/`take`; `take=i32::MAX` triggers a full-trie traversal + giant reply, repeatable per peer. **Fixed** — `take` is capped at `MAX_STORE_ITEMS_TAKE = 10_000`; oversized requests are dropped.
+- **R15 (C1) — unbounded block-validation pipeline.** `node/src/runtime/node_runtime.rs:522` feeds replay validation through an `unbounded_channel`; the bounded ingress (S18) is upstream of it, so a peer streaming valid-signed blocks fills memory faster than replay drains. **Fixed** — the processor-input channel is now `mpsc::channel(MAX_PENDING_BLOCKS)` with backpressure (`send().await`), and `block_processor::apply` takes the bounded `Receiver`.
+- **R16 (C2) — unbounded `StoreItemsMessageRequest.take`.** `casper/src/engine/node_running.rs:342-344` bounds only the *sign* of `skip`/`take`; `take=i32::MAX` triggers a full-trie traversal + giant reply, repeatable per peer. **Fixed** — `take` is capped at `MAX_STORE_ITEMS_TAKE = 10_000`; oversized requests are dropped.
 - **R17 (A1/C8) — faucet rate limit is global, no per-source/address budget.** `node/src/web/http.rs:44,127-136` + `web_api_impl.rs:89` use one shared `RateLimiter` (1/s); a single caller drains the genesis dev wallet at 0.3 REV/s and monopolizes the budget. **Fixed** — a per-address drip budget (`FAUCET_MAX_DRIPS_PER_ADDRESS = 10`) in `WebApiImpl`; per-source IP buckets remain a devnet-only refinement.
-- **R18 (E1) — `CostAccounting.log` grows unboundedly.** `rholang/src/accounting.rs:342,390` appends a `Cost` (with a heap `String` op) per `charge` and never clears; `total_charged()` (`:363`) re-sums the whole log per deploy, becoming O(n) and able to wrap i64. **Fixed** — replaced the `Vec` with a running `AtomicI64` total.
+- **R18 (E1) — `CostAccounting.log` grows unboundedly.** `rholang/src/accounting.rs:370,410` appends a `Cost` (with a heap `String` op) per `charge` and never clears; `total_charged()` (`:395`) re-sums the whole log per deploy, becoming O(n) and able to wrap i64. **Fixed** — replaced the `Vec` with a running `AtomicI64` total.
 
 ### Medium (P2)
 
-- **R19 (C6/A2/E5) — `exploratory_deploy` reads the non-finalized chain tip.** `casper/src/api/block_api_impl.rs:626-638` (commit `5186361dc`) reads `height_map.iter().next_back()` (first hash at max height, i.e. an arbitrary fork) instead of `last_finalized_block`. A byzantine tip block can spoof wallet `getBalance`/explore results, and forks make reads node-dependent. **Fixed** — restored `last_finalized_block` as the no-hash default; latest-tip reads remain available via `explore-deploy-by-block-hash` with an explicit hash.
+- **R19 (C6/A2/E5) — `exploratory_deploy` reads the non-finalized chain tip.** `casper/src/api/block_api_impl.rs`'s `exploratory_deploy` (commit `5186361dc`) read `height_map.iter().next_back()` (first hash at max height, i.e. an arbitrary fork) instead of `last_finalized_block`. A byzantine tip block can spoof wallet `getBalance`/explore results, and forks make reads node-dependent. **Fixed** — restored `last_finalized_block` as the no-hash default; latest-tip reads remain available via `explore-deploy-by-block-hash` with an explicit hash.
 - **R20 (A3/E6) — `revVault transfer` unchecked i64 add + self-transfer guard before the balance check.** `rholang/src/system_processes.rs` — `i64::from(to_balance) + i64::from(amount)` overflows on extreme balances; and the self-transfer guard (commit `204d98656`) returns success before checking `amount ≤ balance`. **Fixed** — `checked_add`/i128 accumulation, and the guard now sits after the balance check.
 - **R21 (E3) — arithmetic panic on `EMult`/`EPlus`/`EMinus`/`ENeg`.** `rholang/src/reduce.rs:265,367,395,247` use raw `l*r`/`l+r`/`l-r`/`-hs` on `GInt`; `i64::MAX * 2` panics the reducer in debug builds. **Fixed** — `wrapping_*` (release wrap is Scala-faithful; the debug panic was not).
-- **R22 (E4) — number-channel merge/diff unchecked i64.** `rholang/src/merging.rs:100,304` (`init_num + diff`, `end_val - prev`) wrap/panic and write a corrupted value into the trie. **Fixed** — `checked_add`/`checked_sub` with an error.
-- **R23 (E2) — `slice` charges output length but walks input uncharged.** `rholang/src/reduce.rs:1044,1048` — a recursive contract slicing a large string gets ~16M:1 op/phlo amplification. **Fixed** — `slice` now charges `max(from, until)` (the input walk), not just the output length.
+- **R22 (E4) — number-channel merge/diff unchecked i64.** `rholang/src/merging.rs:97,305` (`init_num + diff`, `end_val - prev`) wrap/panic and write a corrupted value into the trie. **Fixed** — `checked_add`/`checked_sub` with an error.
+- **R23 (E2) — `slice` charges output length but walks input uncharged.** `rholang/src/reduce.rs:1264` (`"slice"`) — a recursive contract slicing a large string gets ~16M:1 op/phlo amplification. **Fixed** — `slice` now charges `max(from, until)` (the input walk), not just the output length.
 - **R24 (F4) — SSRF filter classifies only IPv4 literals.** `comm/src/rp/handle_messages.rs:27-40` + Kademlia lookup-insertion (`kademlia_node_discovery.rs:45-50`) connect to attacker-chosen hostnames/IPv6. **Fixed (partial)** — `is_local_address` now classifies IPv6 literals (`::1`, `fe80::/10`, `fc00::/7`, multicast); hostname resolution remains a documented residual (DNS-rebinding-prone), and the Kademlia lookup-insertion path still needs the same filter.
-- **R25 (F3) — global channel cache mutex held across an unbounded connect.** `comm/src/transport/grpc_transport_client.rs:94-108`. **Assessed — false positive.** `create_channel` uses `connect_with_connector_lazy`, so the actual `TcpStream::connect`+TLS is deferred to first use and is bounded by `DEFAULT_SEND_TIMEOUT` in `send`; the cache mutex is held only for the fast lazy-channel construction.
+- **R25 (F3) — global channel cache mutex held across an unbounded connect.** `comm/src/transport/grpc_transport_client.rs:68-75` (`create_channel`). **Assessed — false positive.** `create_channel` uses `connect_with_connector_lazy`, so the actual `TcpStream::connect`+TLS is deferred to first use and is bounded by `DEFAULT_SEND_TIMEOUT` in `send`; the cache mutex is held only for the fast lazy-channel construction.
 - **R26 (F5) — `stream` size cap counts only data bytes.** `grpc_transport_receiver.rs:173-184` — empty `Chunk.content_data` never advances `received`, so unbounded empty chunks grow the per-stream buffer. **Fixed** — a `MAX_STREAM_CHUNKS = 100_000` cap bounds the per-stream chunk count.
-- **R27 (C3) — `phlo_price` checked after replay.** `casper/src/multi_parent_casper.rs:351` — a below-min-price block is fully replayed before rejection, so `phlo_price=0` deploys give free replay DoS. **Fixed** — `phlo_price` is now in `block_summary`'s pure-checks, before `validate_block_checkpoint`.
+- **R27 (C3) — `phlo_price` checked after replay.** `casper/src/multi_parent_casper.rs:298` (`block_summary`) — a below-min-price block is fully replayed before rejection, so `phlo_price=0` deploys give free replay DoS. **Fixed** — `phlo_price` is now in `block_summary`'s pure-checks, before `validate_block_checkpoint`.
 - **R28 (C4) — deploy pool never expires future-dated deploys.** `casper/src/dag.rs:122` — ingress never bounds `valid_after_block_number`, so deploys anchored at `i64::MAX` fill `MAX_POOLED_DEPLOYS` permanently. **Fixed** — `BlockApiImpl::deploy` rejects deploys with `valid_after_block_number` more than `DEPLOY_LIFESPAN` ahead of the tip.
-- **R29 (C5) — block-receiver maps unbounded.** `casper/src/blocks/block_receiver.rs:105` — valid-signed blocks with unresolvable justifications are retained forever. **Fixed** — `end_stored` rejects when `blocks_st` reaches `MAX_PENDING_BLOCKS`.
-- **R30 (C7) — `PeerRateLimiter` never evicts.** `casper/src/engine/node_running.rs:90` — `BTreeMap<Vec<u8>,(Instant,u32)>` grows with connection churn. **Fixed** — `allow` prunes entries whose window is older than 60 s.
+- **R29 (C5) — block-receiver maps unbounded.** `casper/src/blocks/block_receiver.rs:101` — valid-signed blocks with unresolvable justifications are retained forever. **Fixed** — `end_stored` rejects when `blocks_st` reaches `MAX_PENDING_BLOCKS`.
+- **R30 (C7) — `PeerRateLimiter` never evicts.** `casper/src/engine/node_running.rs:106` — `BTreeMap<Vec<u8>,(Instant,u32)>` grows with connection churn. **Fixed** — `allow` prunes entries whose window is older than 60 s.
 
 ### Low (P3)
 
@@ -978,7 +990,10 @@ oracle is, and the test that pins the fix.
   (the failure message prints the whole JSON, which is how the wire spelling was read off rather than
   guessed). The two other `rename_all` enums in the models crate (`ReportProto`,
   `SystemDeployData`) were checked and carry only tuple/unit variants, so they have no such field —
-  this was the only instance.
+  this was the only instance. **Corroboration:** `docs/src/developer/building-apps.md` already
+  documented the response as "`processedWithSuccess` (with the `deployResult` expression)" — the
+  published API documentation and the code disagreed, and the *documentation* was right. That is
+  independent evidence for the fix rather than a preference for camelCase.
 
 ### Open question (behaviour pinned, oracle not established)
 

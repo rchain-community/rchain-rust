@@ -30,8 +30,9 @@ Concurrency appears at three levels, each with its own enabling and constraining
 ## Level 1 — the reducer (fork-join over `|`)
 
 A `Par` is a parallel composition (`|`, Law 2), so its sub-terms are *concurrent by construction*. The
-reducer realizes this with a **fork-join**: `expand_par` resolves every term's *pure* part concurrently
-(`rholang/src/reduce.rs`), then applies the *effects* (the `produce`/`consume` calls that touch the
+reducer realizes this with a **fork-join**: `reduce_par` resolves every term's *pure* part
+concurrently — the disjoint branches are spawned and joined (`rholang/src/reduce.rs:2211`,
+`join_spawned` at `:2028`) — then applies the *effects* (the `produce`/`consume` calls that touch the
 tuple space) in DFS order.
 
 - **Why the pure part is concurrent.** Substitution, spatial matching, and `new`-name allocation are
