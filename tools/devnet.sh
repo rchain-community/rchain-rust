@@ -80,6 +80,9 @@ Commands:
   --propose-on-deploy | --no-propose-on-deploy
                                  propose a block immediately after a deploy (default: on for devnet)
   --admin | --no-admin           publish the admin HTTP API (40405) to the host (default: on for devnet)
+  --effect-scheduler MODE        effect-scheduler mode: dfs (default), gate, relaxed-validated, or
+                                 relaxed — the last is rejected on the block path at runtime, which
+                                 is how tools/devnet-fuzz.py --mode scheduler exercises that guard
   --deployer-key HEX | --no-deployer
                                  fund the deployer wallet + enable dev-mode dummy-deploy keepalive
                                  (default: on for devnet, using validator[0]'s key)
@@ -180,6 +183,11 @@ rnode_run_common() {
   if $PROPOSE_ON_DEPLOY; then flags="$flags --propose-on-deploy"; fi
   if $ADMIN; then flags="$flags --api-enable-devnet-cors"; fi
   if $DEPLOYER; then flags="$flags --dev-mode --deployer-private-key ${DEPLOYER_PRIV}"; fi
+  # The effect-scheduler mode (Laws 20-25). The default is the sequential reference; `gate` and
+  # `relaxed-validated` are the block-path-capable alternatives, and `relaxed` is rejected on the
+  # block path at runtime (casper/tests/scheduler.rs::block_paths_reject_relaxed_mode), so starting
+  # a devnet with it is how that rejection is exercised end to end.
+  if [[ -n "$EFFECT_SCHEDULER" ]]; then flags="$flags --effect-scheduler $EFFECT_SCHEDULER"; fi
   echo "$flags"
 }
 
@@ -190,11 +198,19 @@ cmd_up() {
   PROPOSE_ON_DEPLOY=true
   ADMIN=true
   DEPLOYER=true
+  EFFECT_SCHEDULER=""   # default: the node's own default (dfs)
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --validators) n="${2:?}"; shift 2 ;;
       --observers)  m="${2:?}"; shift 2 ;;
+      --effect-scheduler)
+        EFFECT_SCHEDULER="${2:?}"
+        case "$EFFECT_SCHEDULER" in
+          dfs|gate|relaxed|relaxed-validated) ;;
+          *) echo "--effect-scheduler must be one of dfs, gate, relaxed, relaxed-validated" >&2; exit 2 ;;
+        esac
+        shift 2 ;;
       --nodes)
         n=1; m=$((${2:?} - 1)); AUTOPROPOSE=false; PROPOSE_ON_DEPLOY=false; ADMIN=false; DEPLOYER=false
         shift 2 ;;

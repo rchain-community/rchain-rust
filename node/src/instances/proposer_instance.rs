@@ -1,7 +1,8 @@
 //! Proposer instance (port of `node/instances/ProposerInstance.scala`).
 //!
 //! Drains propose requests, serializing actual proposal through a semaphore; concurrent attempts
-//! resolve to `ProposerResult::Empty`. The `trigger` re-enqueue optimization is deferred.
+//! resolve to `ProposerResult::Empty` and set the `trigger` flag, so a propose that arrives while
+//! one is running is re-enqueued once the running one finishes (the Scala's trigger re-enqueue).
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;

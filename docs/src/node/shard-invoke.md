@@ -142,8 +142,12 @@ and cannot participate in the home shard's reduction. Consequences:
   contract runs on the two escrows' committed facts, using `rho:qucalc:verify`
   (already exposed by the node). It is a verification, not a transport guarantee.
 - Achieving atomic, single-closure composition is Layer 2's job (a gateway peer
-  that is a member of both shards, or promise pipelining). It is deliberately not
-  in rnode. See [Exchange support](#exchange-support) and Layer 2 below.
+  that is a member of both shards, or promise pipelining). A node that *is* a
+  member of several shards can now do it: see
+  [cross-shard transactions](../formal/cross-shard-transactions.md) for the
+  two-phase commit and `POST /api/v1/txn` for the node-side coordinator.
+  Promise pipelining and relay to a shard the node does *not* validate remain
+  out of scope. See [Exchange support](#exchange-support) and Layer 2 below.
 
 This is the price of "no new consensus", and it is the right trade for Layer 1:
 most uses need same-account signed reach, not cross-shard atomicity. `#32`'s
@@ -204,16 +208,21 @@ channel for the response. It lives at [`rchain_casper::shard_invoke`][module].
 
 [module]: https://github.com/rchain-community/rchain-rust/blob/dev/casper/src/shard_invoke.rs
 
-- `invoke_term(target_uri, method, args) -> String` — the expansion above, with
+- `invoke_term(target_uri, method, args: &[Par]) -> String` — the expansion above, with
   `` `rho:rchain:deployId` `` as the reply channel.
-- `signed_invoke(term, caller_key, phlo, shard_id) -> Signed<DeployData>` — an
-  ordinary deploy signed by the caller; `deployerId` on the far shard is
-  `caller_key`'s public key.
+- `signed_invoke(term, caller_key, timestamp, phlo_limit, phlo_price, valid_after_block_number,
+  shard_id) -> Result<Signed<DeployData>, String>` — an ordinary deploy signed by the
+  caller (`shard_id` must be the *target* shard's, or the far node rejects the
+  `DeployData.shardId`); `deployerId` on the far shard is `caller_key`'s public key.
 - `reply_channel(deploy_id) -> Par` — the reply channel, derived from the deploy id.
 - `await_reply(service, deploy_id, listen_interval, timeout) -> ShardOutcome` —
   listens on that channel until the reply appears, mapping it (or a timeout) to
   `Value(Par)` / `Error(String)`; `into_value()` renders the latter as
   `("shard-error", reason)`.
+- `reply_outcome(data: &[DataWithBlockInfo]) -> ShardOutcome` — the same mapping over
+  an already-fetched listen result (the first value produced, else an error), and
+  `shard_error(reason) -> Par` — the `("shard-error", reason)` tuple on its own, for a
+  caller that already has a reason string.
 
 There is no server-side `rho:shard:invoke` system process, and none is needed: the
 node already accepts signed deploys (`rnode --grpc-host <target> -p 40401 deploy …`,
@@ -226,7 +235,11 @@ expansion end-to-end is a follow-up, not a node change.
 - Shared state or cross-shard consensus. A cross-shard call is a deploy.
 - A relay, a signed-envelope wire protocol, or a replicated link table.
 - Delegated / revocable proxies, promise pipelining, three-party handoff, gateway
-  routing, non-RChain chains — all Layer 2 (`quantum-os#173`), built over this.
+  routing (relaying a deploy to a shard this node is **not** a member of),
+  non-RChain chains — all Layer 2 (`quantum-os#173`), built over this. Serving
+  several shards in one node *is* implemented (the gateway): the node has a
+  membership list, routes each request to the shard that owns it, and
+  coordinates a two-phase commit across its own shards. Relay stays out.
 - Light state proofs, arbitrary-pre-state replay — dropped in `#32`.
 
 ## Related

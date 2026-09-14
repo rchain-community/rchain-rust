@@ -16,21 +16,25 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use tower_http::cors::CorsLayer;
 use tower_http::timeout::TimeoutLayer;
 
+use rchain_casper::api::block_api::BlockApi;
 use rchain_casper::api::block_report_api::BlockReportApi;
+use rchain_casper::gateway::GatewayTxn;
 use rchain_casper::protocol::comm_util::ConnectionsCell;
 use rchain_comm::discovery::NodeDiscovery;
 use rchain_comm::rp::rp_conf::RPConf;
 use rchain_models::block_hash::BlockHash;
+use rchain_shared::base16;
 use rchain_shared::rate_limiter::RateLimiter;
-use rchain_shared::refined::Port;
+use rchain_shared::refined::{Port, ShardId};
 
 use crate::api::admin_web_api::AdminWebApi;
 use crate::api::dto::{
     BlockApiException, DataAtNameByBlockHashRequest, DataAtNameRequest, DeployRequest,
-    ExploreDeployRequest, FaucetRequest,
+    ExploreDeployRequest, FaucetRequest, TxnRecordDto, TxnRequest,
 };
 use crate::api::grpc::DEFAULT_API_RATE_LIMIT_PER_SEC;
 use crate::api::web_api::WebApi;
@@ -52,6 +56,15 @@ pub struct StatusProvider {
     pub discovery: Arc<dyn NodeDiscovery>,
 }
 
+/// The shards a node validates for, primary first, each with the API that reads its head. Served by
+/// `GET /api/v1/shards` — deliberately *not* folded into `/api/status`, whose `shardId` field
+/// existing tooling extracts with a single greedy match.
+#[derive(Clone)]
+pub struct ShardRegistry {
+    pub primary: ShardId,
+    pub members: Vec<(ShardId, Arc<dyn BlockApi>)>,
+}
+
 /// State shared by the public HTTP server (port of the `webApi` + `prometheusReporter` +
 /// `blockReportAPI` arguments of `acquireHttpServer`).
 #[derive(Clone)]
@@ -59,6 +72,12 @@ pub struct HttpState {
     pub reporter: Arc<NewPrometheusReporter>,
     pub web_api: Arc<dyn WebApi>,
     pub block_report_api: Arc<BlockReportApi>,
+    pub shards: Arc<ShardRegistry>,
+    /// The on-node cross-shard 2PC coordinator, present only when this node is a multi-shard
+    /// gateway (several memberships and a signing key).
+    pub gateway: Option<Arc<GatewayTxn>>,
+    /// Whether the cross-shard transaction routes are enabled (`api-server.enable-txn-api`).
+    pub enable_txn_api: bool,
     pub status_provider: Option<StatusProvider>,
     pub enable_reporting: bool,
     /// Rate limiter for the unauthenticated deploy/explore-deploy routes (documented Scala
@@ -123,6 +142,122 @@ async fn api_deploys(State(state): State<HttpState>) -> Response {
 
 async fn api_capabilities(State(state): State<HttpState>) -> Response {
     json_result(state.web_api.capabilities().await)
+}
+
+/// `GET /api/v1/shards` — the shards this node is a member of (a gateway is a member of several),
+/// primary first, each with the height of its own chain. A client that needs to address a specific
+/// shard reads the ids here; a deploy already names its shard in `DeployData.shardId`.
+async fn api_shards(State(state): State<HttpState>) -> Response {
+    let mut shards = Vec::with_capacity(state.shards.members.len());
+    for (shard_id, api) in &state.shards.members {
+        let status = api.status().await;
+        shards.push(json!({
+            "shardId": shard_id.to_string(),
+            "primary": *shard_id == state.shards.primary,
+            "latestBlockNumber": status.latest_block_number,
+        }));
+    }
+    Json(json!({
+        "primaryShard": state.shards.primary.to_string(),
+        "shardCount": shards.len(),
+        "shards": shards,
+    }))
+    .into_response()
+}
+
+/// The gateway, or the standard not-available response.
+///
+/// Mirrors the `enable-reporting` convention: the route is mounted unconditionally and answers 404
+/// when the feature is off, so a single-shard node's surface is unchanged and a client can tell
+/// "not a gateway" from "bad request".
+fn gateway_or_not_found(state: &HttpState) -> Result<Arc<GatewayTxn>, Response> {
+    match (&state.gateway, state.enable_txn_api) {
+        (Some(gateway), true) => Ok(gateway.clone()),
+        _ => Err((StatusCode::NOT_FOUND, ()).into_response()),
+    }
+}
+
+/// `POST /api/v1/txn` — open (or resume) a cross-shard transaction and drive it to a terminal state.
+///
+/// The legs are ordinary deploys on this node's own shards, so the call returns once each leg has
+/// been included in a block — seconds, not microseconds — and can fail by timeout. It is
+/// idempotent under `txnId`: re-issuing a completed transaction returns its record and moves no
+/// funds.
+async fn api_txn_run(State(state): State<HttpState>, Json(req): Json<TxnRequest>) -> Response {
+    let gateway = match gateway_or_not_found(&state) {
+        Ok(gateway) => gateway,
+        Err(response) => return response,
+    };
+    let txn_id = match base16::decode(&req.txn_id) {
+        Some(bytes) if !bytes.is_empty() && bytes.len() <= 64 => bytes,
+        _ => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json("txnId must be non-empty hex of at most 64 bytes".to_string()),
+            )
+                .into_response()
+        }
+    };
+    let mut legs = Vec::with_capacity(req.legs.len());
+    for leg in &req.legs {
+        match rchain_shared::refined::ShardId::try_from(leg.shard_id.clone()) {
+            Ok(shard_id) => legs.push(rchain_casper::gateway::GatewayLeg {
+                shard_id,
+                amount: leg.amount,
+                to: leg.to.clone(),
+            }),
+            Err(e) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(format!("invalid shardId '{}': {e}", leg.shard_id)),
+                )
+                    .into_response()
+            }
+        }
+    }
+
+    match gateway.run(&txn_id, &legs).await {
+        Ok(record) => (StatusCode::OK, Json(TxnRecordDto::from_record(&record))).into_response(),
+        Err(err) => (StatusCode::BAD_REQUEST, Json(err)).into_response(),
+    }
+}
+
+/// `GET /api/v1/txn/:txnId` — the durable record of a transaction, or 404 when this node has none.
+async fn api_txn_status(State(state): State<HttpState>, Path(txn_id): Path<String>) -> Response {
+    let gateway = match gateway_or_not_found(&state) {
+        Ok(gateway) => gateway,
+        Err(response) => return response,
+    };
+    let Some(txn_id) = base16::decode(&txn_id) else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json("txnId must be hex".to_string()),
+        )
+            .into_response();
+    };
+    match gateway.status(&txn_id).await {
+        Ok(Some(record)) => {
+            (StatusCode::OK, Json(TxnRecordDto::from_record(&record))).into_response()
+        }
+        Ok(None) => (StatusCode::NOT_FOUND, ()).into_response(),
+        Err(err) => (StatusCode::INTERNAL_SERVER_ERROR, Json(err)).into_response(),
+    }
+}
+
+/// `GET /api/v1/txn` — the transactions this node is still coordinating.
+async fn api_txn_list(State(state): State<HttpState>) -> Response {
+    let gateway = match gateway_or_not_found(&state) {
+        Ok(gateway) => gateway,
+        Err(response) => return response,
+    };
+    match gateway.list().await {
+        Ok(records) => {
+            let records: Vec<TxnRecordDto> =
+                records.iter().map(TxnRecordDto::from_record).collect();
+            Json(json!({ "inFlight": records })).into_response()
+        }
+        Err(err) => (StatusCode::INTERNAL_SERVER_ERROR, Json(err)).into_response(),
+    }
 }
 
 async fn api_deploy(State(state): State<HttpState>, Json(req): Json<DeployRequest>) -> Response {
@@ -276,6 +411,45 @@ const OPENAPI_JSON: &str = r##"{
         }
       }
     },
+    "/shards": {
+      "get": {
+        "summary": "The shards this node is a member of",
+        "description": "Primary shard first, each with the height of its own chain. A gateway node is a member of several. Deploys name their target shard in `DeployRequest.data.shardId`.",
+        "responses": {
+          "200": { "description": "Membership list", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ShardsResponse" } } } }
+        }
+      }
+    },
+    "/txn": {
+      "post": {
+        "summary": "Open or resume a cross-shard transaction",
+        "description": "Runs a two-phase commit across this node's own member shards: each leg is an ordinary deploy on the shard that owns it, so the call returns once every leg is in a block (seconds) and can fail by timeout. Idempotent under `txnId`: re-issuing a completed transaction returns its record and moves no funds. 404 when this node is not a multi-shard gateway.",
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/TxnRequest" } } } },
+        "responses": {
+          "200": { "description": "The durable coordinator record", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/TxnRecord" } } } },
+          "400": { "description": "Invalid txnId, a non-member shard, or a failed leg" },
+          "404": { "description": "This node is not a gateway (`api-server.enable-txn-api` is off, or it has a single shard)" }
+        }
+      },
+      "get": {
+        "summary": "Transactions this node is still coordinating",
+        "responses": {
+          "200": { "description": "The in-flight records", "content": { "application/json": { "schema": { "type": "object", "properties": { "inFlight": { "type": "array", "items": { "$ref": "#/components/schemas/TxnRecord" } } } } } } },
+          "404": { "description": "This node is not a gateway" }
+        }
+      }
+    },
+    "/txn/{txnId}": {
+      "get": {
+        "summary": "A cross-shard transaction's durable record",
+        "parameters": [ { "name": "txnId", "in": "path", "required": true, "schema": { "type": "string" }, "description": "Hex-encoded transaction id" } ],
+        "responses": {
+          "200": { "description": "The coordinator record", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/TxnRecord" } } } },
+          "400": { "description": "txnId is not hex" },
+          "404": { "description": "Unknown transaction, or this node is not a gateway" }
+        }
+      }
+    },
     "/deploy": {
       "post": {
         "summary": "Deploy a signed rholang term",
@@ -360,6 +534,58 @@ const OPENAPI_JSON: &str = r##"{
         "properties": {
           "api": { "type": "string" },
           "node": { "type": "string" }
+        }
+      },
+      "TxnLeg": {
+        "type": "object",
+        "properties": {
+          "shardId": { "type": "string", "description": "The member shard that escrows this leg" },
+          "amount": { "type": "integer", "description": "REV to escrow" },
+          "to": { "type": "string", "description": "The REV address a commit credits" }
+        }
+      },
+      "TxnRequest": {
+        "type": "object",
+        "properties": {
+          "txnId": { "type": "string", "description": "Hex; caller-supplied so a retry is the same transaction" },
+          "legs": { "type": "array", "items": { "$ref": "#/components/schemas/TxnLeg" } }
+        }
+      },
+      "TxnVote": {
+        "type": "object",
+        "properties": {
+          "shardId": { "type": "string" },
+          "vote": { "type": "string", "enum": ["ready", "abort"] }
+        }
+      },
+      "TxnRecord": {
+        "type": "object",
+        "properties": {
+          "txnId": { "type": "string" },
+          "state": { "type": "string", "enum": ["proposed", "prepared", "committed", "aborted"] },
+          "coordinator": { "type": "string", "description": "The key the participants gate commit/abort on" },
+          "recordHash": { "type": "string", "description": "The record's content address" },
+          "legs": { "type": "array", "items": { "$ref": "#/components/schemas/TxnLeg" } },
+          "votes": { "type": "array", "items": { "$ref": "#/components/schemas/TxnVote" } },
+          "reason": { "type": "string", "nullable": true, "description": "Why an abort happened, when one did" }
+        }
+      },
+      "ShardsResponse": {
+        "type": "object",
+        "properties": {
+          "primaryShard": { "type": "string", "description": "The default target for requests that do not name a shard" },
+          "shardCount": { "type": "integer" },
+          "shards": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "shardId": { "type": "string" },
+                "primary": { "type": "boolean" },
+                "latestBlockNumber": { "type": "integer" }
+              }
+            }
+          }
         }
       },
       "ApiStatus": {
@@ -555,6 +781,9 @@ pub fn router(state: HttpState) -> Router {
         .route("/api/trace", get(reporting_trace))
         .route("/api/status", get(api_status))
         .route("/api/capabilities", get(api_capabilities))
+        .route("/api/shards", get(api_shards))
+        .route("/api/txn", get(api_txn_list).post(api_txn_run))
+        .route("/api/txn/:txn_id", get(api_txn_status))
         .route("/api/deploys", get(api_deploys))
         .route("/api/deploy", post(api_deploy))
         .route("/api/faucet", post(api_faucet))
@@ -578,6 +807,9 @@ pub fn router(state: HttpState) -> Router {
         .route("/api/transactions/:hash", get(api_get_transaction))
         .route("/api/v1/status", get(api_status))
         .route("/api/v1/capabilities", get(api_capabilities))
+        .route("/api/v1/shards", get(api_shards))
+        .route("/api/v1/txn", get(api_txn_list).post(api_txn_run))
+        .route("/api/v1/txn/:txn_id", get(api_txn_status))
         .route("/api/v1/deploys", get(api_deploys))
         .route("/api/v1/deploy", post(api_deploy))
         .route("/api/v1/faucet", post(api_faucet))
@@ -621,15 +853,19 @@ pub fn admin_router(state: AdminState) -> Router {
 
 /// Bind and serve the public HTTP routes (port of `web/acquireHttpServer`), with a CORS layer and a
 /// per-request timeout (`api-server.max-connection-idle`).
+#[allow(clippy::too_many_arguments)]
 pub async fn acquire_http_server(
     host: &str,
     port: Port,
     reporter: Arc<NewPrometheusReporter>,
     web_api: Arc<dyn WebApi>,
     block_report_api: Arc<BlockReportApi>,
+    shards: Arc<ShardRegistry>,
+    gateway: Option<Arc<GatewayTxn>>,
     status_provider: Option<StatusProvider>,
     max_connection_idle: Duration,
     enable_reporting: bool,
+    enable_txn_api: bool,
 ) -> Result<(), String> {
     let port = u16::from(port); // single discharge at the bind boundary
     let addr: SocketAddr = format!("{host}:{port}")
@@ -642,6 +878,9 @@ pub async fn acquire_http_server(
         reporter,
         web_api,
         block_report_api,
+        shards,
+        gateway,
+        enable_txn_api,
         status_provider,
         enable_reporting,
         deploy_rate_limiter: Arc::new(RateLimiter::new(DEFAULT_API_RATE_LIMIT_PER_SEC)),
@@ -856,6 +1095,14 @@ mod tests {
                 },
             }),
             block_report_api: test_block_report_api(),
+            // The HTTP tests drive the routes, not the shard list; one member stands in.
+            shards: Arc::new(ShardRegistry {
+                primary: rchain_shared::refined::ShardId::try_from("/root".to_string()).unwrap(),
+                members: Vec::new(),
+            }),
+            // No gateway in these tests: the transaction routes answer 404.
+            gateway: None,
+            enable_txn_api: false,
             status_provider: None,
             enable_reporting: true,
             deploy_rate_limiter: Arc::new(RateLimiter::new(DEFAULT_API_RATE_LIMIT_PER_SEC)),
@@ -968,5 +1215,426 @@ mod tests {
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["peers"], 1);
         assert_eq!(json["nodes"], 0);
+    }
+
+    /// The deploy route is rate-limited, and an exhausted limiter is a 429 — not a silent drop and
+    /// not an unbounded accept. (A limiter configured to zero is closed, so this needs no sleep.)
+    #[tokio::test]
+    async fn api_deploy_returns_429_when_the_limiter_is_exhausted() {
+        let mut s = state();
+        s.deploy_rate_limiter = Arc::new(RateLimiter::new(0));
+        let request: DeployRequest = serde_json::from_value(serde_json::json!({
+            "data": {
+                "term": "Nil",
+                "timestamp": 0,
+                "phloPrice": 1,
+                "phloLimit": 1,
+                "validAfterBlockNumber": 0,
+                "shardId": "/root"
+            },
+            "deployer": "",
+            "signature": "",
+            "sigAlgorithm": "secp256k1"
+        }))
+        .expect("deploy request");
+        let response = api_deploy(State(s), Json(request)).await;
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+    }
+
+    // --- the shard list and the cross-shard transaction routes (Laws 26–29) ---
+
+    /// A `BlockApi` for the transaction-route tests: only the three methods the gateway's phase
+    /// path touches are real, because these tests drive *validation* and the gate, not a live 2PC.
+    struct TxnStubApi {
+        shard_id: String,
+    }
+
+    #[async_trait]
+    impl BlockApi for TxnStubApi {
+        async fn deploy(
+            &self,
+            _: &rchain_models::casper::protocol::casper_message::SignedDeployData,
+        ) -> Result<String, String> {
+            Err("no phase deploys in these tests".to_string())
+        }
+        async fn get_latest_message(
+            &self,
+        ) -> Result<rchain_models::block_metadata::BlockMetadata, String> {
+            Err("no head in these tests".to_string())
+        }
+        async fn get_listening_name_data_response(
+            &self,
+            depth: i32,
+            _: &rchain_models::ast::Par,
+        ) -> Result<
+            (
+                Vec<rchain_models::casper::protocol::deploy_service::DataWithBlockInfo>,
+                i32,
+            ),
+            String,
+        > {
+            Ok((Vec::new(), depth))
+        }
+        async fn status(&self) -> rchain_models::casper::protocol::deploy_service::Status {
+            rchain_models::casper::protocol::deploy_service::Status {
+                version: rchain_models::casper::protocol::deploy_service::VersionInfo {
+                    api: "1".to_string(),
+                    node: "test".to_string(),
+                },
+                address: self.shard_id.clone(),
+                network_id: "testnet".to_string(),
+                shard_id: self.shard_id.clone(),
+                peers: 0,
+                nodes: 0,
+                min_phlo_price: 1,
+                latest_block_number: if self.shard_id == "/root" { 7 } else { 3 },
+            }
+        }
+        async fn deploy_status(
+            &self,
+            _: &rchain_block_storage::dag::dag_storage::DeployId,
+        ) -> Result<rchain_models::casper::protocol::deploy_service::DeployExecStatus, String>
+        {
+            Err("unused".to_string())
+        }
+        async fn pooled_deploys(
+            &self,
+        ) -> Result<Vec<rchain_models::casper::protocol::casper_message::SignedDeployData>, String>
+        {
+            Err("unused".to_string())
+        }
+        async fn capabilities(&self) -> rchain_casper::api::block_api::Capabilities {
+            unreachable!("unused in these tests")
+        }
+        async fn create_block(&self, _: bool) -> Result<String, String> {
+            Err("unused".to_string())
+        }
+        async fn get_propose_result(&self) -> Result<String, String> {
+            Err("unused".to_string())
+        }
+        async fn get_listening_name_continuation_response(
+            &self,
+            _: i32,
+            _: &[rchain_models::ast::Par],
+        ) -> Result<
+            (
+                Vec<rchain_models::casper::protocol::deploy_service::ContinuationsWithBlockInfo>,
+                i32,
+            ),
+            String,
+        > {
+            Err("unused".to_string())
+        }
+        async fn get_blocks_by_heights(
+            &self,
+            _: i64,
+            _: i64,
+        ) -> Result<Vec<LightBlockInfo>, String> {
+            Err("unused".to_string())
+        }
+        async fn visualize_dag(&self, _: i32, _: i32, _: bool) -> Result<Vec<String>, String> {
+            Err("unused".to_string())
+        }
+        async fn machine_verifiable_dag(&self, _: i32) -> Result<String, String> {
+            Err("unused".to_string())
+        }
+        async fn get_blocks(&self, _: i32) -> Result<Vec<LightBlockInfo>, String> {
+            Err("unused".to_string())
+        }
+        async fn find_deploy(
+            &self,
+            _: &rchain_block_storage::dag::dag_storage::DeployId,
+        ) -> Result<LightBlockInfo, String> {
+            Err("unused".to_string())
+        }
+        async fn get_block(&self, _: &str) -> Result<BlockInfo, String> {
+            Err("unused".to_string())
+        }
+        async fn bond_status(&self, _: &[u8]) -> Result<bool, String> {
+            Err("unused".to_string())
+        }
+        async fn exploratory_deploy(
+            &self,
+            _: &str,
+            _: Option<&str>,
+            _: bool,
+        ) -> Result<(Vec<rchain_models::ast::Par>, LightBlockInfo), String> {
+            Err("unused".to_string())
+        }
+        async fn get_data_at_par(
+            &self,
+            _: &rchain_models::ast::Par,
+            _: &str,
+            _: bool,
+        ) -> Result<(Vec<rchain_models::ast::Par>, LightBlockInfo), String> {
+            Err("unused".to_string())
+        }
+        async fn last_finalized_block(&self) -> Result<BlockInfo, String> {
+            Err("unused".to_string())
+        }
+        async fn is_finalized(&self, _: &str) -> Result<bool, String> {
+            Err("unused".to_string())
+        }
+    }
+
+    /// A [`KeyValueStoreManager`] whose stores reject every read — how `api_txn_status`'s 500 arm is
+    /// reached (a ledger that opens and then cannot be read).
+    struct UnreadableStoreManager;
+
+    struct UnreadableStore;
+
+    impl rchain_shared::store::KeyValueStore for UnreadableStore {
+        fn get(&self, _: &[Vec<u8>]) -> Result<Vec<Option<Vec<u8>>>, String> {
+            Err("store read failed".to_string())
+        }
+        fn put(&mut self, _: Vec<(Vec<u8>, Vec<u8>)>) -> Result<(), String> {
+            Err("store write failed".to_string())
+        }
+        fn delete(&mut self, _: &[Vec<u8>]) -> Result<usize, String> {
+            Err("store delete failed".to_string())
+        }
+        fn entries(&self) -> Result<Vec<(Vec<u8>, Vec<u8>)>, String> {
+            Err("store scan failed".to_string())
+        }
+    }
+
+    #[async_trait]
+    impl rchain_shared::store_manager::KeyValueStoreManager for UnreadableStoreManager {
+        async fn store(&self, _: &str) -> Result<SharedStore, String> {
+            let store: Box<dyn rchain_shared::store::KeyValueStore + Send + Sync> =
+                Box::new(UnreadableStore);
+            Ok(Arc::new(tokio::sync::Mutex::new(store)))
+        }
+        async fn shutdown(&self) {}
+    }
+
+    fn txn_shards() -> Vec<(rchain_shared::refined::ShardId, Arc<dyn BlockApi>)> {
+        let shard = |id: &str| rchain_shared::refined::ShardId::try_from(id.to_string()).unwrap();
+        vec![
+            (
+                shard("/root"),
+                Arc::new(TxnStubApi {
+                    shard_id: "/root".to_string(),
+                }) as Arc<dyn BlockApi>,
+            ),
+            (
+                shard("/root/child"),
+                Arc::new(TxnStubApi {
+                    shard_id: "/root/child".to_string(),
+                }) as Arc<dyn BlockApi>,
+            ),
+        ]
+    }
+
+    /// A gateway over the stub shards, with a real ledger.
+    async fn gateway() -> Arc<GatewayTxn> {
+        gateway_over(Arc::new(
+            rchain_shared::store_manager::InMemoryStoreManager::default(),
+        ))
+        .await
+    }
+
+    async fn gateway_over(
+        manager: Arc<dyn rchain_shared::store_manager::KeyValueStoreManager>,
+    ) -> Arc<GatewayTxn> {
+        let (key, pub_key) = rchain_casper::construct_deploy::default_key_pair().unwrap();
+        let mut shards = std::collections::BTreeMap::new();
+        for (shard_id, api) in txn_shards() {
+            shards.insert(
+                shard_id.clone(),
+                rchain_casper::gateway::LocalShard {
+                    shard_id,
+                    block_api: api,
+                    max_listen_depth: 50,
+                },
+            );
+        }
+        Arc::new(rchain_casper::gateway::GatewayTxn::new(
+            Arc::new(rchain_casper::gateway::LocalShardDeployService::new(shards)),
+            Arc::new(
+                rchain_casper::gateway::ledger::TxnLedger::open(manager.as_ref())
+                    .await
+                    .expect("ledger"),
+            ),
+            key,
+            pub_key,
+            Duration::from_millis(50),
+        ))
+    }
+
+    /// State with a shard list and an optional gateway.
+    fn txn_state(gateway: Option<Arc<GatewayTxn>>, enable_txn_api: bool) -> HttpState {
+        let mut s = state();
+        let shard = |id: &str| rchain_shared::refined::ShardId::try_from(id.to_string()).unwrap();
+        s.shards = Arc::new(ShardRegistry {
+            primary: shard("/root"),
+            members: txn_shards(),
+        });
+        s.gateway = gateway;
+        s.enable_txn_api = enable_txn_api;
+        s
+    }
+
+    fn txn_body(txn_id: &str, legs: serde_json::Value) -> crate::api::dto::TxnRequest {
+        serde_json::from_value(serde_json::json!({ "txnId": txn_id, "legs": legs })).unwrap()
+    }
+
+    #[tokio::test]
+    async fn api_shards_lists_every_member_primary_first() {
+        let response = api_shards(State(txn_state(None, false))).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["primaryShard"], "/root");
+        assert_eq!(json["shardCount"], 2);
+        assert_eq!(json["shards"][0]["shardId"], "/root");
+        assert_eq!(json["shards"][0]["primary"], true);
+        assert_eq!(json["shards"][0]["latestBlockNumber"], 7);
+        assert_eq!(json["shards"][1]["shardId"], "/root/child");
+        assert_eq!(json["shards"][1]["primary"], false);
+        assert_eq!(json["shards"][1]["latestBlockNumber"], 3);
+    }
+
+    #[tokio::test]
+    async fn api_shards_with_no_members_is_an_empty_list() {
+        let mut s = txn_state(None, false);
+        let primary = s.shards.primary.clone();
+        s.shards = Arc::new(ShardRegistry {
+            primary,
+            members: Vec::new(),
+        });
+        let response = api_shards(State(s)).await;
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["shardCount"], 0);
+        assert_eq!(json["shards"].as_array().unwrap().len(), 0);
+    }
+
+    /// The gate: without a gateway, or with the feature switched off, the transaction routes answer
+    /// 404 — the same convention the reporting routes use. The `(Some, false)` case is the one no
+    /// test reached before, and it is what stops a gateway node from serving the routes before an
+    /// operator enables them.
+    #[tokio::test]
+    async fn txn_routes_404_when_the_gateway_is_off_or_disabled() {
+        for (gateway, enabled) in [(None, false), (Some(gateway().await), false), (None, true)] {
+            let state = || txn_state(gateway.clone(), enabled);
+            assert_eq!(
+                api_txn_list(State(state())).await.status(),
+                StatusCode::NOT_FOUND
+            );
+            assert_eq!(
+                api_txn_status(State(state()), Path("aabb".to_string()))
+                    .await
+                    .status(),
+                StatusCode::NOT_FOUND
+            );
+            assert_eq!(
+                api_txn_run(
+                    State(state()),
+                    Json(txn_body("/root", serde_json::json!([])))
+                )
+                .await
+                .status(),
+                StatusCode::NOT_FOUND
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn api_txn_run_rejects_a_malformed_transaction_id() {
+        for bad in ["", "zz", "abc", &"aa".repeat(65)] {
+            let response = api_txn_run(
+                State(txn_state(Some(gateway().await), true)),
+                Json(txn_body(bad, serde_json::json!([]))),
+            )
+            .await;
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST, "txnId {bad:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn api_txn_run_rejects_an_invalid_leg_shard_or_an_empty_leg_list() {
+        let response = api_txn_run(
+            State(txn_state(Some(gateway().await), true)),
+            Json(txn_body(
+                "aabb",
+                serde_json::json!([{ "shardId": "", "amount": 1, "to": "d" }]),
+            )),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        assert!(String::from_utf8_lossy(&body).contains("invalid shardId"));
+
+        let response = api_txn_run(
+            State(txn_state(Some(gateway().await), true)),
+            Json(txn_body("aabb", serde_json::json!([]))),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let err = String::from_utf8_lossy(&body);
+        assert!(err.contains("at least one leg"), "{err}");
+    }
+
+    /// A leg on a shard this node does not validate is a caller error, and the membership is
+    /// reported back.
+    #[tokio::test]
+    async fn api_txn_run_reports_a_non_member_shard() {
+        let response = api_txn_run(
+            State(txn_state(Some(gateway().await), true)),
+            Json(txn_body(
+                "aabb",
+                serde_json::json!([{ "shardId": "/elsewhere", "amount": 1, "to": "d" }]),
+            )),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let err = String::from_utf8_lossy(&body);
+        assert!(err.contains("/elsewhere"), "{err}");
+        assert!(err.contains("/root, /root/child"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn api_txn_status_400_non_hex_and_404_unknown_and_500_unreadable() {
+        let g = gateway().await;
+        assert_eq!(
+            api_txn_status(
+                State(txn_state(Some(g.clone()), true)),
+                Path("zz".to_string())
+            )
+            .await
+            .status(),
+            StatusCode::BAD_REQUEST
+        );
+        // A well-formed id this node has never seen.
+        assert_eq!(
+            api_txn_status(State(txn_state(Some(g), true)), Path("aabb".to_string()))
+                .await
+                .status(),
+            StatusCode::NOT_FOUND
+        );
+
+        // A ledger that cannot be read is a server error, not a 404.
+        let unreadable = gateway_over(Arc::new(UnreadableStoreManager)).await;
+        assert_eq!(
+            api_txn_status(
+                State(txn_state(Some(unreadable), true)),
+                Path("aabb".to_string())
+            )
+            .await
+            .status(),
+            StatusCode::INTERNAL_SERVER_ERROR
+        );
+    }
+
+    #[tokio::test]
+    async fn api_txn_list_is_empty_for_a_fresh_gateway() {
+        let response = api_txn_list(State(txn_state(Some(gateway().await), true))).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["inFlight"].as_array().unwrap().len(), 0);
     }
 }

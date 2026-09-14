@@ -106,6 +106,52 @@ fn genesis_boot_exposes_block_over_http() {
         let blocks = poll_blocks(&client, &format!("{base}/api/blocks")).await;
 
         let genesis = &blocks[0];
+        // The genesis block carries the *full* shard id, not the bare shard name: the proposer, the
+        // block receiver and the deploy API all use the full id, so a genesis block stamped with
+        // "root" would carry an id no later block or deploy shares.
+        assert_eq!(genesis["shardId"], "/root");
+
+        // `GET /api/v1/shards` reports the node's memberships. A single-shard node has exactly one,
+        // and it is the primary — the same shard `/api/status` and the genesis block report. (The
+        // membership list is deliberately not folded into `/api/status`.)
+        let shards_resp = client
+            .get(format!("{base}/api/v1/shards"))
+            .send()
+            .await
+            .expect("GET /api/v1/shards");
+        assert_eq!(shards_resp.status(), 200);
+        let shards: Value = shards_resp.json().await.expect("shards json");
+        assert_eq!(shards["primaryShard"], "/root");
+        assert_eq!(shards["shardCount"], 1);
+        assert_eq!(shards["shards"][0]["shardId"], "/root");
+        assert_eq!(shards["shards"][0]["primary"], true);
+
+        // This node is not a gateway (one shard), so the cross-shard transaction routes are not
+        // available: 404, the same convention the reporting routes use. A single-shard node's
+        // surface is otherwise unchanged.
+        assert_eq!(
+            client
+                .get(format!("{base}/api/v1/txn"))
+                .send()
+                .await
+                .expect("GET /api/v1/txn")
+                .status(),
+            404
+        );
+        assert_eq!(
+            client
+                .post(format!("{base}/api/v1/txn"))
+                .json(&serde_json::json!({
+                    "txnId": "aabb",
+                    "legs": [{ "shardId": "/root", "amount": 1, "to": "d" }]
+                }))
+                .send()
+                .await
+                .expect("POST /api/v1/txn")
+                .status(),
+            404
+        );
+
         // The genesis block has no justifications.
         assert_eq!(genesis["justifications"].as_array().unwrap().len(), 0);
         // ... and carries the single bonded validator with stake 100.

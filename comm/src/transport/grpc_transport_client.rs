@@ -168,3 +168,94 @@ impl TransportLayer for GrpcTransportClient {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use rchain_shared::refined::Port;
+
+    use crate::peer_node::NodeIdentifier;
+    use crate::transport::generate_certificate_if_absent::generate_certificate;
+
+    fn client() -> GrpcTransportClient {
+        let (cert_pem, key_pem) = generate_certificate().expect("a test certificate");
+        GrpcTransportClient::new(
+            "testnet".to_string(),
+            &cert_pem,
+            &key_pem,
+            16 * 1024 * 1024,
+            16 * 1024,
+            16,
+        )
+        .expect("a client with a valid certificate")
+    }
+
+    fn peer(id: NodeIdentifier, host: &str, port: u16) -> PeerNode {
+        PeerNode::from(id, host.to_string(), Port::new(port), Port::new(port))
+    }
+
+    fn short_id() -> NodeIdentifier {
+        NodeIdentifier::new(vec![0x11; 20])
+    }
+
+    /// A client with unusable PEM material fails to build rather than panicking later: the TLS
+    /// configuration is the one thing `new` can get wrong, and it does so up front.
+    #[test]
+    fn a_client_rejects_unusable_certificate_material() {
+        for (cert, key) in [
+            ("not a pem", "also not a pem"),
+            (
+                "-----BEGIN CERTIFICATE-----\nAAAA\n-----END CERTIFICATE-----\n",
+                "x",
+            ),
+        ] {
+            assert!(
+                GrpcTransportClient::new("testnet".to_string(), cert, key, 1024, 1024, 1).is_err(),
+                "garbage PEM must be refused"
+            );
+        }
+    }
+
+    /// **A peer id that is not a usable TLS server name is rejected as a parse error.** The client
+    /// verifies the *server's* certificate against the peer's id, so an id it cannot form a
+    /// `ServerName` from must fail here — not be silently accepted and then fail (or worse, match)
+    /// during the handshake. The bound is DNS's 253 characters, and an id is 40 hex chars per 20
+    /// key bytes, so an over-long key is what reaches it.
+    #[tokio::test]
+    async fn an_over_long_peer_id_is_a_parse_error() {
+        let c = client();
+        let long_id = peer(NodeIdentifier::new(vec![0xAB; 200]), "127.0.0.1", 40404);
+        let err = c
+            .get_channel(&long_id)
+            .await
+            .expect_err("a 400-character server name is not valid");
+        assert!(
+            matches!(err, CommError::ParseError(_)),
+            "expected a parse error, got {err:?}"
+        );
+    }
+
+    /// A connection failure is an error and is **not cached**: a second attempt retries rather than
+    /// returning a stored failure (or, worse, a stale channel). Port 1 on loopback refuses, so this
+    /// needs no server.
+    #[tokio::test]
+    async fn a_failed_connection_is_reported_and_not_cached() {
+        let c = client();
+        let p = peer(short_id(), "127.0.0.1", 1);
+        assert!(
+            c.get_channel(&p).await.is_err(),
+            "a refused connection must be an error"
+        );
+        assert!(
+            c.get_channel(&p).await.is_err(),
+            "…and the second attempt must try again, not replay a cached failure"
+        );
+    }
+
+    /// The channel cache is **bounded** (an unbounded per-peer channel map was a DoS finding in the
+    /// security pass, `spec/AUDIT.md` §12): the bound is what makes eviction reachable at all. It is
+    /// asserted at *compile* time, so a change to the constant is a build failure rather than a test
+    /// failure nobody runs — and so this module needs no test to police a number.
+    const _: () = assert!(MAX_CACHED_CHANNELS > 0 && MAX_CACHED_CHANNELS <= 4096);
+}

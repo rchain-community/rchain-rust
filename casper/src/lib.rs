@@ -14,6 +14,7 @@ pub mod construct_deploy;
 pub mod dag;
 pub mod engine;
 pub mod event_converter;
+pub mod gateway;
 pub mod genesis;
 pub mod interpreter_util;
 pub mod merging;
@@ -34,4 +35,7 @@ pub mod validate;
 pub mod validator_identity;
 pub mod vault_parser;
 
-pub use conf::{CasperConf, GenesisBlockData};
+pub use conf::{CasperConf, GenesisBlockData, ShardMemberships, ShardSpec};
+
+#[cfg(test)]
+mod property_tests;

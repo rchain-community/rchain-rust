@@ -65,15 +65,38 @@ pub async fn build_runtime_with_mode(concurrent: bool, mode: EffectMode) -> RhoR
         .expect("rho runtime")
 }
 
-/// Look up a committed golden hex vector for `case` in `testdata/differential/<target>.tsv`.
-pub fn load_golden(case: &str, target: &str) -> Option<String> {
+/// The rows of a golden file as `(id, value, provenance)`.
+///
+/// `#` lines are the file's legend and are skipped; the value is read **by position**, so the
+/// provenance column (and any later one) cannot corrupt a vector. `execution.tsv`'s provenance is
+/// `rust-regression-pinned` — there is no Scala oracle for the rholang pipeline — so a caller that
+/// needs ground truth must check the third field rather than assume it.
+pub fn golden_rows(target: &str) -> Vec<(String, String, String)> {
     let path = format!(
         "{}/testdata/differential/{target}.tsv",
         env!("CARGO_MANIFEST_DIR")
     );
-    let contents = std::fs::read_to_string(path).ok()?;
-    contents.lines().find_map(|line| {
-        let (id, hex) = line.split_once('\t')?;
-        (id == case).then(|| hex.to_string())
-    })
+    let Ok(contents) = std::fs::read_to_string(path) else {
+        return Vec::new();
+    };
+    contents
+        .lines()
+        .filter(|l| !l.trim().is_empty() && !l.starts_with('#'))
+        .map(|l| {
+            let mut f = l.split('\t');
+            (
+                f.next().unwrap_or_default().to_string(),
+                f.next().unwrap_or_default().to_string(),
+                f.next().unwrap_or_default().to_string(),
+            )
+        })
+        .collect()
+}
+
+/// Look up a committed golden hex vector for `case` in `testdata/differential/<target>.tsv`.
+pub fn load_golden(case: &str, target: &str) -> Option<String> {
+    golden_rows(target)
+        .into_iter()
+        .find(|(id, _, _)| id == case)
+        .map(|(_, value, _)| value)
 }

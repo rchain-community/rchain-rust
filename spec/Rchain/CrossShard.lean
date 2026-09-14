@@ -30,7 +30,8 @@ namespace Rchain
 
 /-- A shard id: the name of one chain/tuple-space. The Rust realization is the `ShardId` newtype
     (`shared/src/refined.rs`) — a validated, ordered `/`-separated path (`/root`), with the hierarchy
-    `parent-shard-id`/`shard-name` computed by `CasperConf::full_shard_id`. The model abstracts it as a
+    `parent-shard-id`/`shard-name` resolved by `ShardSpec` (a node's memberships are the non-empty
+    `ShardMemberships` list). The model abstracts it as a
     `String`; `ValidShardId` is the non-empty half of the validation. -/
 abbrev ShardId := String
 

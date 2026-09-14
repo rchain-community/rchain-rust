@@ -18,15 +18,6 @@ fn read_rho(rel: &str) -> String {
     std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {path}: {e}"))
 }
 
-/// Files that bind `rho:rchain:deployerId` need the per-deploy binding injected.
-const NEEDS_DEPLOYER: &[&str] = &[
-    "qucalc/rholang/qucalc.rho",
-    "qucalc/rholang/gov.rho",
-    "qucalc/examples/multisig.rho",
-    "qucalc/examples/shard_exchange.rho",
-    "examples/wallet.rho",
-];
-
 const EXAMPLES: &[&str] = &[
     "qucalc/rholang/Directory.rho",
     "qucalc/rholang/Inbox.rho",
@@ -55,7 +46,11 @@ async fn rho_examples_parse_and_reduce() {
     let mut failures = Vec::new();
     for &rel in EXAMPLES {
         let source = read_rho(rel);
-        let env = if NEEDS_DEPLOYER.contains(&rel) {
+        // The deployer binding is injected when the *content* binds it. A hand-maintained list of
+        // filenames has to be edited whenever a file's content changes, and it fails by reducing
+        // without the binding (a confusing error in the file) rather than by name; the scan cannot
+        // go stale. The corpus test (`legacy_contracts.rs`) uses the same rule.
+        let env = if source.contains("rho:rchain:deployerId") {
             &deployer_env
         } else {
             &empty_env

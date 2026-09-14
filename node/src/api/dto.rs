@@ -222,6 +222,83 @@ mod tests {
         let e = SignatureException("bad sig".to_string());
         assert_eq!(e.to_string(), "bad sig");
     }
+
+    /// Every field of a coordinator record survives the DTO mapping — including the aborted shape,
+    /// which is the one an operator reads when a transaction fails.
+    #[test]
+    fn txn_record_dto_maps_every_field() {
+        use rchain_casper::gateway::ledger::{CoordRecord, CoordState, LegRecord, Vote};
+        use rchain_crypto::public_key::PublicKey;
+        use rchain_shared::refined::{NonNegI64, ShardId};
+
+        let shard = |id: &str| ShardId::try_from(id.to_string()).unwrap();
+        let mut record = CoordRecord {
+            txn_id: vec![0xAA, 0xBB],
+            state: CoordState::Proposed,
+            coordinator: PublicKey::new(vec![7u8; 65]),
+            legs: vec![LegRecord {
+                shard_id: shard("/root"),
+                amount: NonNegI64::try_from(30).unwrap(),
+                to: "dest".to_string(),
+            }],
+            votes: Vec::new(),
+            reason: None,
+        };
+
+        // Proposed: no votes, no reason.
+        let dto = TxnRecordDto::from_record(&record);
+        assert_eq!(dto.txn_id, "aabb");
+        assert_eq!(dto.state, "proposed");
+        assert_eq!(dto.coordinator.len(), 130, "65 bytes as hex");
+        assert_eq!(dto.legs.len(), 1);
+        assert_eq!(dto.legs[0].shard_id, "/root");
+        assert_eq!(dto.legs[0].amount, 30);
+        assert_eq!(dto.legs[0].to, "dest");
+        assert!(dto.votes.is_empty());
+        assert!(dto.reason.is_none());
+        assert_eq!(dto.record_hash.len(), 64, "the record's content address");
+
+        // Aborted with a reason: the terminal shape a client has to interpret.
+        record.record_vote(shard("/root"), Vote::Abort, Some("short".to_string()));
+        let dto = TxnRecordDto::from_record(&record);
+        assert_eq!(dto.state, "aborted");
+        assert_eq!(dto.votes.len(), 1);
+        assert_eq!(dto.votes[0].shard_id, "/root");
+        assert_eq!(dto.votes[0].vote, "abort");
+        assert_eq!(dto.reason.as_deref(), Some("short"));
+    }
+
+    /// The API speaks `camelCase` both ways, so a client's request and the response it reads back
+    /// use the same names.
+    #[test]
+    fn txn_dtos_round_trip_through_json() {
+        let request: TxnRequest = serde_json::from_str(
+            r#"{"txnId":"aabb","legs":[{"shardId":"/root","amount":30,"to":"dest"}]}"#,
+        )
+        .expect("request parses");
+        assert_eq!(request.txn_id, "aabb");
+        assert_eq!(request.legs[0].shard_id, "/root");
+        assert_eq!(request.legs[0].amount, 30);
+
+        let record = TxnRecordDto {
+            txn_id: "aabb".to_string(),
+            state: "committed".to_string(),
+            coordinator: "00".to_string(),
+            record_hash: "11".to_string(),
+            legs: request.legs.clone(),
+            votes: vec![TxnVoteDto {
+                shard_id: "/root".to_string(),
+                vote: "ready".to_string(),
+            }],
+            reason: None,
+        };
+        let json = serde_json::to_string(&record).expect("serializes");
+        assert!(json.contains("\"recordHash\""), "{json}");
+        assert!(json.contains("\"txnId\""), "{json}");
+        assert!(json.contains("\"shardId\""), "{json}");
+        let back: TxnRecordDto = serde_json::from_str(&json).expect("round trip");
+        assert_eq!(back, record);
+    }
 }
 
 /// A deploy execution status (port of the `DeployExecStatus` ADT in `WebApi.scala`).
@@ -271,4 +348,84 @@ pub struct ExploratoryDeployResponse {
 pub struct RhoDataResponse {
     pub expr: Vec<RhoExpr>,
     pub block: LightBlockInfo,
+}
+
+// --- Cross-shard transactions (the multi-shard gateway, Laws 26–29) ---
+
+/// `POST /api/v1/txn` — open (or resume) a cross-shard transaction on this node.
+///
+/// `txn_id` is caller-supplied rather than generated: a retried request must be the *same*
+/// transaction, so the coordinator's idempotency (Law 28 at the API boundary) applies to it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TxnRequest {
+    pub txn_id: String,
+    pub legs: Vec<TxnLegDto>,
+}
+
+/// One leg: which shard escrows, how much REV, and where a commit credits it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TxnLegDto {
+    pub shard_id: String,
+    pub amount: i64,
+    pub to: String,
+}
+
+/// A recorded vote, as reported.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TxnVoteDto {
+    pub shard_id: String,
+    pub vote: String,
+}
+
+/// The coordinator's durable record, as reported by `POST /api/v1/txn` and `GET /api/v1/txn/:id`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TxnRecordDto {
+    pub txn_id: String,
+    /// `proposed` | `prepared` | `committed` | `aborted`.
+    pub state: String,
+    /// The coordinator key the participants gate `commit`/`abort` on.
+    pub coordinator: String,
+    /// The record's content address — the same decision on two nodes hashes the same, and nothing
+    /// about it is consensus state.
+    pub record_hash: String,
+    pub legs: Vec<TxnLegDto>,
+    pub votes: Vec<TxnVoteDto>,
+    /// Why an abort happened (a participant error or a timeout), when one did.
+    pub reason: Option<String>,
+}
+
+impl TxnRecordDto {
+    /// Render a coordinator record for the API.
+    pub fn from_record(record: &rchain_casper::gateway::ledger::CoordRecord) -> Self {
+        TxnRecordDto {
+            txn_id: rchain_shared::base16::encode(&record.txn_id),
+            state: record.state.as_str().to_string(),
+            coordinator: rchain_shared::base16::encode(record.coordinator.bytes()),
+            record_hash: rchain_shared::base16::encode(
+                rchain_casper::gateway::ledger::record_hash(record).as_bytes(),
+            ),
+            legs: record
+                .legs
+                .iter()
+                .map(|leg| TxnLegDto {
+                    shard_id: leg.shard_id.to_string(),
+                    amount: i64::from(leg.amount),
+                    to: leg.to.clone(),
+                })
+                .collect(),
+            votes: record
+                .votes
+                .iter()
+                .map(|(shard_id, vote)| TxnVoteDto {
+                    shard_id: shard_id.to_string(),
+                    vote: vote.as_str().to_string(),
+                })
+                .collect(),
+            reason: record.reason.clone(),
+        }
+    }
 }

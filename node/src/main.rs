@@ -54,6 +54,37 @@ fn default_worker_threads() -> usize {
         .unwrap_or(1)
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The worker count defaults to the machine's parallelism, and **never zero**: a tokio runtime
+    /// built with zero worker threads cannot make progress, and the fallback exists for the
+    /// platforms where `available_parallelism` fails. The other half of the rule — an explicit
+    /// `--thread-pool-size 0` is refused with a message and `exit(1)` — lives in `main` itself and
+    /// cannot be asserted from inside the process; it is what the flag's parse-time validation
+    /// covers.
+    #[test]
+    fn the_default_worker_count_is_at_least_one() {
+        let threads = default_worker_threads();
+        assert!(
+            threads >= 1,
+            "a runtime needs at least one worker: {threads}"
+        );
+        assert!(
+            threads <= 1024,
+            "a sane machine has fewer than 1024 cores: {threads}"
+        );
+
+        // It is the hardware parallelism when the platform reports it…
+        if let Ok(available) = std::thread::available_parallelism() {
+            assert_eq!(threads, available.get());
+        }
+        // …and stable across calls, so two builds of the runtime agree.
+        assert_eq!(threads, default_worker_threads());
+    }
+}
+
 async fn async_main(options: Options) {
     // Execute a thin-client CLI command (port of `Main.main`'s `runCLI` branch).
     if !matches!(options.subcommand, Commands::Run(_)) {

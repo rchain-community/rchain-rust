@@ -88,4 +88,47 @@ mod tests {
         assert_eq!(status.peers, 2);
         assert_eq!(status.nodes, 3);
     }
+
+    /// The degenerate comm state — before the first peer connects, which is where a node spends
+    /// its first seconds and where a hardcoded or unwired counter shows up as a silent `0` rather
+    /// than as a crash. The counts must be *derived* from the two slices, so an empty one reports
+    /// zero while a non-empty one still counts.
+    #[test]
+    fn a_lone_node_reports_zero_peers_and_its_own_address() {
+        let lone = status("v1.0", &[], &[], &rp_conf());
+        assert_eq!(lone.peers, 0);
+        assert_eq!(lone.nodes, 0);
+        assert_eq!(
+            lone.address, "rnode://01@localhost?protocol=40400&discovery=40404",
+            "a node with no peers still names itself"
+        );
+
+        // One side empty, the other not: the two counts must not share a source.
+        let only_connections = status("v1.0", &[peer(2, "a")], &[], &rp_conf());
+        assert_eq!((only_connections.peers, only_connections.nodes), (1, 0));
+        let only_discovered = status("v1.0", &[], &[peer(2, "a")], &rp_conf());
+        assert_eq!((only_discovered.peers, only_discovered.nodes), (0, 1));
+    }
+
+    /// The field names are the `/api/status` wire contract; renaming one silently breaks every
+    /// client, so the serialized shape is asserted here rather than left to the HTTP tests.
+    #[test]
+    fn the_serialized_field_names_are_the_wire_contract() {
+        let built = status(
+            "v1.0",
+            &[peer(2, "a")],
+            &[peer(2, "a"), peer(3, "b")],
+            &rp_conf(),
+        );
+        let json = serde_json::to_value(&built).expect("a status serializes");
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "address": "rnode://01@localhost?protocol=40400&discovery=40404",
+                "version": "v1.0",
+                "peers": 1,
+                "nodes": 2,
+            })
+        );
+    }
 }

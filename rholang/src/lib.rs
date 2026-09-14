@@ -30,3 +30,6 @@ pub mod substitute;
 pub mod system_processes;
 pub mod tree_proc;
 pub mod util;
+
+#[cfg(test)]
+mod property_tests;

@@ -198,3 +198,101 @@ where
     result.extend(joins_trie_actions);
     Ok(result)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn hash(n: u8) -> Blake2b256Hash {
+        Blake2b256Hash::from_bytes([n; 32])
+    }
+
+    fn change(added: Vec<Vec<u8>>, removed: Vec<Vec<u8>>) -> ChannelChange<Vec<u8>> {
+        ChannelChange { added, removed }
+    }
+
+    /// `JoinAction`'s two variants answer the same channel list — the merge reads the channels off
+    /// whichever action it built, so a variant that carried them differently would send the trie
+    /// action to the wrong place.
+    #[test]
+    fn join_actions_report_their_channels() {
+        let channels = vec![hash(1), hash(2)];
+        assert_eq!(JoinAction::AddJoin(channels.clone()).channels(), channels);
+        assert_eq!(
+            JoinAction::RemoveJoin(channels.clone()).channels(),
+            channels
+        );
+    }
+
+    /// The three outcomes of a channel change: everything removed ⇒ a removal action; some content
+    /// left ⇒ an update action carrying exactly the new value. The value is `init − removed + added`,
+    /// so a removal actually takes effect and an addition lands (Law 9's deterministic merge).
+    #[tokio::test]
+    async fn a_channel_change_produces_a_remove_or_an_update_action() {
+        type Action = HotStoreTrieAction<String, String, String, String>;
+
+        // Everything removed and nothing added: the channel is emptied.
+        let removed = mk_trie_action::<String, String, String, String, _, _>(
+            hash(9),
+            vec![b"a".to_vec(), b"b".to_vec()],
+            &change(vec![], vec![b"a".to_vec(), b"b".to_vec()]),
+            |pointer| Action::TrieDeleteProduce(pointer),
+            |_, _| panic!("an emptied channel must be removed, not updated"),
+        )
+        .await
+        .expect("removal");
+        assert!(
+            matches!(removed, Action::TrieDeleteProduce(..)),
+            "{removed:?}"
+        );
+
+        // A partial change: the update action carries the survivors plus the addition.
+        let updated = mk_trie_action::<String, String, String, String, _, _>(
+            hash(9),
+            vec![b"a".to_vec(), b"b".to_vec()],
+            &change(vec![b"c".to_vec()], vec![b"a".to_vec()]),
+            |_| panic!("a non-empty channel must be updated, not removed"),
+            |_, value| Action::TrieInsertBinaryProduce(Blake2b256Hash::from_bytes([0; 32]), value),
+        )
+        .await
+        .expect("update");
+        match updated {
+            Action::TrieInsertBinaryProduce(_, value) => {
+                assert_eq!(value, vec![b"b".to_vec(), b"c".to_vec()]);
+            }
+            other => panic!("expected an update, got {other:?}"),
+        }
+    }
+
+    /// **A change that changes nothing is an error, not a no-op.** The merger is called only when
+    /// there is a difference to merge, so `init == new` means the caller and the merger disagree
+    /// about the channel's state — silently returning a no-op action would hide that and leave the
+    /// trie action queue inconsistent with the values it was computed from.
+    #[tokio::test]
+    async fn an_empty_channel_change_is_reported_as_an_error() {
+        type Action = HotStoreTrieAction<String, String, String, String>;
+
+        let err = mk_trie_action::<String, String, String, String, _, _>(
+            hash(9),
+            vec![b"a".to_vec()],
+            &change(vec![], vec![]),
+            |_| Action::TrieDeleteProduce(Blake2b256Hash::from_bytes([0; 32])),
+            |_, _| panic!("a no-op change must not reach an action"),
+        )
+        .await
+        .expect_err("a change that changes nothing must be reported");
+        assert!(err.contains("Merging logic error"), "{err}");
+
+        // The degenerate all-empty case is the same error, not a removal of nothing.
+        let err = mk_trie_action::<String, String, String, String, _, _>(
+            hash(9),
+            Vec::new(),
+            &change(vec![], vec![]),
+            |_| Action::TrieDeleteProduce(Blake2b256Hash::from_bytes([0; 32])),
+            |_, _| panic!("a no-op change must not reach an action"),
+        )
+        .await
+        .expect_err("an empty change against an empty channel is reported too");
+        assert!(err.contains("Merging logic error"), "{err}");
+    }
+}

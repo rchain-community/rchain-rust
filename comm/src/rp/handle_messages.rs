@@ -151,4 +151,80 @@ mod tests {
             assert!(!is_local_address(host), "{host} should be public");
         }
     }
+
+    /// **The same-network check is about *locality class*, not equality.** A peer is on the same
+    /// network when both ends are local (a private/devnet address) or both are public — so a
+    /// localhost node accepts a LAN peer, and refuses a public one. The `handle` path uses this to
+    /// decide whether to answer a handshake, so an inversion here would make a devnet unreachable
+    /// (or a public node accept only public peers).
+    #[test]
+    fn the_same_network_check_compares_locality_class() {
+        let conf = |local_host: &str| RPConf {
+            local: peer("local", local_host),
+            network_id: "testnet".to_string(),
+            bootstrap: None,
+            default_timeout: std::time::Duration::from_secs(10),
+            max_num_of_connections: 10,
+            clear_connections: crate::rp::rp_conf::ClearConnectionsConf {
+                num_of_connections_pinged: 10,
+            },
+        };
+
+        let local_conf = conf("127.0.0.1");
+        assert!(
+            check_peer_on_same_network(&local_conf, &peer("lan", "192.168.1.5")),
+            "a local node accepts another private peer"
+        );
+        assert!(
+            !check_peer_on_same_network(&local_conf, &peer("public", "8.8.8.8")),
+            "…and refuses a public one"
+        );
+
+        let public_conf = conf("8.8.8.8");
+        assert!(
+            check_peer_on_same_network(&public_conf, &peer("other", "1.1.1.1")),
+            "a public node accepts a public peer"
+        );
+        assert!(
+            !check_peer_on_same_network(&public_conf, &peer("private", "10.0.0.1")),
+            "…and refuses a private one"
+        );
+    }
+
+    /// The same-network check is *symmetric* in its two arguments' roles, since it compares the two
+    /// classifications — the property a caller relies on when it applies the check to either side.
+    #[test]
+    fn the_same_network_check_is_symmetric() {
+        let conf = |host: &str| RPConf {
+            local: peer("local", host),
+            network_id: "testnet".to_string(),
+            bootstrap: None,
+            default_timeout: std::time::Duration::from_secs(10),
+            max_num_of_connections: 10,
+            clear_connections: crate::rp::rp_conf::ClearConnectionsConf {
+                num_of_connections_pinged: 10,
+            },
+        };
+        for (a, b) in [
+            ("127.0.0.1", "10.0.0.1"),
+            ("127.0.0.1", "8.8.8.8"),
+            ("8.8.8.8", "1.1.1.1"),
+        ] {
+            assert_eq!(
+                check_peer_on_same_network(&conf(a), &peer("p", b)),
+                check_peer_on_same_network(&conf(b), &peer("p", a)),
+                "({a}, {b}) must classify the same way as ({b}, {a})"
+            );
+        }
+    }
+
+    fn peer(name: &str, host: &str) -> PeerNode {
+        use rchain_shared::refined::Port;
+        PeerNode::from(
+            crate::peer_node::NodeIdentifier::new(name.as_bytes().to_vec()),
+            host.to_string(),
+            Port::new(40400),
+            Port::new(40404),
+        )
+    }
 }

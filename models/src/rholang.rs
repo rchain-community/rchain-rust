@@ -249,3 +249,67 @@ pub mod RhoType {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ast::Expr;
+    use RhoType::*;
+
+    /// Every typed accessor round-trips its own value — the base case for the whole module.
+    #[test]
+    fn each_accessor_round_trips_its_own_type() {
+        assert_eq!(
+            RhoString::unapply(&RhoString::apply("s".to_string())),
+            Some("s")
+        );
+        assert_eq!(RhoNumber::unapply(&RhoNumber::apply(42)), Some(42));
+        assert_eq!(RhoBoolean::unapply(&RhoBoolean::apply(true)), Some(true));
+        assert_eq!(
+            RhoByteArray::unapply(&RhoByteArray::apply(vec![1, 2, 3])),
+            Some([1u8, 2, 3].as_slice())
+        );
+        assert!(RhoNil::unapply(&RhoNil::apply()));
+    }
+
+    /// **The typed accessors do not coerce.** Each rejects a par of another type — this is what makes
+    /// them usable as argument validation in the system processes: a `rho:txn` prepare that receives a
+    /// number where it expects a byte-array must fail rather than reinterpret the bits.
+    #[test]
+    fn an_accessor_rejects_another_types_par() {
+        let number = RhoNumber::apply(1);
+        let string = RhoString::apply("x".to_string());
+        let bytes = RhoByteArray::apply(vec![9]);
+        let boolean = RhoBoolean::apply(false);
+
+        assert_eq!(RhoString::unapply(&number), None);
+        assert_eq!(RhoNumber::unapply(&string), None);
+        assert_eq!(RhoByteArray::unapply(&string), None);
+        assert_eq!(RhoBoolean::unapply(&number), None);
+        assert!(!RhoNil::unapply(&number), "a number is not nil");
+        assert_eq!(RhoString::unapply(&bytes), None);
+        assert_eq!(RhoString::unapply(&boolean), None);
+        assert_eq!(RhoNumber::unapply(&boolean), None);
+    }
+
+    /// A par carrying **more than one** expression is not a single ground term, so every accessor
+    /// rejects it — a list of values must not read as its first element (that would silently accept a
+    /// malformed argument list).
+    #[test]
+    fn an_accessor_rejects_a_multi_expression_par() {
+        let two = Par {
+            exprs: vec![
+                Expr::GString("a".to_string()),
+                Expr::GString("b".to_string()),
+            ],
+            ..Default::default()
+        };
+        assert_eq!(RhoString::unapply(&two), None);
+        assert_eq!(RhoNumber::unapply(&two), None);
+
+        // And an empty par is nil, not a value of any of the other types.
+        let empty = Par::default();
+        assert!(RhoNil::unapply(&empty));
+        assert_eq!(RhoString::unapply(&empty), None);
+    }
+}

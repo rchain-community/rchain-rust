@@ -244,3 +244,250 @@ where
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+
+    use rchain_shared::store_manager::InMemoryStoreManager;
+
+    use crate::factory::create_history_repository;
+    use crate::hot_store::InMemHotStore;
+    use crate::i_space::ISpace;
+    use crate::match_::Match;
+    use crate::tuple_space::Tuplespace;
+
+    /// Any pattern matches any datum — enough to produce a COMM and therefore a deferred commit.
+    struct StrMatch;
+    impl Match<String, String> for StrMatch {
+        fn get(&self, _p: &String, a: &String) -> Option<String> {
+            Some(a.clone())
+        }
+    }
+
+    /// A fresh `RSpace` (the only implementation that overrides the scheduled ops).
+    async fn space() -> Arc<RSpace<String, String, String, String>> {
+        let manager = InMemoryStoreManager::default();
+        let history = create_history_repository::<String, String, String, String>(
+            &manager,
+            "scheduled-space",
+        )
+        .await
+        .expect("history repository");
+        let reader = history.get_history_reader(history.root()).await;
+        let hot = Arc::new(InMemHotStore::new(reader.base()));
+        let (play, _replay) = RSpace::create_with_replay(history, hot, Arc::new(StrMatch));
+        play
+    }
+
+    /// **Phase one, no match.** With nothing waiting on the channel the datum is stored inline and
+    /// there is no phase two to run: `phase_two` is `None`, `joins` is empty, and the produce is
+    /// already final. This is the arm that keeps the common case to a single lock acquisition.
+    #[tokio::test]
+    async fn a_produce_with_no_match_stores_inline_and_defers_nothing() {
+        let space = space().await;
+        let scheduled = space
+            .scheduled_produce_at(vec![], "c".to_string(), "data".to_string(), false)
+            .await
+            .expect("scheduled produce");
+
+        assert!(
+            scheduled.phase_two.is_none(),
+            "no match means no deferred commit: {scheduled:?}"
+        );
+        assert!(scheduled.joins.is_empty(), "{scheduled:?}");
+        assert_eq!(scheduled.result, Ok(None));
+        assert_eq!(scheduled.release, ReleaseToken::detached());
+        // The datum really is in the space — the inline path stored it.
+        let stored = space.get_data(&"c".to_string()).await.expect("get data");
+        assert_eq!(stored.len(), 1);
+        assert_eq!(stored[0].a, "data");
+    }
+
+    /// **Phase one, match.** With a consume waiting, phase one returns the matched channel set for
+    /// `claim_more` and *does not* commit: `phase_two` carries the trigger, the in-flight datum and
+    /// the persistence flag, and nothing has been delivered yet.
+    #[tokio::test]
+    async fn a_produce_that_matches_returns_the_join_set_and_defers_the_commit() {
+        let space = space().await;
+        space
+            .consume(
+                &["c".to_string()],
+                &["p".to_string()],
+                "cont".to_string(),
+                false,
+                BTreeSet::new(),
+            )
+            .await
+            .expect("waiting consume");
+
+        let scheduled = space
+            .scheduled_produce_at(vec![], "c".to_string(), "data".to_string(), true)
+            .await
+            .expect("scheduled produce");
+
+        assert_eq!(
+            scheduled.joins,
+            vec!["c".to_string()],
+            "the matched channel set is what the caller claims"
+        );
+        let pending = scheduled
+            .phase_two
+            .as_ref()
+            .expect("a match defers the commit");
+        assert_eq!(pending.trigger, "c");
+        assert_eq!(pending.data, "data");
+        assert!(pending.persist, "the persistence flag must be carried over");
+        // Not delivered yet: the continuation is still waiting, and no datum was stored.
+        assert_eq!(
+            space
+                .get_waiting_continuations(&["c".to_string()])
+                .await
+                .expect("continuations")
+                .len(),
+            1,
+            "phase one must not deliver; that is phase two's job"
+        );
+        assert!(space
+            .get_data(&"c".to_string())
+            .await
+            .expect("data")
+            .is_empty());
+    }
+
+    /// **Phase two.** Committing the pending produce delivers it: the continuation the consume
+    /// parked is returned and the datum is not left in the space.
+    #[tokio::test]
+    async fn the_deferred_commit_delivers_the_match() {
+        let space = space().await;
+        space
+            .consume(
+                &["c".to_string()],
+                &["p".to_string()],
+                "cont".to_string(),
+                false,
+                BTreeSet::new(),
+            )
+            .await
+            .expect("waiting consume");
+
+        let scheduled = space
+            .scheduled_produce_at(vec![], "c".to_string(), "data".to_string(), false)
+            .await
+            .expect("scheduled produce");
+        let pending = scheduled.phase_two.expect("deferred");
+        let committed = space
+            .scheduled_produce_commit(pending)
+            .await
+            .expect("commit");
+        let (cont_result, _) = committed.expect("a match");
+        assert_eq!(cont_result.continuation, "cont");
+        assert_eq!(cont_result.channels, vec!["c".to_string()]);
+    }
+
+    /// **Phase two re-validates.** The phase-one candidate is advisory: if a cross-channel op takes
+    /// the waiting consume in the gap, the commit must *store* the datum rather than deliver to a
+    /// continuation that is no longer there. This is the property that makes the relaxed
+    /// interleaving sound, and the one a phase two that trusted its phase-one reads would break.
+    #[tokio::test]
+    async fn a_commit_whose_candidate_vanished_stores_instead_of_delivering() {
+        let space = space().await;
+        space
+            .consume(
+                &["c".to_string()],
+                &["p".to_string()],
+                "cont".to_string(),
+                false,
+                BTreeSet::new(),
+            )
+            .await
+            .expect("waiting consume");
+        let scheduled = space
+            .scheduled_produce_at(vec![], "c".to_string(), "data".to_string(), false)
+            .await
+            .expect("scheduled produce");
+        let pending = scheduled.phase_two.expect("deferred");
+
+        // The gap: a produce on a *different* channel can take the continuation... but this matcher
+        // matches anything, so produce a datum that would match the same consume and commit it, and
+        // the phase-one candidate is gone.
+        space
+            .produce("c".to_string(), "first".to_string(), false)
+            .await
+            .expect("the interleaved produce takes the continuation");
+
+        let committed = space
+            .scheduled_produce_commit(pending)
+            .await
+            .expect("commit");
+        assert!(
+            committed.is_none(),
+            "the candidate was consumed in the gap, so the commit must store: {committed:?}"
+        );
+        let stored = space.get_data(&"c".to_string()).await.expect("data");
+        assert!(
+            stored.iter().any(|d| d.a == "data"),
+            "the re-validated produce stores its own datum: {stored:?}"
+        );
+    }
+
+    /// **The consume's validation arm.** A scheduled consume claims the effect's full static source
+    /// set, so an empty channel list or a pattern/channel arity mismatch is a caller bug, not an
+    /// empty space: it is reported as `ConsumeArity` rather than acquiring a lock on nothing.
+    #[tokio::test]
+    async fn a_scheduled_consume_rejects_an_empty_or_mismatched_source_set() {
+        let space = space().await;
+
+        let empty = space
+            .scheduled_consume_at(vec![], &[], &[], "cont".to_string(), false, BTreeSet::new())
+            .await
+            .expect_err("an empty channel set is an error");
+        assert!(
+            format!("{empty}").contains("non-empty channel set"),
+            "{empty}"
+        );
+
+        let mismatched = space
+            .scheduled_consume_at(
+                vec![],
+                &["c".to_string()],
+                &["p".to_string(), "q".to_string()],
+                "cont".to_string(),
+                false,
+                BTreeSet::new(),
+            )
+            .await
+            .expect_err("one channel, two patterns is an error");
+        assert!(
+            format!("{mismatched}").contains("non-empty channel set"),
+            "{mismatched}"
+        );
+    }
+
+    /// The happy consume path: one acquisition over the whole source set, and the token the caller
+    /// drops once it has enqueued the continuation's next-step effects.
+    #[tokio::test]
+    async fn a_scheduled_consume_commits_its_full_source_set() {
+        let space = space().await;
+        space
+            .produce("c".to_string(), "data".to_string(), false)
+            .await
+            .expect("produce");
+
+        let scheduled = space
+            .scheduled_consume_at(
+                vec![],
+                &["c".to_string()],
+                &["p".to_string()],
+                "cont".to_string(),
+                false,
+                BTreeSet::new(),
+            )
+            .await
+            .expect("scheduled consume");
+        let (cont_result, _) = scheduled.result.expect("a match").expect("data");
+        assert_eq!(cont_result.continuation, "cont");
+        assert_eq!(scheduled.release, ReleaseToken::detached());
+    }
+}

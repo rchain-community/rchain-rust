@@ -189,3 +189,84 @@ impl ConsoleIo for NopConsoleIo {
 
     fn close(&mut self) {}
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The no-op console (port of `NOPConsoleIO`) is what tests and non-interactive paths use, and
+    /// what the REPL falls back to: every method must be total and side-effect free.
+    #[test]
+    fn the_nop_console_answers_without_io() {
+        let mut console = NopConsoleIo;
+        assert_eq!(console.read_line(), Some(String::new()));
+        assert_eq!(console.read_password("prompt: "), String::new());
+        console.println("ignored");
+        console.println_colored(&rchain_shared::string_ops::StringColors::green("ignored"));
+        console.update_completion(&["history".to_string()]);
+        console.close();
+        // `Default` is what the REPL falls back to on a non-tty.
+        let mut defaulted: NopConsoleIo = Default::default();
+        assert_eq!(defaulted.read_line(), Some(String::new()));
+    }
+
+    /// The completer completes the word under the cursor from its keyword list and reports the
+    /// replacement *start* — the index the caller overwrites from. A word that matches nothing
+    /// yields no candidates rather than an error.
+    #[test]
+    fn the_completer_completes_the_word_under_the_cursor() {
+        let completer = KeywordCompleter {
+            keywords: vec!["Nil".to_string(), "new".to_string(), "news".to_string()],
+        };
+        let history = rustyline::history::DefaultHistory::new();
+        let ctx = Context::new(&history);
+
+        // An empty word matches everything, at the start of the line.
+        let (start, matches) = completer.complete("", 0, &ctx).expect("complete");
+        assert_eq!(start, 0);
+        assert_eq!(matches.len(), 3);
+
+        // A prefix narrows it and the start is after the space.
+        let line = "new ne";
+        let (start, matches) = completer
+            .complete(line, line.len(), &ctx)
+            .expect("complete");
+        assert_eq!(start, 4, "the replacement starts at the word");
+        let mut names: Vec<String> = matches.into_iter().map(|p| p.replacement).collect();
+        names.sort();
+        assert_eq!(names, vec!["new".to_string(), "news".to_string()]);
+
+        // No keyword matches: an empty candidate list, not an error.
+        let line = "new zzz";
+        let (_, matches) = completer
+            .complete(line, line.len(), &ctx)
+            .expect("complete");
+        assert!(matches.is_empty());
+    }
+
+    /// A rustyline console can be constructed on a non-tty (no terminal needed for construction), and
+    /// `update_completion` rebuilds its helper with the given history — the port of the Scala
+    /// `updateCompletion`. Construction is the only part testable without a tty; `read_line` on a
+    /// closed stdin returns `None` rather than blocking forever (the EOF arm).
+    #[test]
+    fn a_rustyline_console_constructs_and_updates_its_completion_history() {
+        let mut console = match RustylineConsole::new() {
+            Ok(console) => console,
+            // No tty available in some sandboxes: constructing is best-effort by design.
+            Err(_) => return,
+        };
+        console.update_completion(&["Nil".to_string(), "new".to_string()]);
+        console.println("ignored on a non-tty");
+        console.println_colored(&rchain_shared::string_ops::StringColors::red("ignored"));
+        console.close();
+    }
+
+    /// `ColoredString` is what the colored printer consumes; the ANSI form is what reaches stdout.
+    #[test]
+    fn a_colored_line_is_rendered_with_its_ansi_code() {
+        use rchain_shared::string_ops::StringColors;
+        let colored = StringColors::green("ok");
+        assert!(colored.colorize().contains("ok"));
+        assert!(colored.colorize().contains('\u{1b}'));
+    }
+}

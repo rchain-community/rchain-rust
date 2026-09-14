@@ -237,3 +237,380 @@ impl CommUtil {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use async_trait::async_trait;
+    use rchain_comm::errors::CommErr;
+    use rchain_comm::peer_node::NodeIdentifier;
+    use rchain_comm::rp::rp_conf::ClearConnectionsConf;
+    use rchain_models::casper::protocol::packet_type_tag::FromPacket;
+    use rchain_shared::log::NopLog;
+
+    /// Records every call and fails `send` while `fail_sends` is positive. The retry bound is a
+    /// deviation from Scala (which retries forever), so it needs a transport that really fails —
+    /// a mock that always succeeds cannot reach the loop's give-up arm at all.
+    #[derive(Default)]
+    struct MockTransport {
+        sends: std::sync::Mutex<Vec<(PeerNode, Protocol)>>,
+        broadcasts: std::sync::Mutex<Vec<(Vec<PeerNode>, Protocol)>>,
+        streams: std::sync::Mutex<Vec<(Vec<PeerNode>, Blob)>>,
+        fail_sends: std::sync::atomic::AtomicUsize,
+    }
+
+    impl MockTransport {
+        fn failing(times: usize) -> Self {
+            let t = MockTransport::default();
+            t.fail_sends
+                .store(times, std::sync::atomic::Ordering::SeqCst);
+            t
+        }
+        fn send_count(&self) -> usize {
+            self.sends.lock().unwrap().len()
+        }
+    }
+
+    #[async_trait]
+    impl TransportLayer for MockTransport {
+        async fn send(&self, peer: &PeerNode, msg: Protocol) -> CommErr<()> {
+            self.sends.lock().unwrap().push((peer.clone(), msg));
+            // `usize::MAX` is the "always fails" setting, and the only one that reaches the bound.
+            let remaining = self.fail_sends.load(std::sync::atomic::Ordering::SeqCst);
+            if remaining > 0 {
+                self.fail_sends
+                    .store(remaining - 1, std::sync::atomic::Ordering::SeqCst);
+                Err(rchain_comm::errors::CommError::PeerUnavailable(
+                    peer.clone(),
+                ))
+            } else {
+                Ok(())
+            }
+        }
+        async fn broadcast(&self, peers: &[PeerNode], msg: Protocol) -> Vec<CommErr<()>> {
+            self.broadcasts.lock().unwrap().push((peers.to_vec(), msg));
+            peers.iter().map(|_| Ok(())).collect()
+        }
+        async fn stream(&self, peers: &[PeerNode], blob: Blob) {
+            self.streams.lock().unwrap().push((peers.to_vec(), blob));
+        }
+    }
+
+    fn peer(name: &str, port: u16) -> PeerNode {
+        PeerNode::from(
+            NodeIdentifier::new(name.as_bytes().to_vec()),
+            "host".to_string(),
+            rchain_shared::refined::Port::new(port),
+            rchain_shared::refined::Port::new(port),
+        )
+    }
+
+    fn conf(local: &PeerNode, bootstrap: Option<PeerNode>, max: usize) -> RPConf {
+        RPConf {
+            local: local.clone(),
+            network_id: "testnet".to_string(),
+            bootstrap,
+            default_timeout: Duration::from_secs(10),
+            max_num_of_connections: max,
+            clear_connections: ClearConnectionsConf {
+                num_of_connections_pinged: 10,
+            },
+        }
+    }
+
+    /// `CommUtil` over the mock, with `n` connections already established.
+    fn comm_util_with(
+        transport: Arc<MockTransport>,
+        conf: RPConf,
+        connections: Vec<PeerNode>,
+    ) -> CommUtil {
+        CommUtil::new(
+            transport,
+            conf,
+            Arc::new(tokio::sync::RwLock::new(connections)),
+            Arc::new(NopLog),
+        )
+    }
+
+    fn packet(type_id: &str) -> Packet {
+        Packet {
+            type_id: type_id.to_string(),
+            content: Vec::new(),
+        }
+    }
+
+    /// Decode a protocol back to its packet, so an assertion can name the wire type the caller
+    /// actually sent rather than trusting the wrapper.
+    fn unpack(proto: &Protocol) -> Packet {
+        protocol_helper::to_packet(proto).expect("the broadcast carries a packet")
+    }
+
+    fn hash(byte: u8) -> BlockHash {
+        BlockHash::new([byte; 32])
+    }
+
+    #[tokio::test]
+    async fn request_finalized_fringe_is_an_error_when_there_is_no_bootstrap() {
+        let local = peer("local", 40400);
+        let transport = Arc::new(MockTransport::default());
+        let comm = comm_util_with(transport.clone(), conf(&local, None, 10), Vec::new());
+
+        let err = comm
+            .request_finalized_fringe(false)
+            .await
+            .expect_err("a standalone node has no bootstrap to ask");
+        assert_eq!(err, StandaloneNodeSendToBootstrapError);
+        assert_eq!(
+            err.to_string(),
+            "standalone node cannot send to the bootstrap node"
+        );
+        // The guard is a precondition, not a filter: nothing was put on the wire.
+        assert_eq!(transport.send_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn request_finalized_fringe_asks_the_bootstrap_for_the_fringe() {
+        let local = peer("local", 40400);
+        let bootstrap = peer("bootstrap", 40401);
+        let transport = Arc::new(MockTransport::default());
+        let comm = comm_util_with(
+            transport.clone(),
+            conf(&local, Some(bootstrap.clone()), 10),
+            Vec::new(),
+        );
+
+        comm.request_finalized_fringe(true)
+            .await
+            .expect("a bootstrap");
+        let sends = transport.sends.lock().unwrap();
+        assert_eq!(sends.len(), 1, "one successful attempt, then stop");
+        assert_eq!(sends[0].0, bootstrap, "the request goes to the bootstrap");
+        assert_eq!(unpack(&sends[0].1).type_id, "FinalizedFringeRequest");
+        // The retry loop's own behaviour is covered by the zero-delay tests below; driving it from
+        // here would sleep the hard-coded ten seconds between attempts.
+    }
+
+    /// The give-up arm: a transport that never succeeds must not hang the caller. Scala's
+    /// `keepOnRequestingTillRunning` retries forever (AUDIT.md), so this bound is a deviation and
+    /// the test is what keeps it from silently disappearing.
+    #[tokio::test]
+    async fn send_with_retry_gives_up_after_the_bounded_number_of_attempts() {
+        let local = peer("local", 40400);
+        let remote = peer("remote", 40402);
+        let transport = Arc::new(MockTransport::failing(usize::MAX));
+        let comm = comm_util_with(transport.clone(), conf(&local, None, 10), Vec::new());
+
+        // A zero retry delay keeps the ten attempts instantaneous; the bound, not the wait, is
+        // what is under test.
+        comm.send_with_retry(
+            &packet("BlockRequest"),
+            &remote,
+            Duration::ZERO,
+            "BlockRequest",
+        )
+        .await;
+        assert_eq!(
+            transport.send_count(),
+            MAX_BOOTSTRAP_RETRIES as usize,
+            "the loop is bounded, and the bound is the named constant"
+        );
+    }
+
+    #[tokio::test]
+    async fn send_with_retry_recovers_after_a_transient_failure() {
+        let local = peer("local", 40400);
+        let remote = peer("remote", 40402);
+        let transport = Arc::new(MockTransport::failing(2));
+        let comm = comm_util_with(transport.clone(), conf(&local, None, 10), Vec::new());
+
+        comm.send_with_retry(
+            &packet("BlockRequest"),
+            &remote,
+            Duration::ZERO,
+            "BlockRequest",
+        )
+        .await;
+        assert_eq!(
+            transport.send_count(),
+            3,
+            "two retries then the attempt that succeeds"
+        );
+    }
+
+    #[tokio::test]
+    async fn send_with_retry_stops_at_the_first_success() {
+        let local = peer("local", 40400);
+        let remote = peer("remote", 40402);
+        let transport = Arc::new(MockTransport::default());
+        let comm = comm_util_with(transport.clone(), conf(&local, None, 10), Vec::new());
+
+        comm.send_with_retry(
+            &packet("BlockRequest"),
+            &remote,
+            Duration::ZERO,
+            "BlockRequest",
+        )
+        .await;
+        assert_eq!(transport.send_count(), 1, "one attempt, then stop");
+    }
+
+    #[tokio::test]
+    async fn send_to_peers_caps_the_scope_and_defaults_to_the_configured_maximum() {
+        let local = peer("local", 40400);
+        let transport = Arc::new(MockTransport::default());
+        let connections: Vec<PeerNode> = (0..12)
+            .map(|i| peer(&format!("p{i}"), 40400 + i as u16))
+            .collect();
+        let comm = comm_util_with(
+            transport.clone(),
+            conf(&local, None, 10),
+            connections.clone(),
+        );
+
+        comm.send_to_peers(&packet("ForkChoiceTipRequest"), Some(2))
+            .await;
+        comm.send_to_peers(&packet("ForkChoiceTipRequest"), None)
+            .await;
+
+        let broadcasts = transport.broadcasts.lock().unwrap();
+        assert_eq!(broadcasts.len(), 2);
+        assert_eq!(broadcasts[0].0.len(), 2, "an explicit scope is honoured");
+        assert_eq!(
+            broadcasts[1].0.len(),
+            10,
+            "no scope means the configured maximum, not every connection"
+        );
+        // The peers are drawn from the connection table (randomly ordered, hence the set compare).
+        for sent in broadcasts[0].0.iter() {
+            assert!(connections.contains(sent), "{sent:?} is not a connection");
+        }
+    }
+
+    /// A node with no connections broadcasts to nobody. The call still reaches the transport
+    /// (matching Scala, which does not special-case the empty list) — what matters is that the
+    /// peer list is empty, so no send is attempted.
+    #[tokio::test]
+    async fn send_to_peers_over_no_connections_addresses_nobody() {
+        let local = peer("local", 40400);
+        let transport = Arc::new(MockTransport::default());
+        let comm = comm_util_with(transport.clone(), conf(&local, None, 10), Vec::new());
+
+        comm.send_to_peers(&packet("BlockHashMessage"), None).await;
+        let broadcasts = transport.broadcasts.lock().unwrap();
+        assert_eq!(broadcasts.len(), 1);
+        assert!(broadcasts[0].0.is_empty(), "no connections, no recipients");
+    }
+
+    #[tokio::test]
+    async fn stream_to_peers_streams_a_blob_to_the_scoped_peers() {
+        let local = peer("local", 40400);
+        let transport = Arc::new(MockTransport::default());
+        let connections: Vec<PeerNode> = (0..5)
+            .map(|i| peer(&format!("p{i}"), 40400 + i as u16))
+            .collect();
+        let comm = comm_util_with(
+            transport.clone(),
+            conf(&local, None, 2),
+            connections.clone(),
+        );
+
+        comm.stream_to_peers(&packet("BlockResponse"), None).await;
+        let streams = transport.streams.lock().unwrap();
+        assert_eq!(streams.len(), 1);
+        assert_eq!(
+            streams[0].0.len(),
+            2,
+            "the configured maximum applies to a stream too, not just a broadcast"
+        );
+        for sent in &streams[0].0 {
+            assert!(connections.contains(sent), "{sent:?} is not a connection");
+        }
+        // The blob carries the sender and the packet: a stream that lost either would be
+        // undecodable at the receiver.
+        assert_eq!(streams[0].1.sender, local);
+        assert_eq!(streams[0].1.packet.type_id, "BlockResponse");
+    }
+
+    /// The syntax wrappers each name themselves on the wire; a copy-paste that reuses the wrong
+    /// serde would still "broadcast something", so the type id is asserted, not the count alone.
+    #[tokio::test]
+    async fn the_syntax_wrappers_broadcast_their_own_packet_type() {
+        let local = peer("local", 40400);
+        let transport = Arc::new(MockTransport::default());
+        let comm = comm_util_with(
+            transport.clone(),
+            conf(&local, None, 10),
+            vec![peer("p", 40401)],
+        );
+
+        comm.send_block_hash(&hash(1), &[9u8; 65]).await;
+        comm.broadcast_has_block_request(&hash(2)).await;
+        comm.broadcast_request_for_block(&hash(3), Some(1)).await;
+        comm.send_fork_choice_tip_request().await;
+
+        let broadcasts = transport.broadcasts.lock().unwrap();
+        let ids: Vec<String> = broadcasts
+            .iter()
+            .map(|(peers, proto)| {
+                assert_eq!(peers.len(), 1, "one connection, one recipient");
+                unpack(proto).type_id
+            })
+            .collect();
+        assert_eq!(
+            ids,
+            [
+                "BlockHashMessage",
+                "HasBlockRequest",
+                "BlockRequest",
+                "ForkChoiceTipRequest"
+            ],
+            "each wrapper names itself on the wire"
+        );
+    }
+
+    #[tokio::test]
+    async fn request_for_block_targets_one_peer_and_names_the_block() {
+        let local = peer("local", 40400);
+        let remote = peer("remote", 40402);
+        let transport = Arc::new(MockTransport::default());
+        let comm = comm_util_with(transport.clone(), conf(&local, None, 10), Vec::new());
+
+        comm.request_for_block(&remote, &hash(7)).await;
+        let sends = transport.sends.lock().unwrap();
+        assert_eq!(sends.len(), 1, "a block request is unicast, not broadcast");
+        assert_eq!(sends[0].0, remote);
+        assert_eq!(unpack(&sends[0].1).type_id, "BlockRequest");
+    }
+
+    /// `protocol_helper::packet` is what stamps the sender and network id on every outgoing
+    /// message, so a message that skipped it would be rejected by a peer's routing layer.
+    #[tokio::test]
+    async fn an_outgoing_block_hash_carries_the_block_hash_and_its_creator() {
+        let local = peer("local", 40400);
+        let transport = Arc::new(MockTransport::default());
+        let comm = comm_util_with(
+            transport.clone(),
+            conf(&local, None, 10),
+            vec![peer("p", 40401)],
+        );
+
+        comm.send_block_hash(&hash(3), &[9u8; 65]).await;
+        let broadcasts = transport.broadcasts.lock().unwrap();
+        let decoded = BlockHashMessageSerde
+            .parse_from(&unpack(&broadcasts[0].1))
+            .expect("the advertised hash round-trips");
+        assert_eq!(decoded.block_hash, hash(3));
+        assert_eq!(decoded.block_creator, vec![9u8; 65]);
+        // The header is what the receiver authenticates: it must name this node and network.
+        let header = broadcasts[0]
+            .1
+            .header
+            .clone()
+            .expect("a packet always carries a header");
+        assert_eq!(
+            header.sender.clone().expect("sender").id,
+            local.id.key().to_vec()
+        );
+        assert_eq!(header.network_id, "testnet");
+    }
+}

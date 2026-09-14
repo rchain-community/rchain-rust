@@ -80,7 +80,8 @@ Laws 12–13 (Rosette) are **orphaned**: the `rosette`/`roscala` VM is out of sc
   (`CrossShard.lean`) state the sharding + two-phase-commit cross-shard model; the per-shard
   participant (`rho:txn`) and the client-side coordinator (`casper/src/txn_coordinator.rs`) are
   implemented, and the `ShardId` newtype + `parent-shard-id` hierarchy (`shared/src/refined.rs`,
-  `CasperConf::full_shard_id`) are implemented, and the proofs remain `stated`.
+  `ShardSpec`/`ShardMemberships`) are implemented, the multi-shard gateway with its durable
+  coordinator ledger is implemented, and the proofs remain `stated`.
 - **Axiomatized** (never proven, by design): Law 19's cryptographic primitives (Blake2b, secp256k1,
   Curve25519) are modeled as abstract interfaces whose required properties are *postulated*
   (`Crypto/Random.lean`, `Crypto/Spec.lean`). Proving real crypto is out of scope.

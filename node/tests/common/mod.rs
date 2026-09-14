@@ -3,10 +3,15 @@
 //! Assembles a real standalone node in-process (mirroring `main.rs`: `Configuration::build` →
 //! `node_environment::create` → `setup_node_program` → `serve`) over an ephemeral data dir and
 //! loopback ports, then drives its gRPC + HTTP surfaces.
+//!
+//! Each `node/tests/*.rs` binary compiles this module separately, so helpers a given binary does not
+//! use would warn there — hence the module-wide allowance.
+#![allow(dead_code)]
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use rchain_casper::conf::{ShardMemberships, ShardSpec};
 use rchain_casper::validator_identity::ValidatorIdentity;
 use rchain_comm::peer_node::NodeIdentifier;
 use rchain_node::configuration::configuration::parse_defaults;
@@ -36,7 +41,13 @@ pub fn deploy_conf(dir: &Path, ports: &[u16]) -> NodeConf {
     );
     let mut conf = standalone_conf(dir, &ports[0..4], Some(VALIDATOR_PRIV_HEX));
     conf.api_server.port_grpc_external = ports[4] as i32;
-    let wallets = conf.casper.genesis_block_data.wallets_file.clone();
+    let wallets = conf
+        .casper
+        .shards
+        .primary()
+        .genesis_block_data
+        .wallets_file
+        .clone();
     std::fs::write(&wallets, format!("{DEPLOYER_REV_ADDR},1000000000000\n"))
         .expect("write wallets");
     conf
@@ -106,7 +117,11 @@ pub fn standalone_conf(dir: &Path, ports: &[u16], validator_hex: Option<&str>) -
         let pub_hex = base16::encode(identity.public_key.bytes());
         let bonds = dir.join("bonds.txt");
         std::fs::write(&bonds, format!("{pub_hex} 100\n")).expect("write bonds file");
-        conf.casper.genesis_block_data.bonds_file = bonds.to_string_lossy().into_owned();
+        conf.casper
+            .shards
+            .primary_mut()
+            .genesis_block_data
+            .bonds_file = bonds.to_string_lossy().into_owned();
     }
 
     // `create_genesis_block` calls `vault_parser::parse` (not `parse_if_exists`), so the wallets
@@ -115,7 +130,11 @@ pub fn standalone_conf(dir: &Path, ports: &[u16], validator_hex: Option<&str>) -
     if !wallets.exists() {
         std::fs::write(&wallets, "").expect("write wallets file");
     }
-    conf.casper.genesis_block_data.wallets_file = wallets.to_string_lossy().into_owned();
+    conf.casper
+        .shards
+        .primary_mut()
+        .genesis_block_data
+        .wallets_file = wallets.to_string_lossy().into_owned();
 
     conf
 }
@@ -148,4 +167,58 @@ pub async fn start(conf: &NodeConf, grpc_port: u16, http_port: u16) -> TestNode 
         grpc_port,
         http_port,
     }
+}
+
+/// A standalone **gateway** `NodeConf`: one node that is a member of two shards (`/root` and
+/// `/root/child`), each with its own genesis — bonds and a wallet funding the validator's REV
+/// address, so the cross-shard escrow can pay phlo and hold a balance on both.
+///
+/// `propose-on-deploy` is on because a cross-shard leg is an ordinary deploy: it takes effect when a
+/// block containing it is produced, which is what the gateway's coordinator waits for.
+pub fn gateway_conf(dir: &Path, ports: &[u16], validator_hex: &str) -> NodeConf {
+    gateway_conf_with_txn_api(dir, ports, validator_hex, true)
+}
+
+/// As [`gateway_conf`], with the cross-shard transaction API switched on or off — the flag an
+/// operator controls, and therefore a gate a test has to drive from a real config.
+pub fn gateway_conf_with_txn_api(
+    dir: &Path,
+    ports: &[u16],
+    validator_hex: &str,
+    enable_txn_api: bool,
+) -> NodeConf {
+    assert!(
+        ports.len() >= 4,
+        "need [http, admin-http, grpc-internal, protocol]"
+    );
+    let mut conf = standalone_conf(dir, ports, Some(validator_hex));
+    conf.propose_on_deploy = true;
+    conf.api_server.enable_txn_api = enable_txn_api;
+
+    let identity = ValidatorIdentity::from_hex(validator_hex).expect("validator identity");
+    let pub_hex = base16::encode(identity.public_key.bytes());
+    let primary = conf.casper.shards.primary().clone();
+
+    let mut specs = Vec::new();
+    for (index, (name, parent)) in [("root", "/"), ("child", "/root")].into_iter().enumerate() {
+        // Each shard gets its own genesis files: its own bonds, and a wallet funding the validator
+        // (the node's coordinator key) so it can escrow on that shard.
+        let shard_dir = dir.join(format!("genesis-{name}"));
+        std::fs::create_dir_all(&shard_dir).expect("genesis dir");
+        let bonds = shard_dir.join("bonds.txt");
+        std::fs::write(&bonds, format!("{pub_hex} 100\n")).expect("write bonds");
+        let wallets = shard_dir.join("wallets.txt");
+        std::fs::write(&wallets, format!("{DEPLOYER_REV_ADDR},1000000000000\n"))
+            .expect("write wallets");
+
+        let mut genesis = primary.genesis_block_data.clone();
+        genesis.bonds_file = bonds.to_string_lossy().into_owned();
+        genesis.wallets_file = wallets.to_string_lossy().into_owned();
+        let _ = index;
+        specs.push(
+            ShardSpec::new(name.to_string(), parent.to_string(), genesis, 5).expect("shard spec"),
+        );
+    }
+    conf.casper.shards = ShardMemberships::new(specs).expect("memberships");
+    conf
 }

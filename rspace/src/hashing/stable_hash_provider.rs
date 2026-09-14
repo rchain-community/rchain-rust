@@ -145,20 +145,63 @@ mod differential {
         }
     }
 
-    fn load(case: &str) -> String {
+    /// Rows are `id<TAB>value<TAB>provenance`; `#` lines are the legend.
+    fn rows() -> Vec<(String, String, String)> {
         let path = concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/testdata/differential/stable_hash.tsv"
         );
-        let data = std::fs::read_to_string(path).unwrap();
-        for line in data.lines() {
-            if let Some((id, hex)) = line.split_once('\t') {
-                if id == case {
-                    return hex.to_string();
-                }
-            }
+        std::fs::read_to_string(path)
+            .expect("the golden file")
+            .lines()
+            .filter(|l| !l.trim().is_empty() && !l.starts_with('#'))
+            .map(|l| {
+                let mut f = l.split('\t');
+                (
+                    f.next().unwrap_or_default().to_string(),
+                    f.next().unwrap_or_default().to_string(),
+                    f.next().unwrap_or_default().to_string(),
+                )
+            })
+            .collect()
+    }
+
+    fn load(case: &str) -> String {
+        rows()
+            .into_iter()
+            .find(|(id, _, _)| id == case)
+            .unwrap_or_else(|| panic!("missing differential case: {case}"))
+            .1
+    }
+
+    /// **Golden-drift guard** (see `models/src/wire.rs` for the shape): every row must be consumed,
+    /// and every row must carry its provenance.
+    #[test]
+    fn every_golden_row_is_consumed() {
+        const CONSUMED: &[&str] = &[
+            "ch_0102",
+            "ch_empty",
+            "join_ab",
+            "produce_0102_03_false",
+            "produce_0102_03_true",
+            "consume_1ch_false",
+            "consume_2ch_true",
+        ];
+        let rows = rows();
+        assert_eq!(rows.len(), CONSUMED.len(), "row count");
+        for case in CONSUMED {
+            assert!(
+                rows.iter().any(|(id, _, _)| id == case),
+                "{case} is missing"
+            );
+            assert!(!load(case).is_empty(), "{case} has an empty value");
         }
-        panic!("missing differential case: {case}");
+        for (id, _, provenance) in rows {
+            assert!(
+                provenance == "scala-ground-truth",
+                "{id} must carry the oracle provenance, got {provenance:?}"
+            );
+        }
     }
 
     fn hex(h: &Blake2b256Hash) -> String {

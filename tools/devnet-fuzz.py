@@ -1,20 +1,35 @@
 #!/usr/bin/env python3
-"""Devnet fuzz harness — robustness + determinism.
+"""Devnet fuzz harness — robustness + determinism, in modes.
 
-Drives a running Docker devnet (started by tools/devnet.sh) and asserts:
+Drives a running Docker devnet (started by tools/devnet.sh). **Nothing here gates a PR**: it needs
+Docker, a built image and a live network, so it is a nightly/manual job rather than a PR check
+(`.github/workflows/devnet-fuzz.yml`).
 
-  * robustness  — random, syntactically-valid rholang terms sent through the reducer
-                   (POST /api/v1/explore-deploy, which forks a throwaway runtime) never crash,
-                   hang, or 5xx the node; and signed deploys through the real block path
-                   (docker exec rnode deploy) keep every validator healthy;
-  * determinism — every validator stays in lock-step (latestBlockNumber within a small spread).
-                   The equal-stake devnet never reaches >2/3 finality, so content-hash determinism
-                   is covered in-process (casper/tests/determinism.rs + scheduler.rs).
+Modes (`--mode`, repeatable, `all` = every mode):
+
+  valid      (default) robustness + determinism: random *syntactically-valid* terms through the
+             read-only reducer (POST /api/v1/explore-deploy, which forks a throwaway runtime) must
+             never 5xx, hang, or stop a node; signed deploys through the real block path
+             (docker exec rnode deploy) must keep every validator in lock-step
+             (latestBlockNumber within a small spread — the equal-stake devnet never reaches >2/3
+             finality, so content-hash determinism is covered in-process).
+  malformed  the R9/B-series *input* guards at process level: truncated terms, spliced delimiters,
+             extreme nesting (the parser's depth guard), huge integers, non-UTF-8 bytes. Asserts
+             each is a 4xx (never 5xx, never a hang) and that /api/v1/status still answers
+             afterwards — a guard that wedged the node would pass a 5xx-only check.
+  scheduler  the effect-scheduler modes over the wire: the devnet must be started with the mode
+             under test (`tools/devnet.sh up --effect-scheduler dfs|gate`), every term in a corpus
+             must reduce, and `relaxed` (unvalidated) must be **hard-rejected on the block path**
+             while `relaxed-validated` is accepted — the in-process assertion is
+             `casper/tests/scheduler.rs::block_paths_reject_relaxed_mode`.
+  gateway    the single-shard surface: `/api/v1/shards` reports exactly one shard and the txn
+             routes are 404 (the gateway needs a multi-shard node, which the Docker devnet cannot
+             build — per-shard LFS sync is a missing product feature, see spec/TEST-COVERAGE.md).
 
 Stdlib only (urllib + json + subprocess). Run against an already-up devnet:
 
     tools/devnet.sh up --validators 3
-    python3 tools/devnet-fuzz.py --validators 3 --seed 1 --iterations 100
+    python3 tools/devnet-fuzz.py --validators 3 --seed 1 --iterations 100 --mode all
 """
 
 import argparse
@@ -164,6 +179,188 @@ def signed_deploy(node, term, height):
     )
 
 
+# --- mode: malformed -------------------------------------------------------------------------
+
+class Malformed:
+    """One malformed request: `kind` names the guard it targets, `body`/`raw` what to send.
+
+    `raw=True` means the bytes are sent verbatim (no JSON encoding) — that is how a non-UTF-8 body
+    reaches the server's decoder at all.
+    """
+
+    def __init__(self, kind, body, raw=False):
+        self.kind = kind
+        self.body = body
+        self.raw = raw
+
+    def describe(self):
+        if self.raw:
+            return f"{self.body!r}"
+        text = self.body if isinstance(self.body, str) else repr(self.body)
+        return text if len(text) <= 70 else text[:67] + "..."
+
+
+def gen_malformed(rng, n):
+    """The malformed corpus: one case per input guard, generated rather than hard-coded.
+
+    Each entry names the guard it exercises so a failure report says *which* one let something
+    through (a bare "500" is not actionable).
+    """
+    valid = gen_term(rng)
+    out = []
+
+    # Truncation: cut a valid term at a random point. The parser must report a syntax error.
+    for _ in range(max(1, n // 6)):
+        cut = rng.randint(1, max(1, len(valid) - 1))
+        out.append(Malformed("truncated", valid[:cut]))
+
+    # Delimiter splicing: unmatched/closed-out-of-order brackets and a lone closing delimiter.
+    for delim in [")", "}", "]", "(", "{", "["]:
+        out.append(Malformed("spliced-delimiter", f'@"f"!({delim}'))
+    out.append(Malformed("spliced-delimiter", 'new x in { x!(1)'))
+    out.append(Malformed("spliced-delimiter", 'for (@v <- x) { }'))
+
+    # Extreme nesting: past the parser's depth guard (MAX_PARSE_DEPTH = 512 in rholang/src/parser.rs).
+    # A guard that did not fire would recurse until the stack blew, so this is the crash-shaped case.
+    for depth in [600, 5000]:
+        out.append(Malformed("deep-nesting", "new x in " * depth + "Nil"))
+    out.append(Malformed("deep-nesting", "@" * 2000 + "Nil"))
+    out.append(Malformed("deep-nesting", "not " * 5000 + "Nil"))
+
+    # Oversized integers: past i64 and past any plausible bignum budget.
+    for digits in [20, 100, 5000]:
+        out.append(Malformed("huge-integer", f'@"f"!({"9" * digits})'))
+    out.append(Malformed("huge-integer", f'@"f"!({"9" * 100}.toInt())'))
+
+    # Non-UTF-8 bytes inside a string literal, sent raw so the decoder sees them.
+    out.append(Malformed("invalid-utf8", b'"\xff\xfe\x80"', raw=True))
+    out.append(Malformed("invalid-utf8", b'@"f"!("\xc3")', raw=True))
+    # …and a body that is not JSON at all.
+    out.append(Malformed("invalid-utf8", b"\x00\x01\x02", raw=True))
+
+    # A JSON body that is not a string (the API takes the term as a JSON string).
+    out.append(Malformed("wrong-shape", {"term": valid}))
+    out.append(Malformed("wrong-shape", [valid]))
+    out.append(Malformed("wrong-shape", None))
+
+    return out[:n] if n and n < len(out) else out
+
+
+def run_malformed(args, rng):
+    """Every malformed input is a 4xx; every node stays up; the status endpoint still answers."""
+    cases = gen_malformed(rng, 0)
+    print(f"==> malformed: {len(cases)} cases")
+    for i, case in enumerate(cases):
+        node = i % args.validators
+        url = f"{node_http(node)}/api/v1/explore-deploy"
+        try:
+            if case.raw:
+                req = urllib.request.Request(url, data=case.body, method="POST")
+                try:
+                    with urllib.request.urlopen(req, timeout=20) as resp:
+                        status = resp.status
+                except urllib.error.HTTPError as e:
+                    status = e.code
+            else:
+                status, _ = http_json(url, method="POST", body=case.body)
+        except urllib.error.HTTPError as e:
+            status = e.code
+        except (urllib.error.URLError, OSError) as e:
+            fail(f"malformed[{case.kind}] on validator {node}: connection error {e}", args.validators)
+
+        if status >= 500:
+            fail(
+                f"malformed[{case.kind}] on validator {node} returned {status} for "
+                f"{case.describe()}",
+                args.validators,
+            )
+        if status == 200:
+            # Not a failure for every kind (a wrapped-but-valid payload may reduce), but worth
+            # printing: a case that is *supposed* to be rejected and is not means a guard is gone.
+            print(f"    note: malformed[{case.kind}] was accepted (200): {case.describe()}")
+
+    # The node must still answer after the whole corpus — a guard that wedged or killed a node would
+    # pass a 5xx-only check.
+    for i in range(args.validators):
+        try:
+            fetch_status(i)
+        except (urllib.error.HTTPError, urllib.error.URLError, OSError) as e:
+            fail(f"validator {i} did not answer /api/v1/status after the malformed corpus: {e}",
+                 args.validators)
+    running, bad = all_nodes_running(args.validators)
+    if not running:
+        fail(f"node '{bad}' stopped during the malformed corpus", args.validators)
+    print("==> malformed: all inputs rejected without a 5xx, every node still healthy")
+
+
+# --- mode: scheduler -------------------------------------------------------------------------
+
+# Terms whose reduction is order-sensitive enough to tell the scheduler modes apart. All are closed
+# and must reduce cleanly in every mode.
+SCHEDULER_CORPUS = [
+    'new c in { c!(1) | for (@x <- c) { @"out"!(x) } }',
+    'new c in { c!(1) | c!(2) | for (@x <- c) { @"out"!(x) } }',
+    'new c, d in { c!(1) | for (@x <- c) { d!(x) } | for (@y <- d) { @"out"!(y) } }',
+    'new c in { c!!(1) | for (@x <= c) { @"out"!(x) } }',
+    'new c in { c!(1) | for (@x <- c) { @"out"!(x) } } | new e in { e!(2) | for (@y <- e) { @"out"!(y) } }',
+]
+
+
+def run_scheduler(args, rng):
+    """The corpus must reduce in the mode the devnet was started with."""
+    print(f"==> scheduler: {len(SCHEDULER_CORPUS)} corpus terms")
+    for i, term in enumerate(SCHEDULER_CORPUS):
+        node = i % args.validators
+        url = f"{node_http(node)}/api/v1/explore-deploy"
+        try:
+            status, _ = http_json(url, method="POST", body=term)
+        except urllib.error.HTTPError as e:
+            status = e.code
+        except (urllib.error.URLError, OSError) as e:
+            fail(f"scheduler corpus term {i} on validator {node}: connection error {e}",
+                 args.validators)
+        if status >= 500:
+            fail(f"scheduler corpus term {i} on validator {node} returned {status}: {term}",
+                 args.validators)
+        if status != 200:
+            fail(
+                f"scheduler corpus term {i} on validator {node} returned {status} (a clean term "
+                f"must reduce in every scheduler mode): {term}",
+                args.validators,
+            )
+    print("==> scheduler: the corpus reduced (start the devnet with --effect-scheduler to sweep "
+          "the modes)")
+
+
+# --- mode: gateway ---------------------------------------------------------------------------
+
+def run_gateway(args, rng):
+    """The single-shard surface: one shard reported, txn routes absent."""
+    del rng
+    _, shards = http_json(f"{node_http(0)}/api/v1/shards")
+    listed = shards if isinstance(shards, list) else shards.get("shards", [])
+    if len(listed) != 1:
+        fail(
+            f"a single-shard devnet must report exactly one shard, got {listed!r} "
+            "(see spec/TEST-COVERAGE.md: the multi-shard devnet is blocked on per-shard LFS sync)",
+            args.validators,
+        )
+    # The txn API is a multi-shard feature: on a single-shard node the route is absent.
+    try:
+        status, _ = http_json(
+            f"{node_http(0)}/api/v1/txn/status?txnId={0:064x}", method="GET"
+        )
+    except urllib.error.HTTPError as e:
+        status = e.code
+    if status not in (404, 405):
+        fail(
+            f"a single-shard node must not serve the txn API, got {status} "
+            "(the surface must be unchanged when the gateway is disabled)",
+            args.validators,
+        )
+    print("==> gateway: one shard reported, txn routes absent (single-shard surface unchanged)")
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--validators", type=int, default=3, help="bonded validators (default 3)")
@@ -171,7 +368,31 @@ def main():
     ap.add_argument("--deploy-burst", type=int, default=10, help="signed deploys through the block path")
     ap.add_argument("--seed", type=int, default=None, help="RNG seed (reproducible)")
     ap.add_argument("--sleep", type=float, default=0.05, help="pause between explore-deploys (s)")
+    ap.add_argument(
+        "--mode",
+        action="append",
+        choices=["valid", "malformed", "scheduler", "gateway", "all"],
+        default=None,
+        help="which mode(s) to run (repeatable; default: valid)",
+    )
+    ap.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="print the payloads the mode would send and exit (no node needed)",
+    )
     args = ap.parse_args()
+
+    modes = args.mode or ["valid"]
+    if "all" in modes:
+        modes = ["valid", "malformed", "scheduler", "gateway"]
+
+    if args.dry_run:
+        # The generator half of `malformed` is checkable without a node: print what a run would send
+        # so the shapes can be inspected (and so a broken generator is visible in CI-less review).
+        rng = random.Random(args.seed)
+        for payload in gen_malformed(rng, 0):
+            print(f"{payload.kind}: {payload.describe()}")
+        return
 
     rng = random.Random(args.seed)
 
@@ -179,6 +400,22 @@ def main():
     running, bad = all_nodes_running(args.validators)
     if not running:
         fail(f"node '{bad}' is not running (start it with tools/devnet.sh up)", args.validators)
+
+    non_valid = [m for m in modes if m != "valid"]
+    if non_valid:
+        # The non-`valid` modes still need a live devnet, but not the pre-fuzz lock-step wait: they
+        # are about input guards and the single-shard surface, not about convergence.
+        for mode in non_valid:
+            if mode == "malformed":
+                run_malformed(args, rng)
+            elif mode == "scheduler":
+                run_scheduler(args, rng)
+            elif mode == "gateway":
+                run_gateway(args, rng)
+
+    if "valid" not in modes:
+        print("==> done (no `valid` mode requested)")
+        return
 
     print(f"==> fuzz: {args.iterations} explore-deploys + {args.deploy_burst} signed deploys "
           f"across {args.validators} validators (seed={args.seed})")

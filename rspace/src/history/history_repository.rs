@@ -375,3 +375,65 @@ impl<C, P, A, K> HistoryRepository<C, P, A, K> {
         ))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::factory::create_history_repository;
+    use rchain_shared::store_manager::InMemoryStoreManager;
+
+    // The repository is generic over the channel/pattern/leaf/continuation types; the root machinery
+    // under test is independent of them, so the concrete choice is arbitrary (as in `hot_store`'s
+    // tests).
+    type Repo = HistoryRepository<String, String, String, String>;
+
+    async fn repository(manager: &InMemoryStoreManager) -> Arc<Repo> {
+        create_history_repository::<String, String, String, String>(manager, "rspace")
+            .await
+            .expect("history repository")
+    }
+
+    /// **The root is read from the store, not defaulted per process.** Two repositories built over
+    /// the same stores report the same root, so a node that reopens its data directory continues the
+    /// chain it was on rather than starting a fresh trie beside the old one. That is the property the
+    /// state hash of every subsequent block depends on.
+    #[tokio::test]
+    async fn two_repositories_over_the_same_stores_agree_on_the_root() {
+        let manager = InMemoryStoreManager::default();
+        let first = repository(&manager).await;
+        let second = repository(&manager).await;
+        assert_eq!(first.root(), second.root());
+
+        // And a root the first one resets to is visible to a repository built afterwards (the reset
+        // went through the shared roots store).
+        let empty = crate::history::history::empty_root_hash_value();
+        let moved = first.reset(empty).await.expect("reset to the empty root");
+        assert_eq!(moved.root(), empty);
+        let third = repository(&manager).await;
+        assert_eq!(third.root(), empty);
+    }
+
+    /// Resetting to a root the store has never recorded is an error, and the repository keeps its
+    /// current root — a node cannot be pointed at history it does not hold, and cannot be left
+    /// believing it moved.
+    #[tokio::test]
+    async fn reset_to_an_unknown_root_is_an_error() {
+        let manager = InMemoryStoreManager::default();
+        let repo = repository(&manager).await;
+        let before = repo.root();
+
+        let unknown = Blake2b256Hash::from_bytes([0xAB; 32]);
+        // `Result::expect_err` needs `Debug` on the Ok type, which the repository does not derive —
+        // match instead of demanding a `Debug` impl for a test's convenience.
+        let err = match repo.reset(unknown).await {
+            Ok(_) => panic!("an unknown root must be refused"),
+            Err(err) => err,
+        };
+        assert!(err.contains("unknown root"), "{err}");
+        assert_eq!(
+            repo.root(),
+            before,
+            "a refused reset must not move the root"
+        );
+    }
+}

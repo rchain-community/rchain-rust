@@ -49,3 +49,93 @@ impl From<rchain_crypto::errors::CryptoError> for ModelsError {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use rchain_crypto::errors::CryptoError;
+
+    /// **The remap's field order.** `CryptoError::InvalidLength { expected, actual }` becomes
+    /// `ModelsError::Length { got, expected }`: the source's `actual` is the target's `got`. A
+    /// transposition here produces a message that reads plausibly and states the opposite ("expected
+    /// 5 bytes, got 32"), which is exactly the kind of error a reader would believe.
+    #[test]
+    fn the_length_remap_keeps_got_and_expected_the_right_way_round() {
+        let mapped: ModelsError = CryptoError::InvalidLength {
+            expected: 32,
+            actual: 5,
+        }
+        .into();
+        assert_eq!(
+            mapped,
+            ModelsError::Length {
+                got: 5,
+                expected: 32
+            }
+        );
+        assert_eq!(mapped.to_string(), "expected 32 bytes, got 5");
+    }
+
+    /// Every other crypto error is carried as a decode failure with the source's own message, so no
+    /// variant is silently dropped (an `unwrap`-style mapping would lose the reason).
+    #[test]
+    fn any_other_crypto_error_becomes_a_decode_error_carrying_its_message() {
+        for source in [
+            CryptoError::InvalidKey,
+            CryptoError::EncryptionFailed,
+            CryptoError::InvalidHex,
+        ] {
+            let message = source.to_string();
+            let mapped: ModelsError = source.into();
+            assert_eq!(mapped, ModelsError::Decode(message.clone()));
+            assert!(
+                mapped.to_string().contains(&message),
+                "the source's reason must survive the mapping: {mapped}"
+            );
+        }
+    }
+
+    /// The four `Display` arms. `PacketTypeMismatch` uses the Scala wording
+    /// (`"Got X packet - need Y packet"`) rather than a Rust-shaped sentence, because the string is
+    /// what a peer's rejection reports.
+    #[test]
+    fn every_display_arm_renders_its_case() {
+        assert_eq!(
+            ModelsError::Decode("bad bytes".to_string()).to_string(),
+            "decode error: bad bytes"
+        );
+        assert_eq!(
+            ModelsError::Malformed("missing field").to_string(),
+            "malformed: missing field"
+        );
+        assert_eq!(
+            ModelsError::PacketTypeMismatch {
+                got: "BlockRequest".to_string(),
+                expected: "HasBlock".to_string()
+            }
+            .to_string(),
+            "Got BlockRequest packet - need HasBlock packet"
+        );
+        // Note the rendering order: the *expected* length comes first, unlike the field order.
+        assert_eq!(
+            ModelsError::Length {
+                got: 5,
+                expected: 32
+            }
+            .to_string(),
+            "expected 32 bytes, got 5"
+        );
+    }
+
+    /// The type is a real `std::error::Error`, so `?` across the crate boundary and any
+    /// `Box<dyn Error>` sink work — and it is `Clone`/`PartialEq`, which is what lets a caller match
+    /// on it after the fact.
+    #[test]
+    fn it_is_a_std_error() {
+        let e = ModelsError::Malformed("x");
+        let boxed: Box<dyn std::error::Error> = Box::new(e.clone());
+        assert_eq!(boxed.to_string(), "malformed: x");
+        assert_eq!(e.clone(), e);
+    }
+}

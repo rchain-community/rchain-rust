@@ -1,6 +1,8 @@
-bitset_empty
-bitset_0	01
-bitset_7	80
-bitset_8	0001
-bitset_64	000000000000000001
-par_empty
+# id	value	provenance
+# Computed from the shared RhoTypes.proto schema plus the scalapb TypeMapper's bitSetToByteString rule, not captured by running an oracle: the wire format is pinned by the proto, not by a Scala run.
+bitset_empty		scala-rule-transcribed
+bitset_0	01	scala-rule-transcribed
+bitset_7	80	scala-rule-transcribed
+bitset_8	0001	scala-rule-transcribed
+bitset_64	000000000000000001	scala-rule-transcribed
+par_empty		scala-rule-transcribed

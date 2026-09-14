@@ -376,3 +376,106 @@ proptest! {
         .unwrap();
     }
 }
+
+// --- Law 11: replay determinism --------------------------------------------------------------
+
+/// A trivial matcher: any pattern matches any datum, which is enough to produce COMM events.
+struct AnyMatch;
+impl crate::match_::Match<String, String> for AnyMatch {
+    fn get(&self, _p: &String, a: &String) -> Option<String> {
+        Some(a.clone())
+    }
+}
+
+/// A play + replay pair over a fresh in-memory store (the fixture `replay_rspace.rs`'s tests use).
+async fn play_and_replay() -> (
+    Arc<crate::rspace::RSpace<String, String, String, String>>,
+    crate::replay_rspace::ReplayRSpace<String, String, String, String>,
+) {
+    use rchain_shared::store_manager::InMemoryStoreManager;
+
+    use crate::factory::create_history_repository;
+    use crate::hot_store::InMemHotStore;
+
+    let manager = InMemoryStoreManager::default();
+    let history = create_history_repository::<String, String, String, String>(&manager, "law11")
+        .await
+        .expect("history repository");
+    let reader = history.get_history_reader(history.root()).await;
+    let hot = Arc::new(InMemHotStore::new(reader.base()));
+    crate::rspace::RSpace::create_with_replay(history, hot, Arc::new(AnyMatch))
+}
+
+/// A random operation script: `(is_produce, persist, channel, payload)`.
+fn arb_ops() -> impl Strategy<Value = Vec<(bool, bool, u8, u8)>> {
+    prop::collection::vec((any::<bool>(), any::<bool>(), 0u8..3, 0u8..3), 0..8)
+}
+
+proptest! {
+    /// **Law 11: replay determinism.** Replaying the *same* operations against the trace the play
+    /// space recorded checks clean — `check_replay_data` reports a divergence only when the replay
+    /// produces a COMM the recording does not contain (`unused_comm_event`). Randomized over produce
+    /// and consume scripts, so the recording is exercised with matches, misses, peeks and persistent
+    /// operations rather than one hand-picked shape.
+    #[test]
+    fn law11_a_replayed_script_matches_its_recording(ops in arb_ops()) {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("a runtime");
+        runtime.block_on(async {
+            use crate::i_space::ISpace;
+            use crate::i_replay_space::IReplaySpace;
+            use crate::tuple_space::Tuplespace;
+
+            let (play, replay) = play_and_replay().await;
+
+            // Play the script, recording the trace.
+            for (is_produce, persist, channel, payload) in &ops {
+                let channel = format!("c{channel}");
+                let payload = format!("d{payload}");
+                if *is_produce {
+                    play.produce(channel, payload, *persist).await.expect("play produce");
+                } else {
+                    play.consume(
+                        &[channel],
+                        &["pattern".to_string()],
+                        "continuation".to_string(),
+                        *persist,
+                        Default::default(),
+                    )
+                    .await
+                    .expect("play consume");
+                }
+            }
+            let recorded = play.create_soft_checkpoint().await.log;
+            let root = play.create_checkpoint().await.expect("checkpoint").root;
+
+            // Rig the replay with the recording and replay the same script.
+            replay.rig_and_reset(root, recorded).await.expect("rig");
+            for (is_produce, persist, channel, payload) in &ops {
+                let channel = format!("c{channel}");
+                let payload = format!("d{payload}");
+                if *is_produce {
+                    replay.produce(channel, payload, *persist).await.expect("replay produce");
+                } else {
+                    replay
+                        .consume(
+                            &[channel],
+                            &["pattern".to_string()],
+                            "continuation".to_string(),
+                            *persist,
+                            Default::default(),
+                        )
+                        .await
+                        .expect("replay consume");
+                }
+            }
+            prop_assert!(
+                replay.check_replay_data().await.is_ok(),
+                "a replay of its own recording must check clean"
+            );
+            Ok(())
+        })?;
+    }
+}

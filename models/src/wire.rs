@@ -1038,19 +1038,66 @@ mod differential {
     use super::*;
     use rchain_shared::base16;
 
-    fn load(case: &str) -> String {
+    /// The golden file's rows are `id<TAB>value<TAB>provenance`; `#` lines are its legend. The
+    /// *value* column is read by position, so adding the provenance column (and any later one)
+    /// cannot corrupt a vector.
+    fn rows() -> Vec<(String, String, String)> {
         let path = concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/testdata/differential/wire.tsv"
         );
-        let data = std::fs::read_to_string(path).unwrap();
-        for line in data.lines() {
-            let (id, hex) = line.split_once('\t').unwrap_or((line, ""));
-            if id == case {
-                return hex.to_string();
-            }
+        std::fs::read_to_string(path)
+            .expect("the golden file")
+            .lines()
+            .filter(|l| !l.trim().is_empty() && !l.starts_with('#'))
+            .map(|l| {
+                let mut f = l.split('\t');
+                (
+                    f.next().unwrap_or_default().to_string(),
+                    f.next().unwrap_or_default().to_string(),
+                    f.next().unwrap_or_default().to_string(),
+                )
+            })
+            .collect()
+    }
+
+    fn load(case: &str) -> String {
+        rows()
+            .into_iter()
+            .find(|(id, _, _)| id == case)
+            .unwrap_or_else(|| panic!("missing differential case: {case}"))
+            .1
+    }
+
+    /// **Golden-drift guard.** Every row of the file must be consumed by a test in this module, and
+    /// every case the tests load must exist — a file that grows a row nobody asserts on (or a test
+    /// that starts reading a row that was deleted) fails here rather than passing quietly.
+    #[test]
+    fn every_golden_row_is_consumed() {
+        const CONSUMED: &[&str] = &[
+            "bitset_empty",
+            "bitset_0",
+            "bitset_7",
+            "bitset_8",
+            "bitset_64",
+            "par_empty",
+        ];
+        let ids: Vec<String> = rows().into_iter().map(|(id, _, _)| id).collect();
+        assert_eq!(ids.len(), CONSUMED.len(), "row count: {ids:?}");
+        for case in CONSUMED {
+            assert!(ids.iter().any(|id| id == case), "{case} is not in the file");
+            assert!(
+                !load(case).is_empty() || *case == "bitset_empty" || *case == "par_empty",
+                "{case} has an empty value and no empty-value case expects one"
+            );
         }
-        panic!("missing differential case: {case}");
+        // Every row is `scala-rule-transcribed`: the wire format comes from the proto, not a run.
+        for (id, _, provenance) in rows() {
+            assert_eq!(
+                provenance, "scala-rule-transcribed",
+                "{id} lost its provenance"
+            );
+        }
     }
 
     fn hex(bytes: &[u8]) -> String {
@@ -1096,5 +1143,461 @@ mod differential {
         let bytes = <a::Par as Serialize<a::Par>>::encode(&par);
         let expected = format!("3a240a220a20{}", "01".repeat(32));
         assert_eq!(hex(&bytes), expected);
+    }
+
+    /// The **round-trip** half of the codec, which the golden vectors cannot reach: every `Expr`
+    /// variant, every connective and every unforgeable is converted out and back. A variant that
+    /// `expr_to_proto` writes into the wrong proto arm, or `expr_from_proto` reads back out of the
+    /// wrong one, survives a golden test that only covers a handful of shapes.
+    mod round_trips {
+        use super::*;
+
+        /// A par carrying a distinct integer, so two pars in one value are distinguishable.
+        fn par(n: i64) -> a::Par {
+            a::Par {
+                exprs: vec![a::Expr::GInt(n)],
+                ..a::Par::default()
+            }
+        }
+
+        /// The same term in **name** position: the AST's sort split means a channel is a
+        /// `Par<NameSort>`, and the wire type is one `Par` for both.
+        fn name(n: i64) -> a::Par<a::NameSort> {
+            a::Par {
+                exprs: vec![a::Expr::GInt(n)],
+                ..a::Par::default()
+            }
+        }
+
+        fn bit(n: i32) -> a::AlwaysEqual<a::BitSet> {
+            a::AlwaysEqual(vec![bit_or_zero(n)])
+        }
+
+        fn bit_or_zero(n: i32) -> i32 {
+            n
+        }
+
+        fn var(idx: i32) -> a::Var {
+            a::Var::BoundVar(idx)
+        }
+
+        /// Every `Expr` variant the AST has, one instance each — including the collections and the
+        /// method call, which carry their own nested structure.
+        fn every_expr() -> Vec<(&'static str, a::Expr)> {
+            let boxed = |n: i64| Box::new(par(n));
+            vec![
+                ("GBool", a::Expr::GBool(true)),
+                ("GInt", a::Expr::GInt(-7)),
+                (
+                    "GBigInt",
+                    a::Expr::GBigInt(num_bigint::BigInt::from(1_000_000_000_000i64)),
+                ),
+                ("GString", a::Expr::GString("text".to_string())),
+                ("GUri", a::Expr::GUri("rho:io".to_string())),
+                ("GByteArray", a::Expr::GByteArray(vec![1, 2, 3])),
+                ("ENot", a::Expr::ENot(boxed(1))),
+                ("ENeg", a::Expr::ENeg(boxed(2))),
+                ("EMult", a::Expr::EMult(boxed(3), boxed(4))),
+                ("EDiv", a::Expr::EDiv(boxed(5), boxed(6))),
+                ("EMod", a::Expr::EMod(boxed(7), boxed(8))),
+                ("EPlus", a::Expr::EPlus(boxed(9), boxed(10))),
+                ("EMinus", a::Expr::EMinus(boxed(11), boxed(12))),
+                ("ELt", a::Expr::ELt(boxed(13), boxed(14))),
+                ("ELte", a::Expr::ELte(boxed(15), boxed(16))),
+                ("EGt", a::Expr::EGt(boxed(17), boxed(18))),
+                ("EGte", a::Expr::EGte(boxed(19), boxed(20))),
+                ("EEq", a::Expr::EEq(boxed(21), boxed(22))),
+                ("ENeq", a::Expr::ENeq(boxed(23), boxed(24))),
+                ("EAnd", a::Expr::EAnd(boxed(25), boxed(26))),
+                ("EOr", a::Expr::EOr(boxed(27), boxed(28))),
+                ("EShortAnd", a::Expr::EShortAnd(boxed(29), boxed(30))),
+                ("EShortOr", a::Expr::EShortOr(boxed(31), boxed(32))),
+                ("EMatches", a::Expr::EMatches(boxed(33), boxed(34))),
+                (
+                    "EPercentPercent",
+                    a::Expr::EPercentPercent(boxed(35), boxed(36)),
+                ),
+                ("EPlusPlus", a::Expr::EPlusPlus(boxed(37), boxed(38))),
+                ("EMinusMinus", a::Expr::EMinusMinus(boxed(39), boxed(40))),
+                ("EVar", a::Expr::EVar(Box::new(a::Var::FreeVar(3)))),
+                (
+                    "EList",
+                    a::Expr::EList(a::EList {
+                        ps: vec![par(41)],
+                        locally_free: bit(2),
+                        connective_used: true,
+                        remainder: Some(Box::new(var(1))),
+                    }),
+                ),
+                (
+                    "ETuple",
+                    a::Expr::ETuple(a::ETuple {
+                        ps: vec![par(42), par(43)],
+                        locally_free: bit(3),
+                        connective_used: false,
+                    }),
+                ),
+                (
+                    "ESet",
+                    a::Expr::ESet(a::ParSet {
+                        ps: vec![par(44)],
+                        connective_used: true,
+                        locally_free: bit(4),
+                        remainder: None,
+                    }),
+                ),
+                (
+                    "EMap",
+                    a::Expr::EMap(a::ParMap {
+                        kvs: vec![(par(45), par(46))],
+                        connective_used: false,
+                        locally_free: bit(5),
+                        remainder: Some(Box::new(var(2))),
+                    }),
+                ),
+                (
+                    "EMethod",
+                    a::Expr::EMethod(a::EMethod {
+                        method_name: "get".to_string(),
+                        target: boxed(47),
+                        arguments: vec![par(48), par(49)],
+                        locally_free: bit(6),
+                        connective_used: true,
+                    }),
+                ),
+            ]
+        }
+
+        /// Each variant survives `expr_to_proto` → `expr_from_proto` unchanged: the assertion is on
+        /// the whole `Expr`, so a variant that round-trips *through the wrong arm* (a `GInt` coming
+        /// back as `GBool`) fails.
+        #[test]
+        fn every_expr_variant_round_trips() {
+            let variants = every_expr();
+            assert_eq!(
+                variants.len(),
+                33,
+                "the table covers every variant the enum has (33 as of this test)"
+            );
+            for (name, expr) in &variants {
+                let proto = expr_to_proto(expr);
+                let back = expr_from_proto(&proto)
+                    .unwrap_or_else(|e| panic!("{name} did not decode: {e}"));
+                assert_eq!(&back, expr, "{name} did not round trip");
+            }
+        }
+
+        /// The **protobuf tag** each variant uses is the Scala's `ExprInstance` arm: asserted
+        /// separately from the round trip, because a variant written into the wrong *arm* still
+        /// round-trips through the Rust pair while producing bytes a Scala node would read
+        /// differently.
+        #[test]
+        fn the_expr_variants_use_the_scala_proto_arms() {
+            use p::expr::ExprInstance as E;
+            assert!(matches!(
+                expr_to_proto(&a::Expr::GBool(true)).expr_instance,
+                Some(E::GBool(true))
+            ));
+            assert!(matches!(
+                expr_to_proto(&a::Expr::GInt(-7)).expr_instance,
+                Some(E::GInt(-7))
+            ));
+            assert!(matches!(
+                expr_to_proto(&a::Expr::GString("x".to_string())).expr_instance,
+                Some(E::GString(_))
+            ));
+            assert!(matches!(
+                expr_to_proto(&a::Expr::EList(a::EList::default())).expr_instance,
+                Some(E::EListBody(_))
+            ));
+            assert!(matches!(
+                expr_to_proto(&a::Expr::EMethod(a::EMethod::default())).expr_instance,
+                Some(E::EMethodBody(_))
+            ));
+            // A big integer is written as its signed big-endian bytes.
+            let huge = a::Expr::GBigInt(num_bigint::BigInt::from(258i64));
+            match expr_to_proto(&huge).expr_instance {
+                Some(E::GBigInt(bytes)) => assert_eq!(bytes, vec![1, 2]),
+                other => panic!("expected GBigInt, got {other:?}"),
+            }
+        }
+
+        /// Connectives and unforgeables: the two sum types with their own proto arms.
+        #[test]
+        fn every_connective_and_unforgeable_round_trips() {
+            let connectives = vec![
+                a::Connective::ConnAnd(a::ConnectiveBody { ps: vec![par(1)] }),
+                a::Connective::ConnOr(a::ConnectiveBody {
+                    ps: vec![par(2), par(3)],
+                }),
+                a::Connective::ConnNot(Box::new(par(4))),
+                a::Connective::VarRef(a::VarRef { index: 1, depth: 2 }),
+                a::Connective::ConnBool(true),
+                a::Connective::ConnInt(false),
+                a::Connective::ConnBigInt(true),
+                a::Connective::ConnString(false),
+                a::Connective::ConnUri(true),
+                a::Connective::ConnByteArray(false),
+            ];
+            for connective in &connectives {
+                let back = connective_from_proto(&connective_to_proto(connective))
+                    .unwrap_or_else(|e| panic!("{connective:?} did not decode: {e}"));
+                assert_eq!(&back, connective, "{connective:?} did not round trip");
+            }
+
+            let unforgeables = vec![
+                a::GUnforgeable::GPrivate(a::GPrivate { id: vec![7; 32] }),
+                a::GUnforgeable::GDeployId(a::GDeployId { sig: vec![8; 32] }),
+                a::GUnforgeable::GDeployerId(a::GDeployerId {
+                    public_key: vec![9; 32],
+                }),
+                a::GUnforgeable::GSysAuthToken,
+            ];
+            for unforgeable in &unforgeables {
+                let back = unforgeable_from_proto(&unforgeable_to_proto(unforgeable))
+                    .unwrap_or_else(|e| panic!("{unforgeable:?} did not decode: {e}"));
+                assert_eq!(&back, unforgeable);
+            }
+        }
+
+        /// A `Par` with **every field** populated round-trips: the eight lists, the bitset, the
+        /// `connective_used` flag and the sort marker all survive.
+        #[test]
+        fn a_par_with_every_field_round_trips() {
+            let full: a::Proc = a::Par {
+                sends: vec![a::Send {
+                    chan: Box::new(name(1)),
+                    data: vec![name(2), name(3)],
+                    persistent: true,
+                    locally_free: bit(1),
+                    connective_used: true,
+                }],
+                receives: vec![a::Receive {
+                    binds: vec![a::ReceiveBind {
+                        patterns: vec![name(4)],
+                        source: Box::new(name(5)),
+                        remainder: Some(Box::new(var(1))),
+                        free_count: FreeCount::new(2).expect("non-negative"),
+                    }],
+                    body: Box::new(par(6)),
+                    persistent: true,
+                    peek: true,
+                    bind_count: 1,
+                    locally_free: bit(2),
+                    connective_used: false,
+                }],
+                news: vec![a::New {
+                    bind_count: 3,
+                    p: Box::new(par(7)),
+                    uri: vec!["rho:io".to_string()],
+                    injections: std::collections::BTreeMap::new(),
+                    locally_free: bit(3),
+                }],
+                exprs: vec![a::Expr::GInt(8)],
+                matches: vec![a::Match {
+                    target: Box::new(name(9)),
+                    cases: vec![a::MatchCase {
+                        pattern: Box::new(name(10)),
+                        source: Box::new(par(11)),
+                        free_count: FreeCount::new(1).expect("non-negative"),
+                    }],
+                    locally_free: bit(4),
+                    connective_used: true,
+                }],
+                unforgeables: vec![a::GUnforgeable::GSysAuthToken],
+                bundles: vec![a::Bundle {
+                    body: Box::new(par(12)),
+                    write_flag: true,
+                    read_flag: false,
+                }],
+                connectives: vec![a::Connective::ConnBool(true)],
+                locally_free: bit(5),
+                connective_used: true,
+                _sort: std::marker::PhantomData,
+            };
+
+            let back = par_from_proto(&par_to_proto(&full)).expect("a full par decodes");
+            assert_eq!(back, full, "every field survives");
+
+            // The fields that are easy to lose in a conversion are named individually, so a failure
+            // says which one moved.
+            assert_eq!(back.sends.len(), 1);
+            assert!(back.sends[0].persistent);
+            assert_eq!(back.receives[0].binds[0].patterns.len(), 1);
+            assert!(back.receives[0].peek, "the peek flag is not dropped");
+            assert_eq!(back.news[0].uri, vec!["rho:io".to_string()]);
+            assert_eq!(back.matches[0].cases.len(), 1);
+            assert!(back.bundles[0].write_flag, "the write flag is not dropped");
+            assert!(!back.bundles[0].read_flag);
+            assert_eq!(back.connectives.len(), 1);
+            assert!(back.connective_used);
+        }
+
+        /// The runtime payloads — the ones the RSpace keys continuations by — round-trip: a bind
+        /// pattern, a list of pars with a random state, and all three tagged continuations.
+        #[test]
+        fn the_runtime_payloads_round_trip() {
+            let pattern = BindPattern {
+                patterns: vec![SortedProc::new(par(1))],
+                remainder: Some(a::Var::Wildcard),
+                free_count: 1,
+            };
+            assert_eq!(
+                bind_pattern_from_proto(&bind_pattern_to_proto(&pattern)).expect("pattern"),
+                pattern
+            );
+
+            let random = Blake2b512Random::from_init(&[3u8; 8]);
+            let list = ListParWithRandom {
+                pars: vec![SortedProc::new(par(2))],
+                random_state: random.clone(),
+            };
+            let back = list_par_with_random_from_proto(&list_par_with_random_to_proto(&list))
+                .expect("list");
+            assert_eq!(back.pars.len(), 1);
+            assert_eq!(back.pars[0].as_par(), &par(2));
+            assert_eq!(
+                back.random_state, random,
+                "the split generator state survives, or a replay would diverge"
+            );
+
+            let par_with_random = ParWithRandom {
+                body: SortedProc::new(par(3)),
+                random_state: Blake2b512Random::from_init(&[4u8; 8]),
+            };
+            let back = par_with_random_from_proto(&par_with_random_to_proto(&par_with_random))
+                .expect("par with random");
+            assert_eq!(back.body.as_par(), &par(3));
+
+            // `TaggedContinuation` carries a split-generator state, so (like `ParWithRandom`) it
+            // has no `PartialEq`; the `Debug` forms are structural, so they are compared instead.
+            for continuation in [
+                TaggedContinuation::ParBody(ParWithRandom {
+                    body: SortedProc::new(par(5)),
+                    random_state: Blake2b512Random::from_init(&[6u8; 8]),
+                }),
+                TaggedContinuation::ScalaBodyRef(7),
+            ] {
+                let back =
+                    tagged_continuation_from_proto(&tagged_continuation_to_proto(&continuation))
+                        .expect("tagged continuation");
+                assert_eq!(
+                    format!("{back:?}"),
+                    format!("{continuation:?}"),
+                    "a tagged continuation round trip"
+                );
+            }
+        }
+
+        /// The `from_proto` half is **partial** where the proto has an optional inner message: a
+        /// missing one is `Malformed(<field>)` naming the field, rather than a defaulted value. Two
+        /// representative arms are exercised — the shape is the same for all twenty-one binary
+        /// operators, and the round-trip tests above already cover their success paths.
+        #[test]
+        fn a_missing_inner_message_is_malformed_and_names_the_field() {
+            use p::expr::ExprInstance as E;
+
+            let unary = p::Expr {
+                expr_instance: Some(E::ENotBody(p::ENot { p: None })),
+            };
+            assert_eq!(
+                expr_from_proto(&unary).expect_err("no inner par"),
+                ModelsError::Malformed("p")
+            );
+
+            let binary = p::Expr {
+                expr_instance: Some(E::EMultBody(p::EMult {
+                    p1: None,
+                    p2: Some(p::Par::default()),
+                })),
+            };
+            assert_eq!(
+                expr_from_proto(&binary).expect_err("no p1"),
+                ModelsError::Malformed("p1")
+            );
+
+            let binary = p::Expr {
+                expr_instance: Some(E::EMultBody(p::EMult {
+                    p1: Some(p::Par::default()),
+                    p2: None,
+                })),
+            };
+            assert_eq!(
+                expr_from_proto(&binary).expect_err("no p2"),
+                ModelsError::Malformed("p2")
+            );
+
+            let var_body = p::Expr {
+                expr_instance: Some(E::EVarBody(p::EVar { v: None })),
+            };
+            assert_eq!(
+                expr_from_proto(&var_body).expect_err("no var"),
+                ModelsError::Malformed("v")
+            );
+
+            // A missing `send`/`receive`/`bundle` body is refused the same way.
+            let send = p::Send {
+                chan: None,
+                data: Vec::new(),
+                persistent: false,
+                locally_free: Vec::new(),
+                connective_used: false,
+            };
+            assert_eq!(
+                send_from_proto(&send).expect_err("no channel"),
+                ModelsError::Malformed("chan")
+            );
+
+            let receive = p::Receive {
+                binds: Vec::new(),
+                body: None,
+                persistent: false,
+                peek: false,
+                bind_count: 0,
+                locally_free: Vec::new(),
+                connective_used: false,
+            };
+            assert_eq!(
+                receive_from_proto(&receive).expect_err("no body"),
+                ModelsError::Malformed("body")
+            );
+
+            let bundle = p::Bundle {
+                body: None,
+                write_flag: false,
+                read_flag: false,
+            };
+            assert_eq!(
+                bundle_from_proto(&bundle).expect_err("no body"),
+                ModelsError::Malformed("body")
+            );
+        }
+
+        /// An `Expr` message with **no instance** decodes to `GBool(false)` — a silent default
+        /// rather than an error.
+        ///
+        /// Pinned as behaviour, with the caveat stated: the legacy tree does not contain the
+        /// Scala's `Expr.fromProto`, so what the JVM node does with an instance-less `Expr` could
+        /// not be established. Changing this arm to `Malformed("expr_instance")` would be the
+        /// stricter reading, but it is also a wire-path change that could *disagree* with the Scala
+        /// on a peer-supplied block, so it is left as it is and recorded here rather than guessed
+        /// at. The decode of an empty buffer reaching this arm is the honest trigger.
+        #[test]
+        fn an_instance_less_expr_decodes_to_the_default() {
+            let empty = p::Expr::default();
+            assert!(empty.expr_instance.is_none());
+            assert_eq!(
+                expr_from_proto(&empty).expect("the arm never errors"),
+                a::Expr::GBool(false)
+            );
+
+            // …and through a par, which is how a peer-supplied message would reach it.
+            let par = p::Par {
+                exprs: vec![p::Expr::default()],
+                ..p::Par::default()
+            };
+            let decoded = par_from_proto::<a::ProcSort>(&par).expect("a par decodes");
+            assert_eq!(decoded.exprs, vec![a::Expr::GBool(false)]);
+        }
     }
 }

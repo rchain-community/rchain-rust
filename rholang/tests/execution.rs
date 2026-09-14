@@ -687,3 +687,45 @@ async fn cancellation_stops_runaway_reduction() {
         vec![from_expr(Expr::GInt(42))]
     );
 }
+
+/// **The golden file's provenance, asserted rather than assumed.** `execution.tsv`'s rows are
+/// `rust-regression-pinned`: the rholang execution pipeline has **no** Scala oracle in `legacy/`, so
+/// they pin the port against its own past behaviour and are *not* evidence of Scala agreement. This
+/// test makes that explicit — if a Scala oracle is ever written, updating this assertion is the
+/// deliberate act that reclassifies the file.
+#[test]
+fn the_execution_goldens_declare_their_provenance() {
+    let rows = common::golden_rows("execution");
+    assert!(!rows.is_empty(), "the golden file must have rows");
+    for (id, value, provenance) in rows {
+        assert!(
+            !value.is_empty(),
+            "{id} has an empty value: the rows are regression pins"
+        );
+        assert_eq!(
+            provenance, "rust-regression-pinned",
+            "{id}: the rholang pipeline has no Scala oracle, so a row claiming `scala-ground-truth` \
+             would be a false differential claim"
+        );
+    }
+}
+
+/// **Golden-drift guard.** Every row of `execution.tsv` must be loaded by a test in this file: the
+/// three cases below are the file's whole content, so a row added without a test (or a test that
+/// stops reading a row) fails here rather than leaving an unasserted vector behind.
+#[test]
+fn every_execution_golden_row_is_consumed() {
+    const CONSUMED: &[&str] = &["empty_state", "exec_deploy_42", "replay_deploy_42"];
+    let rows = common::golden_rows("execution");
+    assert_eq!(rows.len(), CONSUMED.len(), "row count");
+    for case in CONSUMED {
+        assert!(
+            rows.iter().any(|(id, _, _)| id == case),
+            "{case} is missing from the golden file"
+        );
+        assert!(
+            load_golden(case, "execution").is_some(),
+            "{case} does not load"
+        );
+    }
+}

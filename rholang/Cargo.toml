@@ -18,3 +18,7 @@ tokio = { version = "1", features = ["rt", "rt-multi-thread"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+
+[dev-dependencies.proptest]
+# The property sweep (Laws 3/5). Already in `Cargo.lock` — a dev-dependency addition.
+version = "1"

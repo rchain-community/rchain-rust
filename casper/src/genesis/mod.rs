@@ -73,15 +73,15 @@ pub fn build_pos_genesis(proof_of_stake: &ProofOfStake) -> PosGenesis {
     }
 }
 
-/// Build the genesis PoS descriptors from the node configuration (the same pool/trusted/params the
-/// genesis ceremony installs). Used to seed `RuntimeManager` so a genesis-block replay reconstructs
-/// the native genesis state. Call only on a genesis-ceremony (standalone) node: it may create the
-/// bonds file via `parse_or_generate`.
-pub fn pos_genesis_from_config(conf: &crate::conf::CasperConf) -> Result<PosGenesis, String> {
-    let gbd = &conf.genesis_block_data;
+/// Build the genesis PoS descriptors for one shard from its spec (the same pool/trusted/params that
+/// shard's genesis ceremony installs). Used to seed `RuntimeManager` so a genesis-block replay
+/// reconstructs the native genesis state. Call only on a genesis-ceremony (standalone) node: it may
+/// create the bonds file via `parse_or_generate`.
+pub fn pos_genesis_from_config(spec: &crate::conf::ShardSpec) -> Result<PosGenesis, String> {
+    let gbd = &spec.genesis_block_data;
     let bonds = crate::bonds_parser::parse_or_generate(
         std::path::Path::new(&gbd.bonds_file),
-        conf.autogen_shard_size,
+        spec.autogen_shard_size,
     )?;
     let validators: Vec<contracts::Validator> = bonds
         .into_iter()

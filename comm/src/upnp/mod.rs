@@ -409,3 +409,258 @@ mod tests {
         assert!(logs.iter().any(|m| m.contains("No gateway devices found")));
     }
 }
+
+#[cfg(test)]
+mod port_forwarding_tests {
+    use super::*;
+
+    /// A gateway double that records the calls the orchestration makes, so "remove then add" and
+    /// "one call per port" are assertions rather than inferences. `add_fails` selects which ports the
+    /// gateway refuses.
+    #[derive(Default)]
+    struct FakeGateway {
+        name: String,
+        external_ip: String,
+        /// Mappings the gateway already holds (read back by `get_generic_port_mapping_entry`).
+        existing: Vec<PortMappingEntry>,
+        /// Ports whose `add_port_mapping` fails.
+        failing: Vec<i32>,
+        added: std::sync::Mutex<Vec<(i32, String)>>,
+        removed: std::sync::Mutex<Vec<(i32, String)>>,
+    }
+
+    impl GatewayDevice for FakeGateway {
+        fn friendly_name(&self) -> String {
+            self.name.clone()
+        }
+        fn model_name(&self) -> String {
+            "model".to_string()
+        }
+        fn manufacturer(&self) -> String {
+            "maker".to_string()
+        }
+        fn model_description(&self) -> String {
+            "description".to_string()
+        }
+        fn device_type(&self) -> String {
+            "type".to_string()
+        }
+        fn search_type(&self) -> String {
+            "search".to_string()
+        }
+        fn service_type(&self) -> String {
+            "service".to_string()
+        }
+        fn location(&self) -> String {
+            "http://192.168.1.1/desc.xml".to_string()
+        }
+        fn external_ip_address(&self) -> String {
+            self.external_ip.clone()
+        }
+        fn is_connected(&self) -> bool {
+            true
+        }
+        fn local_address(&self) -> String {
+            "192.168.1.2".to_string()
+        }
+        fn add_port_mapping(
+            &self,
+            external_port: i32,
+            _internal_port: i32,
+            _internal_client: &str,
+            protocol: &str,
+            _description: &str,
+        ) -> Result<bool, String> {
+            if self.failing.contains(&external_port) {
+                return Err("gateway refused".to_string());
+            }
+            self.added
+                .lock()
+                .unwrap()
+                .push((external_port, protocol.to_string()));
+            Ok(true)
+        }
+        fn delete_port_mapping(&self, external_port: i32, protocol: &str) -> Result<(), String> {
+            self.removed
+                .lock()
+                .unwrap()
+                .push((external_port, protocol.to_string()));
+            Ok(())
+        }
+        fn get_generic_port_mapping_entry(&self, index: i32, entry: &mut PortMappingEntry) -> bool {
+            match usize::try_from(index)
+                .ok()
+                .and_then(|i| self.existing.get(i))
+            {
+                Some(found) => {
+                    *entry = found.clone();
+                    true
+                }
+                None => false,
+            }
+        }
+    }
+
+    fn mapping(port: i32, protocol: &str) -> PortMappingEntry {
+        PortMappingEntry {
+            protocol: protocol.to_string(),
+            external_port: port,
+            internal_port: port,
+            internal_client: "192.168.1.2".to_string(),
+            description: "RChain".to_string(),
+        }
+    }
+
+    fn devices(gateway: Arc<FakeGateway>, valid: bool) -> UPnPDevices {
+        let any: Arc<dyn GatewayDevice> = gateway.clone();
+        UPnPDevices {
+            all: vec![("192.168.1.1".to_string(), any.clone())],
+            gateways: vec![any.clone()],
+            valid_gateway: if valid { Some(any) } else { None },
+        }
+    }
+
+    /// **The port-opening order is remove-then-add.** An existing mapping for a requested port must
+    /// be deleted first (a router that already holds the mapping would otherwise answer `Conflict`
+    /// and the port stays closed), and every requested port is attempted exactly once — the
+    /// orchestration the `UPnP` documentation's "please open it manually" message depends on.
+    #[test]
+    fn opening_ports_removes_existing_mappings_then_adds_every_port() {
+        let gateway = Arc::new(FakeGateway {
+            name: "gw".to_string(),
+            external_ip: "203.0.113.7".to_string(),
+            existing: vec![mapping(40400, "TCP")],
+            ..Default::default()
+        });
+        let mut logs = Vec::new();
+        let exposed = try_open_ports(&[40400, 40404], &devices(gateway.clone(), true), &mut |m| {
+            logs.push(m)
+        })
+        .expect("a gateway was found");
+
+        assert_eq!(
+            exposed, "203.0.113.7",
+            "the gateway's external address is returned"
+        );
+        assert_eq!(
+            *gateway.removed.lock().unwrap(),
+            vec![(40400, "TCP".to_string())],
+            "the pre-existing mapping for a requested port is removed first"
+        );
+        assert_eq!(
+            *gateway.added.lock().unwrap(),
+            vec![(40400, "TCP".to_string()), (40404, "TCP".to_string())],
+            "each requested port is opened once, in order"
+        );
+        assert!(
+            logs.iter().any(|l| l.contains("most likely successful")),
+            "{logs:?}"
+        );
+        assert!(
+            logs.iter().any(|l| l.contains("public address block")),
+            "a public external address is reported as such: {logs:?}"
+        );
+    }
+
+    /// A gateway whose external address is **private** means the machine is behind a second NAT,
+    /// which is what the message warns about; an unparsable (IPv6) address is reported separately.
+    #[test]
+    fn the_external_address_classification_is_reported() {
+        for (external, expected) in [
+            ("10.0.0.1", "behind more than one NAT"),
+            ("192.168.1.1", "behind more than one NAT"),
+            ("203.0.113.7", "public address block"),
+            ("2001:db8::1", "maybe IPv6"),
+        ] {
+            let gateway = Arc::new(FakeGateway {
+                name: "gw".to_string(),
+                external_ip: external.to_string(),
+                ..Default::default()
+            });
+            let mut logs = Vec::new();
+            try_open_ports(&[40400], &devices(gateway, true), &mut |m| logs.push(m))
+                .expect("a gateway");
+            assert!(
+                logs.iter().any(|l| l.contains(expected)),
+                "for {external} expected a message containing {expected:?}: {logs:?}"
+            );
+        }
+    }
+
+    /// A port the gateway refuses produces the manual-opened warning; the ports that succeeded are
+    /// still recorded (the loop does not stop at the first failure).
+    #[test]
+    fn a_refused_port_reports_that_the_ports_must_be_opened_manually() {
+        let gateway = Arc::new(FakeGateway {
+            name: "gw".to_string(),
+            external_ip: "203.0.113.7".to_string(),
+            failing: vec![40404],
+            ..Default::default()
+        });
+        let mut logs = Vec::new();
+        try_open_ports(&[40400, 40404], &devices(gateway.clone(), true), &mut |m| {
+            logs.push(m)
+        })
+        .expect("a gateway");
+
+        assert_eq!(
+            gateway.added.lock().unwrap().len(),
+            1,
+            "the port that succeeded is still mapped"
+        );
+        assert!(
+            logs.iter().any(|l| l.contains("manually")),
+            "the failure is reported: {logs:?}"
+        );
+        assert!(
+            logs.iter().all(|l| !l.contains("most likely successful")),
+            "…and not as a success: {logs:?}"
+        );
+    }
+
+    /// With no *valid* gateway the first discovered one is used (a gateway that is not "connected"
+    /// per SSDP may still forward), and with no gateway at all the function returns `None` rather
+    /// than panicking — the arm that makes UPnP best-effort.
+    #[test]
+    fn a_fallback_gateway_is_used_and_no_gateway_is_answered_with_none() {
+        let gateway = Arc::new(FakeGateway {
+            name: "gw".to_string(),
+            external_ip: "203.0.113.7".to_string(),
+            ..Default::default()
+        });
+        let mut logs = Vec::new();
+        assert!(
+            try_open_ports(&[40400], &devices(gateway.clone(), false), &mut |m| logs
+                .push(m))
+            .is_some(),
+            "the first gateway is the fallback"
+        );
+        assert!(logs.iter().any(|l| l.contains("Picking gw")), "{logs:?}");
+
+        let mut logs = Vec::new();
+        assert!(try_open_ports(&[40400], &UPnPDevices::default(), &mut |m| logs.push(m)).is_none());
+        assert!(
+            logs.iter()
+                .any(|l| l.contains("Available gateway devices: ")),
+            "{logs:?}"
+        );
+    }
+
+    /// The device table and the port-mapping table are fixed-width reports; the *header* is part of
+    /// what an operator reads, so its column order is pinned.
+    #[test]
+    fn the_reports_have_their_documented_columns() {
+        let header = show_port_mapping_header();
+        let columns: Vec<&str> = header.split_whitespace().collect();
+        assert_eq!(
+            columns,
+            vec!["Protocol", "Extern", "Host", "Intern", "Description"]
+        );
+
+        let row = show_port_mapping(&mapping(40400, "TCP"));
+        assert!(row.starts_with("TCP"), "{row}");
+        assert!(row.contains("40400"), "{row}");
+        assert!(row.contains("192.168.1.2"), "{row}");
+        assert!(row.contains("RChain"), "{row}");
+    }
+}

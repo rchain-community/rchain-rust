@@ -1,9 +1,37 @@
 //! RNode key-value store layout (port of `storage/RNodeKeyValueStoreManager.scala`).
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use rchain_shared::lmdb::LmdbDirStoreManager;
+use rchain_shared::refined::ShardId;
 use rchain_shared::store_manager::{Db, LmdbEnvConfig, GB, TB};
+
+/// The file recording which shard owns a data directory, written on first boot and checked on every
+/// later one. Because the primary membership keeps the data directory root while every additional
+/// shard nests under `shard/…` (see [`shard_data_dir`]), reordering memberships would otherwise
+/// silently re-point a shard at another shard's chain. See `node`'s `check_shard_data_dir`.
+pub const SHARD_ID_MARKER: &str = "shard-id";
+
+/// The gateway's durable coordinator-record database ([`crate::gateway::ledger`]). Node-local: it
+/// is deliberately **not** part of a shard's content-addressed state, because a coordinator's votes
+/// and decision belong to one node and must not enter another shard's state hash.
+pub const GATEWAY_TXN_DB: &str = "gateway-txn";
+
+/// The data directory of the shard at `index` in the node's membership list.
+///
+/// The primary membership (index 0) keeps `root` itself, so every existing single-shard deployment
+/// finds its data exactly where it left it; additional memberships nest under `shard/` with one path
+/// segment per shard-id segment. [`ShardId::segments`] is reused for the path so the layout cannot
+/// collide the way a `/`-to-`_` slug would.
+pub fn shard_data_dir(root: &Path, index: usize, shard_id: &ShardId) -> PathBuf {
+    if index == 0 {
+        return root.to_path_buf();
+    }
+    shard_id
+        .segments()
+        .into_iter()
+        .fold(root.join("shard"), |path, segment| path.join(segment))
+}
 
 /// The RNode DB → LMDB environment mapping (port of `rnodeDbMapping`).
 ///
@@ -79,6 +107,13 @@ pub fn rnode_db_mapping() -> Vec<(Db, LmdbEnvConfig)> {
             Db::new("eval-cold"),
             LmdbEnvConfig::new("eval/cold", 1 * TB),
         ),
+        // The gateway's durable coordinator records (node-local, never consensus state). Its own
+        // environment, so opening it over the primary shard's manager writes one extra directory
+        // (`<data-dir>/gateway/`) rather than sharing a shard's.
+        (
+            Db::new(GATEWAY_TXN_DB),
+            LmdbEnvConfig::new("gateway", 1 * GB),
+        ),
     ]
 }
 
@@ -95,6 +130,32 @@ mod tests {
     use super::*;
     use rchain_shared::store_manager::KeyValueStoreManager;
 
+    /// The primary membership keeps the data-directory root (so existing deployments are
+    /// unchanged); each additional shard nests by shard-id segment.
+    #[test]
+    fn shard_data_dirs_are_the_root_for_the_primary_and_nested_afterwards() {
+        let root = Path::new("/var/lib/rnode");
+        let primary = ShardId::try_from("/root".to_string()).unwrap();
+        let child = ShardId::try_from("/root/child".to_string()).unwrap();
+        let grandchild = ShardId::try_from("/root/child/leaf".to_string()).unwrap();
+
+        assert_eq!(shard_data_dir(root, 0, &primary), PathBuf::from(root));
+        assert_eq!(
+            shard_data_dir(root, 1, &child),
+            Path::new("/var/lib/rnode/shard/root/child")
+        );
+        assert_eq!(
+            shard_data_dir(root, 2, &grandchild),
+            Path::new("/var/lib/rnode/shard/root/child/leaf")
+        );
+        // Distinct shard ids never share a directory — even one whose segments could collide under a
+        // naive `/`-to-`_` slug.
+        assert_ne!(
+            shard_data_dir(root, 1, &ShardId::try_from("/a/b".to_string()).unwrap()),
+            shard_data_dir(root, 1, &ShardId::try_from("/a_b".to_string()).unwrap())
+        );
+    }
+
     #[test]
     fn mapping_has_expected_databases() {
         let mapping = rnode_db_mapping();
@@ -102,6 +163,14 @@ mod tests {
         assert!(ids.contains(&"blocks"));
         assert!(ids.contains(&"rspace-history"));
         assert!(ids.contains(&"mergeable-channel-cache"));
+        // The gateway's coordinator ledger is node-local and in its own environment, so opening it
+        // writes one extra directory rather than sharing a shard's.
+        assert!(ids.contains(&GATEWAY_TXN_DB));
+        let gateway = mapping
+            .iter()
+            .find(|(db, _)| db.id == GATEWAY_TXN_DB)
+            .map(|(_, c)| c.name.clone());
+        assert_eq!(gateway.as_deref(), Some("gateway"));
         // History and roots share an environment name.
         let history = mapping
             .iter()
