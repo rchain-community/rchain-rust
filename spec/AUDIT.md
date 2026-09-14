@@ -979,3 +979,22 @@ oracle is, and the test that pins the fix.
   guessed). The two other `rename_all` enums in the models crate (`ReportProto`,
   `SystemDeployData`) were checked and carry only tuple/unit variants, so they have no such field —
   this was the only instance.
+
+### Open question (behaviour pinned, oracle not established)
+
+- **`models/src/wire.rs::expr_from_proto` decodes an `Expr` with no instance to `GBool(false)`.** The
+  final arm is `None => a::Expr::GBool(false)`: a protobuf `Expr` that carries no `expr_instance` —
+  an empty buffer, or a peer's message with the oneof unset — becomes the expression `false` rather
+  than an error. Every *other* optional inner message in this file is
+  `ModelsError::Malformed(<field>)`, so this arm is the outlier; on the wire-decoding path the
+  difference matters, because the stricter reading would reject such a message and this one accepts
+  it with a substituted constant.
+
+  **Pinned, not changed**, because the oracle could not be established: the legacy tree does not
+  contain the Scala's `Expr.fromProto` (`exprInstance` appears only in the sorter, `RhoType.scala`
+  and `implicits.scala`, none of which is the conversion), so whether the JVM node defaults, errors,
+  or treats the case as unreachable is unknown. Changing this arm is also a wire-path change that
+  could *disagree* with the Scala on a peer-supplied block — a fork risk greater than the silent
+  default it would remove. Recorded here so the question is visible, and pinned by
+  `an_instance_less_expr_decodes_to_the_default`, which carries the same caveat in the test itself
+  rather than only in this register.

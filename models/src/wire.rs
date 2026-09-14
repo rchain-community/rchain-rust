@@ -1427,7 +1427,7 @@ mod differential {
             assert!(back.receives[0].peek, "the peek flag is not dropped");
             assert_eq!(back.news[0].uri, vec!["rho:io".to_string()]);
             assert_eq!(back.matches[0].cases.len(), 1);
-            assert_eq!(back.bundles[0].write_flag, true);
+            assert!(back.bundles[0].write_flag, "the write flag is not dropped");
             assert!(!back.bundles[0].read_flag);
             assert_eq!(back.connectives.len(), 1);
             assert!(back.connective_used);
