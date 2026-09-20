@@ -91,7 +91,8 @@ impl Configuration {
         let default_config = parse_defaults(&data_dir.to_string_lossy())?;
 
         let merged = merge(merge(options_config, file_config), default_config);
-        let node_conf = node_conf_from_hocon(&merged)?;
+        let mut node_conf = node_conf_from_hocon(&merged)?;
+        resolve_validator_private_key(&mut node_conf)?;
 
         for spec in node_conf.casper.shards.iter() {
             let quorum = spec.genesis_block_data.pos_multi_sig_quorum;
@@ -106,6 +107,31 @@ impl Configuration {
 
         Ok((check_dev_mode(node_conf), profile, config_file))
     }
+}
+
+/// Resolve `casper.validator-private-key-path` into `casper.validator-private-key`.
+///
+/// The runtime reads only the hex field, so a key supplied *by path* was parsed into the
+/// config and then silently dropped — leaving the node with no validator identity, no
+/// diagnostic, and (in standalone mode) a genesis ceremony that cannot be signed.
+/// Resolving it here also lets operators keep the secret off the command line:
+/// `--validator-private-key <hex>` is visible to any local process via `ps` or
+/// `/proc/<pid>/cmdline`, a file path is not.
+///
+/// Precedence: an explicit `validator-private-key` always wins; the path is consulted
+/// only when that is absent. A path that is set but unreadable or not a key is a hard
+/// error rather than a silent fallback, for the same reason — silently running without
+/// a validator identity is the failure this exists to prevent.
+fn resolve_validator_private_key(node_conf: &mut NodeConf) -> Result<(), String> {
+    if node_conf.casper.validator_private_key.is_some() {
+        return Ok(());
+    }
+    let Some(path) = node_conf.casper.validator_private_key_path.clone() else {
+        return Ok(());
+    };
+    let key = rchain_crypto::util::key_util::load_validator_private_key(&path)?;
+    node_conf.casper.validator_private_key = Some(rchain_shared::base16::encode(key.bytes()));
+    Ok(())
 }
 
 /// If not in dev mode, strip the deployer private key (port of `Configuration.checkDevMode`).
@@ -650,5 +676,51 @@ mod tests {
         };
 
         assert_eq!(config, expected);
+    }
+
+    /// A validator key given *by path* must end up in the hex field the runtime reads.
+    /// Before this, `--validator-private-key-path` was parsed and then dropped, so a
+    /// node configured that way ran with no validator identity and said nothing.
+    #[test]
+    fn validator_private_key_path_is_resolved_into_the_hex_field() {
+        let dir = std::env::temp_dir().join(format!("rchain_validator_key_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        const HEX: &str = "67e56582298859ddae725f972992a07c6c4fb9f62a8fff58ce3ca926a1063530";
+        let key_path = dir.join("validator.hex");
+        // Trailing newline: what any editor or `echo` leaves behind.
+        std::fs::write(&key_path, format!("{HEX}\n")).unwrap();
+
+        let mut conf = default_expected();
+        conf.casper.validator_private_key = None;
+        conf.casper.validator_private_key_path = Some(key_path);
+        resolve_validator_private_key(&mut conf).unwrap();
+        assert_eq!(conf.casper.validator_private_key.as_deref(), Some(HEX));
+
+        // An explicit hex key wins, and the path is not even read (it does not exist).
+        let explicit = "11".repeat(32);
+        conf.casper.validator_private_key = Some(explicit.clone());
+        conf.casper.validator_private_key_path = Some(dir.join("does-not-exist.pem"));
+        resolve_validator_private_key(&mut conf).unwrap();
+        assert_eq!(
+            conf.casper.validator_private_key.as_deref(),
+            Some(explicit.as_str())
+        );
+
+        // A path that is set but is not a key is an error, not a silent no-op.
+        let junk = dir.join("junk.txt");
+        std::fs::write(&junk, "not a key\n").unwrap();
+        conf.casper.validator_private_key = None;
+        conf.casper.validator_private_key_path = Some(junk);
+        assert!(resolve_validator_private_key(&mut conf).is_err());
+
+        // No path and no hex key at all is fine (an observer node).
+        conf.casper.validator_private_key = None;
+        conf.casper.validator_private_key_path = None;
+        resolve_validator_private_key(&mut conf).unwrap();
+        assert!(conf.casper.validator_private_key.is_none());
+
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }
