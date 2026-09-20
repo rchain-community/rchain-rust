@@ -76,8 +76,22 @@ not set up for you:
    ```
 
    Without it the node exits with `To create genesis block node must provide validator private key`.
-   (`--validator-private-key-path` accepts a PEM file, but the Rust runtime currently reads only the
-   hex form.)
+
+   Prefer `--validator-private-key-path`, which reads the key from a file. The file may hold either a
+   64-character base16 scalar (surrounding whitespace ignored) or an unencrypted PKCS#8 `PRIVATE KEY`
+   PEM, as produced by `openssl ecparam -name secp256k1 -genkey`:
+
+   ```sh
+   install -m 600 /dev/stdin /etc/rnode/validator.hex <<< "$KEY"
+   rnode run -s --validator-private-key-path /etc/rnode/validator.hex
+   ```
+
+   The distinction matters: the hex flag puts the secret in the process argument list, where any local
+   process can read it from `ps` or `/proc/<pid>/cmdline`, whereas only the path is exposed. If both are
+   given the hex flag wins and the path is not read. A path that is set but unreadable, or that holds no
+   secp256k1 key, is a startup error rather than a silent fallback — otherwise the node would run with
+   no validator identity and never propose. *Encrypted* PEMs are not accepted here (they need a
+   passphrase; `Secp256k1.parse_pem_file` covers that shape).
 
 2. **A wallets file.** The genesis ceremony parses `~/.rnode/genesis/wallets.txt` *strictly*, so the
    file must exist — an empty file is fine. `bonds.txt` is auto-generated when absent, but to be

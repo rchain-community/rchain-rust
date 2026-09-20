@@ -25,7 +25,7 @@ and **no file is left without one or the other** — the linter's check 7 passes
 
 ## Inventory
 
-**1311 `#[test]`/`#[tokio::test]` unit functions + 84 integration tests** across 13 crates, with **6
+**1315 `#[test]`/`#[tokio::test]` unit functions + 84 integration tests** across 13 crates, with **6
 laws** carrying a randomized property test and **10 benchmark functions** in 6 Criterion groups. Only
 **3 of 12 crates have integration tests** (`rholang`, `casper`, `node`).
 
@@ -33,7 +33,7 @@ laws** carrying a randomized property test and **10 benchmark functions** in 6 C
 |---|---|---|---|---|
 | `sdk` | 46 | — | 2 | — |
 | `shared` | 83 | — | — | — |
-| `crypto` | 86 | — | — | — |
+| `crypto` | 89 | — | — | — |
 | `graphz` | 18 | — | — | — |
 | `models` | 143 | — | 5 | — |
 | `block-storage` | 40 | — | 3 | — |
@@ -41,7 +41,7 @@ laws** carrying a randomized property test and **10 benchmark functions** in 6 C
 | `rspace` | 166 | — | 7 | — |
 | `rholang` | 188 | 37 | 7 | — |
 | `casper` | 221 | 38 | 3 | — |
-| `node` | 177 | 9 | — | — |
+| `node` | 178 | 9 | — | — |
 | `qucalc` | 20 | — | — | — |
 | `rspace-bench` | — | — | — | 10 |
 
