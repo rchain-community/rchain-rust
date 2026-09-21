@@ -977,6 +977,11 @@ impl Parser {
                     procs.push(self.parse_proc()?);
                     if self.peek() == &Tok::Comma {
                         self.next();
+                        // `[a, b, ...rest]`: the remainder is not a process, so stop before
+                        // `parse_proc` sees the ellipsis and let `parse_proc_remainder` take it.
+                        if self.peek() == &Tok::Ellipsis {
+                            break;
+                        }
                     } else {
                         break;
                     }
@@ -1038,6 +1043,10 @@ impl Parser {
                     kvs.push(KeyValuePair(k, v));
                     if self.peek() == &Tok::Comma {
                         self.next();
+                        // `{a: 1, ...rest}`: stop before `parse_proc` meets the ellipsis.
+                        if self.peek() == &Tok::Ellipsis {
+                            break;
+                        }
                     } else {
                         break;
                     }
@@ -1054,6 +1063,10 @@ impl Parser {
                     procs.push(self.parse_proc()?);
                     if self.peek() == &Tok::Comma {
                         self.next();
+                        // `Set(a, b, ...rest)`: stop before `parse_proc` meets the ellipsis.
+                        if self.peek() == &Tok::Ellipsis {
+                            break;
+                        }
                     } else {
                         break;
                     }
@@ -1310,6 +1323,53 @@ mod tests {
     fn parses_nil() {
         let p = parse("Nil").unwrap();
         assert_eq!(p, Proc::PNil);
+    }
+
+    /// A `ProcRemainder` applies to **every** collection form, but only the map branch broke on
+    /// the ellipsis: the list and set branches consumed the comma unconditionally and then called
+    /// `parse_proc` on `...`, which is not a process. So `[=*type, ...item]` — how `Inbox.rho`
+    /// destructures a message queue, and therefore how the whole rgov governance set that imports
+    /// it destructures one — failed to parse with `expected variable, got Ellipsis`, while
+    /// `{a: 1, ...rest}` was accepted. The remainder must also be *carried*, not dropped.
+    #[test]
+    fn collection_remainders_parse_for_lists_and_sets_not_only_maps() {
+        for src in [
+            "[a, ...rest]",
+            "[=*type, ...item]",
+            "[=*type, =*subtype, ...item]",
+            "[a, ..._]",
+            "Set(a, ...rest)",
+            "{a: 1, ...rest}",
+            "{a: 1, ..._}",
+        ] {
+            let parsed = parse(src).unwrap_or_else(|e| panic!("`{src}` must parse: {e}"));
+            let remainder = match &parsed {
+                Proc::PCollect(Collection::CollectList(_, r))
+                | Proc::PCollect(Collection::CollectSet(_, r))
+                | Proc::PCollect(Collection::CollectMap(_, r)) => r,
+                other => panic!("`{src}` parsed as {other:?}, expected a collection"),
+            };
+            assert!(
+                matches!(remainder, ProcRemainder::ProcRemainderVar(_)),
+                "`{src}`: the remainder should be bound to a var, got {remainder:?}"
+            );
+        }
+
+        // A comma-separated collection with no ellipsis still has an empty remainder.
+        let Proc::PCollect(Collection::CollectList(_, remainder)) = parse("[a, b]").unwrap() else {
+            panic!("expected a list")
+        };
+        assert!(matches!(remainder, ProcRemainder::ProcRemainderEmpty));
+
+        // The whole shape that failed in the wild, verbatim from `Inbox.rho`: a match arm whose
+        // pattern is a par containing a map containing a list-with-remainder.
+        parse(
+            "match (*items) {
+               {[=*type, ...item] | rest} => { ret!(item) | box!(rest) }
+               _ => { box!(*items) | ret!(Nil) }
+             }",
+        )
+        .expect("the Inbox.rho read-pattern must parse");
     }
 
     #[test]

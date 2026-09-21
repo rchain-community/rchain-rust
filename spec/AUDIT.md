@@ -996,6 +996,35 @@ oracle is, and the test that pins the fix.
   published API documentation and the code disagreed, and the *documentation* was right. That is
   independent evidence for the fix rather than a preference for camelCase.
 
+- **C17 — the list and `Set` collection branches had no remainder production, and neither did the
+  collection-level map branch.** The grammar gives *every* collection form a remainder:
+
+  ```
+  CollectList.   Collection ::= "[" [Proc] ProcRemainder "]" ;
+  CollectSet.    Collection ::= "Set" "(" [Proc] ProcRemainder")" ;
+  CollectMap.    Collection ::= "{" [KeyValuePair] ProcRemainder"}" ;
+  ProcRemainderVar.   ProcRemainder ::= "..." ProcVar ;
+  ```
+
+  One map path (`parse_proc`'s `{k: v}` arm) broke on the ellipsis, so `{a: 1, ...rest}` parsed; the
+  three arms in `parse_collection` — list, `Set(...)`, and its own map arm — consumed the comma
+  unconditionally and then called `parse_proc` on `...`, which is not a process. So
+  `[=*type, ...item]` failed with `expected variable, got Ellipsis` while the same construct in a map
+  was accepted. `ProcRemainderVar` is not merely unsupported downstream: `normalize_collection`
+  carries it into `EList`/`ESet`/`EMap`'s `remainder` field, and the matcher consumes it
+  (`fold_match`, `handle_remainder`). Only the parser was missing the arm, which made a valid
+  collection pattern unparseable for two of the three forms. Measured payoff: the rgov governance
+  contracts (`rchain-community/rgov`) destructure their message queues exactly this way — `Inbox.rho`
+  uses it 16 times with both bindings *used* (`ret!(item) | box!(rest)`), so `Inbox.rho` is
+  unparseable and everything importing it is too: `Directory.rho`, `Issue.rho`, `Group.rho`,
+  `CrowdFund.rho`, `Kudos.rho`, `memberIdGovRev.rho` and `feature/MemberDirectory.rho` **all failed to
+  parse and all parse now** (verified against the files themselves, not a reduction of them).
+  **Fix:** after a comma, each branch breaks on `Tok::Ellipsis`, leaving the token to
+  `parse_proc_remainder`, as the map arm in `parse_proc` already did. Verified:
+  `collection_remainders_parse_for_lists_and_sets_not_only_maps` parses every form, asserts the
+  remainder is *carried* rather than dropped (`ProcRemainderVar`), and parses the `Inbox.rho` read
+  pattern verbatim — `match (*items) { {[=*type, ...item] | rest} => {…} _ => {…} }`.
+
 ### Open question (behaviour pinned, oracle not established)
 
 - **`models/src/wire.rs::expr_from_proto` decodes an `Expr` with no instance to `GBool(false)`.** The
