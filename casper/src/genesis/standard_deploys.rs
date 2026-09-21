@@ -83,6 +83,176 @@ fn to_public(private_key_hex: &str) -> Result<PublicKey, String> {
     Secp256k1.to_public(&private_key).map_err(|e| e.to_string())
 }
 
+/// The `rho:id` a blessed contract registers itself under.
+///
+/// `rho:registry:insertSigned:secp256k1` derives the URI from the **deployer public key** it is
+/// called with (`rholang/src/system_processes.rs::registry_insert_signed` →
+/// `registry::build_uri(&blake2b256(pub_key))`), never from the deploy signature or a timestamp.
+/// Every blessed deploy's key is a fixed constant above, so its URI is a **chain-independent
+/// constant**: the value a consumer may hardcode, and the key the genesis alias seed copies onto the
+/// shorthand (`spec/GENESIS.md`).
+///
+/// Note it is this port's own zbase32 encoding (`rholang/src/registry.rs`), not the 54-char
+/// mainnet values in the `.rho` header comments — those come from the Scala's CRC14+ZBase32 bit
+/// order, which the port deliberately does not reproduce.
+pub fn contract_uri(private_key_hex: &str) -> Result<String, String> {
+    let public_key = to_public(private_key_hex)?;
+    Ok(rchain_rholang::registry::build_uri(
+        &rchain_crypto::hash::blake2b256::hash(public_key.bytes()),
+    ))
+}
+
+// -------------------------------------------------------------------------------------------------
+// The genesis registry manifest
+// -------------------------------------------------------------------------------------------------
+
+/// What provides the value a shorthand resolves to.
+pub enum GenesisAliasSource {
+    /// An arity-1 native system channel (`rholang/src/system_processes.rs::definitions`). Only the
+    /// *registry alias* is missing on a fresh chain; the value is built by
+    /// `system_processes::system_channel_alias` as `(nonce, bundle+{channel})`.
+    NativeChannel,
+    /// An interpreted contract installed by the blessed deploy built from this fixed key. The genesis
+    /// seed copies the entry the deploy registered under [`contract_uri`] onto the shorthand.
+    Contract { private_key_hex: &'static str },
+}
+
+/// One registry entry a fresh chain seeds, with the consumer that justifies it. Genesis content is
+/// consensus identity, so every entry is here for a named reason — `spec/GENESIS.md` carries the
+/// full manifest, including what is deliberately *not* installed.
+pub struct GenesisAlias {
+    /// The name consumers look up, e.g. `rho:rchain:revVault`.
+    pub shorthand: &'static str,
+    pub source: GenesisAliasSource,
+    /// The consumer-side evidence (file:line in the wallet / rgov checkouts) for this entry.
+    pub consumer: &'static str,
+}
+
+/// The shorthands a fresh chain's registry resolves. Minimal by design: each is reached by
+/// `rho:registry:lookup` from a real consumer, or is a dependency of one that is.
+pub const GENESIS_ALIASES: &[GenesisAlias] = &[
+    GenesisAlias {
+        shorthand: "rho:rchain:revVault",
+        source: GenesisAliasSource::NativeChannel,
+        consumer:
+            "wallet + rgov: r-wallet/src/utils/rho.ts:7,18; rgov src/actions/transfer.rho:4, \
+                   checkBalance.rho:10 — `lookup!` then `@(_, RevVault)` then the vault methods",
+    },
+    GenesisAlias {
+        shorthand: "rho:rchain:pos",
+        source: GenesisAliasSource::NativeChannel,
+        consumer: "wallet bonding: r-wallet/src/utils/rho.ts:29 — `lookup!` then `@(_, PoS)` then \
+                   `PoS!(\"bond\", …)`",
+    },
+    GenesisAlias {
+        shorthand: "rho:rchain:makeMint",
+        source: GenesisAliasSource::Contract {
+            private_key_hex: MAKE_MINT_PK,
+        },
+        consumer: "rgov src/actions/makeMint.rho:13 + wallet snippets.ts:751 — `lookup!` then \
+                   `@(nonce, *MakeMint)` then `MakeMint!(*ch)`",
+    },
+    GenesisAlias {
+        shorthand: "rho:lang:listOps",
+        source: GenesisAliasSource::Contract {
+            private_key_hex: LIST_OPS_PK,
+        },
+        consumer: "rgov rholang/core/CrowdFund.rho:8 — `lookup!` then `@(_, *ListOps)` then \
+                   `ListOps!(\"fold\", …)`",
+    },
+    GenesisAlias {
+        shorthand: "rho:lang:nonNegativeNumber",
+        source: GenesisAliasSource::Contract {
+            private_key_hex: NON_NEGATIVE_NUMBER_PK,
+        },
+        consumer:
+            "no direct consumer; it is the dependency `MakeMint.rho:27` looks up before it can \
+                   install, so it is aliased for makeMint to work at all",
+    },
+];
+
+/// The registry value for a native system channel shorthand: `(nonce, bundle+{channel})`.
+pub fn native_channel_alias(shorthand: &str) -> Option<rchain_models::ast::Par> {
+    rchain_rholang::system_processes::system_channel_alias(shorthand)
+}
+
+// -------------------------------------------------------------------------------------------------
+// The adapted MakeMint epilogue
+// -------------------------------------------------------------------------------------------------
+
+/// `MakeMint.rho` with its registry epilogue adapted for this port.
+///
+/// The blessed source ends by asking `rho:registry:systemContractManager` for a write-only
+/// dispatcher and by defining a `securityCheck` arm that calls `rho:rchain:configPublicKeyCheck`.
+/// **Neither channel exists in this port** — both were provided by the interpreted `Registry.rho`,
+/// which is not installed (`spec/GENESIS.md`) — so the `for` that waits on them never fires, the
+/// deploy registers nothing, and `lookup!(\`rho:rchain:makeMint\`, *ch)` answers `Nil` forever.
+///
+/// The adaptation registers the contract's own bundle and drops the unused `securityCheck` arm. That
+/// is behaviourally identical on the consumer path — `lookup!` returns `(nonce, bundle+{MakeMint})`
+/// and the caller invokes it, which is exactly what `MakeMint!(*ch)` in the wallet and rgov does —
+/// and neither checkout calls `securityCheck` (`spec/GENESIS.md` records the evidence).
+///
+/// Each replacement asserts its marker, so a drift in the vendored source fails the genesis build
+/// loudly instead of silently shipping an epilogue that cannot register.
+fn make_mint_source() -> Result<String, String> {
+    let mut source = MAKE_MINT_RHO.to_string();
+
+    // 1. The `new` binding list: the three names only existed to hold the channels this port does not
+    //    have. Dropped so the adapted source carries no reference to them at all.
+    let bindings = "  deployerId(`rho:rchain:deployerId`),\n  systemContractManagerCh,\n  \
+                    dispatcherCh,\n  configPublicKeyCheckCh\nin {";
+    let patched_bindings = "  deployerId(`rho:rchain:deployerId`)\nin {";
+    if !source.contains(bindings) {
+        return Err(
+            "MakeMint.rho: the `new` binding marker is missing from the vendored source".into(),
+        );
+    }
+    source = source.replace(bindings, patched_bindings);
+
+    // 2. The two lookups for the absent channels: without them the lookups would answer `Nil` onto
+    //    channels nothing reads (stray datums in the genesis state), and the gate below could never
+    //    fire anyway.
+    let lookups = "  rl!(`rho:registry:systemContractManager`, *systemContractManagerCh)|\n  \
+                   rl!(`rho:rchain:configPublicKeyCheck`, *configPublicKeyCheckCh)|\n  ";
+    if !source.contains(lookups) {
+        return Err("MakeMint.rho: the lookup markers are missing from the vendored source".into());
+    }
+    source = source.replace(lookups, "  ");
+
+    // 3. The install gate: wait only for the dependency this port actually has.
+    let gate = "for(@(_, NonNegativeNumber) <- NonNegativeNumberCh & @(_, systemContractManager) \
+                <- systemContractManagerCh& @(_, configPublicKeyCheck)<- configPublicKeyCheckCh) {";
+    let patched_gate = "for(@(_, NonNegativeNumber) <- NonNegativeNumberCh) {";
+    if !source.contains(gate) {
+        return Err(
+            "MakeMint.rho: the install-gate marker is missing from the vendored source".into(),
+        );
+    }
+    source = source.replace(gate, patched_gate);
+
+    // 4. The registration: discharge the dispatcher request and register the contract's own bundle.
+    let epilogue = "@systemContractManager!(\"createDispatcher\", *MakeMint, *dispatcherCh)|\n    \
+                    contract @(*MakeMint, \"securityCheck\")(@deployerId, ret) = {\n      \
+                    @configPublicKeyCheck!(deployerId, *ret)\n    } |\n    \
+                    for (makeMintdispatcher <- dispatcherCh){\n      // Inserts signed write-only \
+                    MakeMint dispatcher contract into the registry\n      rs!(\n        \
+                    (9223372036854775807, bundle+{*makeMintdispatcher}),\n        *deployerId,\n        \
+                    *uriOut\n      )\n    }";
+    let patched_epilogue = "// Adapted (see `make_mint_source`): no systemContractManager in this \
+                            port; register the contract's own bundle.\n    \
+                            rs!(\n      (9223372036854775807, bundle+{*MakeMint}),\n      \
+                            *deployerId,\n      *uriOut\n    )";
+    if !source.contains(epilogue) {
+        return Err(
+            "MakeMint.rho: the registry-epilogue marker is missing from the vendored source".into(),
+        );
+    }
+    source = source.replace(epilogue, patched_epilogue);
+
+    Ok(load_source("MakeMint.rho", &source))
+}
+
 // -------------------------------------------------------------------------------------------------
 // Standard deploys
 // -------------------------------------------------------------------------------------------------
@@ -177,7 +347,7 @@ impl StandardDeploys {
 
     pub fn make_mint(shard_id: &str) -> Result<SignedDeployData, String> {
         Self::to_deploy(
-            load_source("MakeMint.rho", MAKE_MINT_RHO),
+            make_mint_source()?,
             MAKE_MINT_PK,
             MAKE_MINT_TIMESTAMP,
             shard_id,
@@ -272,6 +442,146 @@ mod tests {
     #[test]
     fn system_public_keys_has_ten_entries() {
         assert_eq!(StandardDeploys::system_public_keys().unwrap().len(), 10);
+    }
+
+    /// Each alias entry is seedable: a native channel resolves to a value, a contract alias resolves
+    /// to a `rho:id` — and the URI is a pure function of the fixed key, so two calls agree (the
+    /// property that lets a consumer hardcode it, and the genesis alias seed recompute it).
+    #[test]
+    fn every_genesis_alias_has_a_source() {
+        for alias in GENESIS_ALIASES {
+            match alias.source {
+                GenesisAliasSource::NativeChannel => {
+                    let value = native_channel_alias(alias.shorthand).unwrap_or_else(|| {
+                        panic!(
+                            "{} names a native channel with no alias value",
+                            alias.shorthand
+                        )
+                    });
+                    assert!(
+                        !value.exprs.is_empty(),
+                        "{} must resolve to a `(nonce, bundle)` value",
+                        alias.shorthand
+                    );
+                }
+                GenesisAliasSource::Contract { private_key_hex } => {
+                    let uri = contract_uri(private_key_hex).expect("the fixed key derives a URI");
+                    assert!(uri.starts_with("rho:id:"), "{uri}");
+                    assert_eq!(uri.len(), "rho:id:".len() + 52, "{uri}");
+                    assert_eq!(uri, contract_uri(private_key_hex).unwrap(), "deterministic");
+                }
+            }
+            assert!(
+                !alias.consumer.is_empty(),
+                "{} must record the consumer that justifies it",
+                alias.shorthand
+            );
+        }
+    }
+
+    /// The `rho:id` of every *aliased* blessed contract, pinned. These are the constants a consumer
+    /// may hardcode (`spec/GENESIS.md`); they are this port's own zbase32 encoding, so they are not
+    /// the 54-char mainnet ids in the `.rho` header comments. A change here is a genesis change.
+    #[test]
+    fn aliased_contract_uris_are_pinned() {
+        // The `rho:id` each seeded shorthand resolves to, as `spec/GENESIS.md` publishes them. These
+        // are consensus-visible: a consumer hardcodes them, so a change here is a genesis change and
+        // must be recorded in the manifest — which is why they are asserted, not printed.
+        let expected: &[(&str, &str)] = &[
+            (
+                "rho:rchain:makeMint",
+                "rho:id:asysrwfgzf8bf7sxkiowp4b3tcsy4f8ombi3w96ysox4u3qdmn1o",
+            ),
+            (
+                "rho:lang:listOps",
+                "rho:id:6fzorimqngeedepkrizgiqms6zjt76zjeciktt1eifequy4osz3o",
+            ),
+            (
+                "rho:lang:nonNegativeNumber",
+                "rho:id:hxyadh1ffypra47ry9mk6b8r1i33ar1w9wjsez4khfe9huzrfcyo",
+            ),
+        ];
+        for (shorthand, uri) in expected {
+            let alias = GENESIS_ALIASES
+                .iter()
+                .find(|a| a.shorthand == *shorthand)
+                .unwrap_or_else(|| panic!("{shorthand} must be in the manifest"));
+            let GenesisAliasSource::Contract { private_key_hex } = alias.source else {
+                panic!("{shorthand} must be an installed contract");
+            };
+            assert_eq!(
+                contract_uri(private_key_hex).unwrap(),
+                *uri,
+                "{shorthand}: its URI is consensus-visible and published in spec/GENESIS.md"
+            );
+        }
+    }
+
+    /// The MakeMint adaptation is applied, and applied *loudly*: the term must no longer contain the
+    /// epilogue that waits on channels this port does not have, and must carry the direct
+    /// registration instead.
+    #[test]
+    fn the_make_mint_epilogue_is_adapted() {
+        let term = make_mint_source().expect("the vendored source still has both markers");
+        assert!(
+            !term.contains("createDispatcher"),
+            "the unadapted dispatcher request must be gone"
+        );
+        // Asserted against the *use* forms, not the bare names: the adaptation's own comment names
+        // the channels it removed, and a comment cannot resolve anything.
+        for gone in [
+            "createDispatcher",
+            "@systemContractManager!(",
+            "rl!(`rho:registry:systemContractManager`",
+            "configPublicKeyCheck!(",
+            "rl!(`rho:rchain:configPublicKeyCheck`",
+            "systemContractManagerCh",
+            "configPublicKeyCheckCh",
+        ] {
+            assert!(
+                !term.contains(gone),
+                "the adapted term must not contain {gone:?}"
+            );
+        }
+        assert!(
+            term.contains("(9223372036854775807, bundle+{*MakeMint})"),
+            "the contract registers its own bundle"
+        );
+        // …and the adapted term still parses and normalizes: the patch edits text, so this is what
+        // catches an edit that leaves the source unbalanced. On a worker thread with the 32 MiB
+        // stack the runtime gives genesis deploys — the blessed terms recurse past the 2 MiB default.
+        let normalized = std::thread::Builder::new()
+            .stack_size(32 * 1024 * 1024)
+            .spawn(move || rchain_rholang::normalizer::source_to_adt(&term).is_ok())
+            .expect("spawn")
+            .join()
+            .expect("join");
+        assert!(
+            normalized,
+            "the adapted MakeMint term must parse and normalize"
+        );
+    }
+
+    /// A drift in the vendored `MakeMint.rho` must fail the genesis *build*, not silently ship an
+    /// epilogue that cannot register. Asserted by patching a copy of the source with the marker
+    /// removed.
+    #[test]
+    fn a_drifted_make_mint_source_is_an_error() {
+        // The markers are matched exactly, so a source edit that moves them is caught here.
+        let source = MAKE_MINT_RHO;
+        // Every marker `make_mint_source` replaces, asserted independently: a source that loses one
+        // of them must fail here (and in the genesis build) rather than ship unpatched.
+        for marker in [
+            "@systemContractManager!(\"createDispatcher\"",
+            "for(@(_, NonNegativeNumber) <- NonNegativeNumberCh & @(_, systemContractManager)",
+            "rl!(`rho:registry:systemContractManager`, *systemContractManagerCh)|",
+            "systemContractManagerCh,\n  dispatcherCh,\n  configPublicKeyCheckCh\nin {",
+        ] {
+            assert!(
+                source.contains(marker),
+                "vendored MakeMint.rho lost the marker {marker:?}"
+            );
+        }
     }
 }
 

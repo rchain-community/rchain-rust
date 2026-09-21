@@ -37,6 +37,39 @@ pub fn byte_name(b: u8) -> Par {
     RhoName::apply_bytes(vec![b])
 }
 
+/// The nonce a system contract is registered with (the Scala `Long.MaxValue`): consumers destructure
+/// the registry reply as `(nonce, value)` and ignore this element.
+pub const SYSTEM_CONTRACT_NONCE: i64 = i64::MAX;
+
+/// The shorthands that must resolve through `rho:registry:lookup` to a **native system channel**.
+///
+/// Each names an arity-1 channel that `definitions()` already installs as a continuation; what is
+/// missing on a fresh chain is only the *registry alias*, so that `lookup!(\`rho:rchain:pos\`, *ch)`
+/// finds something instead of answering `Nil`. Kept as a table (rather than a lookup inside
+/// `definitions()`) so the genesis path can seed it without a `SystemProcesses` instance; a test
+/// asserts every urn here is a real definition with the channel this module maps it to.
+pub const SYSTEM_CHANNEL_ALIAS_URNS: &[&str] = &[
+    "rho:rchain:pos",
+    "rho:rchain:revVault",
+    "rho:rchain:multiSigRevVault",
+];
+
+/// The registry value a system-channel shorthand resolves to: `(nonce, bundle+{channel})` — the
+/// shape `rho:registry:insertSigned:secp256k1` stores, which is what every consumer destructures
+/// (`for (@(_, PoS) <- ch)`). `None` for a urn that is not one of [`SYSTEM_CHANNEL_ALIAS_URNS`].
+pub fn system_channel_alias(urn: &str) -> Option<Par> {
+    let channel = match urn {
+        "rho:rchain:pos" => FixedChannels::pos(),
+        "rho:rchain:revVault" => FixedChannels::rev_vault(),
+        "rho:rchain:multiSigRevVault" => FixedChannels::multi_sig_rev_vault(),
+        _ => return None,
+    };
+    Some(RhoTupleN::apply(vec![
+        RhoNumber::apply(SYSTEM_CONTRACT_NONCE),
+        crate::runtime::write_bundle(channel),
+    ]))
+}
+
 /// The fixed system channels (port of `SystemProcesses.FixedChannels`).
 pub struct FixedChannels;
 impl FixedChannels {

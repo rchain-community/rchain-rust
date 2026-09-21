@@ -99,6 +99,29 @@ inputs simplified (theory in [Consensus (Casper)](consensus.md)):
   but is never exercised); **no partitions/latency** (local Docker bridge); **throwaway keys** with no
   economic security; a small fixed validator set (≤3).
 
+## Genesis content and what a consumer can hardcode
+
+A fresh chain's genesis installs the interpreted contracts a client reaches through
+`rho:registry:lookup`, and seeds the shorthand aliases so those lookups resolve — `rho:rchain:revVault`
+and `rho:rchain:pos` (native channels), `rho:rchain:makeMint`, `rho:lang:listOps` and
+`rho:lang:nonNegativeNumber`. [`spec/GENESIS.md`](../../../spec/GENESIS.md) is the manifest: each
+entry with the consumer it unblocks, its `rho:id`, and what is deliberately *not* installed.
+
+For a client:
+
+- A seeded lookup answers **`(9223372036854775807, bundle+{dispatcher})`** — the signed-registration
+  shape, destructured `for (@(_, X) <- ch)` (or `for (@(_, *X) <- ch)`), after which `X` is callable.
+  A `Nil` reply is what an *unseeded* shorthand looks like; it is silent, since an unmatched `for` is
+  not an error.
+- The `rho:id`s of the blessed contracts are **constants of this port** (they derive from fixed
+  deployer keys) and are listed in the manifest, so they are safe to hardcode. They are not the
+  54-char mainnet ids.
+- `down -v && up` **regenerates genesis**, which produces a new genesis *address* and invalidates any
+  URI recorded from a *deployed* bootstrap (e.g. a governance master URI obtained by deploying the
+  contract set at runtime). With the blessed set installed at genesis, that no longer applies to the
+  node's own contracts — but anything a deploy registers is still per-chain, because
+  `rho:registry:insertArbitrary` derives its URI from a random seed.
+
 ## Ports
 
 Deploy is served on gRPC `40401` and Propose+Repl on `40402`; the helpers run the Rust `rnode` client

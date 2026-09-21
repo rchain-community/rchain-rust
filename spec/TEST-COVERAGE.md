@@ -40,7 +40,7 @@ laws** carrying a randomized property test and **10 benchmark functions** in 6 C
 | `comm` | 123 | — | — | — |
 | `rspace` | 166 | — | 7 | — |
 | `rholang` | 196 | 39 | 7 | — |
-| `casper` | 221 | 38 | 3 | — |
+| `casper` | 221 | 40 | 3 | — |
 | `node` | 178 | 9 | — | — |
 | `qucalc` | 20 | — | — | — |
 | `rspace-bench` | — | — | — | 10 |
@@ -211,6 +211,11 @@ not found in that file. Coverage claims live here rather than in prose so they c
 | C20 | `rholang/src/matcher/spatial_matcher.rs` | `a_set_pattern_may_name_fewer_members_than_the_set_has` |
 | C20 | `rholang/src/matcher/spatial_matcher.rs` | `list_remainders_stay_positional` |
 | C20 | `rholang/tests/system_process_conformance.rs` | `collection_patterns_match_a_subset_of_their_collection` |
+| genesis | `casper/tests/genesis_registry.rs` | `a_fresh_chain_resolves_and_can_call_every_seeded_shorthand` |
+| genesis | `casper/tests/genesis_registry.rs` | `the_seeded_registry_is_identical_across_fresh_genesis_ceremonies` |
+| genesis | `casper/src/genesis/standard_deploys.rs` | `aliased_contract_uris_are_pinned` |
+| genesis | `casper/src/genesis/standard_deploys.rs` | `every_genesis_alias_has_a_source` |
+| genesis | `casper/src/genesis/standard_deploys.rs` | `the_make_mint_epilogue_is_adapted` |
 | syntax | `rholang/src/reduce.rs` | `plus_and_minus_also_insert_into_and_delete_from_collections` |
 
 ## Gap analysis (severity-ordered)
@@ -560,6 +565,7 @@ green diff. These are all of them.
 | `rholang/src/pretty_printer.rs::build_bundle` — print the `bundle` keyword with Scala's 8-column padding | Bundles printed as `0{ … }`, losing the keyword (AUDIT §16 C13) | `printing_and_reparsing_is_the_identity` |
 | `comm/src/upnp/gateway.rs::split_authority` — a bracket-aware authority split, shared by the SSRF guard and the URL splitter | The guard read `[::1]` as the host `"["`, allowing a loopback discovery URL (AUDIT §16 C14) | `the_url_guard_allows_private_gateways_and_refuses_ssrf_targets` |
 | `rholang/src/matcher/spatial_matcher.rs` — the `ESet`/`EMap` arms take their `remainder` from the *pattern* (as the `EList` arm and the Scala do), and `list_match`'s padding gate returns to the Scala's `remainder.is_some()` | Those two arms read the collection remainder off the **target**, which never has one, so `is_wildcard`/`remainder_var` were permanently `false`/`None` and a partial map/set pattern could not match at all — every rgov governance contract gates its entire body on one, and an unmatched `for` is silent, so the whole family returned `[]` with no diagnostic. The padding gate was a no-op for collections for the same reason (AUDIT §17 C20, and C19's resolution) | `a_map_pattern_may_name_fewer_entries_than_the_map_has`, `a_named_map_remainder_captures_the_unnamed_entries`, `a_set_pattern_may_name_fewer_members_than_the_set_has`, `list_remainders_stay_positional`, `collection_patterns_match_a_subset_of_their_collection` |
+| `casper/src/genesis/{mod.rs,standard_deploys.rs,runtime_replay.rs}` + `rholang/src/{native_state.rs,system_processes.rs,runtime.rs}` — genesis installs `ListOps`/`NonNegativeNumber`/`MakeMint`, seeds the shorthand aliases natively (native channels + the blessed contracts' `rho:id` entries), adapts `MakeMint.rho`'s epilogue, and reproduces the seeding on replay | A fresh chain's registry was empty, so `lookup!(\`rho:rchain:revVault\`, *ch)` answered `Nil` — silently, because an unmatched `for` is not an error, which is why the rgov family and the wallet's bonding path failed as if in client code. The `MakeMint` epilogue waits on two channels this port does not have, so it could never register (`spec/GENESIS.md`). The replay twin must seed identically or the replayed genesis hash diverges (Law 11) | `a_fresh_chain_resolves_and_can_call_every_seeded_shorthand`, `the_seeded_registry_is_identical_across_fresh_genesis_ceremonies`, `aliased_contract_uris_are_pinned`, `every_genesis_alias_has_a_source`, `the_make_mint_epilogue_is_adapted`, `a_drifted_make_mint_source_is_an_error` |
 
 ### The census sweep (definition of done items 10–11)
 

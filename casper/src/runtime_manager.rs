@@ -608,6 +608,10 @@ impl RuntimeManager {
         self.runtime.set_block_data(block_data);
         let pre_state_hash = self.runtime.empty_state_hash().await?;
         self.runtime.reset(pre_state_hash).await.map_err(|e| e)?;
+        let native = NativeSystemState::new(self.runtime.native_store());
+        // The native-channel aliases have no deploy to wait for; seed them before the loop so a
+        // blessed deploy could look them up, and re-seed after each deploy below.
+        crate::genesis::seed_registry_aliases(&native).await?;
         let mut results = Vec::new();
         for (i, d) in terms.iter().enumerate() {
             let r = rand
@@ -622,16 +626,24 @@ impl RuntimeManager {
                 mergeable: BTreeMap::new(),
                 eval_result,
             });
+            // Publish the aliases this deploy's registration made available, before the next deploy
+            // runs (MakeMint resolves `rho:lang:nonNegativeNumber` at deploy time).
+            crate::genesis::seed_registry_aliases(&native).await?;
         }
         // Install the native system-contract state before the final checkpoint so it is
         // content-addressed into the post-state hash.
-        let native = NativeSystemState::new(self.runtime.native_store());
         native.install_genesis(pos_genesis);
         // Seed the initial REV vault balances from the genesis wallets file so pre-charge can
         // deduct phlo (the native vault map is otherwise empty, and every deploy fails pre-charge).
         for vault in vaults {
             native.set_vault_balance(&vault.rev_address.to_base58(), vault.initial_balance);
         }
+        // Re-seed once more so an alias whose source was the last deploy still lands before the
+        // checkpoint. The *completeness* check belongs to the genesis ceremony
+        // (`create_genesis_block`): `compute_genesis` is also called with arbitrary term lists (in
+        // tests, and for a chain that installs a different contract set), and demanding the full
+        // manifest here would reject those.
+        crate::genesis::seed_registry_aliases(&native).await?;
         let checkpoint = self.runtime.create_checkpoint().await.map_err(|e| e)?;
         let mergeable_chs: Vec<NumberChannelsDiff> =
             results.iter().map(|r| r.mergeable.clone()).collect();

@@ -86,7 +86,7 @@ pub struct RhoRuntime {
 }
 
 /// A write-only bundle over `channel` (port of `Bundle(channel, writeFlag = true)`).
-fn write_bundle(channel: Par) -> Par {
+pub(crate) fn write_bundle(channel: Par) -> Par {
     Par {
         bundles: vec![Bundle {
             body: Box::new(channel),

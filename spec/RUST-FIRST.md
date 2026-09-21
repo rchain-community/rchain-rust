@@ -116,11 +116,15 @@ deferred:** reward computation/distribution and the vault **unforgeable-name cap
 simplified model keys vaults by REV address, so `findOrCreate` returns the address rather than a fresh
 unforgeable).
 
-`default_blessed_terms` now returns an empty list; the PoS pool/trusted/params/active state is
-installed natively in `compute_genesis`, and `compute_bonds`/`get_active_validators` read the
-`pos:active` leaf directly (no rholang exploratory deploy). The pre-charge/refund/close-block/slash
-system deploys carry a `NativeSystemDeployOp` and no longer route through `rho:registry:lookup` + the
-`Pos.rhox` contract.
+`default_blessed_terms` installs only the interpreted contracts a consumer actually reaches through
+`rho:registry:lookup` — `ListOps`, `NonNegativeNumber` and `MakeMint` — plus the registry aliases that
+make those lookups (and the native `rho:rchain:revVault` / `rho:rchain:pos` channels) resolve. The
+vault and PoS **system** contracts are not installed as sources: their state is native
+(`install_genesis`), `compute_bonds`/`get_active_validators` read the `pos:active` leaf directly (no
+rholang exploratory deploy), and the pre-charge/refund/close-block/slash system deploys carry a
+`NativeSystemDeployOp` rather than routing through `rho:registry:lookup` + `Pos.rhox`. Installing the
+interpreted equivalents would shadow consensus-critical logic with slower, less auditable copies.
+`spec/GENESIS.md` is the manifest (what is installed, why, and what is deliberately excluded).
 
 ## Cross-links
 

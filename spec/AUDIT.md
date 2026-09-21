@@ -1053,10 +1053,12 @@ oracle is, and the test that pins the fix.
   (`legacy/.../SystemProcesses.scala:355-361`; consumer
   `legacy/casper/src/test/resources/BlockDataContractTest.rho:15-16` binds a two-name pattern, so a
   three-element send cannot match it); the registry's **shorthand table is unimplemented and never
-  seeded** (no shorthand resolution in `registry_lookup`, no `registry_insert` outside
-  `system_processes.rs`, and `casper/src/genesis/mod.rs:151` `default_blessed_terms` installs
-  nothing — so `lookup!(\`rho:rchain:revVault\`, *ch)` answers `Nil` although direct binding
-  `new revVault(\`rho:rchain:revVault\`)` works); and `rho:rchain:revVault` is a redesigned API
+  seeded** — ⚠️ **resolved since** (`spec/GENESIS.md`): genesis now installs `ListOps`,
+  `NonNegativeNumber` and `MakeMint` and seeds the shorthand aliases natively, so
+  `lookup!(\`rho:rchain:revVault\`, *ch)` resolves to a callable value. The original finding stands
+  as the description of what was wrong: `registry_lookup` did a literal key lookup against a registry
+  nothing ever populated, and `default_blessed_terms` installed nothing, so every shorthand answered
+  `Nil` — silently, because an unmatched `for` is not an error; and `rho:rchain:revVault` is a redesigned API
   (`getBalance`/`transfer` on the vault, `findOrCreate` returning an address string rather than a
   vault capability, no `authKey`) with `rho:rchain:multiSigRevVault` wired to the single-sig
   handler. The schema standard these belong to is `spec/API-SCHEMA.md`.

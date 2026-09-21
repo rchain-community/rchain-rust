@@ -168,6 +168,13 @@ impl<'a, R: ReplayRuntime + ?Sized> RuntimeReplayOps<'a, R> {
             for vault in vaults {
                 native.set_vault_balance(&vault.rev_address.to_base58(), vault.initial_balance);
             }
+            // The registry aliases are native state written *outside* the deploy log, so replay has
+            // to reproduce them exactly as `compute_genesis` does — seeding the native channels
+            // before the deploy loop and re-seeding after each deploy — or the replayed genesis
+            // post-state hash would differ from the played one (Law 11).
+            crate::genesis::seed_registry_aliases(&native)
+                .await
+                .map_err(ReplayFailure::internal_error)?;
         }
 
         let mut mergeable: Vec<NumberChannelsDiff> = Vec::new();
@@ -182,6 +189,12 @@ impl<'a, R: ReplayRuntime + ?Sized> RuntimeReplayOps<'a, R> {
                 )
                 .await?,
             );
+            if !with_cost_accounting {
+                let native = NativeSystemState::new(self.runtime.native_store());
+                crate::genesis::seed_registry_aliases(&native)
+                    .await
+                    .map_err(ReplayFailure::internal_error)?;
+            }
         }
         for (i, sd) in system_deploys.iter().enumerate() {
             mergeable.push(

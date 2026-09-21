@@ -139,16 +139,97 @@ fn create_block_with_processed_deploys(
 
 /// The ordered list of blessed (standard) genesis deploys (port of `defaultBlessedTerms`).
 ///
-/// Rust-first: the registry/PoS/vault system contracts are now **native** (`rholang::native_state`
-/// + `system_deploy::NativeSystemDeployOp`); the blessed `.rho`/`.rhox` sources are a checklist only.
-/// Genesis therefore installs no rholang system contracts.
+/// Rust-first: the registry, PoS and vault *system* contracts are native (`rholang::native_state` +
+/// `system_deploy::NativeSystemDeployOp`), so their `.rho`/`.rhox` sources stay a checklist and are
+/// **not** installed — installing them would shadow consensus-critical logic with interpreted
+/// equivalents. What genesis does install is the small set of interpreted contracts a consumer
+/// actually reaches through `rho:registry:lookup`, in dependency order, plus the registry aliases
+/// that make those lookups resolve ([`seed_registry_aliases`], `spec/GENESIS.md`).
+///
+/// Before this, a fresh chain's registry was empty, so `lookup!(\`rho:rchain:revVault\`, *ch)`
+/// answered `Nil` — and a consumer cannot tell a `Nil` reply from a pattern that never matched.
 pub fn default_blessed_terms(
     _proof_of_stake: &ProofOfStake,
     _registry: &Registry,
     _vaults: &[Vault],
-    _shard_id: &str,
+    shard_id: &str,
 ) -> Result<Vec<SignedDeployData>, String> {
-    Ok(Vec::new())
+    Ok(vec![
+        // Order is the dependency order (MakeMint looks up `rho:lang:nonNegativeNumber` at deploy
+        // time, so that alias is seeded between the second and third deploys).
+        standard_deploys::StandardDeploys::list_ops(shard_id)?,
+        standard_deploys::StandardDeploys::non_negative_number(shard_id)?,
+        standard_deploys::StandardDeploys::make_mint(shard_id)?,
+    ])
+}
+
+/// Seed the genesis registry aliases whose source is now available. Idempotent, so the genesis loop
+/// can call it after every blessed deploy and once at the end.
+///
+/// Native system channels are seeded on the first call. A *contract* alias is seeded as soon as the
+/// blessed deploy that registered it has run — the entry is copied from the contract's deterministic
+/// `rho:id` onto the shorthand consumers look up. This is called after *every* deploy rather than
+/// once at the end because `MakeMint` looks up `rho:lang:nonNegativeNumber` **during** its deploy,
+/// so that alias must already exist when MakeMint runs.
+pub async fn seed_registry_aliases(
+    native: &rchain_rholang::native_state::NativeSystemState,
+) -> Result<usize, String> {
+    let mut seeded = 0;
+    for alias in standard_deploys::GENESIS_ALIASES {
+        if native
+            .registry_lookup(alias.shorthand)
+            .await
+            .map_err(|e| e.to_string())?
+            .is_some()
+        {
+            continue;
+        }
+        let value = match alias.source {
+            standard_deploys::GenesisAliasSource::NativeChannel => {
+                standard_deploys::native_channel_alias(alias.shorthand).ok_or_else(|| {
+                    format!(
+                        "genesis alias {} names a native channel that is not a definition",
+                        alias.shorthand
+                    )
+                })?
+            }
+            standard_deploys::GenesisAliasSource::Contract { private_key_hex } => {
+                let uri = standard_deploys::contract_uri(private_key_hex)?;
+                match native
+                    .registry_lookup(&uri)
+                    .await
+                    .map_err(|e| e.to_string())?
+                {
+                    Some(entry) => entry,
+                    // Its blessed deploy has not run yet; the next call after it has will seed this.
+                    None => continue,
+                }
+            }
+        };
+        native.registry_insert(alias.shorthand, &value);
+        seeded += 1;
+    }
+    Ok(seeded)
+}
+
+/// Every shorthand the genesis registry must resolve after the blessed deploys have run. Used to
+/// fail the genesis loudly if an alias did not get seeded — a missing alias is the silent-`Nil`
+/// failure this whole module exists to remove.
+pub async fn missing_genesis_aliases(
+    native: &rchain_rholang::native_state::NativeSystemState,
+) -> Result<Vec<&'static str>, String> {
+    let mut missing = Vec::new();
+    for alias in standard_deploys::GENESIS_ALIASES {
+        if native
+            .registry_lookup(alias.shorthand)
+            .await
+            .map_err(|e| e.to_string())?
+            .is_none()
+        {
+            missing.push(alias.shorthand);
+        }
+    }
+    Ok(missing)
 }
 
 /// Create the signed genesis block (port of `Genesis.createGenesisBlock`).
@@ -190,6 +271,17 @@ pub async fn create_genesis_block(
                 r.eval_result.errors
             ));
         }
+    }
+    // The ceremony is where the full manifest must hold: a chain that starts with a shorthand
+    // answering `Nil` gives every consumer a silent no-op, and the place to refuse that is here —
+    // not on a client's first lookup days later.
+    let native = rchain_rholang::native_state::NativeSystemState::new(runtime.runtime().native_store());
+    let missing = missing_genesis_aliases(&native).await?;
+    if !missing.is_empty() {
+        return Err(format!(
+            "genesis registry aliases were not seeded: {missing:?} — the chain would answer `Nil` \
+             to those lookups"
+        ));
     }
     let processed_deploys: Vec<ProcessedDeploy> =
         processed_results.into_iter().map(|r| r.deploy).collect();
