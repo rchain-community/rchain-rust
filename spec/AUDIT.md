@@ -1075,10 +1075,19 @@ oracle is, and the test that pins the fix.
   `for (@{"read": *MCAread, ..._} <<- @[*deployerId, "MasterContractAdmin"])`, so none of those
   contracts could run, and a `for` whose pattern does not match is **not an error** — it silently
   never fires, which is why the failure presented as `[]` with no diagnostic rather than as a fault.
-  Lists happened to work and maps did not; sets shared the map's fate. **Fix:** pad when the pattern
-  has a remainder *or* is a wildcard (`spatial_matcher.rs::list_match`). Verified:
-  `collection_patterns_match_a_subset_of_their_collection` pins all five forms — list/map/set ×
-  wildcard/named, each asserted to *match*, since the failure mode is silence rather than an error.
+  Lists happened to work and maps did not; sets shared the map's fate. **Fix (diagnosed, NOT
+  landed):** pad when the pattern has a remainder *or* is a wildcard
+  (`spatial_matcher.rs::list_match`). That change makes the test suite green and is the right
+  direction, but it **hangs the node**: with the padding in place the devnet never serves
+  `/api/v1/status` while replaying the chain (`ExitCode=0`, not an OOM, so a stall rather than a
+  crash). Unblocking the bipartite matcher for the wildcard case therefore needs a *bounded* search,
+  not a one-line pad — which is a deliberate change to matcher semantics (Law 5 territory) and is
+  left for that work rather than shipped. Reverted to the padding rule that boots.
+  `collection_patterns_match_a_subset_of_their_collection` is kept, `#[ignore]`d, as the
+  executable record of the defect and of the acceptance criteria: all five forms — list/map/set ×
+  wildcard/named — each asserted to *match*, because the failure mode is silence rather than an
+  error. **Consequence while unlanded:** every rgov governance contract still returns `[]`, since
+  `MemberDirectory.rho:15` gates its body on a partial map pattern.
 
 ### Open question (behaviour pinned, oracle not established)
 

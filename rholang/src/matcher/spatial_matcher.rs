@@ -738,7 +738,16 @@ fn list_match<T: MatchableTerm>(
     // a map with any other key, and every rgov contract gates its whole body on exactly that
     // pattern to reach its capabilities. The handling below already expects this case —
     // `None => { if wildcard || … }` — it simply never received the padding.
-    if remainder.is_some() || wildcard {
+    // NOTE (C19): padding for a *wildcard* remainder (`..._`) belongs here too — a wildcard arrives
+    // as the `wildcard` flag rather than a remainder level, so gating only on `remainder.is_some()`
+    // leaves it with no `MbmPattern::Remainder` to absorb the unnamed entries, and a partial map
+    // pattern (`@{"read": *MCA, ..._}`) can then never match. Adding it here is the diagnosed fix,
+    // but it is **not landed**: with the padding in place the node hangs on startup while replaying
+    // the chain (the devnet never serves `/api/v1/status`; `ExitCode=0`, not an OOM), so it must be
+    // done with a bounded search rather than by unblocking the bipartite matcher unchecked. See
+    // `spec/AUDIT.md` C19 and the ignored
+    // `collection_patterns_match_a_subset_of_their_collection`.
+    if remainder.is_some() {
         for _ in 0..(targets.len() - patterns.len()) {
             all_patterns.push(MbmPattern::Remainder);
         }
