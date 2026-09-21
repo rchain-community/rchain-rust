@@ -1069,10 +1069,21 @@ async fn setup_shard_runtime(
     let autopropose: Option<Arc<dyn Fn() + Send + Sync>> = if conf.autopropose {
         match &proposer_parts {
             Some(pp) => {
-                let tx = pp.queue_tx.clone();
+                let tap_log = log.clone();
+                let tap_tx = pp.queue_tx.clone();
+                // The tap runs on every validated block; if the propose queue is full or the
+                // proposer stream is gone, the request is dropped — and nothing else would say so.
                 let tap: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
                     let (otx, _orx) = tokio::sync::oneshot::channel();
-                    let _ = tx.try_send((true, otx));
+                    if let Err(e) = tap_tx.try_send((true, otx)) {
+                        tap_log.warn(
+                            LogSource::new("coop.rchain.node.runtime.Setup"),
+                            &format!(
+                                "autopropose request not queued ({e}) — no block will be proposed \
+                                 for this trigger"
+                            ),
+                        );
+                    }
                 });
 
                 // Periodic timer: the event-driven tap only fires on a validated block or a deploy,
@@ -1100,7 +1111,15 @@ async fn setup_shard_runtime(
                             break;
                         }
                         let (otx, _orx) = tokio::sync::oneshot::channel();
-                        let _ = timer_tx.try_send((true, otx));
+                        if let Err(e) = timer_tx.try_send((true, otx)) {
+                            timer_log.warn(
+                                LogSource::new("coop.rchain.node.runtime.Setup"),
+                                &format!(
+                                    "autopropose tick for shard {timer_shard} not queued ({e}) — \
+                                     no block will be proposed"
+                                ),
+                            );
+                        }
                     }
                 });
 
@@ -1217,6 +1236,7 @@ async fn setup_shard_runtime(
             proposer_parts.queue_tx,
             proposer,
             proposer_parts.state,
+            log.clone(),
         );
         tokio::spawn(async move {
             use futures_util::StreamExt;
