@@ -1075,19 +1075,45 @@ oracle is, and the test that pins the fix.
   `for (@{"read": *MCAread, ..._} <<- @[*deployerId, "MasterContractAdmin"])`, so none of those
   contracts could run, and a `for` whose pattern does not match is **not an error** — it silently
   never fires, which is why the failure presented as `[]` with no diagnostic rather than as a fault.
-  Lists happened to work and maps did not; sets shared the map's fate. **Fix (diagnosed, NOT
+  Lists happened to work and maps did not; sets shared the map's fate. **Fix (diagnosed, not
   landed):** pad when the pattern has a remainder *or* is a wildcard
   (`spatial_matcher.rs::list_match`). That change makes the test suite green and is the right
-  direction, but it **hangs the node**: with the padding in place the devnet never serves
-  `/api/v1/status` while replaying the chain (`ExitCode=0`, not an OOM, so a stall rather than a
-  crash). Unblocking the bipartite matcher for the wildcard case therefore needs a *bounded* search,
-  not a one-line pad — which is a deliberate change to matcher semantics (Law 5 territory) and is
-  left for that work rather than shipped. Reverted to the padding rule that boots.
+  direction, but it is **not landed, and its node-safety is unverified** — see the correction below.
   `collection_patterns_match_a_subset_of_their_collection` is kept, `#[ignore]`d, as the
   executable record of the defect and of the acceptance criteria: all five forms — list/map/set ×
   wildcard/named — each asserted to *match*, because the failure mode is silence rather than an
   error. **Consequence while unlanded:** every rgov governance contract still returns `[]`, since
   `MemberDirectory.rho:15` gates its body on a partial map pattern.
+
+  **Correction (this entry previously claimed the padding hangs the node — withdrawn).** The
+  observation was real: with the padding built in, the devnet stopped serving `/api/v1/status` while
+  replaying the chain. But the reverted build failed to serve on that same chain data too, so the
+  padding is not what blocked it: the persisted chain had grown across many deploy-heavy runs and its
+  startup replay had outgrown `devnet.sh`'s serve-timeout. On **fresh** data the node boots either
+  way. Controlled comparison settled it: with the padding built in, on the same chain data, the devnet
+  boots and serves (`devnet.sh up` exits 0). The padding is **landed** — it is correct and necessary,
+  since a map of plain values could not be matched partially before it.
+
+  **The padding is NOT sufficient, and there is a second gate (open).** With it landed, the rgov
+  family still returns `[]`. Tracing that: `getMe`'s body calls `createMe`, which is defined *inside*
+  the `for (@{"read": *MCAread, ..._} <<- @[*deployerId, "MasterContractAdmin"])` block at
+  `MemberDirectory.rho:15`; with that gate closed, `createMe` is the outer `new`'s unused channel, so
+  the call silently goes nowhere. Probing that exact pattern against the real channel on a live node
+  shows it **still does not match** (`for (@c <<- …)` — binding the map bare — does match, so the
+  channel holds a value):
+
+  ```
+  channel-holds  a value          ← the channel is populated
+  gate-open      pattern matched  ✗  ← the partial map pattern still fails
+  ```
+
+  The likely reason, and it is a hole in the acceptance test: `MbmPattern::Remainder` absorbs a target
+  only when `t.locally_free_empty()`, and the real dictionaries hold **bundles** (`{"read":
+  bundle+{*read}, …}`), not plain values. The five-form conformance test uses a map of integers, so it
+  passes while the real shape fails — the test must be re-specified with bundle-valued entries before
+  it can serve as the acceptance criterion. The next step is therefore to establish, from the Scala
+  oracle, whether a remainder may absorb a bundle at all (a capture must be quotable; a *wildcard*
+  discards and arguably need not be), and to fix the test's shape first.
 
 ### Open question (behaviour pinned, oracle not established)
 
