@@ -500,13 +500,17 @@ pub fn spatial_match_expr(target: &Expr, pattern: &Expr, fm: &FreeMap) -> MResul
             }
             Ok(out)
         }
+        // The `remainder` comes from the **pattern**, never the target (SpatialMatcher.scala:495,
+        // and the `EList` arm above): a stored collection has no remainder of its own, so reading it
+        // off the target left `is_wildcard`/`remainder_var` permanently `false`/`None` and forced
+        // the exact-match path — a partial set pattern could not match (C20).
         (
+            Expr::ESet(ParSet { ps: tlist, .. }),
             Expr::ESet(ParSet {
-                ps: tlist,
+                ps: plist,
                 remainder: rem,
                 ..
             }),
-            Expr::ESet(ParSet { ps: plist, .. }),
         ) => {
             let is_wildcard = matches!(rem.as_deref(), Some(Var::Wildcard));
             let remainder_var = match rem.as_deref() {
@@ -527,13 +531,14 @@ pub fn spatial_match_expr(target: &Expr, pattern: &Expr, fm: &FreeMap) -> MResul
                 &spatial_match,
             )
         }
+        // As for `ESet` above: the pattern's remainder, not the target's (SpatialMatcher.scala:501).
         (
+            Expr::EMap(ParMap { kvs: tlist, .. }),
             Expr::EMap(ParMap {
-                kvs: tlist,
+                kvs: plist,
                 remainder: rem,
                 ..
             }),
-            Expr::EMap(ParMap { kvs: plist, .. }),
         ) => {
             let is_wildcard = matches!(rem.as_deref(), Some(Var::Wildcard));
             let remainder_var = match rem.as_deref() {
@@ -731,23 +736,16 @@ fn list_match<T: MatchableTerm>(
     spatial_match_fn: &dyn Fn(&T, &T, &FreeMap) -> MResult,
 ) -> MResult {
     let mut all_patterns: Vec<MbmPattern<T>> = Vec::new();
-    // Pad with `Remainder` patterns for the entries the pattern does not name — for a **named**
-    // remainder (`...rest`) *and* for a wildcard (`..._`). The wildcard arrives as the separate
-    // `wildcard` flag rather than a `remainder` level, so gating only on `remainder.is_some()` left
-    // it with no `Remainder` to absorb the extra entries: `@{"read": *MCA, ..._}` could never match
-    // a map with any other key, and every rgov contract gates its whole body on exactly that
-    // pattern to reach its capabilities. The handling below already expects this case —
-    // `None => { if wildcard || … }` — it simply never received the padding.
-    // Pad with `Remainder` patterns for the entries the pattern does not name — for a **named**
-    // remainder (`...rest`) *and* for a wildcard (`..._`). The wildcard arrives as the separate
-    // `wildcard` flag rather than a `remainder` level, so gating only on `remainder.is_some()` left
-    // it with nothing to absorb the extra entries: `@{"read": *MCA, ..._}` could not match a map
-    // holding any other key, and every rgov contract gates its whole body on exactly that pattern to
-    // reach its capabilities (C19). The handling below already expects this case
-    // (`None => { if wildcard || … }`) — it simply never received the padding.
+    // Pad with a `Remainder` pattern per unnamed entry, for a **named** remainder (`...rest`) only —
+    // the gate is the Scala's (`SpatialMatcher.scala:165-170`). A *wildcard* remainder (`..._`) needs
+    // no padding: it names no variable, so its only requirement is that the named terms match, and
+    // the `None => { if wildcard || … }` branch below already accepts whatever is left over. Padding
+    // it too would additionally demand every leftover be `locally_free_empty()`, which Scala does not
+    // — and gating on `wildcard` as well never had an effect for collections anyway, since a
+    // collection pattern's remainder was read off the wrong side of the match (C19's part 1, C20).
     // `saturating_sub`: a pattern naming more entries than the collection has must add none (the
     // terms fail to match on their own), and an underflow here would wrap to an unbounded count.
-    if remainder.is_some() || wildcard {
+    if remainder.is_some() {
         for _ in 0..targets.len().saturating_sub(patterns.len()) {
             all_patterns.push(MbmPattern::Remainder);
         }
@@ -860,6 +858,233 @@ mod tests {
         assert_eq!(
             spatial_match_result(&target, &pattern).unwrap(),
             Some(expected)
+        );
+    }
+
+    // --- collection patterns that name only part of the collection (C20) ---
+    //
+    // `..._` and `...rest` both mean "and the rest": the named terms must match *any* entries and
+    // the remainder takes what is left. Every rgov contract gates its body on
+    // `for (@{"read": *MCA, ..._} <<- <3-key map>)`, so a map pattern that could not match a map
+    // with further keys made the whole family unreachable — silently, since an unmatched `for` is
+    // not an error (`MemberDirectory.rho:15`).
+
+    use rchain_models::par_ops::from_expr;
+
+    fn gint(n: i64) -> Par {
+        from_expr(Expr::GInt(n))
+    }
+
+    /// A `{"k": n, …}` value, as stored on a channel (no remainder: a datum cannot have one).
+    fn map_of(kvs: &[(&str, i64)]) -> Par {
+        par(vec![Expr::EMap(par_map(
+            kvs.iter()
+                .map(|(k, v)| (from_expr(Expr::GString((*k).to_string())), gint(*v)))
+                .collect(),
+        ))])
+    }
+
+    /// A `{"k": *level, …}` pattern over `named`, with `remainder` (`..._` or `...rest`).
+    fn map_pattern(named: &[(&str, i32)], remainder: Var) -> Par {
+        Par {
+            exprs: vec![Expr::EMap(ParMap {
+                connective_used: true,
+                remainder: Some(Box::new(remainder)),
+                ..par_map(
+                    named
+                        .iter()
+                        .map(|(k, level)| {
+                            (
+                                from_expr(Expr::GString((*k).to_string())),
+                                from_expr(Expr::EVar(Box::new(Var::FreeVar(*level)))),
+                            )
+                        })
+                        .collect(),
+                )
+            })],
+            connective_used: true,
+            ..Default::default()
+        }
+    }
+
+    /// A set of integers, as a value and as a pattern (`remainder: None` for the former).
+    ///
+    /// The par's `connective_used` is part of the fixture, not decoration: the normalizer sets it on
+    /// a par that carries a wildcard or a free variable, and `spatial_match` reads it to choose
+    /// between matching and plain equality.
+    fn set_of(items: &[i64], remainder: Option<Var>) -> Par {
+        let ps = items.iter().map(|n| gint(*n)).collect();
+        let has_rem = remainder.is_some();
+        Par {
+            exprs: vec![Expr::ESet(ParSet {
+                connective_used: has_rem,
+                remainder: remainder.map(Box::new),
+                ..par_set(ps)
+            })],
+            connective_used: has_rem,
+            ..Default::default()
+        }
+    }
+
+    /// A list, as a value and as a pattern (`remainder: None` for the former).
+    fn list_of(items: &[i64], remainder: Option<Var>) -> Par {
+        let has_rem = remainder.is_some();
+        Par {
+            exprs: vec![Expr::EList(EList {
+                ps: items.iter().map(|n| gint(*n)).collect(),
+                connective_used: has_rem,
+                remainder: remainder.map(Box::new),
+                ..Default::default()
+            })],
+            connective_used: has_rem,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn a_map_pattern_may_name_fewer_entries_than_the_map_has() {
+        // `@{"x": *v, ..._}` against `{"x": 1, "y": 2}` — the reported defect.
+        let got = spatial_match_result(
+            &map_of(&[("x", 1), ("y", 2)]),
+            &map_pattern(&[("x", 0)], Var::Wildcard),
+        )
+        .unwrap()
+        .expect("the named entry matches and the wildcard takes the rest");
+        assert_eq!(got.get(&0), Some(&gint(1)), "`*v` is the value at \"x\"");
+    }
+
+    #[test]
+    fn a_named_map_remainder_captures_the_unnamed_entries() {
+        // `@{"read": *v, ...rest}` — the shape every rgov contract gates on.
+        let got = spatial_match_result(
+            &map_of(&[("read", 1), ("write", 2), ("grant", 3)]),
+            &map_pattern(&[("read", 0)], Var::FreeVar(1)),
+        )
+        .unwrap()
+        .expect("the named entry matches and the rest is captured");
+        assert_eq!(got.get(&0), Some(&gint(1)));
+        assert_eq!(
+            got.get(&1),
+            Some(&map_of(&[("grant", 3), ("write", 2)])),
+            "`...rest` is the leftover entries, as a map"
+        );
+    }
+
+    #[test]
+    fn a_map_pattern_naming_an_absent_key_does_not_match() {
+        assert_eq!(
+            spatial_match_result(
+                &map_of(&[("x", 1)]),
+                &map_pattern(&[("z", 0)], Var::Wildcard)
+            )
+            .unwrap(),
+            None,
+            "no entry at \"z\""
+        );
+        // Without a remainder the pattern is still exact: it cannot match a bigger map…
+        let exact = Par {
+            exprs: vec![Expr::EMap(ParMap {
+                connective_used: true,
+                ..par_map(vec![(
+                    from_expr(Expr::GString("x".to_string())),
+                    from_expr(Expr::EVar(Box::new(Var::FreeVar(0)))),
+                )])
+            })],
+            connective_used: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            spatial_match_result(&map_of(&[("x", 1), ("y", 2)]), &exact).unwrap(),
+            None,
+            "an exact pattern must not match a map with an unnamed entry"
+        );
+        assert!(spatial_match_result(&map_of(&[("x", 1)]), &exact)
+            .unwrap()
+            .is_some());
+        // …and the exact form the report shows matching still matches.
+        let two = map_pattern_two();
+        assert!(spatial_match_result(&map_of(&[("x", 1), ("y", 2)]), &two)
+            .unwrap()
+            .is_some());
+    }
+
+    /// `@{"x": *0, "y": *1}` — the exact form from the report's reproduction.
+    fn map_pattern_two() -> Par {
+        Par {
+            exprs: vec![Expr::EMap(ParMap {
+                connective_used: true,
+                ..par_map(vec![
+                    (
+                        from_expr(Expr::GString("x".to_string())),
+                        from_expr(Expr::EVar(Box::new(Var::FreeVar(0)))),
+                    ),
+                    (
+                        from_expr(Expr::GString("y".to_string())),
+                        from_expr(Expr::EVar(Box::new(Var::FreeVar(1)))),
+                    ),
+                ])
+            })],
+            connective_used: true,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn a_set_pattern_may_name_fewer_members_than_the_set_has() {
+        assert!(spatial_match_result(
+            &set_of(&[1, 2, 3], None),
+            &set_of(&[1], Some(Var::Wildcard))
+        )
+        .unwrap()
+        .is_some());
+        let got = spatial_match_result(
+            &set_of(&[1, 2, 3], None),
+            &set_of(&[1], Some(Var::FreeVar(0))),
+        )
+        .unwrap()
+        .expect("the named member matches and the rest is captured");
+        assert_eq!(
+            got.get(&0),
+            Some(&set_of(&[2, 3], None)),
+            "`...rest` is the leftover members, as a set"
+        );
+    }
+
+    #[test]
+    fn list_remainders_stay_positional() {
+        // The acceptance's list cases: lists are a *suffix*, not "any entries".
+        assert!(spatial_match_result(
+            &list_of(&[1, 2, 3], None),
+            &list_of(&[1], Some(Var::Wildcard))
+        )
+        .unwrap()
+        .is_some());
+        let got = spatial_match_result(
+            &list_of(&[1, 2, 3], None),
+            &list_of(&[1], Some(Var::FreeVar(0))),
+        )
+        .unwrap()
+        .expect("`@[1, ...rest]` has `[2, 3]` left");
+        assert_eq!(got.get(&0), Some(&list_of(&[2, 3], None)));
+        let got = spatial_match_result(
+            &list_of(&[1, 2, 3], None),
+            &list_of(&[1, 2], Some(Var::FreeVar(0))),
+        )
+        .unwrap()
+        .expect("`@[1, 2, ...rest]` has `[3]` left");
+        assert_eq!(
+            got.get(&0),
+            Some(&list_of(&[3], None)),
+            "the suffix binding the report pins"
+        );
+        assert_eq!(
+            spatial_match_result(
+                &list_of(&[1, 2, 3], None),
+                &list_of(&[1, 3], Some(Var::Wildcard))
+            )
+            .unwrap(),
+            None,
+            "a list pattern is positional: [1, 3] is not a prefix of [1, 2, 3]"
         );
     }
 }

@@ -1115,6 +1115,66 @@ oracle is, and the test that pins the fix.
   oracle, whether a remainder may absorb a bundle at all (a capture must be quotable; a *wildcard*
   discards and arguably need not be), and to fix the test's shape first.
 
+  **Resolution (both of the above are superseded — see C20).** The diagnosis above was wrong on both
+  counts, and both wrong claims are withdrawn:
+
+  - *"the padding is correct and necessary"* — it was a **no-op for collections**. The `wildcard` flag
+    is derived from the *map/set* `remainder`, which the `ESet`/`EMap` arms read off the **target**
+    (C20), so it was always `false` and the gate never opened. The map case in the conformance test
+    passed for a different reason: the five cases shared one runtime and one `@"out"` channel, so
+    after the first (list) case produced `"ok"` every later case passed by re-reading that datum. The
+    padding has since been reduced back to the Scala's own gate (`remainder.is_some()`), which is
+    correct because a wildcard needs no padding — the trailing `wildcard ||` check accepts unclaimed
+    leftovers — and padding would demand concreteness Scala does not require of them.
+  - *"the second gate is `locally_free_empty` on bundles"* — **refuted**. `C20`'s fix, with the gate
+    restored, matches a three-key dictionary of bundles (`{"read": bundle+{*read}, …}`) peeked with
+    `@{"read": *MCAread, ..._}` — pinned by
+    `collection_patterns_match_a_subset_of_their_collection`. Nothing about bundles was in the way;
+    the pattern never reached the matcher's remainder handling at all.
+
+  The `✓`-shaped probe above (`gate-open ✗`) was real, but its cause was C20, not bundles: with the
+  partial map pattern unable to match *any* map with an unnamed key, no dictionary shape could open
+  the gate.
+
+- **C20 — a remainder in a `map`/`set` pattern never absorbs an entry: the pattern's remainder was
+  read off the *target*.** A map pattern matched only when the map had exactly as many entries as the
+  pattern names — `@{"x": *v, ..._}` against `{"x": 1, "y": 2}` failed while the exact form succeeded,
+  observed on a node. In `spatial_matcher.rs::spatial_match_expr` the `ESet` and `EMap` arms destructure
+  `remainder: rem` from the **first** tuple element (the target) and ignore the pattern's, while the
+  `EList` arm — and the Scala oracle at `SpatialMatcher.scala:495-505` — take it from the **pattern**:
+
+  ```rust
+  (Expr::EMap(ParMap { kvs: tlist, remainder: rem, .. }),   // ← target binds `rem`
+   Expr::EMap(ParMap { kvs: plist, .. }))                   // ← pattern's remainder ignored
+  ```
+
+  A stored collection never has a remainder, so `is_wildcard`/`remainder_var` were permanently
+  `false`/`None` and `list_match_single` took its exact-match path
+  (`if exact_match && plen != tlen { return Ok(Vec::new()) }`). **Consequence:** every rgov governance
+  contract reaches its capabilities through `for (@{"read": *MCAread, ..._} <<- <3-key map>)`
+  (`MemberDirectory.rho:15`), so the family returned `[]` — silently, since an unmatched `for` is not
+  an error, which is why this was expensive to find. Lists were unaffected (their arm was right and
+  their remainder is a suffix, via `fold_match`).
+
+  **Fix:** take the remainder from the pattern in both arms, as Scala and the `EList` arm do; and
+  reduce `list_match`'s padding gate back to the Scala's `remainder.is_some()` (a wildcard needs no
+  padding — see C19's resolution). Pinned by the matcher unit tests
+  (`a_map_pattern_may_name_fewer_entries_than_the_map_has`,
+  `a_named_map_remainder_captures_the_unnamed_entries`,
+  `a_set_pattern_may_name_fewer_members_than_the_set_has`, `list_remainders_stay_positional`) and by
+  `collection_patterns_match_a_subset_of_their_collection` (in-process, with the rgov gate's
+  bundle-valued shape and a peek) and the `devnet-test.sh` step 3b leg (on a real node).
+
+  **Also found — the harness accepted what the node rejected, and it was the fixture, not the
+  runtime.** The in-process conformance runtime is *not* a different matcher: it builds the same
+  `RSpace` + `RhoMatch` the node does, and the same normalizer. The test was blind instead: it
+  evaluated all five shapes against **one** runtime, reading a **shared** `@"out"` channel, and
+  asserted on `got[0]` — the first datum, which the first (list) case had already produced. Cases 2–5
+  therefore passed by re-reading it whether or not their own pattern matched (measured: on a fresh
+  runtime the map and set cases produce **0** data). Each case now builds its own runtime and is
+  asserted to produce exactly one datum. A green in-process conformance run is evidence about the
+  node **only** when each case's observation is separable.
+
 ### Open question (behaviour pinned, oracle not established)
 
 - **`models/src/wire.rs::expr_from_proto` decodes an `Expr` with no instance to `GBool(false)`.** The

@@ -133,6 +133,38 @@ check "explore-deploy response has expr" \
   'printf "%s" "$HTTP_BODY" | grep -q "\"expr\""'
 
 echo ""
+echo "==> 3b. partial collection patterns (C20)"
+# A pattern may name only part of a collection: `..._` absorbs the rest, `...rest` binds it. A *map*
+# pattern that could not match a map with further keys made every rgov governance contract
+# unreachable, silently — an unmatched `for` is not an error, it just never fires — so the family
+# returned `[]` with no diagnostic. This is the reproduction, run on a real node: the two patterns
+# sit on separate channels, so both must fire.
+#
+# The first `new`-bound name of the term is the deploy's return channel (see
+# `RuntimeSyntax.playExploratoryDeploy`), so the endpoint's response carries `result`'s data: read
+# it, and read it from the *node*, which is the only surface that showed the defect — the in-process
+# conformance harness was green throughout, because its cases shared one runtime and one output
+# channel (C20).
+# The endpoint takes the term as a JSON *string*; escape it with `sed`, like `json_num` parses JSON
+# with `sed`, so the script keeps its dependencies.
+json_string() { sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' | tr -d '\n'; }
+c20_term='new result, a, b in {
+  a!({"x": 1, "y": 2}) |
+  b!({"x": 1, "y": 2}) |
+  for (@{"x": *v, ..._} <- a)    { result!(["partial-with-remainder", "matched"]) } |
+  for (@{"x": *w, "y": *z} <- b) { result!(["exact", "matched"]) }
+}'
+c20_body="\"$(printf '%s' "$c20_term" | json_string)\""
+http_get "$HTTP/api/v1/explore-deploy" -X POST -H 'Content-Type: application/json' \
+  --data-binary "$c20_body"
+check "POST /api/v1/explore-deploy (C20 reproduction) returns 200" \
+  '[[ "$HTTP_CODE" == "200" ]]'
+check "the partial map pattern matched (a partial map pattern fires)" \
+  'printf "%s" "$HTTP_BODY" | grep -q "partial-with-remainder"'
+check "the exact map pattern still matched" \
+  'printf "%s" "$HTTP_BODY" | grep -q "\"exact\""'
+
+echo ""
 echo "==> 4. deploy + deploy-status"
 # (a) HTTP deploy endpoint accepts a signed deploy.
 http_get "$HTTP/api/deploy" -X POST -H 'Content-Type: application/json' -d "$DEPLOY_FIXTURE"

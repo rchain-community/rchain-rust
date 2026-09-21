@@ -73,6 +73,13 @@ fn list_strings(p: &Par) -> Option<Vec<String>> {
         .collect()
 }
 
+fn list_numbers(p: &Par) -> Option<Vec<i64>> {
+    RhoList::unapply(p)?
+        .iter()
+        .map(RhoNumber::unapply)
+        .collect()
+}
+
 #[tokio::test]
 async fn qucalc_zfa_reports_zfa_and_phase_for_closed_and_open_histories() {
     let (rt, _) = build_runtime_pair().await;
@@ -410,17 +417,18 @@ async fn a_looked_up_contract_can_be_called_through_its_lookup_reply() {
 
 /// A collection pattern may name only *part* of the collection: `..._` absorbs the rest, `...rest`
 /// absorbs it and binds it. Every rgov contract reaches its capabilities through such a pattern —
-/// `@{"read": *MCA, ..._}` — so while the wildcard case could not match, all of their bodies were
-/// unreachable, and *silently*: a `for` whose pattern does not match is not an error, it just never
-/// fires. Lists happened to work and maps did not, so both must be pinned.
-/// A collection pattern may name only *part* of the collection: `..._` absorbs the rest, `...rest`
-/// absorbs it and binds it. Every rgov contract reaches its capabilities through such a pattern —
-/// `@{"read": *MCA, ..._}` — so while the wildcard case could not match, all of their bodies were
-/// unreachable, and *silently*: a `for` whose pattern does not match is not an error, it just never
-/// fires. Lists happened to work and maps did not, so both must be pinned.
+/// `@{"read": *MCA, ..._}` against a three-key dictionary — so while a partial *map* (or *set*)
+/// pattern could not match, all of their bodies were unreachable, and *silently*: a `for` whose
+/// pattern does not match is not an error, it just never fires. Lists happened to work and maps did
+/// not, so both must be pinned.
+///
+/// Each case gets its **own runtime**, because a shared one is exactly how this defect hid. The
+/// first version of this test evaluated all five shapes against one runtime, reading a shared
+/// `@"out"`: once the first (list) case had produced `"ok"`, every later case passed by re-reading
+/// that datum, so the map and set cases could not fail — and did not run their patterns at all. A
+/// conformance test that cannot fail is not evidence about the node (C20).
 #[tokio::test]
 async fn collection_patterns_match_a_subset_of_their_collection() {
-    let (rt, _) = build_runtime_pair().await;
     let env = BTreeMap::new();
 
     for (label, term) in [
@@ -444,14 +452,106 @@ async fn collection_patterns_match_a_subset_of_their_collection() {
             "set, wildcard remainder",
             r#"new a in { a!(Set(1, 2, 3)) | for (@Set(1, ..._) <- a) { @"out"!("ok") } }"#,
         ),
+        (
+            "set, named remainder",
+            r#"new a in { a!(Set(1, 2, 3)) | for (@Set(1, ...rest) <- a) { @"out"!("ok") } }"#,
+        ),
     ] {
+        let (rt, _) = build_runtime_pair().await;
         let got = eval_out(&rt, term, &env, "out").await;
+        assert_eq!(got.len(), 1, "{label}: exactly one result");
         assert_eq!(
             RhoString::unapply(&got[0]),
             Some("ok"),
             "{label}: a partial collection pattern must match"
         );
     }
+
+    // The `MemberDirectory.rho:15` gate itself, with production shapes: a three-key dictionary of
+    // *bundles* (not ground terms) peeked with a partial map pattern. Two claims in one — the body
+    // runs, and the named entry binds its own value rather than one the wildcard absorbed.
+    let (rt, _) = build_runtime_pair().await;
+    let reached = eval_out(
+        &rt,
+        r#"new dict in {
+             dict!({"read": 1, "write": 2, "grant": 3}) |
+             for (@{"read": *MCAread, ..._} <<- dict) { @"out"!(*MCAread) }
+           }"#,
+        &env,
+        "out",
+    )
+    .await;
+    assert_eq!(reached.len(), 1, "the peek gate fires once");
+    assert_eq!(
+        RhoNumber::unapply(&reached[0]),
+        Some(1),
+        "`*MCAread` is the value at \"read\", not at a key the wildcard absorbed"
+    );
+
+    let (rt, _) = build_runtime_pair().await;
+    let reached = eval_out(
+        &rt,
+        r#"new read, write, grant, dict in {
+             dict!({"read": bundle+{*read}, "write": bundle+{*write}, "grant": bundle+{*grant}}) |
+             for (@{"read": *MCAread, ..._} <<- dict) { @"out"!("gate-open") }
+           }"#,
+        &env,
+        "out",
+    )
+    .await;
+    assert_eq!(
+        reached.len(),
+        1,
+        "the gate fires once over bundle-valued entries"
+    );
+    assert_eq!(RhoString::unapply(&reached[0]), Some("gate-open"));
+
+    // A *named* map remainder captures the unnamed entries and not the named one. The remainder is
+    // a *process* variable — referenced unstarred (`rest`), unlike the quoted name patterns `*v` —
+    // which is how the rgov contracts write it (`Group.rho:68-71`).
+    let (rt, _) = build_runtime_pair().await;
+    let rest = eval_out(
+        &rt,
+        r#"new dict in {
+             dict!({"read": 1, "write": 2, "grant": 3}) |
+             for (@{"read": *v, ...rest} <- dict) { @"out"!(rest) }
+           }"#,
+        &env,
+        "out",
+    )
+    .await;
+    assert_eq!(rest.len(), 1);
+    assert_eq!(
+        map_get_string_int(&rest[0], "write"),
+        Some(2),
+        "`...rest` captured \"write\""
+    );
+    assert_eq!(
+        map_get_string_int(&rest[0], "grant"),
+        Some(3),
+        "`...rest` captured \"grant\""
+    );
+    assert_eq!(
+        map_get_string_int(&rest[0], "read"),
+        None,
+        "`...rest` must not capture the named entry"
+    );
+
+    // Lists keep positional/suffix semantics: the remainder is a *suffix*, not "any elements".
+    let (rt, _) = build_runtime_pair().await;
+    let rest = eval_out(
+        &rt,
+        r#"new a in { a!([1, 2, 3]) | for (@[1, 2, ...rest] <- a) { @"out"!(rest) } }"#,
+        &env,
+        "out",
+    )
+    .await;
+    assert_eq!(rest.len(), 1);
+    assert_eq!(
+        list_numbers(&rest[0]),
+        Some(vec![3]),
+        "`@[1, 2, ...rest]` on [1, 2, 3] leaves rest = [3]"
+    );
 }
 
 #[tokio::test]

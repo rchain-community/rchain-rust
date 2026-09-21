@@ -39,7 +39,7 @@ laws** carrying a randomized property test and **10 benchmark functions** in 6 C
 | `block-storage` | 40 | — | 3 | — |
 | `comm` | 123 | — | — | — |
 | `rspace` | 166 | — | 7 | — |
-| `rholang` | 188 | 37 | 7 | — |
+| `rholang` | 196 | 39 | 7 | — |
 | `casper` | 221 | 38 | 3 | — |
 | `node` | 178 | 9 | — | — |
 | `qucalc` | 20 | — | — | — |
@@ -206,6 +206,11 @@ not found in that file. Coverage claims live here rather than in prose so they c
 | syntax | `rholang/src/parser.rs` | `a_group_may_not_contain_a_send_or_a_parallel` |
 | syntax | `rholang/src/parser.rs` | `the_logical_connectives_lex_and_parse_in_their_grammar_spelling` |
 | syntax | `rholang/src/reduce.rs` | `plus_plus_concatenates_byte_arrays_and_unions_maps_and_sets` |
+| C20 | `rholang/src/matcher/spatial_matcher.rs` | `a_map_pattern_may_name_fewer_entries_than_the_map_has` |
+| C20 | `rholang/src/matcher/spatial_matcher.rs` | `a_named_map_remainder_captures_the_unnamed_entries` |
+| C20 | `rholang/src/matcher/spatial_matcher.rs` | `a_set_pattern_may_name_fewer_members_than_the_set_has` |
+| C20 | `rholang/src/matcher/spatial_matcher.rs` | `list_remainders_stay_positional` |
+| C20 | `rholang/tests/system_process_conformance.rs` | `collection_patterns_match_a_subset_of_their_collection` |
 | syntax | `rholang/src/reduce.rs` | `plus_and_minus_also_insert_into_and_delete_from_collections` |
 
 ## Gap analysis (severity-ordered)
@@ -554,6 +559,7 @@ green diff. These are all of them.
 | `rholang/src/pretty_printer.rs::build_par` — the separator flag is per *group*, not per item | A group with two or more items printed `a |\n |\nb`, which is not parsable rholang (AUDIT §16 C13) | `printing_and_reparsing_is_the_identity` |
 | `rholang/src/pretty_printer.rs::build_bundle` — print the `bundle` keyword with Scala's 8-column padding | Bundles printed as `0{ … }`, losing the keyword (AUDIT §16 C13) | `printing_and_reparsing_is_the_identity` |
 | `comm/src/upnp/gateway.rs::split_authority` — a bracket-aware authority split, shared by the SSRF guard and the URL splitter | The guard read `[::1]` as the host `"["`, allowing a loopback discovery URL (AUDIT §16 C14) | `the_url_guard_allows_private_gateways_and_refuses_ssrf_targets` |
+| `rholang/src/matcher/spatial_matcher.rs` — the `ESet`/`EMap` arms take their `remainder` from the *pattern* (as the `EList` arm and the Scala do), and `list_match`'s padding gate returns to the Scala's `remainder.is_some()` | Those two arms read the collection remainder off the **target**, which never has one, so `is_wildcard`/`remainder_var` were permanently `false`/`None` and a partial map/set pattern could not match at all — every rgov governance contract gates its entire body on one, and an unmatched `for` is silent, so the whole family returned `[]` with no diagnostic. The padding gate was a no-op for collections for the same reason (AUDIT §17 C20, and C19's resolution) | `a_map_pattern_may_name_fewer_entries_than_the_map_has`, `a_named_map_remainder_captures_the_unnamed_entries`, `a_set_pattern_may_name_fewer_members_than_the_set_has`, `list_remainders_stay_positional`, `collection_patterns_match_a_subset_of_their_collection` |
 
 ### The census sweep (definition of done items 10–11)
 
