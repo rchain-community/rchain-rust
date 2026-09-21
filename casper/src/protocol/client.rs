@@ -166,6 +166,27 @@ fn to_json_pretty<T: serde::Serialize>(value: &T) -> String {
     serde_json::to_string_pretty(value).unwrap_or_default()
 }
 
+/// The block height to anchor a deploy at when the caller did not choose one.
+///
+/// A deploy is expired once `height - valid_after_block_number > DEPLOY_LIFESPAN` (50), so a
+/// hardcoded anchor is *born expired* on any chain taller than the lifespan: the deploy is purged
+/// from the pool and silently never proposed. `rnode deploy` passed `-1` whenever the caller omitted
+/// `--valid-after-block-number`, which is why the same command worked against a young chain and
+/// silently did nothing against an older one. A negative anchor means "not specified": anchor at the
+/// node's current height — exactly what the faucet, the browser client,
+/// `gateway::current_height` and `txn_coordinator::run_phase_at` all do.
+async fn resolve_valid_after_block_number(
+    service: &dyn DeployService,
+    requested: i64,
+) -> Result<i64, Vec<String>> {
+    if requested >= 0 {
+        return Ok(requested);
+    }
+    let status: Status =
+        serde_json::from_str(&service.status().await?).map_err(|e| vec![e.to_string()])?;
+    Ok(status.latest_block_number)
+}
+
 async fn connect_channel(host: &str, port: i32) -> Result<Channel, String> {
     let endpoint = tonic::transport::Endpoint::from_shared(format!("http://{host}:{port}"))
         .map_err(|e| e.to_string())?;
@@ -617,6 +638,8 @@ impl DeployRuntime {
         shard_id: &str,
     ) -> Result<(), Vec<String>> {
         graceful_exit(async {
+            let valid_after_block_number =
+                resolve_valid_after_block_number(service, valid_after_block_number).await?;
             let code = std::fs::read_to_string(file)
                 .map_err(|e| vec![format!("Error with given file: \n{e}")])?;
             let timestamp = std::time::SystemTime::now()
@@ -1018,5 +1041,36 @@ mod runtime_tests {
 
         // Malformed source is an error, not a panic.
         assert!(build_par(&Name::PubName("new in {".to_string())).is_err());
+    }
+
+    #[tokio::test]
+    async fn deploy_anchor_defaults_to_the_node_height() {
+        // `-1` is how the CLI says "not specified" (`valid_after_block_number.unwrap_or(-1)`). It has
+        // to become the node's current height: a deploy anchored at a stale block is purged from the
+        // pool once the chain is more than DEPLOY_LIFESPAN (50) blocks past it, so it gets accepted,
+        // reported as `Response: Success!`, and then silently never proposed.
+        let status = r#"{"version":{"api":"1","node":"0.1.0"},"address":"abc","networkId":"testnet",
+                         "shardId":"/root","peers":0,"nodes":0,"minPhloPrice":1,
+                         "latestBlockNumber":904}"#;
+        let service = RecordingService::ok(status);
+        assert_eq!(
+            resolve_valid_after_block_number(&service, -1)
+                .await
+                .unwrap(),
+            904
+        );
+        // An explicit anchor is used as given, without consulting the node.
+        assert_eq!(
+            resolve_valid_after_block_number(&service, 12)
+                .await
+                .unwrap(),
+            12
+        );
+        let probes = service.probes.lock().unwrap().clone();
+        assert_eq!(probes, vec!["status".to_string()]);
+
+        // A node that cannot describe itself is an error, not a silent fallback to `-1`.
+        let broken = RecordingService::ok("not json");
+        assert!(resolve_valid_after_block_number(&broken, -1).await.is_err());
     }
 }
