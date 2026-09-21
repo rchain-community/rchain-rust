@@ -1222,7 +1222,18 @@ impl SystemProcesses {
 
     // --- native registry -------------------------------------------------
 
-    /// `rho:registry:lookup(uri, ret)` — return `(uri, value)` or `Nil` from the native registry.
+    /// `rho:registry:lookup(uri, ret)` — send the **stored value alone** on `ret`, or `Nil` when the
+    /// uri is unknown. Never wrapped.
+    ///
+    /// The oracle is the genesis `Registry.rho` contract, whose `lookup` forwards
+    /// `TreeHashMap!("get", …)` and that sends the stored value by itself
+    /// (`legacy/casper/src/main/resources/Registry.rho:397-401`, with recorded output in
+    /// `legacy/rholang/examples/tut-registry.rho:8,42-47`). Wrapping it in `(uri, value)` — as this
+    /// handler did — breaks every client written for the oracle, which consumes the reply as
+    /// `lookup!(uri, *ch) | for (X <- ch) { X!(…) }`: the pair binds to the name and the send is a
+    /// silent no-op. System contracts are unaffected because their *stored* value is itself a
+    /// `(nonce, data)` pair (via `insertSigned`), which clients destructure as `@(_, X)`.
+    /// Recorded as C18 in `spec/AUDIT.md`.
     fn registry_lookup(&self) -> ScalaBodyFn {
         let cc = self.contract_call.clone();
         let native = self.native_state.clone();
@@ -1247,15 +1258,7 @@ impl SystemProcesses {
                     .await
                     .map_err(|e| illegal_arg(&e))?
                 {
-                    Some(value) => {
-                        cc.produce(
-                            &rand,
-                            &[RhoTupleN::apply(vec![uri.clone(), value])],
-                            ret,
-                            path,
-                        )
-                        .await
-                    }
+                    Some(value) => cc.produce(&rand, &[value], ret, path).await,
                     None => cc.produce(&rand, &[RhoNil::apply()], ret, path).await,
                 }
             })
@@ -2046,12 +2049,10 @@ mod tests {
         let produced = mock.produced.lock().unwrap_or_else(|p| p.into_inner());
         assert_eq!(produced.len(), 2);
         assert_eq!(produced[1].0.as_par(), &ret2);
-        let tuple = &produced[1].1.pars[0];
-        let parts =
-            RhoTupleN::unapply(tuple.as_par()).expect("lookup returns a (uri, value) tuple");
-        assert_eq!(parts.len(), 2);
-        assert_eq!(parts[0], *uri.as_par());
-        assert_eq!(parts[1], data);
+        // The stored value goes out on its own, unpaired with the uri (C18) — a pair would bind to
+        // the name at the consumer and make its send a no-op.
+        let sent = &produced[1].1.pars[0];
+        assert_eq!(sent.as_par(), &data, "lookup sends the stored value alone");
     }
 
     #[tokio::test]

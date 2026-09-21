@@ -308,10 +308,14 @@ async fn registry_insert_arbitrary_and_lookup_round_trip() {
         "out2",
     )
     .await;
-    let parts = RhoTupleN::unapply(&looked_up[0]).expect("lookup returns (uri, value)");
-    assert_eq!(parts.len(), 2);
-    assert_eq!(RhoUri::unapply(&parts[0]), Some(uri.as_str()));
-    assert_eq!(RhoNumber::unapply(&parts[1]), Some(42));
+    // The reply is the stored value alone, never wrapped in its own uri (C18): an oracle-era client
+    // consumes it as `for (X <- ch) { X!(…) }`, and a pair would bind to the name, making the send a
+    // silent no-op rather than a type error.
+    assert_eq!(
+        RhoNumber::unapply(&looked_up[0]),
+        Some(42),
+        "lookup replies with the stored value alone, not (uri, value)"
+    );
 
     // A uri that was never registered answers Nil (not silence).
     let missing = eval_out(
@@ -358,13 +362,50 @@ async fn registry_insert_signed_binds_deployer_id_from_the_normalizer_env() {
         "out2",
     )
     .await;
-    let parts = RhoTupleN::unapply(&looked_up[0]).expect("lookup returns (uri, value)");
-    assert_eq!(parts.len(), 2);
-    assert_eq!(RhoUri::unapply(&parts[0]), Some(uri.as_str()));
-    // The stored value is the (nonce, data) tuple recorded under the deployer-derived uri.
-    let stored = RhoTupleN::unapply(&parts[1]).expect("insertSigned stores a (nonce, data) tuple");
+    // The reply is the stored value alone — and for `insertSigned` that value is itself the
+    // `(nonce, data)` pair it recorded, which is why consumers of *system* contracts destructure it
+    // as `@(_, X)`. The uri is not echoed back (C18).
+    let stored =
+        RhoTupleN::unapply(&looked_up[0]).expect("insertSigned stores a (nonce, data) tuple");
     assert_eq!(RhoNumber::unapply(&stored[0]), Some(1));
     assert_eq!(RhoString::unapply(&stored[1]), Some("data"));
+}
+
+/// The idiom **every** oracle-era client is written in: look a contract up, then send to the reply.
+///
+/// This is the assertion whose absence let C18 ship. Checking only that the reply *contains* the
+/// right value misses the failure mode entirely: a `(uri, value)` wrapper still carries the value,
+/// so a shape assertion on a scalar reply can pass by reading the right element — but the client
+/// binds the pair to a name and its send becomes a **silent no-op**. Nothing errors; the deploy
+/// simply produces no result, which is how the whole rgov contract family came to return `[]`.
+/// So assert the reachability, not just the shape.
+#[tokio::test]
+async fn a_looked_up_contract_can_be_called_through_its_lookup_reply() {
+    let (rt, _) = build_runtime_pair().await;
+    let env = BTreeMap::new();
+
+    let reached = eval_out(
+        &rt,
+        r#"new target, ins(`rho:registry:insertArbitrary`), lookup(`rho:registry:lookup`), ack, call in {
+             contract target(@x, ret) = { ret!(["got", x]) } |
+             ins!(bundle+{*target}, *ack) |
+             for (@uri <- ack) {
+               lookup!(uri, *call) |
+               for (@T <- call) {
+                 new reply in { @T!("ping", *reply) | for (@r <- reply) { @"out"!(r) } }
+               }
+             }
+           }"#,
+        &env,
+        "out",
+    )
+    .await;
+
+    assert_eq!(
+        list_strings(&reached[0]),
+        Some(vec!["got".to_string(), "ping".to_string()]),
+        "the looked-up contract must be reachable through its lookup reply"
+    );
 }
 
 #[tokio::test]

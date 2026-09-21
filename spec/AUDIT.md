@@ -1025,6 +1025,42 @@ oracle is, and the test that pins the fix.
   remainder is *carried* rather than dropped (`ProcRemainderVar`), and parses the `Inbox.rho` read
   pattern verbatim — `match (*items) { {[=*type, ...item] | rest} => {…} _ => {…} }`.
 
+- **C18 — `rho:registry:lookup` wrapped its reply in `(uri, value)`; the oracle sends the stored
+  value alone.** The oracle is not a native process at all: lookup is the genesis `Registry.rho`
+  contract, whose `lookup` forwards `TreeHashMap!("get", …)` — which sends the stored value by
+  itself (`legacy/casper/src/main/resources/Registry.rho:397-401`). Its recorded output agrees
+  (`legacy/rholang/examples/tut-registry.rho:8,42-47`: the reply prints as `Unforgeable(0x…)`, and
+  the consumer binds one name). The native handler wrapped it instead
+  (`system_processes.rs::registry_lookup` produced `RhoTupleN(vec![uri, value])`), which **fails
+  silently rather than loudly**: every oracle-era client consumes the reply as
+  `lookup!(uri, *ch) | for (X <- ch) { X!(…) }`, so the pair binds to the name and the send is a
+  no-op. Nothing errors; the deploy simply produces no result. Measured payoff: the entire rgov
+  governance contract family (and ~40 consumer snippets) returned `[]` with no diagnostic — the
+  symptom that started this audit pass. **Not a cosmetic wrapping difference:** a shape assertion
+  on a scalar reply can still read the right element out of a pair, which is why the previous
+  round-trip test passed while every real client failed. **Fix:** produce the stored value alone
+  (unknown uri still answers `Nil`). Verified: `registry_insert_arbitrary_and_lookup_round_trip` and
+  `registry_insert_signed_binds_deployer_id_from_the_normalizer_env` now assert the unwrapped value
+  (`insertSigned`'s stored value is itself the `(nonce, data)` pair it recorded — which is why
+  consumers of *system* contracts destructure `@(_, X)`, the pattern that had been misread as
+  evidence for the wrapper), and the new
+  `a_looked_up_contract_can_be_called_through_its_lookup_reply` asserts the thing the old tests
+  could not: that a looked-up contract is **reachable by a send**. That missing assertion is the
+  reason this shipped.
+- **Related, found by the same pass — not fixed here.** Three further divergences of the same class,
+  each needing its own decision: `rho:block:data` sends `(blockNumber, sender, timestamp)` where the
+  oracle sends `(blockNumber, sender)` and never exposes `seqNum`
+  (`legacy/.../SystemProcesses.scala:355-361`; consumer
+  `legacy/casper/src/test/resources/BlockDataContractTest.rho:15-16` binds a two-name pattern, so a
+  three-element send cannot match it); the registry's **shorthand table is unimplemented and never
+  seeded** (no shorthand resolution in `registry_lookup`, no `registry_insert` outside
+  `system_processes.rs`, and `casper/src/genesis/mod.rs:151` `default_blessed_terms` installs
+  nothing — so `lookup!(\`rho:rchain:revVault\`, *ch)` answers `Nil` although direct binding
+  `new revVault(\`rho:rchain:revVault\`)` works); and `rho:rchain:revVault` is a redesigned API
+  (`getBalance`/`transfer` on the vault, `findOrCreate` returning an address string rather than a
+  vault capability, no `authKey`) with `rho:rchain:multiSigRevVault` wired to the single-sig
+  handler. The schema standard these belong to is `spec/API-SCHEMA.md`.
+
 ### Open question (behaviour pinned, oracle not established)
 
 - **`models/src/wire.rs::expr_from_proto` decodes an `Expr` with no instance to `GBool(false)`.** The
