@@ -1061,6 +1061,25 @@ oracle is, and the test that pins the fix.
   vault capability, no `authKey`) with `rho:rchain:multiSigRevVault` wired to the single-sig
   handler. The schema standard these belong to is `spec/API-SCHEMA.md`.
 
+- **C19 — a collection pattern with a *wildcard* remainder could never match, so partial *map*
+  patterns never matched at all.** `...rest` (named) and `..._` (discarding) both mean "and the
+  rest of the collection", and the grammar gives both to every collection form. The matcher reached
+  `list_match` with the remainder split in two — a `remainder: Option<i32>` level for the named form
+  and a separate `wildcard: bool` for the discarding form — and padding for it only when
+  `remainder.is_some()`. So a wildcard got no `MbmPattern::Remainder` to absorb the unnamed entries,
+  and `@{"x": *v, ..._}` could not match a map holding any other key. The handling *below* already
+  expected this case (`None => { if wildcard || … }`), it simply never received the padding — which
+  is what made this a one-condition fix rather than a design change. **Measured payoff:** every rgov
+  governance contract reaches its capabilities through exactly this pattern — `MemberDirectory.rho:15`
+  gates its whole body (`getMe`, `createMe`, `sendThem`) on
+  `for (@{"read": *MCAread, ..._} <<- @[*deployerId, "MasterContractAdmin"])`, so none of those
+  contracts could run, and a `for` whose pattern does not match is **not an error** — it silently
+  never fires, which is why the failure presented as `[]` with no diagnostic rather than as a fault.
+  Lists happened to work and maps did not; sets shared the map's fate. **Fix:** pad when the pattern
+  has a remainder *or* is a wildcard (`spatial_matcher.rs::list_match`). Verified:
+  `collection_patterns_match_a_subset_of_their_collection` pins all five forms — list/map/set ×
+  wildcard/named, each asserted to *match*, since the failure mode is silence rather than an error.
+
 ### Open question (behaviour pinned, oracle not established)
 
 - **`models/src/wire.rs::expr_from_proto` decodes an `Expr` with no instance to `GBool(false)`.** The

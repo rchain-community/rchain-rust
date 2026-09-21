@@ -731,7 +731,14 @@ fn list_match<T: MatchableTerm>(
     spatial_match_fn: &dyn Fn(&T, &T, &FreeMap) -> MResult,
 ) -> MResult {
     let mut all_patterns: Vec<MbmPattern<T>> = Vec::new();
-    if remainder.is_some() {
+    // Pad with `Remainder` patterns for the entries the pattern does not name — for a **named**
+    // remainder (`...rest`) *and* for a wildcard (`..._`). The wildcard arrives as the separate
+    // `wildcard` flag rather than a `remainder` level, so gating only on `remainder.is_some()` left
+    // it with no `Remainder` to absorb the extra entries: `@{"read": *MCA, ..._}` could never match
+    // a map with any other key, and every rgov contract gates its whole body on exactly that
+    // pattern to reach its capabilities. The handling below already expects this case —
+    // `None => { if wildcard || … }` — it simply never received the padding.
+    if remainder.is_some() || wildcard {
         for _ in 0..(targets.len() - patterns.len()) {
             all_patterns.push(MbmPattern::Remainder);
         }

@@ -408,6 +408,47 @@ async fn a_looked_up_contract_can_be_called_through_its_lookup_reply() {
     );
 }
 
+/// A collection pattern may name only *part* of the collection: `..._` absorbs the rest, `...rest`
+/// absorbs it and binds it. Every rgov contract reaches its capabilities through such a pattern —
+/// `@{"read": *MCA, ..._}` — so while the wildcard case could not match, all of their bodies were
+/// unreachable, and *silently*: a `for` whose pattern does not match is not an error, it just never
+/// fires. Lists happened to work and maps did not, so both must be pinned.
+#[tokio::test]
+async fn collection_patterns_match_a_subset_of_their_collection() {
+    let (rt, _) = build_runtime_pair().await;
+    let env = BTreeMap::new();
+
+    for (label, term) in [
+        (
+            "list, wildcard remainder",
+            r#"new a in { a!([1, 2, 3]) | for (@[1, ..._] <- a) { @"out"!("ok") } }"#,
+        ),
+        (
+            "list, named remainder",
+            r#"new a in { a!([1, 2, 3]) | for (@[1, ...rest] <- a) { @"out"!("ok") } }"#,
+        ),
+        (
+            "map, wildcard remainder",
+            r#"new a in { a!({"x": 1, "y": 2}) | for (@{"x": *v, ..._} <- a) { @"out"!("ok") } }"#,
+        ),
+        (
+            "map, named remainder",
+            r#"new a in { a!({"x": 1, "y": 2}) | for (@{"x": *v, ...rest} <- a) { @"out"!("ok") } }"#,
+        ),
+        (
+            "set, wildcard remainder",
+            r#"new a in { a!(Set(1, 2, 3)) | for (@Set(1, ..._) <- a) { @"out"!("ok") } }"#,
+        ),
+    ] {
+        let got = eval_out(&rt, term, &env, "out").await;
+        assert_eq!(
+            RhoString::unapply(&got[0]),
+            Some("ok"),
+            "{label}: a partial collection pattern must match"
+        );
+    }
+}
+
 #[tokio::test]
 async fn txn_recover_unknown_returns_nil() {
     let (rt, _replay) = build_runtime_pair().await;
