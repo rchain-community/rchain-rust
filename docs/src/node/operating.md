@@ -174,6 +174,80 @@ thin-client model — not on the REPL client.
 
 ---
 
+## Deploying, and block production
+
+### `rnode deploy` and `deploy-status`
+
+Deploys reach a node through the **external gRPC** port (40401 by default) or `POST /api/deploy`
+(40403). Three things bite operators:
+
+- **The shard must be named.** The client sends an empty shard id unless told otherwise, and a node on the
+  `root` shard rejects it outright:
+
+  ```
+  Deploy shardId '' is not a member of this node's shards: [/root]
+  ```
+
+  Pass `--shard-id /root` (or whatever `/api/status` reports as `shardId`).
+
+- **A CLI deploy that does not set an anchor is dropped.** The client leaves
+  `valid_after_block_number` at `-1`, and a deploy is expired once
+  `height - valid_after_block_number > DEPLOY_LIFESPAN` (50) — enforced by `dag::expire_deploys`, which
+  deletes it from the pool, and again by the proposer. On a chain taller than ~49 blocks such a deploy is
+  accepted (`Response: Success!` with a DeployId) and then never proposed:
+  `deploy-status` answers `notProcessed / Unknown`, and the proposer logs
+  `No pooled deploys; injecting dummy deploy for block #NNN`. Pass
+  `--valid-after-block-number <current height>` on a binary that predates
+  [#58](https://github.com/rchain-community/rchain-rust/pull/58), which makes the CLI resolve the anchor
+  from the node's own height the way the faucet, the browser client and `txn_coordinator` already do.
+  Short chains hide this: below the lifespan, `-1` is not yet "expired".
+
+- **`deploy-status` reports the outcome, not the reason.** A success returns
+  `{"processedWithSuccess": {"deployResult": […], "block": …}}`; a failure returns
+  `{"processedWithError": {"deployError": "<deploy error message not available in cache or deploy
+  executed on another node>", "block": …}}`; a deploy still in the pool returns
+  `{"notProcessed": {"status": "Pooled"}}`. The error text is not retained (issue #15), so a failed deploy
+  tells you *that* it failed and not why.
+
+  To read a term's **return value** — usually what you actually want — have the term send its result
+  somewhere it can be read back, using the registry result-slot pattern that the browser client and
+  `scripts/qos-cli/rholang-client.mjs` use: `wrapProgram` binds `return` and inserts the value under a
+  nonce through `rho:registry:insertSigned:secp256k1`, which can then be looked up. A raw deploy or eval
+  does **not** get `return` for free, so a term written for the browser fails as
+  `Top level free variables are not allowed` when deployed directly.
+
+### Block production modes
+
+| mode | flags | behaviour |
+|---|---|---|
+| continuous | `--autopropose` | proposes on a fixed cadence. The devnet adds `--dev-mode --deployer-private-key` so an injected dummy `Nil` deploy keeps the pool non-empty |
+| on demand | `--propose-on-deploy` | proposes when a deploy arrives |
+| idle | neither | nothing is proposed; the DAG advances only via the admin API's `POST /api/v1/propose` or another node |
+
+There is **no `--no-autopropose` flag** on the node — you omit `--autopropose`. (`tools/devnet.sh`
+accepts `--no-autopropose` because that is *its* CLI, and it simply omits the node flag. Passing it to
+`rnode run` exits 1 in a restart loop.)
+
+### Finality, and why an idle chain can report no fringe
+
+Finality requires **more than 2/3 of the whole bond pool** to attest, *and* someone to propose. Two
+consequences operators run into:
+
+- If the only proposer holds ≤ 2/3 of the pool, blocks keep extending the DAG but nothing finalises:
+  `GET /api/last-finalized-block` answers `"Finalized fringe is not available."`, and a health check that
+  treats a missing fringe as a failure will report an idle chain as unhealthy. Joining nodes can still
+  sync — they restore from the **approved** fringe, persisted at the genesis ceremony by
+  `put_approved_block` — but a node needing a *later* fringe to catch up quickly has none available.
+- `withdraw` does **not** remove stake from the pool at once: it deactivates the validator immediately and
+  escrows the stake until the quarantine deadline, so the stake keeps counting against the 2/3 threshold
+  until `close_block` refunds it (`rholang/src/native_state.rs`).
+
+A net that must keep finalising while otherwise idle should either give its founding validator more than
+2/3 of the pool as a genesis stake, or run a second validator with `--autopropose`. [Running a public
+testnet](running-a-public-testnet.md) works both through.
+
+---
+
 ## The Docker multi-node network (bare topology)
 
 `tools/devnet.sh up --nodes N` boots a bare **1–5 node** network (one bootstrap + `N-1` unbonded peers)

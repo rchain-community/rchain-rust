@@ -43,6 +43,7 @@
 - [Cross-shard invoke (remote deploy)](node/shard-invoke.md)
 - [Running a validator: hardware requirements](node/validator-requirements.md)
 - [Local devnet (Docker)](node/devnet.md)
+- [Running a public testnet](node/running-a-public-testnet.md)
 
 # Part IV — Building applications
 
