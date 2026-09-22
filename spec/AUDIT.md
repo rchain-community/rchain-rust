@@ -1492,6 +1492,32 @@ oracle is, and the test that pins the fix.
   restore to the *wrong channel* (which is what makes the model compare channels rather than ask
   whether any send is there).
 
+- **Law 32 — the operator surface, and the four rules its samples had to obey.** `Rchain/Lex.lean`
+  holds the port's operator/lexeme table as data (`rholang/src/parser.rs`'s `match c` cascade, read row
+  for row) with the `decide`d checks a table can make about itself: the spellings are distinct and are
+  punctuation, and **maximal munch** holds — `longestMatchIn` over the table, applied to each row's own
+  spelling, must return that row, so a cascade that tested `<` before `<=` would fail the `<=` row.
+  Each row also carries a *sample* and what it must observe, which is the half the table cannot check:
+  `node/tests/lean_lex_corpus.rs` runs the sample and compares (`value:<json>` through law 42's JSON, or
+  `answers:<n>` for the arrows, which is how `<-` — one consume — and `<<-` — two peeks — are told
+  apart). AUDIT C10's swap (`/\`/`\/` lexed silently as each other) fails its sample; falsified once on
+  purpose, a perturbed expectation fails naming the row.
+
+  Writing the samples turned up four behaviours of the port, each checked against the reference *while
+  writing it* rather than assumed — and three are faithful ports of the Scala, which is why they are
+  recorded here rather than filed as divergences:
+
+  | Behaviour | Faithful? |
+  |---|---|
+  | a top-level logical connective in *process* position is refused (`TopLevelLogicalConnectivesNotAllowedError`) | yes — `Compiler.scala:106` raises the same error for the same condition |
+  | at bind depth 0, `\/` or `~` in a *receive* pattern is refused (`PatternReceiveError("\\/ (disjunction) at …")`) | yes — `Utils.scala:13-21` is the same check with the same messages, and the port's `fail_on_invalid_connective` is its port |
+  | a *bare name* is not a process: `read!(@"c")` does not parse | yes — the reference grammar has `Name ::= "_" \| Var \| "@" Proc12` and **no** `Proc ::= Name`, so the port is right and the sample was wrong (the store layer hit the same rule) |
+  | `--` is defined for `Set`s only (`OperatorNotDefined` for a List) | yes — `reduce.rs`'s `EMinusMinus` arm takes `(ESet, ESet)` and nothing else |
+  | `match` *case* patterns are not subject to the `\/` depth check (only receive patterns are) | yes — the port checks at two call sites (contract formals, receive patterns), matching the Scala's two |
+
+  The table's boundary is stated in the module: the rest of law 32 (comments, the `_`/`_ident` rule,
+  `bundle0`, the number/string/uri literal forms) needs the full lexer that laws 30/31/33 share.
+
 - **C29 — the served OpenAPI document was stale, and nothing held it to the code it describes.** Found
   while writing law 43, and it is the C16 class one level up: a *shape a client reads* that had drifted
   from the shape the node produces, silently.

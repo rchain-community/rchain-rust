@@ -5,6 +5,7 @@ import Rchain.Store
 import Rchain.Protocol
 import Rchain.Json
 import Rchain.Envelope
+import Rchain.Lex
 
 /-!
 # The conformance corpus, generated from the specification
@@ -525,6 +526,17 @@ def envelopeLine (r : EnvelopeRow) : String :=
       String.intercalate ";" (r.variants.map (fun v =>
         v.1 ++ ":" ++ String.intercalate "," v.2)))
 
+/-! ## Law 32 — the lexeme layer
+
+The table is the law (`Rchain/Lex.lean`: `lexemes`, with `lexemes_decide` checking distinctness, the
+punctuation class and maximal munch); this layer renders it. Each row is a spelling, the token it lexes
+to, what its sample must observe, and the sample itself — so the Rust consumer runs the sample and
+reports; nothing about the meaning is the consumer's to decide. -/
+
+/-- One lexeme corpus line: layer, the spelling, its token, the expectation, and the sample term. -/
+def lexLine (l : Lexeme) : String :=
+  "lex\t" ++ l.spelling ++ "\t" ++ l.token ++ "\t" ++ l.expected ++ "\t" ++ l.sample
+
 end Corpus
 end Rchain
 
@@ -535,7 +547,7 @@ open Rchain
 def main (args : List String) : IO UInt32 := do
   let want :=
     (args.find? (fun a => a == "flags" || a == "match" || a == "silence" || a == "store"
-      || a == "protocol" || a == "json" || a == "envelope")).getD "flags"
+      || a == "protocol" || a == "json" || a == "envelope" || a == "lex")).getD "flags"
   let (lines, count) :=
     if want == "match" then (Corpus.matchCases.map Corpus.matchLine, Corpus.matchCaseCount)
     else if want == "silence" then
@@ -548,6 +560,8 @@ def main (args : List String) : IO UInt32 := do
       (Corpus.jsonCases.map Corpus.jsonLine, Corpus.jsonCaseCount)
     else if want == "envelope" then
       (envelopeCatalog.map Corpus.envelopeLine, envelopeCaseCount)
+    else if want == "lex" then
+      (lexemes.map Corpus.lexLine, lexemeCount)
     else (Corpus.flagCases.map Corpus.flagLine, Corpus.flagCaseCount)
   if lines.length != count then
     IO.eprintln s!"rchain-corpus: {want}: the case list and the declared count disagree"
