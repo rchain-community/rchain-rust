@@ -1828,3 +1828,33 @@ port against the **reference document** rather than against itself.
   both at the **client's** surface — a real node over HTTP, `replySource: "out"` and
   `expr[0].ExprInt.data == 42`. The document also gained the paths and value schemas it lacked: `/capabilities`,
   `/deploys`, `/faucet` and `RhoExpr`/`RhoUnforg` (AUDIT C29's named gap).
+
+- **C40 — law 38's tie was stated as an `iff` that is false, and the relation was missing the clause
+  the same module says it carries.** Two defects in one module, found by trying to *prove* the owed
+  axiom rather than by reading it, which is the only way this class surfaces:
+
+  1. **The `iff` is false.** `takesStep_iff_reduces` read
+     `takesStep p = true ↔ ∃ q', ReduceP p q'` for **every** `p`. Refute it with `chan = nilPar`:
+     `ReduceP.comm` fires with `data = pattern = nilPar` (`spatialMatches` accepts them and the rule
+     never looks at the channel), so the right-hand side holds — while `stepsInBinds` answers `false`,
+     because it compares channels with `stringChan` and `stringChan nilPar = none`. A false axiom is
+     not an owed proof; it is the state C26 found law 5 in, where anything follows from it. The
+     restriction is not arbitrary slack: `stringChan` is a *decidable* `String` identity, and the
+     model's `Par` has no `DecidableEq`, while its canonical comparator is a well-founded recursion
+     that `decide` cannot unfold — so the computation can only see string channels, and the corpus's
+     verdicts depend on exactly that. The statement now carries the domain as data
+     (`allStringChans`), plus `takesStep_sound` on its own — the direction the corpus leans on ("the
+     search reported a step, so a step exists"), which needs no restriction, since a `true` from the
+     search already implies both channels were string channels.
+
+  2. **The relation could not express the arity clause.** The module's own docstring says law 40 lives
+     in one clause of the rule, and `stepsInBinds` reads the arity — but `ReduceP` could contract only
+     a send of *one* datum against a single-pattern receive. A two-argument call against a
+     two-argument contract is a step by the search and had **no derivation**: the relation was strictly
+     weaker than the computation it is the specification of. `commPs` supplies it — the arity
+     hypothesis and the pairwise match — which is what makes law 40's question a question about the
+     rule rather than about an implementation detail.
+
+  Both statements are now true and precisely scoped; both proofs remain owed, and the second is the
+  smaller job (a structural induction reconstructing the redex the search found, with the head-peeling
+  congruence chain). Recorded here rather than discovered later by someone proving a falsehood.

@@ -46,10 +46,24 @@ def receiveParPs (chan : Par) (patterns : List Par) (body : Par) : Par :=
     [] [] [] [] [] []
 
 /-- Pattern-aware reduction. The contract rule requires `spatialMatches data pattern`, so "no match,
-no step" is the rule rather than a remark about the implementation. -/
+no step" is the rule rather than a remark about the implementation.
+
+**`commPs` is law 40's clause, and it was missing.** The docstring above says the arity lives in this
+rule — but as first written the rule could contract only a send of *one* datum, against `receiveParP`
+(one pattern), while `stepsInBinds` (the computation the corpus decides against) accepts a bind with as
+many patterns as the send has data. So the relation could not express what the computation accepted: a
+two-argument call against a two-argument contract is a step by the search and had no derivation.
+`commPs` is that derivation — the arity hypothesis and the pairwise match, exactly the clauses
+`stepsInBinds` checks — and it is what makes law 40's question ("at which arities does a call have an
+accepting receive?") a question about the *rule* rather than about an implementation detail.
+AUDIT C40. -/
 inductive ReduceP : Par → Par → Prop where
   | comm {chan pattern data body : Par} (h : spatialMatches data pattern) :
       ReduceP (parMerge (sendPar chan [data]) (receiveParP chan pattern body)) body
+  | commPs {chan : Par} {patterns data : List Par} {body : Par}
+      (harity : patterns.length = data.length)
+      (hmatch : (patterns.zip data).all (fun pd => spatialMatch pd.2 pd.1) = true) :
+      ReduceP (parMerge (sendPar chan data) (receiveParPs chan patterns body)) body
   | parLeft {p p' q : Par} : ReduceP p p' → ReduceP (parMerge p q) (parMerge p' q)
   | parRight {p q q' : Par} : ReduceP q q' → ReduceP (parMerge p q) (parMerge p q')
 
@@ -90,9 +104,33 @@ mutual
       || stepsInBinds s bs
 end
 
-/-- The tie between the relation and the computation: they answer the same question. **Owed** — the
-search above is what the corpus decides against, and the node's behaviour is what the corpus checks,
-so a disagreement of either kind is reported rather than passing. -/
-axiom takesStep_iff_reduces (p : Par) : takesStep p = true ↔ ∃ q', ReduceP p q'
+/-- Every channel the search will compare is a **string** channel: each send's channel and each bind's
+source. This is the computation's domain, and it has to be stated because the two sides of
+`takesStep_iff_reduces` are not defined on the same terms: `ReduceP.comm` fires on *any* channel, while
+`stepsInBinds` compares channels with `stringChan` — a decidable `String` identity, which is what makes
+the corpus's verdicts `decide`-able at all, since the model's `Par` has no `DecidableEq` and its
+canonical comparator is a well-founded recursion that `decide` cannot unfold. -/
+def allStringChans (p : Par) : Bool :=
+  p.sends.all (fun s => (stringChan s.chan).isSome)
+    && p.receives.all (fun r => r.binds.all (fun b => (stringChan b.source).isSome))
+
+/-- The tie between the relation and the computation, **on the computation's domain**: for a `Par`
+whose channels are all string channels, the search reports a step exactly when the relation has one.
+
+**This replaced an axiom that was false** (AUDIT C40): it read `takesStep p = true ↔ ∃ q', ReduceP p q'`
+for *every* `p`, and `chan = nilPar` refutes it — `ReduceP.comm` fires with `data = pattern = nilPar`
+(`spatialMatches` accepts them, and the rule never looks at the channel), while `stepsInBinds` answers
+`false` because `stringChan nilPar = none`. A false axiom is not an owed proof; it is the state C26
+found law 5 in, where anything follows from it, so the statement is corrected here and the proof is
+still owed — with the *sound* direction separated out below, which is the one the corpus leans on. -/
+axiom takesStep_iff_reduces (p : Par) (h : allStringChans p = true) :
+    takesStep p = true ↔ ∃ q', ReduceP p q'
+
+/-- The **sound** direction on its own, and the one that matters for reading the corpus: when the
+search reports a step, a step exists. Stated without the domain restriction because it does not need
+it — a `true` from `stepsInBinds` already implies both channels were string channels. **Owed**, and
+the half to prove first: it is a structural induction over the search that reconstructs the redex the
+search found, and it is what lets a `silence.tsv` verdict of `true` be read as the relation's. -/
+axiom takesStep_sound (p : Par) : takesStep p = true → ∃ q', ReduceP p q'
 
 end Rchain
