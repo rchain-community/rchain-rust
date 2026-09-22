@@ -5,9 +5,17 @@ guessed, and each guess was only falsified when someone ran it — which is how 
 `rho:registry:lookup` replies in `(uri, value)` (C18) while every oracle-era client consumed the
 value alone, and how the whole rgov governance contract family came to return `[]` with no
 diagnostic. A shape is a published contract: changing one is a breaking change, so every row here
-cites the oracle it follows and the test that enforces it. The consumer side
-(`r-wallet/scripts/test-output-json.ts`) asserts the same shapes, so a regression from either
-direction is caught.
+cites the oracle it follows and the test that enforces it.
+
+**This file has been wrong once, and the way it went wrong is worth knowing.** Its rule 1 said the
+wire had no `data` envelope and called the envelope "the Scala/OpenAPI *schema* artifact's spelling,
+not the wire's" — and, because the only consumer (`r-wallet/`) had been written to that rule, the port
+and the wallet agreed with each other and neither with the reference node. When rule 1 was corrected
+(AUDIT C38) the wallet's parser broke on 22 of its 36 contracts: **a correction to a published contract
+is still a breaking change**, and this one landed without being called out as such. The consumer is
+out-of-tree, so nothing in this repository can assert what it expects — which is exactly why the rule
+below cites the *reference* rather than a consumer, and why the migration is the client accepting both
+forms.
 
 **Scope.** What rholang code and HTTP clients receive. The HTTP DTOs live in the OpenAPI artifact
 (`node/src/web/http.rs`, served at `/api/v1/openapi.json`); this file covers what it cannot: the
@@ -23,16 +31,21 @@ rholang-typed values, and the reply shapes of the system processes.
 
    **This rule was wrong until AUDIT C38, and the way it was wrong is worth keeping.** It said the
    wire had no `data` envelope, and that the envelope was "the Scala/OpenAPI *schema* artifact's
-   spelling, not the wire's". The reference's own types say otherwise: every arm is a case class whose
-   single field is named `data` — `final case class ExprInt(data: Long)`,
-   `ExprMap(data: Map[String, RhoExpr])`, `UnforgPrivate(data: String)`
-   (`legacy/node/src/main/scala/coop/rchain/node/api/WebApi.scala:131-151`) — and the node's JSON codec
-   is *derived* from those case classes, so the field name is the serialization. The document a client
-   generates from (`legacy/docs/rnode-api/rnode-openapi.json`, and the `rnode-openapi-schema.ts` beside
-   it) is derived from the same case classes, which is why the two agree and there is no "schema
-   spelling" to discount. The port emitted the unwrapped form, this file blessed it, and law 42 was
-   then written from the port — so code and law agreed with each other and neither with a client. The
-   corpus could not catch it: it compares the node to the model.
+   spelling, not the wire's" — a claim that would be true only if the document were generated
+   separately from the codec. It is not: the reference's own JSON layer derives both from the *same*
+   generic instances — `implicit lazy val rhoExprSchema: JsonSchema[RhoExpr] =
+   schemaTagged[RhoExpr]` over `genericTagged`/`genericRecord`
+   (`legacy/node/src/main/scala/coop/rchain/node/api/json/JsonSchemaDerivation.scala:45-82`), where
+   `schemaRecord` is endpoints4s's case-class-to-JSON-object derivation. So the field named `data` in
+   `final case class ExprInt(data: Long)` *is* the serialization, and the document is its shadow
+   rather than a rival spelling. The port emitted the unwrapped form, this file blessed it, and law 42
+   was then written from the port — so code and law agreed with each other and neither with a client.
+   The corpus could not catch it: it compares the node to the model.
+
+   **Migration, stated because the correction broke a client.** A consumer written to the bare form
+   must accept the envelope (or read `Expr*["data"]`); a consumer written to the *reference* node is
+   unaffected, because the reference always emitted the envelope. The wallet is being changed to accept
+   both; the envelope is what a fresh chain has emitted since C38.
 
    Note the lossiness that follows: a set is indistinguishable from a list on the wire.
 2. **Terminal results are a list.** A deploy or explore result is always wrapped one level
