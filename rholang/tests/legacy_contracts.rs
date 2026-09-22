@@ -93,11 +93,11 @@ impl SkipReason {
 }
 
 /// The skipped files, keyed by path relative to the repository root, with the reason each is not
-/// reduced. Written *from what the reducer reported* (90 files out of 165), not from what looked
+/// reduced. Written *from what the reducer reported* (95 files out of 165), not from what looked
 /// hard: 56 files are in a dialect the grammar does not have, 17 need a test-harness native, 8 are
 /// templates, 4 are meant to fail or need a live context, and 5 exceed the fuel bound.
 ///
-/// The remaining **75 reduce cleanly**. Getting there fixed four real defects in the port — a
+/// The remaining **70 reduce cleanly**. Getting there fixed four real defects in the port — a
 /// parenthesised expression was parsed as a one-element tuple (`Registry.rho` could not be reduced
 /// at all), the two logical connectives were swapped at the lexer and disjunction was unparseable,
 /// `++` was missing its Map/Set arms, and `+`/`-` were missing theirs. See `spec/AUDIT.md` §16.
@@ -197,6 +197,26 @@ const SKIPS: &[(&str, SkipReason)] = &[
     ("legacy/rholang/examples/performance/loop_recursive.rho", SkipReason::ExceedsTestBudget),
     ("legacy/rholang/examples/shortslow.rho", SkipReason::ExceedsTestBudget),
     ("legacy/rspace-bench/src/test/resources/rholang/wide-setup.rho", SkipReason::ExceedsTestBudget),
+    // --- found by the grammar, not by taste (AUDIT C31, C30) ---
+    //
+    // These five were *accepted* before the parser was held to `rholang_mercury.cf`, which is why
+    // they reached this list only now. The first three are Scala test fixtures that end a list with
+    // a comma (`[a, b, c,]`); the grammar's `[X] ::= X | X "," [X]` derives no such list, so the
+    // port now refuses them — the same classification the `SupersededSyntax` bucket already makes.
+    // (The comma form of a *remainder*, `[a, ...rest]`, is a different matter: it is equally
+    // underivable and the vendored contracts use it, so it is a recorded deviation the parser
+    // accepts, not a rejection — see `spec/AUDIT.md` C31.)
+    ("legacy/casper/src/test/resources/ListOpsTest.rho", SkipReason::SupersededSyntax),
+    ("legacy/casper/src/test/resources/NonNegativeNumberTest.rho", SkipReason::SupersededSyntax),
+    ("legacy/casper/src/test/resources/RegistryOpsTest.rho", SkipReason::SupersededSyntax),
+    // The last two are *negative examples*, and their own comments say so: "This shows that the
+    // program cannot be a pair of logically connected processes. A successful run will return in
+    // StdOut 'Error: Program of the form Process1 /\ Process2.'" A top-level connective in process
+    // position was parsed as a valid prefix with the rest discarded; the `Eof` requirement turns it
+    // into the error the file was written to produce (AUDIT C30).
+    ("legacy/rholang/src/main/k/rholang/tests/Global-Program-Structure/Logical-and-in-program.rho", SkipReason::ExpectedRuntimeError),
+    ("legacy/rholang/src/main/k/rholang/tests/Global-Program-Structure/Logical-or-in-program.rho", SkipReason::ExpectedRuntimeError),
+
 ];
 
 /// The repository root (`rholang/..`).

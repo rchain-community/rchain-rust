@@ -34,8 +34,34 @@ const EXAMPLES: &[&str] = &[
     "examples/wallet.rho",
 ];
 
-#[tokio::test]
-async fn rho_examples_parse_and_reduce() {
+/// An explicit stack, for the reason `legacy_contracts.rs` records: `qucalc/rholang/gov.rho` nests
+/// deeply enough that parsing it is **marginal** on the default 2 MiB test stack — it parses on 8
+/// MiB and aborts below it, and the margin is small enough that an unrelated change elsewhere in the
+/// parser (a few bytes per frame) decides whether it survives. A test that aborts with a stack
+/// overflow in that regime reports nothing about the parse; the requirement belongs here, where it is
+/// needed, not in a `RUST_MIN_STACK` invocation nobody will remember. Both stacks matter:
+/// `block_on` drives the future on the *calling* thread, and each program's reduction runs on a
+/// runtime worker.
+const STACK: usize = 8 << 20;
+
+#[test]
+fn rho_examples_parse_and_reduce() {
+    std::thread::Builder::new()
+        .stack_size(STACK)
+        .spawn(|| {
+            tokio::runtime::Builder::new_multi_thread()
+                .thread_stack_size(STACK)
+                .enable_all()
+                .build()
+                .expect("a tokio runtime")
+                .block_on(run_examples())
+        })
+        .expect("spawn the corpus thread")
+        .join()
+        .expect("the corpus thread panicked");
+}
+
+async fn run_examples() {
     let (rt, _replay) = common::build_runtime_pair().await;
     let rand = fixed_rand();
     let empty_env = BTreeMap::new();

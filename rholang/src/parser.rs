@@ -103,9 +103,17 @@ fn lex(src: &str) -> Result<Vec<Tok>, RholangError> {
             continue;
         }
         if c == '/' && i + 1 < chars.len() && chars[i + 1] == '*' {
+            let start = i;
             i += 2;
             while i + 1 < chars.len() && !(chars[i] == '*' && chars[i + 1] == '/') {
                 i += 1;
+            }
+            if i + 1 >= chars.len() {
+                // An unterminated comment used to swallow the rest of the source and lex cleanly, so
+                // `Nil /* oops` parsed as `Nil` (AUDIT C36).
+                return Err(RholangError::LexerError(format!(
+                    "unterminated block comment at position {start}"
+                )));
             }
             i += 2;
             continue;
@@ -117,6 +125,13 @@ fn lex(src: &str) -> Result<Vec<Tok>, RholangError> {
             while i < chars.len() && chars[i] != '"' {
                 i += 1;
             }
+            if i >= chars.len() {
+                // `chars[start..i]` with `i == len + 1` **panicked** here: an unterminated literal was
+                // a crash rather than a diagnostic (AUDIT C36).
+                return Err(RholangError::LexerError(format!(
+                    "unterminated string literal at position {start}"
+                )));
+            }
             i += 1; // closing quote
             toks.push(Tok::Str(chars[start..i].iter().collect()));
             continue;
@@ -127,6 +142,11 @@ fn lex(src: &str) -> Result<Vec<Tok>, RholangError> {
             i += 1;
             while i < chars.len() && chars[i] != '`' {
                 i += 1;
+            }
+            if i >= chars.len() {
+                return Err(RholangError::LexerError(format!(
+                    "unterminated uri literal at position {start}"
+                )));
             }
             i += 1;
             toks.push(Tok::Uri(chars[start..i].iter().collect()));
@@ -313,9 +333,77 @@ impl Parser {
             )))
         }
     }
+
+    /// Require a keyword rather than consuming it if present. Every keyword the grammar makes
+    /// mandatory is checked with this: `eat_ident`'s `false` is a boolean nobody reads, and an
+    /// ignored keyword is a term the grammar does not derive (`new x Nil`, AUDIT C32).
+    fn expect_ident(&mut self, kw: &str) -> Result<(), RholangError> {
+        if self.eat_ident(kw) {
+            Ok(())
+        } else {
+            Err(RholangError::SyntaxError(format!(
+                "expected `{kw}`, got {:?} (pos={})",
+                self.peek(),
+                self.pos
+            )))
+        }
+    }
+
+    /// After consuming a list separator, the next token must begin another element — or a remainder.
+    /// The grammar's lists are `[X] ::= X | X "," [X]`, so a separator followed by the closing token
+    /// has **no derivation**: `[1,]`, `Set(1,)`, `{a: 1,}`, `c!(1,)`, `contract c(@x,) = …`,
+    /// `(1, 2,)` and `new x, in Nil` are all outside the language, and the port used to accept every
+    /// one of them (AUDIT C31).
+    ///
+    /// An **ellipsis** after the separator *is* allowed, and that is a deliberate, evidenced choice
+    /// rather than slack: the grammar separates a remainder from the list by no terminal at all
+    /// (`CollectList ::= "[" [Proc] ProcRemainder "]"`), so the comma form is not derivable — but the
+    /// vendored contracts spell it both ways and both must run (`Issue.rho:110`'s
+    /// `{name: *voter, ...tail}`), so the comma form is an *extension* recorded as a deviation row on
+    /// law 31's data list, not a rejection. A separator followed by the closer means nothing at all,
+    /// which is the part that was silent.
+    fn expect_element_after_separator(&self, close: &Tok, what: &str) -> Result<(), RholangError> {
+        if self.peek() == &Tok::Ellipsis {
+            return Ok(());
+        }
+        if self.peek() == close || self.peek() == &Tok::Eof {
+            return Err(RholangError::SyntaxError(format!(
+                "trailing separator in {what} (pos={})",
+                self.pos
+            )));
+        }
+        Ok(())
+    }
+
+    /// The same rule where a list has more than one legitimate terminator: a bind's names are
+    /// followed by `<-`, `<<-` or `<=` (`rholang_mercury.cf:127,137,143`), and a `let` declaration's
+    /// are followed by `;`, `&` or `in` (`:84,87`). Those are `stops`, not a single `close` token.
+    fn expect_element_after_separator_where(
+        &self,
+        stops: fn(&Tok) -> bool,
+        what: &str,
+    ) -> Result<(), RholangError> {
+        if self.peek() == &Tok::Ellipsis {
+            return Ok(());
+        }
+        if stops(self.peek()) || self.peek() == &Tok::Eof {
+            return Err(RholangError::SyntaxError(format!(
+                "trailing separator in {what} (pos={})",
+                self.pos
+            )));
+        }
+        Ok(())
+    }
 }
 
 /// Parse a source string into a `Proc` (port of `Compiler.sourceToAST`).
+///
+/// The whole token stream must be the term: `Tok::Eof` is pushed by the lexer and required here. The
+/// grammar derives *terms*, not "a term followed by anything", so trailing input has no derivation —
+/// and the port used to return `Ok` for it, which made `parse("Nil )")` and `parse("c!(1) garbage")`
+/// **succeed silently** (AUDIT C30). That matters because `source_to_adt_with_env` runs on
+/// `deploy.data.term`: a deploy whose term is a valid prefix of what the client wrote would have run,
+/// reporting success, having executed something the client did not write.
 pub fn parse(source: &str) -> Result<Proc, RholangError> {
     let toks = lex(source)?;
     let mut p = Parser {
@@ -324,6 +412,7 @@ pub fn parse(source: &str) -> Result<Proc, RholangError> {
         depth: 0,
     };
     let proc = p.parse_proc()?;
+    p.expect(Tok::Eof)?;
     Ok(proc)
 }
 
@@ -361,11 +450,18 @@ impl Parser {
                     decls.push(p.parse_name_decl()?);
                     if p.peek() == &Tok::Comma {
                         p.next();
+                        p.expect_element_after_separator(
+                            &Tok::Ident("in".to_string()),
+                            "a `new` declaration list",
+                        )?;
                     } else {
                         break;
                     }
                 }
-                p.eat_ident("in");
+                // `PNew ::= "new" [NameDecl] "in" Proc1` (`rholang_mercury.cf:74`): `in` is not
+                // optional, and ignoring `eat_ident`'s result made `new x Nil` a term — a declaration
+                // list that ends where the grammar says a keyword must be (AUDIT C32).
+                p.expect_ident("in")?;
                 let body = p.parse_proc1()?;
                 Ok(Proc::PNew(decls, Box::new(body)))
             } else {
@@ -383,6 +479,10 @@ impl Parser {
                 names.push(self.parse_name()?);
                 if self.peek() == &Tok::Comma {
                     self.next();
+                    self.expect_element_after_separator(
+                        &Tok::RParen,
+                        "a `contract` parameter list",
+                    )?;
                 } else {
                     break;
                 }
@@ -406,6 +506,7 @@ impl Parser {
                 receipts.push(self.parse_receipt()?);
                 if self.peek() == &Tok::Semicolon {
                     self.next();
+                    self.expect_element_after_separator(&Tok::RParen, "a `for` bind list")?;
                 } else {
                     break;
                 }
@@ -448,7 +549,9 @@ impl Parser {
         } else if self.eat_ident("let") {
             let decl = self.parse_decl()?;
             let decls = self.parse_decls()?;
-            self.eat_ident("in");
+            // `PLet ::= "let" Decl Decls "in" "{" Proc "}"` (`rholang_mercury.cf:70`) — `in` is
+            // mandatory here too (AUDIT C32).
+            self.expect_ident("in")?;
             self.expect(Tok::LBrace)?;
             let body = self.parse_proc()?;
             self.expect(Tok::RBrace)?;
@@ -476,12 +579,52 @@ impl Parser {
                     data.push(self.parse_proc()?);
                     if self.peek() == &Tok::Comma {
                         self.next();
+                        self.expect_element_after_separator(&Tok::RParen, "a send's arguments")?;
                     } else {
                         break;
                     }
                 }
                 self.expect(Tok::RParen)?;
                 return Ok(Proc::PSend(name, send, data));
+            }
+            // `PSendSynch. Proc1 ::= Name "!?" "(" [Proc] ")" SynchSendCont ;` with
+            // `EmptyCont ::= "."` / `NonEmptyCont ::= ";" Proc1` (`rholang_mercury.cf:75,95,96`).
+            // The `Tok::BangQ` was lexed and only ever read by `parse_name_source`, so a synchronous
+            // send in **process** position had no parser path at all: `PSendSynch` has a `proc_ast`
+            // variant and a normalizer arm (`normalizer.rs:220`) and could not be produced, so
+            // `x!?(1); P` parsed as the bare variable `x` with `!?(1); P` discarded — silently, until
+            // the `Eof` check above turned it into an error (AUDIT C35).
+            if matches!(self.peek(), Tok::BangQ) {
+                self.next();
+                self.expect(Tok::LParen)?;
+                let mut data = Vec::new();
+                while self.peek() != &Tok::RParen {
+                    data.push(self.parse_proc()?);
+                    if self.peek() == &Tok::Comma {
+                        self.next();
+                        self.expect_element_after_separator(
+                            &Tok::RParen,
+                            "a synchronous send's arguments",
+                        )?;
+                    } else {
+                        break;
+                    }
+                }
+                self.expect(Tok::RParen)?;
+                let cont = if self.peek() == &Tok::Dot {
+                    self.next();
+                    SynchSendCont::EmptyCont
+                } else if self.peek() == &Tok::Semicolon {
+                    self.next();
+                    SynchSendCont::NonEmptyCont(Box::new(self.parse_proc1()?))
+                } else {
+                    return Err(RholangError::SyntaxError(format!(
+                        "a synchronous send must be followed by `.` or `;`, got {:?} (pos={})",
+                        self.peek(),
+                        self.pos
+                    )));
+                };
+                return Ok(Proc::PSendSynch(name, data, cont));
             }
             // A bare `Var`/`_` in process position is a process-variable reference (`PVar`/
             // `PVarWildcard`), handled by `parse_proc16`; backtrack and fall through. Only `@`
@@ -684,6 +827,10 @@ impl Parser {
                         args.push(self.parse_proc()?);
                         if self.peek() == &Tok::Comma {
                             self.next();
+                            self.expect_element_after_separator(
+                                &Tok::RParen,
+                                "a method call's arguments",
+                            )?;
                         } else {
                             break;
                         }
@@ -812,29 +959,28 @@ impl Parser {
         } else {
             Proc::PVar(self.parse_proc_var()?)
         };
-        // Method calls (`receiver.method` / `receiver.method(args...)`) bind tighter than the
-        // operators above and chain left-to-right.
+        // Method calls (`receiver.method(args...)`) bind tighter than the operators above and chain
+        // left-to-right. The argument list is **required**: `PMethod ::= Proc11 "." Var "(" [Proc]
+        // ")"` (`rholang_mercury.cf:41`) has no paren-less form, so `x.m` used to parse as a method
+        // call with no arguments — a term the grammar does not derive, and one the normalizer then
+        // handed to a native method that would wait for an argument nothing would supply (AUDIT C33).
         let mut chain = 0;
         while self.peek() == &Tok::Dot {
             self.chain_link(&mut chain)?;
             self.next();
             let method = self.parse_source_var()?;
-            let args = if self.peek() == &Tok::LParen {
-                self.next();
-                let mut args = Vec::new();
-                while self.peek() != &Tok::RParen {
-                    args.push(self.parse_proc()?);
-                    if self.peek() == &Tok::Comma {
-                        self.next();
-                    } else {
-                        break;
-                    }
+            self.expect(Tok::LParen)?;
+            let mut args = Vec::new();
+            while self.peek() != &Tok::RParen {
+                args.push(self.parse_proc()?);
+                if self.peek() == &Tok::Comma {
+                    self.next();
+                    self.expect_element_after_separator(&Tok::RParen, "a method call's arguments")?;
+                } else {
+                    break;
                 }
-                self.expect(Tok::RParen)?;
-                args
-            } else {
-                Vec::new()
-            };
+            }
+            self.expect(Tok::RParen)?;
             target = Proc::PMethod(Box::new(target), method, args);
         }
         Ok(target)
@@ -872,9 +1018,10 @@ impl Parser {
             kvs.push(KeyValuePair(key, value));
             if self.peek() == &Tok::Comma {
                 self.next();
-                if self.peek() == &Tok::RBrace || self.peek() == &Tok::Ellipsis {
+                if self.peek() == &Tok::Ellipsis {
                     break;
                 }
+                self.expect_element_after_separator(&Tok::RBrace, "a map")?;
                 key = self.parse_proc()?;
             } else {
                 break;
@@ -933,7 +1080,13 @@ impl Parser {
         let t = match self.peek() {
             Tok::Ident(s) if s == "Bool" => Some(SimpleType::SimpleTypeBool),
             Tok::Ident(s) if s == "Int" => Some(SimpleType::SimpleTypeInt),
-            Tok::Ident(s) if s == "BigInt" => Some(SimpleType::SimpleTypeBigInt),
+            // `BigInt` is both a simple type and the head of the `GroundBigInt` production
+            // (`"BigInt(" LongLiteral ")"`, `rholang_mercury.cf:172`), so the type form is the one
+            // *not* followed by `(` — otherwise `BigInt(42)` read as the type and left `(42)` over
+            // (AUDIT C34).
+            Tok::Ident(s) if s == "BigInt" && !self.at_bigint_ground() => {
+                Some(SimpleType::SimpleTypeBigInt)
+            }
             Tok::Ident(s) if s == "String" => Some(SimpleType::SimpleTypeString),
             Tok::Ident(s) if s == "Uri" => Some(SimpleType::SimpleTypeUri),
             Tok::Ident(s) if s == "ByteArray" => Some(SimpleType::SimpleTypeByteArray),
@@ -945,7 +1098,18 @@ impl Parser {
         Ok(t)
     }
 
+    /// Is the cursor at `"BigInt" "(" Long ")"` — the grammar's `GroundBigInt`?
+    fn at_bigint_ground(&self) -> bool {
+        matches!(self.toks.get(self.pos), Some(Tok::Ident(s)) if s == "BigInt")
+            && matches!(self.toks.get(self.pos + 1), Some(Tok::LParen))
+            && matches!(self.toks.get(self.pos + 2), Some(Tok::Long(_)))
+            && matches!(self.toks.get(self.pos + 3), Some(Tok::RParen))
+    }
+
     fn is_ground(&self) -> bool {
+        if self.at_bigint_ground() {
+            return true;
+        }
         match self.peek() {
             Tok::Long(_) | Tok::Str(_) | Tok::Uri(_) => true,
             Tok::Ident(s) => s == "true" || s == "false",
@@ -954,6 +1118,20 @@ impl Parser {
     }
 
     fn parse_ground(&mut self) -> Result<Ground, RholangError> {
+        if self.at_bigint_ground() {
+            self.next(); // `BigInt`
+            self.next(); // `(`
+            let digits = match self.next() {
+                Tok::Long(n) => n.to_string(),
+                t => {
+                    return Err(RholangError::SyntaxError(format!(
+                        "expected a LongLiteral in `BigInt(…)`, got {t:?}"
+                    )))
+                }
+            };
+            self.expect(Tok::RParen)?;
+            return Ok(Ground::GroundBigInt(digits));
+        }
         match self.next() {
             Tok::Long(n) => Ok(Ground::GroundInt(n.to_string())),
             Tok::Str(s) => Ok(Ground::GroundString(s)),
@@ -993,6 +1171,7 @@ impl Parser {
                         if self.peek() == &Tok::Ellipsis {
                             break;
                         }
+                        self.expect_element_after_separator(&Tok::RBracket, "a list")?;
                     } else {
                         break;
                     }
@@ -1017,6 +1196,14 @@ impl Parser {
                             rest.push(self.parse_proc()?);
                             if self.peek() == &Tok::Comma {
                                 self.next();
+                                // `u ::= X | X "," [X]`, and `Tuple ::= "(" Proc "," [Proc] ")"`
+                                // has no remainder, so `(1, 2,)` has no derivation. `(1,)` **does**:
+                                // it is `TupleSingle ::= "(" Proc ",)"` and is handled above, which
+                                // is why this check is here and not on the first comma.
+                                self.expect_element_after_separator(
+                                    &Tok::RParen,
+                                    "a tuple's elements",
+                                )?;
                             } else {
                                 break;
                             }
@@ -1060,6 +1247,7 @@ impl Parser {
                         if self.peek() == &Tok::Ellipsis {
                             break;
                         }
+                        self.expect_element_after_separator(&Tok::RBrace, "a map")?;
                     } else {
                         break;
                     }
@@ -1082,6 +1270,7 @@ impl Parser {
                         if self.peek() == &Tok::Ellipsis {
                             break;
                         }
+                        self.expect_element_after_separator(&Tok::RParen, "a set")?;
                     } else {
                         break;
                     }
@@ -1211,6 +1400,10 @@ impl Parser {
             names.push(self.parse_name()?);
             if self.peek() == &Tok::Comma {
                 self.next();
+                self.expect_element_after_separator_where(
+                    |t| matches!(t, Tok::LArrow | Tok::LLArrow | Tok::Lte),
+                    "a bind's names",
+                )?;
             } else {
                 break;
             }
@@ -1234,6 +1427,7 @@ impl Parser {
                 procs.push(self.parse_proc()?);
                 if self.peek() == &Tok::Comma {
                     self.next();
+                    self.expect_element_after_separator(&Tok::RParen, "a send/receive source")?;
                 } else {
                     break;
                 }
@@ -1273,6 +1467,10 @@ impl Parser {
             names.push(self.parse_name()?);
             if self.peek() == &Tok::Comma {
                 self.next();
+                self.expect_element_after_separator_where(
+                    |t| matches!(t, Tok::LArrow),
+                    "a declaration's names",
+                )?;
             } else {
                 break;
             }
@@ -1292,6 +1490,10 @@ impl Parser {
             procs.push(self.parse_proc()?);
             if self.peek() == &Tok::Comma {
                 self.next();
+                self.expect_element_after_separator_where(
+                    |t| matches!(t, Tok::Semicolon | Tok::Amp | Tok::Ident(_)),
+                    "a declaration's values",
+                )?;
             } else {
                 break;
             }
@@ -1307,6 +1509,10 @@ impl Parser {
                 decls.push(LinearDecl(self.parse_decl()?));
                 if self.peek() == &Tok::Semicolon {
                     self.next();
+                    self.expect_element_after_separator(
+                        &Tok::Ident("in".to_string()),
+                        "a `let` declaration list",
+                    )?;
                 } else {
                     break;
                 }
@@ -1319,6 +1525,10 @@ impl Parser {
                 decls.push(ConcDecl(self.parse_decl()?));
                 if self.peek() == &Tok::Amp {
                     self.next();
+                    self.expect_element_after_separator(
+                        &Tok::Ident("in".to_string()),
+                        "a `let` declaration list",
+                    )?;
                 } else {
                     break;
                 }
@@ -1333,6 +1543,154 @@ impl Parser {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **AUDIT C30.** `parse` used to return `Ok` for a valid *prefix* of the input: `Tok::Eof` was
+    /// pushed by the lexer and matched nowhere, so trailing input was discarded. `source_to_adt`
+    /// runs on `deploy.data.term`, so a deploy whose term was a prefix of what the client wrote ran
+    /// and reported success having executed something the client did not write.
+    #[test]
+    fn trailing_input_is_not_a_term() {
+        for src in [
+            "Nil )",
+            "c!(1) garbage",
+            "Nil Nil",
+            "1 2",
+            "new x in { Nil } extra",
+            "@10!(10) /\\ @20!(20)",
+            "@10!(10) \\/ @20!(20)",
+        ] {
+            assert!(
+                parse(src).is_err(),
+                "{src:?} is a term followed by more input, which is not a term"
+            );
+        }
+        // The controls: each of those is a term on its own.
+        for src in ["Nil", "c!(1)", "1", "new x in { Nil }"] {
+            assert!(parse(src).is_ok(), "{src:?} is a term");
+        }
+    }
+
+    /// **AUDIT C31.** The grammar's lists are `[X] ::= X | X "," [X]`, so a separator with nothing
+    /// after it has no derivation. The port accepted every one of these. `(1,)` is *not* in the
+    /// list: `TupleSingle ::= "(" Proc ",)"` is the production for it.
+    #[test]
+    fn a_trailing_separator_has_no_derivation() {
+        for src in [
+            "[1,]",
+            "Set(1,)",
+            "{a: 1,}",
+            "c!(1,)",
+            "contract c(@x,) = { Nil }",
+            "new x,) in { Nil }",
+            "(1, 2,)",
+            "a.b(1,)",
+            "for (x <- @\"c\";) { Nil }",
+        ] {
+            assert!(parse(src).is_err(), "{src:?} ends a list with a separator");
+        }
+        for src in [
+            "[1]",
+            "[1, 2]",
+            "(1,)",
+            "Set(1)",
+            "{a: 1}",
+            "c!(1)",
+            "a.b(1)",
+            "a.b()",
+            "for (x <- @\"c\") { Nil }",
+            "for (x <- @\"c\"; y <- @\"d\") { Nil }",
+        ] {
+            assert!(parse(src).is_ok(), "{src:?} is derivable");
+        }
+    }
+
+    /// A separator followed by a **remainder** stays accepted, and that is a decision with evidence
+    /// rather than slack: the grammar separates a remainder from the list by no terminal
+    /// (`CollectList ::= "[" [Proc] ProcRemainder "]"`), so `{name: *voter, ...tail}` is equally
+    /// underivable — and it is how `Issue.rho:110` and `Ballot.rho:106` are written. Rejecting it
+    /// would stop the vendored contracts from loading, so it is a recorded deviation (law 31's data
+    /// list), not a rejection.
+    #[test]
+    fn a_comma_before_a_remainder_is_the_deviation_the_contracts_use() {
+        for src in [
+            "[a, ...rest]",
+            "{name: *voter, ...tail}",
+            "Set(a, ...rest)",
+            "[a ...rest]",
+        ] {
+            assert!(parse(src).is_ok(), "{src:?} must stay accepted");
+        }
+    }
+
+    /// **AUDIT C32.** `PNew ::= "new" [NameDecl] "in" Proc1` and `PLet ::= "let" Decl Decls "in"
+    /// "{" Proc "}"` both make `in` mandatory, and both dropped `eat_ident`'s boolean — so `new x
+    /// Nil` parsed as a `new` whose body was `Nil`, with the grammar's keyword missing.
+    #[test]
+    fn in_is_required_by_new_and_let() {
+        assert!(parse("new x Nil").is_err());
+        assert!(parse("new x, y in { Nil }").is_ok());
+        assert!(parse("let x <- 1 in { Nil }").is_ok());
+    }
+
+    /// **AUDIT C33.** `PMethod ::= Proc11 "." Var "(" [Proc] ")"` has no paren-less form. The port
+    /// accepted `x.m` and produced a call with **no arguments**, which the normalizer then handed to
+    /// a native method that waits for an argument nothing will send. The control is `x.m()` — the
+    /// empty argument list the grammar does have.
+    #[test]
+    fn a_method_call_needs_its_argument_list() {
+        assert!(parse("x.m").is_err(), "`x.m` is not a term of the grammar");
+        assert!(parse("x.m()").is_ok());
+        assert!(parse("x.m(1)").is_ok());
+        assert!(parse("x.m(1, 2)").is_ok());
+    }
+
+    /// **AUDIT C34.** `GroundBigInt ::= "BigInt(" LongLiteral ")"` had no parser arm: `BigInt(42)`
+    /// parsed as the *simple type* `BigInt` followed by a discarded `(42)`, while the normalizer
+    /// already supported the ground (`normalizer.rs:59`). `BigInt` alone stays the simple type.
+    #[test]
+    fn bigint_is_a_ground_and_bigint_alone_is_a_type() {
+        assert!(matches!(
+            parse("BigInt(42)").unwrap(),
+            Proc::PGround(Ground::GroundBigInt(_))
+        ));
+        assert!(matches!(
+            parse("BigInt").unwrap(),
+            Proc::PSimpleType(SimpleType::SimpleTypeBigInt)
+        ));
+    }
+
+    /// **AUDIT C35.** `PSendSynch ::= Name "!?" "(" [Proc] ")" SynchSendCont` with
+    /// `EmptyCont ::= "."` / `NonEmptyCont ::= "; " Proc1`: the token was lexed and read only by
+    /// `parse_name_source`, so a synchronous send in **process** position had no parser path —
+    /// `x!?(1); P` parsed as the bare variable `x` with the rest discarded. That its `SynchSendCont`
+    /// continuation is present is the assertion: a `PSendSynch` whose tail was dropped would not be
+    /// distinguishable from one whose tail was parsed.
+    #[test]
+    fn a_synchronous_send_parses_with_its_continuation() {
+        match parse("x!?(1); Nil").unwrap() {
+            Proc::PSendSynch(_, data, SynchSendCont::NonEmptyCont(_)) => assert_eq!(data.len(), 1),
+            other => panic!("expected a synchronous send with a continuation, got {other:?}"),
+        }
+        assert!(matches!(
+            parse("x!?(1).").unwrap(),
+            Proc::PSendSynch(_, _, SynchSendCont::EmptyCont)
+        ));
+        // The grammar requires one of the two continuations.
+        assert!(parse("x!?(1)").is_err());
+    }
+
+    /// **AUDIT C36.** The lexer sliced `chars[start..i]` with `i == len + 1` for an unterminated
+    /// literal — a **panic**, not a diagnostic — and an unterminated block comment swallowed the
+    /// rest of the source, so `Nil /* oops` lexed cleanly and parsed as `Nil`.
+    #[test]
+    fn unterminated_lexical_forms_are_errors_not_crashes() {
+        for src in ["\"abc", "`abc", "Nil /* oops", "Nil /*"] {
+            assert!(parse(src).is_err(), "{src:?} is unterminated");
+        }
+        assert!(parse("\"abc\"").is_ok());
+        assert!(parse("`abc`").is_ok());
+        assert!(parse("Nil /* ok */").is_ok());
+    }
 
     #[test]
     fn parses_nil() {

@@ -1693,3 +1693,75 @@ oracle is, and the test that pins the fix.
   default it would remove. Recorded here so the question is visible, and pinned by
   `an_instance_less_expr_decodes_to_the_default`, which carries the same caveat in the test itself
   rather than only in this register.
+
+## 18. The parser's soundness sweep (pass 7): C30–C37
+
+`rholang_mercury.cf` is law 30's oracle — "every term the parser accepts is in the BNFC grammar" —
+and nothing held `rholang/src/parser.rs` to it. Reading the parser against the grammar, production by
+production, found eight gaps in one class: **every one of them was silent.** Seven are the parser
+accepting or refusing the wrong thing; the eighth is a test harness that was measuring the wrong
+thing. All eight are fixed, each with a unit test in `parser.rs`'s `mod tests` that was falsified by
+removing the fix and confirming the test fails.
+
+- **C30 — `parse` returned `Ok` for a valid *prefix* of its input.** `Tok::Eof` is pushed by the lexer
+  (`parser.rs:237`) and was matched **nowhere**, so the parse simply stopped where it stopped and
+  discarded the rest: `parse("Nil )")`, `parse("c!(1) garbage")` and `parse("@10!(10) /\ @20!(20)")`
+  all succeeded. That is live, not academic: `source_to_adt_with_env` runs on `deploy.data.term`
+  (`casper/src/multi_parent_casper.rs:76`), so a deploy whose term was a *prefix* of what the client
+  wrote executed part of a program and reported success. **Fixed**: `parse` requires `Tok::Eof` after
+  the term. The two logical-connective fixtures in the legacy corpus are the finding's own evidence —
+  their comments say their program "cannot be a pair of logically connected processes" and that a
+  successful run prints an error, and the corpus had been counting them as programs that reduce. They
+  are now rows of the corpus's skip list, in the "meant to fail" bucket.
+- **C31 — a trailing separator was accepted at every list site.** The grammar's lists are
+  `[X] ::= X | X "," [X]`, so `[1,]`, `Set(1,)`, `{a: 1,}`, `c!(1,)`, `contract c(@x,) = …`,
+  `(1, 2,)`, `a.b(1,)` and `for (x <- c;) { … }` have no derivation, and the port accepted all of
+  them — a separator with nothing after it, in eleven loops. **Fixed** at each site, by a shared check
+  (`expect_element_after_separator`, and its multiple-terminator form for a bind's names and a
+  declaration's values). Two distinctions the fix had to keep, both from the grammar rather than from
+  taste: `(1,)` is derivable (`TupleSingle ::= "(" Proc ",)"`), so it stays; and a separator followed
+  by a **remainder** (`{name: *voter, ...tail}`) is *equally* underivable but is how the vendored
+  contracts are written (`Issue.rho:110`, `Ballot.rho:106`, and 31 such sites), so it is a recorded
+  **deviation** — law 31's data list — rather than a rejection. Three Scala test fixtures that end a
+  list with a comma are now skip-list rows. The deviation is what makes `[1 ..._]` (no comma) and
+  `[1, ..._]` (comma) both accepted: the grammar derives only the first, and the printer emits the
+  first, so tightening it would break law 33 and stop the contracts from loading.
+- **C32 — `in` was optional in `new` and `let`.** `PNew ::= "new" [NameDecl] "in" Proc1` and
+  `PLet ::= "let" Decl Decls "in" "{" Proc "}"` both make the keyword mandatory, and both sites
+  dropped `eat_ident`'s boolean (`parser.rs:368`, `:451`), so `new x Nil` parsed as a `new` whose body
+  was `Nil`. **Fixed** with an `expect_ident`, which is now the rule for every keyword the grammar
+  makes mandatory.
+- **C33 — a method call without its argument list parsed.** `PMethod ::= Proc11 "." Var "(" [Proc]
+  ")"` has no paren-less form; the port produced a call with an **empty** argument list, which the
+  normalizer then handed to a native method that waits for an argument nothing will send — the same
+  silent stall as C22 item 2, one layer down. **Fixed**: the `(` is required. (There are two method
+  loops — `parse_proc11` and `parse_proc16` — and only the second was lax; `parse_proc11` already
+  required the parens.)
+- **C34 — `GroundBigInt` was unreachable.** `BigInt(42)` parsed as the *simple type* `BigInt` followed
+  by a discarded `(42)`, because `parse_simple_type` matched the identifier before anything could ask
+  what followed it — while the normalizer already supported the ground (`normalizer.rs:59`) and the
+  protobuf `Expr` carries `GBigInt`. **Fixed**: a lookahead distinguishes `BigInt(` *Long* `)` (the
+  ground the grammar names) from `BigInt` alone (the type).
+- **C35 — `PSendSynch` was unreachable.** `PSendSynch ::= Name "!?" "(" [Proc] ")" SynchSendCont`
+  with `EmptyCont ::= "."` / `NonEmptyCont ::= ";" Proc1`: `Tok::BangQ` was lexed and read by exactly
+  one caller (`parse_name_source`, the `for (a!?(x) <- c)` form), so a synchronous send in **process**
+  position had no parser path at all — `x!?(1); P` parsed as the bare variable `x` with `!?(1); P`
+  discarded, and before C30 the discard was silent. `proc_ast.rs:61` has the variant and
+  `normalizer.rs:220` has the arm, so the parser was the only missing link. **Fixed**, including the
+  continuation, and the grammar's requirement that one of `.`/`;` follow is now an error of its own.
+- **C36 — two lexical forms were accepted by accident and one crashed.** The lexer sliced
+  `chars[start..i]` with `i == len + 1` for an **unterminated** string or uri literal — a panic, not a
+  diagnostic — and an unterminated block comment silently swallowed the rest of the source, so
+  `Nil /* oops` lexed cleanly and parsed as `Nil`. **Fixed**: all three are lexer errors.
+- **C37 — `rho_examples` was measuring the stack, not the parse.** The eight findings above were
+  chased through a stack overflow in `rholang/tests/rho_examples.rs` whose cause was *not* any of
+  them: `qucalc/rholang/gov.rho` parses at ~2 MiB of stack and aborts below it, so the margin was
+  small enough that a few bytes per parser frame decided the outcome — which made the overflow move
+  between builds and made two wrong diagnoses possible (first "the method-parens requirement", then
+  "the `in` requirement", each "proved" by a rebuild that shifted the frame size). `legacy_contracts.rs`
+  had already met this and recorded it (`:303-305`, with an explicit 8 MiB stack and the note that the
+  depth guard bounds *nesting*, not stack); `rho_examples.rs` never got the same wrapper. **Fixed** the
+  way the sibling test fixed it — an explicit stack, with the reason written where it is needed — and
+  recorded here because the next marginal example will look exactly like a logic bug. The lesson is
+  the one worth keeping: a stack overflow under a 2 MiB default is a *harness* result until the same
+  input is shown to fail on an explicit stack.
