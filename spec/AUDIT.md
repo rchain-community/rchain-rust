@@ -213,6 +213,7 @@ Every place the Rust port deliberately departs from the Scala oracle, with the r
 | exploratory deploy phlo limit (`1e9`) + 60 s deadline | Scala runs exploratory deploy with no limit | a runaway term must not drain a read-only node (R6) |
 | private keys written owner-only (`0o600`) | Scala `fs.write` uses default perms | secret material must not be world-readable (R8) |
 | rholang parser depth guard (`MAX_PARSE_DEPTH = 512`) | Scala BNFC parser has no depth guard | a deeply-nested term must not overflow the stack (R9) |
+| `if`'s condition is normalized against an **empty** par (`normalizer.rs::normalize_if`), as `match`'s target is | `PIfNormalizer.scala:24` passes the caller's `input` through, so the target becomes `<the par before the if> \| <condition>`; `PMatchNormalizer.scala:28` — the *same* desugaring — passes `input.copy(par = VectorPar())` | the Scala contradicts itself: its `if` and `match` desugarings of one construct normalize the target differently, and only the `if` path's version is broken (`if E {A} else {B}` = `match E {true => A; false => B}`, and a process's meaning cannot depend on what precedes it in a `par`). Under the Scala's `if` path every non-first `if` is a silent no-op — see **C21**. The port follows the spec and the Scala's `match` path. **Hard fork:** the normal form of any term whose par holds a non-first `if` changes, so a chain that ran the old rule and upgrades diverges on such a deploy (and on genesis, where the effected normal forms *are* genesis content: `ListOps.rho:203,242`, `MultiSigRevVault.rho:155`, and the rgov family) |
 | HTTP `/api/deploy` + explore routes rate-limited (100 req/s) | Scala HTTP deploy routes are unlimited | match the gRPC deploy rate limit (R10) |
 | PBKDF2 iterations raised `1024 → 310_000` | Scala uses BouncyCastle default `1024` | slow offline brute-force of encrypted keys at rest (R11) |
 | RSpace candidate selection is **sorted-first** by content hash (not newest-first insertion order) | `RSpace.scala`/`RSpaceOps.scala` shuffle candidates via `Random.shuffle` before matching | live Scala is non-deterministic across runs; the port selects the sorted-first candidate for consensus. Implemented per `docs/src/node/sorted-matching.md` (changes post-state hashes only for multi-candidate deploys) |
@@ -1176,6 +1177,83 @@ oracle is, and the test that pins the fix.
   runtime the map and set cases produce **0** data). Each case now builds its own runtime and is
   asserted to produce exactly one datum. A green in-process conformance run is evidence about the
   node **only** when each case's observation is separable.
+
+- **C21 — an `if` normalized its condition against the `par` that precedes it, so every `if` that was
+  not the first term of its `par` was a silent no-op.** `normalizer.rs::normalize_if` desugars
+  `if E {A} else {B}` to `match E { true => A; false => B }`, and normalized the *condition* with
+  `normalize_proc(value, input)` — the caller's `ProcVisitInputs`, whose `par` field is where a `PPar`
+  accumulates its already-normalized left-hand terms (`normalizer.rs`'s `Proc::PPar` arm threads
+  `par: result.par` into the right operand). So for `P | if E …` the `Match` target became `P | E`
+  rather than `E`. The two case patterns are `true` and `false`, so a target that is not a Bool
+  matches **neither** case; `resolve_match` then returns `Ok(None)`
+  (`reduce.rs:2018`), the effect is dropped as `None` (`reduce.rs:2288-2299`), and an unmatched
+  `match` is **not an error** — the `if` reduced to nothing, silently, with the deploy reporting
+  `processedWithSuccess`. Invisible for an `if` in first position, where the accumulated par is empty:
+  `Nil | if (c) …` worked, and that is the idiom almost every working contract uses, which is how
+  this survived both implementations.
+
+  **Found from:** the wallet's staged governance handshake reached `stage:3 directory answered GetMe`
+  and never `stage:4`, and `newInbox` returned `[]`. The vendored feature's `getMe` logs
+  `["getMe", you, "everyone size", N]` (`MemberDirectory.rho:77`), then `if (everyone.contains(you) ==
+  false)` (line 78) — a non-first `if` — so neither the create path (line 79-93) nor the
+  already-exists path (94-109) ran, `createMe!` at line 80 was never sent to, and the caller's reply
+  channel stayed silent. In-process the same trace is reproducible in one line of rholang:
+  `x!(["a"]) | if (1 == 1) { @"out"!("then") } else { @"out"!("else") }` produces **0** data, while
+  the identical `if` first (or wrapped in a `new`) produces one.
+
+  **Mechanism, isolated:** the *target* was the accumulated par. `normalize_match` (the explicit
+  `match`, `normalizer.rs:697`), `binary_exp` and `normalize_bundle` all seed the target with
+  `Par::default()`; `normalize_if` was the only desugaring that passed the caller's `input` through.
+  A live node probe confirmed it from the other side: `out!(["W1-a"]) | 1 / 0` is inert, while
+  `out!(["W2-a"]) | 1 / 0 | if (true) {…} else { Nil }` **errors** — the preceding par's expression
+  was being evaluated inside the `Match` target.
+
+  **Reference:** the Scala is *internally inconsistent* on exactly this point, which is why the port
+  inherited the defect. `PMatchNormalizer.scala:28` normalizes the target with
+  `input.copy(par = VectorPar())`; `PIfNormalizer.scala:24` passes `input` unchanged and then uses
+  `targetResult.par` as the `Match` target. The two desugarings of the same construct therefore
+  disagree, and the Scala's own tests only exercise `if` as a whole term or first in a block. The
+  port follows the `match` path (and the desugaring), and the divergence from the Scala's `if` path is
+  registered in §6. **Hard-fork class:** the normal form of any term with a non-first `if` changes —
+  see §6's row for the consequence.
+
+  **Fix (`normalizer.rs::normalize_if`):** normalize the condition against `Par::default()`, keeping
+  the accumulated par only for the final `prepend_match(&input_par, m)`. One field. Every vendored
+  `.rho` file is untouched (bytes identical to upstream — see `resources/rgov/NOTICE`), and the
+  *other* dead `if`s in genesis content come back with it: `MemberDirectory.rho:78, 96, 131`,
+  `Ballot.rho:56, 60`, `Issue.rho:62, 66`, `Group.rho:79, 119`, and `ListOps.rho:203, 242` +
+  `MultiSigRevVault.rho:155` from the node's own standard deploys. **Pinned by**
+  `an_if_condition_does_not_absorb_the_pars_before_it` (the AST-level pin: the target *is* the
+  condition, and `P | if E …` normalizes it identically to `if E …` alone), the conformance case
+  `an_if_fires_the_same_way_wherever_it_sits_in_a_par` (the shape in the wild, both branches, the
+  `match` control, each on its own runtime), and
+  `a_fresh_chain_serves_the_wallets_new_inbox_handshake`, which now asserts the reply, the ceremony
+  key's bootstrap lockers, and the feature's own log lines as a *trace* — so a stall is a missing
+  line rather than an absence of output. Both the AST pin and the acceptance test were confirmed to
+  fail with the defect reintroduced.
+
+  **Correction of record:** the "open item" these passages described — "the read cap resolves, the
+  directory answers `GetMe`, and `getMe` runs, then it stops inside the feature's own `createMe`"
+  (`spec/GENESIS.md`, `docs/src/node/devnet.md:180`, and the comment this replaces in
+  `casper/tests/genesis_registry.rs`) — was **wrong about where it stopped**, and C19/C20's matcher
+  fixes were not the missing piece. `getMe` never reached `createMe`; it died one line earlier, at
+  `if` (line 78). The four log lines that observation counted are `deployerRevAddr`'s three plus
+  line 77; the next line the feature would have logged is `createMe`'s line 27, and its absence is
+  the evidence that the `if` — not `createMe` — was the stall.
+
+  **Not a defect, corrected in passing:** `rho:io:stdout` is **not** a one-datum sink that errors on
+  the feature's multi-element log lines. It is registered `arity: 1` and persistent, and a *list* is
+  one datum; the genesis run prints six-plus list-valued lines on it in a row, and the in-process
+  genesis trace shows the same. The warning in `docs/src/node/devnet.md` (and the client-side copies
+  in `r-wallet`'s `handshake.rho` and `snippets.ts`) is false and has been corrected here; passing a
+  drain is still good hygiene for a caller, but it is not load-bearing.
+
+  **Also found — a bare pattern matches `Nil`, so "a receive fired" is not evidence of a value.**
+  `MCAread!("GetMe", …)` goes through `Directory.rho:43`'s `read(@key, return)`, which answers
+  `return!(*map.get(key))` — `Nil` when the key is absent — and the consumer's `for (GetMe <- …)` is
+  a *bare* pattern, which matches `Nil`. Reaching "the directory answered" is therefore true whether
+  `GetMe` was registered or not, which is why the handshake looks further along than it is. The pins
+  above assert the *value* (`getme-entry` is not `Nil`), never the bare fact that a receive fired.
 
 ### Open question (behaviour pinned, oracle not established)
 

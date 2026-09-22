@@ -554,6 +554,78 @@ async fn collection_patterns_match_a_subset_of_their_collection() {
     );
 }
 
+/// An `if` means the same thing wherever it sits in its `par`. A condition normalized against the
+/// terms that *precede* the `if` makes the condition be those terms, so the `Match` target matches
+/// neither `true` nor `false` and the `if` reduces to **nothing** — silently, because an unmatched
+/// `match` is not an error. `MemberDirectory.rho:77-79` is exactly this shape (a log send, then
+/// `if (everyone.contains(you) == false)`), which is why `getMe` logged its line and then neither
+/// created the member nor answered (AUDIT C21).
+///
+/// The first case is the shape in the wild, the second is the property that makes it a defect rather
+/// than a quirk: wrapping the `par` changes nothing, so the `if` cannot depend on its position. Each
+/// case gets its own runtime and reports through its own channel — the discipline C20's post-mortem
+/// demands, because a shared runtime let a previous case's datum satisfy a later case's assertion.
+#[tokio::test]
+async fn an_if_fires_the_same_way_wherever_it_sits_in_a_par() {
+    let env = BTreeMap::new();
+
+    for (label, term) in [
+        (
+            "if after a send, at the top level",
+            r#"new x in { x!(["before"]) |
+                 if (1 == 1) { @"out"!("then") } else { @"out"!("else") } }"#,
+        ),
+        (
+            "if after a send, inside a receive body",
+            r#"new m, y in { m!({}) | y!((true, "addr")) |
+                 for (@(true, you) <- y) { for (@everyone <<- m) { Nil
+                   |  @"before"!("line") |
+                   if (everyone.contains(you) == false ) { @"out"!("then") } else { @"out"!("else") } } } }"#,
+        ),
+        (
+            "if first, then the same send",
+            r#"new x in {
+                 if (1 == 1) { @"out"!("then") } else { @"out"!("else") } | x!(["after"]) }"#,
+        ),
+    ] {
+        let (rt, _) = build_runtime_pair().await;
+        let got = eval_out(&rt, term, &env, "out").await;
+        assert_eq!(got.len(), 1, "{label}: exactly one branch must run");
+        assert_eq!(
+            RhoString::unapply(&got[0]),
+            Some("then"),
+            "{label}: the branch the condition selects"
+        );
+    }
+
+    // The other side of the same coin: a condition that is *false* takes the else branch, and an
+    // `if` preceded by a send must not be swallowed on the way there either.
+    let (rt, _) = build_runtime_pair().await;
+    let got = eval_out(
+        &rt,
+        r#"new x in { x!(["before"]) |
+             if (1 == 2) { @"out"!("then") } else { @"out"!("else") } }"#,
+        &env,
+        "out",
+    )
+    .await;
+    assert_eq!(got.len(), 1, "exactly one branch must run");
+    assert_eq!(RhoString::unapply(&got[0]), Some("else"));
+
+    // ...and a `match` in the same position keeps working (it always did: its target was already
+    // normalized against a fresh par — the two desugarings must not disagree).
+    let (rt, _) = build_runtime_pair().await;
+    let got = eval_out(
+        &rt,
+        r#"new x in { x!(["before"]) | match 1 { 1 => @"out"!("matched") } }"#,
+        &env,
+        "out",
+    )
+    .await;
+    assert_eq!(got.len(), 1, "the match must fire");
+    assert_eq!(RhoString::unapply(&got[0]), Some("matched"));
+}
+
 #[tokio::test]
 async fn txn_recover_unknown_returns_nil() {
     let (rt, _replay) = build_runtime_pair().await;

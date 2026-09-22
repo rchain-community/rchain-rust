@@ -15,7 +15,9 @@ mod common;
 use rchain_casper::genesis::contracts::{ProofOfStake, Registry};
 use rchain_casper::genesis::default_blessed_terms;
 use rchain_crypto::hash::blake2b512_random::Blake2b512Random;
+use rchain_models::ast::Par;
 use rchain_models::casper::protocol::casper_message::{DeployData, SignedDeployData};
+use rchain_models::rholang::RhoType::{RhoList, RhoString};
 use rchain_rholang::native_state::PosGenesis;
 use rchain_rholang::system_processes::BlockData;
 
@@ -168,6 +170,23 @@ fn probes() -> Vec<(&'static str, &'static str)> {
                  for (@(nonce, *MakeMint) <- ch) {
                    MakeMint!(*ret) |
                    for (@_ <- ret) { @"out"!("rho:rchain:makeMint") }
+                 }
+               }"#,
+        ),
+        (
+            // Not a shorthand but the *contract's own* multi-step path: `unorderedParMap` is the one
+            // `ListOps` operation that runs through `collect` (`ListOps.rho:197-215`), whose
+            // `if (sc == cc + 1)` follows a send. While any non-first `if` reduced to nothing (AUDIT
+            // C21), `collect` neither advanced its counters nor answered, so this call could never
+            // return — a hang, but the silent kind. `range` (the probe above) takes a path with no
+            // `if` and would have passed throughout, which is exactly why this one is here.
+            "rho:lang:listOps:unorderedParMap",
+            r#"new rl(`rho:registry:lookup`), ch, ret, double in {
+                 contract double(@x, r) = { r!(x * 2) } |
+                 rl!(`rho:lang:listOps`, *ch) |
+                 for (@(_, *ListOps) <- ch) {
+                   ListOps!("unorderedParMap", [1, 2, 3], *double, *ret) |
+                   for (@_ <- ret) { @"out"!("rho:lang:listOps:unorderedParMap") }
                  }
                }"#,
         ),
@@ -465,46 +484,77 @@ fn a_fresh_chain_installs_the_rgov_contracts_and_they_answer() {
 }
 
 /// The wallet's first governance step, on a fresh chain and with no bootstrap: resolve the master
-/// read cap by its constant key and get the directory to answer `GetMe`.
+/// read cap by its constant key, get the directory to answer `GetMe`, call it, and **receive the
+/// deployer's stuff** — the whole handshake, in-process.
 ///
-/// This half is what `scripts/bootstrap-rgov.ts` used to arrange at runtime (with a recorded URI
-/// that goes stale per chain). Genesis arranges it instead, for the fixed testnet key, so a client
+/// This is what `scripts/bootstrap-rgov.ts` used to arrange at runtime (with a recorded URI that
+/// goes stale per chain). Genesis arranges it instead, for the fixed testnet key, so a client
 /// hardcodes `readcap_uri()` and needs no bootstrap.
 ///
-/// The remainder of the handshake — calling `GetMe` and receiving the deployer's stuff — is verified
-/// on a node rather than here: the feature's own contract logs are where a stall in that half is
-/// legible, and in-process a failed call and an unanswered one look identical (both are silence).
-/// See `docs/src/node/devnet.md`.
+/// Two shapes here are load-bearing, and both were learned the hard way:
+///
+/// - **The feature's log channel is forwarded, not drained.** `getMe`'s control flow has exactly one
+///   trace — its own log lines — and a drain throws them away, so a stall and a broken client look
+///   identical. Forwarding them to `@"out"` is what makes the assertions below able to name *where*
+///   the flow stopped instead of only that it did.
+/// - **A fired receive is not an answer.** `MCAread!("GetMe", …)` goes through `Directory.rho:43`'s
+///   `read(@key, return)`, which replies `*map.get(key)` — i.e. `Nil` when the key is absent — and a
+///   bare `for (GetMe <- …)` pattern matches `Nil`, so "the directory answered" is true either way.
+///   The assertions therefore read the *value* (`getme-entry`) and the *reply* (`getme-answered`).
+///
+/// The ceremony-key leg is the other half: the feature's own deploy-time epilogue (`line 167`) calls
+/// `getMe` for the key that deployed it, so if that key's lockers are written, the same flow a client
+/// takes has already completed once on this chain.
 #[test]
 fn a_fresh_chain_serves_the_wallets_new_inbox_handshake() {
     with_big_stack(async {
         let rm = build_runtime_manager().await;
         let rand = fixed_rand();
         let readcap = rchain_casper::genesis::rgov::readcap_uri().expect("the read cap key");
-        let handshake = format!(
-            r#"new rl(`rho:registry:lookup`), deployerId(`rho:rchain:deployerId`),
+
+        // 1. The wallet's own path, as a client key distinct from the chain's ceremony key, so the
+        //    deployer is a *new* member and the `createMe` branch is the one exercised.
+        let handshake = r#"new rl(`rho:registry:lookup`), deployerId(`rho:rchain:deployerId`),
                  capCh, getMeCh, stuffCh
-               in {{
-                 rl!(`{readcap}`, *capCh) |
+               in {
+                 rl!(`READCAP`, *capCh) |
                  // Bind bare, call bare — the convention the rgov contracts themselves use
                  // (`memberIdGovRev`'s imports, the master-directory template). Mixing it with the
                  // wallet's `for (@X <- ch)` + `@X!` is a parse error, not a silent miss.
-                 for (MCAread <- capCh) {{
+                 for (MCAread <- capCh) {
                    MCAread!("GetMe", *getMeCh) |
-                   for (GetMe <- getMeCh) {{
-                     @"out"!("got-getme") |
-                     new logCh in {{
-                       // A *drain*, and a repeated one: the feature logs multi-element lines, and
-                       // `rho:io:stdout` takes one datum — pointing the log at stdout makes the
-                       // contract error mid-flow, which is a foot-gun for any caller.
-                       for (@_line <= logCh) {{ @"out"!("getme-logged") }} |
+                   for (GetMe <- getMeCh) {
+                     @"out"!(["getme-entry", *GetMe]) |
+                     new logCh in {
+                       for (@line <= logCh) { @"out"!(["getme-log", line]) } |
                        GetMe!(*deployerId, *stuffCh, *logCh) |
-                       for (@_reply <- stuffCh) {{ @"out"!("getme-answered") }}
-                     }}
-                   }}
-                 }}
-               }}"#
-        );
+                       for (@reply <- stuffCh) { @"out"!("getme-answered") }
+                     }
+                   }
+                 }
+               }"#
+        .replace("READCAP", &readcap);
+
+        // 2. The ceremony key's leg — the key the feature's epilogue bootstraps at genesis, and the
+        //    key `tools/devnet.sh`'s client actually signs with.
+        let ceremony_leg = r#"new rl(`rho:registry:lookup`), deployerId(`rho:rchain:deployerId`),
+                 capCh, getMeCh, stuffCh
+               in {
+                 for (@i <<- @[*deployerId, "inbox"]) { @"out"!("bootstrap-inbox") } |
+                 for (@d <<- @[*deployerId, "dictionary"]) { @"out"!("bootstrap-dictionary") } |
+                 rl!(`READCAP`, *capCh) |
+                 for (MCAread <- capCh) {
+                   MCAread!("GetMe", *getMeCh) |
+                   for (GetMe <- getMeCh) {
+                     new logCh in {
+                       for (@line <= logCh) { Nil } |
+                       GetMe!(*deployerId, *stuffCh, *logCh) |
+                       for (@reply <- stuffCh) { @"out"!("bootstrap-answered") }
+                     }
+                   }
+                 }
+               }"#
+        .replace("READCAP", &readcap);
 
         let mut terms = default_blessed_terms(
             &proof_of_stake(),
@@ -517,6 +567,7 @@ fn a_fresh_chain_serves_the_wallets_new_inbox_handshake() {
         )
         .expect("blessed terms");
         terms.push(deploy_signed_by(&handshake, 11));
+        terms.push(deploy_signed_by(&ceremony_leg, 7));
 
         let (_, _, results) = rm
             .compute_genesis(
@@ -545,6 +596,8 @@ fn a_fresh_chain_serves_the_wallets_new_inbox_handshake() {
             ))
             .await
             .expect("read the handshake's output channel");
+
+        // The bare tags: the flow reached its end, on both legs.
         let tags: Vec<String> = produced
             .iter()
             .filter_map(|p| {
@@ -552,21 +605,66 @@ fn a_fresh_chain_serves_the_wallets_new_inbox_handshake() {
             })
             .collect();
         assert!(
-            tags.contains(&"got-getme".to_string()),
-            "the read cap must resolve to a directory that answers `GetMe`: {tags:?}"
+            tags.contains(&"getme-answered".to_string()),
+            "`getMe` must answer the client — the wallet's `newInbox` waits on exactly this reply \
+             and gets silence otherwise: {tags:?}"
         );
         assert!(
-            tags.contains(&"getme-logged".to_string()),
-            "`getMe` must run — it is reached through the directory and logs before the first step \
-             that can stall: {tags:?}"
+            tags.contains(&"bootstrap-answered".to_string()),
+            "`getMe` must answer the ceremony key too: {tags:?}"
+        );
+        assert!(
+            tags.contains(&"bootstrap-inbox".to_string())
+                && tags.contains(&"bootstrap-dictionary".to_string()),
+            "the feature's deploy-time epilogue writes `@[*deployerId, \"inbox\"]` and \
+             `@[*deployerId, \"dictionary\"]` for the key that deployed it (lines 173-174); those two \
+             lockers are what eighteen of the wallet's snippets read: {tags:?}"
         );
 
-        // What is *not* yet pinned here, and the honest boundary of this test: `getMe` then enters
-        // the feature's own `createMe` flow (it logs four lines) and stops before answering, so
-        // `getme-answered` does not appear. That is upstream contract logic, not the genesis
-        // installation — on a node the feature's log lines are where it is legible, and the open
-        // item is recorded in `spec/GENESIS.md`. Asserting it here today would only assert the
-        // silence this file exists to distinguish from a failure.
+        // The trace, tag by tag: every step of the feature's own control flow, named. A stall is
+        // then a *missing* name rather than an absence of output.
+        let mut logged_steps: Vec<String> = Vec::new();
+        let mut getme_entry: Option<Par> = None;
+        for p in &produced {
+            let Some(items) = RhoList::unapply(p) else {
+                continue;
+            };
+            match items.first().and_then(RhoString::unapply) {
+                Some("getme-log") => {
+                    if let Some(step) = items
+                        .get(1)
+                        .and_then(RhoList::unapply)
+                        .and_then(|line| line.first())
+                        .and_then(RhoString::unapply)
+                    {
+                        logged_steps.push(step.to_string());
+                    }
+                }
+                Some("getme-entry") => getme_entry = items.get(1).cloned(),
+                _ => {}
+            }
+        }
+        for line in [
+            "you don't exist",
+            "creating your stuff",
+            "creating you",
+            "your inserted stuff",
+        ] {
+            assert!(
+                logged_steps.iter().any(|s| s == line),
+                "the feature must log {line:?} on its way through `getMe` -> `createMe`; a missing \
+                 line names the step it stopped at. Logged: {logged_steps:?}"
+            );
+        }
+
+        // And the value the directory holds: a real channel, not the `Nil` an absent key answers.
+        let value = getme_entry.expect("the directory must answer `GetMe` with something");
+        assert_ne!(
+            value,
+            Par::default(),
+            "`GetMe` must resolve to the feature's channel, not `Nil` — a `Nil` is what a \
+             registration that never happened looks like, and the wallet cannot tell it from broken"
+        );
     });
 }
 

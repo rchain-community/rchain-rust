@@ -144,17 +144,22 @@ knowing: that validator also holds the `MasterContractAdmin` locker, so `newMemb
 requires it) is callable by that key and not by others. See "Ceiling of this arrangement" in
 `spec/GENESIS.md` before reusing any of it on a public network.
 
-Two foot-guns worth knowing when you exercise this by hand:
+Two things worth knowing when you exercise this by hand:
 
-- **Pass the feature a *drain* as its log channel, never `rho:io:stdout`.** It logs multi-element
-  lines (`["getMe", you, …]`) and stdout takes one datum, so a stdout log channel makes the contract
-  error mid-flow — which looks exactly like the stall you are trying to diagnose.
+- **Log what the feature logs, or you will not see where it stopped.** Pointing its log channel at
+  `rho:io:stdout` works — stdout takes a list as one datum and is persistent, and the genesis run
+  prints the feature's multi-element lines on it in a row — but a *drain* (`for (@_ <= logCh) { Nil }`)
+  throws the trace away, and a lost trace is what makes a stall indistinguishable from a broken
+  client. (An earlier revision of this file claimed stdout *errors* on multi-element lines. It does
+  not; see AUDIT C21.)
 - **`rho:rchain:deployerId` must be a real public key** for anything that derives a REV address from
   it (`getMe` does). A placeholder byte array makes `RevAddress!("fromPublicKey", …)` match nothing
   and the call stalls.
+- **A reply is not a value.** `MCAread!("GetMe", …)` answers `Nil` for a key the directory does not
+  hold, and a bare `for (GetMe <- ch)` pattern matches `Nil`, so "the directory answered" says nothing
+  about whether `GetMe` was registered. Report the value.
 
-A hand probe of the handshake (deploy it, then read the node's own log for the stages — the feature's
-contract logs are where a stall is legible):
+A hand probe of the handshake (deploy it, then read the node's own log for the stages):
 
 ```rholang
 new rl(`rho:registry:lookup`), deployerId(`rho:rchain:deployerId`), out(`rho:io:stdout`),
@@ -165,9 +170,9 @@ new rl(`rho:registry:lookup`), deployerId(`rho:rchain:deployerId`), out(`rho:io:
     out!("stage:2 readcap resolved") |
     MCAread!("GetMe", *getMeCh) |
     for (GetMe <- getMeCh) {
-      out!("stage:3 directory answered GetMe") |
+      out!(["stage:3 getme-entry", *GetMe]) |     // the *value*, not just that it answered
       new logCh in {
-        for (@_line <= logCh) { Nil } |          // a *repeated* drain, not stdout
+        for (@line <= logCh) { out!(["log", line]) } |   // keep the feature's trace
         GetMe!(*deployerId, *stuffCh, *logCh) |
         for (@_reply <- stuffCh) { out!("stage:4 getMe answered") }
       }
@@ -176,8 +181,12 @@ new rl(`rho:registry:lookup`), deployerId(`rho:rchain:deployerId`), out(`rho:io:
 }
 ```
 
-Current state: stages 1–3 pass on a fresh devnet and `getMe` runs, then it stops inside the feature's
-own `createMe` before answering — see the open item in `spec/GENESIS.md`.
+All four stages pass on a fresh devnet: `getMe` answers, and for a deployer that had none it creates
+the member's inbox and dictionary on the way. The stall that used to sit between stages 3 and 4 was
+AUDIT C21 (an `if` that was not the first term of its `par` reduced to nothing), not the genesis
+installation nor the feature's flow. `spec/GENESIS.md` carries the resolved state; the check that a
+stall is *over* is `@[*deployerId, "inbox"]` and `@[*deployerId, "dictionary"]` being non-empty after
+`newInbox`.
 
 ## The consumer's call order
 

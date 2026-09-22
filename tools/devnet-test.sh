@@ -192,6 +192,80 @@ done
 check "deploy-status reaches ProcessedWithSuccess" '[[ "$deploy_status" == "ProcessedWithSuccess" ]]'
 
 echo ""
+echo "==> 4b. the governance handshake (C21)"
+# `MemberDirectory.rho`'s `getMe` (the wallet's first governance call) logged its way to its third
+# statement and then neither created the member nor answered: line 78's
+# `if (everyone.contains(you) == false)` is not the first term of its `par` (line 77 logs first), and
+# the port normalized an `if`'s condition against the `par` preceding it, so the condition *was* that
+# `par` — a non-Bool `Match` target matches neither `true` nor `false`, and an unmatched `match` is
+# not an error, so the `if` reduced to nothing, silently (AUDIT C21). Two node-level signatures of
+# it, both read from the bootstrap's own log:
+#
+#   1. the feature's *deploy-time epilogue* calls `getMe` for the key that deployed it
+#      (`MemberDirectory.rho:167`), so with the defect the log carries the feature's first lines and
+#      stops — `["creating your stuff", …]` (line 27) never appears. It is upstream's own log line,
+#      not a probe's.
+#   2. a client's staged handshake reaches `stage:4 getMe answered`.
+#
+# The devnet is restarted with `down -v` at the top of this script, so the log is empty of earlier
+# runs: a `grep` for a stage cannot be satisfied by a previous run's output. The deploy is signed by
+# the devnet's *genesis* key (= the ceremony key, the only funded deployer here), so this leg covers
+# the answer path and the member-exists branch; the fresh-member branch (which runs `createMe` for a
+# client's own key) is pinned in-process by `a_fresh_chain_serves_the_wallets_new_inbox_handshake`.
+#
+# `stage:3` prints the value the directory holds, but no assertion reads it: `stage:4` already proves
+# it. A `GetMe` entry that was `Nil` (an absent key) would take the send at the next statement
+# nowhere, so a reply can only come from a real channel — and asserting "not Nil" by grepping a
+# pretty-printed par is the kind of shape-matching that stops being true when the printer changes.
+# The term is written with a *quoted* heredoc: backticks in the rho source (`rho:io:stdout`) would
+# otherwise be command-substituted by the shell that expands it.
+docker exec -i "$BOOTSTRAP" sh -c 'cat > /tmp/handshake.rho' <<'RHO'
+new rl(`rho:registry:lookup`), deployerId(`rho:rchain:deployerId`), out(`rho:io:stdout`),
+    capCh, getMeCh, stuffCh in {
+  out!("stage:1 lookup sent") |
+  rl!(`rho:id:wxc4mwdh7otq4fd6iuxt84inepssyz5tugojf7ao68dkh4ebbncy`, *capCh) |
+  for (MCAread <- capCh) {
+    out!("stage:2 readcap resolved") |
+    MCAread!("GetMe", *getMeCh) |
+    for (GetMe <- getMeCh) {
+      out!(["stage:3 getme-entry", *GetMe]) |
+      new logCh in {
+        // Forward the feature's own log lines instead of draining them: they are the only trace of
+        // where its control flow went, and a drain is what made a stall look like a client bug.
+        for (@line <= logCh) { out!(["feature-log", line]) } |
+        GetMe!(*deployerId, *stuffCh, *logCh) |
+        for (@_reply <- stuffCh) { out!("stage:4 getMe answered") }
+      }
+    }
+  } |
+  // Peeks (`<<-`), so the lockers survive for the next reader — the wallet reads exactly these.
+  for (@inboxValue <<- @[*deployerId, "inbox"])      { out!("stage:5 inbox locker") } |
+  for (@dictValue <<- @[*deployerId, "dictionary"])  { out!("stage:5 dictionary locker") }
+}
+RHO
+handshake_out="$(docker exec -i "$BOOTSTRAP" rnode --grpc-host localhost deploy \
+  --phlo-limit 1000000 --phlo-price 1 \
+  --valid-after-block-number "$block" \
+  --private-key "$DEPLOYER_PRIV" --shard-id /root /tmp/handshake.rho 2>&1 || true)"
+handshake_id="$(printf '%s' "$handshake_out" | sed -n 's/.*DeployId is: \([0-9a-f]*\).*/\1/p')"
+check "handshake deploy accepted (DeployId captured)" '[[ -n "$handshake_id" ]]'
+for _ in $(seq 1 60); do
+  http_get "$HTTP/api/v1/deploy-status/$handshake_id"
+  printf '%s' "$HTTP_BODY" | grep -q 'ProcessedWithSuccess' && break
+  sleep 1
+done
+check "handshake deploy reaches ProcessedWithSuccess" \
+  'printf "%s" "$HTTP_BODY" | grep -q "ProcessedWithSuccess"'
+
+node_log="$(docker logs "$BOOTSTRAP" 2>&1 || true)"
+check "the feature's own createMe ran at genesis ([\"creating your stuff\"] in the node log)" \
+  'printf "%s" "$node_log" | grep -q "creating your stuff"'
+check "the client's handshake reaches stage:4" \
+  'printf "%s" "$node_log" | grep -q "stage:4 getMe answered"'
+check "the deployer's inbox and dictionary lockers are present" \
+  'printf "%s" "$node_log" | grep -q "stage:5 inbox locker" && printf "%s" "$node_log" | grep -q "stage:5 dictionary locker"'
+
+echo ""
 echo "==> 5. admin propose"
 http_get "$ADMIN/api/propose" -X POST
 check "POST /api/propose returns 200" '[[ "$HTTP_CODE" == "200" ]]'

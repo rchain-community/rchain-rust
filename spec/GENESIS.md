@@ -70,9 +70,11 @@ arrangement, and it is what the master directory's admin capability requires:
 - **They must be one key.** The template publishes its
   `@[*deployerId, "MasterContractAdmin"]` capability for *its own* deployer, and the `GetMe` feature's
   registration is gated on reading that capability back. Signed by different keys the gate never
-  opens, the feature registers nothing, the directory answers `Nil` for `GetMe`, and a client calling
-  it gets silence — found on a node: the handshake reached "directory answered GetMe" and never
-  entered `getMe`.
+  opens, the feature registers nothing, and the directory answers `Nil` for `GetMe`. (This rule was
+  originally argued from a handshake that reached "directory answered GetMe" and stopped before
+  `getMe` — an observation later explained by AUDIT C21 rather than by the keys. The rule stands on the
+  gate's `deployerId`, not on that sighting: the same key is what makes
+  `the_governance_terms_are_signed_by_the_ceremony_key` meaningful.)
 - **It must be a key whose private half is not public.** An earlier revision signed them with a key
   derived from a string literal in `rgov.rs`; anyone reading the source could compute it and exercise
   the capability on any network that installed it. The ceremony identity is threaded in for that
@@ -87,17 +89,27 @@ it takes the write capability the template published and writes `Chat`, `Ballot`
 
 ## Ceiling of this arrangement, and what a public network needs
 
-### Open item (this is where the handshake currently stops)
+### The handshake, end to end (the open item is closed)
 
-On a fresh chain, with the constants above: the read cap resolves, the directory answers `GetMe`, and
-`getMe` **runs** — it derives the deployer's REV address and logs four lines — then it enters the
-feature's own `createMe` (inbox/dictionary creation) and stops before answering, so a client still
-sees nothing at its reply channel. That is upstream `MemberDirectory.rho` flow logic rather than the
-genesis installation, and the node's own contract logs are where it is legible
-(`getMe!(*deployerId, *ret, *log)` with `log` wired to a *drain*, not to `rho:io:stdout` — the
-feature logs multi-element lines and stdout takes one datum, so pointing the log at stdout makes the
-contract error mid-flow). Diagnosing it is a separate piece of work; it is recorded here so nobody
-mistakes the current state for "the family works".
+On a fresh chain, with the constants above: the read cap resolves, the directory answers `GetMe` with
+the feature's channel, `getMe` runs for the calling deployer, and it **answers** — creating the member
+(inbox + dictionary) on the way if this is the deployer's first call, and writing
+`@[*deployerId, "inbox"]` / `@[*deployerId, "dictionary"]` for the key that deployed the feature. That
+is the whole of the wallet's first governance step, and it needs no bootstrap script.
+
+There was an open item here — recorded as "stops inside the feature's own `createMe`" — and it was
+**wrong about where it stopped**. `getMe` died one line earlier, at
+`if (everyone.contains(you) == false)` (`MemberDirectory.rho:78`): the port normalized an `if`'s
+condition against the `par` that precedes it, so any `if` that was not the first term of its `par`
+reduced to nothing, silently, and `createMe` was never called at all. The fix is one field in
+`rholang/src/normalizer.rs::normalize_if`; no vendored `.rho` byte changed. **AUDIT C21** carries the
+mechanism, the evidence and the (hard-fork class) consequence — three `if`s in this feature and a
+handful more in the node's own `ListOps.rho`/`MultiSigRevVault.rho` were dead with it.
+
+The diagnosis trap is worth keeping: `GetMe` is answered even when nothing was registered, because
+`Directory.rho`'s `read` replies `*map.get(key)` = `Nil` for an absent key and a bare
+`for (GetMe <- ch)` pattern matches `Nil`. Existence of a reply is not existence of a value — probe the
+value, not the receive.
 
 ## Testnet vs mainnet
 

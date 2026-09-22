@@ -964,7 +964,30 @@ fn normalize_if(
     let input_par = input.par.clone();
     let bound_map_chain = input.bound_map_chain.clone();
     let env = input.env.clone();
-    let target = normalize_proc(value, input)?;
+    // The condition is normalized against an **empty** par, never the accumulated one: `input.par`
+    // holds the terms that precede the `if` in its `|`-chain, and seeding the condition with them
+    // makes the condition *be* those terms, so the `Match` target matches neither `true` nor `false`
+    // and the `if` reduces to **nothing** — silently, because an unmatched `match` is not an error.
+    // Invisible for an `if` in first position (the accumulated par is empty there), and silent
+    // everywhere else: this is how `MemberDirectory.rho`'s `getMe` came to log "everyone size" and
+    // then neither create the member nor answer (AUDIT C21).
+    //
+    // `PMatchNormalizer.normalize` (`PMatchNormalizer.scala:28`) seeds the target with `VectorPar()`,
+    // and this file's `normalize_match`/`normalize_bundle`/`binary_exp` already do the same — but
+    // `PIfNormalizer.scala:24` passes the caller's `input` straight through, i.e. the reference is
+    // inconsistent with itself on exactly this point, which is why the port inherited the defect.
+    // The desugaring is `if E {A} else {B}` = `match E { true => A; false => B }`, and a process's
+    // meaning cannot depend on what precedes it in a `par`; the reference's `match` path is followed
+    // here, and the divergence from its `if` path is recorded in `spec/AUDIT.md`'s register.
+    let target = normalize_proc(
+        value,
+        ProcVisitInputs {
+            par: Par::default(),
+            bound_map_chain: bound_map_chain.clone(),
+            free_map: input.free_map.clone(),
+            env: env.clone(),
+        },
+    )?;
     let true_result = normalize_proc(
         true_body,
         ProcVisitInputs {
@@ -1849,5 +1872,41 @@ mod tests {
     #[test]
     fn compiler_normalizes_complex_input_source() {
         assert!(source_to_adt("new ch in { for(x <- ch?) { Nil } }").is_ok());
+    }
+
+    /// An `if`'s condition is normalized **alone**, never against the terms that precede it in its
+    /// `|`-chain. Seeding the condition with them makes the condition *be* them, so the `Match` target
+    /// matches neither `true` nor `false` and the `if` reduces to nothing — silently, because an
+    /// unmatched `match` is not an error. `P | if E …` must mean the same as `P | (if E …)`
+    /// (AUDIT C21).
+    #[test]
+    fn an_if_condition_does_not_absorb_the_pars_before_it() {
+        let if_alone: Par = source_to_adt(r#"if (1 == 1) { Nil } else { Nil }"#)
+            .unwrap()
+            .into();
+        let if_after_a_send: Par =
+            source_to_adt(r#"new x in { x!(1) | if (1 == 1) { Nil } else { Nil } }"#)
+                .unwrap()
+                .into();
+
+        let condition = |par: &Par| {
+            let inner = par
+                .news
+                .first()
+                .map(|n| (*n.p).clone())
+                .unwrap_or_else(|| par.clone());
+            inner.matches[0].target.clone()
+        };
+        // The condition of the second form is the same par as the first's: `1 == 1`, with no send in
+        // it. Before the fix it was `x!(1) | (1 == 1)`.
+        assert_eq!(
+            condition(&if_alone),
+            condition(&if_after_a_send),
+            "the `if`'s target must be its condition, not the par that precedes it"
+        );
+        assert!(
+            condition(&if_after_a_send).sends.is_empty(),
+            "the preceding send must not appear inside the condition"
+        );
     }
 }
