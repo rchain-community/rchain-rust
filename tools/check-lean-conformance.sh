@@ -132,6 +132,7 @@ if [[ -d "$ROOT/spec/conformance" ]]; then
       parse)    test_name="lean_parse_corpus";     crate="rchain-rholang" ;;
       match)    test_name="lean_match_corpus";     crate="rchain-rholang" ;;
       silence)  test_name="lean_silence_corpus";   crate="rchain-rholang" ;;
+      store)    test_name="lean_store_corpus";     crate="rchain-rholang" ;;
       json)     test_name="lean_json_corpus";      crate="rchain-node" ;;
       *)        fail "corpus spec/conformance/$layer.tsv has no consumer mapping"; continue ;;
     esac
@@ -153,13 +154,12 @@ if [[ -d "$ROOT/spec/conformance" ]]; then
   done
 fi
 
-if [[ -x "$ROOT/tools/audit-protocols.sh" ]]; then
-  if "$ROOT/tools/audit-protocols.sh" >/tmp/audit-protocols.log 2>&1; then
-    ok "protocol agreement + channel balance"
-  else
-    fail "protocol/channel-balance audit failed — see /tmp/audit-protocols.log"
-  fi
-fi
+# (`tools/audit-protocols.sh` was to be a *static* audit of the vendored protocol content — a
+# "linear consume with no paired produce" walk for law 41 and a call-shape table for law 40. Law 41's
+# half was retired unshipped rather than committed with an exception list over vendored content; the
+# reasoning is AUDIT §17 C22 item 1. Law 40's call-shape table is still owed, and it lands as a corpus
+# layer like the others, not as a hook here: a conditional check for a file that does not exist is a
+# green that means nothing.)
 
 echo ""
 if (( failures > 0 )); then

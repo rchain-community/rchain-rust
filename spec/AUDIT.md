@@ -1270,6 +1270,21 @@ oracle is, and the test that pins the fix.
      `ret!(*items) | box!(Nil)`. The on-disk `.rho` stays upstream byte-for-byte. **Pinned by**
      `a_read_does_not_destroy_the_inbox` (a write, a read-all, and a write that must still answer).
      Consumers: `sendMail`, `claimWithInbox`, `share`, and anything else that reads an inbox twice.
+
+     **The class now has a law** (INVENTORY row 41, `Rchain/Store.lean`): a *replicable* reader — a
+     `contract`, called again — must put back what it consumes, and `storeSurvives` is the decidable
+     form of that ("a datum is back, and the pair forms a step"). `spec/conformance/store.tsv`'s cases
+     are this defect, its repair, and the three shapes nearby (a restore in one branch of a `match`, a
+     restore on the wrong channel, and the read-all/restore-container form `Inbox.rho` uses), each run
+     through the node by `rholang/tests/lean_store_corpus.rs`. **The static half is deliberately not
+     shipped:** a walk of the rendered text for "a linear consume with no paired produce" cannot tell
+     three things apart, and two of them are not defects — a *terminal* consume `Issue.rho:104` (the
+     tally's last read, after which nothing reads the store again), a *deferred* restore
+     `Group.rho:49→65` (the datum comes back, behind two receives), and a permanent loss (this item).
+     Reporting all three would mean an exception list over vendored content, which is exactly the kind
+     of allowance this catalog exists to avoid. A static walk for this rule was drafted for this slice
+     and retired unshipped rather than committed with an exception list; reading every vendored source
+     against it by hand is what produced this paragraph and the note in C25.
   2. **`extraSlots` called the directory's write capability with the wrong arity.** Our own term
      (`rgov.rs::extra_directory_slots_source`) called `MCAwrite!("Chat", *C_Chat)` — two arguments —
      while `Directory.rho:56` is `write(@key, @value, ret)`. No receive matched, so **none** of the
@@ -1384,6 +1399,19 @@ oracle is, and the test that pins the fix.
   reply), so it was removed rather than committed red; the corpus case that should replace it is
   Phase 3 of the formalization plan, and this item is its first customer.
 
+  **Law 41's reading of the same three candidates, recorded here because it narrows what a stall there
+  *does*** (INVENTORY row 41). `:49`'s read is a linear consume of the store, and the datum goes back
+  only at `:65` — inside two nested receives (`for (Directory <- ret)` at `:59`, `for (… <- dirCh)` at
+  `:63`). So between `:49` and `:65` the store is *empty*, not merely busy: every other `Group` call
+  that reads it linearly (`admin(@"add user")` at `:77`, `admin(@"registerSet")` at `:104`,
+  `admin(@"unregister")` at `:110`) and every peek of it (`Group(@"lookup")` at `:158`, and
+  `Group(@"new")`'s own `if` at `:50`) waits on a channel nobody will fill until that chain resolves.
+  That is consistent with the probe (*a* `Group!("lookup")` answered, so the datum was there when it
+  ran) and it explains the symptom's *shape*: a stall anywhere in `:50`-`:63` does not fail one call,
+  it silences the whole class until the deploy's own awaits resolve. `:48`'s print is the last
+  statement before `:49`, which is why "creating Group." is the last line seen. None of this picks
+  between the three candidates; it is what the corpus layers will have to separate.
+
 - **C26 — law 5 was three `axiom`s, one of them false, and nothing checked any of them.** Found while
   replacing law 5's `spatialMatches` with a definition. `spec/Rchain/Match.lean` stated
 
@@ -1442,6 +1470,33 @@ oracle is, and the test that pins the fix.
   be written `@2`, not `2` — the grammar's bind patterns are names (`Name ::= "_" | Var | "@" Proc12`),
   so the bare form is a parse error and the parser was right to say so. The case text was wrong, not the
   node.
+
+- **Law 41 — channel balance, and it is the *replicable* reader that the law is about.** `Rchain/
+  Store.lean` states it over the model's flat `Par`: `replicatedRead` is the reader a `contract`
+  installs (a replicated receive — replication is the specification's word for "this reader is called
+  again", which is the whole question the law asks of the store it reads); `readStore` computes one
+  read (the datum is a send whose value the bind's pattern accepts; the residue keeps the replicated
+  reader and drops the datum it took); and `storeSurvives` is the law — **is a datum back on the
+  channel, and does the result still form a contract step** (law 38's `takesStep`)? A reader that
+  restores answers again; one that consumes has consumed the store for good, and that "for good" is
+  what used to be unstated (C22 item 1).
+
+  Checked 1:1: `spec/conformance/store.tsv` (5 cases, `Corpus.storeCases_decide`) consumed by
+  `rholang/tests/lean_store_corpus.rs`. Every term registers **two** reads of the store, so the model's
+  verdict decides the count the node must produce (`2` or `1`), each case runs on its own runtime, and
+  the term carries a control datum — a must-not-fire case asserted by absence alone cannot tell "the
+  store was consumed" from "the term never ran" (the fixture rule C20's post-mortem records). The five
+  are the balanced reader, C22 item 1's defect, its repair (`box!(Nil)`), a restore that lives in only
+  one branch of a `match` (with the datum taking the other branch, so the model's conservative verdict
+  and the node's behaviour are the same claim — C22 item 3's lesson from the matching side), and a
+  restore to the *wrong channel* (which is what makes the model compare channels rather than ask
+  whether any send is there).
+
+  **A *peek* is deliberately absent, and that is a finding in itself:** `for (map <<- mapCh)` consumes
+  nothing, so `Directory.rho`'s two reads (`:31`, `:44`) were never this law's defect, and the model's
+  `Receive` has a *persistent* flag and no peek one — a peek case would have to assert its own verdict
+  instead of deriving it. The static half (a walk of the vendored text) is recorded in C22 item 1 as
+  drafted-and-retired, with the three shapes it cannot tell apart.
 
 ### Open question (behaviour pinned, oracle not established)
 

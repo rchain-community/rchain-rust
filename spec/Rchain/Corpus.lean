@@ -1,6 +1,7 @@
 import Rchain.Par
 import Rchain.Match
 import Rchain.Silence
+import Rchain.Store
 
 /-!
 # The conformance corpus, generated from the specification
@@ -277,18 +278,113 @@ theorem silenceCases_length : silenceCases.length = silenceCaseCount := by decid
 def silenceLine (c : SilenceCase) : String :=
   "silence\t" ++ c.term ++ "\t" ++ (if c.steps then "true" else "false")
 
+/-! ## Law 41 — the store layer
+
+Each case is a *term* whose store is read **twice** — a `contract` reader called two times, which is
+what makes it replicable — and the number of answers that must come back: `2` when the reader restores
+what it consumed, `1` when it has consumed the store for good. The model's side of the case is the same
+question asked of `Rchain/Store.lean`: `storeSurvives` after one read. The two sides are deliberately
+different shapes — the term has the surface syntax and two calls; the model has the flat `Par` and the
+replication — and they have to agree on the verdict, which is the corpus's premise.
+
+Case 2 is the defect that started this (AUDIT C22 item 1: `Inbox.rho`'s zero-argument `read`), case 3 is
+its repair (`box!(Nil)`: the read is documented to remove the *messages*, not the container), case 4 is
+the shape C22 item 3 taught from the matching side — a restore that lives in only one branch of a
+`match` is not a restore, and the term makes the datum take the other branch so the model's conservative
+verdict and the node's behaviour are the same claim — and case 5 is the restore that goes to the wrong
+channel, which is what makes the model compare channels rather than ask whether *any* send is there.
+
+A *peek* is deliberately absent, for the reason the Directory's reads were never this law's defect:
+`for (map <<- mapCh)` consumes nothing, so it cannot consume the store. The model's `Receive` has a
+*persistent* flag and no peek one, so a peek case would have to state its own verdict rather than derive
+it.
+
+Every term declares the reader's name in the `new` (`new box, read in …`), because a name that is
+*not* bound may be used only **once**: the second use of a free name is `UnexpectedReuseOfNameContextFree`
+— the Scala's `NameNormalizeMatcher.scala:52` and the port's `normalizer.rs:111`, faithfully the same
+rule. A `contract`'s own name is not bound by its definition, so a reader called twice must have its
+channel in scope. -/
+
+/-- The number of cases the store layer carries. -/
+def storeCaseCount : Nat := 5
+
+/-- A store case: the term as rholang spells it, the model's view of it, and whether the store answers
+the second read. -/
+structure StoreCase where
+  /-- The term: a store on `@"box"`, a reader, and exactly two calls of it. Its answers land on
+  `@"out"`, one per call that fired. -/
+  term : String
+  /-- The model's view: the store's datum beside the replicated reader and its continuation. -/
+  par : Par
+  /-- Does the store answer the second read? -/
+  survives : Bool
+
+/-- A store's datum on `"box"`, beside a replicated reader of `"box"` whose continuation is `body`. -/
+def storeWith (datum body : Par) : Par :=
+  parMerge (sendPar (strPar "box") [datum]) (replicatedRead (strPar "box") (namePar 0) body)
+
+/-- A `match` on the reader's datum whose case body restores the store — a restore that is only in one
+branch, kept in `matches` rather than `sends`, which is why the model does not count it. (`Rchain.`-
+qualified: this module's own `MatchCase` is the corpus's case record, a different type.) -/
+def restoreInOneBranch (datum : Par) : Par :=
+  Par.mk [] [] [] [] [Rchain.Match.mk (one (.evar (.free 0)))
+    [Rchain.MatchCase.mk (strPar "m") (sendPar (strPar "box") [datum]) 0]] [] [] []
+
+/-- The cases. -/
+def storeCases : List StoreCase :=
+  [ -- 1. the reader restores the datum it took: the store answers again.
+    { term := "new box, read in { box!(\"m\") | contract read(_) = { for (x <- box) { @\"out\"!(*x) | box!(*x) } } | read!(Nil) | read!(Nil) }"
+    , par := storeWith (strPar "m") (sendPar (strPar "box") [strPar "m"])
+    , survives := true }
+  , -- 2. the reader that consumes: AUDIT C22 item 1, `Inbox.rho`'s zero-argument `read`.
+    { term := "new box, read in { box!(\"m\") | contract read(_) = { for (x <- box) { @\"out\"!(*x) } } | read!(Nil) | read!(Nil) }"
+    , par := storeWith (strPar "m") (sendPar (strPar "out") [strPar "m"])
+    , survives := false }
+  , -- 3. the repair: the read removes the messages, and puts the emptied container back.
+    { term := "new box, read in { box!([\"m\"]) | contract read(_) = { for (items <- box) { @\"out\"!(*items) | box!(Nil) } } | read!(Nil) | read!(Nil) }"
+    , par := storeWith (listPat [strPar "m"] none) (sendPar (strPar "box") [listPat [] none])
+    , survives := true }
+  , -- 4. the restore is in one branch of a match, and the datum takes the other.
+    { term := "new box, read in { box!(\"z\") | contract read(_) = { for (x <- box) { @\"out\"!(*x) | match *x { \"m\" => { box!(*x) } _ => { Nil } } } } | read!(Nil) | read!(Nil) }"
+    , par := storeWith (strPar "z")
+        (parMerge (sendPar (strPar "out") [strPar "z"]) (restoreInOneBranch (strPar "z")))
+    , survives := false }
+  , -- 5. the restore goes somewhere else: a datum put back on a *different* channel is not a restore,
+    --    which is why the model compares channels rather than asking whether *any* send is there.
+    { term := "new box, read in { box!(\"m\") | contract read(_) = { for (x <- box) { @\"out\"!(*x) | @\"boxx\"!(*x) } } | read!(Nil) | read!(Nil) }"
+    , par := storeWith (strPar "m") (sendPar (strPar "boxx") [strPar "m"])
+    , survives := false }
+  ]
+
+/-- Every store case's verdict holds of the model, `decide`d against `storeSurvives`. -/
+theorem storeCases_decide :
+    storeCases.all (fun c => storeSurvives (strPar "box") c.par == c.survives) = true := by
+  decide
+
+/-- The layer carries exactly `storeCaseCount` cases. -/
+theorem storeCases_length : storeCases.length = storeCaseCount := by decide
+
+/-- One store corpus line: layer, the term, and how many reads of the store the node must answer — two
+calls in every term, so a store that survives answers both. -/
+def storeLine (c : StoreCase) : String :=
+  "store\t" ++ c.term ++ "\t" ++ (if c.survives then "2" else "1")
+
 end Corpus
 end Rchain
 
 open Rchain
 
-/-- `rchain-corpus --layer {flags|match} [--out FILE]` — print the corpus (stdout by default). -/
+/-- `rchain-corpus --layer {flags|match|silence|store} [--out FILE]` — print the corpus (stdout by
+default). -/
 def main (args : List String) : IO UInt32 := do
-  let want := (args.find? (fun a => a == "flags" || a == "match" || a == "silence")).getD "flags"
+  let want :=
+    (args.find? (fun a => a == "flags" || a == "match" || a == "silence" || a == "store")).getD "flags"
   let (lines, count) :=
     if want == "match" then (Corpus.matchCases.map Corpus.matchLine, Corpus.matchCaseCount)
     else if want == "silence" then
       (Corpus.silenceCases.map Corpus.silenceLine, Corpus.silenceCaseCount)
+    else if want == "store" then
+      (Corpus.storeCases.map Corpus.storeLine, Corpus.storeCaseCount)
     else (Corpus.flagCases.map Corpus.flagLine, Corpus.flagCaseCount)
   if lines.length != count then
     IO.eprintln s!"rchain-corpus: {want}: the case list and the declared count disagree"

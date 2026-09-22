@@ -1,0 +1,5 @@
+store	new box, read in { box!("m") | contract read(_) = { for (x <- box) { @"out"!(*x) | box!(*x) } } | read!(Nil) | read!(Nil) }	2
+store	new box, read in { box!("m") | contract read(_) = { for (x <- box) { @"out"!(*x) } } | read!(Nil) | read!(Nil) }	1
+store	new box, read in { box!(["m"]) | contract read(_) = { for (items <- box) { @"out"!(*items) | box!(Nil) } } | read!(Nil) | read!(Nil) }	2
+store	new box, read in { box!("z") | contract read(_) = { for (x <- box) { @"out"!(*x) | match *x { "m" => { box!(*x) } _ => { Nil } } } } | read!(Nil) | read!(Nil) }	1
+store	new box, read in { box!("m") | contract read(_) = { for (x <- box) { @"out"!(*x) | @"boxx"!(*x) } } | read!(Nil) | read!(Nil) }	1
