@@ -5,3 +5,4 @@
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
 cc 845bd2fa5a30f2adbb640d869dfc7f2e50b6111cb4ecb7bdb9d68a86022c7963 # shrinks to executing_path = 6, burst = [(6, 0)]
+cc 77071e7a29198dabd28f0667feb1769247f0661a6b7fb6642a1c8929edabc63b # shrinks to a = StateChange { datums_changes: {}, kont_changes: {[]: ChannelChange { added: [[], [], []], removed: [] }}, consume_channels_to_join_serialized_map: {} }, b = StateChange { datums_changes: {}, kont_changes: {[]: ChannelChange { added: [[]], removed: [] }}, consume_channels_to_join_serialized_map: {} }, c = StateChange { datums_changes: {}, kont_changes: {[]: ChannelChange { added: [[], []], removed: [] }}, consume_channels_to_join_serialized_map: {} }

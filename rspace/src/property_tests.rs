@@ -55,6 +55,37 @@ fn state_change_from(items: &[(u8, ChannelChange<Vec<u8>>)]) -> StateChange {
     }
 }
 
+/// A strategy producing an arbitrary `StateChange` over a small key space, **including the join map** —
+/// the half where the merge is a right-biased overwrite rather than a concatenation, which is what makes
+/// associativity worth testing instead of obvious.
+fn arb_state_change() -> impl Strategy<Value = StateChange> {
+    let key = || prop::collection::vec(any::<u8>(), 0..3);
+    (
+        prop::collection::btree_map(any::<u8>(), arb_channel_change(), 0..5),
+        prop::collection::btree_map(key(), arb_channel_change(), 0..5),
+        prop::collection::btree_map(key(), any::<u8>(), 0..5),
+    )
+        .prop_map(|(datums, konts, joins)| StateChange {
+            datums_changes: datums
+                .into_iter()
+                .map(|(k, v)| (Blake2b256Hash::from_bytes([k; 32]), v))
+                .collect(),
+            kont_changes: konts.into_iter().map(|(k, v)| (hashes(&k), v)).collect(),
+            consume_channels_to_join_serialized_map: joins
+                .into_iter()
+                .map(|(k, v)| (hashes(&k), vec![v]))
+                .collect(),
+        })
+}
+
+/// The `Vec<Blake2b256Hash>` a `StateChange`'s multi-channel keys are made of.
+fn hashes(bytes: &[u8]) -> Vec<Blake2b256Hash> {
+    bytes
+        .iter()
+        .map(|b| Blake2b256Hash::from_bytes([*b; 32]))
+        .collect()
+}
+
 proptest! {
     /// Law 7: a join's hash is independent of channel order.
     #[test]
@@ -230,6 +261,25 @@ proptest! {
         let a = state_change_from(&left_items);
         let b = state_change_from(&right_disjoint);
         prop_assert_eq!(StateChange::combine(&a, &b), StateChange::combine(&b, &a));
+    }
+
+    /// Law 9: `StateChange::combine` is **associative** — the law `casper/src/merging.rs`'s merge fold
+    /// relies on (`to_merge.iter().fold(StateChange::empty(), |acc, b| StateChange::combine(&acc, …))`).
+    /// It had no test: the unit test *named* `combine_is_associative` (`state_change.rs:203-238`) pins
+    /// empty-is-identity and a sorted-multiset agreement instead, by its own comment (AUDIT C43). The
+    /// join map is what makes this worth asserting rather than assuming — it is a right-biased
+    /// overwrite, so a contested key is decided by the last operand in both groupings, and the property
+    /// exercises overlapping keys deliberately.
+    #[test]
+    fn law9_state_change_combine_is_associative(
+        a in arb_state_change(),
+        b in arb_state_change(),
+        c in arb_state_change(),
+    ) {
+        prop_assert_eq!(
+            StateChange::combine(&StateChange::combine(&a, &b), &c),
+            StateChange::combine(&a, &StateChange::combine(&b, &c))
+        );
     }
 
     /// Law 20: on the claim queue, every channel's commit sequence is path-nondecreasing (ties in

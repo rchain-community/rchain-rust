@@ -199,8 +199,13 @@ impl StateChange {
 mod tests {
     use super::*;
 
+    /// The identity, and the two orders' *sorted multiset* agreement — **not** associativity, which is
+    /// why this test is no longer named for it: `ChannelChange::combine` concatenates, so the added and
+    /// removed lists differ in order between the two groupings while carrying the same elements. The
+    /// associativity the merge fold relies on (`casper/src/merging.rs:752-755`) is a property test,
+    /// `property_tests.rs`'s `law9_state_change_combine_is_associative` (AUDIT C43).
     #[test]
-    fn combine_is_associative() {
+    fn combine_has_an_identity_and_agrees_on_sorted_multisets() {
         let a = StateChange {
             datums_changes: BTreeMap::from([(
                 Blake2b256Hash::from_bytes([1; 32]),

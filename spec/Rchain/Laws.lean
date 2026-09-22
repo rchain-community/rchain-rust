@@ -301,17 +301,20 @@ def laws : List Law := [
       `:186-189` — the Scala's `x.map ++ y.map`, right-biased too, `StateChange.scala:152`), so the model \
       overwrites and `join_last_wins` states which side wins — which the code's own \
       `combine_has_an_identity_and_a_right_biased_join_map` (`:502-544`, \"the later change's join body \
-      wins\") pins. **Two findings are recorded here.** \
+      wins\") pins. **Two findings are recorded here, one now fixed.** \
       (1) `NonConflicting` is *not* `are_conflicting` read negatively, and saying so was wrong: \
       `are_conflicting` is over two `EventLogIndex`es with three checks, one of which (a potential COMM) \
       is a shared-channel interaction and one of which (produces touching base joins) no state diff can \
       see (`event_log_merging_logic.rs:105-158`), and the predicate the merge branches on is broader \
       again (`casper/src/merging.rs:177-181`). What the model needs is the sufficient condition for \
       commutation, and it is named for that. (2) The Rust test named `combine_is_associative` \
-      (`state_change.rs:203-238`) does **not** test associativity — its own comment says the law it pins \
-      is empty-is-identity — so the associativity the merge fold relies on (`casper/src/merging.rs:752-755`) \
-      is **untested on the Rust side**, while the identity, the right-biased join and the inner \
-      `ChannelChange` monoid all are (`:502-544`, `channel_change.rs:35-50`); owed: an AUDIT §17 entry" },
+      (`state_change.rs:203-238`) did **not** test associativity — its own comment said the law it pinned \
+      was empty-is-identity — so the associativity the merge fold relies on \
+      (`casper/src/merging.rs:752-755`) was **untested on the Rust side** (AUDIT C43). It is fixed: the \
+      misnamed test is renamed to what it asserts, and \
+      `property_tests.rs`'s `law9_state_change_combine_is_associative` is the test — over arbitrary state \
+      changes including the join map, and falsified before it was believed (a left-side-dropping \
+      `combine` makes it fail in 0.01s)" },
   { number := 10, layer := "RSpace",
     statement := "Merkle determinism: the radix trie is content-addressed, collision-free, with a \
       defined empty root",

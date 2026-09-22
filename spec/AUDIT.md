@@ -1930,16 +1930,22 @@ port against the **reference document** rather than against itself.
   pairs to the matcher directly rather than parsing a term. What was wrong was the model's note, which
   implied a term could reach the silent paths; the note and the row now say what the probe showed.
 
-- **C43 — the merge's associativity is untested on the Rust side, and the test that looks like it
-  tests the opposite.** `rspace/src/merger/state_change.rs:203-238` is named `combine_is_associative`,
-  but its own comment says "the monoid law tested here is empty-is-identity", and its assertions are the
-  identity plus a **sorted-multiset** agreement between the two orders — not associativity. The
-  associativity that the merge fold actually relies on
-  (`casper/src/merging.rs:752-755`, `to_merge.iter().fold(StateChange::empty(), …)`) is therefore
-  untested; the *inner* `ChannelChange::combine` is tested (`channel_change.rs:35-50`), and so are the
-  identity and the right-biased join map (`state_change.rs:502-544`). Not a defect — a coverage gap with
-  a misleading name, and the reason law 9's row says the associativity is owed a test rather than
-  claiming one.
+- **C43 — the merge's associativity was untested, under a test that looks like it tests the
+  opposite.** `rspace/src/merger/state_change.rs:203-238` was named `combine_is_associative`, but its own
+  comment said "the monoid law tested here is empty-is-identity", and its assertions were the identity
+  plus a **sorted-multiset** agreement between the two orders — not associativity. The associativity the
+  merge fold actually relies on (`casper/src/merging.rs:752-755`,
+  `to_merge.iter().fold(StateChange::empty(), …)`) was therefore untested, where the *inner*
+  `ChannelChange::combine` is tested (`channel_change.rs:35-50`) and so are the identity and the
+  right-biased join map (`state_change.rs:502-544`). Not a defect — a coverage gap with a misleading
+  name.
+
+  **Fixed.** The misnamed test is renamed `combine_has_an_identity_and_agrees_on_sorted_multisets`, and
+  `rspace/src/property_tests.rs`'s `law9_state_change_combine_is_associative` is the test the fold was
+  missing: a proptest over arbitrary `StateChange`s **including the join map**, so the right-biased
+  overwrite is exercised rather than assumed. Falsified before it was believed — a `combine` that drops
+  the left side's added list when the right's is longer makes it fail in 0.01s — which is the same
+  standard the register's own checks are held to.
 
 - **The class, recorded once, because it is the consolidation pass's whole justification: an axiom that
   is false is worse than one that is owed, because anything follows from it.** Nine axioms the pass
@@ -1998,7 +2004,7 @@ finding that no law covers, and it says why rather than leaving the gap to infer
 | C40 law 38's tie was false, and the relation lacked its arity clause | 38, 40 | `allStringChans` scoping the statement, `commPs` as the rule's arity clause |
 | C41 the diff accumulator can overflow where the merge refuses | 17 | `Merging.lean`'s `checkedAdd_refuses_overflow`/`mergeRandoms_perm` state the checked half and the call-site canonicalization; the two plain-`+=` sites (`event_log_index.rs:151`, `casper/src/merging.rs:758`) are the finding |
 | C42 law 5's linearity is the normalizer's, not the matcher's | 5 | `Match.lean`'s `aggregateUpdates_rejects_double_bind`/`freeMapMerge_overwrites` state the matcher's halves; the enforcing check is `normalizer.rs:111,289,590,1325`, measured on a devnet (both contexts refused, a duplicated datum accepted), and `spec/conformance/match.tsv` documents the matcher in isolation |
-| C43 the merge's associativity is untested, under a name that says otherwise | 9 | `Merge.lean`'s `mergeChanges_assoc` is now its only statement (proved); the Rust side owes the test — `state_change.rs:203-238` pins identity and a sorted-multiset agreement, not associativity |
+| C43 the merge's associativity was untested, under a name that says otherwise | 9 | `Merge.lean`'s `mergeChanges_assoc` (proved) **and** `property_tests.rs`'s `law9_state_change_combine_is_associative`, over arbitrary state changes including the join map; the misnamed `state_change.rs` test now says what it asserts |
 
 **The two rows that are not laws are the two worth keeping visible.** C37 is a *harness* finding —
 a measurement that was not a measurement — and no law would have caught it, because the thing that

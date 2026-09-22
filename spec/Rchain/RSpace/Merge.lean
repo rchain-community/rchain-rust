@@ -114,12 +114,14 @@ theorem not_touches_iff (x : StateChange) (c : Chan) :
     a right-biased overwrite of the join map are associative, which is the fact the fold
     (`casper/src/merging.rs:753-755`) relies on.
 
-    **It is not tested on the Rust side**, and the test that looks like it is does the opposite:
-    `state_change.rs:203-238` is named `combine_is_associative`, but its own comment says "the monoid law
-    tested here is empty-is-identity" and its assertions are the identity and a **sorted-multiset**
-    agreement between the two orders. The inner monoid's associativity *is* tested
-    (`channel_change.rs:35-50`), as is the identity and the right-biased join
-    (`state_change.rs:502-544`); this one is owed — recorded in Law 9's row and AUDIT §17. -/
+    **It is tested now, and it had not been** (AUDIT C43): the test named `combine_is_associative` was
+    the opposite — its own comment said the law it pinned was empty-is-identity, and its assertions were
+    the identity and a **sorted-multiset** agreement between the two orders. It is renamed to what it
+    tests (`combine_has_an_identity_and_agrees_on_sorted_multisets`), and this associativity is a
+    property test over arbitrary state changes **including the join map** —
+    `property_tests.rs`'s `law9_state_change_combine_is_associative` — so the right-biased overwrite is
+    exercised rather than assumed. The inner monoid's associativity is tested at
+    `channel_change.rs:35-50`, as are the identity and the right-biased join at `state_change.rs:502-544`. -/
 theorem mergeChanges_assoc (a b c : StateChange) :
     mergeChanges (mergeChanges a b) c = mergeChanges a (mergeChanges b c) := by
   unfold mergeChanges

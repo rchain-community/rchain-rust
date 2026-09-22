@@ -88,7 +88,7 @@ overstate coverage.
 | 6 | Rholang | `law6_a_closed_term_is_accepted_and_the_predicate_agrees` | Lean `Ty.lean` |
 | 7 | RSpace | `rspace/src/property_tests.rs` `law7_join_hash_commutes` | Lean `Join.lean` |
 | 8 | RSpace | `law8_comm_sorts_produces` | Lean `Comm.lean` |
-| 9 | RSpace | `law9_disjoint_state_changes_commute` | Lean `Merge.lean` |
+| 9 | RSpace | `law9_disjoint_state_changes_commute`, `law9_state_change_combine_is_associative` | Lean `Merge.lean` |
 | 10 | RSpace | `law10_merkle_root_is_insertion_order_independent` | Lean `Merkle.lean` |
 | 11 | RSpace | `law11_a_replayed_script_matches_its_recording` | `rspace/src/replay_rspace.rs`, `casper/tests/determinism.rs` |
 | 12 | Rosette | **none — the law is orphaned** (the Rosette VM is out of scope; no Rust obligation) | — |
