@@ -22,17 +22,17 @@
 #   5. **Tier table modules exist** — every path in the per-module tier table must be a real file.
 #   6. **Tier table rows are pinned** — a row's named test must exist in the named file, and no row may
 #      be left with a `—` test cell (that is a registered open item).
+#   7. **Every source file is tested or exempt** — each `<crate>/src/**/*.rs` either contains a test
+#      attribute or is a row of the `## Exempt modules` table with a valid reason class. A file that
+#      gains a test while still holding a row fails, so the table burns down instead of rotting into an
+#      allowlist. Under `--deferred-ok` the still-unlisted files are reported (the burn-down list)
+#      rather than failing, exactly like the deferred-gap and open-tier checks.
 #   8. **Law rows are answerable** — a row of `spec/INVENTORY.md` that claims coverage (its status
 #      cell says "checked") must name a Lean module that exists, a corpus that exists and a consumer
 #      that exists; a row that does not claim coverage must say so in one of the closed vocabulary
 #      words (`open`, `boundary`, `orphaned`, `axiomatic`, `deviation`). This is check 2's rule
 #      applied to the law catalogue, and it is the check that would have caught C30-C40's gaps: each
 #      was a row whose status read better than its evidence.
-#   7. **Every source file is tested or exempt** — each `<crate>/src/**/*.rs` either contains a test
-#      attribute or is a row of the `## Exempt modules` table with a valid reason class. A file that
-#      gains a test while still holding a row fails, so the table burns down instead of rotting into an
-#      allowlist. Under `--deferred-ok` the still-unlisted files are reported (the burn-down list)
-#      rather than failing, exactly like the deferred-gap and open-tier checks.
 #
 # The class vocabulary is **closed** because a row that can invent its own reason is not a reason:
 # a `peer-bound` or `harness-bound` row must name its covering test as `path::test`, and the linter
