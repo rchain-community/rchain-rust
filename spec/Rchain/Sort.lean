@@ -686,13 +686,18 @@ mutual
   termination_by l => sizeOf l
 end
 
-/-! ## Lawfulness: `lt_trans` (RESIDUAL AXIOMS — now 33, down from 69)
+/-! ## Lawfulness: `lt_trans` (RESIDUAL AXIOMS — **12**, down from 69)
 
 The 12 **list** comparators' `eq_iff`/`swap`/`lt_trans` laws are now **discharged** (direct induction
 on the list, composing the element law with `lex_eq_iff`/`swap_lex`/`lex_lt_trans`); they were never
-the hard part. The remaining **33 axioms** are the 11 **element** comparators' laws
-(`cmpPar`/`cmpSend`/…/`cmpConnective` × `eq_iff`/`swap`/`lt_trans`), which need mutual induction over
-the AST.
+the hard part. The remaining **12 axioms** are `cmpExpr`'s `eq_iff` and `swap` plus the ten element
+comparators' `lt_trans` laws (`cmpPar`/`cmpSend`/…/`cmpConnective`; `cmpGUnforgeable_lt_trans` is
+proved), which need mutual induction over the AST.
+
+**This header said 33 and `spec/INVENTORY.md` said 30, and both were wrong** — counted by
+`Rchain/Laws.lean` (the law register), whose axiom-accounting check compares the axioms its rows cite
+against the elaborated environment, so a number here cannot drift again without the register
+disagreeing.
 
 Discharging the element laws is blocked by a Lean limitation, not by choice:
 

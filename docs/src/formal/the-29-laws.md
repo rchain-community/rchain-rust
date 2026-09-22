@@ -15,6 +15,13 @@ and a client never touches the calculus directly.
 Legend: **proven** = a theorem with a proof; **stated** = an axiom with a precise signature (definition
 deferred); **axiom** = postulated by design (a cryptographic primitive).
 
+> **The checked rendering is [`spec/LAWS.md`](../../../spec/LAWS.md)** — emitted from
+> `Rchain/Laws.lean` and refused stale by the gate. It counts clauses rather than laws and separates
+> **`proved-tied`** (proved *and* tied to the node by a corpus) from **`proved-model`** (proved about a
+> model a human keeps in sync); this page's plainer words are the narrative reading of the same rows.
+> Its total is **14 of 43 laws proved at all**. Where the two disagree, the register is right — and it
+> was right about this page's law 5, which used to call an almost-vacuous lemma "correctly stated".
+
 ## Rholang — the language (Laws 1–6)
 
 | Law | Invariant | Surface feature | Lean | Coq | K rule |
@@ -23,7 +30,7 @@ deferred); **axiom** = postulated by design (a cryptographic primitive).
 | **2** | α / name equivalence: par order, `\| Nil`, associativity, top-level arithmetic, α, `@`/`*` | `@`/`*`, `@{P\|Q}=@{Q\|P}` | `Rho.lean` — `StrCong` `≡` (**proven** core) | `Laws.v` — `alpha_equiv` (axiom) | `name-equivalence.k`, `alpha-equivalence.k` |
 | **3** | capture-avoiding de Bruijn substitution; `sort(subst t)=subst(sort t)` | variable binding | `Subst.lean` — `substPar`, `sort_subst`, `subst_closed` (**stated**) | `Laws.v` — `substPar`, `subst_commutes_sort` (axiom) | `free.k` (substitution; `substitution.k` referenced) |
 | **4** | reduction (COMM), first-match-wins, `new` freshness | send/receive, `match` | `Rho.lean` `Reduce` ⟶ (**proven** core); `Concurrent.lean` `reduce_redex_unique` (**proven** — an isolated redex reduces to its body, uniquely up to `≡`) and `reduce_not_deterministic` (**proven** — the flat `Par` is *not* confluent, which is why the block path's determinism comes from the scheduler, Laws 20–25); `Reduce.lean` `reduce_freeVars_subset` (**stated**) | `Laws.v` — `reduce` (axiom) | `processes-semantics.k`, `sending-receiving.k`, `persistent-sending-receiving.k` |
-| **5** | spatial matching, defined; an accepted match binds each free level at most once | patterns, `_`, `~`, `/\`, `\/` | `Match.lean` — `spatialMatchCore`/`spatialMatch` (**defined**: a fuel-carrying matcher, so "does it match" is computed), `spatialMatches` (**defined**), `spatialMatches_decidable` (**an instance**, not an axiom), `spatialMatch_implies_linear` (**proven** — the linearity law, correctly stated). The old statement of this row ("`BindsAtMostOnce` … **stated**") was an axiom that was *false* as written: AUDIT C26. Law 37's tie — `spatialMatch t p = (t = p)` for a connective-free pattern, which is what makes the port's `connective_used` fast path sound — is stated there as `concrete_matches_iff_eq` and is **owed** | `Laws.v` — `spatial_matches`, `binds_at_most_once` (axiom) | `matching-function.k`, `specific-matching-rules.k`, `exact-matching-function.k`, `matching-with-par.k` |
+| **5** | spatial matching, defined; an accepted match binds each free level at most once | patterns, `_`, `~`, `/\`, `\/` | `Match.lean` — `spatialMatchCore`/`spatialMatch` (**defined**: a fuel-carrying matcher, so "does it match" is computed), `spatialMatches` (**defined**), `spatialMatches_decidable` (**an instance**, not an axiom), `spatialMatch_implies_linear` (**proved**, with the register's caveat: it is a conjunct inside `spatialMatch`'s own definition, so it holds *by construction* rather than as a statement about the matcher's clauses). The old statement of this row ("`BindsAtMostOnce` … **stated**") was an axiom that was *false* as written: AUDIT C26. Law 37's tie — `spatialMatch t p = (t = p)` for a connective-free pattern, which is what makes the port's `connective_used` fast path sound — is stated there as `concrete_matches_iff_eq` and is **owed** | `Laws.v` — `spatial_matches`, `binds_at_most_once` (axiom) | `matching-function.k`, `specific-matching-rules.k`, `exact-matching-function.k`, `matching-with-par.k` |
 | **6** | no globally free variables | `Closed` | `Ty.lean` `Closed` (**proven**) + `FreeVars.lean` `freeVarOf`/`closed_iff_no_freeVars` | `Laws.v` — `closed`, `closed_decidable` (axiom) | `free.k`, `program-restrictions.k` |
 
 ## RSpace — the tuple space (Laws 7–11)
