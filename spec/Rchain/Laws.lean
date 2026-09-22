@@ -370,17 +370,45 @@ def laws : List Law := [
     note := "as stated the axiom restates its own definition (`simp [isSuperMajority, Nat.mul_comm]` \
       closes it) — it ties finality to nothing. Re-scoping it is Task 2's" },
   { number := 14, clause := "b", layer := "Casper",
-    statement := "A fringe holds one message per bonded validator (an antichain)",
-    status := .deferred,
-    declarations := [`Rchain.fringe_antichain],
-    axioms := [`Rchain.fringe_antichain],
-    falsifiable := none },
+    statement := "A fringe holds one message per bonded validator (an antichain) — **of the fringe the \
+      finalizer derives**; over a bare `Fringe` the claim is false and its refutation is proved",
+    status := .owed,
+    declarations := [`Rchain.Fringe, `Rchain.fringe_antichain_is_false],
+    axioms := [],
+    rust := ["block-storage/src/dag/finalizer.rs"],
+    falsifiable := some "the refutation is in the tree: `fringe_antichain_is_false` exhibits two messages \
+      from one sender with different ids in one `Fringe`, which is a value the model can build and the \
+      finalizer cannot produce",
+    note := "**the axiom that stood here was false**: it quantified over a *bare* `Fringe`, and a \
+      `Fringe` is freely constructed, so the refutation is three lines. What it is missing is not a \
+      hypothesis on the value but the **derivation** — the fringe the port publishes comes from \
+      `calculate_finalization`, which advances only on the support gate and only to a strictly new layer \
+      (`finalizer.rs:196-215`) — and the model has no DAG from which to derive it. Owed: the derivation, \
+      at which point the statement becomes provable rather than falsified" },
   { number := 15, layer := "Casper",
-    statement := "The fringe is monotone by height and the seen-set is monotone (no regression)",
-    status := .deferred,
-    declarations := [`Rchain.fringe_monotone, `Rchain.seen_monotone],
-    axioms := [`Rchain.fringe_monotone, `Rchain.seen_monotone],
-    falsifiable := none },
+    statement := "The fringe is monotone by height and the seen set is monotone (no regression) — the \
+      **derived** fringe and the **constructed** seen set; over bare values both claims are false and \
+      their refutations are proved",
+    status := .owed,
+    declarations := [`Rchain.Message, `Rchain.seenOf, `Rchain.seen_monotone_is_false,
+      `Rchain.fringe_monotone_is_false, `Rchain.seenOf_contains_justifications, `Rchain.mem_seenOf_self],
+    axioms := [],
+    rust := ["block-storage/src/dag/message_state.rs", "block-storage/src/dag/finalizer.rs"],
+    falsifiable := some "`fringe_monotone_is_false` exhibits two overlapping fringes (one at 5 and 1, one \
+      at 3) where both arms of the disjunction fail — so the axiom was false as written; \
+      `seen_monotone_is_false` exhibits two unrelated messages where `b` sees `a` and `a` sees `2` but \
+      `b` does not. The constructive half is falsifiable too: `seenOf_contains_justifications` fails for \
+      a `seenOf` that dropped the justifications' sets, which is the port's `new_seen` \
+      (`message_state.rs:54-59`)",
+    note := "**two more false axioms, both refuted in the tree.** The content is the *derivation*: a \
+      message's seen set is **constructed** as the union of its justifications' seen sets plus its own id \
+      (`message_state.rs:54-59`), which the model now has (`seenOf`, with both halves proved: \
+      `seenOf_contains_justifications` and `mem_seenOf_self`); and height monotonicity relates \
+      *successive* fringes of one validator, which the finalizer's advance gate produces \
+      (`finalizer.rs:196-215`). What remains owed is the **transitive** closure the finalizer leans on — \
+      `a ∈ b.seen → a.seen ⊆ b.seen` — which follows from the construction by induction over the DAG, \
+      and the DAG is not modelled here. The old row's claim that the seen set is monotone \"(no \
+      regression)\" was true of the port and false of the value the axiom quantified over" },
   { number := 16, clause := "a", layer := "Casper",
     statement := "Block number = max(parent) + 1 — as the port's check, which **rejects** a block whose \
       number is not one more than the maximum of its non-failed justifications (`0` when there is none \
@@ -486,22 +514,37 @@ def laws : List Law := [
       result uses `checked_add` (`merging.rs:102`) while the diff accumulator uses a plain `i64 +=` \
       (`rspace/src/merger/event_log_index.rs:151`, `casper/src/merging.rs:758`) — a debug panic, a \
       release wrap. That half is a code finding, recorded as AUDIT §17 C41, not a law" },
-  { number := 18, clause := "a", layer := "Storage",
-    statement := "The height map is contiguous: no holes in block heights",
-    status := .deferred,
-    declarations := [`Rchain.height_map_contiguous],
-    axioms := [`Rchain.height_map_contiguous],
-    falsifiable := none,
-    note := "as stated it claims a property of *any* `List Block`, which is false of an arbitrary \
-      list — the DAG/fringe structure it depends on is not a hypothesis" },
-  { number := 18, clause := "b", layer := "Storage",
-    statement := "The fringe identity is order-independent (a set, not a list)",
-    status := .deferred,
-    declarations := [`Rchain.fringe_identity_order_independent],
-    axioms := [`Rchain.fringe_identity_order_independent],
-    falsifiable := none,
-    note := "`Perm → f = g` needs `messages` sorted and deduplicated as an invariant of `Fringe`; \
-      without it the axiom is false of a `Fringe` built by hand" },
+  { number := 18, layer := "Storage",
+    statement := "The store's own invariants: the height map is **contiguous** — no holes in block \
+      heights — and the fringe identity is **order-independent**, because what the code keys on is a \
+      `BTreeSet`, not a list",
+    status := .provedModel,
+    declarations := [`Rchain.HeightSet, `Rchain.Contiguous, `Rchain.contiguous_insert_succ,
+      `Rchain.contiguous_skip_leaves_hole, `Rchain.height_map_universal_is_false, `Rchain.Fringe,
+      `Rchain.fringeId, `Rchain.fringeId_perm,
+      `Rchain.fringe_identity_order_independent_is_false],
+    axioms := [],
+    rust := ["block-storage/src/dag/metadata_store.rs", "models/src/fringe_data.rs",
+      "block-storage/src/dag/finalizer.rs"],
+    falsifiable := some "`contiguous_skip_leaves_hole` is the negative case the store's check exists for: \
+      a block whose number is not the successor of the current maximum leaves a hole (what \
+      `validate_dag_state` reports, `metadata_store.rs:83-86`) — and the store **cannot derive** the \
+      positive direction for itself, since it inspects only the keys it is handed: that step runs through \
+      Law 16a's block-number check. `fringeId_perm` fails for an identity that dropped the sort, which \
+      is what `fringe_hash_of` would be without its `BTreeSet` input (`models/src/fringe_data.rs:38-43`), \
+      and `height_map_universal_is_false` / `fringe_identity_order_independent_is_false` publish the \
+      refutations of the two axioms this row replaces",
+    note := "**two axioms gone, and neither was a law.** `height_map_contiguous` claimed a property of \
+      *any* `List Block` — false, and refuted in the tree (a one-element list numbered 1 has an element \
+      above 0 and no element at 0); what the port has is an invariant its *store* checks \
+      (`metadata_store.rs:77-87`), so the model states contiguity as the store's meaning and proves the \
+      two steps that matter: a successor insert preserves it, a skipped number breaks it. \
+      `fringe_identity_order_independent` claimed `Perm → f = g`, also false of a hand-built `Fringe` \
+      (refuted in the tree) — in the port the property is **structural**: `fringe` is a \
+      `BTreeSet<BlockHash>` wherever it appears, so there is no list order to be invariant under, and the \
+      model keeps a list only so the claim can be stated at all, then sorts (`fringeId`) and proves the \
+      invariance the type supplies. **Clause split removed**: 18a and 18b now share a status, an empty \
+      axiom set and a file" },
   { number := 19, layer := "Crypto",
     statement := "Blake2b256 is canonical and collision-free; the `Blake2b512Random` merge is n-ary \
       and **order-sensitive**; signatures verify what they sign; Curve25519 round-trips",

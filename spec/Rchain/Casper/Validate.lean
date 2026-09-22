@@ -1,4 +1,5 @@
 import Rchain.Casper.Fringe
+import Rchain.Cmp
 import Rchain.Crypto.Spec
 
 /-!
@@ -165,12 +166,94 @@ theorem blockHash_changes_with_header {a b : Block} (h : a.header ≠ b.header) 
 -- The law's real content — the checked `i64` arithmetic of the merge, the unchecked accumulator beside
 -- it, and the RNG merge's call-site canonicalization — is modelled in `Rchain/Merging.lean`.
 
-/-- Law 18: the height map is contiguous — no holes in block heights. -/
-axiom height_map_contiguous (bs : List Block) :
-  ∀ b ∈ bs, b.number > 0 → ∃ c ∈ bs, c.number = b.number - 1
+/-! ## Law 18 — the store's own invariants
 
-/-- Law 18: the fringe identity is order-independent (a set, not a list). -/
-axiom fringe_identity_order_independent (f g : Fringe) :
-  List.Perm f.messages g.messages → f = g
+Two axioms stood here and neither was a law of the code. `height_map_contiguous` claimed a property of
+*any* `List Block` — false, because the DAG structure it needs was not a hypothesis.
+`fringe_identity_order_independent` claimed `Perm → f = g` over a hand-built `Fringe` — also false, since
+two lists being permutations does not make them equal. What the port has is an *invariant the store
+checks* and a *representation that gives order-independence for free*. -/
+
+/-- The store's height map, as the set of heights it holds (`block-storage/src/dag/metadata_store.rs:20`
+    keeps a `BTreeMap<BlockHeight, BTreeSet<BlockHash>>`, and `validate_dag_state` checks its keys for
+    holes, `:77-87`). -/
+abbrev HeightSet := Nat → Prop
+
+/-- **The invariant `validate_dag_state` checks**, as what it means: every height between the smallest
+    the store holds and the largest is present — no holes. The port's arithmetic on a duplicate-free key
+    list (`(max + 1) - min = len`, `metadata_store.rs:80-85`) is this. -/
+def Contiguous (hs : HeightSet) : Prop :=
+  ∀ h lo hi, hs lo → hs hi → lo ≤ h → h ≤ hi → hs h
+
+/-- **Law 18a, the half the store cannot derive for itself.** Inserting a block whose number is the
+    successor of the current maximum preserves contiguity — and the derivation runs through **Law 16a's
+    check**, not through the store: `validate_dag_state` (`metadata_store.rs:77-87`) only checks the keys
+    it is handed and never inspects parent structure, so the store cannot establish this on its own. -/
+theorem contiguous_insert_succ (hs : HeightSet) (m : Nat) (hc : Contiguous hs) (hmax : hs m)
+    (hbound : ∀ h, hs h → h ≤ m) : Contiguous (fun h => h = m + 1 ∨ hs h) := by
+  intro h lo hi hlo hhi hle hle'
+  rcases hlo with rfl | hlo
+  · left
+    rcases hhi with hhi | hhi
+    · omega
+    · have := hbound hi hhi; omega
+  · rcases hhi with hhi | hhi
+    · by_cases hh : h = m + 1
+      · exact Or.inl hh
+      · exact Or.inr (hc h lo m hlo hmax hle (by omega))
+    · exact Or.inr (hc h lo hi hlo hhi hle hle')
+
+/-- **Law 18a's negative case** — a block that skips a number leaves a hole at its predecessor, which is
+    what the store's check reports (`metadata_store.rs:83-86`). The `hs lo` hypothesis is the store being
+    non-empty, which the port's check also requires: on a single key there is no hole to have. -/
+theorem contiguous_skip_leaves_hole (hs : HeightSet) (m lo : Nat) (hlo : hs lo)
+    (hbound : ∀ h, hs h → h ≤ m) : ¬ Contiguous (fun h => h = m + 2 ∨ hs h) := by
+  intro hc
+  have hmem : (fun h => h = m + 2 ∨ hs h) (m + 1) :=
+    hc (m + 1) lo (m + 2) (Or.inr hlo) (Or.inl rfl)
+      (by have := hbound lo hlo; omega) (by omega)
+  rcases hmem with h | h
+  · omega
+  · exact absurd (hbound (m + 1) h) (by omega)
+
+/-- **The axiom that stood here was false**: a list of one block, numbered 1, has an element above `0`
+    and no element numbered `0` — so the "no holes" claim fails of a list that is not a DAG's height
+    map. The invariant is real, but it is the *store's*, not a property of any `List Block`. -/
+theorem height_map_universal_is_false :
+    ¬ ∀ bs : List Block, ∀ b ∈ bs, b.number > 0 → ∃ c ∈ bs, c.number = b.number - 1 := by
+  intro h
+  let b : Block := ⟨1, 0, 0, [], 0, []⟩
+  have hb := h [b] b (by simp) (by simp [b])
+  rcases hb with ⟨c, hc, hnum⟩
+  simp at hc
+  subst hc
+  simp [b] at hnum
+
+/-- The fringe's identity as the store keys it: its message ids in **sorted** order — the code hashes a
+    `BTreeSet<BlockHash>` (`models/src/fringe_data.rs:22,38-43`), so its input is sorted by
+    construction. -/
+noncomputable def fringeId (f : Fringe) : List Nat :=
+  Comparator.sortList (Comparator.linearOrderComparator Nat) (f.messages.map (·.id))
+
+/-- **Law 18b** — the fringe identity is order-independent. In the port this is **structural**, not a
+    law: `fringe` is a `BTreeSet<BlockHash>` wherever it appears (`models/src/fringe_data.rs:22`,
+    `block-storage/src/dag/finalizer.rs:30`), so there is no list order for the identity to be invariant
+    under. The model keeps a list — so the claim can be *stated* at all — and proves the invariance the
+    type supplies, the same way Law 7's join key does. -/
+theorem fringeId_perm (f g : Fringe) (h : List.Perm f.messages g.messages) :
+    fringeId f = fringeId g := by
+  simp only [fringeId]
+  exact Comparator.sortList_perm (Comparator.linearOrderComparator Nat)
+    (List.Perm.map (fun m => m.id) h)
+
+/-- **The axiom that stood here was false**: two `Fringe`s that are permutations of one another are
+    different values, and no hypothesis makes them equal. The port's order-independence comes from the
+    *type* — a `BTreeSet` — which the model replaces with a sort (`fringeId`). -/
+theorem fringe_identity_order_independent_is_false :
+    ¬ ∀ f g : Fringe, List.Perm f.messages g.messages → f = g := by
+  intro h
+  let m0 : Message := ⟨0, 0, 0, 0, [], []⟩
+  let m1 : Message := ⟨1, 0, 0, 0, [], []⟩
+  exact absurd (h ⟨[m0, m1]⟩ ⟨[m1, m0]⟩ (List.Perm.swap m1 m0 [])) (by decide)
 
 end Rchain
