@@ -31,8 +31,13 @@ axiom seq_num_strictly_increases (prev next : Block) :
 /-- Law 16: content addressing — the hash determines the block body (collision-free). -/
 axiom content_addressing (a b : Block) : a.hash = b.hash → a = b
 
-/-- Law 17: numeric channels are non-negative (no overflow). -/
-axiom numeric_channels_nonneg (b : Block) : 0 ≤ b.number
+-- Law 17's arithmetic is not in this file. `numeric_channels_nonneg` lived here until the
+-- consolidation pass and claimed numeric channels are non-negative — which is **false of the code**:
+-- they are signed `i64` and negative diffs are ordinary (`rholang/src/merging.rs:161-166`, tests at
+-- `:349,370` with `diff: -5`). The non-negativity that *is* true belongs to Law 14's bonds and to
+-- `NonNegI64` (`shared/src/refined.rs:64`), which types bonds and heights, never numeric channels.
+-- The law's real content — the checked `i64` arithmetic of the merge, the unchecked accumulator beside
+-- it, and the RNG merge's call-site canonicalization — is modelled in `Rchain/Merging.lean`.
 
 /-- Law 18: the height map is contiguous — no holes in block heights. -/
 axiom height_map_contiguous (bs : List Block) :

@@ -58,19 +58,54 @@ def statusCount (s : Status) : Nat := (laws.filter (·.status == s)).length
 def joinNames (ns : List Name) : String :=
   if ns.isEmpty then "-" else String.intercalate ", " (ns.map (·.toString))
 
+def joinStrs (ss : List String) : String :=
+  if ss.isEmpty then "-" else String.intercalate ", " ss
+
+/-! ## The Rust anchors, checked against the filesystem
+
+Not part of the compile-time checks: these need `IO`, and `run_cmd` has no `IO`. They run in `main`
+*before* anything is written, so a register that cites code which does not exist emits nothing. -/
+
+/-- The anchor's file: `"rholang/src/merging.rs:102"` → `"rholang/src/merging.rs"`. -/
+def anchorPath (a : String) : String := (a.splitOn ":").head!
+
+/-- Whether a row's status *claims a model of the code*. Exactly these must name the code they model:
+a `owed`, `deferred`, `open` or `orphaned` row has no model yet, so there is nothing to anchor, and
+requiring one would be busywork that teaches people to fill the column in. -/
+def claimsModel (s : Status) : Bool :=
+  match s with
+  | .provedTied | .provedModel | .axiomByDesign | .vacuous => true
+  | .owed | .deferred | .open | .orphaned => false
+
+/-- Every anchor must be a file that exists, resolved from the repo root (the parent of `spec/`, since
+the executable is run from there) or from the working directory. Returns the failures. -/
+def rustAnchorFailures : IO (List String) := do
+  let mut failures : List String := []
+  for l in Laws.laws do
+    if claimsModel l.status && l.rust.isEmpty then
+      failures := failures ++ [s!"law {l.number}{l.clause} is `{l.status.wire}` and cites no Rust \
+        anchor — say which code the model stands for"]
+    for a in l.rust do
+      let p := anchorPath a
+      let here ← System.FilePath.pathExists p
+      let up ← if here then pure true else System.FilePath.pathExists (".." / p)
+      unless up do
+        failures := failures ++ [s!"law {l.number}{l.clause} cites `{a}`, which does not exist"]
+  return failures
+
 /-- One line of `spec/laws.tsv`. Columns: number, clause, layer, status, declarations, axioms, corpus,
-falsifiable, statement, note. Tab-separated with a header, so a consumer can read it by column. Newlines
-and tabs inside a field would break the format, so they are folded to spaces. -/
+rust, falsifiable, statement, note. Tab-separated with a header, so a consumer can read it by column.
+Newlines and tabs inside a field would break the format, so they are folded to spaces. -/
 def tsvRow (l : Law) : String :=
   let flat (s : String) : String := (s.replace "\t" " ").replace "\n" " "
   String.intercalate "\t" [
     toString l.number, l.clause, l.layer, l.status.wire, joinNames l.declarations,
-    joinNames l.axioms, l.corpus.getD "-", flat (l.falsifiable.getD "-"),
+    joinNames l.axioms, l.corpus.getD "-", joinStrs l.rust, flat (l.falsifiable.getD "-"),
     flat l.statement, flat l.note]
 
 def tsv : String :=
   String.intercalate "\n" <|
-    ("number\tclause\tlayer\tstatus\tdeclarations\taxioms\tcorpus\tfalsifiable\tstatement\tnote"
+    ("number\tclause\tlayer\tstatus\tdeclarations\taxioms\tcorpus\trust\tfalsifiable\tstatement\tnote"
       :: ordered.map tsvRow)
 
 /-- The summary sentence both documents open with — the one number that replaces the three competing
@@ -78,6 +113,7 @@ counts (19 in a stale note, 29 in two documents, 43 in the tree). -/
 def summary : String :=
   s!"{lawCount} laws, {entryCount} entries: {statusCount .provedTied} proved and tied to the node by a \
 conformance corpus, {statusCount .provedModel} proved over the model, \
+{statusCount .vacuous} proved but vacuous (the statement restates its own definition), \
 {statusCount .axiomByDesign} axiomatized by design (the cryptographic primitives), \
 {statusCount .owed} owed, {statusCount .deferred} deferred, {statusCount .open} open, \
 {statusCount .orphaned} orphaned."
@@ -97,11 +133,12 @@ def markdown : String :=
     let statement :=
       if l.note.isEmpty then l.statement else s!"{l.statement} <br/> <em>{l.note}</em>"
     let cells := [num, statement, l.status.wire, joinNames l.declarations, joinNames l.axioms,
-      l.corpus.getD "-", l.falsifiable.getD "*owed*"]
+      l.corpus.getD "-", joinStrs l.rust, l.falsifiable.getD "*owed*"]
     "| " ++ String.intercalate " | " (cells.map mdCell) ++ " |"
   let table (layer : String) : String :=
     let rows := ordered.filter (·.layer == layer)
-    "| Law | Invariant | Status | Lean | Rests on | Tied by | Falsified by |\n|---|---|---|---|---|---|---|\n"
+    "| Law | Invariant | Status | Lean | Rests on | Tied by | Models | Falsified by |\n\
+     |---|---|---|---|---|---|---|---|\n"
       ++ String.intercalate "\n" (rows.map one)
   String.intercalate "\n\n" (layers.map fun layer => s!"### {layer}\n\n{table layer}")
 
@@ -114,6 +151,15 @@ lake's `lean_exe` links. With `main` under a namespace the build still *succeeds
 `main` — and the binary then rejects `--out` with "unknown long option": a silent mismatch, caught only by
 running the thing. -/
 def main (args : List String) : IO UInt32 := do
+  -- Check 9 first, and before writing anything: a register whose anchors do not resolve must not be
+  -- able to emit. The gate re-emits the register and diffs it, so a failing check here fails the gate.
+  let anchorFailures ← Rchain.Laws.rustAnchorFailures
+  unless anchorFailures.isEmpty do
+    for f in anchorFailures do
+      IO.eprintln s!"rchain-laws: {f}"
+    IO.eprintln s!"rchain-laws: {anchorFailures.length} Rust anchor(s) do not resolve — the register \
+      claims to model code that is not there"
+    return 1
   let format :=
     match args.findIdx? (fun a => a == "--format") with
     | some i => args[i + 1]?.getD "tsv"
@@ -231,6 +277,14 @@ run_cmd do
   for l in register do
     if !l.axioms.isEmpty && (l.status == .open || l.status == .orphaned) then
       failures := failures.push s!"law {l.number}{l.clause} is `{l.status.wire}` yet cites axioms"
+
+  -- 8. A `vacuous` row must say what the law needs in order to stop being vacuous. The word is an
+  -- admission — "proved, but the statement restates its own definition" — and an admission with no plan
+  -- is how a gap becomes permanent.
+  for l in register do
+    if l.status == .vacuous && l.note.isEmpty then
+      failures := failures.push s!"law {l.number}{l.clause} is `vacuous` with no note — name the \
+        re-scoping it needs, or the word is a resting place rather than a finding"
 
   if failures.isEmpty then
     logInfo m!"rchain-laws: the register is consistent — {lawCount} laws, {entryCount} entries, \

@@ -68,6 +68,14 @@ inductive Status where
   | open
   /-- Out of scope: the VM it describes was not ported. -/
   | orphaned
+  /-- **Proved, but the statement restates its own definition and so cannot fail.** This is the status
+  the consolidation pass exists for: `next_step_closure_computable` was `rfl`,
+  `validated_speculation_refines_apply` a disjunction whose second arm holds for any run, and
+  `finality_iff_supermajority` two `Nat.mul_comm`s away from `isSuperMajority`'s own body. Calling such
+  a row `provedModel` would be true and useless; `vacuous` says the proof is real and the *law* is not
+  yet. A `vacuous` row must carry a note naming the re-scoping it needs, so the word cannot become a
+  resting place. -/
+  | vacuous
   deriving BEq, DecidableEq, Repr
 
 def Status.wire : Status → String
@@ -78,6 +86,7 @@ def Status.wire : Status → String
   | .deferred      => "deferred"
   | .open          => "open"
   | .orphaned      => "orphaned"
+  | .vacuous       => "vacuous"
 
 /-- One law, or one clause of a law whose clauses differ in status or in what they rest on. Law 16
 carries four clauses and Law 1 two, because "Law 1 is proved, residually 30 axioms" was the sentence
@@ -98,6 +107,12 @@ structure Law where
   axioms : List Lean.Name := []
   /-- The conformance corpus layer that ties this law to the node, if there is one. -/
   corpus : Option String := none
+  /-- **The Rust this law models**, as `path` or `path:line` anchors — the field that makes "the model
+  models the code" checkable rather than promised. `Rchain/LawsMain.lean` refuses a row that claims a
+  model (`proved-tied`, `proved-model`, `axiom-by-design`, `vacuous`) without one, and refuses any
+  anchor whose file does not exist. The anchor names the *code*, not the test: where a conformance
+  corpus exists it is already in `corpus`, and where a property test exists it is named in the note. -/
+  rust : List String := []
   /-- What would have to hold for this law to be false: a witness, a negative case, or why it cannot
   fail. `none` = owed. -/
   falsifiable : Option String := none
@@ -118,6 +133,7 @@ def laws : List Law := [
     status := .provedModel,
     declarations := [`Rchain.sortPar_idempotent, `Rchain.sortPar_comm, `Rchain.sortPar,
       `Rchain.parMerge],
+    rust := ["models/src/sorter.rs"],
     axioms := [],
     falsifiable := some "`sortPar_idempotent`/`sortPar_comm` are theorems; `spec/INVENTORY.md`'s Law 1 \
       claim of idempotence is falsified by any leaf type whose comparator is not a total order — see \
@@ -146,6 +162,7 @@ def laws : List Law := [
     status := .provedModel,
     declarations := [`Rchain.StrCong, `Rchain.strCong_equivalence, `Rchain.strCong_comm,
       `Rchain.strCong_assoc, `Rchain.strCong_ident, `Rchain.strCong_nil_left],
+    rust := ["models/src/ast.rs"],
     falsifiable := some "`reduce_not_deterministic` (`Rchain/Concurrent.lean`) exhibits two distinct \
       reductions of one term, which is what makes `≡` — rather than syntactic identity — the relation \
       reduction needs",
@@ -163,6 +180,7 @@ def laws : List Law := [
       receive's body",
     status := .provedModel,
     declarations := [`Rchain.Reduce, `Rchain.reduce_closed, `Rchain.reduce_not_deterministic],
+    rust := ["rholang/src/reduce.rs"],
     falsifiable := some "`reduce_not_deterministic` proves confluence is **false** on the flat `Par`, \
       so the law's statement is bounded by a published disproof rather than an assertion"
     },
@@ -218,6 +236,7 @@ def laws : List Law := [
     declarations := [`Rchain.mergeChanges, `Rchain.mergeChanges_assoc, `Rchain.NonConflicting,
       `Rchain.mergeChanges_comm, `Rchain.effect_commute_of_disjoint_closure,
       `Rchain.effect_reorder_diverges],
+    rust := ["rspace/src/merger/state_change.rs", "rspace/src/merger/event_log_merging_logic.rs"],
     axioms := [`Rchain.mergeChanges, `Rchain.mergeChanges_assoc, `Rchain.NonConflicting,
       `Rchain.mergeChanges_comm],
     falsifiable := some "`effect_reorder_diverges` is a proved counterexample to the weaker \
@@ -307,28 +326,34 @@ def laws : List Law := [
     note := "no Lean declaration; the Rust side is `BTreeMap<S, NonNegI64>` bonds" },
   { number := 17, clause := "a", layer := "Casper",
     statement := "Merge determinism: a rejection resolves to a unique minimum-cost candidate",
-    status := .deferred,
-    declarations := [`Rchain.numeric_channels_nonneg],
-    axioms := [`Rchain.numeric_channels_nonneg],
+    status := .open,
     falsifiable := none,
-    note := "the only Lean declaration here is the non-negativity axiom, which is clause b — merge \
-      determinism itself has no Lean statement" },
+    note := "no Lean statement, and the Rust suggests why: the merge takes the *branch set* \
+      (`casper/src/merging.rs`'s `compute_merged_state` over the conflict predicate at \
+      `rspace/src/merger/event_log_merging_logic.rs:100-158`) — it does not choose among candidates, so \
+      a claim about a unique minimum-cost candidate has nothing in the code to be stated against. What \
+      the code does have is Law 9's non-conflict condition, which is modelled there" },
   { number := 17, clause := "b", layer := "Casper",
-    statement := "Numeric channels are non-negative and cannot overflow",
-    status := .owed,
-    declarations := [`Rchain.numeric_channels_nonneg],
-    axioms := [`Rchain.numeric_channels_nonneg],
-    falsifiable := none,
-    note := "`0 ≤ b.number` on a `Nat` is `Nat.zero_le b.number`: it constrains nothing and cannot \
-      fail. The law's real content is the Rust `NonNegI64` newtype, and the Lean statement needs \
-      re-scoping to the no-overflow invariant it means — Task 2's" },
-  { number := 17, clause := "c", layer := "Casper",
-    statement := "The RNG merge is commutative",
-    status := .axiomByDesign,
-    declarations := [`Rchain.mergeRandom, `Rchain.mergeRandom_comm],
-    axioms := [`Rchain.mergeRandom, `Rchain.mergeRandom_comm],
-    falsifiable := none,
-    note := "counted under Law 19's crypto axioms too — the same declaration serves both clauses" },
+    statement := "The merge's arithmetic is the checked 64-bit one — a value that would leave `i64` is \
+      **refused, not wrapped** — and the merged RNG is a function of the *set* of branch generators",
+    status := .provedModel,
+    declarations := [`Rchain.checkedAdd, `Rchain.checkedSub, `Rchain.mergeRandoms,
+      `Rchain.checkedAdd_refuses_overflow, `Rchain.checkedSub_refuses_overflow,
+      `Rchain.merge_diff_round_trip, `Rchain.mergeRandoms_perm],
+    rust := ["rholang/src/merging.rs", "rspace/src/merger/event_log_index.rs"],
+    axioms := [],
+    falsifiable := some "the refusal is a witness rather than a remark: `checkedAdd i64Max 1 = none` \
+      and `checkedAdd i64Min (-1) = none` (`checkedAdd_refuses_overflow`), which a `checkedAdd` that \
+      wrapped would fail; `mergeRandoms_perm` is the statement that the merged RNG does not depend on \
+      the order branches arrived in, false the moment the caller's sort is removed",
+    note := "**the law that stood here was false**: `numeric_channels_nonneg` claimed numeric channels \
+      are non-negative, and they are signed `i64` with ordinary negative diffs \
+      (`rholang/src/merging.rs:161-166`, tests at `:349,370` with `diff: -5`). The non-negativity that \
+      *is* true belongs to Law 14's bonds and to `NonNegI64` (`shared/src/refined.rs:64`), which types \
+      bonds and heights, never numeric channels. **And the arithmetic is only half checked**: the merge \
+      result uses `checked_add` (`merging.rs:102`) while the diff accumulator uses a plain `i64 +=` \
+      (`rspace/src/merger/event_log_index.rs:151`, `casper/src/merging.rs:758`) — a debug panic, a \
+      release wrap. That half is a code finding, recorded as AUDIT §17 C41, not a law" },
   { number := 18, clause := "a", layer := "Storage",
     statement := "The height map is contiguous: no holes in block heights",
     status := .deferred,
@@ -346,21 +371,25 @@ def laws : List Law := [
     note := "`Perm → f = g` needs `messages` sorted and deduplicated as an invariant of `Fringe`; \
       without it the axiom is false of a `Fringe` built by hand" },
   { number := 19, layer := "Crypto",
-    statement := "Blake2b256 is canonical and collision-free; the `Blake2b512Random` merge is \
-      associative and commutative; signatures verify what they sign; Curve25519 round-trips",
+    statement := "Blake2b256 is canonical and collision-free; the `Blake2b512Random` merge is n-ary \
+      and **order-sensitive**; signatures verify what they sign; Curve25519 round-trips",
     status := .axiomByDesign,
     declarations := [`Rchain.blake2b256, `Rchain.blake2b256_collision_free, `Rchain.sign,
       `Rchain.verify, `Rchain.sign_verify_roundtrip, `Rchain.sharedSecret,
-      `Rchain.curve25519_roundtrip, `Rchain.mergeRandom, `Rchain.mergeRandom_assoc,
-      `Rchain.mergeRandom_comm],
+      `Rchain.curve25519_roundtrip, `Rchain.mergeRandom],
+    rust := ["crypto/src/hash/blake2b256_hash.rs", "crypto/src/hash/blake2b512_random.rs"],
     axioms := [`Rchain.blake2b256, `Rchain.blake2b256_collision_free, `Rchain.sign, `Rchain.verify,
       `Rchain.sign_verify_roundtrip, `Rchain.sharedSecret, `Rchain.curve25519_roundtrip,
-      `Rchain.mergeRandom, `Rchain.mergeRandom_assoc, `Rchain.mergeRandom_comm],
+      `Rchain.mergeRandom],
     falsifiable := some "the Rust side is pinned by known-answer tests rather than by these axioms: \
       `crypto/`'s `Blake2b512Random`/`Secp256k1`/`Curve25519` vectors are what would catch a wrong \
       primitive, so the axioms are a *boundary* of the model, not a claim the model establishes",
-    note := "the only `axiomByDesign` law: postulating a cryptographic primitive is the correct \
-      treatment, and these are the axioms that should survive the discharge work" },
+    note := "the only `axiomByDesign` law, and where a **false axiom** was found: `mergeRandom_comm` \
+      claimed the RNG merge commutes and the code's own test refutes it \
+      (`crypto/src/hash/blake2b512_random.rs:548`, `merge_is_order_sensitive`). The merge is modelled \
+      n-ary (`List Random → Random`) because that is its Rust signature, and *no* algebraic law of it \
+      is claimed — the code has none to claim, so `mergeRandom_assoc` went with the commutativity. Law \
+      17's RNG clause duplicated this one and is merged into it" },
 
   -- ── Scheduler: the effect scheduler (Laws 20–25) ─────────────────────────────────────────────────
   { number := 20, layer := "Scheduler",
@@ -379,6 +408,7 @@ def laws : List Law := [
       next-step pruning is unsound",
     status := .provedModel,
     declarations := [`Rchain.gate_exec_refines_apply, `Rchain.one_hop_depth2_diverges],
+    rust := ["rholang/src/reduce.rs", "rholang/src/scheduler.rs"],
     falsifiable := some "`one_hop_depth2_diverges` is a proved depth-2 counterexample to the pruning \
       rule the law forbids — this is the catalog's model of what a falsifiable law looks like: the law \
       and the disproof of its tempting weakening are published together",
@@ -389,6 +419,7 @@ def laws : List Law := [
       computability does not make cross-channel pruning sound",
     status := .provedModel,
     declarations := [`Rchain.next_step_closure_computable, `Rchain.depth2_next_step_disjoint],
+    rust := ["rholang/src/reduce.rs"],
     falsifiable := some "`depth2_next_step_disjoint` bounds the law: the closure is computable yet \
       cross-channel pruning by it is still unsound, and that is proved rather than asserted",
     note := "`next_step_closure_computable` itself is `rfl` — it restates the definition's unfolding, \
@@ -398,6 +429,7 @@ def laws : List Law := [
       deterministic function of the state it reads",
     status := .provedModel,
     declarations := [`Rchain.read_state_determines_outcome],
+    rust := ["rspace/src/space_matcher.rs", "rspace/src/rspace.rs"],
     falsifiable := some "stated as an implication from two states agreeing on the effect's closure, so \
       it is falsifiable by a state pair that agrees on the closure yet yields different traces — the \
       depth-2 stale read of Law 24 is exactly the shape that would produce one",
@@ -412,6 +444,7 @@ def laws : List Law := [
       `Rchain.s3_pair_fails_validation, `Rchain.serializable_writer_chain,
       `Rchain.dfs_serializable_implies_log_equal,
       `Rchain.certificate_blind_late_writer_diverges],
+    rust := ["rspace/src/concurrent/channel_queue.rs", "casper/src/runtime_manager.rs"],
     falsifiable := some "the certificate's blind spot is *published* as a theorem \
       (`certificate_blind_late_writer_diverges`): a late-writer run passes the certificate and still \
       diverges, which is why the oracle backstop stays load-bearing",
@@ -492,6 +525,7 @@ def laws : List Law := [
     status := .provedTied,
     declarations := [`Rchain.lexemes, `Rchain.lexemes_decide, `Rchain.longestMatchIn],
     corpus := some "lex",
+    rust := ["rholang/src/parser.rs", "node/tests/lean_lex_corpus.rs"],
     falsifiable := some "the `decide`d `lexemes_decide` fails if two spellings collide or if a row's \
       spelling is not its own longest match — a table where `<` shadowed `<=` breaks the `<=` row; the \
       Rust consumer (`node/tests/lean_lex_corpus.rs`) runs each sample through the real lexer, so a \
@@ -524,6 +558,7 @@ def laws : List Law := [
     status := .provedTied,
     declarations := [`Rchain.connectiveUsed, `Rchain.Var.isConnective, `Rchain.cmpOptionVar],
     corpus := some "flags",
+    rust := ["rholang/src/normalizer.rs", "rholang/tests/lean_normalize_corpus.rs"],
     falsifiable := some "`flagCases_decide` (`Rchain/Corpus.lean`, 17 cases) is `decide`d, so a model \
       whose flag disagreed with its own case would not compile; \
       `rholang/tests/lean_normalize_corpus.rs` then reads each pattern's verdict out of the real node. \
@@ -567,6 +602,7 @@ def laws : List Law := [
     status := .provedTied,
     declarations := [`Rchain.replyCatalog, `Rchain.replyCatalog_decide],
     corpus := some "protocol",
+    rust := ["rholang/src/system_processes.rs", "spec/API-SCHEMA.md"],
     falsifiable := some "`replyCatalog_decide` requires namespaced unique urns, the reply kind \
       agreeing with its slots, and the declared arity agreeing with the arguments as written; the gate \
       additionally requires a `spec/API-SCHEMA.md` row per catalog urn, so a urn without a documented \
@@ -577,6 +613,7 @@ def laws : List Law := [
     statement := "Every call in the protocol catalog has an accepting receive at the target's arity",
     status := .provedTied,
     declarations := [`Rchain.stepsInBinds, `Rchain.receiveParPs],
+    rust := ["rholang/src/system_processes.rs"],
     corpus := some "silence",
     falsifiable := some "case 10 is `write!(key, value)` against a three-argument `write` — a call at \
       the wrong arity has no step *by the rule*, so the corpus's arity-varying cases are the negative \
@@ -587,6 +624,7 @@ def laws : List Law := [
     status := .provedTied,
     declarations := [`Rchain.replicatedRead, `Rchain.readStore, `Rchain.storeSurvives],
     corpus := some "store",
+    rust := ["rspace/src/rspace.rs", "casper/tests/genesis_registry.rs"],
     falsifiable := some "`storeCases_decide` (5 cases) plus \
       `casper/tests/genesis_registry.rs`'s `a_read_does_not_destroy_the_inbox` on a real chain: a read \
       that consumed its datum would fail both, and C25 (`Group`'s `new` reading a dictionary nobody \
@@ -611,6 +649,7 @@ def laws : List Law := [
     status := .provedTied,
     declarations := [`Rchain.envelopeCatalog, `Rchain.envelopeCatalog_decide],
     corpus := some "envelope",
+    rust := ["node/src/api/grpc/tonic.rs", "node/src/api/dto.rs"],
     falsifiable := some "`envelopeCatalog_decide`: no key contains an underscore (C16's rule), keys \
       distinct, union tags capitalized, names unique; `node/tests/lean_envelope_corpus.rs` holds *both* \
       parties to the catalog — the DTOs' serialization and the served `OPENAPI_JSON` document — so a \

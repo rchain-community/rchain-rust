@@ -8,6 +8,7 @@ import Rchain.Ty
 import Rchain.Subst
 import Rchain.Reduce
 import Rchain.Match
+import Rchain.Merging
 import Rchain.Silence
 import Rchain.Store
 import Rchain.Protocol
