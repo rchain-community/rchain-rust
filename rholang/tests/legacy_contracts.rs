@@ -197,18 +197,12 @@ const SKIPS: &[(&str, SkipReason)] = &[
     ("legacy/rholang/examples/performance/loop_recursive.rho", SkipReason::ExceedsTestBudget),
     ("legacy/rholang/examples/shortslow.rho", SkipReason::ExceedsTestBudget),
     ("legacy/rspace-bench/src/test/resources/rholang/wide-setup.rho", SkipReason::ExceedsTestBudget),
-    // --- found by the grammar, not by taste (AUDIT C31, C30) ---
-    //
-    // These five were *accepted* before the parser was held to `rholang_mercury.cf`, which is why
-    // they reached this list only now. The first three are Scala test fixtures that end a list with
-    // a comma (`[a, b, c,]`); the grammar's `[X] ::= X | X "," [X]` derives no such list, so the
-    // port now refuses them — the same classification the `SupersededSyntax` bucket already makes.
-    // (The comma form of a *remainder*, `[a, ...rest]`, is a different matter: it is equally
-    // underivable and the vendored contracts use it, so it is a recorded deviation the parser
-    // accepts, not a rejection — see `spec/AUDIT.md` C31.)
-    ("legacy/casper/src/test/resources/ListOpsTest.rho", SkipReason::SupersededSyntax),
-    ("legacy/casper/src/test/resources/NonNegativeNumberTest.rho", SkipReason::SupersededSyntax),
-    ("legacy/casper/src/test/resources/RegistryOpsTest.rho", SkipReason::SupersededSyntax),
+    // (Three Scala test fixtures that end a list with a comma — `ListOpsTest`, `NonNegativeNumberTest`,
+    // `RegistryOpsTest` — were briefly on this list when the parser refused a trailing separator. They
+    // came *off* it when that refusal turned out to be the compatibility bug: these fixtures ran in the
+    // Scala suite, which is the evidence that the reference node accepts the spelling, and the nodes
+    // they exercise are the ones this corpus is for. The acceptance is a recorded deviation, stated by
+    // `parser.rs`'s `a_trailing_separator_is_accepted_as_a_deviation`; see AUDIT C31.)
     // The last two are *negative examples*, and their own comments say so: "This shows that the
     // program cannot be a pair of logically connected processes. A successful run will return in
     // StdOut 'Error: Program of the form Process1 /\ Process2.'" A top-level connective in process

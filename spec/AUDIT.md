@@ -1723,7 +1723,23 @@ removing the fix and confirming the test fails.
   their comments say their program "cannot be a pair of logically connected processes" and that a
   successful run prints an error, and the corpus had been counting them as programs that reduce. They
   are now rows of the corpus's skip list, in the "meant to fail" bucket.
-- **C31 — a trailing separator was accepted at every list site.** The grammar's lists are
+- **C31 — a trailing separator was accepted at every list site** — and then refused, and then
+  accepted again on evidence, which is the part worth reading. The port accepted `[1,]`, `Set(1,)`,
+  `{a: 1,}`, `c!(1,)`, `contract c(@x,) = …`, `(1, 2,)`, `a.b(1,)` and `for (x <- c;) { … }` at
+  eleven loops, and the grammar's `[X] ::= X | X "," [X]` derives none of them, so the checks were
+  added. **They broke real code**: `rchain-community/rgov`'s `rholang/core/CrowdFund.rho` ends each
+  parameter of its `contract CrowdFund(…)` head with a comma before a comment, and nine of the Scala's
+  own test fixtures (`legacy/casper/src/test/resources/*Test.rho`) end list literals the same way —
+  files that *ran* in the Scala suite, which is the evidence that the reference node accepts the
+  spelling. A node that refuses the contracts it exists to run has the wrong language, so the
+  acceptance is back **as a registered deviation**: stated by
+  `a_trailing_separator_is_accepted_as_a_deviation`, named in law 31's deviation list, and recorded
+  here. What the pass bought is not the refusal but its *opposite*: the acceptance is no longer
+  silent, and the three fixtures are back in the legacy corpus because they parse.
+
+  The original entry follows, because the reasoning in it is still right and the conclusion is not.
+
+  **The finding.** The grammar's lists are
   `[X] ::= X | X "," [X]`, so `[1,]`, `Set(1,)`, `{a: 1,}`, `c!(1,)`, `contract c(@x,) = …`,
   `(1, 2,)`, `a.b(1,)` and `for (x <- c;) { … }` have no derivation, and the port accepted all of
   them — a separator with nothing after it, in eleven loops. **Fixed** at each site, by a shared check
@@ -1859,6 +1875,32 @@ port against the **reference document** rather than against itself.
   smaller job (a structural induction reconstructing the redex the search found, with the head-peeling
   congruence chain). Recorded here rather than discovered later by someone proving a falsehood.
 
+- **C41 — the numeric-channel diff accumulator can overflow, and the merge beside it cannot.** Found by
+  the consolidation pass that re-modelled law 17: it read the *arithmetic* instead of the law, and the
+  two halves disagree at the boundary. `calculate_number_channel_merge` adds with `checked_add`
+  (`rholang/src/merging.rs:102`) and `calculate_num_channel_diff` subtracts with `checked_sub`
+  (`:309`), each returning an error rather than wrapping, so a value that would leave `i64` is refused.
+  The *accumulator* that sums branch diffs does not use them:
+
+      rspace/src/merger/event_log_index.rs:151    *number_channels.entry(*k).or_insert(0) += *v;
+      casper/src/merging.rs:758                   *mergeable_diffs.entry(*k).or_insert(0) += v;
+
+  a plain `i64 +=`, so a debug build panics and a release build wraps. Two branches carrying large diffs
+  for the same channel reach it, and each diff is itself an unbounded-to-`i64::MAX` `end - prev`, so the
+  input is constructible in principle rather than merely theoretical.
+
+  **The law the catalogue carried here was worse than unhelpful, it pointed away from this.**
+  `numeric_channels_nonneg` claimed numeric channels are non-negative; they are signed `i64` with
+  ordinary negative diffs (`merging.rs:161-166`), so no instance of that law would ever have looked at
+  an addition. The corrected law (`Merging.lean`) states the checked half with witnesses
+  (`checkedAdd_refuses_overflow`) and names the unchecked half as this finding — the test of a
+  consolidation pass is whether the *replacement* law can see the defect the old one could not.
+
+  **Not fixed here.** The fix is a `checked_add` at both accumulation sites plus an error path, which
+  changes behaviour on the merge path and belongs with whoever owns merge semantics — the same reason
+  C27 was recorded before it was fixed. What was owed was to stop the catalogue claiming the arithmetic
+  was safe.
+
 ## 20. The back-sweep: every incident to its law and its case
 
 The programme began with ten defects of one class — "nothing errors" — found on a running node,
@@ -1887,7 +1929,7 @@ finding that no law covers, and it says why rather than leaving the gap to infer
 | C28 the model's ground scalars were missing two leaves | 42 | `Rchain/Syntax.lean`'s `uri`/`bytes` + `json.tsv` |
 | C29 the served OpenAPI document was stale | 43 | `envelope.tsv` held to the DTOs **and** the served document by `lean_envelope_corpus.rs`; the three missing paths added |
 | C30 trailing input accepted | 30, 31 | `parser.rs`'s `trailing_input_is_not_a_term`; the two `Logical-*-in-program.rho` fixtures are the corpus's own evidence and are now skip-list rows |
-| C31 trailing separators accepted | 31 | `parser.rs`'s `a_trailing_separator_has_no_derivation` (nine spellings), with `(1,)` and the comma-remainder deviation kept as controls |
+| C31 trailing separators | 31 | `parser.rs`'s `a_trailing_separator_is_accepted_as_a_deviation` — the acceptance is the *registered* answer, on the evidence of rgov's `CrowdFund.rho` and nine Scala test fixtures, and the three fixtures are back in the legacy corpus |
 | C32 `in` optional in `new`/`let` | 31 | `parser.rs`'s `in_is_required_by_new_and_let` |
 | C33 a method call without its argument list | 30 | `parser.rs`'s `a_method_call_needs_its_argument_list` |
 | C34 `GroundBigInt` unreachable | 31 | `parser.rs`'s `bigint_is_a_ground_and_bigint_alone_is_a_type` |
@@ -1897,6 +1939,7 @@ finding that no law covers, and it says why rather than leaving the gap to infer
 | C38 every rho value wrapped wrongly | 42 | `rho_expr.rs`'s `the_wire_shape_is_the_reference_documents` (one literal per arm), `json.tsv`/`lex.tsv` re-emitted, the served document's `RhoExpr` schema, and `node/tests/node_api.rs` over HTTP |
 | C39 the reply was read from one channel | 39, 43 | `casper/tests/exploratory_reply.rs` (three outcomes) + `replySource` in `envelope.tsv` and the served document |
 | C40 law 38's tie was false, and the relation lacked its arity clause | 38, 40 | `allStringChans` scoping the statement, `commPs` as the rule's arity clause |
+| C41 the diff accumulator can overflow where the merge refuses | 17 | `Merging.lean`'s `checkedAdd_refuses_overflow`/`mergeRandoms_perm` state the checked half and the call-site canonicalization; the two plain-`+=` sites (`event_log_index.rs:151`, `casper/src/merging.rs:758`) are the finding |
 
 **The two rows that are not laws are the two worth keeping visible.** C37 is a *harness* finding —
 a measurement that was not a measurement — and no law would have caught it, because the thing that

@@ -65,7 +65,6 @@ something other than what it looked like. Check these against the terms you stor
 
 | Refused, with the reason | |
 |---|---|
-| `[1, 2,]`, `c!(1,)`, `{a: 1,}`, `Set(1,)`, `(1, 2,)`, `contract c(@x,) = { Nil }`, `new x,) in { Nil }` | a **trailing separator**: the grammar's list is `[X] ::= X \| X "," [X]`, so nothing may follow the comma |
 | `new x Nil`, `let x <- 1 { Nil }` | **`in` omitted**: `PNew`/`PLet` require it |
 | `x.m` — a method call with no argument list | `PMethod ::= Proc11 "." Var "(" [Proc] ")"` requires the parentheses |
 | `Nil )`, `c!(1) garbage` | **trailing input**: the whole token stream must be the term, not a term followed by anything |
@@ -79,12 +78,20 @@ silently:
 | `x!?(1); P` — a synchronous send, with its continuation | the bare variable `x`, discarding `!?(1); P` |
 | `BigInt(42)` — the bigint ground the grammar names | the *type* `BigInt` with `(42)` discarded |
 
-**One deliberate exception, kept because the contracts here use it:** the *comma* form of a collection
-remainder — `[head, ...tail]`, `{"a": 1, ...rest}` — is **accepted**, though the grammar separates a
-remainder from the list by no terminal at all. The shipped genesis sources spell it both ways
-(`ListOps.rho:38` `[head ...tail]`, `MemberDirectory.rho:124` `[themRevAddr, ...rest]`), so refusing it
-would stop them loading; the acceptance is a registered deviation
-([`spec/API-SCHEMA.md`](../../../spec/API-SCHEMA.md), and law 31's deviation list).
+**Two deliberate exceptions, kept because the contracts use them.** Both are spellings the grammar
+does not derive, and both are **accepted** — as registered deviations, not silently:
+
+- **A trailing separator**: `[1, 2,]`, `c!(1,)`, `{a: 1,}`, `Set(1,)`, `(1, 2,)`, `contract c(@x,) = { Nil }`,
+  `new x, in { Nil }`. This was briefly *refused* here, and that refusal was a bug: `rchain-community/rgov`'s
+  `rholang/core/CrowdFund.rho` ends each parameter of its `contract CrowdFund(…)` head with a comma
+  before a comment, and nine of the Scala's own test fixtures do the same in list literals — files that
+  *ran* in the Scala suite, which is the proof the old node accepts it.
+- **The comma form of a remainder**: `[head, ...tail]`, `{"a": 1, ...rest}`. The shipped genesis
+  sources spell it both ways (`ListOps.rho:38` `[head ...tail]`, `MemberDirectory.rho:124`
+  `[themRevAddr, ...rest]`), so refusing it would stop them loading.
+
+Both are rows in law 31's deviation list, and each is stated by a test that would fail if the
+acceptance were removed.
 
 If a term of yours is refused now, the fix is on the term: the grammar is the contract, and the
 deploy's failure names the position.

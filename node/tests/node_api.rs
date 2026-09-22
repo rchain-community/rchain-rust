@@ -163,7 +163,10 @@ fn genesis_boot_exposes_block_over_http() {
             .await
             .expect("POST /api/v1/explore-deploy (first private name)");
         assert_eq!(named.status(), 200);
-        let body: Value = named.json().await.expect("explore json (first private name)");
+        let body: Value = named
+            .json()
+            .await
+            .expect("explore json (first private name)");
         assert_eq!(body["replySource"], "firstPrivateName", "{body}");
 
         // This node is not a gateway (one shard), so the cross-shard transaction routes are not

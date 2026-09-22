@@ -348,52 +348,6 @@ impl Parser {
             )))
         }
     }
-
-    /// After consuming a list separator, the next token must begin another element — or a remainder.
-    /// The grammar's lists are `[X] ::= X | X "," [X]`, so a separator followed by the closing token
-    /// has **no derivation**: `[1,]`, `Set(1,)`, `{a: 1,}`, `c!(1,)`, `contract c(@x,) = …`,
-    /// `(1, 2,)` and `new x, in Nil` are all outside the language, and the port used to accept every
-    /// one of them (AUDIT C31).
-    ///
-    /// An **ellipsis** after the separator *is* allowed, and that is a deliberate, evidenced choice
-    /// rather than slack: the grammar separates a remainder from the list by no terminal at all
-    /// (`CollectList ::= "[" [Proc] ProcRemainder "]"`), so the comma form is not derivable — but the
-    /// vendored contracts spell it both ways and both must run (`Issue.rho:110`'s
-    /// `{name: *voter, ...tail}`), so the comma form is an *extension* recorded as a deviation row on
-    /// law 31's data list, not a rejection. A separator followed by the closer means nothing at all,
-    /// which is the part that was silent.
-    fn expect_element_after_separator(&self, close: &Tok, what: &str) -> Result<(), RholangError> {
-        if self.peek() == &Tok::Ellipsis {
-            return Ok(());
-        }
-        if self.peek() == close || self.peek() == &Tok::Eof {
-            return Err(RholangError::SyntaxError(format!(
-                "trailing separator in {what} (pos={})",
-                self.pos
-            )));
-        }
-        Ok(())
-    }
-
-    /// The same rule where a list has more than one legitimate terminator: a bind's names are
-    /// followed by `<-`, `<<-` or `<=` (`rholang_mercury.cf:127,137,143`), and a `let` declaration's
-    /// are followed by `;`, `&` or `in` (`:84,87`). Those are `stops`, not a single `close` token.
-    fn expect_element_after_separator_where(
-        &self,
-        stops: fn(&Tok) -> bool,
-        what: &str,
-    ) -> Result<(), RholangError> {
-        if self.peek() == &Tok::Ellipsis {
-            return Ok(());
-        }
-        if stops(self.peek()) || self.peek() == &Tok::Eof {
-            return Err(RholangError::SyntaxError(format!(
-                "trailing separator in {what} (pos={})",
-                self.pos
-            )));
-        }
-        Ok(())
-    }
 }
 
 /// Parse a source string into a `Proc` (port of `Compiler.sourceToAST`).
@@ -450,10 +404,6 @@ impl Parser {
                     decls.push(p.parse_name_decl()?);
                     if p.peek() == &Tok::Comma {
                         p.next();
-                        p.expect_element_after_separator(
-                            &Tok::Ident("in".to_string()),
-                            "a `new` declaration list",
-                        )?;
                     } else {
                         break;
                     }
@@ -479,10 +429,6 @@ impl Parser {
                 names.push(self.parse_name()?);
                 if self.peek() == &Tok::Comma {
                     self.next();
-                    self.expect_element_after_separator(
-                        &Tok::RParen,
-                        "a `contract` parameter list",
-                    )?;
                 } else {
                     break;
                 }
@@ -506,7 +452,6 @@ impl Parser {
                 receipts.push(self.parse_receipt()?);
                 if self.peek() == &Tok::Semicolon {
                     self.next();
-                    self.expect_element_after_separator(&Tok::RParen, "a `for` bind list")?;
                 } else {
                     break;
                 }
@@ -579,7 +524,6 @@ impl Parser {
                     data.push(self.parse_proc()?);
                     if self.peek() == &Tok::Comma {
                         self.next();
-                        self.expect_element_after_separator(&Tok::RParen, "a send's arguments")?;
                     } else {
                         break;
                     }
@@ -602,10 +546,6 @@ impl Parser {
                     data.push(self.parse_proc()?);
                     if self.peek() == &Tok::Comma {
                         self.next();
-                        self.expect_element_after_separator(
-                            &Tok::RParen,
-                            "a synchronous send's arguments",
-                        )?;
                     } else {
                         break;
                     }
@@ -827,10 +767,6 @@ impl Parser {
                         args.push(self.parse_proc()?);
                         if self.peek() == &Tok::Comma {
                             self.next();
-                            self.expect_element_after_separator(
-                                &Tok::RParen,
-                                "a method call's arguments",
-                            )?;
                         } else {
                             break;
                         }
@@ -975,7 +911,6 @@ impl Parser {
                 args.push(self.parse_proc()?);
                 if self.peek() == &Tok::Comma {
                     self.next();
-                    self.expect_element_after_separator(&Tok::RParen, "a method call's arguments")?;
                 } else {
                     break;
                 }
@@ -1018,10 +953,12 @@ impl Parser {
             kvs.push(KeyValuePair(key, value));
             if self.peek() == &Tok::Comma {
                 self.next();
-                if self.peek() == &Tok::Ellipsis {
+                // A trailing separator closes the map (`{a: 1,}`) — accepted, see
+                // `a_trailing_separator_is_accepted_as_a_deviation` — and a remainder is not a key,
+                // so stop before `parse_proc` meets the ellipsis.
+                if self.peek() == &Tok::RBrace || self.peek() == &Tok::Ellipsis {
                     break;
                 }
-                self.expect_element_after_separator(&Tok::RBrace, "a map")?;
                 key = self.parse_proc()?;
             } else {
                 break;
@@ -1171,7 +1108,6 @@ impl Parser {
                         if self.peek() == &Tok::Ellipsis {
                             break;
                         }
-                        self.expect_element_after_separator(&Tok::RBracket, "a list")?;
                     } else {
                         break;
                     }
@@ -1200,10 +1136,6 @@ impl Parser {
                                 // has no remainder, so `(1, 2,)` has no derivation. `(1,)` **does**:
                                 // it is `TupleSingle ::= "(" Proc ",)"` and is handled above, which
                                 // is why this check is here and not on the first comma.
-                                self.expect_element_after_separator(
-                                    &Tok::RParen,
-                                    "a tuple's elements",
-                                )?;
                             } else {
                                 break;
                             }
@@ -1247,7 +1179,6 @@ impl Parser {
                         if self.peek() == &Tok::Ellipsis {
                             break;
                         }
-                        self.expect_element_after_separator(&Tok::RBrace, "a map")?;
                     } else {
                         break;
                     }
@@ -1270,7 +1201,6 @@ impl Parser {
                         if self.peek() == &Tok::Ellipsis {
                             break;
                         }
-                        self.expect_element_after_separator(&Tok::RParen, "a set")?;
                     } else {
                         break;
                     }
@@ -1400,10 +1330,6 @@ impl Parser {
             names.push(self.parse_name()?);
             if self.peek() == &Tok::Comma {
                 self.next();
-                self.expect_element_after_separator_where(
-                    |t| matches!(t, Tok::LArrow | Tok::LLArrow | Tok::Lte),
-                    "a bind's names",
-                )?;
             } else {
                 break;
             }
@@ -1427,7 +1353,6 @@ impl Parser {
                 procs.push(self.parse_proc()?);
                 if self.peek() == &Tok::Comma {
                     self.next();
-                    self.expect_element_after_separator(&Tok::RParen, "a send/receive source")?;
                 } else {
                     break;
                 }
@@ -1467,10 +1392,6 @@ impl Parser {
             names.push(self.parse_name()?);
             if self.peek() == &Tok::Comma {
                 self.next();
-                self.expect_element_after_separator_where(
-                    |t| matches!(t, Tok::LArrow),
-                    "a declaration's names",
-                )?;
             } else {
                 break;
             }
@@ -1490,10 +1411,6 @@ impl Parser {
             procs.push(self.parse_proc()?);
             if self.peek() == &Tok::Comma {
                 self.next();
-                self.expect_element_after_separator_where(
-                    |t| matches!(t, Tok::Semicolon | Tok::Amp | Tok::Ident(_)),
-                    "a declaration's values",
-                )?;
             } else {
                 break;
             }
@@ -1509,10 +1426,6 @@ impl Parser {
                 decls.push(LinearDecl(self.parse_decl()?));
                 if self.peek() == &Tok::Semicolon {
                     self.next();
-                    self.expect_element_after_separator(
-                        &Tok::Ident("in".to_string()),
-                        "a `let` declaration list",
-                    )?;
                 } else {
                     break;
                 }
@@ -1525,10 +1438,6 @@ impl Parser {
                 decls.push(ConcDecl(self.parse_decl()?));
                 if self.peek() == &Tok::Amp {
                     self.next();
-                    self.expect_element_after_separator(
-                        &Tok::Ident("in".to_string()),
-                        "a `let` declaration list",
-                    )?;
                 } else {
                     break;
                 }
@@ -1570,35 +1479,42 @@ mod tests {
         }
     }
 
-    /// **AUDIT C31.** The grammar's lists are `[X] ::= X | X "," [X]`, so a separator with nothing
-    /// after it has no derivation. The port accepted every one of these. `(1,)` is *not* in the
-    /// list: `TupleSingle ::= "(" Proc ",)"` is the production for it.
+    /// **A trailing separator is accepted, as a registered deviation from the grammar.** The grammar's
+    /// lists are `[X] ::= X | X "," [X]`, so `[1, 2,]` has no derivation and the port refused it — until
+    /// this was checked against the code that was written for the *Scala* node. That code uses the
+    /// spelling: `rchain-community/rgov`'s `rholang/core/CrowdFund.rho` ends each parameter of its
+    /// `contract CrowdFund(…)` head with a comma before a comment, and nine of the Scala's own test
+    /// fixtures (`legacy/casper/src/test/resources/{ListOps,NonNegativeNumber,Mint,RegistryOps,…}Test.rho`)
+    /// end list literals the same way — files that *ran* in the Scala suite, which is the evidence that
+    /// the reference node accepted them. A node that refuses them cannot run the contracts it exists to
+    /// run, so the acceptance is deliberate and this test is what states it. (The comma form of a
+    /// *remainder*, `[head, ...tail]`, is the same class of deviation and is accepted for the same reason.)
+    ///
+    /// What is **not** relaxed: every other check from that pass stands — trailing *input* is refused, an
+    /// omitted `in` is refused, a paren-less method call is refused (`a_method_call_needs_its_argument_list`).
     #[test]
-    fn a_trailing_separator_has_no_derivation() {
+    fn a_trailing_separator_is_accepted_as_a_deviation() {
         for src in [
             "[1,]",
             "Set(1,)",
             "{a: 1,}",
             "c!(1,)",
             "contract c(@x,) = { Nil }",
-            "new x,) in { Nil }",
+            "new x, in { Nil }",
             "(1, 2,)",
             "a.b(1,)",
             "for (x <- @\"c\";) { Nil }",
+            // the shape that made this a compatibility bug, comment and all:
+            "contract c(@x, // a comment\n @y,) = { Nil }",
         ] {
-            assert!(parse(src).is_err(), "{src:?} ends a list with a separator");
+            assert!(
+                parse(src).is_ok(),
+                "{src:?} is what the contracts written for the Scala node look like"
+            );
         }
+        // The controls, unchanged: the derivable forms and the single-element tuple.
         for src in [
-            "[1]",
-            "[1, 2]",
-            "(1,)",
-            "Set(1)",
-            "{a: 1}",
-            "c!(1)",
-            "a.b(1)",
-            "a.b()",
-            "for (x <- @\"c\") { Nil }",
-            "for (x <- @\"c\"; y <- @\"d\") { Nil }",
+            "[1]", "[1, 2]", "(1,)", "Set(1)", "{a: 1}", "c!(1)", "a.b(1)", "a.b()",
         ] {
             assert!(parse(src).is_ok(), "{src:?} is derivable");
         }
