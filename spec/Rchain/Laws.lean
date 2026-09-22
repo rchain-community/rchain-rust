@@ -691,7 +691,7 @@ def laws : List Law := [
       (which is why the Rust's own test compares sorted multisets rather than lists, \
       `state_change.rs:224-238`), and a contested **join** is won by whichever side the fold reaches last \
       (`state_change.rs:186-189`, pinned by `:502-544` and stated as `join_last_wins`; the fold is \
-      `casper/src/merging.rs:804-808`). `nonConflicting_not_necessary` proves the relation is sufficient \
+      `casper/src/merging.rs:832-836`). `nonConflicting_not_necessary` proves the relation is sufficient \
       and not necessary, and `effect_reorder_diverges` remains the disproof of the weaker footprint \
       reading",
     note := "**all four axioms are gone.** `mergeChanges` and `NonConflicting` were axioms over \
@@ -713,7 +713,7 @@ def laws : List Law := [
       commutation, and it is named for that. (2) The Rust test named `combine_is_associative` \
       (`state_change.rs:203-238`) did **not** test associativity — its own comment said the law it pinned \
       was empty-is-identity — so the associativity the merge fold relies on \
-      (`casper/src/merging.rs:804-808`) was **untested on the Rust side** (AUDIT C43). It is fixed: the \
+      (`casper/src/merging.rs:832-836`) was **untested on the Rust side** (AUDIT C43). It is fixed: the \
       misnamed test is renamed to what it asserts, and \
       `property_tests.rs`'s `law9_state_change_combine_is_associative` is the test — over arbitrary state \
       changes including the join map, and falsified before it was believed (a left-side-dropping \
@@ -1342,7 +1342,7 @@ def laws : List Law := [
       bonds and heights, never numeric channels. **And the arithmetic is only half checked**: the merge \
       result uses `checked_add` (`rholang/src/merging.rs:102`) while the diff accumulator *was* a plain \
       `i64 +=` (`EventLogIndex::combine`, `rspace/src/merger/event_log_index.rs:156`, and the merge's \
-      own fold at `casper/src/merging.rs:789` — both `checked_add` now) — a debug panic, a \
+      own fold at `casper/src/merging.rs:891` — both `checked_add` now) — a debug panic, a \
       release wrap. That half was a code finding (AUDIT §17 C41) and is **fixed**: the accumulation is
       checked now and its error reaches the merge, with `combining_refuses_a_diff_that_leaves_i64`
       (`rspace/src/merger/event_log_index.rs`) failing on a `wrapping_add`" },
