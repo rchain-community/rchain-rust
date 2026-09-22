@@ -22,6 +22,12 @@
 #   5. **Tier table modules exist** — every path in the per-module tier table must be a real file.
 #   6. **Tier table rows are pinned** — a row's named test must exist in the named file, and no row may
 #      be left with a `—` test cell (that is a registered open item).
+#   8. **Law rows are answerable** — a row of `spec/INVENTORY.md` that claims coverage (its status
+#      cell says "checked") must name a Lean module that exists, a corpus that exists and a consumer
+#      that exists; a row that does not claim coverage must say so in one of the closed vocabulary
+#      words (`open`, `boundary`, `orphaned`, `axiomatic`, `deviation`). This is check 2's rule
+#      applied to the law catalogue, and it is the check that would have caught C30-C40's gaps: each
+#      was a row whose status read better than its evidence.
 #   7. **Every source file is tested or exempt** — each `<crate>/src/**/*.rs` either contains a test
 #      attribute or is a row of the `## Exempt modules` table with a valid reason class. A file that
 #      gains a test while still holding a row fails, so the table burns down instead of rotting into an
@@ -300,6 +306,59 @@ else
   elif (( bad == 0 )); then
     ok "$rows exemption row(s) verified; every source file is tested or exempt"
   fi
+fi
+
+# --- 8. law rows are answerable ---------------------------------------------
+#
+# Check 2 already refuses a *claim* test that does not exist. This is the same rule for the law
+# catalogue: a row of `spec/INVENTORY.md` that claims coverage (its status cell says "checked") must
+# name a Lean module that exists under `spec/Rchain/`, a corpus that exists under
+# `spec/conformance/`, and a Rust file that exists — the three things a reader needs to check the row
+# themselves. A row that does *not* claim coverage must say so in one of the closed vocabulary words,
+# so a new row cannot be added without either evidence or an explicit "open"/"boundary"/"orphaned"/
+# "axiomatic" token. That is the check that would have caught every one of C30-C40's gaps: each was a
+# row whose status read better than its evidence.
+printf '\n== law rows (INVENTORY: every claim backed by a file) ==\n'
+law_rows=0 law_bad=0
+while IFS= read -r row; do
+  # Only the rows 30-43 carry the corpus/consumer convention; 1-29 predate it and name Scala
+  # oracles and Lean theorems instead, so they are checked by row 6's register, not here.
+  num="$(printf '%s' "$row" | sed -E 's/^\| *([0-9]+) .*/\1/')"
+  [[ "$num" =~ ^[0-9]+$ ]] && (( num >= 30 )) || continue
+  law_rows=$((law_rows + 1))
+  # `| 32 | Rholang | … | <Lean> | <corpus + consumer> | <status> |` — the leading `|` makes field 1
+  # empty, so the cells are 5, 6 and 7. (Getting this wrong is not a small mistake: with `lean`=$4 the
+  # check read the *law* cell, found no file, and reported "ok" for every row — the vacuous-claim
+  # failure it exists to refuse, found by falsifying it.)
+  status="$(printf '%s' "$row" | awk -F'|' '{print $7}')"
+  lean="$(printf '%s' "$row" | awk -F'|' '{print $5}')"
+  corpus="$(printf '%s' "$row" | awk -F'|' '{print $6}')"
+  if printf '%s' "$status" | grep -qiE '\*\*checked\*\*|checked'; then
+    # A checked row must name something this check can *verify*. Without these two counts the check
+    # is vacuous for a row whose text does not match the patterns below — it would report "ok" for a
+    # row naming a file that does not exist under a different spelling, which is the class of claim
+    # this check exists to refuse.
+    found_lean="$(printf '%s' "$lean" | grep -coE 'Rchain/[A-Za-z]+\.lean' || true)"
+    found_corpus="$(printf '%s' "$corpus" | grep -coE 'spec/conformance/[a-zA-Z_]+\.tsv' || true)"
+    (( found_lean > 0 )) || { fail "INVENTORY row $num claims coverage but names no spec/Rchain/*.lean module"; law_bad=$((law_bad + 1)); }
+    (( found_corpus > 0 )) || { fail "INVENTORY row $num claims coverage but names no spec/conformance/*.tsv"; law_bad=$((law_bad + 1)); }
+    # a checked row: the Lean module, the corpus and the consumer must all exist
+    for decl in $(printf '%s' "$lean" | grep -oE 'Rchain/[A-Za-z]+\.lean' | sort -u); do
+      [[ -f "$ROOT/spec/$decl" ]] || { fail "INVENTORY row $num names $decl, which does not exist"; law_bad=$((law_bad + 1)); }
+    done
+    for f in $(printf '%s' "$corpus" | grep -oE 'spec/conformance/[a-zA-Z_]+\.tsv' | sort -u); do
+      [[ -f "$ROOT/$f" ]] || { fail "INVENTORY row $num names $f, which does not exist"; law_bad=$((law_bad + 1)); }
+    done
+    for t in $(printf '%s' "$corpus" | grep -oE '(rholang|node)/tests/[a-z_]+\.rs' | sort -u); do
+      [[ -f "$ROOT/$t" ]] || { fail "INVENTORY row $num names $t, which does not exist"; law_bad=$((law_bad + 1)); }
+    done
+  else
+    printf '%s' "$status" | grep -qiE 'open|boundary|orphaned|axiomatic|deviation' \
+      || { fail "INVENTORY row $num neither claims coverage nor says why not (status: $status)"; law_bad=$((law_bad + 1)); }
+  fi
+done < <(grep -E '^\| *[0-9]+ \|' "$ROOT/spec/INVENTORY.md")
+if (( law_bad == 0 )); then
+  ok "$law_rows law row(s) 30-43 name real files or state their status"
 fi
 
 # --- summary -----------------------------------------------------------------
