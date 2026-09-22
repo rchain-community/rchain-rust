@@ -337,19 +337,22 @@ while IFS= read -r row; do
     # A checked row must name something this check can *verify*. Without these two counts the check
     # is vacuous for a row whose text does not match the patterns below — it would report "ok" for a
     # row naming a file that does not exist under a different spelling, which is the class of claim
-    # this check exists to refuse.
+    # this check exists to refuse. The character classes admit **digits**, which every layer before
+    # `c21` happened not to need: `[a-zA-Z_]` rejected `spec/conformance/c21.tsv` and
+    # `rholang/tests/lean_c21_corpus.rs` as if the row named nothing, which is this check reporting a
+    # stale row where the row was new.
     found_lean="$(printf '%s' "$lean" | grep -coE 'Rchain/[A-Za-z]+\.lean' || true)"
-    found_corpus="$(printf '%s' "$corpus" | grep -coE 'spec/conformance/[a-zA-Z_]+\.tsv' || true)"
+    found_corpus="$(printf '%s' "$corpus" | grep -coE 'spec/conformance/[a-zA-Z0-9_]+\.tsv' || true)"
     (( found_lean > 0 )) || { fail "INVENTORY row $num claims coverage but names no spec/Rchain/*.lean module"; law_bad=$((law_bad + 1)); }
     (( found_corpus > 0 )) || { fail "INVENTORY row $num claims coverage but names no spec/conformance/*.tsv"; law_bad=$((law_bad + 1)); }
     # a checked row: the Lean module, the corpus and the consumer must all exist
     for decl in $(printf '%s' "$lean" | grep -oE 'Rchain/[A-Za-z]+\.lean' | sort -u); do
       [[ -f "$ROOT/spec/$decl" ]] || { fail "INVENTORY row $num names $decl, which does not exist"; law_bad=$((law_bad + 1)); }
     done
-    for f in $(printf '%s' "$corpus" | grep -oE 'spec/conformance/[a-zA-Z_]+\.tsv' | sort -u); do
+    for f in $(printf '%s' "$corpus" | grep -oE 'spec/conformance/[a-zA-Z0-9_]+\.tsv' | sort -u); do
       [[ -f "$ROOT/$f" ]] || { fail "INVENTORY row $num names $f, which does not exist"; law_bad=$((law_bad + 1)); }
     done
-    for t in $(printf '%s' "$corpus" | grep -oE '(rholang|node)/tests/[a-z_]+\.rs' | sort -u); do
+    for t in $(printf '%s' "$corpus" | grep -oE '(rholang|node)/tests/[a-z0-9_]+\.rs' | sort -u); do
       [[ -f "$ROOT/$t" ]] || { fail "INVENTORY row $num names $t, which does not exist"; law_bad=$((law_bad + 1)); }
     done
   else
