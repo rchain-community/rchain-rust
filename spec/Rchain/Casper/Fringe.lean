@@ -18,7 +18,7 @@ are proved in this file (`fringe_antichain_is_false`, `fringe_monotone_is_false`
 
 What each actually needs is the **derivation**, not a hypothesis on the value: the fringe the port
 finalizes comes from `calculate_finalization`, which advances only when the support gate holds and only
-to a strictly new layer (`block-storage/src/dag/finalizer.rs:196-215`), and a message's `seen` set is
+to a strictly new layer (`block-storage/src/dag/finalizer.rs:174-197`, `:202-215`), and a message's `seen` set is
 *constructed* — the union of its justifications' seen sets plus its own id
 (`block-storage/src/dag/message_state.rs:54-59`). That construction is modelled below (`seenOf`), so the
 half of Law 15 that follows from it is a theorem; the transitive closure it induces over the DAG — which
@@ -50,7 +50,7 @@ structure Fringe where
 /-- **The axiom that stood here was false.** Two messages from one sender with different ids: the claim
     "same sender ⇒ same id" is refuted by the value itself, with no hypothesis to appeal to. What the
     law needs is the derivation — a fringe advanced by `calculate_finalization` holds one message per
-    bonded sender (`finalizer.rs:196-215`) — which is owed. -/
+    bonded sender (`finalizer.rs:174-197`) — which is owed. -/
 theorem fringe_antichain_is_false :
     ¬ ∀ f : Fringe, ∀ m ∈ f.messages, ∀ n ∈ f.messages, m.sender = n.sender → m.id = n.id := by
   intro h
@@ -99,5 +99,27 @@ theorem seenOf_contains_justifications (js : List Message) (a : Message) (ha : a
 /-- A message sees itself — the other half of the port's `new_seen.insert(id)`. -/
 theorem mem_seenOf_self (js : List Message) (id : Nat) : id ∈ seenOf js id :=
   List.mem_append_right _ (by simp)
+
+/-! ## Law 14 — the fringe advance gate -/
+
+/-- **The finalizer's advance gate**: a strictly new layer is published exactly when the support gate
+    holds, and a non-advancing layer is dropped (`block-storage/src/dag/finalizer.rs:174-197` for the
+    decision, `:202-215` for the guard — the
+    `if self.calculate_fringe(...) { Some(next_layer) } else { None }` and the
+    `if nf == current { break }` progress guard). -/
+def nextFringe (prev next : Fringe) (supp : SupportMap) (bonds : Bonds) : Option Fringe :=
+  if calculateFringe supp bonds && decide (next ≠ prev) then some next else none
+
+/-- **Law 14** — the fringe advances **iff** the supporting stake is a strict supermajority of the
+    bonded stake and the layer is strictly new.
+
+    The `↔`'s shape is the gate's own `if`, so the weight is not in the equivalence but in what
+    `calculateFringe` computes (`Rchain.Casper.Stake`) — the full-partition filter, the skip for a
+    non-bonded sender, and the exact integer comparison — which the boundary theorems there pin against
+    the port's named tests. -/
+theorem finality_iff_supermajority (prev next : Fringe) (supp : SupportMap) (bonds : Bonds) :
+    nextFringe prev next supp bonds = some next ↔
+      isSuperMajority (fullPartitionStake supp bonds) (totalStake bonds) ∧ next ≠ prev := by
+  simp [nextFringe, calculateFringe]
 
 end Rchain

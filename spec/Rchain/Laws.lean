@@ -31,14 +31,16 @@ proved *about the Lean model* and a law proved *and checked against the running 
 - `axiomByDesign` — postulated because the primitive is cryptographic (Law 19). The only status that
   should survive the work this register begins.
 - `owed` — the definition exists and the proof does not. `takesStep_iff_reduces`, `decode_encode`.
-- `deferred` — the `axiom` *is* the definition (`joinKey`, `trieRoot`, `mergeChanges`, `substPar`), so
-  there is nothing yet to prove anything about.
+- `deferred` — the `axiom` *is* the definition, so there is nothing yet to prove anything about.
+  `substPar` is the remaining example; `joinKey`, `trieRoot` and `mergeChanges` left this status in the
+  consolidation pass, when the Rust's own definitions were modelled.
 - `open` — in the catalog, no formalization (laws 30, 31, 33, 34, 36).
 - `orphaned` — out of scope because the VM it describes was not ported (laws 12, 13).
 
 `falsifiable` records what would have to be true for the law to be *false* — a witness, a negative case,
 or the reason it cannot fail. A law that cannot fail constrains nothing: `numeric_channels_nonneg` was
-`0 ≤ b.number` on a `Nat` (`Nat.zero_le`), and `finality_iff_supermajority` restated its own definition.
+`0 ≤ b.number` on a `Nat` (`Nat.zero_le`), and `finality_iff_supermajority` restated its own definition
+(the pass has since deleted the first and re-scoped the second onto the finalizer's gate).
 `none` means the witness is owed, and the count of those is the measure of how much of this catalog is
 still unfalsifiable.
 -/
@@ -69,13 +71,14 @@ inductive Status where
   /-- Out of scope: the VM it describes was not ported. -/
   | orphaned
   /-- **Proved, but the statement restates its own definition and so cannot fail.** This is the status
-  the consolidation pass exists for: three statements have already been removed under it —
-  `next_step_closure_computable` (a `rfl`), `validated_speculation_refines_apply` (a disjunction whose
-  second arm held for any run), and `gate_replay_terminates` (`∃ st', f st = st'`, which is totality of a
-  Lean function) — and `finality_iff_supermajority` is still here, two `Nat.mul_comm`s away from
-  `isSuperMajority`'s own body. Calling such a row `provedModel` would be true and useless; `vacuous`
-  says the proof is real and the *law* is not yet. A `vacuous` row must carry a note naming the
-  re-scoping it needs, so the word cannot become a resting place. -/
+  the consolidation pass exists for: statements that are true and useless. Four have been removed under
+  it — `next_step_closure_computable` (a `rfl`), `validated_speculation_refines_apply` (a disjunction
+  whose second arm held for any run), `gate_replay_terminates` (`∃ st', f st = st'`, which is totality of
+  a Lean function), and `finality_iff_supermajority` (two `Nat.mul_comm`s away from `isSuperMajority`'s
+  own body, now re-scoped onto the finalizer's gate). Two remain, each with the re-scoping it needs
+  written in its note. Calling such a row `provedModel` would be true and useless; `vacuous` says the
+  proof is real and the *law* is not yet, and the note requirement is what stops the word becoming a
+  resting place. -/
   | vacuous
   deriving BEq, DecidableEq, Repr
 
@@ -359,16 +362,40 @@ def laws : List Law := [
 
   -- ── Casper / Storage / Crypto (Laws 14–19) ──────────────────────────────────────────────────────
   { number := 14, clause := "a", layer := "Casper",
-    statement := "Finality requires more than 2/3 of bonded stake, as the exact integer comparison \
-      `3·stake > 2·total` (no float rounding)",
-    status := .owed,
-    declarations := [`Rchain.isSuperMajority, `Rchain.finality_iff_supermajority],
-    axioms := [`Rchain.finality_iff_supermajority],
-    falsifiable := some "the integer form is falsifiable where the float form is not: `3·stake = \
-      2·total` is a boundary case the `>` excludes, and `isSuperMajority` is a `Prop` over `Nat`, so a \
-      boundary instance can be checked",
-    note := "as stated the axiom restates its own definition (`simp [isSuperMajority, Nat.mul_comm]` \
-      closes it) — it ties finality to nothing. Re-scoping it is Task 2's" },
+    statement := "Finality is the fringe's advance gate: the fringe advances iff the supporting stake is \
+      a strict supermajority of the bonded stake, as the exact integer comparison `3·stake > 2·total` \
+      (no float rounding)",
+    status := .provedModel,
+    declarations := [`Rchain.isSuperMajority, `Rchain.bondedSenders, `Rchain.stakeOf,
+      `Rchain.stakeOf_eq_none, `Rchain.allBonded, `Rchain.bondedSupport,
+      `Rchain.fullPartitionStake, `Rchain.totalStake, `Rchain.calculateFringe,
+      `Rchain.finality_iff_supermajority, `Rchain.two_thirds_is_not_supermajority,
+      `Rchain.above_two_thirds_is_supermajority, `Rchain.below_two_thirds_is_not_supermajority,
+      `Rchain.large_stake_just_above_two_thirds_is_exact,
+      `Rchain.i64_overflowing_stakes_do_not_wrap],
+    axioms := [],
+    rust := ["block-storage/src/dag/finalizer.rs", "sdk/src/consensus.rs"],
+    falsifiable := some "each boundary is an independent witness, and each names the port's own test: \
+      `two_thirds_is_not_supermajority` fails the moment the comparison is `≥` (`consensus.rs:24`); \
+      `large_stake_just_above_two_thirds_is_exact` is false for the `f64` form the Scala oracle uses \
+      (`stake.toDouble / totalStake > 2d / 3`, `legacy/sdk/.../consensus/Stake.scala:8`), which cannot \
+      represent `2·2⁵³+1` (`sdk/src/consensus.rs:40`); `i64_overflowing_stakes_do_not_wrap` is the \
+      case the port's `i128` exists for (`:50`); and `stakeOf_eq_none` is false for a gate that \
+      indexed the bonds map by every support sender — the panic the port's `calculate_fringe` skips \
+      instead, pinned by `calculate_fringe_ignores_non_bonded_sender` \
+      (`block-storage/src/dag/finalizer.rs:282`, and `law14_fringe_requires_supermajority`       at `:268`)",
+    note := "**the axiom that stood here was `Nat.mul_comm` twice** — `isSuperMajority s t ↔ s * 3 > \
+      t * 2` restated the definition's own body, which is why the row was `vacuous` and why it tied \
+      finality to nothing. It is a **theorem** now, and the law is the **gate**: `calculateFringe` is \
+      the port's `calculate_fringe` (the full-partition filter, the skip for a non-bonded sender, the \
+      exact integer comparison — `finalizer.rs:153-171`) and `nextFringe` is `next_fringe`'s decision \
+      with `calculate_finalization`'s progress guard (`:174-197`, `:202-215`). **Where the content is, stated \
+      plainly**: the `↔`'s shape is the gate's own `if`, so the weight sits in *what the gate computes*, \
+      and that is what the boundary theorems falsify — the strict `>`, the exact `3·stake > 2·total` at \
+      the 2⁵³ boundary, and the non-bonded skip. Each is pinned by a named Rust test, which is what \
+      makes the row a claim about code rather than arithmetic. Not modelled: `check_min_messages`' \
+      arity check ahead of the gate (`finalizer.rs:87`, called at `:188`), which rejects a layer before the stake \
+      question is asked" },
   { number := 14, clause := "b", layer := "Casper",
     statement := "A fringe holds one message per bonded validator (an antichain) — **of the fringe the \
       finalizer derives**; over a bare `Fringe` the claim is false and its refutation is proved",
