@@ -101,6 +101,65 @@ proptest! {
         prop_assert!(sorted);
     }
 
+    /// Law 23: **read-determinism** — an effect's commit outcome and event trace are a function of the
+    /// state it *reads*, not of the order that state happened to be presented in. `Comm::apply`
+    /// receives its candidates in whatever order the space produced them, so the whole event must
+    /// depend only on the multiset: permute the input and the event is the same event. That is what
+    /// makes a commit reproducible on another node and on replay.
+    ///
+    /// This is the stronger sibling of the law 8 property above, and the pair is the point: law 8
+    /// checks that the *produces come out sorted* (the mechanism), law 23 checks that permuting the
+    /// *input* leaves the event unchanged (the property the mechanism exists for). A `Comm::apply`
+    /// that sorted nothing would pass neither; one that sorted only for display would pass law 8 and
+    /// fail here.
+    #[test]
+    fn law23_read_state_determines_outcome(
+        triples in prop::collection::vec(
+            (any::<[u8; 32]>(), any::<[u8; 32]>(), any::<bool>()),
+            1..32,
+        ),
+        rotation in any::<prop::sample::Index>(),
+    ) {
+        let candidates: Vec<ConsumeCandidate<String, String>> = triples
+            .iter()
+            .map(|(ch, h, persist)| {
+                let source = Produce::from_hash(
+                    Blake2b256Hash::from_bytes(*ch),
+                    Blake2b256Hash::from_bytes(*h),
+                    *persist,
+                );
+                ConsumeCandidate {
+                    channel: "c".to_string(),
+                    datum: Datum {
+                        a: "a".to_string(),
+                        persist: *persist,
+                        source,
+                    },
+                    removed_datum: "a".to_string(),
+                    datum_index: 0,
+                }
+            })
+            .collect();
+        // The same state, read in a different order: a rotation is a permutation, and it keeps any
+        // duplicate candidates in place relative to each other.
+        let mut permuted = candidates.clone();
+        permuted.rotate_left(rotation.index(candidates.len()));
+
+        let consume = Consume::from_hash(vec![], Blake2b256Hash::from_bytes([0u8; 32]), false);
+        let event = Comm::apply(
+            &candidates,
+            consume.clone(),
+            BTreeSet::new(),
+            |_| BTreeMap::new(),
+        );
+        let rotated = Comm::apply(&permuted, consume, BTreeSet::new(), |_| BTreeMap::new());
+        prop_assert_eq!(
+            event,
+            rotated,
+            "the commit outcome must be the same for the same state read, whatever order it arrived in"
+        );
+    }
+
     /// Law 10: the radix-tree root hash is independent of insertion order. Keys are fixed-length
     /// (the Scala asserts every prefix in a subtree has equal length, so variable-length keys are
     /// out of contract).

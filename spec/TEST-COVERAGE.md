@@ -25,7 +25,7 @@ and **no file is left without one or the other** — the linter's check 7 passes
 
 ## Inventory
 
-**1362 `#[test]`/`#[tokio::test]` unit functions + 102 integration tests** across 13 crates, with **6
+**1363 `#[test]`/`#[tokio::test]` unit functions + 102 integration tests** across 13 crates, with **6
 laws** carrying a randomized property test and **10 benchmark functions** in 6 Criterion groups. Only
 **3 of 12 crates have integration tests** (`rholang`, `casper`, `node`).
 
@@ -38,7 +38,7 @@ laws** carrying a randomized property test and **10 benchmark functions** in 6 C
 | `models` | 153 | — | 5 | — |
 | `block-storage` | 40 | — | 3 | — |
 | `comm` | 123 | — | — | — |
-| `rspace` | 166 | — | 7 | — |
+| `rspace` | 167 | — | 7 | — |
 | `rholang` | 204 | 50 | 7 | — |
 | `casper` | 239 | 47 | 3 | — |
 | `node` | 178 | 12 | — | — |
@@ -102,7 +102,7 @@ overstate coverage.
 | 20 | Scheduler | `law20_per_channel_path_order` | Lean `Scheduler.lean` (`queue_commit_path_ordered`) |
 | 21 | Scheduler | `rholang/src/property_tests.rs` `law21_the_gate_scheduler_refines_the_sequential_reference` (16 randomized programs, gate vs sequential state hash + event log) | Lean `gate_exec_refines_apply`; `rholang/tests/execution.rs` `gate_and_sequential_state_hashes_match` |
 | 22 | Scheduler | **exemption: harness-heavy** — `rholang/src/reduce.rs` `law22_the_next_step_closure_is_computable_at_dispatch` pins the structural half (one effect per term, no space I/O, arities 1–6); a full property over the effect stream was spiked at >150 lines and the integration suite already asserts on it | Lean `next_step_closure_computable` |
-| 23 | Scheduler | **exemption: covered by Law 8's property** — the law's Rust realization *is* content-addressed candidate selection, which `law8_comm_sorts_produces` randomizes (`read_state_determines_outcome` is Lean-proven) | Lean `SchedulerOnchain.lean` |
+| 23 | Scheduler | `rspace/src/property_tests.rs` `law23_read_state_determines_outcome` — permutes `Comm::apply`'s candidates and asserts the whole event is unchanged, so the commit is a function of the state *read* and not of the order it arrived in. (Was an exemption: "covered by Law 8's property". Law 8 checks the produces come out sorted — the mechanism; this checks the property the mechanism exists for, and it is the one that fails if the sort is removed. Falsified once by removing it.) | Lean `SchedulerOnchain.lean` `read_state_determines_outcome` |
 | 24 | Scheduler | `law24_record_layer_and_validation` | Lean `SchedulerOnchain.lean` |
 | 25 | Scheduler | `rholang/src/property_tests.rs` `law25_the_validated_relaxed_scheduler_refines_sequential` | Lean `validated_speculation_refines_apply`; `casper/tests/scheduler.rs` |
 | 26 | Cross-shard | `casper/src/property_tests.rs` `law26_a_shard_id_is_accepted_exactly_when_nonempty_ascii`, `law26_invalid_shard_names_are_refused`, `law26_a_child_id_nests_under_its_parent` | Lean `shard_scope_deterministic`; `casper/src/conf.rs` unit tests |
