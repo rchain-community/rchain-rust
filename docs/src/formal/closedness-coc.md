@@ -20,9 +20,16 @@ operation the interpreter performs:
 ```lean
 theorem Closed_nil : Closed nilPar
 theorem Closed_parMerge_iff (p q : Par) : Closed (parMerge p q) ↔ Closed p ∧ Closed q
+theorem Closed_receivePar_iff (chan body : Par) : Closed (receivePar chan body) ↔ Closed chan ∧ Closed body
 theorem strCong_closed {p q : Par} (h : StrCong p q) (hp : Closed p) : Closed q
 theorem reduce_closed {p p' : Par} (h : Reduce p p') (hp : Closed p) : Closed p'
 ```
+
+The receive case is the one that was wrong in the model rather than merely unstated: `receivePar` used
+to keep the *body* in the `source` slot, so "which channel does this receive listen on?" had no answer
+(AUDIT C27). Fixing it needed `closed_anyPat` — the fact that the pattern a receive binds is closed,
+stated once because otherwise this proof spends its whole heartbeat budget unfolding the pattern — and
+it is what makes the line above mean what it says.
 
 Closedness is a monoid invariant under `|`, and it is invariant under both `≡` and `⟶`. In other words:
 **start from a closed program, and it stays closed, forever.** The semantic reading — `Closed p ↔ no
@@ -70,8 +77,16 @@ In Rust, the sort and the refinements become *types*, so illegal states are unre
 
 - `Par<S>` carries the compile-time `NameSort`/`ProcSort` phantom sort; `quote`/`eval` recover `@`/`*`.
 - `Closed` is a newtype (`TryFrom`/`new` to construct, `From<Closed> for Par` to discharge).
-- `BindsAtMostOnce`, `WellScoped`, and the numeric refinements (`BlockHeight`, `SeqNum`, `Port`,
-  `Hash32`, `NonNegI64`, …) are newtypes in [`shared/src/refined.rs`](../../../shared/src/refined.rs).
+- **`WellScoped`** is a newtype too, in
+  [`models/src/types.rs`](../../../models/src/types.rs) — constructed only by `WellScoped::new`, a
+  declared partiality that returns `Option`.
+- **Linearity (Law 5)** is *not* a newtype: it is carried on the AST itself, as the `free_count:
+  FreeCount` field of `ReceiveBind`/`MatchCase`
+  ([`models/src/ast.rs`](../../../models/src/ast.rs)), because it is a property of a *node* rather than
+  of a term a caller passes around. (This page used to list it beside `WellScoped` as a refinement in
+  `shared/src/refined.rs`, where it does not exist.)
+- The numeric refinements (`BlockHeight`, `SeqNum`, `Port`, `Hash32`, `NonNegI64`, …) **are** in
+  [`shared/src/refined.rs`](../../../shared/src/refined.rs).
 
 There is **no `Deref`/`.get()` escape** out of these newtypes — the invariant is structural, not a
 convention. The machine gate that enforces this is
