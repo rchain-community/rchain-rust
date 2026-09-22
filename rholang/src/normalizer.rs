@@ -964,7 +964,22 @@ fn normalize_if(
     let input_par = input.par.clone();
     let bound_map_chain = input.bound_map_chain.clone();
     let env = input.env.clone();
-    let target = normalize_proc(value, input)?;
+    // Normalize the condition into its own empty `Par`, because it becomes the match target and the
+    // target must be the condition alone. Normalizing it into `input.par` merges whatever the
+    // surrounding `Par` has accumulated so far into the target, so a top-level `if` that is not the
+    // first operand of `|` matched nothing and its branches were dropped silently (issue #59).
+    // The oracle does the same: `normalize(..., input.copy(par = VectorPar()))` followed by
+    // `n.par ++ input.par` (`legacy/.../interpreter/compiler/normalize.scala`), and it is what
+    // `normalize_match` below already does for an explicit `match`.
+    let target = normalize_proc(
+        value,
+        ProcVisitInputs {
+            par: Par::default(),
+            bound_map_chain: bound_map_chain.clone(),
+            free_map: input.free_map,
+            env: env.clone(),
+        },
+    )?;
     let true_result = normalize_proc(
         true_body,
         ProcVisitInputs {
