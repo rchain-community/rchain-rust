@@ -3,4 +3,5 @@ envelope	NodeCapabilities	GET /api/v1/capabilities	autopropose,proposeOnDeploy,m
 envelope	LightBlockInfo	the `block` field of most responses	version,shardId,blockHash,blockNumber,sender,seqNum,preStateHash,postStateHash,justifications,bonds,sigAlgorithm,sig,blockSize,deployCount,rejectedDeploys,timestamp	-
 envelope	DeployInfo	the `deploys` entries of a block response	deployer,term,timestamp,sig,sigAlgorithm,phloPrice,phloLimit,validAfterBlockNumber,cost,errored,systemDeployError	-
 envelope	RhoDataResponse	POST /api/v1/data-at-name	expr,block	-
+envelope	ExploratoryDeployResponse	POST /api/v1/explore-deploy	expr,block,replySource	-
 envelope	DeployExecStatus	the `deployResult` body of a deploy response	-	ProcessedWithSuccess:deployResult,block;ProcessedWithError:deployError,block;NotProcessed:status

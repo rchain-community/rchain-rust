@@ -22,6 +22,7 @@ use async_trait::async_trait;
 
 use rchain_block_storage::dag::dag_storage::DeployId;
 use rchain_casper::api::block_api::{ApiErr, BlockApi, Capabilities};
+use rchain_casper::runtime_manager::CapturedReply;
 use rchain_models::ast::Par;
 use rchain_models::block_metadata::BlockMetadata;
 use rchain_models::casper::protocol::casper_message::SignedDeployData;
@@ -220,7 +221,7 @@ impl BlockApi for ShardRoutingBlockApi {
         term: &str,
         block_hash: Option<&str>,
         use_pre_state_hash: bool,
-    ) -> ApiErr<(Vec<Par>, LightBlockInfo)> {
+    ) -> ApiErr<(CapturedReply, LightBlockInfo)> {
         // An exploratory deploy against a named block belongs to that block's shard; with no block
         // named it runs against the primary shard's head.
         match block_hash {
@@ -282,6 +283,7 @@ impl BlockApi for ShardRoutingBlockApi {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rchain_casper::runtime_manager::ReplySource;
     use std::sync::Mutex;
 
     use rchain_models::casper::protocol::casper_message::DeployData;
@@ -510,17 +512,17 @@ mod tests {
             _: &str,
             block_hash: Option<&str>,
             _: bool,
-        ) -> ApiErr<(Vec<Par>, LightBlockInfo)> {
+        ) -> ApiErr<(CapturedReply, LightBlockInfo)> {
             self.record("exploratory_deploy");
+            let reply = || CapturedReply {
+                source: ReplySource::FirstPrivateName,
+                data: vec![RhoString::apply(self.shard_id.clone())],
+            };
             match block_hash {
-                None => Ok((
-                    vec![RhoString::apply(self.shard_id.clone())],
-                    self.marked_block(),
-                )),
-                Some(hash) if hash == format!("{}-hash", self.shard_id) => Ok((
-                    vec![RhoString::apply(self.shard_id.clone())],
-                    self.marked_block(),
-                )),
+                None => Ok((reply(), self.marked_block())),
+                Some(hash) if hash == format!("{}-hash", self.shard_id) => {
+                    Ok((reply(), self.marked_block()))
+                }
                 Some(hash) => Err(format!("{} has no block {hash}", self.shard_id)),
             }
         }
@@ -635,12 +637,12 @@ mod tests {
         assert_eq!(block.shard_id, "/root/child");
         assert_eq!(data.len(), 1);
 
-        let (data, block) = api
+        let (reply, block) = api
             .exploratory_deploy("Nil", Some(child_hash), false)
             .await
             .expect("exploratory at hash");
         assert_eq!(block.shard_id, "/root/child");
-        assert_eq!(data.len(), 1);
+        assert_eq!(reply.data.len(), 1);
 
         // `deploy_status` and `find_deploy` are errors on every member in this stub, so the probe
         // can only be observed as "it asked the child too".

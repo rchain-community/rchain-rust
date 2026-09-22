@@ -2,6 +2,27 @@
 //!
 //! `RhoExpr` is the JSON-ish representation of rholang data the web API exposes. `expr_from_par`
 //! converts a protobuf `Par` to it and `rho_expr_to_par` converts back.
+//!
+//! **The wire shape is the reference's, not this module's** (AUDIT C38). The reference document
+//! (`legacy/docs/rnode-api/rnode-openapi.json`, and the generated `rnode-openapi-schema.ts` beside
+//! it) is what a client generates its types from, and it says every arm wraps its payload in a field
+//! named `data`:
+//!
+//! ```text
+//! ExprInt:  { ExprInt:  { data: number } }
+//! ExprList: { ExprList: { data: RhoExpr[] } }
+//! ExprMap:  { ExprMap:  { data: { [key: string]: RhoExpr } } }   -- an *object*, not pairs
+//! ExprUnforg: { ExprUnforg: { data: RhoUnforg } }
+//! UnforgPrivate: { data: string }
+//! ```
+//!
+//! This module's `#[derive]`d representation emitted `{"ExprInt":42}`, `{"ExprMap":[["k",v]]}` and
+//! `{"ExprUnforg":{"UnforgPrivate":"hex"}}` — three divergences from a client's expectations on every
+//! value the node reports, which is the reply the client never managed to read. The enum below stays
+//! as the internal form; `RhoExprWire`/`RhoUnforgWire` are the contract, and the manual
+//! `Serialize`/`Deserialize` impls are the one place the two meet.
+
+use std::collections::BTreeMap;
 
 use rchain_models::ast::{Bundle, Expr, GUnforgeable, Par};
 use rchain_models::rholang::RhoType::{
@@ -9,15 +30,17 @@ use rchain_models::rholang::RhoType::{
     RhoSet, RhoString, RhoTupleN, RhoUri,
 };
 use rchain_shared::base16;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 /// Rholang terms interesting for translation to JSON (port of `RhoExpr`).
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RhoExpr {
     ExprPar(Vec<RhoExpr>),
     ExprTuple(Vec<RhoExpr>),
     ExprList(Vec<RhoExpr>),
     ExprSet(Vec<RhoExpr>),
+    /// Key/value pairs, kept sorted. On the wire this is a JSON **object** (the reference's shape),
+    /// which is also what law 1's canonical order wants.
     ExprMap(Vec<(String, RhoExpr)>),
     ExprBool(bool),
     ExprInt(i64),
@@ -28,11 +51,142 @@ pub enum RhoExpr {
 }
 
 /// An unforgeable name (port of `RhoUnforg`).
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RhoUnforg {
     UnforgPrivate(String),
     UnforgDeploy(String),
     UnforgDeployer(String),
+}
+
+/// The reference's payload wrapper: `{"data": …}`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Data<T> {
+    pub data: T,
+}
+
+impl<T> From<T> for Data<T> {
+    fn from(data: T) -> Self {
+        Data { data }
+    }
+}
+
+/// The reference's `RhoExpr` encoding, arm for arm.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RhoExprWire {
+    ExprPar(Data<Vec<RhoExprWire>>),
+    ExprTuple(Data<Vec<RhoExprWire>>),
+    ExprList(Data<Vec<RhoExprWire>>),
+    ExprSet(Data<Vec<RhoExprWire>>),
+    ExprMap(Data<BTreeMap<String, RhoExprWire>>),
+    ExprBool(Data<bool>),
+    ExprInt(Data<i64>),
+    ExprString(Data<String>),
+    ExprUri(Data<String>),
+    ExprBytes(Data<String>),
+    ExprUnforg(Data<RhoUnforgWire>),
+}
+
+/// The reference's `RhoUnforg` encoding: a tagged union whose payloads are themselves `{"data": …}`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RhoUnforgWire {
+    UnforgPrivate(Data<String>),
+    UnforgDeploy(Data<String>),
+    UnforgDeployer(Data<String>),
+}
+
+impl From<RhoUnforg> for RhoUnforgWire {
+    fn from(u: RhoUnforg) -> Self {
+        match u {
+            RhoUnforg::UnforgPrivate(s) => RhoUnforgWire::UnforgPrivate(s.into()),
+            RhoUnforg::UnforgDeploy(s) => RhoUnforgWire::UnforgDeploy(s.into()),
+            RhoUnforg::UnforgDeployer(s) => RhoUnforgWire::UnforgDeployer(s.into()),
+        }
+    }
+}
+
+impl From<RhoUnforgWire> for RhoUnforg {
+    fn from(u: RhoUnforgWire) -> Self {
+        match u {
+            RhoUnforgWire::UnforgPrivate(d) => RhoUnforg::UnforgPrivate(d.data),
+            RhoUnforgWire::UnforgDeploy(d) => RhoUnforg::UnforgDeploy(d.data),
+            RhoUnforgWire::UnforgDeployer(d) => RhoUnforg::UnforgDeployer(d.data),
+        }
+    }
+}
+
+impl From<RhoExpr> for RhoExprWire {
+    fn from(e: RhoExpr) -> Self {
+        let many = |es: Vec<RhoExpr>| Data {
+            data: es.into_iter().map(RhoExprWire::from).collect::<Vec<_>>(),
+        };
+        match e {
+            RhoExpr::ExprPar(es) => RhoExprWire::ExprPar(many(es)),
+            RhoExpr::ExprTuple(es) => RhoExprWire::ExprTuple(many(es)),
+            RhoExpr::ExprList(es) => RhoExprWire::ExprList(many(es)),
+            RhoExpr::ExprSet(es) => RhoExprWire::ExprSet(many(es)),
+            RhoExpr::ExprMap(kvs) => RhoExprWire::ExprMap(Data {
+                // A `BTreeMap`, so the object's keys are emitted in law 1's canonical order.
+                data: kvs
+                    .into_iter()
+                    .map(|(k, v)| (k, RhoExprWire::from(v)))
+                    .collect(),
+            }),
+            RhoExpr::ExprBool(b) => RhoExprWire::ExprBool(b.into()),
+            RhoExpr::ExprInt(n) => RhoExprWire::ExprInt(n.into()),
+            RhoExpr::ExprString(s) => RhoExprWire::ExprString(s.into()),
+            RhoExpr::ExprUri(s) => RhoExprWire::ExprUri(s.into()),
+            RhoExpr::ExprBytes(s) => RhoExprWire::ExprBytes(s.into()),
+            RhoExpr::ExprUnforg(u) => RhoExprWire::ExprUnforg(Data { data: u.into() }),
+        }
+    }
+}
+
+impl From<RhoExprWire> for RhoExpr {
+    fn from(e: RhoExprWire) -> Self {
+        let many = |es: Vec<RhoExprWire>| es.into_iter().map(RhoExpr::from).collect::<Vec<_>>();
+        match e {
+            RhoExprWire::ExprPar(d) => RhoExpr::ExprPar(many(d.data)),
+            RhoExprWire::ExprTuple(d) => RhoExpr::ExprTuple(many(d.data)),
+            RhoExprWire::ExprList(d) => RhoExpr::ExprList(many(d.data)),
+            RhoExprWire::ExprSet(d) => RhoExpr::ExprSet(many(d.data)),
+            RhoExprWire::ExprMap(d) => RhoExpr::ExprMap(
+                d.data
+                    .into_iter()
+                    .map(|(k, v)| (k, RhoExpr::from(v)))
+                    .collect(),
+            ),
+            RhoExprWire::ExprBool(d) => RhoExpr::ExprBool(d.data),
+            RhoExprWire::ExprInt(d) => RhoExpr::ExprInt(d.data),
+            RhoExprWire::ExprString(d) => RhoExpr::ExprString(d.data),
+            RhoExprWire::ExprUri(d) => RhoExpr::ExprUri(d.data),
+            RhoExprWire::ExprBytes(d) => RhoExpr::ExprBytes(d.data),
+            RhoExprWire::ExprUnforg(d) => RhoExpr::ExprUnforg(d.data.into()),
+        }
+    }
+}
+
+impl Serialize for RhoExpr {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        RhoExprWire::from(self.clone()).serialize(s)
+    }
+}
+
+impl<'de> Deserialize<'de> for RhoExpr {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        Ok(RhoExprWire::deserialize(d)?.into())
+    }
+}
+
+impl Serialize for RhoUnforg {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        RhoUnforgWire::from(self.clone()).serialize(s)
+    }
+}
+
+impl<'de> Deserialize<'de> for RhoUnforg {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        Ok(RhoUnforgWire::deserialize(d)?.into())
+    }
 }
 
 /// Convert a `Par` to a `RhoExpr` (port of `exprFromParProto`).
@@ -249,5 +403,68 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(expr_from_par(&p), None);
+    }
+
+    /// **The wire shape is the reference document's, arm for arm** (AUDIT C38). Every string here is
+    /// the shape `legacy/docs/rnode-api/rnode-openapi-schema.ts` declares — the file a client
+    /// generates its types from — so this test is the one that would have caught the divergence:
+    /// the port emitted `{"ExprInt":42}`, `{"ExprMap":[["k",…]]}` and a flat unforgeable, and no
+    /// client built on the reference API could read any of it.
+    #[test]
+    fn the_wire_shape_is_the_reference_documents() {
+        let cases: Vec<(RhoExpr, &str)> = vec![
+            (RhoExpr::ExprInt(42), r#"{"ExprInt":{"data":42}}"#),
+            (RhoExpr::ExprBool(true), r#"{"ExprBool":{"data":true}}"#),
+            (
+                RhoExpr::ExprString("s".to_string()),
+                r#"{"ExprString":{"data":"s"}}"#,
+            ),
+            (
+                RhoExpr::ExprUri("rho:id:x".to_string()),
+                r#"{"ExprUri":{"data":"rho:id:x"}}"#,
+            ),
+            (
+                RhoExpr::ExprBytes("deadbeef".to_string()),
+                r#"{"ExprBytes":{"data":"deadbeef"}}"#,
+            ),
+            (
+                RhoExpr::ExprList(vec![RhoExpr::ExprInt(1)]),
+                r#"{"ExprList":{"data":[{"ExprInt":{"data":1}}]}}"#,
+            ),
+            (
+                RhoExpr::ExprTuple(vec![RhoExpr::ExprInt(1)]),
+                r#"{"ExprTuple":{"data":[{"ExprInt":{"data":1}}]}}"#,
+            ),
+            (
+                RhoExpr::ExprSet(vec![RhoExpr::ExprInt(1)]),
+                r#"{"ExprSet":{"data":[{"ExprInt":{"data":1}}]}}"#,
+            ),
+            (
+                RhoExpr::ExprPar(vec![RhoExpr::ExprInt(1)]),
+                r#"{"ExprPar":{"data":[{"ExprInt":{"data":1}}]}}"#,
+            ),
+            // A map is a JSON **object** on the wire — the reference's `{ [key: string]: RhoExpr }` —
+            // so its keys come out in the object's canonical (sorted) order, which is what law 1
+            // wants; the pairs here are written sorted because that is the order the round-trip
+            // reproduces. (The node's own maps reach this point from a `Par` whose exprs law 1 has
+            // already sorted, so the wire order is canonical in practice too.)
+            (
+                RhoExpr::ExprMap(vec![
+                    ("a".to_string(), RhoExpr::ExprInt(1)),
+                    ("b".to_string(), RhoExpr::ExprInt(2)),
+                ]),
+                r#"{"ExprMap":{"data":{"a":{"ExprInt":{"data":1}},"b":{"ExprInt":{"data":2}}}}}"#,
+            ),
+            (
+                RhoExpr::ExprUnforg(RhoUnforg::UnforgPrivate("ab".to_string())),
+                r#"{"ExprUnforg":{"data":{"UnforgPrivate":{"data":"ab"}}}}"#,
+            ),
+        ];
+        for (expr, want) in cases {
+            let got = serde_json::to_string(&expr).expect("the encode serializes");
+            assert_eq!(got, want, "wire shape of {expr:?}");
+            let back: RhoExpr = serde_json::from_str(want).expect("and it decodes");
+            assert_eq!(back, expr, "and it round-trips: {want}");
+        }
     }
 }

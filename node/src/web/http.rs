@@ -415,6 +415,33 @@ pub const OPENAPI_JSON: &str = r##"{
         }
       }
     },
+    "/capabilities": {
+      "get": {
+        "summary": "What this node's API can do",
+        "description": "The `ApiStatus` boolean fields, plus the faucet. A client reads this to decide whether to offer `propose`, `deploy`, or the devnet faucet.",
+        "responses": {
+          "200": { "description": "Capabilities", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/NodeCapabilities" } } } }
+        }
+      }
+    },
+    "/deploys": {
+      "get": {
+        "summary": "The deploys waiting in the deploy pool",
+        "responses": {
+          "200": { "description": "Pooled deploys", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/PooledDeploys" } } } }
+        }
+      }
+    },
+    "/faucet": {
+      "post": {
+        "summary": "Dev-mode faucet",
+        "description": "Transfers dev REV to an address. Present only in dev mode; answers 404 otherwise.",
+        "responses": {
+          "200": { "description": "The transfer's deploy id, amount and recipient", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/FaucetResponse" } } } },
+          "404": { "description": "The faucet is disabled on this node" }
+        }
+      }
+    },
     "/shards": {
       "get": {
         "summary": "The shards this node is a member of",
@@ -700,16 +727,40 @@ pub const OPENAPI_JSON: &str = r##"{
       "RhoDataResponse": {
         "type": "object",
         "properties": {
-          "expr": { "type": "array", "items": { "type": "object", "description": "A rholang expression" } },
+          "expr": { "type": "array", "items": { "$ref": "#/components/schemas/RhoExpr" } },
           "block": { "$ref": "#/components/schemas/LightBlockInfo" }
         }
       },
       "ExploratoryDeployResponse": {
         "type": "object",
         "properties": {
-          "expr": { "type": "array", "items": { "type": "object", "description": "A rholang expression" } },
-          "block": { "$ref": "#/components/schemas/LightBlockInfo" }
+          "expr": { "type": "array", "items": { "$ref": "#/components/schemas/RhoExpr" } },
+          "block": { "$ref": "#/components/schemas/LightBlockInfo" },
+          "replySource": { "type": "string", "enum": ["firstPrivateName", "out", "none"], "description": "Which channel the reply was read from: the term's first `new`-bound name, `@\"out\"`, or neither (the term produced nothing on either). A client can tell an empty `expr` from a reply it cannot see." }
         }
+      },
+      "RhoExpr": {
+        "description": "A rholang value, in the reference document's shape: every arm wraps its payload in a field named `data` (legacy/docs/rnode-api/rnode-openapi.json).",
+        "oneOf": [
+          { "type": "object", "properties": { "ExprPar": { "type": "object", "properties": { "data": { "type": "array", "items": { "$ref": "#/components/schemas/RhoExpr" } } } } } },
+          { "type": "object", "properties": { "ExprTuple": { "type": "object", "properties": { "data": { "type": "array", "items": { "$ref": "#/components/schemas/RhoExpr" } } } } } },
+          { "type": "object", "properties": { "ExprList": { "type": "object", "properties": { "data": { "type": "array", "items": { "$ref": "#/components/schemas/RhoExpr" } } } } } },
+          { "type": "object", "properties": { "ExprSet": { "type": "object", "properties": { "data": { "type": "array", "items": { "$ref": "#/components/schemas/RhoExpr" } } } } } },
+          { "type": "object", "properties": { "ExprMap": { "type": "object", "properties": { "data": { "type": "object", "additionalProperties": { "$ref": "#/components/schemas/RhoExpr" } } } } } },
+          { "type": "object", "properties": { "ExprBool": { "type": "object", "properties": { "data": { "type": "boolean" } } } } },
+          { "type": "object", "properties": { "ExprInt": { "type": "object", "properties": { "data": { "type": "integer" } } } } },
+          { "type": "object", "properties": { "ExprString": { "type": "object", "properties": { "data": { "type": "string" } } } } },
+          { "type": "object", "properties": { "ExprUri": { "type": "object", "properties": { "data": { "type": "string" } } } } },
+          { "type": "object", "properties": { "ExprBytes": { "type": "object", "properties": { "data": { "type": "string" } } } } },
+          { "type": "object", "properties": { "ExprUnforg": { "type": "object", "properties": { "data": { "$ref": "#/components/schemas/RhoUnforg" } } } } }
+        ]
+      },
+      "RhoUnforg": {
+        "oneOf": [
+          { "type": "object", "properties": { "UnforgPrivate": { "type": "object", "properties": { "data": { "type": "string" } } } } },
+          { "type": "object", "properties": { "UnforgDeploy": { "type": "object", "properties": { "data": { "type": "string" } } } } },
+          { "type": "object", "properties": { "UnforgDeployer": { "type": "object", "properties": { "data": { "type": "string" } } } } }
+        ]
       },
       "DeployExecStatus": {
         "oneOf": [
@@ -927,8 +978,8 @@ pub async fn acquire_admin_http_server(
 mod tests {
     use super::*;
     use crate::api::dto::{
-        ApiStatus, DataAtNameResponse, DeployExecStatus, FaucetResponse, NodeCapabilities,
-        PooledDeploy, PooledDeploys, RhoDataResponse, VersionInfo,
+        ApiStatus, DataAtNameResponse, DeployExecStatus, ExploratoryDeployResponse, FaucetResponse,
+        NodeCapabilities, PooledDeploy, PooledDeploys, RhoDataResponse, VersionInfo,
     };
     use crate::diagnostics::scrape_data_builder::Configuration;
     use crate::web::transaction::TransactionResponse;
@@ -936,6 +987,7 @@ mod tests {
     use axum::body::to_bytes;
     use rchain_block_storage::dag::codecs::{BlockHashCodec, BlockMessageCodec};
     use rchain_casper::reporting::noop;
+    use rchain_casper::runtime_manager::CapturedReply;
     use rchain_comm::peer_node::{NodeIdentifier, PeerNode};
     use rchain_comm::rp::rp_conf::ClearConnectionsConf;
     use rchain_models::casper::protocol::deploy_service::{BlockInfo, LightBlockInfo};
@@ -1074,7 +1126,7 @@ mod tests {
             _: &str,
             _: Option<&str>,
             _: bool,
-        ) -> Result<RhoDataResponse, BlockApiException> {
+        ) -> Result<ExploratoryDeployResponse, BlockApiException> {
             unimplemented!()
         }
 
@@ -1368,7 +1420,7 @@ mod tests {
             _: &str,
             _: Option<&str>,
             _: bool,
-        ) -> Result<(Vec<rchain_models::ast::Par>, LightBlockInfo), String> {
+        ) -> Result<(CapturedReply, LightBlockInfo), String> {
             Err("unused".to_string())
         }
         async fn get_data_at_par(

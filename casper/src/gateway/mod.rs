@@ -421,6 +421,8 @@ fn vote_of(outcome: &ShardOutcome) -> Vote {
 mod tests {
     use std::sync::Mutex;
 
+    use crate::runtime_manager::CapturedReply;
+
     use super::*;
     use crate::api::block_api::{ApiErr, Capabilities};
     use crate::construct_deploy;
@@ -549,7 +551,7 @@ mod tests {
             _: &str,
             _: Option<&str>,
             _: bool,
-        ) -> ApiErr<(Vec<Par>, LightBlockInfo)> {
+        ) -> ApiErr<(CapturedReply, LightBlockInfo)> {
             Err("not used".to_string())
         }
         async fn get_data_at_par(

@@ -98,7 +98,15 @@ async fn exploratory_path_stays_open_in_relaxed_mode() {
         .play_exploratory_deploy(r#"@"chan"!(42)"#, &start)
         .await
         .expect("relaxed exploratory deploy succeeds");
-    assert!(res.is_empty(), "no return-channel data expected");
+    // The term replies on `@"chan"`, which is neither channel the node reads, so the reply is empty
+    // **and the response now says why** — before AUDIT C38's fix this assertion documented a dropped
+    // reply as expected, which is exactly how the bug survived.
+    assert_eq!(
+        res.source,
+        rchain_casper::runtime_manager::ReplySource::None,
+        "a reply on another channel is `none`, not silence"
+    );
+    assert!(res.data.is_empty());
 }
 
 /// Terms spanning the validated-speculation outcomes (Laws 23–25): a single-channel term

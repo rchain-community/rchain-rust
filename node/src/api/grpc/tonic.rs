@@ -765,9 +765,9 @@ impl DeployService for DeployGrpcServiceV1 {
             })
             .await;
         let message = match r {
-            Ok((pars, block)) => {
+            Ok((reply, block)) => {
                 wire::exploratory_deploy_response::Message::Result(wire::DataWithBlockInfo {
-                    post_block_data: pars.iter().map(par_to_proto).collect(),
+                    post_block_data: reply.data.iter().map(par_to_proto).collect(),
                     block: Some(light_block_info_to_wire(&block)),
                 })
             }
@@ -850,6 +850,7 @@ impl DeployService for DeployGrpcServiceV1 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rchain_casper::runtime_manager::CapturedReply;
     use std::sync::Arc;
 
     use async_trait::async_trait;
@@ -927,7 +928,7 @@ mod tests {
             _: &str,
             _: Option<&str>,
             _: bool,
-        ) -> ApiErr<(Vec<Par>, LightBlockInfo)> {
+        ) -> ApiErr<(CapturedReply, LightBlockInfo)> {
             unimplemented!()
         }
         async fn get_data_at_par(

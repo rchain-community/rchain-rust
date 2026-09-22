@@ -104,6 +104,38 @@ impl From<RuntimeRunError> for String {
     }
 }
 
+/// Where an exploratory deploy's reply was found, named by the rule rather than by the unforgeable's
+/// bytes: a client can act on "the first private name answered" or "`@"out"` answered", and cannot do
+/// anything useful with a hex string.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReplySource {
+    /// The term's first `new`-bound name — the derived channel, and the only one read before this
+    /// was made explicit.
+    FirstPrivateName,
+    /// `@"out"` — the channel the corpus, the examples and the system-process conformance tests use.
+    Out,
+    /// Neither channel held a datum: the term really did produce nothing *there*.
+    None,
+}
+
+impl ReplySource {
+    /// The name a client sees, stable and part of the scheme (`spec/API-SCHEMA.md`).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ReplySource::FirstPrivateName => "firstPrivateName",
+            ReplySource::Out => "out",
+            ReplySource::None => "none",
+        }
+    }
+}
+
+/// An exploratory deploy's reply: the data, and where it was read from.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CapturedReply {
+    pub source: ReplySource,
+    pub data: Vec<Par>,
+}
+
 impl RuntimeManager {
     pub fn new(
         runtime: RhoRuntime,
@@ -1080,7 +1112,7 @@ impl RuntimeManager {
         &self,
         term: &str,
         hash: &StateHash,
-    ) -> Result<Vec<Par>, String> {
+    ) -> Result<CapturedReply, String> {
         let rand = Blake2b512Random::default_random();
         let mut return_rand = rand.copy();
         let return_channel = RhoName::apply_bytes(return_rand.next());
@@ -1094,7 +1126,7 @@ impl RuntimeManager {
         term: &str,
         rand: &Blake2b512Random,
         return_channel: &Par,
-    ) -> Result<Vec<Par>, String> {
+    ) -> Result<CapturedReply, String> {
         // Fork a fresh, isolated play runtime at `start`: exploration must never mutate the shared
         // runtime the proposer uses to create blocks (a concurrent explore-deploy would otherwise
         // reset/re-evaluate the shared space mid-block and corrupt the block's post-state hash).
@@ -1130,10 +1162,43 @@ impl RuntimeManager {
         if !eval.errors.is_empty() {
             return Err(format!("{:?}", eval.errors));
         }
-        runtime
+        // Where a term's reply is read from, in the order the scheme states (`spec/API-SCHEMA.md`,
+        // law 43's catalog). The first is the derived name — the term's **first `new`-bound name**,
+        // because the normalizer consumes this RNG stream for that binding — and the second is the
+        // channel every example, corpus and client writes to. Reading only the first meant a term
+        // that replied on `@"out"` returned an empty `expr`, which is indistinguishable from a term
+        // that produced nothing: a reply dropped silently, with nothing to catch it. See AUDIT C38.
+        let derived = runtime
             .get_data_par(&SortedProc::new(return_channel.clone()))
             .await
-            .map_err(|e| e.to_string())
+            .map_err(|e| e.to_string())?;
+        if !derived.is_empty() {
+            return Ok(CapturedReply {
+                source: ReplySource::FirstPrivateName,
+                data: derived,
+            });
+        }
+        let out = runtime
+            .get_data_par(&SortedProc::new(Self::out_channel()))
+            .await
+            .map_err(|e| e.to_string())?;
+        if !out.is_empty() {
+            return Ok(CapturedReply {
+                source: ReplySource::Out,
+                data: out,
+            });
+        }
+        Ok(CapturedReply {
+            source: ReplySource::None,
+            data: Vec::new(),
+        })
+    }
+
+    /// The `@"out"` channel, as the runtime keys it: the name `@"out"` is the quoted string, which is
+    /// what every `@"out"!(…)` in the corpus, the examples and the system-process conformance tests
+    /// writes to and what `node/tests/lean_*_corpus.rs` reads back with `chan("out")`.
+    fn out_channel() -> Par {
+        rchain_models::par_ops::from_expr(rchain_models::ast::Expr::GString("out".to_string()))
     }
 
     /// Query the current active validators at `hash` (native PoS read, port of `getActiveValidators`).

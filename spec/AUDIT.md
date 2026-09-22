@@ -1765,3 +1765,54 @@ removing the fix and confirming the test fails.
   recorded here because the next marginal example will look exactly like a logic bug. The lesson is
   the one worth keeping: a stack overflow under a 2 MiB default is a *harness* result until the same
   input is shown to fail on an explicit stack.
+
+## 19. The reply-JSON findings (pass 8): C38–C39
+
+The API's job is *rholang in, JSON out*, and both halves of it were wrong in a way nothing could
+catch. This is the finding the whole formalisation programme was started for, found by comparing the
+port against the **reference document** rather than against itself.
+
+- **C38 — every rho value in every reply was wrapped wrongly, and the schema file rationalised it.**
+  The reference's own types are case classes whose single field is named `data`:
+  `final case class ExprInt(data: Long)`, `ExprMap(data: Map[String, RhoExpr])`,
+  `UnforgPrivate(data: String)` (`legacy/node/src/main/scala/coop/rchain/node/api/WebApi.scala:131-151`),
+  and the node's JSON codec is *derived* from them — so the wire is
+  `{"ExprInt":{"data":42}}`, `{"ExprMap":{"data":{"k":…}}}`, and an unforgeable nests one level
+  (`{"ExprUnforg":{"data":{"UnforgPrivate":{"data":"ab"}}}}`). The port emitted
+  `{"ExprInt":42}`, `{"ExprMap":[["k",…]]}` and a flat unforgeable: three divergences on every value
+  of every reply, deploy results and `data-at-name` alike. A client built on the reference document —
+  which is generated from those same case classes — cannot read any of it.
+
+  **Why nothing caught it.** Three layers agreed with each other and none with the client:
+  `spec/API-SCHEMA.md`'s rule 1 asserted that there was **no** `data` envelope and that it was "the
+  Scala/OpenAPI *schema* artifact's spelling, not the wire's"; law 42 (`Rchain/Json.lean`'s `render`)
+  was written from the *port's* `#[derive]`d output; and the conformance corpus compares the node to
+  the law — so a corpus that passed could only ever confirm that the code and the model were wrong
+  together. The one file that could have settled it, `rnode-openapi-schema.ts`, is generated from the
+  reference document and was in the tree the whole time. **The lesson is the one the prime directive
+  already states**: a law written from the code is a mirror, and a mirror cannot show you a wrong
+  shape.
+
+  **Fixed**: `node/src/api/rho_expr.rs` now has `RhoExprWire`/`RhoUnforgWire` — the contract as a
+  type, with `Serialize`/`Deserialize` on `RhoExpr` delegating to it — and `Rchain/Json.lean`'s
+  `render` renders the contract arm for arm, so law 42 states the *client's* wire form rather than the
+  port's. Pinned by `the_wire_shape_is_the_reference_documents` (`rho_expr.rs`, one literal per arm,
+  copied from `rnode-openapi-schema.ts`), by the re-emitted `spec/conformance/json.tsv` and
+  `lex.tsv`, and by the served document's `RhoExpr`/`RhoUnforg` schemas — which it did not have at
+  all before (it said only "a rholang expression").
+
+- **C39 — an exploratory deploy's reply was read from one channel, and a reply anywhere else was
+  dropped in silence.** `capture_results` read only the RNG-derived channel — the term's first
+  `new`-bound name — and `ExploratoryDeployResponse` was `{expr}`, so a term that replied on `@"out"`
+  returned `{"expr": []}`, which is *also* what a term that produced nothing returns. The convention
+  existed only in a scratch note; the repository's own test documented the drop as expected
+  (`casper/tests/scheduler.rs`: `assert!(res.is_empty(), "no return-channel data expected")` for a
+  term sending `42` on `@"chan"`).
+
+  **Fixed**: `capture_results` consults the documented channels in a stated order — the first
+  `new`-bound name, then `@"out"` — and returns a `CapturedReply` carrying `ReplySource`, so the
+  response names which rule answered or `none`. The rule is in `spec/API-SCHEMA.md`, the served
+  document's schema gained `replySource` (law 43's catalog row is checked against both by
+  `node/tests/lean_envelope_corpus.rs`), and `casper/tests/exploratory_reply.rs` pins all three
+  outcomes. The document also gained the paths and value schemas it lacked: `/capabilities`,
+  `/deploys`, `/faucet` and `RhoExpr`/`RhoUnforg` (AUDIT C29's named gap).

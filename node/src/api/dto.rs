@@ -334,12 +334,22 @@ pub struct DataAtNameResponse {
     pub length: i32,
 }
 
-/// An exploratory-deploy response (port of `ExploratoryDeployResponse`).
+/// An exploratory-deploy response (port of `ExploratoryDeployResponse`) — what
+/// `POST /api/v1/explore-deploy` returns, and **the type the served document has always named for
+/// that path** (`node/src/web/http.rs`): the handler returned `RhoDataResponse` instead, which was
+/// invisible while the two were field-for-field identical.
+///
+/// `reply_source` is the part a client could not get before: **which channel the reply was read
+/// from**, per the rule in `spec/API-SCHEMA.md`. Without it an empty `expr` meant both "your term
+/// produced nothing" and "your reply is on a channel the node does not read" — a dropped reply with
+/// nothing to catch it (AUDIT C38).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ExploratoryDeployResponse {
     pub expr: Vec<RhoExpr>,
     pub block: LightBlockInfo,
+    /// `firstPrivateName`, `out`, or `none` — the channel that answered, named by the rule.
+    pub reply_source: String,
 }
 
 /// A rho data response (port of `RhoDataResponse`).

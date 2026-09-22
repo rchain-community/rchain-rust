@@ -94,36 +94,36 @@ def lexemes : List Lexeme :=
     -- `...` is the collection remainder: the sample matches a partial list pattern.
   , { token := "Ellipsis", spelling := "...",
       sample := "new c in { @\"c\"!([1, 2]) | for (@[1, ..._] <- @\"c\") { @\"out\"!(\"matched\") } } | @\"ctl\"!(\"ran\")",
-      expected := "value:{\"ExprString\":\"matched\"}" }
+      expected := "value:{\"ExprString\":{\"data\":\"matched\"}}" }
     -- Arithmetic and the collection operators, each against its neighbour.
   , { token := "Star", spelling := "*", sample := "@\"out\"!(2 * 3) | @\"ctl\"!(\"ran\")",
-      expected := "value:{\"ExprInt\":6}" }
+      expected := "value:{\"ExprInt\":{\"data\":6}}" }
   , { token := "Slash", spelling := "/", sample := "@\"out\"!(6 / 2) | @\"ctl\"!(\"ran\")",
-      expected := "value:{\"ExprInt\":3}" }
+      expected := "value:{\"ExprInt\":{\"data\":3}}" }
   , { token := "Percent", spelling := "%", sample := "@\"out\"!(5 % 2) | @\"ctl\"!(\"ran\")",
-      expected := "value:{\"ExprInt\":1}" }
+      expected := "value:{\"ExprInt\":{\"data\":1}}" }
   , { token := "Plus", spelling := "+", sample := "@\"out\"!(1 + 2) | @\"ctl\"!(\"ran\")",
-      expected := "value:{\"ExprInt\":3}" }
+      expected := "value:{\"ExprInt\":{\"data\":3}}" }
   , { token := "PlusPlus", spelling := "++", sample := "@\"out\"!([1] ++ [2]) | @\"ctl\"!(\"ran\")",
-      expected := "value:{\"ExprList\":[{\"ExprInt\":1},{\"ExprInt\":2}]}" }
+      expected := "value:{\"ExprList\":{\"data\":[{\"ExprInt\":{\"data\":1}},{\"ExprInt\":{\"data\":2}}]}}" }
   , { token := "Minus", spelling := "-", sample := "@\"out\"!(3 - 1) | @\"ctl\"!(\"ran\")",
-      expected := "value:{\"ExprInt\":2}" }
+      expected := "value:{\"ExprInt\":{\"data\":2}}" }
   , { token := "MinusMinus", spelling := "--",
       sample := "@\"out\"!(Set(1, 2) -- Set(1)) | @\"ctl\"!(\"ran\")",
-      expected := "value:{\"ExprSet\":[{\"ExprInt\":2}]}" }
+      expected := "value:{\"ExprSet\":{\"data\":[{\"ExprInt\":{\"data\":2}}]}}" }
     -- The comparisons: each sample is true only for its own spelling.
   , { token := "Lt", spelling := "<", sample := "@\"out\"!(1 < 1) | @\"ctl\"!(\"ran\")",
-      expected := "value:{\"ExprBool\":false}" }
+      expected := "value:{\"ExprBool\":{\"data\":false}}" }
   , { token := "Lte", spelling := "<=", sample := "@\"out\"!(1 <= 1) | @\"ctl\"!(\"ran\")",
-      expected := "value:{\"ExprBool\":true}" }
+      expected := "value:{\"ExprBool\":{\"data\":true}}" }
   , { token := "Gt", spelling := ">", sample := "@\"out\"!(1 > 1) | @\"ctl\"!(\"ran\")",
-      expected := "value:{\"ExprBool\":false}" }
+      expected := "value:{\"ExprBool\":{\"data\":false}}" }
   , { token := "Gte", spelling := ">=", sample := "@\"out\"!(1 >= 1) | @\"ctl\"!(\"ran\")",
-      expected := "value:{\"ExprBool\":true}" }
+      expected := "value:{\"ExprBool\":{\"data\":true}}" }
   , { token := "EqEq", spelling := "==", sample := "@\"out\"!(1 == 1) | @\"ctl\"!(\"ran\")",
-      expected := "value:{\"ExprBool\":true}" }
+      expected := "value:{\"ExprBool\":{\"data\":true}}" }
   , { token := "Neq", spelling := "!=", sample := "@\"out\"!(1 != 2) | @\"ctl\"!(\"ran\")",
-      expected := "value:{\"ExprBool\":true}" }
+      expected := "value:{\"ExprBool\":{\"data\":true}}" }
     -- The arrows: one datum, read linearly (`<-` consumes), peeked (`<<-` does not) and persistently
     -- (`<=` re-arms) — so the counts are 1, 2 and 2. `<-`/`<<-` are distinct spellings; `<=` is the
     -- *same* token as the comparison above, read by the parser's bind position rather than by the

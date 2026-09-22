@@ -6,8 +6,8 @@ use rchain_models::casper::protocol::deploy_service::{BlockInfo, LightBlockInfo}
 
 use super::dto::{
     ApiStatus, BlockApiException, DataAtNameByBlockHashRequest, DataAtNameRequest,
-    DataAtNameResponse, DeployExecStatus, DeployRequest, FaucetResponse, NodeCapabilities,
-    PooledDeploys, RhoDataResponse,
+    DataAtNameResponse, DeployExecStatus, DeployRequest, ExploratoryDeployResponse, FaucetResponse,
+    NodeCapabilities, PooledDeploys, RhoDataResponse,
 };
 use crate::web::transaction::TransactionResponse;
 
@@ -49,7 +49,7 @@ pub trait WebApi: Send + Sync {
         term: &str,
         block_hash: Option<&str>,
         use_pre_state_hash: bool,
-    ) -> Result<RhoDataResponse, BlockApiException>;
+    ) -> Result<ExploratoryDeployResponse, BlockApiException>;
 
     async fn get_blocks_by_heights(
         &self,

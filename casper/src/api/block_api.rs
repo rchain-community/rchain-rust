@@ -16,6 +16,8 @@ use rchain_shared::base16;
 use rchain_shared::refined::NonNegI64;
 use serde::{Deserialize, Serialize};
 
+use crate::runtime_manager::CapturedReply;
+
 /// A block-api error (the Scala `BlockApi.Error = String`).
 pub type ApiErr<A> = Result<A, String>;
 
@@ -92,12 +94,14 @@ pub trait BlockApi: Send + Sync {
 
     async fn bond_status(&self, public_key: &[u8]) -> ApiErr<bool>;
 
+    /// The reply *and where it was read from*: a bare `Vec<Par>` cannot say whether the term
+    /// produced nothing or replied on a channel the node does not read (AUDIT C38).
     async fn exploratory_deploy(
         &self,
         term: &str,
         block_hash: Option<&str>,
         use_pre_state_hash: bool,
-    ) -> ApiErr<(Vec<Par>, LightBlockInfo)>;
+    ) -> ApiErr<(CapturedReply, LightBlockInfo)>;
 
     async fn get_data_at_par(
         &self,

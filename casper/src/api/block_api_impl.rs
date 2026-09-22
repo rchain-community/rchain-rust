@@ -36,7 +36,7 @@ use crate::api::machine_verifiable_dag::machine_verifiable_dag;
 use crate::blocks::proposer::propose_result::{ProposeResult, ProposeStatus};
 use crate::blocks::proposer::proposer::ProposerResult;
 use crate::event_converter::to_rspace_event;
-use crate::runtime_manager::RuntimeManager;
+use crate::runtime_manager::{CapturedReply, RuntimeManager};
 use crate::state::ProposerState;
 use crate::validator_identity::ValidatorIdentity;
 
@@ -681,7 +681,7 @@ impl BlockApi for BlockApiImpl {
         term: &str,
         block_hash: Option<&str>,
         use_pre_state_hash: bool,
-    ) -> ApiErr<(Vec<Par>, LightBlockInfo)> {
+    ) -> ApiErr<(CapturedReply, LightBlockInfo)> {
         if !(self.is_node_read_only || self.dev_mode) {
             return Err("Exploratory deploy can only be executed on read-only RNode.".to_string());
         }

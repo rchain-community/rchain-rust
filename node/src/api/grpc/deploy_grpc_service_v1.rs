@@ -7,6 +7,7 @@ use std::sync::Arc;
 
 use rchain_casper::api::block_api::BlockApi;
 use rchain_casper::api::block_report_api::BlockReportApi;
+use rchain_casper::runtime_manager::CapturedReply;
 use rchain_models::ast::Par;
 use rchain_models::block_hash::BlockHash;
 use rchain_models::casper::protocol::casper_message::SignedDeployData;
@@ -179,7 +180,7 @@ impl DeployGrpcServiceV1 {
     pub async fn exploratory_deploy(
         &self,
         request: &ExploratoryDeployQuery,
-    ) -> Result<(Vec<Par>, LightBlockInfo), ServiceError> {
+    ) -> Result<(CapturedReply, LightBlockInfo), ServiceError> {
         let block_hash = if request.block_hash.is_empty() {
             None
         } else {
@@ -230,6 +231,7 @@ impl DeployGrpcServiceV1 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rchain_casper::runtime_manager::ReplySource;
     use std::marker::PhantomData;
     use std::sync::Mutex;
 
@@ -354,13 +356,19 @@ mod tests {
             term: &str,
             block_hash: Option<&str>,
             use_pre_state_hash: bool,
-        ) -> ApiErr<(Vec<Par>, LightBlockInfo)> {
+        ) -> ApiErr<(CapturedReply, LightBlockInfo)> {
             self.exploratory.lock().unwrap().push((
                 term.to_string(),
                 block_hash.map(str::to_string),
                 use_pre_state_hash,
             ));
-            Ok((Vec::new(), light_block()))
+            Ok((
+                CapturedReply {
+                    source: ReplySource::None,
+                    data: Vec::new(),
+                },
+                light_block(),
+            ))
         }
         async fn get_data_at_par(
             &self,

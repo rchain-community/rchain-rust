@@ -6,7 +6,7 @@
 
 use std::sync::Arc;
 
-use rchain_casper::runtime_manager::{MergeableStore, RuntimeManager};
+use rchain_casper::runtime_manager::{CapturedReply, MergeableStore, RuntimeManager};
 use rchain_models::runtime::{BindPattern, ListParWithRandom, TaggedContinuation};
 use rchain_models::sorted::SortedProc;
 use rchain_rholang::merging::DeployMergeableDataCodec;
@@ -329,7 +329,7 @@ impl BlockApi for TestShardApi {
         _: &str,
         _: Option<&str>,
         _: bool,
-    ) -> ApiErr<(Vec<Par>, LightBlockInfo)> {
+    ) -> ApiErr<(CapturedReply, LightBlockInfo)> {
         Err("not used by the gateway".to_string())
     }
     async fn get_data_at_par(

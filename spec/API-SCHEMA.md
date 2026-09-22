@@ -15,15 +15,44 @@ rholang-typed values, and the reply shapes of the system processes.
 
 ## Normative rules
 
-1. **`RhoExpr` is externally tagged and unwrapped**: `{"ExprInt":42}`, `{"ExprString":"…"}`,
-   `{"ExprBytes":"<hex>"}`, `{"ExprUnforg":{"UnforgDeploy":"<hex>"}}`. There is **no** `{data: …}`
-   envelope — that is the Scala/OpenAPI *schema* artifact's spelling, not the wire's.
-   Collections: `ExprList`/`ExprTuple`/`ExprSet`/`ExprPar` are all JSON arrays; `ExprMap` is a JSON
-   object. Note the lossiness that follows: a set is indistinguishable from a list on the wire.
+1. **`RhoExpr` is externally tagged and carries the reference's `data` wrapper**:
+   `{"ExprInt":{"data":42}}`, `{"ExprString":{"data":"…"}}`, `{"ExprBytes":{"data":"<hex>"}}`,
+   `{"ExprUnforg":{"data":{"UnforgDeploy":{"data":"<hex>"}}}}`. Collections:
+   `ExprList`/`ExprTuple`/`ExprSet`/`ExprPar` are arrays under `data`; `ExprMap` is a JSON **object**
+   under `data`; an unforgeable nests one level deeper.
+
+   **This rule was wrong until AUDIT C38, and the way it was wrong is worth keeping.** It said the
+   wire had no `data` envelope, and that the envelope was "the Scala/OpenAPI *schema* artifact's
+   spelling, not the wire's". The reference's own types say otherwise: every arm is a case class whose
+   single field is named `data` — `final case class ExprInt(data: Long)`,
+   `ExprMap(data: Map[String, RhoExpr])`, `UnforgPrivate(data: String)`
+   (`legacy/node/src/main/scala/coop/rchain/node/api/WebApi.scala:131-151`) — and the node's JSON codec
+   is *derived* from those case classes, so the field name is the serialization. The document a client
+   generates from (`legacy/docs/rnode-api/rnode-openapi.json`, and the `rnode-openapi-schema.ts` beside
+   it) is derived from the same case classes, which is why the two agree and there is no "schema
+   spelling" to discount. The port emitted the unwrapped form, this file blessed it, and law 42 was
+   then written from the port — so code and law agreed with each other and neither with a client. The
+   corpus could not catch it: it compares the node to the model.
+
+   Note the lossiness that follows: a set is indistinguishable from a list on the wire.
 2. **Terminal results are a list.** A deploy or explore result is always wrapped one level
    (`[42]`, `[]` when the term sent nothing), because the result channel is a `Par`.
-3. **`[]` means the term sent nothing to its result channel** — not "failed" and not
-   "unsupported". Anything that must be seen has to be sent to `rho:rchain:deployId`.
+3. **Where a reply is read from, in order — and the response says which.** A deploy's `expr` is read
+   from these channels, first non-empty wins, and the response's `replySource` names the one that
+   answered (`"firstPrivateName"`, `"out"`, or `"none"`):
+   - **`POST /api/v1/explore-deploy`** (and `-by-block-hash`):
+     1. the term's **first `new`-bound name** — the reference node's own convention, stated in the
+        Scala's `BlockApiImpl` as "be sure the first new should be `return`", and the only channel the
+        port used to read;
+     2. **`@"out"`** — the channel the corpus, the examples and the system-process conformance tests
+        use, added by AUDIT C38 because reading only the first meant a term written this way returned
+        `{"expr": []}`, indistinguishable from a term that produced nothing.
+   - **`GET /api/v1/deploy-status/{sig}`**: the deploy's own `rho:rchain:deployId` channel
+     (`rho:id:<sig>`), which is how the reference node reports a deploy's result.
+4. **`[]` means the term sent nothing to the channels in rule 3** — not "failed" and not
+   "unsupported". On the explore path `replySource: "none"` says it explicitly; a term that must be
+   seen sends to one of the channels in rule 3. A reduce error is a 400 with the error text, and a
+   deploy that fails is `processedWithError`.
 4. **`POST /api/deploy` and `POST /api/propose` return a JSON-encoded string**
    (`"Success!\nDeployId is: <hex>"`), not a JSON object. `deploy-status` returns the
    `DeployExecStatus` enum instead: `{processedWithSuccess:{deployResult,block}}`,

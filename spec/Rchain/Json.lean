@@ -4,9 +4,10 @@ import Rchain.Par
 # Law 42 — the rho-value JSON round-trip, and the envelope rule
 
 The web API exposes rholang data as a JSON-ish tree (`node/src/api/rho_expr.rs`'s `RhoExpr`, which
-clients read as `{"ExprInt":42}`, `{"ExprBytes":"deadbeef"}`, `{"ExprPar":[…]}`). Two things about that
-conversion were a comment rather than a theorem, and both are AUDIT C16's family — a shape a client
-depends on, pinned by nothing:
+clients read as `{"ExprInt":{"data":42}}`, `{"ExprBytes":{"data":"deadbeef"}}`,
+`{"ExprPar":{"data":[…]}}` — the reference document's shape, arm for arm; see `render` below and
+AUDIT C38). Two things about that conversion were a comment rather than a theorem, and both are AUDIT
+C16's family — a shape a client depends on, pinned by nothing:
 
 - **the envelope rule** — `expr_from_par` reads a par's fields and then decides by *count*: one value
   comes back unwrapped, none is "absent" (`None`: a response renders no value at all), and two or more
@@ -80,29 +81,40 @@ def jsonStr (s : String) : String :=
 def bracket (xs : List String) : String := "[" ++ String.intercalate "," xs ++ "]"
 
 mutual
-  /-- The wire text of a `JE`, in the shape `serde`'s derived representation of `RhoExpr` has (compact,
-  externally tagged: `{"ExprInt":42}`). The corpus carries this text, and the Rust consumer compares
-  the node's own JSON to it. -/
+  /-- The wire text of a `JE`: **the reference document's shape, arm for arm** — every arm wraps its
+  payload in a field named `data`, a map's payload is a JSON *object* keyed by string, and an
+  unforgeable nests one level (`{"ExprUnforg":{"data":{"UnforgPrivate":{"data":"ab"}}}}`). The shapes
+  are copied from `legacy/docs/rnode-api/rnode-openapi-schema.ts`, the file the Scala node's own
+  OpenAPI document generates for clients: `ExprInt: { ExprInt: { data: number } }` and so on.
+
+  This is AUDIT C38. The model used to render `{"ExprInt":42}` — because it was written from the
+  *port's* `#[derive]`d serde output rather than from the contract, so law and code agreed with each
+  other and both disagreed with every client. The corpus could not catch that: it compares the node
+  to the model, and the two were wrong together. -/
   def render : JE → String
-    | .par es => "{\"ExprPar\":" ++ bracket (renderItems es) ++ "}"
-    | .tuple es => "{\"ExprTuple\":" ++ bracket (renderItems es) ++ "}"
-    | .list es => "{\"ExprList\":" ++ bracket (renderItems es) ++ "}"
-    | .set es => "{\"ExprSet\":" ++ bracket (renderItems es) ++ "}"
-    | .map kvs => "{\"ExprMap\":" ++ bracket (renderKvs kvs) ++ "}"
-    | .bool b => "{\"ExprBool\":" ++ (if b then "true" else "false") ++ "}"
-    | .int n => "{\"ExprInt\":" ++ toString n ++ "}"
-    | .str s => "{\"ExprString\":" ++ jsonStr s ++ "}"
-    | .uri s => "{\"ExprUri\":" ++ jsonStr s ++ "}"
-    | .bytes l => "{\"ExprBytes\":" ++ jsonStr (hexEncode l) ++ "}"
-    | .unforg u => "{\"ExprUnforg\":{" ++ jsonStr u.tag ++ ":" ++ jsonStr u.hex ++ "}}"
+    | .par es => data "ExprPar" (bracket (renderItems es))
+    | .tuple es => data "ExprTuple" (bracket (renderItems es))
+    | .list es => data "ExprList" (bracket (renderItems es))
+    | .set es => data "ExprSet" (bracket (renderItems es))
+    | .map kvs => data "ExprMap" ("{" ++ String.intercalate "," (renderKvs kvs) ++ "}")
+    | .bool b => data "ExprBool" (if b then "true" else "false")
+    | .int n => data "ExprInt" (toString n)
+    | .str s => data "ExprString" (jsonStr s)
+    | .uri s => data "ExprUri" (jsonStr s)
+    | .bytes l => data "ExprBytes" (jsonStr (hexEncode l))
+    | .unforg u => data "ExprUnforg" (data u.tag (jsonStr u.hex))
+
+  /-- One arm: `{"<tag>":{"data":<payload>}}`. The tag is the bare name (`ExprInt`), quoted here. -/
+  def data (tag payload : String) : String := "{\"" ++ tag ++ "\":{\"data\":" ++ payload ++ "}}"
 
   def renderItems : List JE → List String
     | [] => []
     | e :: es => render e :: renderItems es
 
+  /-- A map's entries as a JSON object's members, in the canonical order law 1 gives them. -/
   def renderKvs : List (String × JE) → List String
     | [] => []
-    | (k, v) :: kvs => ("[" ++ jsonStr k ++ "," ++ render v ++ "]") :: renderKvs kvs
+    | (k, v) :: kvs => (jsonStr k ++ ":" ++ render v) :: renderKvs kvs
 end
 
 /-- The envelope rule, on its own: `expr_from_par`'s `match exprs.len()` — one value comes back

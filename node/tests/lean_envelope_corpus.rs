@@ -24,12 +24,14 @@
 mod common;
 
 use rchain_models::casper::protocol::deploy_service::{BondInfo, DeployInfo, LightBlockInfo};
-use rchain_node::api::dto::{ApiStatus, NodeCapabilities, RhoDataResponse, VersionInfo};
+use rchain_node::api::dto::{
+    ApiStatus, ExploratoryDeployResponse, NodeCapabilities, RhoDataResponse, VersionInfo,
+};
 use rchain_node::web::http::OPENAPI_JSON;
 use serde_json::Value;
 
 /// The catalog's declared size (`Rchain/Envelope.lean`'s `envelopeCaseCount`).
-const ENVELOPE_CASES: usize = 6;
+const ENVELOPE_CASES: usize = 7;
 
 #[tokio::test]
 async fn every_envelope_is_the_lean_catalogs_and_the_served_schemas() {
@@ -246,6 +248,14 @@ fn dto_by_name(name: &str) -> Value {
         "RhoDataResponse" => to_json(&RhoDataResponse {
             expr: Vec::new(),
             block: light_block(),
+        }),
+        // The exploratory response carries the channel rule (AUDIT C38), so its keys are
+        // `expr, block, replySource` — and `replySource` is one of the three names the catalog and
+        // the served document both declare.
+        "ExploratoryDeployResponse" => to_json(&ExploratoryDeployResponse {
+            expr: Vec::new(),
+            block: light_block(),
+            reply_source: "none".to_string(),
         }),
         other => panic!("no DTO arm for the catalog row {other:?}"),
     }

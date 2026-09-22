@@ -1,4 +1,5 @@
 import Rchain.Syntax
+import Rchain.Surface
 import Rchain.Par
 import Rchain.Cmp
 import Rchain.Rho

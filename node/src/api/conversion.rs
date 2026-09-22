@@ -1,6 +1,7 @@
 //! Web API protobuf conversion functions (port of the conversion fns in `api/WebApi.scala`).
 
 use rchain_casper::api::block_api::Capabilities;
+use rchain_casper::runtime_manager::CapturedReply;
 use rchain_crypto::public_key::PublicKey;
 use rchain_crypto::signatures::signatures_alg::from_algorithm;
 use rchain_crypto::signatures::signed::Signed;
@@ -13,8 +14,8 @@ use rchain_shared::base16;
 
 use super::dto::{
     ApiStatus, DataAtNameResponse, DeployExecStatus as ApiDeployExecStatus, DeployRequest,
-    NodeCapabilities, PooledDeploy, RhoDataResponse, RhoExprWithBlock, SignatureException,
-    VersionInfo,
+    ExploratoryDeployResponse, NodeCapabilities, PooledDeploy, RhoDataResponse, RhoExprWithBlock,
+    SignatureException, VersionInfo,
 };
 use super::rho_expr::{expr_from_par, RhoExpr};
 
@@ -98,6 +99,20 @@ pub fn to_rho_data_response(pars: &[Par], block: &LightBlockInfo) -> RhoDataResp
     RhoDataResponse {
         expr: pars.iter().filter_map(expr_from_par).collect(),
         block: block.clone(),
+    }
+}
+
+/// Map an exploratory deploy's reply — its data *and* the channel it was read from — to an
+/// `ExploratoryDeployResponse`. `to_rho_data_response` is for the endpoints where the *client* names
+/// the channel (`/data-at-name-by-block-hash`), so no source is needed there.
+pub fn to_exploratory_deploy_response(
+    reply: &CapturedReply,
+    block: &LightBlockInfo,
+) -> ExploratoryDeployResponse {
+    ExploratoryDeployResponse {
+        expr: reply.data.iter().filter_map(expr_from_par).collect(),
+        block: block.clone(),
+        reply_source: reply.source.as_str().to_string(),
     }
 }
 

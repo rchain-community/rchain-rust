@@ -41,6 +41,7 @@ mod tests {
     use super::*;
     use async_trait::async_trait;
     use rchain_casper::api::block_api::{ApiErr, BlockApi, Capabilities};
+    use rchain_casper::runtime_manager::CapturedReply;
     use rchain_models::ast::Par;
     use rchain_models::block_metadata::BlockMetadata;
     use rchain_models::casper::protocol::casper_message::SignedDeployData;
@@ -126,7 +127,7 @@ mod tests {
             _term: &str,
             _block_hash: Option<&str>,
             _use_pre_state_hash: bool,
-        ) -> ApiErr<(Vec<Par>, LightBlockInfo)> {
+        ) -> ApiErr<(CapturedReply, LightBlockInfo)> {
             unimplemented!()
         }
         async fn get_data_at_par(

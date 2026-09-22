@@ -14,13 +14,13 @@ use rchain_rholang::util::rev_address::RevAddress;
 use rchain_shared::base16;
 
 use super::conversion::{
-    to_api_status, to_data_at_name_response, to_deploy_exec_status, to_node_capabilities,
-    to_pooled_deploy, to_rho_data_response, to_signed_deploy,
+    to_api_status, to_data_at_name_response, to_deploy_exec_status, to_exploratory_deploy_response,
+    to_node_capabilities, to_pooled_deploy, to_rho_data_response, to_signed_deploy,
 };
 use super::dto::{
     ApiStatus, BlockApiException, DataAtNameByBlockHashRequest, DataAtNameRequest,
-    DataAtNameResponse, DeployExecStatus, DeployRequest, FaucetResponse, NodeCapabilities,
-    PooledDeploys, RhoDataResponse,
+    DataAtNameResponse, DeployExecStatus, DeployRequest, ExploratoryDeployResponse, FaucetResponse,
+    NodeCapabilities, PooledDeploys, RhoDataResponse,
 };
 use super::faucet;
 use super::rho_expr::{rho_expr_to_par, unforg_to_par};
@@ -66,6 +66,7 @@ const FAUCET_MAX_DRIPS_PER_ADDRESS: u32 = 10;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rchain_casper::runtime_manager::CapturedReply;
     use std::sync::Mutex as StdMutex;
 
     use rchain_block_storage::dag::dag_storage::DeployId;
@@ -215,7 +216,7 @@ mod tests {
             _: &str,
             _: Option<&str>,
             _: bool,
-        ) -> ApiErr<(Vec<Par>, LightBlockInfo)> {
+        ) -> ApiErr<(CapturedReply, LightBlockInfo)> {
             unreachable!("not exercised here")
         }
         async fn get_data_at_par(
@@ -618,13 +619,13 @@ impl WebApi for WebApiImpl {
         term: &str,
         block_hash: Option<&str>,
         use_pre_state_hash: bool,
-    ) -> Result<RhoDataResponse, BlockApiException> {
-        let (pars, block) = self
+    ) -> Result<ExploratoryDeployResponse, BlockApiException> {
+        let (reply, block) = self
             .block_api
             .exploratory_deploy(term, block_hash, use_pre_state_hash)
             .await
             .map_err(BlockApiException)?;
-        Ok(to_rho_data_response(&pars, &block))
+        Ok(to_exploratory_deploy_response(&reply, &block))
     }
 
     async fn get_blocks_by_heights(

@@ -77,6 +77,10 @@ def envelopeCatalog : List EnvelopeRow :=
         "validAfterBlockNumber", "cost", "errored", "systemDeployError"] }
   , { name := "RhoDataResponse", endpoint := "POST /api/v1/data-at-name",
       keys := ["expr", "block"] }
+  -- The exploratory response names the *channel* it read the reply from, so an empty `expr` is a
+  -- fact rather than a guess (AUDIT C38).
+  , { name := "ExploratoryDeployResponse", endpoint := "POST /api/v1/explore-deploy",
+      keys := ["expr", "block", "replySource"] }
   , { name := "DeployExecStatus", endpoint := "the `deployResult` body of a deploy response",
       keys := [],
       variants :=
@@ -95,7 +99,7 @@ theorem envelopeCatalog_decide :
   decide
 
 /-- The count the Rust consumer asserts it read. -/
-def envelopeCaseCount : Nat := 6
+def envelopeCaseCount : Nat := 7
 
 /-- The catalog carries exactly `envelopeCaseCount` rows. -/
 theorem envelopeCatalog_length : envelopeCatalog.length = envelopeCaseCount := by decide
