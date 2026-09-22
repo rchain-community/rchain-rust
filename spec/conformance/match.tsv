@@ -13,3 +13,5 @@ match	@{..._}	{"a": 1}	true
 match	@{"a": {"b": 1, ..._}, ..._}	{"a": {"b": 1, "c": 2}, "d": 3}	true
 match	@{"a": v1, "b": v1}	{"a": 1, "b": 2}	rejected
 match	@{"a": v1, "b": v2}	{"a": 1, "b": 2}	true
+match	@(1, 2)	(1, 2)	true
+match	@(1, 2)	(1, 2, 3)	false

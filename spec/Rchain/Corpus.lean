@@ -56,6 +56,12 @@ def listPat (ps : List Par) (r : Option Var) : Par := one (.elist ps r)
 /-- A set pattern. -/
 def setPat (ps : List Par) (r : Option Var) : Par := one (.eset ps r)
 
+/-- A tuple, as a pattern or as a datum — the shape whose matcher clause the model was missing
+    (AUDIT C44): the port's `spatial_match` has an `ETuple` arm (`spatial_matcher.rs:496-501`) and the
+    model's clauses did not, so a tuple pattern matched nothing in the model while the node matches
+    it. The cases below are what pins it. -/
+def tuplePat (ps : List Par) : Par := one (.etuple ps)
+
 /-- An integer. -/
 def intPar (n : Int) : Par := one (.ground (.int n))
 
@@ -131,7 +137,7 @@ partial map whose only non-concreteness is the remainder (C22 item 3), each with
 *not* match beside it. -/
 
 /-- The number of cases the matching layer carries. -/
-def matchCaseCount : Nat := 15
+def matchCaseCount : Nat := 17
 
 /-- One matching case: the bind's source, the target's source, the model's view of both, and the
 verdict. The verdict is `decide`d against `spatialMatch` (`matchCases_decide`), which is what makes
@@ -209,6 +215,16 @@ def matchCases : List MatchCase :=
   , { bind := "@{\"a\": v1, \"b\": v2}", target := "{\"a\": 1, \"b\": 2}",
       patternPar := mapOf [("a", namePar 1), ("b", namePar 2)] none,
       targetPar := mapOf [("a", intPar 1), ("b", intPar 2)] none, expected := true }
+    -- 15. the shape the model's clauses had no arm for: a **tuple**. The port matches it
+    -- (`spatial_matcher.rs:496-501`), so an equal tuple must match — and until the arm was added the
+    -- model answered `false`, which is AUDIT C44.
+  , { bind := "@(1, 2)", target := "(1, 2)",
+      patternPar := tuplePat [intPar 1, intPar 2],
+      targetPar := tuplePat [intPar 1, intPar 2], expected := true }
+    -- 16. the same arm, on the negative side: tuples of different arity do not match.
+  , { bind := "@(1, 2)", target := "(1, 2, 3)",
+      patternPar := tuplePat [intPar 1, intPar 2],
+      targetPar := tuplePat [intPar 1, intPar 2, intPar 3], expected := false }
   ]
 
 /-- Every matching case's verdict holds of the model. `decide`, because the clauses are structurally

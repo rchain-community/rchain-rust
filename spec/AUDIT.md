@@ -1960,6 +1960,35 @@ port against the **reference document** rather than against itself.
   the left side's added list when the right's is longer makes it fail in 0.01s — which is the same
   standard the register's own checks are held to.
 
+- **C44 — the matcher had no clause for a tuple, and the port has one.** Found by adding two cases to
+  the matching corpus (`spec/conformance/match.tsv` 15/16: `@(1, 2)` against `(1, 2)`, which must match,
+  and against `(1, 2, 3)`, which must not). The corpus declares each verdict and `matchCases_decide`
+  refuses to compile when the model disagrees — and it refused: the model answered **false** for the
+  equal tuple.
+
+  The model's `spatialMatchExpr` covered ground values, lists, sets and maps, and every other shape
+  answered `false`; `rholang/src/matcher/spatial_matcher.rs:496-501` has an `ETuple` arm. Adding the
+  corpus case first is what made this visible, and the *reason it was invisible* is worth recording,
+  because the model's own documentation said so in as many words: every unmodelled shape fails closed
+  ("the spec claims no match rather than guessing one"), and a pattern that matches nothing produces
+  **silence** rather than an error. That is C19/C20/C22's shape exactly — a missing clause read as a
+  client bug — surviving in the model instead of in the port, in the one place the docs called a
+  boundary.
+
+  The clause set is not the only thing this exposed. Law 37's tie (`concrete_matches_iff_eq`) was stated
+  over *every* connective-free pattern, and an arithmetic pattern is connective-free, equal to itself,
+  and matched by no clause — so the tie, which the register carried as **owed**, was **false**:
+  `arithmetic_pattern_refutes_the_unrestricted_tie` is the term (`spatialMatch p p = false` for
+  `p = (1 + 2)`), and the statement now carries `modelledPar` on both sides. The port's arithmetic arms
+  are deliberately not modelled: a datum is evaluated before it is stored, so no reachable target carries
+  one — the model's `false` is right about every term a client can produce, and the law's quantifier was
+  what was wrong.
+
+  **Fixed**: the `ETuple` arm (`Match.lean`, mirroring the port's `fold_match(tlist, plist, None, …)`),
+  `freeLevelsExpr` gained the tuple arm too (a level bound twice *inside* a tuple would otherwise have
+  passed the linearity check), the corpus carries the two cases, and `rholang/tests/lean_match_corpus.rs`
+  holds the node to them — the node agrees on both.
+
 - **The class, recorded once, because it is the consolidation pass's whole justification: an axiom that
   is false is worse than one that is owed, because anything follows from it.** Nine axioms the pass
   removed were not merely unproved — they were false of the code or of the model that carried them, and
@@ -2018,6 +2047,7 @@ finding that no law covers, and it says why rather than leaving the gap to infer
 | C41 the diff accumulator could overflow where the merge refuses | 17 | **fixed**: `combining_refuses_a_diff_that_leaves_i64` (`event_log_index.rs`) fails on a `wrapping_add`, and the error reaches the merge through the now-fallible `EventLogIndex::combine`/`branches_are_conflicting`; `Merging.lean`'s `checkedAdd_refuses_overflow`/`mergeRandoms_perm` state the checked half and the call-site canonicalization |
 | C42 law 5's linearity is the normalizer's, not the matcher's | 5 | `Match.lean`'s `aggregateUpdates_rejects_double_bind`/`freeMapMerge_overwrites` state the matcher's halves; the enforcing check is `normalizer.rs:111,289,590,1325`, measured on a devnet (both contexts refused, a duplicated datum accepted), and `spec/conformance/match.tsv` documents the matcher in isolation |
 | C43 the merge's associativity was untested, under a name that says otherwise | 9 | `Merge.lean`'s `mergeChanges_assoc` (proved) **and** `property_tests.rs`'s `law9_state_change_combine_is_associative`, over arbitrary state changes including the join map; the misnamed `state_change.rs` test now says what it asserts |
+| C44 the matcher had no clause for a tuple, and the port has one | 5, 37 | `match.tsv` cases 15/16 (`@(1, 2)` against `(1, 2)` and against `(1, 2, 3)`) + `lean_match_corpus.rs`; the `ETuple` arm in `Match.lean`, and `modelledPar` on both sides of `concrete_matches_iff_eq`, whose old statement is refuted by `arithmetic_pattern_refutes_the_unrestricted_tie` |
 
 **The two rows that are not laws are the two worth keeping visible.** C37 is a *harness* finding —
 a measurement that was not a measurement — and no law would have caught it, because the thing that

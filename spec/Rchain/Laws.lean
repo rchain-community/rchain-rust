@@ -256,7 +256,11 @@ def laws : List Law := [
       carries both halves (`aggregateUpdates_rejects_double_bind`, `freeMapMerge_overwrites`), which is \
       what makes the law a statement about the matcher's clauses — and the probe is what says the \
       matcher half is defence-in-depth rather than a defect, exactly as C42 records. **Owed**: the two \
-      proofs above" },
+      proofs above. **A third thing this row's corpus found** (AUDIT C44): the clauses had no arm for a \
+      **tuple**, which the port matches (`spatial_matcher.rs:496-501`) — so a tuple pattern the node \
+      matches read as silence here, and the law's own statement was false of the model until \
+      `modelledPar` was added to it. Cases 15/16 of `spec/conformance/match.tsv` are the pair that \
+      caught it; the arm is not an axiom, it is a clause" },
   { number := 6, layer := "Rholang",
     statement := "No globally free variables in a program",
     status := .provedModel,
@@ -894,16 +898,24 @@ def laws : List Law := [
     note := "reuses `TotalOn`/`Refined` (`Rchain/Ty.lean`)" },
   { number := 37, layer := "Rholang",
     statement := "Match soundness and completeness (Law 5 strengthened: partial collections, \
-      wildcards, remainders)",
+      wildcards, remainders) — over the shapes the clauses cover, which `modelledPar` names",
     status := .owed,
     declarations := [`Rchain.spatialMatchCore, `Rchain.spatialMatchExprs, `Rchain.spatialMatchExpr,
-      `Rchain.matchListPar, `Rchain.matchMap],
+      `Rchain.matchListPar, `Rchain.matchMap, `Rchain.modelledPar, `Rchain.modelledExpr,
+      `Rchain.arithmetic_pattern_refutes_the_unrestricted_tie],
     axioms := [`Rchain.concrete_matches_iff_eq, `Rchain.fuel_saturation],
     corpus := some "match",
-    falsifiable := some "15 cases with three-valued verdicts; the once-false law-5 axiom was replaced \
-      *because* a corpus case contradicted it (AUDIT C26), and the fuel bound was one step short until \
-      the `decide` refused to compile — the mechanism caught both",
-    note := "shares its two axioms with Law 5" },
+    falsifiable := some "17 cases with three-valued verdicts; the once-false law-5 axiom was replaced \
+      *because* a corpus case contradicted it (AUDIT C26), the fuel bound was one step short until the \
+      `decide` refused to compile, and `concrete_matches_iff_eq` **was false as stated** until case 15 \
+      — a tuple pattern, which the port matches (`spatial_matcher.rs:496-501`) and the clauses had no \
+      arm for — made the `decide` refuse (AUDIT C44). The tie now carries `modelledPar` on both sides, \
+      and `arithmetic_pattern_refutes_the_unrestricted_tie` is the term that says why it must: a \
+      concrete arithmetic pattern equals itself and no clause matches it",
+    note := "shares its two axioms with Law 5. **The tie's domain was too wide, not merely unproved**: \
+      `connectiveUsed pattern = false` admits an arithmetic pattern, which is concrete and unmatchable, \
+      so the statement was false of the model — the same class as C26 and C40, found by asking what the \
+      statement says on a term the model has" },
   { number := 38, layer := "Rholang",
     statement := "Silence is specified: an unmatched receive or `match` yields no reduction **and no \
       error**",

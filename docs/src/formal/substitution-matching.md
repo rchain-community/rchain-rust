@@ -58,8 +58,10 @@ def spatialMatches (target pattern : Par) : Prop := spatialMatch target pattern 
 instance spatialMatches_decidable (target pattern : Par) : Decidable (spatialMatches target pattern)
 theorem spatialMatch_implies_linear {target pattern : Par}
     (h : spatialMatch target pattern = true) : …               -- Law 5, correctly stated
-axiom concrete_matches_iff_eq (target pattern : Par) (h : connectiveUsed pattern = false) :
-    spatialMatch target pattern = (target = pattern)          -- Law 37↔35, owed
+axiom concrete_matches_iff_eq (target pattern : Par)
+    (h : connectiveUsed pattern = false)
+    (hp : modelledPar pattern = true) (ht : modelledPar target = true) :
+    spatialMatch target pattern = (target = pattern)           -- Law 37↔35, owed
 axiom fuel_saturation (target pattern : Par) : …               -- owed
 ```
 
@@ -76,6 +78,11 @@ Three things follow, and each is the point of a row:
 
 Law 37 is *soundness and completeness* — the result set equals the relation's, with partial collections,
 wildcards and remainders included (`spec/conformance/match.tsv`, `rholang/tests/lean_match_corpus.rs`);
+`modelledPar` is the domain the tie is stated over — the shapes the clauses cover. It is not
+decoration: an arithmetic pattern is connective-free and equal to itself and no clause matches it, so
+the tie without it was **false** (`arithmetic_pattern_refutes_the_unrestricted_tie`, AUDIT C44), and the
+same audit found the `ETuple` clause missing from a matcher the port has one for.
+
 `concrete_matches_iff_eq` is the half that justifies the port's fast path
 (`if !pattern.connective_used { pattern == target }`), which is why the two are one row. Law 38 is what
 happens when nothing matches: **no step and no error** ([Laws 30–43](laws-30-43.md)).

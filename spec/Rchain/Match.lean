@@ -31,11 +31,22 @@ Two things are owed rather than proven, and are named rather than left implicit:
 `fuel_saturation`. A fuel shortfall makes the matcher answer `false`, which the corpus reports as a
 disagreement with the node — so both are checked behaviourally in the meantime.
 
-**The boundary, stated rather than implied.** The clauses cover what the corpus and the failing
-consumers use: variables, wildcards, ground values, and `[…]`/`Set(…)`/`{…}` with remainders and
-nesting. Every other shape answers `false`, which *fails closed*: the spec claims no match rather than
-guessing one, and since the corpus asserts agreement with the node, a shape outside the boundary that
-the node *does* match shows up as a corpus failure rather than a silent over-claim.
+**The boundary, stated rather than implied — and now named by a predicate.** The clauses cover:
+variables, wildcards, ground values, and `[…]`/`Set(…)`/`{…}`/`(…)` with remainders and nesting — which
+is `modelledPar` below, the predicate law 37's tie is stated over. Every other shape answers `false`,
+which *fails closed*: the spec claims no match rather than guessing one, and since the corpus asserts
+agreement with the node, a shape outside the boundary that the node *does* match shows up as a corpus
+failure rather than a silent over-claim.
+
+**A tuple was outside the boundary, and the port matches one** (AUDIT C44). The clauses had no `ETuple`
+arm, and `spatial_matcher.rs:496-501` has one, so a tuple pattern that the node matches read as
+"silence" in the model — the C19/C20/C22 shape, hidden this time behind the *documented* fact that
+unmodelled shapes fail closed. The corpus's cases 15/16 are what found it: a declared verdict of `true`
+for `@(1, 2)` against `(1, 2)` made `matchCases_decide` refuse to compile. The arm is added. The
+arithmetic arms are the port's too (`:563-573`) and are deliberately **not** modelled: a datum is
+evaluated before it is stored, so no reachable target carries one — a `spatialMatch` that said otherwise
+would be right about the model and wrong about the node. That gap is why the tie carries `modelledPar`
+rather than `connectiveUsed` alone.
 -/
 
 namespace Rchain
@@ -122,6 +133,15 @@ mutual
       | .elist ps r => match target with
         | [.elist ts _] => matchListPar f ps ts r.isSome
         | _ => false
+      -- A **tuple** matches element-wise, with no remainder to absorb a tail — the port's arm
+      -- (`spatial_matcher.rs:496-501`, `fold_match(tlist, plist, None, …)`) which this clause set did
+      -- not have. Its absence was invisible because the model *fails closed* (every unmodelled shape
+      -- answers `false`), and a pattern that matches nothing produces silence rather than an error —
+      -- the same shape as C19/C20/C22, where a missing clause read as a client bug. AUDIT C44; the
+      -- corpus's cases 15/16 (`spec/conformance/match.tsv`) are what found it.
+      | .etuple ps => match target with
+        | [.etuple ts] => matchListPar f ps ts false
+        | _ => false
       | .eset ps r => match target with
         | [.eset ts _] => matchListPar f ps ts r.isSome
         | _ => false
@@ -182,6 +202,7 @@ mutual
     | .evar (.free n) => [n]
     | .elist ps _ => freeLevelsOfListPar ps
     | .eset ps _ => freeLevelsOfListPar ps
+    | .etuple ps => freeLevelsOfListPar ps
     | .emap kvs _ => freeLevelsOfPairs kvs
     | _ => []
 
@@ -295,16 +316,73 @@ theorem freeMapMerge_overwrites (f : FreeMap) (l : Nat) (v' : Par) :
     (freeMapMerge f [(l, v')]).lookup l = some v' := by
   simp [freeMapMerge, freeMapBind, FreeMap.lookup]
 
-/-- Law 37's tie to law 35, and the justification of the Rust's fast path: a pattern with no
-connective, no free variable, no wildcard and no remainder matches exactly the targets structurally
-equal to it, so `if !pattern.connective_used { pattern == target }` decides the same question the
-clauses would.
+/-! ## The domain of the tie
 
-**Proof owed**: reducing the clauses to equality is an induction over the pattern — its expression
-list, the collections' element lists, a map's pairs, and the remainder rule. Its *content* is checked
-today by `spec/conformance/match.tsv` (every verdict `decide`d against the definitions above, with the
-Rust held to the same cases); the proof itself is recorded as owed in `spec/INVENTORY.md` row 37. -/
-axiom concrete_matches_iff_eq (target pattern : Par) (h : connectiveUsed pattern = false) :
+The shapes the clauses above **cover**: a par whose only non-empty field is `exprs`, every
+  expression of which is a ground value or one of the four collection forms, recursively. The tie below
+  is stated over this predicate rather than over every par, because a shape outside it *fails closed*
+  — every clause that does not apply answers `false` — and a law about "matches exactly the equal
+  targets" cannot hold where the only answer is "no clause". An arithmetic pattern is the case: it is
+  concrete (`connectiveUsed` is false of it), it equals itself, and no clause matches it, which is the
+counterexample below. -/
+
+mutual
+  def modelledPar : Par → Bool
+    | .mk s r n e m u b c =>
+      s.isEmpty && r.isEmpty && n.isEmpty && modelledExprs e && m.isEmpty && u.isEmpty
+        && b.isEmpty && c.isEmpty
+  def modelledExprs : List Expr → Bool
+    | [] => true
+    | x :: xs => modelledExpr x && modelledExprs xs
+  def modelledExpr : Expr → Bool
+    | .ground _ => true
+    | .elist ps _ => modelledPars ps
+    | .eset ps _ => modelledPars ps
+    | .etuple ps => modelledPars ps
+    | .emap kvs _ => modelledPairs kvs
+    | _ => false
+  def modelledPars : List Par → Bool
+    | [] => true
+    | p :: ps => modelledPar p && modelledPars ps
+  def modelledPairs : List (Par × Par) → Bool
+    | [] => true
+    | (a, b) :: kvs => modelledPar a && modelledPar b && modelledPairs kvs
+end
+
+/-- A tuple holding `1 + 2`: concrete, equal to itself, and outside every clause — the term that shows
+    why the tie needs `modelledPar` and not just `connectiveUsed`. Its *tuple* half is what the corpus
+    found first (case 15 of `spec/conformance/match.tsv`), and the fix there exposed this one: the port
+    *does* have the arithmetic arms (`spatial_matcher.rs:563-573`), but a datum is evaluated before it is
+    stored, so a target can never carry one — the model's `false` is right about every reachable term
+    and the law's quantifier was what was wrong. -/
+def oneExpr (e : Expr) : Par := Par.mk [] [] [] [e] [] [] [] []
+
+def arithmeticTuple : Par :=
+  oneExpr (.etuple [oneExpr (.eplus (oneExpr (.ground (.int 1))) (oneExpr (.ground (.int 2))))])
+
+/-- **The unrestricted tie was false.** `spatialMatch p p` answers `false` for a concrete pattern while
+    `p = p` holds. -/
+theorem arithmetic_pattern_refutes_the_unrestricted_tie :
+    connectiveUsed arithmeticTuple = false ∧ spatialMatch arithmeticTuple arithmeticTuple = false
+      ∧ modelledPar arithmeticTuple = false := by
+  refine ⟨?_, ?_, ?_⟩ <;> decide
+
+/-- **Law 37's tie to law 35, and the justification of the Rust's fast path**: a *modelled*, concrete
+pattern matches exactly the targets structurally equal to it — so `if !pattern.connective_used
+{ pattern == target }` decides the same question the clauses would, for the shapes the clauses cover.
+
+**The domain is part of the statement now.** It read `∀ target pattern, connectiveUsed pattern = false
+→ spatialMatch target pattern = (target = pattern)`, which is false: `arithmeticTuple` is concrete and
+equal to itself and no clause matches it (`arithmetic_pattern_refutes_the_unrestricted_tie`), and the
+`modelledPar` hypotheses are what exclude it. Both sides carry one — the clauses read only the two
+`exprs` fields, so a target with a send in it would "match" a pattern it is not equal to.
+
+**Proof owed**: reducing the clauses to equality is an induction over the pattern — its expression list,
+the collections' element lists, a map's pairs, the tuples, and the fuel. Its *content* is checked today
+by `spec/conformance/match.tsv` (every verdict `decide`d against the definitions above, with the Rust
+held to the same cases); the proof itself is recorded as owed in `spec/INVENTORY.md` row 37. -/
+axiom concrete_matches_iff_eq (target pattern : Par) (h : connectiveUsed pattern = false)
+    (hp : modelledPar pattern = true) (ht : modelledPar target = true) :
     spatialMatch target pattern = (target = pattern)
 
 /-- The fuel is enough — stated as **saturation**: past `matchFuel`, more fuel changes nothing.
