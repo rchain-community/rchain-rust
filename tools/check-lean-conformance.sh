@@ -20,6 +20,10 @@
 #      produce. A stale corpus is a check that stopped checking.
 #   6. **The Rust agrees 1:1** — the consumer tests read the corpora and fail on any disagreement.
 #   7. **The static audits** — protocol agreement and channel balance over the vendored sources.
+#   8. **The law register is current** — `lake exe rchain-laws` re-emits `spec/laws.tsv` and
+#      `spec/LAWS.md`, and `git status` proves they are what `Rchain/Laws.lean` says. The register's own
+#      checks — numbering 1..43, reference integrity, axiom accounting, and that every *proved* law has
+#      a falsifiability witness — run in step 1, because they need the elaborated environment.
 #
 # Usage: tools/check-lean-conformance.sh
 set -euo pipefail
@@ -35,9 +39,15 @@ ok() { printf 'ok    %s\n' "$*"; }
 # (the corpus emitter) is *not* pulled in by the library target, so `lake build` alone would compile
 # the corpus module's theorems never — a `decide`d case could rot unread. Verified by breaking the
 # model on purpose and watching this fail.
+#
+# `rchain-laws` is built here for the same reason and one more: its `run_cmd` checks (the register's
+# numbering, reference integrity and axiom accounting) only run when the module is elaborated, so
+# *building* it is the check. A `sorry` scan cannot see an `axiom`; this step is what can.
 if command -v lake >/dev/null 2>&1; then
-  if (cd "$SPEC" && lake build >/tmp/lean-build.log 2>&1 && lake build rchain-corpus >>/tmp/lean-build.log 2>&1); then
-    ok "lake build (spec/, library + executables)"
+  if (cd "$SPEC" && lake build >/tmp/lean-build.log 2>&1 \
+      && lake build rchain-corpus >>/tmp/lean-build.log 2>&1 \
+      && lake build rchain-laws >>/tmp/lean-build.log 2>&1); then
+    ok "lake build (spec/, library + executables + the law-register checks)"
   else
     fail "lake build (spec/) — see /tmp/lean-build.log"
   fi
@@ -155,6 +165,27 @@ if [[ -d "$ROOT/spec/conformance" ]]; then
       fail "$dir/tests/$test_name.rs disagrees with the corpus — see /tmp/$test_name.log"
     fi
   done
+fi
+
+# --- 5b. the law register is current -------------------------------------------
+# `spec/laws.tsv` and `spec/LAWS.md` are generated from `Rchain/Laws.lean`, and the documents' law counts
+# and statuses are supposed to come from them. Committed and re-emitted here for the same reason the
+# corpora are: a register that no longer matches the Lean is a catalog that stopped being true — which is
+# exactly how both documents came to say "29 laws" while the tree held 43, and how they came to disagree
+# with each other on Laws 5 and 24.
+if [[ -x "$ROOT/tools/emit-lean-laws.sh" ]]; then
+  if "$ROOT/tools/emit-lean-laws.sh" >/tmp/lean-laws.log 2>&1; then
+    ok "law register emitted from the Lean"
+  else
+    fail "law register emission failed — see /tmp/lean-laws.log"
+  fi
+  dirty="$(cd "$ROOT" && git status --porcelain -- spec/laws.tsv spec/LAWS.md)"
+  if [[ -z "$dirty" ]]; then
+    ok "committed law register matches the Lean"
+  else
+    fail "spec/laws.tsv / spec/LAWS.md are not what the Lean defines — re-emit and commit:"
+    printf '%s\n' "$dirty" | sed 's/^/      /'
+  fi
 fi
 
 # --- the reply catalog is the schema's table ---------------------------------

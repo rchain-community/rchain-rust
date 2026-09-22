@@ -16,3 +16,12 @@ name = "Rchain"
 [[lean_exe]]
 name = "rchain-corpus"
 root = "Rchain.Corpus"
+
+# The law register: `lake exe rchain-laws --out spec/laws.tsv` (or `--format md`). It emits the catalog
+# from `Rchain/Laws.lean` and — because it imports the whole library — *checks* the tree against it:
+# numbering, reference integrity, and that the axioms the rows cite are exactly the tree's axioms.
+# It is an `lean_exe` root rather than a library module because it imports `Rchain`, which imports
+# `Rchain.Laws`; as a root it is excluded from `Rchain.lean`'s import set and cannot be circular.
+[[lean_exe]]
+name = "rchain-laws"
+root = "Rchain.LawsMain"
