@@ -1,9 +1,17 @@
 # Grammar and sorts
 
-This is the precise statement of the rholang grammar. It is the reflective higher-order ρ-calculus of
-Meredith & Radestock (2005), with its two sorts made explicit. The authoritative source is
+This is the precise statement of the **calculus**: the reflective higher-order ρ-calculus of Meredith
+& Radestock (2005), with its two sorts made explicit. The authoritative source is
 [`spec/RHO-CALCULUS.md`](../../../spec/RHO-CALCULUS.md); this page reproduces the grammar so the rest of
 Part II can refer to it.
+
+**This is not the surface grammar a client writes.** The language a deploy is written in is the BNFC
+grammar [`legacy/rholang/src/main/bnfc/rholang_mercury.cf`](https://github.com/rchain-community/rchain-rust/blob/dev/legacy/rholang/src/main/bnfc/rholang_mercury.cf)
+— `contract`, `if`/`else`, `let`, `select`, collections with remainders, method calls, `bundle+/-/0`,
+the lot. The parser's relation to it is laws **30–43** ([Laws 30–43](laws-30-43.md)): every term the
+parser accepts is in that grammar, and the surface AST it produces is `Rchain/Surface.lean`. The two
+grammars meet at the flat `Par`: a surface term *desugars* into it (`Surface.lean`'s `normalize`), and
+the calculus below is what the result means.
 
 ## The grammar
 
@@ -21,7 +29,8 @@ Name  ::=  @Proc                        (quote a process into a name)
 
 Proc  ::=  *Name                        (evaluate a name into a process)
         |  Name!(Name, …)               (send; `!!` = persistent)
-        |  for( Name ← Name, … ){ Proc }   (receive; `<=` = peek; a name may be a binder pattern)
+        |  for( Name ← Name, … ){ Proc }   (receive; `<=` = repeated, `<<-` = peek; a name may be a
+                                          binder pattern)
         |  new … in Proc                (restriction: fresh unforgeable names)
         |  match Name { Name ⇒ Proc, … }   (spatial matching, first-match-wins)
         |  Proc | Proc                  (parallel composition)
@@ -77,8 +86,13 @@ Three sigma-type refinements make the interpreter's partiality impossible:
 - **`Closed p`** (Law 6) — no free variables; decidable; preserved by composition, `≡`,
   canonicalization, and `⟶`.
 - **`WellScoped Γ t`** — every bound level of `t` is within `Γ` (the variable half of the judgment).
-- **`BindsAtMostOnce`** (Law 5) — a pattern binds each free variable at most once (the `freeCount`
-  fields of `ReceiveBind`/`MatchCase`).
+- **linearity** (Law 5) — a pattern binds each free level at most once: `spatialMatch_implies_linear`
+  in `Rchain/Match.lean`, **proven** of a matcher that is *defined* rather than postulated. The name
+  this bullet used to carry, `BindsAtMostOnce`, was an axiom whose statement
+  (`∀ n m, freeVarOf p n → freeVarOf p m → n = m`) is false for a pattern like
+  `{"a": *x, "b": *y}`; it was replaced by the definitional matcher and the theorem above
+  (AUDIT C26). The port's `freeCount` fields on `ReceiveBind`/`MatchCase` carry the same invariant
+  structurally.
 
 ## Where each piece lives
 
@@ -89,3 +103,4 @@ Three sigma-type refinements make the interpreter's partiality impossible:
 | `StrCong` `≡`, `Reduce` `⟶` | [`spec/Rchain/Rho.lean`](../../../spec/Rchain/Rho.lean) | `rholang/src/reduce.rs` |
 | canonical `sort` (Law 1) | [`spec/Rchain/Sort.lean`](../../../spec/Rchain/Sort.lean) | `models/src/sorter.rs` |
 | substitutions / matching / freshness | [`spec/Rchain/{Subst,Reduce,Match,FreeVars}.lean`](../../../spec/Rchain/) | `rholang/src/{substitute,matcher}.rs` |
+| the surface grammar and its desugaring (Laws 30–43) | [`spec/Rchain/Surface.lean`](../../../spec/Rchain/Surface.lean) | `rholang/src/{parser,normalizer,pretty_printer}.rs` |

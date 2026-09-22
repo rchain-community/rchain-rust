@@ -1,10 +1,16 @@
 # The 29 laws
 
-RChain's behavior is pinned by **29 laws** — one invariant per layer of the system. Each law maps a
+RChain's behavior is pinned by **laws** — one invariant per layer of the system. Each law maps a
 language or system feature to its formalization: a Lean theorem, a Coq axiom, the executable K rule,
 and the Rust realization. The canonical catalog is
 [`spec/INVENTORY.md`](../../../spec/INVENTORY.md); this page is the reader-facing rendering of the same
 mapping.
+
+**The catalog is 43 rows.** The 29 below are the *calculus*; rows **30–43** are the *surface* the
+matcher reads — grammar, lexing, normalization, matching, reply shapes, the JSON envelope — and they
+are [Laws 30–43](laws-30-43.md). The surface rows exist because every defect that started that
+programme (AUDIT C9–C22) lived there and **nothing errored**: the laws below constrain the calculus,
+and a client never touches the calculus directly.
 
 Legend: **proven** = a theorem with a proof; **stated** = an axiom with a precise signature (definition
 deferred); **axiom** = postulated by design (a cryptographic primitive).
@@ -16,8 +22,8 @@ deferred); **axiom** = postulated by design (a cryptographic primitive).
 | **1** | canonicalization is idempotent & commutative: `sort(sort p)=sort p`, `sort(p\|q)=sort(q\|p)` | the sorted `Par`, commutative `ESet`/`EMap` | `Sort.lean` — `sortPar_idempotent` / `sortPar_comm` (**proven**, mod 30 element-comparator axioms) | `Sort.v` — `sortPar_idempotent` / `sortPar_comm` (axioms) | normalization (α + canonical `\|` sort) |
 | **2** | α / name equivalence: par order, `\| Nil`, associativity, top-level arithmetic, α, `@`/`*` | `@`/`*`, `@{P\|Q}=@{Q\|P}` | `Rho.lean` — `StrCong` `≡` (**proven** core) | `Laws.v` — `alpha_equiv` (axiom) | `name-equivalence.k`, `alpha-equivalence.k` |
 | **3** | capture-avoiding de Bruijn substitution; `sort(subst t)=subst(sort t)` | variable binding | `Subst.lean` — `substPar`, `sort_subst`, `subst_closed` (**stated**) | `Laws.v` — `substPar`, `subst_commutes_sort` (axiom) | `free.k` (substitution; `substitution.k` referenced) |
-| **4** | reduction (COMM), first-match-wins, `new` freshness | send/receive, `match` | `Rho.lean` `Reduce` ⟶ (**proven** core) + `Reduce.lean` `reduce_deterministic`/`reduce_freeVars_subset` (**stated**) | `Laws.v` — `reduce` (axiom) | `processes-semantics.k`, `sending-receiving.k`, `persistent-sending-receiving.k` |
-| **5** | spatial matching; a free var bound at most once | patterns, `_`, `~`, `/\`, `\/` | `Match.lean` — `BindsAtMostOnce`, `spatialMatches`, `spatialMatches_decidable` (**stated**) | `Laws.v` — `spatial_matches`, `binds_at_most_once` (axiom) | `matching-function.k`, `specific-matching-rules.k`, `exact-matching-function.k`, `matching-with-par.k` |
+| **4** | reduction (COMM), first-match-wins, `new` freshness | send/receive, `match` | `Rho.lean` `Reduce` ⟶ (**proven** core); `Concurrent.lean` `reduce_redex_unique` (**proven** — an isolated redex reduces to its body, uniquely up to `≡`) and `reduce_not_deterministic` (**proven** — the flat `Par` is *not* confluent, which is why the block path's determinism comes from the scheduler, Laws 20–25); `Reduce.lean` `reduce_freeVars_subset` (**stated**) | `Laws.v` — `reduce` (axiom) | `processes-semantics.k`, `sending-receiving.k`, `persistent-sending-receiving.k` |
+| **5** | spatial matching, defined; an accepted match binds each free level at most once | patterns, `_`, `~`, `/\`, `\/` | `Match.lean` — `spatialMatchCore`/`spatialMatch` (**defined**: a fuel-carrying matcher, so "does it match" is computed), `spatialMatches` (**defined**), `spatialMatches_decidable` (**an instance**, not an axiom), `spatialMatch_implies_linear` (**proven** — the linearity law, correctly stated). The old statement of this row ("`BindsAtMostOnce` … **stated**") was an axiom that was *false* as written: AUDIT C26. Law 37's tie — `spatialMatch t p = (t = p)` for a connective-free pattern, which is what makes the port's `connective_used` fast path sound — is stated there as `concrete_matches_iff_eq` and is **owed** | `Laws.v` — `spatial_matches`, `binds_at_most_once` (axiom) | `matching-function.k`, `specific-matching-rules.k`, `exact-matching-function.k`, `matching-with-par.k` |
 | **6** | no globally free variables | `Closed` | `Ty.lean` `Closed` (**proven**) + `FreeVars.lean` `freeVarOf`/`closed_iff_no_freeVars` | `Laws.v` — `closed`, `closed_decidable` (axiom) | `free.k`, `program-restrictions.k` |
 
 ## RSpace — the tuple space (Laws 7–11)
@@ -78,12 +84,28 @@ recovery caveat — is [Cross-shard transactions: two-phase commit](cross-shard-
 ## Reading the formalization
 
 - **Lean** (`spec/Rchain/*.lean`) owns the algebraic/order laws and the type-system fundamentals. Build:
-  `cd spec && lake build`.
+  `cd spec && lake build`. An `axiom` with a named reason is a *stated* obligation, not a hole: the gate
+  below refuses a `sorry`, so an unproven claim has to be visible in the source as an axiom and in
+  `spec/INVENTORY.md` as a status.
 - **Coq** (`spec/coq/*.v`) owns the substitution / α-equivalence metatheory (Laws 2–6). Build:
   `make -C spec/coq`.
 - **K** (`legacy/rholang/src/main/k/rholang/*.k`) is the executable reference semantics of the language.
-- **Rust** carries each invariant *structurally* (refinement newtypes, no silent partiality); the
-  machine gate is `tools/audit-type-system.sh`.
+- **Rust** carries each invariant *structurally* (refinement newtypes, no silent partiality).
+- **The corpora** (`spec/conformance/*.tsv`) are the bridge: they are *emitted* from the Lean
+  definitions (`lake exe rchain-corpus --layer <l>`), committed, and read by a Rust consumer that runs
+  the same cases through the node and must agree 1:1. A law whose definition changes without its
+  corpus being re-emitted fails the gate rather than drifting quietly.
+
+### The gates
+
+| Command | What it refuses |
+|---|---|
+| `tools/check-lean-conformance.sh` | a failed Lean or Coq build, a `sorry`/`admit`, a module `Rchain.lean` does not import, a **stale or untracked corpus**, a corpus with no consumer, a consumer that disagrees with its corpus, and a law-39 catalog urn with no row in `spec/API-SCHEMA.md`. It is the `formal` job in CI. |
+| `tools/audit-type-system.sh` | production `panic!`/`unsafe`/silent conversion — the no-silent-partiality discipline |
+| `tools/audit-test-register.sh` | a register that overstates the tree, a named test that does not exist, **a law row claiming coverage without naming a Lean module, a corpus and a consumer that exist** |
+
+The third of those is the one that answers "which law would have caught the eleventh failure?":
+`spec/AUDIT.md` §20 maps every incident to its law and its case.
 
 Per-law status, source-of-truth pointers, and Rust realization are in
 [`spec/INVENTORY.md`](../../../spec/INVENTORY.md).
