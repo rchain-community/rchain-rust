@@ -131,6 +131,7 @@ if [[ -d "$ROOT/spec/conformance" ]]; then
       flags)    test_name="lean_normalize_corpus"; crate="rchain-rholang" ;;
       parse)    test_name="lean_parse_corpus";     crate="rchain-rholang" ;;
       match)    test_name="lean_match_corpus";     crate="rchain-rholang" ;;
+      silence)  test_name="lean_silence_corpus";   crate="rchain-rholang" ;;
       json)     test_name="lean_json_corpus";      crate="rchain-node" ;;
       *)        fail "corpus spec/conformance/$layer.tsv has no consumer mapping"; continue ;;
     esac

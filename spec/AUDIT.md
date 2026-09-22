@@ -1414,6 +1414,35 @@ oracle is, and the test that pins the fix.
   corpus's `decide` refused to compile until the bound was right, which is the mechanism working as
   intended. The saturation of `matchFuel` is `fuel_saturation` in `Rchain/Match.lean`, stated and owed.
 
+- **C27 — the base-sort receive never said which channel it listens on.** Found while writing law 38's
+  rule (`Rchain/Silence.lean`). `Rho.lean`'s `receivePar` builds its bind as
+  `ReceiveBind.mk [chan] body 1`, and in the `ReceiveBind` record the fields are
+  `(patterns, source, freeCount)` (`Par.lean`'s accessors) — so the *body* sits in the `source` slot and
+  the channel sits in `patterns`. The model's receive therefore has no channel in the field that means
+  channel, which is invisible in `Rchain.Rho`'s own theorems (they are about `Reduce` abstractly) and
+  fatal to any reasoning that asks *which channel a receive listens on* — law 40's whole question.
+
+  **Not fixed here, and recorded instead:** `Reduce`'s theorems (`reduce_closed` in `Rchain.Ty`,
+  `reduce_freeVars_subset` in `Rchain.Reduce`) are proved against that shape, so changing it is a
+  separate, deliberate step rather than a drive-by edit. The pattern-aware layer beside it
+  (`Silence.lean`'s `receiveParP`) uses the *correct* order —
+  `ReceiveBind.mk [pattern] chan 1` — so law 38's reasoning has both slots right, and the corpus's
+  cases exercise the node's real receives, not this model shape.
+
+- **Law 38 — silence, as a rule rather than a remark, and checked.** `Rchain/Silence.lean`:
+  `ReduceP`'s only rule that consumes a datum carries `spatialMatches data pattern` as a hypothesis, so
+  "no match ⇒ no step, no error" is the rule; `takesStep` computes the same question over the flat
+  `Par` (a send/receive pair on one string channel whose pattern matches), which is what lets the corpus
+  `decide` against it. The tie between the two is `takesStep_iff_reduces`, **owed** and named.
+  `spec/conformance/silence.tsv` carries 6 cases, each `decide`d (`silenceCases_decide`) and each run
+  by `rholang/tests/lean_silence_corpus.rs` on its own runtime with a control datum. `spec/INVENTORY.md`
+  row 38.
+
+  **Also found by the corpus's first run, in the corpus itself:** a *ground* pattern in a receive must
+  be written `@2`, not `2` — the grammar's bind patterns are names (`Name ::= "_" | Var | "@" Proc12`),
+  so the bare form is a parse error and the parser was right to say so. The case text was wrong, not the
+  node.
+
 ### Open question (behaviour pinned, oracle not established)
 
 - **`models/src/wire.rs::expr_from_proto` decodes an `Expr` with no instance to `GBool(false)`.** The

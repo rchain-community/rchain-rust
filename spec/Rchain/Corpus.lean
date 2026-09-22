@@ -1,5 +1,6 @@
 import Rchain.Par
 import Rchain.Match
+import Rchain.Silence
 
 /-!
 # The conformance corpus, generated from the specification
@@ -219,6 +220,63 @@ def matchLine (c : MatchCase) : String :=
   "match\t" ++ c.bind ++ "\t" ++ c.target ++ "\t"
     ++ (if c.rejected then "rejected" else if c.expected then "true" else "false")
 
+/-! ## Law 38 — the silence layer
+
+Each case is a *term* — a send and a receive on a channel, the receive's body reporting on `@"out"` —
+and the verdict `takesStep` gives it: does the pair form a contract step at all? A term that does not
+step produces nothing but the consumer's control datum, which is what "silent" means in the port, and
+what the rule in `Rchain/Silence.lean` says: the contract rule carries the match as a hypothesis. -/
+
+/-- The number of cases the silence layer carries. -/
+def silenceCaseCount : Nat := 6
+
+/-- A silence case: the term as rholang spells it, the model's view of it, and whether it steps. -/
+structure SilenceCase where
+  /-- The term's source: a send, a receive whose body reports on `out`, and nothing else. -/
+  term : String
+  /-- The model's view of that term. -/
+  par : Par
+  /-- Does it form a contract step? -/
+  steps : Bool
+
+/-- The body a silence case's receive runs when it fires: `@"out"!("step")`. -/
+def stepBody : Par := sendPar (strPar "out") [strPar "step"]
+
+/-- A send-and-receive term on string channels, with `pattern` as the receive's bind. -/
+def pairPar (sendChan : String) (datum : Par) (recvChan : String) (pattern : Par) : Par :=
+  parMerge (sendPar (strPar sendChan) [datum]) (receiveParP (strPar recvChan) pattern stepBody)
+
+/-- The cases. Case 3 is the shape C22 item 3 turned on, seen from the reduction side rather than the
+matcher's; case 5 is a store pair, the single-step half of the C22 item 1 class; cases 4 and 6 are the
+two ways a pair fails to be a redex — the wrong channel, and a pattern that does not match. -/
+def silenceCases : List SilenceCase :=
+  [ { term := "@\"c\"!(1) | for (x <- @\"c\") { @\"out\"!(\"step\") }",
+      par := pairPar "c" (intPar 1) "c" (namePar 0), steps := true }
+  , { term := "@\"c\"!(1) | for (@{\"k\": 9} <- @\"c\") { @\"out\"!(\"step\") }",
+      par := pairPar "c" (intPar 1) "c" (mapOf [("k", intPar 9)] none), steps := false }
+  , { term := "@\"c\"!({\"x\": 1, \"y\": 2}) | for (@{\"x\": 1, ..._} <- @\"c\") { @\"out\"!(\"step\") }",
+      par := pairPar "c" (mapOf [("x", intPar 1), ("y", intPar 2)] none) "c"
+        (mapOf [("x", intPar 1)] wildRem),
+      steps := true }
+  , { term := "@\"c\"!(1) | for (x <- @\"d\") { @\"out\"!(\"step\") }",
+      par := pairPar "c" (intPar 1) "d" (namePar 0), steps := false }
+  , { term := "@\"s\"!({}) | for (@m <- @\"s\") { @\"out\"!(\"step\") }",
+      par := pairPar "s" (mapPat [] none) "s" (namePar 0), steps := true }
+  , { term := "@\"c\"!(1) | for (@2 <- @\"c\") { @\"out\"!(\"step\") }",
+      par := pairPar "c" (intPar 1) "c" (intPar 2), steps := false }
+  ]
+
+/-- Every silence case's verdict holds of the model, `decide`d against `takesStep`. -/
+theorem silenceCases_decide : silenceCases.all (fun c => takesStep c.par == c.steps) = true := by
+  decide
+
+/-- The layer carries exactly `silenceCaseCount` cases. -/
+theorem silenceCases_length : silenceCases.length = silenceCaseCount := by decide
+
+/-- One silence corpus line: layer, the term, whether it steps. -/
+def silenceLine (c : SilenceCase) : String :=
+  "silence\t" ++ c.term ++ "\t" ++ (if c.steps then "true" else "false")
+
 end Corpus
 end Rchain
 
@@ -226,9 +284,11 @@ open Rchain
 
 /-- `rchain-corpus --layer {flags|match} [--out FILE]` — print the corpus (stdout by default). -/
 def main (args : List String) : IO UInt32 := do
-  let want := (args.find? (fun a => a == "flags" || a == "match")).getD "flags"
+  let want := (args.find? (fun a => a == "flags" || a == "match" || a == "silence")).getD "flags"
   let (lines, count) :=
     if want == "match" then (Corpus.matchCases.map Corpus.matchLine, Corpus.matchCaseCount)
+    else if want == "silence" then
+      (Corpus.silenceCases.map Corpus.silenceLine, Corpus.silenceCaseCount)
     else (Corpus.flagCases.map Corpus.flagLine, Corpus.flagCaseCount)
   if lines.length != count then
     IO.eprintln s!"rchain-corpus: {want}: the case list and the declared count disagree"
