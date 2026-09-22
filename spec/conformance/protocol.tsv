@@ -1,0 +1,9 @@
+protocol	rho:io:stdout	"x"	none	-
+protocol	rho:io:stderr	"x"	none	-
+protocol	rho:io:stdoutAck	"x"	send	nil
+protocol	rho:io:stderrAck	"x"	send	nil
+protocol	rho:block:data	-	send	int,byteArray,int
+protocol	rho:registry:lookup	"rho:id:unknown0000000000000000000000000000000000"	send	nil
+protocol	rho:registry:insertArbitrary	Nil	send	uri
+protocol	rho:rev:address	"validate", "abc"	send	string
+protocol	rho:qucalc:zfa	[0, 1]	tuple	bool,int

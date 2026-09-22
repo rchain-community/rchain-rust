@@ -55,7 +55,7 @@ Scala oracle (a documented extension) and this file is its definition.
 | `rho:rev:address` | 3 | `String`, else `Nil` | `SystemProcesses.scala:232-295` | ✅ |
 | `rho:rchain:deployerId:ops` | 3 | `ByteArray` | `SystemProcesses.scala:297-306` | ✅ |
 | `sys:authToken:ops` | 3 | `Bool` | `SystemProcesses.scala:322-332` | ✅ |
-| `rho:block:data` | 1 | **`(blockNumber, sender, timestamp)`** — three, deliberately | oracle sends **two**: `SystemProcesses.scala:355-361` produces `(blockNumber, sender)` from a `(blockNumber, sender, seqNum)` record | **documented extension**, not a defect: `docs/src/rholang/reference.md:93` specifies "number, sender and informational timestamp", and the node's own genesis vault consumes all three (`casper/src/genesis/resources/RevVault.rho:207-209` binds `@blockNumber, @sender, @timestamp`). The port substituted `timestamp` for the oracle's unexposed `seqNum`. **Consequence to know:** a *legacy* two-name consumer (`legacy/casper/src/test/resources/BlockDataContractTest.rho:15-16`) cannot match this and will stall — it must be amended, or the reply versioned, before that corpus is relied on |
+| `rho:block:data` | 1 | **`(blockNumber, sender, timestamp)`** — three, deliberately (pinned as a law-39 catalog row) | oracle sends **two**: `SystemProcesses.scala:355-361` produces `(blockNumber, sender)` from a `(blockNumber, sender, seqNum)` record | **documented extension**, not a defect: `docs/src/rholang/reference.md:93` specifies "number, sender and informational timestamp", and the node's own genesis vault consumes all three (`casper/src/genesis/resources/RevVault.rho:207-209` binds `@blockNumber, @sender, @timestamp`). The port substituted `timestamp` for the oracle's unexposed `seqNum`. **Consequence to know:** a *legacy* two-name consumer (`legacy/casper/src/test/resources/BlockDataContractTest.rho:15-16`) cannot match this and will stall — it must be amended, or the reply versioned, before that corpus is relied on |
 | `rho:rchain:revVault` | 1 | `Int`, `Nil`, `(true, addr_string)` | `legacy/casper/src/main/resources/RevVault.rho:103-121,196-204` | ❌ **open** — the oracle's `findOrCreate` returns a *vault capability*, and `balance`/`transfer` are methods of that vault taking an `authKey` |
 | `rho:rchain:multiSigRevVault` | — | shares the single-sig handler | `MultiSigRevVault.rho` is a different contract | ❌ **open** — the urn should not be advertised until it has its own contract |
 | `rho:rchain:{revVault,pos,makeMint}`, `rho:lang:{listOps,nonNegativeNumber}` | — | `(9223372036854775807, bundle+{dispatcher})` — the signed-registration shape consumers destructure as `@(_, X)` | genesis content + aliases; `Registry.rho:371-379` is the oracle's shorthand aliasing | ✅ **resolved** — genesis now installs the interpreted library contracts and seeds the shorthand aliases natively (`spec/GENESIS.md`), so `lookup!(\`rho:rchain:revVault\`, *ch)` resolves *and* the value answers a call. Native channels keep working by direct binding too |
@@ -76,6 +76,13 @@ Scala oracle (a documented extension) and this file is its definition.
 
 ## Enforcement
 
+- **Catalog (law 39)**: the rows a call can be *spelled* for are data in `spec/Rchain/Protocol.lean`
+  (`replyCatalog`), emitted to `spec/conformance/protocol.tsv` and checked against a running node by
+  `rholang/tests/lean_protocol_corpus.rs` — each row calls its urn with the arguments it spells and
+  classifies every slot of the reply, arity included. This file is the tie on the other side:
+  `tools/check-lean-conformance.sh` fails if a catalog urn has no row here. Read a row here as a
+  *claim*, and that corpus as the machine-checked form of it; `spec/INVENTORY.md` row 39 names the
+  urns the catalog cannot reach yet (the `ByteArray`-argument ones).
 - **Node**: `rholang/tests/system_process_conformance.rs` asserts reply *shapes* — and, since C18,
   also **reachability** (`a_looked_up_contract_can_be_called_through_its_lookup_reply`). A shape
   assertion alone can pass while every real client fails, so reachability is part of the standard.

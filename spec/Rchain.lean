@@ -9,6 +9,7 @@ import Rchain.Reduce
 import Rchain.Match
 import Rchain.Silence
 import Rchain.Store
+import Rchain.Protocol
 import Rchain.Concurrent
 import Rchain.Tree
 import Rchain.FreeVars

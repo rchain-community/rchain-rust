@@ -39,7 +39,7 @@ laws** carrying a randomized property test and **10 benchmark functions** in 6 C
 | `block-storage` | 40 | — | 3 | — |
 | `comm` | 123 | — | — | — |
 | `rspace` | 166 | — | 7 | — |
-| `rholang` | 197 | 48 | 7 | — |
+| `rholang` | 197 | 49 | 7 | — |
 | `casper` | 239 | 45 | 3 | — |
 | `node` | 178 | 9 | — | — |
 | `qucalc` | 20 | — | — | — |
@@ -120,8 +120,9 @@ than an algebraic identity. Explicit rather than implied, per the rule that no c
 | 35 | Concreteness is sound (`connective_used` ⟺ connective/free var/wildcard/remainder) | `Par.lean` `connectiveUsed` (+ `Sort.cmpOptionVar`, `Ty.closedRemainder`) | `spec/conformance/flags.tsv` ← `Corpus.flagCases_decide` · `rholang/tests/lean_normalize_corpus.rs` | **checked** |
 | 37 | Match soundness and completeness (law 5 strengthened) | `Match.lean` `spatialMatch*` defined; `spatialMatch_implies_linear` proven | `spec/conformance/match.tsv` ← `Corpus.matchCases_decide` · `rholang/tests/lean_match_corpus.rs` | **checked** |
 | 38 | Silence is specified (no match ⇒ no step, no error) | `Silence.lean` `ReduceP` (the contract rule carries the match) + `takesStep`; `takesStep_iff_reduces` owed | `spec/conformance/silence.tsv` ← `Corpus.silenceCases_decide` · `rholang/tests/lean_silence_corpus.rs` | **checked** |
+| 39 | Reply shapes: every urn's reply arity/shape is its `spec/API-SCHEMA.md` row | `Protocol.lean` `replyCatalog` + `replyCatalog_decide` (unique namespaced urns, kind agrees with slots, arity agrees with the arguments as written) | `spec/conformance/protocol.tsv` ← `replyCatalog` · `rholang/tests/lean_protocol_corpus.rs` · the doc tie in `tools/check-lean-conformance.sh` | **checked** for the rows the surface language can spell (the `ByteArray`-argument urns are named in `spec/INVENTORY.md` row 39) |
 | 41 | Channel balance: a replicable reader restores what it consumes | `Store.lean` `readStore` / `storeSurvives` (a datum back *and* `takesStep`), `replicatedRead` | `spec/conformance/store.tsv` ← `Corpus.storeCases_decide` · `rholang/tests/lean_store_corpus.rs` | **checked** (the installed content: `casper/tests/genesis_registry.rs`'s `a_read_does_not_destroy_the_inbox`) |
-| 30-34, 36, 39, 40, 42, 43 | grammar, lexing, print/parse round-trip; normalization as a function; reply shapes; protocol agreement; JSON round-trip and envelope | *(named per row in `spec/INVENTORY.md`; not yet defined)* | *(none yet)* | **open** — the next slices |
+| 30-34, 36, 40, 42, 43 | grammar, lexing, print/parse round-trip; normalization as a function; protocol agreement; JSON round-trip and envelope | *(named per row in `spec/INVENTORY.md`; not yet defined)* | *(none yet)* | **open** — the next slices |
 
   Two laws therefore have **no** randomized evidence, both deliberately: 12 and 13 are orphaned with
   the Rosette VM, and 19 is an axiom whose implementations are KAT-pinned. Law 22 and 23 have a

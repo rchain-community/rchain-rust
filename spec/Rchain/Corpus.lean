@@ -2,6 +2,7 @@ import Rchain.Par
 import Rchain.Match
 import Rchain.Silence
 import Rchain.Store
+import Rchain.Protocol
 
 /-!
 # The conformance corpus, generated from the specification
@@ -369,22 +370,38 @@ calls in every term, so a store that survives answers both. -/
 def storeLine (c : StoreCase) : String :=
   "store\t" ++ c.term ++ "\t" ++ (if c.survives then "2" else "1")
 
+/-! ## Law 39 — the protocol layer
+
+The catalog is the law (`Rchain/Protocol.lean`: `replyCatalog`, with its `decide`d consistency checks);
+this layer is its rendering. Each row is a *probe*: call the urn with the arguments the row spells, and
+the reply must arrive in the row's kind and slots. `args` and `slots` render as `-` when empty, so a
+column is never blank and the consumer never has to guess what a missing column means. -/
+
+/-- One protocol corpus line: layer, urn, the call's arguments, the reply's kind, its slots. -/
+def protocolLine (r : ReplyRow) : String :=
+  "protocol\t" ++ r.urn ++ "\t" ++ (if r.args.isEmpty then "-" else r.args) ++ "\t"
+    ++ r.kind.tag ++ "\t" ++ (if r.slots.isEmpty then "-" else
+      String.intercalate "," (r.slots.map SlotShape.tag))
+
 end Corpus
 end Rchain
 
 open Rchain
 
-/-- `rchain-corpus --layer {flags|match|silence|store} [--out FILE]` — print the corpus (stdout by
-default). -/
+/-- `rchain-corpus --layer {flags|match|silence|store|protocol} [--out FILE]` — print the corpus
+(stdout by default). -/
 def main (args : List String) : IO UInt32 := do
   let want :=
-    (args.find? (fun a => a == "flags" || a == "match" || a == "silence" || a == "store")).getD "flags"
+    (args.find? (fun a => a == "flags" || a == "match" || a == "silence" || a == "store"
+      || a == "protocol")).getD "flags"
   let (lines, count) :=
     if want == "match" then (Corpus.matchCases.map Corpus.matchLine, Corpus.matchCaseCount)
     else if want == "silence" then
       (Corpus.silenceCases.map Corpus.silenceLine, Corpus.silenceCaseCount)
     else if want == "store" then
       (Corpus.storeCases.map Corpus.storeLine, Corpus.storeCaseCount)
+    else if want == "protocol" then
+      (replyCatalog.map Corpus.protocolLine, replyCaseCount)
     else (Corpus.flagCases.map Corpus.flagLine, Corpus.flagCaseCount)
   if lines.length != count then
     IO.eprintln s!"rchain-corpus: {want}: the case list and the declared count disagree"

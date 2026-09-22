@@ -1492,7 +1492,37 @@ oracle is, and the test that pins the fix.
   restore to the *wrong channel* (which is what makes the model compare channels rather than ask
   whether any send is there).
 
-  **A *peek* is deliberately absent, and that is a finding in itself:** `for (map <<- mapCh)` consumes
+- **Law 39 — the reply-shape table stops being prose.** `Rchain/Protocol.lean` holds the urn → reply
+  catalog as **data** (`replyCatalog`), and `replyCatalog_decide` checks what a table can check about
+  itself: the urns are namespaced (`rho:`/`sys:`) and unique, the reply kind agrees with its slots
+  (`none` has none, a `send`/`tuple` has at least one), and — the check with teeth — **the declared
+  arity agrees with the arguments as written** (`countArgs`, a bracket-aware comma count, against
+  `ReplyRow.probeArity`). That last one is C22 item 2's class in a table: `MCAwrite!("Chat", *C_Chat)`
+  against a three-argument `write`, where the call matches no receive and *nothing errors*. A table
+  that does not count its own arguments cannot catch it.
+
+  Checked 1:1: `spec/conformance/protocol.tsv` (9 rows) consumed by
+  `rholang/tests/lean_protocol_corpus.rs`, which calls each urn with the row's own arguments, receives
+  the reply with the pattern its *kind* implies (`send` → n patterns, `tuple` → one `@(…)` pattern),
+  re-sends every part on its own channel and classifies each one — so the reply's *arity* is checked as
+  well as each slot's shape, and a short reply is a failure here rather than a client's mystery (C18).
+  A `none` row is asserted by absence with a control datum, never by absence alone. The check was
+  falsified once on purpose (a slot's expected shape perturbed): it fails, naming the slot, the shape
+  it got and the row it disagreed with.
+
+  Among the rows: **`rho:block:data`'s three-value reply** — `(blockNumber, sender, timestamp)`, the
+  documented extension over the oracle's two — is now a checked row instead of a prose consequence
+  (`docs/src/rholang/reference.md:93` specifies the timestamp, `RevVault.rho:207-209` binds all
+  three); and `rho:rev:address!("validate", "abc")` answers the parse **error string**, not `Nil`.
+  What the catalog does *not* cover is named rather than implied: the crypto urns,
+  `rho:rchain:deployerId:ops` and `sys:authToken:ops` take a `ByteArray`, and the surface grammar has
+  no byte-array literal (`Ground ::= BoolLiteral | "BigInt(" … ")" | LongLiteral | StringLiteral |
+  UriLiteral`), so their shapes stay pinned by `system_process_conformance.rs`'s hand-written probes,
+  which build the bytes in Rust. The doc tie is machine-checked too: `tools/check-lean-conformance.sh`
+  fails if a catalog urn (or its family) has no row in `spec/API-SCHEMA.md`, so the catalog cannot
+  drift into a second copy of the doc.
+
+- **Law 41 — channel balance, and it is the *replicable* reader that the law is about.** `Rchain/
   nothing, so `Directory.rho`'s two reads (`:31`, `:44`) were never this law's defect, and the model's
   `Receive` has a *persistent* flag and no peek one — a peek case would have to assert its own verdict
   instead of deriving it. The static half (a walk of the vendored text) is recorded in C22 item 1 as

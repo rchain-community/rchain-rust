@@ -133,6 +133,7 @@ if [[ -d "$ROOT/spec/conformance" ]]; then
       match)    test_name="lean_match_corpus";     crate="rchain-rholang" ;;
       silence)  test_name="lean_silence_corpus";   crate="rchain-rholang" ;;
       store)    test_name="lean_store_corpus";     crate="rchain-rholang" ;;
+      protocol) test_name="lean_protocol_corpus";  crate="rchain-rholang" ;;
       json)     test_name="lean_json_corpus";      crate="rchain-node" ;;
       *)        fail "corpus spec/conformance/$layer.tsv has no consumer mapping"; continue ;;
     esac
@@ -152,6 +153,30 @@ if [[ -d "$ROOT/spec/conformance" ]]; then
       fail "$dir/tests/$test_name.rs disagrees with the corpus — see /tmp/$test_name.log"
     fi
   done
+fi
+
+# --- the reply catalog is the schema's table ---------------------------------
+#
+# Law 39's catalog is data in Lean (`spec/Rchain/Protocol.lean`'s `replyCatalog`) and a probe per row
+# in Rust; what it must not become is a *second* copy of `spec/API-SCHEMA.md` free to drift from it.
+# Every urn the catalog names must have a row there — by name, or by its family, since the schema
+# tables the qucalc/gov urns as one row per family.
+if [[ -f "$ROOT/spec/conformance/protocol.tsv" ]]; then
+  missing=0
+  while IFS=$'\t' read -r layer urn _args _kind _slots; do
+    [[ "$layer" == "protocol" ]] || continue
+    family="${urn%:*}"
+    if grep -qF -- "$urn" "$ROOT/spec/API-SCHEMA.md" \
+      || grep -qF -- "$family" "$ROOT/spec/API-SCHEMA.md"; then
+      :
+    else
+      fail "law 39's catalog names $urn and spec/API-SCHEMA.md has no row for it (nor for $family)"
+      missing=$((missing + 1))
+    fi
+  done <"$ROOT/spec/conformance/protocol.tsv"
+  if ((missing == 0)); then
+    ok "every urn in law 39's catalog has a row in spec/API-SCHEMA.md"
+  fi
 fi
 
 # (`tools/audit-protocols.sh` was to be a *static* audit of the vendored protocol content — a
