@@ -65,6 +65,23 @@ where
         .expect("the test thread panicked");
 }
 
+/// A deploy signed by a **real** key pair, so `rho:rchain:deployerId` is a genuine public key. Terms
+/// that derive a REV address from it need that: `RevAddress!("fromPublicKey", …)` matches nothing
+/// for a placeholder byte-array, and the call then stalls silently — which is what a governance
+/// handshake does before it answers.
+fn deploy_signed_by(term: &str, seed: u8) -> SignedDeployData {
+    use rchain_crypto::private_key::PrivateKey;
+    use rchain_crypto::signatures::secp256k1::Secp256k1;
+    use rchain_crypto::signatures::signatures_alg::SignaturesAlg;
+    let sk = PrivateKey::new(vec![seed; 32]);
+    let pk = Secp256k1
+        .to_public(&sk)
+        .expect("a fixed 32-byte scalar is a valid secp256k1 key");
+    let mut d = deploy(term);
+    d.deployer = pk.bytes().to_vec();
+    d
+}
+
 fn proof_of_stake() -> ProofOfStake {
     ProofOfStake {
         minimum_bond: 1,
@@ -259,16 +276,18 @@ fn the_seeded_registry_is_identical_across_fresh_genesis_ceremonies() {
     });
 }
 
-/// A probe for a contract reached by its **constant URI** (the vendored rgov set): look it up,
-/// destructure the `(nonce, value)` pair, call it with the wallet's convention (`@(_, X)` binds a
-/// process variable, so the call is `@X!`), and report
-/// the tag only once the call is answered. A tag therefore proves the value is callable, which is
-/// the property the per-chain bootstrap existed to provide.
-fn lookup_probe(uri: &str, tag: &str, call: &str, reply_names: &str) -> String {
+/// A probe for a contract reached by its **constant URI**.
+///
+/// `destructure` is the pattern the *consumer* uses, and it differs by contract family: the node's
+/// own blessed contracts register signed, so they destructure `@(_, X)` (a `(nonce, value)` pair),
+/// while the vendored rgov classes register exactly as upstream does (`insertArbitrary`) and
+/// destructure the **bare** value `X`. Using the wrong one is exactly the failure this file exists to
+/// catch: it matches nothing and the probe simply never reports.
+fn lookup_probe(uri: &str, tag: &str, destructure: &str, call: &str, reply_names: &str) -> String {
     format!(
         r#"new rl(`rho:registry:lookup`), ch, ret, log in {{
              rl!(`{uri}`, *ch) |
-             for (@(_, X) <- ch) {{
+             for ({destructure} <- ch) {{
                @"out"!("{tag}:resolved") |
                {call} |
                for ({reply_names} <- ret) {{ @"out"!("{tag}:called") }}
@@ -301,28 +320,55 @@ fn a_fresh_chain_installs_the_rgov_contracts_and_they_answer() {
         let probes: Vec<(&str, String)> = vec![
             (
                 "kudos",
-                lookup_probe(&uri("kudos"), "kudos", r#"@X!("peek", *ret)"#, "@_"),
+                lookup_probe(&uri("kudos"), "kudos", "@X", r#"@X!("peek", *ret)"#, "@_"),
             ),
             (
                 "inbox",
-                lookup_probe(&uri("inbox"), "inbox", r#"@X!(*ret)"#, "@_, @_, @_"),
+                lookup_probe(&uri("inbox"), "inbox", "@X", r#"@X!(*ret)"#, "@_, @_, @_"),
             ),
             (
                 "directory",
-                lookup_probe(&uri("directory"), "directory", r#"@X!(Nil, *ret)"#, "@_"),
+                lookup_probe(
+                    &uri("directory"),
+                    "directory",
+                    "@X",
+                    r#"@X!(Nil, *ret)"#,
+                    "@_",
+                ),
             ),
             (
                 "roll",
-                lookup_probe(&uri("roll"), "roll", r#"@X!("make", {}, *ret)"#, "@_"),
+                lookup_probe(&uri("roll"), "roll", "@X", r#"@X!("make", {}, *ret)"#, "@_"),
             ),
             (
                 "issue",
                 lookup_probe(
                     &uri("issue"),
                     "issue",
+                    "@X",
                     r#"@X!(["proposal"], *ret, *log)"#,
                     "@_, @_",
                 ),
+            ),
+            // The three classes upstream's template does not list, but the wallet's editor asks the
+            // directory for by name — installed and callable like the rest.
+            (
+                "chat",
+                lookup_probe(&uri("chat"), "chat", "@X", r#"@X!(*ret)"#, "@_, @_, @_"),
+            ),
+            (
+                "ballot",
+                lookup_probe(
+                    &uri("ballot"),
+                    "ballot",
+                    "@X",
+                    r#"@X!(["p1"], *ret, *log)"#,
+                    "@_, @_",
+                ),
+            ),
+            (
+                "group",
+                lookup_probe(&uri("group"), "group", "@X", r#"@X!("lookup", *ret)"#, "@_"),
             ),
         ];
 
@@ -396,6 +442,111 @@ fn a_fresh_chain_installs_the_rgov_contracts_and_they_answer() {
             tags, expected,
             "every vendored contract must be installed, resolvable by its constant URI, and callable"
         );
+    });
+}
+
+/// The wallet's first governance step, on a fresh chain and with no bootstrap: resolve the master
+/// read cap by its constant key and get the directory to answer `GetMe`.
+///
+/// This half is what `scripts/bootstrap-rgov.ts` used to arrange at runtime (with a recorded URI
+/// that goes stale per chain). Genesis arranges it instead, for the fixed testnet key, so a client
+/// hardcodes `readcap_uri()` and needs no bootstrap.
+///
+/// The remainder of the handshake — calling `GetMe` and receiving the deployer's stuff — is verified
+/// on a node rather than here: the feature's own contract logs are where a stall in that half is
+/// legible, and in-process a failed call and an unanswered one look identical (both are silence).
+/// See `docs/src/node/devnet.md`.
+#[test]
+fn a_fresh_chain_serves_the_wallets_new_inbox_handshake() {
+    with_big_stack(async {
+        let rm = build_runtime_manager().await;
+        let rand = fixed_rand();
+        let readcap = rchain_casper::genesis::rgov::readcap_uri().expect("the read cap key");
+        let handshake = format!(
+            r#"new rl(`rho:registry:lookup`), deployerId(`rho:rchain:deployerId`),
+                 capCh, getMeCh, stuffCh
+               in {{
+                 rl!(`{readcap}`, *capCh) |
+                 // Bind bare, call bare — the convention the rgov contracts themselves use
+                 // (`memberIdGovRev`'s imports, the master-directory template). Mixing it with the
+                 // wallet's `for (@X <- ch)` + `@X!` is a parse error, not a silent miss.
+                 for (MCAread <- capCh) {{
+                   MCAread!("GetMe", *getMeCh) |
+                   for (GetMe <- getMeCh) {{
+                     @"out"!("got-getme") |
+                     new logCh in {{
+                       // A *drain*, and a repeated one: the feature logs multi-element lines, and
+                       // `rho:io:stdout` takes one datum — pointing the log at stdout makes the
+                       // contract error mid-flow, which is a foot-gun for any caller.
+                       for (@_line <= logCh) {{ @"out"!("getme-logged") }} |
+                       GetMe!(*deployerId, *stuffCh, *logCh) |
+                       for (@_reply <- stuffCh) {{ @"out"!("getme-answered") }}
+                     }}
+                   }}
+                 }}
+               }}"#
+        );
+
+        let mut terms = default_blessed_terms(
+            &proof_of_stake(),
+            &Registry {
+                system_contract_pub_key: String::new(),
+            },
+            &[],
+            "root",
+        )
+        .expect("blessed terms");
+        terms.push(deploy_signed_by(&handshake, 7));
+
+        let (_, _, results) = rm
+            .compute_genesis(
+                &terms,
+                &rand,
+                BlockData::empty(),
+                &PosGenesis::default(),
+                &[],
+            )
+            .await
+            .expect("compute_genesis");
+        for (i, r) in results.iter().enumerate() {
+            assert!(
+                r.eval_result.succeeded(),
+                "genesis deploy #{i} failed: {:?}",
+                r.eval_result.errors
+            );
+        }
+
+        let produced = rm
+            .runtime()
+            .get_data_par(&rchain_models::sorted::SortedProc::new(
+                rchain_models::par_ops::from_expr(rchain_models::ast::Expr::GString(
+                    "out".to_string(),
+                )),
+            ))
+            .await
+            .expect("read the handshake's output channel");
+        let tags: Vec<String> = produced
+            .iter()
+            .filter_map(|p| {
+                rchain_models::rholang::RhoType::RhoString::unapply(p).map(str::to_string)
+            })
+            .collect();
+        assert!(
+            tags.contains(&"got-getme".to_string()),
+            "the read cap must resolve to a directory that answers `GetMe`: {tags:?}"
+        );
+        assert!(
+            tags.contains(&"getme-logged".to_string()),
+            "`getMe` must run — it is reached through the directory and logs before the first step \
+             that can stall: {tags:?}"
+        );
+
+        // What is *not* yet pinned here, and the honest boundary of this test: `getMe` then enters
+        // the feature's own `createMe` flow (it logs four lines) and stops before answering, so
+        // `getme-answered` does not appear. That is upstream contract logic, not the genesis
+        // installation — on a node the feature's log lines are where it is legible, and the open
+        // item is recorded in `spec/GENESIS.md`. Asserting it here today would only assert the
+        // silence this file exists to distinguish from a failure.
     });
 }
 

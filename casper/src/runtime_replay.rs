@@ -41,6 +41,7 @@ use rchain_rspace::util::ReplayException;
 
 use crate::event_converter::to_rspace_event;
 use crate::genesis::contracts::Vault;
+use crate::genesis::rgov;
 use crate::rholang::ReplayFailure;
 use crate::system_deploy::{
     process_bool_result, NativeSystemDeployOp, SystemDeploy, SystemDeployUserError,
@@ -175,6 +176,19 @@ impl<'a, R: ReplayRuntime + ?Sized> RuntimeReplayOps<'a, R> {
             crate::genesis::seed_registry_aliases(&native)
                 .await
                 .map_err(ReplayFailure::internal_error)?;
+            {
+                let published = self
+                    .runtime
+                    .get_data(&rgov::publish_channel())
+                    .await
+                    .map_err(|e| ReplayFailure::internal_error(e.to_string()))?
+                    .into_iter()
+                    .flat_map(|d| d.a.pars.into_iter().map(|p| p.as_par().clone()))
+                    .collect::<Vec<_>>();
+                crate::genesis::seed_rgov_aliases_from(&published, &native)
+                    .await
+                    .map_err(ReplayFailure::internal_error)?;
+            }
         }
 
         let mut mergeable: Vec<NumberChannelsDiff> = Vec::new();
@@ -194,6 +208,19 @@ impl<'a, R: ReplayRuntime + ?Sized> RuntimeReplayOps<'a, R> {
                 crate::genesis::seed_registry_aliases(&native)
                     .await
                     .map_err(ReplayFailure::internal_error)?;
+                {
+                    let published = self
+                        .runtime
+                        .get_data(&rgov::publish_channel())
+                        .await
+                        .map_err(|e| ReplayFailure::internal_error(e.to_string()))?
+                        .into_iter()
+                        .flat_map(|d| d.a.pars.into_iter().map(|p| p.as_par().clone()))
+                        .collect::<Vec<_>>();
+                    crate::genesis::seed_rgov_aliases_from(&published, &native)
+                        .await
+                        .map_err(ReplayFailure::internal_error)?;
+                }
             }
         }
         for (i, sd) in system_deploys.iter().enumerate() {

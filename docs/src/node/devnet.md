@@ -122,7 +122,74 @@ For a client:
   node's own contracts — but anything a deploy registers is still per-chain, because
   `rho:registry:insertArbitrary` derives its URI from a random seed.
 
+## Governance on a devnet (the rgov set)
+
+A fresh chain from `tools/devnet.sh up` already has the rgov governance set installed — no bootstrap
+script, no per-chain URI to record. `spec/GENESIS.md` is the manifest; the constants a client
+hardcodes are there, and the one a governance client needs first is the master directory's read cap
+(`ReadcapURI`, what the wallet's `master-uri.ts` holds).
+
+What is installed, and by whom:
+
+- the eight classes (`Kudos`, `Inbox`, `Directory`, `roll`, `Issue`, `Ballot`, `Chat`, `Group`) with
+  upstream's registration shape, each published under a chosen constant key;
+- the master directory (upstream's seven slots, rendered with those constants) plus the three slots
+  upstream omits (`Chat`, `Ballot`, `Group`);
+- the `GetMe`/`SendThem` feature — the first call a governance client makes.
+
+The last three are deployed by **one fixed dummy key** (`rgov::testnet_governance_key()`), because the
+template publishes its admin capability for its own deployer and the feature's registration reads it
+back. That is a testnet arrangement: see "Testnet vs mainnet" in `spec/GENESIS.md` before reusing any
+of it on a public network.
+
+Two foot-guns worth knowing when you exercise this by hand:
+
+- **Pass the feature a *drain* as its log channel, never `rho:io:stdout`.** It logs multi-element
+  lines (`["getMe", you, …]`) and stdout takes one datum, so a stdout log channel makes the contract
+  error mid-flow — which looks exactly like the stall you are trying to diagnose.
+- **`rho:rchain:deployerId` must be a real public key** for anything that derives a REV address from
+  it (`getMe` does). A placeholder byte array makes `RevAddress!("fromPublicKey", …)` match nothing
+  and the call stalls.
+
+A hand probe of the handshake (deploy it, then read the node's own log for the stages — the feature's
+contract logs are where a stall is legible):
+
+```rholang
+new rl(`rho:registry:lookup`), deployerId(`rho:rchain:deployerId`), out(`rho:io:stdout`),
+    capCh, getMeCh, stuffCh in {
+  out!("stage:1 lookup sent") |
+  rl!(`<ReadcapURI from spec/GENESIS.md>`, *capCh) |
+  for (MCAread <- capCh) {
+    out!("stage:2 readcap resolved") |
+    MCAread!("GetMe", *getMeCh) |
+    for (GetMe <- getMeCh) {
+      out!("stage:3 directory answered GetMe") |
+      new logCh in {
+        for (@_line <= logCh) { Nil } |          // a *repeated* drain, not stdout
+        GetMe!(*deployerId, *stuffCh, *logCh) |
+        for (@_reply <- stuffCh) { out!("stage:4 getMe answered") }
+      }
+    }
+  }
+}
+```
+
+Current state: stages 1–3 pass on a fresh devnet and `getMe` runs, then it stops inside the feature's
+own `createMe` before answering — see the open item in `spec/GENESIS.md`.
+
+## The consumer's call order
+
+From the wallet's integration suite (which drives these contracts): `newInbox` **first** — it creates
+`@[*deployerId, "inbox"]` and `@[*deployerId, "dictionary"]`, and eighteen other snippets read one of
+those two lockers. Then, per family: `newChat` → `sendChat`/`readChat`; `newBallot` → `castBallot`;
+`newIssue` → `addVoterToIssue`/`castVote`/`displayVote`/`delegateVote`/`tallyVotes`; `newGroup` →
+`joinGroup`/`addMember`. `newMemberDirectory` needs the `MasterContractAdmin` locker, which only the
+key that deployed the master directory has — the dummy key here, or a client's own deploy on a public
+network. Reads (`getRoll`, `peekKudos`, `checkRegistration`, `checkBalance`) go anywhere after their
+inputs exist.
+
 ## Ports
+
 
 Deploy is served on gRPC `40401` and Propose+Repl on `40402`; the helpers run the Rust `rnode` client
 *inside* a node container (`docker exec`) so they reach both via `localhost`. The public HTTP API

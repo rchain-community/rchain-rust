@@ -24,47 +24,85 @@ order (`registry.rs:3-6`). They are **stable across chains of this port** becaus
 key is a fixed constant — that is what makes them hardcodable — but they are **not** the 54-char
 mainnet values carried in the `.rho` header comments.
 
-## The rgov governance class contracts (vendored)
+## The rgov governance set — the **testnet** setup
 
-Installed from `casper/src/genesis/resources/rgov/` — vendored from `rchain-community/rgov` (commit,
-licence position and adaptations: `resources/rgov/NOTICE`). They are here because a governance client
-otherwise has to deploy the set at runtime with `scripts/bootstrap-rgov.ts` and *record* the URIs the
-deployment happens to produce: the master directory's member list is a product of the chain, so it
-shifts on every fresh chain and goes stale silently.
+Installed from `casper/src/genesis/resources/rgov/` (vendored from `rchain-community/rgov`; commit,
+licence position and every adaptation: `resources/rgov/NOTICE`), so that a governance client on a
+fresh chain needs **no bootstrap step and no recorded URI**: it hardcodes the constants below.
 
-| # | Contract (`rgov`) | `rho:id` (hardcodable) | Consumer it unblocks |
-|---|---|---|---|
-| 1 | `rholang/core/Kudos.rho` | `rho:id:c35xabt84irokn3kp7qh9gs31f58rzje8ntifucmg19s1q6gek8y` | the master directory's `kudos` member; `Kudos!("peek"/"award", …)` |
-| 2 | `rholang/core/Inbox.rho` | `rho:id:8qbr8guigfush1n8y64ubkjnakwrh9m3suty68pkoebgbjwuiuio` | the member-directory handshake and the wallet's `newInbox`/`sendMail` snippets |
-| 3 | `rholang/core/Directory.rho` | `rho:id:xp7ih4n3kghz89kkc3smgighxs1ou8wx6hrt54z9smr55tfd1i3o` | every per-deployer dictionary the member directory creates |
-| 4 | `rholang/core/memberIdGovRev.rho` (the "roll") | `rho:id:j9wmz843xzfporr7qnghzsj46doxctpxg4msw9tjtrqex1smngjy` | `MemberDirectory!("make"/"makeFromURI", …)` — the master-directory path |
-| 5 | `rholang/core/Issue.rho` | `rho:id:jne1e6mptyjp96zrak8reb4s8hmw3fonrkkkaxbiok18xxs1oj1o` | the ballot/issue snippets (`newIssue`, `castVote`, `tallyVotes`) |
+Two registrations live in these files and only one keeps upstream's shape:
 
-What was adapted (each asserted at build time, so a vendored-file change fails the build):
+- a **class** registers with `insertArbitrary!(bundle+{*X}, …)` — the stored value is the bare class,
+  which is what every rgov consumer destructures (`for (Dir <- lookCh)`, `for (@(_, *X) <- ch)` for the
+  node's own signed contracts). **Do not convert this to `insertSigned`**: its value is a
+  `(nonce, value)` tuple, and the master-directory template then stalls *silently* — a deploy that
+  reports `processedWithSuccess` and produces nothing. That was tried, and it is why the class keys
+  below are chosen keys with a copy behind them rather than derived ones;
+- each class therefore **publishes** the URI it was given (`["<name>", <uri>]` on the fixed channel
+  `rnode:genesis:rgov-uri`), and genesis copies the entry onto a key *we* choose, which is what makes
+  the key independent of the install order (the registered URI is `blake2b256` of the deploy's RNG
+  state — deterministic on genesis, but it moves if any deploy is inserted before it).
 
-- **Self-registration → `rho:registry:insertSigned:secp256k1`.** Upstream registers with
-  `insertArbitrary`, whose URI is `build_uri(blake2b256(random seed))` — a *different* URI on every
-  chain. The signed form derives it from the deployer key, and these deploys' keys are fixed, so the
-  URIs above are constants. Only the **class** registration is converted; per-deployer registrations
-  (a member directory's own write capability, an inbox instance's send capability) stay
-  `insertArbitrary`, because they are runtime state by nature.
-- **Fixed keys, derived not pasted**: `contract_key(name) = blake2b256("rnode/genesis/rgov/<name>")`,
-  timestamp `1700000000000`. A pasted hex constant is unauditable; a named hash can be recomputed by
-  anyone reading the source, and the URIs above are exactly `build_uri(blake2b256(pubkey))` of it.
-- **Dependency markers substituted**: `memberIdGovRev.rho`'s
-  `match ("import", "./directory.rho", \`rho:id:...\`)` / `("./inbox.rho", …)` markers become the
-  installed URIs above — the same string substitution `bootstrap-rgov.ts` performs at runtime.
-- **Deploy-time self-test traffic removed** (`Inbox.rho`'s trailing test program, `Directory.rho`'s
-  post-registration exercise, and the demo prints around them): a chain's genesis must not send test
-  messages or print demo output. The class definitions are untouched.
-- The master-directory template
-  (`resources/rgov/create-master-contract-directory-testnet.rho`) is vendored **verbatim** and
-  rendered by `rgov::master_directory_template()`, which substitutes the seven recorded member URIs
-  with the installed constants (`directory`, `echo`→`directory`, `inbox`, `issue`, `kudos`, `roll`,
-  `log`→`directory` — `Echo.rho`/`mq.rho` never register, so their slots alias to `Directory`,
-  exactly as upstream's bootstrap does). Creating a master directory stays a **runtime** deploy: it
-  is keyed by the deployer's `deployerId`, so each client makes their own — that URI is inherently
-  per-deployer, and the thing this change removes is having to *discover* the member URIs first.
+### The constants a client hardcodes
+
+| Contract (`rgov`) | `rho:id` | Consumer it unblocks |
+|---|---|---|
+| `Kudos.rho` | `rho:id:6hstcrmii97pxfnnwturmhmhfbtomdnh6q6fc6nrnsgfbuyjogyy` | the directory's `Kudos` slot; `Kudos!("peek"/"award", …)` |
+| `Inbox.rho` | `rho:id:cbqr7s4o9yb6trpcitj7ne3qdyci8ph7u8yn8qp1hs1woe59iweo` | the `newInbox`/`sendMail`/`sendChat` snippets |
+| `Directory.rho` | `rho:id:atsx1axaqqyjq841y8em3wgtrf8fe9iwm5ykwjyk3j66fxyskt7y` | every per-deployer dictionary |
+| `memberIdGovRev.rho` (the "roll") | `rho:id:sff83mg96h5rt3emdncpnkrwgfobh9uuyhgw3tuctkeq17fnykqy` | `MemberDirectory!("make"/"makeFromURI", …)` |
+| `Issue.rho` | `rho:id:q5eo8oexygm1yu3ha7g4t55gnau3onyex39198hm4d69n7ifhsto` | `newIssue`, `castVote`, `tallyVotes`, delegations |
+| `Ballot.rho` | `rho:id:hpg1dns31bbdwb4yf9u6teabt7doutus6xfnu6uij6rweoszc8qy` | the ballot snippets |
+| `Chat.rho` | `rho:id:yaer85qmkisrnr3h7yir389u687jhrzs4p1h67jtqasp4j5fw8sy` | `newChat`, `sendChat`, `readChat` |
+| `Group.rho` | `rho:id:4ms51n1oramet9iu94df4483xp88jogfsfcnnsmen6xpraz7gs9o` | `newGroup`, `joinGroup`, `addMember` |
+| **the master directory's read cap** | `rho:id:wxc4mwdh7otq4fd6iuxt84inepssyz5tugojf7ao68dkh4ebbncy` | the `MasterURI` every governance snippet takes — the wallet's `master-uri.ts` |
+
+`ballot`, `chat` and `group` are **not** in upstream's deployment order: the master directory has
+slots for them here because the wallet's editor asks the directory for those class *names*, and a slot
+that was never filled answers `Nil` — which a client cannot tell from "broken".
+
+### The dummy key, and why the three governance terms share it
+
+`masterDirectory`, `extraSlots` and `memberDirectory` are all deployed by
+`testnet_governance_key()` — one fixed dummy key. **They must share it.** The template publishes its
+`@[*deployerId, "MasterContractAdmin"]` capability for *its own* deployer, and the `GetMe` feature's
+registration is gated on reading that capability back; with different keys the gate never opens, the
+feature registers nothing, the directory answers `Nil` for `GetMe`, and a client calling it gets
+silence. Found on a node: the handshake reached "directory answered GetMe" and never entered `getMe`.
+
+`extraSlots` is our own term, not upstream's: rather than rewrite upstream's seven-slot template body,
+it takes the write capability the template published and writes `Chat`, `Ballot` and `Group` in.
+
+### Open item (this is where the handshake currently stops)
+
+On a fresh chain, with the constants above: the read cap resolves, the directory answers `GetMe`, and
+`getMe` **runs** — it derives the deployer's REV address and logs four lines — then it enters the
+feature's own `createMe` (inbox/dictionary creation) and stops before answering, so a client still
+sees nothing at its reply channel. That is upstream `MemberDirectory.rho` flow logic rather than the
+genesis installation, and the node's own contract logs are where it is legible
+(`getMe!(*deployerId, *ret, *log)` with `log` wired to a *drain*, not to `rho:io:stdout` — the
+feature logs multi-element lines and stdout takes one datum, so pointing the log at stdout makes the
+contract error mid-flow). Diagnosing it is a separate piece of work; it is recorded here so nobody
+mistakes the current state for "the family works".
+
+## Testnet vs mainnet
+
+Genesis installing steps 2–4 above is a **testnet** convenience with a real cost, and a public network
+must not do it:
+
+- **One dummy key holds `@[*deployerId, "MasterContractAdmin"]`** and the chain's only `GetMe`
+  feature. On a testnet that is the point (it is what makes the client-side URIs constant). On
+  mainnet each deployer must run their own template + feature deploy from their own key, and the node
+  must install none of it.
+- **A directory slot that was never filled answers `Nil`**, and a consumer cannot distinguish that
+  from "broken" — so on mainnet a client must handle an absent class explicitly rather than wait.
+- **Class URIs derived from the deploy RNG move when the blessed order changes** (`BLESSED_DEPENDENCIES`
+  and the pinned sequence in `casper/src/genesis/mod.rs` are the guard). The *chosen* keys above do
+  not move, which is why a client hardcodes them and not the registered URIs.
+- **The blessed deploys are free** (`phlo_price 0`, `phlo_limit MAX`) and unbounded in reduce steps
+  except by the genesis path's own limits; a production genesis should charge or bound them.
+- **Per-deployer state stays runtime**: an inbox, a dictionary, a master directory for a *new* key —
+  none of that is genesis content, and the wallet's `newInbox` creates it for its own key.
 
 ## Install order
 

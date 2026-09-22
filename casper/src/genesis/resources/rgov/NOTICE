@@ -1,8 +1,16 @@
 The `.rho` files in this directory are vendored from rchain-community/rgov
-(https://github.com/rchain-community/rgov), commit a045c181ec474fc1b9d8dda6221385340767e304,
-`rholang/core/{Kudos,Inbox,Directory,memberIdGovRev,Issue}.rho` plus
-`bootstrap/create-master-contract-directory-testnet.rho`, for use as node genesis content
-(`spec/GENESIS.md`).
+(https://github.com/rchain-community/rgov), commit a045c181ec474fc1b9d8dda6221385340767e304:
+
+- `rholang/core/{Kudos,Inbox,Directory,memberIdGovRev,Issue,Ballot,Chat,Group}.rho` — the class
+  contracts the wallet's editor reaches through the master directory. `Ballot`, `Chat` and `Group`
+  are not in upstream's deployment order (`bootstrap-rgov.ts`'s `STEPS`): they are included here
+  because the wallet asks the directory for those class *names*, and a slot that was never filled
+  answers `Nil`, which a client cannot tell from "broken";
+- `rholang/feature/MemberDirectory.rho` — the `GetMe`/`SendThem` feature, which is what a client's
+  first governance call resolves;
+- `bootstrap/create-master-contract-directory-testnet.rho` — the master-directory template.
+
+They are used as node genesis content for the **testnet** setup (`spec/GENESIS.md`).
 
 Licence: upstream declares `"license": "Apache-2.0"` in its `package.json`, but **ships no LICENSE
 file** and GitHub reports no detectable licence for the repository. Apache-2.0 is the declared
@@ -12,19 +20,30 @@ re-checked before the next release. Recorded here rather than only in the commit
 licence situation is unusual and the next reader of these files will not have the commit in front of
 them.
 
-Local adaptations (all asserted at build time by `casper/src/genesis/standard_deploys.rs`, so a
-change to a vendored file fails the build rather than shipping an unadapted copy):
+Local adaptations (each asserted at build time — in `casper/src/genesis/rgov.rs` — against the exact
+upstream text, so a drift in a vendored file fails the build rather than shipping an unadapted copy):
 
-- self-registration converted from `rho:registry:insertArbitrary` (whose URI is a hash of a random
-  seed, so it shifts on every chain) to `rho:registry:insertSigned:secp256k1` (whose URI is a hash of
-  the deployer public key — a constant, since genesis keys are fixed). This is what makes the URIs
-  hardcodable, which is the point of installing these as genesis content.
-- the *class* registration only: per-deployer registrations (a member directory's own write
-  capability, an inbox instance's send capability) stay `insertArbitrary`, because they are runtime
-  state, not classes.
-- `memberIdGovRev.rho`'s two `match ("import", "./directory.rho", ...)` / `("./inbox.rho", ...)`
-  markers are substituted with the vendored contracts' URIs.
-- deploy-time **self-test traffic** is removed where upstream runs it at the end of the file
-  (`Inbox.rho`'s trailing test program, `Directory.rho`'s post-registration exercise). A chain's
-  genesis must not send test messages or print demo output. The class definitions themselves are
-  untouched.
+- **The class registration is left exactly as upstream wrote it** (`insertArbitrary!(bundle+{*X}, …)`).
+  The stored value is the bare class, which is what every rgov consumer destructures
+  (`for (Dir <- lookCh)`). Converting it to `insertSigned:secp256k1` — whose value is a
+  `(nonce, value)` tuple — makes the master-directory template stall *silently*: a deploy that
+  reports `processedWithSuccess` and produces nothing. (That conversion was tried; this note exists
+  because it is the trap.)
+- Each class **publishes** the URI it was given, as `["<name>", <uri>]` on the fixed channel
+  `rnode:genesis:rgov-uri`, so genesis can copy the registered entry onto the constant key a client
+  hardcodes (`contract_uri_for`). That is what makes the key independent of the deploy order: the
+  registered URI is `blake2b256` of the deploy's RNG state, which is deterministic on genesis but
+  moves if any deploy is inserted before it.
+- The master-directory template's seven member URIs (recorded from an upstream testnet deployment —
+  the values that go stale) are replaced with the class constants, and its `ReadcapURI`
+  announcement is extended with a publish, so the read cap too is reachable under a constant key.
+- `memberIdGovRev.rho`'s two `match ("import", "./directory.rho", …)` / `("./inbox.rho", …)` markers
+  are substituted with the vendored contracts' URIs.
+- Deploy-time **self-test traffic** is removed where upstream runs it at the end of a file:
+  `Inbox.rho`'s trailing program (and the two demo prints that head it), `Directory.rho`'s
+  post-registration exercise, `Ballot.rho`'s four-voter tally, `Chat.rho`'s listener run,
+  `Group.rho`'s two demo groups, and the feature's final `sendThem` to a hardcoded address. A
+  chain's genesis must not send test messages or print demo output. The class definitions themselves
+  are untouched.
+
+Everything else in these files is upstream text, byte for byte.

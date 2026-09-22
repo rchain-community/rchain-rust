@@ -627,8 +627,10 @@ impl RuntimeManager {
                 eval_result,
             });
             // Publish the aliases this deploy's registration made available, before the next deploy
-            // runs (MakeMint resolves `rho:lang:nonNegativeNumber` at deploy time).
+            // runs (MakeMint resolves `rho:lang:nonNegativeNumber` at deploy time; the governance
+            // contracts resolve what an earlier governance deploy published).
             crate::genesis::seed_registry_aliases(&native).await?;
+            crate::genesis::seed_rgov_aliases(self).await?;
         }
         // Install the native system-contract state before the final checkpoint so it is
         // content-addressed into the post-state hash.

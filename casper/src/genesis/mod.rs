@@ -154,9 +154,15 @@ fn create_block_with_processed_deploys(
 /// genesis content, so a client calling it always finds them). That was worth checking rather than
 /// assuming — the first version of this table claimed an order for it, and the negative test refuted
 /// the claim.
+#[cfg(test)]
 const BLESSED_DEPENDENCIES: &[(&str, &[&str])] = &[("make_mint", &["non_negative_number"])];
 
 /// The blessed set with its manifest names, in install order.
+///
+/// The governance block ([`rgov::governance_deploys`]) follows the libraries: its own order is
+/// internal (classes → master directory → the extra slots → the `GetMe` feature), because each step
+/// resolves what the previous one published. It is **testnet-only** — see the module doc in
+/// `rgov.rs` and `spec/GENESIS.md` for what a public network must do instead.
 fn blessed_terms_named(shard_id: &str) -> Result<Vec<(&'static str, SignedDeployData)>, String> {
     let standard: Vec<(&'static str, SignedDeployData)> = vec![
         (
@@ -172,8 +178,99 @@ fn blessed_terms_named(shard_id: &str) -> Result<Vec<(&'static str, SignedDeploy
             standard_deploys::StandardDeploys::make_mint(shard_id)?,
         ),
     ];
-    let rgov = rgov::deploys_named(shard_id)?;
+    let rgov = rgov::governance_deploys(shard_id)?;
     Ok(standard.into_iter().chain(rgov).collect())
+}
+
+/// Copy the **published** entries of the vendored governance contracts onto the constant keys this
+/// node chooses (`rgov::contract_uri_for`, `rgov::readcap_uri`).
+///
+/// A class registers with `insertArbitrary` — upstream's shape, which consumers destructure — so its
+/// own URI is `blake2b256` of the deploy's RNG state: deterministic on genesis, but moved by
+/// inserting any deploy before it. Each class therefore publishes `["<name>", uri]` on
+/// `rgov::URI_PUBLISH_CHANNEL`, and this copies the stored entry to the constant key so a client can
+/// hardcode it and does not depend on the install order.
+///
+/// Idempotent, and called after every blessed deploy — the template's read cap is published by the
+/// deploy that mints it, which is several deploys after the classes.
+pub async fn seed_rgov_aliases(runtime: &RuntimeManager) -> Result<usize, String> {
+    let published = runtime
+        .runtime()
+        .get_data_par(&rgov::publish_channel())
+        .await
+        .map_err(|e| e.to_string())?;
+    let native =
+        rchain_rholang::native_state::NativeSystemState::new(runtime.runtime().native_store());
+    seed_rgov_aliases_from(&published, &native).await
+}
+
+/// The play/replay-independent half of [`seed_rgov_aliases`]: it takes the published datums and the
+/// native store, so the replay path (which holds a `ReplayRuntime`, not a `RuntimeManager`) can
+/// reproduce the seeding exactly — a native write outside the deploy log must match or the replayed
+/// genesis hash diverges (Law 11).
+pub async fn seed_rgov_aliases_from(
+    published: &[rchain_models::ast::Par],
+    native: &rchain_rholang::native_state::NativeSystemState,
+) -> Result<usize, String> {
+    let mut seeded = 0;
+    for datum in published {
+        let Some((name, uri)) = rgov::published_uri(datum) else {
+            continue;
+        };
+        let target = if name == "readcap" {
+            rgov::readcap_uri()?
+        } else {
+            rgov::contract_uri_for(&name)?
+        };
+        if native
+            .registry_lookup(&target)
+            .await
+            .map_err(|e| e.to_string())?
+            .is_some()
+        {
+            continue;
+        }
+        let Some(value) = native
+            .registry_lookup(&uri)
+            .await
+            .map_err(|e| e.to_string())?
+        else {
+            // Published before its registration landed; the next call will see it.
+            continue;
+        };
+        native.registry_insert(&target, &value);
+        seeded += 1;
+    }
+    Ok(seeded)
+}
+
+/// Every governance key a fresh chain must resolve, for the ceremony's completeness check: the
+/// classes, the master directory's read cap, and every seeded shorthand.
+pub async fn missing_governance_keys(
+    native: &rchain_rholang::native_state::NativeSystemState,
+) -> Result<Vec<String>, String> {
+    let mut missing = Vec::new();
+    for name in rgov::RGOV_CORE {
+        let uri = rgov::contract_uri_for(name)?;
+        if native
+            .registry_lookup(&uri)
+            .await
+            .map_err(|e| e.to_string())?
+            .is_none()
+        {
+            missing.push(uri);
+        }
+    }
+    let readcap = rgov::readcap_uri()?;
+    if native
+        .registry_lookup(&readcap)
+        .await
+        .map_err(|e| e.to_string())?
+        .is_none()
+    {
+        missing.push(readcap);
+    }
+    Ok(missing)
 }
 
 /// The ordered list of blessed (standard) genesis deploys (port of `defaultBlessedTerms`).
@@ -321,6 +418,16 @@ pub async fn create_genesis_block(
              to those lookups"
         ));
     }
+    // The governance block too: a class that registered but never published (or a template that
+    // never minted its read cap) leaves a key a client hardcodes resolving to `Nil`, which is the
+    // silent no-op this whole module exists to refuse.
+    let missing_governance = missing_governance_keys(&native).await?;
+    if !missing_governance.is_empty() {
+        return Err(format!(
+            "genesis governance keys were not published: {missing_governance:?} — a client \
+             hardcoding them would get `Nil`"
+        ));
+    }
     let processed_deploys: Vec<ProcessedDeploy> =
         processed_results.into_iter().map(|r| r.deploy).collect();
 
@@ -417,6 +524,12 @@ mod tests {
                 "directory",
                 "roll",
                 "issue",
+                "ballot",
+                "chat",
+                "group",
+                "masterDirectory",
+                "extraSlots",
+                "memberDirectory",
             ],
             "the install order is part of the chain's identity — a change here is a genesis change"
         );
