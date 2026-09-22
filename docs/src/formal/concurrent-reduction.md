@@ -54,7 +54,7 @@ currently carries it (from [`contributor/laws-to-rust.md`](../contributor/laws-t
 | # | Law | What it fixes | Rust realization |
 |---|-----|---------------|------------------|
 | **1** (tie-break) | canonical total order | *Which* candidate is "first" when several match | `Sorted<Par>` + `space_matcher.rs` |
-| **4** (full) | `Reduce`'s COMM rule, first-match-wins; `reduce_redex_unique` (**proven**) — and `reduce_not_deterministic` (**proven**), the counterexample that says the flat `Par` is *not* confluent | An isolated redex produces one thing; *which* redex fires is the scheduler's business, and the flat calculus does not fix it | `Rchain/Rho.lean` (rule), `Rchain/Concurrent.lean` (theorems), `Rchain/Reduce.lean` `reduce_freeVars_subset` (**stated**) |
+| **4** (full) | `Reduce`'s COMM rule, first-match-wins; `reduce_redex_unique` (**proven**) — and `reduce_not_deterministic` (**proven**), the counterexample that says the flat `Par` is *not* confluent | An isolated redex produces one thing; *which* redex fires is the scheduler's business, and the flat calculus does not fix it | `Rchain/Rho.lean` (rule), `Rchain/Concurrent.lean` (theorems), `Rchain/Reduce.lean` `reduce_freeVars_subset` (**proven**) |
 | **8** | Deterministic COMM (produce refs sorted; content-addressed events) | Reproducible candidate selection | `rspace::space_matcher` first-match-in-insertion-order |
 | **11** | Replay determinism (recomputed COMM ⊆ recorded trace) | A re-execution — concurrent or not — reproduces the recorded trace | `rspace::ReplayRSpace` |
 | **12** | Actor atomicity (single-threaded `mbox.nextMsg`) | One actor/message at a time; the *analog* here is per-channel serialization | (orphaned; carried by `TwoStepLock`) |

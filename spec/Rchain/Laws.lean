@@ -207,10 +207,23 @@ def laws : List Law := [
   { number := 4, clause := "b", layer := "Rholang",
     statement := "`new` yields fresh unforgeable names: reduction introduces no free variables it did \
       not already have",
-    status := .owed,
-    declarations := [`Rchain.reduce_freeVars_subset],
-    axioms := [`Rchain.reduce_freeVars_subset],
-    falsifiable := none },
+    status := .provedModel,
+    declarations := [`Rchain.reduce_freeVars_subset, `Rchain.freeVarOf_receivePar,
+      `Rchain.freeVarOf_parMerge],
+    rust := ["rholang/src/reduce.rs"],
+    falsifiable := some "a `comm` whose receive body mentions a level free in neither the send nor the \
+      receive would refute it — the shape a body that is not a function of the datum it consumed \
+      produces, and the one the port's capture-avoiding `substitute_par` (`rholang/src/substitute.rs`) \
+      exists to prevent",
+    note := "proved in `Rchain/Reduce.lean` by induction on the derivation, against `freeVarOf`, which \
+      is a definition (law 6) — so this is a statement about a defined predicate rather than about an \
+      `axiom`, which is what the row used to be. `comm` is the arm with content (the reduct is the \
+      receive's body, a component of the redex); the two congruence arms are `freeVarOf_parMerge` in \
+      both directions. **The `new` half is stated in `Closed`'s terms, not here**: the base-sort \
+      `Reduce` has no `new` rule — freshness of the bound name is a property of the model's \
+      `GUnforgeable`, not of the relation — and what carries it is `Ty.lean`'s `closedNew` (a binder's \
+      body is checked and nothing else) with `reduce_closed` composed in. So the row proves the \
+      free-variable half in as many words, and names the half it does not." },
   { number := 5, layer := "Rholang",
     statement := "Spatial matching; a free variable is bound at most once — enforced by the port's \
       **normalizer** before any matcher runs, and inside the matcher only on the aggregation path \
@@ -246,14 +259,24 @@ def laws : List Law := [
       proofs above" },
   { number := 6, layer := "Rholang",
     statement := "No globally free variables in a program",
-    status := .owed,
-    declarations := [`Rchain.Closed, `Rchain.closed, `Rchain.Closed_parMerge_iff,
+    status := .provedModel,
+    declarations := [`Rchain.Closed, `Rchain.closed, `Rchain.closed_eq_Closed, `Rchain.freeVarOf,
+      `Rchain.freeVarOf_iff_closed, `Rchain.closed_iff_no_freeVars, `Rchain.Closed_parMerge_iff,
       `Rchain.Closed_receivePar_iff, `Rchain.closed_anyPat],
-    axioms := [`Rchain.freeVarOf, `Rchain.closed_iff_no_freeVars],
-    falsifiable := some "`Closed` is a `decide`d `Bool` checker with a proved agreement lemma \
-      (`closed_eq_Closed`), so both directions of the predicate are testable on concrete terms",
-    note := "`Closed` itself is proved; the tie to `freeVarOf` is the axiom, which is what makes the \
-      law rest on a defined-but-undefined-elsewhere predicate" },
+    rust := ["models/src/types.rs"],
+    falsifiable := some "both sides are `decide`d on concrete terms: `bound_var_is_closed` (a `.bound` \
+      occurrence is closed — the model reads it as a back-reference the normalizer resolves), \
+      `free_var_is_not_closed` (a `.free 3` occurrence is not, and the **level** is what the predicate \
+      is about: `freeVarOf p 4` is false of it), and `free_var_is_free_under_par` (a level free \
+      inside a `|` is free in the whole). Two mutations were checked while writing it: making \
+      `freeVarAt` accept `.bound k` as free breaks the tie's `Expr.evar` arm, and dropping one \
+      disjunct from `freeVarOf`'s `Par` arm breaks its `Par` arm",
+    note := "**the tie is a proof now.** `freeVarOf` is a `mutual` block mirroring `Ty.lean`'s \
+      `closed*` block type for type (`∨` where the checker has `&&`), and `freeVarOf_iff_closed` is \
+      the corresponding induction. It discharges two axioms — the opaque predicate and the tie — which \
+      the row used to record as 'a defined-but-undefined-elsewhere predicate'. What makes the \
+      mirroring exact is the model's de Bruijn *levels*: `closedVar` reads `.bound` as bound and \
+      `.free` as open, so the checker refuses exactly the occurrences the predicate accepts" },
 
   -- ── RSpace: the tuple space (Laws 7–11) ─────────────────────────────────────────────────────────
   { number := 7, layer := "RSpace",
