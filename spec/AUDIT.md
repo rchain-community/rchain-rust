@@ -1563,6 +1563,11 @@ oracle is, and the test that pins the fix.
   empty `par` is the same value as its element or no value at all), and **owed** — the induction is over
   the flat fields and the merge arithmetic is the part still to be written out.
 
+  **Instanced on the corpus and discharged by computation** (`Corpus.jsonCases_round_trip`): the
+  general statement is owed, but the twelve cases are not — the kernel reduces each case's encode,
+  decode and re-encode and refuses the build if the wire text changed, so the law's core is *checked*
+  on the layer while the induction is pending.
+
   Checked 1:1: `spec/conformance/json.tsv` (12 cases, `Corpus.jsonCases_decide`) consumed by
   `node/tests/lean_json_corpus.rs`. Each case's expected JSON is the *model's* `render` of the declared
   `JE` (not a hand-written string), and the consumer asserts two things against the running node: the

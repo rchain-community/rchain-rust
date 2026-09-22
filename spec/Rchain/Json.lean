@@ -250,8 +250,10 @@ is what a client depends on when it reads a value from one endpoint and sends it
 
 **Owed** and named rather than assumed quietly: the induction runs over the flat fields, and the merge
 arithmetic it needs (`parMerge`'s field concatenation commuting with the encode) is the part still to
-be written out. The corpus checks the statement against the node's own codec meanwhile, case by case,
-with the model's `JE.render` as the independent witness. -/
+be written out. Two things stand in its place meanwhile, neither of them an assumption: the corpus
+*instantiates* the statement on its cases and the kernel discharges them by computation
+(`Rchain/Corpus.lean`'s `jsonCases_round_trip`), and the Rust consumer checks the same statement
+against the node's own codec with the model's `JE.render` as the independent witness. -/
 axiom decode_encode (e : JE) (p : Par) (h : jeToPar e = some p) (hf : flatPar e = true) :
     (parToJE p).bind jeToPar = some p
 

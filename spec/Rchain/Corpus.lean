@@ -486,6 +486,18 @@ theorem jsonCases_decide :
     jsonCases.all (fun c => (parToJE c.par).map render == c.je.map render) = true := by
   decide
 
+/-- **Law 42 instantiated on the layer's cases, discharged by computation.** The general statement
+(`Rchain/Json.lean`'s `decode_encode`) is an induction over the flat fields and is still owed; what this
+theorem adds is that *these* cases are not owed: for each one the kernel reduces the encode, the decode
+and the encode again, and the wire text is unchanged. `decide` closes it because every function involved
+is structural recursion — the same reason the other layers' verdicts are `decide`d — so a case that
+stopped round-tripping fails `lake build` rather than waiting for the induction. -/
+theorem jsonCases_round_trip :
+    jsonCases.all (fun c =>
+      (((parToJE c.par).bind jeToPar).bind parToJE).map render
+        == (parToJE c.par).map render) = true := by
+  decide
+
 /-- The count the Rust consumer asserts it read. -/
 def jsonCaseCount : Nat := 12
 
