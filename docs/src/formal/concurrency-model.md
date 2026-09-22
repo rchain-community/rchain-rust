@@ -162,12 +162,15 @@ sequential one.
    apply(e₂; e₁)` (`Rchain.Effect.effect_commute_of_disjoint_closure`). Not statically decidable, so no
    static sharded scheduler is sound — the claim queue enforces the achievable special case (per-channel
    order) dynamically instead.
-5. **Gate refinement** — running effect `i` only after effects `0..i−1` complete is exactly the
-   sequential `apply` fold (`Scheduler.lean`, `gate_exec_refines_apply`); the one-hop (next-step
-   footprint) variant is unsound (`one_hop_depth2_diverges`).
+5. **Gate refinement** — running effect `i` only after effects `0..i−1` complete refines the
+   sequential `apply` fold, and the linear chain of awaits that implements it is *transitively*
+   complete (`Scheduler.lean`, `gate_await_closure_orders`); the one-hop (next-step footprint)
+   variant is unsound (`one_hop_depth2_diverges`).
 6. **Path-ordered commit** — a claim queue's commit sequence per channel follows the path-sorted
-   claim order (`Scheduler.lean`, `queue_commit_path_ordered`; deadlock-freedom stated by the bakery
-   argument, `law20_deadlock_freedom`).
+   claim order (`Scheduler.lean`, `queue_commit_path_ordered`), and a sorted queue's head is its
+   path-smallest element (`pathSorted_head_minimal` — the bakery argument's core; the *global*
+   liveness statement needs the finiteness the real system has, since `PathLt` is not well-founded
+   on paths).
 7. **Replay determinism** — recomputed COMM ⊆ recorded trace (Law 11), so concurrent re-validation
    reaches the recorded root.
 
@@ -190,10 +193,10 @@ sequential one.
   (`effect_commute_of_disjoint_closure`: disjoint *closure* ⇒ commute). This is what rules out the
   *static* channel-sharded effect scheduler.
 - **Done** (`Scheduler.lean`): the **channel scheduler** — `DfsPath`/`PathLt` (lexicographic = DFS
-  order), the claim queue with `queue_commit_path_ordered` (proven) and `law20_deadlock_freedom`
-  (stated, bakery), the gate with `gate_exec_refines_apply` (proven) and the one-hop counterexample
-  `one_hop_depth2_diverges` (proven), and `next_step_closure_computable` /
-  `depth2_next_step_disjoint` for Law 22.
+  order), the claim queue with `queue_commit_path_ordered` and `pathSorted_head_minimal` (both
+  proven), the gate with `gate_await_closure_orders` (proven) and the one-hop counterexample
+  `one_hop_depth2_diverges` (proven), and `depth2_next_step_disjoint` for Law 22 — the half of it
+  that has content, since computability at dispatch is a fact about `resolve_children`'s signature.
 
 > **Formal.** The full catalog is 43 rows — [The 29 laws](the-29-laws.md) for the calculus,
 > [Laws 30–43](laws-30-43.md) for the surface — and the checked rendering is `spec/LAWS.md`. This

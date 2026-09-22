@@ -48,9 +48,9 @@ Two effects are **independent** only when their **closures** are disjoint, not m
 | **8** | Deterministic COMM | candidate selection is sorted-first by content hash | `rspace/src/space_matcher.rs`, `rspace/src/rspace.rs` |
 | **11** | Replay determinism | the effect *order* is fixed — replay must reproduce the recorded trace | `rspace/src/replay_rspace.rs` |
 | **10** | Merkle determinism | the trie root is the state — a given effect *set* yields the same root | `rspace/src/history/*` |
-| **20** | `queue_commit_path_ordered` (+ bakery deadlock-freedom, stated) | same-channel commits follow the path-sorted claim order; a claim commits only as head of *all* its channels | `rspace/src/concurrent/channel_queue.rs` |
-| **21** | `gate_exec_refines_apply` | effect `i` runs only after `0..i−1` complete — exactly the sequential fold; the one-hop variant diverges (`one_hop_depth2_diverges`) | `rholang/src/scheduler.rs` (`EffectMode::Gate`), `rholang/src/reduce.rs` |
-| **22** | `next_step_closure_computable` | the matched datum is concrete at dispatch, so the continuation's first-step footprint is computable (`resolve_children`) | `rholang/src/reduce.rs` |
+| **20** | `queue_commit_path_ordered` (+ `pathSorted_head_minimal`, the bakery argument's core) | same-channel commits follow the path-sorted claim order; a claim commits only as head of *all* its channels; a sorted queue's head is its path-smallest element | `rspace/src/concurrent/channel_queue.rs` |
+| **21** | `gate_await_closure_orders` | the immediate-predecessor await chain is *transitively* complete, so a linear chain of awaits suffices (the Rust's "not the quadratic all-predecessors join"); the one-hop variant diverges (`one_hop_depth2_diverges`) | `rholang/src/scheduler.rs` (`EffectMode::Gate`), `rholang/src/reduce.rs` |
+| **22** | `depth2_next_step_disjoint` | the matched datum is concrete at dispatch, so the continuation's first-step footprint is computable (`resolve_children`, whose signature carries no store) — and that computability does *not* license cross-channel pruning | `rholang/src/reduce.rs` |
 
 The subtle point the rest of this document makes precise: sorted selection (Law 8) removes the
 order-sensitivity of *which stored candidate* a comm consumes, but **not** the *arrival order* — and, more
@@ -134,7 +134,7 @@ queue*; it cannot stop the sibling from being claimed *before* the continuation 
 **one-hop enqueue race**: the scheduler may only compare effects that are *both enqueued* — and the
 gate scheduler's answer is to compare them by DFS path (Law 21), while the claim queue's answer is to
 let the per-channel head rule order them (Law 20). `Scheduler.lean` pins both: `one_hop_depth2_diverges`
-is the prepend race as a divergence proof, and `gate_exec_refines_apply` / `queue_commit_path_ordered`
+is the prepend race as a divergence proof, and `gate_await_closure_orders` / `queue_commit_path_ordered`
 are the two repairs. Only the closure condition (S.4) would justify *more* than per-channel order, and
 it is not statically checkable.
 

@@ -29,17 +29,18 @@ that makes effect-level concurrency *sound on-chain*
   validates Law 24; invalidated runs fall back to the gate re-run, so the published state is
   the sequential fold's. All publication statements are **proven**: the writer chain
   (`serializable_writer_chain`, with the path-nodup and initial-record hypotheses the boundary
-  witnesses force), the pinned publication theorem (`dfs_serializable_implies_log_equal` —
-  dispatched + path-nodup + per-channel path-pinned commit order ⇒ the commit-order fold
-  reaches the gate fold's state and each commit emits the gate's trace), and the coordinator
-  refinement (`validated_speculation_refines_apply` — certificate fail-fast + oracle accept +
-  gate re-run fallback ⇒ the sequential fold ships). The boundary witnesses
-  (`dispatched_serializable_log_inequality`, `certificate_blind_late_writer_diverges`,
-  `writer_chain_needs_nodup`) settle why each hypothesis is needed; the converse of
-  publication is disproved by `trace_equality_without_serializability`; `gate_replay_terminates`
-  proves re-runs total; `Published` (path-nodup) states that each path commits at most once and
-  `fallback_rerun_published` proves the fallback queue preserves it.
+  witnesses force), the pinned publication theorem (`pinned_run_publication` — dispatched +
+  path-nodup + per-channel path-pinned commit order ⇒ the commit-order fold reaches the gate fold's
+  state and each commit emits the gate's trace), and the publication rule itself
+  (`published_state_is_the_oracles` — the port accepts the speculative run only when it agrees with
+  the oracle and ships the oracle's result otherwise, `runtime_manager.rs:1013,1044`, so what is
+  published is the sequential reference's state whichever way the certificate goes). The boundary
+  witnesses (`dispatched_serializable_log_inequality`, `certificate_blind_late_writer_diverges`,
+  `writer_chain_needs_nodup`) settle why each hypothesis is needed; the converse of publication is
+  disproved by `trace_equality_without_serializability`; `Published` (path-nodup) states that each
+  path commits at most once and `fallback_rerun_published` proves the fallback queue preserves it.
 -/
+
 
 namespace Rchain
 
@@ -93,7 +94,7 @@ def ValidCommit (sRead : SpecState) (p : DfsPath) (reads : Finset Chan) : Prop :
 /-- **Law 24** — a run is DFS-serializable when every commit in it validates against the
     record layer the commit actually read (the stepped state's record at commit time — no
     separate snapshot is carried, so the check is faithful by construction). The
-    log-equality direction is `dfs_serializable_implies_log_equal`. -/
+    log-equality direction is `pinned_run_publication`. -/
 def DFSSerializable (st0 : State × SpecState) : List (DfsPath × Effect) → Prop
   | [] => True
   | (p, e) :: rest =>
@@ -560,31 +561,11 @@ def publishedTrace (run : List (DfsPath × Effect)) (d : State) : List Event :=
 def gateFold (st0 : State × SpecState) (run : List (DfsPath × Effect)) : State × SpecState :=
   runFold (pathSortedRun run) st0
 
-/-- `PathLt` is transitive (the strict path order). -/
-theorem PathLt_trans {a b c : List Nat} (h1 : PathLt a b) (h2 : PathLt b c) : PathLt a c := by
-  induction h1 generalizing c with
-  | nilCons b bs =>
-      cases c with
-      | nil => cases h2
-      | cons c0 cs => exact PathLt.nilCons c0 cs
-  | cons hlt =>
-      cases h2 with
-      | cons hc => exact PathLt.cons (Nat.lt_trans hlt hc)
-      | consEq h2' => exact PathLt.cons hlt
-  | consEq _ ih =>
-      cases h2 with
-      | cons hc => exact PathLt.cons hc
-      | consEq h2' => exact PathLt.consEq (ih h2')
-
-/-- `PathLt` is irreflexive. -/
-theorem PathLt_irrefl (p : List Nat) : ¬ PathLt p p := by
-  induction p with
-  | nil => intro h; cases h
-  | cons a as ih =>
-      intro h
-      cases h with
-      | cons hlt => exact Nat.lt_irrefl a hlt
-      | consEq h => exact ih h
+-- `PathLt_trans` and `PathLt_irrefl` now live in `Rchain/Scheduler.lean`, the module that *defines*
+-- `PathLt`, alongside the bakery argument (`pathSorted_head_minimal`) that uses them. They were
+-- declared here as well until the consolidation pass moved the bakery core into `Scheduler` and the
+-- build refused the second copy — a de-duplication, not a change: the statements are identical, and
+-- this file imports `Rchain.Scheduler`, so every use below still resolves.
 
 /-- **Law 24 (log-equality boundary)** — a dispatched, DFS-serializable run whose commit-order
     log differs from the path-order log: the two produces are independent, so both commit
@@ -1202,18 +1183,20 @@ theorem prefix_states_agree {st0 : State × SpecState} {run : List (DfsPath × E
           exact hdisp (mem_pathSortedRun.mp (mem_of_mem_takeWhile (fun pe => pe.1 ≠ p) hm))
     _ = (commitPrefixState st0 (pathSortedRun run) p).1 c := rfl
 
-set_option linter.unusedVariables false in
-/-- **Law 24 (publication, proven)** — a pinned DFS-serializable run of dispatched commits
-    reaches the gate fold's state, and each commit emits exactly the gate's trace at its
-    path. (The pin hypothesis — each channel's commits already appear in path order — is
-    the load-bearing one; `h` records that the run is serializable, which the pin implies.)
+/-- **Law 24 (publication, proven)** — a *pinned* run of dispatched commits reaches the gate fold's
+    state, and each commit emits exactly the gate's trace at its path. The load-bearing hypothesis is
+    `Pinned` (each channel's commits already appear in path order), and that is all: this used to carry
+    `h : DFSSerializable st0 run` as well, with `set_option linter.unusedVariables false` suppressing
+    the warning that the proof never touched it. It was not merely unused but redundant — a pinned run
+    *is* the serializability that matters (that is the writer chain's conclusion), and the write-record
+    certificate is the fail-fast device that *finds* such runs, not the reason the fold is reached
+    (`casper/src/runtime_manager.rs:1013,1044`; blind spot `certificate_blind_late_writer_diverges`).
     The published log, the path-ordered drain, is then the gate's trace event for event. -/
-theorem dfs_serializable_implies_log_equal (st0 : State × SpecState)
+theorem pinned_run_publication (st0 : State × SpecState)
     (run : List (DfsPath × Effect))
     (hdisp : ∀ ⦃p : DfsPath⦄ ⦃e : Effect⦄, (p, e) ∈ run → Dispatched e)
     (hnodup : (runPaths run).Nodup)
-    (hpinned : Pinned run)
-    (h : DFSSerializable st0 run) :
+    (hpinned : Pinned run) :
     (runFold run st0).1 = (gateFold st0 run).1
     ∧ (∀ p e, (p, e) ∈ run →
         Effect.trace e (commitPrefixState st0 run p).1 =
@@ -1277,20 +1260,37 @@ theorem gateRerun_eq_runFold (run : List (DfsPath × Effect)) (st : State × Spe
       rcases pe with ⟨p, e⟩
       simpa [gateRerun, List.foldl, runFold] using ih (applyAt p e st)
 
-/-- **Law 25 (refinement, proven)** — the coordinator publishes the sequential fold's state
-    either way: on the accept path the oracle's own verdict is the state equality; on the
-    fallback path the deploy set re-runs under the gate from the start state, which is the
-    gate fold by construction. The certificate's role is fail-fast — its positive content is
-    the writer chain (`serializable_writer_chain`), its blind spot is
-    `certificate_blind_late_writer_diverges`, and pinned runs close the loop via
-    `dfs_serializable_implies_log_equal`. -/
-theorem validated_speculation_refines_apply (st0 : State × SpecState)
-    (run : List (DfsPath × Effect)) :
-    oracleClean st0 run ∨ (gateRerun (pathSortedRun run) st0 = gateFold st0 run) := by
+/-- The port's publication rule (`casper/src/runtime_manager.rs:1013,1044`): a speculative run is
+    *accepted* only when its post-state agrees with the oracle's and the COMM multisets match, and
+    when it is not accepted the **oracle's result is what ships**. The Bool model keeps the state
+    agreement (`oracleClean`) and drops the multiset check, which the Rust makes the same way. -/
+noncomputable def published (st0 : State × SpecState) (run : List (DfsPath × Effect)) :
+    State × SpecState := by
   classical
-  by_cases h : oracleClean st0 run
-  · exact Or.inl h
-  · exact Or.inr (gateRerun_eq_runFold (pathSortedRun run) st0)
+  exact if oracleClean st0 run then runFold run st0 else gateFold st0 run
+
+/-- **Law 25** — the certificate cannot make the published state wrong. Whichever way the check goes,
+    what is published is the sequential reference's state: on the accept path that *is* the verdict it
+    accepted (`oracleClean` is exactly the state equality), and on the reject path the oracle's own
+    result is what is returned (`runtime_manager.rs:1044`). So the certificate decides *how much* gets
+    re-run, never *what* is published — which is why its blind spot
+    (`certificate_blind_late_writer_diverges`) is survivable, and why the sequential-oracle backstop is
+    load-bearing rather than decorative. A publication rule that shipped the speculative state
+    unconditionally would falsify this, which is the point of stating it over the rule rather than over
+    the fold.
+
+    This replaces `validated_speculation_refines_apply`, a disjunction whose second arm
+    (`gateRerun (pathSortedRun run) st0 = gateFold st0 run`) held for *every* run by the definition of
+    `gateFold` — so it said nothing about the certificate, the fallback, or the code. -/
+theorem published_state_is_the_oracles (st0 : State × SpecState)
+    (run : List (DfsPath × Effect)) :
+    (published st0 run).1 = (gateFold st0 run).1 := by
+  classical
+  unfold published
+  split
+  · rename_i h
+    exact h
+  · rfl
 
 /-! ### The converse fails: trace equality without serializability
 
@@ -1320,11 +1320,6 @@ theorem trace_equality_without_serializability :
     have hlt : PathLt [2] [1] := by simpa using h0
     cases hlt with
     | cons hlt => exact (by decide : ¬ 2 < 1) hlt
-
-/-- **Law 25 (progress)** — gate replay is total: every subtree re-run terminates. -/
-theorem gate_replay_terminates (ops : List (DfsPath × Effect)) (st : State × SpecState) :
-    ∃ st', gateRerun ops st = st' :=
-  ⟨gateRerun ops st, rfl⟩
 
 /-- **Law 25 (progress)** — a *published* run commits each path at most once: each path
     validates, or aborts at most once and then commits via the gate re-run (the path-ordered

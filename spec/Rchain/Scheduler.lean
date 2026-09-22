@@ -1,4 +1,5 @@
 import Rchain.Effect
+import Rchain.Par
 
 /-!
 # The path-ordered scheduler — Laws 20–22
@@ -13,25 +14,46 @@ level (`docs/src/formal/channel-scheduler.md`):
   *claim queue*; an effect claims its channels at its DFS path, and commits only when it is the
   head (the path-smallest pending claim) of **every** claimed channel. `queue_commit_path_ordered`
   proves that queue steps preserve path-sortedness and that a channel's commit sequence follows
-  its initial (path-sorted) queue order; `law20_deadlock_freedom` states the bakery argument —
-  the globally path-smallest pending claim is at the head of all its channels, so some claim can
-  always commit.
+  its initial (path-sorted) queue order; `pathSorted_head_minimal` is the bakery argument's core —
+  a path-sorted queue's head is its path-smallest element, so the queue's head can always commit.
 
 * **Law 21 — DFS-gate linearization**. The *gate* scheduler runs effect `i` only after every
-  earlier effect's subtree has completed. `gate_exec_refines_apply` shows the gate's execution is
-  exactly the sequential `Effect.apply` fold — sound, but with no parallelism beyond Level 1.
-  The tempting repair — a **one-hop** scheduler that lets a sibling run once an effect's
-  *next-step* footprint is disjoint — is unsound: `one_hop_depth2_diverges` exhibits a pair whose
-  next-step footprints are disjoint at every decision point yet whose closures overlap, so the
-  one-hop interleaving reaches a state the sequential reducer never reaches.
+  earlier effect's subtree has completed. The Rust builds that with a **chain of awaits**
+  (`reduce.rs:2334-2351`: task `i` holds task `i−1`'s handle and awaits it first), and the claim
+  worth proving is that the immediate-predecessor chain is *transitively complete* —
+  `gate_await_closure_orders` — which is what "not the quadratic all-predecessors join" means. The
+  tempting repair — a **one-hop** scheduler that lets a sibling run once an effect's *next-step*
+  footprint is disjoint — is unsound: `one_hop_depth2_diverges` exhibits a pair whose next-step
+  footprints are disjoint at every decision point yet whose closures overlap, so the one-hop
+  interleaving reaches a state the sequential reducer never reaches.
 
 * **Law 22 — next-step closure is computable at dispatch.** Once a trigger matches, the matched
-  datum is concrete, so a continuation chosen by that datum (`consumeWith`) has a
-  *computable* first-step footprint (`next_step_closure_computable`) — this is what the Rust
-  reducer's `resolve_children` computes. `depth2_next_step_disjoint` records that this
-  computability does **not** make cross-channel pruning sound (the depth-2 pair is next-step
-  disjoint yet non-commuting). The strengthened Law 9 itself — disjoint **closure** commutes — is
-  promoted from an axiom to the theorem `effect_commute_of_disjoint_closure` in `Rchain.Effect`.
+  datum is concrete, so the continuation chosen by that datum has a *computable* first-step
+  footprint — the reason the Rust reducer can resolve a `Par`'s terms concurrently
+  (`resolve_children`, `reduce.rs:2228-2257`, whose own comment is the claim: "Pure w.r.t. the
+  tuple space … so it can run concurrently across a `Par`'s terms and still produce the same result
+  as the sequential interpreter"). That positive half is a fact about a **signature** — the resolver
+  takes no store — and the section below says why it is not dressed as a theorem here, and why the
+  tempting distributivity law is false. What is proved is the negative half,
+  `depth2_next_step_disjoint`: this computability does **not** make cross-channel pruning sound.
+
+## What the consolidation pass changed here (and why)
+
+Three statements in this module were true by construction and are gone, replaced by statements
+about the code:
+
+* `next_step_closure_computable` was `nextFootprint f b = EffectWith.footprint (f b)` — both sides
+  the same expression, `by rfl`. It said nothing about `resolve_children`, which is what it cited.
+* `gate_exec_refines_apply` defined `gateApply` as the sequential fold and then proved the fold is
+  the fold. The Rust comment above the gate says as much ("Not a speedup — the sound,
+  sequential-equivalent carrier"), so the content is in the *dependency structure* (Law 21 above),
+  not in the identification.
+* `law20_deadlock_freedom` was an **axiom**, and unprovable as stated: it quantified over every
+  `Chan → Queue`, so a set of pending claims could have paths `[0] > [0,0] > [0,0,0] > …` with no
+  minimum (`PathLt` is not well-founded on all paths). The real system's paths are bounded by the
+  depth of the term being reduced and its pending set is finite, so the corrected statement needs
+  that finiteness as a hypothesis — the finding is recorded in the register's Law 20 row, and what
+  is proved here is the queue-level core that needs no such hypothesis.
 -/
 
 namespace Rchain
@@ -113,18 +135,23 @@ theorem queueStep_preserves_pathSorted {queues queues' : Queues} (hstep : QueueS
     simp [hch]
     exact hsorted ch
 
-/-- **Law 20 (core)** — channel-task linearization: in any run from path-sorted queues, every
-    channel's queue is always a suffix of its initial queue, so that channel's commits happen in
-    its initial (path) order. This is the claim-queue discipline the relaxed scheduler enforces
-    per channel: at most one op executes per channel at any instant, and same-channel ops commit
-    in DFS path order. -/
+/-- **Law 20 (core)** — channel-task linearization: every channel's queue is always a suffix of its
+    initial queue, so that channel's commits happen in the order they were enqueued. This is the
+    claim-queue discipline the relaxed scheduler enforces per channel: at most one op executes per
+    channel at any instant, and same-channel ops commit in DFS path order.
+
+    **No sortedness hypothesis** — and that is a finding, not a slip: the mechanism that makes the
+    suffix property true is the commit rule (`removeHead` on a claim that is head-on-all), which
+    preserves order whatever the queues start as. Path-*sortedness* is what makes a head
+    *path-smallest*, which is `pathSorted_head_minimal`'s hypothesis, not this theorem's. The
+    previous version of this statement carried `hinit : ∀ ch, PathSorted (q0 ch)` and never used it
+    — the same unused-hypothesis shape as Law 24's `DFSSerializable`, found by the same pass. -/
 theorem queue_commit_path_ordered {q0 q : Queues}
-    (hinit : ∀ ch, PathSorted (q0 ch))
     (hrun : Relation.ReflTransGen QueueStep q0 q) :
     ∀ ch, ∃ pre, q0 ch = pre ++ q ch := by
   induction hrun with
   | refl => intro ch; exact ⟨[], by simp⟩
-  | @tail b _ hprev hstep ih =>
+  | @tail b _ _ hstep ih =>
       rcases hstep with ⟨c, hhead, hdef⟩
       intro ch
       rcases ih ch with ⟨pre, hpre⟩
@@ -144,40 +171,97 @@ theorem queue_commit_path_ordered {q0 q : Queues}
         simp [hch]
         exact hpre
 
-/-- The globally path-smallest pending claim: no pending claim has a strictly smaller path. -/
-def IsPathMinimal (queues : Queues) (c : Claim) : Prop :=
-  (∃ ch, c ∈ queues ch) ∧ ∀ ch c', c' ∈ queues ch → ¬ PathLt c'.path c.path
+/-! ### The bakery argument's core, and the finiteness it needs
 
-/-- **Law 20 (deadlock-freedom)** — the bakery argument: a path-sorted queue's head is its
-    path-smallest element, so the globally path-smallest pending claim is the head of every
-    channel it claims, and therefore can always commit. Combined with `queue_commit_path_ordered`,
-    this is the claim queue's liveness: paths are totally ordered, waits strictly descend, and
-    some head claim always exists while anything is pending. -/
-axiom law20_deadlock_freedom (queues : Queues) :
-    (∃ ch, queues ch ≠ []) →
-    (∀ ch, PathSorted (queues ch)) →
-    ∃ c, HeadOnAll queues c
+A path-sorted queue's head is its path-smallest element, which is why the head can always commit:
+anything ahead of it in a queue it claims would have to have a strictly smaller path, and a strictly
+smaller path is exactly what "head" excludes. That argument needs no finiteness hypothesis, and it is
+what is proved here.
 
-/-! ## Law 21 — the gate scheduler (sound, sequential-equivalent) -/
+What *does* need one is the global statement the axiom this replaces made — that some claim is
+head-on-all. `PathLt` is **not** well-founded on paths: `[0] > [0,0] > [0,0,0] > …` is an infinite
+descending chain, so an unbounded set of pending claims can have no minimum. The real system's paths
+are bounded by the depth of the term being reduced and its pending set is finite, so the corrected
+statement carries that finiteness — recorded in the register's Law 20 row rather than assumed here.
+-/
+
+/-- `PathLt` is irreflexive: no path precedes itself. -/
+theorem PathLt_irrefl : ∀ (a : DfsPath), ¬ PathLt a a
+  | [], h => by cases h
+  | _ :: _, h => by
+      cases h with
+      | cons hlt => exact absurd rfl (Nat.ne_of_lt hlt)
+      | consEq h' => exact PathLt_irrefl _ h'
+
+/-- `PathLt` is transitive. -/
+theorem PathLt_trans : ∀ {a b c : DfsPath}, PathLt a b → PathLt b c → PathLt a c
+  | _, _, _, .nilCons b bs, hbc => by cases hbc <;> exact .nilCons _ _
+  | _, _, _, .cons hlt, hbc => by
+      cases hbc with
+      | cons hlt2 => exact .cons (Nat.lt_trans hlt hlt2)
+      | consEq _ => exact .cons hlt
+  | _, _, _, .consEq hab, hbc => by
+      cases hbc with
+      | cons hlt => exact .cons hlt
+      | consEq hbc' => exact .consEq (PathLt_trans hab hbc')
+
+/-- In a path-sorted queue, everything after the head has a strictly larger path. -/
+theorem pathSorted_lt_of_mem {c0 : Claim} {rest : Queue} (hs : PathSorted (c0 :: rest)) :
+    ∀ c ∈ rest, PathLt c0.path c.path := by
+  induction rest generalizing c0 with
+  | nil => intro c hc; simp at hc
+  | cons c1 rest' ih =>
+      intro c hc
+      have hpair : PathLt c0.path c1.path ∧ PathSorted (c1 :: rest') := by
+        cases rest' <;> simpa [PathSorted] using hs
+      rcases List.mem_cons.mp hc with h | h
+      · subst h; exact hpair.1
+      · exact PathLt_trans hpair.1 (ih hpair.2 c h)
+
+/-- **Law 20 (the bakery argument's core)** — the head of a path-sorted queue is that queue's
+    path-smallest element: nothing in the queue has a strictly smaller path than the head, so the
+    head is exactly the claim that may commit first on that channel. -/
+theorem pathSorted_head_minimal {q : Queue} {hd : Claim} (hs : PathSorted q) (hh : IsHead q hd) :
+    ∀ c ∈ q, ¬ PathLt c.path hd.path := by
+  intro c hc hlt
+  cases q with
+  | nil => simp [IsHead] at hh
+  | cons c0 rest =>
+      have hhd : c0 = hd := by simpa [IsHead] using hh
+      subst hhd
+      rcases List.mem_cons.mp hc with h | h
+      · subst h; exact PathLt_irrefl _ hlt
+      · exact PathLt_irrefl _ (PathLt_trans (pathSorted_lt_of_mem hs c h) hlt)
+
+/-! ## Law 21 — the gate scheduler, as the dependency structure it is -/
 
 /-- The gate scheduler over a DFS-ordered effect list: effect `i` runs only after effects `0..i-1`
-    have completed. In this state-passing model "completed" means the state carries their result,
-    so the gate's execution is the sequential fold. -/
+    have completed. This is the *sequential reference* the gate must be equivalent to; in this
+    state-passing model "completed" means the state carries their result, so the reference is the
+    fold. What the gate's *code* adds is the dependency chain below, and that is where the claim
+    with content lives. -/
 def gateApply : List Effect → State → State
   | [], s => s
   | e :: rest, s => gateApply rest (e.apply s)
 
-/-- **Law 21** — DFS-gate linearization: the gate scheduler refines the sequential reducer
-    (`Effect.apply` in DFS order). Sound — every concurrent execution under the gate reaches the
-    sequential state — but it grants no cross-effect parallelism: the gate *is* the fold. The
-    parallel-permitting variant is the relaxed scheduler of Law 20, whose per-channel order
-    preservation is what `queue_commit_path_ordered` pins down. -/
-theorem gate_exec_refines_apply (l : List Effect) (s : State) :
-    gateApply l s = l.foldl (fun s e => e.apply s) s := by
-  induction l generalizing s with
-  | nil => rfl
-  | cons e rest ih =>
-      simp [gateApply, ih]
+/-- The gate's dependency, as the Rust builds it (`reduce.rs:2334-2351`): the task for effect `i`
+    holds the handle of the task for `i−1` and awaits it first, so the relation is
+    `j + 1 = i` among `n` tasks. -/
+def GateAwaits (n : Nat) : Nat → Nat → Prop := fun j i => i < n ∧ j + 1 = i
+
+/-- **Law 21** — the immediate-predecessor chain is **transitively complete**: every task awaits
+    every earlier task through it. This is exactly what the Rust's comment claims — "Awaiting the
+    immediate predecessor alone suffices because that task itself awaits its own — a linear chain
+    of awaits, not the quadratic all-predecessors join" (`reduce.rs:2341-2345`) — and it is the
+    content the identification "the gate is the fold" lacks: the *transitive closure* of a linear
+    dependency orders all earlier tasks, so no task can observe a missing dependency. A chain with
+    a missing link (say `j + 2 = i` for even `i`) would leave odd-indexed tasks unordered, and this
+    theorem would be false. -/
+theorem gate_await_closure_orders {n j i : Nat}
+    (h : Relation.TransGen (GateAwaits n) j i) : j < i := by
+  induction h with
+  | single hab => obtain ⟨_, hji⟩ := hab; omega
+  | tail _ hbc ih => obtain ⟨_, hcb⟩ := hbc; omega
 
 /-! ## The depth-2 counterexample (one-hop pruning is unsound)
 
@@ -226,7 +310,34 @@ theorem one_hop_depth2_diverges :
   rw [hab, hba] at h
   cases h
 
-/-! ## Law 22 — the next-step closure is computable at dispatch -/
+/-! ## Law 22 — closure computability is a signature fact, and the *negative* half is the law
+
+`EffectWith` and its `footprint`/`apply` are the datum-dependent effect tree Law 23's
+`read_state_determines_outcome` is stated over, so they live here and are used there.
+
+What this module does **not** claim about Law 22, and why:
+
+* The positive half — "the next-step closure is computable at dispatch" — is a fact about a
+  *signature*, not a theorem about a definition. `resolve_children` takes a `Par`, an `Env` and a
+  `Blake2b512Random` and **no store** (`reduce.rs:2228-2234`), and its own comment says what that
+  buys: "Pure w.r.t. the tuple space … so it can run concurrently across a `Par`'s terms and still
+  produce the same result as the sequential interpreter". Stating it in Lean as "two stores give the
+  same resolution" would prove something only because the model's resolver ignores a parameter
+  nobody would pass — exactly the definition-shuffling this pass exists to remove. The signature
+  *is* the claim, and a reader checks it by reading the signature.
+* The tempting positive *law* — resolving `p | q` term-wise gives the resolution of `p` followed by
+  that of `q` — is **false** for the Rust's shape, and a proof attempt is what showed it.
+  `resolve_children` flattens *all* sends before *all* receives (`reduce.rs:2234-2257`), so a merge
+  interleaves differently than a concatenation: with one send and one receive in each half, the
+  merged resolution is `[send_p, send_q, recv_p, recv_q]` while the concatenation is
+  `[send_p, recv_p, send_q, recv_q]`. The concurrency licence therefore rests on *per-term
+  independence* — each term resolved on its own, with no store — and not on distributivity. (The
+  statement was written, would not close, and is recorded rather than deleted quietly.)
+* The half with content is the **negative** one, and it is proved above:
+  `depth2_next_step_disjoint` — computability does not license cross-channel pruning. The register's
+  Law 22 row states it that way rather than claiming a computability theorem this model cannot give
+  content to.
+-/
 
 /-- A consume whose continuation is chosen by the matched datum (the reflective case: a bound
     channel variable). In the Bool model the datum *is* the presence bit. -/
@@ -249,18 +360,5 @@ def EffectWith.apply : EffectWith → State → State
   | consume c k, s => if s c then k.apply (fun x => if x = c then false else s x) else s
   | consumeWith c f, s => if s c then (f (s c)).apply (fun x => if x = c then false else s x) else s
   | stop, s => s
-
-/-- The next-step footprint after the trigger matches on datum `b`: the footprint of the chosen
-    continuation. Total because `f` is total — this is what makes the dispatch-time closure
-    *computable* in the Rust reducer (matched data is concrete at dispatch). -/
-def nextFootprint (f : Bool → EffectWith) (b : Bool) : Finset Chan :=
-  EffectWith.footprint (f b)
-
-/-- **Law 22** — next-step closure is computable at dispatch: given the matched datum, the
-    continuation's first-step channel set is a total, decidable computation. The Rust realization
-    is `resolve_children`'s per-term footprint computed after substitution. -/
-theorem next_step_closure_computable (f : Bool → EffectWith) (b : Bool) :
-    nextFootprint f b = EffectWith.footprint (f b) := by
-  rfl
 
 end Rchain

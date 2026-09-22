@@ -47,8 +47,9 @@ Both Law 24/25 axioms are de-axiomatized with the statements their boundary witn
 (each witness is a decided counterexample): the writer chain carries path-nodup and the initial
 empty record layer; the publication theorem is the **pinned** form — dispatched + path-nodup +
 per-channel path-pinned commit order ⇒ the commit-order fold reaches the gate fold's state and
-each commit emits the gate's trace; `validated_speculation_refines_apply` is the coordinator
-refinement, proven by cases. INVENTORY rows 24/25 are **proven**; no axioms remain.
+each commit emits the gate's trace; the publication *rule* itself (`published_state_is_the_oracles`:
+accept the speculative run only on agreement with the oracle, else ship the oracle's result,
+`runtime_manager.rs:1013,1044`) is proven by cases. INVENTORY rows 24/25 are **proven**; no axioms remain.
 
 ## Phase F — docs and verification
 
