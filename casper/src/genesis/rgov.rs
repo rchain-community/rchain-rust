@@ -253,9 +253,9 @@ fn cut_statement(rho: &str, marker: &str) -> Result<String, String> {
             "rgov: expected exactly one `{marker}` statement, found {occurrences}"
         ));
     }
-    let at = rho.find(marker).ok_or_else(|| {
-        format!("rgov: `{marker}` vanished between the count and the find")
-    })?;
+    let at = rho
+        .find(marker)
+        .ok_or_else(|| format!("rgov: `{marker}` vanished between the count and the find"))?;
     // Walk back over the `|` (and whitespace) that joined the statement to the previous one.
     let before = rho[..at].trim_end();
     let before = before.strip_suffix('|').unwrap_or(before).trim_end();
@@ -343,7 +343,6 @@ fn key_for(name: &str) -> String {
         contract_key(name)
     }
 }
-
 
 /// The vendored set in install order.
 pub fn deploys(shard_id: &str) -> Result<Vec<SignedDeployData>, String> {
@@ -475,15 +474,15 @@ in {{
 mod tests {
     use super::*;
 
-/// The public key (the `deployerId`) a term's deploy carries.
-fn deploy_public_key(name: &str) -> Vec<u8> {
-    let sk = PrivateKey::new(base16::unsafe_decode(&key_for(name)));
-    Secp256k1
-        .to_public(&sk)
-        .unwrap_or_else(|e| panic!("a derived key must be valid: {e}"))
-        .bytes()
-        .to_vec()
-}
+    /// The public key (the `deployerId`) a term's deploy carries.
+    fn deploy_public_key(name: &str) -> Vec<u8> {
+        let sk = PrivateKey::new(base16::unsafe_decode(&key_for(name)));
+        Secp256k1
+            .to_public(&sk)
+            .unwrap_or_else(|e| panic!("a derived key must be valid: {e}"))
+            .bytes()
+            .to_vec()
+    }
 
     /// Normalizing a blessed term needs the node's 32 MiB stack (these contracts recurse past the
     /// 2 MiB test default), matching `node/src/main.rs` and `node/tests/common/mod.rs`.
