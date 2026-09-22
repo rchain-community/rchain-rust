@@ -193,17 +193,33 @@ def laws : List Law := [
     axioms := [`Rchain.reduce_freeVars_subset],
     falsifiable := none },
   { number := 5, layer := "Rholang",
-    statement := "Spatial matching; a free variable is bound at most once",
+    statement := "Spatial matching; a free variable is bound at most once — **on the aggregation path**, \
+      which is the only place the port checks it (`aggregate_updates` raises a `BugFoundError`), while \
+      the element-pair and conjunction paths overwrite silently",
     status := .owed,
-    declarations := [`Rchain.spatialMatch, `Rchain.spatialMatch_implies_linear,
-      `Rchain.spatialMatchCore],
+    declarations := [`Rchain.spatialMatch, `Rchain.spatialMatches, `Rchain.spatialMatchCore,
+      `Rchain.aggregateUpdates, `Rchain.aggregateUpdates_rejects_double_bind,
+      `Rchain.freeMapMerge_overwrites],
     axioms := [`Rchain.concrete_matches_iff_eq, `Rchain.fuel_saturation],
     corpus := some "match",
+    rust := ["rholang/src/matcher/spatial_matcher.rs"],
     falsifiable := some "the corpus's three-valued verdicts (`true`/`false`/`rejected`) include the \
       rejected case a twice-bound pattern produces — the shape the previous law-5 axiom *denied* and \
-      which `spec/conformance/match.tsv` now pins (AUDIT C26)",
+      which `spec/conformance/match.tsv` now pins (AUDIT C26) — and `freeMapMerge_overwrites` is the \
+      counterexample inside the model: the same repeated level the aggregation path refuses is silently \
+      overwritten on the fold path",
     note := "`spatialMatch_implies_linear` is `h.2` of a conjunct inside `spatialMatch`'s own \
-      definition, so it holds by construction: it is not yet a statement about the matcher's clauses" },
+      definition, so it holds by construction — and it is **not the port's predicate**. The port checks \
+      linearity in exactly one place, `aggregate_updates` (`spatial_matcher.rs:644-665`), reached only \
+      from the collection path (`list_match`'s tail, `:800`); the element-pair path (`fold_match`, \
+      `:595-629`) and the conjunction path (`ConnAnd`, `:325-334`) thread their binding maps with no \
+      check, and a binding is a plain `insert` (`:477-480`), so a level bound twice **overwrites**, \
+      right-biased, with no error. The model carries both halves now — \
+      `aggregateUpdates_rejects_double_bind` for the checked path, `freeMapMerge_overwrites` for the \
+      unchecked ones — which is what makes the law a statement about the matcher's clauses rather than \
+      about its own definition. **Owed**: the owed proofs above, and a node probe of the silent path \
+      (`x!(a, a)`, and a twice-bound pattern through each path) before the divergence is *called* a \
+      defect" },
   { number := 6, layer := "Rholang",
     statement := "No globally free variables in a program",
     status := .owed,

@@ -223,6 +223,69 @@ theorem spatialMatch_implies_linear {target pattern : Par} (h : spatialMatch tar
   simp [spatialMatch] at h
   exact h.2
 
+/-! ## Law 5, re-stated over the aggregation the port actually checks
+
+`spatialMatch` conjoins `linear pattern`, so `spatialMatch_implies_linear` above holds by construction —
+it is `h.2` of a conjunct inside a definition, not a statement about the matcher's clauses. The port
+enforces linearity in exactly **one** place, and the model below is it: `aggregate_updates`
+(`rholang/src/matcher/spatial_matcher.rs:644-665`), reached only from the collection path (`list_match`'s
+tail, `:800`). The element-pair path (`fold_match`, `:595-629`) and the conjunction path (`ConnAnd`,
+`:325-334`) thread their binding maps with **no check at all** — a binding is a plain `insert`
+(`:477-480`) — so a level bound twice is silently overwritten, right-biased. Both halves are stated,
+because a law about "bound at most once" that named only the checked path would be the same mistake this
+pass exists to remove. -/
+
+/-- The matcher's binding environment: the free levels bound so far, each to the `Par` it is bound to
+    (the port's `FreeMap = BTreeMap<i32, Par>`). A list of pairs, so `decide` can read it. -/
+abbrev FreeMap := List (Nat × Par)
+
+/-- Bind a level, replacing any previous binding — the port's `fm.insert(level, …)`
+    (`spatial_matcher.rs:477-480`). -/
+def freeMapBind (fm : FreeMap) (l : Nat) (v : Par) : FreeMap :=
+  (l, v) :: fm.filter (fun p => p.1 ≠ l)
+
+/-- Fold one contributor's bindings in, right-biased — the port's `out.extend(f)`
+    (`spatial_matcher.rs:659-663`). **No check happens here**, which is what the theorems below are
+    about. -/
+def freeMapMerge (fm f : FreeMap) : FreeMap := f.foldl (fun acc p => freeMapBind acc p.1 p.2) fm
+
+/-- The `Par` a level is bound to, if any. -/
+def FreeMap.lookup (fm : FreeMap) (l : Nat) : Option Par :=
+  (fm.find? (fun p => p.1 == l)).map (fun p => p.2)
+
+/-- The levels a contributor binds that the base does not already bind — the port's `added_vars`
+    (`spatial_matcher.rs:645-653`). One difference the code cannot reach: a `BTreeMap`'s keys are unique,
+    so a single contributor never repeats a level there, while the model's list can — and would then be
+    rejected. The model is stricter only in a state the port cannot produce. -/
+def newLevels (fm f : FreeMap) : List Nat :=
+  (f.map (fun p => p.1)).filter (fun l => l ∉ fm.map (fun p => p.1))
+
+/-- **The port's linearity check**: `aggregate_updates` (`spatial_matcher.rs:644-665`) returns
+    `Err(BugFoundError("Aggregated updates conflicted with each other"))` when two contributors bind the
+    same level the base does not already bind — the Rust compares a `BTreeSet` of the added variables
+    against the `Vec` it built, so a repeat is exactly `¬ Nodup` — and folds them right-biased otherwise.
+    One call site: `list_match`'s tail (`:800`). -/
+def aggregateUpdates (fm : FreeMap) (fms : List FreeMap) : Option FreeMap :=
+  let added := (fms.map (newLevels fm)).join
+  if added.Nodup then some (fms.foldl freeMapMerge fm) else none
+
+/-- **Law 5 on the checked path** — two contributors that both bind a level the base has not bound are
+    **rejected**, which is the port's `BugFoundError` (`spatial_matcher.rs:654-658`). -/
+theorem aggregateUpdates_rejects_double_bind (fm f g : FreeMap) (l : Nat)
+    (hl : l ∉ fm.map (fun p => p.1)) (hf : l ∈ f.map (fun p => p.1))
+    (hg : l ∈ g.map (fun p => p.1)) : aggregateUpdates fm [f, g] = none := by
+  have hla : l ∈ newLevels fm f := List.mem_filter.mpr ⟨hf, by simpa using hl⟩
+  have hlb : l ∈ newLevels fm g := List.mem_filter.mpr ⟨hg, by simpa using hl⟩
+  have hdisj : ¬ (newLevels fm f).Disjoint (newLevels fm g) := fun h => h hla hlb
+  simp [aggregateUpdates, List.nodup_append, hdisj]
+
+/-- **And this is what the other two paths do instead** — the element-pair and conjunction paths bind
+    with no check, so a repeated level is **overwritten**: the later binding wins, whatever the base
+    held (`spatial_matcher.rs:477-480`, `:595-629`, `:325-334`). -/
+theorem freeMapMerge_overwrites (f : FreeMap) (l : Nat) (v' : Par) :
+    (freeMapMerge f [(l, v')]).lookup l = some v' := by
+  simp [freeMapMerge, freeMapBind, FreeMap.lookup]
+
 /-- Law 37's tie to law 35, and the justification of the Rust's fast path: a pattern with no
 connective, no free variable, no wildcard and no remainder matches exactly the targets structurally
 equal to it, so `if !pattern.connective_used { pattern == target }` decides the same question the
