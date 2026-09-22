@@ -956,15 +956,29 @@ def laws : List Law := [
   { number := 42, layer := "JSON",
     statement := "`rho_expr_to_par (expr_from_par p) = p`, and the `0 → absent`, `1 → unwrapped`, \
       `n → ExprPar` envelope rule",
-    status := .owed,
-    declarations := [`Rchain.parToJE, `Rchain.jeToPar, `Rchain.render, `Rchain.flatPar],
-    axioms := [`Rchain.decode_encode],
+    status := .provedTied,
+    declarations := [`Rchain.parToJE, `Rchain.jeToPar, `Rchain.render, `Rchain.flatPar,
+      `Rchain.decode_encode, `Rchain.parToJE_getD_round, `Rchain.parToJE_of_decodesTo,
+      `Rchain.parsToPar_merged, `Rchain.unforgPair_refutes_the_old_statement],
     corpus := some "json",
-    falsifiable := some "`jsonCases_decide` (12 cases) is `decide`d, and \
-      `node/tests/lean_json_corpus.rs` runs each case through the node's own `expr_from_par` *and* its \
-      `rho_expr_to_par` round-trip, so an envelope rule that was wrong for `n = 2` fails on a case",
-    note := "the unforgeable leaf is outside the model's domain (its `GUnforgeable` carries a level, \
-      not the wire bytes) and stays pinned by `rho_expr.rs`'s unit tests" },
+    rust := ["node/src/api/rho_expr.rs"],
+    falsifiable := some "the **statement was false as written**, and the falsification is in the tree: \
+      the domain predicate `flatPar` accepted a par of two unforgeables, which the decoder drops and \
+      the encoder then writes as *no value at all* — `unforgPair_refutes_the_old_statement` is that \
+      term, `flatPar e = true`, `jeToPar e = some nilPar`, `parToJE nilPar = none`. The predicate now \
+      refuses an unforgeable, which is what the module doc already claimed. Behaviourally, \
+      `jsonCases_decide` (12 cases) is `decide`d and `node/tests/lean_json_corpus.rs` runs each case \
+      through the node's own `expr_from_par` *and* its `rho_expr_to_par` round-trip, so an envelope \
+      rule that was wrong for `n = 2` fails on a case",
+    note := "**the axiom is gone, and it was not merely owed.** The row used to cite `decode_encode` as \
+      an axiom whose own docstring said the merge arithmetic was 'still to be written out'; what the \
+      induction showed instead is that the *statement* was false of the model, in exactly the way law \
+      5's and law 38's were (C26, C40): a hypothesis wide enough to accept a term the conclusion cannot \
+      hold of. The proof needed the merge arithmetic to be *per field* (`parMerge` concatenates exprs, \
+      then unforgeables, then bundles — so a merge's item list is not `rawItems p ++ rawItems q`) and \
+      the unforgeable arm of the domain to be closed. The unforgeable leaf is still outside the model's \
+      domain — its `GUnforgeable` carries a level, not the wire bytes — and stays pinned by \
+      `rho_expr.rs`'s unit tests, which is now what `flatPar` says rather than what it wished" },
   { number := 43, layer := "JSON",
     statement := "Each endpoint's serialized shape equals the schema's (camelCase fields, `[]` \
       semantics, error precedence)",
