@@ -186,7 +186,7 @@ Every place the Rust port deliberately departs from the Scala oracle, with the r
 | `locally_free` excluded from `Eq`/`Hash` (`AlwaysEqual`) | `models/.../Par.scala` | the cache field is not part of structural identity |
 | Negative deploy cost **rejected** (not wrapped to `uint64`) | `accounting/Costs.scala` `toProto` = `PCost(c.value)` | Scala wraps a negative `Long` into `uint64` (latent bug); reject is safer |
 | Integer arithmetic **promotes to `BigInt`** on `i64` overflow and never wraps; mixed `Int`/`BigInt` operands promote | `Reduce.scala` `wrappingAdd`/`wrappingSub`/`wrappingMul`/`wrappingNeg` and `i64::MIN / -1` errors | RCHIP #51: silent overflow/underflow is the bug class behind the PoS incidents ("one may blow up the world"); exact arithmetic removes it. A **hard fork** — previously-wrapped results change, so prior state is invalid |
-| Number-channel merge diffs are **checked** (`i64` overflow is an error) | `calculateNumChannelDiff` (`Long` subtraction wraps) | a wrapped diff silently corrupts the merged state (Laws 9 & 17); same class as RCHIP #51 — recorded as issue #52 |
+| Number-channel merge diffs are **checked** (`i64` overflow is an error) — the subtraction, the merge, **and the accumulation** (`EventLogIndex::combine`, `casper/src/merging.rs`'s mergeable-diff sum) | `calculateNumChannelDiff` (`Long` subtraction wraps) and `EventLogIndex.combine` (`+` wraps) | a wrapped diff silently corrupts the merged state (Laws 9 & 17); same class as RCHIP #51 — recorded as issue #52, and the accumulation was the last site in that class (AUDIT C41, fixed: the error now propagates to the merge, which refuses the block). **Hard fork:** on a block whose channel diffs sum past `i64`, the old node computed a *wrapped* diff and a wrong state hash, the new one refuses the merge — so a chain that accepted such a block diverges on it. The wrapped value was already wrong, which is why this is a fix rather than a divergence in behaviour that was ever correct |
 | `Add<NonNegI64>` for heights (no negative delta) | — | invariant preserved structurally |
 | gRPC `max_decoding_message_size` wired (was 4 MB tonic default) | `defaults.conf` `grpc-max-recv-message-size = 16M` | honors the existing config |
 | transport `send` timeout (`DEFAULT_SEND_TIMEOUT`) | `GrpcTransportClient.DefaultSendTimeout` | the constant existed but was unused |
@@ -1896,10 +1896,23 @@ port against the **reference document** rather than against itself.
   (`checkedAdd_refuses_overflow`) and names the unchecked half as this finding — the test of a
   consolidation pass is whether the *replacement* law can see the defect the old one could not.
 
-  **Not fixed here.** The fix is a `checked_add` at both accumulation sites plus an error path, which
-  changes behaviour on the merge path and belongs with whoever owns merge semantics — the same reason
-  C27 was recorded before it was fixed. What was owed was to stop the catalogue claiming the arithmetic
-  was safe.
+  **Fixed** (2026-09-22). Both sites now sum with `checked_add` and return the error in the house style
+  (`"number channel diff accumulation overflow: {a} + {b} does not fit i64"`), and the error reaches the
+  merge: `EventLogIndex::combine` is `Result<EventLogIndex, String>`, `DeployChainIndex::apply` and
+  `compute_merged_state` propagate it with `?` (both already returned `Result`, so the merge path's error
+  handling was in place), and `DeployChainIndex::branches_are_conflicting` — a `bool` predicate — became
+  fallible too, because answering `true` ("conflicting") on an un-computable sum would have been the same
+  silent semantic choice the finding is about. `deploys_are_conflicting` needed no change: it compares two
+  existing indices and never accumulates. The test is
+  `combining_refuses_a_diff_that_leaves_i64` (`rspace/src/merger/event_log_index.rs`), falsified before it
+  was believed — a `wrapping_add` in place of the `checked_add` fails it. The behaviour change is
+  registered in §6 (a `Hard fork`, in the row that already carried issue #52).
+
+  Why this shape rather than "answer conflicting and carry on": the port's own choice two lines away is to
+  *refuse* (`calculate_num_channel_diff` returns `Err` on a subtraction that does not fit), so refusing at
+  the accumulation is the same decision applied to the same class — and a merge that refuses is loud,
+  while a merge that silently picks a branch set is not.
+
 
 - **C42 — law 5's linearity is enforced by the normalizer, not by the matcher, and the model had it
   backwards about which paths are reachable.** The consolidation pass re-modelled law 5 on the matcher:
@@ -2002,7 +2015,7 @@ finding that no law covers, and it says why rather than leaving the gap to infer
 | C38 every rho value wrapped wrongly | 42 | `rho_expr.rs`'s `the_wire_shape_is_the_reference_documents` (one literal per arm), `json.tsv`/`lex.tsv` re-emitted, the served document's `RhoExpr` schema, and `node/tests/node_api.rs` over HTTP |
 | C39 the reply was read from one channel | 39, 43 | `casper/tests/exploratory_reply.rs` (three outcomes) + `replySource` in `envelope.tsv` and the served document |
 | C40 law 38's tie was false, and the relation lacked its arity clause | 38, 40 | `allStringChans` scoping the statement, `commPs` as the rule's arity clause |
-| C41 the diff accumulator can overflow where the merge refuses | 17 | `Merging.lean`'s `checkedAdd_refuses_overflow`/`mergeRandoms_perm` state the checked half and the call-site canonicalization; the two plain-`+=` sites (`event_log_index.rs:151`, `casper/src/merging.rs:758`) are the finding |
+| C41 the diff accumulator could overflow where the merge refuses | 17 | **fixed**: `combining_refuses_a_diff_that_leaves_i64` (`event_log_index.rs`) fails on a `wrapping_add`, and the error reaches the merge through the now-fallible `EventLogIndex::combine`/`branches_are_conflicting`; `Merging.lean`'s `checkedAdd_refuses_overflow`/`mergeRandoms_perm` state the checked half and the call-site canonicalization |
 | C42 law 5's linearity is the normalizer's, not the matcher's | 5 | `Match.lean`'s `aggregateUpdates_rejects_double_bind`/`freeMapMerge_overwrites` state the matcher's halves; the enforcing check is `normalizer.rs:111,289,590,1325`, measured on a devnet (both contexts refused, a duplicated datum accepted), and `spec/conformance/match.tsv` documents the matcher in isolation |
 | C43 the merge's associativity was untested, under a name that says otherwise | 9 | `Merge.lean`'s `mergeChanges_assoc` (proved) **and** `property_tests.rs`'s `law9_state_change_combine_is_associative`, over arbitrary state changes including the join map; the misnamed `state_change.rs` test now says what it asserts |
 

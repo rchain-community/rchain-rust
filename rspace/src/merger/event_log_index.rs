@@ -145,12 +145,24 @@ impl EventLogIndex {
     }
 
     /// Combine two indices (port of `EventLogIndex.combine`).
-    pub fn combine(x: &EventLogIndex, y: &EventLogIndex) -> EventLogIndex {
+    ///
+    /// The numeric-channel diffs are summed with **`checked_add`**, like the merge's own arithmetic
+    /// (AUDIT C41). A value that would leave `i64` is an error rather than a wrap: `calculate_number
+    /// _channel_merge` already refuses one (`checked_add`, `rholang/src/merging.rs:102`) and
+    /// `calculate_num_channel_diff` another (`:309`), so the *accumulation* was the only place the
+    /// arithmetic could go wrong silently — a debug panic and a release wrap, on a path two branches'
+    /// diffs for the same channel reach. The input is constructible rather than merely theoretical:
+    /// each diff is itself an unchecked-to-`i64::MAX` `end - prev`.
+    pub fn combine(x: &EventLogIndex, y: &EventLogIndex) -> Result<EventLogIndex, String> {
         let mut number_channels = x.number_channels_data.clone();
         for (k, v) in &y.number_channels_data {
-            *number_channels.entry(*k).or_insert(0) += *v;
+            let entry = number_channels.entry(*k).or_insert(0);
+            let sum = entry.checked_add(*v).ok_or_else(|| {
+                format!("number channel diff accumulation overflow: {entry} + {v} does not fit i64")
+            })?;
+            *entry = sum;
         }
-        EventLogIndex {
+        Ok(EventLogIndex {
             produces_linear: union(&x.produces_linear, &y.produces_linear),
             produces_persistent: union(&x.produces_persistent, &y.produces_persistent),
             produces_consumed: union(&x.produces_consumed, &y.produces_consumed),
@@ -169,7 +181,7 @@ impl EventLogIndex {
             produces_mergeable: union(&x.produces_mergeable, &y.produces_mergeable),
             consumes_mergeable: union(&x.consumes_mergeable, &y.consumes_mergeable),
             number_channels_data: number_channels,
-        }
+        })
     }
 }
 
@@ -211,5 +223,33 @@ mod tests {
         assert!(idx.produces_mergeable.contains(&produce));
         assert!(idx.consumes_mergeable.contains(&consume));
         assert_eq!(idx.number_channels_data, mergeable);
+    }
+
+    /// The accumulator refuses a diff that leaves `i64` (AUDIT C41), where the plain `+=` this replaces
+    /// would have wrapped in release and panicked in debug. The merge's *other* two arithmetic sites
+    /// already refused — `calculate_number_channel_merge`'s `checked_add` and `calculate_num_channel
+    /// _diff`'s `checked_sub` — and the accumulation was the one that did not, which is why the law's row
+    /// names this as a code finding rather than a law: nothing in the catalogue could see it.
+    #[test]
+    fn combining_refuses_a_diff_that_leaves_i64() {
+        let left = EventLogIndex::apply(
+            &[],
+            |_| false,
+            |_| false,
+            BTreeMap::from([(h(1), i64::MAX)]),
+        );
+        let right = EventLogIndex::apply(&[], |_| false, |_| false, BTreeMap::from([(h(1), 1i64)]));
+
+        let err = EventLogIndex::combine(&left, &right)
+            .expect_err("i64::MAX + 1 does not fit i64, so the accumulation must refuse");
+        assert!(
+            err.contains("accumulation overflow"),
+            "the error names the site rather than the value alone: {err}"
+        );
+
+        // A sum that fits is still produced, so the refusal is a boundary and not a blanket.
+        let ok = EventLogIndex::combine(&left, &EventLogIndex::empty())
+            .expect("adding nothing cannot overflow");
+        assert_eq!(ok.number_channels_data, left.number_channels_data);
     }
 }

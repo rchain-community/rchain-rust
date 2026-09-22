@@ -550,7 +550,9 @@ def laws : List Law := [
       bonds and heights, never numeric channels. **And the arithmetic is only half checked**: the merge \
       result uses `checked_add` (`merging.rs:102`) while the diff accumulator uses a plain `i64 +=` \
       (`rspace/src/merger/event_log_index.rs:151`, `casper/src/merging.rs:758`) — a debug panic, a \
-      release wrap. That half is a code finding, recorded as AUDIT §17 C41, not a law" },
+      release wrap. That half was a code finding (AUDIT §17 C41) and is **fixed**: the accumulation is
+      checked now and its error reaches the merge, with `combining_refuses_a_diff_that_leaves_i64`
+      (`rspace/src/merger/event_log_index.rs`) failing on a `wrapping_add`" },
   { number := 18, layer := "Storage",
     statement := "The store's own invariants: the height map is **contiguous** — no holes in block \
       heights — and the fringe identity is **order-independent**, because what the code keys on is a \

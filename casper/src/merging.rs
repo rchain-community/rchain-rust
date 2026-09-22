@@ -152,10 +152,14 @@ impl DeployChainIndex {
     }
 
     /// Whether two sets of deploy chains conflict (port of `branchesAreConflicting`).
+    ///
+    /// Fallible because combining a set's indices can overflow the numeric-channel accumulation
+    /// (AUDIT C41): the alternative was to answer `true` — "conflicting" — on an un-computable sum,
+    /// which would be a silent semantic choice where the merge's own arithmetic returns an error.
     pub fn branches_are_conflicting(
         a: &BTreeSet<DeployChainIndex>,
         b: &BTreeSet<DeployChainIndex>,
-    ) -> bool {
+    ) -> Result<bool, String> {
         let a_ids: BTreeSet<&Vec<u8>> = a
             .iter()
             .flat_map(|d| d.deploys_with_cost.iter().map(|x| &x.id))
@@ -164,13 +168,15 @@ impl DeployChainIndex {
             .iter()
             .flat_map(|d| d.deploys_with_cost.iter().map(|x| &x.id))
             .collect();
-        let a_event = a.iter().fold(EventLogIndex::empty(), |acc, d| {
-            EventLogIndex::combine(&acc, &d.event_log_index)
-        });
-        let b_event = b.iter().fold(EventLogIndex::empty(), |acc, d| {
-            EventLogIndex::combine(&acc, &d.event_log_index)
-        });
-        !a_ids.is_disjoint(&b_ids) || are_conflicting(&a_event, &b_event)
+        let mut a_event = EventLogIndex::empty();
+        for d in a {
+            a_event = EventLogIndex::combine(&a_event, &d.event_log_index)?;
+        }
+        let mut b_event = EventLogIndex::empty();
+        for d in b {
+            b_event = EventLogIndex::combine(&b_event, &d.event_log_index)?;
+        }
+        Ok(!a_ids.is_disjoint(&b_ids) || are_conflicting(&a_event, &b_event))
     }
 
     /// Whether two deploy chains conflict (port of `deploysAreConflicting`).
@@ -202,9 +208,10 @@ impl DeployChainIndex {
                 cost: d.cost,
             })
             .collect();
-        let event_log_index = deploys.iter().fold(EventLogIndex::empty(), |acc, d| {
-            EventLogIndex::combine(&acc, &d.event_log_index)
-        });
+        let mut event_log_index = EventLogIndex::empty();
+        for d in deploys {
+            event_log_index = EventLogIndex::combine(&event_log_index, &d.event_log_index)?;
+        }
 
         let pre_reader = history_repository.get_history_reader(pre_state_hash).await;
         let pre_binary = pre_reader.reader_binary();
@@ -755,7 +762,13 @@ impl MergeScope {
         let mut mergeable_diffs: NumberChannelsDiff = BTreeMap::new();
         for b in to_merge {
             for (k, v) in &b.event_log_index.number_channels_data {
-                *mergeable_diffs.entry(*k).or_insert(0) += v;
+                let entry = mergeable_diffs.entry(*k).or_insert(0);
+                let sum = entry.checked_add(*v).ok_or_else(|| {
+                    format!(
+                        "number channel diff accumulation overflow: {entry} + {v} does not fit i64"
+                    )
+                })?;
+                *entry = sum;
             }
         }
 
@@ -1032,7 +1045,9 @@ mod merge_relation_tests {
             event_log_index: deploys
                 .iter()
                 .fold(EventLogIndex::empty(), |acc, (_, _, ch)| {
+                    // A test chain's diffs are small; an error here would be a test bug, not a merge path.
                     EventLogIndex::combine(&acc, &deploy_index(vec![1], 0, *ch).event_log_index)
+                        .expect("a test chain's accumulation cannot overflow")
                 }),
             state_changes: StateChange::empty(),
         }
@@ -1147,20 +1162,23 @@ mod merge_relation_tests {
     }
 
     /// `branches_are_conflicting` lifts the same test to *sets* of chains: a shared id anywhere in
-    /// either branch is a conflict, and so is a conflicting pair of combined event logs.
+    /// either branch is a conflict, and so is a conflicting pair of combined event logs. It is
+    /// fallible (AUDIT C41), so this test unwraps: a test chain's diffs are small.
+    fn conflicts(a: &BTreeSet<DeployChainIndex>, b: &BTreeSet<DeployChainIndex>) -> bool {
+        DeployChainIndex::branches_are_conflicting(a, b)
+            .expect("a test chain's accumulation cannot overflow")
+    }
+
     #[test]
     fn branch_conflicts_lift_the_chain_relation() {
         let a: BTreeSet<DeployChainIndex> = [chain(1, 2, &[(1, 10, 1)])].into_iter().collect();
         let b: BTreeSet<DeployChainIndex> = [chain(3, 4, &[(1, 10, 9)])].into_iter().collect();
         let c: BTreeSet<DeployChainIndex> = [chain(5, 6, &[(2, 10, 2)])].into_iter().collect();
 
-        assert!(DeployChainIndex::branches_are_conflicting(&a, &b));
-        assert!(!DeployChainIndex::branches_are_conflicting(&a, &c));
+        assert!(conflicts(&a, &b));
+        assert!(!conflicts(&a, &c));
         // An empty branch conflicts with nothing.
-        assert!(!DeployChainIndex::branches_are_conflicting(
-            &BTreeSet::new(),
-            &a
-        ));
+        assert!(!conflicts(&BTreeSet::new(), &a));
     }
 
     /// `depends` between chains is the event-log dependency: a target that consumed what the source
