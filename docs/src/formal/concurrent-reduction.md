@@ -140,7 +140,7 @@ normal form, and vice versa (every `⟹` schedule linearizes to some sequential 
 state). This is what makes the sequential `eval` loop a *correct* scheduler, and what any (future)
 concurrent scheduler must preserve.
 
-### C.3 Commutative merge (**stated**, the Law 9/17 pair)
+### C.3 Commutative merge (**proved**, the Law 9/17 pair)
 
 The *effect* of a set of COMM events on the tuple space is a commutative monoid over non-conflicting
 events; conflicting events resolve to a unique min-cost winner (Law 17). Hence parallel branches may

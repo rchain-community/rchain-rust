@@ -19,7 +19,9 @@ deferred); **axiom** = postulated by design (a cryptographic primitive).
 > `Rchain/Laws.lean` and refused stale by the gate. It counts clauses rather than laws and separates
 > **`proved-tied`** (proved *and* tied to the node by a corpus) from **`proved-model`** (proved about a
 > model a human keeps in sync); this page's plainer words are the narrative reading of the same rows.
-> Its total is **14 of 43 laws proved at all**. Where the two disagree, the register is right — and it
+> Its total is **25 of 43 laws proved at all** — six tied to the node by a corpus, nineteen over the
+> model — with two more proved but *vacuous* (their statements restate their own definitions). Where the
+> two disagree, the register is right — and it
 > was right about this page's law 5, which used to call an almost-vacuous lemma "correctly stated".
 
 ## Rholang — the language (Laws 1–6)
@@ -37,11 +39,11 @@ deferred); **axiom** = postulated by design (a cryptographic primitive).
 
 | Law | Invariant | Feature | Lean |
 |---|---|---|---|
-| **7** | join commutativity (channel keys hashed in sorted order) | multi-channel receive | `RSpace/Join.lean` — `joinKey_perm` (**stated**) |
-| **8** | deterministic COMM (produce refs sorted; content-addressed events) | the comm event | `RSpace/Comm.lean` — `comm_content_addressed` (**stated**) |
-| **9** | merge is a monoid; non-conflicting logs commute | state merging | `RSpace/Merge.lean` — `mergeChanges_assoc`/`comm` (**stated**) |
-| **10** | Merkle determinism (content-addressed radix trie, collision-free, empty root) | history | `RSpace/Merkle.lean` — `trie_collision_free`/`trie_empty_root` (**stated**) |
-| **11** | replay determinism (recomputed COMM ⊆ recorded trace) | replay | `RSpace/Comm.lean` — `replay_comm_subset` (**stated**) |
+| **7** | join commutativity (channel keys hashed in sorted order) | multi-channel receive | `RSpace/Join.lean` — `joinKey` is *defined* as hash-of-sorted-channel-hashes, so `joinKey_perm` (**proved**) is law 1's canonicalization applied to a join key |
+| **8** | deterministic COMM (produce refs sorted; content-addressed events) | the comm event | `RSpace/Comm.lean` — `produceRefs`/`commId` defined over the Rust's own sort, `comm_content_addressed` (**proved**) |
+| **9** | merge is a monoid; non-conflicting logs commute | state merging | `RSpace/Merge.lean` — `mergeChanges` defined (added/removed concatenate, the join map is right-biased overwrite), `NonConflicting` defined, `mergeChanges_assoc`/`_comm` (**proved**) |
+| **10** | Merkle determinism (content-addressed radix trie, collision-free, empty root) | history | `RSpace/Merkle.lean` — `nodeHash`/`emptyNode`/`emptyRoot` defined over the node type the code has, `root_collision_free`/`nodeHash_eq_emptyRoot` (**proved**) |
+| **11** | replay determinism (recomputed COMM ⊆ recorded trace) | replay | `RSpace/Comm.lean` — **vacuous**: in the model "recomputed" and "recorded" would be the same function, so the claim would be `rfl`; the port checks membership **both** ways (`replay_rspace.rs:330-332`, `:580-590`), and re-stating the law needs a model of the recorded store |
 
 ## Rosette — the actor VM (Laws 12–13)
 
@@ -54,12 +56,12 @@ deferred); **axiom** = postulated by design (a cryptographic primitive).
 
 | Law | Invariant | Feature | Lean |
 |---|---|---|---|
-| **14** | finality requires **> 2/3** bonded stake; fringe = one message per validator | the fringe | `Casper/Stake.lean` `isSuperMajority` (`3·stake > 2·total`), `finality_iff_supermajority`; `Casper/Fringe.lean` `fringe_antichain` (**stated**) |
-| **15** | fringe monotone by height; seen-set monotone | the DAG | `Casper/Fringe.lean` — `fringe_monotone`, `seen_monotone` (**stated**) |
-| **16** | block number = max(parent)+1; seqNum strictly +1; content addressing; bonds cache = PoS | blocks | `Casper/Validate.lean` — `block_number_max_parent_plus_one`, `seq_num_strictly_increases`, `content_addressing` (**stated**) |
+| **14** | finality requires **> 2/3** bonded stake; fringe = one message per validator | the fringe | `Casper/Stake.lean` — `calculateFringe` is the port's `calculate_fringe` (full-partition filter, non-bonded skip, exact-integer comparison) and `Fringe.lean`'s `finality_iff_supermajority` is the advance gate (**proved**, with the 2/3, 2⁵³ and `i64` boundary tests); `fringe_antichain` was **false of a bare `Fringe`** and is refuted in the tree — the antichain is a property of the *derived* fringe, and that derivation is owed |
+| **15** | fringe monotone by height; seen-set monotone | the DAG | `Casper/Fringe.lean` — both axioms were **false of a bare `Fringe`/`Message`** and are refuted in the tree; the port *constructs* a message's seen set (`seenOf`, with `seenOf_contains_justifications`/`mem_seenOf_self` **proved**), and the transitive closure the finalizer leans on is owed to a DAG model |
+| **16** | block number = max(parent)+1; seqNum strictly +1; content addressing; bonds cache = PoS | blocks | `Casper/Validate.lean` — the two number laws are now the port's own checks (`BlockNumberValid`/`SeqNumValid`, folds over the justifications seeded `-1`) with the laws as their elimination (**proved**; both old universal forms were **false** and are refuted in the tree); `content_addressing` is **proved** from `blake2b256_collision_free` and the serializer's canonicity |
 | **17** | the merge's arithmetic is the checked 64-bit one — a value that would leave `i64` is **refused, not wrapped** — and the merged RNG is a function of the *set* of branch generators | merges | `Merging.lean` — `checkedAdd`/`checkedSub` with their refusal witnesses, `mergeRandoms_perm` (**proved**). The `numeric_channels_nonneg` this row used to cite was **false of the code**: numeric channels are signed `i64` and negative diffs are ordinary (`rholang/src/merging.rs:161-166`) |
-| **18** | height map contiguous; fringe identity order-independent | storage | `Casper/Validate.lean` — `height_map_contiguous`, `fringe_identity_order_independent` (**stated**) |
-| **19** | Blake2b256 canonical; the `Blake2b512Random` merge is n-ary and **order-sensitive**; sig verify/sign; Curve25519 round-trip | crypto | `Crypto/Random.lean` `mergeRandom` (n-ary, mirroring `merge(children: &[Self])`); `Crypto/Spec.lean` `blake2b256_collision_free`, `sign_verify_roundtrip`, `curve25519_roundtrip` (**axiom**, by design). The `mergeRandom_comm` this row used to cite was **false of the code** — `crypto/src/hash/blake2b512_random.rs:548` asserts order-sensitivity — so order-independence is stated where it holds: at the *call site*, `Merging.lean`'s `mergeRandoms_perm` |
+| **18** | height map contiguous; fringe identity order-independent | storage | `Casper/Validate.lean` — the two axioms were **false as stated** (any `List Block`; `Perm → f = g`) and are refuted in the tree; `Contiguous` is the store's invariant with `contiguous_insert_succ`/`contiguous_skip_leaves_hole` **proved**, and `fringeId`/`fringeId_perm` prove the order-independence the `BTreeSet` supplies |
+| **19** | Blake2b256 canonical; the `Blake2b512Random` merge is n-ary and **order-sensitive**; sig verify/sign; Curve25519 round-trip | crypto | `Crypto/Random.lean` `mergeRandom` (n-ary, mirroring `merge(children: &[Self])`); `Crypto/Spec.lean` `blake2b256_collision_free`, `blake2b256_output_is_32_bytes` (the 32-byte width the code's `Hash32` types), `sign_verify_roundtrip`, `curve25519_roundtrip` (**axiom**, by design; `Msg`/`Hash` are byte strings, not opaque `Nat`s, so the width is stateable). The `mergeRandom_comm` this row used to cite was **false of the code** — `crypto/src/hash/blake2b512_random.rs:548` asserts order-sensitivity — so order-independence is stated where it holds: at the *call site*, `Merging.lean`'s `mergeRandoms_perm` |
 
 ## Scheduler — the effect scheduler (Laws 20–25)
 

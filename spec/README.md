@@ -44,8 +44,8 @@ spec/
     CrossShard.lean    Laws 26–29: shard scope determinism + 2PC cross-shard atomicity
     Concurrent.lean    concurrency-model soundness theorems (standalone, not imported by the root)
     Tree.lean          tree-model confluence up to `StrCongT` (standalone)
-    RSpace/            Laws 7–11: Join/Comm/Merge/Merkle (stated)
-    Casper/            Laws 14–18: Stake/Fringe/Validate (stated)
+    RSpace/            Laws 7–11: Join/Comm/Merge/Merkle (7–10 proven, 11 vacuous)
+    Casper/            Laws 14–18: Stake/Fringe/Validate (14a/16/18 proven, 14b/15 owed)
     Crypto/            Law 19: Random/Spec (axiomatized by design)
   INVENTORY.md         the law catalog (Laws 1–29): source-of-truth → theorem → Rust test
 ```
@@ -72,9 +72,12 @@ Laws 12–13 (Rosette) are **orphaned**: the `rosette`/`roscala` VM is out of sc
   The sum-type `Sortable`/`cmpSortable` definition is in place (termination proven); the remaining step
   is its laws proof by well-founded induction — see the note in `Rchain/Sort.lean`.
 - **Stated** (axiom, precise signature, definition deferred): Laws 3 (`Subst.lean`), 4-full
-  (`Reduce.lean`), 5 (`Match.lean`), 7–11 (`RSpace/*`), 14–18 (`Casper/*`). Each states the law's
-  signature over the `Par`/abstract data types; the definitions (capture-avoiding substitution,
-  α-equivalence) are Coq's obligation, the RSpace/Casper definitions are later phases.
+  (`Reduce.lean`), 5 (`Match.lean`). Each states the law's signature over the `Par`/abstract data types;
+  the definitions (capture-avoiding substitution, α-equivalence) are Coq's obligation. The RSpace and
+  Casper rows this list used to hold are no longer axioms: the consolidation pass modelled the Rust's
+  own definitions (`joinKey`, `Comm`, `mergeChanges`, `nodeHash`, `blockHash`, the number/seqNum checks,
+  the finalizer's gate) and made the laws theorems over them, with the remaining obligations named in
+  `spec/LAWS.md`'s rows.
   Law 20's liveness half (`law20_deadlock_freedom` in `Rchain/Scheduler.lean`) is stated; its
   per-channel path-order core (`queue_commit_path_ordered`) is proven. Laws 26–29
   (`CrossShard.lean`) state the sharding + two-phase-commit cross-shard model; the per-shard

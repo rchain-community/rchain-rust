@@ -74,7 +74,8 @@ def effectB : Effect := Effect.consume 0 (Effect.produce 3)
 /-- Initial state: channels `c = 0` and `d = 1` each hold one datum. -/
 def state0 : State := fun x => x = 0 ∨ x = 1
 
-/-- The two effects have **disjoint footprints** (Law 9's `NonConflicting` holds). -/
+/-- The two effects have **disjoint footprints** — the footprint analogue of Law 9's `NonConflicting`,
+    which the merge model states as channel-disjointness on a state change. -/
 theorem footprint_disjoint : effectA.footprint ∩ effectB.footprint = ∅ := by
   native_decide
 

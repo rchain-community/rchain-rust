@@ -1,8 +1,9 @@
 /-!
 # The law register — all 43 laws, in one place, with what each one rests on
 
-`spec/INVENTORY.md` is the prose catalog and `docs/src/formal/the-43-laws.md` is its reader-facing
-rendering, but neither is *checkable*: nothing noticed that the tree grew to 43 laws while both still
+`spec/INVENTORY.md` is the prose catalog, and `docs/src/formal/the-29-laws.md` and
+`docs/src/formal/laws-30-43.md` are its reader-facing rendering, but none of the three is *checkable*:
+nothing noticed that the tree grew to 43 laws while both still
 said 29, that the two tables contradicted each other on Laws 5 and 24, or that Law 1's "30 residual
 axioms" were really 12. This module is the single source of truth those documents are generated from,
 and `Rchain/LawsMain.lean` (the `rchain-laws` executable) is what enforces it:
@@ -26,8 +27,9 @@ proved *about the Lean model* and a law proved *and checked against the running 
   same source text through the real thing (`spec/conformance/*.tsv`). The corpus is the only mechanical
   Lean↔Rust link this repo has, so only laws 32, 35, 37–43 can carry this status today.
 - `provedModel` — proved over the model; the tie to the Rust is prose in a mapping table. Honest, and
-  weaker than it sounds: a `provedModel` law is a claim about a model that a human keeps in sync. Laws
-  1–11 and 14–29 are here.
+  weaker than it sounds: a `provedModel` law is a claim about a model that a human keeps in sync. Most of
+  laws 1–29 are here, and the consolidation pass moved rows *into* it by modelling the Rust's own
+  definitions; the rows it could not are `owed`, and their notes say what is missing.
 - `axiomByDesign` — postulated because the primitive is cryptographic (Law 19). The only status that
   should survive the work this register begins.
 - `owed` — the definition exists and the proof does not. `takesStep_iff_reduces`, `decode_encode`.
@@ -415,7 +417,7 @@ def laws : List Law := [
       `Fringe` is freely constructed, so the refutation is three lines. What it is missing is not a \
       hypothesis on the value but the **derivation** — the fringe the port publishes comes from \
       `calculate_finalization`, which advances only on the support gate and only to a strictly new layer \
-      (`finalizer.rs:196-215`) — and the model has no DAG from which to derive it. Owed: the derivation, \
+      (`finalizer.rs:174-197`, `:202-215`) — and the model has no DAG from which to derive it. Owed: the derivation, \
       at which point the statement becomes provable rather than falsified" },
   { number := 15, layer := "Casper",
     statement := "The fringe is monotone by height and the seen set is monotone (no regression) — the \
@@ -437,7 +439,7 @@ def laws : List Law := [
       (`message_state.rs:54-59`), which the model now has (`seenOf`, with both halves proved: \
       `seenOf_contains_justifications` and `mem_seenOf_self`); and height monotonicity relates \
       *successive* fringes of one validator, which the finalizer's advance gate produces \
-      (`finalizer.rs:196-215`). What remains owed is the **transitive** closure the finalizer leans on — \
+      (`finalizer.rs:174-197`, `:202-215`). What remains owed is the **transitive** closure the finalizer leans on — \
       `a ∈ b.seen → a.seen ⊆ b.seen` — which follows from the construction by induction over the DAG, \
       and the DAG is not modelled here. The old row's claim that the seen set is monotone \"(no \
       regression)\" was true of the port and false of the value the axiom quantified over" },
