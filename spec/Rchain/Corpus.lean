@@ -256,12 +256,17 @@ def stepBody : Par := sendPar (strPar "out") [strPar "step"]
 
 /-- A send-and-receive term on string channels, with `pattern` as the receive's bind. -/
 def pairPar (sendChan : String) (datum : Par) (recvChan : String) (pattern : Par) : Par :=
-  parMerge (sendPar (strPar sendChan) [datum]) (receiveParP (strPar recvChan) pattern stepBody)
+  -- A `!` send and a `for` receive: both non-persistent, which is the shape the corpus's terms are.
+  parMerge (sendParP (strPar sendChan) [datum] false)
+    (receiveParP (strPar recvChan) pattern stepBody false)
 
 /-- A send with `data` and a receive with `patterns` on one string channel: the shape a *call* and a
 *contract head* make. Law 40's cases are exactly these, with the arities varied. -/
 def callPar (data : List Par) (patterns : List Par) : Par :=
-  parMerge (sendPar (strPar "c") data) (receiveParPs (strPar "c") patterns stepBody)
+  -- A call (`!`, non-persistent) against a **contract head** (replicated) — the flags the node gives
+  -- the two shapes, and the reason `ReduceP`'s constructors take them.
+  parMerge (sendParP (strPar "c") data false)
+    (receiveParPs (strPar "c") patterns stepBody true)
 
 /-- The cases. Case 3 is the shape C22 item 3 turned on, seen from the reduction side rather than the
 matcher's; case 5 is a store pair, the single-step half of the C22 item 1 class; cases 4 and 6 are the

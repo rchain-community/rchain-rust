@@ -12,11 +12,14 @@ The model could not state it. `Rho.lean`'s `Reduce` contracts *any* send with *a
 same channel — its `ReceiveBind` carries no pattern at all. This module adds the pattern and makes the
 contract rule require a match, so silence is a consequence of the rule:
 
-- `receiveParP` — a receive with a pattern. Note its bind is `(patterns := [pattern], source := chan)`;
-  `Rho.lean`'s `receivePar` has the *body* in the `source` slot, so the base-sort receive never says
-  which channel it listens on. Left alone here (its theorems depend on it) and recorded instead.
-- `ReduceP` — pattern-aware reduction: `comm` carries the match as a hypothesis; everything else is
-  congruence under `|`.
+- `receiveParP` / `receiveParPs` — a receive with a pattern (one pattern, or as many as a call has
+  arguments), each with its persistence flag. Its bind is `(patterns := […], source := chan)` — the
+  channel in the slot that means *channel* (C27 fixed the base-sort `Rho.lean`'s receive, which had the
+  body there instead).
+- `ReduceP` — pattern-aware reduction: `comm` and `commPs` carry the match as a hypothesis; everything
+  else is congruence under `|`. Both constructors take the send's and the receive's persistence flags,
+  because a `!!` send and a replicated receive contract in the node exactly as their non-persistent
+  forms do.
 - `takesStep` — the same question, computed: does this flat `Par` hold a send and a receive on one
   channel whose pattern matches the send's datum? It is a plain structural search (the model's `Par` is
   flat, so a redex is a pair of entries, not a subtree), which is what lets the corpus `decide` against
@@ -24,7 +27,9 @@ contract rule require a match, so silence is a consequence of the rule:
 
 `takesStep_iff_reduces` is the tie between the two, and it is **owed** — named here rather than
 assumed, and checked behaviourally meanwhile by `spec/conformance/silence.tsv`'s consumer, which runs
-each case through the node.
+each case through the node. Its first statement was **false** and is now scoped to the computation's
+domain (`allStringChans`), with the unrestricted direction stated separately as `takesStep_sound`;
+AUDIT C40 records both that and the missing arity clause.
 **Law 40 lives one clause of this rule.** `stepsInBinds` reads the *arity*: a receive accepts a send
 only when it has as many patterns as the send has data (`receiveParPs` is that receive, and law 40's
 cases in the corpus vary the arity). That is where C22 item 2 lived — `MCAwrite!("Chat", *C_Chat)`
@@ -34,15 +39,24 @@ consequence of the rule rather than a remark about the implementation.
 
 namespace Rchain
 
-/-- A receive with a *pattern* on `chan`: the datum must match `pattern` for it to fire. -/
-def receiveParP (chan pattern body : Par) : Par :=
-  Par.mk [] [Receive.mk [ReceiveBind.mk [pattern] chan 1] body false 1] [] [] [] [] [] []
+/-- A send on `chan` carrying `data`, with the **persistence flag** (`!` vs `!!`). `Rho.lean`'s
+`sendPar` fixes it to non-persistent; a `!!` send contracts in the node exactly as a `!` one does, so
+the rule below has to be able to say so. -/
+def sendParP (chan : Par) (data : List Par) (persistent : Bool) : Par :=
+  Par.mk [Send.mk chan data persistent] [] [] [] [] [] [] []
+
+/-- A receive with a *pattern* on `chan`: the datum must match `pattern` for it to fire. The flag is
+whether the receive is replicated (`<=`) — a replicated receive re-arms, which is what makes a
+`contract` callable twice. -/
+def receiveParP (chan pattern body : Par) (persistent : Bool) : Par :=
+  Par.mk [] [Receive.mk [ReceiveBind.mk [pattern] chan 1] body persistent 1] [] [] [] [] [] []
 
 /-- A receive with **several** patterns on `chan` — the shape a contract call is matched against, so
 that law 40's question (*at which arities does a call have an accepting receive?*) is about this
-constructor. Replicated, because a contract's receive is. -/
-def receiveParPs (chan : Par) (patterns : List Par) (body : Par) : Par :=
-  Par.mk [] [Receive.mk [ReceiveBind.mk patterns chan patterns.length] body true 1]
+constructor. Its persistence flag is a parameter: a `contract`'s receive is replicated, and the flag is
+what says so. -/
+def receiveParPs (chan : Par) (patterns : List Par) (body : Par) (persistent : Bool) : Par :=
+  Par.mk [] [Receive.mk [ReceiveBind.mk patterns chan patterns.length] body persistent 1]
     [] [] [] [] [] []
 
 /-- Pattern-aware reduction. The contract rule requires `spatialMatches data pattern`, so "no match,
@@ -58,12 +72,16 @@ two-argument call against a two-argument contract is a step by the search and ha
 accepting receive?") a question about the *rule* rather than about an implementation detail.
 AUDIT C40. -/
 inductive ReduceP : Par → Par → Prop where
-  | comm {chan pattern data body : Par} (h : spatialMatches data pattern) :
-      ReduceP (parMerge (sendPar chan [data]) (receiveParP chan pattern body)) body
+  | comm {chan pattern data body : Par} {sendPersistent recvPersistent : Bool}
+      (h : spatialMatches data pattern) :
+      ReduceP (parMerge (sendParP chan [data] sendPersistent)
+        (receiveParP chan pattern body recvPersistent)) body
   | commPs {chan : Par} {patterns data : List Par} {body : Par}
+      {sendPersistent recvPersistent : Bool}
       (harity : patterns.length = data.length)
       (hmatch : (patterns.zip data).all (fun pd => spatialMatch pd.2 pd.1) = true) :
-      ReduceP (parMerge (sendPar chan data) (receiveParPs chan patterns body)) body
+      ReduceP (parMerge (sendParP chan data sendPersistent)
+        (receiveParPs chan patterns body recvPersistent)) body
   | parLeft {p p' q : Par} : ReduceP p p' → ReduceP (parMerge p q) (parMerge p' q)
   | parRight {p q q' : Par} : ReduceP q q' → ReduceP (parMerge p q) (parMerge p q')
 
