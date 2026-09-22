@@ -1280,7 +1280,9 @@ oracle is, and the test that pins the fix.
      shipped:** a walk of the rendered text for "a linear consume with no paired produce" cannot tell
      three things apart, and two of them are not defects — a *terminal* consume `Issue.rho:104` (the
      tally's last read, after which nothing reads the store again), a *deferred* restore
-     `Group.rho:49→65` (the datum comes back, behind two receives), and a permanent loss (this item).
+     `Group.rho:49→65` (the datum comes back, behind two receives — which C25 later **measured** to be
+     the case, so the reading was right and the walk could not have known it), and a permanent loss
+     (this item).
      Reporting all three would mean an exception list over vendored content, which is exactly the kind
      of allowance this catalog exists to avoid. A static walk for this rule was drafted for this slice
      and retired unshipped rather than committed with an exception list; reading every vendored source
@@ -1380,37 +1382,45 @@ oracle is, and the test that pins the fix.
   than the BNFC there; the *soundness* direction of law 30 (every accepted term is in the grammar) is
   what would pin it, and that row is not landed yet.
 
-- **C25 (open) — `Group!("new", …)` answers nothing, and the reproduction is in-process.** A wallet-case
-  failure (`newGroup`) that survived C21/C22 was narrowed by hand before the conformance corpus existed,
-  and is recorded here rather than left as a red test in the tree:
+- **C25 (fixed) — `Group!("new", …)` answered nothing because it read a dictionary genesis never
+  writes.** A wallet-case failure (`newGroup`); the symptom was that `Group.rho`'s `new` contract
+  (`:36`) printed its first line (`"creating Group."`, `:48`) and then nothing — no
+  `["got directory", …]` (`:60`), no reply. Three statements were the suspects: `:49`'s linear consume
+  of `groupMapCh`, `:50`'s `if (groups.get(name) != Nil)`, and `:55`'s dictionary peek. Read *before*
+  the corpus existed, the candidates could not be separated; the tests below separate them by
+  observation.
 
-  `Group.rho`'s `new` contract (`:36`) prints its first line (`"creating Group."`, `:48`) and then
-  nothing: no `["got directory", …]` (`:60`), no reply. In-process, in one genesis run, the following
-  were *ruled out* by probes in the same deploy — the store exists and answers (`Group!("lookup", …)`
-  replies from `:157`'s peek of `groupMapCh`), the deployer's `dictionary` locker is peekable and its
-  read cap answers (`q!("Directory", *ret2)` replies), and the inbox locker exists. The same operations
-  *inside* `new` do not proceed, so the stall is in the body between `:48` and `:60` — the candidates
-  left are `:49`'s linear consume of `groupMapCh`, `:50`'s `if (groups.get(name) != Nil)`, and `:55`'s
-  dictionary peek. The client-side probes cannot distinguish them, and that is exactly the gap the
-  match/protocol corpus layers (laws 37-40) exist to close: a case per shape, with the model's verdict
-  as the oracle, names the statement instead of narrowing it by hand.
+  **The ruling.** `a_fresh_chain_answers_one_group_creation` and
+  `a_fresh_chain_answers_two_group_creations_in_one_deploy`
+  (`casper/tests/genesis_registry.rs`) drive the contract under the ceremony key, with a witness on
+  `@[*deployerId, "dictionary"]`. Both failed, and the tags named the site: the dictionary witness was
+  **present**, `"creating Group."` printed **twice**, and no call answered. So `:55`'s *precondition*
+  held — the caller's dictionary exists — and yet nothing after `:49` ran. The cause is identity:
+  `Group.rho:6` binds `deployerId` at **registration** time, and `:55` peeks
+  `@[deployerId, "dictionary"]` — the locker `MemberDirectory`'s `createMe` writes for whoever ran it.
+  Upstream deploys the whole rgov set from one funded key, so registration and caller identity coincide;
+  genesis signs each class with its own fixed key (`contract_key`), so the dictionary `Group` peeks
+  belongs to the class deploy and **nothing ever writes it**. The peek never fires, nothing between
+  `:49` and `:60` runs, and an unmatched receive is not an error — so the whole group class was
+  unreachable, silently, and a wallet's `newGroup` hung on it. `:49`'s consume and `:50`'s `if` are
+  both *sound*: a shape test ruled the `if` out (an `if` inside a receive body runs its `else`;
+  pinned now as `if_inside_a_receive_body_runs_its_else_branch` in `rholang/tests/if_par.rs`), and the
+  store restores — see the law-41 note below.
 
-  **Not pinned, not fixed.** The probe that narrowed it was a diagnostic (asserting the *absence* of a
-  reply), so it was removed rather than committed red; the corpus case that should replace it is
-  Phase 3 of the formalization plan, and this item is its first customer.
+  **The fix.** A behavioural repair at render time (`casper/src/genesis/rgov.rs`'s `source("group")`,
+  recorded in `resources/rgov/NOTICE`): the dictionary peek becomes a lookup of the master read
+  capability by its **constant** URI (`readcap_uri`) — the path the wallet's own `getMe` handshake
+  already takes — reusing the `lookup` the file binds at `:8`. Both tests pass with it, and it is the
+  only change.
 
-  **Law 41's reading of the same three candidates, recorded here because it narrows what a stall there
-  *does*** (INVENTORY row 41). `:49`'s read is a linear consume of the store, and the datum goes back
-  only at `:65` — inside two nested receives (`for (Directory <- ret)` at `:59`, `for (… <- dirCh)` at
-  `:63`). So between `:49` and `:65` the store is *empty*, not merely busy: every other `Group` call
-  that reads it linearly (`admin(@"add user")` at `:77`, `admin(@"registerSet")` at `:104`,
-  `admin(@"unregister")` at `:110`) and every peek of it (`Group(@"lookup")` at `:158`, and
-  `Group(@"new")`'s own `if` at `:50`) waits on a channel nobody will fill until that chain resolves.
-  That is consistent with the probe (*a* `Group!("lookup")` answered, so the datum was there when it
-  ran) and it explains the symptom's *shape*: a stall anywhere in `:50`-`:63` does not fail one call,
-  it silences the whole class until the deploy's own awaits resolve. `:48`'s print is the last
-  statement before `:49`, which is why "creating Group." is the last line seen. None of this picks
-  between the three candidates; it is what the corpus layers will have to separate.
+  **Law 41's reading, measured rather than argued** (INVENTORY row 41). The earlier entry here read
+  `:49`'s deferred write-back as a *permanent* loss when the `:50`-`:66` chain fails. With `:55` fixed,
+  the chain completes, so the datum *does* go back at `:65` on the success branch and at `:52` on the
+  error branch: the store survives, and a second concurrent `Group!("new")` is **serialized** behind the
+  first rather than lost — which is what the two-call test now pins. The window between `:49` and `:65`
+  remains a latency property of this contract, not a law-41 violation, and the law's own behavioural
+  form (`storeSurvives`, `spec/conformance/store.tsv`) is what says so.
+
 
 - **C26 — law 5 was three `axiom`s, one of them false, and nothing checked any of them.** Found while
   replacing law 5's `spatialMatches` with a definition. `spec/Rchain/Match.lean` stated

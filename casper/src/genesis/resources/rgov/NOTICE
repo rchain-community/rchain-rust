@@ -45,15 +45,33 @@ upstream text, so a drift in a vendored file fails the build rather than shippin
   `Group.rho`'s two demo groups, and the feature's final `sendThem` to a hardcoded address. A
   chain's genesis must not send test messages or print demo output. The class definitions themselves
   are untouched.
-- **One behavioural repair**, in `Inbox.rho`'s zero-argument `read(ret)`: it consumed the store datum
-  (`for (items <- box)`) and never put it back, so a single read left that inbox answering nothing
-  again — every later `write`, `peek` and `read` waited on an empty channel, silently, for the life of
-  the chain. Its two typed siblings restore the store (`box!(rest)` on a match, `box!(*items)`
-  otherwise), and the contract's own docstring is "read (and *remove*) all messages" — the messages,
-  not the container — so the omission is a defect in the vendored text, not a design. The store is
-  emptied, so the restore is `box!(Nil)`. Applied at render time by `replace_once`, which fails the
-  build if upstream reword the block rather than silently shipping the repair as a no-op; pinned by
-  `a_read_does_not_destroy_the_inbox` in `casper/tests/genesis_registry.rs` (a write, a read-all, and
-  a write that must still answer).
+- **Two behavioural repairs.** Each is applied at render time by `replace_once`, which fails the build
+  if upstream reword the block rather than silently shipping a repair as a no-op.
+
+  1. `Inbox.rho`'s zero-argument `read(ret)`: it consumed the store datum (`for (items <- box)`) and
+     never put it back, so a single read left that inbox answering nothing again — every later
+     `write`, `peek` and `read` waited on an empty channel, silently, for the life of the chain. Its
+     two typed siblings restore the store (`box!(rest)` on a match, `box!(*items)` otherwise), and the
+     contract's own docstring is "read (and *remove*) all messages" — the messages, not the container —
+     so the omission is a defect in the vendored text, not a design. The store is emptied, so the
+     restore is `box!(Nil)`. Pinned by `a_read_does_not_destroy_the_inbox` in
+     `casper/tests/genesis_registry.rs` (a write, a read-all, and a write that must still answer).
+
+  2. `Group.rho`'s `@"new"` contract, which read the **deployer's dictionary** it does not have. The
+     file binds `deployerId(\`rho:rchain:deployerId\`)` at its head (`:6`, the *registration* deploy's
+     identity) and the `new` contract peeks `@[deployerId, "dictionary"]` (`:55`). Upstream deploys the
+     whole set from one funded key, so registration identity and caller identity coincide, and
+     `MemberDirectory`'s `createMe` writes that locker for whoever ran it. Genesis signs each class with
+     its **own** fixed key, so the dictionary `Group` peeks belongs to the class deploy and **nothing
+     ever writes it**: the peek never fires, nothing between `:49` and `:60` runs, and
+     `Group!("new", …)` answers nothing — silently, since an unmatched receive is not an error. The
+     whole group class was unreachable and a wallet's `newGroup` hung on it. The repair addresses the
+     directory the way a client does — the master read capability published under its **constant** URI
+     (`readcap_uri`, the same `READCAP` path `a_fresh_chain_serves_the_wallets_new_inbox_handshake`
+     takes) — using the `lookup` the file already binds at `:8`, so no new dependency is introduced.
+     Pinned by `a_fresh_chain_answers_one_group_creation` and
+     `a_fresh_chain_answers_two_group_creations_in_one_deploy` in `casper/tests/genesis_registry.rs`;
+     the three statements that *were* the suspects (`:49`'s linear consume, `:50`'s `if`, `:55`'s peek)
+     are separated by those tests rather than by argument, and AUDIT C25 records the ruling.
 
 Everything else in these files is upstream text, byte for byte.

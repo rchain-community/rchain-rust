@@ -393,6 +393,184 @@ fn a_read_does_not_destroy_the_inbox() {
     });
 }
 
+/// **One** `Group!("new", …)`, the control for the two-call test below: the same contract, the same
+/// store, no contention. If this answers and two calls do not, the defect is the shared store's
+/// discipline (law 41) rather than the body's statements — which is what separates C25's three
+/// candidates for good.
+#[test]
+fn a_fresh_chain_answers_one_group_creation() {
+    with_big_stack(async {
+        let rm = build_runtime_manager().await;
+        let rand = fixed_rand();
+        let group_uri = rchain_casper::genesis::rgov::contract_uri_for("group").expect("the URI");
+        let term = format!(
+            r#"new rl(`rho:registry:lookup`), deployerId(`rho:rchain:deployerId`), ch, ret in {{
+                 for (@_d <<- @[*deployerId, "dictionary"]) {{ @"out"!("dictionary-present") }} |
+                 rl!(`{group_uri}`, *ch) |
+                 for (Group <- ch) {{
+                   Group!("new", "t1", Nil, *ret) |
+                   for (@_a <- ret) {{ @"out"!("one-new-answered") }}
+                 }}
+               }}"#
+        );
+        let mut terms = default_blessed_terms(
+            &proof_of_stake(),
+            &Registry {
+                system_contract_pub_key: String::new(),
+            },
+            &[],
+            "root",
+            &ceremony_identity(),
+        )
+        .expect("blessed terms");
+        terms.push(deploy_signed_by(&term, 7));
+
+        let (_, _, results) = rm
+            .compute_genesis(
+                &terms,
+                &rand,
+                BlockData::empty(),
+                &PosGenesis::default(),
+                &[],
+            )
+            .await
+            .expect("compute_genesis");
+        for (i, r) in results.iter().enumerate() {
+            assert!(
+                r.eval_result.succeeded(),
+                "genesis deploy #{i} failed: {:?}",
+                r.eval_result.errors
+            );
+        }
+        let produced = rm
+            .runtime()
+            .get_data_par(&rchain_models::sorted::SortedProc::new(
+                rchain_models::par_ops::from_expr(rchain_models::ast::Expr::GString(
+                    "out".to_string(),
+                )),
+            ))
+            .await
+            .expect("read the probe's output channel");
+        let tags: Vec<String> = produced
+            .iter()
+            .filter_map(|p| RhoString::unapply(p).map(str::to_string))
+            .collect();
+        assert!(
+            tags.contains(&"dictionary-present".to_string()),
+            "the deployer's dictionary locker must be readable: {tags:?}"
+        );
+        assert!(
+            tags.contains(&"one-new-answered".to_string()),
+            "a single `Group!(\"new\", …)` must answer — if it does and two do not, the store's \
+             discipline is the defect and the body's statements are not: {tags:?}"
+        );
+    });
+}
+
+/// Two `Group` creations in one deploy, which is the shape the wallet's `newGroup` and the vendored
+/// contract's own self-test both use — and the shape that stalled (AUDIT C25).
+///
+/// `Group.rho`'s `new` contract takes the group map with a **linear** receive (`for (@groups <-
+/// groupMapCh)`, `:49`) and puts a datum back only on the *error* branch (`:52`). The success branch's
+/// write-back is at `:65`, inside two nested receives (`:59`'s `for (Directory <- ret)` and `:63`'s
+/// `for (@{…} <- dirCh)`) — so the store is empty for the whole creation sequence. A second `new`
+/// waits on a channel that will not speak until the first finishes, and if the first's chain never
+/// resolves the store is gone for the life of the chain, silently. That is law 41's violation: a
+/// replicable reader must restore what it consumes.
+///
+/// Three statements in that body were the candidates (`:49`'s consume, `:50`'s
+/// `if (groups.get(name) != Nil)`, `:55`'s dictionary peek), and this test separates them by
+/// observation rather than by argument: the dictionary witness below proves the deployer's locker is
+/// present, so if `Group!("new", …)` still answers nothing, the peek at `:55` is ruled out and the
+/// store is the culprit — and "which call answered" says whether the first one completed at all.
+#[test]
+fn a_fresh_chain_answers_two_group_creations_in_one_deploy() {
+    with_big_stack(async {
+        let rm = build_runtime_manager().await;
+        let rand = fixed_rand();
+        let group_uri = rchain_casper::genesis::rgov::contract_uri_for("group").expect("the URI");
+        let term = format!(
+            r#"new rl(`rho:registry:lookup`), deployerId(`rho:rchain:deployerId`),
+                 ch, ret1, ret2
+               in {{
+                 // The precondition `Group.rho:55` waits on, witnessed: if this tag is absent the
+                 // deployer's dictionary locker was never written and the peek cannot fire.
+                 for (@_d <<- @[*deployerId, "dictionary"]) {{ @"out"!("dictionary-present") }} |
+                 rl!(`{group_uri}`, *ch) |
+                 for (Group <- ch) {{
+                   Group!("new", "t1", Nil, *ret1) |
+                   Group!("new", "t2", Nil, *ret2) |
+                   for (@_a <- ret1) {{ @"out"!("first-new-answered") }} |
+                   for (@_b <- ret2) {{ @"out"!("second-new-answered") }}
+                 }}
+               }}"#
+        );
+        // The ceremony key deploys it: the feature's epilogue writes `@[*deployerId, "dictionary"]`
+        // for the key that deployed it, and that key is the one `Group.rho:55` peeks.
+        let mut terms = default_blessed_terms(
+            &proof_of_stake(),
+            &Registry {
+                system_contract_pub_key: String::new(),
+            },
+            &[],
+            "root",
+            &ceremony_identity(),
+        )
+        .expect("blessed terms");
+        terms.push(deploy_signed_by(&term, 7));
+
+        let (_, _, results) = rm
+            .compute_genesis(
+                &terms,
+                &rand,
+                BlockData::empty(),
+                &PosGenesis::default(),
+                &[],
+            )
+            .await
+            .expect("compute_genesis");
+        for (i, r) in results.iter().enumerate() {
+            assert!(
+                r.eval_result.succeeded(),
+                "genesis deploy #{i} failed: {:?}",
+                r.eval_result.errors
+            );
+        }
+        let produced = rm
+            .runtime()
+            .get_data_par(&rchain_models::sorted::SortedProc::new(
+                rchain_models::par_ops::from_expr(rchain_models::ast::Expr::GString(
+                    "out".to_string(),
+                )),
+            ))
+            .await
+            .expect("read the probe's output channel");
+        let tags: Vec<String> = produced
+            .iter()
+            .filter_map(|p| RhoString::unapply(p).map(str::to_string))
+            .collect();
+
+        assert!(
+            tags.contains(&"dictionary-present".to_string()),
+            "the deployer's dictionary locker must be readable, so that a `Group!(\"new\", …)` that \
+             still stalls is not the `:55` peek — the precondition this test has to establish before \
+             its verdict means anything: {tags:?}"
+        );
+        assert!(
+            tags.contains(&"first-new-answered".to_string()),
+            "the first `Group!(\"new\", …)` must answer — its store is taken at `:49` and the \
+             read-modify-write chain from `:50` to `:66` must complete: {tags:?}"
+        );
+        assert!(
+            tags.contains(&"second-new-answered".to_string()),
+            "the second `Group!(\"new\", …)` must answer too. `:49`'s linear consume puts a datum \
+             back only on the error branch (`:52`), so while the first creation is in flight the \
+             group map is empty and this call waits on a channel nobody will fill — law 41: a \
+             replicable reader restores what it consumes: {tags:?}"
+        );
+    });
+}
+
 /// The three extra directory slots the wallet's editor asks for answer a **value**, not `Nil`.
 ///
 /// `extraSlots` is our own term (upstream's template has seven slots, none of them `Chat`/`Ballot`/

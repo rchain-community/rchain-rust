@@ -118,3 +118,45 @@ async fn explicit_match_not_first_in_a_par_still_runs() {
         vec![1, 2]
     );
 }
+
+/// An `if` inside a **receive body**, which is `Group.rho:49`'s shape: there the `if` at `:50` carries
+/// the contract's entire creation chain in its `else`, so an absorbed `else` is a silent stall rather
+/// than a missing value. The carriers above place the `if` in a `Par`; this one is the arm where a
+/// `for` body hands it a fresh continuation. (AUDIT C25's investigation ruled this shape out first —
+/// pinning it here is what keeps that ruling true.)
+///
+/// Both binds are covered because the store's is the linear one: `<<-` does not consume, `<-` does.
+#[tokio::test]
+async fn if_inside_a_receive_body_runs_its_else_branch() {
+    let (rt, _) = build_runtime_pair().await;
+    assert_eq!(
+        run(
+            &rt,
+            r#"new box in {
+                 box!({}) |
+                 for (@m <<- box) {
+                   if (m.get("absent") != Nil) { @"out"!(1) } else { @"out"!(2) }
+                 }
+               }"#
+        )
+        .await,
+        vec![2],
+        "a peek's body is a statement position"
+    );
+
+    let (rt, _) = build_runtime_pair().await;
+    assert_eq!(
+        run(
+            &rt,
+            r#"new a, box in {
+                 a!(1) | a!(2) | box!({}) |
+                 for (@m <- box) {
+                   if (m.get("absent") != Nil) { @"out"!(1) } else { @"out"!(2) }
+                 }
+               }"#
+        )
+        .await,
+        vec![2],
+        "a linear consume's body is a statement position too, with sends ahead of it in the block"
+    );
+}

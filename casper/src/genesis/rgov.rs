@@ -191,6 +191,29 @@ pub fn source(name: &str) -> Result<String, String> {
         }
         "group" => {
             let source = publish_registration(GROUP_RHO, name, "deployId!(uri)")?;
+            // `Group.rho:6` binds `deployerId` at **registration** time, and `:55` peeks
+            // `@[deployerId, "dictionary"]` — the locker `MemberDirectory`'s `createMe` writes *for
+            // the key that ran it*. Upstream deploys the whole set from one funded key, so those are
+            // the same identity; genesis signs each class with its own fixed key (`contract_key`), so
+            // the dictionary this contract peeks is the class deploy's, which nothing ever writes.
+            // The peek never fires, so nothing between `:49` and `:60` runs and `Group!("new", …)`
+            // answers nothing — **silently**, because an unmatched receive is not an error (AUDIT
+            // C25; the vendored contract was unusable, and the group slot with it).
+            //
+            // The repair addresses the directory the way a client does: the master read capability is
+            // published under a *constant* URI (`readcap_uri`, `spec/GENESIS.md`), which is exactly
+            // the path the wallet's own `getMe` handshake takes (`genesis_registry.rs`, its
+            // `READCAP` leg). `lookup` is already bound at the file's head (`:8`), so the replacement
+            // adds no dependency the contract did not have.
+            let readcap = readcap_uri()?;
+            let source = replace_once(
+                &source,
+                "          for(@{\"read\": *masterRead, ..._} <<- @[*deployerId, \"dictionary\"]) {\n            stdout!({\"read\": *masterRead}) |\n            masterRead!(\"Directory\", *ret)\n          } |",
+                &format!(
+                    "          new capCh in {{\n            lookup!(`{readcap}`, *capCh) |\n            for (masterRead <- capCh) {{\n              stdout!({{ \"read\": *masterRead }}) |\n              masterRead!(\"Directory\", *ret)\n            }}\n          }} |"
+                ),
+                "Group.rho's `new` reading the deployer's dictionary",
+            )?;
             // The tail creates two demo groups and looks them up.
             cut_from(&source, "} |\n  new return(`rho:io:stdout`)")
         }

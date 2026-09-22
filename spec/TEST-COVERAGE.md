@@ -25,7 +25,7 @@ and **no file is left without one or the other** — the linter's check 7 passes
 
 ## Inventory
 
-**1352 `#[test]`/`#[tokio::test]` unit functions + 99 integration tests** across 13 crates, with **6
+**1355 `#[test]`/`#[tokio::test]` unit functions + 102 integration tests** across 13 crates, with **6
 laws** carrying a randomized property test and **10 benchmark functions** in 6 Criterion groups. Only
 **3 of 12 crates have integration tests** (`rholang`, `casper`, `node`).
 
@@ -39,8 +39,8 @@ laws** carrying a randomized property test and **10 benchmark functions** in 6 C
 | `block-storage` | 40 | — | 3 | — |
 | `comm` | 123 | — | — | — |
 | `rspace` | 166 | — | 7 | — |
-| `rholang` | 197 | 49 | 7 | — |
-| `casper` | 239 | 45 | 3 | — |
+| `rholang` | 197 | 50 | 7 | — |
+| `casper` | 239 | 47 | 3 | — |
 | `node` | 178 | 12 | — | — |
 | `qucalc` | 20 | — | — | — |
 | `rspace-bench` | — | — | — | 10 |
@@ -122,7 +122,7 @@ than an algebraic identity. Explicit rather than implied, per the rule that no c
 | 38 | Silence is specified (no match ⇒ no step, no error) | `Silence.lean` `ReduceP` (the contract rule carries the match) + `takesStep`; `takesStep_iff_reduces` owed | `spec/conformance/silence.tsv` ← `Corpus.silenceCases_decide` · `rholang/tests/lean_silence_corpus.rs` | **checked** |
 | 39 | Reply shapes: every urn's reply arity/shape is its `spec/API-SCHEMA.md` row | `Protocol.lean` `replyCatalog` + `replyCatalog_decide` (unique namespaced urns, kind agrees with slots, arity agrees with the arguments as written) | `spec/conformance/protocol.tsv` ← `replyCatalog` · `rholang/tests/lean_protocol_corpus.rs` · the doc tie in `tools/check-lean-conformance.sh` | **checked** for the rows the surface language can spell (the `ByteArray`-argument urns are named in `spec/INVENTORY.md` row 39) |
 | 40 | Protocol agreement: a call has an accepting receive at the target's arity | `Silence.lean` `stepsInBinds` reads the arity (as many patterns as data), `receiveParPs` | `spec/conformance/silence.tsv` cases 7-12 ← `Corpus.silenceCases_decide` · `rholang/tests/lean_silence_corpus.rs` | **checked** (case 10 is C22 item 2) |
-| 41 | Channel balance: a replicable reader restores what it consumes | `Store.lean` `readStore` / `storeSurvives` (a datum back *and* `takesStep`), `replicatedRead` | `spec/conformance/store.tsv` ← `Corpus.storeCases_decide` · `rholang/tests/lean_store_corpus.rs` | **checked** (the installed content: `casper/tests/genesis_registry.rs`'s `a_read_does_not_destroy_the_inbox`) |
+| 41 | Channel balance: a replicable reader restores what it consumes | `Store.lean` `readStore` / `storeSurvives` (a datum back *and* `takesStep`), `replicatedRead` | `spec/conformance/store.tsv` ← `Corpus.storeCases_decide` · `rholang/tests/lean_store_corpus.rs` | **checked** (the installed content: `casper/tests/genesis_registry.rs`'s `a_read_does_not_destroy_the_inbox`, and — measured on the contract that was unreachable — `a_fresh_chain_answers_one_group_creation` / `..._two_group_creations_in_one_deploy`, which is AUDIT C25's fix; the store is restored on both branches, so the `:49`-`:65` window is latency, not loss) |
 | 42 | rho-value JSON: the envelope rule and `rho_expr_to_par (expr_from_par p) = p` | `Json.lean` `parToJE` (the envelope), `jeToPar`, `render`; `decode_encode` stated over `flatPar` and **owed** | `spec/conformance/json.tsv` ← `Corpus.jsonCases_decide` · `node/tests/lean_json_corpus.rs` | **checked** at the wire level (the model's `render` is the expectation; the node's JSON and its own round-trip are the second party) |
 | 43 | The endpoint envelope equals the served schema (camelCase keys, tags) | `Envelope.lean` `envelopeCatalog` + `envelopeCatalog_decide` (no underscore in a key, tags capitalized, names unique) | `spec/conformance/envelope.tsv` ← `envelopeCatalog` · `node/tests/lean_envelope_corpus.rs` (the DTOs *and* the served OpenAPI document) | **checked** for keys and tags (the value types and the document's coverage are the named boundary) |
 | 32 | Lexical determinism for the operator surface (maximal munch; each spelling one way) | `Lex.lean` `lexemes` + `lexemes_decide` (distinct punctuation spellings; each its own longest match) | `spec/conformance/lex.tsv` ← `lexemes` · `node/tests/lean_lex_corpus.rs` (each row's sample run through the node) | **checked for the operator surface** (the rest of the law is the named boundary) |

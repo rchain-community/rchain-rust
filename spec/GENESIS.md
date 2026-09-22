@@ -61,6 +61,13 @@ Two registrations live in these files and only one keeps upstream's shape:
 slots for them here because the wallet's editor asks the directory for those class *names*, and a slot
 that was never filled answers `Nil` — which a client cannot tell from "broken".
 
+Two of the vendored files carry a behavioural repair, both recorded in
+`resources/rgov/NOTICE` with their evidence: `Inbox.rho`'s zero-argument `read` restored a store it
+consumed (AUDIT C22 item 1), and `Group.rho`'s `@"new"` read the deployer's dictionary *of its own
+registration deploy* rather than the caller's, which genesis never writes — so the class answered
+nothing, silently (AUDIT C25). The group row above is usable because of that second repair; before it,
+`newGroup` hung and `joinGroup`/`addMember` had no group to reach.
+
 ### The key: the genesis ceremony's own
 
 `masterDirectory`, `extraSlots` and `memberDirectory` are signed by **the key that creates the genesis
