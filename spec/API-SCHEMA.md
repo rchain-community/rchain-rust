@@ -66,15 +66,15 @@ rholang-typed values, and the reply shapes of the system processes.
    "unsupported". On the explore path `replySource: "none"` says it explicitly; a term that must be
    seen sends to one of the channels in rule 3. A reduce error is a 400 with the error text, and a
    deploy that fails is `processedWithError`.
-4. **`POST /api/deploy` and `POST /api/propose` return a JSON-encoded string**
+5. **`POST /api/deploy` and `POST /api/propose` return a JSON-encoded string**
    (`"Success!\nDeployId is: <hex>"`), not a JSON object. `deploy-status` returns the
    `DeployExecStatus` enum instead: `{processedWithSuccess:{deployResult,block}}`,
    `{processedWithError:{deployError,block}}`, `{notProcessed:{status}}` — **camelCase on both the
    variant and its fields** (C16), and `notProcessed.status` is one of `"Pooled"`,
    `"Block not yet available"`, `"Unknown"`.
-5. **`POST /api/explore-deploy` takes a raw JSON string body** (the term), not
+6. **`POST /api/explore-deploy` takes a raw JSON string body** (the term), not
    `ExploreDeployRequest`.
-6. **`rho:rchain:deployId` / `deployerId` are bound by the normalizer env on the deploy path only.**
+7. **`rho:rchain:deployId` / `deployerId` are bound by the normalizer env on the deploy path only.**
    They are absent under an exploratory deploy, so a term that reads them fails there with
    `No value set for \`rho:rchain:deployId\`` — a property of explore, not of the contract.
 
