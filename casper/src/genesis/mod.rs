@@ -138,14 +138,53 @@ fn create_block_with_processed_deploys(
     ))
 }
 
+/// The order the blessed deploys depend on: `(dependent, what must already be installed)`.
+///
+/// Exactly one entry today, and it is the sharp kind: `MakeMint.rho:27` sends
+/// `lookup!(\`rho:lang:nonNegativeNumber\`, …)` **during its own deploy** and waits on a reply pattern
+/// a `Nil` reply cannot match. An unmatched `for` is not an error, so with the wrong order the deploy
+/// *succeeds* while `MakeMint` never registers at all — nothing fails, and `lookup!` on `makeMint`
+/// just keeps answering `Nil`. What catches it is the genesis ceremony's completeness check
+/// (`missing_genesis_aliases`), and
+/// `installing_make_mint_before_its_dependency_is_caught_by_the_genesis_check` pins both halves of
+/// that: the silence, and the check that ends it.
+///
+/// The vendored rgov contracts need no entry: `memberIdGovRev` looks its `directory`/`inbox` imports
+/// up **per call**, not at deploy time, so its position in the genesis list is free (all three are
+/// genesis content, so a client calling it always finds them). That was worth checking rather than
+/// assuming — the first version of this table claimed an order for it, and the negative test refuted
+/// the claim.
+const BLESSED_DEPENDENCIES: &[(&str, &[&str])] = &[("make_mint", &["non_negative_number"])];
+
+/// The blessed set with its manifest names, in install order.
+fn blessed_terms_named(shard_id: &str) -> Result<Vec<(&'static str, SignedDeployData)>, String> {
+    let standard: Vec<(&'static str, SignedDeployData)> = vec![
+        (
+            "list_ops",
+            standard_deploys::StandardDeploys::list_ops(shard_id)?,
+        ),
+        (
+            "non_negative_number",
+            standard_deploys::StandardDeploys::non_negative_number(shard_id)?,
+        ),
+        (
+            "make_mint",
+            standard_deploys::StandardDeploys::make_mint(shard_id)?,
+        ),
+    ];
+    let rgov = rgov::deploys_named(shard_id)?;
+    Ok(standard.into_iter().chain(rgov).collect())
+}
+
 /// The ordered list of blessed (standard) genesis deploys (port of `defaultBlessedTerms`).
 ///
 /// Rust-first: the registry, PoS and vault *system* contracts are native (`rholang::native_state` +
 /// `system_deploy::NativeSystemDeployOp`), so their `.rho`/`.rhox` sources stay a checklist and are
 /// **not** installed — installing them would shadow consensus-critical logic with interpreted
 /// equivalents. What genesis does install is the small set of interpreted contracts a consumer
-/// actually reaches through `rho:registry:lookup`, in dependency order, plus the registry aliases
-/// that make those lookups resolve ([`seed_registry_aliases`], `spec/GENESIS.md`).
+/// actually reaches through `rho:registry:lookup`, in dependency order ([`BLESSED_DEPENDENCIES`]),
+/// plus the registry aliases that make those lookups resolve ([`seed_registry_aliases`],
+/// `spec/GENESIS.md`).
 ///
 /// Before this, a fresh chain's registry was empty, so `lookup!(\`rho:rchain:revVault\`, *ch)`
 /// answered `Nil` — and a consumer cannot tell a `Nil` reply from a pattern that never matched.
@@ -155,21 +194,10 @@ pub fn default_blessed_terms(
     _vaults: &[Vault],
     shard_id: &str,
 ) -> Result<Vec<SignedDeployData>, String> {
-    Ok(vec![
-        // Order is the dependency order (MakeMint looks up `rho:lang:nonNegativeNumber` at deploy
-        // time, so that alias is seeded between the second and third deploys).
-        standard_deploys::StandardDeploys::list_ops(shard_id)?,
-        standard_deploys::StandardDeploys::non_negative_number(shard_id)?,
-        standard_deploys::StandardDeploys::make_mint(shard_id)?,
-    ]
-    .into_iter()
-    .chain(
-        // The rgov governance *class* contracts, vendored and adapted for genesis
-        // (`resources/rgov/NOTICE`, `rgov.rs`). Their URIs are constants of the fixed keys, so the
-        // master directory's member list no longer has to be discovered by deploying them.
-        rgov::deploys(shard_id)?,
-    )
-    .collect())
+    Ok(blessed_terms_named(shard_id)?
+        .into_iter()
+        .map(|(_, deploy)| deploy)
+        .collect())
 }
 
 /// Seed the genesis registry aliases whose source is now available. Idempotent, so the genesis loop
@@ -348,5 +376,49 @@ mod tests {
         assert_eq!(bonds.len(), 2);
         assert_eq!(i64::from(bonds[&ModelsValidator::from_slice(&[1; 65])]), 10);
         assert_eq!(i64::from(bonds[&ModelsValidator::from_slice(&[2; 65])]), 20);
+    }
+
+    /// The blessed list is in dependency order, and every contract the table names is really in the
+    /// list. Both halves matter: a dependent that is missing from the list is a typo that would
+    /// otherwise pass, and a dependency ordered *after* its dependent is the silent failure
+    /// `BLESSED_DEPENDENCIES` documents.
+    #[test]
+    fn blessed_terms_are_ordered_by_dependency() {
+        let named = blessed_terms_named("root").expect("the blessed list builds");
+        let names: Vec<&str> = named.iter().map(|(name, _)| *name).collect();
+        let position = |name: &str| {
+            names
+                .iter()
+                .position(|n| *n == name)
+                .unwrap_or_else(|| panic!("{name} is not in the blessed list: {names:?}"))
+        };
+        for (dependent, dependencies) in BLESSED_DEPENDENCIES {
+            for dependency in *dependencies {
+                assert!(
+                    position(dependency) < position(dependent),
+                    "{dependent} resolves {dependency} during its own deploy, so {dependency} must \
+                     be installed first (order: {names:?}) — a violation is silent, not an error"
+                );
+            }
+        }
+        // The names the table keys on are the ones the list carries: a rename that broke the table
+        // would otherwise leave every assertion above vacuous.
+        for (dependent, _) in BLESSED_DEPENDENCIES {
+            position(dependent);
+        }
+        assert_eq!(
+            names,
+            vec![
+                "list_ops",
+                "non_negative_number",
+                "make_mint",
+                "kudos",
+                "inbox",
+                "directory",
+                "roll",
+                "issue",
+            ],
+            "the install order is part of the chain's identity — a change here is a genesis change"
+        );
     }
 }

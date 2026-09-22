@@ -244,9 +244,18 @@ pub fn deploy(name: &str, shard_id: &str) -> Result<SignedDeployData, String> {
 
 /// The vendored set in install order.
 pub fn deploys(shard_id: &str) -> Result<Vec<SignedDeployData>, String> {
+    Ok(deploys_named(shard_id)?
+        .into_iter()
+        .map(|(_, deploy)| deploy)
+        .collect())
+}
+
+/// The vendored set with its manifest names, in install order — so the genesis ordering check can
+/// name the contracts it orders (`BLESSED_DEPENDENCIES`).
+pub fn deploys_named(shard_id: &str) -> Result<Vec<(&'static str, SignedDeployData)>, String> {
     RGOV_CORE
         .iter()
-        .map(|name| deploy(name, shard_id))
+        .map(|name| deploy(name, shard_id).map(|deploy| (*name, deploy)))
         .collect()
 }
 

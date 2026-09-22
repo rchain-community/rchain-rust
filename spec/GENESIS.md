@@ -66,6 +66,20 @@ What was adapted (each asserted at build time, so a vendored-file change fails t
   is keyed by the deployer's `deployerId`, so each client makes their own — that URI is inherently
   per-deployer, and the thing this change removes is having to *discover* the member URIs first.
 
+## Install order
+
+Genesis installs the set **in one order, and only one of the constraints is sharp**:
+
+| Constraint | Why | If violated | Caught by |
+|---|---|---|---|
+| `non_negative_number` → `make_mint` | `MakeMint.rho:27` looks the counter up (`lookup!(\`rho:lang:nonNegativeNumber\`, …)`) **during its own deploy**, and waits on a reply pattern a `Nil` reply cannot match | the deploy still *succeeds*, `MakeMint` never registers, and `lookup!(\`rho:rchain:makeMint\`)` answers `Nil` forever — silently | the genesis ceremony's completeness check (`missing_genesis_aliases`), pinned by `installing_make_mint_before_its_dependency_is_caught_by_the_genesis_check` |
+| `directory`, `inbox` → `roll` | **not a genesis constraint** — `memberIdGovRev` resolves those imports per *call*, not at deploy time, so its position in the list is free (all three are genesis content, so a caller always finds them) | nothing at genesis; a client's `"makeFromURI"` would need them installed, which they are by the time anyone can call | — (a negative test for it is what established this; see `BLESSED_DEPENDENCIES`) |
+| `kudos`, `issue` vs anything | independent: each self-registers and reads nothing at deploy time | — | — |
+
+The order itself is pinned twice: `genesis::tests::blessed_terms_are_ordered_by_dependency` asserts
+the dependency table against the returned list *and* the exact sequence (a change there is a genesis
+change), and every entry's *usability* is asserted by the call probes on a fresh chain.
+
 ## Native system channels, aliased
 
 The PoS and vault channels are native (`rholang/src/system_processes.rs::definitions`), so only the

@@ -40,7 +40,7 @@ laws** carrying a randomized property test and **10 benchmark functions** in 6 C
 | `comm` | 123 | — | — | — |
 | `rspace` | 166 | — | 7 | — |
 | `rholang` | 196 | 39 | 7 | — |
-| `casper` | 227 | 41 | 3 | — |
+| `casper` | 228 | 42 | 3 | — |
 | `node` | 178 | 9 | — | — |
 | `qucalc` | 20 | — | — | — |
 | `rspace-bench` | — | — | — | 10 |
@@ -223,6 +223,8 @@ not found in that file. Coverage claims live here rather than in prose so they c
 | genesis | `casper/src/genesis/rgov.rs` | `the_master_directory_template_carries_the_installed_uris` |
 | genesis | `casper/src/genesis/rgov.rs` | `the_deploy_time_self_tests_are_removed` |
 | genesis | `casper/tests/genesis_registry.rs` | `a_fresh_chain_installs_the_rgov_contracts_and_they_answer` |
+| genesis | `casper/tests/genesis_registry.rs` | `installing_make_mint_before_its_dependency_is_caught_by_the_genesis_check` |
+| genesis | `casper/src/genesis/mod.rs` | `blessed_terms_are_ordered_by_dependency` |
 | syntax | `rholang/src/reduce.rs` | `plus_and_minus_also_insert_into_and_delete_from_collections` |
 
 ## Gap analysis (severity-ordered)

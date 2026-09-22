@@ -398,3 +398,62 @@ fn a_fresh_chain_installs_the_rgov_contracts_and_they_answer() {
         );
     });
 }
+
+/// The one order that matters, demonstrated: `MakeMint` resolves `rho:lang:nonNegativeNumber`
+/// **during its own deploy** (`MakeMint.rho:27`), and `rho:registry:lookup` answers `Nil` when the
+/// counter is not installed yet. Its install gate waits on a reply pattern a `Nil` cannot match, so
+/// with the wrong order the deploy *succeeds* and `MakeMint` never registers — the silence this
+/// whole task has been about. What ends that silence is the genesis ceremony's completeness check,
+/// and this test pins both halves: the silence, and the check that turns it into a failed genesis.
+///
+/// (`roll` needs no such ordering: it resolves its `directory`/`inbox` imports per *call*, so its
+/// position in the list is free — a negative test for it is what established that.)
+#[test]
+fn installing_make_mint_before_its_dependency_is_caught_by_the_genesis_check() {
+    with_big_stack(async {
+        let rm = build_runtime_manager().await;
+        let rand = fixed_rand();
+        use rchain_casper::genesis::standard_deploys::StandardDeploys;
+        // `make_mint` before `non_negative_number`: the only difference from the blessed order.
+        let terms = vec![
+            StandardDeploys::list_ops("root").expect("list_ops"),
+            StandardDeploys::make_mint("root").expect("make_mint"),
+            StandardDeploys::non_negative_number("root").expect("non_negative_number"),
+        ];
+
+        let (_, _, results) = rm
+            .compute_genesis(
+                &terms,
+                &rand,
+                BlockData::empty(),
+                &PosGenesis::default(),
+                &[],
+            )
+            .await
+            .expect("compute_genesis");
+        for (i, r) in results.iter().enumerate() {
+            assert!(
+                r.eval_result.succeeded(),
+                "no deploy may fail — the misordering is silent, which is the point \
+                 (deploy #{i}: {:?})",
+                r.eval_result.errors
+            );
+        }
+
+        // The class never registered, so its shorthand could not be seeded…
+        let native =
+            rchain_rholang::native_state::NativeSystemState::new(rm.runtime().native_store());
+        let missing = rchain_casper::genesis::missing_genesis_aliases(&native)
+            .await
+            .expect("the completeness check runs");
+        assert!(
+            missing.contains(&"rho:rchain:makeMint"),
+            "the misordered make_mint must be reported missing, got {missing:?}"
+        );
+        // …which is exactly what the genesis ceremony refuses to start with.
+        assert!(
+            !missing.is_empty(),
+            "a chain that started here would answer `Nil` to that lookup forever"
+        );
+    });
+}
