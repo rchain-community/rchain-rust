@@ -219,47 +219,116 @@ def laws : List Law := [
   { number := 7, layer := "RSpace",
     statement := "Join commutativity: channel keys are hashed in sorted order, so the join key is \
       invariant under permutation",
-    status := .deferred,
+    status := .provedModel,
     declarations := [`Rchain.joinKey, `Rchain.joinKey_perm],
-    axioms := [`Rchain.joinKey, `Rchain.joinKey_perm],
-    falsifiable := none },
+    axioms := [`Rchain.hashHashes],
+    rust := ["rspace/src/hashing/stable_hash_provider.rs"],
+    falsifiable := some "`joinKey_perm` follows from `Cmp.sortList_perm` — the join key is *defined* as \
+      hash-of-sorted-hashes, mirroring `hash_seq` + `hash_hashes` — so removing the sort from the \
+      definition would falsify it: two permutations of one channel list would then hash differently",
+    note := "**this row's two axioms are gone.** `joinKey : List Channel → Nat` was opaque and \
+      `joinKey_perm` a claim about it; the Rust's join key is *defined* (`hash_seq` sorts the channel \
+      hashes, `hash_hashes` sorts again and hashes — `stable_hash_provider.rs:22-46`), so the invariance \
+      is Law 1's canonicalization applied to a join key rather than an independent postulate. \
+      `hashHashes` is the one primitive that stays axiomatized, in Law 19's class" },
   { number := 8, layer := "RSpace",
     statement := "Deterministic COMM: candidate selection is sorted-first by content hash and produce \
       refs are sorted, so the event trace is content-addressed",
-    status := .deferred,
-    declarations := [`Rchain.produceRefs, `Rchain.comm_content_addressed],
-    axioms := [`Rchain.produceRefs, `Rchain.comm_content_addressed],
-    falsifiable := none },
+    status := .provedModel,
+    declarations := [`Rchain.Produce, `Rchain.Consume, `Rchain.Comm, `Rchain.produceRefs,
+      `Rchain.commId, `Rchain.comm_content_addressed],
+    rust := ["rspace/src/trace/event.rs", "rspace/src/space_matcher.rs", "rspace/src/rspace.rs"],
+    axioms := [],
+    falsifiable := some "`comm_content_addressed` is proved from `sortList_perm`: two comms whose \
+      produces are permutations of one another have the same identity. Dropping the sort from \
+      `produceRefs` — which is what `Comm::apply` would be without `produce_refs.sort_by_key` — would \
+      falsify it, and the Rust pins the ordering directly (`event.rs:165`, `space_matcher.rs:98-102`, \
+      `rspace.rs:154-157`)",
+    note := "**both axioms are gone.** `produceRefs : Comm → List Nat` was opaque and \
+      `comm_content_addressed` a claim about it; the refs are a *definition* now, mirroring \
+      `Comm::apply`'s sort, and the content-addressing is Law 1's canonicalization applied to the event \
+      log. The model keeps the arrival order in `Comm.produces` precisely so the sort has something to \
+      remove" },
   { number := 9, layer := "RSpace",
     statement := "Merge is a monoid and non-conflicting logs commute — strengthened for effect \
       scheduling: disjoint **closure** (not footprint) implies commutation",
     status := .provedModel,
     declarations := [`Rchain.mergeChanges, `Rchain.mergeChanges_assoc, `Rchain.NonConflicting,
-      `Rchain.mergeChanges_comm, `Rchain.effect_commute_of_disjoint_closure,
-      `Rchain.effect_reorder_diverges],
+      `Rchain.mergeChanges_comm, `Rchain.nonConflicting_not_necessary, `Rchain.join_last_wins,
+      `Rchain.effect_commute_of_disjoint_closure, `Rchain.effect_reorder_diverges],
     rust := ["rspace/src/merger/state_change.rs", "rspace/src/merger/event_log_merging_logic.rs"],
-    axioms := [`Rchain.mergeChanges, `Rchain.mergeChanges_assoc, `Rchain.NonConflicting,
-      `Rchain.mergeChanges_comm],
-    falsifiable := some "`effect_reorder_diverges` is a proved counterexample to the weaker \
-      footprint-disjointness reading: there is a published schedule that the naive rule would allow and \
-      that changes the result, which is why the law was strengthened to closures",
-    note := "the effect-level strengthening is a theorem; the state-change monoid it is stated over is \
-      `deferred` (the four axioms)" },
+    axioms := [],
+    falsifiable := some "`mergeChanges_assoc` is structural (concatenation of the added/removed lists, \
+      right-biased overwrite of the join map); `mergeChanges_comm` *needs* the disjointness hypothesis — \
+      without it the theorem is false twice over: the added/removed lists concatenate in operand order \
+      (which is why the Rust's own test compares sorted multisets rather than lists, \
+      `state_change.rs:224-238`), and a contested **join** is won by whichever side the fold reaches last \
+      (`state_change.rs:186-189`, pinned by `:502-544` and stated as `join_last_wins`; the fold is \
+      `casper/src/merging.rs:752-755`). `nonConflicting_not_necessary` proves the relation is sufficient \
+      and not necessary, and `effect_reorder_diverges` remains the disproof of the weaker footprint \
+      reading",
+    note := "**all four axioms are gone.** `mergeChanges` and `NonConflicting` were axioms over \
+      `StateChange = { id : Nat }` — and a claim about an undefined relation is a claim about nothing, \
+      so the two laws could have been true of any relation one cared to imagine. The Rust gives the \
+      definition: the added/removed lists concatenate (`state_change.rs:18-38`) and the join map is a \
+      **right-biased overwrite** (`joins.insert(k, v)` in a loop over the right operand, \
+      `:186-189` — the Scala's `x.map ++ y.map`, right-biased too, `StateChange.scala:152`), so the model \
+      overwrites and `join_last_wins` states which side wins — which the code's own \
+      `combine_has_an_identity_and_a_right_biased_join_map` (`:502-544`, \"the later change's join body \
+      wins\") pins. **Two findings are recorded here.** \
+      (1) `NonConflicting` is *not* `are_conflicting` read negatively, and saying so was wrong: \
+      `are_conflicting` is over two `EventLogIndex`es with three checks, one of which (a potential COMM) \
+      is a shared-channel interaction and one of which (produces touching base joins) no state diff can \
+      see (`event_log_merging_logic.rs:105-158`), and the predicate the merge branches on is broader \
+      again (`casper/src/merging.rs:177-181`). What the model needs is the sufficient condition for \
+      commutation, and it is named for that. (2) The Rust test named `combine_is_associative` \
+      (`state_change.rs:203-238`) does **not** test associativity — its own comment says the law it pins \
+      is empty-is-identity — so the associativity the merge fold relies on (`casper/src/merging.rs:752-755`) \
+      is **untested on the Rust side**, while the identity, the right-biased join and the inner \
+      `ChannelChange` monoid all are (`:502-544`, `channel_change.rs:35-50`); owed: an AUDIT §17 entry" },
   { number := 10, layer := "RSpace",
     statement := "Merkle determinism: the radix trie is content-addressed, collision-free, with a \
       defined empty root",
-    status := .deferred,
-    declarations := [`Rchain.trieRoot, `Rchain.trie_collision_free, `Rchain.emptyRoot,
-      `Rchain.trie_empty_root],
-    axioms := [`Rchain.trieRoot, `Rchain.trie_collision_free, `Rchain.emptyRoot,
-      `Rchain.trie_empty_root],
-    falsifiable := none },
+    status := .provedModel,
+    declarations := [`Rchain.Item, `Rchain.Node, `Rchain.encodeNode, `Rchain.nodeHash,
+      `Rchain.emptyNode, `Rchain.emptyRoot, `Rchain.root_collision_free,
+      `Rchain.nodeHash_eq_emptyRoot],
+    axioms := [`Rchain.encodeNode, `Rchain.encodeNode_injective],
+    rust := ["rspace/src/history/radix_tree.rs"],
+    falsifiable := some "`root_collision_free` composes Law 19's `blake2b256_collision_free` with \
+      `encodeNode_injective`; `nodeHash_eq_emptyRoot` pins the empty root as a fixed point with nothing \
+      else hashing to it. A serializer that dropped a field would falsify the first, and a second node \
+      hashing to the empty root the second — which is why the store *refuses* a colliding write \
+      (`radix_tree.rs:208-223,226-258`) rather than tolerating one",
+    note := "**the ghost constant is gone.** `trieRoot : NodeHash` had no arguments — a constant — which \
+      is why nothing could be proved about it; the root is now `nodeHash ∘ encodeNode` over the node \
+      type the code has (`[Item; 256]`, `radix_tree.rs:15-35`), with `emptyRoot` the empty node's hash. \
+      The two collision statements, which were statements about the *hash* wearing a trie's name, are \
+      now theorems composing Law 19's axiom with `encodeNode_injective` — the serializer's canonicity, \
+      which a hash cannot supply, so it is stated as this row's own axiom" },
   { number := 11, layer := "RSpace",
-    statement := "Replay determinism: recomputed COMM is a subset of the recorded trace",
-    status := .deferred,
-    declarations := [`Rchain.replayEvents, `Rchain.replay_comm_subset],
-    axioms := [`Rchain.replayEvents, `Rchain.replay_comm_subset],
-    falsifiable := none },
+    statement := "Replay determinism: a recomputed COMM agrees with the recorded trace, and the port \
+      checks membership **both** ways — a recomputed COMM absent from the trace fails, and a recorded \
+      COMM the replay never consumes fails too",
+    status := .vacuous,
+    declarations := [`Rchain.Comm, `Rchain.produceRefs, `Rchain.commId, `Rchain.Trace],
+    axioms := [],
+    rust := ["rspace/src/replay_rspace.rs", "rspace/src/space_matcher.rs"],
+    falsifiable := some "the port's check has a negative case on each side, so the law is falsifiable in \
+      both directions: `ReplayCommNotInTrace` when the recomputed COMM is not in the record, and \
+      `Unused COMM event` when the record keeps an entry the replay never consumed \
+      (`rspace/src/replay_rspace.rs:580-590`). The Rust's own tests assert each fires — \
+      `a_rig_whose_comm_never_happens_is_reported` (`:663-696`) for the second, \
+      `a_rigged_replay_matches_its_recorded_trace` (`:635-651`) for the first",
+    note := "`replayEvents` and `replay_comm_subset` are **deleted**, and the reason they are is the \
+      finding: in this model the replay runs the same matcher over the same recorded producers, so \
+      \"recomputed\" and \"recorded\" would be the *same function* and the subset claim would be `rfl` \
+      (argued in `Rchain/RSpace/Comm.lean`'s header). What would give the law content is a model of the \
+      recorded store as a structure *distinct* from the recomputation, so that the two must be shown to \
+      agree; the proof is owed to that modelling step, not to a tactic. The law is real in the code and \
+      **stronger than this register used to say** — the Rust checks membership in both directions, \
+      forward at `replay_rspace.rs:330-332` and reverse at `:580-590` — so the re-scoping is to \
+      `Rchain.Trace` plus that bidirectional check, which also stops Law 11 from being Law 8 restated" },
 
   -- ── Rosette: the actor VM (Laws 12–13) ──────────────────────────────────────────────────────────
   { number := 12, layer := "Rosette",
@@ -312,14 +381,31 @@ def laws : List Law := [
     note := "as stated the axiom quantifies over **any** two blocks (`prev.seqNum + 1 = next.seqNum`), \
       which is false of two unrelated blocks: the sender relation is missing from the statement" },
   { number := 16, clause := "c", layer := "Casper",
-    statement := "Content addressing: `hash = Blake2b256(block − {hash, sig})`, so the hash determines \
-      the body",
-    status := .deferred,
-    declarations := [`Rchain.content_addressing],
-    axioms := [`Rchain.content_addressing],
-    falsifiable := none,
-    note := "over the model's `hash : Nat` field the axiom is not true — an injective `Nat → Nat` does \
-      not exist; a byte-string hash model is needed before this can be more than a postulate" },
+    statement := "Content addressing: `hash_block` clears `block_hash` and `sig` and hashes every other \
+      proto field canonically, so equal hashes determine equal bodies",
+    status := .provedModel,
+    declarations := [`Rchain.Block, `Rchain.BlockBody, `Rchain.Block.body, `Rchain.encodeBody,
+      `Rchain.blockHash, `Rchain.content_addressing, `Rchain.blockHash_changes_with_header],
+    axioms := [`Rchain.encodeBody, `Rchain.encodeBody_injective],
+    rust := ["casper/src/proto_util.rs", "models/src/casper/protocol/casper_message.rs"],
+    falsifiable := some "`content_addressing` composes Law 19's `blake2b256_collision_free` with \
+      `encodeBody_injective`, so a serializer that dropped a field would falsify it — and \
+      `blockHash_changes_with_header` is the code's own `hash_block_changes_with_timestamp` \
+      (`proto_util.rs:155-162`) derived: two blocks differing in **any** hashed field must hash \
+      differently, which is why the informational timestamp is in the body even though no consensus rule \
+      reads it. A `hash_block` that stopped clearing `sig` would falsify \
+      `hash_block_is_deterministic_and_ignores_sig` (`:138-144`) and, transitively, this",
+    note := "**the old row was a postulate about a field no function computed** — `hash = \
+      Blake2b256(block − {hash, sig})` over `Block.hash : Nat`, which the note below it admitted was not \
+      true even of its own model (an injective `Nat → Nat` does not exist). `Block.hash` is gone; the \
+      hash is *computed* (`blockHash`), and the content addressing is a **theorem**: the composition of \
+      Law 19's collision-freedom with the serializer's canonicity. The two axioms that remain are Law \
+      10's shape and for the same stated reason — a hash can make an encoding collision-resistant but \
+      never canonical, so `encodeBody`'s injectivity is the serializer's assumption, not the hash's. \
+      The body is the **hashed** body: the port hashes every field except `block_hash` and `sig` \
+      (`proto_util.rs:58-64`, `BlockMessage` at `casper_message.rs:563-585`), so the model carries the \
+      timestamp and the rest of the header, and `blockHash_changes_with_header` is the statement a \
+      narrower body could not make" },
   { number := 16, clause := "d", layer := "Casper",
     statement := "The bonds cache equals the PoS state",
     status := .open,
@@ -375,11 +461,13 @@ def laws : List Law := [
     statement := "Blake2b256 is canonical and collision-free; the `Blake2b512Random` merge is n-ary \
       and **order-sensitive**; signatures verify what they sign; Curve25519 round-trips",
     status := .axiomByDesign,
-    declarations := [`Rchain.blake2b256, `Rchain.blake2b256_collision_free, `Rchain.sign,
-      `Rchain.verify, `Rchain.sign_verify_roundtrip, `Rchain.sharedSecret,
-      `Rchain.curve25519_roundtrip, `Rchain.mergeRandom],
+    declarations := [`Rchain.blake2b256, `Rchain.blake2b256_output_is_32_bytes,
+      `Rchain.blake2b256_collision_free, `Rchain.sign, `Rchain.verify,
+      `Rchain.sign_verify_roundtrip, `Rchain.sharedSecret, `Rchain.curve25519_roundtrip,
+      `Rchain.mergeRandom],
     rust := ["crypto/src/hash/blake2b256_hash.rs", "crypto/src/hash/blake2b512_random.rs"],
-    axioms := [`Rchain.blake2b256, `Rchain.blake2b256_collision_free, `Rchain.sign, `Rchain.verify,
+    axioms := [`Rchain.blake2b256, `Rchain.blake2b256_output_is_32_bytes,
+      `Rchain.blake2b256_collision_free, `Rchain.sign, `Rchain.verify,
       `Rchain.sign_verify_roundtrip, `Rchain.sharedSecret, `Rchain.curve25519_roundtrip,
       `Rchain.mergeRandom],
     falsifiable := some "the Rust side is pinned by known-answer tests rather than by these axioms: \
@@ -390,7 +478,10 @@ def laws : List Law := [
       (`crypto/src/hash/blake2b512_random.rs:548`, `merge_is_order_sensitive`). The merge is modelled \
       n-ary (`List Random → Random`) because that is its Rust signature, and *no* algebraic law of it \
       is claimed — the code has none to claim, so `mergeRandom_assoc` went with the commutativity. Law \
-      17's RNG clause duplicated this one and is merged into it" },
+      17's RNG clause duplicated this one and is merged into it. **The types were retyped to mirror the \
+      code's**: `Msg`/`Hash` are byte strings rather than opaque `Nat` wrappers, and the 32-byte width \
+      is `blake2b256_output_is_32_bytes` (`Hash32`, `shared/src/refined.rs:287-296`) — which is what \
+      lets Law 7's and Law 10's models be built out of hashes instead of guessed numbers" },
 
   -- ── Scheduler: the effect scheduler (Laws 20–25) ─────────────────────────────────────────────────
   { number := 20, layer := "Scheduler",
