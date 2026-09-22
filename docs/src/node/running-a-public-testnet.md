@@ -144,7 +144,7 @@ browser/macro client adds it via `wrapProgram` — so a term written for the bro
 new return, pos(`rho:rchain:pos`), ret in {
   pos!("getBonds", *ret) | for (@b <- ret) { return!(b) }
 }
-// → {"expr":[{"ExprMap":[["0410b8c5…",{"ExprInt":1000}],["04675f16…",{"ExprInt":100}]]}]}
+// → {"expr":[{"ExprMap":{"data":{"0410b8c5…":{"ExprInt":{"data":1000}},"04675f16…":{"ExprInt":{"data":100}}}}}]}
 
 // read the consensus set
 new return, pos(`rho:rchain:pos`), ret in {

@@ -190,12 +190,16 @@ HTTP (point-in-time at a block hash; an empty `blockHash` means the current stat
 POST /api/v1/data-at-name-by-block-hash
 Content-Type: application/json
 
-{ "name": { "ExprString": "hello" }, "blockHash": "", "usePreStateHash": false }
+{ "name": { "ExprString": { "data": "hello" } }, "blockHash": "", "usePreStateHash": false }
 ```
 
-A public name `@"hello"` is expressed as the rholang expression `{"ExprString": "hello"}`; the full
-`RhoExpr` JSON shape (ints, lists, maps, tuples, bytes, unforgeables) is in the OpenAPI schema and in
-`node/src/api/rho_expr.rs`.
+A public name `@"hello"` is expressed as the rholang expression `{"ExprString": {"data": "hello"}}`
+— note the `data` wrapper: every `RhoExpr` arm wraps its payload in a field named `data`, a map's
+payload is a JSON **object**, and an unforgeable nests one level deeper
+(`{"ExprUnforg":{"data":{"UnforgPrivate":{"data":"…"}}}}`). That is the reference document's shape
+(`legacy/docs/rnode-api/rnode-openapi.json`, which is what a client generates its types from); the
+served document describes it as `RhoExpr`/`RhoUnforg`, and AUDIT C38 records what it cost to have had
+it the other way.
 
 ### 3.3 Force a block
 
