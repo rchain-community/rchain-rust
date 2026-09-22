@@ -1492,6 +1492,46 @@ oracle is, and the test that pins the fix.
   restore to the *wrong channel* (which is what makes the model compare channels rather than ask
   whether any send is there).
 
+- **C29 — the served OpenAPI document was stale, and nothing held it to the code it describes.** Found
+  while writing law 43, and it is the C16 class one level up: a *shape a client reads* that had drifted
+  from the shape the node produces, silently.
+
+  `node/src/web/http.rs`'s `OPENAPI_JSON` is a hand-written string served at `GET /api/v1/openapi` — the
+  schema a client generates its types from. Nothing checked it against the DTOs, so:
+
+  - `ApiStatus` declared **8** properties while `GET /api/v1/status` serializes **13** — the five
+    `--autopropose`/`--propose-on-deploy`/`--manual-propose`/`--admin-http`/`--dev-mode` flags had been
+    added to the DTO and never to the document. A generated client simply cannot see them;
+  - `LightBlockInfo` declared **15** while the type has **16** — `timestamp` (the same informational
+    extension `rho:block:data` carries) was missing.
+
+  **Fixed**, with the check that found them: `Rchain/Envelope.lean`'s catalog is the truth, and
+  `node/tests/lean_envelope_corpus.rs` holds *both* parties to it — each row's DTO is serialized and its
+  key set compared, and the served document's declared properties compared, for the same row. The two
+  stale schemas now declare their missing keys (types included: five booleans and an `int64`, read off
+  the DTOs), and the check fails if either party drifts again. Falsified once on purpose (a key removed
+  from the catalog): it fails, naming the type and the key.
+
+  **Not fixed, and named:** the document declares no schema at all for `NodeCapabilities`,
+  `PooledDeploys` and `FaucetResponse` — three responses a client can call. Law 43's catalog covers
+  their *keys* (the catalog is checked against the DTOs), but the *document* has no row for them, so a
+  client generating types from it cannot know their shape. Adding those schemas is a doc task this
+  slice did not do; the boundary is stated in `Rchain/Envelope.lean` and here rather than left silent.
+  The *types* of the declared properties are likewise unchecked (the law pins keys and tags).
+
+- **Law 43 — the envelope, checked against the DTOs and the served schema.** `Rchain/Envelope.lean`:
+  the catalog of response envelopes as data (per type: its keys, or a tagged union's `tag → keys`),
+  with `envelopeCatalog_decide` checking the table by C16's rule — **no key contains an underscore**, no
+  key repeats within a row, every tag is capitalized (a client switches on the tag), names unique, and
+  the two row shapes exclusive. That rule is the incident: `DeployExecStatus`'s fields were snake_case
+  in a camelCase response, so a client reading `deployResult` got nothing and nothing errored.
+
+  Checked 1:1: `spec/conformance/envelope.tsv` (6 rows) consumed by
+  `node/tests/lean_envelope_corpus.rs`, which compares each row against the DTO's own serialization
+  (constructing the real type, and for the union each variant's tag and keys) *and* against the served
+  `OPENAPI_JSON` document. Two parties, one catalog — which is what turns a hand-written document into a
+  checked one, and what found C29 on its first run.
+
 - **C28 — the model's ground scalars were missing two of the five the protobuf has.** Found while
   writing law 42. `Rchain/Syntax.lean`'s `Ground` had `bool`, `int`, `str` — and the protobuf's
   `Expr` has five ground instances (`GBool`, `GInt`, `GString`, **`GUri`, `GByteArray`**). So the model

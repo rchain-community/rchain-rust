@@ -396,7 +396,11 @@ async fn api_v1_deploy_status(
 
 /// `GET /api/v1/openapi.json` — the OpenAPI 3.0 document describing the v1 API. Hand-written from the
 /// endpoint DTOs (the Scala derives the same schema from its endpoints4s algebra).
-const OPENAPI_JSON: &str = r##"{
+/// The OpenAPI document this node serves at `GET /api/v1/openapi` — the schema a client generates its
+/// types from. It is hand-written, so nothing but the corpus keeps it equal to what the endpoints
+/// actually serialize; `node/tests/lean_envelope_corpus.rs` (law 43) holds it to
+/// `spec/Rchain/Envelope.lean`'s catalog, which the DTOs are held to as well.
+pub const OPENAPI_JSON: &str = r##"{
   "openapi": "3.0.0",
   "info": { "title": "RNode API", "version": "1.0" },
   "paths": {
@@ -598,7 +602,12 @@ const OPENAPI_JSON: &str = r##"{
           "peers": { "type": "integer", "format": "int32" },
           "nodes": { "type": "integer", "format": "int32" },
           "minPhloPrice": { "type": "integer", "format": "int64" },
-          "latestBlockNumber": { "type": "integer", "format": "int64" }
+          "latestBlockNumber": { "type": "integer", "format": "int64" },
+          "autopropose": { "type": "boolean", "description": "Continuous block production" },
+          "proposeOnDeploy": { "type": "boolean", "description": "Propose immediately after a deploy is accepted" },
+          "manualPropose": { "type": "boolean", "description": "Blocks only by an explicit propose" },
+          "adminHttp": { "type": "boolean", "description": "The admin HTTP surface is published" },
+          "devMode": { "type": "boolean", "description": "Dev mode is on" }
         }
       },
       "DeployData": {
@@ -645,7 +654,8 @@ const OPENAPI_JSON: &str = r##"{
           "sig": { "type": "string" },
           "blockSize": { "type": "string" },
           "deployCount": { "type": "integer", "format": "int32" },
-          "rejectedDeploys": { "type": "array", "items": { "type": "string" } }
+          "rejectedDeploys": { "type": "array", "items": { "type": "string" } },
+          "timestamp": { "type": "integer", "format": "int64", "description": "Informational block header timestamp (ms since the epoch); not a consensus input" }
         }
       },
       "DeployInfo": {

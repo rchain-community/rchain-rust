@@ -4,6 +4,7 @@ import Rchain.Silence
 import Rchain.Store
 import Rchain.Protocol
 import Rchain.Json
+import Rchain.Envelope
 
 /-!
 # The conformance corpus, generated from the specification
@@ -496,6 +497,22 @@ theorem jsonCases_length : jsonCases.length = jsonCaseCount := by decide
 def jsonLine (c : JsonCase) : String :=
   "json\t" ++ c.source ++ "\t" ++ (match c.je with | none => "-" | some j => render j)
 
+/-! ## Law 43 — the envelope layer
+
+The catalog is the law (`Rchain/Envelope.lean`: `envelopeCatalog`, with its `decide`d checks); this
+layer renders it. Each row is a response type — its name, the endpoint a reader should think of, and
+either its struct keys or its tagged union's `tag → keys`. The Rust consumer holds *both* parties to
+it: the DTO's own serialization and the served OpenAPI schema. -/
+
+/-- One envelope corpus line: layer, the type, the endpoint, the keys, and the union's tags with their
+own keys (`-` where a row has none, so a column is never blank). -/
+def envelopeLine (r : EnvelopeRow) : String :=
+  "envelope\t" ++ r.name ++ "\t" ++ r.endpoint ++ "\t"
+    ++ (if r.keys.isEmpty then "-" else String.intercalate "," r.keys) ++ "\t"
+    ++ (if r.variants.isEmpty then "-" else
+      String.intercalate ";" (r.variants.map (fun v =>
+        v.1 ++ ":" ++ String.intercalate "," v.2)))
+
 end Corpus
 end Rchain
 
@@ -506,7 +523,7 @@ open Rchain
 def main (args : List String) : IO UInt32 := do
   let want :=
     (args.find? (fun a => a == "flags" || a == "match" || a == "silence" || a == "store"
-      || a == "protocol" || a == "json")).getD "flags"
+      || a == "protocol" || a == "json" || a == "envelope")).getD "flags"
   let (lines, count) :=
     if want == "match" then (Corpus.matchCases.map Corpus.matchLine, Corpus.matchCaseCount)
     else if want == "silence" then
@@ -517,6 +534,8 @@ def main (args : List String) : IO UInt32 := do
       (replyCatalog.map Corpus.protocolLine, replyCaseCount)
     else if want == "json" then
       (Corpus.jsonCases.map Corpus.jsonLine, Corpus.jsonCaseCount)
+    else if want == "envelope" then
+      (envelopeCatalog.map Corpus.envelopeLine, envelopeCaseCount)
     else (Corpus.flagCases.map Corpus.flagLine, Corpus.flagCaseCount)
   if lines.length != count then
     IO.eprintln s!"rchain-corpus: {want}: the case list and the declared count disagree"

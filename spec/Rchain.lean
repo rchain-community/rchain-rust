@@ -11,6 +11,7 @@ import Rchain.Silence
 import Rchain.Store
 import Rchain.Protocol
 import Rchain.Json
+import Rchain.Envelope
 import Rchain.Concurrent
 import Rchain.Tree
 import Rchain.FreeVars
