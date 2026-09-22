@@ -137,10 +137,12 @@ What is installed, and by whom:
   upstream omits (`Chat`, `Ballot`, `Group`);
 - the `GetMe`/`SendThem` feature — the first call a governance client makes.
 
-The last three are deployed by **one fixed dummy key** (`rgov::testnet_governance_key()`), because the
-template publishes its admin capability for its own deployer and the feature's registration reads it
-back. That is a testnet arrangement: see "Testnet vs mainnet" in `spec/GENESIS.md` before reusing any
-of it on a public network.
+The last three are signed by **the genesis ceremony's key** — the bootstrap validator's own key on a
+devnet (`--validator-private-key`). They must share one key, because the template publishes its admin
+capability for its own deployer and the feature's registration reads it back. The consequence worth
+knowing: that validator also holds the `MasterContractAdmin` locker, so `newMemberDirectory` (which
+requires it) is callable by that key and not by others. See "Ceiling of this arrangement" in
+`spec/GENESIS.md` before reusing any of it on a public network.
 
 Two foot-guns worth knowing when you exercise this by hand:
 
@@ -184,8 +186,8 @@ From the wallet's integration suite (which drives these contracts): `newInbox` *
 those two lockers. Then, per family: `newChat` → `sendChat`/`readChat`; `newBallot` → `castBallot`;
 `newIssue` → `addVoterToIssue`/`castVote`/`displayVote`/`delegateVote`/`tallyVotes`; `newGroup` →
 `joinGroup`/`addMember`. `newMemberDirectory` needs the `MasterContractAdmin` locker, which only the
-key that deployed the master directory has — the dummy key here, or a client's own deploy on a public
-network. Reads (`getRoll`, `peekKudos`, `checkRegistration`, `checkBalance`) go anywhere after their
+key that deployed the master directory has — the devnet bootstrap validator here, or a client's own
+deploy on a public network. Reads (`getRoll`, `peekKudos`, `checkRegistration`, `checkBalance`) go anywhere after their
 inputs exist.
 
 ## Ports

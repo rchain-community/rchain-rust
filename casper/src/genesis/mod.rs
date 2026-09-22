@@ -163,7 +163,10 @@ const BLESSED_DEPENDENCIES: &[(&str, &[&str])] = &[("make_mint", &["non_negative
 /// internal (classes → master directory → the extra slots → the `GetMe` feature), because each step
 /// resolves what the previous one published. It is **testnet-only** — see the module doc in
 /// `rgov.rs` and `spec/GENESIS.md` for what a public network must do instead.
-fn blessed_terms_named(shard_id: &str) -> Result<Vec<(&'static str, SignedDeployData)>, String> {
+fn blessed_terms_named(
+    shard_id: &str,
+    ceremony: &ValidatorIdentity,
+) -> Result<Vec<(&'static str, SignedDeployData)>, String> {
     let standard: Vec<(&'static str, SignedDeployData)> = vec![
         (
             "list_ops",
@@ -178,7 +181,7 @@ fn blessed_terms_named(shard_id: &str) -> Result<Vec<(&'static str, SignedDeploy
             standard_deploys::StandardDeploys::make_mint(shard_id)?,
         ),
     ];
-    let rgov = rgov::governance_deploys(shard_id)?;
+    let rgov = rgov::governance_deploys(shard_id, ceremony)?;
     Ok(standard.into_iter().chain(rgov).collect())
 }
 
@@ -290,8 +293,9 @@ pub fn default_blessed_terms(
     _registry: &Registry,
     _vaults: &[Vault],
     shard_id: &str,
+    ceremony: &ValidatorIdentity,
 ) -> Result<Vec<SignedDeployData>, String> {
-    Ok(blessed_terms_named(shard_id)?
+    Ok(blessed_terms_named(shard_id, ceremony)?
         .into_iter()
         .map(|(_, deploy)| deploy)
         .collect())
@@ -377,6 +381,9 @@ pub async fn create_genesis_block(
         &genesis.registry,
         &genesis.vaults,
         &genesis.shard_id,
+        // The governance bootstrap is signed by the ceremony's own key: the master directory's admin
+        // capability must belong to whoever runs genesis, never to a key derivable from the source.
+        validator,
     )?;
     let block_data = BlockData {
         block_number: BlockHeight::try_from(genesis.block_number).map_err(|e| e.to_string())?,
@@ -454,6 +461,22 @@ mod tests {
     use super::*;
     use crate::genesis::contracts::Validator;
 
+    /// The genesis ceremony's identity, fixed so the tests are deterministic.
+    fn ceremony_identity() -> ValidatorIdentity {
+        use rchain_crypto::private_key::PrivateKey;
+        use rchain_crypto::signatures::secp256k1::Secp256k1;
+        use rchain_crypto::signatures::signatures_alg::SignaturesAlg;
+        let sk = PrivateKey::new(vec![7u8; 32]);
+        let public_key = Secp256k1
+            .to_public(&sk)
+            .unwrap_or_else(|e| panic!("a fixed 32-byte scalar is a valid key: {e}"));
+        ValidatorIdentity {
+            public_key,
+            private_key: sk,
+            sig_algorithm: "secp256k1".to_string(),
+        }
+    }
+
     fn pos() -> ProofOfStake {
         ProofOfStake {
             minimum_bond: 1,
@@ -491,7 +514,8 @@ mod tests {
     /// `BLESSED_DEPENDENCIES` documents.
     #[test]
     fn blessed_terms_are_ordered_by_dependency() {
-        let named = blessed_terms_named("root").expect("the blessed list builds");
+        let ceremony = ceremony_identity();
+        let named = blessed_terms_named("root", &ceremony).expect("the blessed list builds");
         let names: Vec<&str> = named.iter().map(|(name, _)| *name).collect();
         let position = |name: &str| {
             names

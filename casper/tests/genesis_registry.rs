@@ -65,6 +65,22 @@ where
         .expect("the test thread panicked");
 }
 
+/// The genesis ceremony's identity, fixed so a test genesis is deterministic.
+fn ceremony_identity() -> rchain_casper::validator_identity::ValidatorIdentity {
+    use rchain_crypto::private_key::PrivateKey;
+    use rchain_crypto::signatures::secp256k1::Secp256k1;
+    use rchain_crypto::signatures::signatures_alg::SignaturesAlg;
+    let sk = PrivateKey::new(vec![7u8; 32]);
+    let public_key = Secp256k1
+        .to_public(&sk)
+        .expect("a fixed 32-byte scalar is a valid key");
+    rchain_casper::validator_identity::ValidatorIdentity {
+        public_key,
+        private_key: sk,
+        sig_algorithm: "secp256k1".to_string(),
+    }
+}
+
 /// A deploy signed by a **real** key pair, so `rho:rchain:deployerId` is a genuine public key. Terms
 /// that derive a REV address from it need that: `RevAddress!("fromPublicKey", …)` matches nothing
 /// for a placeholder byte-array, and the call then stalls silently — which is what a governance
@@ -172,6 +188,7 @@ fn a_fresh_chain_resolves_and_can_call_every_seeded_shorthand() {
             },
             &[],
             "root",
+            &ceremony_identity(),
         )
         .expect("the blessed term list builds");
         assert!(
@@ -241,6 +258,7 @@ fn the_seeded_registry_is_identical_across_fresh_genesis_ceremonies() {
                 },
                 &[],
                 "root",
+                &ceremony_identity(),
             )
             .expect("blessed terms");
             rm.compute_genesis(
@@ -379,6 +397,7 @@ fn a_fresh_chain_installs_the_rgov_contracts_and_they_answer() {
             },
             &[],
             "root",
+            &ceremony_identity(),
         )
         .expect("blessed terms");
         let blessed = terms.len();
@@ -494,9 +513,10 @@ fn a_fresh_chain_serves_the_wallets_new_inbox_handshake() {
             },
             &[],
             "root",
+            &ceremony_identity(),
         )
         .expect("blessed terms");
-        terms.push(deploy_signed_by(&handshake, 7));
+        terms.push(deploy_signed_by(&handshake, 11));
 
         let (_, _, results) = rm
             .compute_genesis(

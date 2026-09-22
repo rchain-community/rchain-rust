@@ -61,17 +61,31 @@ Two registrations live in these files and only one keeps upstream's shape:
 slots for them here because the wallet's editor asks the directory for those class *names*, and a slot
 that was never filled answers `Nil` — which a client cannot tell from "broken".
 
-### The dummy key, and why the three governance terms share it
+### The key: the genesis ceremony's own
 
-`masterDirectory`, `extraSlots` and `memberDirectory` are all deployed by
-`testnet_governance_key()` — one fixed dummy key. **They must share it.** The template publishes its
-`@[*deployerId, "MasterContractAdmin"]` capability for *its own* deployer, and the `GetMe` feature's
-registration is gated on reading that capability back; with different keys the gate never opens, the
-feature registers nothing, the directory answers `Nil` for `GetMe`, and a client calling it gets
-silence. Found on a node: the handshake reached "directory answered GetMe" and never entered `getMe`.
+`masterDirectory`, `extraSlots` and `memberDirectory` are signed by **the key that creates the genesis
+block** — `create_genesis_block`'s `ValidatorIdentity`. That is the standard genesis-ceremony
+arrangement, and it is what the master directory's admin capability requires:
+
+- **They must be one key.** The template publishes its
+  `@[*deployerId, "MasterContractAdmin"]` capability for *its own* deployer, and the `GetMe` feature's
+  registration is gated on reading that capability back. Signed by different keys the gate never
+  opens, the feature registers nothing, the directory answers `Nil` for `GetMe`, and a client calling
+  it gets silence — found on a node: the handshake reached "directory answered GetMe" and never
+  entered `getMe`.
+- **It must be a key whose private half is not public.** An earlier revision signed them with a key
+  derived from a string literal in `rgov.rs`; anyone reading the source could compute it and exercise
+  the capability on any network that installed it. The ceremony identity is threaded in for that
+  reason, and `spec/TEST-COVERAGE.md` records the change.
+- **Nothing a client hardcodes moves because of it.** The eight class keys are the classes' own fixed
+  keys and the read cap is derived from the deploy *order* (the deploy's RNG state), not the signer;
+  `the_published_keys_are_constants` asserts exactly that, and it is why the constants above are the
+  same under either key.
 
 `extraSlots` is our own term, not upstream's: rather than rewrite upstream's seven-slot template body,
 it takes the write capability the template published and writes `Chat`, `Ballot` and `Group` in.
+
+## Ceiling of this arrangement, and what a public network needs
 
 ### Open item (this is where the handshake currently stops)
 
@@ -90,10 +104,13 @@ mistakes the current state for "the family works".
 Genesis installing steps 2–4 above is a **testnet** convenience with a real cost, and a public network
 must not do it:
 
-- **One dummy key holds `@[*deployerId, "MasterContractAdmin"]`** and the chain's only `GetMe`
-  feature. On a testnet that is the point (it is what makes the client-side URIs constant). On
-  mainnet each deployer must run their own template + feature deploy from their own key, and the node
-  must install none of it.
+- **The ceremony key holds `@[*deployerId, "MasterContractAdmin"]`** and the chain's only `GetMe`
+  feature: the capability belongs to whoever ran genesis. That is a real, secret key and an
+  identifiable operator — but it is still *one* key over every client's first governance call. A
+  network that would rather each client run its own directory must install none of steps 2–4; that is
+  a genesis flag to land, not something this arrangement can express. What makes the shared model
+  tolerable is verifiability: the class URIs are chain constants, so a client can check what the
+  directory hands it against the table above instead of trusting the operator.
 - **A directory slot that was never filled answers `Nil`**, and a consumer cannot distinguish that
   from "broken" — so on mainnet a client must handle an absent class explicitly rather than wait.
 - **Class URIs derived from the deploy RNG move when the blessed order changes** (`BLESSED_DEPENDENCIES`

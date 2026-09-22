@@ -25,11 +25,29 @@
 //! it was given and genesis copies the entry onto the constant key ([`contract_uri_for`]). Everything
 //! this module changes is asserted against the vendored text, so a drift upstream fails the build.
 //!
-//! **Testnet scope, and what mainnet needs instead:** installing a master directory and a `GetMe`
-//! feature for one fixed key means that key holds `@[*deployerId, "MasterContractAdmin"]` for the
-//! chain — fine for a testnet (and it is what makes the client-side URIs constant), unacceptable on
-//! a public network, where each deployer must run their own template + feature deploy from their own
-//! key and the node must install none of steps 2–4. `spec/GENESIS.md` carries the full list.
+//! **Who holds the master directory's admin capability — the ceremony key.** Steps 2–4 are signed by
+//! the key that creates the genesis block (`create_genesis_block`'s `ValidatorIdentity`), which is the
+//! standard genesis-ceremony arrangement: the capability belongs to the network's operator, who runs
+//! the ceremony, and nothing else on the chain can redirect a client's first governance call.
+//!
+//! It has to be *one* key, and that is not a detail: the template publishes its
+//! `@[*deployerId, "MasterContractAdmin"]` capability for its own deployer and the feature's
+//! registration is gated on reading it back. Signed by three different keys the gate never opens, the
+//! feature registers nothing, the directory answers `Nil` for `GetMe`, and a client gets silence —
+//! verified on a node: the handshake reached "directory answered GetMe" and never entered `getMe`.
+//!
+//! It must also be a key whose private half is **not** public. An earlier revision used a key derived
+//! from a string literal in this module (`blake2b256("rnode/genesis/rgov/testnet-governance")`), which
+//! meant anyone reading the source could exercise that capability — on any network that installed it.
+//! That is why the ceremony identity is threaded in rather than a constant.
+//!
+//! Signing by the ceremony key does **not** move anything a client hardcodes: the eight class keys are
+//! the classes' own fixed keys, and the read cap is derived from the deploy *order* (the deploy's RNG
+//! state), not from the signer — `the_published_keys_are_constants` asserts exactly that.
+//!
+//! **Still open for a public network:** a network that would rather each client run its own directory
+//! (rather than the operator holding the shared one) must not install steps 2–4 at all — that is the
+//! genesis flag-gate to land next. `spec/GENESIS.md` carries the full list.
 
 use rchain_crypto::hash::blake2b256::hash as blake2b256;
 use rchain_crypto::private_key::PrivateKey;
@@ -39,6 +57,8 @@ use rchain_crypto::signatures::signed::Signed;
 use rchain_models::casper::protocol::casper_message::{DeployData, SignedDeployData};
 use rchain_rholang::registry::build_uri;
 use rchain_shared::base16;
+
+use crate::validator_identity::ValidatorIdentity;
 
 const KUDOS_RHO: &str = include_str!("resources/rgov/Kudos.rho");
 const INBOX_RHO: &str = include_str!("resources/rgov/Inbox.rho");
@@ -81,25 +101,6 @@ pub const RGOV_CORE: &[&str] = &[
 /// what makes the resulting `rho:id` a constant.
 pub fn contract_key(name: &str) -> String {
     base16::encode(&blake2b256(format!("rnode/genesis/rgov/{name}").as_bytes()))
-}
-
-/// The one **dummy key** the three testnet governance terms share: the master directory, the extra
-/// slots and the `GetMe` feature.
-///
-/// They must share it, and that is not a detail: the template publishes its
-/// `@[*deployerId, "MasterContractAdmin"]` capability *for its own deployer*, and the feature's
-/// registration is gated on reading that capability back. With three different keys the feature's
-/// gate never opens, so it registers nothing, the directory answers `Nil` for `GetMe`, and a client
-/// calling it gets silence — verified on a node: the handshake reached "directory answered GetMe"
-/// and never entered `getMe` at all.
-pub fn testnet_governance_key() -> String {
-    contract_key("testnet-governance")
-}
-
-/// The terms that share [`testnet_governance_key`] (everything that reads or writes the master
-/// directory's admin capability).
-fn shares_testnet_governance_key(name: &str) -> bool {
-    matches!(name, "masterDirectory" | "extraSlots" | "memberDirectory")
 }
 
 /// The fixed timestamp for a vendored contract. Genesis deploys carry no real time; a constant makes
@@ -200,10 +201,17 @@ pub fn source(name: &str) -> Result<String, String> {
 /// The order the whole governance block installs in, after the class libraries: all eight classes
 /// (each publishing its URI), then the master directory that references them, then the three slots
 /// upstream's template omits, then the `GetMe` feature that a client's first call resolves.
-pub fn governance_deploys(shard_id: &str) -> Result<Vec<(&'static str, SignedDeployData)>, String> {
+///
+/// The last three are signed by **the genesis ceremony's key** (`ceremony`) — see the module doc: the
+/// master directory's admin capability must belong to the network's operator, not to a key anyone can
+/// derive from the source. The classes are unaffected (they hold no capability).
+pub fn governance_deploys(
+    shard_id: &str,
+    ceremony: &ValidatorIdentity,
+) -> Result<Vec<(&'static str, SignedDeployData)>, String> {
     let mut out = deploys_named(shard_id)?;
     for name in ["masterDirectory", "extraSlots", "memberDirectory"] {
-        out.push((name, deploy(name, shard_id)?));
+        out.push((name, signed_deploy(name, shard_id, &ceremony.private_key)?));
     }
     Ok(out)
 }
@@ -253,9 +261,9 @@ fn cut_statement(rho: &str, marker: &str) -> Result<String, String> {
             "rgov: expected exactly one `{marker}` statement, found {occurrences}"
         ));
     }
-    let at = rho.find(marker).ok_or_else(|| {
-        format!("rgov: `{marker}` vanished between the count and the find")
-    })?;
+    let at = rho
+        .find(marker)
+        .ok_or_else(|| format!("rgov: `{marker}` vanished between the count and the find"))?;
     // Walk back over the `|` (and whitespace) that joined the statement to the previous one.
     let before = rho[..at].trim_end();
     let before = before.strip_suffix('|').unwrap_or(before).trim_end();
@@ -312,9 +320,22 @@ fn load(source: &str) -> String {
     format!("{source}\n//Loaded from resource file <<rgov>>\n")
 }
 
-/// Build + sign the genesis deploy for one vendored contract, exactly as the standard deploys are
-/// built (free, unbounded phlo, fixed key, shard-scoped).
+/// Build + sign the genesis deploy for one vendored **class**, with the class's own fixed key
+/// (`contract_key`): a class holds no capability, and pinning its key keeps a rebuilt genesis
+/// reproducible.
 pub fn deploy(name: &str, shard_id: &str) -> Result<SignedDeployData, String> {
+    let sk = PrivateKey::new(base16::unsafe_decode(&contract_key(name)));
+    signed_deploy(name, shard_id, &sk)
+}
+
+/// Build + sign the genesis deploy for one vendored term with **an explicit key** — the ceremony
+/// path ([`governance_deploys`]) signs the master directory, the extra slots and the `GetMe` feature
+/// with the genesis ceremony's own identity.
+pub fn signed_deploy(
+    name: &str,
+    shard_id: &str,
+    sk: &PrivateKey,
+) -> Result<SignedDeployData, String> {
     let data = DeployData {
         attachments: Vec::new(),
         term: source(name)?,
@@ -324,8 +345,7 @@ pub fn deploy(name: &str, shard_id: &str) -> Result<SignedDeployData, String> {
         valid_after_block_number: 0,
         shard_id: shard_id.to_string(),
     };
-    let sk = PrivateKey::new(base16::unsafe_decode(&key_for(name)));
-    let signed = Signed::new(data, &Secp256k1, &sk).map_err(|e| e.to_string())?;
+    let signed = Signed::new(data, &Secp256k1, sk).map_err(|e| e.to_string())?;
     Ok(SignedDeployData {
         data: signed.data,
         deployer: signed.pk.bytes().to_vec(),
@@ -333,17 +353,6 @@ pub fn deploy(name: &str, shard_id: &str) -> Result<SignedDeployData, String> {
         sig_algorithm: signed.sig_algorithm.name().to_string(),
     })
 }
-
-/// The private key a given term is deployed with: the shared dummy testnet key for the governance
-/// trio, its own for a class.
-fn key_for(name: &str) -> String {
-    if shares_testnet_governance_key(name) {
-        testnet_governance_key()
-    } else {
-        contract_key(name)
-    }
-}
-
 
 /// The vendored set in install order.
 pub fn deploys(shard_id: &str) -> Result<Vec<SignedDeployData>, String> {
@@ -475,15 +484,28 @@ in {{
 mod tests {
     use super::*;
 
-/// The public key (the `deployerId`) a term's deploy carries.
-fn deploy_public_key(name: &str) -> Vec<u8> {
-    let sk = PrivateKey::new(base16::unsafe_decode(&key_for(name)));
-    Secp256k1
-        .to_public(&sk)
-        .unwrap_or_else(|e| panic!("a derived key must be valid: {e}"))
-        .bytes()
-        .to_vec()
-}
+    /// The public key (the `deployerId`) a term's deploy carries.
+    fn deploy_public_key(name: &str) -> Vec<u8> {
+        let sk = PrivateKey::new(base16::unsafe_decode(&contract_key(name)));
+        Secp256k1
+            .to_public(&sk)
+            .unwrap_or_else(|e| panic!("a derived key must be valid: {e}"))
+            .bytes()
+            .to_vec()
+    }
+
+    /// A fixed ceremony identity for the tests: the genesis ceremony's key, in-process.
+    fn ceremony_identity() -> ValidatorIdentity {
+        let sk = PrivateKey::new(vec![7u8; 32]);
+        let public_key = Secp256k1
+            .to_public(&sk)
+            .unwrap_or_else(|e| panic!("a fixed 32-byte scalar is a valid secp256k1 key: {e}"));
+        ValidatorIdentity {
+            public_key,
+            private_key: sk,
+            sig_algorithm: "secp256k1".to_string(),
+        }
+    }
 
     /// Normalizing a blessed term needs the node's 32 MiB stack (these contracts recurse past the
     /// 2 MiB test default), matching `node/src/main.rs` and `node/tests/common/mod.rs`.
@@ -544,15 +566,24 @@ fn deploy_public_key(name: &str) -> Vec<u8> {
     /// registration is gated on reading it back, so a mismatch there leaves `GetMe` unregistered and
     /// answering `Nil` — a stall with no error anywhere (verified on a node).
     #[test]
-    fn the_governance_terms_share_one_key() {
-        let shared: Vec<String> = ["masterDirectory", "extraSlots", "memberDirectory"]
-            .iter()
-            .map(|name| base16::encode(&deploy_public_key(name)))
-            .collect();
-        assert_eq!(shared[0], shared[1], "template and extra slots");
-        assert_eq!(shared[1], shared[2], "extra slots and feature");
-        let kudos = base16::encode(&deploy_public_key("kudos"));
-        assert_ne!(kudos, shared[0], "a class keeps its own key");
+    fn the_governance_terms_are_signed_by_the_ceremony_key() {
+        let ceremony = ceremony_identity();
+        let deploys = governance_deploys("root", &ceremony).expect("the governance set builds");
+        for (name, deploy) in &deploys {
+            if ["masterDirectory", "extraSlots", "memberDirectory"].contains(name) {
+                assert_eq!(
+                    deploy.deployer,
+                    ceremony.public_key.bytes().to_vec(),
+                    "{name}: the admin capability must belong to the ceremony key"
+                );
+            } else {
+                assert_ne!(
+                    deploy.deployer,
+                    ceremony.public_key.bytes().to_vec(),
+                    "{name}: a class holds no capability, so it keeps its own fixed key"
+                );
+            }
+        }
     }
 
     /// The keys genesis publishes, pinned. A change here is a genesis change and moves what a client
