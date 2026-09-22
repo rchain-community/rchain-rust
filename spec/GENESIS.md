@@ -24,6 +24,48 @@ order (`registry.rs:3-6`). They are **stable across chains of this port** becaus
 key is a fixed constant — that is what makes them hardcodable — but they are **not** the 54-char
 mainnet values carried in the `.rho` header comments.
 
+## The rgov governance class contracts (vendored)
+
+Installed from `casper/src/genesis/resources/rgov/` — vendored from `rchain-community/rgov` (commit,
+licence position and adaptations: `resources/rgov/NOTICE`). They are here because a governance client
+otherwise has to deploy the set at runtime with `scripts/bootstrap-rgov.ts` and *record* the URIs the
+deployment happens to produce: the master directory's member list is a product of the chain, so it
+shifts on every fresh chain and goes stale silently.
+
+| # | Contract (`rgov`) | `rho:id` (hardcodable) | Consumer it unblocks |
+|---|---|---|---|
+| 1 | `rholang/core/Kudos.rho` | `rho:id:c35xabt84irokn3kp7qh9gs31f58rzje8ntifucmg19s1q6gek8y` | the master directory's `kudos` member; `Kudos!("peek"/"award", …)` |
+| 2 | `rholang/core/Inbox.rho` | `rho:id:8qbr8guigfush1n8y64ubkjnakwrh9m3suty68pkoebgbjwuiuio` | the member-directory handshake and the wallet's `newInbox`/`sendMail` snippets |
+| 3 | `rholang/core/Directory.rho` | `rho:id:xp7ih4n3kghz89kkc3smgighxs1ou8wx6hrt54z9smr55tfd1i3o` | every per-deployer dictionary the member directory creates |
+| 4 | `rholang/core/memberIdGovRev.rho` (the "roll") | `rho:id:j9wmz843xzfporr7qnghzsj46doxctpxg4msw9tjtrqex1smngjy` | `MemberDirectory!("make"/"makeFromURI", …)` — the master-directory path |
+| 5 | `rholang/core/Issue.rho` | `rho:id:jne1e6mptyjp96zrak8reb4s8hmw3fonrkkkaxbiok18xxs1oj1o` | the ballot/issue snippets (`newIssue`, `castVote`, `tallyVotes`) |
+
+What was adapted (each asserted at build time, so a vendored-file change fails the build):
+
+- **Self-registration → `rho:registry:insertSigned:secp256k1`.** Upstream registers with
+  `insertArbitrary`, whose URI is `build_uri(blake2b256(random seed))` — a *different* URI on every
+  chain. The signed form derives it from the deployer key, and these deploys' keys are fixed, so the
+  URIs above are constants. Only the **class** registration is converted; per-deployer registrations
+  (a member directory's own write capability, an inbox instance's send capability) stay
+  `insertArbitrary`, because they are runtime state by nature.
+- **Fixed keys, derived not pasted**: `contract_key(name) = blake2b256("rnode/genesis/rgov/<name>")`,
+  timestamp `1700000000000`. A pasted hex constant is unauditable; a named hash can be recomputed by
+  anyone reading the source, and the URIs above are exactly `build_uri(blake2b256(pubkey))` of it.
+- **Dependency markers substituted**: `memberIdGovRev.rho`'s
+  `match ("import", "./directory.rho", \`rho:id:...\`)` / `("./inbox.rho", …)` markers become the
+  installed URIs above — the same string substitution `bootstrap-rgov.ts` performs at runtime.
+- **Deploy-time self-test traffic removed** (`Inbox.rho`'s trailing test program, `Directory.rho`'s
+  post-registration exercise, and the demo prints around them): a chain's genesis must not send test
+  messages or print demo output. The class definitions are untouched.
+- The master-directory template
+  (`resources/rgov/create-master-contract-directory-testnet.rho`) is vendored **verbatim** and
+  rendered by `rgov::master_directory_template()`, which substitutes the seven recorded member URIs
+  with the installed constants (`directory`, `echo`→`directory`, `inbox`, `issue`, `kudos`, `roll`,
+  `log`→`directory` — `Echo.rho`/`mq.rho` never register, so their slots alias to `Directory`,
+  exactly as upstream's bootstrap does). Creating a master directory stays a **runtime** deploy: it
+  is keyed by the deployer's `deployerId`, so each client makes their own — that URI is inherently
+  per-deployer, and the thing this change removes is having to *discover* the member URIs first.
+
 ## Native system channels, aliased
 
 The PoS and vault channels are native (`rholang/src/system_processes.rs::definitions`), so only the

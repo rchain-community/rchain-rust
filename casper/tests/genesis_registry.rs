@@ -258,3 +258,143 @@ fn the_seeded_registry_is_identical_across_fresh_genesis_ceremonies() {
         );
     });
 }
+
+/// A probe for a contract reached by its **constant URI** (the vendored rgov set): look it up,
+/// destructure the `(nonce, value)` pair, call it with the wallet's convention (`@(_, X)` binds a
+/// process variable, so the call is `@X!`), and report
+/// the tag only once the call is answered. A tag therefore proves the value is callable, which is
+/// the property the per-chain bootstrap existed to provide.
+fn lookup_probe(uri: &str, tag: &str, call: &str, reply_names: &str) -> String {
+    format!(
+        r#"new rl(`rho:registry:lookup`), ch, ret, log in {{
+             rl!(`{uri}`, *ch) |
+             for (@(_, X) <- ch) {{
+               @"out"!("{tag}:resolved") |
+               {call} |
+               for ({reply_names} <- ret) {{ @"out"!("{tag}:called") }}
+             }}
+           }}"#
+    )
+}
+
+/// On a fresh chain every vendored rgov class contract is installed under its constant URI and
+/// answers a call. This is what a governance client gets instead of running
+/// `scripts/bootstrap-rgov.ts` and recording whatever URI the deployment happened to produce.
+#[test]
+fn a_fresh_chain_installs_the_rgov_contracts_and_they_answer() {
+    with_big_stack(async {
+        let rm = build_runtime_manager().await;
+        let rand = fixed_rand();
+        let uris = rchain_casper::genesis::rgov::contract_uris().expect("the vendored URIs");
+        let uri = |name: &str| {
+            uris.iter()
+                .find(|(n, _)| *n == name)
+                .map(|(_, u)| u.clone())
+                .unwrap_or_else(|| panic!("{name} must be vendored"))
+        };
+
+        // Each call is upstream's own shape (its contract signature, or its self-test's call), and
+        // `reply_names` is that contract's reply *arity*: `Kudos` and the member directory answer
+        // with one value, `Directory` with its capability map, `Inbox` with three capabilities and
+        // `Issue` with `(admin, tally)`. A pattern of the wrong arity matches nothing, which is the
+        // same class of silence this file exists to turn into a failure.
+        let probes: Vec<(&str, String)> = vec![
+            (
+                "kudos",
+                lookup_probe(&uri("kudos"), "kudos", r#"@X!("peek", *ret)"#, "@_"),
+            ),
+            (
+                "inbox",
+                lookup_probe(&uri("inbox"), "inbox", r#"@X!(*ret)"#, "@_, @_, @_"),
+            ),
+            (
+                "directory",
+                lookup_probe(&uri("directory"), "directory", r#"@X!(Nil, *ret)"#, "@_"),
+            ),
+            (
+                "roll",
+                lookup_probe(&uri("roll"), "roll", r#"@X!("make", {}, *ret)"#, "@_"),
+            ),
+            (
+                "issue",
+                lookup_probe(
+                    &uri("issue"),
+                    "issue",
+                    r#"@X!(["proposal"], *ret, *log)"#,
+                    "@_, @_",
+                ),
+            ),
+        ];
+
+        let mut terms = default_blessed_terms(
+            &proof_of_stake(),
+            &Registry {
+                system_contract_pub_key: String::new(),
+            },
+            &[],
+            "root",
+        )
+        .expect("blessed terms");
+        let blessed = terms.len();
+        assert!(
+            blessed >= 8,
+            "the blessed set includes the libraries and the five vendored contracts (got {blessed})"
+        );
+        terms.extend(probes.iter().map(|(_, term)| deploy(term)));
+
+        let (_, _, results) = rm
+            .compute_genesis(
+                &terms,
+                &rand,
+                BlockData::empty(),
+                &PosGenesis::default(),
+                &[],
+            )
+            .await
+            .expect("compute_genesis");
+        for (i, r) in results.iter().enumerate() {
+            assert!(
+                r.eval_result.succeeded(),
+                "genesis deploy #{i} failed: {:?}",
+                r.eval_result.errors
+            );
+        }
+
+        // Installed, separately from callable: a direct native read attributes a failure to the
+        // registration rather than to the probe.
+        let native =
+            rchain_rholang::native_state::NativeSystemState::new(rm.runtime().native_store());
+        for (name, uri) in &uris {
+            assert!(
+                native.registry_lookup(uri).await.expect("lookup").is_some(),
+                "{name} must be registered under {uri}"
+            );
+        }
+        let produced = rm
+            .runtime()
+            .get_data_par(&rchain_models::sorted::SortedProc::new(
+                rchain_models::par_ops::from_expr(rchain_models::ast::Expr::GString(
+                    "out".to_string(),
+                )),
+            ))
+            .await
+            .expect("read the probes' output channel");
+        let mut tags: Vec<String> = produced
+            .iter()
+            .filter_map(|p| {
+                rchain_models::rholang::RhoType::RhoString::unapply(p).map(str::to_string)
+            })
+            .collect();
+        tags.sort();
+        // Two stages per probe, so a failure says *where*: the lookup/destructure, or the call.
+        let mut expected: Vec<String> = probes
+            .iter()
+            .flat_map(|(name, _)| [format!("{name}:resolved"), format!("{name}:called")])
+            .collect();
+        expected.sort();
+        assert_eq!(
+            tags, expected,
+            "every vendored contract must be installed, resolvable by its constant URI, and callable"
+        );
+    });
+}

@@ -40,7 +40,7 @@ laws** carrying a randomized property test and **10 benchmark functions** in 6 C
 | `comm` | 123 | — | — | — |
 | `rspace` | 166 | — | 7 | — |
 | `rholang` | 196 | 39 | 7 | — |
-| `casper` | 221 | 40 | 3 | — |
+| `casper` | 227 | 41 | 3 | — |
 | `node` | 178 | 9 | — | — |
 | `qucalc` | 20 | — | — | — |
 | `rspace-bench` | — | — | — | 10 |
@@ -216,6 +216,13 @@ not found in that file. Coverage claims live here rather than in prose so they c
 | genesis | `casper/src/genesis/standard_deploys.rs` | `aliased_contract_uris_are_pinned` |
 | genesis | `casper/src/genesis/standard_deploys.rs` | `every_genesis_alias_has_a_source` |
 | genesis | `casper/src/genesis/standard_deploys.rs` | `the_make_mint_epilogue_is_adapted` |
+| genesis | `casper/src/genesis/rgov.rs` | `every_rendered_contract_parses_and_normalizes` |
+| genesis | `casper/src/genesis/rgov.rs` | `the_class_registration_is_the_signed_one` |
+| genesis | `casper/src/genesis/rgov.rs` | `the_uris_are_constants` |
+| genesis | `casper/src/genesis/rgov.rs` | `the_member_directory_imports_the_installed_contracts` |
+| genesis | `casper/src/genesis/rgov.rs` | `the_master_directory_template_carries_the_installed_uris` |
+| genesis | `casper/src/genesis/rgov.rs` | `the_deploy_time_self_tests_are_removed` |
+| genesis | `casper/tests/genesis_registry.rs` | `a_fresh_chain_installs_the_rgov_contracts_and_they_answer` |
 | syntax | `rholang/src/reduce.rs` | `plus_and_minus_also_insert_into_and_delete_from_collections` |
 
 ## Gap analysis (severity-ordered)
@@ -566,6 +573,7 @@ green diff. These are all of them.
 | `comm/src/upnp/gateway.rs::split_authority` — a bracket-aware authority split, shared by the SSRF guard and the URL splitter | The guard read `[::1]` as the host `"["`, allowing a loopback discovery URL (AUDIT §16 C14) | `the_url_guard_allows_private_gateways_and_refuses_ssrf_targets` |
 | `rholang/src/matcher/spatial_matcher.rs` — the `ESet`/`EMap` arms take their `remainder` from the *pattern* (as the `EList` arm and the Scala do), and `list_match`'s padding gate returns to the Scala's `remainder.is_some()` | Those two arms read the collection remainder off the **target**, which never has one, so `is_wildcard`/`remainder_var` were permanently `false`/`None` and a partial map/set pattern could not match at all — every rgov governance contract gates its entire body on one, and an unmatched `for` is silent, so the whole family returned `[]` with no diagnostic. The padding gate was a no-op for collections for the same reason (AUDIT §17 C20, and C19's resolution) | `a_map_pattern_may_name_fewer_entries_than_the_map_has`, `a_named_map_remainder_captures_the_unnamed_entries`, `a_set_pattern_may_name_fewer_members_than_the_set_has`, `list_remainders_stay_positional`, `collection_patterns_match_a_subset_of_their_collection` |
 | `casper/src/genesis/{mod.rs,standard_deploys.rs,runtime_replay.rs}` + `rholang/src/{native_state.rs,system_processes.rs,runtime.rs}` — genesis installs `ListOps`/`NonNegativeNumber`/`MakeMint`, seeds the shorthand aliases natively (native channels + the blessed contracts' `rho:id` entries), adapts `MakeMint.rho`'s epilogue, and reproduces the seeding on replay | A fresh chain's registry was empty, so `lookup!(\`rho:rchain:revVault\`, *ch)` answered `Nil` — silently, because an unmatched `for` is not an error, which is why the rgov family and the wallet's bonding path failed as if in client code. The `MakeMint` epilogue waits on two channels this port does not have, so it could never register (`spec/GENESIS.md`). The replay twin must seed identically or the replayed genesis hash diverges (Law 11) | `a_fresh_chain_resolves_and_can_call_every_seeded_shorthand`, `the_seeded_registry_is_identical_across_fresh_genesis_ceremonies`, `aliased_contract_uris_are_pinned`, `every_genesis_alias_has_a_source`, `the_make_mint_epilogue_is_adapted`, `a_drifted_make_mint_source_is_an_error` |
+| `casper/src/genesis/rgov.rs` + `casper/src/genesis/resources/rgov/**` — the vendored rgov governance class contracts: fixed keys derived from a named hash, class registration converted from `insertArbitrary` to `insertSigned` (constants instead of per-chain URIs), dependency markers substituted, deploy-time self-tests removed, master-directory template rendered with the installed URIs | Upstream deploys the set per chain and *records* the resulting URIs, so the master directory's member list shifted on every chain and a recorded master URI went stale silently. Installing the classes with fixed keys makes their URIs constants (`spec/GENESIS.md`); the licence position (upstream declares Apache-2.0 but ships no LICENSE file) and every adaptation are recorded in `resources/rgov/NOTICE` | `every_rendered_contract_parses_and_normalizes`, `the_class_registration_is_the_signed_one`, `the_uris_are_constants`, `the_member_directory_imports_the_installed_contracts`, `the_master_directory_template_carries_the_installed_uris`, `the_deploy_time_self_tests_are_removed`, `a_fresh_chain_installs_the_rgov_contracts_and_they_answer` | + `rholang/src/{native_state.rs,system_processes.rs,runtime.rs}` — genesis installs `ListOps`/`NonNegativeNumber`/`MakeMint`, seeds the shorthand aliases natively (native channels + the blessed contracts' `rho:id` entries), adapts `MakeMint.rho`'s epilogue, and reproduces the seeding on replay | A fresh chain's registry was empty, so `lookup!(\`rho:rchain:revVault\`, *ch)` answered `Nil` — silently, because an unmatched `for` is not an error, which is why the rgov family and the wallet's bonding path failed as if in client code. The `MakeMint` epilogue waits on two channels this port does not have, so it could never register (`spec/GENESIS.md`). The replay twin must seed identically or the replayed genesis hash diverges (Law 11) | `a_fresh_chain_resolves_and_can_call_every_seeded_shorthand`, `the_seeded_registry_is_identical_across_fresh_genesis_ceremonies`, `aliased_contract_uris_are_pinned`, `every_genesis_alias_has_a_source`, `the_make_mint_epilogue_is_adapted`, `a_drifted_make_mint_source_is_an_error` |
 
 ### The census sweep (definition of done items 10–11)
 

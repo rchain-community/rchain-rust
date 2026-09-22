@@ -1,6 +1,7 @@
 //! Genesis block creation (port of `casper/genesis/Genesis.scala`).
 
 pub mod contracts;
+pub mod rgov;
 pub mod standard_deploys;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -160,7 +161,15 @@ pub fn default_blessed_terms(
         standard_deploys::StandardDeploys::list_ops(shard_id)?,
         standard_deploys::StandardDeploys::non_negative_number(shard_id)?,
         standard_deploys::StandardDeploys::make_mint(shard_id)?,
-    ])
+    ]
+    .into_iter()
+    .chain(
+        // The rgov governance *class* contracts, vendored and adapted for genesis
+        // (`resources/rgov/NOTICE`, `rgov.rs`). Their URIs are constants of the fixed keys, so the
+        // master directory's member list no longer has to be discovered by deploying them.
+        rgov::deploys(shard_id)?,
+    )
+    .collect())
 }
 
 /// Seed the genesis registry aliases whose source is now available. Idempotent, so the genesis loop
@@ -275,7 +284,8 @@ pub async fn create_genesis_block(
     // The ceremony is where the full manifest must hold: a chain that starts with a shorthand
     // answering `Nil` gives every consumer a silent no-op, and the place to refuse that is here —
     // not on a client's first lookup days later.
-    let native = rchain_rholang::native_state::NativeSystemState::new(runtime.runtime().native_store());
+    let native =
+        rchain_rholang::native_state::NativeSystemState::new(runtime.runtime().native_store());
     let missing = missing_genesis_aliases(&native).await?;
     if !missing.is_empty() {
         return Err(format!(
