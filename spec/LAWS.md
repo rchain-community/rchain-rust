@@ -1,4 +1,4 @@
-43 laws, 52 entries: 7 proved and tied to the node by a conformance corpus, 19 proved over the model, 2 proved but vacuous (the statement restates its own definition), 1 axiomatized by design (the cryptographic primitives), 9 owed, 4 deferred, 8 open, 2 orphaned.
+43 laws, 52 entries: 7 proved and tied to the node by a conformance corpus, 19 proved over the model, 2 proved but vacuous (the statement restates its own definition), 1 axiomatized by design (the cryptographic primitives), 9 owed, 4 deferred, 8 open, 0 retired (the port has no rule of that shape — the row says what was read), 2 orphaned.
 
 ### Rholang
 

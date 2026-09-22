@@ -468,8 +468,10 @@ pub struct Run {
 
     /// Length of the quarantine time in blocks.
     ///
-    /// Reserved: parsed and validated, but not yet wired to the native PoS contract
-    /// (see `spec/RUST-FIRST.md`).
+    /// Wired: the value reaches the native PoS contract's `PosParams`
+    /// (`genesis/contracts.rs` → `native_state.rs`), where `withdraw`'s eligibility window is
+    /// `block_number + quarantine_length`. (This comment said "not yet wired" until it was checked;
+    /// the value flows through `node_launch.rs` to genesis.)
     #[arg(long = "quarantine-length")]
     pub quarantine_length: Option<i32>,
 

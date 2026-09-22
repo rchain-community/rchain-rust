@@ -69,12 +69,14 @@ Not part of the compile-time checks: these need `IO`, and `run_cmd` has no `IO`.
 /-- The anchor's file: `"rholang/src/merging.rs:102"` → `"rholang/src/merging.rs"`. -/
 def anchorPath (a : String) : String := (a.splitOn ":").head!
 
-/-- Whether a row's status *claims a model of the code*. Exactly these must name the code they model:
-a `owed`, `deferred`, `open` or `orphaned` row has no model yet, so there is nothing to anchor, and
-requiring one would be busywork that teaches people to fill the column in. -/
+/-- Whether a row's status *claims something about the code*. Exactly these must name the code they are
+about: a `owed`, `deferred`, `open` or `orphaned` row has no model yet, so there is nothing to anchor,
+and requiring one would be busywork that teaches people to fill the column in. A `retired` row is the
+case worth stating: it claims *the port has no rule of this shape*, which is a claim about code, so it
+names the code that was read. -/
 def claimsModel (s : Status) : Bool :=
   match s with
-  | .provedTied | .provedModel | .axiomByDesign | .vacuous => true
+  | .provedTied | .provedModel | .axiomByDesign | .vacuous | .retired => true
   | .owed | .deferred | .open | .orphaned => false
 
 /-- Every anchor must be a file that exists, resolved from the repo root (the parent of `spec/`, since
@@ -116,6 +118,7 @@ conformance corpus, {statusCount .provedModel} proved over the model, \
 {statusCount .vacuous} proved but vacuous (the statement restates its own definition), \
 {statusCount .axiomByDesign} axiomatized by design (the cryptographic primitives), \
 {statusCount .owed} owed, {statusCount .deferred} deferred, {statusCount .open} open, \
+{statusCount .retired} retired (the port has no rule of that shape — the row says what was read), \
 {statusCount .orphaned} orphaned."
 
 /-- A Markdown table cell. A literal `|` ends the cell, and this catalog is full of them — Law 1 is
@@ -275,16 +278,20 @@ run_cmd do
 
   -- 7. An axiom may not be attributed to a law with no formalization.
   for l in register do
-    if !l.axioms.isEmpty && (l.status == .open || l.status == .orphaned) then
+    if !l.axioms.isEmpty && (l.status == .open || l.status == .orphaned || l.status == .retired) then
       failures := failures.push s!"law {l.number}{l.clause} is `{l.status.wire}` yet cites axioms"
 
   -- 8. A `vacuous` row must say what the law needs in order to stop being vacuous. The word is an
   -- admission — "proved, but the statement restates its own definition" — and an admission with no plan
-  -- is how a gap becomes permanent.
+  -- is how a gap becomes permanent. A `retired` row must say what was read and why it is not a law: the
+  -- word is a *decision*, and a decision with no evidence is an omission wearing a status.
   for l in register do
     if l.status == .vacuous && l.note.isEmpty then
       failures := failures.push s!"law {l.number}{l.clause} is `vacuous` with no note — name the \
         re-scoping it needs, or the word is a resting place rather than a finding"
+    if l.status == .retired && l.note.isEmpty then
+      failures := failures.push s!"law {l.number}{l.clause} is `retired` with no note — name the code \
+        that was read and why the port has no rule of this shape (its `rust` anchor says where)"
 
   if failures.isEmpty then
     logInfo m!"rchain-laws: the register is consistent — {lawCount} laws, {entryCount} entries, \

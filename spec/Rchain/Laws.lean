@@ -38,6 +38,9 @@ proved *about the Lean model* and a law proved *and checked against the running 
   consolidation pass, when the Rust's own definitions were modelled.
 - `open` — in the catalog, no formalization (laws 30, 31, 33, 34, 36).
 - `orphaned` — out of scope because the VM it describes was not ported (laws 12, 13).
+- `retired` — the port has **no rule of this shape**, with the evidence in the row's note and its `rust`
+  anchor (the code that was read). A decision recorded, not an omission: the alternative is an `open` row
+  that will never close, which makes the count dishonest in the direction that matters least visibly.
 
 `falsifiable` records what would have to be true for the law to be *false* — a witness, a negative case,
 or the reason it cannot fail. A law that cannot fail constrains nothing: `numeric_channels_nonneg` was
@@ -82,6 +85,16 @@ inductive Status where
   proof is real and the *law* is not yet, and the note requirement is what stops the word becoming a
   resting place. -/
   | vacuous
+  /-- **Retired: the port has no rule of this shape to state the law against**, evidenced rather than
+  assumed. Distinct from `orphaned` (a VM that was not ported) and from `open` (work pending): a
+  `retired` row is one whose own investigation found nothing in the code for the law to be *about* — the
+  merge "does not choose among candidates", so a law about a unique minimum-cost candidate has nothing to
+  be stated against, and the honest close is to say so rather than leave the row owed forever. The
+  requirement is what keeps the word from becoming a resting place: a `retired` row must carry the
+  evidence in its note **and** a `rust` anchor naming the code that was read, because the claim being
+  made is a claim about that code. Retiring is a *decision taken*, recorded — the distinction this
+  register exists to keep. -/
+  | retired
   deriving BEq, DecidableEq, Repr
 
 def Status.wire : Status → String
@@ -93,6 +106,7 @@ def Status.wire : Status → String
   | .open          => "open"
   | .orphaned      => "orphaned"
   | .vacuous       => "vacuous"
+  | .retired       => "retired"
 
 /-- One law, or one clause of a law whose clauses differ in status or in what they rest on. Law 16
 carries four clauses and Law 1 two, because "Law 1 is proved, residually 30 axioms" was the sentence

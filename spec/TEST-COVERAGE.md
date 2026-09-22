@@ -639,6 +639,25 @@ full Rust build in a container) and a live network, so they are written, syntact
 (`bash -n`, `ast.parse`) and dry-run where possible (`--dry-run` prints the malformed corpus) but not
 executed here. The in-process suites above are what was run.
 
+**Executed 2026-09-22**, on a single-validator devnet (the `valid`, `malformed` and `gateway` modes;
+`scheduler` needs the network restarted with `--effect-scheduler`, which this devnet was not). The first
+run that mattered was not green, and what it found were **two defects in the harness itself** rather than
+in the node:
+
+* `signed_deploy` hardcoded `--shard-id root` while the devnet's shard is `/root`, so **every** signed
+  deploy failed the node's own shard check (`Deploy shardId 'root' is not a member of this node's shards:
+  [/root]`) — the whole block-path half of the `valid` mode had never worked. It now reads the shard from
+  the node's `/api/v1/status`.
+* the `spliced-delimiter` generator emitted `@"f"!()` for the lone-closing case, which is **valid** — a
+  send with one empty group — so the run reported it accepted (200). A generator that emits a well-formed
+  term cannot test an input guard; the payload is doubled now.
+
+After both fixes the run is green end to end (`robustness + determinism OK`, exit 0): 15 explore-deploys,
+3 signed deploys through the block path with the height advancing 3039 → 3043, 23 malformed cases all 4xx
+with every node still answering, and the single-shard surface unchanged. That both defects were the
+harness's is the point worth recording: an unrun check is not a check, and this one had been "written and
+syntactically checked" since it landed.
+
 ## Blocked and out of scope (by decision)
 
 - **Multi-shard Docker devnet** — blocked on per-shard LFS sync. A two-shard devnet cannot peer

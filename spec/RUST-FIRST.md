@@ -116,6 +116,12 @@ deferred:** reward computation/distribution and the vault **unforgeable-name cap
 simplified model keys vaults by REV address, so `findOrCreate` returns the address rather than a fresh
 unforgeable).
 
+**Also deferred, and previously unregistered:** the **`revvaultexport`** offline tooling
+(`legacy/node/src/main/scala/coop/rchain/node/revvaultexport/`, seven files — the rho-trie traverser, the
+balance getter, and the mainnet1 balance/reporting mains). No Rust module and no CLI subcommand exist for
+it; `docs/src/contributor/architecture.md` listed it as a done feature until that claim was checked and
+corrected. A deferral registered here is a decision; an unregistered one was an omission.
+
 `default_blessed_terms` installs only the interpreted contracts a consumer actually reaches through
 `rho:registry:lookup` — `ListOps`, `NonNegativeNumber` and `MakeMint` — plus the registry aliases that
 make those lookups (and the native `rho:rchain:revVault` / `rho:rchain:pos` channels) resolve. The

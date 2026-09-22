@@ -162,8 +162,14 @@ def assert_lockstep(validators):
     return max(numbers)
 
 
-def signed_deploy(node, term, height):
-    """Deploy a term through the real block path (docker exec rnode deploy)."""
+def signed_deploy(node, term, height, shard_id):
+    """Deploy a term through the real block path (docker exec rnode deploy).
+
+    `shard_id` is passed in rather than hardcoded: the devnet's shard is `/root`, and this call used to
+    send `root`, so every signed deploy failed the node's own shard check
+    (`Deploy shardId 'root' is not a member of this node's shards: [/root]`) — found on the fuzzer's
+    first real run. The caller reads it from the node's `/api/v1/status`, which is where the truth is.
+    """
     write = subprocess.run(
         ["docker", "exec", "-i", node, "sh", "-c", "cat > /tmp/fuzz.rho"],
         input=term, text=True, capture_output=True,
@@ -173,7 +179,7 @@ def signed_deploy(node, term, height):
     return subprocess.run(
         ["docker", "exec", node, "rnode", "--grpc-host", "localhost", "deploy",
          "--phlo-limit", "1000000", "--phlo-price", "1",
-         "--private-key", DEPLOYER_PRIV, "--shard-id", "root",
+         "--private-key", DEPLOYER_PRIV, "--shard-id", shard_id,
          "--valid-after-block-number", str(height), "/tmp/fuzz.rho"],
         text=True, capture_output=True,
     )
@@ -215,7 +221,12 @@ def gen_malformed(rng, n):
         out.append(Malformed("truncated", valid[:cut]))
 
     # Delimiter splicing: unmatched/closed-out-of-order brackets and a lone closing delimiter.
-    for delim in [")", "}", "]", "(", "{", "["]:
+    #
+    # The lone-closing case is *doubled*: `@"f"!()` is **valid** — a send with one empty group — so the
+    # single-`)` payload this generator used to emit was accepted (200) on the fuzzer's first real run.
+    # A generator that emits a well-formed term cannot test an input guard.
+    out.append(Malformed("spliced-delimiter", '@"f"!())'))
+    for delim in ["}", "]", "(", "{", "["]:
         out.append(Malformed("spliced-delimiter", f'@"f"!({delim}'))
     out.append(Malformed("spliced-delimiter", 'new x in { x!(1)'))
     out.append(Malformed("spliced-delimiter", 'for (@v <- x) { }'))
@@ -447,10 +458,14 @@ def main():
         time.sleep(args.sleep)
 
     # --- state-mutating fuzz through the block path ---------------------------------------
-    height = fetch_status(0)["latestBlockNumber"]
+    status = fetch_status(0)
+    height = status["latestBlockNumber"]
+    # The shard id comes from the running node, not a literal: a hardcoded `root` sent every signed
+    # deploy into the node's shard check and failed there.
+    shard_id = status["shardId"]
     for j in range(args.deploy_burst):
         term = f'@"fuzzstate{j}"!({rng.randint(0, 10 ** 6)})'
-        p = signed_deploy(BOOTSTRAP, term, height)
+        p = signed_deploy(BOOTSTRAP, term, height, shard_id)
         if p.returncode != 0:
             fail(f"signed deploy #{j} failed: {p.stderr.strip() or p.stdout.strip()}", args.validators)
         height += 1
