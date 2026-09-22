@@ -1384,6 +1384,36 @@ oracle is, and the test that pins the fix.
   reply), so it was removed rather than committed red; the corpus case that should replace it is
   Phase 3 of the formalization plan, and this item is its first customer.
 
+- **C26 — law 5 was three `axiom`s, one of them false, and nothing checked any of them.** Found while
+  replacing law 5's `spatialMatches` with a definition. `spec/Rchain/Match.lean` stated
+
+  ```lean
+  def BindsAtMostOnce (p : Par) : Prop := ∀ n m : Nat, freeVarOf p n → freeVarOf p m → n = m
+  axiom pattern_binds_at_most_once (pat : Par) : BindsAtMostOnce pat
+  ```
+
+  and `freeVarOf p n` (`FreeVars.lean`) means "level `n` occurs free in `p`" — so the axiom says a
+  pattern has **at most one variable**, which `{"a": *x, "b": *y}` refutes. An `axiom` is trusted, so
+  the development could prove anything: the formalization that `AGENTS.md:55-57` calls the oracle was
+  *unsound*, and the reason nobody noticed is the same reason the ten silent defects went unnoticed —
+  **no CI job built the Lean at all** (that is what the `formal` job and
+  `tools/check-lean-conformance.sh` now do).
+
+  **Fix:** the relation is defined (`spatialMatchCore`/`spatialMatchExprs`/`spatialMatchExpr`/
+  `matchListPar`/`matchMap`, executable over `Par`, with explicit fuel so the kernel can reduce them);
+  `spatialMatches` is `spatialMatch … = true`; decidability became an `instance`, not an axiom; and
+  law 5 is stated as it is in the implementations — **an accepted match binds each free level at most
+  once** (`spatialMatch_implies_linear`, proven) and a pattern that repeats a level is *refused*
+  (`UnexpectedReuseOfProcContextFree` in the port, `addedVars.distinct` in the Scala). **Pinned by**
+  `matchCases_decide` (15 `decide`d cases in `Rchain/Corpus.lean`), `spec/conformance/match.tsv`, and
+  `rholang/tests/lean_match_corpus.rs` — which runs each case through the node's own path on its own
+  runtime, including the twice-bound pattern as a `rejected` row (the shape the false axiom denied).
+
+  **Also found while building it, and recorded rather than smoothed over:** the matcher's fuel was one
+  step short, so `@[]` against `[]` and `@Set(1, ..._)` against `Set(1, 2)` answered **false** — the
+  corpus's `decide` refused to compile until the bound was right, which is the mechanism working as
+  intended. The saturation of `matchFuel` is `fuel_saturation` in `Rchain/Match.lean`, stated and owed.
+
 ### Open question (behaviour pinned, oracle not established)
 
 - **`models/src/wire.rs::expr_from_proto` decodes an `Expr` with no instance to `GBool(false)`.** The

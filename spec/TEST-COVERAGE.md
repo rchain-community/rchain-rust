@@ -39,7 +39,7 @@ laws** carrying a randomized property test and **10 benchmark functions** in 6 C
 | `block-storage` | 40 | — | 3 | — |
 | `comm` | 123 | — | — | — |
 | `rspace` | 166 | — | 7 | — |
-| `rholang` | 197 | 45 | 7 | — |
+| `rholang` | 197 | 46 | 7 | — |
 | `casper` | 239 | 45 | 3 | — |
 | `node` | 178 | 9 | — | — |
 | `qucalc` | 20 | — | — | — |
@@ -109,6 +109,17 @@ overstate coverage.
 | 27 | Cross-shard | `law27_an_abort_vote_prevents_a_later_commit`, `law27_and_law29_the_state_agrees_with_the_votes`, `law27_a_legless_record_cannot_commit` | Lean `txn_atomic`; `casper/tests/cross_shard_txn.rs`, `gateway_faults.rs` |
 | 28 | Cross-shard | `rholang/src/native_state.rs` `law28_txn_prepare_rejects_overdraw_and_is_idempotent` (idempotency is a *unit* property here: the verbs are async and the state is the store) | Lean `leg_idempotent` |
 | 29 | Cross-shard | `law29_a_terminal_record_never_changes_again` (+ `law27_and_law29_…`) | Lean `commit_record_deterministic`; `casper/src/gateway/ledger.rs` |
+
+The surface the silent defects live in (AUDIT C9-C26) is rows **30-43** of `spec/INVENTORY.md`. Each
+row's evidence is a Lean declaration, a corpus emitted from it, and a Rust consumer that runs the same
+cases through the node — not a randomized property, because what these laws pin is a *shape* rather
+than an algebraic identity. Explicit rather than implied, per the rule that no cell is silently empty:
+
+| # | Law | Lean | Corpus + Rust consumer | Status |
+|---|-----|------|------------------------|--------|
+| 35 | Concreteness is sound (`connective_used` ⟺ connective/free var/wildcard/remainder) | `Par.lean` `connectiveUsed` (+ `Sort.cmpOptionVar`, `Ty.closedRemainder`) | `spec/conformance/flags.tsv` ← `Corpus.flagCases_decide` · `rholang/tests/lean_normalize_corpus.rs` | **checked** |
+| 37 | Match soundness and completeness (law 5 strengthened) | `Match.lean` `spatialMatch*` defined; `spatialMatch_implies_linear` proven | `spec/conformance/match.tsv` ← `Corpus.matchCases_decide` · `rholang/tests/lean_match_corpus.rs` | **checked** |
+| 30-34, 36, 38-43 | grammar, lexing, print/parse round-trip; normalization as a function; silence; reply shapes; protocol agreement; channel balance; JSON round-trip and envelope | *(named per row in `spec/INVENTORY.md`; not yet defined)* | *(none yet)* | **open** — the next slices |
 
   Two laws therefore have **no** randomized evidence, both deliberately: 12 and 13 are orphaned with
   the Rosette VM, and 19 is an axiom whose implementations are KAT-pinned. Law 22 and 23 have a

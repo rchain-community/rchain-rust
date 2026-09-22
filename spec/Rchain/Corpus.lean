@@ -1,4 +1,5 @@
 import Rchain.Par
+import Rchain.Match
 
 /-!
 # The conformance corpus, generated from the specification
@@ -112,16 +113,125 @@ needs no dependency, and so a pattern's punctuation never has to be escaped. -/
 def flagLine (c : FlagCase) : String :=
   "flags\t" ++ c.source ++ "\t" ++ (if c.expected then "true" else "false")
 
+/-! ## Law 37 — the matching layer
+
+Each case is a *pattern* (as a receive bind spells it — `@` for a collection, since a collection is
+not a name) and a *target*, both as rholang source, plus the verdict `spatialMatch` gives them. The
+Rust consumer runs `target` into a channel, receives with `pattern`, and must get the same verdict.
+The two shapes the ten incidents lived in are here: a partial map with a ground entry (C19/C20) and a
+partial map whose only non-concreteness is the remainder (C22 item 3), each with the shape that must
+*not* match beside it. -/
+
+/-- The number of cases the matching layer carries. -/
+def matchCaseCount : Nat := 15
+
+/-- One matching case: the bind's source, the target's source, the model's view of both, and the
+verdict. The verdict is `decide`d against `spatialMatch` (`matchCases_decide`), which is what makes
+this corpus a law's corpus rather than a table of opinions. -/
+structure MatchCase where
+  /-- The receive bind, as rholang spells it. -/
+  bind : String
+  /-- The datum, as rholang spells it. -/
+  target : String
+  /-- The pattern, as the model sees it. -/
+  patternPar : Par
+  /-- The target, as the model sees it. -/
+  targetPar : Par
+  /-- What `spatialMatch` must say. -/
+  expected : Bool
+  /-- Whether the row is really about *rejection* rather than matching: a pattern that binds a level
+  twice is refused by the normalizer (loudly, `UnexpectedReuseOfProcContextFree`) before any match
+  happens, so its honest verdict is neither `true` nor `false`. The Rust consumer asserts the refusal
+  for these rows — that is law 5 in the port, where the Scala's `addedVars.distinct` runs. -/
+  rejected : Bool := false
+
+/-- A map pattern with string keys. -/
+def mapOf (kvs : List (String × Par)) (r : Option Var) : Par :=
+  mapPat (kvs.map (fun kv => (strPar kv.1, kv.2))) r
+
+/-- The cases. Case 3 is the rgov gate's own shape (`{"read": *MCAread, ..._}` against a three-key
+dictionary); case 13 is law 5's linearity — the shape the old axiom `pattern_binds_at_most_once`
+declared impossible (AUDIT C26); case 14 is the same shape with *two* distinct variables, which that
+axiom denied outright. -/
+def matchCases : List MatchCase :=
+  [ { bind := "@{\"x\": 1}", target := "{\"x\": 1}",
+      patternPar := mapOf [("x", intPar 1)] none,
+      targetPar := mapOf [("x", intPar 1)] none, expected := true }
+  , { bind := "@{\"x\": 1}", target := "{\"x\": 1, \"y\": 2}",
+      patternPar := mapOf [("x", intPar 1)] none,
+      targetPar := mapOf [("x", intPar 1), ("y", intPar 2)] none, expected := false }
+  , { bind := "@{\"x\": 1, ..._}", target := "{\"x\": 1, \"y\": 2}",
+      patternPar := mapOf [("x", intPar 1)] wildRem,
+      targetPar := mapOf [("x", intPar 1), ("y", intPar 2)] none, expected := true }
+  , { bind := "@{\"x\": 1, ...rest}", target := "{\"x\": 1, \"y\": 2}",
+      patternPar := mapOf [("x", intPar 1)] namedRem,
+      targetPar := mapOf [("x", intPar 1), ("y", intPar 2)] none, expected := true }
+  , { bind := "@{\"x\": 9, ..._}", target := "{\"x\": 1, \"y\": 2}",
+      patternPar := mapOf [("x", intPar 9)] wildRem,
+      targetPar := mapOf [("x", intPar 1), ("y", intPar 2)] none, expected := false }
+  , { bind := "@{\"read\": v7, ..._}", target := "{\"read\": 1, \"write\": 2, \"grant\": 3}",
+      patternPar := mapOf [("read", namePar 7)] wildRem,
+      targetPar := mapOf [("read", intPar 1), ("write", intPar 2), ("grant", intPar 3)] none,
+      expected := true }
+  , { bind := "@[1, ..._]", target := "[1, 2, 3]",
+      patternPar := listPat [intPar 1] wildRem,
+      targetPar := listPat [intPar 1, intPar 2, intPar 3] none, expected := true }
+  , { bind := "@[1]", target := "[1, 2]",
+      patternPar := listPat [intPar 1] none,
+      targetPar := listPat [intPar 1, intPar 2] none, expected := false }
+  , { bind := "@Set(1, ..._)", target := "Set(1, 2)",
+      patternPar := setPat [intPar 1] wildRem,
+      targetPar := setPat [intPar 1, intPar 2] none, expected := true }
+  , { bind := "@[]", target := "[]",
+      patternPar := listPat [] none, targetPar := listPat [] none, expected := true }
+  , { bind := "@{}", target := "{\"a\": 1}",
+      patternPar := mapPat [] none,
+      targetPar := mapOf [("a", intPar 1)] none, expected := false }
+  , { bind := "@{..._}", target := "{\"a\": 1}",
+      patternPar := mapPat [] wildRem,
+      targetPar := mapOf [("a", intPar 1)] none, expected := true }
+  , { bind := "@{\"a\": {\"b\": 1, ..._}, ..._}", target := "{\"a\": {\"b\": 1, \"c\": 2}, \"d\": 3}",
+      patternPar := mapOf [("a", mapOf [("b", intPar 1)] wildRem)] wildRem,
+      targetPar := mapOf [("a", mapOf [("b", intPar 1), ("c", intPar 2)] none), ("d", intPar 3)] none,
+      expected := true }
+  , { bind := "@{\"a\": v1, \"b\": v1}", target := "{\"a\": 1, \"b\": 2}",
+      patternPar := mapOf [("a", namePar 1), ("b", namePar 1)] none,
+      targetPar := mapOf [("a", intPar 1), ("b", intPar 2)] none, expected := false,
+      rejected := true }
+  , { bind := "@{\"a\": v1, \"b\": v2}", target := "{\"a\": 1, \"b\": 2}",
+      patternPar := mapOf [("a", namePar 1), ("b", namePar 2)] none,
+      targetPar := mapOf [("a", intPar 1), ("b", intPar 2)] none, expected := true }
+  ]
+
+/-- Every matching case's verdict holds of the model. `decide`, because the clauses are structurally
+recursive on fuel — the reason `spatialMatch` carries fuel at all (`Rchain/Match.lean`'s note). -/
+theorem matchCases_decide :
+    matchCases.all (fun c =>
+      if c.rejected then decide (linear c.patternPar = false) else spatialMatch c.targetPar c.patternPar == c.expected)
+      = true := by
+  decide
+
+/-- The layer carries exactly `matchCaseCount` cases. -/
+theorem matchCases_length : matchCases.length = matchCaseCount := by decide
+
+/-- One matching corpus line: layer, the bind, the datum, the verdict. -/
+def matchLine (c : MatchCase) : String :=
+  "match\t" ++ c.bind ++ "\t" ++ c.target ++ "\t"
+    ++ (if c.rejected then "rejected" else if c.expected then "true" else "false")
+
 end Corpus
 end Rchain
 
 open Rchain
 
-/-- `rchain-corpus --layer flags [--out FILE]` — print the corpus (stdout by default). -/
+/-- `rchain-corpus --layer {flags|match} [--out FILE]` — print the corpus (stdout by default). -/
 def main (args : List String) : IO UInt32 := do
-  let lines := Corpus.flagCases.map Corpus.flagLine
-  if lines.length != Corpus.flagCaseCount then
-    IO.eprintln "rchain-corpus: the case list and flagCaseCount disagree"
+  let want := (args.find? (fun a => a == "flags" || a == "match")).getD "flags"
+  let (lines, count) :=
+    if want == "match" then (Corpus.matchCases.map Corpus.matchLine, Corpus.matchCaseCount)
+    else (Corpus.flagCases.map Corpus.flagLine, Corpus.flagCaseCount)
+  if lines.length != count then
+    IO.eprintln s!"rchain-corpus: {want}: the case list and the declared count disagree"
     return 1
   let out := String.intercalate "\n" lines
   match args.findIdx? (fun a => a == "--out") with
@@ -131,3 +241,4 @@ def main (args : List String) : IO UInt32 := do
     | none => IO.eprintln "rchain-corpus: --out needs a path"; return 1
   | none => IO.println out
   return 0
+

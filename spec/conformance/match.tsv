@@ -1,0 +1,15 @@
+match	@{"x": 1}	{"x": 1}	true
+match	@{"x": 1}	{"x": 1, "y": 2}	false
+match	@{"x": 1, ..._}	{"x": 1, "y": 2}	true
+match	@{"x": 1, ...rest}	{"x": 1, "y": 2}	true
+match	@{"x": 9, ..._}	{"x": 1, "y": 2}	false
+match	@{"read": v7, ..._}	{"read": 1, "write": 2, "grant": 3}	true
+match	@[1, ..._]	[1, 2, 3]	true
+match	@[1]	[1, 2]	false
+match	@Set(1, ..._)	Set(1, 2)	true
+match	@[]	[]	true
+match	@{}	{"a": 1}	false
+match	@{..._}	{"a": 1}	true
+match	@{"a": {"b": 1, ..._}, ..._}	{"a": {"b": 1, "c": 2}, "d": 3}	true
+match	@{"a": v1, "b": v1}	{"a": 1, "b": 2}	rejected
+match	@{"a": v1, "b": v2}	{"a": 1, "b": 2}	true
