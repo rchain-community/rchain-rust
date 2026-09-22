@@ -4,8 +4,9 @@ This page is a goal-indexed map of the documentation and the machine-checked spe
 first, then jump to the single page that answers your question. It mirrors the documentation map in
 [`AGENTS.md`](../../AGENTS.md) but is organized by *goal* rather than by artifact.
 
-The **authoritative formal specification** is the [`spec/`](../../spec/) tree — the 29-law catalog
-([`spec/INVENTORY.md`](../../spec/INVENTORY.md)), the ρ-calculus core
+The **authoritative formal specification** is the [`spec/`](../../spec/) tree — the law catalog
+([`spec/INVENTORY.md`](../../spec/INVENTORY.md), **43 rows**: the 29 calculus laws plus 14 covering the
+surface a client writes), the ρ-calculus core
 ([`spec/RHO-CALCULUS.md`](../../spec/RHO-CALCULUS.md)), and the ρ→CoC type discipline
 ([`spec/TYPE-SYSTEM.md`](../../spec/TYPE-SYSTEM.md)). This book explains those; it never duplicates them.
 
@@ -21,6 +22,7 @@ The **authoritative formal specification** is the [`spec/`](../../spec/) tree �
 | Build a secure contract (facets, revocation, sealer/unsealer, multisig) | [Object capabilities](rholang/object-capabilities.md), [Smart contracts](rholang/smart-contracts.md) |
 | See the exact grammar and sorts | [Grammar and sorts](formal/grammar-sorts.md) |
 | Map a language feature to its **law** and its proof | [The 29 laws](formal/the-29-laws.md) |
+| Map a **syntax, matching, reply-shape or JSON** feature to its law | [Laws 30–43: the surface](formal/laws-30-43.md) |
 | Understand how concurrent effects are linearized (claim queues, the DFS gate, the relaxed mode) | [The channel scheduler](formal/channel-scheduler.md) |
 | Understand how effect concurrency becomes sound on-chain (validated speculation, the Law 24 certificate) | [On-chain scheduling: validated speculation](formal/onchain-scheduling.md) |
 | Understand `≡` and `⟶` precisely | [Structural congruence and reduction](formal/congruence-reduction.md) |
@@ -34,8 +36,9 @@ The **authoritative formal specification** is the [`spec/`](../../spec/) tree �
 
 ## The invariant catalog, in one screen
 
-RChain's behavior is pinned by **29 laws** (see [The 29 laws](formal/the-29-laws.md) and
-[`spec/INVENTORY.md`](../../spec/INVENTORY.md)). They group as:
+RChain's behavior is pinned by **43 laws** ([`spec/INVENTORY.md`](../../spec/INVENTORY.md)): the 29
+below, about the calculus, and rows 30–43 about the surface a client writes and a matcher reads
+([Laws 30–43](formal/laws-30-43.md)). The first 29 group as:
 
 - **Rholang (Laws 1–6)** — canonicalization, α-equivalence, substitution, reduction, spatial matching,
   closedness.
@@ -51,11 +54,25 @@ RChain's behavior is pinned by **29 laws** (see [The 29 laws](formal/the-29-laws
 - **Scheduler, on-chain (Laws 23–25)** — read-determinism, DFS-order serializability, validated
   speculation (see [On-chain scheduling](formal/onchain-scheduling.md)).
 
+And the 14 surface rows, which exist because every defect that started the formalisation programme
+lived there and **nothing errored**:
+
+- **Grammar and lexing (30–33)** — every term the parser accepts is in the BNFC grammar, every grammar
+  term is accepted modulo a data list of deviations, each spelling lexes one way, `parse (print p) ≡ p`.
+- **Normalization (34, 36)** — a value position is normalized against an *empty* par; the normalizer's
+  output is well-scoped and closed.
+- **Matching (35, 37, 38)** — concreteness is sound (connective, free var, wildcard **or remainder**);
+  the matcher is sound and complete; silence is specified (no step, no error).
+- **Replies and protocols (39–41)** — reply shapes, call arity, channel balance.
+- **JSON (42, 43)** — the rho-value round-trip and the envelope rule; each endpoint's shape equals the
+  schema's.
+
 ## The formalization, in one screen
 
 | Artifact | What it proves/states | Build |
 |---|---|---|
-| `spec/Rchain/*.lean` (Lean 4) | Law 1, `≡`/`⟶` core, `Closed`, totality fundamentals **proven**; Laws 3–5, 7–18 **stated**; Laws 20–22 **proven** in `Scheduler.lean` (except `law20_deadlock_freedom`, **stated**); Laws 23–25 in `SchedulerOnchain.lean` — Law 23 proven, Law 24 witnesses + supporting lemmas proven (publication **stated**), Law 25 **stated** + `gate_replay_terminates` proven; crypto **axiomatized** | `cd spec && lake build` |
+| `spec/Rchain/*.lean` (Lean 4) | Law 1, `≡`/`⟶` core, `Closed`, totality fundamentals **proven**; law 5's matcher is **defined** with `spatialMatch_implies_linear` proven and its two soundness/saturation axioms owed; Laws 3, 4, 7–18 **stated**; Laws 20–22 **proven** in `Scheduler.lean` (except `law20_deadlock_freedom`, **stated**); Laws 23–25 in `SchedulerOnchain.lean` — Law 23 proven, Law 24 witnesses + supporting lemmas proven (publication **stated**), Law 25 **stated** + `gate_replay_terminates` proven; crypto **axiomatized** | `cd spec && lake build` |
 | `spec/coq/*.v` (Coq) | Laws 2–6 (substitution / α-equivalence metatheory) **stated** | `make -C spec/coq` |
-| `spec/INVENTORY.md` | the 29-law catalog with source-of-truth + status | — |
+| `spec/conformance/*.tsv` | the conformance corpora: *emitted* from the Lean definitions, committed, and read by a Rust consumer that runs the same cases through the node | `tools/emit-lean-corpus.sh` |
+| `spec/INVENTORY.md` | the 43-row law catalog with source-of-truth + status | — |
 | `spec/TYPE-SYSTEM.md` | the ρ→CoC type discipline (totality, refinements) | — |
