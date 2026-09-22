@@ -195,6 +195,8 @@ sequential one.
   `one_hop_depth2_diverges` (proven), and `next_step_closure_computable` /
   `depth2_next_step_disjoint` for Law 22.
 
-> **Formal.** The full per-law catalog is [The 29 laws](the-29-laws.md) /
+> **Formal.** The full catalog is 43 rows — [The 29 laws](the-29-laws.md) for the calculus,
+> [Laws 30–43](laws-30-43.md) for the surface — and the checked rendering is `spec/LAWS.md`. This
+> page is about the first 29. [The 29 laws](the-29-laws.md) /
 > [`spec/INVENTORY.md`](../../../spec/INVENTORY.md). The machine realization of each law is
 > [The 29 laws → Rust code](../contributor/laws-to-rust.md).

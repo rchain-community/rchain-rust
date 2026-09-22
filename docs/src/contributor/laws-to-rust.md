@@ -1,6 +1,6 @@
-# The 29 laws → Rust code
+# The laws → Rust code
 
-A human-oriented walkthrough of how each of the [29 laws](../../../spec/INVENTORY.md) is realized as
+A human-oriented walkthrough of how each of the [laws](../../../spec/INVENTORY.md) is realized as
 **concrete Rust code** in this repository. This page exists because the mapping is obvious to a
 machine but not to a person: most laws don't live in one obvious place, and a few of the type names in
 the older docs were wrong or misleading. The canonical, terse table is

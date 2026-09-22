@@ -54,7 +54,7 @@
 
 - [Why Rust](contributor/why-rust.md)
 - [Architecture & port status](contributor/architecture.md)
-- [The 29 laws → Rust code](contributor/laws-to-rust.md)
+- [The laws → Rust code](contributor/laws-to-rust.md)
 - [On-chain validation phases (Laws 23–25)](contributor/onchain-validation-phases.md)
 - [Formal specification & audit](contributor/spec.md)
 
