@@ -222,15 +222,22 @@ def matchLine (c : MatchCase) : String :=
   "match\t" ++ c.bind ++ "\t" ++ c.target ++ "\t"
     ++ (if c.rejected then "rejected" else if c.expected then "true" else "false")
 
-/-! ## Law 38 — the silence layer
+/-! ## Laws 38 and 40 — the silence layer
 
 Each case is a *term* — a send and a receive on a channel, the receive's body reporting on `@"out"` —
 and the verdict `takesStep` gives it: does the pair form a contract step at all? A term that does not
 step produces nothing but the consumer's control datum, which is what "silent" means in the port, and
-what the rule in `Rchain/Silence.lean` says: the contract rule carries the match as a hypothesis. -/
+what the rule in `Rchain/Silence.lean` says: the contract rule carries the match as a hypothesis.
 
-/-- The number of cases the silence layer carries. -/
-def silenceCaseCount : Nat := 6
+The last six cases are **law 40's** (*protocol agreement*: every call has an accepting receive at the
+target's arity), and they are here rather than in a layer of their own because the verdict they need is
+this one: a call whose arity matches no receive *is* a silent step, so `takesStep` is the same oracle
+and a second consumer would be a copy of this one. What law 40 changed is the *rule* — `stepsInBinds`
+now requires as many patterns as data, where it used to fail closed on anything but a single datum —
+and those cases are what pins the change. -/
+
+/-- The number of cases the silence layer carries (laws 38 and 40). -/
+def silenceCaseCount : Nat := 12
 
 /-- A silence case: the term as rholang spells it, the model's view of it, and whether it steps. -/
 structure SilenceCase where
@@ -248,9 +255,19 @@ def stepBody : Par := sendPar (strPar "out") [strPar "step"]
 def pairPar (sendChan : String) (datum : Par) (recvChan : String) (pattern : Par) : Par :=
   parMerge (sendPar (strPar sendChan) [datum]) (receiveParP (strPar recvChan) pattern stepBody)
 
+/-- A send with `data` and a receive with `patterns` on one string channel: the shape a *call* and a
+*contract head* make. Law 40's cases are exactly these, with the arities varied. -/
+def callPar (data : List Par) (patterns : List Par) : Par :=
+  parMerge (sendPar (strPar "c") data) (receiveParPs (strPar "c") patterns stepBody)
+
 /-- The cases. Case 3 is the shape C22 item 3 turned on, seen from the reduction side rather than the
 matcher's; case 5 is a store pair, the single-step half of the C22 item 1 class; cases 4 and 6 are the
-two ways a pair fails to be a redex — the wrong channel, and a pattern that does not match. -/
+two ways a pair fails to be a redex — the wrong channel, and a pattern that does not match. Cases 7-12
+are law 40's: a 2-arity call to a two-pattern receive (accepted), 1- and 3-arity calls to the same
+receive (silent), the 2-arity call to a *three*-pattern receive — C22 item 2's production instance,
+where `extraSlots` called the directory's `write(@key, @value, ret)` with two arguments and none of the
+three slots was ever written — the 3-arity call that is accepted, and two equal arities whose
+*patterns* do not match (so the arity is not the only thing the rule reads). -/
 def silenceCases : List SilenceCase :=
   [ { term := "@\"c\"!(1) | for (x <- @\"c\") { @\"out\"!(\"step\") }",
       par := pairPar "c" (intPar 1) "c" (namePar 0), steps := true }
@@ -266,6 +283,26 @@ def silenceCases : List SilenceCase :=
       par := pairPar "s" (mapPat [] none) "s" (namePar 0), steps := true }
   , { term := "@\"c\"!(1) | for (@2 <- @\"c\") { @\"out\"!(\"step\") }",
       par := pairPar "c" (intPar 1) "c" (intPar 2), steps := false }
+    -- 7. law 40: two patterns, two data — the accepting call.
+  , { term := "@\"c\"!(1, 2) | for (@a, @b <- @\"c\") { @\"out\"!(\"step\") }",
+      par := callPar [intPar 1, intPar 2] [namePar 0, namePar 1], steps := true }
+    -- 8. one datum against two patterns: silent.
+  , { term := "@\"c\"!(1) | for (@a, @b <- @\"c\") { @\"out\"!(\"step\") }",
+      par := callPar [intPar 1] [namePar 0, namePar 1], steps := false }
+    -- 9. three data against two patterns: silent.
+  , { term := "@\"c\"!(1, 2, 3) | for (@a, @b <- @\"c\") { @\"out\"!(\"step\") }",
+      par := callPar [intPar 1, intPar 2, intPar 3] [namePar 0, namePar 1], steps := false }
+    -- 10. C22 item 2's instance: `write!(key, value)` against `write(@key, @value, ret)`.
+  , { term := "@\"c\"!(1, 2) | for (@k, @v, @ret <- @\"c\") { @\"out\"!(\"step\") }",
+      par := callPar [intPar 1, intPar 2] [namePar 0, namePar 1, namePar 2], steps := false }
+    -- 11. the same receive, called at its own arity: accepted.
+  , { term := "@\"c\"!(1, 2, 3) | for (@k, @v, @ret <- @\"c\") { @\"out\"!(\"step\") }",
+      par := callPar [intPar 1, intPar 2, intPar 3] [namePar 0, namePar 1, namePar 2], steps := true }
+    -- 12. equal arities, and a pattern that does not match: the rule reads both.
+  , { term := "@\"c\"!(9, {\"x\": 1, \"y\": 2}) | for (@2, @{\"x\": 1, ..._} <- @\"c\") { @\"out\"!(\"step\") }",
+      par := callPar [intPar 9, mapOf [("x", intPar 1), ("y", intPar 2)] none]
+        [intPar 2, mapOf [("x", intPar 1)] wildRem],
+      steps := false }
   ]
 
 /-- Every silence case's verdict holds of the model, `decide`d against `takesStep`. -/

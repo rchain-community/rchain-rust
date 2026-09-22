@@ -1492,6 +1492,32 @@ oracle is, and the test that pins the fix.
   restore to the *wrong channel* (which is what makes the model compare channels rather than ask
   whether any send is there).
 
+- **Law 40 — arity agreement, and the model had to learn to read it.** The law is "every call in the
+  protocol catalog has an accepting receive at the target's arity", and the rule under it is one clause
+  of `Rchain/Silence.lean`'s redex search: `stepsInBinds` accepts a send only when the receive's bind
+  has **as many patterns as the send has data**, each matching its own datum. Before this slice the
+  search failed closed on anything but a single datum (`match b.patterns, s.data with | [pat], [d]
+  => …`), which meant the model could not state the question at all — the arity was *outside its
+  language*, which is C23's shape one more time. `receiveParPs` is the multi-pattern receive a
+  `contract` head becomes.
+
+  Checked 1:1 by six new cases in the silence layer's corpus (7-12) — a 2-arity call to a two-pattern
+  receive (accepted), 1- and 3-arity calls to the same receive (silent), **the 2-arity call to a
+  three-pattern receive**, which is C22 item 2's production instance (`extraSlots` called the
+  directory's `write(@key, @value, ret)` with two arguments and none of the three slots was ever
+  written), the 3-arity call that is accepted, and two equal arities whose patterns do not match (so
+  the rule reads the patterns too, not only the count). They live in `spec/conformance/silence.tsv`
+  rather than a layer of their own because the verdict they need *is* `takesStep` — a call at the wrong
+  arity is a silent step — and a second consumer would be a copy of law 38's. The corpus was falsified
+  once on purpose (a case's term changed to the wrong arity): it fails, naming the case and which side
+  stepped.
+
+  **Not claimed:** the *static* form — a walk over the vendored text pairing every `contract` head with
+  every call — cannot see the calls that matter, because the interesting ones go through capabilities
+  resolved at runtime (`MCAwrite` is bound by a directory lookup, not by a `new` in the same text).
+  That is why this law is checked behaviourally, and why the fix for C22 item 2 was an arity in our own
+  term rather than something a linter could have flagged.
+
 - **Law 39 — the reply-shape table stops being prose.** `Rchain/Protocol.lean` holds the urn → reply
   catalog as **data** (`replyCatalog`), and `replyCatalog_decide` checks what a table can check about
   itself: the urns are namespaced (`rho:`/`sys:`) and unique, the reply kind agrees with its slots

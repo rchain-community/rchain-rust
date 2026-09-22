@@ -4,3 +4,9 @@ silence	@"c"!({"x": 1, "y": 2}) | for (@{"x": 1, ..._} <- @"c") { @"out"!("step"
 silence	@"c"!(1) | for (x <- @"d") { @"out"!("step") }	false
 silence	@"s"!({}) | for (@m <- @"s") { @"out"!("step") }	true
 silence	@"c"!(1) | for (@2 <- @"c") { @"out"!("step") }	false
+silence	@"c"!(1, 2) | for (@a, @b <- @"c") { @"out"!("step") }	true
+silence	@"c"!(1) | for (@a, @b <- @"c") { @"out"!("step") }	false
+silence	@"c"!(1, 2, 3) | for (@a, @b <- @"c") { @"out"!("step") }	false
+silence	@"c"!(1, 2) | for (@k, @v, @ret <- @"c") { @"out"!("step") }	false
+silence	@"c"!(1, 2, 3) | for (@k, @v, @ret <- @"c") { @"out"!("step") }	true
+silence	@"c"!(9, {"x": 1, "y": 2}) | for (@2, @{"x": 1, ..._} <- @"c") { @"out"!("step") }	false

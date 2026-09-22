@@ -25,6 +25,11 @@ contract rule require a match, so silence is a consequence of the rule:
 `takesStep_iff_reduces` is the tie between the two, and it is **owed** — named here rather than
 assumed, and checked behaviourally meanwhile by `spec/conformance/silence.tsv`'s consumer, which runs
 each case through the node.
+**Law 40 lives one clause of this rule.** `stepsInBinds` reads the *arity*: a receive accepts a send
+only when it has as many patterns as the send has data (`receiveParPs` is that receive, and law 40's
+cases in the corpus vary the arity). That is where C22 item 2 lived — `MCAwrite!("Chat", *C_Chat)`
+against a three-argument `write` — and the clause is why "a call at the wrong arity does nothing" is a
+consequence of the rule rather than a remark about the implementation.
 -/
 
 namespace Rchain
@@ -32,6 +37,13 @@ namespace Rchain
 /-- A receive with a *pattern* on `chan`: the datum must match `pattern` for it to fire. -/
 def receiveParP (chan pattern body : Par) : Par :=
   Par.mk [] [Receive.mk [ReceiveBind.mk [pattern] chan 1] body false 1] [] [] [] [] [] []
+
+/-- A receive with **several** patterns on `chan` — the shape a contract call is matched against, so
+that law 40's question (*at which arities does a call have an accepting receive?*) is about this
+constructor. Replicated, because a contract's receive is. -/
+def receiveParPs (chan : Par) (patterns : List Par) (body : Par) : Par :=
+  Par.mk [] [Receive.mk [ReceiveBind.mk patterns chan patterns.length] body true 1]
+    [] [] [] [] [] []
 
 /-- Pattern-aware reduction. The contract rule requires `spatialMatches data pattern`, so "no match,
 no step" is the rule rather than a remark about the implementation. -/
@@ -62,15 +74,19 @@ mutual
     | [] => false
     | r :: rs => stepsInBinds s r.binds || stepsInReceives s rs
 
-  /-- One send against every bind of a receive: the same channel, and a pattern that matches the
-  datum. A bind whose pattern is not a single pattern, or a channel that is not a string channel,
-  fails closed — the boundary note in `Rchain/Match.lean` applies. -/
+  /-- One send against every bind of a receive: the same channel, **as many patterns as data** (a
+  call's arity is part of what a receive accepts — a call at the wrong arity matches no receive, and
+  that is silence rather than an error, which is AUDIT C22 item 2: `MCAwrite!("Chat", *C_Chat)`
+  against a three-argument `write`), and each pattern matching its own datum. A channel that is not a
+  string channel fails closed — the boundary note in `Rchain/Match.lean` applies. -/
   def stepsInBinds (s : Send) : List ReceiveBind → Bool
     | [] => false
     | b :: bs =>
-      (match b.patterns, s.data, stringChan s.chan, stringChan b.source with
-       | [pat], [d], some a, some c => a == c && spatialMatch d pat
-       | _, _, _, _ => false)
+      (match stringChan s.chan, stringChan b.source with
+       | some a, some c =>
+         a == c && b.patterns.length == s.data.length
+           && (b.patterns.zip s.data).all (fun pd => spatialMatch pd.2 pd.1)
+       | _, _ => false)
       || stepsInBinds s bs
 end
 
