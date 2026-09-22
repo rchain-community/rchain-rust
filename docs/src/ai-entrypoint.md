@@ -20,6 +20,7 @@ surface a client writes), the ρ-calculus core
 | Understand what an **unforgeable name** is and why `new` matters | [Unforgeable names](rholang/unforgeable-names.md) |
 | Understand pattern matching / spatial matching | [Patterns and matching](rholang/patterns-matching.md) |
 | Build a secure contract (facets, revocation, sealer/unsealer, multisig) | [Object capabilities](rholang/object-capabilities.md), [Smart contracts](rholang/smart-contracts.md) |
+| **Port an existing app** (or debug a parser that worked elsewhere) | [Porting an app from rnode](developer/porting-a-client.md) — reply shapes, refused terms, the traps |
 | See the exact grammar and sorts | [Grammar and sorts](formal/grammar-sorts.md) |
 | Map a language feature to its **law** and its proof | [The 29 laws](formal/the-29-laws.md) |
 | Map a **syntax, matching, reply-shape or JSON** feature to its law | [Laws 30–43: the surface](formal/laws-30-43.md) |

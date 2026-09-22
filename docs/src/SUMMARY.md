@@ -49,6 +49,7 @@
 # Part IV — Building applications
 
 - [Building applications on the local devnet](developer/building-apps.md)
+- [Porting an app from rnode](developer/porting-a-client.md)
 
 # Part V — Contributor / port
 

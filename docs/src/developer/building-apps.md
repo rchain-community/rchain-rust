@@ -169,6 +169,10 @@ upgrade; no genesis reset).
 
 ### 3.2 Read responses
 
+> **Coming from `rnode`?** [Porting an app from rnode](porting-a-client.md) has the exact shape of every
+> value, the terms this node refuses that a permissive parser accepted, and the four traps that read
+> like bugs. Worth five minutes before you debug your parser.
+
 Three ways, in order of increasing specificity:
 
 1. **Poll a deploy's result** — after a deploy, `GET /api/v1/deploy-status/{deploySignature}` returns a
