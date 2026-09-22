@@ -79,10 +79,9 @@ pub fn collect(
     for chunk in chunks {
         match &chunk.content {
             Some(chunk::Content::Header(h)) => {
-                let sender = h
-                    .sender
-                    .as_ref()
-                    .ok_or_else(|| StreamError::Unexpected("chunk header missing sender".to_string()))?;
+                let sender = h.sender.as_ref().ok_or_else(|| {
+                    StreamError::Unexpected("chunk header missing sender".to_string())
+                })?;
                 stmd.header = Some(Header {
                     sender: PeerNode::from_node(sender)
                         .map_err(|e| StreamError::Unexpected(e.message()))?,
@@ -125,7 +124,9 @@ pub fn collect(
 }
 
 /// Check that a completed stream is full and produce a `StreamMessage` (port of `toResult`).
-pub fn to_result(stmd: &Streamed) -> Result<crate::transport::messages::StreamMessage, StreamError> {
+pub fn to_result(
+    stmd: &Streamed,
+) -> Result<crate::transport::messages::StreamMessage, StreamError> {
     match &stmd.header {
         Some(h) => {
             let result = crate::transport::messages::StreamMessage {
@@ -154,8 +155,12 @@ pub fn restore(
     let content = cache
         .remove(&msg.key)
         .ok_or_else(|| "Could not read streamed data from cache".to_string())?;
-    let decompressed =
-        decompress_content(&content, msg.compressed, msg.content_length, max_decompressed_size)?;
+    let decompressed = decompress_content(
+        &content,
+        msg.compressed,
+        msg.content_length,
+        max_decompressed_size,
+    )?;
     Ok(blob(msg.sender.clone(), msg.type_id.clone(), decompressed))
 }
 
@@ -192,7 +197,12 @@ mod tests {
     use rchain_models::comm::protocol::{ChunkData, ChunkHeader};
 
     fn peer() -> PeerNode {
-        PeerNode::from(NodeIdentifier::new(vec![1, 2, 3]), "host".into(), rchain_shared::refined::Port::new(40400), rchain_shared::refined::Port::new(40404))
+        PeerNode::from(
+            NodeIdentifier::new(vec![1, 2, 3]),
+            "host".into(),
+            rchain_shared::refined::Port::new(40400),
+            rchain_shared::refined::Port::new(40404),
+        )
     }
 
     fn header_chunk(content_length: i32, compressed: bool) -> Chunk {
@@ -241,7 +251,10 @@ mod tests {
         let chunks = vec![header_chunk(6, false), data_chunk(&[1, 2])];
         let mut cache = HashMap::new();
         let stmd = collect(&init, &chunks, &closed_breaker, &mut cache).unwrap();
-        assert!(matches!(to_result(&stmd), Err(StreamError::NotFullMessage(_))));
+        assert!(matches!(
+            to_result(&stmd),
+            Err(StreamError::NotFullMessage(_))
+        ));
     }
 
     #[test]

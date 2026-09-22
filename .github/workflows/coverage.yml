@@ -1,7 +1,8 @@
 # Test + audit gate + coverage gate.
 #
-# Runs the full test suite (excluding the flaky crypto crate), the type-system audit gate, and
-# cargo-llvm-cov with a minimum line-coverage threshold. Raise the threshold as coverage improves.
+# Runs the full test suite, the type-system audit gate, the coverage-register gate, and
+# cargo-llvm-cov with a minimum line-coverage threshold. The threshold is raised only after
+# measuring, to two points below the measured value -- never to a number the plan hopes to reach.
 
 name: test & coverage
 
@@ -14,7 +15,7 @@ jobs:
   test-and-coverage:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -28,17 +29,33 @@ jobs:
       - name: Type-system audit gate
         run: tools/audit-type-system.sh
 
+      - name: Test-coverage register gate
+        # `spec/TEST-COVERAGE.md` must match the tree: no overstated counts, no named test that does
+        # not exist, no phantom `#[ignore]` section, and no source file that is neither tested nor
+        # an exemption row with a reason class. Hard mode: every check fails the build. (The flag
+        # this used to carry — `--deferred-ok` — was dropped when the census sweep closed, so that
+        # moment is a visible diff rather than somebody's memory.)
+        run: tools/audit-test-register.sh
+
       - name: Install protoc
         run: sudo apt-get update -qq && sudo apt-get install -y -qq protobuf-compiler
 
-      - name: Test
-        run: cargo test --workspace --exclude rchain-crypto
-
       - name: Coverage
-        run: cargo llvm-cov --workspace --exclude rchain-crypto --lcov --output-path lcov.info --fail-under-lines 50
+        # llvm-cov executes the complete workspace test suite while collecting coverage, so this
+        # is both the test gate and the coverage gate. Keep one test execution path to avoid
+        # spending CI time running the same suite twice.
+        # The floor is a regression tripwire, not a target: it is raised only *after* measuring, to
+        # two points below the measured value, so it can never become a schedule.
+        # Measured 84.07% lines (15530/97490 missed) after the census sweep -- every source file
+        # either tested or an exemption row with a reason class, plus the node gRPC wire
+        # conversions, the faucet budget, the history readers and the transport server's config
+        # path. The measurement history is 73.68% (floor 71), 79.69% (floor 77), 81.30% (floor 79),
+        # 84.07% (floor 82) -- always two points below, so ordinary churn does not trip the
+        # tripwire.
+        run: cargo llvm-cov --workspace --all-features --lcov --output-path lcov.info --fail-under-lines 82
 
       - name: Upload coverage
-        uses: codecov/codecov-action@v4
+        uses: codecov/codecov-action@v7
         with:
           files: lcov.info
           fail_ci_if_error: false

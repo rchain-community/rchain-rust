@@ -27,7 +27,10 @@ pub fn encode(input: &[u8]) -> String {
 
 /// Decode a base-58 string, returning `None` on an invalid character.
 pub fn decode(input: &str) -> Option<Vec<u8>> {
-    let zero_count = input.chars().take_while(|&c| c == ALPHABET.as_bytes()[0] as char).count();
+    let zero_count = input
+        .chars()
+        .take_while(|&c| c == ALPHABET.as_bytes()[0] as char)
+        .count();
     let rest: Vec<char> = input.chars().skip(zero_count).collect();
     if rest.is_empty() {
         return Some(vec![0u8; zero_count]);
@@ -61,7 +64,13 @@ mod tests {
 
     #[test]
     fn round_trips_samples() {
-        for input in [&[0u8][..], &[0u8, 0u8][..], &[1u8][..], &[0xab, 0xcd][..], &[0xff, 0x00, 0x01][..]] {
+        for input in [
+            &[0u8][..],
+            &[0u8, 0u8][..],
+            &[1u8][..],
+            &[0xab, 0xcd][..],
+            &[0xff, 0x00, 0x01][..],
+        ] {
             assert_eq!(decode(&encode(input)).unwrap(), input);
         }
     }

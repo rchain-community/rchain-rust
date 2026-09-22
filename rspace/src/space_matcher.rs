@@ -67,9 +67,7 @@ where
     let mut map = channel_to_indexed_data.clone();
     for (channel, pattern) in channel_pattern_pairs {
         let maybe = match map.get(channel) {
-            Some(indexed_data) => {
-                find_matching_data_candidate(channel, indexed_data, pattern, m)
-            }
+            Some(indexed_data) => find_matching_data_candidate(channel, indexed_data, pattern, m),
             None => None,
         };
         match maybe {
@@ -103,7 +101,11 @@ where
     sorted.sort_by(|a, b| a.0.source.cmp(&b.0.source));
     for (wc, index) in &sorted {
         let data_candidates = extract_data_candidates(
-            &channels.iter().cloned().zip(wc.patterns.iter().cloned()).collect::<Vec<_>>(),
+            &channels
+                .iter()
+                .cloned()
+                .zip(wc.patterns.iter().cloned())
+                .collect::<Vec<_>>(),
             channel_to_indexed_data,
             m,
         );
@@ -122,13 +124,17 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rchain_crypto::hash::blake2b256_hash::Blake2b256Hash;
     use crate::trace::event::Produce;
+    use rchain_crypto::hash::blake2b256_hash::Blake2b256Hash;
 
     struct EqMatch;
     impl Match<i32, i32> for EqMatch {
         fn get(&self, p: &i32, a: &i32) -> Option<i32> {
-            if p == a { Some(*a) } else { None }
+            if p == a {
+                Some(*a)
+            } else {
+                None
+            }
         }
     }
 

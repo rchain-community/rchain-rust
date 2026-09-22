@@ -140,6 +140,9 @@ mod tests {
     async fn propose_and_result_delegate_to_block_api() {
         let api = AdminWebApiImpl::new(Arc::new(StubBlockApi));
         assert_eq!(api.propose().await.unwrap(), "Success! Block created.");
-        assert_eq!(api.propose_result().await.unwrap(), "Success! Block created.");
+        assert_eq!(
+            api.propose_result().await.unwrap(),
+            "Success! Block created."
+        );
     }
 }

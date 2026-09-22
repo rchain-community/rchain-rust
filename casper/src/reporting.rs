@@ -80,10 +80,19 @@ impl ReportingCasper for NoopReportingCasper {
 /// `ReportingProtoTransformer`).
 pub struct ReportingProtoTransformer;
 
-impl ReportingTransformer<SortedProc, BindPattern, ListParWithRandom, TaggedContinuation, ReportProto>
-    for ReportingProtoTransformer
+impl
+    ReportingTransformer<
+        SortedProc,
+        BindPattern,
+        ListParWithRandom,
+        TaggedContinuation,
+        ReportProto,
+    > for ReportingProtoTransformer
 {
-    fn serialize_consume(&self, rc: &ReportingConsume<SortedProc, BindPattern, TaggedContinuation>) -> ReportProto {
+    fn serialize_consume(
+        &self,
+        rc: &ReportingConsume<SortedProc, BindPattern, TaggedContinuation>,
+    ) -> ReportProto {
         ReportProto::Consume(ReportConsumeProto {
             channels: rc.channels.iter().map(|c| c.as_par().clone()).collect(),
             patterns: rc.patterns.clone(),
@@ -97,7 +106,10 @@ impl ReportingTransformer<SortedProc, BindPattern, ListParWithRandom, TaggedCont
         })
     }
 
-    fn serialize_produce(&self, rp: &ReportingProduce<SortedProc, ListParWithRandom>) -> ReportProto {
+    fn serialize_produce(
+        &self,
+        rp: &ReportingProduce<SortedProc, ListParWithRandom>,
+    ) -> ReportProto {
         ReportProto::Produce(ReportProduceProto {
             channel: rp.channel.as_par().clone(),
             data: rp.data.clone(),
@@ -109,7 +121,12 @@ impl ReportingTransformer<SortedProc, BindPattern, ListParWithRandom, TaggedCont
         rc: &ReportingComm<SortedProc, BindPattern, ListParWithRandom, TaggedContinuation>,
     ) -> ReportProto {
         let consume = ReportConsumeProto {
-            channels: rc.consume.channels.iter().map(|c| c.as_par().clone()).collect(),
+            channels: rc
+                .consume
+                .channels
+                .iter()
+                .map(|c| c.as_par().clone())
+                .collect(),
             patterns: rc.consume.patterns.clone(),
             peeks: rc
                 .consume
@@ -189,8 +206,7 @@ async fn replay_deploys(
             .replay_deploy_e(
                 term,
                 rand.split_byte(
-                    u8::try_from(i)
-                        .map_err(|_| "deploy count exceeds 255".to_string())?,
+                    u8::try_from(i).map_err(|_| "deploy count exceeds 255".to_string())?,
                 ),
                 with_cost_accounting,
             )
@@ -211,6 +227,7 @@ async fn replay_deploys(
         let r = ops
             .replay_block_system_deploy(
                 sd,
+                i64::from(block.block_number),
                 rand.split_byte(
                     u8::try_from(terms_len + i)
                         .map_err(|_| "deploy count exceeds 255".to_string())?,
@@ -265,6 +282,7 @@ mod tests {
             state: RholangState::default(),
             sig_algorithm: "secp256k1".to_string(),
             sig: vec![],
+            timestamp: 0,
         }
     }
 
@@ -275,5 +293,127 @@ mod tests {
         assert!(result.deploy_report_result.is_empty());
         assert!(result.system_deploy_report_result.is_empty());
         assert_eq!(result.post_state_hash, b"empty".to_vec());
+    }
+}
+
+/// The proto transformer's three arms, asserted on hand-built events: this is the boundary the
+/// `/reporting` routes serialize through, so a dropped field would be invisible in the API but
+/// present in the trace.
+#[cfg(test)]
+mod transformer_tests {
+    use super::*;
+
+    use rchain_models::sorter::sort_par_term;
+    use rchain_rspace::reporting_rspace::{ReportingComm, ReportingConsume, ReportingProduce};
+
+    /// A block fixture (the module's other test module has its own; test modules do not share
+    /// items).
+    fn block() -> BlockMessage {
+        BlockMessage {
+            version: 1,
+            shard_id: "root".to_string(),
+            block_hash: rchain_models::block_hash::BlockHash::new([0u8; 32]),
+            block_number: 0.try_into().expect("height 0"),
+            sender: rchain_models::validator::Validator::new([1u8; 65]),
+            seq_num: 0.try_into().expect("seq 0"),
+            pre_state_hash: rchain_models::block::state_hash::StateHash::new([0u8; 32]),
+            post_state_hash: rchain_models::block::state_hash::StateHash::new([0u8; 32]),
+            justifications: Vec::new(),
+            bonds: std::collections::BTreeMap::new(),
+            rejected_deploys: std::collections::BTreeSet::new(),
+            rejected_blocks: std::collections::BTreeSet::new(),
+            rejected_senders: std::collections::BTreeSet::new(),
+            state: rchain_models::casper::protocol::casper_message::RholangState::default(),
+            sig_algorithm: "secp256k1".to_string(),
+            sig: Vec::new(),
+            timestamp: 0,
+        }
+    }
+
+    fn channel(name: &str) -> SortedProc {
+        SortedProc::new(rchain_models::par_ops::from_expr(
+            rchain_models::ast::Expr::GString(name.to_string()),
+        ))
+    }
+
+    fn pattern(name: &str) -> BindPattern {
+        BindPattern {
+            patterns: vec![channel(name)],
+            remainder: None,
+            free_count: 0,
+        }
+    }
+
+    fn produce(name: &str) -> ReportingProduce<SortedProc, ListParWithRandom> {
+        ReportingProduce {
+            channel: channel(name),
+            data: ListParWithRandom {
+                pars: vec![channel("payload")],
+                random_state: rchain_crypto::hash::blake2b512_random::Blake2b512Random::from_init(
+                    &[0u8; 32],
+                ),
+            },
+        }
+    }
+
+    /// A consume carries its channels, its patterns and its **peek indices** (the indices, not the
+    /// channels, because the proto's `Peek` is a channel index) — a dropped peek would turn a peek
+    /// into a consuming receive in every report.
+    #[test]
+    fn a_consume_serializes_channels_patterns_and_peek_indices() {
+        use crate::reporting::ReportingTransformer;
+        let consume = ReportingConsume {
+            channels: vec![channel("a"), channel("b")],
+            patterns: vec![pattern("p1"), pattern("p2")],
+            continuation: TaggedContinuation::Empty,
+            peeks: vec![1],
+        };
+        let ReportProto::Consume(proto) = ReportingProtoTransformer.serialize_consume(&consume)
+        else {
+            panic!("a consume must serialize to the consume variant")
+        };
+        assert_eq!(proto.channels.len(), 2);
+        assert_eq!(proto.patterns.len(), 2);
+        assert_eq!(proto.peeks.len(), 1, "one peek");
+        assert_eq!(
+            proto.peeks[0].channel_index, 1,
+            "reported as a channel index"
+        );
+        assert_eq!(proto.channels[0], sort_par_term(channel("a").as_par()));
+    }
+
+    /// A produce carries its channel and its data.
+    #[test]
+    fn a_produce_serializes_its_channel_and_data() {
+        use crate::reporting::ReportingTransformer;
+        let ReportProto::Produce(proto) =
+            ReportingProtoTransformer.serialize_produce(&produce("c"))
+        else {
+            panic!("a produce must serialize to the produce variant")
+        };
+        assert_eq!(proto.channel, sort_par_term(channel("c").as_par()));
+        assert_eq!(proto.data.pars.len(), 1);
+    }
+
+    /// A COMM carries the *matched* consume plus **every** produce it matched — the shape a consumer
+    /// of the report reads to reconstruct what happened.
+    #[test]
+    fn a_comm_serializes_the_consume_and_every_produce() {
+        use crate::reporting::ReportingTransformer;
+        let comm = ReportingComm {
+            consume: ReportingConsume {
+                channels: vec![channel("c")],
+                patterns: vec![pattern("p")],
+                continuation: TaggedContinuation::Empty,
+                peeks: Vec::new(),
+            },
+            produces: vec![produce("c"), produce("c")],
+        };
+        let ReportProto::Comm(proto) = ReportingProtoTransformer.serialize_comm(&comm) else {
+            panic!("a comm must serialize to the comm variant")
+        };
+        assert_eq!(proto.consume.channels.len(), 1);
+        assert!(proto.consume.peeks.is_empty());
+        assert_eq!(proto.produces.len(), 2, "both produces are reported");
     }
 }

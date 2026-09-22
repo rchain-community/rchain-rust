@@ -5,6 +5,7 @@
 //! comm/transport/discovery layer, the proposer, the block receiver/processor streams, the
 //! NodeLaunch state machines, and the report-store codec.
 
+use std::collections::BTreeMap;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -17,26 +18,29 @@ use tokio::sync::mpsc;
 use rchain_block_storage::approved_store::{self, ApprovedStore};
 use rchain_block_storage::block_store::{self, BlockStore};
 use rchain_block_storage::dag::codecs::{
-    Blake2b256HashCodec, BlockHashCodec, BlockMetadataCodec, FringeDataCodec,
-    SignedDeployDataCodec,
+    Blake2b256HashCodec, BlockHashCodec, BlockMetadataCodec, FringeDataCodec, SignedDeployDataCodec,
 };
 use rchain_block_storage::dag::dag_storage::{BlockDagStorage, DeployId};
-use rchain_casper::api::block_api_impl::{BlockApiImpl, NetworkStatus, NetworkStatusFn, ProposeFunction};
+use rchain_casper::api::block_api::BlockApi;
+use rchain_casper::api::block_api_impl::{
+    BlockApiImpl, NetworkStatus, NetworkStatusFn, ProposeFunction,
+};
 use rchain_casper::api::block_report_api::BlockReportApi;
-use rchain_casper::block_random_seed::BlockRandomSeed;
 use rchain_casper::block_metadata_store::BlockMetadataStore;
-use rchain_casper::blocks::block_receiver::{self, BlockReceiverState};
+use rchain_casper::block_random_seed::BlockRandomSeed;
 use rchain_casper::blocks::block_processor;
+use rchain_casper::blocks::block_receiver::{self, BlockReceiverState};
 use rchain_casper::blocks::block_retriever::BlockRetriever;
 use rchain_casper::blocks::proposer::proposer::{Proposer, ProposerResult};
-use rchain_casper::merging::BlockIndex;
+use rchain_casper::conf::ShardSpec;
 use rchain_casper::dag::BlockDagKeyValueStorage;
 use rchain_casper::engine::node_launch::{self, PeerMessage};
+use rchain_casper::merging::BlockIndex;
 use rchain_casper::protocol::comm_util::{CommUtil, ConnectionsCell};
 use rchain_casper::reporting::{rho_reporter, ReportingCasper};
 use rchain_casper::runtime_manager::RuntimeManager;
 use rchain_casper::state::ProposerState;
-use rchain_casper::storage::rnode_key_value_store_manager;
+use rchain_casper::storage::{rnode_key_value_store_manager, shard_data_dir, SHARD_ID_MARKER};
 use rchain_casper::validator_identity::ValidatorIdentity;
 use rchain_comm::discovery::grpc_kademlia_rpc::GrpcKademliaRpc;
 use rchain_comm::discovery::grpc_kademlia_rpc_server::{
@@ -61,7 +65,9 @@ use rchain_crypto::hash::blake2b256_hash::Blake2b256Hash;
 use rchain_crypto::private_key::PrivateKey;
 use rchain_models::block_hash::BlockHash;
 use rchain_models::block_metadata::BlockMetadata;
-use rchain_models::casper::protocol::casper_message::{BlockMessage, CasperMessage, SignedDeployData};
+use rchain_models::casper::protocol::casper_message::{
+    BlockMessage, CasperMessage, SignedDeployData,
+};
 use rchain_models::casper::protocol::casper_message_protocol::to_casper_message_proto;
 use rchain_models::casper::protocol::report::BlockEventInfo;
 use rchain_models::comm::protocol::Protocol;
@@ -71,6 +77,7 @@ use rchain_models::sorted::SortedProc;
 use rchain_rholang::merging::DeployMergeableDataCodec;
 use rchain_rholang::reporting_runtime::create_reporting_rspace;
 use rchain_rholang::runtime::{ReplayRhoRuntime, RhoRuntime};
+use rchain_rholang::scheduler::EffectMode;
 use rchain_rholang::storage::RhoMatch;
 use rchain_rspace::factory::create_history_repository;
 use rchain_rspace::hot_store::InMemHotStore;
@@ -79,20 +86,25 @@ use rchain_rspace::state::instances::{RSpaceExporterStore, RSpaceImporterStore};
 use rchain_shared::base16;
 use rchain_shared::lmdb::LmdbDirStoreManager;
 use rchain_shared::log::{Log, LogSource};
-use rchain_shared::refined::Port;
+use rchain_shared::refined::{Port, ShardId};
 use rchain_shared::store_manager::database;
 use rchain_shared::typed_store::{BytesCodec, Codec, KeyValueTypedStore};
 
 use crate::api::admin_web_api::AdminWebApi;
 use crate::api::admin_web_api_impl::AdminWebApiImpl;
 use crate::api::grpc::{serve_deploy, serve_internal, GrpcServices};
+use crate::api::shard_routing::ShardRoutingBlockApi;
 use crate::api::web_api::WebApi;
 use crate::api::web_api_impl::WebApiImpl;
 use crate::configuration::model::NodeConf;
 use crate::diagnostics::NewPrometheusReporter;
 use crate::instances::proposer_instance;
-use crate::web::http::{acquire_admin_http_server, acquire_http_server, StatusProvider};
+use crate::web::http::{
+    acquire_admin_http_server, acquire_http_server, ShardRegistry, StatusProvider,
+};
 use crate::web::transaction::TransactionAPIImpl;
+use rchain_casper::gateway::ledger::TxnLedger;
+use rchain_casper::gateway::{GatewayTxn, LocalShard, LocalShardDeployService};
 
 /// Interval between `--autopropose` timer ticks. Together with the dev-mode dummy deploy this makes a
 /// fresh devnet produce blocks on its own (a lone validator has no peer/deploy to kick the
@@ -106,12 +118,10 @@ const AUTOPROPOSE_MAX_CONSECUTIVE_FAILURES: u64 = 3;
 /// Build the real block-reporting casper: each `trace` constructs a fresh, isolated reporting
 /// `ReplayRSpace` over the persistent store (the factory clones the store manager, which shares the
 /// underlying LMDB environments).
-fn reporting_casper(
-    store_manager: &LmdbDirStoreManager,
-    shard_id: &str,
-) -> impl ReportingCasper {
+fn reporting_casper(store_manager: &LmdbDirStoreManager, shard_id: &str) -> impl ReportingCasper {
     let store_manager = store_manager.clone();
-    let mergeable_tag_name = SortedProc::new(BlockRandomSeed::non_negative_mergeable_tag_name(shard_id));
+    let mergeable_tag_name =
+        SortedProc::new(BlockRandomSeed::non_negative_mergeable_tag_name(shard_id));
     rho_reporter(
         move || {
             let manager = store_manager.clone();
@@ -179,8 +189,7 @@ pub async fn create_comm_state(
         &key,
         usize::try_from(conf.protocol_client.grpc_max_recv_message_size)
             .map_err(|e| e.to_string())?,
-        usize::try_from(conf.protocol_client.grpc_stream_chunk_size)
-            .map_err(|e| e.to_string())?,
+        usize::try_from(conf.protocol_client.grpc_stream_chunk_size).map_err(|e| e.to_string())?,
         100,
     )?);
 
@@ -199,10 +208,8 @@ pub async fn create_comm_state(
         max_num_of_connections: usize::try_from(conf.protocol_client.batch_max_connections)
             .map_err(|e| e.to_string())?,
         clear_connections: ClearConnectionsConf {
-            num_of_connections_pinged: usize::try_from(
-                conf.peers_discovery.heartbeat_batch_size,
-            )
-            .map_err(|e| e.to_string())?,
+            num_of_connections_pinged: usize::try_from(conf.peers_discovery.heartbeat_batch_size)
+                .map_err(|e| e.to_string())?,
         },
     };
 
@@ -271,7 +278,8 @@ pub async fn create_comm_state(
                 discovery.discover().await;
                 let current = connections.read().await.clone();
                 let new_peers =
-                    find_and_connect(discovery.as_ref(), &rp_conf, transport.as_ref(), &current).await;
+                    find_and_connect(discovery.as_ref(), &rp_conf, transport.as_ref(), &current)
+                        .await;
                 if !new_peers.is_empty() {
                     let mut guard = connections.write().await;
                     *guard = add_conn(&guard, &new_peers);
@@ -327,6 +335,10 @@ pub struct NodeProgram {
     grpc_services: GrpcServices,
     web_api: Arc<dyn WebApi>,
     admin_web_api: Arc<dyn AdminWebApi>,
+    /// The shards this node validates for, for the `GET /api/v1/shards` route.
+    shards: Arc<ShardRegistry>,
+    /// The on-node cross-shard 2PC coordinator, when this node is a multi-shard gateway.
+    gateway: Option<Arc<GatewayTxn>>,
     block_report_api: Arc<BlockReportApi>,
     reporter: Arc<NewPrometheusReporter>,
     host: String,
@@ -337,6 +349,7 @@ pub struct NodeProgram {
     grpc_max_recv_message_size: usize,
     max_connection_idle: Duration,
     enable_reporting: bool,
+    enable_txn_api: bool,
     enable_devnet_cors: bool,
     protocol_server: Option<ProtocolServer>,
     status_provider: Option<StatusProvider>,
@@ -349,6 +362,7 @@ impl NodeProgram {
             grpc_services,
             web_api,
             admin_web_api,
+            shards,
             block_report_api,
             reporter,
             host,
@@ -359,9 +373,11 @@ impl NodeProgram {
             grpc_max_recv_message_size,
             max_connection_idle,
             enable_reporting,
+            enable_txn_api,
             enable_devnet_cors,
             protocol_server,
             status_provider,
+            gateway,
         } = self;
 
         let GrpcServices {
@@ -382,8 +398,11 @@ impl NodeProgram {
                 .parse::<std::net::SocketAddr>()
                 .map_err(|e| e.to_string())?;
 
-        let grpc_external =
-            tokio::spawn(serve_deploy(deploy, grpc_external_addr, grpc_max_recv_message_size));
+        let grpc_external = tokio::spawn(serve_deploy(
+            deploy,
+            grpc_external_addr,
+            grpc_max_recv_message_size,
+        ));
         let grpc_internal = tokio::spawn(serve_internal(
             propose,
             repl,
@@ -400,9 +419,12 @@ impl NodeProgram {
                     reporter,
                     web_api,
                     block_report_api,
+                    shards,
+                    gateway,
                     status_provider,
                     max_connection_idle,
                     enable_reporting,
+                    enable_txn_api,
                 )
                 .await
             }
@@ -433,7 +455,8 @@ impl NodeProgram {
                     .serve(protocol.dispatch, protocol.handle_streamed)
                     .await
             });
-            let (ge, gi, h, a, p) = tokio::join!(grpc_external, grpc_internal, http, admin, protocol);
+            let (ge, gi, h, a, p) =
+                tokio::join!(grpc_external, grpc_internal, http, admin, protocol);
             ge.map_err(|e| e.to_string())??;
             gi.map_err(|e| e.to_string())??;
             h.map_err(|e| e.to_string())??;
@@ -450,16 +473,24 @@ impl NodeProgram {
     }
 }
 
-/// The store/runtime handles extracted from [`setup`], so the block-processing streams can be wired
-/// in a separate step.
-pub struct SetupParts {
+/// The store/runtime handles for **one** shard, extracted from [`setup_shard`] so that shard's
+/// block-processing streams can be wired in a separate step.
+pub struct ShardParts {
+    /// Which shard these handles belong to.
+    pub spec: ShardSpec,
     pub block_store: BlockStore,
     pub dag: Arc<dyn BlockDagStorage>,
     pub runtime_manager: Arc<RuntimeManager>,
     pub approved_store: ApprovedStore,
+    /// This shard's store manager, over its own data directory ([`shard_data_dir`]).
     pub store_manager: LmdbDirStoreManager,
     pub validator_identity_opt: Option<ValidatorIdentity>,
     pub proposer: Option<ProposerParts>,
+    /// This shard's client-facing APIs. Held here rather than in `NodeProgram` so a multi-shard
+    /// node can dispatch a request to the shard that owns it (`ShardRoutingBlockApi`).
+    pub block_api: Arc<dyn BlockApi>,
+    pub block_report_api: Arc<BlockReportApi>,
+    pub transaction_api: Arc<TransactionAPIImpl>,
 }
 
 /// The proposer request queue + shared state (port of the `proposerQueue`/`proposerStateRefOpt` in
@@ -477,7 +508,7 @@ pub struct ProposerParts {
 /// separately.
 pub fn wire_block_processing(
     comm_state: &CommState,
-    parts: &SetupParts,
+    parts: &ShardParts,
     shard_id: &str,
     min_phlo_price: i64,
     log: Arc<dyn Log>,
@@ -507,8 +538,9 @@ pub fn wire_block_processing(
     };
 
     // Block receiver: incoming + validated blocks → a queue of dependency-free block hashes.
-    let receiver_state =
-        Arc::new(tokio::sync::Mutex::new(BlockReceiverState::<BlockHash>::new()));
+    let receiver_state = Arc::new(tokio::sync::Mutex::new(
+        BlockReceiverState::<BlockHash>::new(),
+    ));
     let put_to_incoming_queue: Arc<dyn Fn(BlockMessage) + Send + Sync> = Arc::new({
         let incoming_blocks_tx = incoming_blocks_tx.clone();
         move |block| {
@@ -609,25 +641,61 @@ async fn create_rspace_exporter(
     ))
 }
 
-/// Parse routing messages into peer messages for `NodeLaunch.apply` (port of the
-/// `peerMessageStream` in `Setup.setupNodeProgram`).
-fn spawn_peer_message_stream(
+/// Parse routing messages into peer messages and deliver each to the member shard it belongs to
+/// (port of the `peerMessageStream` in `Setup.setupNodeProgram`, extended to route by shard).
+///
+/// A `BlockMessage` names its shard, so it goes to exactly one member — or is dropped with a log
+/// line if the node is not a member (relaying to a shard this node does not validate is out of
+/// scope by design). The hash-keyed messages fan out to every member, which is *self-selecting*:
+/// a shard answers a `BlockRequest` only if the hash is in its own block store, so exactly the
+/// owner replies and no hash→shard index is needed anywhere in the comm path. That is sound because
+/// block hashes are shard-disjoint by construction — the shard id is a signed field of
+/// `BlockMessage` and is committed by its hash.
+fn spawn_peer_message_router(
     mut routing_rx: mpsc::Receiver<RoutingMessage>,
-    peer_message_tx: mpsc::Sender<PeerMessage>,
+    shards: BTreeMap<String, mpsc::Sender<PeerMessage>>,
     log: Arc<dyn Log>,
 ) {
     let source = LogSource::new("coop.rchain.node.runtime.Setup");
     tokio::spawn(async move {
         while let Some(rm) = routing_rx.recv().await {
             let peer = rm.peer.clone();
-            match to_casper_message_proto(&rm.packet).and_then(|proto| CasperMessage::from_proto(&proto)) {
+            match to_casper_message_proto(&rm.packet)
+                .and_then(|proto| CasperMessage::from_proto(&proto))
+            {
                 Ok(message) => {
-                    let _ = peer_message_tx.send(PeerMessage { peer, message }).await;
+                    let targets: Vec<&mpsc::Sender<PeerMessage>> = match &message {
+                        CasperMessage::BlockMessage(block) => match shards.get(&block.shard_id) {
+                            Some(tx) => vec![tx],
+                            None => {
+                                log.info(
+                                    source,
+                                    &format!(
+                                        "Ignored block for shard {}, which this node is not a member of",
+                                        block.shard_id
+                                    ),
+                                );
+                                Vec::new()
+                            }
+                        },
+                        // Hash-keyed requests: every member looks, only the owner answers.
+                        _ => shards.values().collect(),
+                    };
+                    for tx in targets {
+                        let _ = tx
+                            .send(PeerMessage {
+                                peer: peer.clone(),
+                                message: message.clone(),
+                            })
+                            .await;
+                    }
                 }
                 Err(err) => {
                     log.warn(
                         source,
-                        &format!("Could not extract casper message from packet sent by {peer}: {err}"),
+                        &format!(
+                            "Could not extract casper message from packet sent by {peer}: {err}"
+                        ),
                     );
                 }
             }
@@ -665,8 +733,14 @@ fn build_protocol_server(
             let connections = connections.clone();
             let routing_tx = routing_tx.clone();
             Box::pin(async move {
-                handle_messages::handle(proto, &rp_conf, transport.as_ref(), connections.as_ref(), &routing_tx)
-                    .await
+                handle_messages::handle(
+                    proto,
+                    &rp_conf,
+                    transport.as_ref(),
+                    connections.as_ref(),
+                    &routing_tx,
+                )
+                .await
             })
         })
     };
@@ -703,25 +777,292 @@ pub async fn setup_node_program(
     log: Arc<dyn Log>,
 ) -> Result<NodeProgram, String> {
     let comm_state = create_comm_state(conf, id, log.clone()).await?;
-    let (mut program, mut parts) = setup(
+
+    // Node-level resources, built once: the validator identity, and the REPL eval runtime (an
+    // isolated `eval-*` store set, deliberately chain-independent — port of Scala's `evalStores`).
+    let validator_opt: Option<ValidatorIdentity> = conf
+        .casper
+        .validator_private_key
+        .as_deref()
+        .and_then(ValidatorIdentity::from_hex);
+    let eval_runtime = build_eval_runtime(&conf.storage.data_dir).await?;
+
+    // Assemble every member shard: its own data directory, stores, runtime manager, block pipeline
+    // and `NodeLaunch`.
+    let mut shards: BTreeMap<ShardId, ShardRuntime> = BTreeMap::new();
+    for (index, spec) in conf.casper.shards.iter().enumerate() {
+        let runtime =
+            setup_shard_runtime(conf, spec, index, id, &comm_state, &validator_opt, &log).await?;
+        shards.insert(spec.shard_id.clone(), runtime);
+    }
+
+    // Routing queue → peer-message router → each member shard's `NodeLaunch`.
+    let (routing_tx, routing_rx) = mpsc::channel::<RoutingMessage>(50);
+    let router_targets: BTreeMap<String, mpsc::Sender<PeerMessage>> = shards
+        .iter()
+        .map(|(shard_id, rt)| (shard_id.to_string(), rt.peer_tx.clone()))
+        .collect();
+    spawn_peer_message_router(routing_rx, router_targets, log.clone());
+
+    // Request-missing-dependencies loop (port of `requestDependencies` in `Setup.setupNodeProgram`).
+    let request_deps = {
+        let block_retriever = comm_state.block_retriever.clone();
+        let timeout = conf.casper.requested_blocks_timeout;
+        let interval = conf.casper.casper_loop_interval;
+        async move {
+            loop {
+                block_retriever.request_all(timeout).await;
+                tokio::time::sleep(interval).await;
+            }
+        }
+    };
+    tokio::spawn(request_deps);
+
+    // The client surface is one set of servers over all the members: `ShardRoutingBlockApi` sends
+    // each request to the shard that owns it, so the gRPC/HTTP services above it need no shard
+    // awareness of their own.
+    let primary_id = conf.casper.shards.primary().shard_id.clone();
+    let shard_apis: BTreeMap<ShardId, Arc<dyn BlockApi>> = shards
+        .iter()
+        .map(|(shard_id, rt)| (shard_id.clone(), rt.parts.block_api.clone()))
+        .collect();
+    let routing: Arc<dyn BlockApi> =
+        Arc::new(ShardRoutingBlockApi::new(shard_apis, primary_id.clone())?);
+    let primary = shards
+        .get(&primary_id)
+        .ok_or_else(|| "the primary shard was not assembled".to_string())?;
+    let primary_parts = &primary.parts;
+
+    // The faucet signs transfers with the dev deployer key (only present in dev mode; `None`
+    // disables the faucet). The funds come from the deployer vault seeded at genesis via wallets.txt.
+    let faucet_deployer_key = conf
+        .dev
+        .deployer_private_key
+        .as_deref()
+        .and_then(|hex| base16::decode(hex))
+        .map(PrivateKey::new);
+    let web_api: Arc<dyn WebApi> = Arc::new(WebApiImpl::new(
+        routing.clone(),
+        primary_parts.transaction_api.clone(),
+        faucet_deployer_key,
+        primary_id.to_string(),
+    ));
+    let admin_web_api: Arc<dyn AdminWebApi> = Arc::new(AdminWebApiImpl::new(routing.clone()));
+    let grpc_services = GrpcServices::build(
+        routing.clone(),
+        primary_parts.block_report_api.clone(),
+        eval_runtime,
+        conf.api_server.enable_reporting,
+    );
+    // The membership, for the `GET /api/v1/shards` route: what the node validates for, primary
+    // first, each with the API that reads its head.
+    let registry = Arc::new(ShardRegistry {
+        primary: primary_id.clone(),
+        members: shards
+            .iter()
+            .map(|(shard_id, rt)| (shard_id.clone(), rt.parts.block_api.clone()))
+            .collect(),
+    });
+
+    // The 2PC gateway (Laws 26–29): a node that is a member of several shards can drive a
+    // cross-shard transaction itself. It exists only where it can act — more than one membership
+    // and a signing key — so a single-shard or key-less node is untouched.
+    let gateway = build_gateway(conf, &shards, &primary_parts.store_manager, &log).await?;
+
+    Ok(NodeProgram {
+        grpc_services,
+        web_api,
+        admin_web_api,
+        shards: registry,
+        block_report_api: primary_parts.block_report_api.clone(),
+        reporter: Arc::new(NewPrometheusReporter::new(
+            crate::diagnostics::scrape_data_builder::Configuration::default(),
+        )),
+        host: conf.api_server.host.clone(),
+        port_http: Port::try_from(conf.api_server.port_http).map_err(|e| e.to_string())?,
+        port_admin_http: Port::try_from(conf.api_server.port_admin_http)
+            .map_err(|e| e.to_string())?,
+        port_grpc_external: Port::try_from(conf.api_server.port_grpc_external)
+            .map_err(|e| e.to_string())?,
+        port_grpc_internal: Port::try_from(conf.api_server.port_grpc_internal)
+            .map_err(|e| e.to_string())?,
+        grpc_max_recv_message_size: usize::try_from(conf.api_server.grpc_max_recv_message_size)
+            .map_err(|e| e.to_string())?,
+        max_connection_idle: conf.api_server.max_connection_idle,
+        enable_reporting: conf.api_server.enable_reporting,
+        enable_txn_api: conf.api_server.enable_txn_api,
+        enable_devnet_cors: conf.api_server.enable_devnet_cors,
+        protocol_server: Some(build_protocol_server(conf, &comm_state, routing_tx)?),
+        status_provider: Some(StatusProvider {
+            connections: comm_state.connections.clone(),
+            rp_conf: comm_state.rp_conf.clone(),
+            discovery: comm_state.discovery.clone(),
+        }),
+        gateway,
+    })
+}
+
+/// Build the on-node 2PC gateway, if this node can act as one.
+///
+/// It needs **more than one membership** (a single-shard node has nothing to coordinate across) and
+/// a signing key (every participant gates `commit`/`abort` on the coordinator's key, and the legs
+/// must be able to pay phlo on each shard). Without either, the gateway is absent rather than
+/// present-and-failing.
+///
+/// On success the in-flight records are resumed in the background: a prepared participant holds its
+/// escrow until the coordinator finishes, so a restart must finish or abort what it started. It is
+/// spawned rather than awaited so a slow leg cannot stall startup.
+async fn build_gateway(
+    conf: &NodeConf,
+    shards: &BTreeMap<ShardId, ShardRuntime>,
+    store_manager: &LmdbDirStoreManager,
+    log: &Arc<dyn Log>,
+) -> Result<Option<Arc<GatewayTxn>>, String> {
+    if shards.len() < 2 {
+        return Ok(None);
+    }
+    let Some(identity) = shards
+        .values()
+        .next()
+        .and_then(|rt| rt.parts.validator_identity_opt.clone())
+    else {
+        log.warn(
+            LogSource::new("coop.rchain.node.runtime.Setup"),
+            "This node is a member of several shards but has no validator key, so it cannot act as \
+             a cross-shard coordinator",
+        );
+        return Ok(None);
+    };
+    let key = match conf
+        .casper
+        .validator_private_key
+        .as_deref()
+        .and_then(|hex| base16::decode(hex))
+    {
+        Some(bytes) => PrivateKey::new(bytes),
+        None => return Ok(None),
+    };
+
+    let mut locals: BTreeMap<ShardId, LocalShard> = BTreeMap::new();
+    for (shard_id, rt) in shards {
+        locals.insert(
+            shard_id.clone(),
+            LocalShard {
+                shard_id: shard_id.clone(),
+                block_api: rt.parts.block_api.clone(),
+                max_listen_depth: conf.api_server.max_blocks_limit,
+            },
+        );
+    }
+    let ledger = Arc::new(TxnLedger::open(store_manager).await?);
+    let gateway = Arc::new(GatewayTxn::new(
+        Arc::new(LocalShardDeployService::new(locals)),
+        ledger,
+        key,
+        identity.public_key.clone(),
+        Duration::from_secs(30),
+    ));
+
+    let recovery = gateway.clone();
+    let recovery_log = log.clone();
+    tokio::spawn(async move {
+        match recovery.recover_in_flight().await {
+            Ok(records) if records.is_empty() => {}
+            Ok(records) => {
+                let ids: Vec<String> = records.iter().map(|r| base16::encode(&r.txn_id)).collect();
+                recovery_log.info(
+                    LogSource::new("coop.rchain.node.runtime.Setup"),
+                    &format!(
+                        "Resumed {} cross-shard transaction(s) left in flight: {}",
+                        records.len(),
+                        ids.join(", ")
+                    ),
+                );
+            }
+            Err(err) => recovery_log.error(
+                LogSource::new("coop.rchain.node.runtime.Setup"),
+                &format!("Could not resume in-flight cross-shard transactions: {err}"),
+            ),
+        }
+    });
+
+    Ok(Some(gateway))
+}
+
+/// One member shard's assembled state: its handles plus the channel the peer-message router feeds.
+struct ShardRuntime {
+    parts: ShardParts,
+    peer_tx: mpsc::Sender<PeerMessage>,
+}
+
+/// Build the node-level REPL eval runtime (an isolated `eval-*` store set over `data_dir`).
+async fn build_eval_runtime(data_dir: &std::path::Path) -> Result<Arc<RhoRuntime>, String> {
+    let store_manager = rnode_key_value_store_manager(data_dir);
+    let eval_history = create_history_repository::<
+        SortedProc,
+        BindPattern,
+        ListParWithRandom,
+        TaggedContinuation,
+    >(&store_manager, "eval")
+    .await
+    .map_err(|e| e.to_string())?;
+    let eval_reader = eval_history.get_history_reader(eval_history.root()).await;
+    let eval_hot = Arc::new(InMemHotStore::new(eval_reader.base()));
+    let (eval_play, _) =
+        RSpace::create_with_replay(eval_history.clone(), eval_hot, Arc::new(RhoMatch));
+    let eval_runtime = RhoRuntime::create(eval_play, eval_history, SortedProc::default())
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(Arc::new(eval_runtime))
+}
+
+/// Wire one shard's block pipeline, `NodeLaunch` and proposer stream (port of the per-shard part of
+/// `Setup.setupNodeProgram`), returning its handles and the router's delivery channel.
+#[allow(clippy::too_many_arguments)]
+async fn setup_shard_runtime(
+    conf: &NodeConf,
+    spec: &ShardSpec,
+    index: usize,
+    id: &NodeIdentifier,
+    comm_state: &CommState,
+    validator_opt: &Option<ValidatorIdentity>,
+    log: &Arc<dyn Log>,
+) -> Result<ShardRuntime, String> {
+    let mut parts = setup_shard(
         conf,
+        spec,
+        index,
         id,
         comm_state.connections.clone(),
         comm_state.discovery.clone(),
+        validator_opt.clone(),
     )
     .await?;
+    // LFS sync is shard-blind: the fringe exchange carries no shard id, so a multi-shard node could
+    // not tell which chain a synced fringe belongs to and might import another shard's state. A
+    // single-shard node syncs exactly as before; a gateway must start from a local chain
+    // (reconnecting) or as its own genesis master.
+    if conf.casper.shards.len() > 1
+        && !conf.standalone
+        && parts.dag.get_representation().await.dag_set.is_empty()
+    {
+        return Err(format!(
+            "shard '{}' has no local chain and LFS sync is not shard-aware; start the node with \
+             --standalone (genesis master) or give this shard existing state",
+            spec.shard_id
+        ));
+    }
     let importer = create_rspace_importer(&parts.store_manager).await?;
     let exporter = create_rspace_exporter(&parts.store_manager).await?;
-
-    let shard_id = conf.casper.shard_name.clone();
-    let min_phlo_price = conf.casper.min_phlo_price;
+    let shard_id = spec.shard_id.to_string();
 
     // Extract the proposer queue/state before wiring block processing, so the autopropose tap can
     // enqueue a propose on each validated block.
     let proposer_parts = parts.proposer.take();
 
-    // Shared consecutive-failure counter: the proposer resets it on success and bumps it on a
-    // self-validation failure; the autopropose timer reads it to halt after a burst of failures.
+    // This shard's consecutive-failure counter: the proposer resets it on success and bumps it on a
+    // self-validation failure; the shard's autopropose timer halts after a burst of failures. Per
+    // shard, so a shard that cannot self-validate does not stop the others producing blocks.
     let consecutive_failures: Arc<AtomicU64> = Arc::new(AtomicU64::new(0));
 
     // Autopropose tap: fire an (async) propose on each validated block.
@@ -741,6 +1082,7 @@ pub async fn setup_node_program(
                 let timer_tx = pp.queue_tx.clone();
                 let timer_failures = consecutive_failures.clone();
                 let timer_log = log.clone();
+                let timer_shard = shard_id.clone();
                 tokio::spawn(async move {
                     let mut interval = tokio::time::interval(AUTOPROPOSE_INTERVAL);
                     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -751,7 +1093,8 @@ pub async fn setup_node_program(
                             timer_log.error(
                                 LogSource::new("coop.rchain.node.runtime.Setup"),
                                 &format!(
-                                    "block production halted after {failures} consecutive self-validation failures"
+                                    "block production for shard {timer_shard} halted after \
+                                     {failures} consecutive self-validation failures"
                                 ),
                             );
                             break;
@@ -771,34 +1114,22 @@ pub async fn setup_node_program(
 
     // Block receiver + processor streams (spawned internally).
     let (incoming_blocks_tx, _validated_blocks_tx) = wire_block_processing(
-        &comm_state,
+        comm_state,
         &parts,
         &shard_id,
-        min_phlo_price,
+        conf.casper.min_phlo_price,
         log.clone(),
         autopropose,
     );
 
-    // Routing queue → peer-message stream → NodeLaunch.
-    let (routing_tx, routing_rx) = mpsc::channel::<RoutingMessage>(50);
-    let (peer_message_tx, peer_message_rx) = mpsc::channel::<PeerMessage>(50);
-    spawn_peer_message_stream(routing_rx, peer_message_tx, log.clone());
-
-    // Transport (protocol) server.
-    program.protocol_server = Some(build_protocol_server(conf, &comm_state, routing_tx)?);
-
-    // Comm state for the `/status` HTTP route.
-    program.status_provider = Some(StatusProvider {
-        connections: comm_state.connections.clone(),
-        rp_conf: comm_state.rp_conf.clone(),
-        discovery: comm_state.discovery.clone(),
-    });
+    // This shard's slice of the peer-message stream (fed by the router).
+    let (peer_tx, peer_message_rx) = mpsc::channel::<PeerMessage>(50);
 
     // Node launch mode dispatch (genesis → syncing → running over the peer-message stream).
     let node_launch = node_launch::apply(
         peer_message_rx,
         incoming_blocks_tx,
-        conf.casper.clone(),
+        spec.clone(),
         !conf.protocol_client.disable_lfs,
         conf.protocol_server.disable_state_exporter,
         parts.validator_identity_opt.clone(),
@@ -826,23 +1157,9 @@ pub async fn setup_node_program(
         }
     });
 
-    // Request-missing-dependencies loop (port of `requestDependencies` in `Setup.setupNodeProgram`).
-    let request_deps = {
-        let block_retriever = comm_state.block_retriever.clone();
-        let timeout = conf.casper.requested_blocks_timeout;
-        let interval = conf.casper.casper_loop_interval;
-        async move {
-            loop {
-                block_retriever.request_all(timeout).await;
-                tokio::time::sleep(interval).await;
-            }
-        }
-    };
-    tokio::spawn(request_deps);
-
     // Proposer stream (port of `proposerStream` in `Setup.setupNodeProgram`). Runs only when a
     // validator identity is configured; the propose trigger + state were wired into `BlockApiImpl`
-    // by [`setup`].
+    // by [`setup_shard`].
     let validator = parts.validator_identity_opt.clone();
     if let (Some(proposer_parts), Some(validator)) = (proposer_parts, validator) {
         let block_index = {
@@ -855,7 +1172,9 @@ pub async fn setup_node_program(
             }
         };
         let propose_effect: Arc<
-            dyn Fn(&BlockMessage) -> Pin<Box<dyn Future<Output = ()> + Send + 'static>> + Send + Sync,
+            dyn Fn(&BlockMessage) -> Pin<Box<dyn Future<Output = ()> + Send + 'static>>
+                + Send
+                + Sync,
         > = {
             // The block body is persisted by `Proposer::validate_block` (before the DAG insert);
             // here we only broadcast the block hash to peers.
@@ -881,9 +1200,9 @@ pub async fn setup_node_program(
 
         let proposer = Proposer::apply(
             validator,
-            conf.casper.shard_name.clone(),
+            shard_id.clone(),
             conf.casper.min_phlo_price,
-            conf.casper.genesis_block_data.epoch_length,
+            spec.genesis_block_data.epoch_length,
             dummy_deploy_opt,
             parts.dag.clone(),
             parts.block_store.clone(),
@@ -906,18 +1225,28 @@ pub async fn setup_node_program(
         });
     }
 
-    Ok(program)
+    Ok(ShardRuntime { parts, peer_tx })
 }
 
 /// Assemble the node program (port of `Setup.setupNodeProgram`, minus the comm/discovery/proposer/
 /// block-stream pieces).
-pub async fn setup(
+/// Assemble one shard's stores, runtime manager, native state and client-facing APIs.
+///
+/// `index` is the membership's position in `conf.casper.shards` and selects its data directory
+/// ([`shard_data_dir`]): the primary shard keeps the data-directory root, every additional shard
+/// nests under `shard/…`. Node-level resources (the transport, the ports, the eval runtime, the
+/// validator identity) are assembled once by [`setup_node_program`], not here.
+pub async fn setup_shard(
     conf: &NodeConf,
+    spec: &ShardSpec,
+    index: usize,
     id: &NodeIdentifier,
     connections: ConnectionsCell,
     discovery: Arc<dyn NodeDiscovery>,
-) -> Result<(NodeProgram, SetupParts), String> {
-    let store_manager = rnode_key_value_store_manager(&conf.storage.data_dir);
+    validator_opt: Option<ValidatorIdentity>,
+) -> Result<ShardParts, String> {
+    let data_dir = shard_data_dir(&conf.storage.data_dir, index, &spec.shard_id);
+    let store_manager = rnode_key_value_store_manager(&data_dir);
 
     // Block store + DAG storage.
     let block_store = block_store::create(&store_manager).await?;
@@ -974,20 +1303,34 @@ pub async fn setup(
         .map_err(|e| e.to_string())?,
     );
 
-    // Runtime manager (play + replay runtimes + mergeable store).
-    let history =
-        create_history_repository::<SortedProc, BindPattern, ListParWithRandom, TaggedContinuation>(
-            &store_manager,
-            "rspace",
-        )
-        .await
-        .map_err(|e| e.to_string())?;
+    // Runtime manager (play + replay runtimes + mergeable store). The configured effect-scheduler
+    // mode (Laws 20–22) applies to the play runtime and is recorded on the manager for the
+    // block-path hard-reject of `relaxed`; the replay runtime stays sequential.
+    let effect_mode = conf
+        .casper
+        .effect_mode
+        .parse::<EffectMode>()
+        .map_err(|e| format!("invalid casper.effect-scheduler: {e}"))?;
+    let history = create_history_repository::<
+        SortedProc,
+        BindPattern,
+        ListParWithRandom,
+        TaggedContinuation,
+    >(&store_manager, "rspace")
+    .await
+    .map_err(|e| e.to_string())?;
     let reader = history.get_history_reader(history.root()).await;
     let hot = Arc::new(InMemHotStore::new(reader.base()));
     let (play, replay) = RSpace::create_with_replay(history.clone(), hot, Arc::new(RhoMatch));
-    let rho_runtime = RhoRuntime::create(play.clone(), history.clone(), SortedProc::default())
-        .await
-        .map_err(|e| e.to_string())?;
+    let rho_runtime = RhoRuntime::create_with_effect_mode(
+        play.clone(),
+        history.clone(),
+        SortedProc::default(),
+        true,
+        effect_mode,
+    )
+    .await
+    .map_err(|e| e.to_string())?;
     let replay_runtime =
         ReplayRhoRuntime::create(Arc::new(replay), history.clone(), SortedProc::default())
             .await
@@ -1001,38 +1344,29 @@ pub async fn setup(
         )
         .await?,
     );
-    let runtime_manager = Arc::new(RuntimeManager::new(
-        rho_runtime,
-        replay_runtime,
-        history,
-        mergeable_store,
-    ));
-
-    // Eval runtime for the Repl service — an isolated `eval-*` store set so REPL evaluation never
-    // reads/writes the node's live chain state (port of Scala's `evalStores`).
-    let eval_history =
-        create_history_repository::<SortedProc, BindPattern, ListParWithRandom, TaggedContinuation>(
-            &store_manager,
-            "eval",
+    let runtime_manager = Arc::new(
+        RuntimeManager::new(
+            rho_runtime,
+            replay_runtime,
+            history,
+            mergeable_store,
+            effect_mode,
         )
-        .await
-        .map_err(|e| e.to_string())?;
-    let eval_reader = eval_history.get_history_reader(eval_history.root()).await;
-    let eval_hot = Arc::new(InMemHotStore::new(eval_reader.base()));
-    let (eval_play, _) =
-        RSpace::create_with_replay(eval_history.clone(), eval_hot, Arc::new(RhoMatch));
-    let eval_runtime = Arc::new(
-        RhoRuntime::create(eval_play, eval_history, SortedProc::default())
-            .await
-            .map_err(|e| e.to_string())?,
+        .with_genesis_pos(
+            // Only a genesis-ceremony node has the network genesis descriptors locally; a syncing
+            // observer inserts (does not replay) the genesis block. A failure here (an unreadable
+            // bonds file) is fatal: silently falling back to a default PoS genesis would make the
+            // node replay the genesis block against the wrong validator set.
+            if conf.standalone {
+                rchain_casper::genesis::pos_genesis_from_config(spec)?
+            } else {
+                Default::default()
+            },
+        ),
     );
 
-    // Validator identity (from the PEM-decrypted private key, if set).
-    let validator_opt: Option<ValidatorIdentity> = conf
-        .casper
-        .validator_private_key
-        .as_deref()
-        .and_then(ValidatorIdentity::from_hex);
+    // The eval runtime for the Repl service is node-level (it holds no chain state), and the
+    // validator identity is the node's, so both are built once by `setup_node_program`.
 
     // Proposer queue + trigger + state (port of the `proposerQueue`/`triggerProposeFOpt`/
     // `proposerStateRefOpt` in `Setup.setupNodeProgram`). The proposer stream itself is driven in
@@ -1066,7 +1400,7 @@ pub async fn setup(
         });
 
     let network_id = conf.protocol_server.network_id.clone();
-    let shard_id = conf.casper.shard_name.clone();
+    let shard_id = spec.shard_id.to_string();
     let network_status: NetworkStatusFn = Box::new({
         let id = id.clone();
         let connections = connections.clone();
@@ -1124,68 +1458,89 @@ pub async fn setup(
         validator_opt.clone(),
     ));
 
-    let grpc_services = GrpcServices::build(
-        block_api.clone(),
-        block_report_api.clone(),
-        eval_runtime,
-        conf.api_server.enable_reporting,
-    );
+    // The transaction API is shard-scoped: its `transfer_unforgeable` is derived from the shard's
+    // genesis random, so each shard reads its own REV transfers.
     let transfer_unforgeable = BlockRandomSeed::transfer_unforgeable(&shard_id);
     let transaction_api = Arc::new(TransactionAPIImpl::new(
         block_report_api.clone(),
         transfer_unforgeable,
     ));
-    // The faucet signs transfers with the dev deployer key (only present in dev mode; `None`
-    // disables the faucet). The funds come from the deployer vault seeded at genesis via wallets.txt.
-    let faucet_deployer_key = conf
-        .dev
-        .deployer_private_key
-        .as_deref()
-        .and_then(|hex| base16::decode(hex))
-        .map(PrivateKey::new);
-    let web_api: Arc<dyn WebApi> = Arc::new(WebApiImpl::new(
-        block_api.clone(),
-        transaction_api,
-        faucet_deployer_key,
-        shard_id.clone(),
-    ));
-    let admin_web_api: Arc<dyn AdminWebApi> = Arc::new(AdminWebApiImpl::new(block_api));
 
-    Ok((
-        NodeProgram {
-            grpc_services,
-            web_api,
-            admin_web_api,
-            block_report_api,
-            reporter: Arc::new(NewPrometheusReporter::new(
-                crate::diagnostics::scrape_data_builder::Configuration::default(),
-            )),
-            host: conf.api_server.host.clone(),
-            port_http: Port::try_from(conf.api_server.port_http).map_err(|e| e.to_string())?,
-            port_admin_http: Port::try_from(conf.api_server.port_admin_http)
-                .map_err(|e| e.to_string())?,
-            port_grpc_external: Port::try_from(conf.api_server.port_grpc_external)
-                .map_err(|e| e.to_string())?,
-            port_grpc_internal: Port::try_from(conf.api_server.port_grpc_internal)
-                .map_err(|e| e.to_string())?,
-            grpc_max_recv_message_size: usize::try_from(conf.api_server.grpc_max_recv_message_size)
-                .map_err(|e| e.to_string())?,
-            max_connection_idle: conf.api_server.max_connection_idle,
-            enable_reporting: conf.api_server.enable_reporting,
-            enable_devnet_cors: conf.api_server.enable_devnet_cors,
-            protocol_server: None,
-            status_provider: None,
-        },
-        SetupParts {
-            block_store,
-            dag: block_dag_storage,
-            runtime_manager,
-            approved_store,
-            store_manager,
-            validator_identity_opt: validator_opt,
-            proposer: proposer_parts,
-        },
-    ))
+    // Claim this shard's data directory before anything else touches it: a directory that belonged
+    // to a different shard must fail startup, not read as an empty chain.
+    check_shard_data_dir(&data_dir, spec, block_dag_storage.as_ref(), &block_store).await?;
+
+    Ok(ShardParts {
+        spec: spec.clone(),
+        block_store,
+        dag: block_dag_storage,
+        runtime_manager,
+        approved_store,
+        store_manager,
+        validator_identity_opt: validator_opt,
+        proposer: proposer_parts,
+        block_api,
+        block_report_api,
+        transaction_api,
+    })
+}
+
+/// Record — or verify — which shard owns a data directory.
+///
+/// The primary membership keeps the data-directory root while every additional shard nests under
+/// `shard/…`, so reordering or renaming memberships would otherwise silently re-point a shard at
+/// another shard's chain. The marker file turns that into a startup error.
+///
+/// On a node that predates the marker and already holds a chain, the stored block's shard id is
+/// checked before the directory is claimed, so an upgraded node cannot adopt a foreign chain either.
+async fn check_shard_data_dir(
+    dir: &std::path::Path,
+    spec: &ShardSpec,
+    dag: &dyn BlockDagStorage,
+    block_store: &BlockStore,
+) -> Result<(), String> {
+    let marker = dir.join(SHARD_ID_MARKER);
+    let expected = spec.shard_id.to_string();
+    let recorded = std::fs::read_to_string(&marker)
+        .ok()
+        .map(|id| id.trim().to_string());
+
+    match recorded {
+        Some(id) if id == expected => Ok(()),
+        Some(id) => Err(format!(
+            "data directory {} belongs to shard '{id}', but this node is configured for shard \
+             '{expected}'; remove the directory or fix `casper.shards`",
+            dir.display()
+        )),
+        None => {
+            let representation = dag.get_representation().await;
+            if let Some(hash) = representation.dag_set.iter().next().copied() {
+                let stored = block_store
+                    .get(&[hash])
+                    .await
+                    .map_err(|e| e.to_string())?
+                    .into_iter()
+                    .next()
+                    .flatten();
+                if let Some(block) = stored {
+                    if block.shard_id != expected {
+                        return Err(format!(
+                            "data directory {} holds shard '{}', but this node is configured for \
+                             shard '{expected}'; remove the directory or fix `casper.shards`",
+                            dir.display(),
+                            block.shard_id
+                        ));
+                    }
+                }
+            }
+            std::fs::write(&marker, &expected).map_err(|e| {
+                format!(
+                    "cannot write the shard-id marker to {}: {e}",
+                    marker.display()
+                )
+            })
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1216,39 +1571,301 @@ mod tests {
         dir
     }
 
+    /// A standalone config over `dir`, for the assembly tests.
+    fn test_conf(dir: &std::path::Path) -> NodeConf {
+        let defaults = parse_defaults(dir.to_str().unwrap()).unwrap();
+        let mut conf = node_conf_from_hocon(&defaults).unwrap();
+        conf.storage.data_dir = dir.to_path_buf();
+        conf.api_server.host = "127.0.0.1".to_string();
+        conf
+    }
+
+    fn noop_comm() -> (ConnectionsCell, Arc<dyn NodeDiscovery>) {
+        (
+            Arc::new(tokio::sync::RwLock::new(Vec::new())),
+            Arc::new(NoopDiscovery),
+        )
+    }
+
     #[tokio::test]
-    async fn setup_assembles_node_program_over_lmdb() {
+    async fn setup_assembles_shard_over_lmdb() {
         let dir = temp_dir("node-runtime");
-        let conf = {
-            let defaults = parse_defaults(dir.to_str().unwrap()).unwrap();
-            let mut conf = node_conf_from_hocon(&defaults).unwrap();
-            conf.storage.data_dir = dir.clone();
-            conf.api_server.host = "127.0.0.1".to_string();
-            conf
-        };
+        let conf = test_conf(&dir);
+        let id = NodeIdentifier::new(vec![1u8]);
+        let (connections, discovery) = noop_comm();
+
+        let spec = conf.casper.shards.primary().clone();
+        let parts = setup_shard(&conf, &spec, 0, &id, connections, discovery, None)
+            .await
+            .expect("setup_shard should assemble");
+
+        // The primary shard keeps the data-directory root, and the directory is claimed by marker.
+        assert_eq!(parts.spec.shard_id, spec.shard_id);
+        assert_eq!(parts.spec.shard_id.to_string(), "/root");
+        assert_eq!(
+            std::fs::read_to_string(dir.join(SHARD_ID_MARKER)).unwrap(),
+            "/root"
+        );
+        // A shard reports itself as its own id, not the node's default.
+        assert_eq!(parts.block_api.status().await.shard_id, "/root");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A second membership nests under `shard/<id segments>` and is stamped with its own shard id,
+    /// so two shards in one process never share a store.
+    #[tokio::test]
+    async fn setup_assembles_a_second_shard_in_its_own_directory() {
+        let dir = temp_dir("node-runtime-two-shards");
+        let mut conf = test_conf(&dir);
+        let primary = conf.casper.shards.primary().clone();
+        conf.casper.shards = rchain_casper::conf::ShardMemberships::new(vec![
+            primary.clone(),
+            ShardSpec::new(
+                "child".to_string(),
+                "/root".to_string(),
+                primary.genesis_block_data.clone(),
+                primary.autogen_shard_size,
+            )
+            .unwrap(),
+        ])
+        .unwrap();
 
         let id = NodeIdentifier::new(vec![1u8]);
+        let (c1, d1) = noop_comm();
+        let (c2, d2) = noop_comm();
+        let child = conf.casper.shards.iter().nth(1).unwrap().clone();
 
-        let connections: ConnectionsCell = Arc::new(tokio::sync::RwLock::new(Vec::new()));
-        let discovery: Arc<dyn NodeDiscovery> = Arc::new(NoopDiscovery);
-        let (program, _parts) = setup(&conf, &id, connections, discovery)
+        let _primary_parts = setup_shard(&conf, &primary, 0, &id, c1, d1, None)
             .await
-            .expect("setup should assemble");
-        assert_eq!(program.host, "127.0.0.1");
+            .expect("primary shard");
+        let child_parts = setup_shard(&conf, &child, 1, &id, c2, d2, None)
+            .await
+            .expect("child shard");
+
+        assert_eq!(child_parts.spec.shard_id.to_string(), "/root/child");
+        assert_eq!(child_parts.block_api.status().await.shard_id, "/root/child");
+        let child_dir = dir.join("shard").join("root").join("child");
+        assert!(child_dir.is_dir(), "{} should exist", child_dir.display());
         assert_eq!(
-            u16::from(program.port_http),
-            u16::try_from(conf.api_server.port_http).unwrap()
+            std::fs::read_to_string(child_dir.join(SHARD_ID_MARKER)).unwrap(),
+            "/root/child"
         );
+        // The primary's stores live at the root, not under the child's directory.
         assert_eq!(
-            u16::from(program.port_admin_http),
-            u16::try_from(conf.api_server.port_admin_http).unwrap()
-        );
-        assert_eq!(
-            u16::from(program.port_grpc_internal),
-            u16::try_from(conf.api_server.port_grpc_internal).unwrap()
+            std::fs::read_to_string(dir.join(SHARD_ID_MARKER)).unwrap(),
+            "/root"
         );
 
-        drop(program);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A directory that belongs to another shard is refused rather than read as an empty chain.
+    #[tokio::test]
+    async fn setup_refuses_a_directory_owned_by_another_shard() {
+        let dir = temp_dir("node-runtime-foreign-dir");
+        let conf = test_conf(&dir);
+        std::fs::write(dir.join(SHARD_ID_MARKER), "/something-else").unwrap();
+
+        let id = NodeIdentifier::new(vec![1u8]);
+        let (connections, discovery) = noop_comm();
+        let spec = conf.casper.shards.primary().clone();
+        let err = match setup_shard(&conf, &spec, 0, &id, connections, discovery, None).await {
+            Ok(_) => panic!("a foreign data directory must be refused"),
+            Err(err) => err,
+        };
+        assert!(err.contains("/something-else"), "{err}");
+        assert!(err.contains("configured for shard '/root'"), "{err}");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // --- the peer-message router (Law 26) ------------------------------------
+
+    /// A block whose shard id is `shard_id`, minimal but well-formed.
+    fn block_for(shard_id: &str) -> rchain_models::casper::protocol::casper_message::BlockMessage {
+        use rchain_models::block::state_hash::StateHash;
+        use rchain_models::casper::protocol::casper_message::RholangState;
+        use rchain_models::validator::Validator;
+        use rchain_shared::refined::{BlockHeight, SeqNum};
+
+        rchain_casper::proto_util::unsigned_block_proto(
+            1,
+            shard_id.to_string(),
+            BlockHeight::try_from(1).expect("height"),
+            Validator::from_slice(&[0u8; 65]),
+            SeqNum::zero(),
+            StateHash::from(
+                rchain_crypto::hash::blake2b256_hash::Blake2b256Hash::from_bytes([0u8; 32]),
+            ),
+            StateHash::from(
+                rchain_crypto::hash::blake2b256_hash::Blake2b256Hash::from_bytes([1u8; 32]),
+            ),
+            Vec::new(),
+            std::collections::BTreeMap::new(),
+            std::collections::BTreeSet::new(),
+            RholangState {
+                deploys: Vec::new(),
+                system_deploys: Vec::new(),
+            },
+            0,
+        )
+    }
+
+    fn a_peer() -> rchain_comm::peer_node::PeerNode {
+        rchain_comm::peer_node::PeerNode::from(
+            NodeIdentifier::new(vec![1u8]),
+            "127.0.0.1".to_string(),
+            Port::try_from(40400).expect("port"),
+            Port::try_from(40404).expect("port"),
+        )
+    }
+
+    /// Drive the router once with `message` and report which shard channels received it.
+    async fn route_once(
+        packet: rchain_models::comm::protocol::Packet,
+        members: &[&str],
+    ) -> Vec<(String, bool)> {
+        let mut shards: std::collections::BTreeMap<String, mpsc::Sender<PeerMessage>> =
+            std::collections::BTreeMap::new();
+        let mut receivers = Vec::new();
+        for member in members {
+            let (tx, rx) = mpsc::channel::<PeerMessage>(5);
+            shards.insert(member.to_string(), tx);
+            receivers.push((member.to_string(), rx));
+        }
+
+        let (routing_tx, routing_rx) = mpsc::channel::<RoutingMessage>(5);
+        spawn_peer_message_router(routing_rx, shards, Arc::new(rchain_shared::log::StderrLog));
+        routing_tx
+            .send(RoutingMessage {
+                peer: a_peer(),
+                packet,
+            })
+            .await
+            .expect("route");
+        drop(routing_tx);
+
+        // Give the router a moment, then read whatever was delivered.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        receivers
+            .into_iter()
+            .map(|(member, mut rx)| (member, rx.try_recv().is_ok()))
+            .collect()
+    }
+
+    /// A block goes to the member that owns its shard — and only that member.
+    #[tokio::test]
+    async fn the_router_delivers_a_block_to_its_shard() {
+        use rchain_casper::protocol::casper_message_protocol::BlockMessageSerde;
+        use rchain_models::casper::protocol::packet_type_tag::ToPacket;
+        let delivered = route_once(
+            BlockMessageSerde.mk_packet(&block_for("/root/child")),
+            &["/root", "/root/child"],
+        )
+        .await;
+        assert_eq!(
+            delivered,
+            vec![
+                ("/root".to_string(), false),
+                ("/root/child".to_string(), true)
+            ],
+            "a block must reach exactly the shard it names"
+        );
+    }
+
+    /// A block for a shard this node is not a member of is dropped, not relayed — relaying is an
+    /// explicit non-goal, and delivering it to a member would be a cross-shard corruption.
+    #[tokio::test]
+    async fn the_router_drops_a_block_for_a_foreign_shard() {
+        use rchain_casper::protocol::casper_message_protocol::BlockMessageSerde;
+        use rchain_models::casper::protocol::packet_type_tag::ToPacket;
+        let delivered = route_once(
+            BlockMessageSerde.mk_packet(&block_for("/somewhere-else")),
+            &["/root", "/root/child"],
+        )
+        .await;
+        assert!(
+            delivered.iter().all(|(_, got)| !got),
+            "a foreign block must reach no member: {delivered:?}"
+        );
+    }
+
+    /// Hash-keyed messages fan out to every member, which is self-selecting: only the shard holding
+    /// the hash answers. Sending them to one member would leave the block unfindable from the others.
+    #[tokio::test]
+    async fn the_router_fans_out_a_hash_keyed_message() {
+        use rchain_casper::protocol::casper_message_protocol::BlockHashMessageSerde;
+        use rchain_models::casper::protocol::packet_type_tag::ToPacket;
+        let packet = BlockHashMessageSerde.mk_packet(
+            &rchain_models::casper::protocol::casper_message::BlockHashMessage {
+                block_hash: rchain_models::block_hash::BlockHash::new([9u8; 32]),
+                block_creator: vec![0u8; 65],
+            },
+        );
+        let delivered = route_once(packet, &["/root", "/root/child"]).await;
+        assert_eq!(
+            delivered,
+            vec![
+                ("/root".to_string(), true),
+                ("/root/child".to_string(), true)
+            ],
+            "a hash-keyed request must reach every member"
+        );
+    }
+
+    /// The guard's other half: a directory whose marker is *missing* but which already holds a
+    /// chain must still be checked, so an upgraded node (or a directory copied between shards) cannot
+    /// adopt a foreign chain just because the marker was not there yet.
+    #[tokio::test]
+    async fn a_directory_holding_a_foreign_chain_is_refused_without_a_marker() {
+        use rchain_models::block_metadata::BlockMetadata;
+        use rchain_models::validator::Validator;
+        use rchain_shared::refined::{BlockHeight, SeqNum};
+
+        let dir = temp_dir("node-runtime-foreign-chain");
+        let conf = test_conf(&dir);
+        let id = NodeIdentifier::new(vec![1u8]);
+        let spec = conf.casper.shards.primary().clone();
+
+        // Assemble the shard once, then plant a block belonging to a different shard.
+        let (connections, discovery) = noop_comm();
+        let parts = setup_shard(&conf, &spec, 0, &id, connections, discovery, None)
+            .await
+            .expect("first assembly");
+        let foreign = block_for("/someone-elses-shard");
+        rchain_block_storage::syntax::put_block(&parts.block_store, foreign.clone())
+            .await
+            .expect("store the block body");
+        parts
+            .dag
+            .insert(
+                BlockMetadata {
+                    block_hash: foreign.block_hash,
+                    block_num: BlockHeight::try_from(1).expect("height"),
+                    sender: Validator::from_slice(foreign.sender.as_bytes()),
+                    seq_num: SeqNum::zero(),
+                    justifications: std::collections::BTreeSet::new(),
+                    bonds_map: std::collections::BTreeMap::new(),
+                    validated: true,
+                    validation_failed: false,
+                    member_of_fringe: None,
+                    fringe: std::collections::BTreeSet::new(),
+                    fringe_state_hash: foreign.post_state_hash,
+                },
+                foreign,
+            )
+            .await
+            .expect("insert into the dag");
+        std::fs::remove_file(dir.join(SHARD_ID_MARKER)).expect("remove the marker");
+
+        let (connections, discovery) = noop_comm();
+        let err = match setup_shard(&conf, &spec, 0, &id, connections, discovery, None).await {
+            Ok(_) => panic!("a directory holding a foreign chain must be refused"),
+            Err(err) => err,
+        };
+        assert!(err.contains("holds shard"), "{err}");
+
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -5,6 +5,7 @@ use std::time::Duration;
 
 use clap::{Parser, Subcommand};
 use rchain_comm::peer_node::PeerNode;
+use rchain_rholang::scheduler::EffectMode;
 
 use super::super::hocon::parse_duration;
 
@@ -37,9 +38,39 @@ impl std::str::FromStr for Base16 {
     }
 }
 
+/// The effect-scheduler mode (Laws 20–25): `dfs` → [`EffectMode::Sequential`], `gate` →
+/// [`EffectMode::Gate`], `relaxed` → [`EffectMode::Relaxed`], `relaxed-validated` →
+/// [`EffectMode::RelaxedValidated`]. Parsed by clap via `FromStr` (the `Base16` newtype pattern).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EffectScheduler(pub EffectMode);
+
+impl EffectScheduler {
+    /// The flag/config-file name of the mode (the inverse of `FromStr`).
+    pub fn as_str(&self) -> &'static str {
+        match self.0 {
+            EffectMode::Sequential | EffectMode::ForkJoin => "dfs",
+            EffectMode::Gate => "gate",
+            EffectMode::Relaxed => "relaxed",
+            EffectMode::RelaxedValidated => "relaxed-validated",
+        }
+    }
+}
+
+impl std::str::FromStr for EffectScheduler {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        EffectMode::from_str(s).map(EffectScheduler)
+    }
+}
+
 /// The CLI surface (port of the Scala `Options` scallop config).
 #[derive(Parser, Debug)]
-#[command(name = "rchain", version, about = "RChain node | gRPC client", disable_help_flag = true)]
+#[command(
+    name = "rchain",
+    version,
+    about = "RChain node | gRPC client",
+    disable_help_flag = true
+)]
 pub struct Options {
     /// Print help.
     #[arg(long = "help", action = clap::ArgAction::Help)]
@@ -174,9 +205,18 @@ pub struct Run {
     #[arg(short = 'c', long = "config-file")]
     pub config_file: Option<PathBuf>,
 
-    /// Number of threads allocated for main scheduler (hidden).
-    #[arg(long = "thread-pool-size", hide = true)]
+    /// Number of threads allocated for the main scheduler (the tokio worker threads; defaults to
+    /// the number of CPUs).
+    #[arg(long = "thread-pool-size")]
     pub thread_pool_size: Option<i32>,
+
+    /// The effect scheduler (Laws 20–25): `dfs` (default, the sequential DFS loop), `gate` (the
+    /// DFS gate), `relaxed` (per-channel claim queues; off-chain only — a relaxed node refuses
+    /// block-path deploy execution), or `relaxed-validated` (Laws 23–25: relaxed on the block
+    /// path, validated against the sequential reference with sequential fallback). Falls back to
+    /// the config file's `casper.effect-scheduler` (default `dfs`) when not given.
+    #[arg(long = "effect-scheduler", value_parser = clap::value_parser!(EffectScheduler))]
+    pub effect_scheduler: Option<EffectScheduler>,
 
     /// Start a stand-alone node.
     #[arg(short = 's', long = "standalone")]
@@ -357,6 +397,10 @@ pub struct Run {
     /// Name of the shard this node is connected to.
     #[arg(long = "shard-name")]
     pub shard_name: Option<String>,
+
+    /// ID of the parent shard (`/` for the root). The full shard id is `{parent-shard-id}/{shard-name}`.
+    #[arg(long = "parent-shard-id")]
+    pub parent_shard_id: Option<String>,
 
     /// Base16 encoding of the public key for signing proposed blocks.
     #[arg(long = "validator-public-key")]

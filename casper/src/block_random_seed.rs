@@ -160,8 +160,12 @@ impl BlockRandomSeed {
 
 /// `variableSizeBytes(uint8, X)` — a 1-byte length prefix followed by the bytes.
 fn var_size(bytes: &[u8]) -> Result<Vec<u8>, String> {
-    let len = u8::try_from(bytes.len())
-        .map_err(|_| format!("seed component too long for a 1-byte length prefix: {} bytes", bytes.len()))?;
+    let len = u8::try_from(bytes.len()).map_err(|_| {
+        format!(
+            "seed component too long for a 1-byte length prefix: {} bytes",
+            bytes.len()
+        )
+    })?;
     let mut out = Vec::with_capacity(bytes.len() + 1);
     out.push(len);
     out.extend_from_slice(bytes);
@@ -188,9 +192,14 @@ mod tests {
         );
         assert_ne!(
             seed.encode().unwrap(),
-            BlockRandomSeed::new("root".to_string(), 1, PublicKey::new(vec![]), Blake2b256Hash::create(&[]))
-                .encode()
-                .unwrap()
+            BlockRandomSeed::new(
+                "root".to_string(),
+                1,
+                PublicKey::new(vec![]),
+                Blake2b256Hash::create(&[])
+            )
+            .encode()
+            .unwrap()
         );
     }
 

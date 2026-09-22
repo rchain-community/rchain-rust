@@ -13,6 +13,10 @@ use rchain_models::runtime::{BindPattern, ListParWithRandom, TaggedContinuation}
 use rchain_models::sorted::SortedProc;
 use rchain_rspace::history::history_repository::HistoryRepository;
 use rchain_rspace::match_::Match;
+use rchain_rspace::scheduled_space::{
+    PendingProduce as RspacePendingProduce, ScheduledConsume as RspaceScheduledConsume,
+    ScheduledProduce as RspaceScheduledProduce,
+};
 use rchain_rspace::tuple_space::{
     ContResult, Result as RSpaceResult, Tuplespace as RSpaceTuplespace,
 };
@@ -20,7 +24,7 @@ use rchain_rspace::tuple_space::{
 use crate::accounting::{CostAccounting, Costs};
 use crate::errors::RholangError;
 use crate::matcher::{fold_match, spatial_match, FreeMap};
-use crate::reduce::{Application, Tuplespace};
+use crate::reduce::{Application, PendingProduce, ScheduledConsume, ScheduledProduce, Tuplespace};
 
 /// The rholang history repository (port of `RhoHistoryRepository`).
 pub type RhoHistoryRepository =
@@ -56,7 +60,11 @@ pub struct RhoMatch;
 impl Match<BindPattern, ListParWithRandom> for RhoMatch {
     fn get(&self, pattern: &BindPattern, data: &ListParWithRandom) -> Option<ListParWithRandom> {
         let data_pars: Vec<Par> = data.pars.iter().map(|p| p.as_par().clone()).collect();
-        let pattern_pars: Vec<Par> = pattern.patterns.iter().map(|p| p.as_par().clone()).collect();
+        let pattern_pars: Vec<Par> = pattern
+            .patterns
+            .iter()
+            .map(|p| p.as_par().clone())
+            .collect();
         let matches = fold_match(
             &data_pars,
             &pattern_pars,
@@ -112,7 +120,8 @@ impl Tuplespace for ChargingRSpace {
         data: ListParWithRandom,
         persist: bool,
     ) -> Result<Application, RholangError> {
-        self.cost.charge(Costs::storage_cost_produce(channel, &data))?;
+        self.cost
+            .charge(Costs::storage_cost_produce(channel, &data))?;
         let result = self
             .space
             .produce(channel.clone(), data, persist)
@@ -139,8 +148,11 @@ impl Tuplespace for ChargingRSpace {
         persist: bool,
         peeks: BTreeSet<usize>,
     ) -> Result<Application, RholangError> {
-        self.cost
-            .charge(Costs::storage_cost_consume(channels, patterns, &continuation))?;
+        self.cost.charge(Costs::storage_cost_consume(
+            channels,
+            patterns,
+            &continuation,
+        ))?;
         let result = self
             .space
             .consume(channels, patterns, continuation, persist, peeks)
@@ -154,6 +166,111 @@ impl Tuplespace for ChargingRSpace {
                 if !persist {
                     self.cost
                         .charge(Costs::event_storage_cost(channels.len() as i64))?;
+                }
+                self.cost
+                    .charge(Costs::comm_event_storage_cost(cont.channels.len() as i64))?;
+            }
+        }
+        Ok(to_application(result))
+    }
+
+    async fn produce_at(
+        &self,
+        path: Vec<u16>,
+        channel: &SortedProc,
+        data: ListParWithRandom,
+        persist: bool,
+    ) -> Result<ScheduledProduce, RholangError> {
+        self.cost
+            .charge(Costs::storage_cost_produce(channel, &data))?;
+        let scheduled = self
+            .space
+            .produce_at(path, channel.clone(), data, persist)
+            .await
+            .map_err(|e| RholangError::ReduceError(e.to_string()))?;
+        let RspaceScheduledProduce {
+            joins,
+            result,
+            phase_two,
+            release,
+        } = scheduled;
+        // Propagate the op's error before charging (mirror of the plain `produce` override).
+        let result = result.map_err(|e| RholangError::ReduceError(e.to_string()))?;
+        if phase_two.is_none() {
+            // Phase one stored the datum inline (no match), so the produce event cost lands with
+            // phase one; a deferred commit charges its event/COMM costs in `commit_produce`.
+            self.cost.charge(Costs::event_storage_cost(1))?;
+        }
+        Ok(ScheduledProduce {
+            joins,
+            application: to_application(result),
+            phase_two: phase_two.map(|p| PendingProduce {
+                trigger: p.trigger,
+                data: p.data,
+                persist: p.persist,
+            }),
+            release,
+        })
+    }
+
+    async fn consume_at(
+        &self,
+        path: Vec<u16>,
+        channels: &[SortedProc],
+        patterns: &[BindPattern],
+        continuation: TaggedContinuation,
+        persist: bool,
+        peeks: BTreeSet<usize>,
+    ) -> Result<ScheduledConsume, RholangError> {
+        self.cost.charge(Costs::storage_cost_consume(
+            channels,
+            patterns,
+            &continuation,
+        ))?;
+        let scheduled = self
+            .space
+            .consume_at(path, channels, patterns, continuation, persist, peeks)
+            .await
+            .map_err(|e| RholangError::ReduceError(e.to_string()))?;
+        let RspaceScheduledConsume { result, release } = scheduled;
+        // Propagate the op's error before charging (mirror of the plain `consume` override).
+        let result = result.map_err(|e| RholangError::ReduceError(e.to_string()))?;
+        match &result {
+            None => self
+                .cost
+                .charge(Costs::event_storage_cost(channels.len() as i64))?,
+            Some((cont, _)) => {
+                if !persist {
+                    self.cost
+                        .charge(Costs::event_storage_cost(channels.len() as i64))?;
+                }
+                self.cost
+                    .charge(Costs::comm_event_storage_cost(cont.channels.len() as i64))?;
+            }
+        }
+        Ok(ScheduledConsume {
+            application: to_application(result),
+            release,
+        })
+    }
+
+    async fn commit_produce(&self, pending: PendingProduce) -> Result<Application, RholangError> {
+        let persist = pending.persist;
+        let result = self
+            .space
+            .commit_produce(RspacePendingProduce {
+                trigger: pending.trigger,
+                data: pending.data,
+                persist,
+            })
+            .await
+            .map_err(|e| RholangError::ReduceError(e.to_string()))?;
+        // The event/COMM costs land with the commit (the op's completion, phase two).
+        match &result {
+            None => self.cost.charge(Costs::event_storage_cost(1))?,
+            Some((cont, _)) => {
+                if !persist {
+                    self.cost.charge(Costs::event_storage_cost(1))?;
                 }
                 self.cost
                     .charge(Costs::comm_event_storage_cost(cont.channels.len() as i64))?;
@@ -192,7 +309,9 @@ mod tests {
     }
 
     #[async_trait]
-    impl RSpaceTuplespace<SortedProc, BindPattern, ListParWithRandom, TaggedContinuation> for MockSpace {
+    impl RSpaceTuplespace<SortedProc, BindPattern, ListParWithRandom, TaggedContinuation>
+        for MockSpace
+    {
         async fn consume(
             &self,
             _channels: &[SortedProc],
@@ -239,6 +358,97 @@ mod tests {
         }
     }
 
+    /// A mock space plus a fresh cost account, for the scheduled-path charge tests.
+    fn charging_space(initial: i64) -> (ChargingRSpace, Arc<CostAccounting>, Arc<MockSpace>) {
+        let mock = Arc::new(MockSpace {
+            produced: Mutex::new(Vec::new()),
+        });
+        let cost = Arc::new(CostAccounting::from_initial(Cost::new(initial, "init")));
+        let charging = ChargingRSpace::new(mock.clone() as RhoTuplespace, cost.clone());
+        (charging, cost, mock)
+    }
+
+    fn sample_channel() -> SortedProc {
+        SortedProc::new(par(vec![Expr::GInt(1)]))
+    }
+
+    /// Where the storage cost lands on the scheduled path: **up front**, with phase one. The corpus
+    /// tests exercise `produce_at` end-to-end but cannot say *where* a charge lands, which is what
+    /// this pins.
+    #[tokio::test]
+    async fn produce_at_charges_the_storage_up_front() {
+        let (charging, cost, _) = charging_space(1_000_000);
+        let channel = sample_channel();
+        let data = lpw(vec![par(vec![Expr::GInt(2)])]);
+
+        charging
+            .produce_at(Vec::new(), &channel, data.clone(), false)
+            .await
+            .expect("produce_at");
+
+        // The mock never matches, so phase one stored the datum inline and the produce event cost
+        // lands with it rather than being deferred to a commit. The expected total is built by
+        // charging a reference account the same two costs, rather than by arithmetic on `Cost`.
+        let reference = CostAccounting::from_initial(Cost::new(1_000_000, "init"));
+        reference
+            .charge(Costs::storage_cost_produce(&channel, &data))
+            .expect("storage cost");
+        reference
+            .charge(Costs::event_storage_cost(1))
+            .expect("event cost");
+        assert_eq!(cost.total_charged(), reference.total_charged());
+    }
+
+    /// An exhausted balance fails **before** the datum is stored — the charge is not a flush after
+    /// the fact, so a caller cannot get a free store out of an underfunded deploy.
+    #[tokio::test]
+    async fn produce_at_fails_before_storing_when_the_balance_is_spent() {
+        let (charging, _, mock) = charging_space(1);
+        let err = charging
+            .produce_at(
+                Vec::new(),
+                &sample_channel(),
+                lpw(vec![par(vec![Expr::GInt(2)])]),
+                false,
+            )
+            .await
+            .expect_err("an exhausted balance must fail");
+        assert!(!err.to_string().is_empty());
+        assert!(
+            mock.produced.lock().unwrap().is_empty(),
+            "nothing may be stored when the storage charge fails"
+        );
+    }
+
+    /// The other half of the split: when a produce defers to phase two, the event cost is charged at
+    /// the **commit**, not up front — so an aborted phase two does not pay for an event it never
+    /// produced.
+    #[tokio::test]
+    async fn commit_produce_charges_the_event_at_the_commit() {
+        let (charging, cost, _) = charging_space(1_000_000);
+        let before = cost.total_charged();
+
+        charging
+            .commit_produce(PendingProduce {
+                trigger: sample_channel(),
+                data: lpw(vec![par(vec![Expr::GInt(2)])]),
+                persist: false,
+            })
+            .await
+            .expect("commit_produce");
+
+        let charged = cost.total_charged() - before;
+        let reference = CostAccounting::from_initial(Cost::new(1_000_000, "init"));
+        reference
+            .charge(Costs::event_storage_cost(1))
+            .expect("event cost");
+        assert_eq!(
+            charged,
+            reference.total_charged(),
+            "the commit charges the event cost for the produce it completes"
+        );
+    }
+
     #[tokio::test]
     async fn charging_rspace_charges_and_enforces_balance() {
         let mock: RhoTuplespace = Arc::new(MockSpace {
@@ -248,10 +458,17 @@ mod tests {
         let charging = ChargingRSpace::new(mock, cost.clone());
 
         charging
-            .produce(&SortedProc::new(par(vec![Expr::GInt(1)])), lpw(vec![par(vec![Expr::GInt(2)])]), false)
+            .produce(
+                &SortedProc::new(par(vec![Expr::GInt(1)])),
+                lpw(vec![par(vec![Expr::GInt(2)])]),
+                false,
+            )
             .await
             .unwrap();
-        assert!(cost.total_charged() > 0, "produce must charge storage/event cost");
+        assert!(
+            cost.total_charged() > 0,
+            "produce must charge storage/event cost"
+        );
 
         // A near-zero balance is exhausted by the upfront storage charge.
         let tiny_cost = Arc::new(CostAccounting::from_initial(Cost::new(1, "tiny")));
@@ -262,7 +479,11 @@ mod tests {
             tiny_cost,
         );
         let err = tiny
-            .produce(&SortedProc::new(par(vec![Expr::GInt(1)])), lpw(vec![par(vec![Expr::GInt(2)])]), false)
+            .produce(
+                &SortedProc::new(par(vec![Expr::GInt(1)])),
+                lpw(vec![par(vec![Expr::GInt(2)])]),
+                false,
+            )
             .await;
         assert!(err.is_err(), "exhausted balance must fail produce");
     }
@@ -283,7 +504,10 @@ mod tests {
             random_state: rchain_crypto::hash::blake2b512_random::Blake2b512Random::new_random(128),
         };
         let result = RhoMatch.get(&pattern, &data).unwrap();
-        assert_eq!(result.pars, vec![SortedProc::new(par(vec![Expr::GInt(42)]))]);
+        assert_eq!(
+            result.pars,
+            vec![SortedProc::new(par(vec![Expr::GInt(42)]))]
+        );
     }
 
     #[test]
@@ -295,18 +519,21 @@ mod tests {
             patterns: vec![],
             peek: true,
         };
-        let data = RSpaceResult {
-            channel: SortedProc::new(par(vec![Expr::GInt(1)])),
-            matched_datum: ListParWithRandom {
-                pars: vec![],
-                random_state: rchain_crypto::hash::blake2b512_random::Blake2b512Random::new_random(128),
-            },
-            removed_datum: ListParWithRandom {
-                pars: vec![],
-                random_state: rchain_crypto::hash::blake2b512_random::Blake2b512Random::new_random(128),
-            },
-            persistent: false,
-        };
+        let data =
+            RSpaceResult {
+                channel: SortedProc::new(par(vec![Expr::GInt(1)])),
+                matched_datum: ListParWithRandom {
+                    pars: vec![],
+                    random_state:
+                        rchain_crypto::hash::blake2b512_random::Blake2b512Random::new_random(128),
+                },
+                removed_datum: ListParWithRandom {
+                    pars: vec![],
+                    random_state:
+                        rchain_crypto::hash::blake2b512_random::Blake2b512Random::new_random(128),
+                },
+                persistent: false,
+            };
         let app = to_application(Some((cont, vec![data]))).unwrap();
         assert!(matches!(app.0, TaggedContinuation::Empty));
         assert!(app.2);

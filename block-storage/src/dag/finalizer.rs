@@ -59,7 +59,11 @@ where
     }
 
     /// Iterate the sender's own parent chain (nearest to oldest), stopping at `finalized` messages.
-    fn self_parents(&self, mv: &Message<M, S>, finalized: &BTreeSet<Message<M, S>>) -> Vec<Message<M, S>> {
+    fn self_parents(
+        &self,
+        mv: &Message<M, S>,
+        finalized: &BTreeSet<Message<M, S>>,
+    ) -> Vec<Message<M, S>> {
         let mut chain = Vec::new();
         let mut next: Vec<Message<M, S>> = mv
             .parents
@@ -80,7 +84,11 @@ where
     }
 
     /// Whether the minimum messages are enough for the next-fringe calculation.
-    pub fn check_min_messages(&self, min_msgs: &[Message<M, S>], bonds_map: &BTreeMap<S, NonNegI64>) -> bool {
+    pub fn check_min_messages(
+        &self,
+        min_msgs: &[Message<M, S>],
+        bonds_map: &BTreeMap<S, NonNegI64>,
+    ) -> bool {
         // TODO: epoch changes need more than a sender-count comparison.
         min_msgs.len() == bonds_map.len()
     }
@@ -159,10 +167,7 @@ where
                 }
             }
         }
-        let total_stake: i128 = bonds_map
-            .values()
-            .map(|v| i128::from(i64::from(*v)))
-            .sum();
+        let total_stake: i128 = bonds_map.values().map(|v| i128::from(i64::from(*v))).sum();
         is_super_majority(full_partition_stake, total_stake)
     }
 
@@ -219,7 +224,13 @@ where
 mod tests {
     use super::*;
 
-    fn msg(id: i32, sender: i32, sender_seq: i64, parents: &[i32], seen: &[i32]) -> Message<i32, i32> {
+    fn msg(
+        id: i32,
+        sender: i32,
+        sender_seq: i64,
+        parents: &[i32],
+        seen: &[i32],
+    ) -> Message<i32, i32> {
         Message {
             id,
             height: BlockHeight::zero(),
@@ -279,7 +290,10 @@ mod tests {
         let mut support = support_with_full(&[0, 1, 2], &bonded_senders);
         support.insert(
             99,
-            bonded_senders.iter().map(|&b| (b, bonded_senders.clone())).collect(),
+            bonded_senders
+                .iter()
+                .map(|&b| (b, bonded_senders.clone()))
+                .collect(),
         );
         assert!(finalizer.calculate_fringe(&support, &bonds));
     }
@@ -289,7 +303,14 @@ mod tests {
         let map: BTreeMap<i32, Message<i32, i32>> = BTreeMap::new();
         let finalizer: Finalizer<i32, i32> = Finalizer::new(&map);
         let bonds = bonded();
-        assert!(finalizer.check_min_messages(&[msg(0, 0, 0, &[], &[]), msg(1, 1, 0, &[], &[]), msg(2, 2, 0, &[], &[])], &bonds));
+        assert!(finalizer.check_min_messages(
+            &[
+                msg(0, 0, 0, &[], &[]),
+                msg(1, 1, 0, &[], &[]),
+                msg(2, 2, 0, &[], &[])
+            ],
+            &bonds
+        ));
         assert!(!finalizer.check_min_messages(&[msg(0, 0, 0, &[], &[])], &bonds));
     }
 
@@ -300,10 +321,14 @@ mod tests {
         let m0 = msg(0, 0, 0, &[3], &[]);
         let m1 = msg(1, 1, 0, &[], &[]);
         let m2 = msg(2, 2, 0, &[], &[]);
-        let map: BTreeMap<i32, Message<i32, i32>> =
-            [(0, m0.clone()), (1, m1.clone()), (2, m2.clone()), (3, m0_later.clone())]
-                .into_iter()
-                .collect();
+        let map: BTreeMap<i32, Message<i32, i32>> = [
+            (0, m0.clone()),
+            (1, m1.clone()),
+            (2, m2.clone()),
+            (3, m0_later.clone()),
+        ]
+        .into_iter()
+        .collect();
         let finalizer: Finalizer<i32, i32> = Finalizer::new(&map);
         let min_msgs = [m0, m1, m2];
         let next = finalizer.calculate_next_layer(&min_msgs);
@@ -329,20 +354,33 @@ mod tests {
         let c3 = msg(32, 2, 3, &[20, 21, 22], &[99, 10, 11, 12, 20, 21, 22, 32]);
 
         let map: BTreeMap<i32, Message<i32, i32>> = [
-            genesis.clone(), a1.clone(), b1.clone(), c1.clone(), a2.clone(), b2.clone(), c2.clone(),
-            a3.clone(), b3.clone(), c3.clone(),
+            genesis.clone(),
+            a1.clone(),
+            b1.clone(),
+            c1.clone(),
+            a2.clone(),
+            b2.clone(),
+            c2.clone(),
+            a3.clone(),
+            b3.clone(),
+            c3.clone(),
         ]
         .into_iter()
         .map(|m| (m.id, m))
         .collect();
-        let bonds: BTreeMap<i32, NonNegI64> =
-            [(0, 10), (1, 10), (2, 10)].into_iter().map(|(k, v)| (k, NonNegI64::try_from(v).unwrap())).collect();
+        let bonds: BTreeMap<i32, NonNegI64> = [(0, 10), (1, 10), (2, 10)]
+            .into_iter()
+            .map(|(k, v)| (k, NonNegI64::try_from(v).unwrap()))
+            .collect();
 
-        let justifications: BTreeSet<Message<i32, i32>> =
-            [a3, b3, c3].into_iter().collect();
+        let justifications: BTreeSet<Message<i32, i32>> = [a3, b3, c3].into_iter().collect();
         let finalizer: Finalizer<i32, i32> = Finalizer::new(&map);
         let (_parent, new_fringe) = finalizer.calculate_finalization(&justifications, &bonds);
-        let ids: BTreeSet<i32> = new_fringe.expect("fringe should advance").into_iter().map(|m| m.id).collect();
+        let ids: BTreeSet<i32> = new_fringe
+            .expect("fringe should advance")
+            .into_iter()
+            .map(|m| m.id)
+            .collect();
         assert_eq!(ids, [10, 11, 12].into_iter().collect());
     }
 
@@ -353,12 +391,18 @@ mod tests {
         let a1 = msg(10, 0, 1, &[99], &[99, 10]);
         let b1 = msg(11, 1, 1, &[10], &[99, 10, 11]);
         let c1 = msg(12, 2, 1, &[11], &[99, 10, 11, 12]);
-        let map: BTreeMap<i32, Message<i32, i32>> =
-            [genesis, a1, b1, c1].into_iter().map(|m| (m.id, m)).collect();
-        let bonds: BTreeMap<i32, NonNegI64> =
-            [(0, 10), (1, 10), (2, 10)].into_iter().map(|(k, v)| (k, NonNegI64::try_from(v).unwrap())).collect();
+        let map: BTreeMap<i32, Message<i32, i32>> = [genesis, a1, b1, c1]
+            .into_iter()
+            .map(|m| (m.id, m))
+            .collect();
+        let bonds: BTreeMap<i32, NonNegI64> = [(0, 10), (1, 10), (2, 10)]
+            .into_iter()
+            .map(|(k, v)| (k, NonNegI64::try_from(v).unwrap()))
+            .collect();
         let justifications: BTreeSet<Message<i32, i32>> =
-            [map[&10].clone(), map[&11].clone(), map[&12].clone()].into_iter().collect();
+            [map[&10].clone(), map[&11].clone(), map[&12].clone()]
+                .into_iter()
+                .collect();
         let finalizer: Finalizer<i32, i32> = Finalizer::new(&map);
         let (_parent, new_fringe) = finalizer.calculate_finalization(&justifications, &bonds);
         assert!(new_fringe.is_none(), "lockstep chain must not finalize");

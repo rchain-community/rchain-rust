@@ -89,8 +89,14 @@ mod tests {
 
     #[test]
     fn product_hash_is_deterministic() {
-        assert_eq!(product_hash("Par", &[1, 2, 3]), product_hash("Par", &[1, 2, 3]));
-        assert_ne!(product_hash("Par", &[1, 2, 3]), product_hash("Par", &[1, 2, 4]));
+        assert_eq!(
+            product_hash("Par", &[1, 2, 3]),
+            product_hash("Par", &[1, 2, 3])
+        );
+        assert_ne!(
+            product_hash("Par", &[1, 2, 3]),
+            product_hash("Par", &[1, 2, 4])
+        );
     }
 
     #[test]

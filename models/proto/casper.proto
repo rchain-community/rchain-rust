@@ -59,6 +59,10 @@ message BlockMessageProto {
   RholangStateProto state          = 14;
   string sigAlgorithm   = 15;
   bytes  sig            = 16;
+  // Proposer's wall clock (ms since the Unix epoch) at block creation. Informational only: it is
+  // NOT a consensus input (validators ignore it), and it is exposed to RChain applications via
+  // `rho:block:data`. It is part of the header, so it is covered by the block hash.
+  int64  timestamp      = 17;
 }
 
 message DeployDataProto {
@@ -71,6 +75,10 @@ message DeployDataProto {
   int64  phloLimit             = 8;
   int64  validAfterBlockNumber = 10;
   string shardId               = 11;
+  // Binary attachments (RCHIP #39). Signed as part of the deploy data; referenced from rholang as
+  // `rho:attachment:1`, `rho:attachment:2`, … (1-based) yielding a ByteArray. Deploys without
+  // attachments encode exactly as before, so existing signatures/ids are unchanged.
+  repeated bytes attachments  = 12;
 }
 
 // Inlined from RhoTypes.proto.

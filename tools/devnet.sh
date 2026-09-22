@@ -64,6 +64,7 @@ Commands:
   query <name>                   listen for data at a public name
   faucet <rev-address>           transfer 0.3 REV from the funded dev wallet to <rev-address>
   propose [--admin]              force the bootstrap to propose (gRPC, or admin HTTP with --admin)
+  demo                           deploy the complex wallet contract and assert its round-trip
   cli <node> <rnode subcommand…> run the Rust client inside a node container
   help                           this message
 
@@ -79,6 +80,9 @@ Commands:
   --propose-on-deploy | --no-propose-on-deploy
                                  propose a block immediately after a deploy (default: on for devnet)
   --admin | --no-admin           publish the admin HTTP API (40405) to the host (default: on for devnet)
+  --effect-scheduler MODE        effect-scheduler mode: dfs (default), gate, relaxed-validated, or
+                                 relaxed — the last is rejected on the block path at runtime, which
+                                 is how tools/devnet-fuzz.py --mode scheduler exercises that guard
   --deployer-key HEX | --no-deployer
                                  fund the deployer wallet + enable dev-mode dummy-deploy keepalive
                                  (default: on for devnet, using validator[0]'s key)
@@ -179,6 +183,11 @@ rnode_run_common() {
   if $PROPOSE_ON_DEPLOY; then flags="$flags --propose-on-deploy"; fi
   if $ADMIN; then flags="$flags --api-enable-devnet-cors"; fi
   if $DEPLOYER; then flags="$flags --dev-mode --deployer-private-key ${DEPLOYER_PRIV}"; fi
+  # The effect-scheduler mode (Laws 20-25). The default is the sequential reference; `gate` and
+  # `relaxed-validated` are the block-path-capable alternatives, and `relaxed` is rejected on the
+  # block path at runtime (casper/tests/scheduler.rs::block_paths_reject_relaxed_mode), so starting
+  # a devnet with it is how that rejection is exercised end to end.
+  if [[ -n "$EFFECT_SCHEDULER" ]]; then flags="$flags --effect-scheduler $EFFECT_SCHEDULER"; fi
   echo "$flags"
 }
 
@@ -189,11 +198,19 @@ cmd_up() {
   PROPOSE_ON_DEPLOY=true
   ADMIN=true
   DEPLOYER=true
+  EFFECT_SCHEDULER=""   # default: the node's own default (dfs)
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --validators) n="${2:?}"; shift 2 ;;
       --observers)  m="${2:?}"; shift 2 ;;
+      --effect-scheduler)
+        EFFECT_SCHEDULER="${2:?}"
+        case "$EFFECT_SCHEDULER" in
+          dfs|gate|relaxed|relaxed-validated) ;;
+          *) echo "--effect-scheduler must be one of dfs, gate, relaxed, relaxed-validated" >&2; exit 2 ;;
+        esac
+        shift 2 ;;
       --nodes)
         n=1; m=$((${2:?} - 1)); AUTOPROPOSE=false; PROPOSE_ON_DEPLOY=false; ADMIN=false; DEPLOYER=false
         shift 2 ;;
@@ -406,7 +423,7 @@ cmd_deploy() {
   node_cli "$node" deploy \
     --phlo-limit 1000000 --phlo-price 1 \
     --private-key "$DEPLOYER_PRIV" \
-    --shard-id root \
+    --shard-id /root \
     --valid-after-block-number "${height:-0}" \
     "/contracts/$base"
 }
@@ -422,6 +439,29 @@ cmd_query() {
   # The name is a public (forgeable) name; quote it so the client normalizes it as a rholang
   # *ground string* (matching `@"hello"!("world")`), not as a free variable.
   node_cli "$BOOTSTRAP" listen-data-at-name -t pub -c "\"$name\""
+}
+
+# One-shot run of the second (complex) contract: deploy examples/wallet.rho, which derives the
+# deployer's REV address, keeps a per-address codeDict map, round-trips save/load, and publishes the
+# loaded value on the public name "wallet"; assert the round-trip landed.
+cmd_demo() {
+  echo "==> deploying the complex wallet contract (examples/wallet.rho)"
+  cmd_deploy wallet.rho
+
+  echo "==> waiting for the round-tripped value on the public name 'wallet'"
+  local out
+  if ! out="$(timeout 120 docker exec -i "$BOOTSTRAP" rnode --grpc-host localhost \
+      listen-data-at-name -t pub -c '"wallet"')"; then
+    echo "ERROR: query timed out or failed" >&2
+    return 1
+  fi
+  echo "$out"
+  if ! grep -q 'world' <<<"$out"; then
+    echo "ERROR: expected the wallet contract to round-trip 'world', got:" >&2
+    echo "$out" >&2
+    return 1
+  fi
+  echo "==> wallet contract round-trip OK"
 }
 
 cmd_faucet() {
@@ -461,6 +501,7 @@ case "${1:-}" in
   eval) shift; cmd_eval "$@" ;;
   query) shift; cmd_query "$@" ;;
   faucet) shift; cmd_faucet "$@" ;;
+  demo) cmd_demo ;;
   propose) shift; cmd_propose "${1:-}" ;;
   cli) shift; cmd_cli "$@" ;;
   help|--help|-h) help ;;

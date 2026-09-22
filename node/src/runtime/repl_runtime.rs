@@ -126,10 +126,7 @@ mod tests {
     #[test]
     fn repl_runs_program_and_quits() {
         let mut console = MockConsole {
-            lines: vec![
-                Some("new x in { 0 }".to_string()),
-                Some(":q".to_string()),
-            ],
+            lines: vec![Some("new x in { 0 }".to_string()), Some(":q".to_string())],
             printed: vec![],
         };
         let client = MockClient {

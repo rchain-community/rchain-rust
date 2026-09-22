@@ -15,18 +15,23 @@ use async_trait::async_trait;
 use num_bigint::BigInt;
 use rchain_crypto::hash::blake2b512_random::Blake2b512Random;
 use rchain_models::ast::{
-    AlwaysEqual, Bundle, EList, ETuple, Expr, GPrivate, GUnforgeable, Match, Name, New,
-    Par, ParMap, ParSet, Receive, ReceiveBind, Send, Sort, SortJoin, Var,
+    AlwaysEqual, Bundle, EList, ETuple, Expr, GPrivate, GUnforgeable, Match, Name, New, Par,
+    ParMap, ParSet, Receive, ReceiveBind, Send, Sort, SortJoin, Var,
 };
 use rchain_models::par_ops::{from_expr, par_concat, single_bundle, single_expr, typ};
 use rchain_models::runtime::{BindPattern, ListParWithRandom, ParWithRandom, TaggedContinuation};
 use rchain_models::sorted::SortedProc;
 use rchain_models::sorter::{par_map, par_set};
+use rchain_rspace::concurrent::channel_queue::{
+    AcquireError, ChannelClaimQueue, ClaimGuard, HeadLease,
+};
+use rchain_rspace::scheduled_space::ReleaseToken;
 
-use crate::accounting::{CostAccounting, Costs};
+use crate::accounting::{Cost, CostAccounting, Costs};
 use crate::env::Env;
 use crate::errors::RholangError;
 use crate::matcher::spatial_match_result;
+use crate::scheduler::{DfsPath, EffectMode};
 use crate::substitute::substitute_par_and_charge;
 
 fn union_free(a: Vec<i32>, b: Vec<i32>) -> Vec<i32> {
@@ -37,11 +42,16 @@ fn union_free(a: Vec<i32>, b: Vec<i32>) -> Vec<i32> {
 
 /// Split the reduction RNG for the `i`-th of `n` sibling terms. This is the sequential
 /// interpreter's index-based split, preserved exactly so `new`-name freshness is unchanged.
-fn split_rand(rand: &Blake2b512Random, i: usize, n: usize) -> Result<Blake2b512Random, RholangError> {
+fn split_rand(
+    rand: &Blake2b512Random,
+    i: usize,
+    n: usize,
+) -> Result<Blake2b512Random, RholangError> {
     if n == 1 {
         Ok((*rand).clone())
     } else if n > 256 {
-        Ok(rand.split_short(u16::try_from(i).map_err(|e| RholangError::ReduceError(e.to_string()))?))
+        Ok(rand
+            .split_short(u16::try_from(i).map_err(|e| RholangError::ReduceError(e.to_string()))?))
     } else {
         Ok(rand.split_byte(u8::try_from(i).map_err(|e| RholangError::ReduceError(e.to_string()))?))
     }
@@ -77,9 +87,9 @@ pub fn update_locally_free(par: &Par) -> Par {
 fn eval_var(v: &Var, env: &Env<Par>, cost: &CostAccounting) -> Result<Par, RholangError> {
     cost.charge(Costs::var_eval_cost())?;
     match v {
-        Var::BoundVar(level) => env.get(*level).ok_or_else(|| {
-            RholangError::ReduceError(format!("Unbound variable: {level}"))
-        }),
+        Var::BoundVar(level) => env
+            .get(*level)
+            .ok_or_else(|| RholangError::ReduceError(format!("Unbound variable: {level}"))),
         Var::Wildcard | Var::FreeVar(_) => Err(RholangError::ReduceError(
             "Unbound variable: attempting to evaluate a pattern".to_string(),
         )),
@@ -102,6 +112,11 @@ fn eval_to_bool(par: &Par, env: &Env<Par>, cost: &CostAccounting) -> Result<bool
 fn eval_to_long(par: &Par, env: &Env<Par>, cost: &CostAccounting) -> Result<i64, RholangError> {
     match eval_single_expr(par, env, cost)? {
         Expr::GInt(v) => Ok(v),
+        // RCHIP #51: a `BigInt` that fits in `i64` is a valid index/count.
+        Expr::GBigInt(v) => v
+            .to_string()
+            .parse::<i64>()
+            .map_err(|_| RholangError::ReduceError(format!("Error: value out of range: {v}"))),
         other => Err(RholangError::ReduceError(format!(
             "Error: expected Int, got {}",
             typ(&other)
@@ -132,6 +147,121 @@ pub fn eval_single_expr<S: Sort>(
     }
 }
 
+/// The integer value of an `Int`/`BigInt` expression (RCHIP #51: one integer domain).
+fn as_integer(e: &Expr) -> Option<BigInt> {
+    match e {
+        Expr::GInt(v) => Some(BigInt::from(*v)),
+        Expr::GBigInt(v) => Some(v.clone()),
+        _ => None,
+    }
+}
+
+fn is_zero(e: &Expr) -> bool {
+    match e {
+        Expr::GInt(v) => *v == 0,
+        Expr::GBigInt(v) => *v == BigInt::from(0),
+        _ => false,
+    }
+}
+
+/// Numeric equality spanning `Int`/`BigInt` (so `2 == 2n`); `None` when not both are integers.
+fn numeric_eq(a: &Par, b: &Par) -> Option<bool> {
+    let x = as_integer(single_expr(a)?)?;
+    let y = as_integer(single_expr(b)?)?;
+    Some(x == y)
+}
+
+/// A binary integer operation: an `i64` fast path (`checked`) that **never wraps** — on overflow it
+/// promotes both operands and computes exactly in `BigInt` (RCHIP #51). Mixed `Int`/`BigInt`
+/// operands promote too. `big` must never be called with a zero divisor.
+fn int_binop(
+    op: &str,
+    v1: &Expr,
+    v2: &Expr,
+    cost: &CostAccounting,
+    checked: fn(i64, i64) -> Option<i64>,
+    big: fn(&BigInt, &BigInt) -> Result<BigInt, RholangError>,
+    int_cost: Cost,
+    big_cost: fn(&BigInt, &BigInt) -> Cost,
+) -> Result<Expr, RholangError> {
+    match (v1, v2) {
+        (Expr::GInt(l), Expr::GInt(r)) => match checked(*l, *r) {
+            Some(value) => {
+                cost.charge(int_cost)?;
+                Ok(Expr::GInt(value))
+            }
+            None => int_bigop(&BigInt::from(*l), &BigInt::from(*r), cost, big, big_cost),
+        },
+        (Expr::GInt(l), Expr::GBigInt(r)) => int_bigop(&BigInt::from(*l), r, cost, big, big_cost),
+        (Expr::GBigInt(l), Expr::GInt(r)) => int_bigop(l, &BigInt::from(*r), cost, big, big_cost),
+        (Expr::GBigInt(l), Expr::GBigInt(r)) => int_bigop(l, r, cost, big, big_cost),
+        (Expr::GInt(_) | Expr::GBigInt(_), o) => Err(RholangError::OperatorExpectedError {
+            op: op.to_string(),
+            expected: "Int".to_string(),
+            other_type: typ(o).to_string(),
+        }),
+        (o, _) => Err(RholangError::OperatorNotDefined {
+            op: op.to_string(),
+            other_type: typ(o).to_string(),
+        }),
+    }
+}
+
+fn int_bigop(
+    l: &BigInt,
+    r: &BigInt,
+    cost: &CostAccounting,
+    big: fn(&BigInt, &BigInt) -> Result<BigInt, RholangError>,
+    big_cost: fn(&BigInt, &BigInt) -> Cost,
+) -> Result<Expr, RholangError> {
+    cost.charge(big_cost(l, r))?;
+    Ok(Expr::GBigInt(big(l, r)?))
+}
+
+/// `set + x` — insert `x` into the set, re-canonicalised. This is the `add` **method**'s body,
+/// shared with the `+` operator exactly as Scala shares them (`EPlusBody`'s
+/// `case (lhs: ESetBody, rhs) => add(lhs, List[Par](rhs))` calls the same `add` the `.add(x)`
+/// method does), so the two cannot drift apart.
+fn set_add(b: &ParSet, element: Par, cost: &CostAccounting) -> Result<Expr, RholangError> {
+    cost.charge(Costs::add_cost())?;
+    let element_conn = element.connective_used;
+    let element_lf = element.locally_free.0.clone();
+    let mut ps = b.ps.clone();
+    ps.push(element);
+    let mut s = par_set(ps);
+    s.connective_used = b.connective_used || element_conn;
+    s.locally_free = AlwaysEqual(union_free(b.locally_free.0.clone(), element_lf));
+    s.remainder = None;
+    Ok(Expr::ESet(s))
+}
+
+/// `collection - x` — `delete` for sets and maps (Scala's `EMinusBody` has an arm for each, both
+/// calling `delete`), shared with the `.delete(x)` method for the same reason as [`set_add`].
+fn collection_delete(
+    base: &Expr,
+    element: &Par,
+    cost: &CostAccounting,
+) -> Result<Expr, RholangError> {
+    match base {
+        Expr::ESet(b) => {
+            cost.charge(Costs::remove_cost().mul(b.ps.len() as i64))?;
+            let ps: Vec<Par> = b.ps.iter().filter(|p| *p != element).cloned().collect();
+            Ok(Expr::ESet(par_set(ps)))
+        }
+        Expr::EMap(b) => {
+            cost.charge(Costs::remove_cost().mul(b.kvs.len() as i64))?;
+            let kvs: Vec<(Par, Par)> = b
+                .kvs
+                .iter()
+                .filter(|(k, _)| k != element)
+                .cloned()
+                .collect();
+            Ok(Expr::EMap(par_map(kvs)))
+        }
+        other => Err(method_not_defined("delete", other)),
+    }
+}
+
 fn relop(
     p1: &Par,
     p2: &Par,
@@ -157,6 +287,17 @@ fn relop(
             cost.charge(Costs::big_int_comparison(b1, b2))?;
             Expr::GBool(relopbi(b1, b2))
         }
+        // Mixed `Int`/`BigInt` comparisons promote (RCHIP #51).
+        (Expr::GInt(i1), Expr::GBigInt(b2)) => {
+            let b1 = BigInt::from(*i1);
+            cost.charge(Costs::big_int_comparison(&b1, b2))?;
+            Expr::GBool(relopbi(&b1, b2))
+        }
+        (Expr::GBigInt(b1), Expr::GInt(i2)) => {
+            let b2 = BigInt::from(*i2);
+            cost.charge(Costs::big_int_comparison(b1, &b2))?;
+            Expr::GBool(relopbi(b1, &b2))
+        }
         (Expr::GString(s1), Expr::GString(s2)) => {
             cost.charge(Costs::comparison_cost())?;
             Expr::GBool(relops(s1, s2))
@@ -169,10 +310,7 @@ fn relop(
     })
 }
 
-fn eval_to_string_pair(
-    key: &Expr,
-    value: &Expr,
-) -> Result<(String, String), RholangError> {
+fn eval_to_string_pair(key: &Expr, value: &Expr) -> Result<(String, String), RholangError> {
     match (key, value) {
         (Expr::GString(k), Expr::GString(v)) => Ok((k.clone(), v.clone())),
         (Expr::GString(k), Expr::GInt(v)) => Ok((k.clone(), v.to_string())),
@@ -193,7 +331,10 @@ fn interpolate(string: &str, pairs: &[(String, String)]) -> String {
     let mut result = String::new();
     let mut current = string;
     while !current.is_empty() {
-        match pairs.iter().find(|(k, _)| current.starts_with(&format!("${{{k}}}"))) {
+        match pairs
+            .iter()
+            .find(|(k, _)| current.starts_with(&format!("${{{k}}}")))
+        {
             Some((k, v)) => {
                 result.push_str(v);
                 current = &current[k.len() + 3..];
@@ -213,7 +354,11 @@ fn interpolate(string: &str, pairs: &[(String, String)]) -> String {
     result
 }
 
-fn eval_expr_to_par<S: Sort>(expr: &Expr, env: &Env<Par>, cost: &CostAccounting) -> Result<Par<S>, RholangError> {
+fn eval_expr_to_par<S: Sort>(
+    expr: &Expr,
+    env: &Env<Par>,
+    cost: &CostAccounting,
+) -> Result<Par<S>, RholangError> {
     match expr {
         Expr::EVar(v) => {
             let p = eval_var(v, env, cost)?;
@@ -227,13 +372,18 @@ fn eval_expr_to_par<S: Sort>(expr: &Expr, env: &Env<Par>, cost: &CostAccounting)
                 .iter()
                 .map(|a| eval_expr(a, env, cost))
                 .collect::<Result<_, _>>()?;
-            eval_method(&em.method_name, &evaled_target, &evaled_args, env, cost).map(|r| r.re_sort())
+            eval_method(&em.method_name, &evaled_target, &evaled_args, env, cost)
+                .map(|r| r.re_sort())
         }
         _ => Ok(from_expr(eval_expr_to_expr(expr, env, cost)?).re_sort()),
     }
 }
 
-fn eval_expr_to_expr(expr: &Expr, env: &Env<Par>, cost: &CostAccounting) -> Result<Expr, RholangError> {
+fn eval_expr_to_expr(
+    expr: &Expr,
+    env: &Env<Par>,
+    cost: &CostAccounting,
+) -> Result<Expr, RholangError> {
     match expr {
         Expr::GBool(_)
         | Expr::GInt(_)
@@ -245,7 +395,15 @@ fn eval_expr_to_expr(expr: &Expr, env: &Env<Par>, cost: &CostAccounting) -> Resu
         Expr::ENeg(p) => {
             let v = eval_single_expr(p, env, cost)?;
             match v {
-                Expr::GInt(hs) => Ok(Expr::GInt(hs.wrapping_neg())),
+                // `-i64::MIN` overflows `i64`: promote instead of wrapping (RCHIP #51).
+                Expr::GInt(hs) => match hs.checked_neg() {
+                    Some(value) => Ok(Expr::GInt(value)),
+                    None => {
+                        let r = -BigInt::from(hs);
+                        cost.charge(Costs::big_int_negation(&r))?;
+                        Ok(Expr::GBigInt(r))
+                    }
+                },
                 Expr::GBigInt(hs) => {
                     let r = -hs;
                     cost.charge(Costs::big_int_negation(&r))?;
@@ -260,176 +418,144 @@ fn eval_expr_to_expr(expr: &Expr, env: &Env<Par>, cost: &CostAccounting) -> Resu
         Expr::EMult(p1, p2) => {
             let v1 = eval_single_expr(p1, env, cost)?;
             let v2 = eval_single_expr(p2, env, cost)?;
-            match (&v1, &v2) {
-                (Expr::GInt(l), Expr::GInt(r)) => {
-                    cost.charge(Costs::multiplication_cost())?;
-                    Ok(Expr::GInt(l.wrapping_mul(*r)))
-                }
-                (Expr::GBigInt(l), Expr::GBigInt(r)) => {
-                    cost.charge(Costs::big_int_multiplication(l, r))?;
-                    Ok(Expr::GBigInt(l * r))
-                }
-                (Expr::GInt(_), o) => Err(RholangError::OperatorExpectedError {
-                    op: "*".to_string(),
-                    expected: "Int".to_string(),
-                    other_type: typ(o).to_string(),
-                }),
-                (Expr::GBigInt(_), o) => Err(RholangError::OperatorExpectedError {
-                    op: "*".to_string(),
-                    expected: "BigInt".to_string(),
-                    other_type: typ(o).to_string(),
-                }),
-                (o, _) => Err(RholangError::OperatorNotDefined {
-                    op: "*".to_string(),
-                    other_type: typ(o).to_string(),
-                }),
-            }
+            int_binop(
+                "*",
+                &v1,
+                &v2,
+                cost,
+                i64::checked_mul,
+                |l, r| Ok(l * r),
+                Costs::multiplication_cost(),
+                Costs::big_int_multiplication,
+            )
         }
         Expr::EDiv(p1, p2) => {
             let v1 = eval_single_expr(p1, env, cost)?;
             let v2 = eval_single_expr(p2, env, cost)?;
-            match (&v1, &v2) {
-                (Expr::GInt(l), Expr::GInt(r)) => {
-                    if *r == 0 {
-                        return Err(RholangError::ReduceError("/ by zero".to_string()));
-                    }
-                    if *l == i64::MIN && *r == -1 {
-                        return Err(RholangError::ReduceError("division overflow".to_string()));
-                    }
-                    cost.charge(Costs::division_cost())?;
-                    Ok(Expr::GInt(l / r))
-                }
-                (Expr::GBigInt(l), Expr::GBigInt(r)) => {
-                    if *r == BigInt::from(0i64) {
-                        return Err(RholangError::ReduceError("/ by zero".to_string()));
-                    }
-                    cost.charge(Costs::big_int_division(l, r))?;
-                    Ok(Expr::GBigInt(l / r))
-                }
-                (Expr::GInt(_), o) => Err(RholangError::OperatorExpectedError {
-                    op: "/".to_string(),
-                    expected: "Int".to_string(),
-                    other_type: typ(o).to_string(),
-                }),
-                (Expr::GBigInt(_), o) => Err(RholangError::OperatorExpectedError {
-                    op: "/".to_string(),
-                    expected: "BigInt".to_string(),
-                    other_type: typ(o).to_string(),
-                }),
-                (o, _) => Err(RholangError::OperatorNotDefined {
-                    op: "/".to_string(),
-                    other_type: typ(o).to_string(),
-                }),
+            if is_zero(&v2) {
+                return Err(RholangError::ReduceError("/ by zero".to_string()));
             }
+            int_binop(
+                "/",
+                &v1,
+                &v2,
+                cost,
+                i64::checked_div,
+                |l, r| Ok(l / r),
+                Costs::division_cost(),
+                Costs::big_int_division,
+            )
         }
         Expr::EMod(p1, p2) => {
             let v1 = eval_single_expr(p1, env, cost)?;
             let v2 = eval_single_expr(p2, env, cost)?;
-            match (&v1, &v2) {
-                (Expr::GInt(l), Expr::GInt(r)) => {
-                    if *r == 0 {
-                        return Err(RholangError::ReduceError("/ by zero".to_string()));
-                    }
-                    if *l == i64::MIN && *r == -1 {
-                        return Err(RholangError::ReduceError("modulo overflow".to_string()));
-                    }
-                    cost.charge(Costs::modulo_cost())?;
-                    Ok(Expr::GInt(l % r))
-                }
-                (Expr::GBigInt(l), Expr::GBigInt(r)) => {
-                    if *r == BigInt::from(0i64) {
-                        return Err(RholangError::ReduceError("/ by zero".to_string()));
-                    }
-                    cost.charge(Costs::big_int_modulo(l, r))?;
-                    Ok(Expr::GBigInt(l % r))
-                }
-                (Expr::GInt(_), o) => Err(RholangError::OperatorExpectedError {
-                    op: "%".to_string(),
-                    expected: "Int".to_string(),
-                    other_type: typ(o).to_string(),
-                }),
-                (Expr::GBigInt(_), o) => Err(RholangError::OperatorExpectedError {
-                    op: "%".to_string(),
-                    expected: "BigInt".to_string(),
-                    other_type: typ(o).to_string(),
-                }),
-                (o, _) => Err(RholangError::OperatorNotDefined {
-                    op: "%".to_string(),
-                    other_type: typ(o).to_string(),
-                }),
+            if is_zero(&v2) {
+                return Err(RholangError::ReduceError("/ by zero".to_string()));
             }
+            int_binop(
+                "%",
+                &v1,
+                &v2,
+                cost,
+                i64::checked_rem,
+                |l, r| Ok(l % r),
+                Costs::modulo_cost(),
+                Costs::big_int_modulo,
+            )
         }
         Expr::EPlus(p1, p2) => {
             let v1 = eval_single_expr(p1, env, cost)?;
             let v2 = eval_single_expr(p2, env, cost)?;
-            match (&v1, &v2) {
-                (Expr::GInt(l), Expr::GInt(r)) => {
-                    cost.charge(Costs::sum_cost())?;
-                    Ok(Expr::GInt(l.wrapping_add(*r)))
-                }
-                (Expr::GBigInt(l), Expr::GBigInt(r)) => {
-                    cost.charge(Costs::big_int_sum(l, r))?;
-                    Ok(Expr::GBigInt(l + r))
-                }
-                (Expr::GInt(_), o) => Err(RholangError::OperatorExpectedError {
-                    op: "+".to_string(),
-                    expected: "Int".to_string(),
-                    other_type: typ(o).to_string(),
-                }),
-                (Expr::GBigInt(_), o) => Err(RholangError::OperatorExpectedError {
-                    op: "+".to_string(),
-                    expected: "BigInt".to_string(),
-                    other_type: typ(o).to_string(),
-                }),
-                (o, _) => Err(RholangError::OperatorNotDefined {
-                    op: "+".to_string(),
-                    other_type: typ(o).to_string(),
-                }),
+            // `Set + x` inserts (Scala: `case (lhs: ESetBody, rhs) => add(lhs, …)`), charged
+            // `OP_CALL_COST` for the dispatch before `add`'s own cost. The arm was missing, so
+            // `Set(1) + 2` — valid rholang, and what `convenience_methods_test.rho` exercises —
+            // errored as `OperatorNotDefined`.
+            if let Expr::ESet(b) = &v1 {
+                cost.charge(Costs::op_call_cost())?;
+                return set_add(b, from_expr(v2), cost);
             }
+            int_binop(
+                "+",
+                &v1,
+                &v2,
+                cost,
+                i64::checked_add,
+                |l, r| Ok(l + r),
+                Costs::sum_cost(),
+                Costs::big_int_sum,
+            )
         }
         Expr::EMinus(p1, p2) => {
             let v1 = eval_single_expr(p1, env, cost)?;
             let v2 = eval_single_expr(p2, env, cost)?;
-            match (&v1, &v2) {
-                (Expr::GInt(l), Expr::GInt(r)) => {
-                    cost.charge(Costs::subtraction_cost())?;
-                    Ok(Expr::GInt(l.wrapping_sub(*r)))
-                }
-                (Expr::GBigInt(l), Expr::GBigInt(r)) => {
-                    cost.charge(Costs::big_int_subtraction(l, r))?;
-                    Ok(Expr::GBigInt(l - r))
-                }
-                (Expr::GInt(_), o) => Err(RholangError::OperatorExpectedError {
-                    op: "-".to_string(),
-                    expected: "Int".to_string(),
-                    other_type: typ(o).to_string(),
-                }),
-                (Expr::GBigInt(_), o) => Err(RholangError::OperatorExpectedError {
-                    op: "-".to_string(),
-                    expected: "BigInt".to_string(),
-                    other_type: typ(o).to_string(),
-                }),
-                (o, _) => Err(RholangError::OperatorNotDefined {
-                    op: "-".to_string(),
-                    other_type: typ(o).to_string(),
-                }),
+            // `Set - x` / `Map - x` remove (Scala's `EMinusBody` calls `delete` for each).
+            if matches!(v1, Expr::ESet(_) | Expr::EMap(_)) {
+                cost.charge(Costs::op_call_cost())?;
+                return collection_delete(&v1, &from_expr(v2), cost);
             }
+            int_binop(
+                "-",
+                &v1,
+                &v2,
+                cost,
+                i64::checked_sub,
+                |l, r| Ok(l - r),
+                Costs::subtraction_cost(),
+                Costs::big_int_subtraction,
+            )
         }
-        Expr::ELt(p1, p2) => relop(p1, p2, |a, b| a < b, |a, b| a < b, |a, b| a < b, |a, b| a < b, env, cost),
-        Expr::ELte(p1, p2) => {
-            relop(p1, p2, |a, b| a <= b, |a, b| a <= b, |a, b| a <= b, |a, b| a <= b, env, cost)
-        }
-        Expr::EGt(p1, p2) => relop(p1, p2, |a, b| a > b, |a, b| a > b, |a, b| a > b, |a, b| a > b, env, cost),
-        Expr::EGte(p1, p2) => {
-            relop(p1, p2, |a, b| a >= b, |a, b| a >= b, |a, b| a >= b, |a, b| a >= b, env, cost)
-        }
+        Expr::ELt(p1, p2) => relop(
+            p1,
+            p2,
+            |a, b| a < b,
+            |a, b| a < b,
+            |a, b| a < b,
+            |a, b| a < b,
+            env,
+            cost,
+        ),
+        Expr::ELte(p1, p2) => relop(
+            p1,
+            p2,
+            |a, b| a <= b,
+            |a, b| a <= b,
+            |a, b| a <= b,
+            |a, b| a <= b,
+            env,
+            cost,
+        ),
+        Expr::EGt(p1, p2) => relop(
+            p1,
+            p2,
+            |a, b| a > b,
+            |a, b| a > b,
+            |a, b| a > b,
+            |a, b| a > b,
+            env,
+            cost,
+        ),
+        Expr::EGte(p1, p2) => relop(
+            p1,
+            p2,
+            |a, b| a >= b,
+            |a, b| a >= b,
+            |a, b| a >= b,
+            |a, b| a >= b,
+            env,
+            cost,
+        ),
         Expr::EEq(p1, p2) => {
             let v1 = eval_expr(p1, env, cost)?;
             let v2 = eval_expr(p2, env, cost)?;
             let sv1 = substitute_par_and_charge(&v1, 0, env, cost)?;
             let sv2 = substitute_par_and_charge(&v2, 0, env, cost)?;
             cost.charge(Costs::equality_check_cost(&sv1, &sv2))?;
-            Ok(Expr::GBool(sv1 == sv2))
+            // RCHIP #51: `Int`/`BigInt` with the same value are equal (`2 == 2n`).
+            let equal = match numeric_eq(&sv1, &sv2) {
+                Some(equal) => equal,
+                None => sv1 == sv2,
+            };
+            Ok(Expr::GBool(equal))
         }
         Expr::ENeq(p1, p2) => {
             let v1 = eval_expr(p1, env, cost)?;
@@ -437,7 +563,11 @@ fn eval_expr_to_expr(expr: &Expr, env: &Env<Par>, cost: &CostAccounting) -> Resu
             let sv1 = substitute_par_and_charge(&v1, 0, env, cost)?;
             let sv2 = substitute_par_and_charge(&v2, 0, env, cost)?;
             cost.charge(Costs::equality_check_cost(&sv1, &sv2))?;
-            Ok(Expr::GBool(sv1 != sv2))
+            let equal = match numeric_eq(&sv1, &sv2) {
+                Some(equal) => equal,
+                None => sv1 == sv2,
+            };
+            Ok(Expr::GBool(!equal))
         }
         Expr::EAnd(p1, p2) => {
             let b1 = eval_to_bool(p1, env, cost)?;
@@ -453,13 +583,21 @@ fn eval_expr_to_expr(expr: &Expr, env: &Env<Par>, cost: &CostAccounting) -> Resu
         }
         Expr::EShortAnd(p1, p2) => {
             let b1 = eval_to_bool(p1, env, cost)?;
-            let b2 = if b1 { eval_to_bool(p2, env, cost)? } else { false };
+            let b2 = if b1 {
+                eval_to_bool(p2, env, cost)?
+            } else {
+                false
+            };
             cost.charge(Costs::boolean_and_cost())?;
             Ok(Expr::GBool(b1 && b2))
         }
         Expr::EShortOr(p1, p2) => {
             let b1 = eval_to_bool(p1, env, cost)?;
-            let b2 = if b1 { true } else { eval_to_bool(p2, env, cost)? };
+            let b2 = if b1 {
+                true
+            } else {
+                eval_to_bool(p2, env, cost)?
+            };
             cost.charge(Costs::boolean_or_cost())?;
             Ok(Expr::GBool(b1 || b2))
         }
@@ -529,6 +667,37 @@ fn eval_expr_to_expr(expr: &Expr, env: &Env<Par>, cost: &CostAccounting) -> Resu
                         ..Default::default()
                     }))
                 }
+                (Expr::ESet(l), Expr::ESet(r)) => {
+                    // Set union (the `union` method's semantics, `ParSet.union`): the Scala `++`
+                    // union-s the two sets, charging `unionCost(otherPs.size)`.
+                    cost.charge(Costs::union_cost(r.ps.len() as i64))?;
+                    let mut ps = l.ps.clone();
+                    ps.extend(r.ps.clone());
+                    let mut s = par_set(ps);
+                    s.connective_used = l.connective_used || r.connective_used;
+                    s.locally_free = AlwaysEqual(union_free(
+                        l.locally_free.0.clone(),
+                        r.locally_free.0.clone(),
+                    ));
+                    s.remainder = None;
+                    Ok(Expr::ESet(s))
+                }
+                (Expr::EMap(l), Expr::EMap(r)) => {
+                    // Map union (`baseMap ++ otherMap`, right-biased: the other map's value wins on
+                    // a colliding key — which is what `par_map`'s canonicalisation gives, since it
+                    // keeps the last of each key).
+                    cost.charge(Costs::union_cost(r.kvs.len() as i64))?;
+                    let mut kvs = l.kvs.clone();
+                    kvs.extend(r.kvs.clone());
+                    let mut m = par_map(kvs);
+                    m.connective_used = l.connective_used || r.connective_used;
+                    m.locally_free = AlwaysEqual(union_free(
+                        l.locally_free.0.clone(),
+                        r.locally_free.0.clone(),
+                    ));
+                    m.remainder = None;
+                    Ok(Expr::EMap(m))
+                }
                 (Expr::GString(_), o) => Err(RholangError::OperatorExpectedError {
                     op: "++".to_string(),
                     expected: "String".to_string(),
@@ -537,6 +706,16 @@ fn eval_expr_to_expr(expr: &Expr, env: &Env<Par>, cost: &CostAccounting) -> Resu
                 (Expr::EList(_), o) => Err(RholangError::OperatorExpectedError {
                     op: "++".to_string(),
                     expected: "List".to_string(),
+                    other_type: typ(o).to_string(),
+                }),
+                (Expr::EMap(_), o) => Err(RholangError::OperatorExpectedError {
+                    op: "++".to_string(),
+                    expected: "Map".to_string(),
+                    other_type: typ(o).to_string(),
+                }),
+                (Expr::ESet(_), o) => Err(RholangError::OperatorExpectedError {
+                    op: "++".to_string(),
+                    expected: "Set".to_string(),
                     other_type: typ(o).to_string(),
                 }),
                 (o, _) => Err(RholangError::OperatorNotDefined {
@@ -639,7 +818,11 @@ fn eval_expr_to_expr(expr: &Expr, env: &Env<Par>, cost: &CostAccounting) -> Resu
 }
 
 /// Evaluate the top-level expressions of a `Par` (port of `evalExpr`).
-pub fn eval_expr<S: Sort + SortJoin<S>>(par: &Par<S>, env: &Env<Par>, cost: &CostAccounting) -> Result<Par<S>, RholangError> {
+pub fn eval_expr<S: Sort + SortJoin<S>>(
+    par: &Par<S>,
+    env: &Env<Par>,
+    cost: &CostAccounting,
+) -> Result<Par<S>, RholangError> {
     let mut result = Par {
         exprs: Vec::new(),
         ..par.clone()
@@ -660,6 +843,67 @@ fn check_arity(method: &str, expected: usize, actual: usize) -> Result<(), Rhola
         })
     } else {
         Ok(())
+    }
+}
+
+/// Arity check for the methods that accept a range of arguments (e.g. `substring(i[, j])`).
+/// The error reports the minimum accepted count.
+fn check_arity_between(
+    method: &str,
+    min: usize,
+    max: usize,
+    actual: usize,
+) -> Result<(), RholangError> {
+    if actual < min || actual > max {
+        Err(RholangError::MethodArgumentNumberMismatch {
+            method: method.to_string(),
+            expected: min as i32,
+            actual: actual as i32,
+        })
+    } else {
+        Ok(())
+    }
+}
+
+/// Require an evaluated `Expr` to be a string.
+fn expect_string(method: &str, e: Expr) -> Result<String, RholangError> {
+    match e {
+        Expr::GString(s) => Ok(s),
+        other => Err(method_not_defined(method, &other)),
+    }
+}
+
+/// Evaluate `p` and require a string.
+fn string_arg(
+    method: &str,
+    p: &Par,
+    env: &Env<Par>,
+    cost: &CostAccounting,
+) -> Result<String, RholangError> {
+    expect_string(method, eval_single_expr(p, env, cost)?)
+}
+
+/// Require an already-evaluated `Par` to hold a string (used where the argument was evaluated as a
+/// `Par`, e.g. `contains`, so it is not evaluated — and charged — twice).
+fn expect_string_par(method: &str, p: &Par) -> Result<String, RholangError> {
+    match single_expr(p) {
+        Some(Expr::GString(s)) => Ok(s.clone()),
+        Some(other) => Err(method_not_defined(method, other)),
+        None => Err(RholangError::ReduceError(format!(
+            "Error: {method} expects a string argument"
+        ))),
+    }
+}
+
+/// The string form of a value, for `toString`/`format` (the inverse of `toInt`/`toBigInt`).
+fn expr_to_string(method: &str, e: &Expr) -> Result<String, RholangError> {
+    match e {
+        Expr::GString(s) => Ok(s.clone()),
+        Expr::GInt(v) => Ok(v.to_string()),
+        Expr::GBigInt(v) => Ok(v.to_string()),
+        Expr::GBool(b) => Ok(if *b { "true" } else { "false" }.to_string()),
+        Expr::GUri(u) => Ok(u.clone()),
+        other => Err(method_not_defined(method, other)),
     }
 }
 
@@ -824,8 +1068,7 @@ fn eval_method(
             // `mkProtobufInstance(Par)` — the protobuf serialization, not UTF-8).
             check_arity("toByteArray", 0, args.len())?;
             let substituted = substitute_par_and_charge(target, 0, env, cost)?;
-            let bytes =
-                <Par as rchain_shared::serialize::Serialize<Par>>::encode(&substituted);
+            let bytes = <Par as rchain_shared::serialize::Serialize<Par>>::encode(&substituted);
             cost.charge(Costs::to_byte_array_cost(&substituted))?;
             Ok(from_expr(Expr::GByteArray(bytes)))
         }
@@ -840,8 +1083,10 @@ fn eval_method(
                     ps.extend(o.ps.clone());
                     let mut s = par_set(ps);
                     s.connective_used = b.connective_used || o.connective_used;
-                    s.locally_free =
-                        AlwaysEqual(union_free(b.locally_free.0.clone(), o.locally_free.0.clone()));
+                    s.locally_free = AlwaysEqual(union_free(
+                        b.locally_free.0.clone(),
+                        o.locally_free.0.clone(),
+                    ));
                     s.remainder = None;
                     Ok(from_expr(Expr::ESet(s)))
                 }
@@ -851,8 +1096,10 @@ fn eval_method(
                     kvs.extend(o.kvs.clone());
                     let mut m = par_map(kvs);
                     m.connective_used = b.connective_used || o.connective_used;
-                    m.locally_free =
-                        AlwaysEqual(union_free(b.locally_free.0.clone(), o.locally_free.0.clone()));
+                    m.locally_free = AlwaysEqual(union_free(
+                        b.locally_free.0.clone(),
+                        o.locally_free.0.clone(),
+                    ));
                     m.remainder = None;
                     Ok(from_expr(Expr::EMap(m)))
                 }
@@ -886,45 +1133,16 @@ fn eval_method(
             check_arity("add", 1, args.len())?;
             let base = eval_single_expr(target, env, cost)?;
             let element = eval_expr(&args[0], env, cost)?;
-            cost.charge(Costs::add_cost())?;
-            match base {
-                Expr::ESet(b) => {
-                    let element_conn = element.connective_used;
-                    let element_lf = element.locally_free.0.clone();
-                    let mut ps = b.ps.clone();
-                    ps.push(element);
-                    let mut s = par_set(ps);
-                    s.connective_used = b.connective_used || element_conn;
-                    s.locally_free =
-                        AlwaysEqual(union_free(b.locally_free.0.clone(), element_lf));
-                    s.remainder = None;
-                    Ok(from_expr(Expr::ESet(s)))
-                }
-                other => Err(method_not_defined("add", &other)),
+            match &base {
+                Expr::ESet(b) => set_add(b, element, cost).map(from_expr),
+                other => Err(method_not_defined("add", other)),
             }
         }
         "delete" => {
             check_arity("delete", 1, args.len())?;
             let base = eval_single_expr(target, env, cost)?;
             let element = eval_expr(&args[0], env, cost)?;
-            match &base {
-                Expr::ESet(b) => {
-                    cost.charge(Costs::remove_cost().mul(b.ps.len() as i64))?;
-                    let ps: Vec<Par> = b.ps.iter().filter(|p| *p != &element).cloned().collect();
-                    Ok(from_expr(Expr::ESet(par_set(ps))))
-                }
-                Expr::EMap(b) => {
-                    cost.charge(Costs::remove_cost().mul(b.kvs.len() as i64))?;
-                    let kvs: Vec<(Par, Par)> = b
-                        .kvs
-                        .iter()
-                        .filter(|(k, _)| k != &element)
-                        .cloned()
-                        .collect();
-                    Ok(from_expr(Expr::EMap(par_map(kvs))))
-                }
-                other => Err(method_not_defined("delete", other)),
-            }
+            collection_delete(&base, &element, cost).map(from_expr)
         }
         "contains" => {
             check_arity("contains", 1, args.len())?;
@@ -937,7 +1155,19 @@ fn eval_method(
                 }
                 Expr::EMap(b) => {
                     cost.charge(Costs::lookup_cost().mul(b.kvs.len() as i64))?;
-                    Ok(from_expr(Expr::GBool(b.kvs.iter().any(|(k, _)| k == &element))))
+                    Ok(from_expr(Expr::GBool(
+                        b.kvs.iter().any(|(k, _)| k == &element),
+                    )))
+                }
+                Expr::GString(s) => {
+                    // `S.contains(T)` (RCHIP #37): is `T` a substring of `S`.
+                    let needle = expect_string_par("contains", &element)?;
+                    cost.charge(Costs::string_search_cost(
+                        s.chars().count() as i64,
+                        needle.chars().count() as i64,
+                        "contains",
+                    ))?;
+                    Ok(from_expr(Expr::GBool(s.contains(&needle))))
                 }
                 other => Err(method_not_defined("contains", other)),
             }
@@ -949,8 +1179,7 @@ fn eval_method(
             match &base {
                 Expr::EMap(b) => {
                     cost.charge(Costs::lookup_cost().mul(b.kvs.len() as i64))?;
-                    Ok(b
-                        .kvs
+                    Ok(b.kvs
                         .iter()
                         .find(|(k, _)| k == &key)
                         .map(|(_, v)| v.clone())
@@ -967,8 +1196,7 @@ fn eval_method(
             match &base {
                 Expr::EMap(b) => {
                     cost.charge(Costs::lookup_cost().mul(b.kvs.len() as i64))?;
-                    Ok(b
-                        .kvs
+                    Ok(b.kvs
                         .iter()
                         .find(|(k, _)| k == &key)
                         .map(|(_, v)| v.clone())
@@ -1024,7 +1252,9 @@ fn eval_method(
             let base = eval_single_expr(target, env, cost)?;
             cost.charge(Costs::length_method_cost())?;
             let n = match &base {
-                Expr::GString(s) => s.len(),
+                // Characters, not UTF-8 bytes (RCHIP #37: "the length of the string in
+                // characters"), consistent with `slice`/`substring`, which index by character.
+                Expr::GString(s) => s.chars().count(),
                 Expr::GByteArray(b) => b.len(),
                 Expr::EList(EList { ps, .. }) => ps.len(),
                 other => return Err(method_not_defined("length", other)),
@@ -1041,7 +1271,11 @@ fn eval_method(
             // `until - from` underflow — so clamp in `i64` first.
             let from = from_i.max(0);
             let until = until_i.max(0);
-            let len = if until > from { (until - from) as usize } else { 0 };
+            let len = if until > from {
+                (until - from) as usize
+            } else {
+                0
+            };
             // Charge the input walk (`skip(from).take(len)` touches `max(from, until)` elements), not
             // just the output length: otherwise `slice(n, n)` walks n elements for ~0 phlo (R23).
             cost.charge(Costs::slice_cost(from.max(until)))?;
@@ -1053,14 +1287,17 @@ fn eval_method(
                 Expr::GByteArray(b) => Ok(from_expr(Expr::GByteArray(
                     b.into_iter().skip(from).take(len).collect(),
                 ))),
-                Expr::EList(EList { ps, locally_free, connective_used, remainder }) => {
-                    Ok(from_expr(Expr::EList(EList {
-                        ps: ps.into_iter().skip(from).take(len).collect(),
-                        locally_free,
-                        connective_used,
-                        remainder,
-                    })))
-                }
+                Expr::EList(EList {
+                    ps,
+                    locally_free,
+                    connective_used,
+                    remainder,
+                }) => Ok(from_expr(Expr::EList(EList {
+                    ps: ps.into_iter().skip(from).take(len).collect(),
+                    locally_free,
+                    connective_used,
+                    remainder,
+                }))),
                 other => Err(method_not_defined("slice", &other)),
             }
         }
@@ -1073,14 +1310,17 @@ fn eval_method(
             let n = if n_i <= 0 { 0 } else { n_i as usize };
             cost.charge(Costs::take_cost(n as i64))?;
             match base {
-                Expr::EList(EList { ps, locally_free, connective_used, remainder }) => {
-                    Ok(from_expr(Expr::EList(EList {
-                        ps: ps.into_iter().take(n).collect(),
-                        locally_free,
-                        connective_used,
-                        remainder,
-                    })))
-                }
+                Expr::EList(EList {
+                    ps,
+                    locally_free,
+                    connective_used,
+                    remainder,
+                }) => Ok(from_expr(Expr::EList(EList {
+                    ps: ps.into_iter().take(n).collect(),
+                    locally_free,
+                    connective_used,
+                    remainder,
+                }))),
                 other => Err(method_not_defined("take", &other)),
             }
         }
@@ -1129,14 +1369,17 @@ fn eval_method(
                         .collect();
                     Ok(from_expr(Expr::ESet(par_set(ps))))
                 }
-                Expr::EList(EList { ps, connective_used, remainder, .. }) => {
-                    Ok(from_expr(Expr::ESet(ParSet {
-                        ps: par_set(ps).ps,
-                        connective_used,
-                        locally_free: AlwaysEqual(vec![]),
-                        remainder,
-                    })))
-                }
+                Expr::EList(EList {
+                    ps,
+                    connective_used,
+                    remainder,
+                    ..
+                }) => Ok(from_expr(Expr::ESet(ParSet {
+                    ps: par_set(ps).ps,
+                    connective_used,
+                    locally_free: AlwaysEqual(vec![]),
+                    remainder,
+                }))),
                 other => Err(method_not_defined("toSet", &other)),
             }
         }
@@ -1178,6 +1421,223 @@ fn eval_method(
                 other => Err(method_not_defined("toMap", &other)),
             }
         }
+        // --- String methods (RCHIP #37 "Add string functions") --------------------------
+        // All string methods index/count by character (Unicode scalar values), matching
+        // `length`/`slice`.
+        "substring" => {
+            check_arity_between("substring", 1, 2, args.len())?;
+            let s = string_arg("substring", target, env, cost)?;
+            let from_i = eval_to_long(&args[0], env, cost)?;
+            let until_i = if args.len() == 2 {
+                eval_to_long(&args[1], env, cost)?
+            } else {
+                s.chars().count() as i64
+            };
+            let from = from_i.max(0);
+            let until = until_i.max(0);
+            cost.charge(Costs::slice_cost(from.max(until)))?;
+            // `i64::saturating_sub` clamps at `i64::MIN`, not 0, so clamp explicitly: a negative
+            // length cast to `usize` wraps and would take the whole tail.
+            let len = if until > from {
+                (until - from) as usize
+            } else {
+                0
+            };
+            let out: String = s.chars().skip(from as usize).take(len).collect();
+            Ok(from_expr(Expr::GString(out)))
+        }
+        "indexOf" => {
+            check_arity_between("indexOf", 1, 2, args.len())?;
+            let s = string_arg("indexOf", target, env, cost)?;
+            let needle = string_arg("indexOf", &args[0], env, cost)?;
+            let from_i = if args.len() == 2 {
+                eval_to_long(&args[1], env, cost)?
+            } else {
+                0
+            };
+            cost.charge(Costs::string_search_cost(
+                s.chars().count() as i64,
+                needle.chars().count() as i64,
+                "indexOf",
+            ))?;
+            let hay: Vec<char> = s.chars().collect();
+            let ndl: Vec<char> = needle.chars().collect();
+            let start = from_i.max(0) as usize;
+            let found = if ndl.is_empty() {
+                if start <= hay.len() {
+                    Some(start)
+                } else {
+                    None
+                }
+            } else if ndl.len() > hay.len() || start > hay.len() - ndl.len() {
+                None
+            } else {
+                hay[start..]
+                    .windows(ndl.len())
+                    .position(|w| w == ndl.as_slice())
+                    .map(|i| start + i)
+            };
+            Ok(from_expr(Expr::GInt(found.map(|i| i as i64).unwrap_or(-1))))
+        }
+        "toLowerCase" => {
+            check_arity("toLowerCase", 0, args.len())?;
+            let s = string_arg("toLowerCase", target, env, cost)?;
+            cost.charge(Costs::string_transform_cost(
+                s.chars().count() as i64,
+                "toLowerCase",
+            ))?;
+            Ok(from_expr(Expr::GString(s.to_lowercase())))
+        }
+        "toUpperCase" => {
+            check_arity("toUpperCase", 0, args.len())?;
+            let s = string_arg("toUpperCase", target, env, cost)?;
+            cost.charge(Costs::string_transform_cost(
+                s.chars().count() as i64,
+                "toUpperCase",
+            ))?;
+            Ok(from_expr(Expr::GString(s.to_uppercase())))
+        }
+        "capitalize" => {
+            check_arity("capitalize", 0, args.len())?;
+            let s = string_arg("capitalize", target, env, cost)?;
+            cost.charge(Costs::string_transform_cost(
+                s.chars().count() as i64,
+                "capitalize",
+            ))?;
+            let out: String = match s.chars().next() {
+                Some(first) => first.to_uppercase().collect::<String>() + &s[first.len_utf8()..],
+                None => String::new(),
+            };
+            Ok(from_expr(Expr::GString(out)))
+        }
+        "reverse" => {
+            check_arity("reverse", 0, args.len())?;
+            let s = string_arg("reverse", target, env, cost)?;
+            cost.charge(Costs::string_transform_cost(
+                s.chars().count() as i64,
+                "reverse",
+            ))?;
+            Ok(from_expr(Expr::GString(s.chars().rev().collect())))
+        }
+        "trim" => {
+            check_arity("trim", 0, args.len())?;
+            let s = string_arg("trim", target, env, cost)?;
+            cost.charge(Costs::string_transform_cost(
+                s.chars().count() as i64,
+                "trim",
+            ))?;
+            Ok(from_expr(Expr::GString(s.trim().to_string())))
+        }
+        "isEmpty" => {
+            check_arity("isEmpty", 0, args.len())?;
+            let s = string_arg("isEmpty", target, env, cost)?;
+            Ok(from_expr(Expr::GBool(s.is_empty())))
+        }
+        "nonEmpty" => {
+            check_arity("nonEmpty", 0, args.len())?;
+            let s = string_arg("nonEmpty", target, env, cost)?;
+            Ok(from_expr(Expr::GBool(!s.is_empty())))
+        }
+        "startsWith" => {
+            check_arity("startsWith", 1, args.len())?;
+            let s = string_arg("startsWith", target, env, cost)?;
+            let prefix = string_arg("startsWith", &args[0], env, cost)?;
+            cost.charge(Costs::string_search_cost(
+                s.chars().count() as i64,
+                prefix.chars().count() as i64,
+                "startsWith",
+            ))?;
+            Ok(from_expr(Expr::GBool(s.starts_with(&prefix))))
+        }
+        "endsWith" => {
+            check_arity("endsWith", 1, args.len())?;
+            let s = string_arg("endsWith", target, env, cost)?;
+            let suffix = string_arg("endsWith", &args[0], env, cost)?;
+            cost.charge(Costs::string_search_cost(
+                s.chars().count() as i64,
+                suffix.chars().count() as i64,
+                "endsWith",
+            ))?;
+            Ok(from_expr(Expr::GBool(s.ends_with(&suffix))))
+        }
+        "replace" => {
+            check_arity("replace", 2, args.len())?;
+            let s = string_arg("replace", target, env, cost)?;
+            let old = string_arg("replace", &args[0], env, cost)?;
+            let new = string_arg("replace", &args[1], env, cost)?;
+            cost.charge(Costs::string_replace_cost(
+                s.chars().count() as i64,
+                old.chars().count() as i64,
+                new.chars().count() as i64,
+            ))?;
+            // An empty `old` would splice `new` between every character; leave the input as-is.
+            let out = if old.is_empty() {
+                s
+            } else {
+                s.replace(&old, &new)
+            };
+            Ok(from_expr(Expr::GString(out)))
+        }
+        "split" => {
+            check_arity("split", 1, args.len())?;
+            let s = string_arg("split", target, env, cost)?;
+            let sep = string_arg("split", &args[0], env, cost)?;
+            cost.charge(Costs::string_split_cost(
+                s.chars().count() as i64,
+                sep.chars().count() as i64,
+            ))?;
+            let parts: Vec<Par> = if sep.is_empty() {
+                s.chars()
+                    .map(|c| from_expr(Expr::GString(c.to_string())))
+                    .collect()
+            } else {
+                s.split(sep.as_str())
+                    .map(|p| from_expr(Expr::GString(p.to_string())))
+                    .collect()
+            };
+            Ok(from_expr(Expr::EList(EList {
+                ps: parts,
+                ..Default::default()
+            })))
+        }
+        "format" => {
+            // Variadic: a single list/tuple argument is flattened, so both `S.format(a, b)` and
+            // `S.format([a, b])` work. `%s` placeholders are replaced in order; extras are left.
+            let s = string_arg("format", target, env, cost)?;
+            let mut arg_pars: Vec<Par> = Vec::new();
+            if args.len() == 1 {
+                match eval_single_expr(&args[0], env, cost)? {
+                    Expr::EList(EList { ps, .. }) | Expr::ETuple(ETuple { ps, .. }) => {
+                        arg_pars.extend(ps)
+                    }
+                    other => arg_pars.push(from_expr(other)),
+                }
+            } else {
+                arg_pars.extend_from_slice(args);
+            }
+            cost.charge(Costs::string_format_cost(
+                s.chars().count() as i64,
+                arg_pars.len() as i64,
+            ))?;
+            let mut out = String::with_capacity(s.len());
+            let mut rest = s.as_str();
+            for p in &arg_pars {
+                let Some(i) = rest.find("%s") else { break };
+                out.push_str(&rest[..i]);
+                let v = eval_single_expr(p, env, cost)?;
+                out.push_str(&expr_to_string("format", &v)?);
+                rest = &rest[i + 2..];
+            }
+            out.push_str(rest);
+            Ok(from_expr(Expr::GString(out)))
+        }
+        "toString" => {
+            check_arity("toString", 0, args.len())?;
+            let v = eval_single_expr(target, env, cost)?;
+            let out = expr_to_string("toString", &v)?;
+            cost.charge(Costs::to_string_cost(out.chars().count() as i64))?;
+            Ok(from_expr(Expr::GString(out)))
+        }
         _ => Err(RholangError::ReduceError(format!(
             "Unimplemented method: {method}"
         ))),
@@ -1186,8 +1646,49 @@ fn eval_method(
 
 /// The result of a tuplespace produce/consume: the matched continuation, the list of
 /// (channel, matched data, removed data, persistent), and whether it was a peek.
-pub type Application =
-    Option<(TaggedContinuation, Vec<(SortedProc, ListParWithRandom, ListParWithRandom, bool)>, bool)>;
+pub type Application = Option<(
+    TaggedContinuation,
+    Vec<(SortedProc, ListParWithRandom, ListParWithRandom, bool)>,
+    bool,
+)>;
+
+/// The produce between its two scheduled phases (the rholang view of
+/// `rchain_rspace::scheduled_space::PendingProduce`): what the phase-two commit needs to
+/// re-validate under the full lock set.
+#[derive(Debug, Clone)]
+pub struct PendingProduce {
+    /// The trigger channel the produce was made on.
+    pub trigger: SortedProc,
+    /// The in-flight datum (not yet stored; the commit re-extracts with it prepended).
+    pub data: ListParWithRandom,
+    pub persist: bool,
+}
+
+/// The result of the scheduled `produce_at` (Law 20): either the op committed inline
+/// (`phase_two: None`, the datum was stored and `application` is final), or the matched join
+/// channels are returned for the claim queue's `claim_more` and the commit is deferred to
+/// `commit_produce`.
+#[derive(Debug, Clone)]
+pub struct ScheduledProduce {
+    /// The matched continuation's channel set (the phase-two claim set). Empty when the datum was
+    /// stored with no match.
+    pub joins: Vec<SortedProc>,
+    /// Final when `phase_two` is `None`; a placeholder otherwise.
+    pub application: Application,
+    /// `Some` when the commit is deferred to `commit_produce`.
+    pub phase_two: Option<PendingProduce>,
+    /// Dropped by the caller after enqueueing the continuation's next-step effects.
+    pub release: ReleaseToken,
+}
+
+/// The result of the scheduled `consume_at` (no split: the full static source set was claimed
+/// before the op).
+#[derive(Debug, Clone)]
+pub struct ScheduledConsume {
+    pub application: Application,
+    /// Dropped by the caller after enqueueing the continuation's next-step effects.
+    pub release: ReleaseToken,
+}
 
 /// The tuplespace interface the evaluator produces/consumes against (port of `RhoTuplespace`).
 #[async_trait]
@@ -1207,15 +1708,66 @@ pub trait Tuplespace: std::marker::Send + std::marker::Sync {
         persist: bool,
         peeks: BTreeSet<usize>,
     ) -> Result<Application, RholangError>;
+
+    /// Produce *at* the given DFS path (the Law 20 scheduling entry point). The default is the
+    /// plain produce plus `ReleaseToken::detached()` — non-scheduling tuplespaces "don't
+    /// schedule": their ops complete inline and no phase-two claim set is returned.
+    async fn produce_at(
+        &self,
+        _path: Vec<u16>,
+        channel: &SortedProc,
+        data: ListParWithRandom,
+        persist: bool,
+    ) -> Result<ScheduledProduce, RholangError> {
+        let application = self.produce(channel, data, persist).await?;
+        Ok(ScheduledProduce {
+            joins: vec![],
+            application,
+            phase_two: None,
+            release: ReleaseToken::detached(),
+        })
+    }
+
+    /// Consume *at* the given DFS path. Default: the plain consume (no split is ever needed — the
+    /// full static source set is claimed before this is called).
+    async fn consume_at(
+        &self,
+        _path: Vec<u16>,
+        channels: &[SortedProc],
+        patterns: &[BindPattern],
+        continuation: TaggedContinuation,
+        persist: bool,
+        peeks: BTreeSet<usize>,
+    ) -> Result<ScheduledConsume, RholangError> {
+        let application = self
+            .consume(channels, patterns, continuation, persist, peeks)
+            .await?;
+        Ok(ScheduledConsume {
+            application,
+            release: ReleaseToken::detached(),
+        })
+    }
+
+    /// Commit the phase two of a scheduled produce (only the scheduling `RSpace` ever defers one;
+    /// the default is therefore unreachable and errors loudly).
+    async fn commit_produce(&self, _pending: PendingProduce) -> Result<Application, RholangError> {
+        Err(RholangError::ReduceError(
+            "commit_produce called on a non-scheduling tuplespace".to_string(),
+        ))
+    }
 }
 
-/// Dispatches a continuation with its matched data (port of `Dispatch`).
+/// Dispatches a continuation with its matched data, at its DFS path (port of `Dispatch`). The
+/// path is the scheduler's linearization key (Laws 20–22): the continuation subtree is ordered
+/// under the effect that dispatched it (`path.child(0)`), ahead of that effect's follow-on
+/// re-produce and the next sibling.
 #[async_trait]
 pub trait Dispatch: std::marker::Send + std::marker::Sync {
     async fn dispatch(
         &self,
         continuation: TaggedContinuation,
         data_list: Vec<ListParWithRandom>,
+        path: DfsPath,
     ) -> Result<(), RholangError>;
 }
 
@@ -1255,7 +1807,9 @@ fn resolve_term(
     match term {
         OwnedTerm::Send(s) => resolve_send(&s, &env, &rand, cost.as_ref()).map(Some),
         OwnedTerm::Receive(r) => resolve_receive(&r, &env, &rand, cost.as_ref()).map(Some),
-        OwnedTerm::New(n) => resolve_new(&n, &env, &rand, urn_map.as_ref(), cost.as_ref()).map(Some),
+        OwnedTerm::New(n) => {
+            resolve_new(&n, &env, &rand, urn_map.as_ref(), cost.as_ref()).map(Some)
+        }
         OwnedTerm::Match(m) => resolve_match(&m, &env, &rand, cost.as_ref()),
         OwnedTerm::Bundle(b) => Ok(Some(Effect::Par(*b.body, env, rand))),
         OwnedTerm::ExprVar(v) => {
@@ -1300,7 +1854,10 @@ fn resolve_send(
     Ok(Effect::Produce(
         SortedProc::new(unbundled),
         ListParWithRandom {
-            pars: subst_data.into_iter().map(|d| SortedProc::new(d.eval())).collect(),
+            pars: subst_data
+                .into_iter()
+                .map(|d| SortedProc::new(d.eval()))
+                .collect(),
             random_state: (*rand).clone(),
         },
         send.persistent,
@@ -1325,7 +1882,10 @@ fn resolve_receive(
             .collect::<Result<_, _>>()?;
         binds.push((
             BindPattern {
-                patterns: subst_patterns.into_iter().map(|p| SortedProc::new(p.eval())).collect(),
+                patterns: subst_patterns
+                    .into_iter()
+                    .map(|p| SortedProc::new(p.eval()))
+                    .collect(),
                 remainder: rb.remainder.as_deref().cloned(),
                 free_count: i32::from(rb.free_count),
             },
@@ -1376,7 +1936,14 @@ fn resolve_new(
 ) -> Result<Effect, RholangError> {
     cost.charge(Costs::new_bindings_cost(new.bind_count as i64))?;
     let mut r = (*rand).clone();
-    let new_env = alloc(new.bind_count, &new.uri, &new.injections, env, urn_map, &mut r)?;
+    let new_env = alloc(
+        new.bind_count,
+        &new.uri,
+        &new.injections,
+        env,
+        urn_map,
+        &mut r,
+    )?;
     // The body must run with the RNG state advanced past the freshly-allocated names: reusing the
     // incoming state would make a *nested* `new` draw the same random bytes as its parent (colliding
     // fresh names) — issue #19.
@@ -1441,7 +2008,11 @@ fn resolve_match(
             for e in 0..i32::from(case.free_count) {
                 new_env = new_env.put(free_map.get(&e).cloned().unwrap_or_default());
             }
-            return Ok(Some(Effect::Par((*case.source).clone(), new_env, (*rand).clone())));
+            return Ok(Some(Effect::Par(
+                (*case.source).clone(),
+                new_env,
+                (*rand).clone(),
+            )));
         }
     }
     Ok(None)
@@ -1480,6 +2051,9 @@ pub struct DebruijnInterpreter<T: Tuplespace, D: Dispatch> {
     merge_chs: Arc<Mutex<Vec<SortedProc>>>,
     mergeable_tag_name: SortedProc,
     concurrent: bool,
+    /// The effect-scheduler mode (Laws 20–22; see `crate::scheduler`). `Sequential` by default —
+    /// the plain DFS loop, the sound reference the Gate and Relaxed modes must refine.
+    effect_mode: Mutex<EffectMode>,
     /// Reduction steps taken in the current top-level evaluation (see [`DEFAULT_MAX_REDUCE_STEPS`]).
     steps: Arc<AtomicI64>,
     max_steps: Arc<AtomicI64>,
@@ -1487,6 +2061,17 @@ pub struct DebruijnInterpreter<T: Tuplespace, D: Dispatch> {
     /// evaluation future (a `tokio::time::timeout`) does not stop the spawned continuation tasks;
     /// this flag lets the owner tell the in-flight task tree to unwind (issue #12).
     cancelled: Arc<AtomicBool>,
+    /// The per-runtime channel claim queue (Law 20). Every relaxed produce/consume task claims its
+    /// static footprint at its DFS path and holds the guard until the continuation's next-step
+    /// effects are enqueued — the queue-level continuation-prepend. Entries are inserted on claim
+    /// and removed on guard drop; the DashMap itself is never trimmed (fork-per-deploy bounds it).
+    claims: Arc<ChannelClaimQueue<SortedProc, Vec<u16>>>,
+    /// The relaxed-mode task set (Law 20's spawn-only dispatch): effects and continuations are
+    /// spawned into it, and only the root evaluation drains it. A produce/consume task must never
+    /// await continuation completion while holding its claims — `for(x <- c){ c!(x) }` would
+    /// self-deadlock (the continuation claims `c`, the producer holds it) — so relaxed dispatch
+    /// enqueues the continuation at `child(0)` and returns.
+    relaxed_tasks: Arc<Mutex<tokio::task::JoinSet<Result<(), RholangError>>>>,
 }
 
 impl<T: Tuplespace + 'static, D: Dispatch + 'static> DebruijnInterpreter<T, D> {
@@ -1503,9 +2088,12 @@ impl<T: Tuplespace + 'static, D: Dispatch + 'static> DebruijnInterpreter<T, D> {
             merge_chs: Arc::new(Mutex::new(Vec::new())),
             mergeable_tag_name,
             concurrent: true,
+            effect_mode: Mutex::new(EffectMode::Sequential),
             steps: Arc::new(AtomicI64::new(0)),
             max_steps: Arc::new(AtomicI64::new(DEFAULT_MAX_REDUCE_STEPS)),
             cancelled: Arc::new(AtomicBool::new(false)),
+            claims: Arc::new(ChannelClaimQueue::new()),
+            relaxed_tasks: Arc::new(Mutex::new(tokio::task::JoinSet::new())),
         }
     }
 
@@ -1527,6 +2115,28 @@ impl<T: Tuplespace + 'static, D: Dispatch + 'static> DebruijnInterpreter<T, D> {
         self.concurrent = concurrent;
     }
 
+    /// Set the effect-scheduler mode (Laws 20–22). Defaults to [`EffectMode::Sequential`]; the
+    /// Gate (Phase 4) and Relaxed (Phase 5) modes replace the sequential `reduce_effects` loop
+    /// while preserving its DFS order semantics. The relaxed-validated mode additionally enables
+    /// the Law 24 per-commit certificate on the claim queue. Interior-mutable: the casper
+    /// block path switches it around the per-deploy sequential fallback re-run.
+    pub fn set_effect_mode(&self, mode: EffectMode) {
+        *self.effect_mode.lock().unwrap_or_else(|p| p.into_inner()) = mode;
+        self.claims
+            .set_validation_enabled(mode == EffectMode::RelaxedValidated);
+    }
+
+    /// The current effect-scheduler mode.
+    pub fn effect_mode(&self) -> EffectMode {
+        *self.effect_mode.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    /// Whether the current evaluation observed the S.3 enqueue window (a DFS-earlier claim landing
+    /// while a DFS-later claim held the channel) — the skew divergence signal the block path reads.
+    pub fn observed_skew(&self) -> bool {
+        self.claims.observed_skew()
+    }
+
     /// Evaluate a top-level `Par` (port of `Reduce.eval(par)`): reduce the process to normal form via
     /// the recursive reducer. Resets the per-evaluation reduction-step counter and the cancellation
     /// flag.
@@ -1539,22 +2149,76 @@ impl<T: Tuplespace + 'static, D: Dispatch + 'static> DebruijnInterpreter<T, D> {
     ) -> Result<(), RholangError> {
         self.steps.store(0, Ordering::SeqCst);
         self.cancelled.store(false, Ordering::SeqCst);
-        self.reduce_par((*par).clone(), (*env).clone(), (*rand).clone(), cost.clone())
-            .await
+        // Reset the write-record layer per evaluation: writes from a prior deploy in this
+        // runtime must not invalidate this deploy's commits.
+        if matches!(
+            self.effect_mode(),
+            EffectMode::Relaxed | EffectMode::RelaxedValidated
+        ) {
+            self.claims.reset_write_record();
+            self.claims.reset_skew();
+        }
+        let result = self
+            .clone()
+            .reduce_par(
+                (*par).clone(),
+                (*env).clone(),
+                (*rand).clone(),
+                cost.clone(),
+                DfsPath::root(),
+            )
+            .await;
+        if matches!(
+            self.effect_mode(),
+            EffectMode::Relaxed | EffectMode::RelaxedValidated
+        ) {
+            result.and(self.drain_relaxed_tasks().await)
+        } else {
+            result
+        }
+    }
+
+    /// Drain the relaxed task set to completion, propagating the first error (Law 20: only the
+    /// root reduction drains; the produce/consume tasks never join their continuations). Tasks
+    /// spawned during a drain land in the replacement set and are drained in the next round, so
+    /// the drain ends exactly when no task has enqueued another.
+    async fn drain_relaxed_tasks(&self) -> Result<(), RholangError> {
+        loop {
+            let mut set = {
+                let mut guard = self.relaxed_tasks.lock().unwrap_or_else(|p| p.into_inner());
+                if guard.is_empty() {
+                    return Ok(());
+                }
+                std::mem::take(&mut *guard)
+            };
+            while let Some(res) = set.join_next().await {
+                match res {
+                    Err(e) => {
+                        return Err(RholangError::ReduceError(format!(
+                            "relaxed task panicked: {e}"
+                        )))
+                    }
+                    Ok(Err(e)) => return Err(e),
+                    Ok(Ok(())) => {}
+                }
+            }
+        }
     }
 
     /// Reduce a `Par` (public: the continuation-dispatch hook used by the dispatcher's eval closure).
-    /// Resolves the `Par`'s sub-terms to effects, then reduces those effects in DFS order.
+    /// Resolves the `Par`'s sub-terms to effects, then reduces those effects in DFS order. `path`
+    /// addresses this `Par` node in the reduction tree; its terms are the children `path.child(i)`.
     pub fn reduce_par(
         self: Arc<Self>,
         par: Par,
         env: Env<Par>,
         rand: Blake2b512Random,
         cost: Arc<CostAccounting>,
+        path: DfsPath,
     ) -> ReducerFuture {
         Box::pin(async move {
             let effects = self.resolve_children(&par, &env, &rand, &cost).await?;
-            self.reduce_effects(effects, cost).await
+            self.reduce_effects(effects, cost, path).await
         })
     }
 
@@ -1610,12 +2274,14 @@ impl<T: Tuplespace + 'static, D: Dispatch + 'static> DebruijnInterpreter<T, D> {
                 let e = (*env).clone();
                 let urn_map = self.urn_map.clone();
                 let c = cost.clone();
-                handles.push(tokio::spawn(async move { resolve_term(term, e, r, urn_map, c) }));
+                handles.push(tokio::spawn(
+                    async move { resolve_term(term, e, r, urn_map, c) },
+                ));
             }
             for h in handles {
-                let resolved = h
-                    .await
-                    .map_err(|e| RholangError::ReduceError(format!("reducer task panicked: {e}")))??;
+                let resolved = h.await.map_err(|e| {
+                    RholangError::ReduceError(format!("reducer task panicked: {e}"))
+                })??;
                 if let Some(w) = resolved {
                     effects.push(w);
                 }
@@ -1634,39 +2300,114 @@ impl<T: Tuplespace + 'static, D: Dispatch + 'static> DebruijnInterpreter<T, D> {
         Ok(effects)
     }
 
-    /// Reduce a sequence of effects in DFS order. The sequential reference loop; the sharded
-    /// scheduler (disjoint-channel components run concurrently) is layered on top of this in the
-    /// next phase.
+    /// Reduce a sequence of effects in DFS order: the `i`th effect is applied at `path.child(i)`.
+    /// The sequential reference loop; the Gate (Law 21) and Relaxed (Law 20) schedulers replace it
+    /// under the same per-channel DFS order.
     fn reduce_effects(
         self: Arc<Self>,
         effects: Vec<Effect>,
         cost: Arc<CostAccounting>,
+        path: DfsPath,
     ) -> ReducerFuture {
         Box::pin(async move {
-            for effect in effects {
-                self.clone().apply_effect(effect, cost.clone()).await?;
+            match self.effect_mode() {
+                // The sequential DFS loop — the sound reference.
+                EffectMode::Sequential | EffectMode::ForkJoin => {
+                    for (i, effect) in effects.into_iter().enumerate() {
+                        self.clone()
+                            .apply_effect(effect, cost.clone(), path.child(i as u16))
+                            .await?;
+                    }
+                    Ok(())
+                }
+                // Law 21 — the gate: the task for effect `i` runs only after the tasks for effects
+                // `0..i−1` have completed (subtree completion = handle completion), so the gate's
+                // execution is exactly the sequential `Effect.apply` fold
+                // (`gate_exec_refines_apply`). Not a speedup — the sound, sequential-equivalent
+                // carrier the Relaxed mode is measured against.
+                EffectMode::Gate => {
+                    // The gate chain: the task for effect `i` owns the handle of the task for
+                    // effect `i−1` and awaits it first, so (transitively) it runs only after
+                    // every earlier effect's subtree completed. Awaiting the immediate
+                    // predecessor alone suffices because that task itself awaits its own — a
+                    // linear chain of awaits, not the quadratic all-predecessors join.
+                    let mut predecessor: Option<tokio::task::JoinHandle<Result<(), RholangError>>> =
+                        None;
+                    for (i, effect) in effects.into_iter().enumerate() {
+                        let self_ = self.clone();
+                        let cost = cost.clone();
+                        let effect_path = path.child(i as u16);
+                        let handle = tokio::spawn(async move {
+                            if let Some(prev) = predecessor {
+                                prev.await.map_err(|e| {
+                                    RholangError::ReduceError(format!(
+                                        "gate predecessor task panicked: {e}"
+                                    ))
+                                })??;
+                            }
+                            self_.apply_effect(effect, cost, effect_path).await
+                        });
+                        predecessor = Some(handle);
+                    }
+                    if let Some(last) = predecessor {
+                        last.await.map_err(|e| {
+                            RholangError::ReduceError(format!("gate task panicked: {e}"))
+                        })??;
+                    }
+                    Ok(())
+                }
+                // Law 20 — the relaxed scheduler: every effect is a task on the per-channel claim
+                // queues (spawn-only dispatch into `relaxed_tasks`; the root evaluation drains).
+                // Per-channel DFS order is preserved by the queues; cross-channel interleaving is
+                // free (the relaxed contract). This arm returns after enqueueing — the tasks run
+                // concurrently under the queues. Each effect's claim is made at dispatch time
+                // (pre-claiming, inside `apply_effect_relaxed`), so this loop lands same-channel
+                // claims in path order before any task runs — a later-path task can never commit
+                // before an earlier-path claim has landed (the persistent-produce inversion).
+                EffectMode::Relaxed | EffectMode::RelaxedValidated => {
+                    for (i, effect) in effects.into_iter().enumerate() {
+                        let self_ = self.clone();
+                        let cost = cost.clone();
+                        let effect_path = path.child(i as u16);
+                        let fut = if self_.cancelled.load(Ordering::SeqCst) {
+                            Err(RholangError::ReduceError("reduction cancelled".to_string()))
+                        } else {
+                            Ok(self_
+                                .clone()
+                                .apply_effect_relaxed(effect, cost, effect_path))
+                        };
+                        self_.enqueue_relaxed(fut);
+                    }
+                    Ok(())
+                }
             }
-            Ok(())
         })
     }
 
-    /// Apply one effect: expand a nested `Par` (a scheduling barrier), or perform a produce/consume/
-    /// peek and reduce any matched continuation inline (the continuation-prepend invariant). The
-    /// persistent/peek re-produce is applied *after* the continuation subtree.
+    /// Apply one effect at DFS path `path`: expand a nested `Par` (a scheduling barrier), or
+    /// perform a produce/consume/peek and reduce any matched continuation inline (the
+    /// continuation-prepend invariant). The continuation subtree is addressed at `path.child(0)`
+    /// and the persistent/peek follow-on re-produce at `path.child(1)`: both complete before the
+    /// next sibling at the parent, matching the sequential reducer's order.
     fn apply_effect(
         self: Arc<Self>,
         effect: Effect,
         cost: Arc<CostAccounting>,
+        path: DfsPath,
     ) -> ReducerFuture {
         Box::pin(async move {
             match effect {
-                Effect::Par(par, env, rand) => self.reduce_par(par, env, rand, cost).await,
+                Effect::Par(par, env, rand) => self.reduce_par(par, env, rand, cost, path).await,
                 Effect::Produce(chan, data, persistent) => {
                     self.update_mergeable_channels(&chan);
                     let result = self.space.produce(&chan, data.clone(), persistent).await?;
                     if let Some((continuation, data_list, peek)) = result {
                         join_spawned(
-                            self.clone().dispatch_owned(continuation, data_list.clone()),
+                            self.clone().dispatch_owned(
+                                continuation,
+                                data_list.clone(),
+                                path.child(0),
+                            ),
                             "continuation dispatch",
                         )
                         .await?;
@@ -1675,14 +2416,18 @@ impl<T: Tuplespace + 'static, D: Dispatch + 'static> DebruijnInterpreter<T, D> {
                                 self.clone().apply_effect_spawned(
                                     Effect::Produce(chan.clone(), data.clone(), true),
                                     cost,
+                                    path.child(1),
                                 ),
                                 "persistent re-produce",
                             )
                             .await?;
                         } else if peek {
                             join_spawned(
-                                self.clone()
-                                    .apply_effect_spawned(Effect::ProducePeeks(data_list.clone()), cost),
+                                self.clone().apply_effect_spawned(
+                                    Effect::ProducePeeks(data_list.clone()),
+                                    cost,
+                                    path.child(1),
+                                ),
                                 "peek re-produce",
                             )
                             .await?;
@@ -1713,7 +2458,11 @@ impl<T: Tuplespace + 'static, D: Dispatch + 'static> DebruijnInterpreter<T, D> {
                         .await?;
                     if let Some((continuation, data_list, p)) = result {
                         join_spawned(
-                            self.clone().dispatch_owned(continuation, data_list.clone()),
+                            self.clone().dispatch_owned(
+                                continuation,
+                                data_list.clone(),
+                                path.child(0),
+                            ),
                             "continuation dispatch",
                         )
                         .await?;
@@ -1722,14 +2471,18 @@ impl<T: Tuplespace + 'static, D: Dispatch + 'static> DebruijnInterpreter<T, D> {
                                 self.clone().apply_effect_spawned(
                                     Effect::Consume(binds.clone(), body.clone(), true, peek),
                                     cost,
+                                    path.child(1),
                                 ),
                                 "persistent re-consume",
                             )
                             .await?;
                         } else if p {
                             join_spawned(
-                                self.clone()
-                                    .apply_effect_spawned(Effect::ProducePeeks(data_list.clone()), cost),
+                                self.clone().apply_effect_spawned(
+                                    Effect::ProducePeeks(data_list.clone()),
+                                    cost,
+                                    path.child(1),
+                                ),
                                 "peek re-produce",
                             )
                             .await?;
@@ -1738,12 +2491,13 @@ impl<T: Tuplespace + 'static, D: Dispatch + 'static> DebruijnInterpreter<T, D> {
                     Ok(())
                 }
                 Effect::ProducePeeks(data_list) => {
-                    for (chan, _, removed_data, persist) in &data_list {
+                    for (i, (chan, _, removed_data, persist)) in data_list.iter().enumerate() {
                         if !persist {
                             self.clone()
                                 .apply_effect(
                                     Effect::Produce(chan.clone(), removed_data.clone(), false),
                                     cost.clone(),
+                                    path.child(i as u16),
                                 )
                                 .await?;
                         }
@@ -1762,6 +2516,7 @@ impl<T: Tuplespace + 'static, D: Dispatch + 'static> DebruijnInterpreter<T, D> {
         self: Arc<Self>,
         continuation: TaggedContinuation,
         data_list: Vec<(SortedProc, ListParWithRandom, ListParWithRandom, bool)>,
+        path: DfsPath,
     ) -> Result<ReducerFuture, RholangError> {
         if self.cancelled.load(Ordering::SeqCst) {
             return Err(RholangError::ReduceError("reduction cancelled".to_string()));
@@ -1776,7 +2531,7 @@ impl<T: Tuplespace + 'static, D: Dispatch + 'static> DebruijnInterpreter<T, D> {
         let fut = Box::pin(async move {
             let data: Vec<ListParWithRandom> =
                 data_list.iter().map(|(_, d, _, _)| d.clone()).collect();
-            self.dispatcher.dispatch(continuation, data).await
+            self.dispatcher.dispatch(continuation, data, path).await
         });
         Ok(fut)
     }
@@ -1789,6 +2544,7 @@ impl<T: Tuplespace + 'static, D: Dispatch + 'static> DebruijnInterpreter<T, D> {
         self: Arc<Self>,
         effect: Effect,
         cost: Arc<CostAccounting>,
+        path: DfsPath,
     ) -> Result<ReducerFuture, RholangError> {
         if self.cancelled.load(Ordering::SeqCst) {
             return Err(RholangError::ReduceError("reduction cancelled".to_string()));
@@ -1800,7 +2556,238 @@ impl<T: Tuplespace + 'static, D: Dispatch + 'static> DebruijnInterpreter<T, D> {
                 "reduction step budget exceeded ({max_steps} steps)"
             )));
         }
-        let fut = Box::pin(async move { self.apply_effect(effect, cost).await });
+        let fut = Box::pin(async move { self.apply_effect(effect, cost, path).await });
+        Ok(fut)
+    }
+
+    /// Enqueue a relaxed task into the shared set without awaiting it (the spawn-only dispatch
+    /// rule — see the `relaxed_tasks` field). A step-budget/cancellation error raised before the
+    /// future exists is enqueued as an immediately-failing task so the root drain sees it.
+    fn enqueue_relaxed(&self, fut: Result<ReducerFuture, RholangError>) {
+        let fut = match fut {
+            Ok(fut) => fut,
+            Err(e) => Box::pin(async move { Err(e) }),
+        };
+        self.relaxed_tasks
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .spawn(fut);
+    }
+
+    /// Wait for the head lease, mapping a Law 24 validation failure to the block-path fallback
+    /// error. `NotHead` is retried inside `wait_at_head` itself, so it never surfaces here —
+    /// if it ever does (a future queue change), report it as a deploy error rather than
+    /// panicking the node (the type-system audit bans panics in production code).
+    async fn wait_at_head_or_invalidate(
+        guard: &ClaimGuard<SortedProc, Vec<u16>>,
+        at_path: &[u16],
+    ) -> Result<HeadLease, RholangError> {
+        match guard.wait_at_head().await {
+            Ok(lease) => Ok(lease),
+            Err(AcquireError::ValidationFailed {
+                channel,
+                writer_path,
+            }) => Err(RholangError::SpeculationInvalid {
+                channel,
+                writer_path,
+                at_path: at_path.to_vec(),
+            }),
+            Err(AcquireError::NotHead) => Err(RholangError::BugFoundError(
+                "wait_at_head retried NotHead internally".to_string(),
+            )),
+        }
+    }
+
+    /// Apply one effect at DFS path `path` under the relaxed scheduler (Law 20): claim the
+    /// effect's static footprint at `path`, wait for the head lease, perform the op via the
+    /// scheduled `produce_at`/`consume_at`, enqueue the continuation at `child(0)` and the
+    /// persistent/peek follow-on at `child(1)`, and only then drop the claim (the queue-level
+    /// continuation-prepend). The produce's phase two claims the matched join set, re-waits at
+    /// head, and commits with re-validation — see `rchain_rspace::scheduled_space`.
+    ///
+    /// The claim is made **at dispatch time**, before the task future is even built
+    /// (dispatch-time pre-claiming, `docs/src/formal/channel-scheduler.md`): every claim of a
+    /// dispatch list therefore lands in the queue in dispatch order, so a later-path task can
+    /// never commit before an earlier-path claim has landed — the persistent-produce COMM-order
+    /// inversion cannot occur. Continuation claims land at their parent's match time and are
+    /// ordered by the queue's path-ordered insert.
+    fn apply_effect_relaxed(
+        self: Arc<Self>,
+        effect: Effect,
+        cost: Arc<CostAccounting>,
+        path: DfsPath,
+    ) -> ReducerFuture {
+        match effect {
+            Effect::Par(par, env, rand) => {
+                Box::pin(async move { self.reduce_par(par, env, rand, cost, path).await })
+            }
+            Effect::Produce(chan, data, persistent) => {
+                // Pre-claim at dispatch time (see the doc above): the guard is created now and
+                // moved into the task.
+                let mut guard = self.claims.claim(path.0.clone(), &[chan.clone()]);
+                Box::pin(async move {
+                    self.update_mergeable_channels(&chan);
+                    let _lease = Self::wait_at_head_or_invalidate(&guard, &path.0).await?;
+                    let scheduled = self
+                        .space
+                        .produce_at(path.0.clone(), &chan, data.clone(), persistent)
+                        .await?;
+                    let ScheduledProduce {
+                        joins,
+                        application,
+                        phase_two,
+                        release,
+                    } = scheduled;
+                    let application = match phase_two {
+                        Some(pending) => {
+                            // Phase two: claim the matched join set and re-wait at head (the
+                            // trigger passes through — it is already active under this claim),
+                            // then commit. The commit re-validates under the full lock set.
+                            guard.claim_more(&joins);
+                            let _lease = Self::wait_at_head_or_invalidate(&guard, &path.0).await?;
+                            self.space.commit_produce(pending).await?
+                        }
+                        None => application,
+                    };
+                    // Law 24's record layer: the produce commits a write on its trigger —
+                    // phase-one store or phase-two store/match — with post-value `true`. Stamped
+                    // before the guard drops (the order the prefix-visibility check relies on).
+                    self.claims.record_write(&chan, &path.0, true);
+                    if let Some((continuation, data_list, peek)) = application {
+                        self.enqueue_relaxed(self.clone().dispatch_owned(
+                            continuation,
+                            data_list.clone(),
+                            path.child(0),
+                        ));
+                        if persistent {
+                            self.enqueue_relaxed(self.clone().apply_effect_relaxed_spawned(
+                                Effect::Produce(chan.clone(), data.clone(), true),
+                                cost,
+                                path.child(1),
+                            ));
+                        } else if peek {
+                            self.enqueue_relaxed(self.clone().apply_effect_relaxed_spawned(
+                                Effect::ProducePeeks(data_list.clone()),
+                                cost,
+                                path.child(1),
+                            ));
+                        }
+                    }
+                    // The token's scope is the claim's scope: released after the enqueue, together
+                    // with the guard (`ReleaseToken` is a `Copy` marker, so `let _ = release;` is
+                    // the explicit scope end).
+                    let _ = release;
+                    Ok(())
+                })
+            }
+            Effect::Consume(binds, body, persistent, peek) => {
+                // Pre-claim at dispatch time: the full static source set lands in the queue
+                // before any later-path task can acquire.
+                let patterns: Vec<BindPattern> = binds.iter().map(|(p, _)| p.clone()).collect();
+                let sources: Vec<SortedProc> = binds.iter().map(|(_, s)| s.clone()).collect();
+                let peeks: BTreeSet<usize> = if peek {
+                    (0..sources.len()).collect()
+                } else {
+                    BTreeSet::new()
+                };
+                let guard = self.claims.claim(path.0.clone(), &sources);
+                Box::pin(async move {
+                    for s in &sources {
+                        self.update_mergeable_channels(s);
+                    }
+                    let _lease = Self::wait_at_head_or_invalidate(&guard, &path.0).await?;
+                    let scheduled = self
+                        .space
+                        .consume_at(
+                            path.0.clone(),
+                            &sources,
+                            &patterns,
+                            TaggedContinuation::ParBody(body.clone()),
+                            persistent,
+                            peeks.clone(),
+                        )
+                        .await?;
+                    let ScheduledConsume {
+                        application,
+                        release,
+                    } = scheduled;
+                    if let Some((continuation, data_list, p)) = application {
+                        // Law 24's record layer: a matched, non-peek consume commits a removal
+                        // write (post-value `false`) on every source. An installing consume and
+                        // a peek match write nothing (the Lean `applyAt`). Stamped before the
+                        // guard drops.
+                        if !p {
+                            for s in &sources {
+                                self.claims.record_write(s, &path.0, false);
+                            }
+                        }
+                        self.enqueue_relaxed(self.clone().dispatch_owned(
+                            continuation,
+                            data_list.clone(),
+                            path.child(0),
+                        ));
+                        if persistent {
+                            self.enqueue_relaxed(self.clone().apply_effect_relaxed_spawned(
+                                Effect::Consume(binds.clone(), body.clone(), true, peek),
+                                cost,
+                                path.child(1),
+                            ));
+                        } else if p {
+                            self.enqueue_relaxed(self.clone().apply_effect_relaxed_spawned(
+                                Effect::ProducePeeks(data_list.clone()),
+                                cost,
+                                path.child(1),
+                            ));
+                        }
+                    }
+                    let _ = release;
+                    Ok(())
+                })
+            }
+            Effect::ProducePeeks(data_list) => Box::pin(async move {
+                // Each peek re-produce dispatches as an ordinary produce at its child path; its
+                // claim lands at that dispatch (the recursive apply_effect_relaxed pre-claims).
+                for (i, (chan, _, removed_data, persist)) in data_list.iter().enumerate() {
+                    if !persist {
+                        let self_ = self.clone();
+                        let cost = cost.clone();
+                        let effect_path = path.child(i as u16);
+                        let fut = if self_.cancelled.load(Ordering::SeqCst) {
+                            Err(RholangError::ReduceError("reduction cancelled".to_string()))
+                        } else {
+                            Ok(self_.clone().apply_effect_relaxed(
+                                Effect::Produce(chan.clone(), removed_data.clone(), false),
+                                cost,
+                                effect_path,
+                            ))
+                        };
+                        self_.enqueue_relaxed(fut);
+                    }
+                }
+                Ok(())
+            }),
+        }
+    }
+
+    /// The relaxed re-effect (persistent/peek follow-on) on a fresh task, charged against the same
+    /// per-evaluation step budget as `apply_effect_spawned`.
+    fn apply_effect_relaxed_spawned(
+        self: Arc<Self>,
+        effect: Effect,
+        cost: Arc<CostAccounting>,
+        path: DfsPath,
+    ) -> Result<ReducerFuture, RholangError> {
+        if self.cancelled.load(Ordering::SeqCst) {
+            return Err(RholangError::ReduceError("reduction cancelled".to_string()));
+        }
+        let step = self.steps.fetch_add(1, Ordering::SeqCst).saturating_add(1);
+        let max_steps = self.max_steps.load(Ordering::SeqCst);
+        if step > max_steps {
+            return Err(RholangError::ReduceError(format!(
+                "reduction step budget exceeded ({max_steps} steps)"
+            )));
+        }
+        let fut = Box::pin(async move { self.apply_effect_relaxed(effect, cost, path).await });
         Ok(fut)
     }
 
@@ -1837,10 +2824,138 @@ mod tests {
             Box::new(from_expr(Expr::GInt(2))),
             Box::new(from_expr(Expr::GInt(3))),
         ));
+        assert_eq!(eval_single_expr(&p, &e, &cost).unwrap(), Expr::GInt(5));
+    }
+
+    /// `++` is defined for String, ByteArray, List, **Map** and **Set** (`Reduce.scala`'s
+    /// `EPlusPlusBody`: the Map/Set arms go through `union`). The Map/Set arms were missing in the
+    /// port, so `Set(1) ++ Set(2)` and `{"a": 1} ++ {"b": 2}` — both valid rholang — errored instead
+    /// of reducing, which is a replay divergence on any block that uses them.
+    #[tokio::test]
+    async fn plus_plus_concatenates_byte_arrays_and_unions_maps_and_sets() {
+        let cost = CostAccounting::from_initial(Costs::unsafe_max());
+        let e = Env::new();
+        let eval = |src: &str| {
+            // `source_to_adt` yields the typed `Closed`; the consuming `From` is how a term reaches
+            // the reducer, so the test crosses the same boundary the runtime does.
+            let p: Par = crate::normalizer::source_to_adt(src).expect("parse").into();
+            eval_single_expr(&p, &e, &cost)
+        };
+
+        // Byte arrays concatenate (`GByteArray(lhs) ++ GByteArray(rhs)`). Built as an AST rather
+        // than parsed: rholang has no byte-array *literal* (the BNFC `Ground` is Bool/Int/BigInt/
+        // String/Uri only), so a byte array reaches the reducer from a native such as
+        // `keccak256Hash` — which the corpus exercises, and which has no syntax to write here.
+        let bytes = from_expr(Expr::EPlusPlus(
+            Box::new(from_expr(Expr::GByteArray(vec![97, 98]))),
+            Box::new(from_expr(Expr::GByteArray(vec![99, 100]))),
+        ));
         assert_eq!(
-            eval_single_expr(&p, &e, &cost).unwrap(),
-            Expr::GInt(5)
+            eval_single_expr(&bytes, &e, &cost).expect("byte arrays"),
+            Expr::GByteArray(vec![97, 98, 99, 100])
         );
+
+        // Sets union and are re-canonicalised (the duplicate `2` collapses).
+        let set = eval("Set(1, 2) ++ Set(2, 3)").expect("set union");
+        let Expr::ESet(s) = &set else {
+            panic!("expected a set, got {set:?}")
+        };
+        assert_eq!(s.ps.len(), 3, "the duplicate element is not kept twice");
+
+        // Maps union, right-biased on a colliding key (Scala `baseMap ++ otherMap`).
+        let Expr::EMap(m) = eval("{\"a\": 1} ++ {\"a\": 2}").expect("map union") else {
+            panic!("expected a map")
+        };
+        assert_eq!(m.kvs.len(), 1, "one key, not two");
+        assert_eq!(m.kvs[0].1, from_expr(Expr::GInt(2)), "the other map wins");
+
+        // A mismatched operand reports the type the *left* operand established, as Scala's
+        // `OperatorExpectedError` does for each of its four arms. The variant is asserted rather
+        // than the message, because the message does **not** contain `expected`: Scala's
+        // `OperatorExpectedError` formats identically to `OperatorNotDefined` (both are
+        // "Operator `op` is not defined on type."), and the port is faithful to that — so a
+        // `contains("Set")` assertion would be testing the port's *unfaithfulness*.
+        for (src, expected) in [
+            ("Set(1) ++ [2]", "Set"),
+            ("{\"a\": 1} ++ 3", "Map"),
+            ("[1] ++ 3", "List"),
+            ("\"a\" ++ 3", "String"),
+        ] {
+            let err = eval(src).expect_err("a mismatched operand must be a type error");
+            match &err {
+                RholangError::OperatorExpectedError {
+                    op,
+                    expected: got,
+                    other_type,
+                } => {
+                    assert_eq!(op, "++", "{src}: wrong operator");
+                    assert_eq!(got, expected, "{src}: wrong expected type");
+                    assert!(!other_type.is_empty(), "{src}: the offending type is named");
+                }
+                other => panic!("{src}: expected an OperatorExpectedError, got {other:?}"),
+            }
+        }
+
+        // A `ByteArray` left operand has no arm in Scala either (the four arms are String, List,
+        // Map, Set), so it falls through to `OperatorNotDefined` — the same shape here.
+        let err = eval("3 ++ 4").expect_err("int ++ int");
+        assert!(
+            matches!(&err, RholangError::OperatorNotDefined { op, .. } if op == "++"),
+            "{err:?}"
+        );
+    }
+
+    /// `+` and `-` are not only arithmetic: Scala's `EPlusBody` has a `(lhs: ESetBody, rhs)` arm
+    /// that inserts, and `EMinusBody` has arms for both sets and maps that remove — each calling the
+    /// *same* `add`/`delete` the corresponding method does. The port had neither, so
+    /// `Set(1, 2) + 3`, `Set(1, 2) - 1` and `{"a": 1} - "a"` — all valid rholang — errored as
+    /// `OperatorNotDefined`, which is the failure `convenience_methods_test.rho` reports.
+    #[tokio::test]
+    async fn plus_and_minus_also_insert_into_and_delete_from_collections() {
+        let cost = CostAccounting::from_initial(Costs::unsafe_max());
+        let e = Env::new();
+        let eval = |src: &str| {
+            let p: Par = crate::normalizer::source_to_adt(src).expect("parse").into();
+            eval_single_expr(&p, &e, &cost)
+        };
+        let set_len = |src: &str| match eval(src).expect("a set") {
+            Expr::ESet(s) => s.ps.len(),
+            other => panic!("expected a set, got {other:?}"),
+        };
+
+        // Insert: a new element grows the set, an existing one does not (it is re-canonicalised).
+        assert_eq!(set_len("Set(1, 2) + 3"), 3);
+        assert_eq!(
+            set_len("Set(1, 2) + 1"),
+            2,
+            "inserting a duplicate is a no-op"
+        );
+        // Delete: from a set, and from a map by key.
+        assert_eq!(set_len("Set(1, 2, 3) - 2"), 2);
+        assert_eq!(
+            set_len("Set(1, 2) - 9"),
+            2,
+            "deleting an absent element is a no-op"
+        );
+        let Expr::EMap(m) = eval("{\"a\": 1, \"b\": 2} - \"a\"").expect("a map") else {
+            panic!("expected a map")
+        };
+        assert_eq!(m.kvs.len(), 1);
+        assert_eq!(m.kvs[0].0, from_expr(Expr::GString("b".to_string())));
+
+        // Arithmetic is untouched (the collection arm is checked first, so this is the arm order).
+        assert_eq!(eval("1 + 2").expect("int sum"), Expr::GInt(3));
+        assert_eq!(eval("5 - 3").expect("int difference"), Expr::GInt(2));
+        // And a non-integer, non-collection operand still reports the right error per operand:
+        // `GInt` + other is `OperatorExpectedError`, anything else is `OperatorNotDefined`.
+        assert!(matches!(
+            eval("1 + \"a\"").expect_err("int + string"),
+            RholangError::OperatorExpectedError { ref op, .. } if op == "+"
+        ));
+        assert!(matches!(
+            eval("\"a\" + 1").expect_err("string + int"),
+            RholangError::OperatorNotDefined { ref op, .. } if op == "+"
+        ));
     }
 
     #[test]
@@ -1874,7 +2989,9 @@ mod tests {
     }
 
     #[test]
-    fn division_and_modulo_overflow_are_errors() {
+    fn division_and_modulo_overflow_promote_to_bigint() {
+        // RCHIP #51: `i64::MIN / -1` and `i64::MIN % -1` overflow `i64`; they are now computed
+        // exactly (2^63 and 0) instead of erroring.
         let cost = CostAccounting::from_initial(Costs::unsafe_max());
         let e = Env::new();
 
@@ -1882,13 +2999,91 @@ mod tests {
             Box::new(from_expr(Expr::GInt(i64::MIN))),
             Box::new(from_expr(Expr::GInt(-1))),
         ));
-        assert!(eval_single_expr(&div_overflow, &e, &cost).is_err());
+        assert_eq!(
+            eval_single_expr(&div_overflow, &e, &cost).unwrap(),
+            Expr::GBigInt(-BigInt::from(i64::MIN))
+        );
 
         let mod_overflow = from_expr(Expr::EMod(
             Box::new(from_expr(Expr::GInt(i64::MIN))),
             Box::new(from_expr(Expr::GInt(-1))),
         ));
-        assert!(eval_single_expr(&mod_overflow, &e, &cost).is_err());
+        assert_eq!(
+            eval_single_expr(&mod_overflow, &e, &cost).unwrap(),
+            Expr::GBigInt(BigInt::from(0))
+        );
+    }
+
+    #[test]
+    fn integer_arithmetic_never_wraps_and_mixes_types() {
+        let cost = CostAccounting::from_initial(Costs::unsafe_max());
+        let e = Env::new();
+        let i = |v: i64| from_expr(Expr::GInt(v));
+        let bi = |v: i64| from_expr(Expr::GBigInt(BigInt::from(v)));
+        let eval = |ex: Expr| eval_expr_to_expr(&ex, &e, &cost).unwrap();
+
+        // `i64::MAX + 1` promotes instead of wrapping to `i64::MIN`.
+        assert_eq!(
+            eval(Expr::EPlus(Box::new(i(i64::MAX)), Box::new(i(1)))),
+            Expr::GBigInt(BigInt::from(i64::MAX) + BigInt::from(1))
+        );
+        // `i64::MIN - 1` promotes instead of wrapping to `i64::MAX`.
+        assert_eq!(
+            eval(Expr::EMinus(Box::new(i(i64::MIN)), Box::new(i(1)))),
+            Expr::GBigInt(BigInt::from(i64::MIN) - BigInt::from(1))
+        );
+        // `i64::MAX * 2` promotes instead of wrapping.
+        assert_eq!(
+            eval(Expr::EMult(Box::new(i(i64::MAX)), Box::new(i(2)))),
+            Expr::GBigInt(BigInt::from(i64::MAX) * BigInt::from(2))
+        );
+        // `-i64::MIN` promotes instead of staying `i64::MIN`.
+        assert_eq!(
+            eval(Expr::ENeg(Box::new(i(i64::MIN)))),
+            Expr::GBigInt(-BigInt::from(i64::MIN))
+        );
+        // Small results stay `Int` on the fast path.
+        assert_eq!(
+            eval(Expr::EPlus(Box::new(i(2)), Box::new(i(3)))),
+            Expr::GInt(5)
+        );
+
+        // Mixed `Int`/`BigInt` operands work (the small operand promotes).
+        assert_eq!(
+            eval(Expr::EPlus(Box::new(i(2)), Box::new(bi(3)))),
+            Expr::GBigInt(BigInt::from(5))
+        );
+        assert_eq!(
+            eval(Expr::EMult(Box::new(bi(3)), Box::new(i(4)))),
+            Expr::GBigInt(BigInt::from(12))
+        );
+
+        // Comparisons and equality span both integer forms.
+        assert_eq!(
+            eval(Expr::ELt(Box::new(i(1)), Box::new(bi(2)))),
+            Expr::GBool(true)
+        );
+        assert_eq!(
+            eval(Expr::EGte(Box::new(bi(2)), Box::new(i(2)))),
+            Expr::GBool(true)
+        );
+        assert_eq!(
+            eval(Expr::EEq(Box::new(i(2)), Box::new(bi(2)))),
+            Expr::GBool(true)
+        );
+        assert_eq!(
+            eval(Expr::ENeq(Box::new(i(2)), Box::new(bi(3)))),
+            Expr::GBool(true)
+        );
+
+        // Division by zero is still an error, in both forms.
+        assert!(eval_expr_to_expr(&Expr::EDiv(Box::new(i(1)), Box::new(i(0))), &e, &cost).is_err());
+        assert!(
+            eval_expr_to_expr(&Expr::EDiv(Box::new(i(1)), Box::new(bi(0))), &e, &cost).is_err()
+        );
+        assert!(
+            eval_expr_to_expr(&Expr::EMod(Box::new(i(1)), Box::new(bi(0))), &e, &cost).is_err()
+        );
     }
 
     #[test]
@@ -1951,8 +3146,66 @@ mod tests {
             &self,
             _continuation: TaggedContinuation,
             _data_list: Vec<ListParWithRandom>,
+            _path: DfsPath,
         ) -> Result<(), RholangError> {
             Ok(())
+        }
+    }
+
+    /// **Law 22 (`next_step_closure_computable`).** The next-step closure is computable *at
+    /// dispatch*, from the term alone: `resolve_children` turns each top-level term of a par into one
+    /// effect (a produce, a consume, or a nested `Par` to walk) without touching the tuple space, so
+    /// a scheduler can compute an effect's static footprint before committing to it. The spike for a
+    /// full property harness measured >150 lines (it needs the effect stream the integration tests
+    /// already assert on), so this is the structural half: one effect per term, no space I/O, for
+    /// every arity from one term to six.
+    #[tokio::test]
+    async fn law22_the_next_step_closure_is_computable_at_dispatch() {
+        let interp = Arc::new(DebruijnInterpreter::new(
+            MockSpace {
+                produced: Mutex::new(Vec::new()),
+            },
+            MockDispatch,
+            BTreeMap::new(),
+            SortedProc::default(),
+        ));
+        let cost = Arc::new(CostAccounting::from_initial(Costs::unsafe_max()));
+        let env = Env::new();
+        let rand = Blake2b512Random::from_init(&[0u8; 32]);
+
+        for n in 1..=6usize {
+            let sends: Vec<Send> = (0..n)
+                .map(|i| Send {
+                    chan: Box::new(from_expr(Expr::GInt(i as i64)).quote()),
+                    data: vec![from_expr(Expr::GInt(1)).quote()],
+                    persistent: false,
+                    locally_free: AlwaysEqual(vec![]),
+                    connective_used: false,
+                })
+                .collect();
+            let par = Par {
+                sends: sends.clone(),
+                ..Default::default()
+            };
+
+            let effects = interp
+                .resolve_children(&par, &env, &rand, &cost)
+                .await
+                .expect("the closure resolves");
+            assert_eq!(
+                effects.len(),
+                n,
+                "one effect per top-level term ({n} term(s))"
+            );
+            assert!(
+                interp
+                    .space
+                    .produced
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .is_empty(),
+                "computing the closure must not touch the tuple space"
+            );
         }
     }
 
@@ -1984,21 +3237,33 @@ mod tests {
         };
         interp.clone().eval(&par, &env, &rand, &cost).await.unwrap();
 
-        let produced = interp.space.produced.lock().unwrap_or_else(|p| p.into_inner());
+        let produced = interp
+            .space
+            .produced
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
         assert_eq!(produced.len(), 1);
         assert_eq!(produced[0].0.as_par().exprs, vec![Expr::GInt(1)]);
-        assert_eq!(produced[0].1.pars, vec![SortedProc::new(from_expr(Expr::GInt(2)))]);
+        assert_eq!(
+            produced[0].1.pars,
+            vec![SortedProc::new(from_expr(Expr::GInt(2)))]
+        );
         assert!(!produced[0].2);
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn concurrent_term_resolution_matches_sequential_count() {
-        // Many independent sends resolve concurrently (fork-join in `expand_par`); the produce
+        // Many independent sends resolve concurrently (the fork-join in `reduce_par`); the produce
         // effects are applied in DFS order, so none are lost or duplicated.
         let space = MockSpace {
             produced: Mutex::new(Vec::new()),
         };
-        let interp = Arc::new(DebruijnInterpreter::new(space, MockDispatch, BTreeMap::new(), SortedProc::default()));
+        let interp = Arc::new(DebruijnInterpreter::new(
+            space,
+            MockDispatch,
+            BTreeMap::new(),
+            SortedProc::default(),
+        ));
         let cost = Arc::new(CostAccounting::from_initial(Costs::unsafe_max()));
         let env = Env::new();
         let rand = Blake2b512Random::new_random(128);
@@ -2017,7 +3282,11 @@ mod tests {
         };
         interp.clone().eval(&par, &env, &rand, &cost).await.unwrap();
 
-        let produced = interp.space.produced.lock().unwrap_or_else(|p| p.into_inner());
+        let produced = interp
+            .space
+            .produced
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
         assert_eq!(produced.len(), 64);
     }
 
@@ -2062,7 +3331,8 @@ mod tests {
             from_expr(Expr::GInt(2)),
             from_expr(Expr::GInt(3)),
         ])));
-        let diff = eval_expr_to_expr(&Expr::EMinusMinus(Box::new(s1), Box::new(s2)), &e, &cost).unwrap();
+        let diff =
+            eval_expr_to_expr(&Expr::EMinusMinus(Box::new(s1), Box::new(s2)), &e, &cost).unwrap();
         match diff {
             Expr::ESet(set) => {
                 assert_eq!(set.ps.len(), 1);
@@ -2070,5 +3340,66 @@ mod tests {
             }
             _ => panic!("expected a set"),
         }
+    }
+
+    #[test]
+    fn string_methods_from_rchip_37() {
+        let cost = CostAccounting::from_initial(Costs::unsafe_max());
+        let e = Env::new();
+        let s = |v: &str| from_expr(Expr::GString(v.to_string()));
+        let i = |v: i64| from_expr(Expr::GInt(v));
+        let b = |v: bool| from_expr(Expr::GBool(v));
+        let call = |m: &str, target: &Par, args: &[Par]| {
+            eval_method(m, target, args, &e, &cost).expect("method call")
+        };
+
+        // substring(i) / substring(i, j)
+        assert_eq!(call("substring", &s("hello"), &[i(1)]), s("ello"));
+        assert_eq!(call("substring", &s("hello"), &[i(1), i(3)]), s("el"));
+        assert_eq!(call("substring", &s("hello"), &[i(3), i(1)]), s(""));
+        // length counts characters, not UTF-8 bytes
+        assert_eq!(call("length", &s("héllo"), &[]), i(5));
+        // indexOf(T) / indexOf(T, i)
+        assert_eq!(call("indexOf", &s("banana"), &[s("na")]), i(2));
+        assert_eq!(call("indexOf", &s("banana"), &[s("na"), i(3)]), i(4));
+        assert_eq!(call("indexOf", &s("banana"), &[s("zz")]), i(-1));
+        // case, reverse, trim
+        assert_eq!(call("toUpperCase", &s("aBc"), &[]), s("ABC"));
+        assert_eq!(call("toLowerCase", &s("aBc"), &[]), s("abc"));
+        assert_eq!(call("capitalize", &s("abc"), &[]), s("Abc"));
+        assert_eq!(call("reverse", &s("abc"), &[]), s("cba"));
+        assert_eq!(call("trim", &s("  x  "), &[]), s("x"));
+        // predicates
+        assert_eq!(call("isEmpty", &s(""), &[]), b(true));
+        assert_eq!(call("nonEmpty", &s("x"), &[]), b(true));
+        assert_eq!(call("startsWith", &s("hello"), &[s("he")]), b(true));
+        assert_eq!(call("endsWith", &s("hello"), &[s("lo")]), b(true));
+        assert_eq!(call("contains", &s("hello"), &[s("ell")]), b(true));
+        assert_eq!(call("contains", &s("hello"), &[s("zz")]), b(false));
+        // replace / split
+        assert_eq!(call("replace", &s("a-b-c"), &[s("-"), s("+")]), s("a+b+c"));
+        assert_eq!(
+            call("split", &s("a,b,c"), &[s(",")]),
+            from_expr(Expr::EList(EList {
+                ps: vec![s("a"), s("b"), s("c")],
+                ..Default::default()
+            }))
+        );
+        // toString: the value -> string conversion (so `42.toString() ++ " units"` works)
+        assert_eq!(call("toString", &i(42), &[]), s("42"));
+        assert_eq!(call("toString", &b(false), &[]), s("false"));
+        // format: variadic and single-list forms
+        assert_eq!(call("format", &s("a=%s b=%s"), &[i(1), i(2)]), s("a=1 b=2"));
+        assert_eq!(
+            call(
+                "format",
+                &s("x=%s"),
+                &[from_expr(Expr::EList(EList {
+                    ps: vec![i(7)],
+                    ..Default::default()
+                }))]
+            ),
+            s("x=7")
+        );
     }
 }

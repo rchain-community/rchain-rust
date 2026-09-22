@@ -19,36 +19,62 @@ pub fn to_casper_message_proto(packet: &Packet) -> PacketParseResult<CasperMessa
     let tag = PacketTypeTag::from_tag(&packet.type_id)
         .ok_or_else(|| ModelsError::Malformed("Unrecognized packet typeId"))?;
     match tag {
-        PacketTypeTag::BlockHashMessage => Ok(CasperMessageProto::BlockHashMessage(
-            decode_proto::<BlockHashMessageProto>(&packet.content)?,
-        )),
+        PacketTypeTag::BlockHashMessage => {
+            Ok(CasperMessageProto::BlockHashMessage(decode_proto::<
+                BlockHashMessageProto,
+            >(
+                &packet.content
+            )?))
+        }
         PacketTypeTag::BlockMessage => Ok(CasperMessageProto::BlockMessage(decode_proto::<
             BlockMessageProto,
-        >(&packet.content)?)),
-        PacketTypeTag::HasBlockRequest => Ok(CasperMessageProto::HasBlockRequest(
-            decode_proto::<HasBlockRequestProto>(&packet.content)?,
-        )),
-        PacketTypeTag::HasBlock => Ok(CasperMessageProto::HasBlock(decode_proto::<
-            HasBlockProto,
-        >(&packet.content)?)),
+        >(
+            &packet.content
+        )?)),
+        PacketTypeTag::HasBlockRequest => Ok(CasperMessageProto::HasBlockRequest(decode_proto::<
+            HasBlockRequestProto,
+        >(
+            &packet.content,
+        )?)),
+        PacketTypeTag::HasBlock => Ok(CasperMessageProto::HasBlock(decode_proto::<HasBlockProto>(
+            &packet.content,
+        )?)),
         PacketTypeTag::BlockRequest => Ok(CasperMessageProto::BlockRequest(decode_proto::<
             BlockRequestProto,
-        >(&packet.content)?)),
-        PacketTypeTag::ForkChoiceTipRequest => Ok(CasperMessageProto::ForkChoiceTipRequest(
-            decode_proto::<ForkChoiceTipRequestProto>(&packet.content)?,
-        )),
-        PacketTypeTag::FinalizedFringeRequest => Ok(CasperMessageProto::FinalizedFringeRequest(
-            decode_proto::<FinalizedFringeRequestProto>(&packet.content)?,
-        )),
+        >(
+            &packet.content
+        )?)),
+        PacketTypeTag::ForkChoiceTipRequest => {
+            Ok(CasperMessageProto::ForkChoiceTipRequest(decode_proto::<
+                ForkChoiceTipRequestProto,
+            >(
+                &packet.content
+            )?))
+        }
+        PacketTypeTag::FinalizedFringeRequest => {
+            Ok(CasperMessageProto::FinalizedFringeRequest(decode_proto::<
+                FinalizedFringeRequestProto,
+            >(
+                &packet.content,
+            )?))
+        }
         PacketTypeTag::FinalizedFringe => Ok(CasperMessageProto::FinalizedFringe(decode_proto::<
             FinalizedFringeProto,
-        >(&packet.content)?)),
-        PacketTypeTag::StoreItemsMessageRequest => Ok(CasperMessageProto::StoreItemsMessageRequest(
-            decode_proto::<StoreItemsMessageRequestProto>(&packet.content)?,
-        )),
-        PacketTypeTag::StoreItemsMessage => Ok(CasperMessageProto::StoreItemsMessage(
-            decode_proto::<StoreItemsMessageProto>(&packet.content)?,
-        )),
+        >(
+            &packet.content,
+        )?)),
+        PacketTypeTag::StoreItemsMessageRequest => {
+            Ok(CasperMessageProto::StoreItemsMessageRequest(
+                decode_proto::<StoreItemsMessageRequestProto>(&packet.content)?,
+            ))
+        }
+        PacketTypeTag::StoreItemsMessage => {
+            Ok(CasperMessageProto::StoreItemsMessage(decode_proto::<
+                StoreItemsMessageProto,
+            >(
+                &packet.content
+            )?))
+        }
     }
 }
 

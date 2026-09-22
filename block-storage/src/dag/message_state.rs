@@ -52,7 +52,10 @@ where
         let new_fringe = new_fringe_opt.unwrap_or(parent_fringe);
         let new_fringe_ids: BTreeSet<M> = new_fringe.iter().map(|m| m.id.clone()).collect();
 
-        let mut new_seen: BTreeSet<M> = justifications.iter().flat_map(|j| j.seen.iter().cloned()).collect();
+        let mut new_seen: BTreeSet<M> = justifications
+            .iter()
+            .flat_map(|j| j.seen.iter().cloned())
+            .collect();
         new_seen.insert(id.clone());
 
         let justification_keys: BTreeSet<M> = justifications.iter().map(|j| j.id.clone()).collect();
@@ -88,7 +91,9 @@ where
         }
 
         debug_assert!(
-            new_latest_msgs.values().all(|m| new_msg_map.contains_key(&m.id)),
+            new_latest_msgs
+                .values()
+                .all(|m| new_msg_map.contains_key(&m.id)),
             "latest_msgs must be a subset of msg_map"
         );
 

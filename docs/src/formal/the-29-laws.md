@@ -1,6 +1,6 @@
-# The 19 laws
+# The 29 laws
 
-RChain's behavior is pinned by **19 laws** — one invariant per layer of the system. Each law maps a
+RChain's behavior is pinned by **29 laws** — one invariant per layer of the system. Each law maps a
 language or system feature to its formalization: a Lean theorem, a Coq axiom, the executable K rule,
 and the Rust realization. The canonical catalog is
 [`spec/INVENTORY.md`](../../../spec/INVENTORY.md); this page is the reader-facing rendering of the same
@@ -47,6 +47,33 @@ deferred); **axiom** = postulated by design (a cryptographic primitive).
 | **17** | merge determinism; numeric channels non-negative | merges | `Casper/Validate.lean` — `numeric_channels_nonneg` (**stated**) |
 | **18** | height map contiguous; fringe identity order-independent | storage | `Casper/Validate.lean` — `height_map_contiguous`, `fringe_identity_order_independent` (**stated**) |
 | **19** | Blake2b256 canonical; `Blake2b512Random` associative splittable merge; sig verify/sign; Curve25519 round-trip | crypto | `Crypto/Random.lean` `mergeRandom_assoc`/`comm`; `Crypto/Spec.lean` `blake2b256_collision_free`, `sign_verify_roundtrip`, `curve25519_roundtrip` (**axiom**, by design) |
+
+## Scheduler — the effect scheduler (Laws 20–25)
+
+| Law | Invariant | Feature | Lean |
+|---|---|---|---|
+| **20** | channel-task linearization ("1 channel = 1 logical task"): a per-channel claim queue keeps same-channel commits in DFS path order; the path-smallest pending claim is always committable | the claim queue | `Scheduler.lean` — `queue_commit_path_ordered` (**proven**), `law20_deadlock_freedom` (**stated**, bakery argument) |
+| **21** | DFS-gate linearization: running effect `i` only after effects `0..i−1` complete is exactly the sequential apply fold; the one-hop (next-step-footprint) variant is unsound | the gate scheduler | `Scheduler.lean` — `gate_exec_refines_apply` (**proven**), `one_hop_depth2_diverges` (**proven** counterexample) |
+| **22** | next-step closure is computable at dispatch (the matched datum is concrete); computability does *not* make cross-channel pruning sound | dispatch-time closure | `Scheduler.lean` — `next_step_closure_computable`, `depth2_next_step_disjoint` (**proven**) |
+| **23** | read-determinism: an effect's outcome and event trace are a deterministic function of the state it reads | on-chain speculation | `SchedulerOnchain.lean` — `read_state_determines_outcome` (**proven**) |
+| **24** | DFS-order serializability: a concurrent run is sound iff every commit read the state the DFS-earlier effects produced (versioned write-record layer; prefix visibility) | the validation certificate | `SchedulerOnchain.lean` — witnesses proven; `record_determines_value`/`dispatched_record_at` proven; `serializable_writer_chain`/`dfs_serializable_implies_log_equal` **stated** |
+| **25** | validated speculation: commits may reorder iff each validates Law 24; invalidated subtrees abort and gate-re-run, so the published log is the sequential fold's | the abort/re-run coordinator | `SchedulerOnchain.lean` — `validated_speculation_refines_apply`, `gate_replay_terminates`, `Published` |
+
+The reader-facing story — the claim queue, the DFS gate, the relaxed mode, and the unsound one-hop
+variant — is [The channel scheduler](channel-scheduler.md); the on-chain extension is
+[On-chain scheduling: validated speculation](onchain-scheduling.md).
+
+## Cross-shard — two-phase commit (Laws 26–29)
+
+| Law | Invariant | Feature | Lean |
+|---|---|---|---|
+| **26** | shard scope determinism: a deploy/block's effects bind to exactly one shard; the shard id is a validated, ordered value; the RNG seed + unforgeable names are shard-scoped | the shard boundary | `CrossShard.lean` — `shard_scope_deterministic` (**stated**) |
+| **27** | cross-shard atomicity (2PC): a transaction commits on every participant or aborts on every one — no run leaves a strict subset committed | the coordinator | `CrossShard.lean` — `txn_atomic` (**stated**) |
+| **28** | leg idempotency: `prepare`/`commit`/`abort` are idempotent under the transaction id | re-delivery / retry | `CrossShard.lean` — `leg_idempotent` (**stated**) |
+| **29** | decision durability & record determinism: the coordinator's decision is a durable, content-addressed record; a prepared participant recovers it; re-derivable on replay | the merge/close record | `CrossShard.lean` — `commit_record_deterministic` (**stated**) |
+
+The reader-facing story — the Git pull-request flow, the roles, the state machine, and the 2PC
+recovery caveat — is [Cross-shard transactions: two-phase commit](cross-shard-transactions.md).
 
 ## Reading the formalization
 

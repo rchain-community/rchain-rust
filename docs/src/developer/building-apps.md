@@ -103,14 +103,22 @@ Content-Type: application/json
     "timestamp": 1724500000000,
     "phloPrice": 1,
     "phloLimit": 1000000,
-    "validAfterBlockNumber": -1,
-    "shardId": "root"
+    "validAfterBlockNumber": 0,
+    "shardId": "/root"
   },
   "deployer": "<base16 secp256k1 public key>",
   "signature": "<base16 secp256k1 signature>",
   "sigAlgorithm": "secp256k1"
 }
 ```
+
+Two fields are the ones a client gets wrong, so they are given the values the node's own tested
+fixture uses (`tools/devnet-test.sh`): `shardId` is the **full shard id** — `/root` for the default
+shard, `/root/child` for its child — *not* the bare `shard-name` from the config, and a mismatch is
+rejected with "Deploy shardId '…' is not as expected network shard '…'". And
+`validAfterBlockNumber` must be at or above the current block height minus the 50-block deploy
+lifespan: `0` is always valid on a fresh chain, whereas `-1` is *expired* once the node is past
+height 50, which is why the faucet anchors its deploys to the tip.
 
 The response is the **deploy signature** (a hex string); keep it to poll status. The `signature` is a
 secp256k1 signature over the protobuf-serialized `data` object; `deployer` is the signer's public key
@@ -126,6 +134,38 @@ gRPC `doDeploy`) is used, and the deploy always lands in the deploy pool. Autopr
   or on the next timer tick.
 - **autopropose OFF** (`--no-autopropose --no-propose-on-deploy`): the deploy sits in the pool until
   *you* call `propose` (admin `POST /api/v1/propose` on `40405`, or `rnode propose`).
+
+#### Binary attachments (RCHIP #39)
+
+A deploy may carry binary attachments instead of hex-encoding a blob into the `term`. Add an
+`attachments` array (hex strings, in order) to `data`. It is part of the signed payload, so the
+signature must cover it.
+
+```http
+{
+  "data": {
+    "term": "new out(`rho:io:stdout`), a(`rho:attachment:1`) in { out!(*a) }",
+    "timestamp": 1724500000000,
+    "phloPrice": 1,
+    "phloLimit": 1000000,
+    "validAfterBlockNumber": -1,
+    "shardId": "root",
+    "attachments": ["deadbeef", "0102030405"]
+  },
+  "deployer": "<base16 secp256k1 public key>",
+  "signature": "<base16 secp256k1 signature>",
+  "sigAlgorithm": "secp256k1"
+}
+```
+
+Inside the deploy, the *i*-th attachment (1-based) is the name `` `rho:attachment:i` ``, which
+evaluates to its bytes as a `ByteArray` — send it, match it, hash it, like any other `ByteArray`.
+
+A deploy with no `attachments` is unchanged: the field is omitted from both the JSON and the
+protobuf, so existing signatures and deploy ids stay valid. Note that a node **without** this
+version ignores the new protobuf field, so it would evaluate such a deploy *without* its attachments
+and diverge — every validator must be on this version before attachments are used (a coordinated
+upgrade; no genesis reset).
 
 ### 3.2 Read responses
 

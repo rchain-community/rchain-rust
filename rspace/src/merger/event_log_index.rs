@@ -117,7 +117,11 @@ impl EventLogIndex {
             .collect();
         let mergeable_consumes: BTreeSet<Consume> = all_consumes
             .into_iter()
-            .filter(|c| c.channels_hashes.iter().any(|h| mergeable_chs.contains_key(h)))
+            .filter(|c| {
+                c.channels_hashes
+                    .iter()
+                    .any(|h| mergeable_chs.contains_key(h))
+            })
             .collect();
 
         EventLogIndex {

@@ -7,7 +7,7 @@ use linked_hash_map::LinkedHashMap;
 
 use super::commandline::config_mapper;
 use super::commandline::options::{Commands, Options};
-use super::hocon::node_conf_from_hocon;
+use super::hocon::{check_shard_config_exclusivity, node_conf_from_hocon};
 use super::model::NodeConf;
 
 /// A named set of defaults (port of `Configuration.Profile`).
@@ -58,7 +58,9 @@ impl Configuration {
 
         let run = match &options.subcommand {
             Commands::Run(run) => run,
-            _ => return Err("`run` subcommand is required to build a node configuration".to_string()),
+            _ => {
+                return Err("`run` subcommand is required to build a node configuration".to_string())
+            }
         };
 
         let data_dir = run
@@ -81,25 +83,55 @@ impl Configuration {
             Some(path) => parse_file(path)?,
             None => Hocon::Hash(LinkedHashMap::new()),
         };
+        // Checked on the operator-supplied layers only: `defaults.conf` always sets
+        // `casper.shard-name`, so its presence after the merge says nothing about intent.
+        check_shard_config_exclusivity(&options_config, "the command line")?;
+        check_shard_config_exclusivity(&file_config, "the config file")?;
+
         let default_config = parse_defaults(&data_dir.to_string_lossy())?;
 
         let merged = merge(merge(options_config, file_config), default_config);
-        let node_conf = node_conf_from_hocon(&merged)?;
+        let mut node_conf = node_conf_from_hocon(&merged)?;
+        resolve_validator_private_key(&mut node_conf)?;
 
-        let quorum = node_conf.casper.genesis_block_data.pos_multi_sig_quorum;
-        let keys_len = node_conf
-            .casper
-            .genesis_block_data
-            .pos_multi_sig_public_keys
-            .len();
-        if quorum > keys_len as i32 {
-            return Err(format!(
-                "defaults.conf: The value 'pos-multi-sig-quorum' should be less or equal the length of 'pos-multi-sig-public-keys' (the actual values are '{quorum}' and '{keys_len}' respectively)"
-            ));
+        for spec in node_conf.casper.shards.iter() {
+            let quorum = spec.genesis_block_data.pos_multi_sig_quorum;
+            let keys_len = spec.genesis_block_data.pos_multi_sig_public_keys.len();
+            if quorum > keys_len as i32 {
+                return Err(format!(
+                    "shard '{}': The value 'pos-multi-sig-quorum' should be less or equal the length of 'pos-multi-sig-public-keys' (the actual values are '{quorum}' and '{keys_len}' respectively)",
+                    spec.shard_id
+                ));
+            }
         }
 
         Ok((check_dev_mode(node_conf), profile, config_file))
     }
+}
+
+/// Resolve `casper.validator-private-key-path` into `casper.validator-private-key`.
+///
+/// The runtime reads only the hex field, so a key supplied *by path* was parsed into the
+/// config and then silently dropped — leaving the node with no validator identity, no
+/// diagnostic, and (in standalone mode) a genesis ceremony that cannot be signed.
+/// Resolving it here also lets operators keep the secret off the command line:
+/// `--validator-private-key <hex>` is visible to any local process via `ps` or
+/// `/proc/<pid>/cmdline`, a file path is not.
+///
+/// Precedence: an explicit `validator-private-key` always wins; the path is consulted
+/// only when that is absent. A path that is set but unreadable or not a key is a hard
+/// error rather than a silent fallback, for the same reason — silently running without
+/// a validator identity is the failure this exists to prevent.
+fn resolve_validator_private_key(node_conf: &mut NodeConf) -> Result<(), String> {
+    if node_conf.casper.validator_private_key.is_some() {
+        return Ok(());
+    }
+    let Some(path) = node_conf.casper.validator_private_key_path.clone() else {
+        return Ok(());
+    };
+    let key = rchain_crypto::util::key_util::load_validator_private_key(&path)?;
+    node_conf.casper.validator_private_key = Some(rchain_shared::base16::encode(key.bytes()));
+    Ok(())
 }
 
 /// If not in dev mode, strip the deployer private key (port of `Configuration.checkDevMode`).
@@ -179,7 +211,7 @@ mod tests {
     use crate::configuration::model::{
         ApiServer, DevConf, Metrics, PeersDiscovery, ProtocolClient, ProtocolServer, Storage,
     };
-    use rchain_casper::{CasperConf, GenesisBlockData};
+    use rchain_casper::{CasperConf, GenesisBlockData, ShardMemberships, ShardSpec};
     use rchain_comm::peer_node::PeerNode;
     use rchain_comm::transport::tls_conf::TlsConf;
     use std::time::Duration;
@@ -202,6 +234,22 @@ mod tests {
 
     fn secs(s: u64) -> Duration {
         Duration::from_secs(s)
+    }
+
+    /// The default single-shard membership: the `root` shard under the root parent (full id
+    /// `/root`), with the given genesis data.
+    fn root_shard_spec(
+        genesis_block_data: GenesisBlockData,
+        autogen_shard_size: i32,
+    ) -> ShardMemberships {
+        ShardMemberships::new(vec![ShardSpec::new(
+            "root".to_string(),
+            "/".to_string(),
+            genesis_block_data,
+            autogen_shard_size,
+        )
+        .expect("a valid root shard spec")])
+        .expect("a non-empty membership set")
     }
 
     fn default_expected() -> NodeConf {
@@ -251,6 +299,7 @@ mod tests {
                 port_admin_http: 40405,
                 max_blocks_limit: 50,
                 enable_reporting: false,
+                enable_txn_api: false,
                 enable_devnet_cors: false,
                 keep_alive_time: secs(2 * 60 * 60),
                 keep_alive_timeout: secs(20),
@@ -273,7 +322,24 @@ mod tests {
                 validator_public_key: None,
                 validator_private_key: None,
                 validator_private_key_path: None,
-                shard_name: "root".to_string(),
+                shards: root_shard_spec(
+                    GenesisBlockData {
+                        genesis_data_dir: PathBuf::from("/var/lib/rnode/genesis"),
+                        bonds_file: "/var/lib/rnode/genesis/bonds.txt".to_string(),
+                        wallets_file: "/var/lib/rnode/genesis/wallets.txt".to_string(),
+                        bond_minimum: 1,
+                        bond_maximum: 9223372036854775807,
+                        epoch_length: 10000,
+                        quarantine_length: 50000,
+                        genesis_block_number: 0,
+                        number_of_active_validators: 100,
+                        pos_multi_sig_public_keys: default_pos_multi_sig_public_keys(),
+                        pos_multi_sig_quorum: 2,
+                        pos_vault_pub_key: String::new(),
+                        system_contract_pub_key: String::new(),
+                    },
+                    5,
+                ),
                 casper_loop_interval: secs(30),
                 requested_blocks_timeout: secs(240),
                 max_number_of_parents: 2147483647,
@@ -281,23 +347,8 @@ mod tests {
                 fork_choice_check_if_stale_interval: secs(11 * 60),
                 synchrony_constraint_threshold: 0.67,
                 height_constraint_threshold: 1000,
-                genesis_block_data: GenesisBlockData {
-                    genesis_data_dir: PathBuf::from("/var/lib/rnode/genesis"),
-                    bonds_file: "/var/lib/rnode/genesis/bonds.txt".to_string(),
-                    wallets_file: "/var/lib/rnode/genesis/wallets.txt".to_string(),
-                    bond_minimum: 1,
-                    bond_maximum: 9223372036854775807,
-                    epoch_length: 10000,
-                    quarantine_length: 50000,
-                    genesis_block_number: 0,
-                    number_of_active_validators: 100,
-                    pos_multi_sig_public_keys: default_pos_multi_sig_public_keys(),
-                    pos_multi_sig_quorum: 2,
-                    pos_vault_pub_key: String::new(),
-                    system_contract_pub_key: String::new(),
-                },
-                autogen_shard_size: 5,
                 min_phlo_price: 1,
+                effect_mode: "dfs".to_string(),
             },
             metrics: Metrics {
                 prometheus: false,
@@ -320,10 +371,162 @@ mod tests {
         assert_eq!(config, default_expected());
     }
 
+    /// Parse a HOCON fragment, for the shard-membership tests below.
+    fn parse_hocon_str(s: &str) -> Hocon {
+        hocon::HoconLoader::new()
+            .load_str(s)
+            .expect("parse hocon")
+            .hocon()
+            .expect("hocon tree")
+    }
+
+    /// A node configured with the legacy scalar shard keys and one configured with an equivalent
+    /// one-entry `casper.shards` array must be the same node: the array form has to be the identity
+    /// case, not merely equivalent-looking.
+    #[test]
+    fn one_entry_shards_array_equals_the_legacy_scalar_keys() {
+        let legacy = node_conf_from_hocon(&merge(
+            parse_hocon_str("casper { shard-name = root, parent-shard-id = / }"),
+            parse_defaults("/var/lib/rnode").unwrap(),
+        ))
+        .expect("legacy config");
+
+        let array = node_conf_from_hocon(&merge(
+            parse_hocon_str("casper { shards = [ { shard-name = root, parent-shard-id = / } ] }"),
+            parse_defaults("/var/lib/rnode").unwrap(),
+        ))
+        .expect("array config");
+
+        assert_eq!(legacy.casper.shards, array.casper.shards);
+        assert_eq!(legacy.casper.shards.len(), 1);
+        assert_eq!(legacy.casper.shards.primary().shard_id.to_string(), "/root");
+        // The entry inherits the node-level genesis data rather than getting an empty block.
+        assert_eq!(
+            legacy.casper.shards.primary().genesis_block_data,
+            array.casper.shards.primary().genesis_block_data
+        );
+    }
+
+    /// A `shards` array carries one membership per entry, in order (entry 0 is the primary), and an
+    /// entry-level `genesis-block-data` replaces the node-level one for that shard only.
+    #[test]
+    fn shards_array_parses_each_membership_with_its_own_genesis() {
+        let config = node_conf_from_hocon(&merge(
+            parse_hocon_str(
+                r#"casper { shards = [
+                     { shard-name = root, parent-shard-id = / }
+                     { shard-name = child, parent-shard-id = /root,
+                       genesis-block-data { bonds-file = /var/lib/rnode/child-bonds.txt } }
+                   ] }"#,
+            ),
+            parse_defaults("/var/lib/rnode").unwrap(),
+        ))
+        .expect("multi-shard config");
+
+        let shards = &config.casper.shards;
+        assert_eq!(shards.len(), 2);
+        let ids: Vec<String> = shards.iter().map(|s| s.shard_id.to_string()).collect();
+        assert_eq!(ids, vec!["/root".to_string(), "/root/child".to_string()]);
+        assert_eq!(shards.primary().shard_id.to_string(), "/root");
+
+        // Entry 1 overrode its bonds file wholesale; every other field came from the node default,
+        // so nothing was silently zeroed by the override.
+        let child = shards
+            .get(&rchain_shared::refined::ShardId::try_from("/root/child".to_string()).unwrap());
+        let child = child.expect("child membership");
+        assert_eq!(
+            child.genesis_block_data.bonds_file,
+            "/var/lib/rnode/child-bonds.txt"
+        );
+        assert_eq!(
+            child.genesis_block_data.epoch_length,
+            shards.primary().genesis_block_data.epoch_length
+        );
+    }
+
+    /// A nested hierarchy resolves in order, with the first entry the primary — the ordering the
+    /// per-shard data directories and the request default both depend on.
+    #[test]
+    fn three_memberships_resolve_in_order() {
+        let config = node_conf_from_hocon(&merge(
+            parse_hocon_str(
+                r#"casper { shards = [
+                     { shard-name = root, parent-shard-id = / }
+                     { shard-name = child, parent-shard-id = /root }
+                     { shard-name = leaf, parent-shard-id = /root/child }
+                   ] }"#,
+            ),
+            parse_defaults("/var/lib/rnode").unwrap(),
+        ))
+        .expect("three memberships");
+
+        let ids: Vec<String> = config
+            .casper
+            .shards
+            .iter()
+            .map(|s| s.shard_id.to_string())
+            .collect();
+        assert_eq!(ids, vec!["/root", "/root/child", "/root/child/leaf"]);
+        assert_eq!(config.casper.shards.len(), 3);
+        assert_eq!(config.casper.shards.primary().shard_id.to_string(), "/root");
+    }
+
+    /// The transaction API is off unless an operator turns it on: a gateway node must not serve the
+    /// routes by virtue of being a gateway.
+    #[test]
+    fn enable_txn_api_defaults_off_and_parses_on() {
+        let off = node_conf_from_hocon(&parse_defaults("/var/lib/rnode").unwrap()).unwrap();
+        assert!(!off.api_server.enable_txn_api);
+
+        let on = node_conf_from_hocon(&merge(
+            parse_hocon_str("api-server { enable-txn-api = true }"),
+            parse_defaults("/var/lib/rnode").unwrap(),
+        ))
+        .unwrap();
+        assert!(on.api_server.enable_txn_api);
+    }
+
+    /// Setting both the array and the scalar keys is an error rather than a silent precedence rule.
+    #[test]
+    fn shards_and_scalar_keys_are_mutually_exclusive() {
+        let both = parse_hocon_str(
+            "casper { shard-name = root, parent-shard-id = /, shards = [ { shard-name = root, parent-shard-id = / } ] }",
+        );
+        let err = check_shard_config_exclusivity(&both, "the config file")
+            .expect_err("must reject both forms");
+        assert!(err.contains("mutually exclusive"), "{err}");
+        // A layer with only one of the two forms is fine.
+        assert!(check_shard_config_exclusivity(
+            &parse_hocon_str("casper { shard-name = root }"),
+            "the config file"
+        )
+        .is_ok());
+    }
+
+    /// A node must belong to at least one shard, and no shard may be listed twice.
+    #[test]
+    fn memberships_reject_empty_and_duplicate_lists() {
+        let base = parse_defaults("/var/lib/rnode").unwrap();
+        let empty = node_conf_from_hocon(&merge(
+            parse_hocon_str("casper { shards = [] }"),
+            base.clone(),
+        ));
+        assert!(empty.is_err(), "an empty shards array must be rejected");
+
+        let duplicate = node_conf_from_hocon(&merge(
+            parse_hocon_str(
+                "casper { shards = [ { shard-name = root, parent-shard-id = / }, { shard-name = root, parent-shard-id = / } ] }",
+            ),
+            base,
+        ));
+        let err = duplicate.expect_err("duplicate memberships must be rejected");
+        assert!(err.contains("duplicate shard membership"), "{err}");
+    }
+
     #[test]
     fn cli_options_override_defaults() {
-        use clap::Parser as _;
         use crate::configuration::commandline::options::Options;
+        use clap::Parser as _;
 
         let args = "\
             run --standalone --dev-mode \
@@ -408,6 +611,7 @@ mod tests {
                 port_admin_http: 111111,
                 max_blocks_limit: 111111,
                 enable_reporting: true,
+                enable_txn_api: false,
                 enable_devnet_cors: false,
                 keep_alive_time: secs(111111),
                 keep_alive_timeout: secs(111111),
@@ -430,7 +634,24 @@ mod tests {
                 validator_public_key: Some("111111".to_string()),
                 validator_private_key: Some("111111".to_string()),
                 validator_private_key_path: Some(PathBuf::from("/var/lib/rnode/pem.key")),
-                shard_name: "root".to_string(),
+                shards: root_shard_spec(
+                    GenesisBlockData {
+                        genesis_data_dir: PathBuf::from("/var/lib/rnode/genesis"),
+                        bonds_file: "/var/lib/rnode/genesis/bonds1.txt".to_string(),
+                        wallets_file: "/var/lib/rnode/genesis/wallets1.txt".to_string(),
+                        bond_minimum: 111111,
+                        bond_maximum: 111111,
+                        epoch_length: 111111,
+                        quarantine_length: 111111,
+                        genesis_block_number: 222,
+                        number_of_active_validators: 111111,
+                        pos_multi_sig_public_keys: default_pos_multi_sig_public_keys(),
+                        pos_multi_sig_quorum: 2,
+                        pos_vault_pub_key: default_pos_vault_pub_key(),
+                        system_contract_pub_key: default_system_contract_pub_key(),
+                    },
+                    111111,
+                ),
                 casper_loop_interval: secs(111111),
                 requested_blocks_timeout: secs(111111),
                 max_number_of_parents: 111111,
@@ -438,23 +659,8 @@ mod tests {
                 fork_choice_check_if_stale_interval: secs(111111),
                 synchrony_constraint_threshold: 111111.0,
                 height_constraint_threshold: 111111,
-                genesis_block_data: GenesisBlockData {
-                    genesis_data_dir: PathBuf::from("/var/lib/rnode/genesis"),
-                    bonds_file: "/var/lib/rnode/genesis/bonds1.txt".to_string(),
-                    wallets_file: "/var/lib/rnode/genesis/wallets1.txt".to_string(),
-                    bond_minimum: 111111,
-                    bond_maximum: 111111,
-                    epoch_length: 111111,
-                    quarantine_length: 111111,
-                    genesis_block_number: 222,
-                    number_of_active_validators: 111111,
-                    pos_multi_sig_public_keys: default_pos_multi_sig_public_keys(),
-                    pos_multi_sig_quorum: 2,
-                    pos_vault_pub_key: default_pos_vault_pub_key(),
-                    system_contract_pub_key: default_system_contract_pub_key(),
-                },
-                autogen_shard_size: 111111,
                 min_phlo_price: 1,
+                effect_mode: "dfs".to_string(),
             },
             metrics: Metrics {
                 prometheus: true,
@@ -470,5 +676,51 @@ mod tests {
         };
 
         assert_eq!(config, expected);
+    }
+
+    /// A validator key given *by path* must end up in the hex field the runtime reads.
+    /// Before this, `--validator-private-key-path` was parsed and then dropped, so a
+    /// node configured that way ran with no validator identity and said nothing.
+    #[test]
+    fn validator_private_key_path_is_resolved_into_the_hex_field() {
+        let dir = std::env::temp_dir().join(format!("rchain_validator_key_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        const HEX: &str = "67e56582298859ddae725f972992a07c6c4fb9f62a8fff58ce3ca926a1063530";
+        let key_path = dir.join("validator.hex");
+        // Trailing newline: what any editor or `echo` leaves behind.
+        std::fs::write(&key_path, format!("{HEX}\n")).unwrap();
+
+        let mut conf = default_expected();
+        conf.casper.validator_private_key = None;
+        conf.casper.validator_private_key_path = Some(key_path);
+        resolve_validator_private_key(&mut conf).unwrap();
+        assert_eq!(conf.casper.validator_private_key.as_deref(), Some(HEX));
+
+        // An explicit hex key wins, and the path is not even read (it does not exist).
+        let explicit = "11".repeat(32);
+        conf.casper.validator_private_key = Some(explicit.clone());
+        conf.casper.validator_private_key_path = Some(dir.join("does-not-exist.pem"));
+        resolve_validator_private_key(&mut conf).unwrap();
+        assert_eq!(
+            conf.casper.validator_private_key.as_deref(),
+            Some(explicit.as_str())
+        );
+
+        // A path that is set but is not a key is an error, not a silent no-op.
+        let junk = dir.join("junk.txt");
+        std::fs::write(&junk, "not a key\n").unwrap();
+        conf.casper.validator_private_key = None;
+        conf.casper.validator_private_key_path = Some(junk);
+        assert!(resolve_validator_private_key(&mut conf).is_err());
+
+        // No path and no hex key at all is fine (an observer node).
+        conf.casper.validator_private_key = None;
+        conf.casper.validator_private_key_path = None;
+        resolve_validator_private_key(&mut conf).unwrap();
+        assert!(conf.casper.validator_private_key.is_none());
+
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

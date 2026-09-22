@@ -25,6 +25,7 @@ use rchain_shared::refined::NonNegI64;
 fn deploy(term: &str) -> SignedDeployData {
     SignedDeployData {
         data: DeployData {
+            attachments: Vec::new(),
             term: term.to_string(),
             timestamp: 0,
             phlo_price: 1,
@@ -70,7 +71,7 @@ async fn system_process_replies_in_cost_accounted_block_and_restart_succeeds() {
             &[],
             &rand,
             BlockData::empty(),
-            &std::collections::BTreeMap::new(),
+            &rchain_rholang::native_state::PosGenesis::default(),
             &[seeded_vault()],
         )
         .await
@@ -88,10 +89,15 @@ async fn system_process_replies_in_cost_accounted_block_and_restart_succeeds() {
     );
 
     // The forwarded reply must be in the block's post-state (#5).
-    rm.runtime().reset(post2).await.expect("reset to post state");
+    rm.runtime()
+        .reset(post2)
+        .await
+        .expect("reset to post state");
     let got = rm
         .runtime()
-        .get_data_par(&SortedProc::new(from_expr(Expr::GString("got-zfa".to_string()))))
+        .get_data_par(&SortedProc::new(from_expr(Expr::GString(
+            "got-zfa".to_string(),
+        ))))
         .await
         .expect("get_data_par");
     assert!(
@@ -100,5 +106,7 @@ async fn system_process_replies_in_cost_accounted_block_and_restart_succeeds() {
     );
 
     // Restarting on this chain must not fail with InstallNotAllowed (#6).
-    restart(&rm, post2).await.expect("restart after executed deploy");
+    restart(&rm, post2)
+        .await
+        .expect("restart after executed deploy");
 }

@@ -45,7 +45,10 @@ mod tests {
         let v = U32(0xdead_beef);
         let bytes = <U32 as Serialize<U32>>::encode(&v);
         assert_eq!(bytes, vec![0xde, 0xad, 0xbe, 0xef]);
-        assert_eq!(<U32 as Serialize<U32>>::decode(&bytes).unwrap().0, 0xdead_beef);
+        assert_eq!(
+            <U32 as Serialize<U32>>::decode(&bytes).unwrap().0,
+            0xdead_beef
+        );
     }
 
     #[test]

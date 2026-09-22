@@ -79,15 +79,27 @@ list cannot exceed 255; config durations/sizes cannot exceed `Long` range). Chan
   (e.g. a Law-5 `BugFoundError`) as "no match". Now the error is recorded and propagated when the
   bipartite search finds no matching.
 - **Documented (sanctioned design)** — the flat `Par` ADT **erases** the quote `@`/eval `*`
-  distinction (`rholang/src/normalizer.rs:131-145,166-178`); the Name/Proc sort is recovered
+  distinction (the `VarSort::ProcSort` arms of `rholang/src/normalizer.rs`); the Name/Proc sort is recovered
   structurally by `classify`/`is_pure_name` (`models/src/types.rs`), per `TYPE-SYSTEM.md` §1.1 and
   the Lean `Par.lean` flat record.
-- **Stubbed semantics** (honest inventory for the formal spec): set difference `--`
-  (`rholang/src/reduce.rs:516-518`); normalizer `defer(...)` cases — `process` dispatch, `complex
-  input source`, `concurrent let` (`normalizer.rs`); `substituteAndCharge`/`Chargeable` deferrals
-  (`substitute.rs:5`, `accounting.rs:5`, `storage.rs:88`).
+- **Stubbed or deferred semantics** (honest inventory for the formal spec; re-verified against the
+  tree, since the previous version of this list had itself gone stale — everything it named is now
+  implemented). What is deferred **today**, none of it on the reduction path:
+  - the `.rho`/`.rhox` genesis-template *loading* (`CompiledRholangSource`/`CompiledRholangTemplate`)
+    — only the parameter types and the pure source-string builders are ported
+    (`casper/src/genesis/contracts.rs`);
+  - three Java/scodec conveniences with no Rust analog in the string/byte syntax helpers
+    (`ByteStringSyntax.toDirectByteBuffer`, `toByteVector`, `toBlake2b256Hash`) —
+    `models/src/string_syntax.rs`;
+  - the Magnolia-derived `Pretty[A]` typeclass — the pure escaping/indentation helpers are ported
+    (`models/src/pretty.rs`);
+  - the effect-machinery readers (`NodeCallCtxReader`, `VersionInfo.get`'s sbt-buildinfo input) —
+    `node/src/runtime/node_call_ctx.rs`, `node/src/web/version_info.rs`.
+  Set difference `--` is **implemented** (`rholang/src/reduce.rs:727`, with both error arms), and the
+  normalizer's `defer(...)` cases, `substituteAndCharge` and the proto-size `Costs`/`Chargeable`
+  instances are all in place (see F4 below, which records the fix).
 - **Deliberate Scala deviations (determinism):** `New.injections` sorted by key
-  (`models/src/sorter.rs:324-327`); `locally_free` excluded from equality/hash via `AlwaysEqual`
+  (`models/src/sorter.rs`'s par reconstruction); `locally_free` excluded from equality/hash via `AlwaysEqual`
   (`models/src/ast.rs:35-77`).
 
 ---
@@ -173,6 +185,8 @@ Every place the Rust port deliberately departs from the Scala oracle, with the r
 | `New.injections` sorted by key (determinism) | `models/.../rholang/*` | `HashMap` order is non-deterministic in Rust |
 | `locally_free` excluded from `Eq`/`Hash` (`AlwaysEqual`) | `models/.../Par.scala` | the cache field is not part of structural identity |
 | Negative deploy cost **rejected** (not wrapped to `uint64`) | `accounting/Costs.scala` `toProto` = `PCost(c.value)` | Scala wraps a negative `Long` into `uint64` (latent bug); reject is safer |
+| Integer arithmetic **promotes to `BigInt`** on `i64` overflow and never wraps; mixed `Int`/`BigInt` operands promote | `Reduce.scala` `wrappingAdd`/`wrappingSub`/`wrappingMul`/`wrappingNeg` and `i64::MIN / -1` errors | RCHIP #51: silent overflow/underflow is the bug class behind the PoS incidents ("one may blow up the world"); exact arithmetic removes it. A **hard fork** — previously-wrapped results change, so prior state is invalid |
+| Number-channel merge diffs are **checked** (`i64` overflow is an error) | `calculateNumChannelDiff` (`Long` subtraction wraps) | a wrapped diff silently corrupts the merged state (Laws 9 & 17); same class as RCHIP #51 — recorded as issue #52 |
 | `Add<NonNegI64>` for heights (no negative delta) | — | invariant preserved structurally |
 | gRPC `max_decoding_message_size` wired (was 4 MB tonic default) | `defaults.conf` `grpc-max-recv-message-size = 16M` | honors the existing config |
 | transport `send` timeout (`DEFAULT_SEND_TIMEOUT`) | `GrpcTransportClient.DefaultSendTimeout` | the constant existed but was unused |
@@ -290,7 +304,7 @@ Scala remains a *checklist* of required behavior only, never an implementation g
   maintained **by hand** (`reduce.rs:35-59`, `substitute.rs`) rather than carried by the type. A
   single inversion (the `normalize_contr` formal-order reversal, fixed in `5ae8dc4df`) silently broke
   list-as-channel matching — latent bugs are invisible until one contract exercises them. *How the
-  rewrite eliminates it:* the interpreter is re-derived from the 19 laws (`INVENTORY.md`) and the
+  rewrite eliminates it:* the interpreter is re-derived from the 29 laws (`INVENTORY.md`) and the
   grammar in `RHO-CALCULUS.md`, with the `Par<S>` sort split and the `Closed`/`WellScoped`/
   `BindsAtMostOnce` refinements carrying the invariants structurally (Phase 4).
 
@@ -313,7 +327,7 @@ Scala remains a *checklist* of required behavior only, never an implementation g
   `compute_bonds` becomes a single native read (`HistoryReader::get_native(PREFIX_POS, …)`), total and
   typed (Phase 2).
 
-- **F4 — Gas metering is unwired.** `ChargingRSpace` (`rholang/src/storage.rs:88`) is a pure
+- **F4 — Gas metering is unwired.** `ChargingRSpace` (`rholang/src/storage.rs:103`) is a pure
   passthrough (storage/event charging deferred); `substituteAndCharge` (`substitute.rs:5`) and the
   proto-size cost table (`accounting.rs:5`) are deferred; `Chargeable` has no instances. *Why
   fragile:* the node's primary DoS defense (phlo) is not actually enforced against untrusted deploy
@@ -579,25 +593,25 @@ reuses §11's P0–P3 model. Findings are deduplicated across clusters.
 ### High (P1)
 
 - **R14 (F2) — unbounded concurrent TLS handshakes.** `grpc_transport_receiver.rs:248-263` spawns one accept task per TCP connection with no timeout; the 128-slot channel bounds only *completed* handshakes. A peer opening thousands of idle connections holds sockets/rustls state until TCP timeouts. **Fixed** — a `handshake_slots` semaphore (`MAX_CONCURRENT_HANDSHAKES`) is acquired before each spawn (excess connections are dropped), and `acceptor.accept` is wrapped in a 10 s timeout.
-- **R15 (C1) — unbounded block-validation pipeline.** `node/src/runtime/node_runtime.rs:533` feeds replay validation through an `unbounded_channel`; the bounded ingress (S18) is upstream of it, so a peer streaming valid-signed blocks fills memory faster than replay drains. **Fixed** — the processor-input channel is now `mpsc::channel(MAX_PENDING_BLOCKS)` with backpressure (`send().await`), and `block_processor::apply` takes the bounded `Receiver`.
-- **R16 (C2) — unbounded `StoreItemsMessageRequest.take`.** `casper/src/engine/node_running.rs:307` bounds only the *sign* of `skip`/`take`; `take=i32::MAX` triggers a full-trie traversal + giant reply, repeatable per peer. **Fixed** — `take` is capped at `MAX_STORE_ITEMS_TAKE = 10_000`; oversized requests are dropped.
+- **R15 (C1) — unbounded block-validation pipeline.** `node/src/runtime/node_runtime.rs:522` feeds replay validation through an `unbounded_channel`; the bounded ingress (S18) is upstream of it, so a peer streaming valid-signed blocks fills memory faster than replay drains. **Fixed** — the processor-input channel is now `mpsc::channel(MAX_PENDING_BLOCKS)` with backpressure (`send().await`), and `block_processor::apply` takes the bounded `Receiver`.
+- **R16 (C2) — unbounded `StoreItemsMessageRequest.take`.** `casper/src/engine/node_running.rs:342-344` bounds only the *sign* of `skip`/`take`; `take=i32::MAX` triggers a full-trie traversal + giant reply, repeatable per peer. **Fixed** — `take` is capped at `MAX_STORE_ITEMS_TAKE = 10_000`; oversized requests are dropped.
 - **R17 (A1/C8) — faucet rate limit is global, no per-source/address budget.** `node/src/web/http.rs:44,127-136` + `web_api_impl.rs:89` use one shared `RateLimiter` (1/s); a single caller drains the genesis dev wallet at 0.3 REV/s and monopolizes the budget. **Fixed** — a per-address drip budget (`FAUCET_MAX_DRIPS_PER_ADDRESS = 10`) in `WebApiImpl`; per-source IP buckets remain a devnet-only refinement.
-- **R18 (E1) — `CostAccounting.log` grows unboundedly.** `rholang/src/accounting.rs:342,390` appends a `Cost` (with a heap `String` op) per `charge` and never clears; `total_charged()` (`:363`) re-sums the whole log per deploy, becoming O(n) and able to wrap i64. **Fixed** — replaced the `Vec` with a running `AtomicI64` total.
+- **R18 (E1) — `CostAccounting.log` grows unboundedly.** `rholang/src/accounting.rs:370,410` appends a `Cost` (with a heap `String` op) per `charge` and never clears; `total_charged()` (`:395`) re-sums the whole log per deploy, becoming O(n) and able to wrap i64. **Fixed** — replaced the `Vec` with a running `AtomicI64` total.
 
 ### Medium (P2)
 
-- **R19 (C6/A2/E5) — `exploratory_deploy` reads the non-finalized chain tip.** `casper/src/api/block_api_impl.rs:626-638` (commit `5186361dc`) reads `height_map.iter().next_back()` (first hash at max height, i.e. an arbitrary fork) instead of `last_finalized_block`. A byzantine tip block can spoof wallet `getBalance`/explore results, and forks make reads node-dependent. **Fixed** — restored `last_finalized_block` as the no-hash default; latest-tip reads remain available via `explore-deploy-by-block-hash` with an explicit hash.
+- **R19 (C6/A2/E5) — `exploratory_deploy` reads the non-finalized chain tip.** `casper/src/api/block_api_impl.rs`'s `exploratory_deploy` (commit `5186361dc`) read `height_map.iter().next_back()` (first hash at max height, i.e. an arbitrary fork) instead of `last_finalized_block`. A byzantine tip block can spoof wallet `getBalance`/explore results, and forks make reads node-dependent. **Fixed** — restored `last_finalized_block` as the no-hash default; latest-tip reads remain available via `explore-deploy-by-block-hash` with an explicit hash.
 - **R20 (A3/E6) — `revVault transfer` unchecked i64 add + self-transfer guard before the balance check.** `rholang/src/system_processes.rs` — `i64::from(to_balance) + i64::from(amount)` overflows on extreme balances; and the self-transfer guard (commit `204d98656`) returns success before checking `amount ≤ balance`. **Fixed** — `checked_add`/i128 accumulation, and the guard now sits after the balance check.
 - **R21 (E3) — arithmetic panic on `EMult`/`EPlus`/`EMinus`/`ENeg`.** `rholang/src/reduce.rs:265,367,395,247` use raw `l*r`/`l+r`/`l-r`/`-hs` on `GInt`; `i64::MAX * 2` panics the reducer in debug builds. **Fixed** — `wrapping_*` (release wrap is Scala-faithful; the debug panic was not).
-- **R22 (E4) — number-channel merge/diff unchecked i64.** `rholang/src/merging.rs:100,304` (`init_num + diff`, `end_val - prev`) wrap/panic and write a corrupted value into the trie. **Fixed** — `checked_add`/`checked_sub` with an error.
-- **R23 (E2) — `slice` charges output length but walks input uncharged.** `rholang/src/reduce.rs:1044,1048` — a recursive contract slicing a large string gets ~16M:1 op/phlo amplification. **Fixed** — `slice` now charges `max(from, until)` (the input walk), not just the output length.
+- **R22 (E4) — number-channel merge/diff unchecked i64.** `rholang/src/merging.rs:97,305` (`init_num + diff`, `end_val - prev`) wrap/panic and write a corrupted value into the trie. **Fixed** — `checked_add`/`checked_sub` with an error.
+- **R23 (E2) — `slice` charges output length but walks input uncharged.** `rholang/src/reduce.rs:1264` (`"slice"`) — a recursive contract slicing a large string gets ~16M:1 op/phlo amplification. **Fixed** — `slice` now charges `max(from, until)` (the input walk), not just the output length.
 - **R24 (F4) — SSRF filter classifies only IPv4 literals.** `comm/src/rp/handle_messages.rs:27-40` + Kademlia lookup-insertion (`kademlia_node_discovery.rs:45-50`) connect to attacker-chosen hostnames/IPv6. **Fixed (partial)** — `is_local_address` now classifies IPv6 literals (`::1`, `fe80::/10`, `fc00::/7`, multicast); hostname resolution remains a documented residual (DNS-rebinding-prone), and the Kademlia lookup-insertion path still needs the same filter.
-- **R25 (F3) — global channel cache mutex held across an unbounded connect.** `comm/src/transport/grpc_transport_client.rs:94-108`. **Assessed — false positive.** `create_channel` uses `connect_with_connector_lazy`, so the actual `TcpStream::connect`+TLS is deferred to first use and is bounded by `DEFAULT_SEND_TIMEOUT` in `send`; the cache mutex is held only for the fast lazy-channel construction.
+- **R25 (F3) — global channel cache mutex held across an unbounded connect.** `comm/src/transport/grpc_transport_client.rs:68-75` (`create_channel`). **Assessed — false positive.** `create_channel` uses `connect_with_connector_lazy`, so the actual `TcpStream::connect`+TLS is deferred to first use and is bounded by `DEFAULT_SEND_TIMEOUT` in `send`; the cache mutex is held only for the fast lazy-channel construction.
 - **R26 (F5) — `stream` size cap counts only data bytes.** `grpc_transport_receiver.rs:173-184` — empty `Chunk.content_data` never advances `received`, so unbounded empty chunks grow the per-stream buffer. **Fixed** — a `MAX_STREAM_CHUNKS = 100_000` cap bounds the per-stream chunk count.
-- **R27 (C3) — `phlo_price` checked after replay.** `casper/src/multi_parent_casper.rs:351` — a below-min-price block is fully replayed before rejection, so `phlo_price=0` deploys give free replay DoS. **Fixed** — `phlo_price` is now in `block_summary`'s pure-checks, before `validate_block_checkpoint`.
+- **R27 (C3) — `phlo_price` checked after replay.** `casper/src/multi_parent_casper.rs:298` (`block_summary`) — a below-min-price block is fully replayed before rejection, so `phlo_price=0` deploys give free replay DoS. **Fixed** — `phlo_price` is now in `block_summary`'s pure-checks, before `validate_block_checkpoint`.
 - **R28 (C4) — deploy pool never expires future-dated deploys.** `casper/src/dag.rs:122` — ingress never bounds `valid_after_block_number`, so deploys anchored at `i64::MAX` fill `MAX_POOLED_DEPLOYS` permanently. **Fixed** — `BlockApiImpl::deploy` rejects deploys with `valid_after_block_number` more than `DEPLOY_LIFESPAN` ahead of the tip.
-- **R29 (C5) — block-receiver maps unbounded.** `casper/src/blocks/block_receiver.rs:105` — valid-signed blocks with unresolvable justifications are retained forever. **Fixed** — `end_stored` rejects when `blocks_st` reaches `MAX_PENDING_BLOCKS`.
-- **R30 (C7) — `PeerRateLimiter` never evicts.** `casper/src/engine/node_running.rs:90` — `BTreeMap<Vec<u8>,(Instant,u32)>` grows with connection churn. **Fixed** — `allow` prunes entries whose window is older than 60 s.
+- **R29 (C5) — block-receiver maps unbounded.** `casper/src/blocks/block_receiver.rs:101` — valid-signed blocks with unresolvable justifications are retained forever. **Fixed** — `end_stored` rejects when `blocks_st` reaches `MAX_PENDING_BLOCKS`.
+- **R30 (C7) — `PeerRateLimiter` never evicts.** `casper/src/engine/node_running.rs:106` — `BTreeMap<Vec<u8>,(Instant,u32)>` grows with connection churn. **Fixed** — `allow` prunes entries whose window is older than 60 s.
 
 ### Low (P3)
 
@@ -679,3 +693,503 @@ invariant (#18/#23).
 - `cargo clippy -p rchain-rspace -p rchain-rholang --all-targets` — no new warnings on the changed
   files (the pre-existing clone-on-copy / await-holding-lock warnings in test modules remain).
 
+
+## 15. Multi-shard gateway findings (pass 6)
+
+The multi-shard gateway (`casper/src/gateway/`, Laws 26–29) was audited for its own failure paths
+while completing its test coverage. One latent bug was found and fixed; one behaviour is a documented
+deviation.
+
+### Fixed
+
+- **C1 — a decided coordinator record could be resurrected by a late vote.**
+  `casper/src/gateway/ledger.rs::CoordRecord::record_vote` overwrote a leg's vote in place and then
+  re-derived the state. An `Abort` recorded for a leg could therefore be overwritten by a later
+  `Ready`, and once *every* leg held a `Ready` vote the `else if` branch set the record back to
+  `Committed` — resurrecting a transaction whose compensation had already run and whose escrow had
+  been returned. Root cause: the phase-one state mapping treated the vote list as mutable input
+  rather than as a record of a decision that, once taken, is durable (Law 29). **Fix:** a terminal
+  record is absorbing — `record_vote` returns immediately when `state.is_terminal()`, so a decided
+  transaction cannot be moved and its votes stay consistent with the state it committed to. The path
+  was **latent, not live**: `GatewayTxn::drive` breaks the collection loop on the first abort and
+  never re-prepares a terminal record. **Pure bug fix.** Verified: `an_abort_is_absorbing` (fails
+  without the fix with `left: Committed, right: Aborted`), `a_commit_is_absorbing` (a late abort
+  cannot un-commit; fails without the fix), `record_vote_overwrites_a_repeated_shard_vote`,
+  `record_vote_does_not_set_a_reason_for_a_ready_vote`.
+
+### Documented (assessed faithful / residual)
+
+- **C2 — a phase-two failure is discarded.** `casper/src/gateway/mod.rs::apply_phase_two` ignores
+  each `commit`/`abort` deploy's outcome (`let _ = self.phase(...)`). Faithful to the coordinator
+  model: the decision is already durable (written *before* phase two), a failed delivery is re-driven
+  by `recover_in_flight` on the next boot or by a re-issued `run` with the same `txn_id`, and the
+  participants are idempotent under `txn_id` (Law 28) — so a lost phase two is not a lost decision.
+  The residual is that the record does not distinguish "phase two delivered" from "phase two
+  attempted", so a leg whose commit never landed holds its escrow until recovery re-drives it.
+  Verified: `a_failed_phase_two_leaves_the_decision_intact` (both legs prepare, the decision is
+  written, leg B's commit is rejected, the record stays `Committed`).
+
+- **C3 — the inner replay trace check does not fire for a term tamper; the state-hash comparison
+  does.** `casper/src/runtime_replay.rs::check_replay_data_with_fix` returns `Ok(())` when the
+  RSpace trace check fails **and** the deploy was not "eval successful" — the deliberate
+  RCHAIN-3505 workaround (`// TODO: temp fix for replay error mismatch (RCHAIN-3505)`). Measured:
+  replaying a deploy whose processed `data.term` was rewritten to a different term does **not**
+  produce a `ReplayFailure`; it produces a *different post-state hash*. The invariant is carried one
+  level up, by `casper/src/interpreter_util.rs::handle_errors`, which compares the replayed hash
+  against the block's claimed `post_state_hash` and returns `Ok(None)` on a mismatch. **Assessed
+  faithful** (it is the ported Scala behaviour), recorded because a test written against the inner
+  check alone would pass while a tampered block was accepted. Verified:
+  `a_tampered_deploy_replays_to_a_rejected_state_hash` (`casper/tests/determinism.rs`) pins both the
+  divergence and the rejection — and would fail if the comparison were removed.
+
+- **C4 — a saturated inbound queue is reported to callers as `MessageTooLarge`.**
+  `comm/src/transport/grpc_transport.rs::process_error` maps a gRPC `ResourceExhausted` to
+  `CommError::MessageTooLarge(peer)` (the ported `processError`), and the receiver answers
+  `ResourceExhausted` for **two different causes**: a genuinely oversized message and a saturated
+  concurrency bound — the dispatch queue (`MAX_CONCURRENT_DISPATCH`), the stream slots, and the
+  decompressed-blob budget. Both fail closed, so this is a diagnostic wart rather than a hazard: an
+  operator reading `MessageTooLarge` cannot tell congestion from size, and the refusal's own message
+  (`"dispatch queue full"`) is discarded by the mapping. **Documented deviation** (the mapping is
+  faithful to Scala; the second cause is the Rust-first DoS bound). Verified:
+  `a_full_dispatch_queue_is_rejected_and_recovers` (`comm/src/transport/grpc_transport.rs`) pins the
+  refusal *and* the recovery — the bound is a queue, not a latch.
+
+- **C5 — a `ParBody` continuation dispatched with no matched data panics in the random merge.**
+  `rholang/src/dispatch.rs` always prepends the continuation's own random state to the matched data's
+  random states before calling `Blake2b512Random::merge`, which **asserts at least two inputs**
+  (`crypto/src/hash/blake2b512_random.rs`). With zero matched data the list has one element and the
+  merge panics — a reducer-path panic rather than a reported error. **Latent, not live**: the reducer
+  never dispatches a `ParBody` with empty data today (a receive always matches at least the datum that
+  triggered it, and a match with nothing to run becomes `TaggedContinuation::Empty`, which is a
+  deliberate no-op). Recorded rather than fixed because the fix is a judgement about what an empty
+  data list *means* (dispatch with the continuation's own random? refuse?), and the path is
+  unreachable. Pinned by `a_par_body_with_no_matched_data_panics_in_merge`
+  (`#[should_panic(expected = "at least 2 inputs")]`), so a change in reachability — or a guard —
+  fails a test instead of surfacing as a node crash.
+
+### Findings from the coverage sweep (pass 6, continued)
+
+These three came out of Stage 3's tier sweep — two are faithful-port notes pinned by a test, one is a
+partial fix of an earlier security remediation.
+
+- **C6 — `graphz` does not escape its input.** `graphz/src/lib.rs::quote` wraps a label in quotes
+  only when it does not already start with one, and `head` interpolates the graph name unescaped, so
+  a name or label containing `"` emits malformed DOT (a name of `G"x` yields `graph "G"x" {`, an edge
+  label of `a"b` yields `"a"b"`). The inputs are block-derived strings in the documentation/SVG
+  pipeline, so the impact is a broken diagram, not injection into anything executed. **Assessed
+  faithful** (Scala's `Graphz.quote` is the same two-line function; adding escaping would change
+  generated output for every existing caller). Pinned by `an_embedded_quote_is_not_escaped`
+  (`graphz/src/lib.rs`), so the day escaping is added the test fails and is updated deliberately.
+  Related: `Graphz::node` writes its `label` through unquoted while `Graphz::apply` quotes a label —
+  the Scala asymmetry, pinned by `a_node_label_is_written_through_without_quoting`.
+
+- **C7 — `generate_key`'s password retry recurses without a bound.**
+  `node/src/runtime/node_main.rs::generate_key` re-prompts by calling itself on an empty or
+  mismatched password, with no attempt counter and no depth limit, so a console that always returns
+  an empty string would grow the stack until it overflows. **Assessed faithful** (port of
+  `NodeMain.generateKey`, which recurses the same way) and bounded in practice by an interactive
+  operator, so the port keeps it. Deliberately **not** pinned by a test — a stack-overflow probe
+  aborts the test process and would assert nothing a reader cannot see; the doc comment on the
+  function records the shape. The retry *behaviour* (re-prompt, distinct messages for empty and
+  mismatched) is pinned by `generate_key_reprompts_on_a_mismatch_and_refuses_an_empty_password` and
+  `generate_key_retries_after_an_empty_password`.
+
+- **C8 — the R6 private-key file mode was applied only at creation (fixed here).**
+  `crypto/src/util/key_util.rs::write_with_mode` passed `0o600` to `OpenOptions::mode`, which the
+  kernel applies **only when the file is created**. Writing over an existing `rnode.key` therefore
+  kept whatever permissions it already had — so a key file that predates the R6 remediation (or one
+  an operator copied in with `cp`, which preserves the source mode) stayed world-readable through
+  every subsequent `--generate-key`. The R6 fix was therefore only half-effective: correct on a fresh
+  data directory, silently ineffective on an upgrade. **Fixed** — the mode is now also applied with
+  an explicit `fs::set_permissions` *after* the write, so the content is never briefly readable under
+  the wider mode. **Production change** (one function, `crypto/src/util/key_util.rs`), listed in the
+  register's production-change list. Verified: `the_private_key_file_is_owner_only`
+  (`crypto/src/util/key_util.rs`) asserts the created mode *and* the re-write case; the second
+  assertion fails without the `set_permissions` call (`left: 420 (0o644), right: 384 (0o600)`), which
+  is how the defect was found.
+
+## 16. Rholang syntax findings (the legacy-corpus sweep)
+
+The 165 `.rho` files under `legacy/` had never been parsed by the Rust port (`spec/TEST-COVERAGE.md`,
+"the largest single untested surface"). Running them through the real parser/reducer
+(`rholang/tests/legacy_contracts.rs`) found three defects in the **grammar** — not in the reducer —
+each of which silently changed the meaning of valid rholang. All three are fixed and pinned.
+
+The oracle for every one of these is the BNFC grammar the Scala node's Java parser is generated from,
+`legacy/rholang/src/main/bnfc/rholang_mercury.cf`.
+
+- **C9 — `(x)` was parsed as a one-element tuple; it is a group.** The grammar has *both* a grouping
+  production and two tuple productions, and they are distinguished by content:
+
+  ```
+  PExprs.          Proc11 ::= "(" Proc4 ")" ;              -- a parenthesised expression
+  TupleSingle.     Tuple  ::= "(" Proc ",)" ;              -- a tuple, comma mandatory
+  TupleMultiple.   Tuple  ::= "(" Proc "," [Proc] ")" ;
+  ```
+
+  The Rust parser had no `PExprs` at all: any `(` in collection position became a tuple, so
+  `(3 + 5)` parsed as `TupleSingle(3 + 5)` and `2 * (3 + 5)` failed at *reduce* time with "operator
+  `*` expects Int, got Tuple". Worse, it accepted forms the grammar rejects — `(a!(b))` and
+  `(a | b)` — as one-element tuples, because `parse_collection` never required the comma. Measured
+  payoff: `casper/src/genesis/resources/Registry.rho` (the node's own registry contract, a depth-4
+  keccak-256 nybble trie) **could not be reduced at all** before the fix; it reduces cleanly now, as
+  does `Registry.rho`, `tut-parens.rho` and any deploy using arithmetic in parentheses. **Fix:** a
+  group is now parsed at its own level (`parse_proc11_head`, `PExprs ::= "(" Proc4 ")"`, tried
+  speculatively and rewound when the interior is followed by a comma), and the collection path
+  requires the comma. Verified: `a_parenthesised_expression_is_a_group_not_a_one_element_tuple`,
+  `a_group_may_not_contain_a_send_or_a_parallel`; with the old branch restored the first fails with
+  the AST it used to build, `CollectTuple(TupleSingle(PAdd(3, 5)))`.
+
+- **C10 — the logical connectives were swapped, and disjunction was unparseable.** The grammar spells
+  them `PConjunction ::= Proc14 "/\\" Proc15` and `PDisjunction ::= Proc13 "\\/" Proc14` — conjunction
+  is `/` then `\`, disjunction is `\` then `/`. The lexer matched `\` + `/` as **Conj** (the
+  disjunction spelling, labelled as conjunction) and `\` + `\` — not an operator in the grammar at
+  all — as `Disj`, while the parser consumed `Tok::Conj` as `PConjunction` and never consumed
+  `Tok::Disj`. So `a \/ b` parsed as **`a /\ b`** and reduced to `ConnAnd`, and `a /\ b` did not lex
+  (`/` was taken as division, the `\` was then an illegal character). `Proc::PDisjunction` and the
+  normalizer's `normalize_disjunction` were already written and therefore unreachable. This is a
+  silent *semantic* swap on a ρ-calculus connective (Law 4), not a parse failure: a Scala-produced
+  block using `\/` would be re-parsed by a Rust node as a conjunction and diverge. **Fix:** the lexer
+  spells both connectives as the grammar does (longest match, so `/` alone is still division) and
+  `parse_proc13` grew the disjunction level. Verified:
+  `the_logical_connectives_lex_and_parse_in_their_grammar_spelling` (also pins the precedence —
+  `/\` binds tighter — and that `\\` no longer lexes); with the swapped arms restored the test fails.
+
+- **C11 — `++` had no Map or Set arm.** `Reduce.scala`'s `EPlusPlusBody` defines five arms: String,
+  `GByteArray`, `EList`, `EMapBody` (union) and `ESetBody` (union), reporting
+  `OperatorExpectedError("++", "Map"/"Set", …)` for a mismatched operand. The port had only the first
+  three, so `Set(1) ++ Set(2)` and `{"a": 1} ++ {"b": 2}` — both valid rholang, and both used by the
+  standard contracts — errored instead of reducing, and a `Map`/`Set` left operand was reported as
+  `OperatorNotDefined` rather than the expected-type error. **Fix:** the Map/Set arms reuse the same
+  `par_set`/`par_map` canonicalisation as the `union` *method* (which was already implemented), and
+  the two error arms match Scala's. Verified:
+  `plus_plus_concatenates_byte_arrays_and_unions_maps_and_sets` (values, the right-biased map
+  collision, and all four error arms by variant).
+
+### Documented (not a defect)
+
+- **`OperatorExpectedError` prints the same message as `OperatorNotDefined`.** Both format as
+  "Error: Operator `op` is not defined on type." in `legacy/rholang/.../errors.scala` — the Scala
+  `expected` field is carried but never rendered. The port is faithful, so a test that asserts the
+  *type* is in the message would be asserting an infidelity; the C11 test asserts the enum variant
+  instead. Recorded because it is surprising enough to be "fixed" by accident.
+- **The `src/main/k/rholang/tests/*.rho` files are K-framework semantics tests**, not programs: they
+  are the fixtures for the K definition (`legacy/rholang/src/main/k/`), written in an older dialect.
+  They are classified, not "supported" (see the register's skip table).
+- **C12 — `+` and `-` had no collection arms.** `Reduce.scala`'s `EPlusBody` has
+  `case (lhs: ESetBody, rhs) => add(lhs, List[Par](rhs))` — inserting into a set — and `EMinusBody`
+  has an arm each for `EMapBody` and `ESetBody`, both calling `delete`. The port implemented `+` and
+  `-` as integer arithmetic only, so `Set(1, 2) + 3`, `Set(1, 2) - 1` and `{"a": 1} - "a"` — all
+  valid rholang, exercised by `convenience_methods_test.rho` in the Mercury tutorial — errored as
+  `OperatorNotDefined`. Both call the *same* `add`/`delete` the corresponding methods do, so the port
+  was already carrying the semantics one dispatch away. **Fix:** the arms are added and the shared
+  bodies extracted into `set_add`/`collection_delete`, used by both the operators and the methods so
+  the two cannot drift. Verified: `plus_and_minus_also_insert_into_and_delete_from_collections`
+  (insert, duplicate insert, set delete, map delete by key, and the unchanged arithmetic and error
+  arms).
+- **The parse-depth guard bounds nesting, not stack.** `MAX_PARSE_DEPTH = 128` (`rholang/src/parser.rs`)
+  accepts depth 128 because each level enters ~16 nested `parse_procN` functions, so the guard's
+  limit costs ~3 MiB of stack in a debug build and under 2 MiB in release (measured: a `new x in`
+  term 124 levels deep parses at 3 MiB debug / 2 MiB release, and a 200-level term is rejected).
+  `casper/src/genesis/resources/MakeMint.rho` — one of the node's own genesis contracts — reaches
+  parse depth 64, so the margin is real but not large: a debug build cannot run the corpus on a
+  default 2 MiB thread stack. No action for the node (it ships release, where the limit fits), but
+  the corpus test sets an explicit stack so the requirement is stated where it bites rather than in
+  a `RUST_MIN_STACK` invocation.
+- **A forged block stalls LFS sync for that hash (faithful to Scala — recorded, not fixed).**
+  `casper/src/engine/lfs_block_requester.rs::validate_received_block` marks the key `Received` via
+  `LfsState::received` *before* it checks the hash, and `LfsState::get_next(resend)` only ever
+  re-requests keys in `Init` or `Requested` status. So a peer that answers a request with a block
+  whose `block_hash` does not match its content leaves that key `Received`, neither saved (`done` is
+  only called on acceptance, and only `done` removes the key) nor re-requestable — even by the idle
+  resend. The requester then never reports `is_finished()`. **Assessed faithful**: the Scala
+  `LfsBlockRequester.validateReceivedBlock`/`ST.getNext` have exactly this ordering and this
+  predicate, so the port is not the source of the behaviour, and a divergence here would be worse
+  than the wart. The residual is a liveness one on a sync that a hostile peer can stall. Pinned by
+  `a_requested_block_with_a_forged_hash_is_rejected` (the rejection, the absence from both the
+  normal and the resend request sets, and `!is_finished()`), so a future guard in either place fails
+  a test instead of changing behaviour silently.
+- **OPEN QUESTION — `ReportingRuntime::consume_result` never matches.** Calling it with the same
+  binder `BindPattern` and on the same channel as a datum that `get_data` reports as present returns
+  `None` *and* leaves the datum in place: it neither matches nor consumes. The same pattern and datum
+  match in isolation (`rho_match_binds_free_vars` in `rholang/src/storage.rs`), so the gap is in the
+  path, not the matcher — `ReportingRspace::consume` records the event and delegates to
+  `ReplayRSpace::consume`, and the reporting runtime is the only caller of this entry point. Recorded
+  rather than fixed or asserted-as-correct because I could not establish the intent: `consume_result`
+  may be a reporting placeholder that was never wired to matching, or the delegation may be losing
+  something. The test
+  (`an_unmatched_consume_result_is_none_and_leaves_a_waiter`, `rholang/src/reporting_runtime.rs`)
+  pins what is observed, so closing the gap will fail it and force the update. No consensus impact:
+  the reporting runtime is read-only tooling (`/reporting` routes), not the deploy path.
+
+- **C13 — the pretty printer emitted two `|` separators between the first two items of a group, and
+  dropped the `bundle` keyword.** Both are **port** defects (the Scala renders both correctly), and
+  both were found by a round-trip test (`printing_and_reparsing_is_the_identity`): printing a parsed
+  term and re-parsing the result must give the same term back.
+  1. `rholang/src/pretty_printer.rs::build_par` tracked "an item has been printed" *inside* the item
+     loop, where the Scala tracks it per *group* (`PrettyPrinter.scala:288-302`'s `prevNonEmpty`), so
+     any group with two or more items printed `a |\n |\nb` — the two sends of `@"a"!(1) | @"b"!(2)`,
+     the most ordinary shape there is, printed as unparsable rholang.
+  2. `build_bundle` printed only the bundle *sign* (`0`, `+`, `-`) and not the keyword, where Scala's
+     `BundleOps.showInstance` is `"%-8s".format(s"bundle$sign")` — so a bundle printed as `0{ … }`
+     instead of `bundle0 { … }`. The eight-column padding is faithful and is reproduced.
+  Both are fixed and the round trip now covers 36 terms. Two *faithful* warts remain, both inherited
+  from the Scala printer and both pinned rather than fixed (`the_documented_warts_print_what_the_
+  grammar_cannot_read_back`): a one-element tuple prints as a group (`(1,)` ⇒ `(1)`, which is `1`),
+  and `not x` prints as `~(x)`, which is not valid rholang at all. Printed output for those two forms
+  must not be pasted back as source.
+
+- **C14 — the UPnP SSRF guard could be bypassed with a bracketed IPv6 URL (fixed).**
+  `comm/src/upnp/gateway.rs::is_safe_url` — the guard that refuses loopback/link-local/unspecified/
+  multicast discovery URLs — extracted the host with `authority.split(':').next()`. For a bracketed
+  literal (`http://[::1]/desc.xml`) that yields the host `"["`, which is not a parseable IP, so
+  `is_ssrf_unsafe_host` answered `false` and the guard **allowed** a loopback URL; `split_url` then
+  produced the same broken host, so no request was actually made (the connect failed on the name
+  `"["`), which is why the hole was latent rather than live — the guard's *decision* was wrong and the
+  second bug masked its effect. **Fixed** with one `split_authority` helper (bracket-aware, shared by
+  the guard and the URL splitter), so `[::1]`/`[fe80::1]` are refused and an IPv6 gateway literal is
+  split correctly. Found by `the_url_guard_allows_private_gateways_and_refuses_ssrf_targets`, which
+  lists `http://[::1]/desc.xml` among the URLs that must be refused.
+
+- **C15 — the bit-level decoder panics on a truncated bit stream (latent, pinned).**
+  `rspace/src/serializers/scodec_serialize.rs::BitReader::read_bit` indexes `bytes[bit_pos / 8]`
+  without a bounds check, so decoding a truncated blob panics with an index-out-of-bounds instead of
+  returning a decode error — `decode_rnd(b"")` is the smallest case. **Latent, not live**: the bytes it
+  decodes come from the node's own mergeable store (written from its own replay), so the exposure is a
+  corrupted or truncated *local* entry aborting the merge rather than a peer-supplied one; the
+  peer-facing decoders (`Packet`/protobuf) go through prost and return `Result`s. Recorded rather than
+  fixed because a `Result` has to be threaded through every `read_bit`/`read_bits` caller (the whole
+  scodec layer) — a change worth doing deliberately, not as a side effect of a test sweep. Pinned by
+  `a_truncated_mergeable_datum_panics` (`#[should_panic]`), so giving the reader a `Result` fails that
+  test and is a deliberate change.
+
+## 17. Census-sweep findings (the untested-file sweep)
+
+The sweep this section belongs to enumerates every source file without a test and writes one
+(`spec/TEST-COVERAGE.md`, definition of done item 10). Its findings are recorded here in the same
+form as the other passes: what the code did, why it is wrong rather than merely surprising, what the
+oracle is, and the test that pins the fix.
+
+- **C16 — the deploy-execution-status enum serialized its variant *fields* in snake_case, in the
+  middle of a camelCase API response.** `models/src/casper/protocol/deploy_service.rs` declares
+  `#[serde(rename_all = "camelCase")]` on `DeployExecStatus`, which renames the *variants*
+  (`processedWithSuccess` ✓) but — in serde, and this is the easy mistake — **not the fields of struct
+  variants**. Those need `rename_all_fields` (serde ≥ 1.0.181), which the repo already uses in
+  `node/src/api/dto.rs` and `node/src/web/transaction.rs` for exactly this reason. So
+  `GET /api/...`'s deploy status emitted
+
+  ```json
+  {"processedWithSuccess":{"deploy_result":[],"block":{"blockHash":"…","preStateHash":"…"}}}
+  ```
+
+  — every sibling field camelCased, the two variant fields not. The oracle is the Scala the API
+  mirrors: `DeployExecStatus.ProcessedWithSuccess(deployResult, block)` is a case class whose field
+  names are the JSON keys, and they are `deployResult`/`deployError`. **Not a cosmetic difference**:
+  the API is a published client contract, and a client reading `deployResult` against this node gets
+  nothing. **Fix:** `rename_all_fields = "camelCase"` on the enum. Verified:
+  `the_api_types_deserialize_what_they_serialize` asserts the variant key *and* its fields by name
+  (the failure message prints the whole JSON, which is how the wire spelling was read off rather than
+  guessed). The two other `rename_all` enums in the models crate (`ReportProto`,
+  `SystemDeployData`) were checked and carry only tuple/unit variants, so they have no such field —
+  this was the only instance. **Corroboration:** `docs/src/developer/building-apps.md` already
+  documented the response as "`processedWithSuccess` (with the `deployResult` expression)" — the
+  published API documentation and the code disagreed, and the *documentation* was right. That is
+  independent evidence for the fix rather than a preference for camelCase.
+
+- **C17 — the list and `Set` collection branches had no remainder production, and neither did the
+  collection-level map branch.** The grammar gives *every* collection form a remainder:
+
+  ```
+  CollectList.   Collection ::= "[" [Proc] ProcRemainder "]" ;
+  CollectSet.    Collection ::= "Set" "(" [Proc] ProcRemainder")" ;
+  CollectMap.    Collection ::= "{" [KeyValuePair] ProcRemainder"}" ;
+  ProcRemainderVar.   ProcRemainder ::= "..." ProcVar ;
+  ```
+
+  One map path (`parse_proc`'s `{k: v}` arm) broke on the ellipsis, so `{a: 1, ...rest}` parsed; the
+  three arms in `parse_collection` — list, `Set(...)`, and its own map arm — consumed the comma
+  unconditionally and then called `parse_proc` on `...`, which is not a process. So
+  `[=*type, ...item]` failed with `expected variable, got Ellipsis` while the same construct in a map
+  was accepted. `ProcRemainderVar` is not merely unsupported downstream: `normalize_collection`
+  carries it into `EList`/`ESet`/`EMap`'s `remainder` field, and the matcher consumes it
+  (`fold_match`, `handle_remainder`). Only the parser was missing the arm, which made a valid
+  collection pattern unparseable for two of the three forms. Measured payoff: the rgov governance
+  contracts (`rchain-community/rgov`) destructure their message queues exactly this way — `Inbox.rho`
+  uses it 16 times with both bindings *used* (`ret!(item) | box!(rest)`), so `Inbox.rho` is
+  unparseable and everything importing it is too: `Directory.rho`, `Issue.rho`, `Group.rho`,
+  `CrowdFund.rho`, `Kudos.rho`, `memberIdGovRev.rho` and `feature/MemberDirectory.rho` **all failed to
+  parse and all parse now** (verified against the files themselves, not a reduction of them).
+  **Fix:** after a comma, each branch breaks on `Tok::Ellipsis`, leaving the token to
+  `parse_proc_remainder`, as the map arm in `parse_proc` already did. Verified:
+  `collection_remainders_parse_for_lists_and_sets_not_only_maps` parses every form, asserts the
+  remainder is *carried* rather than dropped (`ProcRemainderVar`), and parses the `Inbox.rho` read
+  pattern verbatim — `match (*items) { {[=*type, ...item] | rest} => {…} _ => {…} }`.
+
+- **C18 — `rho:registry:lookup` wrapped its reply in `(uri, value)`; the oracle sends the stored
+  value alone.** The oracle is not a native process at all: lookup is the genesis `Registry.rho`
+  contract, whose `lookup` forwards `TreeHashMap!("get", …)` — which sends the stored value by
+  itself (`legacy/casper/src/main/resources/Registry.rho:397-401`). Its recorded output agrees
+  (`legacy/rholang/examples/tut-registry.rho:8,42-47`: the reply prints as `Unforgeable(0x…)`, and
+  the consumer binds one name). The native handler wrapped it instead
+  (`system_processes.rs::registry_lookup` produced `RhoTupleN(vec![uri, value])`), which **fails
+  silently rather than loudly**: every oracle-era client consumes the reply as
+  `lookup!(uri, *ch) | for (X <- ch) { X!(…) }`, so the pair binds to the name and the send is a
+  no-op. Nothing errors; the deploy simply produces no result. Measured payoff: the entire rgov
+  governance contract family (and ~40 consumer snippets) returned `[]` with no diagnostic — the
+  symptom that started this audit pass. **Not a cosmetic wrapping difference:** a shape assertion
+  on a scalar reply can still read the right element out of a pair, which is why the previous
+  round-trip test passed while every real client failed. **Fix:** produce the stored value alone
+  (unknown uri still answers `Nil`). Verified: `registry_insert_arbitrary_and_lookup_round_trip` and
+  `registry_insert_signed_binds_deployer_id_from_the_normalizer_env` now assert the unwrapped value
+  (`insertSigned`'s stored value is itself the `(nonce, data)` pair it recorded — which is why
+  consumers of *system* contracts destructure `@(_, X)`, the pattern that had been misread as
+  evidence for the wrapper), and the new
+  `a_looked_up_contract_can_be_called_through_its_lookup_reply` asserts the thing the old tests
+  could not: that a looked-up contract is **reachable by a send**. That missing assertion is the
+  reason this shipped.
+- **Related, found by the same pass — not fixed here.** Three further divergences of the same class,
+  each needing its own decision: `rho:block:data` sends `(blockNumber, sender, timestamp)` where the
+  oracle sends `(blockNumber, sender)` and never exposes `seqNum`
+  (`legacy/.../SystemProcesses.scala:355-361`; consumer
+  `legacy/casper/src/test/resources/BlockDataContractTest.rho:15-16` binds a two-name pattern, so a
+  three-element send cannot match it); the registry's **shorthand table is unimplemented and never
+  seeded** (no shorthand resolution in `registry_lookup`, no `registry_insert` outside
+  `system_processes.rs`, and `casper/src/genesis/mod.rs:151` `default_blessed_terms` installs
+  nothing — so `lookup!(\`rho:rchain:revVault\`, *ch)` answers `Nil` although direct binding
+  `new revVault(\`rho:rchain:revVault\`)` works); and `rho:rchain:revVault` is a redesigned API
+  (`getBalance`/`transfer` on the vault, `findOrCreate` returning an address string rather than a
+  vault capability, no `authKey`) with `rho:rchain:multiSigRevVault` wired to the single-sig
+  handler. The schema standard these belong to is `spec/API-SCHEMA.md`.
+
+- **C19 — a collection pattern with a *wildcard* remainder could never match, so partial *map*
+  patterns never matched at all.** `...rest` (named) and `..._` (discarding) both mean "and the
+  rest of the collection", and the grammar gives both to every collection form. The matcher reached
+  `list_match` with the remainder split in two — a `remainder: Option<i32>` level for the named form
+  and a separate `wildcard: bool` for the discarding form — and padding for it only when
+  `remainder.is_some()`. So a wildcard got no `MbmPattern::Remainder` to absorb the unnamed entries,
+  and `@{"x": *v, ..._}` could not match a map holding any other key. The handling *below* already
+  expected this case (`None => { if wildcard || … }`), it simply never received the padding — which
+  is what made this a one-condition fix rather than a design change. **Measured payoff:** every rgov
+  governance contract reaches its capabilities through exactly this pattern — `MemberDirectory.rho:15`
+  gates its whole body (`getMe`, `createMe`, `sendThem`) on
+  `for (@{"read": *MCAread, ..._} <<- @[*deployerId, "MasterContractAdmin"])`, so none of those
+  contracts could run, and a `for` whose pattern does not match is **not an error** — it silently
+  never fires, which is why the failure presented as `[]` with no diagnostic rather than as a fault.
+  Lists happened to work and maps did not; sets shared the map's fate. **Fix (diagnosed, not
+  landed):** pad when the pattern has a remainder *or* is a wildcard
+  (`spatial_matcher.rs::list_match`). That change makes the test suite green and is the right
+  direction, but it is **not landed, and its node-safety is unverified** — see the correction below.
+  `collection_patterns_match_a_subset_of_their_collection` is kept, `#[ignore]`d, as the
+  executable record of the defect and of the acceptance criteria: all five forms — list/map/set ×
+  wildcard/named — each asserted to *match*, because the failure mode is silence rather than an
+  error. **Consequence while unlanded:** every rgov governance contract still returns `[]`, since
+  `MemberDirectory.rho:15` gates its body on a partial map pattern.
+
+  **Correction (this entry previously claimed the padding hangs the node — withdrawn).** The
+  observation was real: with the padding built in, the devnet stopped serving `/api/v1/status` while
+  replaying the chain. But the reverted build failed to serve on that same chain data too, so the
+  padding is not what blocked it: the persisted chain had grown across many deploy-heavy runs and its
+  startup replay had outgrown `devnet.sh`'s serve-timeout. On **fresh** data the node boots either
+  way. Controlled comparison settled it: with the padding built in, on the same chain data, the devnet
+  boots and serves (`devnet.sh up` exits 0). The padding is **landed** — it is correct and necessary,
+  since a map of plain values could not be matched partially before it.
+
+  **The padding is NOT sufficient, and there is a second gate (open).** With it landed, the rgov
+  family still returns `[]`. Tracing that: `getMe`'s body calls `createMe`, which is defined *inside*
+  the `for (@{"read": *MCAread, ..._} <<- @[*deployerId, "MasterContractAdmin"])` block at
+  `MemberDirectory.rho:15`; with that gate closed, `createMe` is the outer `new`'s unused channel, so
+  the call silently goes nowhere. Probing that exact pattern against the real channel on a live node
+  shows it **still does not match** (`for (@c <<- …)` — binding the map bare — does match, so the
+  channel holds a value):
+
+  ```
+  channel-holds  a value          ← the channel is populated
+  gate-open      pattern matched  ✗  ← the partial map pattern still fails
+  ```
+
+  The likely reason, and it is a hole in the acceptance test: `MbmPattern::Remainder` absorbs a target
+  only when `t.locally_free_empty()`, and the real dictionaries hold **bundles** (`{"read":
+  bundle+{*read}, …}`), not plain values. The five-form conformance test uses a map of integers, so it
+  passes while the real shape fails — the test must be re-specified with bundle-valued entries before
+  it can serve as the acceptance criterion. The next step is therefore to establish, from the Scala
+  oracle, whether a remainder may absorb a bundle at all (a capture must be quotable; a *wildcard*
+  discards and arguably need not be), and to fix the test's shape first.
+
+  **Resolution (both of the above are superseded — see C20).** The diagnosis above was wrong on both
+  counts, and both wrong claims are withdrawn:
+
+  - *"the padding is correct and necessary"* — it was a **no-op for collections**. The `wildcard` flag
+    is derived from the *map/set* `remainder`, which the `ESet`/`EMap` arms read off the **target**
+    (C20), so it was always `false` and the gate never opened. The map case in the conformance test
+    passed for a different reason: the five cases shared one runtime and one `@"out"` channel, so
+    after the first (list) case produced `"ok"` every later case passed by re-reading that datum. The
+    padding has since been reduced back to the Scala's own gate (`remainder.is_some()`), which is
+    correct because a wildcard needs no padding — the trailing `wildcard ||` check accepts unclaimed
+    leftovers — and padding would demand concreteness Scala does not require of them.
+  - *"the second gate is `locally_free_empty` on bundles"* — **refuted**. `C20`'s fix, with the gate
+    restored, matches a three-key dictionary of bundles (`{"read": bundle+{*read}, …}`) peeked with
+    `@{"read": *MCAread, ..._}` — pinned by
+    `collection_patterns_match_a_subset_of_their_collection`. Nothing about bundles was in the way;
+    the pattern never reached the matcher's remainder handling at all.
+
+  The `✓`-shaped probe above (`gate-open ✗`) was real, but its cause was C20, not bundles: with the
+  partial map pattern unable to match *any* map with an unnamed key, no dictionary shape could open
+  the gate.
+
+- **C20 — a remainder in a `map`/`set` pattern never absorbs an entry: the pattern's remainder was
+  read off the *target*.** A map pattern matched only when the map had exactly as many entries as the
+  pattern names — `@{"x": *v, ..._}` against `{"x": 1, "y": 2}` failed while the exact form succeeded,
+  observed on a node. In `spatial_matcher.rs::spatial_match_expr` the `ESet` and `EMap` arms destructure
+  `remainder: rem` from the **first** tuple element (the target) and ignore the pattern's, while the
+  `EList` arm — and the Scala oracle at `SpatialMatcher.scala:495-505` — take it from the **pattern**:
+
+  ```rust
+  (Expr::EMap(ParMap { kvs: tlist, remainder: rem, .. }),   // ← target binds `rem`
+   Expr::EMap(ParMap { kvs: plist, .. }))                   // ← pattern's remainder ignored
+  ```
+
+  A stored collection never has a remainder, so `is_wildcard`/`remainder_var` were permanently
+  `false`/`None` and `list_match_single` took its exact-match path
+  (`if exact_match && plen != tlen { return Ok(Vec::new()) }`). **Consequence:** every rgov governance
+  contract reaches its capabilities through `for (@{"read": *MCAread, ..._} <<- <3-key map>)`
+  (`MemberDirectory.rho:15`), so the family returned `[]` — silently, since an unmatched `for` is not
+  an error, which is why this was expensive to find. Lists were unaffected (their arm was right and
+  their remainder is a suffix, via `fold_match`).
+
+  **Fix:** take the remainder from the pattern in both arms, as Scala and the `EList` arm do; and
+  reduce `list_match`'s padding gate back to the Scala's `remainder.is_some()` (a wildcard needs no
+  padding — see C19's resolution). Pinned by the matcher unit tests
+  (`a_map_pattern_may_name_fewer_entries_than_the_map_has`,
+  `a_named_map_remainder_captures_the_unnamed_entries`,
+  `a_set_pattern_may_name_fewer_members_than_the_set_has`, `list_remainders_stay_positional`) and by
+  `collection_patterns_match_a_subset_of_their_collection` (in-process, with the rgov gate's
+  bundle-valued shape and a peek) and the `devnet-test.sh` step 3b leg (on a real node).
+
+  **Also found — the harness accepted what the node rejected, and it was the fixture, not the
+  runtime.** The in-process conformance runtime is *not* a different matcher: it builds the same
+  `RSpace` + `RhoMatch` the node does, and the same normalizer. The test was blind instead: it
+  evaluated all five shapes against **one** runtime, reading a **shared** `@"out"` channel, and
+  asserted on `got[0]` — the first datum, which the first (list) case had already produced. Cases 2–5
+  therefore passed by re-reading it whether or not their own pattern matched (measured: on a fresh
+  runtime the map and set cases produce **0** data). Each case now builds its own runtime and is
+  asserted to produce exactly one datum. A green in-process conformance run is evidence about the
+  node **only** when each case's observation is separable.
+
+### Open question (behaviour pinned, oracle not established)
+
+- **`models/src/wire.rs::expr_from_proto` decodes an `Expr` with no instance to `GBool(false)`.** The
+  final arm is `None => a::Expr::GBool(false)`: a protobuf `Expr` that carries no `expr_instance` —
+  an empty buffer, or a peer's message with the oneof unset — becomes the expression `false` rather
+  than an error. Every *other* optional inner message in this file is
+  `ModelsError::Malformed(<field>)`, so this arm is the outlier; on the wire-decoding path the
+  difference matters, because the stricter reading would reject such a message and this one accepts
+  it with a substituted constant.
+
+  **Pinned, not changed**, because the oracle could not be established: the legacy tree does not
+  contain the Scala's `Expr.fromProto` (`exprInstance` appears only in the sorter, `RhoType.scala`
+  and `implicits.scala`, none of which is the conversion), so whether the JVM node defaults, errors,
+  or treats the case as unreachable is unknown. Changing this arm is also a wire-path change that
+  could *disagree* with the Scala on a peer-supplied block — a fork risk greater than the silent
+  default it would remove. Recorded here so the question is visible, and pinned by
+  `an_instance_less_expr_decodes_to_the_default`, which carries the same caveat in the test itself
+  rather than only in this register.

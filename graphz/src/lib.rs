@@ -291,7 +291,14 @@ impl Graphz {
             GraphType::Graph => " -- ",
             GraphType::DiGraph => " -> ",
         };
-        ser.push_line(&format!("{}{}{}{}{}", self.t, quote(src), sep, quote(dst), attr));
+        ser.push_line(&format!(
+            "{}{}{}{}{}",
+            self.t,
+            quote(src),
+            sep,
+            quote(dst),
+            attr
+        ));
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -387,7 +394,11 @@ fn insert<S: GraphSerializer>(
 mod tests {
     use super::*;
 
-    fn build(name: &str, gtype: GraphType, f: impl FnOnce(&Graphz, &mut StringSerializer)) -> String {
+    fn build(
+        name: &str,
+        gtype: GraphType,
+        f: impl FnOnce(&Graphz, &mut StringSerializer),
+    ) -> String {
         let mut ser = StringSerializer::new();
         let g = Graphz::new(name, gtype, &mut ser);
         f(&g, &mut ser);
@@ -439,7 +450,16 @@ mod tests {
     fn digraph_nodes_with_style() {
         let out = build("G", GraphType::DiGraph, |g, ser| {
             g.node("Hello", GraphShape::Box, None, None, None, None, None, ser);
-            g.node("World", GraphShape::DoubleCircle, None, None, None, None, None, ser);
+            g.node(
+                "World",
+                GraphShape::DoubleCircle,
+                None,
+                None,
+                None,
+                None,
+                None,
+                ser,
+            );
             g.edge("Hello", "World", None, None, None, ser);
         });
         assert_eq!(
@@ -545,24 +565,87 @@ mod tests {
     #[test]
     fn blockchain_simple() {
         fn lvl1(ser: &mut StringSerializer) {
-            let sg = Graphz::subgraph("", GraphType::DiGraph, ser, None, Some(GraphRank::Same), None, None, None);
+            let sg = Graphz::subgraph(
+                "",
+                GraphType::DiGraph,
+                ser,
+                None,
+                Some(GraphRank::Same),
+                None,
+                None,
+                None,
+            );
             sg.node("1", GraphShape::Circle, None, None, None, None, None, ser);
             sg.node("ddeecc", GraphShape::Box, None, None, None, None, None, ser);
             sg.node("ffeeff", GraphShape::Box, None, None, None, None, None, ser);
             sg.close(ser);
         }
         fn lvl0(ser: &mut StringSerializer) {
-            let sg = Graphz::subgraph("", GraphType::DiGraph, ser, None, Some(GraphRank::Same), None, None, None);
+            let sg = Graphz::subgraph(
+                "",
+                GraphType::DiGraph,
+                ser,
+                None,
+                Some(GraphRank::Same),
+                None,
+                None,
+                None,
+            );
             sg.node("0", GraphShape::Circle, None, None, None, None, None, ser);
             sg.node("000000", GraphShape::Box, None, None, None, None, None, ser);
             sg.close(ser);
         }
         fn timeline(ser: &mut StringSerializer) {
-            let sg = Graphz::subgraph("timeline", GraphType::DiGraph, ser, None, None, None, None, None);
-            sg.node("3", GraphShape::PlainText, None, None, None, None, None, ser);
-            sg.node("2", GraphShape::PlainText, None, None, None, None, None, ser);
-            sg.node("1", GraphShape::PlainText, None, None, None, None, None, ser);
-            sg.node("0", GraphShape::PlainText, None, None, None, None, None, ser);
+            let sg = Graphz::subgraph(
+                "timeline",
+                GraphType::DiGraph,
+                ser,
+                None,
+                None,
+                None,
+                None,
+                None,
+            );
+            sg.node(
+                "3",
+                GraphShape::PlainText,
+                None,
+                None,
+                None,
+                None,
+                None,
+                ser,
+            );
+            sg.node(
+                "2",
+                GraphShape::PlainText,
+                None,
+                None,
+                None,
+                None,
+                None,
+                ser,
+            );
+            sg.node(
+                "1",
+                GraphShape::PlainText,
+                None,
+                None,
+                None,
+                None,
+                None,
+                ser,
+            );
+            sg.node(
+                "0",
+                GraphShape::PlainText,
+                None,
+                None,
+                None,
+                None,
+                None,
+                ser,
+            );
             sg.edge("0", "1", None, None, None, ser);
             sg.edge("1", "2", None, None, None, ser);
             sg.edge("2", "3", None, None, None, ser);
@@ -616,10 +699,138 @@ mod tests {
         let mut ser = StringSerializer::new();
         let g = Graphz::new("G", GraphType::DiGraph, &mut ser);
         for i in 1..=1000 {
-            g.edge(&format!("e{i}"), &format!("e{}", i + 1), None, None, None, &mut ser);
+            g.edge(
+                &format!("e{i}"),
+                &format!("e{}", i + 1),
+                None,
+                None,
+                None,
+                &mut ser,
+            );
         }
         g.close(&mut ser);
         let out = ser.into_string();
         assert_eq!(out.matches(" -> ").count(), 1000);
+    }
+
+    /// An unnamed graph drops the name *and* its quotes (`head`'s empty-name arm) — the arm that
+    /// makes a nested anonymous subgraph legal DOT.
+    #[test]
+    fn an_unnamed_graph_is_emitted_without_quotes() {
+        assert_eq!(build("", GraphType::Graph, |_, _| {}), "graph {\n}");
+        assert_eq!(build("", GraphType::DiGraph, |_, _| {}), "digraph {\n}");
+    }
+
+    /// `quote` is idempotent by construction: a label that already begins with a quote is left
+    /// alone, so a caller passing a pre-quoted label does not get `""label""`.
+    #[test]
+    fn a_label_that_is_already_quoted_is_not_quoted_again() {
+        let mut ser = StringSerializer::new();
+        let opts = GraphzOptions {
+            label: Some("\"already\"".to_string()),
+            ..Default::default()
+        };
+        let g = Graphz::apply("G", GraphType::Graph, &mut ser, &opts);
+        g.close(&mut ser);
+        assert_eq!(ser.into_string(), "graph \"G\" {\n  label = \"already\"\n}");
+
+        // The other arm: an unquoted label gains its quotes.
+        let mut ser = StringSerializer::new();
+        let opts = GraphzOptions {
+            label: Some("plain".to_string()),
+            ..Default::default()
+        };
+        let g = Graphz::apply("G", GraphType::Graph, &mut ser, &opts);
+        g.close(&mut ser);
+        assert_eq!(ser.into_string(), "graph \"G\" {\n  label = \"plain\"\n}");
+    }
+
+    /// Three of the four DOT enum spellings are *not* lowercased — `Msquare` keeps its capital and
+    /// `rankdir` keeps its uppercase. Pinned so that a tidy-up pass toward a uniform lowercase
+    /// cannot silently emit DOT that Graphviz rejects.
+    #[test]
+    fn the_dot_enum_spellings_are_not_uniformly_lowercased() {
+        assert_eq!(GraphShape::Msquare.show(), "Msquare");
+        assert_eq!(GraphShape::DoubleCircle.show(), "doublecircle");
+        assert_eq!(GraphShape::PlainText.show(), "plaintext");
+        assert_eq!(GraphRankDir::LR.show(), "LR");
+        assert_eq!(GraphArrowType::NoneArrow.show(), "none");
+        assert_eq!(GraphStyle::Invis.show(), "invis");
+        assert_eq!(GraphRank::Sink.show(), "sink");
+    }
+
+    /// A node with no attributes at all emits no bracket group, and the default shape is not
+    /// spelled out — both are `attr_mk_str`'s empty arm plus the `!= DEFAULT_SHAPE` guard.
+    #[test]
+    fn a_node_without_attributes_emits_no_brackets() {
+        let out = build("G", GraphType::Graph, |g, ser| {
+            g.node("A", DEFAULT_SHAPE, None, None, None, None, None, ser);
+        });
+        assert_eq!(out, "graph \"G\" {\n  \"A\"\n}");
+    }
+
+    /// A node label is written through raw, while a graph label goes through `quote` — an
+    /// asymmetry inherited from Scala (`Graphz.apply` vs `Graphz.node`). Pinned as-is so that
+    /// "unifying" the two is a deliberate change with a visible diff.
+    #[test]
+    fn a_node_label_is_written_through_without_quoting() {
+        let out = build("G", GraphType::Graph, |g, ser| {
+            g.node(
+                "A",
+                GraphShape::Box,
+                None,
+                None,
+                None,
+                None,
+                Some("raw label"),
+                ser,
+            );
+        });
+        assert_eq!(out, "graph \"G\" {\n  \"A\" [shape=box label=raw label]\n}");
+    }
+
+    /// An edge's attribute list is empty when nothing is supplied, and the explicit boolean
+    /// `constraint` is only emitted when it is `Some` — including when it is `false`, which is the
+    /// arm a `unwrap_or_default` rewrite would get wrong.
+    #[test]
+    fn an_edge_emits_only_the_attributes_it_is_given() {
+        let bare = build("G", GraphType::Graph, |g, ser| {
+            g.edge("A", "B", None, None, None, ser);
+        });
+        assert_eq!(bare, "graph \"G\" {\n  \"A\" -- \"B\"\n}");
+
+        let constrained = build("G", GraphType::Graph, |g, ser| {
+            g.edge("A", "B", None, None, Some(false), ser);
+        });
+        assert_eq!(
+            constrained,
+            "graph \"G\" {\n  \"A\" -- \"B\" [constraint=false]\n}"
+        );
+
+        let styled = build("G", GraphType::DiGraph, |g, ser| {
+            g.edge(
+                "A",
+                "B",
+                Some(GraphStyle::Dashed),
+                Some(GraphArrowType::NormalArrow),
+                None,
+                ser,
+            );
+        });
+        assert_eq!(
+            styled,
+            "digraph \"G\" {\n  \"A\" -> \"B\" [style=dashed arrowhead=normal]\n}"
+        );
+    }
+
+    /// Documented deviation (AUDIT.md §15 C6): neither `quote` nor `head` escapes its input, so a
+    /// name or label containing a quote produces malformed DOT. Faithful to Scala, presentation
+    /// only — pinned so the day escaping is added, this test fails and is updated deliberately.
+    #[test]
+    fn an_embedded_quote_is_not_escaped() {
+        let out = build("G\"x", GraphType::Graph, |g, ser| {
+            g.edge("a\"b", "c", None, None, None, ser);
+        });
+        assert_eq!(out, "graph \"G\"x\" {\n  \"a\"b\" -- \"c\"\n}");
     }
 }

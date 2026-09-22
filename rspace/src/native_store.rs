@@ -20,6 +20,10 @@ pub const PREFIX_REGISTRY: u8 = 0x03;
 pub const PREFIX_POS: u8 = 0x04;
 /// Trie prefix for native vault state (`rev-address -> balance`).
 pub const PREFIX_VAULT: u8 = 0x05;
+/// Trie prefix for native cross-shard transaction state (`txn-id -> TxnRecord`).
+pub const PREFIX_TXN: u8 = 0x06;
+/// Trie prefix for the native HTTP-result oracle (`url -> recorded value`); RCHIP #54.
+pub const PREFIX_HTTP: u8 = 0x07;
 
 /// A native-state mutation, folded into the trie at checkpoint (port of a `NativeStoreAction`).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -47,7 +51,11 @@ struct NoopNativeReader;
 
 #[async_trait]
 impl NativeHistoryReader for NoopNativeReader {
-    async fn get_native(&self, _prefix: u8, _key: Blake2b256Hash) -> Result<Option<Vec<u8>>, String> {
+    async fn get_native(
+        &self,
+        _prefix: u8,
+        _key: Blake2b256Hash,
+    ) -> Result<Option<Vec<u8>>, String> {
         Ok(None)
     }
 }
@@ -89,7 +97,11 @@ impl InMemNativeStore {
                 return Ok(v.clone());
             }
         }
-        let reader = self.reader.read().unwrap_or_else(|p| p.into_inner()).clone();
+        let reader = self
+            .reader
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone();
         reader.get_native(prefix, *key).await
     }
 
@@ -131,7 +143,11 @@ impl InMemNativeStore {
     /// Capture the current overlay for a soft-checkpoint rollback.
     pub fn snapshot(&self) -> NativeStoreState {
         NativeStoreState {
-            overlay: self.overlay.lock().unwrap_or_else(|p| p.into_inner()).clone(),
+            overlay: self
+                .overlay
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .clone(),
         }
     }
 
@@ -155,7 +171,10 @@ mod tests {
         let store = InMemNativeStore::empty();
         let key = Blake2b256Hash::from_bytes([7u8; 32]);
         store.put(PREFIX_POS, key, vec![1, 2, 3]);
-        assert_eq!(store.get(PREFIX_POS, &key).await.unwrap(), Some(vec![1, 2, 3]));
+        assert_eq!(
+            store.get(PREFIX_POS, &key).await.unwrap(),
+            Some(vec![1, 2, 3])
+        );
     }
 
     #[tokio::test]
@@ -184,7 +203,13 @@ mod tests {
         store.delete(PREFIX_VAULT, &key);
         assert_eq!(store.get(PREFIX_VAULT, &key).await.unwrap(), None);
         let changes = store.drain_changes();
-        assert_eq!(changes, vec![NativeStoreAction::Delete { prefix: PREFIX_VAULT, key }]);
+        assert_eq!(
+            changes,
+            vec![NativeStoreAction::Delete {
+                prefix: PREFIX_VAULT,
+                key
+            }]
+        );
     }
 
     #[tokio::test]

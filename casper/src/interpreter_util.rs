@@ -49,7 +49,10 @@ pub async fn replay_block(
             rand,
             block_data,
             with_cost_accounting,
-            &block.bonds,
+            // Genesis PoS descriptors (pool/trusted/params) come from the network's genesis
+            // configuration; the trie is authoritative for every non-genesis block, so this value is
+            // only consumed on the trusted genesis replay path.
+            runtime.genesis_pos(),
             // Genesis vault balances are not carried on the block (they are installed at genesis
             // and re-derived only on the trusted genesis replay path); block replay here is always
             // cost-accounting (non-genesis), so no vault re-install is needed.
@@ -165,7 +168,9 @@ where
         let post_state_hash = Blake2b256Hash::from_byte_array(block.post_state_hash.as_bytes());
         // Fork a fresh replay runtime at the block's pre-state (read-only history fork) so block
         // validation is self-contained and can run concurrently with other blocks.
-        let forked = runtime.fork_replay_runtime(pre_state.pre_state_hash).await?;
+        let forked = runtime
+            .fork_replay_runtime(pre_state.pre_state_hash)
+            .await?;
         let replay_result = replay_block(runtime, &forked, block, &rand).await;
         let handled = handle_errors(&post_state_hash, replay_result)?;
         Ok(handled.is_some())
@@ -196,10 +201,7 @@ mod tests {
 
     #[test]
     fn handle_errors_accepts_matching_hash() {
-        assert_eq!(
-            handle_errors(&hash(1), Ok(hash(1))).unwrap(),
-            Some(hash(1))
-        );
+        assert_eq!(handle_errors(&hash(1), Ok(hash(1))).unwrap(), Some(hash(1)));
     }
 
     #[test]

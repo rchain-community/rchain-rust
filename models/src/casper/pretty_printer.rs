@@ -26,7 +26,10 @@ pub fn build_string_casper_message(message: &CasperMessage, short: bool) -> Stri
 
 /// Render a block-hash message (port of `buildString(BlockHashMessage)`).
 pub fn build_string_block_hash_message(bh: &BlockHashMessage) -> String {
-    format!("Block hash: {}", build_string_bytes(bh.block_hash.as_bytes()))
+    format!(
+        "Block hash: {}",
+        build_string_bytes(bh.block_hash.as_bytes())
+    )
 }
 
 /// Render a processed deploy (port of `buildString(ProcessedDeploy)`).
@@ -130,6 +133,7 @@ mod tests {
             state: RholangState::default(),
             sig_algorithm: "secp256k1".to_string(),
             sig: vec![0x44; 64],
+            timestamp: 0,
         }
     }
 
@@ -167,6 +171,7 @@ mod tests {
     #[test]
     fn deploy_string() {
         let d = DeployData {
+            attachments: Vec::new(),
             term: "new x in { x!(0) }".to_string(),
             timestamp: 1000,
             phlo_price: 1,
@@ -174,7 +179,10 @@ mod tests {
             valid_after_block_number: 5,
             shard_id: "root".to_string(),
         };
-        assert_eq!(build_string_deploy(&d), "DeployData #1000 -- new x in { x!(0) }");
+        assert_eq!(
+            build_string_deploy(&d),
+            "DeployData #1000 -- new x in { x!(0) }"
+        );
     }
 
     #[test]
@@ -198,6 +206,9 @@ mod tests {
             BlockHash::from_slice(&[0x01; 32]),
             BlockHash::from_slice(&[0x02; 32]),
         ];
-        assert_eq!(build_string_hashes(&hashes), "[0101010101... 0202020202...]");
+        assert_eq!(
+            build_string_hashes(&hashes),
+            "[0101010101... 0202020202...]"
+        );
     }
 }

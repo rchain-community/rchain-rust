@@ -81,7 +81,10 @@ fn init_node_path(
         }
         let item_idx = rest_prefix.head() as usize;
         match node[item_idx].clone() {
-            Item::NodePtr { prefix: ptr_prefix, ptr } => {
+            Item::NodePtr {
+                prefix: ptr_prefix,
+                ptr,
+            } => {
                 let (prefix_common, prefix_rest, ptr_prefix_rest) =
                     KeySegment::common_prefix(&rest_prefix.tail(), &ptr_prefix);
                 assert!(
@@ -98,7 +101,9 @@ fn init_node_path(
                     },
                 );
                 hash = ptr;
-                node_prefix = node_prefix.append(rest_prefix.head()).concat(&prefix_common);
+                node_prefix = node_prefix
+                    .append(rest_prefix.head())
+                    .concat(&prefix_common);
                 rest_prefix = prefix_rest;
             }
             _ => return Err(err_not_found(&node_prefix.concat(&rest_prefix))),
@@ -411,8 +416,7 @@ mod tests {
     #[test]
     fn export_empty_root() {
         let root_hash = empty_root_hash();
-        let store: HashMap<Blake2b256Hash, Vec<u8>> =
-            HashMap::from([(root_hash, Vec::new())]);
+        let store: HashMap<Blake2b256Hash, Vec<u8>> = HashMap::from([(root_hash, Vec::new())]);
         let get = |h: &Blake2b256Hash| store.get(h).cloned();
 
         let (data, last_prefix) =
@@ -433,9 +437,15 @@ mod tests {
         let (root_hash, root_bytes) = hash_node(&root);
         let store: HashMap<Blake2b256Hash, Vec<u8>> = HashMap::from([(root_hash, root_bytes)]);
 
-        let (data, last_prefix) =
-            sequential_export(root_hash, None, 0, 10, &|h| store.get(h).cloned(), &all_settings())
-                .unwrap();
+        let (data, last_prefix) = sequential_export(
+            root_hash,
+            None,
+            0,
+            10,
+            &|h| store.get(h).cloned(),
+            &all_settings(),
+        )
+        .unwrap();
 
         assert_eq!(data.node_keys, vec![root_hash]);
         assert_eq!(data.leaf_values, vec![leaf_hash]);

@@ -188,8 +188,14 @@ pub fn traverse_history(
     let root_hash = path_seq[0];
     let last_prefix = create_last_prefix(&path_seq[1..])?;
 
-    let (data, new_last_prefix_opt) =
-        sequential_export(root_hash, last_prefix, skip, take, get_from_history, &settings)?;
+    let (data, new_last_prefix_opt) = sequential_export(
+        root_hash,
+        last_prefix,
+        skip,
+        take,
+        get_from_history,
+        &settings,
+    )?;
 
     let node_keys = data.node_keys.clone();
     let leaf_keys = data.leaf_values.clone();
@@ -250,8 +256,8 @@ pub fn validate_state_items(
         }
     };
 
-    let nodes = traverse_history(start_path, skip, chunk_size, &get_node)
-        .map_err(StateValidationError)?;
+    let nodes =
+        traverse_history(start_path, skip, chunk_size, &get_node).map_err(StateValidationError)?;
 
     let mut data_keys = Vec::new();
     let mut history_keys = Vec::new();
@@ -265,11 +271,15 @@ pub fn validate_state_items(
 
     let history_items_keys: Vec<Blake2b256Hash> = history_items.iter().map(|(h, _)| *h).collect();
     if history_items_keys != history_keys {
-        return Err(StateValidationError("History items are corrupted.".to_string()));
+        return Err(StateValidationError(
+            "History items are corrupted.".to_string(),
+        ));
     }
     let data_items_keys: Vec<Blake2b256Hash> = data_items.iter().map(|(h, _)| *h).collect();
     if data_items_keys != data_keys {
-        return Err(StateValidationError("Data items are corrupted.".to_string()));
+        return Err(StateValidationError(
+            "Data items are corrupted.".to_string(),
+        ));
     }
 
     // Validate data (leaf) item hashes.
@@ -314,7 +324,11 @@ mod tests {
 
     use crate::history::radix_tree::{empty_node, hash_node, Item};
 
-    fn single_leaf_store() -> (HashMap<Blake2b256Hash, Vec<u8>>, Blake2b256Hash, Blake2b256Hash) {
+    fn single_leaf_store() -> (
+        HashMap<Blake2b256Hash, Vec<u8>>,
+        Blake2b256Hash,
+        Blake2b256Hash,
+    ) {
         let mut root = empty_node();
         let leaf_hash = Blake2b256Hash::from_bytes([0x42; 32]);
         root[0] = Item::Leaf {
@@ -330,8 +344,7 @@ mod tests {
     fn traverse_history_emits_leaf_and_last_node() {
         let (store, root_hash, leaf_hash) = single_leaf_store();
         let get = |h: &Blake2b256Hash| store.get(h).cloned();
-        let nodes =
-            traverse_history(&[(root_hash, None)], 0, 10, &get).unwrap();
+        let nodes = traverse_history(&[(root_hash, None)], 0, 10, &get).unwrap();
         assert_eq!(nodes.len(), 2);
         assert!(nodes[0].is_leaf);
         assert_eq!(nodes[0].hash, leaf_hash);
@@ -368,8 +381,15 @@ mod tests {
 
         let history_items = vec![(root_hash, root_bytes)];
         let data_items = vec![(data_hash, data_value)];
-        validate_state_items(&history_items, &data_items, &[(root_hash, None)], 10, 0, &get)
-            .unwrap();
+        validate_state_items(
+            &history_items,
+            &data_items,
+            &[(root_hash, None)],
+            10,
+            0,
+            &get,
+        )
+        .unwrap();
     }
 
     #[test]
@@ -381,7 +401,14 @@ mod tests {
         // The data bytes no longer hash to the claimed `data_hash`.
         let history_items = vec![(root_hash, root_bytes)];
         let data_items = vec![(data_hash, vec![9, 9, 9])];
-        assert!(validate_state_items(&history_items, &data_items, &[(root_hash, None)], 10, 0, &get)
-            .is_err());
+        assert!(validate_state_items(
+            &history_items,
+            &data_items,
+            &[(root_hash, None)],
+            10,
+            0,
+            &get
+        )
+        .is_err());
     }
 }

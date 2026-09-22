@@ -24,7 +24,10 @@ mod tests {
     fn round_trips() {
         let data = b"the quick brown fox jumps over the lazy dog".to_vec();
         let compressed = compress(&data);
-        assert_eq!(decompress(&compressed, data.len()).as_deref(), Some(data.as_slice()));
+        assert_eq!(
+            decompress(&compressed, data.len()).as_deref(),
+            Some(data.as_slice())
+        );
     }
 
     #[test]

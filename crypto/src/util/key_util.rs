@@ -9,7 +9,7 @@ use std::fs;
 use std::io::Write;
 use std::path::Path;
 
-use k256::pkcs8::{EncodePrivateKey, EncodePublicKey, LineEnding};
+use k256::pkcs8::{DecodePrivateKey, EncodePrivateKey, EncodePublicKey, LineEnding};
 use k256::SecretKey;
 use pkcs5::pbes2;
 use pkcs8::{EncryptedPrivateKeyInfo, SecretDocument};
@@ -39,13 +39,16 @@ pub fn write_private_key(path: &Path, bytes: impl AsRef<[u8]>) -> Result<(), Str
 
 #[cfg(unix)]
 fn write_with_mode(path: &Path, bytes: &[u8], mode: u32) -> Result<(), String> {
-    use std::os::unix::fs::OpenOptionsExt;
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
     let mut opts = fs::OpenOptions::new();
     opts.write(true).create(true).truncate(true).mode(mode);
-    opts.open(path)
-        .map_err(|e| e.to_string())?
-        .write_all(bytes)
-        .map_err(|e| e.to_string())
+    let mut file = opts.open(path).map_err(|e| e.to_string())?;
+    file.write_all(bytes).map_err(|e| e.to_string())?;
+    // `OpenOptions::mode` only applies when the file is *created*, so a write over a pre-existing
+    // file (an `rnode.key` copied in by hand, or one this code wrote before R6 narrowed the mode)
+    // would keep whatever permissions it had. Narrow it explicitly, after the write so the content
+    // is never briefly readable under the wider mode.
+    fs::set_permissions(path, fs::Permissions::from_mode(mode)).map_err(|e| e.to_string())
 }
 
 #[cfg(not(unix))]
@@ -98,10 +101,61 @@ pub fn write_keys(
 
     write_private_key(private_key_pem_path, private_pem.as_bytes())?;
     fs::write(public_key_pem_path, public_pem.as_bytes()).map_err(|e| e.to_string())?;
-    fs::write(public_key_hex_path, format!("{}\n", base16::encode(pk.bytes())))
-        .map_err(|e| e.to_string())?;
+    fs::write(
+        public_key_hex_path,
+        format!("{}\n", base16::encode(pk.bytes())),
+    )
+    .map_err(|e| e.to_string())?;
 
     Ok(())
+}
+
+/// Read a secp256k1 validator private key from a file.
+///
+/// Accepts either shape an operator is likely to have on disk:
+///
+///   * a bare base16 scalar — the same 64-character form `--validator-private-key` takes,
+///     with surrounding whitespace/newlines ignored;
+///   * an unencrypted PKCS#8 PEM (`-----BEGIN PRIVATE KEY-----`), the shape
+///     `openssl ecparam -name secp256k1 -genkey` or `openssl pkcs8 -topk8 -nocrypt`
+///     produces.
+///
+/// This exists so the key can be kept off the command line. `--validator-private-key`
+/// puts the secret in the process argument list, where any local process can read it
+/// out of `ps` or `/proc/<pid>/cmdline`; a path does not.
+///
+/// *Encrypted* PEMs are deliberately rejected here: they need a passphrase, and
+/// [`crate::signatures::secp256k1::Secp256k1::parse_pem_file`] already covers that shape.
+pub fn load_validator_private_key(path: &Path) -> Result<PrivateKey, String> {
+    let contents = fs::read_to_string(path).map_err(|e| {
+        format!(
+            "could not read validator private key {}: {e}",
+            path.display()
+        )
+    })?;
+    let trimmed = contents.trim();
+
+    // A bare base16 scalar.
+    if trimmed.len() == 64 && trimmed.bytes().all(|b| b.is_ascii_hexdigit()) {
+        let bytes = base16::decode(&trimmed.to_ascii_lowercase())
+            .ok_or_else(|| format!("{}: not valid base16", path.display()))?;
+        return Ok(PrivateKey::new(bytes));
+    }
+
+    // An unencrypted PKCS#8 PEM.
+    if let Ok((label, document)) = SecretDocument::from_pem(&contents) {
+        if label == "PRIVATE KEY" {
+            if let Ok(secret) = SecretKey::from_pkcs8_der(document.as_bytes()) {
+                return Ok(PrivateKey::new(secret.to_bytes().to_vec()));
+            }
+        }
+    }
+
+    Err(format!(
+        "{}: no secp256k1 private key found (expected a 64-character base16 scalar or an \
+         unencrypted PKCS#8 'PRIVATE KEY' PEM)",
+        path.display()
+    ))
 }
 
 #[cfg(test)]
@@ -113,6 +167,16 @@ mod tests {
 
     fn temp_dir() -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!("rchain_key_util_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// A directory of its own, so a test that also removes its directory on the way out cannot
+    /// delete another test's files (the tests run in parallel, and `temp_dir` is keyed by pid).
+    fn temp_dir_named(tag: &str) -> std::path::PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("rchain_key_util_{}_{tag}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir
@@ -162,6 +226,110 @@ mod tests {
             secret2.to_bytes(),
             SecretKey::from_slice(sk.bytes()).unwrap().to_bytes()
         );
+
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// The private key file must be owner-only (R6 in `spec/AUDIT.md` §11: it was written with the
+    /// process umask, so on a default `0022` it landed world-readable). The public key files are
+    /// deliberately not restricted — they are meant to be shared — so the two modes are asserted
+    /// together, and a `write` swapped back in for `write_private_key` fails this test.
+    #[cfg(unix)]
+    #[test]
+    fn the_private_key_file_is_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = temp_dir_named("mode");
+        let (sk, pk) = Secp256k1.new_key_pair();
+        let private_path = dir.join("private.pem");
+        write_keys(
+            &sk,
+            &pk,
+            &Secp256k1,
+            "password",
+            &private_path,
+            &dir.join("public.pem"),
+            &dir.join("public.hex"),
+        )
+        .unwrap();
+
+        let mode = fs::metadata(&private_path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600, "private key mode was {mode:o}");
+        // The mode is set at creation, not by a later chmod, so a re-write over an existing
+        // wider-open file must also narrow it.
+        fs::set_permissions(&private_path, fs::Permissions::from_mode(0o644)).unwrap();
+        write_keys(
+            &sk,
+            &pk,
+            &Secp256k1,
+            "password",
+            &private_path,
+            &dir.join("public.pem"),
+            &dir.join("public.hex"),
+        )
+        .unwrap();
+        let mode = fs::metadata(&private_path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600, "re-write left mode {mode:o}");
+
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A bare base16 scalar in the file is read, and surrounding whitespace is ignored
+    /// (a file written by `echo` or by an editor almost always ends in a newline).
+    #[test]
+    fn load_validator_private_key_reads_a_hex_scalar() {
+        let dir = temp_dir_named("hex");
+        let (sk, _pk) = Secp256k1.new_key_pair();
+        let expected = base16::encode(sk.bytes());
+        let path = dir.join("validator.hex");
+        fs::write(&path, format!("  {expected}\n")).unwrap();
+
+        let loaded = load_validator_private_key(&path).unwrap();
+        assert_eq!(base16::encode(loaded.bytes()), expected);
+
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// An unencrypted PKCS#8 `PRIVATE KEY` PEM — the shape `openssl pkcs8 -topk8 -nocrypt`
+    /// produces — is read and yields the same 32-byte scalar.
+    #[test]
+    fn load_validator_private_key_reads_an_unencrypted_pkcs8_pem() {
+        let dir = temp_dir_named("pem");
+        let (sk, _pk) = Secp256k1.new_key_pair();
+        let secret = SecretKey::from_slice(sk.bytes()).unwrap();
+        let path = dir.join("validator.pem");
+        fs::write(
+            &path,
+            secret.to_pkcs8_pem(LineEnding::LF).unwrap().as_bytes(),
+        )
+        .unwrap();
+
+        let loaded = load_validator_private_key(&path).unwrap();
+        assert_eq!(loaded.bytes(), sk.bytes());
+
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Anything else is rejected with a message naming the file, rather than silently
+    /// yielding no validator identity.
+    #[test]
+    fn load_validator_private_key_rejects_junk_and_missing_files() {
+        let dir = temp_dir_named("junk");
+        let path = dir.join("not-a-key.txt");
+        fs::write(&path, "hello, not a key\n").unwrap();
+
+        let err = load_validator_private_key(&path).expect_err("junk must be rejected");
+        assert!(err.contains("not-a-key.txt"), "{err}");
+
+        // An ENCRYPTED PEM is explicitly out of scope (it needs a passphrase).
+        let encrypted = dir.join("encrypted.pem");
+        fs::write(&encrypted, "-----BEGIN ENCRYPTED PRIVATE KEY-----\nnope\n").unwrap();
+        assert!(load_validator_private_key(&encrypted).is_err());
+
+        // A missing file is an error, not a silent `None`.
+        let missing = dir.join("absent.pem");
+        let err = load_validator_private_key(&missing).expect_err("missing file must error");
+        assert!(err.contains("absent.pem"), "{err}");
 
         fs::remove_dir_all(&dir).unwrap();
     }

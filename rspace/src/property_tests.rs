@@ -12,6 +12,7 @@ use rchain_crypto::hash::blake2b256_hash::Blake2b256Hash;
 use rchain_shared::store::{InMemoryKeyValueStore, KeyValueStore};
 use rchain_shared::typed_store::{BytesCodec, KeyValueTypedStoreCodec};
 
+use crate::concurrent::channel_queue::{ChannelClaimQueue, WriteRecord};
 use crate::hashing::stable_hash_provider::hash_channels;
 use crate::history::codecs::Blake2b256HashCodec;
 use crate::history::history_action::HistoryAction;
@@ -170,5 +171,311 @@ proptest! {
         let a = state_change_from(&left_items);
         let b = state_change_from(&right_disjoint);
         prop_assert_eq!(StateChange::combine(&a, &b), StateChange::combine(&b, &a));
+    }
+
+    /// Law 20: on the claim queue, every channel's commit sequence is path-nondecreasing (ties in
+    /// arrival order) and at most one claim executes on a channel at any instant.
+    #[test]
+    fn law20_per_channel_path_order(
+        claims in prop::collection::vec(
+            (0u64..8, prop::collection::vec(0u8..4, 1..4)),
+            0..12,
+        )
+    ) {
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(4)
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let queue = Arc::new(ChannelClaimQueue::<u8, u64>::new());
+            let guards: Vec<_> = claims
+                .iter()
+                .map(|(path, channels)| queue.claim(*path, channels))
+                .collect();
+            let order: Arc<std::sync::Mutex<Vec<(u64, Vec<u8>)>>> =
+                Arc::new(std::sync::Mutex::new(Vec::new()));
+            let inside: Arc<std::sync::Mutex<BTreeMap<u8, usize>>> =
+                Arc::new(std::sync::Mutex::new(BTreeMap::new()));
+
+            let mut tasks = Vec::new();
+            for guard in guards {
+                let order = order.clone();
+                let inside = inside.clone();
+                tasks.push(tokio::spawn(async move {
+                    let _lease = guard.wait_at_head().await;
+                    {
+                        let mut marks = inside.lock().unwrap();
+                        for channel in guard.channels() {
+                            let mark = marks.entry(*channel).or_insert(0);
+                            assert_eq!(*mark, 0, "two claims ran on the same channel at once");
+                            *mark += 1;
+                        }
+                    }
+                    order
+                        .lock()
+                        .unwrap()
+                        .push((*guard.path(), guard.channels().to_vec()));
+                    tokio::task::yield_now().await;
+                    let mut marks = inside.lock().unwrap();
+                    for channel in guard.channels() {
+                        *marks.get_mut(channel).unwrap() -= 1;
+                    }
+                }));
+            }
+            for task in tasks {
+                tokio::time::timeout(std::time::Duration::from_secs(10), task)
+                    .await
+                    .expect("claim queue deadlocked (Law 20 deadlock freedom)")
+                    .unwrap();
+            }
+
+            let order = order.lock().unwrap();
+            let mut by_channel: BTreeMap<u8, Vec<u64>> = BTreeMap::new();
+            for (path, channels) in order.iter() {
+                for channel in channels {
+                    by_channel.entry(*channel).or_default().push(*path);
+                }
+            }
+            for (_, paths) in by_channel {
+                for window in paths.windows(2) {
+                    prop_assert!(window[0] <= window[1], "per-channel path order violated");
+                }
+            }
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    /// Law 24 (instrumentation): the queue's skew signal flips exactly when a DFS-earlier claim
+    /// lands on a channel while a DFS-later claim holds the head lease there (the S.3 enqueue
+    /// window), never on an unheld channel or the holder's own phase-two re-insert — while the
+    /// Law 24 record layer validates each claim against its channel's newest write: with
+    /// validation enabled, a claim acquires iff every claimed channel's newest write is
+    /// strictly path-earlier (unwritten channels count as initial state), and the per-channel
+    /// version counter counts recorded writes, never acquisitions.
+    #[test]
+    fn law24_record_layer_and_validation(
+        executing_path in 2u64..8,
+        burst in prop::collection::vec((0u64..10, 0u8..4), 0..8),
+        writes in prop::collection::vec((0u8..4, 0u64..2, any::<bool>()), 0..6),
+    ) {
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let queue = Arc::new(ChannelClaimQueue::<u8, u64>::new());
+            queue.set_validation_enabled(true);
+
+            // Seed the write-record layer. Every seeded write is strictly earlier than the
+            // executing claim (paths < 2), so the holder's own acquisitions always validate.
+            let mut expected_versions = [0u64; 4];
+            let mut newest: [Option<(u64, bool)>; 4] = [None; 4];
+            for (channel, path, polarity) in &writes {
+                queue.record_write(channel, path, *polarity);
+                expected_versions[*channel as usize] += 1;
+                newest[*channel as usize] = Some((*path, *polarity));
+            }
+
+            // The executing claim holds the head lease on channels 0 and 1 while the burst
+            // lands — its entry stays at `entries[0]`, so only a strictly-smaller path can land
+            // at the front and trip the signal (equal paths land behind it).
+            let mut holder = queue.claim(executing_path, &[0u8, 1]);
+            let _lease = holder.wait_at_head().await.unwrap();
+            prop_assert_eq!(
+                queue.channel_version(&0u8),
+                expected_versions[0],
+                "acquisitions must not bump the write count on channel 0"
+            );
+            prop_assert_eq!(
+                queue.channel_version(&2u8),
+                expected_versions[2],
+                "acquisitions must not bump the write count on channel 2"
+            );
+            prop_assert!(!queue.observed_skew(), "no window before the burst");
+
+            // The burst: random-path claims on random channels while the lease is held. A claim
+            // flips the signal iff it lands at the front of a held channel — its path is
+            // strictly smaller than the executing claim's.
+            let expected_flip = burst
+                .iter()
+                .any(|(path, channel)| *channel <= 1 && *path < executing_path);
+            let mut burst_guards = Vec::new();
+            for (path, channel) in &burst {
+                burst_guards.push(queue.claim(*path, &[*channel]));
+            }
+            prop_assert_eq!(
+                queue.observed_skew(),
+                expected_flip,
+                "the skew signal must reflect the enqueue window exactly"
+            );
+
+            // The holder's own phase-two re-insert on fresh channels must not flip the signal
+            // (no other claim executes there).
+            let skew_before = queue.observed_skew();
+            holder.claim_more(&[2u8, 3]);
+            prop_assert_eq!(
+                queue.observed_skew(),
+                skew_before,
+                "the holder's own claim_more must not skew"
+            );
+
+            // Release the lease (dropping the holder); `HeadLease` is a `Copy` token, so
+            // dropping it is a no-op. Each burst claim then acquires iff Law 24 validates it —
+            // its channel's newest write is strictly path-earlier (or the channel is unwritten).
+            // Outcomes are order-independent: the record only changes via `record_write`, and
+            // the test writes nothing during the burst.
+            drop(holder);
+            let mut tasks = Vec::new();
+            for (guard, (path, channel)) in burst_guards.into_iter().zip(burst.iter()) {
+                let (path, channel) = (*path, *channel);
+                let expected = newest[channel as usize]
+                    .map_or(true, |(writer, _)| writer < path);
+                tasks.push(tokio::spawn(async move {
+                    let acquired = guard.wait_at_head().await.is_ok();
+                    (acquired, expected, path, channel)
+                }));
+            }
+            for task in tasks {
+                let (acquired, expected, path, channel) =
+                    tokio::time::timeout(std::time::Duration::from_secs(10), task)
+                        .await
+                        .expect("burst claim deadlocked (Law 20 deadlock freedom)")
+                        .unwrap();
+                prop_assert_eq!(
+                    acquired,
+                    expected,
+                    "Law 24 validation outcome for path {} on channel {}",
+                    path,
+                    channel
+                );
+            }
+            for channel in 0u8..4 {
+                prop_assert_eq!(
+                    queue.channel_version(&channel),
+                    expected_versions[channel as usize],
+                    "version counter must count writes, not acquisitions, on channel {}",
+                    channel
+                );
+                let expected_newest = newest[channel as usize].map(|(path, polarity)| WriteRecord {
+                    path,
+                    version: expected_versions[channel as usize],
+                    polarity,
+                });
+                prop_assert_eq!(
+                    queue.last_write(&channel),
+                    expected_newest,
+                    "newest write on channel {}",
+                    channel
+                );
+            }
+            Ok(())
+        })
+        .unwrap();
+    }
+}
+
+// --- Law 11: replay determinism --------------------------------------------------------------
+
+/// A trivial matcher: any pattern matches any datum, which is enough to produce COMM events.
+struct AnyMatch;
+impl crate::match_::Match<String, String> for AnyMatch {
+    fn get(&self, _p: &String, a: &String) -> Option<String> {
+        Some(a.clone())
+    }
+}
+
+/// A play + replay pair over a fresh in-memory store (the fixture `replay_rspace.rs`'s tests use).
+async fn play_and_replay() -> (
+    Arc<crate::rspace::RSpace<String, String, String, String>>,
+    crate::replay_rspace::ReplayRSpace<String, String, String, String>,
+) {
+    use rchain_shared::store_manager::InMemoryStoreManager;
+
+    use crate::factory::create_history_repository;
+    use crate::hot_store::InMemHotStore;
+
+    let manager = InMemoryStoreManager::default();
+    let history = create_history_repository::<String, String, String, String>(&manager, "law11")
+        .await
+        .expect("history repository");
+    let reader = history.get_history_reader(history.root()).await;
+    let hot = Arc::new(InMemHotStore::new(reader.base()));
+    crate::rspace::RSpace::create_with_replay(history, hot, Arc::new(AnyMatch))
+}
+
+/// A random operation script: `(is_produce, persist, channel, payload)`.
+fn arb_ops() -> impl Strategy<Value = Vec<(bool, bool, u8, u8)>> {
+    prop::collection::vec((any::<bool>(), any::<bool>(), 0u8..3, 0u8..3), 0..8)
+}
+
+proptest! {
+    /// **Law 11: replay determinism.** Replaying the *same* operations against the trace the play
+    /// space recorded checks clean — `check_replay_data` reports a divergence only when the replay
+    /// produces a COMM the recording does not contain (`unused_comm_event`). Randomized over produce
+    /// and consume scripts, so the recording is exercised with matches, misses, peeks and persistent
+    /// operations rather than one hand-picked shape.
+    #[test]
+    fn law11_a_replayed_script_matches_its_recording(ops in arb_ops()) {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("a runtime");
+        runtime.block_on(async {
+            use crate::i_space::ISpace;
+            use crate::i_replay_space::IReplaySpace;
+            use crate::tuple_space::Tuplespace;
+
+            let (play, replay) = play_and_replay().await;
+
+            // Play the script, recording the trace.
+            for (is_produce, persist, channel, payload) in &ops {
+                let channel = format!("c{channel}");
+                let payload = format!("d{payload}");
+                if *is_produce {
+                    play.produce(channel, payload, *persist).await.expect("play produce");
+                } else {
+                    play.consume(
+                        &[channel],
+                        &["pattern".to_string()],
+                        "continuation".to_string(),
+                        *persist,
+                        Default::default(),
+                    )
+                    .await
+                    .expect("play consume");
+                }
+            }
+            let recorded = play.create_soft_checkpoint().await.log;
+            let root = play.create_checkpoint().await.expect("checkpoint").root;
+
+            // Rig the replay with the recording and replay the same script.
+            replay.rig_and_reset(root, recorded).await.expect("rig");
+            for (is_produce, persist, channel, payload) in &ops {
+                let channel = format!("c{channel}");
+                let payload = format!("d{payload}");
+                if *is_produce {
+                    replay.produce(channel, payload, *persist).await.expect("replay produce");
+                } else {
+                    replay
+                        .consume(
+                            &[channel],
+                            &["pattern".to_string()],
+                            "continuation".to_string(),
+                            *persist,
+                            Default::default(),
+                        )
+                        .await
+                        .expect("replay consume");
+                }
+            }
+            prop_assert!(
+                replay.check_replay_data().await.is_ok(),
+                "a replay of its own recording must check clean"
+            );
+            Ok(())
+        })?;
     }
 }

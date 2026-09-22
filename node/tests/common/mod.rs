@@ -3,10 +3,15 @@
 //! Assembles a real standalone node in-process (mirroring `main.rs`: `Configuration::build` →
 //! `node_environment::create` → `setup_node_program` → `serve`) over an ephemeral data dir and
 //! loopback ports, then drives its gRPC + HTTP surfaces.
+//!
+//! Each `node/tests/*.rs` binary compiles this module separately, so helpers a given binary does not
+//! use would warn there — hence the module-wide allowance.
+#![allow(dead_code)]
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use rchain_casper::conf::{ShardMemberships, ShardSpec};
 use rchain_casper::validator_identity::ValidatorIdentity;
 use rchain_comm::peer_node::NodeIdentifier;
 use rchain_node::configuration::configuration::parse_defaults;
@@ -18,7 +23,8 @@ use rchain_shared::base16;
 use rchain_shared::log::StderrLog;
 
 /// The default secp256k1 validator private key (hex), port of `ConstructDeploy.defaultSec`.
-pub const VALIDATOR_PRIV_HEX: &str = "a68a6e6cca30f81bd24a719f3145d20e8424bd7b396309b0708a16c7d8000b76";
+pub const VALIDATOR_PRIV_HEX: &str =
+    "a68a6e6cca30f81bd24a719f3145d20e8424bd7b396309b0708a16c7d8000b76";
 
 /// The deployer (validator-0) REV address, funded in the genesis wallets file. Derived from
 /// `VALIDATOR_PRIV_HEX`'s secp256k1 pubkey; a deploy signed with `VALIDATOR_PRIV_HEX` pays phlo from
@@ -29,11 +35,21 @@ pub const DEPLOYER_REV_ADDR: &str = "11112VYAt8rUGNRRZX3eJdgagaAhtWTK8Js7F7X5iqd
 /// protocol, grpc-external]`, with a bonded validator (`VALIDATOR_PRIV_HEX`) and a funded deployer
 /// wallet so signed deploys can pay phlo.
 pub fn deploy_conf(dir: &Path, ports: &[u16]) -> NodeConf {
-    assert!(ports.len() >= 5, "need [http, admin-http, grpc-internal, protocol, grpc-external]");
+    assert!(
+        ports.len() >= 5,
+        "need [http, admin-http, grpc-internal, protocol, grpc-external]"
+    );
     let mut conf = standalone_conf(dir, &ports[0..4], Some(VALIDATOR_PRIV_HEX));
     conf.api_server.port_grpc_external = ports[4] as i32;
-    let wallets = conf.casper.genesis_block_data.wallets_file.clone();
-    std::fs::write(&wallets, format!("{DEPLOYER_REV_ADDR},1000000000000\n")).expect("write wallets");
+    let wallets = conf
+        .casper
+        .shards
+        .primary()
+        .genesis_block_data
+        .wallets_file
+        .clone();
+    std::fs::write(&wallets, format!("{DEPLOYER_REV_ADDR},1000000000000\n"))
+        .expect("write wallets");
     conf
 }
 
@@ -77,7 +93,10 @@ pub fn free_ports(n: usize) -> Vec<u16> {
 /// protocol]` ports. When `validator_hex` is set, a matching bonds file is written and wired into
 /// genesis so the validator is bonded.
 pub fn standalone_conf(dir: &Path, ports: &[u16], validator_hex: Option<&str>) -> NodeConf {
-    assert!(ports.len() >= 4, "need [http, admin-http, grpc-internal, protocol] ports");
+    assert!(
+        ports.len() >= 4,
+        "need [http, admin-http, grpc-internal, protocol] ports"
+    );
     let defaults = parse_defaults(dir.to_str().unwrap()).expect("parse defaults");
     let mut conf = node_conf_from_hocon(&defaults).expect("node conf from hocon");
 
@@ -98,7 +117,11 @@ pub fn standalone_conf(dir: &Path, ports: &[u16], validator_hex: Option<&str>) -
         let pub_hex = base16::encode(identity.public_key.bytes());
         let bonds = dir.join("bonds.txt");
         std::fs::write(&bonds, format!("{pub_hex} 100\n")).expect("write bonds file");
-        conf.casper.genesis_block_data.bonds_file = bonds.to_string_lossy().into_owned();
+        conf.casper
+            .shards
+            .primary_mut()
+            .genesis_block_data
+            .bonds_file = bonds.to_string_lossy().into_owned();
     }
 
     // `create_genesis_block` calls `vault_parser::parse` (not `parse_if_exists`), so the wallets
@@ -107,7 +130,11 @@ pub fn standalone_conf(dir: &Path, ports: &[u16], validator_hex: Option<&str>) -
     if !wallets.exists() {
         std::fs::write(&wallets, "").expect("write wallets file");
     }
-    conf.casper.genesis_block_data.wallets_file = wallets.to_string_lossy().into_owned();
+    conf.casper
+        .shards
+        .primary_mut()
+        .genesis_block_data
+        .wallets_file = wallets.to_string_lossy().into_owned();
 
     conf
 }
@@ -140,4 +167,58 @@ pub async fn start(conf: &NodeConf, grpc_port: u16, http_port: u16) -> TestNode 
         grpc_port,
         http_port,
     }
+}
+
+/// A standalone **gateway** `NodeConf`: one node that is a member of two shards (`/root` and
+/// `/root/child`), each with its own genesis — bonds and a wallet funding the validator's REV
+/// address, so the cross-shard escrow can pay phlo and hold a balance on both.
+///
+/// `propose-on-deploy` is on because a cross-shard leg is an ordinary deploy: it takes effect when a
+/// block containing it is produced, which is what the gateway's coordinator waits for.
+pub fn gateway_conf(dir: &Path, ports: &[u16], validator_hex: &str) -> NodeConf {
+    gateway_conf_with_txn_api(dir, ports, validator_hex, true)
+}
+
+/// As [`gateway_conf`], with the cross-shard transaction API switched on or off — the flag an
+/// operator controls, and therefore a gate a test has to drive from a real config.
+pub fn gateway_conf_with_txn_api(
+    dir: &Path,
+    ports: &[u16],
+    validator_hex: &str,
+    enable_txn_api: bool,
+) -> NodeConf {
+    assert!(
+        ports.len() >= 4,
+        "need [http, admin-http, grpc-internal, protocol]"
+    );
+    let mut conf = standalone_conf(dir, ports, Some(validator_hex));
+    conf.propose_on_deploy = true;
+    conf.api_server.enable_txn_api = enable_txn_api;
+
+    let identity = ValidatorIdentity::from_hex(validator_hex).expect("validator identity");
+    let pub_hex = base16::encode(identity.public_key.bytes());
+    let primary = conf.casper.shards.primary().clone();
+
+    let mut specs = Vec::new();
+    for (index, (name, parent)) in [("root", "/"), ("child", "/root")].into_iter().enumerate() {
+        // Each shard gets its own genesis files: its own bonds, and a wallet funding the validator
+        // (the node's coordinator key) so it can escrow on that shard.
+        let shard_dir = dir.join(format!("genesis-{name}"));
+        std::fs::create_dir_all(&shard_dir).expect("genesis dir");
+        let bonds = shard_dir.join("bonds.txt");
+        std::fs::write(&bonds, format!("{pub_hex} 100\n")).expect("write bonds");
+        let wallets = shard_dir.join("wallets.txt");
+        std::fs::write(&wallets, format!("{DEPLOYER_REV_ADDR},1000000000000\n"))
+            .expect("write wallets");
+
+        let mut genesis = primary.genesis_block_data.clone();
+        genesis.bonds_file = bonds.to_string_lossy().into_owned();
+        genesis.wallets_file = wallets.to_string_lossy().into_owned();
+        let _ = index;
+        specs.push(
+            ShardSpec::new(name.to_string(), parent.to_string(), genesis, 5).expect("shard spec"),
+        );
+    }
+    conf.casper.shards = ShardMemberships::new(specs).expect("memberships");
+    conf
 }

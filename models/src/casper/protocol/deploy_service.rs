@@ -35,6 +35,9 @@ pub struct LightBlockInfo {
     pub block_size: String,
     pub deploy_count: i32,
     pub rejected_deploys: Vec<String>,
+    /// Informational block header timestamp (proposer's wall clock, ms since the Unix epoch). Not a
+    /// consensus input; exposed for RChain applications.
+    pub timestamp: i64,
 }
 
 /// Deploy metadata (port of `DeployInfo`).
@@ -107,8 +110,13 @@ pub struct WaitingContinuationInfo {
 }
 
 /// A deploy execution status (port of `DeployExecStatus`).
+///
+/// `rename_all` renames the *variants*; the fields of the struct variants need `rename_all_fields`
+/// (AUDIT §16 C16), without which they serialize as `deploy_result`/`deploy_error` — snake_case in
+/// the middle of an otherwise camelCase API response, where the Scala case-class fields the API
+/// mirrors are `deployResult`/`deployError`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum DeployExecStatus {
     ProcessedWithSuccess {
         deploy_result: Vec<Par>,
@@ -259,6 +267,7 @@ pub fn light_block_info_from_wire(b: &wire::LightBlockInfo) -> LightBlockInfo {
         block_size: b.block_size.clone(),
         deploy_count: b.deploy_count,
         rejected_deploys: b.rejected_deploys.clone(),
+        timestamp: b.timestamp,
     }
 }
 
@@ -276,5 +285,313 @@ pub fn deploy_info_from_wire(d: &wire::DeployInfo) -> DeployInfo {
         cost: d.cost,
         errored: d.errored,
         system_deploy_error: d.system_deploy_error.clone(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A wire block whose **every field has a distinct value**, so a conversion that swaps two of
+    /// them (`pre_state_hash` with `post_state_hash`, `block_number` with `seq_num`, `phlo_price`
+    /// with `phlo_limit`) cannot pass. The two string fields that are easy to transpose carry
+    /// markers, not plausible hashes.
+    fn wire_light_block_info() -> wire::LightBlockInfo {
+        wire::LightBlockInfo {
+            version: 1,
+            shard_id: "shard-id".to_string(),
+            block_hash: "block-hash".to_string(),
+            block_number: 4,
+            sender: "sender".to_string(),
+            seq_num: 5,
+            pre_state_hash: "PRE".to_string(),
+            post_state_hash: "POST".to_string(),
+            justifications: vec!["j1".to_string(), "j2".to_string()],
+            bonds: vec![
+                wire::BondInfo {
+                    validator: "v1".to_string(),
+                    stake: 11,
+                },
+                wire::BondInfo {
+                    validator: "v2".to_string(),
+                    stake: 22,
+                },
+            ],
+            sig_algorithm: "sig-alg".to_string(),
+            sig: "sig".to_string(),
+            block_size: "1234".to_string(),
+            deploy_count: 6,
+            rejected_deploys: vec!["r1".to_string()],
+            timestamp: 7,
+        }
+    }
+
+    fn wire_deploy_info() -> wire::DeployInfo {
+        wire::DeployInfo {
+            deployer: "deployer".to_string(),
+            term: "term".to_string(),
+            timestamp: 1,
+            sig: "deploy-sig".to_string(),
+            sig_algorithm: "deploy-alg".to_string(),
+            phlo_price: 2,
+            phlo_limit: 3,
+            valid_after_block_number: 4,
+            cost: 5,
+            errored: true,
+            system_deploy_error: "system-error".to_string(),
+        }
+    }
+
+    /// The wire→domain conversions are field-for-field, including the bond list and the two hashes
+    /// that are the classic transposition. Nothing is defaulted and nothing is dropped: every field
+    /// of the wire value appears in the domain value under its own name.
+    #[test]
+    fn the_wire_conversions_carry_every_field_to_its_own_place() {
+        let info = light_block_info_from_wire(&wire_light_block_info());
+        assert_eq!(
+            info,
+            LightBlockInfo {
+                version: 1,
+                shard_id: "shard-id".to_string(),
+                block_hash: "block-hash".to_string(),
+                block_number: 4,
+                sender: "sender".to_string(),
+                seq_num: 5,
+                pre_state_hash: "PRE".to_string(),
+                post_state_hash: "POST".to_string(),
+                justifications: vec!["j1".to_string(), "j2".to_string()],
+                bonds: vec![
+                    BondInfo {
+                        validator: "v1".to_string(),
+                        stake: 11
+                    },
+                    BondInfo {
+                        validator: "v2".to_string(),
+                        stake: 22
+                    },
+                ],
+                sig_algorithm: "sig-alg".to_string(),
+                sig: "sig".to_string(),
+                block_size: "1234".to_string(),
+                deploy_count: 6,
+                rejected_deploys: vec!["r1".to_string()],
+                timestamp: 7,
+            }
+        );
+        assert_eq!(
+            info.bonds[0],
+            bond_info_from_wire(&wire::BondInfo {
+                validator: "v1".to_string(),
+                stake: 11
+            })
+        );
+
+        let deploy = deploy_info_from_wire(&wire_deploy_info());
+        assert_eq!(
+            deploy,
+            DeployInfo {
+                deployer: "deployer".to_string(),
+                term: "term".to_string(),
+                timestamp: 1,
+                sig: "deploy-sig".to_string(),
+                sig_algorithm: "deploy-alg".to_string(),
+                phlo_price: 2,
+                phlo_limit: 3,
+                valid_after_block_number: 4,
+                cost: 5,
+                errored: true,
+                system_deploy_error: "system-error".to_string(),
+            }
+        );
+        // The two flags that read alike are different fields.
+        assert_ne!(deploy.phlo_price, deploy.phlo_limit);
+        assert_eq!(deploy.cost, 5, "cost is the u64, not a phlo bound");
+        assert!(deploy.errored);
+    }
+
+    /// The domain types are the **HTTP API contract**, so their serde field names matter: the Scala
+    /// case classes serialize camelCase, and a forgotten `rename_all` would silently rename every
+    /// key a client reads. The JSON is asserted key-for-key, not merely round-tripped (a round trip
+    /// passes with any consistent naming).
+    #[test]
+    fn the_serialized_keys_are_the_camel_case_api_contract() {
+        let json = serde_json::to_value(light_block_info_from_wire(&wire_light_block_info()))
+            .expect("serializable");
+        for key in [
+            "version",
+            "shardId",
+            "blockHash",
+            "blockNumber",
+            "sender",
+            "seqNum",
+            "preStateHash",
+            "postStateHash",
+            "justifications",
+            "bonds",
+            "sigAlgorithm",
+            "sig",
+            "blockSize",
+            "deployCount",
+            "rejectedDeploys",
+            "timestamp",
+        ] {
+            assert!(json.get(key).is_some(), "missing key {key} in {json}");
+        }
+        assert_eq!(json["blockNumber"], 4);
+        assert_eq!(json["preStateHash"], "PRE");
+        assert_eq!(json["postStateHash"], "POST");
+        assert_eq!(json["bonds"][1]["validator"], "v2");
+        assert_eq!(json["bonds"][1]["stake"], 22);
+        for snake in ["shard_id", "block_hash", "seq_num", "pre_state_hash"] {
+            assert!(
+                json.get(snake).is_none(),
+                "{snake} leaked into the API response"
+            );
+        }
+
+        let json = serde_json::to_value(deploy_info_from_wire(&wire_deploy_info())).expect("ser");
+        for key in [
+            "deployer",
+            "term",
+            "timestamp",
+            "sig",
+            "sigAlgorithm",
+            "phloPrice",
+            "phloLimit",
+            "validAfterBlockNumber",
+            "cost",
+            "errored",
+            "systemDeployError",
+        ] {
+            assert!(json.get(key).is_some(), "missing key {key} in {json}");
+        }
+        assert_eq!(json["phloPrice"], 2);
+        assert_eq!(json["phloLimit"], 3);
+        assert_eq!(json["cost"], 5);
+        assert!(json["errored"].as_bool().expect("a bool"));
+
+        // `VersionInfo` and `Status` are the whole of `GET /api/status`'s shape.
+        let status = serde_json::to_value(Status {
+            version: VersionInfo {
+                api: "1".to_string(),
+                node: "2".to_string(),
+            },
+            address: "addr".to_string(),
+            network_id: "net".to_string(),
+            shard_id: "shard".to_string(),
+            peers: 3,
+            nodes: 4,
+            min_phlo_price: 5,
+            latest_block_number: 6,
+        })
+        .expect("ser");
+        for key in [
+            "version",
+            "address",
+            "networkId",
+            "shardId",
+            "peers",
+            "nodes",
+            "minPhloPrice",
+            "latestBlockNumber",
+        ] {
+            assert!(status.get(key).is_some(), "missing key {key} in {status}");
+        }
+        assert_eq!(status["minPhloPrice"], 5);
+        assert_eq!(status["latestBlockNumber"], 6);
+    }
+
+    /// The deserializer accepts what the serializer emits, for the nested enum too: a client that
+    /// echoes a status back must not be rejected over the tag spelling.
+    #[test]
+    fn the_api_types_deserialize_what_they_serialize() {
+        let info = light_block_info_from_wire(&wire_light_block_info());
+        let text = serde_json::to_string(&info).expect("ser");
+        assert_eq!(
+            serde_json::from_str::<LightBlockInfo>(&text).expect("de"),
+            info
+        );
+
+        let deploy = deploy_info_from_wire(&wire_deploy_info());
+        let text = serde_json::to_string(&deploy).expect("ser");
+        assert_eq!(
+            serde_json::from_str::<DeployInfo>(&text).expect("de"),
+            deploy
+        );
+
+        let bond = BondInfo {
+            validator: "v".to_string(),
+            stake: 1,
+        };
+        assert_eq!(
+            serde_json::from_str::<BondInfo>(&serde_json::to_string(&bond).unwrap()).unwrap(),
+            bond
+        );
+
+        // The execution-status enum: the variant *name* is camelCased too, and its field names with
+        // it, so the wire spelling is `processedWithSuccess` — not `ProcessedWithSuccess`.
+        let success = DeployExecStatus::ProcessedWithSuccess {
+            deploy_result: Vec::new(),
+            block: info.clone(),
+        };
+        let json = serde_json::to_value(&success).expect("ser");
+        assert!(
+            json.get("processedWithSuccess").is_some(),
+            "the variant name is camelCased: {json}"
+        );
+        assert!(
+            json["processedWithSuccess"].get("deployResult").is_some(),
+            "the variant's fields must be camelCased like the Scala case-class fields: {json}"
+        );
+        assert!(json["processedWithSuccess"].get("block").is_some());
+        assert_eq!(
+            serde_json::from_value::<DeployExecStatus>(json).expect("de"),
+            success
+        );
+
+        let not_processed = DeployExecStatus::NotProcessed {
+            status: "pending".to_string(),
+        };
+        let json = serde_json::to_value(&not_processed).expect("ser");
+        assert_eq!(json["notProcessed"]["status"], "pending");
+        assert_eq!(
+            serde_json::from_value::<DeployExecStatus>(json).expect("de"),
+            not_processed
+        );
+
+        let errored = DeployExecStatus::ProcessedWithError {
+            deploy_error: "boom".to_string(),
+            block: info,
+        };
+        let json = serde_json::to_value(&errored).expect("ser");
+        assert_eq!(json["processedWithError"]["deployError"], "boom");
+        assert_eq!(
+            serde_json::from_value::<DeployExecStatus>(json).expect("de"),
+            errored
+        );
+    }
+
+    /// `ServiceError::new` is the one piece of logic in the query block: it collects exactly one
+    /// message, and it accepts anything string-shaped (the call sites pass `&str` and `String`).
+    /// The query types themselves are plain carriers with no behaviour to pin — this asserts only
+    /// the properties the gRPC layer depends on: they are `Copy` where they are declared `Copy`,
+    /// and equality is structural.
+    #[test]
+    fn service_error_collects_one_message_and_the_queries_stay_copy() {
+        let error = ServiceError::new("no such block");
+        assert_eq!(error.messages, vec!["no such block".to_string()]);
+        assert_eq!(ServiceError::new(String::from("x")).messages.len(), 1);
+
+        let query = BlocksQuery { depth: 3 };
+        let copied = query; // still usable: `Copy`, not a move
+        assert_eq!(copied, query);
+        assert_ne!(copied, BlocksQuery { depth: 4 });
+        assert_eq!(
+            BlockQuery {
+                hash: "h".to_string()
+            }
+            .hash,
+            "h"
+        );
     }
 }

@@ -84,17 +84,26 @@ where
             .push(ReportingEvent::Produce(ReportingProduce { channel, data }));
     }
 
-    pub fn record_consume(&self, channels: Vec<C>, patterns: Vec<P>, continuation: K, peeks: Vec<usize>) {
-        crate::lock::wlock(&self.soft_report)
-            .push(ReportingEvent::Consume(ReportingConsume {
-                channels,
-                patterns,
-                continuation,
-                peeks,
-            }));
+    pub fn record_consume(
+        &self,
+        channels: Vec<C>,
+        patterns: Vec<P>,
+        continuation: K,
+        peeks: Vec<usize>,
+    ) {
+        crate::lock::wlock(&self.soft_report).push(ReportingEvent::Consume(ReportingConsume {
+            channels,
+            patterns,
+            continuation,
+            peeks,
+        }));
     }
 
-    pub fn record_comm(&self, consume: ReportingConsume<C, P, K>, produces: Vec<ReportingProduce<C, A>>) {
+    pub fn record_comm(
+        &self,
+        consume: ReportingConsume<C, P, K>,
+        produces: Vec<ReportingProduce<C, A>>,
+    ) {
         crate::lock::wlock(&self.soft_report)
             .push(ReportingEvent::Comm(ReportingComm { consume, produces }));
     }
@@ -114,6 +123,169 @@ where
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::factory::create_reporting_rspace;
+    use crate::match_::Match;
+    use rchain_shared::store_manager::InMemoryStoreManager;
+
+    /// A matcher that matches everything — the same one `factory.rs`'s test uses, so a space built
+    /// here is built exactly as the node builds it.
+    struct StrMatch;
+    impl Match<String, String> for StrMatch {
+        fn get(&self, _p: &String, a: &String) -> Option<String> {
+            Some(a.clone())
+        }
+    }
+
+    async fn space() -> ReportingRspace<String, String, String, String> {
+        create_reporting_rspace::<String, String, String, String>(
+            &InMemoryStoreManager::default(),
+            Arc::new(StrMatch),
+        )
+        .await
+        .expect("reporting space")
+    }
+
+    fn produce_event(channel: &str, data: &str) -> ReportingEvent<String, String, String, String> {
+        ReportingEvent::Produce(ReportingProduce {
+            channel: channel.to_string(),
+            data: data.to_string(),
+        })
+    }
+
+    /// Recording appends to the **soft** report, which `collect_report` moves into a batch — and a
+    /// collect with nothing recorded adds **no** empty batch, so a report never carries a
+    /// checkpoint that reported nothing.
+    #[tokio::test]
+    async fn recording_is_soft_until_collected_and_an_empty_collect_adds_no_batch() {
+        let space = space().await;
+        assert!(
+            space.get_report().is_empty(),
+            "a fresh space reports nothing"
+        );
+
+        space.record_produce("chan".to_string(), "datum".to_string());
+        // The soft report is private; `collect_report` is the only way to see it, and collecting
+        // twice must not duplicate the batch.
+        space.collect_report();
+        space.collect_report();
+        let report = space.get_report();
+        assert_eq!(report.len(), 1, "one batch, not two and not zero");
+        assert_eq!(report[0], vec![produce_event("chan", "datum")]);
+
+        // A collect with an empty soft report does not add a batch…
+        space.collect_report();
+        assert_eq!(
+            space.get_report().len(),
+            0,
+            "…and `get_report` drained the first"
+        );
+
+        // …but a *recorded* event after a drain starts a new batch.
+        space.record_produce("chan".to_string(), "second".to_string());
+        let report = space.get_report();
+        assert_eq!(report.len(), 1);
+        assert_eq!(report[0], vec![produce_event("chan", "second")]);
+    }
+
+    /// `get_report` **drains**: the node calls it once per block and would otherwise re-report every
+    /// event it has ever seen.
+    #[tokio::test]
+    async fn get_report_drains_the_history() {
+        let space = space().await;
+        space.record_produce("chan".to_string(), "one".to_string());
+        assert_eq!(space.get_report().len(), 1);
+        assert_eq!(
+            space.get_report(),
+            Vec::<Vec<ReportingEvent<String, String, String, String>>>::new(),
+            "the second call sees nothing"
+        );
+    }
+
+    /// The three recorders keep their own fields, in the order they were recorded: a consume and a
+    /// COMM are not two spellings of a produce.
+    #[tokio::test]
+    async fn the_recorders_keep_the_event_kinds_apart_and_in_order() {
+        let space = space().await;
+        let consume = ReportingConsume {
+            channels: vec!["chan".to_string()],
+            patterns: vec!["pat".to_string()],
+            continuation: "body".to_string(),
+            peeks: vec![0],
+        };
+
+        space.record_produce("chan".to_string(), "datum".to_string());
+        space.record_consume(
+            consume.channels.clone(),
+            consume.patterns.clone(),
+            consume.continuation.clone(),
+            consume.peeks.clone(),
+        );
+        space.record_comm(
+            consume.clone(),
+            vec![ReportingProduce {
+                channel: "chan".to_string(),
+                data: "datum".to_string(),
+            }],
+        );
+
+        let report = space.get_report();
+        assert_eq!(report.len(), 1);
+        assert_eq!(
+            report[0],
+            vec![
+                produce_event("chan", "datum"),
+                ReportingEvent::Consume(consume.clone()),
+                ReportingEvent::Comm(ReportingComm {
+                    consume,
+                    produces: vec![ReportingProduce {
+                        channel: "chan".to_string(),
+                        data: "datum".to_string(),
+                    }],
+                }),
+            ]
+        );
+    }
+
+    /// The wrapper's `ISpace` reads are the wrapped space's reads, not views of the report: an empty
+    /// space has no data, no continuations, no joins and an empty map, with or without a report.
+    #[tokio::test]
+    async fn the_space_reads_are_the_wrapped_space_reads() {
+        let space = space().await;
+        space.record_produce("chan".to_string(), "datum".to_string());
+
+        assert!(space
+            .get_data(&"chan".to_string())
+            .await
+            .expect("data")
+            .is_empty());
+        assert!(space
+            .get_waiting_continuations(&["chan".to_string()])
+            .await
+            .expect("continuations")
+            .is_empty());
+        assert!(space
+            .get_joins(&"chan".to_string())
+            .await
+            .expect("joins")
+            .is_empty());
+        assert!(space.to_map().await.is_empty());
+
+        // …and the report is still there afterwards: reading the space does not collect.
+        assert_eq!(space.get_report().len(), 1);
+    }
+
+    /// The native store is the **same** store the wrapped spaces use — the registry/PoS/vault state
+    /// a system contract writes must be visible to the reporting layer, not a second copy.
+    #[tokio::test]
+    async fn the_native_store_is_shared_with_the_wrapped_space() {
+        let space = space().await;
+        assert!(Arc::ptr_eq(&space.native_store(), &space.native_store()));
+    }
+}
+
 #[async_trait]
 impl<C, P, A, K> Tuplespace<C, P, A, K> for ReportingRspace<C, P, A, K>
 where
@@ -129,7 +301,10 @@ where
         continuation: K,
         persist: bool,
         peeks: BTreeSet<usize>,
-    ) -> std::result::Result<Option<(ContResult<C, P, K>, Vec<Result<C, A>>)>, crate::errors::RSpaceError> {
+    ) -> std::result::Result<
+        Option<(ContResult<C, P, K>, Vec<Result<C, A>>)>,
+        crate::errors::RSpaceError,
+    > {
         // Record the consume event (port of `logConsume`).
         let peeks_vec: Vec<usize> = peeks.iter().copied().collect();
         self.record_consume(
@@ -169,7 +344,10 @@ where
         channel: C,
         data: A,
         persist: bool,
-    ) -> std::result::Result<Option<(ContResult<C, P, K>, Vec<Result<C, A>>)>, crate::errors::RSpaceError> {
+    ) -> std::result::Result<
+        Option<(ContResult<C, P, K>, Vec<Result<C, A>>)>,
+        crate::errors::RSpaceError,
+    > {
         // Record the produce event (port of `logProduce`).
         self.record_produce(channel.clone(), data.clone());
 
@@ -216,7 +394,9 @@ where
     A: Clone + Serialize<A> + Send + Sync + 'static,
     K: Clone + Serialize<K> + Send + Sync + 'static,
 {
-    async fn create_checkpoint(&self) -> std::result::Result<crate::checkpoint::Checkpoint, String> {
+    async fn create_checkpoint(
+        &self,
+    ) -> std::result::Result<crate::checkpoint::Checkpoint, String> {
         let checkpoint = self.replay.create_checkpoint().await?;
         crate::lock::wlock(&self.soft_report).clear();
         crate::lock::wlock(&self.report).clear();
@@ -227,7 +407,10 @@ where
         self.replay.reset(root).await
     }
 
-    async fn get_data(&self, channel: &C) -> std::result::Result<Vec<Datum<A>>, crate::errors::RSpaceError> {
+    async fn get_data(
+        &self,
+        channel: &C,
+    ) -> std::result::Result<Vec<Datum<A>>, crate::errors::RSpaceError> {
         self.replay.get_data(channel).await
     }
 
@@ -238,7 +421,10 @@ where
         self.replay.get_waiting_continuations(channels).await
     }
 
-    async fn get_joins(&self, channel: &C) -> std::result::Result<Vec<Vec<C>>, crate::errors::RSpaceError> {
+    async fn get_joins(
+        &self,
+        channel: &C,
+    ) -> std::result::Result<Vec<Vec<C>>, crate::errors::RSpaceError> {
         self.replay.get_joins(channel).await
     }
 
@@ -272,7 +458,11 @@ where
         self.replay.rig(log).await;
     }
 
-    async fn rig_and_reset(&self, start_root: Blake2b256Hash, log: Log) -> std::result::Result<(), String> {
+    async fn rig_and_reset(
+        &self,
+        start_root: Blake2b256Hash,
+        log: Log,
+    ) -> std::result::Result<(), String> {
         self.replay.rig_and_reset(start_root, log).await
     }
 

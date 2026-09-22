@@ -69,10 +69,18 @@ impl FringeData {
         FringeDataProto {
             fringe_hash: self.fringe_hash.as_bytes().to_vec(),
             fringe: self.fringe.iter().map(|f| f.as_bytes().to_vec()).collect(),
-            fringe_diff: self.fringe_diff.iter().map(|f| f.as_bytes().to_vec()).collect(),
+            fringe_diff: self
+                .fringe_diff
+                .iter()
+                .map(|f| f.as_bytes().to_vec())
+                .collect(),
             state_hash: self.state_hash.as_bytes().to_vec(),
             rejected_deploys: self.rejected_deploys.iter().cloned().collect(),
-            rejected_blocks: self.rejected_blocks.iter().map(|f| f.as_bytes().to_vec()).collect(),
+            rejected_blocks: self
+                .rejected_blocks
+                .iter()
+                .map(|f| f.as_bytes().to_vec())
+                .collect(),
             rejected_senders: self.rejected_senders.iter().cloned().collect(),
         }
     }
@@ -82,7 +90,8 @@ impl FringeData {
     }
 
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, crate::errors::ModelsError> {
-        let proto = FringeDataProto::decode(bytes).map_err(|e| crate::errors::ModelsError::Decode(e.to_string()))?;
+        let proto = FringeDataProto::decode(bytes)
+            .map_err(|e| crate::errors::ModelsError::Decode(e.to_string()))?;
         FringeData::from_proto(&proto)
     }
 }
@@ -105,7 +114,10 @@ mod tests {
         let h3 = hash(3);
         let fringe: BTreeSet<BlockHash> = [h3, h1, h2].into_iter().collect();
         let expected = {
-            let parts: Vec<&[u8]> = [&h1, &h2, &h3].iter().map(|h| h.as_bytes() as &[u8]).collect();
+            let parts: Vec<&[u8]> = [&h1, &h2, &h3]
+                .iter()
+                .map(|h| h.as_bytes() as &[u8])
+                .collect();
             Blake2b256Hash::create_many(&parts)
         };
         assert_eq!(FringeData::fringe_hash_of(&fringe), expected);

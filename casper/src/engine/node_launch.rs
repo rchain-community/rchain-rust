@@ -24,7 +24,7 @@ use tokio::sync::mpsc;
 
 use crate::blocks::block_retriever::BlockRetriever;
 use crate::bonds_parser;
-use crate::conf::CasperConf;
+use crate::conf::ShardSpec;
 use crate::engine::node_running::NodeRunning;
 use crate::engine::node_syncing::NodeSyncing;
 use crate::genesis::contracts::{ProofOfStake, Registry, Validator};
@@ -97,20 +97,26 @@ pub async fn create_genesis_block(
     crate::genesis::create_genesis_block(validator, &genesis, runtime).await
 }
 
-/// Create the genesis block from a [`CasperConf`] (port of
+/// Create one shard's genesis block from its [`ShardSpec`] (port of
 /// `NodeLaunch.createGenesisBlockFromConfig`).
 pub async fn create_genesis_block_from_config(
     validator: &ValidatorIdentity,
-    conf: &CasperConf,
+    spec: &ShardSpec,
     runtime: &RuntimeManager,
 ) -> Result<BlockMessage, String> {
-    let gbd = &conf.genesis_block_data;
+    let gbd = &spec.genesis_block_data;
+    // The block's shard id is the spec's validated *full* id (`{parent-shard-id}/{shard-name}`),
+    // matching the proposer (`Proposer::apply`), the block receiver's `check_if_of_interest` and
+    // both deploy APIs. Passing the bare `shard_name` here made the genesis block carry an id
+    // ("root") that no later block or deploy shares ("/root"), so a genesis block received from a
+    // peer was dropped by the receiver's equality check.
+    let shard_id = spec.shard_id.to_string();
     create_genesis_block(
         validator,
-        &conf.shard_name,
+        &shard_id,
         gbd.genesis_block_number,
         &gbd.bonds_file,
-        conf.autogen_shard_size,
+        spec.autogen_shard_size,
         &gbd.wallets_file,
         gbd.bond_minimum,
         gbd.bond_maximum,
@@ -138,10 +144,11 @@ async fn wait_for_first_connection(connections: &ConnectionsCell, log: &dyn Log)
     }
 }
 
-/// Create, store and broadcast the genesis block (port of `createStoreBroadcastGenesis`).
+/// Create, store and broadcast one shard's genesis block (port of
+/// `createStoreBroadcastGenesis`).
 async fn create_store_broadcast_genesis(
     validator_identity_opt: Option<&ValidatorIdentity>,
-    conf: &CasperConf,
+    spec: &ShardSpec,
     runtime_manager: &RuntimeManager,
     block_store: &BlockStore,
     approved_store: &ApprovedStore,
@@ -154,7 +161,7 @@ async fn create_store_broadcast_genesis(
         "To create genesis block node must provide validator private key".to_string()
     })?;
 
-    let genesis_block = create_genesis_block_from_config(validator, conf, runtime_manager).await?;
+    let genesis_block = create_genesis_block_from_config(validator, spec, runtime_manager).await?;
     log.info(
         source,
         &format!(
@@ -182,7 +189,7 @@ async fn create_store_broadcast_genesis(
 pub async fn apply<I: RSpaceImporter + Send + 'static, E: RSpaceExporter>(
     mut packet_rx: mpsc::Receiver<PeerMessage>,
     incoming_blocks: mpsc::Sender<BlockMessage>,
-    conf: CasperConf,
+    spec: ShardSpec,
     trim_state: bool,
     // The store-items response is served unconditionally; `disable_state_exporter` would gate it,
     // but the config flag is not yet threaded through, so it is accepted and ignored for now.
@@ -206,10 +213,13 @@ pub async fn apply<I: RSpaceImporter + Send + 'static, E: RSpaceExporter>(
 
     let repr = dag.get_representation().await;
     if repr.dag_set.is_empty() && standalone {
-        log.info(source, "Starting as genesis master, creating genesis block...");
+        log.info(
+            source,
+            "Starting as genesis master, creating genesis block...",
+        );
         create_store_broadcast_genesis(
             validator_identity_opt.as_ref(),
-            &conf,
+            &spec,
             runtime_manager.as_ref(),
             &block_store,
             &approved_store,
@@ -277,4 +287,74 @@ pub async fn apply<I: RSpaceImporter + Send + 'static, E: RSpaceExporter>(
         engine.handle(&pm.peer, &pm.message).await;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rchain_comm::peer_node::NodeIdentifier;
+    use rchain_shared::log::NopLog;
+    use rchain_shared::refined::Port;
+
+    fn peer(name: &str) -> PeerNode {
+        PeerNode::from(
+            NodeIdentifier::new(name.as_bytes().to_vec()),
+            "host".to_string(),
+            Port::new(40400),
+            Port::new(40404),
+        )
+    }
+
+    fn connections(peers: Vec<PeerNode>) -> ConnectionsCell {
+        Arc::new(tokio::sync::RwLock::new(peers))
+    }
+
+    /// The wait ends as soon as a peer is there — the check is the first thing the loop does, so an
+    /// already-connected node does not spend a poll interval idle before creating its genesis.
+    #[tokio::test]
+    async fn the_connection_wait_returns_immediately_when_a_peer_exists() {
+        let conns = connections(vec![peer("p")]);
+        tokio::time::timeout(
+            Duration::from_secs(1),
+            wait_for_first_connection(&conns, &NopLog),
+        )
+        .await
+        .expect("a connected node must not wait");
+    }
+
+    /// With no peers the wait does **not** proceed: it polls, and the caller (`apply`) must not
+    /// fall through to genesis creation or to running. The empty cell is never written to, so the
+    /// future cannot complete — the timeout is the assertion, not a race.
+    #[tokio::test]
+    async fn the_connection_wait_blocks_while_there_are_no_peers() {
+        let conns = connections(Vec::new());
+        let result = tokio::time::timeout(
+            // Comfortably beyond one poll interval, so the loop has had several chances to exit.
+            Duration::from_millis(900),
+            wait_for_first_connection(&conns, &NopLog),
+        )
+        .await;
+        assert!(
+            result.is_err(),
+            "an unconnected node must keep waiting, not proceed"
+        );
+    }
+
+    /// A peer arriving *after* the wait started releases it, which is the case the standalone
+    /// detection depends on: the node is started, the wait begins, then the first peer connects.
+    #[tokio::test]
+    async fn the_connection_wait_is_released_by_a_late_peer() {
+        let conns = connections(Vec::new());
+        let writer = Arc::clone(&conns);
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            writer.write().await.push(peer("late"));
+        });
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            wait_for_first_connection(&conns, &NopLog),
+        )
+        .await
+        .expect("the late peer must release the wait");
+    }
 }

@@ -74,10 +74,20 @@ pub struct Registry {
 pub fn rev_generator_code(vaults: &[Vault], is_last_batch: bool) -> String {
     let vault_balance_list = vaults
         .iter()
-        .map(|v| format!("(\"{}\", {})", v.rev_address.to_base58(), i64::from(v.initial_balance)))
+        .map(|v| {
+            format!(
+                "(\"{}\", {})",
+                v.rev_address.to_base58(),
+                i64::from(v.initial_balance)
+            )
+        })
         .collect::<Vec<_>>()
         .join(", ");
-    let init_continue = if is_last_batch { "" } else { "| initContinue!()" };
+    let init_continue = if is_last_batch {
+        ""
+    } else {
+        "| initContinue!()"
+    };
 
     let template = r#" new rl(`rho:registry:lookup`), revVaultCh in {
    rl!(`rho:rchain:revVault`, *revVaultCh) |
@@ -142,7 +152,10 @@ mod tests {
         let bonds = ProofOfStake::initial_bonds(&validators);
         let pos_200 = bonds.find(": 200").expect("stake 200 present");
         let pos_100 = bonds.find(": 100").expect("stake 100 present");
-        assert!(pos_200 < pos_100, "0x80 must sort before 0x01 (signed order): {bonds}");
+        assert!(
+            pos_200 < pos_100,
+            "0x80 must sort before 0x01 (signed order): {bonds}"
+        );
     }
 
     #[test]

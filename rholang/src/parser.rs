@@ -11,8 +11,8 @@ enum Tok {
     Uri(String),
     Ident(String),
     Tilde,
-    Conj,  // /\
-    Disj,  // \/
+    Conj, // /\
+    Disj, // \/
     Star,
     Dot,
     LParen,
@@ -151,7 +151,11 @@ fn lex(src: &str) -> Result<Vec<Tok>, RholangError> {
         // (mirrors the BNFC `Var` token: `'_' (letter | digit | '_' | '\'')+`).
         let ident_continue = |c: char| c.is_ascii_alphanumeric() || c == '_' || c == '\'';
         if c.is_ascii_alphabetic()
-            || (c == '_' && chars.get(i + 1).map(|&n| ident_continue(n)).unwrap_or(false))
+            || (c == '_'
+                && chars
+                    .get(i + 1)
+                    .map(|&n| ident_continue(n))
+                    .unwrap_or(false))
         {
             let start = i;
             while i < chars.len() && ident_continue(chars[i]) {
@@ -172,8 +176,15 @@ fn lex(src: &str) -> Result<Vec<Tok>, RholangError> {
         let peek = |n: usize| chars.get(i + n).copied();
         let (tok, advance): (Tok, usize) = match c {
             '~' => (Tok::Tilde, 1),
-            '\\' if peek(1) == Some('/') => (Tok::Conj, 2),
-            '\\' if peek(1) == Some('\\') => (Tok::Disj, 2),
+            // The two logical connectives, in the grammar's own spelling:
+            //     PConjunction.  Proc14 ::= Proc14 "/\\" Proc15 ;
+            //     PDisjunction.  Proc13 ::= Proc13 "\\/" Proc14 ;
+            // i.e. conjunction is `/` then `\`, disjunction is `\` then `/`. These were **swapped**
+            // here (and `\\` — not an operator at all — was accepted as the disjunction), so `a \/ b`
+            // lexed as conjunction and `a /\ b` did not lex at all (`/` was taken as division and the
+            // `\` was then an illegal character). Longest match wins, as in the Scala lexer.
+            '/' if peek(1) == Some('\\') => (Tok::Conj, 2),
+            '\\' if peek(1) == Some('/') => (Tok::Disj, 2),
             '*' => (Tok::Star, 1),
             '.' if peek(1) == Some('.') && peek(2) == Some('.') => (Tok::Ellipsis, 3),
             '.' => (Tok::Dot, 1),
@@ -263,7 +274,9 @@ impl Parser {
         self.depth += 1;
         if self.depth > MAX_PARSE_DEPTH {
             self.depth -= 1;
-            return Err(RholangError::SyntaxError("parse depth exceeded".to_string()));
+            return Err(RholangError::SyntaxError(
+                "parse depth exceeded".to_string(),
+            ));
         }
         let result = f(self);
         self.depth -= 1;
@@ -305,7 +318,11 @@ impl Parser {
 /// Parse a source string into a `Proc` (port of `Compiler.sourceToAST`).
 pub fn parse(source: &str) -> Result<Proc, RholangError> {
     let toks = lex(source)?;
-    let mut p = Parser { toks, pos: 0, depth: 0 };
+    let mut p = Parser {
+        toks,
+        pos: 0,
+        depth: 0,
+    };
     let proc = p.parse_proc()?;
     Ok(proc)
 }
@@ -654,7 +671,7 @@ impl Parser {
     }
 
     fn parse_proc11(&mut self) -> Result<Proc, RholangError> {
-        let mut left = self.parse_proc12()?;
+        let mut left = self.parse_proc11_head()?;
         let mut chain = 0;
         loop {
             if self.peek() == &Tok::Dot {
@@ -683,6 +700,41 @@ impl Parser {
         Ok(left)
     }
 
+    /// The head of a `Proc11`: a parenthesised expression (`PExprs ::= "(" Proc4 ")"`) or whatever
+    /// the deeper levels produce.
+    ///
+    /// `(` is ambiguous between a **group** (`PExprs`, at this level) and a **tuple** (`TupleSingle
+    /// ::= "(" Proc ",)"` / `TupleMultiple ::= "(" Proc "," [Proc] ")"`, a collection at the deepest
+    /// level), and the grammar distinguishes them by *content*: a group's interior must be a
+    /// `Proc4` (arithmetic and below — no sends, no `|`, no `new`), while a tuple requires a comma
+    /// after its first element. So the group is tried first, speculatively, and anything that does
+    /// not fit (a comma, or an interior too loose for `Proc4`) rewinds and falls through to the
+    /// collection path — which requires the comma, so a form that is neither is a syntax error
+    /// rather than the one-element tuple this parser used to invent.
+    ///
+    /// The speculation re-parses the group's interior once in the tuple case (the tuple path reads
+    /// the same text again). That is bounded by the nesting of `(`, and it buys an unambiguous
+    /// decision without a second lookahead implementation.
+    fn parse_proc11_head(&mut self) -> Result<Proc, RholangError> {
+        if self.peek() != &Tok::LParen {
+            return self.parse_proc12();
+        }
+        let save = self.pos;
+        self.next();
+        match self.parse_proc4() {
+            Ok(inner) if self.peek() == &Tok::RParen => {
+                self.next();
+                Ok(inner)
+            }
+            // A comma (a tuple), or an interior `Proc4` could not consume (a send, `|`, `new`, …),
+            // or an unclosed paren: hand the text back to the collection path.
+            _ => {
+                self.pos = save;
+                self.parse_proc12()
+            }
+        }
+    }
+
     fn parse_proc12(&mut self) -> Result<Proc, RholangError> {
         if self.peek() == &Tok::Star {
             self.next();
@@ -706,7 +758,19 @@ impl Parser {
             let var = self.parse_source_var()?;
             Ok(Proc::PVarRef(kind, var))
         } else {
-            self.parse_proc14()
+            // `PDisjunction ::= Proc13 "\\/" Proc14` — the disjunction level, one step looser than
+            // the conjunction level below it. There was no such loop, so the token could never be
+            // consumed even once the lexer spelled it right: the parser side of `\/` was missing
+            // entirely, while the normalizer's `normalize_disjunction` was already there.
+            let mut left = self.parse_proc14()?;
+            let mut chain = 0;
+            while self.peek() == &Tok::Disj {
+                self.chain_link(&mut chain)?;
+                self.next();
+                let right = self.parse_proc14()?;
+                left = Proc::PDisjunction(Box::new(left), Box::new(right));
+            }
+            Ok(left)
         }
     }
 
@@ -819,7 +883,9 @@ impl Parser {
         match self.next() {
             Tok::Ident(s) => Ok(s),
             Tok::Underscore => Ok("_".to_string()),
-            t => Err(RholangError::SyntaxError(format!("expected variable, got {t:?}"))),
+            t => Err(RholangError::SyntaxError(format!(
+                "expected variable, got {t:?}"
+            ))),
         }
     }
 
@@ -851,7 +917,9 @@ impl Parser {
         match self.next() {
             Tok::Bang => Ok(Send::SendSingle),
             Tok::BangBang => Ok(Send::SendMultiple),
-            t => Err(RholangError::SyntaxError(format!("expected send, got {t:?}"))),
+            t => Err(RholangError::SyntaxError(format!(
+                "expected send, got {t:?}"
+            ))),
         }
     }
 
@@ -886,7 +954,9 @@ impl Parser {
             Tok::Uri(u) => Ok(Ground::GroundUri(u)),
             Tok::Ident(s) if s == "true" => Ok(Ground::GroundBool(BoolLiteral::BoolTrue)),
             Tok::Ident(s) if s == "false" => Ok(Ground::GroundBool(BoolLiteral::BoolFalse)),
-            t => Err(RholangError::SyntaxError(format!("unexpected ground {t:?}"))),
+            t => Err(RholangError::SyntaxError(format!(
+                "unexpected ground {t:?}"
+            ))),
         }
     }
 
@@ -907,6 +977,11 @@ impl Parser {
                     procs.push(self.parse_proc()?);
                     if self.peek() == &Tok::Comma {
                         self.next();
+                        // `[a, b, ...rest]`: the remainder is not a process, so stop before
+                        // `parse_proc` sees the ellipsis and let `parse_proc_remainder` take it.
+                        if self.peek() == &Tok::Ellipsis {
+                            break;
+                        }
                     } else {
                         break;
                     }
@@ -922,7 +997,9 @@ impl Parser {
                     self.next();
                     if self.peek() == &Tok::RParen {
                         self.next();
-                        Ok(Collection::CollectTuple(Tuple::TupleSingle(Box::new(first))))
+                        Ok(Collection::CollectTuple(Tuple::TupleSingle(Box::new(
+                            first,
+                        ))))
                     } else {
                         let mut rest = Vec::new();
                         while self.peek() != &Tok::RParen {
@@ -940,8 +1017,20 @@ impl Parser {
                         )))
                     }
                 } else {
-                    self.expect(Tok::RParen)?;
-                    Ok(Collection::CollectTuple(Tuple::TupleSingle(Box::new(first))))
+                    // Reached only through `parse_proc11_head`'s fallback: the interior was not a
+                    // `Proc4` (so it is not the `PExprs` group) *and* there is no comma (so it is
+                    // not a tuple, whose productions — `TupleSingle ::= "(" Proc ",)"` and
+                    // `TupleMultiple ::= "(" Proc "," [Proc] ")"` — both require one). `(a!(b))`
+                    // and `(a | b)` land here, and both are syntax errors in the grammar: this
+                    // parser used to accept them as one-element tuples, which silently changed the
+                    // meaning of any expression feeding an operator (`(a + b) % c` reduced as
+                    // `Tuple([a + b]) % c`).
+                    return Err(RholangError::SyntaxError(format!(
+                        "a tuple needs a comma: `(x,)` for one element, `(x, y)` for more, and a \
+                         parenthesised expression may not contain a send, `|`, `new` or `if` \
+                         (pos={})",
+                        self.pos
+                    )));
                 }
             }
             Tok::LBrace => {
@@ -954,6 +1043,10 @@ impl Parser {
                     kvs.push(KeyValuePair(k, v));
                     if self.peek() == &Tok::Comma {
                         self.next();
+                        // `{a: 1, ...rest}`: stop before `parse_proc` meets the ellipsis.
+                        if self.peek() == &Tok::Ellipsis {
+                            break;
+                        }
                     } else {
                         break;
                     }
@@ -970,6 +1063,10 @@ impl Parser {
                     procs.push(self.parse_proc()?);
                     if self.peek() == &Tok::Comma {
                         self.next();
+                        // `Set(a, b, ...rest)`: stop before `parse_proc` meets the ellipsis.
+                        if self.peek() == &Tok::Ellipsis {
+                            break;
+                        }
                     } else {
                         break;
                     }
@@ -1014,7 +1111,9 @@ impl Parser {
                 }
                 _ => Ok(Bundle::BundleReadWrite),
             },
-            t => Err(RholangError::SyntaxError(format!("expected bundle, got {t:?}"))),
+            t => Err(RholangError::SyntaxError(format!(
+                "expected bundle, got {t:?}"
+            ))),
         }
     }
 
@@ -1026,7 +1125,9 @@ impl Parser {
                 self.expect(Tok::RParen)?;
                 Ok(NameDecl::NameDeclUrn(var, u))
             } else {
-                Err(RholangError::SyntaxError("expected uri in name decl".into()))
+                Err(RholangError::SyntaxError(
+                    "expected uri in name decl".into(),
+                ))
             }
         } else {
             Ok(NameDecl::NameDeclSimpl(var))
@@ -1048,7 +1149,9 @@ impl Parser {
                     let s = self.parse_name_source()?;
                     binds.push(LinearBind(n, r, s));
                 }
-                Ok(Receipt::ReceiptLinear(ReceiptLinearImpl::LinearSimple(binds)))
+                Ok(Receipt::ReceiptLinear(ReceiptLinearImpl::LinearSimple(
+                    binds,
+                )))
             }
             Tok::LLArrow => {
                 self.next();
@@ -1074,7 +1177,9 @@ impl Parser {
                     let s = self.parse_name()?;
                     binds.push(RepeatedBind(n, r, s));
                 }
-                Ok(Receipt::ReceiptRepeated(ReceiptRepeatedImpl::RepeatedSimple(binds)))
+                Ok(Receipt::ReceiptRepeated(
+                    ReceiptRepeatedImpl::RepeatedSimple(binds),
+                ))
             }
             t => Err(RholangError::SyntaxError(format!(
                 "expected <-, <<-, or <=, got {t:?}"
@@ -1084,7 +1189,10 @@ impl Parser {
 
     fn parse_bind_head(&mut self) -> Result<(Vec<Name>, NameRemainder), RholangError> {
         let mut names = Vec::new();
-        while !matches!(self.peek(), Tok::LArrow | Tok::LLArrow | Tok::Lte | Tok::Ellipsis) {
+        while !matches!(
+            self.peek(),
+            Tok::LArrow | Tok::LLArrow | Tok::Lte | Tok::Ellipsis
+        ) {
             names.push(self.parse_name()?);
             if self.peek() == &Tok::Comma {
                 self.next();
@@ -1217,6 +1325,53 @@ mod tests {
         assert_eq!(p, Proc::PNil);
     }
 
+    /// A `ProcRemainder` applies to **every** collection form, but only the map branch broke on
+    /// the ellipsis: the list and set branches consumed the comma unconditionally and then called
+    /// `parse_proc` on `...`, which is not a process. So `[=*type, ...item]` — how `Inbox.rho`
+    /// destructures a message queue, and therefore how the whole rgov governance set that imports
+    /// it destructures one — failed to parse with `expected variable, got Ellipsis`, while
+    /// `{a: 1, ...rest}` was accepted. The remainder must also be *carried*, not dropped.
+    #[test]
+    fn collection_remainders_parse_for_lists_and_sets_not_only_maps() {
+        for src in [
+            "[a, ...rest]",
+            "[=*type, ...item]",
+            "[=*type, =*subtype, ...item]",
+            "[a, ..._]",
+            "Set(a, ...rest)",
+            "{a: 1, ...rest}",
+            "{a: 1, ..._}",
+        ] {
+            let parsed = parse(src).unwrap_or_else(|e| panic!("`{src}` must parse: {e}"));
+            let remainder = match &parsed {
+                Proc::PCollect(Collection::CollectList(_, r))
+                | Proc::PCollect(Collection::CollectSet(_, r))
+                | Proc::PCollect(Collection::CollectMap(_, r)) => r,
+                other => panic!("`{src}` parsed as {other:?}, expected a collection"),
+            };
+            assert!(
+                matches!(remainder, ProcRemainder::ProcRemainderVar(_)),
+                "`{src}`: the remainder should be bound to a var, got {remainder:?}"
+            );
+        }
+
+        // A comma-separated collection with no ellipsis still has an empty remainder.
+        let Proc::PCollect(Collection::CollectList(_, remainder)) = parse("[a, b]").unwrap() else {
+            panic!("expected a list")
+        };
+        assert!(matches!(remainder, ProcRemainder::ProcRemainderEmpty));
+
+        // The whole shape that failed in the wild, verbatim from `Inbox.rho`: a match arm whose
+        // pattern is a par containing a map containing a list-with-remainder.
+        parse(
+            "match (*items) {
+               {[=*type, ...item] | rest} => { ret!(item) | box!(rest) }
+               _ => { box!(*items) | ret!(Nil) }
+             }",
+        )
+        .expect("the Inbox.rho read-pattern must parse");
+    }
+
     #[test]
     fn rejects_excessive_nesting_depth() {
         // Deeply nested `new`/`not`/`~` terms must error rather than overflow the stack.
@@ -1225,6 +1380,115 @@ mod tests {
 
         let deep_not = format!("{}Nil", "not ".repeat(MAX_PARSE_DEPTH + 10));
         assert!(parse(&deep_not).is_err());
+    }
+
+    /// `(x)` is a **group** (`PExprs ::= "(" Proc4 ")"`), not a tuple: the tuple productions
+    /// (`TupleSingle ::= "(" Proc ",)"`, `TupleMultiple ::= "(" Proc "," [Proc] ")"`) both require
+    /// a comma. This parser built a one-element tuple out of the bare form, so `(a + b) % c`
+    /// became `Tuple([a + b]) % c` — a reduce-time type error instead of the arithmetic it is, and
+    /// the reason `Registry.rho` and `MakeMint.rho` could not be reduced at all.
+    /// The two logical connectives, which the port had **swapped** at the lexer and left
+    /// unparseable at the parser: `\/` (disjunction) lexed as the conjunction token and reduced as
+    /// `ConnAnd`, while `/\` (conjunction) did not lex at all — `/` was taken as division and the
+    /// backslash was then an illegal character. `Proc::PDisjunction` and the normalizer's
+    /// `normalize_disjunction` were already written, so nothing could ever reach them.
+    #[test]
+    fn the_logical_connectives_lex_and_parse_in_their_grammar_spelling() {
+        assert!(
+            matches!(parse("a /\\ b").unwrap(), Proc::PConjunction(..)),
+            "`/\\` is conjunction"
+        );
+        assert!(
+            matches!(parse("a \\/ b").unwrap(), Proc::PDisjunction(..)),
+            "`\\/` is disjunction"
+        );
+        // Precedence: `/\` (Proc14) binds tighter than `\/` (Proc13), so the right operand of the
+        // disjunction is the whole conjunction.
+        let mixed = parse("a \\/ b /\\ c").unwrap();
+        let Proc::PDisjunction(_, right) = &mixed else {
+            panic!("expected a disjunction at the top, got {mixed:?}")
+        };
+        assert!(
+            matches!(**right, Proc::PConjunction(..)),
+            "`/\\` must bind tighter: {right:?}"
+        );
+        // Both are left-associative, like the grammar's `Proc13 ::= Proc13 "\\/" Proc14`.
+        assert!(matches!(
+            parse("a \\/ b \\/ c").unwrap(),
+            Proc::PDisjunction(..)
+        ));
+        // Division is untouched by the longer token.
+        assert!(parse("6 / 2").is_ok());
+        // `\\` is not an operator in the grammar; it is not a token here either.
+        assert!(parse("a \\\\ b").is_err(), "`\\\\` must not lex");
+    }
+
+    #[test]
+    fn a_parenthesised_expression_is_a_group_not_a_one_element_tuple() {
+        // A group contributes no AST node: it is its interior.
+        assert_eq!(parse("(3 + 5)").unwrap(), parse("3 + 5").unwrap());
+        assert_eq!(parse("((a))").unwrap(), parse("a").unwrap());
+        // So it composes with the enclosing operator, which is the whole point.
+        assert!(matches!(parse("2 * (3 + 5)").unwrap(), Proc::PMult(..)));
+        // And a *tuple* still needs its comma, at one element and at many.
+        assert!(matches!(
+            parse("(3,)").unwrap(),
+            Proc::PCollect(Collection::CollectTuple(Tuple::TupleSingle(_)))
+        ));
+        assert!(matches!(
+            parse("(3, 4)").unwrap(),
+            Proc::PCollect(Collection::CollectTuple(Tuple::TupleMultiple(..)))
+        ));
+    }
+
+    /// A parenthesised expression may not contain a send, `|`, `new` or `if`: `PExprs`'s interior
+    /// is a `Proc4`, which is looser than a tuple's `Proc` but tighter than a full `Proc`. Both
+    /// sides of that boundary are asserted, because accepting too much here is the same class of
+    /// laxness as the one-element tuple was.
+    #[test]
+    fn a_group_may_not_contain_a_send_or_a_parallel() {
+        for src in ["(a!(b))", "(a | b)", "(new x in { Nil })"] {
+            let err = parse(src).expect_err("must not parse: {src}");
+            assert!(
+                format!("{err}").contains("a tuple needs a comma"),
+                "{src}: unexpected error {err}"
+            );
+        }
+        // The boundary holds from the other side: `Proc4` is `or`/`==`/`+`/`*` and below, so those
+        // are legal in a group...
+        for src in [
+            "(a or b)",
+            "(a == b)",
+            "(a + b)",
+            "(a * b)",
+            "([1, 2].nth(0) + 1)",
+        ] {
+            assert!(parse(src).is_ok(), "{src} must parse");
+        }
+        // ...and a *tuple* may hold a send, because `TupleSingle`/`TupleMultiple` take a full
+        // `Proc` (which is why the group is tried before the tuple, not after).
+        assert!(matches!(
+            parse("(a!(b), c)").unwrap(),
+            Proc::PCollect(Collection::CollectTuple(Tuple::TupleMultiple(..)))
+        ));
+    }
+
+    /// The forms that use parentheses for their *own* syntax are unaffected: the `if` condition
+    /// (a full `Proc`), `for` binders, `contract` parameters and method-call arguments.
+    #[test]
+    fn the_parenthesised_forms_the_grammar_allows_still_parse() {
+        assert!(parse("if (1 == 1) { Nil }").is_ok(), "if condition");
+        assert!(parse("if (true) { Nil } else { Nil }").is_ok(), "if/else");
+        assert!(
+            parse("if (a!(b)) { Nil }").is_ok(),
+            "an if condition is a full Proc, send included"
+        );
+        assert!(parse("for (x <- y) { Nil }").is_ok(), "for binder");
+        assert!(
+            parse("contract c(@x, y) = { Nil }").is_ok(),
+            "contract params"
+        );
+        assert!(parse("[1, 2].nth(0)").is_ok(), "method call");
     }
 
     #[test]

@@ -11,6 +11,7 @@ use rchain_models::casper::protocol::casper_message::{DeployData, SignedDeployDa
 pub fn unforgeable_name_rng(deployer: &PublicKey, timestamp: i64) -> Blake2b512Random {
     let deploy = SignedDeployData {
         data: DeployData {
+            attachments: Vec::new(),
             term: String::new(),
             timestamp,
             phlo_price: 0,

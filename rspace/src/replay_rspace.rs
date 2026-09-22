@@ -194,7 +194,8 @@ where
         channels: &[C],
         patterns: &[P],
         comms: &[Comm],
-    ) -> std::result::Result<Option<(Comm, Vec<ConsumeCandidate<C, A>>)>, crate::errors::RSpaceError> {
+    ) -> std::result::Result<Option<(Comm, Vec<ConsumeCandidate<C, A>>)>, crate::errors::RSpaceError>
+    {
         for comm in comms {
             if let Some(candidates) = self.run_matcher_consume(channels, patterns, comm).await? {
                 return Ok(Some((comm.clone(), candidates)));
@@ -272,7 +273,8 @@ where
         comms: &[Comm],
         produce_ref: &Produce,
         grouped_channels: &[Vec<C>],
-    ) -> std::result::Result<Option<(Comm, ProduceCandidate<C, P, A, K>)>, crate::errors::RSpaceError> {
+    ) -> std::result::Result<Option<(Comm, ProduceCandidate<C, P, A, K>)>, crate::errors::RSpaceError>
+    {
         for comm in comms {
             if let Some(pc) = self
                 .run_matcher_produce(channel, data, persist, comm, produce_ref, grouped_channels)
@@ -300,7 +302,10 @@ where
         persist: bool,
         peeks: BTreeSet<usize>,
         consume_ref: Consume,
-    ) -> std::result::Result<Option<(ContResult<C, P, K>, Vec<Result<C, A>>)>, crate::errors::RSpaceError> {
+    ) -> std::result::Result<
+        Option<(ContResult<C, P, K>, Vec<Result<C, A>>)>,
+        crate::errors::RSpaceError,
+    > {
         let wk = WaitingContinuation {
             patterns: patterns.to_vec(),
             continuation,
@@ -339,7 +344,10 @@ where
         data: A,
         persist: bool,
         produce_ref: Produce,
-    ) -> std::result::Result<Option<(ContResult<C, P, K>, Vec<Result<C, A>>)>, crate::errors::RSpaceError> {
+    ) -> std::result::Result<
+        Option<(ContResult<C, P, K>, Vec<Result<C, A>>)>,
+        crate::errors::RSpaceError,
+    > {
         let grouped_channels = self.space.current_store().get_joins(&channel).await?;
         if !persist {
             self.space.increment_produce_counter(&produce_ref);
@@ -348,7 +356,11 @@ where
             .comms_for_produce(&produce_ref)
             .cloned();
         match comms {
-            None => self.space.store_data(&channel, data, persist, produce_ref).await,
+            None => {
+                self.space
+                    .store_data(&channel, data, persist, produce_ref)
+                    .await
+            }
             Some(comms) => match self
                 .get_comm_or_produce_candidate(
                     &channel,
@@ -360,7 +372,11 @@ where
                 )
                 .await?
             {
-                None => self.space.store_data(&channel, data, persist, produce_ref).await,
+                None => {
+                    self.space
+                        .store_data(&channel, data, persist, produce_ref)
+                        .await
+                }
                 Some((_comm, pc)) => self.handle_match(pc, &comms).await,
             },
         }
@@ -370,7 +386,10 @@ where
         &self,
         pc: ProduceCandidate<C, P, A, K>,
         comms: &[Comm],
-    ) -> std::result::Result<Option<(ContResult<C, P, K>, Vec<Result<C, A>>)>, crate::errors::RSpaceError> {
+    ) -> std::result::Result<
+        Option<(ContResult<C, P, K>, Vec<Result<C, A>>)>,
+        crate::errors::RSpaceError,
+    > {
         let ProduceCandidate {
             channels,
             continuation: wk,
@@ -417,7 +436,10 @@ where
         continuation: K,
         persist: bool,
         peeks: BTreeSet<usize>,
-    ) -> std::result::Result<Option<(ContResult<C, P, K>, Vec<Result<C, A>>)>, crate::errors::RSpaceError> {
+    ) -> std::result::Result<
+        Option<(ContResult<C, P, K>, Vec<Result<C, A>>)>,
+        crate::errors::RSpaceError,
+    > {
         assert!(!channels.is_empty(), "channels can't be empty");
         assert_eq!(
             channels.len(),
@@ -426,7 +448,14 @@ where
         );
         let consume_ref = Consume::apply(channels, patterns, &continuation, persist);
         let hashes: Vec<Blake2b256Hash> = channels.iter().map(hash_channel).collect();
-        let thunk = self.locked_consume(channels, patterns, continuation, persist, peeks, consume_ref);
+        let thunk = self.locked_consume(
+            channels,
+            patterns,
+            continuation,
+            persist,
+            peeks,
+            consume_ref,
+        );
         self.lock_f
             .acquire(&hashes, Box::pin(async { Ok(hashes.clone()) }), thunk)
             .await?
@@ -437,7 +466,10 @@ where
         channel: C,
         data: A,
         persist: bool,
-    ) -> std::result::Result<Option<(ContResult<C, P, K>, Vec<Result<C, A>>)>, crate::errors::RSpaceError> {
+    ) -> std::result::Result<
+        Option<(ContResult<C, P, K>, Vec<Result<C, A>>)>,
+        crate::errors::RSpaceError,
+    > {
         let produce_ref = Produce::apply(&channel, &data, persist);
         let thunk = self.locked_produce(channel.clone(), data, persist, produce_ref);
         let phase_two = {
@@ -475,7 +507,9 @@ where
     A: Clone + Serialize<A> + Send + Sync + 'static,
     K: Clone + Serialize<K> + Send + Sync + 'static,
 {
-    async fn create_checkpoint(&self) -> std::result::Result<crate::checkpoint::Checkpoint, String> {
+    async fn create_checkpoint(
+        &self,
+    ) -> std::result::Result<crate::checkpoint::Checkpoint, String> {
         self.check_replay_data().await.map_err(|e| e.to_string())?;
         self.space.create_checkpoint().await
     }
@@ -484,7 +518,10 @@ where
         self.space.reset(root).await
     }
 
-    async fn get_data(&self, channel: &C) -> std::result::Result<Vec<Datum<A>>, crate::errors::RSpaceError> {
+    async fn get_data(
+        &self,
+        channel: &C,
+    ) -> std::result::Result<Vec<Datum<A>>, crate::errors::RSpaceError> {
         self.space.get_data(channel).await
     }
 
@@ -495,7 +532,10 @@ where
         self.space.get_waiting_continuations(channels).await
     }
 
-    async fn get_joins(&self, channel: &C) -> std::result::Result<Vec<Vec<C>>, crate::errors::RSpaceError> {
+    async fn get_joins(
+        &self,
+        channel: &C,
+    ) -> std::result::Result<Vec<Vec<C>>, crate::errors::RSpaceError> {
         self.space.get_joins(channel).await
     }
 
@@ -528,7 +568,11 @@ where
         *crate::lock::wlock(&self.replay_data) = Self::build_replay_data(&log);
     }
 
-    async fn rig_and_reset(&self, start_root: Blake2b256Hash, log: Log) -> std::result::Result<(), String> {
+    async fn rig_and_reset(
+        &self,
+        start_root: Blake2b256Hash,
+        log: Log,
+    ) -> std::result::Result<(), String> {
         self.rig(log).await;
         self.reset(start_root).await
     }
@@ -543,5 +587,114 @@ where
                 data.len()
             )))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+
+    use rchain_shared::store_manager::InMemoryStoreManager;
+
+    use crate::factory::create_history_repository;
+    use crate::hot_store::InMemHotStore;
+    use crate::i_replay_space::IReplaySpace;
+    use crate::i_space::ISpace;
+    use crate::match_::Match;
+    use crate::tuple_space::Tuplespace;
+
+    /// A trivial matcher: any pattern matches any datum, which is enough to produce events.
+    struct StrMatch;
+    impl Match<String, String> for StrMatch {
+        fn get(&self, _p: &String, a: &String) -> Option<String> {
+            Some(a.clone())
+        }
+    }
+
+    async fn play_and_replay() -> (
+        Arc<RSpace<String, String, String, String>>,
+        ReplayRSpace<String, String, String, String>,
+    ) {
+        let manager = InMemoryStoreManager::default();
+        let history = create_history_repository::<String, String, String, String>(
+            &manager,
+            "replay-internals-test",
+        )
+        .await
+        .expect("history repository");
+        let reader = history.get_history_reader(history.root()).await;
+        let hot = Arc::new(InMemHotStore::new(reader.base()));
+        RSpace::create_with_replay(history, hot, Arc::new(StrMatch))
+    }
+
+    /// The rig/check pair at its own level: a replay space rigged with the play space's recorded
+    /// trace re-runs the same op and the check passes. `check_replay_data` is what `replay_compute_state`
+    /// calls per deploy, so a break here surfaces as a replay failure on every block.
+    #[tokio::test]
+    async fn a_rigged_replay_matches_its_recorded_trace() {
+        let (play, replay) = play_and_replay().await;
+
+        play.produce("c".to_string(), "data".to_string(), false)
+            .await
+            .expect("play produce");
+        let recorded = play.create_soft_checkpoint().await.log;
+        let root = play.create_checkpoint().await.expect("checkpoint").root;
+
+        replay.rig_and_reset(root, recorded).await.expect("rig");
+        replay
+            .produce("c".to_string(), "data".to_string(), false)
+            .await
+            .expect("replay produce");
+        assert!(
+            replay.check_replay_data().await.is_ok(),
+            "a replay rigged with its own trace must check clean"
+        );
+    }
+
+    /// **The negative half, in the direction the check actually works.** `check_replay_data`
+    /// reports rigged **COMM** events that the replay never produced (`unused_comm_event`), not
+    /// missing ones — so the failing shape is a rig that *expects* a match the replay does not make.
+    ///
+    /// This is worth being precise about: a test written the other way round (rig empty, replay
+    /// produces something) passes, and would have given false confidence that the check catches
+    /// divergence.
+    #[tokio::test]
+    async fn a_rig_whose_comm_never_happens_is_reported() {
+        let (play, replay) = play_and_replay().await;
+
+        // Record a *match*: a waiting consume, then a produce that joins with it. Together they are
+        // one COMM event in the play space's trace.
+        play.consume(
+            &["c".to_string()],
+            &["p".to_string()],
+            "k".to_string(),
+            false,
+            BTreeSet::new(),
+        )
+        .await
+        .expect("play consume");
+        play.produce("c".to_string(), "data".to_string(), false)
+            .await
+            .expect("play produce");
+        let recorded = play.create_soft_checkpoint().await.log;
+        let root = play.create_checkpoint().await.expect("checkpoint").root;
+        assert!(
+            !recorded.is_empty(),
+            "the recorded trace must contain the COMM for this test to mean anything"
+        );
+
+        // Rig the replay with that trace but replay only the *produce*: the produce finds no waiting
+        // consume, so the COMM the rig expects never happens.
+        replay.rig_and_reset(root, recorded).await.expect("rig");
+        replay
+            .produce("c".to_string(), "data".to_string(), false)
+            .await
+            .expect("replay produce");
+
+        assert!(
+            replay.check_replay_data().await.is_err(),
+            "a rigged COMM that the replay never produced must be reported"
+        );
     }
 }

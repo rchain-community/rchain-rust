@@ -75,12 +75,13 @@ pub async fn deploy(
     let normalizer_env = NormalizerEnv::new(deploy);
     rchain_rholang::normalizer::source_to_adt_with_env(&deploy.data.term, normalizer_env.to_env())
         .map_err(|e| parsing_error(format!("Error in parsing term: \n{e}")))?;
-    add_deploy(dag, deploy)
-        .await
-        .map_err(parsing_error)
+    add_deploy(dag, deploy).await.map_err(parsing_error)
 }
 
-async fn get_block_unsafe(block_store: &BlockStore, hash: &BlockHash) -> Result<BlockMessage, String> {
+async fn get_block_unsafe(
+    block_store: &BlockStore,
+    hash: &BlockHash,
+) -> Result<BlockMessage, String> {
     let mut vals = block_store.get(&[*hash]).await?;
     vals.pop()
         .flatten()
@@ -172,11 +173,12 @@ where
             let (m_scope, base_opt) =
                 MergeScope::from_dag(fringe, &prev_fringe_hashes, &dag_repr.child_map, msg_map)?;
             let base_state = match base_opt {
-                Some(h) => {
-                    Blake2b256Hash::from_byte_array(
-                        get_block_unsafe(block_store, &h).await?.post_state_hash.as_bytes(),
-                    )
-                }
+                Some(h) => Blake2b256Hash::from_byte_array(
+                    get_block_unsafe(block_store, &h)
+                        .await?
+                        .post_state_hash
+                        .as_bytes(),
+                ),
                 None => prev_fringe_state,
             };
             let result = MergeScope::merge(
@@ -200,8 +202,10 @@ where
         .map(|m| i64::from(m.block_num))
         .max()
         .unwrap_or(-1);
-    let max_seq_nums: BTreeMap<Validator, i64> =
-        justifications.iter().map(|m| (m.sender, i64::from(m.seq_num))).collect();
+    let max_seq_nums: BTreeMap<Validator, i64> = justifications
+        .iter()
+        .map(|m| (m.sender, i64::from(m.seq_num)))
+        .collect();
     let new_fringe = new_fringe_hashes.unwrap_or(prev_fringe_hashes);
 
     // Merge the conflict scope (non-finalized blocks above the fringe).
@@ -219,11 +223,12 @@ where
         let (m_scope, base_opt) =
             MergeScope::from_dag(parent_hashes, &new_fringe, &dag_repr.child_map, msg_map)?;
         let base_state = match base_opt {
-            Some(h) => {
-                Blake2b256Hash::from_byte_array(
-                    get_block_unsafe(block_store, &h).await?.post_state_hash.as_bytes(),
-                )
-            }
+            Some(h) => Blake2b256Hash::from_byte_array(
+                get_block_unsafe(block_store, &h)
+                    .await?
+                    .post_state_hash
+                    .as_bytes(),
+            ),
             None => fringe_state,
         };
         MergeScope::merge(
@@ -307,7 +312,11 @@ where
                 status,
             ))
         }
-        Err(e) => return Err(ValidateError::Internal(format!("block summary failed: {e}"))),
+        Err(e) => {
+            return Err(ValidateError::Internal(format!(
+                "block summary failed: {e}"
+            )))
+        }
     }
 
     // Replay validation.
@@ -352,7 +361,11 @@ where
                 status,
             ))
         }
-        Err(e) => return Err(ValidateError::Internal(format!("neglectedInvalidBlock failed: {e}"))),
+        Err(e) => {
+            return Err(ValidateError::Internal(format!(
+                "neglectedInvalidBlock failed: {e}"
+            )))
+        }
     }
 
     // Build/cache the block index.
@@ -366,5 +379,80 @@ fn mark_failed(meta: &BlockMetadata) -> BlockMetadata {
         validated: true,
         validation_failed: true,
         ..meta.clone()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The deploy lifespan is a **consensus-visible parameter**: it decides which deploys a block may
+    /// still include, so two nodes disagreeing on it disagree about validity. Pinned as a value, not
+    /// merely as a constant, because a silent change here is a chain split rather than a tuning
+    /// choice.
+    #[test]
+    fn the_deploy_lifespan_is_pinned() {
+        assert_eq!(DEPLOY_LIFESPAN, 50);
+    }
+
+    /// A parsing error keeps the details it was built from — the only thing that makes a malformed
+    /// block or deploy debuggable once the raw bytes are gone.
+    #[test]
+    fn a_parsing_error_carries_its_details() {
+        let err = parsing_error("bad justification list");
+        assert!(
+            err.0.contains("bad justification list"),
+            "the details must survive: {:?}",
+            err.0
+        );
+        assert!(
+            err.0.starts_with("Parsing error:"),
+            "and be labelled as a parsing failure: {:?}",
+            err.0
+        );
+    }
+
+    /// `ValidateError` distinguishes the two outcomes a validator can have, and the distinction is
+    /// load-bearing: a block that **fails validation is still a block** (its metadata and status are
+    /// returned so the DAG can record it), whereas an internal error has no block outcome at all. A
+    /// refactor that collapsed the two would make a store failure look like an invalid block.
+    #[test]
+    fn validate_error_separates_an_invalid_block_from_an_internal_failure() {
+        let status = BlockStatus::InvalidStateHash;
+        let metadata = BlockMetadata {
+            block_hash: BlockHash::new([0u8; 32]),
+            block_num: rchain_shared::refined::BlockHeight::try_from(1).expect("height"),
+            sender: rchain_models::validator::Validator::from_slice(&[0u8; 65]),
+            seq_num: rchain_shared::refined::SeqNum::zero(),
+            justifications: std::collections::BTreeSet::new(),
+            bonds_map: std::collections::BTreeMap::new(),
+            validated: false,
+            validation_failed: true,
+            member_of_fringe: None,
+            fringe: std::collections::BTreeSet::new(),
+            fringe_state_hash: rchain_crypto::hash::blake2b256_hash::Blake2b256Hash::from_bytes(
+                [0u8; 32],
+            )
+            .into(),
+        };
+
+        let invalid = ValidateError::ValidationFailed(metadata.clone(), status);
+        match invalid {
+            ValidateError::ValidationFailed(returned, returned_status) => {
+                assert_eq!(returned.block_hash, metadata.block_hash);
+                assert_eq!(returned_status, status);
+                assert!(
+                    returned.validation_failed,
+                    "an invalid block is still returned, marked failed"
+                );
+            }
+            ValidateError::Internal(_) => panic!("a validation failure must not read as internal"),
+        }
+
+        let internal = ValidateError::Internal("store unavailable".to_string());
+        assert!(
+            matches!(internal, ValidateError::Internal(message) if message.contains("store")),
+            "an internal error carries its cause and no block outcome"
+        );
     }
 }

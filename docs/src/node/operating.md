@@ -5,6 +5,47 @@ scripted **Docker multi-node network**. This page is the operation guide for bot
 
 ---
 
+## Shard memberships
+
+A node validates one shard by default (`casper.shard-name = root` under `casper.parent-shard-id = /`,
+giving the full id `/root`). A **gateway** node validates several — it produces and validates each
+independently, routes every request to the shard that owns it, and can coordinate a cross-shard
+transaction across its own shards ([cross-shard transactions](../formal/cross-shard-transactions.md)).
+
+```hocon
+casper {
+  # One entry per membership; the FIRST is the primary shard (the default target for requests that
+  # do not name a shard). Each entry may override `genesis-block-data` field by field.
+  shards = [
+    { shard-name = root, parent-shard-id = / }
+    { shard-name = child, parent-shard-id = /root,
+      genesis-block-data { wallets-file = /var/lib/rnode/genesis-child/wallets.txt } }
+  ]
+}
+```
+
+Notes for operators:
+
+- **File-configured.** The command line cannot address array entries, so per-shard genesis data
+  (bonds and wallets) is expressed in `rnode.conf`; `--shard-name`/`--parent-shard-id` still work and
+  define the one-element default. Setting both the array and those scalar keys is an error.
+- **Storage.** The primary membership keeps the data directory itself; each additional shard nests
+  under `<data-dir>/shard/<shard-id segments>/`. A directory records the shard that owns it
+  (`shard-id`), and a mismatch is a startup error rather than a node silently running the wrong
+  chain — so keep a shard's position in the list stable.
+- **Sync.** LFS sync is not shard-aware, so a multi-shard node must reach its shards from their own
+  genesis (genesis master / `--standalone`) or from existing local state.
+- **Cross-shard transactions.** Set `api-server.enable-txn-api = true` on a gateway to serve
+  `POST /api/v1/txn` (plus `GET /api/v1/txn` and `/api/v1/txn/{txnId}`). A single-shard node, or one
+  without a validator key, answers 404. The legs are ordinary deploys, so they take effect when a
+  block includes them — enable `--propose-on-deploy` or `--autopropose`, or the transaction will
+  time out waiting.
+- `GET /api/v1/shards` lists the memberships, primary first, each with its own chain height. The
+  membership is deliberately *not* folded into `/api/status`, whose `shardId` field existing tooling
+  parses on its own.
+
+---
+
 ## The REPL
 
 `rnode repl` is a thin gRPC client: the interactive loop runs on your machine and forwards each line
@@ -35,8 +76,22 @@ not set up for you:
    ```
 
    Without it the node exits with `To create genesis block node must provide validator private key`.
-   (`--validator-private-key-path` accepts a PEM file, but the Rust runtime currently reads only the
-   hex form.)
+
+   Prefer `--validator-private-key-path`, which reads the key from a file. The file may hold either a
+   64-character base16 scalar (surrounding whitespace ignored) or an unencrypted PKCS#8 `PRIVATE KEY`
+   PEM, as produced by `openssl ecparam -name secp256k1 -genkey`:
+
+   ```sh
+   install -m 600 /dev/stdin /etc/rnode/validator.hex <<< "$KEY"
+   rnode run -s --validator-private-key-path /etc/rnode/validator.hex
+   ```
+
+   The distinction matters: the hex flag puts the secret in the process argument list, where any local
+   process can read it from `ps` or `/proc/<pid>/cmdline`, whereas only the path is exposed. If both are
+   given the hex flag wins and the path is not read. A path that is set but unreadable, or that holds no
+   secp256k1 key, is a startup error rather than a silent fallback — otherwise the node would run with
+   no validator identity and never propose. *Encrypted* PEMs are not accepted here (they need a
+   passphrase; `Secp256k1.parse_pem_file` covers that shape).
 
 2. **A wallets file.** The genesis ceremony parses `~/.rnode/genesis/wallets.txt` *strictly*, so the
    file must exist — an empty file is fine. `bonds.txt` is auto-generated when absent, but to be

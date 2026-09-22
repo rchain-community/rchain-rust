@@ -214,8 +214,8 @@ fn read_datum<A>(r: &mut BitReader) -> Result<Datum<A>, RSpaceError>
 where
     A: Serialize<A>,
 {
-    let a = <A as Serialize<A>>::decode(&read_size_head(r))
-        .map_err(|_| RSpaceError::Codec("datum"))?;
+    let a =
+        <A as Serialize<A>>::decode(&read_size_head(r)).map_err(|_| RSpaceError::Codec("datum"))?;
     let persist = r.read_bit() != 0;
     let source = read_produce(r);
     Ok(Datum { a, persist, source })
@@ -297,8 +297,10 @@ where
     let mut encoded: Vec<Vec<u8>> = joins
         .iter()
         .map(|join| {
-            let mut channels: Vec<Vec<u8>> =
-                join.iter().map(|c| <C as Serialize<C>>::encode(c)).collect();
+            let mut channels: Vec<Vec<u8>> = join
+                .iter()
+                .map(|c| <C as Serialize<C>>::encode(c))
+                .collect();
             channels.sort_by(|a, b| crate::util::veccmp(a, b));
             encode_seq_byte_vectors(&channels)
         })
@@ -350,7 +352,9 @@ where
 }
 
 /// Decode a list of continuations (port of `decodeContinuations`).
-pub fn decode_continuations<P, K>(bytes: &[u8]) -> Result<Vec<WaitingContinuation<P, K>>, RSpaceError>
+pub fn decode_continuations<P, K>(
+    bytes: &[u8],
+) -> Result<Vec<WaitingContinuation<P, K>>, RSpaceError>
 where
     P: Serialize<P>,
     K: Serialize<K>,
@@ -371,9 +375,7 @@ where
         .map(|join_bytes| {
             decode_seq_byte_vectors(&join_bytes)
                 .into_iter()
-                .map(|c| {
-                    <C as Serialize<C>>::decode(&c).map_err(|_| RSpaceError::Codec("channel"))
-                })
+                .map(|c| <C as Serialize<C>>::decode(&c).map_err(|_| RSpaceError::Codec("channel")))
                 .collect::<Result<Vec<C>, RSpaceError>>()
         })
         .collect()
@@ -488,20 +490,67 @@ mod differential {
         }
     }
 
-    fn load(case: &str) -> String {
+    /// Rows are `id<TAB>value<TAB>provenance`; `#` lines are the legend.
+    fn rows() -> Vec<(String, String, String)> {
         let path = concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/testdata/differential/scodec.tsv"
         );
-        let data = std::fs::read_to_string(path).unwrap();
-        for line in data.lines() {
-            if let Some((id, hex)) = line.split_once('\t') {
-                if id == case {
-                    return hex.to_string();
-                }
-            }
+        std::fs::read_to_string(path)
+            .expect("the golden file")
+            .lines()
+            .filter(|l| !l.trim().is_empty() && !l.starts_with('#'))
+            .map(|l| {
+                let mut f = l.split('\t');
+                (
+                    f.next().unwrap_or_default().to_string(),
+                    f.next().unwrap_or_default().to_string(),
+                    f.next().unwrap_or_default().to_string(),
+                )
+            })
+            .collect()
+    }
+
+    fn load(case: &str) -> String {
+        rows()
+            .into_iter()
+            .find(|(id, _, _)| id == case)
+            .unwrap_or_else(|| panic!("missing differential case: {case}"))
+            .1
+    }
+
+    /// **Golden-drift guard**: each row is asserted on by a test above, and each carries its
+    /// provenance.
+    #[test]
+    fn every_golden_row_is_consumed() {
+        const CONSUMED: &[&str] = &[
+            "size_head_0102",
+            "size_head_empty",
+            "bool8_true",
+            "bool8_false",
+            "seq_bv_2",
+            "seq_bv_0",
+            "datums_binary_unsorted",
+            "cont_binary_unsorted",
+            "joins_binary_unsorted",
+            "joins_nested",
+            "datum_1",
+            "datum_2",
+            "cont_1",
+            "cont_2",
+        ];
+        let rows = rows();
+        assert_eq!(rows.len(), CONSUMED.len(), "row count");
+        for case in CONSUMED {
+            assert!(
+                rows.iter().any(|(id, _, _)| id == case),
+                "{case} is missing"
+            );
+            assert!(!load(case).is_empty(), "{case} has an empty value");
         }
-        panic!("missing differential case: {case}");
+        for (id, _, provenance) in rows {
+            assert_eq!(provenance, "scala-ground-truth", "{id} lost its provenance");
+        }
     }
 
     fn hex(bytes: &[u8]) -> String {

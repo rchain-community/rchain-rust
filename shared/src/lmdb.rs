@@ -10,7 +10,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use lmdb::{Cursor, Database, DatabaseFlags, Environment, Error as LmdbError, Transaction, WriteFlags};
+use lmdb::{
+    Cursor, Database, DatabaseFlags, Environment, Error as LmdbError, Transaction, WriteFlags,
+};
 
 use crate::store::KeyValueStore;
 use crate::store_manager::{Db, KeyValueStoreManager, LmdbEnvConfig};
@@ -118,9 +120,7 @@ impl LmdbStoreManager {
         builder.set_max_dbs(20);
         builder.set_max_readers(2048);
         let env = builder.open(dir_path).map_err(|e| e.to_string())?;
-        Ok(LmdbStoreManager {
-            env: Arc::new(env),
-        })
+        Ok(LmdbStoreManager { env: Arc::new(env) })
     }
 
     /// Open (creating if absent) a named database and return the raw synchronous store (mirror of
@@ -142,9 +142,10 @@ impl KeyValueStoreManager for LmdbStoreManager {
             .env
             .create_db(Some(name), DatabaseFlags::empty())
             .map_err(|e| e.to_string())?;
-        Ok(Arc::new(tokio::sync::Mutex::new(Box::new(
-            LmdbKeyValueStore::new(self.env.clone(), db),
-        ) as Box<dyn KeyValueStore + Send + Sync>)))
+        Ok(Arc::new(tokio::sync::Mutex::new(
+            Box::new(LmdbKeyValueStore::new(self.env.clone(), db))
+                as Box<dyn KeyValueStore + Send + Sync>,
+        )))
     }
 
     async fn shutdown(&self) {
@@ -198,8 +199,7 @@ impl LmdbDirStoreManager {
             let mut managers = self.managers.lock().await;
             if !managers.contains_key(&cfg.name) {
                 let dir = self.dir_path.join(&cfg.name);
-                let max_env_size =
-                    usize::try_from(cfg.max_env_size).map_err(|e| e.to_string())?;
+                let max_env_size = usize::try_from(cfg.max_env_size).map_err(|e| e.to_string())?;
                 let created = LmdbStoreManager::new(&dir, max_env_size)
                     .map_err(|e| format!("open LMDB environment {}: {e}", cfg.name))?;
                 managers.insert(cfg.name.clone(), Arc::new(created));
@@ -228,8 +228,7 @@ impl KeyValueStoreManager for LmdbDirStoreManager {
             let mut managers = self.managers.lock().await;
             if !managers.contains_key(&cfg.name) {
                 let dir = self.dir_path.join(&cfg.name);
-                let max_env_size =
-                    usize::try_from(cfg.max_env_size).map_err(|e| e.to_string())?;
+                let max_env_size = usize::try_from(cfg.max_env_size).map_err(|e| e.to_string())?;
                 let created = LmdbStoreManager::new(&dir, max_env_size)
                     .map_err(|e| format!("open LMDB environment {}: {e}", cfg.name))?;
                 managers.insert(cfg.name.clone(), Arc::new(created));
@@ -283,7 +282,10 @@ mod tests {
         }
         {
             let kv = store.lock().await;
-            assert_eq!(kv.get(&[b"k1".to_vec()]).unwrap(), vec![Some(b"v1".to_vec())]);
+            assert_eq!(
+                kv.get(&[b"k1".to_vec()]).unwrap(),
+                vec![Some(b"v1".to_vec())]
+            );
             assert_eq!(kv.get(&[b"missing".to_vec()]).unwrap(), vec![None]);
             assert_eq!(kv.entries().unwrap().len(), 2);
         }
@@ -327,11 +329,17 @@ mod tests {
         }
         {
             let kv = store_a.lock().await;
-            assert_eq!(kv.get(&[b"k".to_vec()]).unwrap(), vec![Some(b"va".to_vec())]);
+            assert_eq!(
+                kv.get(&[b"k".to_vec()]).unwrap(),
+                vec![Some(b"va".to_vec())]
+            );
         }
         {
             let kv = store_b.lock().await;
-            assert_eq!(kv.get(&[b"k".to_vec()]).unwrap(), vec![Some(b"vb".to_vec())]);
+            assert_eq!(
+                kv.get(&[b"k".to_vec()]).unwrap(),
+                vec![Some(b"vb".to_vec())]
+            );
         }
 
         // The name override is used as the database name.
@@ -342,7 +350,10 @@ mod tests {
         }
         {
             let kv = store_c.lock().await;
-            assert_eq!(kv.get(&[b"k".to_vec()]).unwrap(), vec![Some(b"vc".to_vec())]);
+            assert_eq!(
+                kv.get(&[b"k".to_vec()]).unwrap(),
+                vec![Some(b"vc".to_vec())]
+            );
         }
 
         manager.shutdown().await;

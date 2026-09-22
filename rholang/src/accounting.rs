@@ -184,6 +184,31 @@ impl Costs {
     pub fn take_cost(to: i64) -> Cost {
         Cost::new(to, "take")
     }
+    /// Cost of a string transform that walks the input once (`toLowerCase`, `toUpperCase`,
+    /// `capitalize`, `reverse`, `trim`).
+    pub fn string_transform_cost(len: i64, what: &str) -> Cost {
+        Cost::new(len, what)
+    }
+    /// Cost of a substring search (`indexOf`, `contains`, `startsWith`, `endsWith`).
+    pub fn string_search_cost(haystack: i64, needle: i64, what: &str) -> Cost {
+        Cost::new(haystack.saturating_add(needle), what)
+    }
+    /// Cost of `replace` (walk the input, build the output).
+    pub fn string_replace_cost(input: i64, old: i64, new: i64) -> Cost {
+        Cost::new(input.saturating_add(old).saturating_add(new), "replace")
+    }
+    /// Cost of `split` (walk the input and the separator).
+    pub fn string_split_cost(input: i64, sep: i64) -> Cost {
+        Cost::new(input.saturating_add(sep), "split")
+    }
+    /// Cost of `format` (walk the format string once per argument).
+    pub fn string_format_cost(format_len: i64, args: i64) -> Cost {
+        Cost::new(format_len.saturating_mul(args.max(1)), "format")
+    }
+    /// Cost of converting a value to its string form (the inverse of `toInt`/`toBigInt`).
+    pub fn to_string_cost(len: i64) -> Cost {
+        Cost::new(len, "toString")
+    }
     pub fn to_list_cost(size: i64) -> Cost {
         Cost::new(size, "toList")
     }
@@ -225,7 +250,10 @@ impl Costs {
     }
     pub fn new_bindings_cost(n: i64) -> Cost {
         Cost::new(
-            Self::new_binding_cost().mul(n).add(&Self::new_eval_cost()).value,
+            Self::new_binding_cost()
+                .mul(n)
+                .add(&Self::new_eval_cost())
+                .value,
             format!("{n} new bindings"),
         )
     }
@@ -255,7 +283,10 @@ impl Costs {
     /// Storage cost: the sum of the serialized sizes (port of `storageCost`).
     pub fn storage_cost<T: Serialize<T>>(terms: &[T]) -> Cost {
         Cost::new(
-            terms.iter().map(|a| <T as Serialize<T>>::encode(a).len() as i64).sum(),
+            terms
+                .iter()
+                .map(|a| <T as Serialize<T>>::encode(a).len() as i64)
+                .sum(),
             "storage cost",
         )
     }
@@ -378,16 +409,18 @@ impl CostAccounting {
     /// effect on the balance).
     pub fn charge(&self, amount: Cost) -> Result<(), RholangError> {
         let amount_value = amount.value;
-        match self.value.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |current| {
-            if current < 0 {
-                // Already exhausted: abort without changing the balance or logging.
-                None
-            } else {
-                // Clamp at 0 rather than leaving the cost cell negative on exhaustion (the error is
-                // still raised by the caller below).
-                Some((current - amount_value).max(0))
-            }
-        }) {
+        match self
+            .value
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |current| {
+                if current < 0 {
+                    // Already exhausted: abort without changing the balance or logging.
+                    None
+                } else {
+                    // Clamp at 0 rather than leaving the cost cell negative on exhaustion (the error is
+                    // still raised by the caller below).
+                    Some((current - amount_value).max(0))
+                }
+            }) {
             Ok(prev) => {
                 self.total.fetch_add(amount_value, Ordering::SeqCst);
                 if prev - amount_value < 0 {
@@ -450,13 +483,12 @@ mod tests {
     #[test]
     fn size_proportional_costs_match_serialized_size() {
         let par = rchain_models::par_ops::from_expr(rchain_models::ast::Expr::GInt(42));
-        let encoded =
-            <rchain_models::ast::Par as Serialize<rchain_models::ast::Par>>::encode(&par);
+        let encoded = <rchain_models::ast::Par as Serialize<rchain_models::ast::Par>>::encode(&par);
         let len = encoded.len() as i64;
 
         assert_eq!(Costs::to_byte_array_cost(&par).value, len);
         assert_eq!(Costs::to_byte_array_cost(&par).operation, "to byte array");
-        assert_eq!(Costs::storage_cost(&[par.clone()]).value, len);
+        assert_eq!(Costs::storage_cost(std::slice::from_ref(&par)).value, len);
         assert_eq!(Costs::equality_check_cost(&par, &par).value, len);
     }
 }

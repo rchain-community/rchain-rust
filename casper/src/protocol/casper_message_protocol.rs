@@ -77,7 +77,9 @@ mod tests {
     #[test]
     fn block_request_serde_round_trips() {
         let serde = BlockRequestSerde;
-        let req = BlockRequest { hash: vec![1, 2, 3] };
+        let req = BlockRequest {
+            hash: vec![1, 2, 3],
+        };
         let bytes = serde.content(&req);
         assert_eq!(serde.parse(&bytes).unwrap(), req);
     }

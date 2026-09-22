@@ -12,15 +12,17 @@ use rchain_models::casper::protocol::casper_message::{
     BlockMessage, ProcessedDeploy, RholangState, SignedDeployData,
 };
 use rchain_models::validator::Validator as ModelsValidator;
+use rchain_rholang::native_state::{PosGenesis, PosParams};
 use rchain_rholang::system_processes::BlockData;
+use rchain_shared::base16;
 use rchain_shared::refined::NonNegI64;
 
 use crate::block_random_seed::BlockRandomSeed;
 use crate::genesis::contracts::{ProofOfStake, Registry, Vault};
 use crate::proto_util::unsigned_block_proto;
-use rchain_shared::refined::{BlockHeight, SeqNum};
 use crate::runtime_manager::RuntimeManager;
 use crate::validator_identity::ValidatorIdentity;
+use rchain_shared::refined::{BlockHeight, SeqNum};
 
 /// Genesis parameters (port of `Genesis`).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -42,10 +44,68 @@ fn build_bonds_map(proof_of_stake: &ProofOfStake) -> BTreeMap<ModelsValidator, N
         .collect()
 }
 
+/// Decode a base16 validator public key (used for the config's `pos-multi-sig-public-keys`).
+fn parse_validator_hex(key: &str) -> Option<ModelsValidator> {
+    let bytes = base16::decode(key)?;
+    ModelsValidator::try_from(bytes.as_slice()).ok()
+}
+
+/// Build the genesis PoS descriptors: the bond pool, the trusted stakeholder set (the genesis
+/// validators plus any configured `pos-multi-sig-public-keys`), and the network parameters.
+pub fn build_pos_genesis(proof_of_stake: &ProofOfStake) -> PosGenesis {
+    let bonds = build_bonds_map(proof_of_stake);
+    let mut trusted: BTreeSet<ModelsValidator> = bonds.keys().copied().collect();
+    for key in &proof_of_stake.pos_multi_sig_public_keys {
+        if let Some(validator) = parse_validator_hex(key) {
+            trusted.insert(validator);
+        }
+    }
+    PosGenesis {
+        bonds,
+        trusted,
+        params: PosParams {
+            minimum_bond: proof_of_stake.minimum_bond,
+            maximum_bond: proof_of_stake.maximum_bond,
+            epoch_length: i64::from(proof_of_stake.epoch_length),
+            quarantine_length: i64::from(proof_of_stake.quarantine_length),
+            number_of_active_validators: i64::from(proof_of_stake.number_of_active_validators),
+        },
+    }
+}
+
+/// Build the genesis PoS descriptors for one shard from its spec (the same pool/trusted/params that
+/// shard's genesis ceremony installs). Used to seed `RuntimeManager` so a genesis-block replay
+/// reconstructs the native genesis state. Call only on a genesis-ceremony (standalone) node: it may
+/// create the bonds file via `parse_or_generate`.
+pub fn pos_genesis_from_config(spec: &crate::conf::ShardSpec) -> Result<PosGenesis, String> {
+    let gbd = &spec.genesis_block_data;
+    let bonds = crate::bonds_parser::parse_or_generate(
+        std::path::Path::new(&gbd.bonds_file),
+        spec.autogen_shard_size,
+    )?;
+    let validators: Vec<contracts::Validator> = bonds
+        .into_iter()
+        .map(|(pk, stake)| contracts::Validator { pk, stake })
+        .collect();
+    let proof_of_stake = ProofOfStake {
+        minimum_bond: gbd.bond_minimum,
+        maximum_bond: gbd.bond_maximum,
+        validators,
+        epoch_length: gbd.epoch_length,
+        quarantine_length: gbd.quarantine_length,
+        number_of_active_validators: gbd.number_of_active_validators,
+        pos_multi_sig_public_keys: gbd.pos_multi_sig_public_keys.clone(),
+        pos_multi_sig_quorum: gbd.pos_multi_sig_quorum,
+        pos_vault_pub_key: gbd.pos_vault_pub_key.clone(),
+    };
+    Ok(build_pos_genesis(&proof_of_stake))
+}
+
 /// Build the unsigned genesis block from processed deploys (port of
-/// `createBlockWithProcessedDeploys`).
+/// `createBlockWithProcessedDeploys`). `bonds` is the *active* validator set.
 fn create_block_with_processed_deploys(
     genesis: &Genesis,
+    bonds: BTreeMap<ModelsValidator, NonNegI64>,
     pre_state_hash: StateHash,
     post_state_hash: StateHash,
     processed_deploys: Vec<ProcessedDeploy>,
@@ -69,9 +129,11 @@ fn create_block_with_processed_deploys(
         pre_state_hash,
         post_state_hash,
         Vec::new(),
-        build_bonds_map(&genesis.proof_of_stake),
+        bonds,
         BTreeSet::new(),
         state,
+        // Genesis carries a fixed timestamp (0) so every node agrees; informational only.
+        0,
     ))
 }
 
@@ -105,11 +167,19 @@ pub async fn create_genesis_block(
         block_number: BlockHeight::try_from(genesis.block_number).map_err(|e| e.to_string())?,
         sender: genesis.sender.clone(),
         seq_num: SeqNum::zero(),
+        // Genesis carries a fixed timestamp (0) so every node agrees; informational only.
+        timestamp: 0,
     };
     let rand = BlockRandomSeed::random_generator_from_shard_id(&genesis.shard_id);
-    let bonds = build_bonds_map(&genesis.proof_of_stake);
+    let pos_genesis = build_pos_genesis(&genesis.proof_of_stake);
     let (start_hash, state_hash, processed_results) = runtime
-        .compute_genesis(&blessed_terms, &rand, block_data, &bonds, &genesis.vaults)
+        .compute_genesis(
+            &blessed_terms,
+            &rand,
+            block_data,
+            &pos_genesis,
+            &genesis.vaults,
+        )
         .await?;
     // Surface deploy evaluation errors (the Scala `require` only checks the `isFailed` flag; the
     // underlying errors are otherwise lost, making genesis failures opaque).
@@ -126,11 +196,14 @@ pub async fn create_genesis_block(
 
     let unsigned_block = create_block_with_processed_deploys(
         genesis,
+        pos_genesis.active_bonds(),
         start_hash.into(),
         state_hash.into(),
         processed_deploys,
     )?;
-    let signed_block = validator.sign_block(&unsigned_block).map_err(|e| e.to_string())?;
+    let signed_block = validator
+        .sign_block(&unsigned_block)
+        .map_err(|e| e.to_string())?;
 
     // Signing must not change the block hash.
     if unsigned_block.block_hash != signed_block.block_hash {

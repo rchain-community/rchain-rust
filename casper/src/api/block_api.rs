@@ -5,7 +5,6 @@ use async_trait::async_trait;
 
 use rchain_block_storage::dag::dag_storage::DeployId;
 use rchain_models::ast::Par;
-use rchain_shared::refined::NonNegI64;
 use rchain_models::block_metadata::BlockMetadata;
 use rchain_models::casper::protocol::casper_message::{BlockMessage, SignedDeployData};
 use rchain_models::casper::protocol::deploy_service::{
@@ -14,6 +13,7 @@ use rchain_models::casper::protocol::deploy_service::{
 };
 use rchain_models::validator::Validator;
 use rchain_shared::base16;
+use rchain_shared::refined::NonNegI64;
 use serde::{Deserialize, Serialize};
 
 /// A block-api error (the Scala `BlockApi.Error = String`).
@@ -174,6 +174,7 @@ fn construct_light_block_info(block: &BlockMessage) -> LightBlockInfo {
             .iter()
             .map(|d| base16::encode(d))
             .collect(),
+        timestamp: block.timestamp,
     }
 }
 
@@ -202,6 +203,7 @@ mod tests {
             state: RholangState::default(),
             sig_algorithm: "secp256k1".to_string(),
             sig: vec![0xee],
+            timestamp: 1_700_000_000_000,
         }
     }
 
@@ -214,6 +216,8 @@ mod tests {
         assert_eq!(info.bonds.len(), 1);
         assert_eq!(info.bonds[0].stake, 100);
         assert!(info.block_hash.starts_with("0101"));
+        // The new block format's informational timestamp is exposed to clients.
+        assert_eq!(info.timestamp, 1_700_000_000_000);
     }
 
     #[test]

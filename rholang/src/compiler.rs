@@ -76,7 +76,15 @@ impl<T: Clone> BoundMap<T> {
     /// Absorb a free map's bindings as bound contexts, shifting their levels by `next_index`.
     pub fn absorb_free(&self, level_map: &FreeMap<T>) -> Self {
         let mut bindings = self.index_bindings.clone();
-        for (name, FreeContext { level, typ, source_position }) in &level_map.level_bindings {
+        for (
+            name,
+            FreeContext {
+                level,
+                typ,
+                source_position,
+            },
+        ) in &level_map.level_bindings
+        {
             bindings.insert(
                 name.clone(),
                 BoundContext {
@@ -208,7 +216,15 @@ impl<T: Clone> FreeMap<T> {
     ) -> (FreeMap<T>, Vec<(String, SourcePosition, SourcePosition)>) {
         let mut acc = self.level_bindings.clone();
         let mut shadowed = Vec::new();
-        for (name, FreeContext { level, typ, source_position }) in &free_map.level_bindings {
+        for (
+            name,
+            FreeContext {
+                level,
+                typ,
+                source_position,
+            },
+        ) in &free_map.level_bindings
+        {
             acc.insert(
                 name.clone(),
                 FreeContext {

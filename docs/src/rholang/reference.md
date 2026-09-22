@@ -55,12 +55,18 @@ Parenthesize when in doubt — `( … )` always wins.
 
 | Kind | Literals | Operators / methods |
 |---|---|---|
-| Integer | `42`, `-7` | `+ - * / %`, `< <= > >= == !=` |
+| Integer | `42`, `-7` | `+ - * / %`, `< <= > >= == !=`; **exact** — overflow promotes to BigInt (never wraps) |
 | Big integer | arbitrary precision | same |
 | Boolean | `true` `false` | `and`, `or`, `not` |
-| String | `"…"` | `++`, `${…}` interpolation, `length`, `slice`, `contains`, `toUtf8Bytes`, `hexToBytes` |
+| String | `"…"` | `++`, `${…}` interpolation, `length`, `slice`, `substring`, `indexOf`, `contains`, `startsWith`, `endsWith`, `toLowerCase`, `toUpperCase`, `capitalize`, `reverse`, `trim`, `isEmpty`, `nonEmpty`, `replace`, `split`, `format`, `toString`, `toUtf8Bytes`, `hexToBytes` |
 | URI | `` `rho:…` `` | — |
 | Byte array | `"…".hexToBytes()` | `length`, `nth`, `slice`, `toUtf8Bytes` |
+
+Numbers are **exact**: integer arithmetic never wraps — an `Int` whose result leaves the machine range
+promotes to `BigInt`, mixed `Int`/`BigInt` operands interoperate, and `2 == 2n` (RCHIP #51; recorded in
+[`spec/AUDIT.md`](../../../spec/AUDIT.md) §6). String methods index and count by **character**
+(Unicode scalar values), and `toString` on an `Int`/`BigInt`/`Bool`/`Uri` gives its string form
+(so `42.toString() ++ " units"` works).
 
 ## Collections
 
@@ -81,8 +87,12 @@ Parenthesize when in doubt — `( … )` always wins.
 | `rho:registry:insertArbitrary` | insert a value (unauthenticated) |
 | `rho:registry:insertSigned:secp256k1` | insert a value, signed |
 | `rho:rchain:deployerId` | the unforgeable id of the deployer (who invoked the contract) |
+| `rho:attachment:N` | the *N*-th (1-based) binary attachment of the deploy, as a `ByteArray` (RCHIP #39) |
 | `rho:rchain:revVault` | the REV vault contract |
 | `rho:rchain:pos` | the proof-of-stake contract |
+| `rho:block:data` | the current block's number, sender and informational timestamp |
+| `rho:io:http` | the deterministic HTTP-result oracle: `record` (first writer wins), `get`, `check`, `height` |
+| `rho:txn` | the cross-shard two-phase-commit participant (`prepare` / `commit` / `abort`) |
 | `rho:crypto:blake2b256Hash` / `keccak256Hash` | hashing |
 | `rho:crypto:secp256k1Verify` / `ed25519Verify` | signature verification |
 
@@ -92,4 +102,4 @@ Some surface features are known incomplete in the reference semantics (see
 [`legacy/rholang/README.md`](../../../legacy/rholang/README.md) "what's broken"): guarded patterns, and
 certain 0-arity/match-case pre-evaluation edge cases. Treat the K semantics under
 [`legacy/rholang/src/main/k/rholang/`](../../../legacy/rholang/src/main/k/rholang/) as the executable
-reference, and the [19 laws](../formal/the-19-laws.md) as the authoritative invariants.
+reference, and the [29 laws](../formal/the-29-laws.md) as the authoritative invariants.

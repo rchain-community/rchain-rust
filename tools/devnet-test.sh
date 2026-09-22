@@ -32,10 +32,10 @@ BOOTSTRAP=devnet-bootstrap
 DEPLOYER_PRIV="a68a6e6cca30f81bd24a719f3145d20e8424bd7b396309b0708a16c7d8000b76"
 
 # Precomputed signed DeployRequest (term "Nil", timestamp 1700000000000, phloPrice 1, phloLimit
-# 1000000, validAfterBlockNumber 0, shardId "root"), signed by the devnet deployer key. Generated
+# 1000000, validAfterBlockNumber 0, shardId "/root"), signed by the devnet deployer key. Generated
 # once via `cargo run -p rchain-node --example gen_deploy_fixture` (deleted); the signature is valid
 # regardless of block number because the HTTP deploy endpoint does not check future/expired at submit.
-DEPLOY_FIXTURE='{"data":{"term":"Nil","timestamp":1700000000000,"phloPrice":1,"phloLimit":1000000,"validAfterBlockNumber":0,"shardId":"root"},"deployer":"04f700a417754b775d95421973bdbdadb2d23c8a5af46f1829b1431f5c136e549e8a0d61aa0c793f1a614f8e437711c7758473c6ceb0859ac7e9e07911ca66b5c4","signature":"304402202944bf281b273bbfa0bda94f19b6c53d61c95ac6c52de80960875bc4e12388af02202b3e1b91443e6a4c1cddebe593e18602b69644b3025f7e034afc84cc14daf984","sigAlgorithm":"secp256k1"}'
+DEPLOY_FIXTURE='{"data":{"term":"Nil","timestamp":1700000000000,"phloPrice":1,"phloLimit":1000000,"validAfterBlockNumber":0,"shardId":"/root"},"deployer":"04f700a417754b775d95421973bdbdadb2d23c8a5af46f1829b1431f5c136e549e8a0d61aa0c793f1a614f8e437711c7758473c6ceb0859ac7e9e07911ca66b5c4","signature":"3044022041ebc32bae0195d167310362dd6539d3e2a750512d03ca075c0308bc75744e1002206338157bde1b385ff76ebc1840cdccb942158cff6e377b3053a1a2e9389d6ad8","sigAlgorithm":"secp256k1"}'
 
 FAILURES=0
 
@@ -105,7 +105,7 @@ for _ in $(seq 1 90); do
   sleep 1
 done
 check "GET /api/status returns 200" '[[ "$HTTP_CODE" == "200" ]]'
-check "shardId == root" '[[ "$shard" == "root" ]]'
+check "shardId == /root" '[[ "$shard" == "/root" ]]'
 check "minPhloPrice set" '[[ -n "$minphlo" ]]'
 
 start="$block"
@@ -133,6 +133,38 @@ check "explore-deploy response has expr" \
   'printf "%s" "$HTTP_BODY" | grep -q "\"expr\""'
 
 echo ""
+echo "==> 3b. partial collection patterns (C20)"
+# A pattern may name only part of a collection: `..._` absorbs the rest, `...rest` binds it. A *map*
+# pattern that could not match a map with further keys made every rgov governance contract
+# unreachable, silently — an unmatched `for` is not an error, it just never fires — so the family
+# returned `[]` with no diagnostic. This is the reproduction, run on a real node: the two patterns
+# sit on separate channels, so both must fire.
+#
+# The first `new`-bound name of the term is the deploy's return channel (see
+# `RuntimeSyntax.playExploratoryDeploy`), so the endpoint's response carries `result`'s data: read
+# it, and read it from the *node*, which is the only surface that showed the defect — the in-process
+# conformance harness was green throughout, because its cases shared one runtime and one output
+# channel (C20).
+# The endpoint takes the term as a JSON *string*; escape it with `sed`, like `json_num` parses JSON
+# with `sed`, so the script keeps its dependencies.
+json_string() { sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' | tr -d '\n'; }
+c20_term='new result, a, b in {
+  a!({"x": 1, "y": 2}) |
+  b!({"x": 1, "y": 2}) |
+  for (@{"x": *v, ..._} <- a)    { result!(["partial-with-remainder", "matched"]) } |
+  for (@{"x": *w, "y": *z} <- b) { result!(["exact", "matched"]) }
+}'
+c20_body="\"$(printf '%s' "$c20_term" | json_string)\""
+http_get "$HTTP/api/v1/explore-deploy" -X POST -H 'Content-Type: application/json' \
+  --data-binary "$c20_body"
+check "POST /api/v1/explore-deploy (C20 reproduction) returns 200" \
+  '[[ "$HTTP_CODE" == "200" ]]'
+check "the partial map pattern matched (a partial map pattern fires)" \
+  'printf "%s" "$HTTP_BODY" | grep -q "partial-with-remainder"'
+check "the exact map pattern still matched" \
+  'printf "%s" "$HTTP_BODY" | grep -q "\"exact\""'
+
+echo ""
 echo "==> 4. deploy + deploy-status"
 # (a) HTTP deploy endpoint accepts a signed deploy.
 http_get "$HTTP/api/deploy" -X POST -H 'Content-Type: application/json' -d "$DEPLOY_FIXTURE"
@@ -144,7 +176,7 @@ docker exec -i "$BOOTSTRAP" sh -c 'printf "Nil\n" > /tmp/nil.rho' || true
 deploy_out="$(docker exec -i "$BOOTSTRAP" rnode --grpc-host localhost deploy \
   --phlo-limit 1000000 --phlo-price 1 \
   --valid-after-block-number "$block" \
-  --private-key "$DEPLOYER_PRIV" --shard-id root /tmp/nil.rho 2>&1 || true)"
+  --private-key "$DEPLOYER_PRIV" --shard-id /root /tmp/nil.rho 2>&1 || true)"
 deploy_id="$(printf '%s' "$deploy_out" | sed -n 's/.*DeployId is: \([0-9a-f]*\).*/\1/p')"
 check "gRPC deploy accepted (DeployId captured)" '[[ -n "$deploy_id" ]]'
 

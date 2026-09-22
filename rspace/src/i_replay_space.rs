@@ -9,9 +9,16 @@ use crate::i_space::ISpace;
 use crate::trace::Log;
 use crate::util::ReplayException;
 
-/// The replay-space interface (port of `IReplaySpace[F]`).
+/// The replay-space interface (port of `IReplaySpace[F]`). The bounds mirror
+/// [`ISpace`](crate::i_space::ISpace)'s — every implementor already carries them.
 #[async_trait]
-pub trait IReplaySpace<C, P, A, K>: ISpace<C, P, A, K> {
+pub trait IReplaySpace<
+    C: Send + Sync + 'static,
+    P: Send + Sync + 'static,
+    A: Send + Sync + 'static,
+    K: Send + Sync + 'static,
+>: ISpace<C, P, A, K>
+{
     async fn rig(&self, log: Log);
 
     async fn rig_and_reset(&self, start_root: Blake2b256Hash, log: Log) -> Result<(), String>;

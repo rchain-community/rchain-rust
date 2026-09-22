@@ -1,0 +1,87 @@
+# Nightly devnet fuzz — robustness, input guards and the scheduler modes, over a real Docker network.
+#
+# **Nothing here gates a pull request.** It needs Docker, a built image and a live network, so it runs
+# on a schedule (and on demand) rather than on every push: a flaky network harness in the PR path
+# would be worse than the coverage it adds. The in-process suites (`casper/tests/scheduler.rs`,
+# `rholang/tests/execution.rs`, `casper/tests/gateway*.rs`) are what gate a PR.
+#
+# Each mode asserts something different, and the mode selection is a workflow input so a manual run
+# can sweep one of them:
+#
+#   valid      3 validators stay in lock-step under a valid-term + signed-deploy fuzz
+#   malformed  the input guards (truncation, spliced delimiters, deep nesting past MAX_PARSE_DEPTH,
+#              huge integers, non-UTF-8 bytes) all answer 4xx, never 5xx, never wedge a node
+#   scheduler  the corpus reduces under the configured `--effect-scheduler` mode
+#   gateway    a single-shard devnet reports one shard and does not serve the txn routes
+
+name: devnet fuzz (nightly)
+
+on:
+  schedule:
+    # Off the :00 mark: every scheduler in the fleet lands on the hour, and a nightly job has no
+    # reason to join them.
+    - cron: "23 3 * * *"
+  workflow_dispatch:
+    inputs:
+      effect_scheduler:
+        description: "effect-scheduler mode for the devnet (dfs, gate, relaxed-validated, relaxed)"
+        default: "dfs"
+      mode:
+        description: "fuzz modes to run (valid, malformed, scheduler, gateway, all)"
+        default: "all"
+      iterations:
+        description: "explore-deploy iterations for the valid mode"
+        default: "100"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: devnet-fuzz
+  cancel-in-progress: false
+
+jobs:
+  fuzz:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      CARGO_TERM_COLOR: always
+      # Inputs are empty on a scheduled run, so fall back to the defaults.
+      EFFECT_SCHEDULER: ${{ github.event.inputs.effect_scheduler || 'dfs' }}
+      FUZZ_MODE: ${{ github.event.inputs.mode || 'all' }}
+      ITERATIONS: ${{ github.event.inputs.iterations || '100' }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install protoc
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq protobuf-compiler
+
+      - name: Build the node image
+        run: tools/devnet.sh build
+
+      - name: Start the devnet
+        run: tools/devnet.sh up --validators 3 --effect-scheduler "$EFFECT_SCHEDULER"
+
+      - name: Fuzz
+        run: |
+          python3 tools/devnet-fuzz.py \
+            --validators 3 \
+            --iterations "$ITERATIONS" \
+            --mode "$FUZZ_MODE"
+
+      - name: Dump the devnet state on failure
+        if: failure()
+        run: |
+          tools/devnet.sh status || true
+          tools/devnet.sh diagnose || true
+          for node in devnet-bootstrap devnet-validator-1 devnet-validator-2; do
+            docker logs --tail 200 "$node" 2>&1 || true
+          done
+
+      - name: Tear the devnet down
+        if: always()
+        run: tools/devnet.sh down -v || true

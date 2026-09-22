@@ -8,7 +8,10 @@ use std::fmt;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum StorageError {
     /// The topo-sort range parameter is invalid.
-    TopoSortFragmentParameterError { start_block_number: i64, end_block_number: i64 },
+    TopoSortFragmentParameterError {
+        start_block_number: i64,
+        end_block_number: i64,
+    },
     /// LZ4 block-message decompression failed.
     DecompressionError,
     /// The latest-messages set was empty when a new message was created.

@@ -8,7 +8,7 @@ quantum-os's governance layer.
 
 > **Documentation**: the QuCalc documentation index (overview, mutual benefits,
 > architecture, examples) lives in
-> [`docs/src/qucalc/README.md`](../../docs/src/qucalc/README.md) (book Part V).
+> [`docs/src/qucalc/README.md`](../../docs/src/qucalc/README.md) (book Part VI).
 
 ## What it provides
 

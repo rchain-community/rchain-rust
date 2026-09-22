@@ -29,6 +29,7 @@ use crate::errors::RholangError;
 use crate::evaluate_result::EvaluateResult;
 use crate::native_state::NativeSystemState;
 use crate::reduce::DebruijnInterpreter;
+use crate::scheduler::EffectMode;
 use crate::storage::{ChargingRSpace, RhoHistoryRepository, RhoTuplespace};
 use crate::system_processes::{BlockData, SystemProcesses};
 
@@ -36,11 +37,11 @@ use crate::system_processes::{BlockData, SystemProcesses};
 pub type RhoSpace = Arc<RSpace<SortedProc, BindPattern, ListParWithRandom, TaggedContinuation>>;
 
 /// The replay rspace type the replay runtime operates on (port of `RhoReplayISpace`).
-pub type RhoReplaySpace = Arc<ReplayRSpace<SortedProc, BindPattern, ListParWithRandom, TaggedContinuation>>;
+pub type RhoReplaySpace =
+    Arc<ReplayRSpace<SortedProc, BindPattern, ListParWithRandom, TaggedContinuation>>;
 
 /// The reducer type wired to the charging space and dispatcher.
-pub type RhoReducer =
-    DebruijnInterpreter<ChargingRSpace, Arc<RholangAndScalaDispatcher>>;
+pub type RhoReducer = DebruijnInterpreter<ChargingRSpace, Arc<RholangAndScalaDispatcher>>;
 
 /// Wire the reducer and dispatcher together (breaking their mutual recursion) and return the
 /// reducer.
@@ -57,7 +58,7 @@ pub fn setup_reducer(
         mergeable_tag_name,
     ));
     let reducer_for_eval = Arc::downgrade(&reducer);
-    dispatcher.set_eval(Box::new(move |par, env, rand| {
+    dispatcher.set_eval(Box::new(move |par, env, rand, path| {
         let reducer = match reducer_for_eval.upgrade() {
             Some(r) => r,
             None => {
@@ -69,7 +70,7 @@ pub fn setup_reducer(
             }
         };
         let cost = cost.clone();
-        Box::pin(async move { reducer.reduce_par(par, env, rand, cost).await })
+        Box::pin(async move { reducer.reduce_par(par, env, rand, cost, path).await })
     }));
     reducer
 }
@@ -108,7 +109,11 @@ async fn install_system_processes(
             patterns: (0..*arity)
                 .map(|i| SortedProc::new(from_expr(Expr::EVar(Box::new(Var::FreeVar(i))))))
                 .collect(),
-            remainder: if *remainder { Some(Var::FreeVar(*arity)) } else { None },
+            remainder: if *remainder {
+                Some(Var::FreeVar(*arity))
+            } else {
+                None
+            },
             free_count: if *remainder { *arity + 1 } else { *arity },
         }];
         let continuation = TaggedContinuation::ScalaBodyRef(*body_ref);
@@ -136,8 +141,11 @@ pub(crate) async fn build_runtime_core(
     mergeable_tag_name: SortedProc,
     native_store: Arc<InMemNativeStore>,
     concurrent: bool,
+    mode: EffectMode,
 ) -> std::io::Result<RuntimeCore> {
-    let cost = Arc::new(CostAccounting::from_initial(crate::accounting::Costs::unsafe_max()));
+    let cost = Arc::new(CostAccounting::from_initial(
+        crate::accounting::Costs::unsafe_max(),
+    ));
     let charging_space = ChargingRSpace::new(space.clone(), cost.clone());
     let block_data = Arc::new(Mutex::new(BlockData::empty()));
     let native_state = Arc::new(NativeSystemState::new(native_store));
@@ -172,12 +180,13 @@ pub(crate) async fn build_runtime_core(
         mergeable_tag_name,
     );
     reducer.set_concurrent(concurrent);
+    reducer.set_effect_mode(mode);
     let reducer = Arc::new(reducer);
     // Weak, not Arc: the dispatcher is stored inside the reducer, so a strong capture here would
     // form a reducer→dispatcher→reducer cycle and leak the whole runtime (issues #18/#23).
     let reducer_for_eval = Arc::downgrade(&reducer);
     let cost_for_eval = cost.clone();
-    dispatcher.set_eval(Box::new(move |par, env, rand| {
+    dispatcher.set_eval(Box::new(move |par, env, rand, path| {
         let reducer = match reducer_for_eval.upgrade() {
             Some(r) => r,
             None => {
@@ -189,7 +198,7 @@ pub(crate) async fn build_runtime_core(
             }
         };
         let cost = cost_for_eval.clone();
-        Box::pin(async move { reducer.reduce_par(par, env, rand, cost).await })
+        Box::pin(async move { reducer.reduce_par(par, env, rand, cost, path).await })
     }));
 
     Ok(RuntimeCore {
@@ -215,9 +224,36 @@ impl RhoRuntime {
         mergeable_tag_name: SortedProc,
         concurrent: bool,
     ) -> std::io::Result<RhoRuntime> {
+        Self::create_with_effect_mode(
+            space,
+            history,
+            mergeable_tag_name,
+            concurrent,
+            EffectMode::Sequential,
+        )
+        .await
+    }
+
+    /// Like [`RhoRuntime::create_with_concurrency`], with an explicit effect-scheduler mode
+    /// (Laws 20–22): `Sequential` is the sound reference; `Gate` (Law 21) and `Relaxed` (Law 20,
+    /// off-chain only) replace its effect loop while preserving its per-channel DFS order.
+    pub async fn create_with_effect_mode(
+        space: RhoSpace,
+        history: RhoHistoryRepository,
+        mergeable_tag_name: SortedProc,
+        concurrent: bool,
+        mode: EffectMode,
+    ) -> std::io::Result<RhoRuntime> {
         let tuplespace: RhoTuplespace = space.clone();
         let native_store = space.native_store();
-        let core = build_runtime_core(&tuplespace, mergeable_tag_name, native_store, concurrent).await?;
+        let core = build_runtime_core(
+            &tuplespace,
+            mergeable_tag_name,
+            native_store,
+            concurrent,
+            mode,
+        )
+        .await?;
         Ok(RhoRuntime {
             reducer: core.reducer,
             space,
@@ -231,6 +267,24 @@ impl RhoRuntime {
     /// Set the per-block data exposed to the `rho:block:data` contract (port of `setBlockData`).
     pub fn set_block_data(&self, block_data: BlockData) {
         *self.block_data.lock().unwrap_or_else(|p| p.into_inner()) = block_data;
+    }
+
+    /// Set the effect-scheduler mode (forwards to the reducer, which also arms the Law 24
+    /// per-commit certificate for `RelaxedValidated`). Interior-mutable so the casper block
+    /// path can switch around the per-deploy sequential fallback re-run.
+    pub fn set_effect_mode(&self, mode: EffectMode) {
+        self.reducer.set_effect_mode(mode);
+    }
+
+    /// The current effect-scheduler mode.
+    pub fn effect_mode(&self) -> EffectMode {
+        self.reducer.effect_mode()
+    }
+
+    /// Whether the current evaluation observed a scheduling skew (the S.3 enqueue window). Read by
+    /// the casper block path after evaluation to trigger the sequential fallback.
+    pub fn observed_skew(&self) -> bool {
+        self.reducer.observed_skew()
     }
 
     /// Execute a `Closed` process in the given environment (port of `inj`). The `Closed` proof is
@@ -267,6 +321,10 @@ impl RhoRuntime {
         let before = self.cost.total_charged();
         let errors = match self.inj(&par, &Env::new(), rand).await {
             Ok(()) => Vec::new(),
+            // Laws 23–25: a per-commit validation failure must escape as an error — it is the
+            // fail-fast signal the block path reads to fall back to the sequential reference.
+            // Landing it in the errors vec would mark the deploy failed instead.
+            Err(e @ RholangError::SpeculationInvalid { .. }) => return Err(e),
             Err(e) => vec![e],
         };
         let cost = self.cost.total_charged() - before;
@@ -292,7 +350,11 @@ impl RhoRuntime {
         install_system_processes(&ts, &self.proc_defs)
             .await
             .map_err(|e| e.to_string())?;
-        let checkpoint = self.space.create_checkpoint().await.map_err(|e| e.to_string())?;
+        let checkpoint = self
+            .space
+            .create_checkpoint()
+            .await
+            .map_err(|e| e.to_string())?;
         Ok(checkpoint.root)
     }
 
@@ -359,7 +421,10 @@ impl RhoRuntime {
         self.space.get_data(channel).await
     }
 
-    pub async fn get_joins(&self, channel: &SortedProc) -> Result<Vec<Vec<SortedProc>>, RSpaceError> {
+    pub async fn get_joins(
+        &self,
+        channel: &SortedProc,
+    ) -> Result<Vec<Vec<SortedProc>>, RSpaceError> {
         self.space.get_joins(channel).await
     }
 
@@ -373,7 +438,10 @@ impl RhoRuntime {
     /// Read all `Par`s at a channel (port of `getDataPar`).
     pub async fn get_data_par(&self, channel: &SortedProc) -> Result<Vec<Par>, RSpaceError> {
         let data = self.space.get_data(channel).await?;
-        Ok(data.into_iter().flat_map(|d| d.a.pars.into_iter().map(|p| p.as_par().clone())).collect())
+        Ok(data
+            .into_iter()
+            .flat_map(|d| d.a.pars.into_iter().map(|p| p.as_par().clone()))
+            .collect())
     }
 
     /// Read the waiting `ParBody` continuations as `(patterns, body)` (port of
@@ -400,7 +468,13 @@ impl RhoRuntime {
     ) -> Result<Option<(TaggedContinuation, Vec<ListParWithRandom>)>, RSpaceError> {
         let result = self
             .space
-            .consume(channels, patterns, TaggedContinuation::Empty, false, BTreeSet::new())
+            .consume(
+                channels,
+                patterns,
+                TaggedContinuation::Empty,
+                false,
+                BTreeSet::new(),
+            )
             .await?;
         Ok(result.map(|(cont, data)| {
             (
@@ -436,7 +510,16 @@ impl ReplayRhoRuntime {
     ) -> std::io::Result<ReplayRhoRuntime> {
         let tuplespace: RhoTuplespace = space.clone();
         let native_store = space.native_store();
-        let core = build_runtime_core(&tuplespace, mergeable_tag_name, native_store, true).await?;
+        // Replay is the Law 11 determinism carrier: it must re-derive the recorded COMM trace, so
+        // only the sequential DFS effect loop may drive it (never Gate/Relaxed).
+        let core = build_runtime_core(
+            &tuplespace,
+            mergeable_tag_name,
+            native_store,
+            true,
+            EffectMode::Sequential,
+        )
+        .await?;
         Ok(ReplayRhoRuntime {
             reducer: core.reducer,
             space,
@@ -547,7 +630,10 @@ impl ReplayRhoRuntime {
     /// Read all `Par`s at a channel (port of `getDataPar`).
     pub async fn get_data_par(&self, channel: &SortedProc) -> Result<Vec<Par>, RSpaceError> {
         let data = self.space.get_data(channel).await?;
-        Ok(data.into_iter().flat_map(|d| d.a.pars.into_iter().map(|p| p.as_par().clone())).collect())
+        Ok(data
+            .into_iter()
+            .flat_map(|d| d.a.pars.into_iter().map(|p| p.as_par().clone()))
+            .collect())
     }
 
     /// Consume the result at a channel with a pattern (port of `consumeResult`).
@@ -558,7 +644,13 @@ impl ReplayRhoRuntime {
     ) -> Result<Option<(TaggedContinuation, Vec<ListParWithRandom>)>, RSpaceError> {
         let result = self
             .space
-            .consume(channels, patterns, TaggedContinuation::Empty, false, BTreeSet::new())
+            .consume(
+                channels,
+                patterns,
+                TaggedContinuation::Empty,
+                false,
+                BTreeSet::new(),
+            )
             .await?;
         Ok(result.map(|(cont, data)| {
             (
@@ -591,7 +683,9 @@ mod tests {
     }
 
     #[async_trait]
-    impl RSpaceTuplespace<SortedProc, BindPattern, ListParWithRandom, TaggedContinuation> for MockSpace {
+    impl RSpaceTuplespace<SortedProc, BindPattern, ListParWithRandom, TaggedContinuation>
+        for MockSpace
+    {
         async fn consume(
             &self,
             _channels: &[SortedProc],
@@ -621,7 +715,10 @@ mod tests {
             )>,
             RSpaceError,
         > {
-            self.produced.lock().unwrap_or_else(|p| p.into_inner()).push((channel, data, persist));
+            self.produced
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .push((channel, data, persist));
             Ok(None)
         }
 
@@ -640,13 +737,19 @@ mod tests {
         let mock = Arc::new(MockSpace {
             produced: Mutex::new(Vec::new()),
         });
-        let cost = Arc::new(CostAccounting::from_initial(crate::accounting::Costs::unsafe_max()));
+        let cost = Arc::new(CostAccounting::from_initial(
+            crate::accounting::Costs::unsafe_max(),
+        ));
         let charging = ChargingRSpace::new(mock.clone(), cost.clone());
         let reducer = setup_reducer(charging, cost.clone(), SortedProc::default());
 
         let send = rchain_models::ast::Send {
-            chan: Box::new(rchain_models::par_ops::from_expr(rchain_models::ast::Expr::GInt(1)).quote()),
-            data: vec![rchain_models::par_ops::from_expr(rchain_models::ast::Expr::GInt(2)).quote()],
+            chan: Box::new(
+                rchain_models::par_ops::from_expr(rchain_models::ast::Expr::GInt(1)).quote(),
+            ),
+            data: vec![
+                rchain_models::par_ops::from_expr(rchain_models::ast::Expr::GInt(2)).quote(),
+            ],
             persistent: false,
             locally_free: rchain_models::ast::AlwaysEqual(vec![]),
             connective_used: false,
@@ -664,8 +767,11 @@ mod tests {
 
         let produced = mock.produced.lock().unwrap_or_else(|p| p.into_inner());
         assert_eq!(produced.len(), 1);
-        assert_eq!(produced[0].1.pars, vec![SortedProc::new(rchain_models::par_ops::from_expr(
-            rchain_models::ast::Expr::GInt(2)
-        ))]);
+        assert_eq!(
+            produced[0].1.pars,
+            vec![SortedProc::new(rchain_models::par_ops::from_expr(
+                rchain_models::ast::Expr::GInt(2)
+            ))]
+        );
     }
 }

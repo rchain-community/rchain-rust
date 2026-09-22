@@ -20,16 +20,16 @@ use rchain_models::casper::protocol::deploy_service::{
 };
 use rchain_models::casper::protocol::propose_service::{ProposeQuery, ProposeResultQuery};
 use rchain_models::casper::protocol::report::{
-    BlockEventInfo, DeployInfoWithEventData, ReportCommProto, ReportConsumeProto, ReportProduceProto,
-    ReportProto, SingleReport, SystemDeployInfoWithEventData,
+    BlockEventInfo, DeployInfoWithEventData, ReportCommProto, ReportConsumeProto,
+    ReportProduceProto, ReportProto, SingleReport, SystemDeployInfoWithEventData,
 };
+use rchain_models::proto::casper as wire;
 use rchain_models::proto::casper::deploy_service_server::DeployService;
 use rchain_models::proto::casper::propose_service_server::ProposeService;
 use rchain_models::proto::casper::{
     propose_response, propose_result_response, ProposeResponse, ProposeResultResponse,
     ServiceError as TonicServiceError,
 };
-use rchain_models::proto::casper as wire;
 use rchain_models::proto::repl::repl_server::Repl;
 use rchain_models::proto::repl::ReplResponse as TonicReplResponse;
 use rchain_models::wire::{
@@ -42,7 +42,9 @@ use super::propose_grpc_service_v1::ProposeGrpcServiceV1;
 use super::repl_grpc_service::{CmdRequest, EvalRequest, ReplGrpcService};
 
 fn to_tonic_service_error(e: ServiceError) -> TonicServiceError {
-    TonicServiceError { messages: e.messages }
+    TonicServiceError {
+        messages: e.messages,
+    }
 }
 
 fn propose_response(r: Result<String, ServiceError>) -> ProposeResponse {
@@ -147,6 +149,7 @@ fn light_block_info_to_wire(b: &LightBlockInfo) -> wire::LightBlockInfo {
         block_size: b.block_size.clone(),
         deploy_count: b.deploy_count,
         rejected_deploys: b.rejected_deploys.clone(),
+        timestamp: b.timestamp,
     }
 }
 
@@ -210,13 +213,13 @@ fn deploy_exec_status_to_wire(s: &DeployExecStatus) -> wire::DeployExecStatus {
             deploy_error: deploy_error.clone(),
             block: Some(light_block_info_to_wire(block)),
         }),
-        DeployExecStatus::NotProcessed { status } => {
-            WireStatus::NotProcessed(wire::NotProcessed {
-                status: status.clone(),
-            })
-        }
+        DeployExecStatus::NotProcessed { status } => WireStatus::NotProcessed(wire::NotProcessed {
+            status: status.clone(),
+        }),
     };
-    wire::DeployExecStatus { status: Some(status) }
+    wire::DeployExecStatus {
+        status: Some(status),
+    }
 }
 
 fn data_with_block_info_to_wire(d: &DataWithBlockInfo) -> wire::DataWithBlockInfo {
@@ -475,7 +478,9 @@ impl DeployService for DeployGrpcServiceV1 {
             })
             .await;
         let message = match r {
-            Ok(s) => wire::deploy_status_response::Message::DeployExecStatus(deploy_exec_status_to_wire(&s)),
+            Ok(s) => wire::deploy_status_response::Message::DeployExecStatus(
+                deploy_exec_status_to_wire(&s),
+            ),
             Err(e) => wire::deploy_status_response::Message::Error(to_tonic_service_error(e)),
         };
         Ok(Response::new(wire::DeployStatusResponse {
@@ -579,8 +584,11 @@ impl DeployService for DeployGrpcServiceV1 {
     ) -> Result<Response<wire::ListeningNameDataResponse>, Status> {
         let req = request.into_inner();
         // The wire `Par` is the prost type; the domain query needs the domain `Par`.
-        let name = rchain_models::wire::par_from_proto(&req.name.ok_or_else(|| Status::invalid_argument("missing name"))?)
-            .map_err(|e| Status::invalid_argument(e.to_string()))?;
+        let name = rchain_models::wire::par_from_proto(
+            &req.name
+                .ok_or_else(|| Status::invalid_argument("missing name"))?,
+        )
+        .map_err(|e| Status::invalid_argument(e.to_string()))?;
         let r = self
             .listen_for_data_at_name(&DataAtNameQuery {
                 depth: req.depth,
@@ -588,14 +596,15 @@ impl DeployService for DeployGrpcServiceV1 {
             })
             .await;
         let message = match r {
-            Ok((block_info, length)) => {
-                wire::listening_name_data_response::Message::Payload(
-                    wire::ListeningNameDataPayload {
-                        block_info: block_info.iter().map(data_with_block_info_to_wire).collect(),
-                        length,
-                    },
-                )
-            }
+            Ok((block_info, length)) => wire::listening_name_data_response::Message::Payload(
+                wire::ListeningNameDataPayload {
+                    block_info: block_info
+                        .iter()
+                        .map(data_with_block_info_to_wire)
+                        .collect(),
+                    length,
+                },
+            ),
             Err(e) => wire::listening_name_data_response::Message::Error(to_tonic_service_error(e)),
         };
         Ok(Response::new(wire::ListeningNameDataResponse {
@@ -608,8 +617,11 @@ impl DeployService for DeployGrpcServiceV1 {
         request: Request<wire::DataAtNameByBlockQuery>,
     ) -> Result<Response<wire::RhoDataResponse>, Status> {
         let req = request.into_inner();
-        let par = rchain_models::wire::par_from_proto(&req.par.ok_or_else(|| Status::invalid_argument("missing par"))?)
-            .map_err(|e| Status::invalid_argument(e.to_string()))?;
+        let par = rchain_models::wire::par_from_proto(
+            &req.par
+                .ok_or_else(|| Status::invalid_argument("missing par"))?,
+        )
+        .map_err(|e| Status::invalid_argument(e.to_string()))?;
         let r = self
             .get_data_at_name(&DataAtNameByBlockQuery {
                 par,
@@ -649,17 +661,15 @@ impl DeployService for DeployGrpcServiceV1 {
             })
             .await;
         let message = match r {
-            Ok((continuations, length)) => {
-                wire::continuation_at_name_response::Message::Payload(
-                    wire::ContinuationAtNamePayload {
-                        block_results: continuations
-                            .iter()
-                            .map(continuations_with_block_info_to_wire)
-                            .collect(),
-                        length,
-                    },
-                )
-            }
+            Ok((continuations, length)) => wire::continuation_at_name_response::Message::Payload(
+                wire::ContinuationAtNamePayload {
+                    block_results: continuations
+                        .iter()
+                        .map(continuations_with_block_info_to_wire)
+                        .collect(),
+                    length,
+                },
+            ),
             Err(e) => {
                 wire::continuation_at_name_response::Message::Error(to_tonic_service_error(e))
             }
@@ -694,8 +704,12 @@ impl DeployService for DeployGrpcServiceV1 {
     ) -> Result<Response<wire::LastFinalizedBlockResponse>, Status> {
         let r = self.last_finalized_block().await;
         let message = match r {
-            Ok(b) => wire::last_finalized_block_response::Message::BlockInfo(block_info_to_wire(&b)),
-            Err(e) => wire::last_finalized_block_response::Message::Error(to_tonic_service_error(e)),
+            Ok(b) => {
+                wire::last_finalized_block_response::Message::BlockInfo(block_info_to_wire(&b))
+            }
+            Err(e) => {
+                wire::last_finalized_block_response::Message::Error(to_tonic_service_error(e))
+            }
         };
         Ok(Response::new(wire::LastFinalizedBlockResponse {
             message: Some(message),
@@ -954,5 +968,445 @@ mod tests {
             .unwrap()
             .into_inner();
         assert!(resp.message.is_some());
+    }
+
+    /// The wire conversions: 26 functions that no test named. They are pure, they sit on the
+    /// boundary between the node's domain and every gRPC/HTTP client, and a transposition in one of
+    /// them is invisible until a client reads the wrong field.
+    mod wire_conversions {
+        use super::*;
+        use rchain_crypto::hash::blake2b512_random::Blake2b512Random;
+        use rchain_models::ast::{Expr, Par};
+        use rchain_models::casper::protocol::deploy_service::{BondInfo, DeployInfo, VersionInfo};
+        use rchain_models::casper::protocol::report::{
+            ReportCommProto, ReportConsumeProto, ReportProduceProto, ReportProto, SingleReport,
+        };
+        use rchain_models::runtime::{BindPattern, ListParWithRandom};
+        use rchain_models::sorted::Sorted;
+
+        /// A par carrying a distinct integer, so two pars in one message are distinguishable —
+        /// `Par::default()` is the same empty par for every field, which would let a swap pass.
+        fn par_of(n: i64) -> Par {
+            Par {
+                exprs: vec![Expr::GInt(n)],
+                ..Par::default()
+            }
+        }
+
+        fn sorted(n: i64) -> Sorted<rchain_models::ast::ProcSort> {
+            Sorted::new(par_of(n))
+        }
+
+        fn list_par(n: i64) -> ListParWithRandom {
+            ListParWithRandom {
+                pars: vec![sorted(n)],
+                random_state: Blake2b512Random::from_init(&[n as u8]),
+            }
+        }
+
+        fn bind_pattern(n: i64) -> BindPattern {
+            BindPattern {
+                patterns: vec![sorted(n)],
+                remainder: None,
+                free_count: n as i32,
+            }
+        }
+
+        /// A block info whose **every field is distinct**, with the two easy-to-transpose hash
+        /// fields (`pre`/`post`) and the two integer pairs (`block_number`/`seq_num`) marked.
+        fn block_info() -> LightBlockInfo {
+            LightBlockInfo {
+                version: 1,
+                shard_id: "shard".to_string(),
+                block_hash: "block-hash".to_string(),
+                block_number: 4,
+                sender: "sender".to_string(),
+                seq_num: 5,
+                pre_state_hash: "PRE".to_string(),
+                post_state_hash: "POST".to_string(),
+                justifications: vec!["j1".to_string(), "j2".to_string()],
+                bonds: vec![
+                    BondInfo {
+                        validator: "v1".to_string(),
+                        stake: 11,
+                    },
+                    BondInfo {
+                        validator: "v2".to_string(),
+                        stake: 22,
+                    },
+                ],
+                sig_algorithm: "sig-alg".to_string(),
+                sig: "sig".to_string(),
+                block_size: "1234".to_string(),
+                deploy_count: 6,
+                rejected_deploys: vec!["r1".to_string()],
+                timestamp: 7000,
+            }
+        }
+
+        fn deploy_info() -> DeployInfo {
+            DeployInfo {
+                deployer: "deployer".to_string(),
+                term: "term".to_string(),
+                timestamp: 1,
+                sig: "deploy-sig".to_string(),
+                sig_algorithm: "deploy-alg".to_string(),
+                phlo_price: 2,
+                phlo_limit: 3,
+                valid_after_block_number: 4,
+                cost: 5,
+                errored: true,
+                system_deploy_error: "system-error".to_string(),
+            }
+        }
+
+        /// The domain→wire conversions are field-for-field, for the flat messages and for the
+        /// nested ones. A field left at its default (a `Some` forgotten on a nested message) shows
+        /// up as a missing inner value rather than as a wrong one.
+        #[test]
+        fn the_domain_to_wire_conversions_carry_every_field() {
+            let b = light_block_info_to_wire(&block_info());
+            assert_eq!(b.version, 1);
+            assert_eq!(b.shard_id, "shard");
+            assert_eq!(b.block_hash, "block-hash");
+            assert_eq!(b.block_number, 4);
+            assert_eq!(b.sender, "sender");
+            assert_eq!(b.seq_num, 5);
+            assert_eq!(b.pre_state_hash, "PRE", "pre is not post");
+            assert_eq!(b.post_state_hash, "POST");
+            assert_eq!(b.justifications, vec!["j1", "j2"]);
+            assert_eq!(b.bonds.len(), 2);
+            assert_eq!(b.bonds[0].validator, "v1");
+            assert_eq!(b.bonds[0].stake, 11);
+            assert_eq!(b.bonds[1].stake, 22);
+            assert_eq!(b.sig_algorithm, "sig-alg");
+            assert_eq!(b.sig, "sig");
+            assert_eq!(b.block_size, "1234");
+            assert_eq!(b.deploy_count, 6);
+            assert_eq!(b.rejected_deploys, vec!["r1"]);
+            assert_eq!(b.timestamp, 7000);
+
+            let d = deploy_info_to_wire(&deploy_info());
+            assert_eq!(d.deployer, "deployer");
+            assert_eq!(d.term, "term");
+            assert_eq!(d.timestamp, 1);
+            assert_eq!(d.sig, "deploy-sig");
+            assert_eq!(d.sig_algorithm, "deploy-alg");
+            assert_eq!(d.phlo_price, 2, "price is not limit");
+            assert_eq!(d.phlo_limit, 3);
+            assert_eq!(d.valid_after_block_number, 4);
+            assert_eq!(d.cost, 5, "cost is the u64, not a phlo bound");
+            assert!(d.errored);
+            assert_eq!(d.system_deploy_error, "system-error");
+
+            let block = block_info_to_wire(&BlockInfo {
+                block_info: block_info(),
+                deploys: vec![deploy_info()],
+            });
+            assert_eq!(block.block_info.expect("inner block").shard_id, "shard");
+            assert_eq!(block.deploys.len(), 1);
+            assert_eq!(block.deploys[0].term, "term");
+
+            let status = status_to_wire(&CasperStatus {
+                version: VersionInfo {
+                    api: "1".to_string(),
+                    node: "2".to_string(),
+                },
+                address: "addr".to_string(),
+                network_id: "net".to_string(),
+                shard_id: "shard".to_string(),
+                peers: 3,
+                nodes: 4,
+                min_phlo_price: 5,
+                latest_block_number: 6,
+            });
+            assert_eq!(status.version.expect("version").api, "1");
+            assert_eq!(status.address, "addr");
+            assert_eq!(status.network_id, "net");
+            assert_eq!(status.shard_id, "shard");
+            assert_eq!(status.peers, 3);
+            assert_eq!(status.nodes, 4);
+            assert_eq!(status.min_phlo_price, 5);
+            assert_eq!(status.latest_block_number, 6);
+
+            // The list-bearing messages keep their element order and their nested `Some`s.
+            let data = data_with_block_info_to_wire(&DataWithBlockInfo {
+                post_block_data: vec![par_of(1), par_of(2)],
+                block: block_info(),
+            });
+            assert_eq!(data.post_block_data.len(), 2);
+            assert_eq!(data.block.expect("block").timestamp, 7000);
+
+            let continuations =
+                continuations_with_block_info_to_wire(&ContinuationsWithBlockInfo {
+                    post_block_continuations: vec![
+                        rchain_models::casper::protocol::deploy_service::WaitingContinuationInfo {
+                            post_block_patterns: vec![bind_pattern(9)],
+                            post_block_continuation: par_of(10),
+                        },
+                    ],
+                    block: block_info(),
+                });
+            assert_eq!(continuations.post_block_continuations.len(), 1);
+            assert!(continuations.post_block_continuations[0]
+                .post_block_continuation
+                .is_some());
+        }
+
+        /// The three execution-status variants each map to their own wire variant, and the payload
+        /// of each lands inside it — `ProcessedWithSuccess` carries its deploy results and block,
+        /// `ProcessedWithError` its message, `NotProcessed` its status.
+        #[test]
+        fn each_execution_status_maps_to_its_own_wire_variant() {
+            use rchain_models::proto::casper::deploy_exec_status::Status as WireStatus;
+
+            let success = deploy_exec_status_to_wire(&DeployExecStatus::ProcessedWithSuccess {
+                deploy_result: vec![par_of(1)],
+                block: block_info(),
+            });
+            match success.status.expect("a status") {
+                WireStatus::ProcessedWithSuccess(s) => {
+                    assert_eq!(s.deploy_result.len(), 1);
+                    assert_eq!(s.block.expect("block").block_hash, "block-hash");
+                }
+                other => panic!("expected ProcessedWithSuccess, got {other:?}"),
+            }
+
+            let error = deploy_exec_status_to_wire(&DeployExecStatus::ProcessedWithError {
+                deploy_error: "boom".to_string(),
+                block: block_info(),
+            });
+            match error.status.expect("a status") {
+                WireStatus::ProcessedWithError(e) => {
+                    assert_eq!(e.deploy_error, "boom");
+                    assert!(e.block.is_some());
+                }
+                other => panic!("expected ProcessedWithError, got {other:?}"),
+            }
+
+            let pending = deploy_exec_status_to_wire(&DeployExecStatus::NotProcessed {
+                status: "pending".to_string(),
+            });
+            match pending.status.expect("a status") {
+                WireStatus::NotProcessed(n) => assert_eq!(n.status, "pending"),
+                other => panic!("expected NotProcessed, got {other:?}"),
+            }
+        }
+
+        /// The report tree — the shape `getEventByHash` returns — round-trips: three nested event
+        /// kinds, with the produce/consume/comm variants each carrying their own fields. The domain
+        /// and wire types have the same shape, so a *structural* equality after `to_wire` →
+        /// `from_wire` is the strongest available check, and it is what catches a swapped field.
+        #[test]
+        fn the_report_tree_round_trips_through_the_wire() {
+            let produce = ReportProduceProto {
+                channel: par_of(1),
+                data: list_par(2),
+            };
+            let consume = ReportConsumeProto {
+                channels: vec![par_of(3), par_of(4)],
+                patterns: vec![bind_pattern(5)],
+                peeks: vec![rchain_models::casper::protocol::casper_message::Peek {
+                    channel_index: 1,
+                }],
+            };
+            let comm = ReportCommProto {
+                consume: consume.clone(),
+                produces: vec![produce.clone()],
+            };
+            let report = SingleReport {
+                events: vec![
+                    ReportProto::Produce(produce),
+                    ReportProto::Consume(consume),
+                    ReportProto::Comm(comm),
+                ],
+            };
+
+            let wire_report = single_report_to_wire(&report);
+            assert_eq!(wire_report.events.len(), 3);
+            // The variant tags are the wire's own, one per domain variant.
+            assert!(matches!(
+                wire_report.events[0].report,
+                Some(rchain_models::proto::casper::report_proto::Report::Produce(
+                    _
+                ))
+            ));
+            assert!(matches!(
+                wire_report.events[1].report,
+                Some(rchain_models::proto::casper::report_proto::Report::Consume(
+                    _
+                ))
+            ));
+            assert!(matches!(
+                wire_report.events[2].report,
+                Some(rchain_models::proto::casper::report_proto::Report::Comm(_))
+            ));
+
+            let back = single_report_from_wire(&wire_report).expect("round trip");
+            assert_eq!(back.events.len(), 3, "no event is dropped");
+            // The pars survive as distinct values, in order.
+            match &back.events[1] {
+                ReportProto::Consume(c) => {
+                    assert_eq!(c.channels.len(), 2);
+                    assert_eq!(c.peeks.len(), 1);
+                    assert_eq!(c.peeks[0].channel_index, 1);
+                    assert_eq!(c.patterns.len(), 1);
+                }
+                other => panic!("expected a consume, got {other:?}"),
+            }
+            match &back.events[2] {
+                ReportProto::Comm(c) => {
+                    assert_eq!(c.produces.len(), 1);
+                    assert_eq!(c.consume.channels.len(), 2);
+                }
+                other => panic!("expected a comm, got {other:?}"),
+            }
+        }
+
+        /// The `from_wire` conversions are **partial**: a message missing an inner message is an
+        /// error naming what is missing, never a panic and never a defaulted value. Each of the
+        /// seven `ok_or` arms is exercised, and the message says which field was absent — this is
+        /// what an operator sees when a peer (or a client) sends a malformed report request.
+        #[test]
+        fn a_missing_inner_message_is_an_error_naming_the_field() {
+            let empty_produce = wire::ReportProduceProto::default();
+            assert_eq!(
+                report_produce_from_wire(&empty_produce).expect_err("no channel"),
+                "missing channel"
+            );
+            let with_channel = wire::ReportProduceProto {
+                channel: Some(Default::default()),
+                ..Default::default()
+            };
+            assert_eq!(
+                report_produce_from_wire(&with_channel).expect_err("no data"),
+                "missing data"
+            );
+
+            let empty_comm = wire::ReportCommProto::default();
+            assert_eq!(
+                report_comm_from_wire(&empty_comm).expect_err("no consume"),
+                "missing consume"
+            );
+
+            let empty_proto = wire::ReportProto::default();
+            assert_eq!(
+                report_proto_from_wire(&empty_proto).expect_err("no report"),
+                "missing report"
+            );
+
+            let empty_deploy = wire::DeployInfoWithEventData::default();
+            assert_eq!(
+                deploy_info_with_event_data_from_wire(&empty_deploy).expect_err("no deploy info"),
+                "missing deploy_info"
+            );
+
+            let empty_system = wire::SystemDeployInfoWithEventData::default();
+            assert_eq!(
+                system_deploy_info_with_event_data_from_wire(&empty_system)
+                    .expect_err("no system deploy"),
+                "missing system_deploy"
+            );
+
+            let empty_block = wire::BlockEventInfo::default();
+            assert_eq!(
+                block_event_info_from_wire(&empty_block).expect_err("no block info"),
+                "missing block_info"
+            );
+
+            // An *empty* report is not an error: a deploy that produced no events is a valid answer.
+            assert_eq!(
+                single_report_from_wire(&wire::SingleReport::default())
+                    .expect("an empty report")
+                    .events
+                    .len(),
+                0
+            );
+        }
+
+        /// The nested `BlockEventInfo` — the whole `getEventByHash` payload — carries its deploys,
+        /// system deploys and post-state hash, and round-trips through both directions.
+        #[test]
+        fn the_block_event_info_round_trips_with_its_nested_parts() {
+            let info = BlockEventInfo {
+                block_info: block_info(),
+                deploys: vec![
+                    rchain_models::casper::protocol::report::DeployInfoWithEventData {
+                        deploy_info: deploy_info(),
+                        report: vec![SingleReport {
+                            events: vec![ReportProto::Produce(ReportProduceProto {
+                                channel: par_of(1),
+                                data: list_par(2),
+                            })],
+                        }],
+                    },
+                ],
+                system_deploys: Vec::new(),
+                post_state_hash: b"POST-STATE".to_vec(),
+            };
+
+            let wire_info = block_event_info_to_wire(&info);
+            assert_eq!(
+                wire_info.post_state_hash,
+                b"POST-STATE".to_vec(),
+                "post-state hash is carried"
+            );
+            assert_eq!(wire_info.deploys.len(), 1);
+            assert!(wire_info.deploys[0].deploy_info.is_some());
+            assert_eq!(wire_info.deploys[0].report.len(), 1);
+            assert_eq!(
+                wire_info
+                    .block_info
+                    .as_ref()
+                    .expect("block info")
+                    .deploy_count,
+                6
+            );
+
+            let back = block_event_info_from_wire(&wire_info).expect("round trip");
+            assert_eq!(back.post_state_hash, b"POST-STATE".to_vec());
+            assert_eq!(back.deploys.len(), 1);
+            assert_eq!(back.deploys[0].deploy_info.term, "term");
+            assert_eq!(back.deploys[0].report[0].events.len(), 1);
+            assert_eq!(back.block_info.block_hash, "block-hash");
+        }
+
+        /// `propose_response` and `propose_result_response` are where a *domain* `Result` becomes a
+        /// gRPC oneof: `Ok` becomes `Result`, `Err` becomes `Error` carrying every message. A
+        /// handler that mapped both to `Result` would report a failed proposal as successful.
+        #[test]
+        fn a_domain_result_becomes_the_right_response_variant() {
+            let ok = propose_response(Ok("proposed".to_string()));
+            match ok.message.expect("a message") {
+                propose_response::Message::Result(s) => assert_eq!(s, "proposed"),
+                propose_response::Message::Error(e) => panic!("expected Result, got {e:?}"),
+            }
+
+            let err = propose_response(Err(ServiceError {
+                messages: vec!["no".to_string(), "way".to_string()],
+            }));
+            match err.message.expect("a message") {
+                propose_response::Message::Error(e) => {
+                    assert_eq!(e.messages, vec!["no".to_string(), "way".to_string()]);
+                }
+                propose_response::Message::Result(s) => panic!("expected Error, got {s}"),
+            }
+
+            // The result-response variant is a different oneof with the same shape.
+            let ok = propose_result_response(Ok("done".to_string()));
+            match ok.message.expect("a message") {
+                propose_result_response::Message::Result(s) => assert_eq!(s, "done"),
+                propose_result_response::Message::Error(e) => panic!("expected Result, got {e:?}"),
+            }
+            let err = propose_result_response(Err(ServiceError::new("bad")));
+            match err.message.expect("a message") {
+                propose_result_response::Message::Error(e) => assert_eq!(e.messages, vec!["bad"]),
+                propose_result_response::Message::Result(s) => panic!("expected Error, got {s}"),
+            }
+
+            // `to_tonic_service_error` carries the messages through unchanged.
+            let converted = to_tonic_service_error(ServiceError::new("x"));
+            assert_eq!(converted.messages, vec!["x"]);
+        }
     }
 }

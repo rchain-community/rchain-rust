@@ -1,0 +1,168 @@
+// Bilateral exchange escrow — a contract on the cross-shard invoke primitive
+// ========================================================================
+// Issue #33, "Exchange support": a pre-funded escrow on each shard, with a
+// fixed exchange rate. A cross-shard call is a *remote signed deploy* (see
+// rchain-community/rchain-rust docs/src/node/shard-invoke.md); the caller's
+// `deployerId` on the far shard is the same account, so an escrow can gate its
+// `consume` on the caller's own unforgeable identity.
+//
+// Deploy one instance per shard with `"deploy"`, giving it the peer escrow's
+// registry URI. Then a client moves value by two signed deploys from its own
+// key:
+//
+//   1. remote consume on the far shard (the far escrow's caller is *you*):
+//        $at(farShard, escrowB)!("consume", "usd", 100, *rB)
+//   2. local deposit on the home shard:
+//        escrowA!("deposit", "usd", 100, *rA)
+//
+// The two legs are separate transactions and are NOT atomic across shards, so
+// each escrow is *individually* conserved and `deposit`/`consume` are
+// idempotent per deploy. The joint closure is a monitor the contract runs with
+// `rho:qucalc:verify` (`"check"`), not a precondition of a single atomic move.
+//
+// Security is capability security, and it is the whole proof:
+//   * no method pays the operator; the escrow holds no ambient authority;
+//   * the rate is fixed at deploy;
+//   * only the configured counterparty may `consume`, keyed by `*deployerId`;
+//   * `consume` refuses to overdraw, so no side can drain the other.
+//
+// No REV is ever touched: `token` is the invoking token's own contract URI and
+// cross-shard REV movement is explicitly out of scope.
+
+new
+  ShardExchange,
+  insertArbitrary(`rho:registry:insertArbitrary`),
+  lookup(`rho:registry:lookup`),
+  verify(`rho:qucalc:verify`),
+  deployerId(`rho:rchain:deployerId`)
+in {
+  // escrows : Map<escrowId, {owner, token, rate, balance, counterparty, peerEscrow, cap}>
+  new escrowsCh in {
+    escrowsCh!({}) |
+
+    // Deploy an escrow. The deployer becomes its owner; the rate is fixed here.
+    // `counterparty` is the other side's public key; `peerEscrow` is the other
+    // shard's escrow registry URI (used only by the `check` monitor).
+    contract ShardExchange(@"deploy", @escrowId, @token, @rate, @counterparty, @peerEscrow, ret) = {
+      for (@escrows <- escrowsCh) {
+        if (escrows.get(escrowId) == Nil) {
+          new capCh in {
+            insertArbitrary!({"escrow": escrowId, "owner": *deployerId}, *capCh) |
+            for (@capUri <- capCh) {
+              escrowsCh!(escrows.set(escrowId, {
+                "owner": *deployerId,
+                "token": token,
+                "rate": rate,
+                "balance": 0,
+                "counterparty": counterparty,
+                "peerEscrow": peerEscrow,
+                "cap": capUri
+              })) |
+              ret!(capUri)
+            }
+          }
+        } else {
+          escrowsCh!(escrows) | ret!(Nil)          // id taken
+        }
+      }
+    } |
+
+    // Fund the local escrow. Only the owner's key may deposit.
+    contract ShardExchange(@"deposit", @escrowId, @amount, ret) = {
+      for (@escrows <- escrowsCh) {
+        if (escrows.get(escrowId) == Nil) {
+          escrowsCh!(escrows) | ret!(("shard-error", "no such escrow"))
+        } else {
+          if (escrows.get(escrowId).get("owner") == *deployerId) {
+            if (amount < 0) {
+              escrowsCh!(escrows) | ret!(("shard-error", "negative amount"))
+            } else {
+              let @balance <- escrows.get(escrowId).get("balance") in {
+                let @updated <- escrows.get(escrowId).set("balance", balance + amount) in {
+                  escrowsCh!(escrows.set(escrowId, updated)) |
+                  ret!(balance + amount)
+                }
+              }
+            }
+          } else {
+            escrowsCh!(escrows) | ret!(("shard-error", "not owner"))
+          }
+        }
+      }
+    } |
+
+    // Consume from the local escrow. Called by the *counterparty* through a
+    // remote deploy, so its `*deployerId` is the counterparty's own key. Refuses
+    // to overdraw; conservation is held per escrow.
+    contract ShardExchange(@"consume", @escrowId, @amount, ret) = {
+      for (@escrows <- escrowsCh) {
+        if (escrows.get(escrowId) == Nil) {
+          escrowsCh!(escrows) | ret!(("shard-error", "no such escrow"))
+        } else {
+          if (escrows.get(escrowId).get("counterparty") == *deployerId) {
+            if (amount < 0) {
+              escrowsCh!(escrows) | ret!(("shard-error", "negative amount"))
+            } else {
+              if (amount > escrows.get(escrowId).get("balance")) {
+                escrowsCh!(escrows) | ret!(("shard-error", "insufficient balance"))
+              } else {
+                let @balance <- escrows.get(escrowId).get("balance") in {
+                  let @updated <- escrows.get(escrowId).set("balance", balance - amount) in {
+                    escrowsCh!(escrows.set(escrowId, updated)) |
+                    ret!(balance - amount)
+                  }
+                }
+              }
+            }
+          } else {
+            escrowsCh!(escrows) | ret!(("shard-error", "not counterparty"))
+          }
+        }
+      }
+    } |
+
+    // Read the local balance (anyone holding the escrow URI).
+    contract ShardExchange(@"balance", @escrowId, ret) = {
+      for (@escrows <- escrowsCh) {
+        if (escrows.get(escrowId) == Nil) {
+          escrowsCh!(escrows) | ret!(("shard-error", "no such escrow"))
+        } else {
+          escrowsCh!(escrows) | ret!(escrows.get(escrowId).get("balance"))
+        }
+      }
+    } |
+
+    // Read the fixed parameters (rate, token, peer escrow URI).
+    contract ShardExchange(@"inspect", @escrowId, ret) = {
+      for (@escrows <- escrowsCh) {
+        if (escrows.get(escrowId) == Nil) {
+          escrowsCh!(escrows) | ret!(("shard-error", "no such escrow"))
+        } else {
+          escrowsCh!(escrows) | ret!({
+            "token": escrows.get(escrowId).get("token"),
+            "rate": escrows.get(escrowId).get("rate"),
+            "balance": escrows.get(escrowId).get("balance"),
+            "peerEscrow": escrows.get(escrowId).get("peerEscrow")
+          })
+        }
+      }
+    } |
+
+    // Re-check this escrow capability with the node's QLF verifier. The joint
+    // closure of the two escrow URIs is a monitor over committed facts, not a
+    // transport guarantee (see the design page's "Honest consequence").
+    contract ShardExchange(@"check", @escrowId, ret) = {
+      for (@escrows <- escrowsCh) {
+        if (escrows.get(escrowId) == Nil) {
+          escrowsCh!(escrows) | ret!(("shard-error", "no such escrow"))
+        } else {
+          new ch in {
+            escrowsCh!(escrows) |
+            verify!(escrows.get(escrowId).get("cap"), *ch) |
+            for (@ok <- ch) { ret!(ok) }
+          }
+        }
+      }
+    }
+  }
+}

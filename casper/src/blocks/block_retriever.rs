@@ -255,8 +255,10 @@ impl BlockRetriever {
         state.remove(hash);
         let is_received = *state != old;
         if is_received {
-            self.log
-                .info(self.log_source, &format!("Block {} marked as received.", hash.to_hex()));
+            self.log.info(
+                self.log_source,
+                &format!("Block {} marked as received.", hash.to_hex()),
+            );
         }
     }
 
@@ -268,7 +270,10 @@ impl BlockRetriever {
         if !keys.is_empty() {
             self.log.debug(
                 self.log_source,
-                &format!("Running BlockRetriever maintenance ({} items unexpired).", keys.len()),
+                &format!(
+                    "Running BlockRetriever maintenance ({} items unexpired).",
+                    keys.len()
+                ),
             );
         }
         for hash in keys {
@@ -277,7 +282,10 @@ impl BlockRetriever {
             if expired {
                 self.log.debug(
                     self.log_source,
-                    &format!("Casper loop: checking if should re-request {}.", hash.to_hex()),
+                    &format!(
+                        "Casper loop: checking if should re-request {}.",
+                        hash.to_hex()
+                    ),
                 );
                 self.try_rerequest(hash, requested).await;
             }
@@ -415,7 +423,11 @@ mod tests {
     fn admit_hash_state_ignores_peer_already_in_waiting_list() {
         let p = peer("peer", 40400);
         let mut state = set(&[1]);
-        state.get_mut(&hash(1)).unwrap().waiting_list.push(p.clone());
+        state
+            .get_mut(&hash(1))
+            .unwrap()
+            .waiting_list
+            .push(p.clone());
         let (_, result) = admit_hash_state(&state, &hash(1), 0, Some(&p));
         assert_eq!(result.status, AdmitHashStatus::Ignore);
     }
@@ -450,8 +462,7 @@ mod tests {
             self.broadcasts.lock().unwrap().push((peers.to_vec(), msg));
             peers.iter().map(|_| Ok(())).collect()
         }
-        async fn stream(&self, _peers: &[PeerNode], _blob: rchain_comm::transport::chunker::Blob) {
-        }
+        async fn stream(&self, _peers: &[PeerNode], _blob: rchain_comm::transport::chunker::Blob) {}
     }
 
     fn conf(local: &PeerNode) -> RPConf {
@@ -485,7 +496,13 @@ mod tests {
         let remote = peer("peer", 40400);
         let retriever = retriever(transport.clone(), &local);
 
-        let result = retriever.admit_hash(&hash(1), Some(&remote), AdmitHashReason::HasBlockMessageReceived).await;
+        let result = retriever
+            .admit_hash(
+                &hash(1),
+                Some(&remote),
+                AdmitHashReason::HasBlockMessageReceived,
+            )
+            .await;
         assert!(result.request_block);
         assert!(!result.broadcast_request);
 
@@ -503,7 +520,9 @@ mod tests {
         let local = peer("src", 40400);
         let retriever = retriever(transport.clone(), &local);
 
-        let result = retriever.admit_hash(&hash(1), None, AdmitHashReason::HashBroadcastRecieved).await;
+        let result = retriever
+            .admit_hash(&hash(1), None, AdmitHashReason::HashBroadcastRecieved)
+            .await;
         assert!(result.broadcast_request);
         assert!(!result.request_block);
 

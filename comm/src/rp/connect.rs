@@ -134,7 +134,12 @@ mod tests {
     use crate::peer_node::NodeIdentifier;
 
     fn peer(id: u8, host: &str) -> PeerNode {
-        PeerNode::from(NodeIdentifier::new(vec![id]), host.into(), rchain_shared::refined::Port::new(40400), rchain_shared::refined::Port::new(40404))
+        PeerNode::from(
+            NodeIdentifier::new(vec![id]),
+            host.into(),
+            rchain_shared::refined::Port::new(40400),
+            rchain_shared::refined::Port::new(40404),
+        )
     }
 
     #[test]
@@ -147,14 +152,20 @@ mod tests {
             add_conn(&[a.clone(), b.clone()], &[c.clone()]),
             vec![a.clone(), b.clone(), c.clone()]
         );
-        assert_eq!(add_conn(&[a.clone(), b.clone()], &[a2.clone()]), vec![b, a2]);
+        assert_eq!(
+            add_conn(&[a.clone(), b.clone()], &[a2.clone()]),
+            vec![b, a2]
+        );
     }
 
     #[test]
     fn remove_conn_removes_by_id() {
         let a = peer(1, "a");
         let b = peer(2, "b");
-        assert_eq!(remove_conn(&[a.clone(), b.clone()], &[b.clone()]), vec![a.clone()]);
+        assert_eq!(
+            remove_conn(&[a.clone(), b.clone()], &[b.clone()]),
+            vec![a.clone()]
+        );
         assert_eq!(
             remove_conn(&[a.clone(), b.clone()], &[peer(9, "x")]),
             vec![a, b]

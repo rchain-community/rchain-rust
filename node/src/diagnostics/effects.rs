@@ -137,12 +137,18 @@ impl Metrics for MetricsRegistry {
 
     fn increment_sampler(&self, source: &Source, name: &str, delta: i64) {
         let mut inner = self.lock();
-        *inner.range_samplers.entry(Self::key(source, name)).or_default() += delta;
+        *inner
+            .range_samplers
+            .entry(Self::key(source, name))
+            .or_default() += delta;
     }
 
     fn sample(&self, source: &Source, name: &str) {
         let mut inner = self.lock();
-        inner.range_samplers.entry(Self::key(source, name)).or_default();
+        inner
+            .range_samplers
+            .entry(Self::key(source, name))
+            .or_default();
     }
 
     fn set_gauge(&self, source: &Source, name: &str, value: i64) {

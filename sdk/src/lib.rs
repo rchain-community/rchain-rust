@@ -10,3 +10,6 @@ pub mod consensus;
 pub mod dag;
 pub mod error;
 pub mod primitive;
+
+#[cfg(test)]
+mod property_tests;

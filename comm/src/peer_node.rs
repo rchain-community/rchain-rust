@@ -140,7 +140,8 @@ impl PeerNode {
         let protocol = Port::new(protocol.ok_or_else(err)?);
         let discovery = Port::new(discovery.ok_or_else(err)?);
         Ok(PeerNode::from(
-            NodeIdentifier::from_hex(key_hex).map_err(|e| crate::errors::CommError::ParseError(e))?,
+            NodeIdentifier::from_hex(key_hex)
+                .map_err(|e| crate::errors::CommError::ParseError(e))?,
             host.to_string(),
             protocol,
             discovery,
@@ -167,7 +168,12 @@ mod tests {
 
     #[test]
     fn to_address_formats_rnode_uri() {
-        let peer = PeerNode::from(NodeIdentifier::new(vec![1, 2, 3]), "example.com".into(), rchain_shared::refined::Port::new(40400), rchain_shared::refined::Port::new(40404));
+        let peer = PeerNode::from(
+            NodeIdentifier::new(vec![1, 2, 3]),
+            "example.com".into(),
+            rchain_shared::refined::Port::new(40400),
+            rchain_shared::refined::Port::new(40404),
+        );
         assert_eq!(
             peer.to_address(),
             "rnode://010203@example.com?protocol=40400&discovery=40404"
@@ -187,14 +193,23 @@ mod tests {
 
     #[test]
     fn from_hex_rejects_malformed_input() {
-        assert!(NodeIdentifier::from_hex("abc").is_err(), "odd-length must be rejected");
-        assert!(NodeIdentifier::from_hex("zz").is_err(), "non-hex must be rejected");
+        assert!(
+            NodeIdentifier::from_hex("abc").is_err(),
+            "odd-length must be rejected"
+        );
+        assert!(
+            NodeIdentifier::from_hex("zz").is_err(),
+            "non-hex must be rejected"
+        );
     }
 
     #[test]
     fn from_address_rejects_malformed_uris() {
         assert!(PeerNode::from_address("not-an-rnode-uri").is_err());
         assert!(PeerNode::from_address("rnode://zz@example.com?protocol=1&discovery=2").is_err());
-        assert!(PeerNode::from_address("rnode://0102@example.com").is_err(), "missing query");
+        assert!(
+            PeerNode::from_address("rnode://0102@example.com").is_err(),
+            "missing query"
+        );
     }
 }

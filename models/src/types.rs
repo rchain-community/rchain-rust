@@ -379,7 +379,9 @@ fn well_scoped_par<S: Sort>(depth: usize, p: &Par<S>) -> bool {
         && p.exprs.iter().all(|e| well_scoped_expr(depth, e))
         && p.matches.iter().all(|m| well_scoped_match(depth, m))
         && p.bundles.iter().all(|b| well_scoped_par(depth, &b.body))
-        && p.connectives.iter().all(|c| well_scoped_connective(depth, c))
+        && p.connectives
+            .iter()
+            .all(|c| well_scoped_connective(depth, c))
 }
 
 fn well_scoped_send(depth: usize, s: &Send) -> bool {
@@ -389,7 +391,8 @@ fn well_scoped_send(depth: usize, s: &Send) -> bool {
 fn well_scoped_receive_bind(depth: usize, rb: &ReceiveBind) -> bool {
     rb.patterns.iter().all(|p| well_scoped_par(depth, p))
         && well_scoped_par(depth, &rb.source)
-        && rb.remainder
+        && rb
+            .remainder
             .as_ref()
             .map(|v| well_scoped_var(depth, v))
             .unwrap_or(true)
@@ -450,7 +453,8 @@ fn well_scoped_expr(depth: usize, e: &Expr) -> bool {
             .iter()
             .all(|(k, v)| well_scoped_par(depth, k) && well_scoped_par(depth, v)),
         Expr::EMethod(em) => {
-            well_scoped_par(depth, &em.target) && em.arguments.iter().all(|p| well_scoped_par(depth, p))
+            well_scoped_par(depth, &em.target)
+                && em.arguments.iter().all(|p| well_scoped_par(depth, p))
         }
     }
 }
@@ -518,7 +522,9 @@ impl From<WellScoped> for Par {
 /// The number of free variables a pattern binds (Law 5, `BindsAtMostOnce`): a non-negative count,
 /// carried by the `free_count` fields of `ReceiveBind`/`MatchCase`. The normalizer computes it as the
 /// number of *distinct* free variables in the pattern, so each is bound at most once.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
+)]
 #[serde(try_from = "i32", into = "i32")]
 pub struct FreeCount(i32);
 
@@ -771,11 +777,13 @@ mod tests {
             matches: vec![Match {
                 target: Box::new(g_int(1).quote()),
                 cases: vec![MatchCase {
-                    pattern: Box::new(Par {
-                        exprs: vec![Expr::EVar(Box::new(Var::FreeVar(0)))],
-                        ..Default::default()
-                    }
-                    .quote()),
+                    pattern: Box::new(
+                        Par {
+                            exprs: vec![Expr::EVar(Box::new(Var::FreeVar(0)))],
+                            ..Default::default()
+                        }
+                        .quote(),
+                    ),
                     source: Box::new(Par::default()),
                     free_count: FreeCount::from_nonneg(1),
                 }],

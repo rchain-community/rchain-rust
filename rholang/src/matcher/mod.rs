@@ -15,5 +15,5 @@ pub mod spatial_matcher;
 /// The mapping from free-variable levels to the `Par`s they capture (port of `FreeMap`).
 pub type FreeMap = BTreeMap<i32, Par>;
 
-pub use spatial_matcher::{spatial_match, spatial_match_result, MatchableTerm};
 pub(crate) use spatial_matcher::fold_match;
+pub use spatial_matcher::{spatial_match, spatial_match_result, MatchableTerm};

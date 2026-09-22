@@ -21,15 +21,25 @@ impl fmt::Display for ProposeStatus {
         match self {
             ProposeStatus::ProposeSuccess => write!(f, "Propose succeed: Valid"),
             ProposeStatus::NoNewDeploys => write!(f, "Proposal failed: NoNewDeploys"),
-            ProposeStatus::InternalDeployError => write!(f, "Proposal failed: internal deploy error"),
+            ProposeStatus::InternalDeployError => {
+                write!(f, "Proposal failed: internal deploy error")
+            }
             ProposeStatus::NotBonded => write!(f, "Proposal failed: ReadOnlyMode"),
             ProposeStatus::NotEnoughNewBlocks => {
-                write!(f, "Proposal failed: Must wait for more blocks from other validators")
+                write!(
+                    f,
+                    "Proposal failed: Must wait for more blocks from other validators"
+                )
             }
             ProposeStatus::TooFarAheadOfLastFinalized => {
-                write!(f, "Proposal failed: too far ahead of the last finalized block")
+                write!(
+                    f,
+                    "Proposal failed: too far ahead of the last finalized block"
+                )
             }
-            ProposeStatus::BugError(reason) => write!(f, "Proposal failed: internal error ({reason})"),
+            ProposeStatus::BugError(reason) => {
+                write!(f, "Proposal failed: internal error ({reason})")
+            }
         }
     }
 }
@@ -62,7 +72,13 @@ mod tests {
 
     #[test]
     fn propose_status_displays() {
-        assert_eq!(ProposeStatus::NoNewDeploys.to_string(), "Proposal failed: NoNewDeploys");
-        assert_eq!(ProposeStatus::ProposeSuccess.to_string(), "Propose succeed: Valid");
+        assert_eq!(
+            ProposeStatus::NoNewDeploys.to_string(),
+            "Proposal failed: NoNewDeploys"
+        );
+        assert_eq!(
+            ProposeStatus::ProposeSuccess.to_string(),
+            "Propose succeed: Valid"
+        );
     }
 }

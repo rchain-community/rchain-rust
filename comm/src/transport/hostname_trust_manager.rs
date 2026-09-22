@@ -23,7 +23,9 @@ pub fn public_address_of_cert(cert: &CertificateDer<'_>) -> Option<Vec<u8>> {
     if point.len() != 65 || point[0] != 0x04 {
         return None;
     }
-    Some(rchain_crypto::util::certificate_helper::public_address(&point[1..]))
+    Some(rchain_crypto::util::certificate_helper::public_address(
+        &point[1..],
+    ))
 }
 
 fn ring_provider() -> Arc<CryptoProvider> {
@@ -70,10 +72,15 @@ impl ServerCertVerifier for NodeIdServerVerifier {
         }
         let expected = match server_name {
             ServerName::DnsName(dns) => dns.as_ref().as_bytes(),
-            _ => return Err(Error::General("expected a DNS server name (peer id)".into())),
+            _ => {
+                return Err(Error::General(
+                    "expected a DNS server name (peer id)".into(),
+                ))
+            }
         };
-        let address = public_address_of_cert(end_entity)
-            .ok_or_else(|| Error::General("certificate's public key has the wrong algorithm".into()))?;
+        let address = public_address_of_cert(end_entity).ok_or_else(|| {
+            Error::General("certificate's public key has the wrong algorithm".into())
+        })?;
         let address_hex = rchain_shared::base16::encode(&address);
         if address_hex.as_bytes() == expected {
             Ok(ServerCertVerified::assertion())
@@ -145,7 +152,9 @@ impl ClientCertVerifier for NodeIdClientVerifier {
         }
         public_address_of_cert(end_entity)
             .map(|_| ClientCertVerified::assertion())
-            .ok_or_else(|| Error::General("certificate's public key has the wrong algorithm".into()))
+            .ok_or_else(|| {
+                Error::General("certificate's public key has the wrong algorithm".into())
+            })
     }
 
     fn client_auth_mandatory(&self) -> bool {
@@ -261,7 +270,10 @@ mod tests {
         // A fixed 40-hex peer id that cannot equal the randomly-generated cert's address.
         let name = ServerName::try_from("deadbeefdeadbeefdeadbeefdeadbeefdeadbeef").unwrap();
         let result = verifier.verify_server_cert(&der, &[], &name, &[], UnixTime::now());
-        assert!(result.is_err(), "a server cert whose address != the peer id must be rejected");
+        assert!(
+            result.is_err(),
+            "a server cert whose address != the peer id must be rejected"
+        );
     }
 
     #[test]

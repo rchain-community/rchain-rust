@@ -14,7 +14,9 @@ use rchain_shared::refined::{BlockHeight, NonNegI64, SeqNum};
 /// The maximum block number among the given metadata, or `-1` if empty (port of
 /// `maxBlockNumberMetadata`).
 pub fn max_block_number_metadata(blocks: &[BlockMetadata]) -> i64 {
-    blocks.iter().fold(-1, |acc, b| acc.max(i64::from(b.block_num)))
+    blocks
+        .iter()
+        .fold(-1, |acc, b| acc.max(i64::from(b.block_num)))
 }
 
 /// Look up a block's (non-failed) parent metadata (port of `ProtoUtil.getParentsMetadata`).
@@ -75,6 +77,7 @@ pub fn unsigned_block_proto(
     bonds: BTreeMap<Validator, NonNegI64>,
     rejected_deploys: BTreeSet<Vec<u8>>,
     state: RholangState,
+    timestamp: i64,
 ) -> BlockMessage {
     let block = BlockMessage {
         version,
@@ -93,6 +96,7 @@ pub fn unsigned_block_proto(
         state,
         sig_algorithm: "secp256k1".to_string(),
         sig: Vec::new(),
+        timestamp,
     };
     let hash = hash_block(&block);
     BlockMessage {
@@ -126,6 +130,7 @@ mod tests {
             },
             sig_algorithm: "secp256k1".to_string(),
             sig: vec![],
+            timestamp: 0,
         }
     }
 
@@ -142,6 +147,16 @@ mod tests {
     fn hash_block_changes_with_body() {
         let mut a = block();
         a.block_number = 1.try_into().unwrap();
+        let b = block();
+        assert_ne!(hash_block(&a), hash_block(&b));
+    }
+
+    #[test]
+    fn hash_block_changes_with_timestamp() {
+        // The informational timestamp is part of the header, so the block hash covers it. This is
+        // why adding the field invalidates prior blocks (and why it is a pre-launch change).
+        let mut a = block();
+        a.timestamp = 1_700_000_000_000;
         let b = block();
         assert_ne!(hash_block(&a), hash_block(&b));
     }

@@ -35,11 +35,13 @@ const POS_RHOX: &str = include_str!("resources/Pos.rhox");
 const REGISTRY_PK: &str = "5a0bde2f5857124b1379c78535b07a278e3b9cefbcacc02e62ab3294c02765a1";
 const LIST_OPS_PK: &str = "867c21c6a3245865444d80e49cac08a1c11e23b35965b566bbe9f49bb9897511";
 const EITHER_PK: &str = "5248f8913f8572d8227a3c7787b54bd8263389f7209adc1422e36bb2beb160dc";
-const NON_NEGATIVE_NUMBER_PK: &str = "e33c9f1e925819d04733db4ec8539a84507c9e9abd32822059349449fe03997d";
+const NON_NEGATIVE_NUMBER_PK: &str =
+    "e33c9f1e925819d04733db4ec8539a84507c9e9abd32822059349449fe03997d";
 const MAKE_MINT_PK: &str = "de19d53f28d4cdee74bad062342d8486a90a652055f3de4b2efa5eb2fccc9d53";
 const AUTH_KEY_PK: &str = "f450b26bac63e5dd9343cd46f5fae1986d367a893cd21eedd98a4cb3ac699abc";
 const REV_VAULT_PK: &str = "27e5718bf55dd673cc09f13c2bcf12ed7949b178aef5dcb6cd492ad422d05e9d";
-const MULTI_SIG_REV_VAULT_PK: &str = "2a2eaa76d6fea9f502629e32b0f8eea19b9de8e2188ec0d589fcafa98fb1f031";
+const MULTI_SIG_REV_VAULT_PK: &str =
+    "2a2eaa76d6fea9f502629e32b0f8eea19b9de8e2188ec0d589fcafa98fb1f031";
 const POS_GENERATOR_PK: &str = "a9585a0687761139ab3587a4938fb5ab9fcba675c79fefba889859674046d4a5";
 const REV_GENERATOR_PK: &str = "a06959868e39bb3a8502846686a23119716ecd001700baf9e2ecfa0dbf1a3247";
 
@@ -98,6 +100,7 @@ impl StandardDeploys {
     ) -> Result<SignedDeployData, String> {
         let sk = PrivateKey::new(base16::unsafe_decode(private_key_hex));
         let data = DeployData {
+            attachments: Vec::new(),
             term,
             timestamp,
             phlo_price: 0,
@@ -130,11 +133,17 @@ impl StandardDeploys {
         ])
     }
 
-    pub fn registry_generator(registry: &Registry, shard_id: &str) -> Result<SignedDeployData, String> {
+    pub fn registry_generator(
+        registry: &Registry,
+        shard_id: &str,
+    ) -> Result<SignedDeployData, String> {
         let term = load_template(
             "Registry.rho",
             REGISTRY_RHO,
-            &[("systemContractPubKey", registry.system_contract_pub_key.as_str())],
+            &[(
+                "systemContractPubKey",
+                registry.system_contract_pub_key.as_str(),
+            )],
         );
         Self::to_deploy(term, REGISTRY_PK, REGISTRY_TIMESTAMP, shard_id)
     }
@@ -219,7 +228,10 @@ impl StandardDeploys {
             ("initialBonds", initial_bonds.as_str()),
             ("epochLength", epoch_length.as_str()),
             ("quarantineLength", quarantine_length.as_str()),
-            ("numberOfActiveValidators", number_of_active_validators.as_str()),
+            (
+                "numberOfActiveValidators",
+                number_of_active_validators.as_str(),
+            ),
             ("posMultiSigPublicKeys", pos_multi_sig_public_keys.as_str()),
             ("posMultiSigQuorum", pos_multi_sig_quorum.as_str()),
             ("posVaultPubKey", pos_vault_pub_key.as_str()),
@@ -260,5 +272,141 @@ mod tests {
     #[test]
     fn system_public_keys_has_ten_entries() {
         assert_eq!(StandardDeploys::system_public_keys().unwrap().len(), 10);
+    }
+}
+
+/// The standard-contract builders, asserted as a table: each must produce a **signed** deploy for
+/// the requested shard, carrying a non-empty term — the essence of "the genesis deploy set is
+/// complete and shard-scoped" (Law 26).
+#[cfg(test)]
+mod builder_tests {
+    use super::*;
+
+    use crate::genesis::contracts::{ProofOfStake, Validator};
+
+    /// Assert the shared shape of a standard deploy: the term is non-empty, the shard id is the one
+    /// asked for, it is signed by the contract's own key (which is what `system_public_keys`
+    /// advertises), the phlo limit is the maximum (a genesis deploy must not run out) and the phlo
+    /// price is zero.
+    fn assert_standard(deploy: &SignedDeployData, shard_id: &str) {
+        assert!(
+            !deploy.data.term.is_empty(),
+            "a standard deploy must carry a term"
+        );
+        assert_eq!(deploy.data.shard_id, shard_id);
+        assert_eq!(deploy.data.phlo_price, 0, "genesis deploys are free");
+        assert_eq!(deploy.data.phlo_limit, MAX_VALUE, "…and unbounded in phlo");
+        assert!(!deploy.sig.is_empty(), "the deploy is signed");
+        assert_eq!(deploy.sig_algorithm, "secp256k1");
+        assert_eq!(deploy.deployer.len(), 65, "an uncompressed public key");
+        assert!(
+            crate::construct_deploy::source_deploy(
+                &deploy.data.term,
+                deploy.data.timestamp,
+                deploy.data.phlo_limit,
+                deploy.data.phlo_price,
+                &PrivateKey::new(vec![1u8; 32]),
+                deploy.data.valid_after_block_number,
+                &deploy.data.shard_id,
+            )
+            .is_ok(),
+            "the term is well-formed enough to sign"
+        );
+    }
+
+    /// Every parameterless builder (the ten standard contracts) produces a standard deploy.
+    #[test]
+    fn every_standard_contract_builder_produces_a_signed_deploy() {
+        let builders: Vec<(&str, SignedDeployData)> = vec![
+            (
+                "registry",
+                StandardDeploys::registry_generator(
+                    &Registry {
+                        system_contract_pub_key: "aa".repeat(65),
+                    },
+                    "/root",
+                )
+                .expect("registry"),
+            ),
+            (
+                "list_ops",
+                StandardDeploys::list_ops("/root").expect("list_ops"),
+            ),
+            ("either", StandardDeploys::either("/root").expect("either")),
+            (
+                "non_negative_number",
+                StandardDeploys::non_negative_number("/root").expect("non_negative_number"),
+            ),
+            (
+                "make_mint",
+                StandardDeploys::make_mint("/root").expect("make_mint"),
+            ),
+            (
+                "auth_key",
+                StandardDeploys::auth_key("/root").expect("auth_key"),
+            ),
+            (
+                "rev_vault",
+                StandardDeploys::rev_vault("/root").expect("rev_vault"),
+            ),
+            (
+                "multi_sig_rev_vault",
+                StandardDeploys::multi_sig_rev_vault("/root").expect("multi_sig_rev_vault"),
+            ),
+        ];
+        // Each builder signs with a *different* key, so a copy-paste that reused one key would show
+        // up as a repeated deployer.
+        let mut deployers: Vec<Vec<u8>> = Vec::new();
+        for (name, deploy) in &builders {
+            assert_standard(deploy, "/root");
+            assert!(
+                !deployers.contains(&deploy.deployer),
+                "{name} reuses another contract's key"
+            );
+            deployers.push(deploy.deployer.clone());
+        }
+        assert_eq!(builders.len(), 8);
+    }
+
+    /// The two parameterised generators: `pos_generator` substitutes the PoS parameters into the
+    /// `Pos.rhox` template (so the term must contain them), and `rev_generator` renders the vault
+    /// list — both scoped to the requested shard.
+    #[test]
+    fn the_pos_and_rev_generators_substitute_their_parameters() {
+        let pos = ProofOfStake {
+            minimum_bond: 3,
+            maximum_bond: 100,
+            validators: vec![Validator {
+                pk: PublicKey::new(rchain_shared::base16::unsafe_decode(&"ab".repeat(65))),
+                stake: rchain_shared::refined::NonNegI64::try_from(42).expect("non-negative"),
+            }],
+            epoch_length: 10,
+            quarantine_length: 5,
+            number_of_active_validators: 7,
+            pos_multi_sig_public_keys: Vec::new(),
+            pos_multi_sig_quorum: 1,
+            pos_vault_pub_key: "cd".repeat(65),
+        };
+        let deploy = StandardDeploys::pos_generator(&pos, "/root/child").expect("pos_generator");
+        assert_standard(&deploy, "/root/child");
+        for expected in ["10", "5", "7"] {
+            assert!(
+                deploy.data.term.contains(expected),
+                "the template must carry the PoS parameter {expected}"
+            );
+        }
+
+        // The vault generator takes the vault list, the timestamp it is given and the
+        // last-batch flag; an empty list is a legal call (a shard with no initial vaults).
+        let deploy =
+            StandardDeploys::rev_generator(&[], 1234, false, "/root").expect("rev_generator");
+        assert_standard(&deploy, "/root");
+        assert_eq!(deploy.data.timestamp, 1234, "the timestamp is the caller's");
+        let closing =
+            StandardDeploys::rev_generator(&[], 1234, true, "/root").expect("rev_generator");
+        assert_ne!(
+            deploy.data.term, closing.data.term,
+            "the last batch renders differently from an intermediate one"
+        );
     }
 }

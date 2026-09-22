@@ -66,7 +66,12 @@ mod tests {
 
     #[test]
     fn round_trips_sample_arrays() {
-        for input in [&[][..], &[0x00][..], &[0xab][..], &[0x12, 0x34, 0xde, 0xf0][..]] {
+        for input in [
+            &[][..],
+            &[0x00][..],
+            &[0xab][..],
+            &[0x12, 0x34, 0xde, 0xf0][..],
+        ] {
             assert_eq!(decode(&encode(input)).unwrap(), input);
         }
     }

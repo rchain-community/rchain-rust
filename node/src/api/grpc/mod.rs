@@ -37,7 +37,8 @@ impl GrpcServices {
         enable_reporting: bool,
     ) -> GrpcServices {
         let repl = ReplGrpcService::new(runtime);
-        let deploy = DeployGrpcServiceV1::new(block_api.clone(), block_report_api, enable_reporting);
+        let deploy =
+            DeployGrpcServiceV1::new(block_api.clone(), block_report_api, enable_reporting);
         let propose = ProposeGrpcServiceV1::new(block_api);
         GrpcServices {
             deploy,
@@ -45,7 +46,6 @@ impl GrpcServices {
             repl,
         }
     }
-
 }
 
 /// The deploy request rate limit (requests/second) applied to the external (unauthenticated) gRPC
@@ -58,8 +58,8 @@ pub async fn serve_deploy(
     addr: std::net::SocketAddr,
     max_message_size: usize,
 ) -> Result<(), String> {
-    use rchain_models::proto::casper::deploy_service_server::DeployServiceServer;
     use ::tonic::service::interceptor::InterceptedService;
+    use rchain_models::proto::casper::deploy_service_server::DeployServiceServer;
 
     let limiter = Arc::new(RateLimiter::new(DEFAULT_API_RATE_LIMIT_PER_SEC));
     let server = DeployServiceServer::new(deploy).max_decoding_message_size(max_message_size);
@@ -67,7 +67,9 @@ pub async fn serve_deploy(
         if limiter.allow() {
             Ok(req)
         } else {
-            Err(::tonic::Status::resource_exhausted("deploy rate limit exceeded"))
+            Err(::tonic::Status::resource_exhausted(
+                "deploy rate limit exceeded",
+            ))
         }
     });
 

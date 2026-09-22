@@ -37,7 +37,11 @@ fn double_to_string(value: f64) -> String {
 pub fn time<A>(mut log: impl FnMut(String), tag: &str, block: impl FnOnce() -> A) -> A {
     let t0 = Instant::now();
     let a = block();
-    log(format!("{} [{}]", tag, show_time(t0.elapsed().as_nanos() as i64)));
+    log(format!(
+        "{} [{}]",
+        tag,
+        show_time(t0.elapsed().as_nanos() as i64)
+    ));
     a
 }
 

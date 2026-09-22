@@ -4,14 +4,16 @@ use std::collections::BTreeSet;
 
 use rchain_block_storage::dag::dag_storage::{BlockDagStorage, DeployId};
 use rchain_crypto::hash::blake2b256_hash::Blake2b256Hash;
+use rchain_models::block::state_hash::StateHash;
 use rchain_models::block_hash::BlockHash;
 use rchain_models::block_version::CURRENT;
 use rchain_models::casper::protocol::casper_message::{
     ProcessedDeploy, ProcessedSystemDeploy, RholangState, SignedDeployData,
 };
 use rchain_models::validator::Validator;
-use rchain_shared::refined::{BlockHeight, NonNegI64, SeqNum};
 use rchain_rholang::system_processes::BlockData;
+use rchain_shared::refined::{BlockHeight, NonNegI64, SeqNum};
+use rchain_shared::time::current_millis;
 
 use crate::block_random_seed::BlockRandomSeed;
 use crate::interpreter_util::compute_deploys_checkpoint;
@@ -52,9 +54,11 @@ impl BlockCreator {
         suppress_attestation: bool,
     ) -> Result<BlockCreatorResult, String> {
         let pre_state_hash = pre_state.pre_state_hash;
-        let parents: Vec<BlockHash> =
-            pre_state.justifications.iter().map(|m| m.block_hash).collect();
-        let bonds_map = pre_state.fringe_bonds_map.clone();
+        let parents: Vec<BlockHash> = pre_state
+            .justifications
+            .iter()
+            .map(|m| m.block_hash)
+            .collect();
         let block_num = pre_state
             .justifications
             .iter()
@@ -70,10 +74,15 @@ impl BlockCreator {
             .find(|m| m.sender == creators_validator)
             .map(|m| m.seq_num + NonNegI64::one())
             .unwrap_or_else(SeqNum::zero);
+        // Informational block timestamp: the proposer's wall clock, chosen once and used both for
+        // the block header and for `rho:block:data` during evaluation, so a contract that reads it
+        // sees exactly the value a replayer will (determinism).
+        let block_timestamp = current_millis();
         let block_data = BlockData {
             block_number: block_num,
             sender: creators_pk.clone(),
             seq_num,
+            timestamp: block_timestamp,
         };
         let should_propose = !deploys.is_empty() || !to_slash.is_empty() || change_epoch;
         let finalization = pre_state.fringe_rejected_deploys.clone();
@@ -103,15 +112,14 @@ impl BlockCreator {
             let mut sorted_to_slash: Vec<&Validator> = to_slash.iter().collect();
             sorted_to_slash.sort();
             for (i, v) in sorted_to_slash.into_iter().enumerate() {
-                let seed = rand.split_byte(
-                    u8::try_from(selected.len() + i).map_err(|e| e.to_string())?,
-                );
+                let seed =
+                    rand.split_byte(u8::try_from(selected.len() + i).map_err(|e| e.to_string())?);
                 system_deploys.push(SystemDeploy::slash(v, seed));
             }
             let close_seed = rand.split_byte(
                 u8::try_from(selected.len() + to_slash.len()).map_err(|e| e.to_string())?,
             );
-            system_deploys.push(SystemDeploy::close_block(close_seed));
+            system_deploys.push(SystemDeploy::close_block(i64::from(block_num), close_seed));
 
             Some(
                 compute_deploys_checkpoint(
@@ -142,6 +150,12 @@ impl BlockCreator {
                     deploys: processed_deploys,
                     system_deploys: processed_system_deploys,
                 };
+                // The block's bond cache is the *active* PoS set at the block's post-state. This is
+                // what `Validate::bonds_cache` recomputes, and it is what lets a block change the
+                // validator pool (bond/withdraw/slash) without the block being rejected.
+                let bonds_map = runtime
+                    .compute_bonds(&StateHash::from_slice(post_state_hash.as_bytes()))
+                    .await?;
                 let unsigned_block = unsigned_block_proto(
                     CURRENT,
                     self.shard_id.clone(),
@@ -154,6 +168,7 @@ impl BlockCreator {
                     bonds_map,
                     finalization,
                     state,
+                    block_timestamp,
                 );
                 let signed_block = self
                     .id

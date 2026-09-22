@@ -1,0 +1,107 @@
+// Adapted from rchain-community/rchain-wallet/src/rholang/{initializeMapStore,login,save,load}.rho
+// (GPL-3.0). Adaptations for the Rust node:
+//   * `RevAddress` is bound to the Rust URN `rho:rev:address` (upstream left it a bare name).
+//   * the map store is a private `new` state channel (upstream's `save`/`load` peeked the
+//     `rho:rchain:deployerId` system channel directly, which does not carry a map).
+//
+// Flow: derive the deployer's REV address, keep a per-address "codeDict" map, round-trip a
+// save("hello","world") / load("hello"), and publish the loaded value on the public name "wallet"
+// so `tools/devnet.sh query wallet` reads it end-to-end.
+
+new
+  deployerId(`rho:rchain:deployerId`),
+  deployerIdOps(`rho:rchain:deployerId:ops`),
+  revAddress(`rho:rev:address`),
+  registryInsert(`rho:registry:insertArbitrary`),
+  registryLookup(`rho:registry:lookup`)
+in {
+
+  new mapStore, deployerRevAddrCh in {
+    // mapStore holds { revAddr : { "codeDict" : { k : v } } }, seeded empty.
+    mapStore!({}) |
+
+    // Derive this deployer's REV address once and publish it (peeked by the contracts below).
+    new pubKeyBytesCh, revAddrCh in {
+      deployerIdOps!("pubKeyBytes", *deployerId, *pubKeyBytesCh) |
+      for (@pubKeyBytes <- pubKeyBytesCh) {
+        revAddress!("fromPublicKey", pubKeyBytes, *revAddrCh) |
+        for (@revAddr <- revAddrCh) {
+          deployerRevAddrCh!(revAddr)
+        }
+      }
+    } |
+
+    new initialize, save, load in {
+      // initialize(ret): ensure this deployer has a {"codeDict": {}} entry; return true if it did.
+      contract initialize(ret) = {
+        for (@revAddr <<- deployerRevAddrCh) {
+          for (@map <- mapStore) {
+            match map.get(revAddr) {
+              Nil => { mapStore!(map.set(revAddr, {"codeDict": {}})) | ret!(false) }
+              _   => { mapStore!(map) | ret!(true) }
+            }
+          }
+        }
+      } |
+
+      // save(key, value, ret): set codeDict[key] = value for this deployer; return true.
+      contract save(@key, @value, ret) = {
+        for (@revAddr <<- deployerRevAddrCh) {
+          for (@map <- mapStore) {
+            match map.get(revAddr) {
+              Nil => { mapStore!(map.set(revAddr, {"codeDict": { key: value }})) | ret!(true) }
+              m   => {
+                match m.get("codeDict") {
+                  Nil => { mapStore!(map.set(revAddr, m.set("codeDict", { key: value }))) | ret!(true) }
+                  cd  => { mapStore!(map.set(revAddr, m.set("codeDict", cd.set(key, value)))) | ret!(true) }
+                }
+              }
+            }
+          }
+        }
+      } |
+
+      // load(key, ret): return codeDict[key], or Nil if this deployer/key is absent.
+      contract load(@key, ret) = {
+        for (@revAddr <<- deployerRevAddrCh) {
+          for (@map <- mapStore) {
+            mapStore!(map) |
+            match map.get(revAddr) {
+              Nil => { ret!(Nil) }
+              m   => {
+                match m.get("codeDict") {
+                  Nil => { ret!(Nil) }
+                  cd  => { ret!(cd.get(key)) }
+                }
+              }
+            }
+          }
+        }
+      } |
+
+      // Register save/load in the registry (the r-wallet publish idiom), then run the driver.
+      new saveURI, loadURI in {
+        registryInsert!(bundle+{*save}, *saveURI) |
+        registryInsert!(bundle+{*load}, *loadURI) |
+        for (@saveUri <- saveURI; @loadUri <- loadURI) {
+          // Confirm the registry round-trips by looking the save contract back up.
+          new lookupCh, r1, r2, r3 in {
+            registryLookup!(saveUri, *lookupCh) |
+            for (@(_, _) <- lookupCh) {
+              initialize!(*r1) |
+              for (_ <- r1) {
+                save!("hello", "world", *r2) |
+                for (_ <- r2) {
+                  load!("hello", *r3) |
+                  for (@loaded <- r3) {
+                    @"wallet"!(loaded)
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

@@ -114,10 +114,7 @@ pub async fn apply<F, Fut>(
             let result = match handle.await {
                 Ok(r) => r,
                 Err(e) => {
-                    log.error(
-                        source,
-                        &format!("validator task panicked: {e}"),
-                    );
+                    log.error(source, &format!("validator task panicked: {e}"));
                     continue;
                 }
             };
@@ -127,10 +124,7 @@ pub async fn apply<F, Fut>(
                 Err(ValidateError::Internal(e)) => {
                     log.error(
                         source,
-                        &format!(
-                            "Block {} processing error: {e}",
-                            block.block_hash.to_hex()
-                        ),
+                        &format!("Block {} processing error: {e}", block.block_hash.to_hex()),
                     );
                     continue;
                 }
@@ -158,5 +152,26 @@ pub async fn apply<F, Fut>(
                 ),
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The concurrency cap is never zero: a zero would mean no block is ever validated concurrently —
+    /// or, if it were used as a batch size, that a batch of blocks is never processed at all. The
+    /// host fallback is the only arm that can go wrong here, and it cannot return zero.
+    #[test]
+    fn the_parallel_validation_cap_is_never_zero() {
+        let cap = max_parallel_block_validation();
+        assert!(cap >= 1, "a zero cap would stall block validation: {cap}");
+        assert_eq!(
+            cap,
+            std::thread::available_parallelism()
+                .map(|n| n.get())
+                .unwrap_or(4),
+            "the cap follows the host's parallelism"
+        );
     }
 }

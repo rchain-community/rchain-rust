@@ -43,7 +43,10 @@ fn opt_f64(e: &mut Entries, key: &str, v: Option<f64>) {
 
 fn opt_path(e: &mut Entries, key: &str, v: &Option<PathBuf>) {
     if let Some(v) = v {
-        e.push((key.to_string(), Hocon::String(v.to_string_lossy().into_owned())));
+        e.push((
+            key.to_string(),
+            Hocon::String(v.to_string_lossy().into_owned()),
+        ));
     }
 }
 
@@ -103,7 +106,11 @@ pub fn from_options(options: &Options) -> Hocon {
         flag(&mut e, "protocol-server.no-upnp", run.no_upnp);
         opt_str(&mut e, "protocol-server.host", &run.host);
         opt_i32(&mut e, "protocol-server.port", run.protocol_port);
-        flag(&mut e, "protocol-server.use-random-ports", run.use_random_ports);
+        flag(
+            &mut e,
+            "protocol-server.use-random-ports",
+            run.use_random_ports,
+        );
         flag(
             &mut e,
             "protocol-server.disable-state-exporter",
@@ -173,6 +180,7 @@ pub fn from_options(options: &Options) -> Hocon {
         opt_path(&mut e, "storage.data-dir", &run.data_dir);
 
         opt_str(&mut e, "casper.shard-name", &run.shard_name);
+        opt_str(&mut e, "casper.parent-shard-id", &run.parent_shard_id);
         opt_i32(
             &mut e,
             "casper.max-number-of-parents",
@@ -188,7 +196,11 @@ pub fn from_options(options: &Options) -> Hocon {
             "casper.height-constraint-threshold",
             run.height_constraint_threshold,
         );
-        opt_str(&mut e, "casper.validator-public-key", &run.validator_public_key);
+        opt_str(
+            &mut e,
+            "casper.validator-public-key",
+            &run.validator_public_key,
+        );
         opt_str(
             &mut e,
             "casper.validator-private-key",
@@ -283,6 +295,12 @@ pub fn from_options(options: &Options) -> Hocon {
 
         opt_i32(&mut e, "casper.autogen-shard-size", run.autogen_shard_size);
         opt_i64(&mut e, "casper.min-phlo-price", run.min_phlo_price);
+        if let Some(mode) = &run.effect_scheduler {
+            e.push((
+                "casper.effect-scheduler".to_string(),
+                Hocon::String(mode.as_str().to_string()),
+            ));
+        }
 
         opt_i32(
             &mut e,
@@ -301,15 +319,31 @@ pub fn from_options(options: &Options) -> Hocon {
         );
         opt_str(&mut e, "api-server.host", &run.api_host);
         opt_i32(&mut e, "api-server.port-http", run.api_port_http);
-        opt_i32(&mut e, "api-server.port-admin-http", run.api_port_admin_http);
-        flag(&mut e, "api-server.enable-reporting", run.api_enable_reporting);
+        opt_i32(
+            &mut e,
+            "api-server.port-admin-http",
+            run.api_port_admin_http,
+        );
+        flag(
+            &mut e,
+            "api-server.enable-reporting",
+            run.api_enable_reporting,
+        );
         flag(
             &mut e,
             "api-server.enable-devnet-cors",
             run.api_enable_devnet_cors,
         );
-        opt_i32(&mut e, "api-server.max-blocks-limit", run.api_max_blocks_limit);
-        opt_duration(&mut e, "api-server.keep-alive-time", run.api_keep_alive_time);
+        opt_i32(
+            &mut e,
+            "api-server.max-blocks-limit",
+            run.api_max_blocks_limit,
+        );
+        opt_duration(
+            &mut e,
+            "api-server.keep-alive-time",
+            run.api_keep_alive_time,
+        );
         opt_duration(
             &mut e,
             "api-server.keep-alive-timeout",
@@ -359,4 +393,89 @@ pub fn from_options(options: &Options) -> Hocon {
     }
 
     nested_hash(e)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser as _;
+
+    /// `Hocon` is an enum, not a map: navigating it means matching the `Hash` variant.
+    fn field<'a>(h: &'a Hocon, key: &str) -> Option<&'a Hocon> {
+        match h {
+            Hocon::Hash(map) => map.get(key),
+            _ => None,
+        }
+    }
+
+    fn options(args: &[&str]) -> Options {
+        let mut argv = vec!["rnode"];
+        argv.extend_from_slice(args);
+        Options::try_parse_from(argv).expect("the CLI options parse")
+    }
+
+    /// Only options that were **explicitly supplied** are written. This is what makes the layered
+    /// fallback work at all: an unset flag must leave the key absent so the config file (then
+    /// `defaults.conf`) supplies it — and it is what the shard-config exclusivity check relies on,
+    /// since a mapper that always wrote `casper.shard-name` would make *every* configuration look like
+    /// it set both the scalar and the array form.
+    #[test]
+    fn an_unset_flag_writes_nothing() {
+        let mapped = from_options(&options(&["run", "--standalone"]));
+
+        assert_eq!(
+            field(&mapped, "standalone"),
+            Some(&Hocon::Boolean(true)),
+            "a supplied flag is written"
+        );
+        let casper = field(&mapped, "casper").and_then(|c| field(c, "shard-name"));
+        assert_eq!(
+            casper, None,
+            "an absent flag must not write the key at all: {mapped:?}"
+        );
+    }
+
+    /// A dotted flag becomes a **nested object**, not a flat key with a dot in it: the merge and the
+    /// readers navigate the tree (`get(h, "casper")`), so a flat `"casper.shard-name"` key would be
+    /// invisible to them.
+    #[test]
+    fn a_dotted_flag_becomes_a_nested_object() {
+        let mapped = from_options(&options(&[
+            "run",
+            "--network-id",
+            "testnet",
+            "--shard-name",
+            "child",
+        ]));
+
+        let protocol = field(&mapped, "protocol-server").expect("nested object");
+        assert_eq!(
+            field(protocol, "network-id"),
+            Some(&Hocon::String("testnet".to_string()))
+        );
+
+        let casper = field(&mapped, "casper").expect("nested object");
+        assert_eq!(
+            field(casper, "shard-name"),
+            Some(&Hocon::String("child".to_string())),
+            "the legacy scalar key path is preserved for the CLI"
+        );
+        assert!(
+            field(&mapped, "casper.shard-name").is_none(),
+            "and it is not also written as a flat key"
+        );
+    }
+
+    /// Supplying the scalar shard flags is exactly the shape the config layer rejects when the
+    /// `casper.shards` array is also present — so the mapper's output must contain them when, and
+    /// only when, the operator asked.
+    #[test]
+    fn an_explicit_shard_flag_is_visible_to_the_exclusivity_check() {
+        let mapped = from_options(&options(&["run", "--parent-shard-id", "/root"]));
+        let casper = field(&mapped, "casper").expect("nested object");
+        assert_eq!(
+            field(casper, "parent-shard-id"),
+            Some(&Hocon::String("/root".to_string()))
+        );
+    }
 }

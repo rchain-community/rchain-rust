@@ -49,6 +49,7 @@ mod tests {
                 block_size: String::new(),
                 deploy_count: 0,
                 rejected_deploys: vec![],
+                timestamp: 0,
             },
             deploys: vec![],
             system_deploys: vec![],

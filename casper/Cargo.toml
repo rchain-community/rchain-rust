@@ -23,3 +23,7 @@ rchain-shared = { path = "../shared", features = ["lmdb"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt"] }
+
+[dev-dependencies.proptest]
+# The property sweep (Laws 26–29). Already in `Cargo.lock` — a dev-dependency addition.
+version = "1"

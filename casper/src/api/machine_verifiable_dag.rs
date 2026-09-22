@@ -67,7 +67,9 @@ mod tests {
     async fn builds_edges_from_toposort() {
         let toposort = vec![vec![hash(1), hash(2)]];
         let edges = machine_verifiable_dag(&toposort, |h| {
-            std::future::ready(Ok::<Vec<BlockHash>, String>(vec![hash(h.as_bytes()[0] + 10)]))
+            std::future::ready(Ok::<Vec<BlockHash>, String>(vec![hash(
+                h.as_bytes()[0] + 10,
+            )]))
         })
         .await
         .unwrap();

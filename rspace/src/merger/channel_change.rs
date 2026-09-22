@@ -33,9 +33,18 @@ mod tests {
 
     #[test]
     fn combine_is_associative() {
-        let a = ChannelChange { added: vec![1], removed: vec![2] };
-        let b = ChannelChange { added: vec![3], removed: vec![] };
-        let c = ChannelChange { added: vec![], removed: vec![4] };
+        let a = ChannelChange {
+            added: vec![1],
+            removed: vec![2],
+        };
+        let b = ChannelChange {
+            added: vec![3],
+            removed: vec![],
+        };
+        let c = ChannelChange {
+            added: vec![],
+            removed: vec![4],
+        };
         let ab = ChannelChange::combine(&a, &b);
         let bc = ChannelChange::combine(&b, &c);
         assert_eq!(
@@ -46,7 +55,10 @@ mod tests {
 
     #[test]
     fn empty_is_identity() {
-        let a = ChannelChange { added: vec![1], removed: vec![2] };
+        let a = ChannelChange {
+            added: vec![1],
+            removed: vec![2],
+        };
         assert_eq!(ChannelChange::combine(&a, &ChannelChange::empty()), a);
     }
 }

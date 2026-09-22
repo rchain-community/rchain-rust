@@ -58,7 +58,9 @@ Before a block is added to the DAG, the node validates it:
 - **Bonds cache** equals the proof-of-stake state: the stake a block carries must match the stake the
   chain has actually bonded.
 - **Merge determinism**: when a validator merges concurrent deploys, the result is a unique, min-cost
-  selection; numeric channels are non-negative and never overflow.
+  selection; numeric channels are non-negative and never overflow. See
+  [Block merging (RCHIP-02)](block-merge.md) for how parent states are merged from event logs and how
+  a block's `rejectedDeploys` is validated.
 
 These checks are what make the DAG self-consistent — a node rejects any block whose claimed view
 doesn't match the real one.
@@ -73,5 +75,5 @@ matching determinism (the canonical order of Law 1, the deterministic COMM of La
 stack — from a deploy to a finalized block — is deterministic end to end.
 
 > **Formal.** Finality and the fringe are Laws 14–15; block validity and merge determinism are Laws
-> 16–17; the height map is Law 18. See [The 19 laws](../formal/the-19-laws.md) and the DAG finalizer
+> 16–17; the height map is Law 18. See [The 29 laws](../formal/the-29-laws.md) and the DAG finalizer
 > in [`spec/INVENTORY.md`](../../../spec/INVENTORY.md).

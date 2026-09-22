@@ -14,22 +14,28 @@ pub mod construct_deploy;
 pub mod dag;
 pub mod engine;
 pub mod event_converter;
+pub mod gateway;
 pub mod genesis;
 pub mod interpreter_util;
 pub mod merging;
 pub mod multi_parent_casper;
-pub mod protocol;
 pub mod proto_util;
+pub mod protocol;
 pub mod reporting;
 pub mod rholang;
 pub mod runtime_manager;
 pub mod runtime_replay;
+pub mod shard_invoke;
 pub mod state;
 pub mod storage;
 pub mod system_deploy;
 pub mod tools;
+pub mod txn_coordinator;
 pub mod validate;
 pub mod validator_identity;
 pub mod vault_parser;
 
-pub use conf::{CasperConf, GenesisBlockData};
+pub use conf::{CasperConf, GenesisBlockData, ShardMemberships, ShardSpec};
+
+#[cfg(test)]
+mod property_tests;

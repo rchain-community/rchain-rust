@@ -50,7 +50,10 @@ async fn http_surface_without_genesis() {
                 break resp.text().await.unwrap();
             }
         }
-        assert!(tokio::time::Instant::now() < deadline, "HTTP server did not come up");
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "HTTP server did not come up"
+        );
         tokio::time::sleep(Duration::from_millis(100)).await;
     };
     assert!(version.contains("RChain Node"), "version = {version}");
@@ -75,39 +78,88 @@ async fn http_surface_without_genesis() {
 #[test]
 fn genesis_boot_exposes_block_over_http() {
     common::test_runtime().block_on(async {
-    let dir = temp_dir("genesis-boot");
-    let ports = free_ports(4);
-    let http_port = ports[0];
-    let conf = standalone_conf(&dir, &ports, Some(VALIDATOR_PRIV_HEX));
-    let node = start(&conf, ports[2], http_port).await;
-    let base = format!("http://127.0.0.1:{http_port}");
-    let client = reqwest::Client::new();
+        let dir = temp_dir("genesis-boot");
+        let ports = free_ports(4);
+        let http_port = ports[0];
+        let conf = standalone_conf(&dir, &ports, Some(VALIDATOR_PRIV_HEX));
+        let node = start(&conf, ports[2], http_port).await;
+        let base = format!("http://127.0.0.1:{http_port}");
+        let client = reqwest::Client::new();
 
-    // The HTTP server comes up before genesis is created; poll until `/version` responds.
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
-    let version = loop {
-        if let Ok(resp) = client.get(format!("{base}/version")).send().await {
-            if resp.status().is_success() {
-                break resp.text().await.unwrap();
+        // The HTTP server comes up before genesis is created; poll until `/version` responds.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+        let version = loop {
+            if let Ok(resp) = client.get(format!("{base}/version")).send().await {
+                if resp.status().is_success() {
+                    break resp.text().await.unwrap();
+                }
             }
-        }
-        assert!(tokio::time::Instant::now() < deadline, "HTTP server did not come up");
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    };
-    assert!(version.contains("RChain Node"), "version = {version}");
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "HTTP server did not come up"
+            );
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        };
+        assert!(version.contains("RChain Node"), "version = {version}");
 
-    // `GET /api/blocks` returns the genesis block once the genesis ceremony completes.
-    let blocks = poll_blocks(&client, &format!("{base}/api/blocks")).await;
+        // `GET /api/blocks` returns the genesis block once the genesis ceremony completes.
+        let blocks = poll_blocks(&client, &format!("{base}/api/blocks")).await;
 
-    let genesis = &blocks[0];
-    // The genesis block has no justifications.
-    assert_eq!(genesis["justifications"].as_array().unwrap().len(), 0);
-    // ... and carries the single bonded validator with stake 100.
-    let bonds = genesis["bonds"].as_array().unwrap();
-    assert_eq!(bonds.len(), 1);
-    assert_eq!(bonds[0]["stake"], 100);
+        let genesis = &blocks[0];
+        // The genesis block carries the *full* shard id, not the bare shard name: the proposer, the
+        // block receiver and the deploy API all use the full id, so a genesis block stamped with
+        // "root" would carry an id no later block or deploy shares.
+        assert_eq!(genesis["shardId"], "/root");
 
-    node.shutdown();
-    let _ = std::fs::remove_dir_all(&dir);
+        // `GET /api/v1/shards` reports the node's memberships. A single-shard node has exactly one,
+        // and it is the primary — the same shard `/api/status` and the genesis block report. (The
+        // membership list is deliberately not folded into `/api/status`.)
+        let shards_resp = client
+            .get(format!("{base}/api/v1/shards"))
+            .send()
+            .await
+            .expect("GET /api/v1/shards");
+        assert_eq!(shards_resp.status(), 200);
+        let shards: Value = shards_resp.json().await.expect("shards json");
+        assert_eq!(shards["primaryShard"], "/root");
+        assert_eq!(shards["shardCount"], 1);
+        assert_eq!(shards["shards"][0]["shardId"], "/root");
+        assert_eq!(shards["shards"][0]["primary"], true);
+
+        // This node is not a gateway (one shard), so the cross-shard transaction routes are not
+        // available: 404, the same convention the reporting routes use. A single-shard node's
+        // surface is otherwise unchanged.
+        assert_eq!(
+            client
+                .get(format!("{base}/api/v1/txn"))
+                .send()
+                .await
+                .expect("GET /api/v1/txn")
+                .status(),
+            404
+        );
+        assert_eq!(
+            client
+                .post(format!("{base}/api/v1/txn"))
+                .json(&serde_json::json!({
+                    "txnId": "aabb",
+                    "legs": [{ "shardId": "/root", "amount": 1, "to": "d" }]
+                }))
+                .send()
+                .await
+                .expect("POST /api/v1/txn")
+                .status(),
+            404
+        );
+
+        // The genesis block has no justifications.
+        assert_eq!(genesis["justifications"].as_array().unwrap().len(), 0);
+        // ... and carries the single bonded validator with stake 100.
+        let bonds = genesis["bonds"].as_array().unwrap();
+        assert_eq!(bonds.len(), 1);
+        assert_eq!(bonds[0]["stake"], 100);
+
+        node.shutdown();
+        let _ = std::fs::remove_dir_all(&dir);
     });
 }

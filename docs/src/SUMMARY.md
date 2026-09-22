@@ -20,12 +20,15 @@
 # Part II — The ρ-calculus, formally
 
 - [Grammar and sorts](formal/grammar-sorts.md)
-- [The 19 laws](formal/the-19-laws.md)
+- [The 29 laws](formal/the-29-laws.md)
 - [The concurrency model](formal/concurrency-model.md)
 - [Determinism of the block state transition](formal/determinism.md)
 - [Structural congruence and reduction](formal/congruence-reduction.md)
 - [Concurrent reduction](formal/concurrent-reduction.md)
 - [Effect scheduling](formal/effect-scheduling.md)
+- [The channel scheduler (Laws 20–22)](formal/channel-scheduler.md)
+- [On-chain scheduling: validated speculation (Laws 23–25)](formal/onchain-scheduling.md)
+- [Cross-shard transactions: two-phase commit (Laws 26–29)](formal/cross-shard-transactions.md)
 - [Substitution and matching](formal/substitution-matching.md)
 - [Closedness and the Calculus of Constructions](formal/closedness-coc.md)
 
@@ -33,9 +36,11 @@
 
 - [Consensus (Casper)](node/consensus.md)
 - [The tuple space (RSpace)](node/rspace.md)
+- [Block merging (RCHIP-02)](node/block-merge.md)
 - [Sorted matching (proposal)](node/sorted-matching.md)
 - [Storage](node/storage.md)
 - [Operating the node](node/operating.md)
+- [Cross-shard invoke (remote deploy)](node/shard-invoke.md)
 - [Running a validator: hardware requirements](node/validator-requirements.md)
 - [Local devnet (Docker)](node/devnet.md)
 
@@ -47,7 +52,8 @@
 
 - [Why Rust](contributor/why-rust.md)
 - [Architecture & port status](contributor/architecture.md)
-- [The 19 laws → Rust code](contributor/laws-to-rust.md)
+- [The 29 laws → Rust code](contributor/laws-to-rust.md)
+- [On-chain validation phases (Laws 23–25)](contributor/onchain-validation-phases.md)
 - [Formal specification & audit](contributor/spec.md)
 
 # Part VI — QuCalc: native AI & governance
@@ -56,6 +62,7 @@
 - [Quantum operators → the ρ-calculus](qucalc/quantum-to-rho.md)
 - [Multi-stakeholder governance](qucalc/multi-stakeholder-governance.md)
 - [Architecture](qucalc/architecture.md)
+- [Experimental: TreeProc + zero-action ledger concurrent reducer](qucalc/zfa-concurrent-reducer.md)
 - [Using the extensions](qucalc/extensions.md)
 - [Examples](qucalc/examples.md)
 - [Upstream references](qucalc/references.md)

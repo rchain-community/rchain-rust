@@ -55,6 +55,40 @@ pub struct DeployData {
     pub phlo_limit: i64,
     pub valid_after_block_number: i64,
     pub shard_id: String,
+    /// Binary attachments (RCHIP #39), hex-encoded in JSON. They are part of the signed deploy data
+    /// and are exposed to rholang as `rho:attachment:1`, `rho:attachment:2`, … (1-based, yielding a
+    /// `ByteArray`). Empty for an ordinary deploy — which still encodes exactly as before, so
+    /// existing signatures and deploy ids are unchanged.
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        with = "hex_attachments"
+    )]
+    pub attachments: Vec<Vec<u8>>,
+}
+
+/// Serde helper: attachments are hex strings in JSON, the API convention for bytes elsewhere
+/// (`deployer`, `signature`, hashes).
+mod hex_attachments {
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S: Serializer>(value: &[Vec<u8>], s: S) -> Result<S::Ok, S::Error> {
+        let hex: Vec<String> = value
+            .iter()
+            .map(|bytes| rchain_shared::base16::encode(bytes))
+            .collect();
+        s.collect_seq(hex)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<Vec<u8>>, D::Error> {
+        let hex = Vec::<String>::deserialize(d)?;
+        hex.into_iter()
+            .map(|h| {
+                rchain_shared::base16::decode(&h)
+                    .ok_or_else(|| serde::de::Error::custom("attachment is not valid hex"))
+            })
+            .collect()
+    }
 }
 
 impl DeployData {
@@ -74,6 +108,7 @@ impl DeployData {
             phlo_limit: p.phlo_limit,
             valid_after_block_number: p.valid_after_block_number,
             shard_id: p.shard_id.clone(),
+            attachments: p.attachments.clone(),
         }
     }
 
@@ -85,6 +120,7 @@ impl DeployData {
             phlo_limit: self.phlo_limit,
             valid_after_block_number: self.valid_after_block_number,
             shard_id: self.shard_id.clone(),
+            attachments: self.attachments.clone(),
             ..DeployDataProto::default()
         }
     }
@@ -218,7 +254,9 @@ impl Event {
                 let consume = ce
                     .consume
                     .as_ref()
-                    .ok_or(crate::errors::ModelsError::Malformed("malformed CommEvent: missing consume"))?;
+                    .ok_or(crate::errors::ModelsError::Malformed(
+                        "malformed CommEvent: missing consume",
+                    ))?;
                 Ok(Event::Comm(CommEvent {
                     consume: ConsumeEvent {
                         channels_hashes: consume.channels_hashes.clone(),
@@ -244,7 +282,9 @@ impl Event {
                         .collect(),
                 }))
             }
-            None => Err(crate::errors::ModelsError::Malformed("malformed Event: empty")),
+            None => Err(crate::errors::ModelsError::Malformed(
+                "malformed Event: empty",
+            )),
         }
     }
 
@@ -311,11 +351,9 @@ pub enum SystemDeployData {
 impl SystemDeployData {
     pub fn from_proto(p: &SystemDeployDataProto) -> Result<Self, crate::errors::ModelsError> {
         match &p.system_deploy {
-            Some(system_deploy_data_proto::SystemDeploy::SlashSystemDeploy(sd)) => {
-                Ok(SystemDeployData::Slash(Validator::try_from(
-                    sd.slashed_validator.as_slice(),
-                )?))
-            }
+            Some(system_deploy_data_proto::SystemDeploy::SlashSystemDeploy(sd)) => Ok(
+                SystemDeployData::Slash(Validator::try_from(sd.slashed_validator.as_slice())?),
+            ),
             Some(system_deploy_data_proto::SystemDeploy::CloseBlockSystemDeploy(_)) => {
                 Ok(SystemDeployData::CloseBlock)
             }
@@ -339,7 +377,9 @@ impl SystemDeployData {
                     ),
                 ),
             },
-            SystemDeployData::Empty => SystemDeployDataProto { system_deploy: None },
+            SystemDeployData::Empty => SystemDeployDataProto {
+                system_deploy: None,
+            },
         }
     }
 }
@@ -420,7 +460,9 @@ impl ProcessedDeploy {
         let deploy = p
             .deploy
             .as_ref()
-            .ok_or(crate::errors::ModelsError::Malformed("malformed ProcessedDeploy: missing deploy"))?;
+            .ok_or(crate::errors::ModelsError::Malformed(
+                "malformed ProcessedDeploy: missing deploy",
+            ))?;
         let deploy_log: Result<Vec<Event>, crate::errors::ModelsError> =
             p.deploy_log.iter().map(Event::from_proto).collect();
         Ok(ProcessedDeploy {
@@ -490,8 +532,11 @@ impl RholangState {
     pub fn from_proto(p: &RholangStateProto) -> Result<Self, crate::errors::ModelsError> {
         let deploys: Result<Vec<ProcessedDeploy>, crate::errors::ModelsError> =
             p.deploys.iter().map(ProcessedDeploy::from_proto).collect();
-        let system_deploys: Result<Vec<ProcessedSystemDeploy>, crate::errors::ModelsError> =
-            p.system_deploys.iter().map(ProcessedSystemDeploy::from_proto).collect();
+        let system_deploys: Result<Vec<ProcessedSystemDeploy>, crate::errors::ModelsError> = p
+            .system_deploys
+            .iter()
+            .map(ProcessedSystemDeploy::from_proto)
+            .collect();
         Ok(RholangState {
             deploys: deploys?,
             system_deploys: system_deploys?,
@@ -533,6 +578,9 @@ pub struct BlockMessage {
     pub state: RholangState,
     pub sig_algorithm: String,
     pub sig: Vec<u8>,
+    /// Proposer's wall clock (ms since the Unix epoch) at block creation. Informational only: it is
+    /// not a consensus input (validators ignore it); applications read it via `rho:block:data`.
+    pub timestamp: i64,
 }
 
 impl BlockMessage {
@@ -540,7 +588,9 @@ impl BlockMessage {
         let state = bm
             .state
             .as_ref()
-            .ok_or(crate::errors::ModelsError::Malformed("malformed BlockMessage: missing state"))?;
+            .ok_or(crate::errors::ModelsError::Malformed(
+                "malformed BlockMessage: missing state",
+            ))?;
         Ok(BlockMessage {
             version: bm.version,
             shard_id: bm.shard_id.clone(),
@@ -576,6 +626,7 @@ impl BlockMessage {
             state: RholangState::from_proto(state)?,
             sig_algorithm: bm.sig_algorithm.clone(),
             sig: bm.sig.clone(),
+            timestamp: bm.timestamp,
         })
     }
 
@@ -622,6 +673,7 @@ impl BlockMessage {
             state: Some(self.state.to_proto()),
             sig_algorithm: self.sig_algorithm.clone(),
             sig: self.sig.clone(),
+            timestamp: self.timestamp,
         }
     }
 
@@ -630,7 +682,8 @@ impl BlockMessage {
     }
 
     pub fn from_bytes(bytes: &[u8]) -> Result<BlockMessage, crate::errors::ModelsError> {
-        let proto = BlockMessageProto::decode(bytes).map_err(|e| crate::errors::ModelsError::Decode(e.to_string()))?;
+        let proto = BlockMessageProto::decode(bytes)
+            .map_err(|e| crate::errors::ModelsError::Decode(e.to_string()))?;
         BlockMessage::from_proto(&proto)
     }
 }
@@ -667,7 +720,8 @@ impl FinalizedFringe {
         self.to_proto().encode_to_vec()
     }
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, crate::errors::ModelsError> {
-        let proto = FinalizedFringeProto::decode(bytes).map_err(|e| crate::errors::ModelsError::Decode(e.to_string()))?;
+        let proto = FinalizedFringeProto::decode(bytes)
+            .map_err(|e| crate::errors::ModelsError::Decode(e.to_string()))?;
         FinalizedFringe::from_proto(&proto)
     }
 }
@@ -750,7 +804,9 @@ impl ForkChoiceTipRequest {
 
 impl HasBlockRequest {
     pub fn from_proto(m: &HasBlockRequestProto) -> Self {
-        HasBlockRequest { hash: m.hash.clone() }
+        HasBlockRequest {
+            hash: m.hash.clone(),
+        }
     }
     pub fn to_proto(&self) -> HasBlockRequestProto {
         HasBlockRequestProto {
@@ -769,10 +825,14 @@ impl HasBlockRequest {
 
 impl HasBlock {
     pub fn from_proto(m: &HasBlockProto) -> Self {
-        HasBlock { hash: m.hash.clone() }
+        HasBlock {
+            hash: m.hash.clone(),
+        }
     }
     pub fn to_proto(&self) -> HasBlockProto {
-        HasBlockProto { hash: self.hash.clone() }
+        HasBlockProto {
+            hash: self.hash.clone(),
+        }
     }
     pub fn to_bytes(&self) -> Vec<u8> {
         self.to_proto().encode_to_vec()
@@ -786,7 +846,9 @@ impl HasBlock {
 
 impl BlockRequest {
     pub fn from_proto(m: &BlockRequestProto) -> Self {
-        BlockRequest { hash: m.hash.clone() }
+        BlockRequest {
+            hash: m.hash.clone(),
+        }
     }
     pub fn to_proto(&self) -> BlockRequestProto {
         BlockRequestProto {
@@ -866,7 +928,9 @@ pub struct StoreItemsMessageRequest {
 }
 
 impl StoreItemsMessageRequest {
-    pub fn from_proto(m: &StoreItemsMessageRequestProto) -> Result<Self, crate::errors::ModelsError> {
+    pub fn from_proto(
+        m: &StoreItemsMessageRequestProto,
+    ) -> Result<Self, crate::errors::ModelsError> {
         Ok(StoreItemsMessageRequest {
             start_path: m
                 .start_path
@@ -879,7 +943,11 @@ impl StoreItemsMessageRequest {
     }
     pub fn to_proto(&self) -> StoreItemsMessageRequestProto {
         StoreItemsMessageRequestProto {
-            start_path: self.start_path.iter().map(store_node_key_to_proto).collect(),
+            start_path: self
+                .start_path
+                .iter()
+                .map(store_node_key_to_proto)
+                .collect(),
             skip: self.skip,
             take: self.take,
         }
@@ -930,7 +998,11 @@ impl StoreItemsMessage {
     }
     pub fn to_proto(&self) -> StoreItemsMessageProto {
         StoreItemsMessageProto {
-            start_path: self.start_path.iter().map(store_node_key_to_proto).collect(),
+            start_path: self
+                .start_path
+                .iter()
+                .map(store_node_key_to_proto)
+                .collect(),
             last_path: self.last_path.iter().map(store_node_key_to_proto).collect(),
             history_items: self
                 .history_items
@@ -995,7 +1067,9 @@ pub enum CasperMessageProto {
 }
 
 impl CasperMessage {
-    pub fn from_proto(cm: &CasperMessageProto) -> Result<CasperMessage, crate::errors::ModelsError> {
+    pub fn from_proto(
+        cm: &CasperMessageProto,
+    ) -> Result<CasperMessage, crate::errors::ModelsError> {
         match cm {
             CasperMessageProto::BlockMessage(m) => {
                 Ok(CasperMessage::BlockMessage(BlockMessage::from_proto(m)?))
@@ -1006,9 +1080,9 @@ impl CasperMessage {
             CasperMessageProto::BlockHashMessage(m) => Ok(CasperMessage::BlockHashMessage(
                 BlockHashMessage::from_proto(m)?,
             )),
-            CasperMessageProto::HasBlock(m) => {
-                Ok(CasperMessage::HasBlock(HasBlock { hash: m.hash.clone() }))
-            }
+            CasperMessageProto::HasBlock(m) => Ok(CasperMessage::HasBlock(HasBlock {
+                hash: m.hash.clone(),
+            })),
             CasperMessageProto::HasBlockRequest(m) => {
                 Ok(CasperMessage::HasBlockRequest(HasBlockRequest {
                     hash: m.hash.clone(),
@@ -1026,14 +1100,12 @@ impl CasperMessage {
                     trim_state: m.trim_state,
                 }),
             ),
-            CasperMessageProto::StoreItemsMessageRequest(m) => {
-                Ok(CasperMessage::StoreItemsMessageRequest(
-                    StoreItemsMessageRequest::from_proto(m)?,
-                ))
-            }
-            CasperMessageProto::StoreItemsMessage(m) => {
-                Ok(CasperMessage::StoreItemsMessage(StoreItemsMessage::from_proto(m)?))
-            }
+            CasperMessageProto::StoreItemsMessageRequest(m) => Ok(
+                CasperMessage::StoreItemsMessageRequest(StoreItemsMessageRequest::from_proto(m)?),
+            ),
+            CasperMessageProto::StoreItemsMessage(m) => Ok(CasperMessage::StoreItemsMessage(
+                StoreItemsMessage::from_proto(m)?,
+            )),
         }
     }
 
@@ -1053,7 +1125,9 @@ impl CasperMessage {
                 hash: m.hash.clone(),
             }),
             CasperMessage::HasBlockRequest(m) => {
-                CasperMessageProto::HasBlockRequest(HasBlockRequestProto { hash: m.hash.clone() })
+                CasperMessageProto::HasBlockRequest(HasBlockRequestProto {
+                    hash: m.hash.clone(),
+                })
             }
             CasperMessage::ForkChoiceTipRequest(_) => {
                 CasperMessageProto::ForkChoiceTipRequest(ForkChoiceTipRequestProto {})
@@ -1105,7 +1179,18 @@ mod tests {
             state: RholangState::default(),
             sig_algorithm: "secp256k1".to_string(),
             sig: Vec::new(),
+            timestamp: 0,
         }
+    }
+
+    #[test]
+    fn block_message_round_trip_preserves_timestamp() {
+        // The informational timestamp is carried in the header proto, so every node (and replay)
+        // decodes the same value.
+        let mut block = empty_block();
+        block.timestamp = 1_700_000_000_000;
+        let round = BlockMessage::from_bytes(&block.to_bytes()).expect("round trip");
+        assert_eq!(round.timestamp, block.timestamp);
     }
 
     #[test]
@@ -1131,16 +1216,17 @@ mod tests {
             (validator(1), 2.try_into().unwrap()),
             (validator(2), 3.try_into().unwrap()),
         ]);
-        block.rejected_blocks = [block_hash(9), block_hash(1)]
-            .into_iter()
-            .collect();
+        block.rejected_blocks = [block_hash(9), block_hash(1)].into_iter().collect();
         let proto = block.to_proto();
         // Bonds already iterated in key order (BTreeMap) and then sorted by validator bytes.
         let validators: Vec<u8> = proto.bonds.iter().map(|b| b.validator[0]).collect();
         assert_eq!(validators, vec![1, 2, 3]);
         assert_eq!(
             proto.rejected_blocks,
-            vec![block_hash(1).as_bytes().to_vec(), block_hash(9).as_bytes().to_vec()]
+            vec![
+                block_hash(1).as_bytes().to_vec(),
+                block_hash(9).as_bytes().to_vec()
+            ]
         );
     }
 
@@ -1208,10 +1294,11 @@ mod tests {
 
     fn signed_deploy_data(term: &str) -> SignedDeployData {
         use rchain_crypto::signatures::secp256k1::Secp256k1;
-        use rchain_crypto::signatures::signed::Signed;
         use rchain_crypto::signatures::signatures_alg::SignaturesAlg;
+        use rchain_crypto::signatures::signed::Signed;
         let (sec, _pk) = Secp256k1.new_key_pair();
         let data = DeployData {
+            attachments: Vec::new(),
             term: term.to_string(),
             timestamp: 0,
             phlo_price: 1,
@@ -1247,9 +1334,81 @@ mod tests {
         assert!(!sd.verify_signature());
     }
 
+    fn signed_deploy_with_attachments(attachments: Vec<Vec<u8>>) -> SignedDeployData {
+        use rchain_crypto::signatures::secp256k1::Secp256k1;
+        use rchain_crypto::signatures::signatures_alg::SignaturesAlg;
+        use rchain_crypto::signatures::signed::Signed;
+        let (sec, _pk) = Secp256k1.new_key_pair();
+        let data = DeployData {
+            term: "Nil".to_string(),
+            timestamp: 0,
+            phlo_price: 1,
+            phlo_limit: 100,
+            valid_after_block_number: 0,
+            shard_id: "root".to_string(),
+            attachments,
+        };
+        let signed = Signed::new(data, &Secp256k1, &sec).unwrap();
+        SignedDeployData {
+            data: signed.data,
+            deployer: signed.pk.bytes().to_vec(),
+            sig: signed.sig,
+            sig_algorithm: signed.sig_algorithm.name().to_string(),
+        }
+    }
+
+    #[test]
+    fn attachments_are_part_of_the_signature() {
+        // RCHIP #39: attachments live in the signed deploy data, so neither tampering with nor
+        // stripping them can pass verification.
+        let sd = signed_deploy_with_attachments(vec![vec![1, 2, 3]]);
+        assert!(sd.verify_signature());
+
+        let mut tampered = sd.clone();
+        tampered.data.attachments = vec![vec![9, 9, 9]];
+        assert!(!tampered.verify_signature());
+
+        let mut stripped = sd;
+        stripped.data.attachments.clear();
+        assert!(!stripped.verify_signature());
+    }
+
+    #[test]
+    fn attachments_round_trip_proto_and_json() {
+        let deploy = DeployData {
+            term: "Nil".to_string(),
+            timestamp: 0,
+            phlo_price: 1,
+            phlo_limit: 1,
+            valid_after_block_number: 0,
+            shard_id: "root".to_string(),
+            attachments: vec![vec![1, 2, 3], vec![]],
+        };
+
+        // The proto round-trip preserves the attachments (including an empty one).
+        let bytes = <DeployData as Serialize<DeployData>>::encode(&deploy);
+        assert_eq!(
+            <DeployData as Serialize<DeployData>>::decode(&bytes).unwrap(),
+            deploy
+        );
+
+        // JSON carries them as hex strings, and an ordinary deploy omits the field entirely.
+        let json = serde_json::to_value(&deploy).unwrap();
+        assert_eq!(json["attachments"], serde_json::json!(["010203", ""]));
+        assert_eq!(serde_json::from_value::<DeployData>(json).unwrap(), deploy);
+
+        let mut plain = deploy;
+        plain.attachments.clear();
+        assert!(serde_json::to_value(&plain)
+            .unwrap()
+            .get("attachments")
+            .is_none());
+    }
+
     #[test]
     fn total_phlo_charge_does_not_wrap_on_overflow() {
         let mut d = DeployData {
+            attachments: Vec::new(),
             term: "Nil".to_string(),
             timestamp: 0,
             phlo_price: i64::MAX,

@@ -46,7 +46,10 @@ async fn eval_out(
         "conformance term failed: {term:?}\nerrors: {:?}",
         res.errors
     );
-    let data = rt.get_data_par(&chan(out_name)).await.expect("read out channel");
+    let data = rt
+        .get_data_par(&chan(out_name))
+        .await
+        .expect("read out channel");
     assert!(
         !data.is_empty(),
         "term produced nothing at @{out_name:?}: {term:?}"
@@ -67,6 +70,13 @@ fn list_strings(p: &Par) -> Option<Vec<String>> {
     let ps = RhoList::unapply(p)?;
     ps.iter()
         .map(|p| RhoString::unapply(p).map(|s| s.to_string()))
+        .collect()
+}
+
+fn list_numbers(p: &Par) -> Option<Vec<i64>> {
+    RhoList::unapply(p)?
+        .iter()
+        .map(RhoNumber::unapply)
         .collect()
 }
 
@@ -126,7 +136,10 @@ async fn qucalc_grant_and_verify_round_trip() {
         "out2",
     )
     .await;
-    assert!(RhoNil::unapply(&nil[0]), "qucalc:grant returns Nil for a non-ZFA history");
+    assert!(
+        RhoNil::unapply(&nil[0]),
+        "qucalc:grant returns Nil for a non-ZFA history"
+    );
 
     // The minted capability verifies; an unknown uri does not.
     let ok = eval_out(
@@ -171,7 +184,10 @@ async fn qucalc_fuse_returns_geometry_and_capability_or_nil() {
         .map(|p| RhoNumber::unapply(p).expect("twist number"))
         .collect();
     assert_eq!(twists, vec![0, 3, 2, 1]);
-    assert!(RhoUri::unapply(&parts[1]).is_some(), "fuse mints a capability uri");
+    assert!(
+        RhoUri::unapply(&parts[1]).is_some(),
+        "fuse mints a capability uri"
+    );
 
     // A subject/predicate whose residue is not ZFA-closed yields Nil.
     let nil = eval_out(
@@ -181,7 +197,10 @@ async fn qucalc_fuse_returns_geometry_and_capability_or_nil() {
         "out2",
     )
     .await;
-    assert!(RhoNil::unapply(&nil[0]), "qucalc:fuse returns Nil for a non-ZFA residue");
+    assert!(
+        RhoNil::unapply(&nil[0]),
+        "qucalc:fuse returns Nil for a non-ZFA residue"
+    );
 }
 
 #[tokio::test]
@@ -196,7 +215,10 @@ async fn gov_resolve_weights_reports_weight_map_from_tuple_shaped_inputs() {
         "out",
     )
     .await;
-    assert!(RhoMap::unapply(&weights[0]).is_some(), "resolveWeights returns a map");
+    assert!(
+        RhoMap::unapply(&weights[0]).is_some(),
+        "resolveWeights returns a map"
+    );
     assert_eq!(map_get_string_int(&weights[0], "A"), Some(2));
     assert_eq!(map_get_string_int(&weights[0], "C"), Some(1));
 }
@@ -213,7 +235,10 @@ async fn gov_trust_levels_reports_admin_rooted_level_map() {
         "out",
     )
     .await;
-    assert!(RhoMap::unapply(&levels[0]).is_some(), "trustLevels returns a map");
+    assert!(
+        RhoMap::unapply(&levels[0]).is_some(),
+        "trustLevels returns a map"
+    );
     assert_eq!(map_get_string_int(&levels[0], "Alice"), Some(5));
     assert_eq!(map_get_string_int(&levels[0], "Bob"), Some(3));
     assert_eq!(map_get_string_int(&levels[0], "Carol"), Some(2));
@@ -290,10 +315,14 @@ async fn registry_insert_arbitrary_and_lookup_round_trip() {
         "out2",
     )
     .await;
-    let parts = RhoTupleN::unapply(&looked_up[0]).expect("lookup returns (uri, value)");
-    assert_eq!(parts.len(), 2);
-    assert_eq!(RhoUri::unapply(&parts[0]), Some(uri.as_str()));
-    assert_eq!(RhoNumber::unapply(&parts[1]), Some(42));
+    // The reply is the stored value alone, never wrapped in its own uri (C18): an oracle-era client
+    // consumes it as `for (X <- ch) { X!(…) }`, and a pair would bind to the name, making the send a
+    // silent no-op rather than a type error.
+    assert_eq!(
+        RhoNumber::unapply(&looked_up[0]),
+        Some(42),
+        "lookup replies with the stored value alone, not (uri, value)"
+    );
 
     // A uri that was never registered answers Nil (not silence).
     let missing = eval_out(
@@ -303,7 +332,10 @@ async fn registry_insert_arbitrary_and_lookup_round_trip() {
         "out3",
     )
     .await;
-    assert!(RhoNil::unapply(&missing[0]), "lookup of an unknown uri returns Nil");
+    assert!(
+        RhoNil::unapply(&missing[0]),
+        "lookup of an unknown uri returns Nil"
+    );
 }
 
 #[tokio::test]
@@ -337,11 +369,204 @@ async fn registry_insert_signed_binds_deployer_id_from_the_normalizer_env() {
         "out2",
     )
     .await;
-    let parts = RhoTupleN::unapply(&looked_up[0]).expect("lookup returns (uri, value)");
-    assert_eq!(parts.len(), 2);
-    assert_eq!(RhoUri::unapply(&parts[0]), Some(uri.as_str()));
-    // The stored value is the (nonce, data) tuple recorded under the deployer-derived uri.
-    let stored = RhoTupleN::unapply(&parts[1]).expect("insertSigned stores a (nonce, data) tuple");
+    // The reply is the stored value alone — and for `insertSigned` that value is itself the
+    // `(nonce, data)` pair it recorded, which is why consumers of *system* contracts destructure it
+    // as `@(_, X)`. The uri is not echoed back (C18).
+    let stored =
+        RhoTupleN::unapply(&looked_up[0]).expect("insertSigned stores a (nonce, data) tuple");
     assert_eq!(RhoNumber::unapply(&stored[0]), Some(1));
     assert_eq!(RhoString::unapply(&stored[1]), Some("data"));
+}
+
+/// The idiom **every** oracle-era client is written in: look a contract up, then send to the reply.
+///
+/// This is the assertion whose absence let C18 ship. Checking only that the reply *contains* the
+/// right value misses the failure mode entirely: a `(uri, value)` wrapper still carries the value,
+/// so a shape assertion on a scalar reply can pass by reading the right element — but the client
+/// binds the pair to a name and its send becomes a **silent no-op**. Nothing errors; the deploy
+/// simply produces no result, which is how the whole rgov contract family came to return `[]`.
+/// So assert the reachability, not just the shape.
+#[tokio::test]
+async fn a_looked_up_contract_can_be_called_through_its_lookup_reply() {
+    let (rt, _) = build_runtime_pair().await;
+    let env = BTreeMap::new();
+
+    let reached = eval_out(
+        &rt,
+        r#"new target, ins(`rho:registry:insertArbitrary`), lookup(`rho:registry:lookup`), ack, call in {
+             contract target(@x, ret) = { ret!(["got", x]) } |
+             ins!(bundle+{*target}, *ack) |
+             for (@uri <- ack) {
+               lookup!(uri, *call) |
+               for (@T <- call) {
+                 new reply in { @T!("ping", *reply) | for (@r <- reply) { @"out"!(r) } }
+               }
+             }
+           }"#,
+        &env,
+        "out",
+    )
+    .await;
+
+    assert_eq!(
+        list_strings(&reached[0]),
+        Some(vec!["got".to_string(), "ping".to_string()]),
+        "the looked-up contract must be reachable through its lookup reply"
+    );
+}
+
+/// A collection pattern may name only *part* of the collection: `..._` absorbs the rest, `...rest`
+/// absorbs it and binds it. Every rgov contract reaches its capabilities through such a pattern —
+/// `@{"read": *MCA, ..._}` against a three-key dictionary — so while a partial *map* (or *set*)
+/// pattern could not match, all of their bodies were unreachable, and *silently*: a `for` whose
+/// pattern does not match is not an error, it just never fires. Lists happened to work and maps did
+/// not, so both must be pinned.
+///
+/// Each case gets its **own runtime**, because a shared one is exactly how this defect hid. The
+/// first version of this test evaluated all five shapes against one runtime, reading a shared
+/// `@"out"`: once the first (list) case had produced `"ok"`, every later case passed by re-reading
+/// that datum, so the map and set cases could not fail — and did not run their patterns at all. A
+/// conformance test that cannot fail is not evidence about the node (C20).
+#[tokio::test]
+async fn collection_patterns_match_a_subset_of_their_collection() {
+    let env = BTreeMap::new();
+
+    for (label, term) in [
+        (
+            "list, wildcard remainder",
+            r#"new a in { a!([1, 2, 3]) | for (@[1, ..._] <- a) { @"out"!("ok") } }"#,
+        ),
+        (
+            "list, named remainder",
+            r#"new a in { a!([1, 2, 3]) | for (@[1, ...rest] <- a) { @"out"!("ok") } }"#,
+        ),
+        (
+            "map, wildcard remainder",
+            r#"new a in { a!({"x": 1, "y": 2}) | for (@{"x": *v, ..._} <- a) { @"out"!("ok") } }"#,
+        ),
+        (
+            "map, named remainder",
+            r#"new a in { a!({"x": 1, "y": 2}) | for (@{"x": *v, ...rest} <- a) { @"out"!("ok") } }"#,
+        ),
+        (
+            "set, wildcard remainder",
+            r#"new a in { a!(Set(1, 2, 3)) | for (@Set(1, ..._) <- a) { @"out"!("ok") } }"#,
+        ),
+        (
+            "set, named remainder",
+            r#"new a in { a!(Set(1, 2, 3)) | for (@Set(1, ...rest) <- a) { @"out"!("ok") } }"#,
+        ),
+    ] {
+        let (rt, _) = build_runtime_pair().await;
+        let got = eval_out(&rt, term, &env, "out").await;
+        assert_eq!(got.len(), 1, "{label}: exactly one result");
+        assert_eq!(
+            RhoString::unapply(&got[0]),
+            Some("ok"),
+            "{label}: a partial collection pattern must match"
+        );
+    }
+
+    // The `MemberDirectory.rho:15` gate itself, with production shapes: a three-key dictionary of
+    // *bundles* (not ground terms) peeked with a partial map pattern. Two claims in one — the body
+    // runs, and the named entry binds its own value rather than one the wildcard absorbed.
+    let (rt, _) = build_runtime_pair().await;
+    let reached = eval_out(
+        &rt,
+        r#"new dict in {
+             dict!({"read": 1, "write": 2, "grant": 3}) |
+             for (@{"read": *MCAread, ..._} <<- dict) { @"out"!(*MCAread) }
+           }"#,
+        &env,
+        "out",
+    )
+    .await;
+    assert_eq!(reached.len(), 1, "the peek gate fires once");
+    assert_eq!(
+        RhoNumber::unapply(&reached[0]),
+        Some(1),
+        "`*MCAread` is the value at \"read\", not at a key the wildcard absorbed"
+    );
+
+    let (rt, _) = build_runtime_pair().await;
+    let reached = eval_out(
+        &rt,
+        r#"new read, write, grant, dict in {
+             dict!({"read": bundle+{*read}, "write": bundle+{*write}, "grant": bundle+{*grant}}) |
+             for (@{"read": *MCAread, ..._} <<- dict) { @"out"!("gate-open") }
+           }"#,
+        &env,
+        "out",
+    )
+    .await;
+    assert_eq!(
+        reached.len(),
+        1,
+        "the gate fires once over bundle-valued entries"
+    );
+    assert_eq!(RhoString::unapply(&reached[0]), Some("gate-open"));
+
+    // A *named* map remainder captures the unnamed entries and not the named one. The remainder is
+    // a *process* variable — referenced unstarred (`rest`), unlike the quoted name patterns `*v` —
+    // which is how the rgov contracts write it (`Group.rho:68-71`).
+    let (rt, _) = build_runtime_pair().await;
+    let rest = eval_out(
+        &rt,
+        r#"new dict in {
+             dict!({"read": 1, "write": 2, "grant": 3}) |
+             for (@{"read": *v, ...rest} <- dict) { @"out"!(rest) }
+           }"#,
+        &env,
+        "out",
+    )
+    .await;
+    assert_eq!(rest.len(), 1);
+    assert_eq!(
+        map_get_string_int(&rest[0], "write"),
+        Some(2),
+        "`...rest` captured \"write\""
+    );
+    assert_eq!(
+        map_get_string_int(&rest[0], "grant"),
+        Some(3),
+        "`...rest` captured \"grant\""
+    );
+    assert_eq!(
+        map_get_string_int(&rest[0], "read"),
+        None,
+        "`...rest` must not capture the named entry"
+    );
+
+    // Lists keep positional/suffix semantics: the remainder is a *suffix*, not "any elements".
+    let (rt, _) = build_runtime_pair().await;
+    let rest = eval_out(
+        &rt,
+        r#"new a in { a!([1, 2, 3]) | for (@[1, 2, ...rest] <- a) { @"out"!(rest) } }"#,
+        &env,
+        "out",
+    )
+    .await;
+    assert_eq!(rest.len(), 1);
+    assert_eq!(
+        list_numbers(&rest[0]),
+        Some(vec![3]),
+        "`@[1, 2, ...rest]` on [1, 2, 3] leaves rest = [3]"
+    );
+}
+
+#[tokio::test]
+async fn txn_recover_unknown_returns_nil() {
+    let (rt, _replay) = build_runtime_pair().await;
+    let data = eval_out(
+        &rt,
+        r#"new txn(`rho:txn`), ret in { txn!("recover", "deadbeef".hexToBytes(), *ret) | for (@r <- ret) { @"out"!(r) } }"#,
+        &BTreeMap::new(),
+        "out",
+    )
+    .await;
+    assert_eq!(data.len(), 1);
+    assert!(
+        RhoNil::unapply(&data[0]),
+        "recover on an unknown transaction must return Nil"
+    );
 }

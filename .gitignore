@@ -93,3 +93,8 @@ integration-tests.log
 ###################
 wallet-extension/node_modules/
 wallet-extension/dist/
+# Claude Code local (personal) settings
+.claude/settings.local.json
+
+# The coverage report (`cargo llvm-cov --lcov`); CI uploads it as an artifact.
+lcov.info

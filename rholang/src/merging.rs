@@ -27,7 +27,8 @@ pub type RhoHotStoreTrieAction =
     HotStoreTrieAction<SortedProc, BindPattern, ListParWithRandom, TaggedContinuation>;
 
 /// The concrete (decoded) history reader.
-pub type RhoHistoryReader = dyn HistoryReader<SortedProc, BindPattern, ListParWithRandom, TaggedContinuation>;
+pub type RhoHistoryReader =
+    dyn HistoryReader<SortedProc, BindPattern, ListParWithRandom, TaggedContinuation>;
 
 /// Extract the number + random state from a number-channel datum (port of `getNumberWithRnd`).
 pub fn get_number_with_rnd(
@@ -80,7 +81,8 @@ pub async fn calculate_number_channel_merge(
     channel_hash: Blake2b256Hash,
     diff: i64,
     changes: &ChannelChange<Vec<u8>>,
-    base_reader: &(dyn HistoryReader<SortedProc, BindPattern, ListParWithRandom, TaggedContinuation> + Sync),
+    base_reader: &(dyn HistoryReader<SortedProc, BindPattern, ListParWithRandom, TaggedContinuation>
+          + Sync),
 ) -> Result<RhoHotStoreTrieAction, String> {
     // Read the initial value of the number channel from the base state.
     let data = base_reader
@@ -143,7 +145,8 @@ pub async fn read_mergeable_values(
         let data = binary.get_data(*ch).await.map_err(|e| e.to_string())?;
         if data.len() > 1 {
             return Err(
-                "To calculate difference on a number channel, single value is expected.".to_string(),
+                "To calculate difference on a number channel, single value is expected."
+                    .to_string(),
             );
         }
         let num = match data.first() {
@@ -206,11 +209,7 @@ fn var_size_u16(bytes: &[u8]) -> Vec<u8> {
 }
 
 /// Encode the mergeable-store key (port of `codecMergeableKey`).
-pub fn encode_mergeable_key(
-    state_hash: &Blake2b256Hash,
-    creator: &[u8],
-    seq_num: i64,
-) -> Vec<u8> {
+pub fn encode_mergeable_key(state_hash: &Blake2b256Hash, creator: &[u8], seq_num: i64) -> Vec<u8> {
     let mut out = var_size_u16(state_hash.as_bytes());
     out.extend(var_size_u16(creator));
     out.extend(vlong_encode(seq_num));
@@ -293,17 +292,24 @@ impl Codec<Vec<DeployMergeableData>> for DeployMergeableDataCodec {
 /// Convert final number-channel values to per-deploy diffs (port of `calculateNumChannelDiff`).
 ///
 /// `init_values` are the pre-state values for every channel key (default `0` when absent).
+///
+/// The subtraction is **checked**: a difference outside `i64` is an error, not a silent wraparound.
+/// Wrapping here would corrupt the merged state — the same bug class as RCHIP #51 (and the Scala
+/// oracle wraps, so this is a deliberate deviation, recorded in `spec/AUDIT.md` §6).
 pub fn calculate_num_channel_diff(
     channel_values: &[BTreeMap<Blake2b256Hash, i64>],
     init_values: &BTreeMap<Blake2b256Hash, i64>,
-) -> Vec<BTreeMap<Blake2b256Hash, i64>> {
+) -> Result<Vec<BTreeMap<Blake2b256Hash, i64>>, String> {
     let mut prev_vals = init_values.clone();
     let mut result = Vec::with_capacity(channel_values.len());
     for end_vals in channel_values {
         let mut diff_map = BTreeMap::new();
         for (ch, end_val) in end_vals {
             if let Some(prev) = prev_vals.get(ch) {
-                diff_map.insert(*ch, end_val.wrapping_sub(*prev));
+                let diff = end_val.checked_sub(*prev).ok_or_else(|| {
+                    format!("number channel diff overflow: {end_val} - {prev} does not fit i64")
+                })?;
+                diff_map.insert(*ch, diff);
             }
         }
         for (ch, end_val) in end_vals {
@@ -311,7 +317,7 @@ pub fn calculate_num_channel_diff(
         }
         result.push(diff_map);
     }
-    result
+    Ok(result)
 }
 
 #[cfg(test)]
@@ -326,12 +332,21 @@ mod tests {
     fn mergeable_data_round_trips() {
         let seq = vec![
             DeployMergeableData {
-                channels: vec![NumberChannel { hash: h(1), diff: 10 }],
+                channels: vec![NumberChannel {
+                    hash: h(1),
+                    diff: 10,
+                }],
             },
             DeployMergeableData {
                 channels: vec![
-                    NumberChannel { hash: h(1), diff: -5 },
-                    NumberChannel { hash: h(2), diff: 7 },
+                    NumberChannel {
+                        hash: h(1),
+                        diff: -5,
+                    },
+                    NumberChannel {
+                        hash: h(2),
+                        diff: 7,
+                    },
                 ],
             },
         ];
@@ -348,11 +363,228 @@ mod tests {
             BTreeMap::from([(a, 15i64)]),
         ];
         let init = BTreeMap::from([(a, 10i64)]);
-        let diffs = calculate_num_channel_diff(&values, &init);
-        assert_eq!(diffs, vec![
-            BTreeMap::from([(a, 10i64)]),
-            BTreeMap::from([(a, 5i64)]),
-            BTreeMap::from([(a, -10i64)]),
+        let diffs = calculate_num_channel_diff(&values, &init).unwrap();
+        assert_eq!(
+            diffs,
+            vec![
+                BTreeMap::from([(a, 10i64)]),
+                BTreeMap::from([(a, 5i64)]),
+                BTreeMap::from([(a, -10i64)]),
+            ]
+        );
+    }
+
+    #[test]
+    fn calculate_diff_rejects_i64_overflow_instead_of_wrapping() {
+        // A diff outside `i64` (here `i64::MAX - i64::MIN`) must be an error: wrapping it would
+        // corrupt the merged state (issue #52).
+        let a = h(1);
+        let values = vec![BTreeMap::from([(a, i64::MAX)])];
+        let init = BTreeMap::from([(a, i64::MIN)]);
+        let err = calculate_num_channel_diff(&values, &init).unwrap_err();
+        assert!(err.contains("overflow"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn calculate_diff_handles_negative_and_absent_keys() {
+        let (a, b) = (h(1), h(2));
+        // `b` is absent from the pre-state: its diff is not computed for that deploy.
+        let values = vec![
+            BTreeMap::from([(a, -5i64)]),
+            BTreeMap::from([(a, -3i64), (b, 4i64)]),
+        ];
+        let init = BTreeMap::from([(a, 0i64)]);
+        let diffs = calculate_num_channel_diff(&values, &init).unwrap();
+        assert_eq!(
+            diffs,
+            vec![BTreeMap::from([(a, -5i64)]), BTreeMap::from([(a, 2i64)]),]
+        );
+    }
+}
+
+#[cfg(test)]
+mod codec_tests {
+    use super::*;
+
+    /// The mergeable key and channel data are a **scodec wire format** shared with the Scala node's
+    /// mergeable store, so the encodings are pinned byte-for-byte: a change here would make the Rust
+    /// node's mergeable keys unreadable (or silently *different*) from a Scala-produced one.
+    #[test]
+    fn the_scodec_primitives_match_scodec() {
+        // `vlong` is zigzag + LEB128: the zigzag maps signed magnitudes onto the unsigned space so
+        // small negatives are short, and LEB128 keeps the continuation bit in the top bit.
+        assert_eq!(zigzag_encode(0), 0);
+        assert_eq!(zigzag_encode(-1), 1);
+        assert_eq!(zigzag_encode(1), 2);
+        assert_eq!(zigzag_encode(-2), 3);
+        assert_eq!(zigzag_encode(i64::MAX), u64::MAX - 1);
+        assert_eq!(zigzag_encode(i64::MIN), u64::MAX);
+
+        assert_eq!(varint_encode(0), vec![0x00]);
+        assert_eq!(varint_encode(1), vec![0x01]);
+        assert_eq!(varint_encode(127), vec![0x7F]);
+        assert_eq!(varint_encode(128), vec![0x80, 0x01]);
+        assert_eq!(varint_encode(300), vec![0xAC, 0x02]);
+        assert_eq!(varint_encode(16384), vec![0x80, 0x80, 0x01]);
+        assert_eq!(
+            varint_encode(u64::MAX).len(),
+            10,
+            "a u64 needs at most 10 groups"
+        );
+
+        assert_eq!(vlong_encode(-1), vec![0x01], "zigzag first, then varint");
+        assert_eq!(vlong_encode(1), vec![0x02]);
+
+        // The fixed-width helpers are big-endian, which is what `variableSizeBytes(uint16, …)` and
+        // the channel diffs are built from.
+        assert_eq!(uint16_be(1), [0x00, 0x01]);
+        assert_eq!(uint16_be(0x1234), [0x12, 0x34]);
+        assert_eq!(int64_be(1), [0, 0, 0, 0, 0, 0, 0, 1]);
+        assert_eq!(int64_be(-1), [0xFF; 8]);
+        assert_eq!(var_size_u16(&[0xAB, 0xCD]), vec![0x00, 0x02, 0xAB, 0xCD]);
+        assert_eq!(
+            var_size_u16(&[]),
+            vec![0x00, 0x00],
+            "an empty value is a zero length"
+        );
+    }
+
+    /// The mergeable **key** is `variableSizeBytes(stateHash) ‖ variableSizeBytes(creator) ‖ vlong(seqNum)`
+    /// — the layout the mergeable store looks up by, so its field order and widths are the contract.
+    #[test]
+    fn the_mergeable_key_layout_is_pinned() {
+        let state_hash = Blake2b256Hash::from_bytes([0x11; 32]);
+        let creator = [0x22u8; 20];
+        let key = encode_mergeable_key(&state_hash, &creator, 5);
+
+        let mut expected = vec![0x00, 0x20];
+        expected.extend_from_slice(&[0x11; 32]);
+        expected.extend_from_slice(&[0x00, 0x14]);
+        expected.extend_from_slice(&[0x22; 20]);
+        expected.extend_from_slice(&[0x0A]); // vlong(5) = varint(zigzag(5) = 10)
+        assert_eq!(key, expected);
+
+        // A negative sequence number still encodes in one byte (zigzag), and a large one grows.
+        let negative = encode_mergeable_key(&state_hash, &creator, -1);
+        assert_eq!(negative.last(), Some(&0x01));
+        let large = encode_mergeable_key(&state_hash, &creator, 1000);
+        assert!(large.len() > expected.len());
+        assert_eq!(
+            &large[..expected.len() - 1],
+            &expected[..expected.len() - 1]
+        );
+    }
+
+    /// The per-deploy mergeable data is `uint16` channel count followed by
+    /// `32-byte hash ‖ int64 diff` per channel, and the sequence form prefixes its own count — a
+    /// reader that expected a different count width would read the first hash's bytes as a count.
+    #[test]
+    fn the_mergeable_channel_data_layout_is_pinned() {
+        let channels = vec![
+            NumberChannel {
+                hash: Blake2b256Hash::from_bytes([0x01; 32]),
+                diff: 7,
+            },
+            NumberChannel {
+                hash: Blake2b256Hash::from_bytes([0x02; 32]),
+                diff: -3,
+            },
+        ];
+        let encoded = encode_deploy_mergeable_data(&DeployMergeableData {
+            channels: channels.clone(),
+        });
+
+        assert_eq!(&encoded[..2], &[0x00, 0x02], "the channel count");
+        assert_eq!(encoded.len(), 2 + 2 * (32 + 8));
+        assert_eq!(&encoded[2..34], &[0x01; 32], "the first hash");
+        assert_eq!(
+            &encoded[34..42],
+            &[0, 0, 0, 0, 0, 0, 0, 7],
+            "the first diff"
+        );
+        assert_eq!(&encoded[42..74], &[0x02; 32], "the second hash");
+        assert_eq!(
+            &encoded[74..82],
+            &[0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFD],
+            "the second diff is a signed int64 (-3)"
+        );
+
+        // The sequence form adds an outer count and concatenates the per-deploy encodings.
+        let seq = encode_deploy_mergeable_data_seq(&[
+            DeployMergeableData {
+                channels: channels.clone(),
+            },
+            DeployMergeableData {
+                channels: Vec::new(),
+            },
         ]);
+        assert_eq!(&seq[..2], &[0x00, 0x02], "the deploy count");
+        assert_eq!(&seq[2..2 + encoded.len()], encoded.as_slice());
+        assert_eq!(
+            seq.len(),
+            2 + encoded.len() + 2,
+            "an empty deploy is just its count"
+        );
+
+        // An empty deploy list is two zero bytes, not an empty vector.
+        assert_eq!(encode_deploy_mergeable_data_seq(&[]), vec![0x00, 0x00]);
+    }
+
+    /// A **round trip through the varint** is the property that matters for the key's `seqNum`: any
+    /// `i64` must survive zigzag + LEB128, since the mergeable key is looked up by decoding it back.
+    #[test]
+    fn every_sequence_number_round_trips_through_the_varint() {
+        let decode = |bytes: &[u8]| -> i64 {
+            let mut value: u64 = 0;
+            for (i, b) in bytes.iter().enumerate() {
+                value |= u64::from(b & 0x7f) << (7 * i);
+            }
+            // Undo the zigzag: the low bit is the sign.
+            let n = (value >> 1) as i64;
+            if value & 1 == 1 {
+                !n
+            } else {
+                n
+            }
+        };
+        for n in [
+            0i64,
+            1,
+            -1,
+            63,
+            64,
+            -64,
+            127,
+            128,
+            -128,
+            1000,
+            -1000,
+            i32::MAX as i64,
+            i32::MIN as i64,
+        ] {
+            assert_eq!(decode(&vlong_encode(n)), n, "{n}");
+        }
+    }
+
+    /// `decode_rnd` decodes the random state the mergeable tag carries, and the **encoded form round
+    /// trips** — that is the case the mergeable store depends on.
+    #[test]
+    fn a_random_state_round_trips_through_the_datum_encoding() {
+        let rand = Blake2b512Random::from_init(&[7u8; 32]);
+        let encoded = create_datum_encoded(Blake2b256Hash::from_bytes([3u8; 32]), 1, rand.clone());
+        let decoded = decode_rnd(&encoded).expect("the encoded form decodes");
+        assert_eq!(decoded, rand);
+    }
+
+    /// **A truncated blob panics rather than erroring** (`BitReader::read_bit` indexes
+    /// `bytes[bit_pos / 8]` unchecked). Latent, not live: the bytes come from the node's own
+    /// mergeable store, which the node wrote from its own replay — so the exposure is a corrupted or
+    /// truncated *local* entry aborting the merge instead of reporting a decode error. Recorded as
+    /// AUDIT §16 C15 and pinned here, so giving the reader a `Result` fails this test and is a
+    /// deliberate change.
+    #[test]
+    #[should_panic(expected = "index out of bounds")]
+    fn a_truncated_mergeable_datum_panics() {
+        let _ = decode_rnd(b"");
     }
 }

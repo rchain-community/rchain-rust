@@ -51,33 +51,8 @@ pub async fn create(kvm: &dyn KeyValueStoreManager) -> Result<BlockStore, String
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::{BTreeMap, BTreeSet};
-
-    use rchain_models::block_hash::BlockHash;
-    use rchain_models::casper::protocol::casper_message::RholangState;
-    use rchain_models::validator::Validator;
+    use crate::test_support::block;
     use rchain_shared::store_manager::InMemoryStoreManager;
-
-    fn block() -> BlockMessage {
-        BlockMessage {
-            version: 1,
-            shard_id: "root".to_string(),
-            block_hash: BlockHash::new([1u8; 32]),
-            block_number: 0.try_into().unwrap(),
-            sender: Validator::new([2u8; 65]),
-            seq_num: 0.try_into().unwrap(),
-            pre_state_hash: rchain_models::block::state_hash::StateHash::new([0u8; 32]),
-            post_state_hash: rchain_models::block::state_hash::StateHash::new([0u8; 32]),
-            justifications: vec![],
-            bonds: BTreeMap::new(),
-            rejected_deploys: BTreeSet::new(),
-            rejected_blocks: BTreeSet::new(),
-            rejected_senders: BTreeSet::new(),
-            state: RholangState::default(),
-            sig_algorithm: "secp256k1".to_string(),
-            sig: vec![],
-        }
-    }
 
     #[test]
     fn lz4_block_message_round_trips() {
