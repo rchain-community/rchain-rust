@@ -3,6 +3,7 @@ import Rchain.Match
 import Rchain.Silence
 import Rchain.Store
 import Rchain.Protocol
+import Rchain.Json
 
 /-!
 # The conformance corpus, generated from the specification
@@ -420,6 +421,81 @@ def protocolLine (r : ReplyRow) : String :=
     ++ r.kind.tag ++ "\t" ++ (if r.slots.isEmpty then "-" else
       String.intercalate "," (r.slots.map SlotShape.tag))
 
+/-! ## Law 42 — the JSON layer
+
+Each case is a *value* — a rholang expression the API would receive as a datum — the model's view of the
+`Par` it becomes, and what the encode must produce (`none` is the envelope's "absent": the API renders
+no value at all). The verdict is `decide`d by comparing the model's rendering of the encode against the
+rendering of the declared `JE`, so a case that drifted fails `lake build`; the Rust consumer runs the
+same source through the node's own codec and compares the JSON, so a case that disagrees with the node
+fails the corpus. The cases cover the envelope's three counts (one → unwrapped, none → absent, two or
+more → `ExprPar`) and every `JE` arm except the unforgeable leaf, which the model cannot decode back
+(`Rchain/Json.lean`'s boundary note). -/
+
+/-- A JSON case: the value as rholang spells it, the model's view of it, and the JSON the API must
+expose — `none` for "no value at all" (the envelope's zero case). -/
+structure JsonCase where
+  /-- The value, as the API receives it: a datum in a term's send. -/
+  source : String
+  /-- The model's view of the `Par` that value becomes. -/
+  par : Par
+  /-- What the encode must produce. -/
+  je : Option JE
+
+/-- An integer value. -/
+def intOf (n : Int) : Par := one (.ground (.int n))
+
+/-- A boolean value. -/
+def boolOf (b : Bool) : Par := one (.ground (.bool b))
+
+/-- A `Par` whose only field is a bundle around `p` (the `expr_from_bundle` arm). -/
+def bundleOf (p : Par) : Par := Par.mk [] [] [] [] [] [] [Bundle.mk p true false] []
+
+/-- The cases. -/
+def jsonCases : List JsonCase :=
+  [ -- 1. one field: the envelope unwraps it.
+    { source := "42", par := intOf 42, je := some (.int 42) }
+  , { source := "true", par := boolOf true, je := some (.bool true) }
+  , { source := "\"hello\"", par := strPar "hello", je := some (.str "hello") }
+  , { source := "`rho:id:abc`", par := one (.ground (.uri (codePointsOf "rho:id:abc"))),
+      je := some (.uri "rho:id:abc") }
+  , -- 2. no field at all: the envelope is "absent", which a response renders as no value.
+    { source := "Nil", par := Par.mk [] [] [] [] [] [] [] [], je := none }
+  , -- 3. two or more: the envelope is an `ExprPar`.
+    { source := "1 | 2", par := parMerge (intOf 1) (intOf 2), je := some (.par [.int 1, .int 2]) }
+  , -- 4. the collections, and a tuple inside a list (the nesting the JSON exposes as nesting).
+    { source := "[1, true]", par := listPat [intOf 1, boolOf true] none,
+      je := some (.list [.int 1, .bool true]) }
+  , { source := "Set(1, 2)", par := setPat [intOf 1, intOf 2] none,
+      je := some (.set [.int 1, .int 2]) }
+  , { source := "(1, \"a\")", par := one (.etuple [intOf 1, strPar "a"]),
+      je := some (.tuple [.int 1, .str "a"]) }
+  , { source := "[[1]]", par := listPat [listPat [intOf 1] none] none,
+      je := some (.list [.list [.int 1]]) }
+  , { source := "{\"a\": 1}", par := mapOf [("a", intOf 1)] none,
+      je := some (.map [("a", .int 1)]) }
+  , -- 5. a bundle exposes its body (one field, so the envelope unwraps that too).
+    { source := "bundle+{1}", par := bundleOf (intOf 1), je := some (.int 1) }
+  ]
+
+/-- Every JSON case's verdict holds of the model: the encode of the case's `Par` renders to the same
+text as the case's declared `JE`. `decide`d, so a case that drifted from `parToJE`/`render` fails the
+build rather than being trusted. -/
+theorem jsonCases_decide :
+    jsonCases.all (fun c => (parToJE c.par).map render == c.je.map render) = true := by
+  decide
+
+/-- The count the Rust consumer asserts it read. -/
+def jsonCaseCount : Nat := 12
+
+/-- The layer carries exactly `jsonCaseCount` cases. -/
+theorem jsonCases_length : jsonCases.length = jsonCaseCount := by decide
+
+/-- One JSON corpus line: layer, the value, and the JSON the API must expose (`-` when the envelope is
+"absent", so no column is ever blank). -/
+def jsonLine (c : JsonCase) : String :=
+  "json\t" ++ c.source ++ "\t" ++ (match c.je with | none => "-" | some j => render j)
+
 end Corpus
 end Rchain
 
@@ -430,7 +506,7 @@ open Rchain
 def main (args : List String) : IO UInt32 := do
   let want :=
     (args.find? (fun a => a == "flags" || a == "match" || a == "silence" || a == "store"
-      || a == "protocol")).getD "flags"
+      || a == "protocol" || a == "json")).getD "flags"
   let (lines, count) :=
     if want == "match" then (Corpus.matchCases.map Corpus.matchLine, Corpus.matchCaseCount)
     else if want == "silence" then
@@ -439,6 +515,8 @@ def main (args : List String) : IO UInt32 := do
       (Corpus.storeCases.map Corpus.storeLine, Corpus.storeCaseCount)
     else if want == "protocol" then
       (replyCatalog.map Corpus.protocolLine, replyCaseCount)
+    else if want == "json" then
+      (Corpus.jsonCases.map Corpus.jsonLine, Corpus.jsonCaseCount)
     else (Corpus.flagCases.map Corpus.flagLine, Corpus.flagCaseCount)
   if lines.length != count then
     IO.eprintln s!"rchain-corpus: {want}: the case list and the declared count disagree"

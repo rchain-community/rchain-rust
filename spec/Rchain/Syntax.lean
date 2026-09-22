@@ -16,11 +16,16 @@ Binders use de Bruijn *levels*, matching the Scala `Var` (`bound_var`/`free_var`
 
 namespace Rchain
 
-/-- Ground scalar values (`Expr` with a `GBool`/`GInt`/`GString` instance). -/
+/-- Ground scalar values: the five `Ground` instances the protobuf has (`GBool`, `GInt`, `GString`,
+`GUri`, `GByteArray`). `uri` and `bytes` were missing until law 42: the model could not *hold* the two
+that the JSON layer's whole subject turns on (`ExprUri`, `ExprBytes`), so the reply-shape and envelope
+laws could not be stated for them (AUDIT C28). -/
 inductive Ground where
   | bool (b : Bool)
   | int  (n : Int)
   | str  (l : List Nat)  -- Unicode code points
+  | uri  (l : List Nat)  -- Unicode code points
+  | bytes (l : List Nat) -- raw bytes
 deriving BEq, Ord, DecidableEq
 
 /-- Variables, represented as de Bruijn levels (bound/free) or a wildcard. -/

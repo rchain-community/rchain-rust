@@ -1492,6 +1492,46 @@ oracle is, and the test that pins the fix.
   restore to the *wrong channel* (which is what makes the model compare channels rather than ask
   whether any send is there).
 
+- **C28 — the model's ground scalars were missing two of the five the protobuf has.** Found while
+  writing law 42. `Rchain/Syntax.lean`'s `Ground` had `bool`, `int`, `str` — and the protobuf's
+  `Expr` has five ground instances (`GBool`, `GInt`, `GString`, **`GUri`, `GByteArray`**). So the model
+  could not *hold* a rho value carrying a uri or a byte array: `ExprUri` and `ExprBytes` are two of the
+  eleven arms of `RhoExpr`, and they are the two the JSON layer's defects turn on (C16's class is about
+  the shapes a client reads). Same shape as C23 and C27: the code had a form the specification's
+  language could not name, so no law could be stated about it.
+
+  **Fixed** rather than noted, because the law depends on it: `Ground.uri` and `Ground.bytes` (both
+  `List Nat` — code points for the uri, bytes for the array, matching how `str` is modelled), and
+  `Sort.cmpGround` extended with the two constructors (its lawful-comparator proofs are written as
+  `cases a <;> cases b`, so they absorbed the new arms; the declaration order is now `bool < int < str
+  < uri < bytes` and the `.lt`/`.gt` arm pairs follow it). `Par.lean`, `Match.lean` and `Ty.lean` needed
+  no change — nothing else matches on `Ground` exhaustively.
+
+  **Still outside the model, and named where it bites:** `GUnforgeable` carries a de Bruijn *level*
+  (`gPrivate : Nat`) where the wire carries the name's bytes, so law 42's corpus cannot compare the
+  unforgeable leaf's JSON and excludes it from the round-trip's domain (`flatPar`); the node's own unit
+  tests pin that leaf. A future slice that needs it would extend `GUnforgeable` the same way this one
+  extended `Ground`.
+
+- **Law 42 — the rho-value JSON: the envelope rule and the round-trip.** `Rchain/Json.lean`:
+  `parToJE` reads the three fields `RhoExpr` reads (`exprs`, `unforgeables`, `bundles`) and applies the
+  **envelope rule** (`envelope`: none → *absent*, one → unwrapped, two or more → `ExprPar`), `jeToPar`
+  is the decode, and `render` is the wire text `serde`'s derived representation produces (`{"ExprInt":42}`,
+  `{"ExprMap":[["a",…]]}`, `{"ExprUnforg":{"UnforgPrivate":…}}`). `decode_encode` is the law's core —
+  `rho_expr_to_par (expr_from_par p) = p` — stated over `flatPar` (the hypothesis the envelope rule
+  itself forces: a `par` holding another `par` would be *merged* by the decode, and a one-element or
+  empty `par` is the same value as its element or no value at all), and **owed** — the induction is over
+  the flat fields and the merge arithmetic is the part still to be written out.
+
+  Checked 1:1: `spec/conformance/json.tsv` (12 cases, `Corpus.jsonCases_decide`) consumed by
+  `node/tests/lean_json_corpus.rs`. Each case's expected JSON is the *model's* `render` of the declared
+  `JE` (not a hand-written string), and the consumer asserts two things against the running node: the
+  node's own `expr_from_par` serializes to that text, and `rho_expr_to_par` of the result encodes back
+  to the same JSON — the API's round-trip, at the wire level, with the model as the independent party.
+  The cases cover the envelope's three counts and every `JE` arm but the unforgeable. Falsified once on
+  purpose (one case's expected JSON perturbed): it fails, naming the value, what the node exposed and
+  what the model says.
+
 - **Law 40 — arity agreement, and the model had to learn to read it.** The law is "every call in the
   protocol catalog has an accepting receive at the target's arity", and the rule under it is one clause
   of `Rchain/Silence.lean`'s redex search: `stepsInBinds` accepts a send only when the receive's bind

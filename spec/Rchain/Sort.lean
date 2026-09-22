@@ -26,13 +26,20 @@ open Comparator
 
 /-! ## Leaf comparators (`Ground`, `Var`) -/
 
-/-- Structural comparison of `Ground`, constructor-declaration order (`bool < int < str`). -/
+/-- Structural comparison of `Ground`, constructor-declaration order (`bool < int < str < uri <
+bytes`). Every constructor but the last needs the `.lt`/`.gt` pair after its own arm: the `.lt` arm
+answers "this constructor against anything later", the `.gt` arm "anything earlier against this one",
+and both are reached only when no earlier group already decided the pair. -/
 def cmpGround : Ground → Ground → Ordering
   | .bool b, .bool b' => _root_.cmp b b'
   | .bool _, _ => .lt | _, .bool _ => .gt
   | .int n, .int n' => _root_.cmp n n'
   | .int _, _ => .lt | _, .int _ => .gt
   | .str l, .str l' => cmpListF (fun n m => _root_.cmp n m) l l'
+  | .str _, _ => .lt | _, .str _ => .gt
+  | .uri l, .uri l' => cmpListF (fun n m => _root_.cmp n m) l l'
+  | .uri _, _ => .lt | _, .uri _ => .gt
+  | .bytes l, .bytes l' => cmpListF (fun n m => _root_.cmp n m) l l'
 
 /-- Structural comparison of `Var`, constructor-declaration order (`bound < free < wildcard`). -/
 def cmpVar : Var → Var → Ordering

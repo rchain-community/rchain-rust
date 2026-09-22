@@ -41,7 +41,7 @@ laws** carrying a randomized property test and **10 benchmark functions** in 6 C
 | `rspace` | 166 | — | 7 | — |
 | `rholang` | 197 | 49 | 7 | — |
 | `casper` | 239 | 45 | 3 | — |
-| `node` | 178 | 9 | — | — |
+| `node` | 178 | 10 | — | — |
 | `qucalc` | 20 | — | — | — |
 | `rspace-bench` | — | — | — | 10 |
 
@@ -123,7 +123,8 @@ than an algebraic identity. Explicit rather than implied, per the rule that no c
 | 39 | Reply shapes: every urn's reply arity/shape is its `spec/API-SCHEMA.md` row | `Protocol.lean` `replyCatalog` + `replyCatalog_decide` (unique namespaced urns, kind agrees with slots, arity agrees with the arguments as written) | `spec/conformance/protocol.tsv` ← `replyCatalog` · `rholang/tests/lean_protocol_corpus.rs` · the doc tie in `tools/check-lean-conformance.sh` | **checked** for the rows the surface language can spell (the `ByteArray`-argument urns are named in `spec/INVENTORY.md` row 39) |
 | 40 | Protocol agreement: a call has an accepting receive at the target's arity | `Silence.lean` `stepsInBinds` reads the arity (as many patterns as data), `receiveParPs` | `spec/conformance/silence.tsv` cases 7-12 ← `Corpus.silenceCases_decide` · `rholang/tests/lean_silence_corpus.rs` | **checked** (case 10 is C22 item 2) |
 | 41 | Channel balance: a replicable reader restores what it consumes | `Store.lean` `readStore` / `storeSurvives` (a datum back *and* `takesStep`), `replicatedRead` | `spec/conformance/store.tsv` ← `Corpus.storeCases_decide` · `rholang/tests/lean_store_corpus.rs` | **checked** (the installed content: `casper/tests/genesis_registry.rs`'s `a_read_does_not_destroy_the_inbox`) |
-| 30-34, 36, 42, 43 | grammar, lexing, print/parse round-trip; normalization as a function; JSON round-trip and envelope | *(named per row in `spec/INVENTORY.md`; not yet defined)* | *(none yet)* | **open** — the next slices |
+| 42 | rho-value JSON: the envelope rule and `rho_expr_to_par (expr_from_par p) = p` | `Json.lean` `parToJE` (the envelope), `jeToPar`, `render`; `decode_encode` stated over `flatPar` and **owed** | `spec/conformance/json.tsv` ← `Corpus.jsonCases_decide` · `node/tests/lean_json_corpus.rs` | **checked** at the wire level (the model's `render` is the expectation; the node's JSON and its own round-trip are the second party) |
+| 30-34, 36, 43 | grammar, lexing, print/parse round-trip; normalization as a function; the per-endpoint envelope schema | *(named per row in `spec/INVENTORY.md`; not yet defined)* | *(none yet)* | **open** — the next slices |
 
   Two laws therefore have **no** randomized evidence, both deliberately: 12 and 13 are orphaned with
   the Rosette VM, and 19 is an axiom whose implementations are KAT-pinned. Law 22 and 23 have a

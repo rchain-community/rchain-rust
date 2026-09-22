@@ -222,3 +222,32 @@ pub fn gateway_conf_with_txn_api(
     conf.casper.shards = ShardMemberships::new(specs).expect("memberships");
     conf
 }
+
+/// Assemble a play runtime over a fresh in-memory store — the same shape `rholang/tests/common`
+/// uses, for tests that need the interpreter but not a node. The corpus consumers in this crate call
+/// the API's own codecs over terms, so they need a store to run a term in and nothing more.
+pub async fn rho_runtime() -> rchain_rholang::runtime::RhoRuntime {
+    use rchain_models::runtime::{BindPattern, ListParWithRandom, TaggedContinuation};
+    use rchain_models::sorted::SortedProc;
+    use rchain_rholang::storage::RhoMatch;
+    use rchain_rspace::factory::create_history_repository;
+    use rchain_rspace::hot_store::InMemHotStore;
+    use rchain_rspace::rspace::RSpace;
+    use rchain_shared::store_manager::InMemoryStoreManager;
+
+    let manager = InMemoryStoreManager::default();
+    let history = create_history_repository::<
+        SortedProc,
+        BindPattern,
+        ListParWithRandom,
+        TaggedContinuation,
+    >(&manager, "rspace")
+    .await
+    .expect("history repository");
+    let reader = history.get_history_reader(history.root()).await;
+    let hot = Arc::new(InMemHotStore::new(reader.base()));
+    let (play, _replay) = RSpace::create_with_replay(history.clone(), hot, Arc::new(RhoMatch));
+    rchain_rholang::runtime::RhoRuntime::create(play, history, SortedProc::default())
+        .await
+        .expect("rho runtime")
+}

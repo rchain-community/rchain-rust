@@ -1,0 +1,12 @@
+json	42	{"ExprInt":42}
+json	true	{"ExprBool":true}
+json	"hello"	{"ExprString":"hello"}
+json	`rho:id:abc`	{"ExprUri":"rho:id:abc"}
+json	Nil	-
+json	1 | 2	{"ExprPar":[{"ExprInt":1},{"ExprInt":2}]}
+json	[1, true]	{"ExprList":[{"ExprInt":1},{"ExprBool":true}]}
+json	Set(1, 2)	{"ExprSet":[{"ExprInt":1},{"ExprInt":2}]}
+json	(1, "a")	{"ExprTuple":[{"ExprInt":1},{"ExprString":"a"}]}
+json	[[1]]	{"ExprList":[{"ExprList":[{"ExprInt":1}]}]}
+json	{"a": 1}	{"ExprMap":[["a",{"ExprInt":1}]]}
+json	bundle+{1}	{"ExprInt":1}
