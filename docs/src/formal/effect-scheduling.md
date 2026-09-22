@@ -44,7 +44,7 @@ Two effects are **independent** only when their **closures** are disjoint, not m
 
 | # | Law | What it fixes | Rust realization |
 |---|-----|---------------|------------------|
-| **4** | `reduce_deterministic` | the consumed candidate is fixed, not scheduler-chosen | `rholang/src/reduce.rs` |
+| **4** | `reduce_redex_unique` (**proven**) — an isolated redex is unique up to `≡`; and `reduce_not_deterministic` (**proven**) — the *flat* calculus is not confluent | an isolated redex produces one thing; which redex fires is this module's business. The consumed candidate is fixed by content-addressed selection (law 8) and the claim queue (law 20), not by the calculus | `rholang/src/reduce.rs`, `rspace/src/space_matcher.rs` |
 | **8** | Deterministic COMM | candidate selection is sorted-first by content hash | `rspace/src/space_matcher.rs`, `rspace/src/rspace.rs` |
 | **11** | Replay determinism | the effect *order* is fixed — replay must reproduce the recorded trace | `rspace/src/replay_rspace.rs` |
 | **10** | Merkle determinism | the trie root is the state — a given effect *set* yields the same root | `rspace/src/history/*` |

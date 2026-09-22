@@ -108,5 +108,6 @@ Remaining:
   (see [`spec/AUDIT.md`](../../../spec/AUDIT.md) §8): two genuinely untrusted-input narrowing casts were
   fixed; the remainder are documented-faithful Scala fixed-width equivalents. The *safe-by-construction
   type system* itself is done: the sort-indexed `Par<S>` (compile-time Name/Proc) plus the load-bearing
-  `Closed`/`WellScoped`/`BindsAtMostOnce` refinements
+  `Closed`/`WellScoped` refinements and the `free_count` fields that carry Law 5's linearity on the
+  AST nodes
   ([`spec/RHO-CALCULUS.md`](../../../spec/RHO-CALCULUS.md)).

@@ -104,7 +104,10 @@ matched variables in scope); an unmatched value falls through (and an implicit t
 matches everything). This first-match-wins ordering is Law 4's determinism, and the guarantee that a
 pattern binds each free variable **at most once** is Law 5.
 
-> **Formal.** Matching is **spatial matching** (Law 5): `BindsAtMostOnce`, `spatialMatches`, and the
-> decidable match in `spec/Rchain/Match.lean`; the K rules are `matching-function.k`,
+> **Formal.** Matching is **spatial matching** (Law 5): `spatialMatch`/`spatialMatches` and the
+> decidable match in `spec/Rchain/Match.lean`, with the linearity law `spatialMatch_implies_linear`
+> proven of a matcher that is *defined* — this note used to name `BindsAtMostOnce`, an axiom that was
+> false as written (AUDIT C26). Law 37 is the matcher's soundness and completeness, law 38 the silence
+> when nothing matches. The K rules are `matching-function.k`,
 > `specific-matching-rules.k`, `exact-matching-function.k`, and `matching-with-par.k`. See
 > [Substitution and matching](../formal/substitution-matching.md).

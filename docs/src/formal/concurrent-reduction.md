@@ -20,8 +20,13 @@ or simultaneously.
 
 ## The concurrency contract in one line
 
-> **Reduction is permitted everywhere inside `|` (`parLeft`/`parRight`), but the result must be the
-> same canonical state regardless of schedule** (`reduce_deterministic`).
+> **Reduction is permitted everywhere inside `|` (`parLeft`/`parRight`), and an *isolated* redex is
+> unique up to `≡` (`reduce_redex_unique`) — but the flat calculus is *not* confluent, and the model
+> proves it** (`reduce_not_deterministic`: one term reduces, via two different decompositions, to two
+> non-`≡` terms). The determinism a node needs therefore does **not** come from the calculus: it comes
+> from content-addressed candidate selection (law 8) and the scheduler (laws 20–25). Full confluence
+> *is* a property of the tree model (`Tree.lean`'s `reduceT_confluent`) — the flat `Par` is that
+> model's field-wise quotient, and the two are not interchangeable for confluence.
 
 Everything below is a spelling-out of that sentence: which laws *grant* the permission, which laws
 *fix* the result, and the theorems that say the two are compatible.
@@ -49,7 +54,7 @@ currently carries it (from [`contributor/laws-to-rust.md`](../contributor/laws-t
 | # | Law | What it fixes | Rust realization |
 |---|-----|---------------|------------------|
 | **1** (tie-break) | canonical total order | *Which* candidate is "first" when several match | `Sorted<Par>` + `space_matcher.rs` |
-| **4** (full) | `reduce_deterministic`, first-match-wins | The send/receive pairing is fixed, not scheduler-chosen | `spec/Rchain/Reduce.lean` (stated) |
+| **4** (full) | `Reduce`'s COMM rule, first-match-wins; `reduce_redex_unique` (**proven**) — and `reduce_not_deterministic` (**proven**), the counterexample that says the flat `Par` is *not* confluent | An isolated redex produces one thing; *which* redex fires is the scheduler's business, and the flat calculus does not fix it | `Rchain/Rho.lean` (rule), `Rchain/Concurrent.lean` (theorems), `Rchain/Reduce.lean` `reduce_freeVars_subset` (**stated**) |
 | **8** | Deterministic COMM (produce refs sorted; content-addressed events) | Reproducible candidate selection | `rspace::space_matcher` first-match-in-insertion-order |
 | **11** | Replay determinism (recomputed COMM ⊆ recorded trace) | A re-execution — concurrent or not — reproduces the recorded trace | `rspace::ReplayRSpace` |
 | **12** | Actor atomicity (single-threaded `mbox.nextMsg`) | One actor/message at a time; the *analog* here is per-channel serialization | (orphaned; carried by `TwoStepLock`) |
@@ -62,8 +67,10 @@ currently carries it (from [`contributor/laws-to-rust.md`](../contributor/laws-t
 
 - **Law 3** — `sort(subst t) = subst(sort t)`: substitution commutes with canonical order, so a branch
   may substitute into an already-sorted subterm without re-sorting.
-- **Law 5** — a free variable is bound at most once (`BindsAtMostOnce`): a pattern's substitution is
-  well-defined regardless of the order parallel-matched sub-patterns bind variables.
+- **Law 5** — a pattern binds each free level at most once (`spatialMatch_implies_linear`, **proven** of
+  a matcher that is *defined* — the axiom this page used to name, `BindsAtMostOnce`, was false as
+  written, AUDIT C26): a pattern's substitution is well-defined regardless of the order
+  parallel-matched sub-patterns bind variables.
 - **Law 6** — no globally free variables (`Closed`): preserved under `|`, `≡`, and `⟶`, so splitting a
   closed program into branches and rejoining keeps everything total.
 - **Law 10** — Merkle determinism: the content-addressed trie root *is* the state, so two merges of the
