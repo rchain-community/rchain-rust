@@ -1858,3 +1858,49 @@ port against the **reference document** rather than against itself.
   Both statements are now true and precisely scoped; both proofs remain owed, and the second is the
   smaller job (a structural induction reconstructing the redex the search found, with the head-peeling
   congruence chain). Recorded here rather than discovered later by someone proving a falsehood.
+
+## 20. The back-sweep: every incident to its law and its case
+
+The programme began with ten defects of one class — "nothing errors" — found on a running node,
+patched, and understood only afterwards. This table is the answer to the question they left: *which
+law would have caught this one?* Each row names the incident, the law that now covers it, and the case
+that fails if the behaviour returns. A row whose third column says **harness** or **retired** is a
+finding that no law covers, and it says why rather than leaving the gap to inference.
+
+| Incident | Law | What catches it now |
+|---|---|---|
+| C9 `(x)` parsed as a one-element tuple | 30, 31, 33 | `Rchain/Surface.lean`'s production table (a tuple is `TupleSingle`/`TupleMultiple`); `rholang/src/parser.rs`'s unit tests |
+| C10 `/\` and `\/` lexed swapped | 32 | `spec/conformance/lex.tsv` rows `Conj`/`Disj`, each with a discriminating sample — `node/tests/lean_lex_corpus.rs` |
+| C13 printer dropped `bundle` and doubled `|` | 33 | `Rchain/Surface.lean`'s witnesses (`bundle+/-/0/` rows) — the round-trip corpus is `Print.lean`'s, still open |
+| C16 `DeployExecStatus` fields snake_case | 43 | `spec/conformance/envelope.tsv`'s `DeployExecStatus` row (variant *and* field keys) + the served document — `node/tests/lean_envelope_corpus.rs` |
+| C17 list/set remainders did not parse | 31 | the `ProcRemainderVar` witness rows and the corpus's remainder cases |
+| C18 `lookup` wrapped its reply in `(uri, value)` | 39 | `spec/conformance/protocol.tsv`'s `rho:registry:lookup` row + the doc tie to `spec/API-SCHEMA.md` |
+| C19, C20 partial collection patterns never matched | 35, 37 | `flags.tsv` (concreteness includes the remainder) and `match.tsv` (a partial pattern's verdict) — `lean_normalize_corpus.rs`, `lean_match_corpus.rs` |
+| C21 a non-first `if` was a no-op | 34 | `rholang/tests/if_par.rs` (five shapes, including `if` inside a receive body) — the Lean value-position model is `Surface.lean`'s `normalize` |
+| C22 item 1 a reader consumed its store | 41 | `store.tsv`'s five cases + `casper/tests/genesis_registry.rs`'s `a_read_does_not_destroy_the_inbox` |
+| C22 item 2 a wrong-arity capability call | 40 | `silence.tsv` case 10 (`write!(key, value)` against a three-argument `write`) — and the *rule* now has `commPs`, which is what makes the arity a rule clause (C40) |
+| C22 item 3 a map remainder treated as concrete | 35 | `flags.tsv`'s remainder rows |
+| C24 `[1 ..._]` and `@{..._}` | 35, 31 | `flags.tsv` (C24's own case) + the deviation row for the comma form `[1, ..._]` — and the model's derivation of the comma-less form is now *stated* (`ProcRemainder` follows the list with no terminal) |
+| C25 `Group!("new")` answered nothing | 41 (measured) | `casper/tests/genesis_registry.rs`'s two group-creation tests; the store *does* restore, so the audit's earlier "permanent loss" reading was wrong and is corrected in place |
+| C26 law 5 was three axioms, one false | 37 | the definitional matcher + `match.tsv`; the theorem is the definition now |
+| C27 the base-sort receive never named its channel | 38, 40 | `Rho.lean`'s `receivePar` (fixed) + `Ty.lean`'s `closed_anyPat` |
+| C28 the model's ground scalars were missing two leaves | 42 | `Rchain/Syntax.lean`'s `uri`/`bytes` + `json.tsv` |
+| C29 the served OpenAPI document was stale | 43 | `envelope.tsv` held to the DTOs **and** the served document by `lean_envelope_corpus.rs`; the three missing paths added |
+| C30 trailing input accepted | 30, 31 | `parser.rs`'s `trailing_input_is_not_a_term`; the two `Logical-*-in-program.rho` fixtures are the corpus's own evidence and are now skip-list rows |
+| C31 trailing separators accepted | 31 | `parser.rs`'s `a_trailing_separator_has_no_derivation` (nine spellings), with `(1,)` and the comma-remainder deviation kept as controls |
+| C32 `in` optional in `new`/`let` | 31 | `parser.rs`'s `in_is_required_by_new_and_let` |
+| C33 a method call without its argument list | 30 | `parser.rs`'s `a_method_call_needs_its_argument_list` |
+| C34 `GroundBigInt` unreachable | 31 | `parser.rs`'s `bigint_is_a_ground_and_bigint_alone_is_a_type` |
+| C35 `PSendSynch` unreachable | 31 | `parser.rs`'s `a_synchronous_send_parses_with_its_continuation` |
+| C36 the lexer panicked on an unterminated literal | 32 | `parser.rs`'s `unterminated_lexical_forms_are_errors_not_crashes` |
+| C37 `rho_examples` measured the stack | — **harness** | no law: the finding is that a 2 MiB default is not a parse result. `casper/tests/genesis_registry.rs`'s pattern (`with_big_stack`) is the convention, and C37 records why two diagnoses went wrong |
+| C38 every rho value wrapped wrongly | 42 | `rho_expr.rs`'s `the_wire_shape_is_the_reference_documents` (one literal per arm), `json.tsv`/`lex.tsv` re-emitted, the served document's `RhoExpr` schema, and `node/tests/node_api.rs` over HTTP |
+| C39 the reply was read from one channel | 39, 43 | `casper/tests/exploratory_reply.rs` (three outcomes) + `replySource` in `envelope.tsv` and the served document |
+| C40 law 38's tie was false, and the relation lacked its arity clause | 38, 40 | `allStringChans` scoping the statement, `commPs` as the rule's arity clause |
+
+**The two rows that are not laws are the two worth keeping visible.** C37 is a *harness* finding —
+a measurement that was not a measurement — and no law would have caught it, because the thing that
+was wrong was outside the term. The retired static walk over vendored text (AUDIT §17 C22) is the
+other: it was drafted, found unable to tell a terminal consume from a deferred restore from a
+permanent loss, and retired unshipped rather than shipped with an exception list. A catalogue that
+claimed to cover them would be claiming something false.
