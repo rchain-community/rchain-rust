@@ -25,7 +25,7 @@ proved *about the Lean model* and a law proved *and checked against the running 
 
 - `provedTied` — proved, **and** tied to the node by a conformance corpus whose Rust consumer runs the
   same source text through the real thing (`spec/conformance/*.tsv`). The corpus is the only mechanical
-  Lean↔Rust link this repo has, so only laws 32, 35, 37–43 can carry this status today.
+  Lean↔Rust link this repo has, so only laws 32, 34, 35, 37–43 can carry this status today.
 - `provedModel` — proved over the model; the tie to the Rust is prose in a mapping table. Honest, and
   weaker than it sounds: a `provedModel` law is a claim about a model that a human keeps in sync. Most of
   laws 1–29 are here, and the consolidation pass moved rows *into* it by modelling the Rust's own
@@ -806,20 +806,35 @@ def laws : List Law := [
     falsifiable := none,
     note := "needs `Rchain/Print.lean`, which does not exist" },
   { number := 34, layer := "Rholang",
-    statement := "Normalization is a function; a *value* position (operand, condition, target, datum, \
-      element, pattern, name) is normalized against an empty `par` — only a statement continuation \
-      inherits",
-    status := .open,
+    statement := "A *value* position (a condition, target, datum, element, pattern, name) is normalized \
+      against an **empty** `par` — only a statement continuation inherits what precedes it. **Checked on \
+      the shapes C21 broke**, not universally: the model threads no accumulator, so the universal \
+      statement is not statable over it",
+    status := .provedTied,
     declarations := [`Rchain.normalizeAt, `Rchain.Surf],
-    falsifiable := some "this is AUDIT C21: with the rule violated, `x!([\"a\"]) | if (1 == 1) { … }` \
-      produces nothing at all — the defect was observed on a node and the Rust fix is `f6477eba3`, so \
-      the negative case is not hypothetical, it is history",
-    note := "**the highest-value open law**, and the model cannot yet state it: `normalizeAt` threads \
-      only the binder stack `Γ` and takes no accumulated `par`, so the very parameter whose misuse was \
-      C21 does not exist here. The defect lived in the Rust normalizer seeding a *value* position with \
-      the par that preceded it; a model with no accumulator cannot express that, so the law needs the \
-      accumulator modelled (or, sharper and cheaper, a corpus layer carrying the C21 repro — the \
-      mechanism that would actually tie it to the node)" },
+    corpus := some "c21",
+    rust := ["rholang/src/normalizer.rs", "rholang/tests/lean_c21_corpus.rs"],
+    falsifiable := some "**the layer is the witness.** Reintroducing C21's defect in `normalize_if` — \
+      normalizing the condition against `input.par` rather than `Par::default()` — fails case 1 at once, \
+      with the target reported as `@\"c\"!([\"a\"])` beside `(1 == 1)` instead of the condition alone \
+      (verified before the corpus was believed). The corpus has a second failure mode of its own: its \
+      non-degeneracy half (`c21IsProbe`, decided with the rest) fails for a case whose term normalizes \
+      to its own condition, so a case that proved nothing would fail rather than pass quietly",
+    note := "**the corpus is the check here, and the model's half is a check rather than a proof of the \
+      rule** — which is the honest shape, not a weakness to hide. `normalizeAt` threads only the binder \
+      stack `Γ` and takes no accumulated `par`, so the parameter whose misuse was C21 does not exist in \
+      the model: \"a value position is normalized against an empty par\" holds of it by construction and \
+      there is nothing to falsify. What the two sides do is normalize the same source text \
+      independently — the model `decide`s (through `cmpPar`, whose `eq_iff` is proved) that the \
+      desugared `Match`'s target is the condition alone, and `lean_c21_corpus.rs` asserts the node's \
+      target equals its own normalization of the condition — so what breaks under a regression is the \
+      **tie**, and it does. Case 3 is the explicit-`match` control (the desugaring that was never \
+      broken) and case 5 a ground condition, so the layer does not rest on the arithmetic clauses \
+      agreeing. AUDIT C21 is the history: the target became the preceding par, the pattern cases are \
+      `true`/`false`, an unmatched `match` is not an error, and the `if` reduced to nothing at \
+      `processedWithSuccess` — invisible for an `if` in first position, which is the idiom contracts \
+      mostly use. **Still owed**: the accumulator modelled, which would make the *universal* rule \
+      statable; the corpus ties the shape, it does not replace the statement" },
   { number := 35, layer := "Rholang",
     statement := "`connective_used` is sound: it holds iff the term contains a connective, free \
       variable, wildcard or remainder, per collection form",

@@ -1,4 +1,6 @@
 import Rchain.Par
+import Rchain.Sort
+import Rchain.Surface
 import Rchain.Match
 import Rchain.Silence
 import Rchain.Store
@@ -415,6 +417,148 @@ calls in every term, so a store that survives answers both. -/
 def storeLine (c : StoreCase) : String :=
   "store\t" ++ c.term ++ "\t" ++ (if c.survives then "2" else "1")
 
+/-! ## Law 34 — the value-position rule (AUDIT C21)
+
+`normalizeAt` threads only a binder stack, so "a value position is normalized against an empty `par`" is a
+property of the definition rather than a statement anything can *falsify* — the accumulator whose misuse
+was C21 does not exist in the model, which is why this law is `owed` rather than proved. What the rule
+can have, and what this layer is, is a **tie to the node on the shape C21 broke**: each case is a term
+whose `if` is *not* first in its `par`, plus that `if`'s condition, and each party normalizes the two
+source strings itself.
+
+- The **model's** half is `decide`d here: the `Match` an `if` desugars into has the condition's
+  normalization as its target, *and* the term's normalization is not the condition — the non-degeneracy
+  half, so a case that accidentally was its own condition fails instead of passing quietly.
+- The **node's** half is `rholang/tests/lean_c21_corpus.rs`: it parses both strings, normalizes them, and
+  asserts the same relation.
+
+The two sides never compare representations across the boundary — each compares terms it normalized
+itself — so what ties them is the source text, as in every layer. Under the C21 defect the node's target
+was `@"c"!(["a"]) | (1 == 1)` rather than `(1 == 1)`, which fails the node's half of every case here
+while the model's half stays true: the corpus is built so that the *tie* is what breaks, and the
+regression that motivated it (`normalizer.rs`'s `normalize_if` seeding the condition with `input.par`)
+fails case 1 immediately.
+
+Case 3 is the explicit `match` control — the desugaring that was never broken, which is the evidence that
+this was `normalize_if`'s bug and not the rule's absence. Case 5's condition is a ground rather than an
+expression, so the layer does not depend on the arithmetic clauses agreeing. -/
+
+/-- The number of cases the c21 layer carries. -/
+def c21CaseCount : Nat := 5
+
+/-- A law-34 case: a term whose `if` is not first in its `par`, the `if`'s condition, and the model's
+    view of each. The two source strings are what the Rust consumer reads; the two `Surf`s are the
+    model's view of that same text, which is what every layer's cases carry. -/
+structure C21Case where
+  /-- The term, as rholang spells it: a statement followed by an `if` (or the explicit-`match`
+      control). A *program* — quoted channels, so no free variable is left for the node to refuse. -/
+  source : String
+  /-- The `if`'s condition, as rholang spells it. Normalized alone, this is what the desugared
+      `Match`'s target must be; for the `match` control it is the `match`'s target. -/
+  condition : String
+  /-- The term, as the model sees it. -/
+  whole : Surf
+  /-- The condition, as the model sees it. -/
+  cond : Surf
+
+/-- A string literal — the surface carries the raw literal, quotes included. -/
+def sStr (raw : String) : Surf := .ground (.str raw)
+
+/-- An integer literal. -/
+def sInt (digits : String) : Surf := .ground (.int digits)
+
+/-- `@"<channel>"!(data)`. -/
+def sQuoteSend (channel : String) (data : List Surf) : Surf :=
+  .send (.quote (sStr ("\"" ++ channel ++ "\""))) false [.collect (.list data none)]
+
+/-- `@"out"!(msg)`. -/
+def sOut (msg : String) : Surf := sQuoteSend "out" [sStr msg]
+
+/-- `1 == 1` — the condition the expression cases share. -/
+def sAlwaysTrue : Surf := .eq (sInt "1") (sInt "1")
+
+/-- Whether two terms are the same, by law 1's canonical comparator — whose `eq_iff` is *proved*
+    (`cmpPar_eq_iff`), so a `Bool` built from it means equality and not merely a hash. -/
+def samePar (p q : Par) : Bool :=
+  match cmpPar p q with
+  | .eq => true
+  | _ => false
+
+/-- The target of a normalized term's sole `Match` — the position an `if` desugars into. -/
+def soleTarget : Option Par → Option Par
+  | some p =>
+    match p.matches with
+    | [Match.mk t _] => some t
+    | _ => none
+  | none => none
+
+/-- **The value-position rule for one case**: the target is the condition, normalized alone — not the
+    condition *preceded by* the terms before it, which is what C21 put there. -/
+def c21Holds (c : C21Case) : Bool :=
+  match soleTarget (normalizeAt c.whole []), normalizeAt c.cond [] with
+  | some t, some q => samePar t q
+  | _, _ => false
+
+/-- The case is a **probe** rather than its own condition: the term normalizes to something other than
+    the condition, so "the target is the condition" cannot hold of the whole by accident. -/
+def c21IsProbe (c : C21Case) : Bool :=
+  match normalizeAt c.whole [], normalizeAt c.cond [] with
+  | some w, some q => !(samePar w q)
+  | _, _ => false
+
+/-- The cases, each a term whose `if` sits behind a statement — the wild shape — with the `match` control
+    and a ground condition for the reasons in the section header. -/
+def c21Cases : List C21Case :=
+  [ -- 1. the shape AUDIT C21 found in the wild: the `if` behind a send, so the defect's target was
+    --    that send *beside* the condition.
+    { source := "@\"c\"!([\"a\"]) | if (1 == 1) { @\"out\"!(\"then\") } else { @\"out\"!(\"else\") }"
+    , condition := "1 == 1"
+    , whole := .par (sQuoteSend "c" [.collect (.list [sStr "\"a\""] none)])
+        (.ifElse sAlwaysTrue (sOut "\"then\"") (sOut "\"else\""))
+    , cond := sAlwaysTrue }
+  , -- 2. no `else` branch: the same desugaring with one case.
+    { source := "@\"c\"!(1) | if (1 == 1) { @\"out\"!(\"then\") }"
+    , condition := "1 == 1"
+    , whole := .par (sQuoteSend "c" [sInt "1"]) (.ifThen sAlwaysTrue (sOut "\"then\""))
+    , cond := sAlwaysTrue }
+  , -- 3. the control: an explicit `match`, the desugaring that never absorbed the preceding par.
+    { source := "@\"c\"!(1) | match 1 { 1 => @\"out\"!(\"then\") }"
+    , condition := "1"
+    , whole := .par (sQuoteSend "c" [sInt "1"])
+        (.match (sInt "1") [⟨sInt "1", sOut "\"then\""⟩])
+    , cond := sInt "1" }
+  , -- 4. two statements before the `if`: the accumulated par the defect folded in was longer.
+    { source := "@\"c\"!(1) | @\"d\"!(2) | if (1 == 1) { @\"out\"!(\"then\") } else { @\"out\"!(\"else\") }"
+    , condition := "1 == 1"
+    , whole := .par (sQuoteSend "c" [sInt "1"])
+        (.par (sQuoteSend "d" [sInt "2"]) (.ifElse sAlwaysTrue (sOut "\"then\"") (sOut "\"else\"")))
+    , cond := sAlwaysTrue }
+  , -- 5. a ground condition, so the layer does not rest on the arithmetic clauses agreeing.
+    { source := "@\"c\"!(1) | if (true) { @\"out\"!(\"then\") } else { @\"out\"!(\"else\") }"
+    , condition := "true"
+    , whole := .par (sQuoteSend "c" [sInt "1"])
+        (.ifElse (.ground (.bool true)) (sOut "\"then\"") (sOut "\"else\""))
+    , cond := .ground (.bool true) }
+  ]
+
+/-- Every case holds of the model **and** is a probe, checked against the desugaring.
+
+`native_decide` rather than `decide`, for the reason `Rchain/Effect.lean` uses it: the checker reduces
+the canonical comparator (`cmpPar`, whose `eq_iff` is proved) over a desugared term, and the kernel's
+reduction is too deep for it — the computation itself is fast (`#eval` agrees with the theorem) and the
+same trust in the compiler the rest of the tree places elsewhere. -/
+theorem c21Cases_decide :
+    c21Cases.all (fun c => c21Holds c && c21IsProbe c) = true := by native_decide
+
+
+/-- The layer carries exactly `c21CaseCount` cases. -/
+theorem c21Cases_length : c21Cases.length = c21CaseCount := by decide
+
+/-- One c21 corpus line: layer, the term, the condition. The consumer normalizes both and asserts the
+    relation the model's half above asserts of its own view. -/
+def c21Line (c : C21Case) : String :=
+  "c21\t" ++ c.source ++ "\t" ++ c.condition
+
 /-! ## Law 39 — the protocol layer
 
 The catalog is the law (`Rchain/Protocol.lean`: `replyCatalog`, with its `decide`d consistency checks);
@@ -552,9 +696,11 @@ open Rchain
 def main (args : List String) : IO UInt32 := do
   let want :=
     (args.find? (fun a => a == "flags" || a == "match" || a == "silence" || a == "store"
-      || a == "protocol" || a == "json" || a == "envelope" || a == "lex")).getD "flags"
+      || a == "c21" || a == "protocol" || a == "json" || a == "envelope"
+      || a == "lex")).getD "flags"
   let (lines, count) :=
-    if want == "match" then (Corpus.matchCases.map Corpus.matchLine, Corpus.matchCaseCount)
+    if want == "c21" then (Corpus.c21Cases.map Corpus.c21Line, Corpus.c21CaseCount)
+    else if want == "match" then (Corpus.matchCases.map Corpus.matchLine, Corpus.matchCaseCount)
     else if want == "silence" then
       (Corpus.silenceCases.map Corpus.silenceLine, Corpus.silenceCaseCount)
     else if want == "store" then
