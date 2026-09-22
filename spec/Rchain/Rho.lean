@@ -51,9 +51,21 @@ theorem strCong_nil_left (p : Par) : StrCong (parMerge nilPar p) p :=
 def sendPar (chan : Par) (data : List Par) : Par :=
   Par.mk [Send.mk chan data false] [] [] [] [] [] [] []
 
-/-- A receive on channel `chan` with body `body` (single bind, non-persistent). -/
+/-- The pattern a `receivePar` binds: a **bound** variable (a de Bruijn level-0 binder), which is what
+`for (x <- chan)` desugars to — it matches any datum and it is *closed*, because the receive binds it.
+(A wildcard `_` would also match anything, but a wildcard is not closed in the model's `Closed`
+judgement, and `Rchain/Ty.lean` proves `Closed (receivePar chan body) ↔ Closed chan ∧ Closed body` —
+so the pattern has to be the bound form.) -/
+def anyPat : Par := Par.mk [] [] [] [.evar (.bound 0)] [] [] [] []
+
+/-- A receive **on channel `chan`** with body `body` (single bind, non-persistent).
+`ReceiveBind`'s fields are `(patterns, source, freeCount)` — the **source is the channel** — so
+`[anyPat]` in the patterns slot and `chan` in the source slot is the shape that *means* "listens on
+`chan`". The previous `ReceiveBind.mk [chan] body 1` put the channel in the patterns slot and the
+body in the source slot, which is invisible in a theorem that never asks where a receive listens —
+and fatal to law 40, whose whole question is exactly that (AUDIT C27). -/
 def receivePar (chan : Par) (body : Par) : Par :=
-  Par.mk [] [Receive.mk [ReceiveBind.mk [chan] body 1] body false 1] [] [] [] [] [] []
+  Par.mk [] [Receive.mk [ReceiveBind.mk [anyPat] chan 1] body false 1] [] [] [] [] [] []
 
 /-- Minimal reduction `⟶` (Law 4 core). COMM contracts a send/receive on the same channel to the
     receive body; reduction is a congruence under `|`. The capture-avoiding substitution of the

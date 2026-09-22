@@ -418,10 +418,19 @@ theorem subst_preserves_sort (σ : Subst) {t : Par} {s : PSort} (h : HasSort t s
   simp [closed, Closed, Bool.and_eq_true]
   tauto
 
+/-- The pattern a receive binds (`anyPat`) is closed: the model checks a bind's pattern with the same
+judgement as its channel (`closedReceiveBind`), and the pattern is a *bound* variable, so it is closed
+on its own. Stated here and marked `simp` so the `Closed` proofs below never unfold the pattern's
+`Par` — without it `Closed_receivePar_iff` spends its whole heartbeat budget inside that one term. -/
+@[simp] theorem closed_anyPat : closed anyPat = true := by
+  simp [anyPat, closed, closedListExpr, closedExpr, closedVar]
+
 /-- `receivePar chan body` is closed iff `chan` and `body` are closed. -/
-theorem Closed_receivePar_iff (chan body : Par) : Closed (receivePar chan body) ↔ Closed chan ∧ Closed body := by
+theorem Closed_receivePar_iff (chan body : Par) :
+    Closed (receivePar chan body) ↔ Closed chan ∧ Closed body := by
   cases chan <;> cases body
-  simp [Closed, receivePar, closedListReceive, closedReceive, closedListReceiveBind, closedReceiveBind, closedListPar, Bool.and_eq_true, and_assoc, and_left_comm]
+  simp [Closed, receivePar, closedListReceive, closedReceive, closedListReceiveBind,
+    closedReceiveBind, closedListPar, Bool.and_eq_true, and_assoc, and_left_comm]
 
 /-- Fundamental 4: reduction preserves closedness (COMM never introduces free variables). -/
 theorem reduce_closed {p p' : Par} (h : Reduce p p') (hp : Closed p) : Closed p' := by

@@ -184,7 +184,7 @@ lemma eq_nilPar_of_fields {p : Par}
 /-- Reconstruct `p = receivePar chan body` from its field values. -/
 lemma eq_receivePar_of_fields {p chan body : Par}
     (hs : p.sends = [])
-    (hr : p.receives = [Receive.mk [ReceiveBind.mk [chan] body 1] body false 1])
+    (hr : p.receives = [Receive.mk [ReceiveBind.mk [anyPat] chan 1] body false 1])
     (hn : p.news = []) (he : p.exprs = []) (hm : p.matches = [])
     (hu : p.unforgeables = []) (hb : p.bundles = []) (hc : p.connectives = []) :
     p = receivePar chan body := by
@@ -193,7 +193,7 @@ lemma eq_receivePar_of_fields {p chan body : Par}
 /-- Reconstruct `p = parMerge (sendPar chan [data]) (receivePar chan body)` from its field values. -/
 lemma eq_commRedex_of_fields {p chan data body : Par}
     (hs : p.sends = [Send.mk chan [data] false])
-    (hr : p.receives = [Receive.mk [ReceiveBind.mk [chan] body 1] body false 1])
+    (hr : p.receives = [Receive.mk [ReceiveBind.mk [anyPat] chan 1] body false 1])
     (hn : p.news = []) (he : p.exprs = []) (hm : p.matches = [])
     (hu : p.unforgeables = []) (hb : p.bundles = []) (hc : p.connectives = []) :
     p = parMerge (sendPar chan [data]) (receivePar chan body) := by
@@ -210,7 +210,7 @@ lemma redex_eq_parMerge {chan data body p q : Par}
   have hsends : p.sends ++ q.sends = [Send.mk chan [data] false] := by
     simpa [parMerge, sendPar, receivePar] using (congrArg Par.sends h).symm
   have hrecvs : p.receives ++ q.receives =
-      [Receive.mk [ReceiveBind.mk [chan] body 1] body false 1] := by
+      [Receive.mk [ReceiveBind.mk [anyPat] chan 1] body false 1] := by
     simpa [parMerge, sendPar, receivePar] using (congrArg Par.receives h).symm
   have hnews : p.news = [] ∧ q.news = [] := by
     exact List.append_eq_nil.mp (by simpa [parMerge, sendPar, receivePar] using (congrArg Par.news h).symm)
@@ -251,8 +251,8 @@ where
     intro p q' h hp
     induction h with
     | comm c d b =>
-        have hrecvs : [Receive.mk [ReceiveBind.mk [c] b 1] b false 1] =
-            [Receive.mk [ReceiveBind.mk [chan] body 1] body false 1] := by
+        have hrecvs : [Receive.mk [ReceiveBind.mk [anyPat] c 1] b false 1] =
+            [Receive.mk [ReceiveBind.mk [anyPat] chan 1] body false 1] := by
           simpa [parMerge, sendPar, receivePar] using congrArg Par.receives hp
         have hb : b = body := by
           simpa using congrArg Receive.body (List.cons.inj hrecvs).1

@@ -1460,6 +1460,16 @@ oracle is, and the test that pins the fix.
   channel, which is invisible in `Rchain.Rho`'s own theorems (they are about `Reduce` abstractly) and
   fatal to any reasoning that asks *which channel a receive listens on* — law 40's whole question.
 
+  **Fixed** (a later pass): `Rho.lean`'s `receivePar` now builds `ReceiveBind.mk [anyPat] chan 1`
+  — the channel in the *source* slot, a **bound** variable as the pattern (a wildcard would match
+  anything but is not closed under the model's `Closed`, which checks a bind's pattern with the same
+  judgement as its channel) — and `Ty.lean` gained `closed_anyPat`, the one fact every `Closed` proof
+  over a receive needs. Repairing the four proofs in `Concurrent.lean` and `Ty.lean` that had been
+  written against the old shape is what the earlier pass had declined to do: they encode the redex's
+  *fields*, so they had to be restated, and one of them (`Closed_receivePar_iff`) spent its whole
+  budget unfolding the pattern's `Par` until the fact was stated separately. The original note, which
+  is now the reason the fix was a deliberate step rather than a one-liner, follows.
+
   **Not fixed here, and recorded instead:** `Reduce`'s theorems (`reduce_closed` in `Rchain.Ty`,
   `reduce_freeVars_subset` in `Rchain.Reduce`) are proved against that shape, so changing it is a
   separate, deliberate step rather than a drive-by edit. The pattern-aware layer beside it
