@@ -81,7 +81,10 @@ fn genesis_boot_exposes_block_over_http() {
         let dir = temp_dir("genesis-boot");
         let ports = free_ports(4);
         let http_port = ports[0];
-        let conf = standalone_conf(&dir, &ports, Some(VALIDATOR_PRIV_HEX));
+        let mut conf = standalone_conf(&dir, &ports, Some(VALIDATOR_PRIV_HEX));
+        // `exploratory_deploy` is admitted on a read-only node or in dev mode
+        // (`block_api_impl.rs:685`); a bonded validator is neither, and the devnet runs dev mode.
+        conf.dev_mode = true;
         let node = start(&conf, ports[2], http_port).await;
         let base = format!("http://127.0.0.1:{http_port}");
         let client = reqwest::Client::new();
@@ -125,6 +128,43 @@ fn genesis_boot_exposes_block_over_http() {
         assert_eq!(shards["shardCount"], 1);
         assert_eq!(shards["shards"][0]["shardId"], "/root");
         assert_eq!(shards["shards"][0]["primary"], true);
+
+        // `POST /api/v1/explore-deploy` runs a term and returns what it produced (AUDIT C38/C39).
+        // Three things are asserted at once, and each was wrong before:
+        //   * the reply is read from `@"out"` — the channel every corpus, example and client writes
+        //     to — and not only from the term's first `new`-bound name;
+        //   * the response *says* which channel answered (`replySource`), so an empty `expr` is a
+        //     fact rather than a guess;
+        //   * the value is the reference document's shape — `{"ExprInt":{"data":42}}` — rather than
+        //     the `{"ExprInt":42}` the port used to write, which no client could read.
+        let explore = client
+            .post(format!("{base}/api/v1/explore-deploy"))
+            .json(&"@\"out\"!(42)".to_string())
+            .send()
+            .await
+            .expect("POST /api/v1/explore-deploy");
+        assert_eq!(explore.status(), 200);
+        let body: Value = explore.json().await.expect("explore json");
+        assert_eq!(
+            body["replySource"], "out",
+            "the response must name the channel it read: {body}"
+        );
+        assert_eq!(
+            body["expr"][0]["ExprInt"]["data"], 42,
+            "and the value must be the reference's shape: {body}"
+        );
+
+        // The first `new`-bound name keeps working — a client following the reference node's own
+        // convention sees no change.
+        let named = client
+            .post(format!("{base}/api/v1/explore-deploy"))
+            .json(&"new result in { result!(7) }".to_string())
+            .send()
+            .await
+            .expect("POST /api/v1/explore-deploy (first private name)");
+        assert_eq!(named.status(), 200);
+        let body: Value = named.json().await.expect("explore json (first private name)");
+        assert_eq!(body["replySource"], "firstPrivateName", "{body}");
 
         // This node is not a gateway (one shard), so the cross-shard transaction routes are not
         // available: 404, the same convention the reporting routes use. A single-shard node's

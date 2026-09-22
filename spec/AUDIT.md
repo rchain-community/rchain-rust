@@ -1813,6 +1813,8 @@ port against the **reference document** rather than against itself.
   `new`-bound name, then `@"out"` — and returns a `CapturedReply` carrying `ReplySource`, so the
   response names which rule answered or `none`. The rule is in `spec/API-SCHEMA.md`, the served
   document's schema gained `replySource` (law 43's catalog row is checked against both by
-  `node/tests/lean_envelope_corpus.rs`), and `casper/tests/exploratory_reply.rs` pins all three
-  outcomes. The document also gained the paths and value schemas it lacked: `/capabilities`,
+  `node/tests/lean_envelope_corpus.rs`), `casper/tests/exploratory_reply.rs` pins all three outcomes
+  at the runtime layer, and `node/tests/node_api.rs`'s `genesis_boot_exposes_block_over_http` pins
+  both at the **client's** surface — a real node over HTTP, `replySource: "out"` and
+  `expr[0].ExprInt.data == 42`. The document also gained the paths and value schemas it lacked: `/capabilities`,
   `/deploys`, `/faucet` and `RhoExpr`/`RhoUnforg` (AUDIT C29's named gap).
