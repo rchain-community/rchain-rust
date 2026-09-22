@@ -1792,7 +1792,7 @@ removing the fix and confirming the test fails.
   the one worth keeping: a stack overflow under a 2 MiB default is a *harness* result until the same
   input is shown to fail on an explicit stack.
 
-## 19. The reply-JSON findings (pass 8): C38–C39
+## 19. The reply-JSON findings (pass 8), and the consolidation pass's: C38–C43
 
 The API's job is *rholang in, JSON out*, and both halves of it were wrong in a way nothing could
 catch. This is the finding the whole formalisation programme was started for, found by comparing the
@@ -1901,6 +1901,63 @@ port against the **reference document** rather than against itself.
   C27 was recorded before it was fixed. What was owed was to stop the catalogue claiming the arithmetic
   was safe.
 
+- **C42 — law 5's linearity is enforced by the normalizer, not by the matcher, and the model had it
+  backwards about which paths are reachable.** The consolidation pass re-modelled law 5 on the matcher:
+  `aggregate_updates` (`rholang/src/matcher/spatial_matcher.rs:644-665`) raises
+  `BugFoundError("Aggregated updates conflicted with each other")` when two contributors bind the same
+  new level, while `fold_match` (`:595-629`) and `ConnAnd` (`:325-334`) thread their maps with no check
+  — so a pattern binding a name twice would be an error on one path and a silent overwrite on the
+  others, and the row said so. **Probed on a devnet, neither path is reachable from a term.** All three
+  shapes are refused before any matcher runs, with the same error, in both contexts:
+
+      POST /api/explore-deploy  new result, x in { x!([1,2]) | for (@[v, v] <- x) { result!("bound") } }
+        → 400  "Free variable v is used twice as a binder (at 0:0 and 0:0) in process context."
+      POST /api/explore-deploy  new result, x, y in { x!(1) | y!(2) | for (v <- x & v <- y) { … } }
+        → 400  "Free variable v is used twice as a binder (at 0:0 and 0:0) in name context."
+      POST /api/explore-deploy  new result, x in { x!({"k": 1}) | for (@{"k": v, ...v} <- x) { … } }
+        → 400  "Free variable v is used twice as a binder (at 0:0 and 0:0) in process context."
+
+  raised at `rholang/src/normalizer.rs:111,289,590,1325`
+  (`UnexpectedReuseOfNameContextFree`/`UnexpectedReuseOfProcContextFree`, `errors.rs:39,49`) — the
+  **normalizer**, i.e. upstream of the matcher and upstream of the receive's channels. A duplicated
+  *datum* is unaffected, as it should be: `new result, x, a in { x!([*a, *a]) | for (@[p, q] <- x)
+  { result!([p, q]) } }` returns 200 with the list and the same unforgeable hash twice.
+
+  **This is the good outcome, and it is not a defect**: the law holds, enforced earlier than the model
+  claimed, and the matcher's aggregation-path error is defence-in-depth on a state the front end cannot
+  produce. The corpus's `rejected` verdict for the twice-bound shape is still the right document of the
+  *matcher's* behaviour, because its consumer (`rholang/tests/lean_match_corpus.rs`) feeds bind/datum
+  pairs to the matcher directly rather than parsing a term. What was wrong was the model's note, which
+  implied a term could reach the silent paths; the note and the row now say what the probe showed.
+
+- **C43 — the merge's associativity is untested on the Rust side, and the test that looks like it
+  tests the opposite.** `rspace/src/merger/state_change.rs:203-238` is named `combine_is_associative`,
+  but its own comment says "the monoid law tested here is empty-is-identity", and its assertions are the
+  identity plus a **sorted-multiset** agreement between the two orders — not associativity. The
+  associativity that the merge fold actually relies on
+  (`casper/src/merging.rs:752-755`, `to_merge.iter().fold(StateChange::empty(), …)`) is therefore
+  untested; the *inner* `ChannelChange::combine` is tested (`channel_change.rs:35-50`), and so are the
+  identity and the right-biased join map (`state_change.rs:502-544`). Not a defect — a coverage gap with
+  a misleading name, and the reason law 9's row says the associativity is owed a test rather than
+  claiming one.
+
+- **The class, recorded once, because it is the consolidation pass's whole justification: an axiom that
+  is false is worse than one that is owed, because anything follows from it.** Nine axioms the pass
+  removed were not merely unproved — they were false of the code or of the model that carried them, and
+  each is now refuted rather than dropped quietly. Seven are refuted by a theorem in the tree
+  (`block_number_universal_is_false`, `seq_num_universal_is_false`, `fringe_antichain_is_false`,
+  `fringe_monotone_is_false`, `seen_monotone_is_false`, `height_map_universal_is_false`,
+  `fringe_identity_order_independent_is_false` — each a value one can write down, which is why a
+  *witness* is the ratchet and not a proof attempt); `mergeRandom_comm` is refuted by the code's own
+  `merge_is_order_sensitive` (`crypto/src/hash/blake2b512_random.rs:548`); and
+  `numeric_channels_nonneg` by the merge's ordinary negative diffs (`rholang/src/merging.rs:161-166`).
+  A tenth, `law20_deadlock_freedom`, was unprovable as stated — `PathLt` is not well-founded on paths,
+  so no minimum need exist — and is deleted with that reason in its row. The same lesson arrived twice
+  before, as C26 (a law-5 axiom the corpus contradicted) and C40 (law 38's tie, refuted by
+  `chan = nilPar`); what this pass adds is that the register now *asks* each proved row for its witness,
+  so the next one has somewhere to fail.
+
+
 ## 20. The back-sweep: every incident to its law and its case
 
 The programme began with ten defects of one class — "nothing errors" — found on a running node,
@@ -1940,6 +1997,8 @@ finding that no law covers, and it says why rather than leaving the gap to infer
 | C39 the reply was read from one channel | 39, 43 | `casper/tests/exploratory_reply.rs` (three outcomes) + `replySource` in `envelope.tsv` and the served document |
 | C40 law 38's tie was false, and the relation lacked its arity clause | 38, 40 | `allStringChans` scoping the statement, `commPs` as the rule's arity clause |
 | C41 the diff accumulator can overflow where the merge refuses | 17 | `Merging.lean`'s `checkedAdd_refuses_overflow`/`mergeRandoms_perm` state the checked half and the call-site canonicalization; the two plain-`+=` sites (`event_log_index.rs:151`, `casper/src/merging.rs:758`) are the finding |
+| C42 law 5's linearity is the normalizer's, not the matcher's | 5 | `Match.lean`'s `aggregateUpdates_rejects_double_bind`/`freeMapMerge_overwrites` state the matcher's halves; the enforcing check is `normalizer.rs:111,289,590,1325`, measured on a devnet (both contexts refused, a duplicated datum accepted), and `spec/conformance/match.tsv` documents the matcher in isolation |
+| C43 the merge's associativity is untested, under a name that says otherwise | 9 | `Merge.lean`'s `mergeChanges_assoc` is now its only statement (proved); the Rust side owes the test — `state_change.rs:203-238` pins identity and a sorted-multiset agreement, not associativity |
 
 **The two rows that are not laws are the two worth keeping visible.** C37 is a *harness* finding —
 a measurement that was not a measurement — and no law would have caught it, because the thing that

@@ -226,14 +226,22 @@ theorem spatialMatch_implies_linear {target pattern : Par} (h : spatialMatch tar
 /-! ## Law 5, re-stated over the aggregation the port actually checks
 
 `spatialMatch` conjoins `linear pattern`, so `spatialMatch_implies_linear` above holds by construction —
-it is `h.2` of a conjunct inside a definition, not a statement about the matcher's clauses. The port
-enforces linearity in exactly **one** place, and the model below is it: `aggregate_updates`
+it is `h.2` of a conjunct inside a definition, not a statement about the matcher's clauses. Inside the
+**matcher**, linearity is enforced in exactly one place, and the model below is it: `aggregate_updates`
 (`rholang/src/matcher/spatial_matcher.rs:644-665`), reached only from the collection path (`list_match`'s
 tail, `:800`). The element-pair path (`fold_match`, `:595-629`) and the conjunction path (`ConnAnd`,
 `:325-334`) thread their binding maps with **no check at all** — a binding is a plain `insert`
-(`:477-480`) — so a level bound twice is silently overwritten, right-biased. Both halves are stated,
-because a law about "bound at most once" that named only the checked path would be the same mistake this
-pass exists to remove. -/
+(`:477-480`) — so a level bound twice would be silently overwritten, right-biased. Both halves are
+stated, because a law about "bound at most once" that named only the checked path would be the same
+mistake this pass exists to remove.
+
+**But no term reaches either path with a twice-bound binder: the normalizer refuses it first.** Probed
+on a devnet (AUDIT C42), all three shapes — `for (@[v, v] <- x)`, `for (v <- x & v <- y)`,
+`for (@{"k": v, ...v} <- x)` — are rejected with `Free variable v is used twice as a binder … in
+process/name context` (`rholang/src/normalizer.rs:111,289,590,1325`), upstream of the matcher; a
+duplicated *datum* element is accepted, as it should be. So the matcher's aggregation-path error is
+defence-in-depth on a state the front end cannot construct, and these theorems describe the matcher's
+modules rather than reachable behaviour. -/
 
 /-- The matcher's binding environment: the free levels bound so far, each to the `Par` it is bound to
     (the port's `FreeMap = BTreeMap<i32, Par>`). A list of pairs, so `decide` can read it. -/
@@ -280,8 +288,9 @@ theorem aggregateUpdates_rejects_double_bind (fm f g : FreeMap) (l : Nat)
   simp [aggregateUpdates, List.nodup_append, hdisj]
 
 /-- **And this is what the other two paths do instead** — the element-pair and conjunction paths bind
-    with no check, so a repeated level is **overwritten**: the later binding wins, whatever the base
-    held (`spatial_matcher.rs:477-480`, `:595-629`, `:325-334`). -/
+    with no check, so a repeated level is **overwritten**: the later binding wins, whatever the base held
+    (`spatial_matcher.rs:477-480`, `:595-629`, `:325-334`). Reached only in the matcher's own terms — a
+    parsed term cannot get here, because the normalizer refuses a twice-bound binder first (AUDIT C42). -/
 theorem freeMapMerge_overwrites (f : FreeMap) (l : Nat) (v' : Par) :
     (freeMapMerge f [(l, v')]).lookup l = some v' := by
   simp [freeMapMerge, freeMapBind, FreeMap.lookup]

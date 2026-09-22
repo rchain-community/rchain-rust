@@ -196,9 +196,9 @@ def laws : List Law := [
     axioms := [`Rchain.reduce_freeVars_subset],
     falsifiable := none },
   { number := 5, layer := "Rholang",
-    statement := "Spatial matching; a free variable is bound at most once — **on the aggregation path**, \
-      which is the only place the port checks it (`aggregate_updates` raises a `BugFoundError`), while \
-      the element-pair and conjunction paths overwrite silently",
+    statement := "Spatial matching; a free variable is bound at most once — enforced by the port's \
+      **normalizer** before any matcher runs, and inside the matcher only on the aggregation path \
+      (`aggregate_updates`), while its element-pair and conjunction paths overwrite silently",
     status := .owed,
     declarations := [`Rchain.spatialMatch, `Rchain.spatialMatches, `Rchain.spatialMatchCore,
       `Rchain.aggregateUpdates, `Rchain.aggregateUpdates_rejects_double_bind,
@@ -212,17 +212,22 @@ def laws : List Law := [
       counterexample inside the model: the same repeated level the aggregation path refuses is silently \
       overwritten on the fold path",
     note := "`spatialMatch_implies_linear` is `h.2` of a conjunct inside `spatialMatch`'s own \
-      definition, so it holds by construction — and it is **not the port's predicate**. The port checks \
-      linearity in exactly one place, `aggregate_updates` (`spatial_matcher.rs:644-665`), reached only \
-      from the collection path (`list_match`'s tail, `:800`); the element-pair path (`fold_match`, \
-      `:595-629`) and the conjunction path (`ConnAnd`, `:325-334`) thread their binding maps with no \
-      check, and a binding is a plain `insert` (`:477-480`), so a level bound twice **overwrites**, \
-      right-biased, with no error. The model carries both halves now — \
-      `aggregateUpdates_rejects_double_bind` for the checked path, `freeMapMerge_overwrites` for the \
-      unchecked ones — which is what makes the law a statement about the matcher's clauses rather than \
-      about its own definition. **Owed**: the owed proofs above, and a node probe of the silent path \
-      (`x!(a, a)`, and a twice-bound pattern through each path) before the divergence is *called* a \
-      defect" },
+      definition, so it holds by construction — and it is **not the port's predicate**. The port's \
+      *enforcing* check is the **normalizer's**, not the matcher's: a pattern that binds a name twice is \
+      refused before any matcher runs, in both contexts (`normalizer.rs:111,289,590,1325`, \
+      `UnexpectedReuseOfNameContextFree`/`…ProcContextFree`). **Probed on a devnet** (AUDIT C42): \
+      `for (@[v, v] <- x)`, `for (v <- x & v <- y)` and `for (@{\"k\": v, ...v} <- x)` each return 400 \
+      with `Free variable v is used twice as a binder …`, while a duplicated *datum* \
+      (`x!([*a, *a])` against `for (@[p, q] <- x)`) returns 200 with the same unforgeable hash twice. \
+      Inside the matcher the check exists in exactly one place — `aggregate_updates` \
+      (`spatial_matcher.rs:644-665`), reached only from the collection path (`list_match`'s tail, \
+      `:800`) — while the element-pair path (`fold_match`, `:595-629`) and the conjunction path \
+      (`ConnAnd`, `:325-334`) thread their maps with no check, a binding being a plain `insert` \
+      (`:477-480`), so a level bound twice would overwrite right-biased with no error. The model \
+      carries both halves (`aggregateUpdates_rejects_double_bind`, `freeMapMerge_overwrites`), which is \
+      what makes the law a statement about the matcher's clauses — and the probe is what says the \
+      matcher half is defence-in-depth rather than a defect, exactly as C42 records. **Owed**: the two \
+      proofs above" },
   { number := 6, layer := "Rholang",
     statement := "No globally free variables in a program",
     status := .owed,
