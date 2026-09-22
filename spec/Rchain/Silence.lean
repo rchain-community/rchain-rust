@@ -129,8 +129,24 @@ axiom takesStep_iff_reduces (p : Par) (h : allStringChans p = true) :
 /-- The **sound** direction on its own, and the one that matters for reading the corpus: when the
 search reports a step, a step exists. Stated without the domain restriction because it does not need
 it — a `true` from `stepsInBinds` already implies both channels were string channels. **Owed**, and
-the half to prove first: it is a structural induction over the search that reconstructs the redex the
-search found, and it is what lets a `silence.tsv` verdict of `true` be read as the relation's. -/
+the half to prove first.
+
+What the proof needs, written down here so the next attempt starts at the modelling step rather than
+at the induction (measured, not guessed):
+
+1. **The constructors must be parameterised by persistence.** `sendPar` fixes `persistent := false`
+   and `receiveParP`/`receiveParPs` fix their own flags, but `stepsInBinds` ignores persistence
+   entirely — so a `!!` send is a step by the search and has no derivation, exactly the shape of the
+   `commPs` gap above. The constructors need the flags as arguments before the induction can even be
+   stated.
+2. **Three witness-extraction lemmas**, one per level of the search (`stepsInSends`,
+   `stepsInReceives`, `stepsInBinds`): each turns a `true` into the send, the receive and the *bind*
+   that produced it, with the four facts `stepsInBinds` checks (`Bool.and_eq_true` at each level, and
+   `String`/`Nat` `==` to `=`).
+3. **The embedding**: given a send at index `i` of `p.sends` and a receive at index `j` of
+   `p.receives`, a right-nested chain of `parRight` peels the fields in order down to the redex
+   (`parMerge` concatenates the flat fields, so a redex is a pair of entries at known positions, and
+   the target is `parMerge body leftover`). -/
 axiom takesStep_sound (p : Par) : takesStep p = true → ∃ q', ReduceP p q'
 
 end Rchain
