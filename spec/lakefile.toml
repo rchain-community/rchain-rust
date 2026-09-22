@@ -9,3 +9,10 @@ rev = "v4.12.0"
 
 [[lean_lib]]
 name = "Rchain"
+
+# The conformance corpus emitter: `lake exe rchain-corpus --layer flags --out …`. The corpus is the
+# check (see `Rchain/Corpus.lean`) — it is generated from the specification, committed, and consumed
+# 1:1 by the Rust tests that `tools/check-lean-conformance.sh` runs.
+[[lean_exe]]
+name = "rchain-corpus"
+root = "Rchain.Corpus"

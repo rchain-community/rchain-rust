@@ -1255,6 +1255,135 @@ oracle is, and the test that pins the fix.
   `GetMe` was registered or not, which is why the handshake looks further along than it is. The pins
   above assert the *value* (`getme-entry` is not `Nil`), never the bare fact that a receive fired.
 
+- **C22 — C21's family, three more instances: two silent-no-match defects and one silent-consumed
+  state.** Found by reading the consumers whose wallet cases still failed after C21, and each fixed
+  with a pin that fails without it. All three are the same shape as C19-C21: nothing errors, and the
+  branch simply never runs.
+
+  1. **`Inbox.rho`'s zero-argument `read` consumed the store and never restored it.** `read(ret)` did
+     `for (items <- box) { ret!(*items) }` — a linear consume of the single `box` datum, so after one
+     read *every* later `write`, `peek` and `read` on that inbox waited on an empty channel for the
+     life of the chain. Its two typed siblings restore it (`box!(rest)` / `box!(*items)`,
+     `Inbox.rho:51,53,71,74`) and its docstring says "read (and *remove*) all messages" — the
+     messages, not the container. **Fix:** a render-time adaptation in `rgov.rs::source("inbox")`
+     (`replace_once`, recorded in the vendored NOTICE) that re-sends the emptied store —
+     `ret!(*items) | box!(Nil)`. The on-disk `.rho` stays upstream byte-for-byte. **Pinned by**
+     `a_read_does_not_destroy_the_inbox` (a write, a read-all, and a write that must still answer).
+     Consumers: `sendMail`, `claimWithInbox`, `share`, and anything else that reads an inbox twice.
+  2. **`extraSlots` called the directory's write capability with the wrong arity.** Our own term
+     (`rgov.rs::extra_directory_slots_source`) called `MCAwrite!("Chat", *C_Chat)` — two arguments —
+     while `Directory.rho:56` is `write(@key, @value, ret)`. No receive matched, so **none** of the
+     three slots was written, and every consumer of `Chat`/`Ballot`/`Group` read `Nil`; a `Nil` slot
+     is indistinguishable from a broken one (that is the *documented* reason these slots exist at
+     all). Worse, the test that covered it — `the_extra_slots_term_writes_the_names_the_wallet_asks_for`
+     — asserted `term.contains("MCAwrite!(\"Chat\"")`, a *source-text* check that a two-argument call
+     satisfies, i.e. the harness accepted what the node rejected (C20's lesson again). **Fix:** pass
+     the reply channel; the text test now pins the arity, and the behavioural pin is
+     `the_extra_slots_answer_a_directory_read` (reads each slot back through the read cap and asserts
+     the *value*, not that a receive fired). Consumers: the wallet's `newBallot`/`castBallot`,
+     `newGroup`/`joinGroup`/`addMember`, which reach those classes through these slots.
+  3. **A partial map pattern whose only non-concreteness is a remainder was treated as concrete.**
+     `fold_collection_map` built `ParMap { connective_used, .. }` from its keys/values alone, while
+     the list and set folds in the same file include the remainder (`cu || has_rem`) and the
+     reference ORs it in (`CollectionNormalizeMatcher.scala:92`, `:112`, `:137`). With the flag
+     false, `spatial_match` takes its `pattern == target` short-circuit and a *partial* map matches
+     nothing but itself — silently. The existing conformance cases all carried a free variable
+     (`{"x": *v, ..._}`), which sets the flag for an unrelated reason, so the gap was invisible.
+     **Fix:** `connective_used || remainder.is_some()` (`normalizer.rs::fold_collection_map`).
+     **Pinned by** three cases in `collection_patterns_match_a_subset_of_their_collection`: a ground
+     map pattern with a wildcard remainder *matches*, the same shape with a differing ground entry
+     does **not** match (the fix must not turn a pattern into a wildcard), and a named remainder binds
+     the ground entries it absorbs.
+
+  **The sweep, finished rather than sampled** — every other candidate of this shape I examined, and
+  why it is *not* a defect (so the next reader does not re-open them):
+
+  | Candidate | Verdict |
+  |---|---|
+  | `normalize_if`'s sibling desugarings that normalize a composed `Par` with the caller's `input` (`PChoice`, `PSendSynch`, multi-receipt `PInput`, concurrent `let`) | **not** defects. A composed par is a *statement*: `PPar`'s arm threads the accumulation and each term lands exactly once. Only a *value* position — a condition (C21), a `Match` target, a method target, a send's data, a collection element — must be normalised in isolation, and all 33 of those sites already pass `Par::default()`. Verified by tracing each arm, not by sampling. |
+  | `ParCount::min_max` expanding its max only for a top-level free var/wildcard in `par.exprs` (a remainder or bundle does not qualify) | faithful: `ParCount.scala:69-90` is byte-for-byte the same rule; a remainder is not a top-level free var in either implementation. |
+  | `Connective::VarRef` never matches (`spatial_matcher.rs:347`) | faithful: `SpatialMatcher.scala:302` returns empty with "this should never happen because variable references should be substituted", and our reducer does substitute — receive patterns at `reduce.rs:1881`, `Match` case patterns at `:2005` — so `=x`/`=*x` patterns (as `Inbox.rho`'s typed reads and `Directory.rho`'s `write` use) never reach the matcher as a `VarRef`. |
+
+  Everything in C22 was found by *reading the consumer of a failing case*, which is the cheap half of
+  the instrument; the expensive half (a chain, a suite) then verifies rather than diagnoses.
+
+- **C23 — the formal model did not contain the surface the ten silent defects live in.** Found while
+  building the conformance instrument, before it ran: `spec/Rchain/Par.lean`'s `Par` had **no remainder**
+  on its collection forms (`elist`/`eset`/`emap` were `List Par` / `List (Par × Par)` alone) and no
+  concreteness predicate. The model therefore could not *express* the value `spatial_match` consults on
+  its very first line (`if !pattern.connective_used { pattern == target }`, `spatial_matcher.rs`), nor
+  the `..._`/`...rest` half of a partial pattern — so laws 35 (concreteness soundness) and 37 (match
+  completeness) were unstatable, and C19/C20/C22's root cause lay *outside the specification's
+  language*. That is how a defect class can recur while every law in the catalog holds: the catalog was
+  written about the calculus, and the incidents happened in the surface the matcher reads.
+
+  **Fix (this pass):** remainders are part of the model again — `Expr.elist`/`eset`/`emap` carry
+  `Option Var`; the predicate is defined (`connectiveUsed` with `Expr.remainder`/`hasRemainder`, and
+  `Var.isConnective`); closedness accounts for a remainder (`Ty.closedRemainder`); and Law 1's
+  canonicalization orders by it (`Sort.cmpOptionVar`), so `[…]` and `[…, ...rest]` are distinct
+  patterns — which is what the Rust already did, so this is the model catching up to the code rather
+  than the other way round. `lake build` is green; the new `formal` CI job is what keeps it that way.
+
+  **Also found:** two modules (`Concurrent`, `Tree`) were compiled but **not imported** by
+  `Rchain.lean` — outside the library, in a repo whose thesis is that nothing is checked by accident.
+  They are imported now, and `tools/check-lean-conformance.sh` fails when the import list and the tree
+  disagree. The Coq (`spec/coq/`) had never been built by anything either; the same script builds it.
+
+  **Residual (§6, a Scala deviation):** the reference ORs the *Var's* connective-ness into a map
+  pattern's flag (`CollectionNormalizeMatcher.scala:92`), not the remainder's existence, while our Rust
+  (and this model) treat any remainder as non-concreteness. The two agree for every pattern the grammar
+  can write — a `...rest` remainder is a free variable before substitution — and differ only for an
+  exotic bound-var remainder; recorded rather than imported.
+
+- **C24 — an empty collection with only a remainder did not parse (found by the new conformance
+  corpus, on its first run).** `[ ..._ ]`, `{ ..._ }` and `Set( ..._ )` are in the grammar —
+  `CollectList/CollectSet/CollectMap ::= … [Proc|KeyValuePair] ProcRemainder …`
+  (`rholang_mercury.cf:179-183`), where the element list may be **empty** — but both map parsers and
+  the list/set element loops demanded an element before the ellipsis: `parse_braced_or_map` read the
+  ellipsis as the first key's process, and the element loops of `parse_collection` could not start on
+  it, so each said `expected variable, got Ellipsis`. A pattern that only *discards* a tail
+  (`{..._}` against a map, `[..._]` against a list) was therefore unwritable, which is the shape a
+  consumer reaches for when it wants "some map, contents irrelevant".
+
+  **How it was found, which is the point:** not by reading contracts at midnight but by the corpus
+  check landing in this same change — `spec/conformance/flags.tsv`'s case `@{..._}` (generated from
+  `spec/Rchain/Corpus.lean`, where the verdict is `decide`d) disagreed with the node, and the check
+  named the source, the expected verdict and the normalizer's answer. That is the loop AUDIT C23 was
+  written to close. **Fix:** all three loops and both map parsers accept an empty element list
+  followed by a remainder.
+
+  **Pinned by:** `collection_remainders_parse_for_lists_and_sets_not_only_maps` (four shapes added:
+  `[..._]`, `[...rest]`, `Set(..._)`, `{..._}`), the corpus case itself in
+  `spec/conformance/flags.tsv` (asserted by `rholang/tests/lean_normalize_corpus.rs`), and — for the
+  *model's* half — `Corpus.flagCases_decide` in `spec/Rchain/Corpus.lean`, which was confirmed to fail
+  when the model's map-remainder rule is removed. The gate builds the executable targets for exactly
+  that reason: a `lean_exe` root is not compiled by `lake build` alone, so its theorems would otherwise
+  never run (found by that same deliberate-break check).
+
+  **Residual (recorded, not fixed):** the element loops still accept a remainder *without* a preceding
+  comma (`[1 ..._]`), which the grammar's `","`-separated list does not. The parser is more permissive
+  than the BNFC there; the *soundness* direction of law 30 (every accepted term is in the grammar) is
+  what would pin it, and that row is not landed yet.
+
+- **C25 (open) — `Group!("new", …)` answers nothing, and the reproduction is in-process.** A wallet-case
+  failure (`newGroup`) that survived C21/C22 was narrowed by hand before the conformance corpus existed,
+  and is recorded here rather than left as a red test in the tree:
+
+  `Group.rho`'s `new` contract (`:36`) prints its first line (`"creating Group."`, `:48`) and then
+  nothing: no `["got directory", …]` (`:60`), no reply. In-process, in one genesis run, the following
+  were *ruled out* by probes in the same deploy — the store exists and answers (`Group!("lookup", …)`
+  replies from `:157`'s peek of `groupMapCh`), the deployer's `dictionary` locker is peekable and its
+  read cap answers (`q!("Directory", *ret2)` replies), and the inbox locker exists. The same operations
+  *inside* `new` do not proceed, so the stall is in the body between `:48` and `:60` — the candidates
+  left are `:49`'s linear consume of `groupMapCh`, `:50`'s `if (groups.get(name) != Nil)`, and `:55`'s
+  dictionary peek. The client-side probes cannot distinguish them, and that is exactly the gap the
+  match/protocol corpus layers (laws 37-40) exist to close: a case per shape, with the model's verdict
+  as the oracle, names the statement instead of narrowing it by hand.
+
+  **Not pinned, not fixed.** The probe that narrowed it was a diagnostic (asserting the *absence* of a
+  reply), so it was removed rather than committed red; the corpus case that should replace it is
+  Phase 3 of the formalization plan, and this item is its first customer.
+
 ### Open question (behaviour pinned, oracle not established)
 
 - **`models/src/wire.rs::expr_from_proto` decodes an `Expr` with no instance to `GBool(false)`.** The

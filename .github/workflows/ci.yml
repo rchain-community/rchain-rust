@@ -101,3 +101,44 @@ jobs:
         uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2
         with:
           command: check advisories
+
+  formal:
+    # The oracle is the mathematical specification (`AGENTS.md:55-57`), and until this job existed
+    # nothing built it: no workflow touched `spec/`, so a theorem that stopped holding, a module that
+    # fell out of the library, or a Coq file that never compiled was noticed by no one. This is the
+    # gate that makes the specification *checked* rather than *cited*.
+    #
+    # `tools/check-lean-conformance.sh` is the single entry point: it builds the Lean library, refuses
+    # a `sorry`, requires `Rchain.lean` to import every module, builds the Coq, re-emits the
+    # conformance corpora from the Lean definitions and refuses a stale one, runs the Rust consumers
+    # 1:1 against them, and runs the static protocol/channel-balance audits.
+    name: Formal specification (Lean, Coq, conformance)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install Coq
+        run: sudo apt-get update && sudo apt-get install --no-install-recommends -y coq
+
+      - name: Install protobuf compiler
+        run: sudo apt-get update && sudo apt-get install --no-install-recommends -y protobuf-compiler libprotobuf-dev
+
+      - name: Cache Cargo artifacts
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          cache-on-failure: false
+
+      - name: Install elan (the Lean toolchain comes from spec/lean-toolchain)
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh \
+            | sh -s -- -y --default-toolchain none
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+
+      - name: Fetch the mathlib cache
+        working-directory: spec
+        run: lake exe cache get
+
+      - name: Formal gate
+        run: tools/check-lean-conformance.sh

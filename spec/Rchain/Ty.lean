@@ -103,6 +103,13 @@ def closedVar (v : Var) : Bool :=
   | .bound _ => true
   | .wildcard => true
 
+/-- A collection remainder is closed when its variable is: a pattern's `...rest` is bound by the
+enclosing receive (a `bound` var after normalization) or discarded (`wildcard`). A *free* remainder
+would escape the term, so it is not closed — the same judgment as any other pattern variable. -/
+def closedRemainder : Option Var → Bool
+  | none => true
+  | some v => closedVar v
+
 mutual
   def closed : Par → Bool
     | Par.mk s r n e m u b c =>
@@ -146,10 +153,10 @@ mutual
     | Expr.eneq p q => closed p && closed q
     | Expr.eand p q => closed p && closed q
     | Expr.eor p q => closed p && closed q
-    | Expr.elist ps => closedListPar ps
+    | Expr.elist ps r => closedListPar ps && closedRemainder r
     | Expr.etuple ps => closedListPar ps
-    | Expr.eset ps => closedListPar ps
-    | Expr.emap kvs => closedListParPair kvs
+    | Expr.eset ps r => closedListPar ps && closedRemainder r
+    | Expr.emap kvs r => closedListParPair kvs && closedRemainder r
   termination_by s => sizeOf s
   def closedBundle : Bundle → Bool
     | Bundle.mk b _ _ => closed b

@@ -45,5 +45,15 @@ upstream text, so a drift in a vendored file fails the build rather than shippin
   `Group.rho`'s two demo groups, and the feature's final `sendThem` to a hardcoded address. A
   chain's genesis must not send test messages or print demo output. The class definitions themselves
   are untouched.
+- **One behavioural repair**, in `Inbox.rho`'s zero-argument `read(ret)`: it consumed the store datum
+  (`for (items <- box)`) and never put it back, so a single read left that inbox answering nothing
+  again — every later `write`, `peek` and `read` waited on an empty channel, silently, for the life of
+  the chain. Its two typed siblings restore the store (`box!(rest)` on a match, `box!(*items)`
+  otherwise), and the contract's own docstring is "read (and *remove*) all messages" — the messages,
+  not the container — so the omission is a defect in the vendored text, not a design. The store is
+  emptied, so the restore is `box!(Nil)`. Applied at render time by `replace_once`, which fails the
+  build if upstream reword the block rather than silently shipping the repair as a no-op; pinned by
+  `a_read_does_not_destroy_the_inbox` in `casper/tests/genesis_registry.rs` (a write, a read-all, and
+  a write that must still answer).
 
 Everything else in these files is upstream text, byte for byte.

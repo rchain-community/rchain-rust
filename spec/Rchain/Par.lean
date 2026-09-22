@@ -64,10 +64,10 @@ mutual
     | eneq   : Par → Par → Expr
     | eand   : Par → Par → Expr
     | eor    : Par → Par → Expr
-    | elist  : List Par → Expr
+    | elist  : List Par → Option Var → Expr
     | etuple : List Par → Expr
-    | eset   : List Par → Expr
-    | emap   : List (Par × Par) → Expr
+    | eset   : List Par → Option Var → Expr
+    | emap   : List (Par × Par) → Option Var → Expr
 
   /-- `Bundle` — body plus the read/write capability flags. -/
   inductive Bundle where
@@ -128,6 +128,134 @@ def Bundle.readFlag  : Bundle → Bool | Bundle.mk _ _ r => r
 /-- The empty process `Nil` — the `Par` with all 8 fields empty. -/
 def nilPar : Par :=
   Par.mk [] [] [] [] [] [] [] []
+
+/-! ## Remainders, and the concreteness predicates the matcher gates on
+
+The Rust caches `connective_used`/`locally_free` as fields on `Par` and consults the cache *before*
+trying to match: `spatial_match`'s first line is `if !pattern.connective_used { pattern == target }`.
+A cache that disagrees with the predicate is therefore not a slower match, it is a *different* one —
+which is AUDIT C19/C20/C22’s whole failure mode ("silently never fires"). The law is that the cache
+equals the predicate; here the predicate is the definition and the cache is the Rust's business. -/
+
+/-- The remainder of a collection form (`..._` / `...rest`), when it has one. -/
+def Expr.remainder : Expr → Option Var
+  | .elist _ r => r
+  | .eset _ r => r
+  | .emap _ r => r
+  | _ => none
+
+/-- A collection form carrying a remainder. In the grammar only `[…]`, `Set(…)` and `{…}` allow one
+(`rholang_mercury.cf:189-193`), and a remainder is what makes such a pattern *partial*. -/
+def Expr.hasRemainder (e : Expr) : Bool := e.remainder.isSome
+
+/-- Whether a pattern variable is a *connective* in `HasLocallyFree`'s sense: a free var or a
+wildcard. A bound var is a back-reference (`=x`), which the reducer substitutes away before matching
+(`AUDIT C22`, the `Connective::VarRef` arm). -/
+def Var.isConnective : Var → Bool
+  | .free _ => true
+  | .wildcard => true
+  | .bound _ => false
+
+mutual
+  /-- `connectiveUsed p` — the predicate `Par.connective_used` caches: does this term contain a
+  connective, a free variable, a wildcard, or a **collection remainder**? The remainder half is what
+  C19/C20/C22 missed, one collection form at a time. -/
+  def connectiveUsed : Par → Bool
+    | .mk s r n e m u b c =>
+      connectiveUsedListSend s || connectiveUsedListReceive r || connectiveUsedListNew n
+      || connectiveUsedListExpr e || connectiveUsedListMatch m
+      || connectiveUsedListGUnforgeable u || connectiveUsedListBundle b
+      || connectiveUsedListConnective c
+
+  def connectiveUsedListSend : List Send → Bool
+    | [] => false
+    | a :: as => connectiveUsedSend a || connectiveUsedListSend as
+
+  def connectiveUsedSend : Send → Bool
+    | .mk chan data _ => connectiveUsed chan || connectiveUsedListPar data
+
+  def connectiveUsedListPar : List Par → Bool
+    | [] => false
+    | a :: as => connectiveUsed a || connectiveUsedListPar as
+
+  def connectiveUsedListReceive : List Receive → Bool
+    | [] => false
+    | a :: as => connectiveUsedReceive a || connectiveUsedListReceive as
+
+  def connectiveUsedReceive : Receive → Bool
+    | .mk binds body _ _ => connectiveUsedListReceiveBind binds || connectiveUsed body
+
+  def connectiveUsedListReceiveBind : List ReceiveBind → Bool
+    | [] => false
+    | a :: as => connectiveUsedReceiveBind a || connectiveUsedListReceiveBind as
+
+  def connectiveUsedReceiveBind : ReceiveBind → Bool
+    | .mk pats src _ => connectiveUsedListPar pats || connectiveUsed src
+
+  def connectiveUsedListNew : List New → Bool
+    | [] => false
+    | a :: as => connectiveUsedNew a || connectiveUsedListNew as
+
+  def connectiveUsedNew : New → Bool
+    | .mk _ body => connectiveUsed body
+
+  def connectiveUsedListMatch : List Match → Bool
+    | [] => false
+    | a :: as => connectiveUsedMatch a || connectiveUsedListMatch as
+
+  def connectiveUsedMatch : Match → Bool
+    | .mk target cases => connectiveUsed target || connectiveUsedListMatchCase cases
+
+  def connectiveUsedListMatchCase : List MatchCase → Bool
+    | [] => false
+    | a :: as => connectiveUsedMatchCase a || connectiveUsedListMatchCase as
+
+  def connectiveUsedMatchCase : MatchCase → Bool
+    | .mk pat src _ => connectiveUsed pat || connectiveUsed src
+
+  def connectiveUsedListExpr : List Expr → Bool
+    | [] => false
+    | a :: as => connectiveUsedExpr a || connectiveUsedListExpr as
+
+  def connectiveUsedExpr : Expr → Bool
+    | .ground _ => false
+    | .evar v => v.isConnective
+    | .eneg p | .enot p => connectiveUsed p
+    | .eplus p q | .eminus p q | .emult p q | .ediv p q | .emod p q
+    | .elt p q | .ele p q | .egt p q | .ege p q | .eeq p q | .eneq p q
+    | .eand p q | .eor p q => connectiveUsed p || connectiveUsed q
+    | .elist ps r => connectiveUsedListPar ps || r.isSome
+    | .etuple ps => connectiveUsedListPar ps
+    | .eset ps r => connectiveUsedListPar ps || r.isSome
+    | .emap kvs r => connectiveUsedListParPair kvs || r.isSome
+
+  def connectiveUsedListParPair : List (Par × Par) → Bool
+    | [] => false
+    | (a, b) :: as => connectiveUsed a || connectiveUsed b || connectiveUsedListParPair as
+
+  def connectiveUsedListBundle : List Bundle → Bool
+    | [] => false
+    | a :: as => connectiveUsedBundle a || connectiveUsedListBundle as
+
+  def connectiveUsedBundle : Bundle → Bool
+    | .mk body _ _ => connectiveUsed body
+
+  def connectiveUsedListGUnforgeable : List GUnforgeable → Bool
+    | [] => false
+    | a :: as => connectiveUsedGUnforgeable a || connectiveUsedListGUnforgeable as
+
+  def connectiveUsedGUnforgeable : GUnforgeable → Bool
+    | _ => false
+
+  def connectiveUsedListConnective : List Connective → Bool
+    | [] => false
+    | a :: as => connectiveUsedConnective a || connectiveUsedListConnective as
+
+  def connectiveUsedConnective : Connective → Bool
+    | .connAnd ps | .connOr ps => connectiveUsedListPar ps
+    | .connNot p => connectiveUsed p
+    | .connVarRef _ _ => true
+end
 
 /-- `parMerge p q` = `p | q` — field-wise multiset union (list append). -/
 def parMerge (p q : Par) : Par :=

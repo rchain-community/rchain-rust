@@ -13,7 +13,7 @@
 # `shared/src/lmdb.rs` and `rspace/src/state/exporters.rs` are silently skipped without it, which is
 # how they escaped local runs while CI (`--all-features`) still exercised them.
 
-.PHONY: test test-unit test-integration test-multinode test-all check-register coverage bench-scheduler bench-smoke spec
+.PHONY: test test-unit test-integration test-multinode test-all check-register check-lean coverage bench-scheduler bench-smoke spec
 
 test: test-all
 
@@ -33,6 +33,12 @@ test-all: test-unit test-integration
 # This runs the linter in hard mode: every check fails the build rather than reporting.
 check-register:
 	tools/audit-test-register.sh
+
+# The formal gate: build the Lean and Coq specifications, refuse a stale or un-consumed conformance
+# corpus, and check the Rust 1:1 against it. `spec` (below) is only the Lean half — this is what CI
+# runs, and what a change to `spec/` must satisfy before it is a change to the specification.
+check-lean:
+	tools/check-lean-conformance.sh
 
 # Coverage. CI (`.github/workflows/coverage.yml`) has always run the whole workspace with
 # `--all-features` and no exclusions, and is green on every PR — so the crypto crate is *not* flaky

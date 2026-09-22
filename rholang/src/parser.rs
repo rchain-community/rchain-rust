@@ -846,11 +846,17 @@ impl Parser {
     /// process. Empty braces are an empty map (there is no empty braced process).
     fn parse_braced_or_map(&mut self) -> Result<Proc, RholangError> {
         self.expect(Tok::LBrace)?;
-        if self.peek() == &Tok::RBrace {
-            self.next();
+        if self.peek() == &Tok::RBrace || self.peek() == &Tok::Ellipsis {
+            // Empty braces are an empty map, and `{..._}` is an empty map *with a remainder* —
+            // `CollectMap ::= "{" [KeyValuePair] ProcRemainder "}"` (`rholang_mercury.cf:183`) allows
+            // no pairs. Without this arm the ellipsis was read as the first key's process and the
+            // parser said `expected variable, got Ellipsis` (AUDIT C24; found by the corpus case
+            // `@{..._}`, `rholang/tests/lean_normalize_corpus.rs`).
+            let remainder = self.parse_proc_remainder()?;
+            self.expect(Tok::RBrace)?;
             return Ok(Proc::PCollect(Collection::CollectMap(
                 Vec::new(),
-                ProcRemainder::ProcRemainderEmpty,
+                remainder,
             )));
         }
         let first = self.parse_proc()?;
@@ -973,7 +979,12 @@ impl Parser {
             Tok::LBracket => {
                 self.next();
                 let mut procs = Vec::new();
-                while self.peek() != &Tok::RBracket {
+                // An *empty* element list may be followed by a remainder: the grammar is
+                // `CollectList ::= "[" [Proc] ProcRemainder "]"`
+                // (`rholang_mercury.cf:179`), so `[..._]` is a legal pattern and the loop must not
+                // try to parse a process where the ellipsis starts. Found by the corpus
+                // (`rholang/tests/lean_normalize_corpus.rs`, case `@{..._}`'s sibling) — AUDIT C24.
+                while self.peek() != &Tok::RBracket && self.peek() != &Tok::Ellipsis {
                     procs.push(self.parse_proc()?);
                     if self.peek() == &Tok::Comma {
                         self.next();
@@ -1036,7 +1047,9 @@ impl Parser {
             Tok::LBrace => {
                 self.next();
                 let mut kvs = Vec::new();
-                while self.peek() != &Tok::RBrace {
+                // As for lists: an empty map with only a remainder is `CollectMap ::= "{"
+                // [KeyValuePair] ProcRemainder "}"` (`rholang_mercury.cf:183`).
+                while self.peek() != &Tok::RBrace && self.peek() != &Tok::Ellipsis {
                     let k = self.parse_proc()?;
                     self.expect(Tok::Colon)?;
                     let v = self.parse_proc()?;
@@ -1059,7 +1072,9 @@ impl Parser {
                 self.next();
                 self.expect(Tok::LParen)?;
                 let mut procs = Vec::new();
-                while self.peek() != &Tok::RParen {
+                // As for lists: `CollectSet ::= "Set" "(" [Proc] ProcRemainder ")"`
+                // (`rholang_mercury.cf:181`).
+                while self.peek() != &Tok::RParen && self.peek() != &Tok::Ellipsis {
                     procs.push(self.parse_proc()?);
                     if self.peek() == &Tok::Comma {
                         self.next();
@@ -1341,6 +1356,13 @@ mod tests {
             "Set(a, ...rest)",
             "{a: 1, ...rest}",
             "{a: 1, ..._}",
+            // A collection with *no* elements and only a remainder is in the grammar too
+            // (`[Proc]`/`[KeyValuePair]` may be empty), and neither parser arm accepted it: the
+            // element loops could not start on an ellipsis (AUDIT C24).
+            "[..._]",
+            "[...rest]",
+            "Set(..._)",
+            "{..._}",
         ] {
             let parsed = parse(src).unwrap_or_else(|e| panic!("`{src}` must parse: {e}"));
             let remainder = match &parsed {

@@ -7,6 +7,8 @@ import Rchain.Ty
 import Rchain.Subst
 import Rchain.Reduce
 import Rchain.Match
+import Rchain.Concurrent
+import Rchain.Tree
 import Rchain.FreeVars
 import Rchain.Effect
 import Rchain.Scheduler

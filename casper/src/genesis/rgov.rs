@@ -152,6 +152,19 @@ pub fn source(name: &str) -> Result<String, String> {
         }
         "inbox" => {
             let source = publish_registration(INBOX_RHO, name, "deployId!(uri)")?;
+            // `read(ret)` — the zero-argument read — consumes the store datum and never puts it back,
+            // so after one read the inbox answers nothing again, ever: every later `write`, `peek`
+            // and `read` waits on a channel that is empty for the rest of the chain's life, silently.
+            // Its two typed siblings (`read(type,…)`, `read(type,subtype,…)`) both restore it
+            // (`box!(rest)` / `box!(*items)`), and the docstring is "read (and *remove*) all
+            // messages" — the messages, not the container — so the omission is a defect in the
+            // vendored text. The store is emptied, so the restore is `box!(Nil)`.
+            let source = replace_once(
+                &source,
+                "      for (items <- box) {\n        ret!(*items)\n      }",
+                "      for (items <- box) {\n        ret!(*items) |\n        box!(Nil)\n      }",
+                "inbox.rho's zero-argument `read`",
+            )?;
             // The class registration shares its block with a trailing test program (create an
             // instance, register its send capability, send test messages). The cut keeps the
             // registration and the `for` that reports it; the demo prints that precede it go too.
@@ -320,6 +333,21 @@ fn load(source: &str) -> String {
     format!("{source}\n//Loaded from resource file <<rgov>>\n")
 }
 
+/// Replace `marker` with `replacement`, asserting the marker occurs **exactly once**.
+///
+/// For an adaptation that changes *behaviour* (rather than removing demo traffic), a marker that
+/// upstream reworded must fail the build: a silent no-op would leave a file that looks adapted and
+/// is not — the failure mode this module's other helpers already refuse (see [`publish_registration`]).
+fn replace_once(rho: &str, marker: &str, replacement: &str, what: &str) -> Result<String, String> {
+    let occurrences = rho.matches(marker).count();
+    if occurrences != 1 {
+        return Err(format!(
+            "rgov: expected exactly one `{marker}` in {what}, found {occurrences}"
+        ));
+    }
+    Ok(load(&rho.replace(marker, replacement)))
+}
+
 /// Build + sign the genesis deploy for one vendored **class**, with the class's own fixed key
 /// (`contract_key`): a class holds no capability, and pinning its key keeps a rebuilt genesis
 /// reproducible.
@@ -465,14 +493,18 @@ pub fn extra_directory_slots_source() -> Result<String, String> {
    lookup(`rho:registry:lookup`)
 in {{
    for (@{{"write": *MCAwrite, ..._}} <<- @[*deployerId, "MasterContractAdmin"]) {{ Nil
-   |  new chatCh, ballotCh, groupCh
+   |  new chatCh, ballotCh, groupCh, ack
       in {{
          lookup!(`{chat}`, *chatCh) |
          lookup!(`{ballot}`, *ballotCh) |
          lookup!(`{group}`, *groupCh) |
-         for (C_Chat <- chatCh) {{ MCAwrite!("Chat", *C_Chat) }} |
-         for (C_Ballot <- ballotCh) {{ MCAwrite!("Ballot", *C_Ballot) }} |
-         for (C_Group <- groupCh) {{ MCAwrite!("Group", *C_Group) }}
+         // `Directory.rho:56` is `write(@key, @value, ret)` — three arguments. Called with two, no
+         // receive matches, so **nothing was written** and every consumer of these three slots read
+         // `Nil` (the wallet's editor asks the directory for exactly these class names). Silent, like
+         // the rest of this family; pinned by `the_extra_slots_answer_a_directory_read`.
+         for (C_Chat <- chatCh) {{ MCAwrite!("Chat", *C_Chat, *ack) }} |
+         for (C_Ballot <- ballotCh) {{ MCAwrite!("Ballot", *C_Ballot, *ack) }} |
+         for (C_Group <- groupCh) {{ MCAwrite!("Group", *C_Group, *ack) }}
       }}
    }}
 }}
@@ -691,5 +723,16 @@ mod tests {
         }
         // It writes through the capability the master directory published, not a hardcoded one.
         assert!(term.contains("@[*deployerId, \"MasterContractAdmin\"]"));
+        // ...and with the capability's own arity: `Directory.rho:56` is `write(@key, @value, ret)`.
+        // A two-argument call matched no receive and wrote nothing, and *this test* — a `contains`
+        // on the source text — was happy with it. The behavioural pin is
+        // `the_extra_slots_answer_a_directory_read`; this one keeps the shape honest so the two
+        // cannot drift apart silently again.
+        for name in ["Chat", "Ballot", "Group"] {
+            assert!(
+                term.contains(&format!("MCAwrite!(\"{name}\", *C_{name}, *ack)")),
+                "every slot write must pass the reply channel the directory's `write` takes"
+            );
+        }
     }
 }

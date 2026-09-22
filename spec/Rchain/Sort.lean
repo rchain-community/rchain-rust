@@ -21,6 +21,7 @@ bundle on each comparator via the generic `sortList` canonicality in `Rchain.Cmp
 -/
 
 namespace Rchain
+
 open Comparator
 
 /-! ## Leaf comparators (`Ground`, `Var`) -/
@@ -40,6 +41,15 @@ def cmpVar : Var → Var → Ordering
   | .free n, .free m => _root_.cmp n m
   | .free _, _ => .lt | _, .free _ => .gt
   | .wildcard, .wildcard => .eq
+
+/-- Compare two optional remainder variables, `none` first. A collection form's remainder is part of
+its identity — `[…]` and `[…, ...rest]` are different patterns — so canonicalization must order by it
+rather than ignore it: Law 1 over the surface the matcher actually reads (AUDIT C22). -/
+def cmpOptionVar : Option Var → Option Var → Ordering
+  | none, none => .eq
+  | none, some _ => .lt
+  | some _, none => .gt
+  | some a, some b => cmpVar a b
 
 /-- `cmpGround` is a lawful comparator. -/
 def groundComparator : Comparator Ground where
@@ -151,13 +161,13 @@ mutual
     | Expr.eand _ _, _ => .lt | _, Expr.eand _ _ => .gt
     | Expr.eor p q, Expr.eor p' q' => lex (cmpPar p p') (cmpPar q q')
     | Expr.eor _ _, _ => .lt | _, Expr.eor _ _ => .gt
-    | Expr.elist ps, Expr.elist ps' => cmpListPar ps ps'
-    | Expr.elist _, _ => .lt | _, Expr.elist _ => .gt
+    | Expr.elist ps r, Expr.elist ps' r' => lex (cmpListPar ps ps') (cmpOptionVar r r')
+    | Expr.elist _ _, _ => .lt | _, Expr.elist _ _ => .gt
     | Expr.etuple ps, Expr.etuple ps' => cmpListPar ps ps'
     | Expr.etuple _, _ => .lt | _, Expr.etuple _ => .gt
-    | Expr.eset ps, Expr.eset ps' => cmpListPar ps ps'
-    | Expr.eset _, _ => .lt | _, Expr.eset _ => .gt
-    | Expr.emap kvs, Expr.emap kvs' => cmpListParPair kvs kvs'
+    | Expr.eset ps r, Expr.eset ps' r' => lex (cmpListPar ps ps') (cmpOptionVar r r')
+    | Expr.eset _ _, _ => .lt | _, Expr.eset _ _ => .gt
+    | Expr.emap kvs r, Expr.emap kvs' r' => lex (cmpListParPair kvs kvs') (cmpOptionVar r r')
   termination_by s t => sizeOf s + sizeOf t
   def cmpBundle : Bundle → Bundle → Ordering
     | Bundle.mk b w r, Bundle.mk b' w' r' => lex (cmpPar b b') (lex (_root_.cmp w w') (_root_.cmp r r'))
@@ -1020,10 +1030,10 @@ mutual
     | Expr.eneq p q => Expr.eneq (sortPar p) (sortPar q)
     | Expr.eand p q => Expr.eand (sortPar p) (sortPar q)
     | Expr.eor p q => Expr.eor (sortPar p) (sortPar q)
-    | Expr.elist ps => Expr.elist (sortList parComparator (sortListPar ps))
+    | Expr.elist ps r => Expr.elist (sortList parComparator (sortListPar ps)) r
     | Expr.etuple ps => Expr.etuple (sortList parComparator (sortListPar ps))
-    | Expr.eset ps => Expr.eset (sortList parComparator (sortListPar ps))
-    | Expr.emap kvs => Expr.emap (sortList (cmpPair parComparator parComparator) (sortListParPair kvs))
+    | Expr.eset ps r => Expr.eset (sortList parComparator (sortListPar ps)) r
+    | Expr.emap kvs r => Expr.emap (sortList (cmpPair parComparator parComparator) (sortListParPair kvs)) r
   termination_by x => sizeOf x
 
   def sortBundle : Bundle → Bundle
@@ -1206,11 +1216,15 @@ mutual
         have hp := sortPar_idempotent p
         have hq := sortPar_idempotent q
         simp [sortExpr, hp, hq]
-    | Expr.elist ps | Expr.etuple ps | Expr.eset ps => by
+    | Expr.elist ps r | Expr.eset ps r => by
         have hps : ∀ x, x ∈ ps → sortPar (sortPar x) = sortPar x := fun x _ => sortPar_idempotent x
         simp [sortExpr]
         exact sortList_field_idem parComparator sortPar ps hps
-    | Expr.emap kvs => by
+    | Expr.etuple ps => by
+        have hps : ∀ x, x ∈ ps → sortPar (sortPar x) = sortPar x := fun x _ => sortPar_idempotent x
+        simp [sortExpr]
+        exact sortList_field_idem parComparator sortPar ps hps
+    | Expr.emap kvs r => by
         have hkvs : ∀ x, x ∈ kvs → sortParPair (sortParPair x) = sortParPair x := fun x _ => sortParPair_idempotent x
         simp [sortExpr]
         exact sortList_field_idem (cmpPair parComparator parComparator) sortParPair kvs hkvs

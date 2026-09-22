@@ -467,6 +467,71 @@ async fn collection_patterns_match_a_subset_of_their_collection() {
         );
     }
 
+    // A remainder is what makes a collection pattern *non-concrete*, and a map pattern was the one
+    // place the port forgot to say so: the list and set folds OR it into `connective_used`
+    // (`normalizer.rs`), the map fold did not, so `spatial_match` saw a concrete pattern, took its
+    // `pattern == target` short-circuit, and a partial map matched nothing but itself — silently.
+    // The cases above all carry a free variable (`*v`), which sets the flag for an unrelated reason;
+    // these carry only *ground* entries and a remainder, which is the shape that was never covered.
+    // (AUDIT C19-C21's family; `CollectionNormalizeMatcher.scala:92` is the reference.)
+    let (rt, _) = build_runtime_pair().await;
+    let got = eval_out(
+        &rt,
+        r#"new a in { a!({"x": 1, "y": 2}) | for (@{"x": 1, ..._} <- a) { @"out"!("matched") } }"#,
+        &env,
+        "out",
+    )
+    .await;
+    assert_eq!(
+        got.len(),
+        1,
+        "a ground map pattern with a remainder must match"
+    );
+    assert_eq!(RhoString::unapply(&got[0]), Some("matched"));
+
+    // ...and it must still *fail* to match when the ground entry differs — the fix must not turn a
+    // partial pattern into a wildcard. A must-not-match case cannot be observed by absence alone
+    // (`eval_out` requires output, and "the term produced nothing" is exactly the failure mode this
+    // file exists to distinguish), so the same term carries a control: the control datum is present
+    // and the match's tag is not.
+    let (rt, _) = build_runtime_pair().await;
+    let got = eval_out(
+        &rt,
+        r#"new a in { a!({"x": 1, "y": 2}) |
+             for (@{"x": 9, ..._} <- a) { @"out"!("matched") } |
+             @"out"!("control") }"#,
+        &env,
+        "out",
+    )
+    .await;
+    assert_eq!(got.len(), 1, "only the control datum may appear: {got:?}");
+    assert_eq!(
+        RhoString::unapply(&got[0]),
+        Some("control"),
+        "a partial pattern must still be a *pattern*: {{\"x\": 9}} does not match {{\"x\": 1, ...}}"
+    );
+
+    // The named remainder binds the entries it absorbs, ground ones included.
+    let (rt, _) = build_runtime_pair().await;
+    let rest = eval_out(
+        &rt,
+        r#"new a in { a!({"x": 1, "y": 2}) | for (@{"x": 1, ...rest} <- a) { @"out"!(rest) } }"#,
+        &env,
+        "out",
+    )
+    .await;
+    assert_eq!(rest.len(), 1);
+    assert_eq!(
+        map_get_string_int(&rest[0], "y"),
+        Some(2),
+        "`...rest` captured the unnamed ground entry"
+    );
+    assert_eq!(
+        map_get_string_int(&rest[0], "x"),
+        None,
+        "`...rest` must not capture the named entry"
+    );
+
     // The `MemberDirectory.rho:15` gate itself, with production shapes: a three-key dictionary of
     // *bundles* (not ground terms) peeked with a partial map pattern. Two claims in one — the body
     // runs, and the named entry binds its own value rather than one the wildcard absorbed.

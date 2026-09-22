@@ -313,6 +313,171 @@ fn the_seeded_registry_is_identical_across_fresh_genesis_ceremonies() {
     });
 }
 
+/// An inbox survives a read. `Inbox.read` — the zero-argument form, which reads and *removes* every
+/// message — consumed the store datum and never restored it, so the second thing anyone did with an
+/// inbox was the last: every later `write`, `peek` and `read` waited on an empty channel, silently, for
+/// the life of the chain. The vendored text is repaired at render time (`rgov.rs::source("inbox")`,
+/// recorded in the NOTICE); this is the consumer-level pin, using the class's own call shapes.
+#[test]
+fn a_read_does_not_destroy_the_inbox() {
+    with_big_stack(async {
+        let rm = build_runtime_manager().await;
+        let rand = fixed_rand();
+        let inbox_uri = rchain_casper::genesis::rgov::contract_uri_for("inbox").expect("the URI");
+        let term = format!(
+            r#"new rl(`rho:registry:lookup`), ch, caps, ret1, ret2, ret3 in {{
+                 rl!(`{inbox_uri}`, *ch) |
+                 // The class registers with `insertArbitrary`, so the lookup answers the bare value.
+                 for (Inbox <- ch) {{
+                   Inbox!(*caps) |
+                   for (read, write, peek <- caps) {{
+                     write!(["email", "from", {{"a": 1}}], *ret1) |
+                     for (@_w1 <- ret1) {{
+                       read!(*ret2) |
+                       for (@_all <- ret2) {{
+                         write!(["email", "from", {{"a": 2}}], *ret3) |
+                         for (@_w3 <- ret3) {{ @"out"!("inbox-survived-read") }}
+                       }}
+                     }}
+                   }}
+                 }}
+               }}"#
+        );
+        let mut terms = default_blessed_terms(
+            &proof_of_stake(),
+            &Registry {
+                system_contract_pub_key: String::new(),
+            },
+            &[],
+            "root",
+            &ceremony_identity(),
+        )
+        .expect("blessed terms");
+        terms.push(deploy_signed_by(&term, 11));
+
+        let (_, _, results) = rm
+            .compute_genesis(
+                &terms,
+                &rand,
+                BlockData::empty(),
+                &PosGenesis::default(),
+                &[],
+            )
+            .await
+            .expect("compute_genesis");
+        for (i, r) in results.iter().enumerate() {
+            assert!(
+                r.eval_result.succeeded(),
+                "genesis deploy #{i} failed: {:?}",
+                r.eval_result.errors
+            );
+        }
+        let produced = rm
+            .runtime()
+            .get_data_par(&rchain_models::sorted::SortedProc::new(
+                rchain_models::par_ops::from_expr(rchain_models::ast::Expr::GString(
+                    "out".to_string(),
+                )),
+            ))
+            .await
+            .expect("read the probe's output channel");
+        let tags: Vec<String> = produced
+            .iter()
+            .filter_map(|p| RhoString::unapply(p).map(str::to_string))
+            .collect();
+        assert!(
+            tags.contains(&"inbox-survived-read".to_string()),
+            "a write after a read must still be answered — the read consumed the store and left it \
+             consumed: {tags:?}"
+        );
+    });
+}
+
+/// The three extra directory slots the wallet's editor asks for answer a **value**, not `Nil`.
+///
+/// `extraSlots` is our own term (upstream's template has seven slots, none of them `Chat`/`Ballot`/
+/// `Group`), and it called the directory's write capability with two arguments where
+/// `Directory.rho:56` takes three — so no receive matched, nothing was written, and every read of
+/// those names answered `Nil`. A `Nil` slot is indistinguishable from a broken one for a consumer,
+/// which is why this asserts the *value* and not merely that a receive fired (the trap AUDIT C21
+/// records: `MCAread!("Chat", *ch)` answers `Nil` for an absent key, and a bare pattern matches
+/// `Nil`).
+#[test]
+fn the_extra_slots_answer_a_directory_read() {
+    with_big_stack(async {
+        let rm = build_runtime_manager().await;
+        let rand = fixed_rand();
+        let readcap = rchain_casper::genesis::rgov::readcap_uri().expect("the read cap key");
+        let term = r#"new rl(`rho:registry:lookup`), ch, chatCh, ballotCh, groupCh in {
+                 rl!(`READCAP`, *ch) |
+                 for (MCAread <- ch) {
+                   MCAread!("Chat", *chatCh) |
+                   MCAread!("Ballot", *ballotCh) |
+                   MCAread!("Group", *groupCh) |
+                   for (@c <- chatCh) {
+                     if (c == Nil) { @"out"!("slot:Chat-nil") } else { @"out"!("slot:Chat-value") }
+                   } |
+                   for (@b <- ballotCh) {
+                     if (b == Nil) { @"out"!("slot:Ballot-nil") } else { @"out"!("slot:Ballot-value") }
+                   } |
+                   for (@g <- groupCh) {
+                     if (g == Nil) { @"out"!("slot:Group-nil") } else { @"out"!("slot:Group-value") }
+                   }
+                 }
+               }"#
+            .replace("READCAP", &readcap);
+        let mut terms = default_blessed_terms(
+            &proof_of_stake(),
+            &Registry {
+                system_contract_pub_key: String::new(),
+            },
+            &[],
+            "root",
+            &ceremony_identity(),
+        )
+        .expect("blessed terms");
+        terms.push(deploy_signed_by(&term, 11));
+
+        let (_, _, results) = rm
+            .compute_genesis(
+                &terms,
+                &rand,
+                BlockData::empty(),
+                &PosGenesis::default(),
+                &[],
+            )
+            .await
+            .expect("compute_genesis");
+        for (i, r) in results.iter().enumerate() {
+            assert!(
+                r.eval_result.succeeded(),
+                "genesis deploy #{i} failed: {:?}",
+                r.eval_result.errors
+            );
+        }
+        let produced = rm
+            .runtime()
+            .get_data_par(&rchain_models::sorted::SortedProc::new(
+                rchain_models::par_ops::from_expr(rchain_models::ast::Expr::GString(
+                    "out".to_string(),
+                )),
+            ))
+            .await
+            .expect("read the probe's output channel");
+        let tags: Vec<String> = produced
+            .iter()
+            .filter_map(|p| RhoString::unapply(p).map(str::to_string))
+            .collect();
+        for name in ["Chat", "Ballot", "Group"] {
+            assert!(
+                tags.contains(&format!("slot:{name}-value")),
+                "the directory must hold a usable {name} class (an unfilled slot answers `Nil`, \
+                 which a consumer cannot tell from broken): {tags:?}"
+            );
+        }
+    });
+}
+
 /// A probe for a contract reached by its **constant URI**.
 ///
 /// `destructure` is the pattern the *consumer* uses, and it differs by contract family: the node's

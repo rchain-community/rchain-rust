@@ -1598,7 +1598,12 @@ fn fold_collection_map(
     Ok(CollectVisitOutputs {
         expr: Expr::EMap(ParMap {
             kvs: pairs,
-            connective_used,
+            // A remainder makes the pattern non-concrete, exactly as it does for `EList`/`ParSet`
+            // (`CollectionNormalizeMatcher.scala:92` ORs it in, and the two sibling folds below do
+            // the same). Without it, `spatial_match` sees a concrete pattern, takes the
+            // `pattern == target` short-circuit, and a *partial* map pattern matches nothing but
+            // itself — silently, which is the family's whole failure mode (AUDIT C19-C21).
+            connective_used: connective_used || remainder.is_some(),
             locally_free: AlwaysEqual(locally_free),
             remainder: remainder.map(Box::new),
         }),

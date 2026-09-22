@@ -1,0 +1,17 @@
+flags	@{}	false
+flags	@{"x": 1}	false
+flags	@{"x": 1, "y": 2}	false
+flags	@{"x": 1, ..._}	true
+flags	@{"x": 1, ...rest}	true
+flags	@{..._}	true
+flags	@[]	false
+flags	@[1, 2]	false
+flags	@[1, ..._]	true
+flags	@[1, ...rest]	true
+flags	@Set()	false
+flags	@Set(1, 2)	false
+flags	@Set(1, ..._)	true
+flags	@{"x": v7}	true
+flags	_	true
+flags	@[{"x": 1, ..._}]	true
+flags	@{"g": {"info": {"x": 1, ..._}, ..._}, ..._}	true
