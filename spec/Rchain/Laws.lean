@@ -382,20 +382,49 @@ def laws : List Law := [
     axioms := [`Rchain.fringe_monotone, `Rchain.seen_monotone],
     falsifiable := none },
   { number := 16, clause := "a", layer := "Casper",
-    statement := "Block number = max(parent) + 1",
-    status := .deferred,
-    declarations := [`Rchain.Block, `Rchain.block_number_max_parent_plus_one],
-    axioms := [`Rchain.block_number_max_parent_plus_one],
-    falsifiable := none },
+    statement := "Block number = max(parent) + 1 — as the port's check, which **rejects** a block whose \
+      number is not one more than the maximum of its non-failed justifications (`0` when there is none \
+      live)",
+    status := .provedModel,
+    declarations := [`Rchain.Parent, `Rchain.maxParentNumber, `Rchain.BlockNumberValid,
+      `Rchain.block_number_max_parent_plus_one, `Rchain.block_number_rejects,
+      `Rchain.block_number_universal_is_false],
+    axioms := [],
+    rust := ["casper/src/validate.rs"],
+    falsifiable := some "`block_number_rejects` is the case the port returns `InvalidBlockNumber` for \
+      (`validate.rs:135-140`): an off-by-one — `max + 2`, or `max` itself — fails it. The `-1` seed is \
+      falsifiable on its own: a block with no live justification must be numbered `0`, so a model that \
+      folded a maximum from `0` would demand `1` and reject the genesis-shaped case. And \
+      `block_number_universal_is_false` exhibits the refutation of the axiom that stood here — which \
+      quantified over every `Block` with no hypothesis at all",
+    note := "**the axiom was false, not merely unproven**: it quantified over every `Block`, and a \
+      `Block` is freely constructed, so one line refutes it (`block_number_universal_is_false`). The law \
+      is re-scoped to the check the code has — a fold over the block's justifications, skipping the \
+      failed ones and seeded `-1` (`validate.rs:123-140`) — and the proof is that predicate's \
+      elimination, which is the honest shape: the port enforces this by *refusing blocks*, not by \
+      maintaining an invariant it states. The model's `Block` carries `justifications` because the check \
+      reads them; the `parents : List Nat` field this row's model used does not exist in the port" },
   { number := 16, clause := "b", layer := "Casper",
-    statement := "`seqNum` strictly increases: the sender's next block is exactly one more than its \
-      previous",
-    status := .deferred,
-    declarations := [`Rchain.seq_num_strictly_increases],
-    axioms := [`Rchain.seq_num_strictly_increases],
-    falsifiable := none,
-    note := "as stated the axiom quantifies over **any** two blocks (`prev.seqNum + 1 = next.seqNum`), \
-      which is false of two unrelated blocks: the sender relation is missing from the statement" },
+    statement := "`seqNum` strictly increases **under the sender's justification**: the port requires the \
+      block's `seqNum` to be one more than the maximum `seqNum` among the justifications whose sender is \
+      this block's sender (`0` when there are none)",
+    status := .provedModel,
+    declarations := [`Rchain.senderLatestSeq, `Rchain.SeqNumValid, `Rchain.seq_num_strictly_increases,
+      `Rchain.seq_num_universal_is_false],
+    axioms := [],
+    rust := ["casper/src/validate.rs"],
+    falsifiable := some "a block whose `seqNum` skips or repeats the sender's latest justification is \
+      rejected (`InvalidSequenceNumber`, `validate.rs:158-162`), and the `-1` seed is a case of its own: \
+      a sender's first block must be `0`. `seq_num_universal_is_false` is the published refutation of \
+      the axiom this replaces — and it refutes it **for a single sender**, which is why the re-scoping \
+      is the justification relation and not the sender relation",
+    note := "**the axiom was false as stated** (`prev.seqNum + 1 = next.seqNum` over any two blocks), and \
+      the diagnosis in the row it replaces — \"the sender relation is missing\" — was wrong: a same-sender \
+      pair with a non-consecutive `seqNum` refutes it just as well \
+      (`seq_num_universal_is_false`). What the check folds over is the block's justifications **whose \
+      sender matches**, against their maximum (`validate.rs:146-161`); the law is re-scoped to that, and \
+      the proof is the predicate's elimination. The old model also carried a `seqNum`-ordering axiom over \
+      any two blocks, which no port rule states" },
   { number := 16, clause := "c", layer := "Casper",
     statement := "Content addressing: `hash_block` clears `block_hash` and `sig` and hashes every other \
       proto field canonically, so equal hashes determine equal bodies",
