@@ -91,6 +91,19 @@ end
 -- the corpus said so: `@[]` against `[]` and `@Set(1, ..._)` against `Set(1, 2)` both answered
 -- **false** until this line changed — a fuel shortfall is a silent wrong answer, which is exactly
 -- why `fuel_saturation` is a named obligation rather than an assumption.
+--
+-- **The `termination_by` experiment, run and answered (2026-09-23).** The plan for `fuel_saturation`
+-- proposed annotating this block's five members with `termination_by fuel` so the equation compiler
+-- would emit usable unfolding lemmas (which is what fixed `flatPar`). It does — and it *costs* the one
+-- thing the checkers rely on: a well-founded definition is no longer reduced by the kernel, so
+-- `decide` stops closing `spatialMatch arithmeticTuple arithmeticTuple = false` and
+-- `matchCases_decide` (the corpus's own checker, 17 cases) alike. Recovering it is a simp-set exercise
+-- per site — the fuel argument must be brought into *successor* form before any clause can be selected
+-- (`matchFuel t p` is `2 * (… + …) + 4`, which no equation matches until `omega` or a `Nat.succ_pred`
+-- rewrite shapes it), and then the `Bool` connectives need their own lemmas. So the annotation trades
+-- a kernel-reducible matcher for symbolic unfolding, and the two proofs below start from that trade
+-- rather than from the assumption that it is free. Reverted rather than kept, because an annotation
+-- whose benefit is a *future* proof and whose cost is two working checkers is a net loss today.
 def matchFuel (target pattern : Par) : Nat := 2 * (parNodes target + parNodes pattern) + 4
 
 mutual
