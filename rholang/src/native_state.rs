@@ -22,6 +22,16 @@
 //! * **withdrawing** — a withdrawal immediately deactivates the validator; the stake is escrowed
 //!   until the quarantine deadline ([`pos_withdrawers_key`]) and refunded by `close_block`.
 //! * **removed** — `slash`/`untrust` remove the validator and confiscate the stake to the Coop vault.
+//!
+//! # The staking vault
+//!
+//! Every movement of REV in the PoS mechanism is a transfer between three places: a user's vault, the
+//! **staking vault** ([`pos_vault_key`], the contract's `posVault`), and the Coop multisig vault. A
+//! bond moves the stake in, a refund moves a deploy's unused phlo back out (the phlo it *did* use
+//! stays in and funds the rewards), a slashing moves a stake to the Coop vault, and a withdrawal pays
+//! a stake plus its committed rewards back out. The vault's balance is therefore the epoch pot's
+//! source, and no step of the mechanism mints: the only credits are a bond, a phlo charge, and the
+//! genesis install that funds the vault with exactly the initial bond sum.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -80,6 +90,13 @@ pub fn pos_params_key() -> Blake2b256Hash {
 /// Leaf key for the Coop slashing vault (confiscated stake).
 pub fn pos_coop_key() -> Blake2b256Hash {
     Blake2b256Hash::create(b"pos:coop")
+}
+
+/// Leaf key for the PoS *staking vault*: the escrowed bonds, plus the phlo charged from deploys that
+/// has not been refunded. This is the contract's `posVault` (`Pos.rhox:161-174`), and it is the pot
+/// an epoch distributes — see [`NativeSystemState::close_block`].
+pub fn pos_vault_key() -> Blake2b256Hash {
+    Blake2b256Hash::create(b"pos:vault")
 }
 
 /// Leaf key for the HTTP-result oracle table (`url → (value, captured block)`); RCHIP #54.
@@ -422,6 +439,17 @@ impl PosGenesis {
     pub fn active_bonds(&self) -> BTreeMap<Validator, NonNegI64> {
         select_active(&self.bonds, &BTreeMap::new(), &self.params)
     }
+
+    /// The initial bond sum — the amount the staking vault is created with (`Pos.rhox:167-174`:
+    /// `ListOps!("fold", $$initialBonds$$.toList(), 0, *sumFromPair, …)` and then
+    /// `createWithBalance(posDeployerRevAddress, bondSum)` before the transfer into the PoS vault).
+    /// A sum that does not fit an `i64` is a genesis that cannot be installed, not a genesis to
+    /// clamp.
+    pub fn bond_sum(&self) -> Result<NonNegI64, String> {
+        let sum: i128 = self.bonds.values().map(|s| i128::from(i64::from(*s))).sum();
+        let sum = checked_i64(sum, "genesis bond sum")?;
+        NonNegI64::try_from(sum).map_err(|_| format!("genesis bond sum is negative: {sum}"))
+    }
 }
 
 /// Select the active validator set from the pool: drop zero-stake and withdrawing validators, sort
@@ -450,6 +478,14 @@ pub fn select_active(
 
 fn checked_i64(value: i128, what: &str) -> Result<i64, String> {
     i64::try_from(value).map_err(|_| format!("{what} overflow: {value}"))
+}
+
+/// `balance + delta` as a `NonNegI64`, with both the `i64` range and the sign checked. The single
+/// place the port's balance arithmetic happens, so a balance can neither wrap nor go negative
+/// silently. `delta` is an `i64` to keep the debit direction explicit at the call sites.
+fn balance_plus(balance: NonNegI64, delta: i64, what: &str) -> Result<NonNegI64, String> {
+    let sum = checked_i64(i128::from(i64::from(balance)) + i128::from(delta), what)?;
+    NonNegI64::try_from(sum).map_err(|_| format!("{what} would become negative: {sum}"))
 }
 
 /// The typed native system state, wrapping the shared byte-oriented [`InMemNativeStore`].
@@ -587,32 +623,94 @@ impl NativeSystemState {
 
     /// Read the Coop slashing-vault balance.
     pub async fn coop_balance(&self) -> Result<NonNegI64, String> {
-        match self.store.get(PREFIX_POS, &pos_coop_key()).await? {
+        self.read_balance(PREFIX_POS, &pos_coop_key(), "coop balance")
+            .await
+    }
+
+    /// Write the Coop slashing-vault balance.
+    pub fn set_coop_balance(&self, balance: NonNegI64) {
+        self.write_balance(PREFIX_POS, &pos_coop_key(), balance);
+    }
+
+    /// Read the PoS staking-vault balance (the epoch pot's source; `Pos.rhox:203`'s
+    /// `posVault!("balance", …)`).
+    pub async fn pos_vault_balance(&self) -> Result<NonNegI64, String> {
+        self.read_balance(PREFIX_POS, &pos_vault_key(), "pos vault balance")
+            .await
+    }
+
+    /// Write the PoS staking-vault balance.
+    pub fn set_pos_vault_balance(&self, balance: NonNegI64) {
+        self.write_balance(PREFIX_POS, &pos_vault_key(), balance);
+    }
+
+    /// Read a leaf holding a single little-endian `NonNegI64` — a balance. An absent leaf is zero,
+    /// which is how the store distinguishes "never written" from "written as zero".
+    async fn read_balance(
+        &self,
+        prefix: u8,
+        key: &Blake2b256Hash,
+        what: &str,
+    ) -> Result<NonNegI64, String> {
+        match self.store.get(prefix, key).await? {
             Some(bytes) => {
                 let arr: [u8; 8] = bytes
                     .as_slice()
                     .try_into()
-                    .map_err(|_| format!("coop balance is {} bytes, expected 8", bytes.len()))?;
+                    .map_err(|_| format!("{what} is {} bytes, expected 8", bytes.len()))?;
                 NonNegI64::try_from(i64::from_le_bytes(arr))
-                    .map_err(|_| "coop balance is negative".to_string())
+                    .map_err(|_| format!("{what} is negative"))
             }
             None => Ok(NonNegI64::zero()),
         }
     }
 
-    /// Write the Coop slashing-vault balance.
-    pub fn set_coop_balance(&self, balance: NonNegI64) {
-        self.store.put(
-            PREFIX_POS,
-            pos_coop_key(),
-            i64::from(balance).to_le_bytes().to_vec(),
-        );
+    /// Write a leaf holding a single little-endian `NonNegI64`.
+    fn write_balance(&self, prefix: u8, key: &Blake2b256Hash, balance: NonNegI64) {
+        self.store
+            .put(prefix, *key, i64::from(balance).to_le_bytes().to_vec());
+    }
+
+    /// Credit `amount` to the staking vault (a bond's stake, or a deploy's phlo charge).
+    pub async fn credit_pos_vault(&self, amount: i64) -> Result<(), String> {
+        if amount <= 0 {
+            return Ok(());
+        }
+        let balance = self.pos_vault_balance().await?;
+        self.set_pos_vault_balance(balance_plus(balance, amount, "pos vault credit")?);
+        Ok(())
+    }
+
+    /// Debit `amount` from the staking vault (a withdrawal's bond + rewards, a refund, a slashing).
+    ///
+    /// **A short vault is a platform error, not a user error.** Every debit is a transfer whose
+    /// source is guaranteed by the accounting: a refund is bounded by the pre-charge that funded it,
+    /// a withdrawal by the bond it escrowed, a slash by the stake it confiscated. So a vault that
+    /// cannot cover the transfer means the ledger has already diverged, and failing the deploy
+    /// loudly is the only honest response — the Scala's `payWithdrawer` has a
+    /// `// FIXME fix transfer in failure case` here and removes the withdrawer from the maps even
+    /// when the transfer failed, which loses the bond. This port refuses instead.
+    pub async fn debit_pos_vault(&self, amount: i64) -> Result<(), String> {
+        if amount <= 0 {
+            return Ok(());
+        }
+        let balance = self.pos_vault_balance().await?;
+        self.set_pos_vault_balance(balance_plus(balance, -amount, "pos vault debit")?);
+        Ok(())
     }
 
     /// Install the genesis PoS state: the pool, the trusted set, the parameters, the derived active
-    /// set, an empty withdrawer map, and an empty Coop vault. This is the deterministic entry point
-    /// shared by genesis creation and genesis replay.
-    pub fn install_genesis(&self, genesis: &PosGenesis) {
+    /// set, an empty withdrawer map, an empty Coop vault, and a staking vault holding exactly the
+    /// initial bond sum. This is the deterministic entry point shared by genesis creation and
+    /// genesis replay.
+    ///
+    /// The vault is funded with the bond sum and nothing more, so the *pot* an epoch distributes
+    /// (`vault − bonded − withdrawers − committed rewards`) is **zero** at genesis: the rewards an
+    /// epoch pays come from the phlo of the deploys since the last boundary, not from the bonds.
+    pub fn install_genesis(&self, genesis: &PosGenesis) -> Result<(), String> {
+        // Computed before anything is written, so a genesis whose bond sum does not fit an `i64`
+        // leaves the store untouched rather than half-installed.
+        let bond_sum = genesis.bond_sum()?;
         let trusted: BTreeSet<Validator> = if genesis.trusted.is_empty() {
             genesis.bonds.keys().copied().collect()
         } else {
@@ -626,6 +724,8 @@ impl NativeSystemState {
         self.set_params(&genesis.params);
         self.set_withdrawers(&withdrawers);
         self.set_coop_balance(NonNegI64::zero());
+        self.set_pos_vault_balance(bond_sum);
+        Ok(())
     }
 
     // --- PoS: validator lifecycle ----------------------------------------
@@ -682,6 +782,11 @@ impl NativeSystemState {
         let new_balance =
             NonNegI64::try_from(i64::from(balance) - stake).map_err(|e| format!("bond: {e}"))?;
         self.set_vault_balance(&address, new_balance);
+        // The stake moves from the validator's vault into the staking vault (`Pos.rhox:392-410`'s
+        // `deposit!(deployerId, amount, posVaultAddr)`). Crediting the destination is what makes the
+        // later reward and refund transfers possible at all: without it the vault would hold nothing
+        // to pay out of, and the epoch would distribute a pot that does not exist.
+        self.credit_pos_vault(stake).await?;
         pool.insert(*validator, amount);
         let withdrawers = self.withdrawers().await?;
         let new_active = select_active(&pool, &withdrawers, &params);
@@ -762,10 +867,13 @@ impl NativeSystemState {
         active.remove(validator);
         withdrawers.remove(validator);
         if let Some(stake) = stake {
+            // The stake leaves the staking vault for the Coop multisig vault (`Pos.rhox:470-482`:
+            // `posVault!("transfer", coopMultiVaultAddr, valBond, posAuthKey)`). Debiting the source
+            // is what makes this a *transfer*: crediting the Coop vault on its own — which is what
+            // this did before the staking vault existed — mints the slashed bond out of nothing.
+            self.debit_pos_vault(i64::from(stake)).await?;
             let coop = self.coop_balance().await?;
-            let new_coop = NonNegI64::try_from(i64::from(coop) + i64::from(stake))
-                .map_err(|e| format!("slash coop: {e}"))?;
-            self.set_coop_balance(new_coop);
+            self.set_coop_balance(balance_plus(coop, i64::from(stake), "slash coop")?);
         }
         self.set_bonds(&pool);
         self.set_active(&active);
@@ -1012,12 +1120,46 @@ impl NativeSystemState {
         let new_balance = NonNegI64::try_from(i64::from(balance) - amount)
             .map_err(|e| format!("preCharge: {e}"))?;
         self.set_vault_balance(&address, new_balance);
+        // The charge is deposited into the staking vault (`Pos.rhox:397-404`:
+        // `deposit!(deployerId, amount, posVaultAddr)`), which is where an epoch's reward pot comes
+        // from. The charge is the deploy's *maximum* phlo; what the deploy does not consume comes
+        // back out in [`Self::refund`], so what the vault keeps is exactly the phlo burned.
+        self.credit_pos_vault(amount).await?;
         Ok(Ok(()))
     }
 
-    /// Refund `amount` (port of the PoS `refundDeploy` behavior). The refund vault is not yet
-    /// modeled, so this is a successful no-op for now.
-    pub async fn refund(&self, _amount: i64) -> Result<Result<(), String>, String> {
+    /// Refund `amount` to `deployer`'s vault out of the staking vault (port of the PoS
+    /// `refundDeploy` behavior, `Pos.rhox:417-454`: `posVault!("transfer", deployerRevAddress,
+    /// refundAmount, posAuthKey)`).
+    ///
+    /// `amount <= 0` succeeds without moving anything — the contract's own `if (refundAmount > 0)`
+    /// branch. The Scala takes the deployer from the `currentDeployerData` cell that `chargeDeploy`
+    /// filled, because the contract's `refundDeploy` is called with only the amount; this port has no
+    /// such limitation and carries the deployer in the system deploy itself (`Refund { deployer,
+    /// amount }` in `casper::system_deploy`), the same way the pre-charge already does — so the payer
+    /// is in the type rather than in a mutable cell.
+    ///
+    /// This used to be a **documented no-op** (`refund_is_a_documented_no_op`): the charged phlo was
+    /// burned rather than returned. Now that the staking vault exists it is the transfer the contract
+    /// describes, and the test pins the two-way movement — including that the over-charge does *not*
+    /// reach the reward pot.
+    pub async fn refund(
+        &self,
+        deployer: &PublicKey,
+        amount: i64,
+    ) -> Result<Result<(), String>, String> {
+        if amount <= 0 {
+            return Ok(Ok(()));
+        }
+        let address = RevAddress::from_public_key(deployer)
+            .ok_or_else(|| "refund: invalid deployer public key".to_string())?
+            .to_base58();
+        self.debit_pos_vault(amount).await?;
+        let balance = self
+            .vault_balance(&address)
+            .await?
+            .unwrap_or(NonNegI64::zero());
+        self.set_vault_balance(&address, balance_plus(balance, amount, "refund")?);
         Ok(Ok(()))
     }
 
@@ -1054,11 +1196,13 @@ mod tests {
             .iter()
             .map(|(v, s)| (*v, NonNegI64::try_from(*s).unwrap()))
             .collect();
-        native.install_genesis(&PosGenesis {
-            bonds,
-            trusted: trusted.iter().copied().collect(),
-            params,
-        });
+        native
+            .install_genesis(&PosGenesis {
+                bonds,
+                trusted: trusted.iter().copied().collect(),
+                params,
+            })
+            .unwrap();
         for (v, _) in pool {
             native.set_vault_balance(&vault_address_of(v), NonNegI64::zero());
         }
@@ -1074,6 +1218,26 @@ mod tests {
             .map(i64::from)
             .unwrap_or(0);
         native.set_vault_balance(&address, NonNegI64::try_from(balance + amount).unwrap());
+    }
+
+    /// The total REV the native state holds: the addresses given, the Coop vault, and the staking
+    /// vault. Every step of the mechanism — bond, slash, phlo charge, refund, withdrawal payment —
+    /// is a transfer *between* these places, so this total is invariant. Checking it is what makes
+    /// "the staking vault is the only source of every payout" a property rather than a claim about
+    /// the code: the version before this one credited the Coop vault on a slash without debiting
+    /// anywhere, and this is the assertion that would have caught it.
+    async fn total_rev(native: &NativeSystemState, addresses: &[String]) -> i64 {
+        let mut total = i64::from(native.coop_balance().await.unwrap())
+            + i64::from(native.pos_vault_balance().await.unwrap());
+        for address in addresses {
+            total += native
+                .vault_balance(address)
+                .await
+                .unwrap()
+                .map(i64::from)
+                .unwrap_or(0);
+        }
+        total
     }
 
     #[test]
@@ -1310,6 +1474,11 @@ mod tests {
             .unwrap()
             .unwrap();
 
+        // v1's genesis bond (10) plus v2's (40) are in the staking vault.
+        assert_eq!(i64::from(native.pos_vault_balance().await.unwrap()), 50);
+        let addresses = [vault_address_of(&v)];
+        let before = total_rev(&native, &addresses).await;
+
         native.slash(&v).await.unwrap().unwrap();
 
         assert!(!native.bonds().await.unwrap().contains_key(&v));
@@ -1318,6 +1487,16 @@ mod tests {
             i64::from(native.coop_balance().await.unwrap()),
             40,
             "slashed stake is confiscated to the Coop vault"
+        );
+        assert_eq!(
+            i64::from(native.pos_vault_balance().await.unwrap()),
+            10,
+            "…and it came *out* of the staking vault (`Pos.rhox:470-482`'s transfer), leaving v1's bond"
+        );
+        assert_eq!(
+            total_rev(&native, &addresses).await,
+            before,
+            "a slashing is a transfer to the Coop vault, not a mint"
         );
     }
 
@@ -1609,16 +1788,104 @@ mod tests {
         assert_eq!(native.http_records().await.unwrap().len(), 2);
     }
 
-    /// `refund` is a **documented no-op**: the refund vault is not modeled yet. Pinning it means a
-    /// future half-implementation — one that debits or credits something without the vault behind it
-    /// — trips here rather than silently changing the phlo accounting.
     #[tokio::test]
-    async fn refund_is_a_documented_no_op() {
-        let native = NativeSystemState::new(std::sync::Arc::new(InMemNativeStore::empty()));
-        assert!(matches!(native.refund(0).await, Ok(Ok(()))));
+    async fn bond_moves_the_stake_into_the_staking_vault() {
+        let native = native_with(&[validator(1)], PosParams::default(), &[]).await;
+        let v = validator(1);
+        fund(&native, &v, 100).await;
+        assert_eq!(
+            i64::from(native.pos_vault_balance().await.unwrap()),
+            0,
+            "a genesis with an empty pool funds the vault with nothing"
+        );
+        let addresses = [vault_address_of(&v)];
+        let before = total_rev(&native, &addresses).await;
+
+        native
+            .bond(&v, NonNegI64::try_from(40).unwrap(), 0)
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(
+            i64::from(native.pos_vault_balance().await.unwrap()),
+            40,
+            "the stake is escrowed in the staking vault"
+        );
+        assert_eq!(
+            total_rev(&native, &addresses).await,
+            before,
+            "a bond is a transfer, not a mint"
+        );
+    }
+
+    /// The charge goes into the staking vault and the refund takes the surplus back out, so what the
+    /// vault keeps is exactly the phlo the deploy burned. This is the flow an epoch's reward pot
+    /// comes from: `Pos.rhox:397-404`'s `deposit!(deployerId, amount, posVaultAddr)` on the charge,
+    /// `Pos.rhox:417-454`'s `posVault!("transfer", deployerRevAddress, refundAmount, posAuthKey)` on
+    /// the refund. Before the staking vault existed the charge was burned, so the pot could only ever
+    /// be zero and a reward law over it could not have failed.
+    #[tokio::test]
+    async fn the_phlo_charge_funds_the_pot_and_the_refund_returns_the_surplus() {
+        let native = NativeSystemState::new(Arc::new(InMemNativeStore::empty()));
+        let pk = PublicKey::new(vec![1u8; 65]);
+        let addr = RevAddress::from_public_key(&pk).unwrap().to_base58();
+        native.set_vault_balance(&addr, NonNegI64::try_from(100).unwrap());
+        let addresses = [addr.clone()];
+        let before = total_rev(&native, &addresses).await;
+
+        // Pre-charge the maximum phlo, then return all but 30 of it.
+        native.pre_charge(&pk, 100).await.unwrap().unwrap();
+        assert_eq!(i64::from(native.pos_vault_balance().await.unwrap()), 100);
+        assert_eq!(
+            i64::from(native.vault_balance(&addr).await.unwrap().unwrap()),
+            0
+        );
+        native.refund(&pk, 70).await.unwrap().unwrap();
+
+        assert_eq!(
+            i64::from(native.vault_balance(&addr).await.unwrap().unwrap()),
+            70,
+            "the surplus returns to the deployer"
+        );
+        assert_eq!(
+            i64::from(native.pos_vault_balance().await.unwrap()),
+            30,
+            "the vault keeps the phlo the deploy burned — the epoch's pot"
+        );
+        assert_eq!(
+            total_rev(&native, &addresses).await,
+            before,
+            "charging and refunding is a transfer, not a mint"
+        );
+
+        // A non-positive refund succeeds without moving anything (`Pos.rhox:426`'s guard).
+        native.refund(&pk, 0).await.unwrap().unwrap();
+        native.refund(&pk, -5).await.unwrap().unwrap();
+        assert_eq!(i64::from(native.pos_vault_balance().await.unwrap()), 30);
+    }
+
+    /// A payout the staking vault cannot cover **fails the deploy** instead of half-paying. The
+    /// Scala's `payWithdrawer` ignores its failed transfer and removes the withdrawer from the maps
+    /// anyway (`// FIXME fix transfer in failure case`, `Pos.rhox:603`), which loses the bond; the
+    /// port refuses. The invariant that makes this unreachable in normal operation — every debit is
+    /// bounded by the credit that funded it — is checked by the conservation assertions in the tests
+    /// around this one.
+    #[tokio::test]
+    async fn a_short_staking_vault_fails_the_transfer_rather_than_half_paying() {
+        let native = NativeSystemState::new(Arc::new(InMemNativeStore::empty()));
+        let pk = PublicKey::new(vec![1u8; 65]);
+
+        // No charge has happened, so the vault holds nothing to refund out of.
         assert!(
-            matches!(native.refund(1_000).await, Ok(Ok(()))),
-            "a no-op succeeds for any amount, including a large one"
+            native.refund(&pk, 1).await.is_err(),
+            "a refund cannot come out of an empty vault"
+        );
+        assert!(native.debit_pos_vault(1).await.is_err());
+        assert_eq!(
+            i64::from(native.pos_vault_balance().await.unwrap()),
+            0,
+            "a refused debit leaves the vault untouched"
         );
     }
 }

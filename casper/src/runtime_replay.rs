@@ -165,7 +165,9 @@ impl<'a, R: ReplayRuntime + ?Sized> RuntimeReplayOps<'a, R> {
         // matches the play genesis hash.
         if !with_cost_accounting {
             let native = NativeSystemState::new(self.runtime.native_store());
-            native.install_genesis(pos_genesis);
+            native
+                .install_genesis(pos_genesis)
+                .map_err(ReplayFailure::internal_error)?;
             for vault in vaults {
                 native.set_vault_balance(&vault.rev_address.to_base58(), vault.initial_balance);
             }
@@ -340,6 +342,7 @@ impl<'a, R: ReplayRuntime + ?Sized> RuntimeReplayOps<'a, R> {
 
         // Refund.
         let refund = SystemDeploy::refund(
+            &PublicKey::new(processed_deploy.deploy.deployer.clone()),
             processed_deploy.refund_amount(),
             rand.split_byte(REFUND_SPLIT_INDEX),
         );
@@ -522,7 +525,9 @@ impl<'a, R: ReplayRuntime + ?Sized> RuntimeReplayOps<'a, R> {
             NativeSystemDeployOp::PreCharge { deployer, amount } => {
                 native.pre_charge(deployer, *amount).await?
             }
-            NativeSystemDeployOp::Refund { amount } => native.refund(*amount).await?,
+            NativeSystemDeployOp::Refund { deployer, amount } => {
+                native.refund(deployer, *amount).await?
+            }
             NativeSystemDeployOp::CloseBlock { block_number } => {
                 native.close_block(*block_number).await?
             }

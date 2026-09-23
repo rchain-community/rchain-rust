@@ -574,7 +574,11 @@ impl RuntimeManager {
             Self::process_deploy_with(runtime, deploy, &rand.split_byte(1)).await?;
         collector = collector.add(&processed.deploy_log, &eval_result.mergeable);
 
-        let refund = SystemDeploy::refund(processed.refund_amount(), rand.split_byte(2));
+        let refund = SystemDeploy::refund(
+            &PublicKey::new(deploy.deployer.clone()),
+            processed.refund_amount(),
+            rand.split_byte(2),
+        );
         let _ = Self::eval_system_deploy_with(runtime, &refund).await?;
 
         processed.deploy_log = collector.event_log.clone();
@@ -666,7 +670,7 @@ impl RuntimeManager {
         }
         // Install the native system-contract state before the final checkpoint so it is
         // content-addressed into the post-state hash.
-        native.install_genesis(pos_genesis);
+        native.install_genesis(pos_genesis)?;
         // Seed the initial REV vault balances from the genesis wallets file so pre-charge can
         // deduct phlo (the native vault map is otherwise empty, and every deploy fails pre-charge).
         for vault in vaults {
@@ -785,7 +789,9 @@ impl RuntimeManager {
             NativeSystemDeployOp::PreCharge { deployer, amount } => {
                 native.pre_charge(deployer, *amount).await?
             }
-            NativeSystemDeployOp::Refund { amount } => native.refund(*amount).await?,
+            NativeSystemDeployOp::Refund { deployer, amount } => {
+                native.refund(deployer, *amount).await?
+            }
             NativeSystemDeployOp::CloseBlock { block_number } => {
                 native.close_block(*block_number).await?
             }

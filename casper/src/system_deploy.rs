@@ -76,10 +76,23 @@ pub struct SystemDeploy {
 /// system-deploy sources; the Scala sources are a checklist only).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum NativeSystemDeployOp {
-    PreCharge { deployer: PublicKey, amount: i64 },
-    Refund { amount: i64 },
-    CloseBlock { block_number: i64 },
-    Slash { validator: Validator },
+    PreCharge {
+        deployer: PublicKey,
+        amount: i64,
+    },
+    /// `Pos.rhox`'s `refundDeploy` is called with only the amount and reads the deployer back out of
+    /// the `currentDeployerData` cell that `chargeDeploy` filled. This port carries the deployer in
+    /// the deploy instead — same rule, stated in the type rather than in a mutable cell.
+    Refund {
+        deployer: PublicKey,
+        amount: i64,
+    },
+    CloseBlock {
+        block_number: i64,
+    },
+    Slash {
+        validator: Validator,
+    },
 }
 
 impl SystemDeploy {
@@ -96,13 +109,16 @@ impl SystemDeploy {
         }
     }
 
-    pub fn refund(amount: i64, rand: Blake2b512Random) -> SystemDeploy {
+    pub fn refund(deployer: &PublicKey, amount: i64, rand: Blake2b512Random) -> SystemDeploy {
         SystemDeploy {
             source: "",
             normalizer_env: BTreeMap::new(),
             rand,
             return_channel: Par::default(),
-            op: Some(NativeSystemDeployOp::Refund { amount }),
+            op: Some(NativeSystemDeployOp::Refund {
+                deployer: deployer.to_owned(),
+                amount,
+            }),
         }
     }
 
@@ -167,6 +183,24 @@ mod tests {
             Some(NativeSystemDeployOp::PreCharge {
                 deployer: pk,
                 amount: 100
+            })
+        );
+    }
+
+    /// The refund carries its payer. The Scala contract reads the deployer back out of the
+    /// `currentDeployerData` cell that `chargeDeploy` filled (`Pos.rhox:425`), because its
+    /// `refundDeploy` is called with only the amount; here the payer is a field of the deploy, so a
+    /// refund cannot be paid to anyone but the account the pre-charge took the phlo from.
+    #[test]
+    fn refund_carries_its_payer() {
+        let pk = PublicKey::new(vec![2u8; 65]);
+        let rand = Blake2b512Random::new_random(128);
+        let d = SystemDeploy::refund(&pk, 70, rand);
+        assert_eq!(
+            d.op,
+            Some(NativeSystemDeployOp::Refund {
+                deployer: pk,
+                amount: 70
             })
         );
     }

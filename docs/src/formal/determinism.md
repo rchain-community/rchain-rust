@@ -60,13 +60,29 @@ replay call) into two Rust paths, which drifted. The audit found:
 | # | Sub-invariant | Violation | Effect |
 |---|---------------|-----------|--------|
 | **D1** | S1 | Replay re-normalizes with an **empty** env (`evaluate(term)`), so `new x(`rho:rchain:deployerId`)` fails `add_urn` with `BugFoundError`. | Deterministic `InvalidStateHash` for every REV-transfer/bond/vault deploy. |
-| **D2** | S3 | Play refunds `phloLimit`; replay refunds `(phloLimit − cost) × phloPrice`. | Latent consensus divergence, masked only because the native refund is a no-op. |
+| ~~**D2**~~ | S3 | ~~Play refunds `phloLimit`; replay refunds `(phloLimit − cost) × phloPrice`.~~ **Corrected — see below: not a violation, and never was.** | ~~Latent consensus divergence, masked only because the native refund is a no-op.~~ |
 | **D3** | S2/S4 | Play uses the *requested* deploy count (`deploys.len()`) for the slash/close seed index; replay uses the *actual* count (`state.deploys.len()`). | Latent divergence if a requested deploy is absent at block-creation time. |
 | **S6a** | S6 | `maximum_bipartite_match.rs` returns a `HashMap::into_iter()` in process-randomized order. | Currently commutative, but the only randomized container iteration in the reduction path. |
 | **S6b** | S6 | `dispatch.rs` merges branch RNGs in un-sorted `data_list` order. | Correct only because `data_list` order is deterministic; fragile. |
 
 The remediation is in the code (see the plan), and — critically — is pinned by the executable check
 below so future drift is caught at compile/test time rather than rediscovered in consensus.
+
+**D2 is retracted (2026-09-23).** It was checked when the native refund stopped being a
+no-op — the one change that would have made its "masked only because…" clause load-bearing — and
+the divergence it describes is in neither tree. The amount is computed by **one** function used by
+both paths (`ProcessedDeploy::refund_amount`, `models/src/casper/protocol/casper_message.rs:512-521`,
+mirroring `CasperMessage.scala:216`'s
+`(deploy.data.phloLimit - cost.cost).max(0) * deploy.data.phloPrice`), not by a per-path expression:
+the play path passes it at `casper/src/runtime_manager.rs:577` and the replay path at
+`casper/src/runtime_replay.rs:344`. The two cannot disagree about the *cost* feeding it either, since
+replay verifies the recorded cost equals the recomputed one before the refund is constructed
+(`runtime_replay.rs:399-407`: `replay_cost_mismatch`) — and the block's `ProcessedDeploy` *is* the play
+result. Neither the Scala's play path (`RuntimeSyntax.scala:239`, `refundDiag(pd.refundAmount)`) nor
+its replay path (`RuntimeReplaySyntax.scala:188`, `processedDeploy.refundAmount`) ever passed
+`phloLimit` on one side only, so "play refunds `phloLimit`" was false when it was written and the
+"masked" effect with it. The row is kept, struck through, rather than deleted: a reader who met the
+old claim deserves to find the correction where the claim was.
 
 ## The executable check
 

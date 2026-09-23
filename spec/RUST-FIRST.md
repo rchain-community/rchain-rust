@@ -39,6 +39,7 @@ The PoS leaves under `PREFIX_POS`:
 | `pos:withdrawers` | pending withdrawers (`Validator → quarantine deadline`) |
 | `pos:params` | immutable PoS parameters (min/max bond, epoch, quarantine, active cap) |
 | `pos:coop` | the Coop slashing-vault balance (confiscated stake) |
+| `pos:vault` | the staking-vault balance — escrowed bonds + the phlo that funds the rewards |
 
 Leaves are the new `PersistedData::NativeLeaf(Vec<u8>)` (the previously-free 2-bit tag `3`). The
 trie prefix disambiguates registry vs PoS vs vault, so a single leaf kind suffices.
@@ -58,8 +59,31 @@ The typed layer is `rholang/src/native_state.rs` (`NativeSystemState`), wrapping
 - `NativeSystemState` exposes typed accessors — `bonds()`/`set_bonds()` (the pool),
   `active()`/`set_active()` (the consensus set), `trusted()`/`set_trusted()`,
   `withdrawers()`/`set_withdrawers()`, `params()`/`set_params()`, `coop_balance()`/`set_coop_balance()`,
-  `vault_balance()`/`set_vault_balance()`, and `registry_lookup()`/`registry_insert()`, with canonical
-  byte encodings (sorted `BTreeMap`, fixed-width `Validator` + little-endian stake).
+  `pos_vault_balance()`/`set_pos_vault_balance()`, `vault_balance()`/`set_vault_balance()`, and
+  `registry_lookup()`/`registry_insert()`, with canonical byte encodings (sorted `BTreeMap`,
+  fixed-width `Validator` + little-endian stake).
+
+## The staking vault (`pos:vault`)
+
+Every REV movement in the mechanism is a transfer between a user's vault, the **staking vault** (the
+contract's `posVault`), and the Coop multisig vault — so nothing is minted and nothing is burned:
+
+| Step | Effect | Scala |
+|---|---|---|
+| bond | validator vault → staking vault | `Pos.rhox:397-404` (`deposit!(deployerId, amount, posVaultAddr)`) |
+| pre-charge | deployer vault → staking vault | same (`chargeDeploy`) |
+| refund | staking vault → deployer vault | `Pos.rhox:417-454` (`refundDeploy`) |
+| slash | staking vault → Coop vault | `Pos.rhox:470-482` |
+| withdrawal | staking vault → validator vault | `Pos.rhox:556-567` (`payWithdrawer`) |
+
+The genesis install funds the vault with **exactly** the initial bond sum (`Pos.rhox:167-174`), so at
+genesis the distributable *pot* (`vault − bonded − withdrawers − committed rewards`) is zero. The pot
+is the phlo the deploys since the last epoch boundary actually burned: the charge goes in and the
+unused surplus comes straight back out. A debit the vault cannot cover is a **platform error** (the
+deploy fails) rather than a partial payment — the Scala's `payWithdrawer` ignores its failed transfer
+and drops the withdrawer anyway (`// FIXME fix transfer in failure case`), which loses the bond.
+`install_genesis` also returns `Result` now: a bond sum that does not fit an `i64` is a genesis that
+cannot be installed, not one to clamp.
 
 ## Dynamic validators
 
@@ -71,9 +95,10 @@ The validator lifecycle is native and on-chain (`rholang/src/native_state.rs`):
    may bond. A genesis validator is trusted by construction; a trusted stakeholder admits a new key
    via `rho:rchain:pos!("trust", *deployerId, targetPubKey, *ret)`, and revokes via `"untrust"`.
 3. **bonded → active** — `"bond"` checks trust, `[minimum_bond, maximum_bond]`, and the deployer's
-   REV vault, then inserts the stake into the pool and recomputes `pos:active` (top
-   `number_of_active_validators` by descending stake, deterministic tie-break). A bonded validator is
-   immediately eligible to propose; the block's bond cache is the active set at the block post-state.
+   REV vault, moves the stake into the staking vault, inserts it into the pool, and recomputes
+   `pos:active` (top `number_of_active_validators` by descending stake, deterministic tie-break). A
+   bonded validator is immediately eligible to propose; the block's bond cache is the active set at
+   the block post-state.
 4. **withdrawing** — `"withdraw"` deactivates the validator immediately and escrows the stake until
    the quarantine deadline; `close_block` refunds it.
 5. **removed** — `slash` (consensus, for bonded offenders) and `untrust` (governance) remove the
@@ -88,7 +113,8 @@ Native mutations are folded into the radix root, so replay reproduces them **onl
 functions of `(deploy, random_state)` — never wall-clock time or OS entropy. The system-deploy
 operations (`pre_charge`/`refund`/`close_block`/`slash`) and the genesis install
 (`compute_genesis(…, pos_genesis)`) obey this; `replay_compute_state` re-installs the genesis PoS
-state (pool, trusted set, params and derived active set) and vaults on the genesis replay
+state (pool, trusted set, params, derived active set, the Coop vault and the staking vault) and the
+genesis vaults on the genesis replay
 (`with_cost_accounting == false`) so the replayed root matches the play root. This is
 asserted by `casper/tests/consensus.rs::empty_state_hash_fixed_matches_runtime` and
 `genesis_deploy_replay_recomputes_state`.
@@ -108,8 +134,8 @@ The native `rho:*` protocol is installed as ordinary system-process `Definition`
 - `rho:io:http` — the deterministic HTTP-result oracle (RCHIP #54): `record` (first writer wins),
   `get`, `check`, `height`, over the `http:records` leaf.
 
-The `bond` (trust + min/max + vault-funds + `(validator, stake)` into the pool, recomputing the active
-set), `withdraw` (immediate deactivation, quarantined refund), `trust`/`untrust` (stakeholder
+The `bond` (trust + min/max + vault-funds + `(validator, stake)` into the pool and the staking vault,
+recomputing the active set), `withdraw` (immediate deactivation, quarantined refund), `trust`/`untrust` (stakeholder
 admission/revocation), `slash` (confiscation to the Coop vault) and vault `findOrCreate` methods are
 implemented natively, returning the `(Bool, Either)` result the PoS/vault contracts expect. **Still
 deferred:** reward computation/distribution and the vault **unforgeable-name capability** (the

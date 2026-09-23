@@ -200,7 +200,7 @@ not found in that file. Coverage claims live here rather than in prose so they c
 | G2 | `rholang/src/parser.rs` | `rejects_excessive_nesting_depth` |
 | G3 | `rholang/src/native_state.rs` | `bond_requires_trust_admission` |
 | G3 | `casper/tests/consensus.rs` | `bond_deploy_updates_the_active_validator_set` |
-| G3 | `rholang/src/native_state.rs` | `refund_is_a_documented_no_op` |
+| G3 | `rholang/src/native_state.rs` | `the_phlo_charge_funds_the_pot_and_the_refund_returns_the_surplus` |
 | G4 | `casper/tests/consensus.rs` | `deploy_exceeding_phlo_limit_fails_and_next_runs` |
 | G5 | `rspace/src/state/mod.rs` | `validate_state_items_accepts_valid_round_trip` |
 | G5 | `rspace/src/state/mod.rs` | `validate_state_items_rejects_corrupted_data` |
@@ -290,11 +290,15 @@ hard mode would fail on, so that a half-finished sweep is legible instead of inv
 - **G3 — PoS lifecycle mutations** (`rholang/src/native_state.rs`). ✅ `bond` trust admission +
   min/max + funds + activation, `withdraw` deactivation + quarantine refund via `close_block`,
   `slash`/`untrust` confiscation to the Coop vault, active-set top-N selection, genesis install,
-  `pre_charge` incl. insufficient funds, and the revVault deposit/transfer paths. *Seam:*
-  `NativeSystemState` over `InMemNativeStore::empty()`, plus the end-to-end
-  deploy → active-set → replay path in `casper/tests/consensus.rs`. **Not covered:** `refund` (a
-  documented no-op — to be pinned so a half-implemented refund trips) and reward distribution
-  (deferred as a *feature*, not a test).
+  `pre_charge` incl. insufficient funds, and the revVault deposit/transfer paths. ✅ The staking vault
+  and its flow: `bond_moves_the_stake_into_the_staking_vault`,
+  `the_phlo_charge_funds_the_pot_and_the_refund_returns_the_surplus` (the charge in, the surplus back
+  out, the burned phlo left as the pot) and
+  `a_short_staking_vault_fails_the_transfer_rather_than_half_paying` — with the *conservation* of
+  total REV across bond / slash / charge / refund / withdrawal asserted by the `total_rev` helper in
+  every one of them. *Seam:* `NativeSystemState` over `InMemNativeStore::empty()`, plus the
+  end-to-end deploy → active-set → replay path in `casper/tests/consensus.rs`. **Not covered:**
+  reward distribution (deferred as a *feature*, not a test).
 
 - **G4 — Gas-metering enforcement** (`rholang/src/storage.rs` `ChargingRSpace::produce/consume`).
   ✅ end-to-end: `deploy_exceeding_phlo_limit_fails_and_next_runs` in `casper/tests/consensus.rs`.
@@ -350,7 +354,7 @@ hard mode would fail on, so that a half-finished sweep is legible instead of inv
 |---|---|
 | G1 equivocation | ✅ `insert_rejects_equivocation_same_seq_num` |
 | G2 DoS limits | ✅ chunker underflow guard, deploy-pool cap, decompression cap, parser depth guard, the `RateLimiter` (window/zero/reset + a 429 through the route), and the dispatch bound (saturation *and* recovery) — the last via an injectable limit, since the production 1024 would need 1025 concurrent TLS streams |
-| G3 PoS mutations | ✅ lifecycle + end-to-end bond→active-set→replay + the `refund` no-op pin; reward distribution **out of scope** (feature) |
+| G3 PoS mutations | ✅ lifecycle + end-to-end bond→active-set→replay + the staking vault's flow (charge in, refund out, conservation) ; reward distribution **out of scope** (feature) |
 | G4 gas enforcement | ✅ end-to-end phlo exhaustion; unit charge paths land with G12 |
 | G5 state-sync | ✅ `validate_state_items_{accepts_valid_round_trip,rejects_corrupted_data}` + a populated store's export→import→compare (`a_populated_store_export_import_round_trips`) |
 | G6 history checkpoint/reset/rollback | ✅ `RSpace::create_checkpoint`/`reset`/`revert`. The history *internals* (`history_repository.rs`, `roots_store.rs`, `root_repository.rs`) are not a gap row of their own: they are T1 tier entries in the table below, which the linter enforces, so an open one is a defect rather than a deferred note |
