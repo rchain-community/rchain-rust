@@ -2231,6 +2231,11 @@ port against the **reference document** rather than against itself.
   next: either the replay's produce takes the candidate path (and so never stores the persistent datum
   the play stored on arrival), or the store's contents diverge earlier than the trace shows.
 
+  **The next experiment, and it is cheap**: instrument the *play* the same way and diff the two traces
+  operation by operation. The play and the replay run the same script, so the first operation whose branch
+  (or store read) differs is the divergence — and the measurements above say it is at or before op2's
+  produce, since the replay's store is already missing what the play's op3 consumes.
+
   **A failed hypothesis, recorded so it is not retried**: rigging the replay with the *pre*-play state
   (taking a checkpoint before the operations, rather than the test's post-play one) changes nothing —
   the trace above is identical.
