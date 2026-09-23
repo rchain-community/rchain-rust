@@ -130,15 +130,26 @@ end
 -- in the meantime. Recorded here so the next attempt starts from the reduction shapes rather than
 -- rediscovering that the bounds must be depth-indexed.
 --
--- **The first link, checked (same day).** Written out with `fuelBound n k := 2 * n + (4 - k)`, the
--- core's obligation reduces in two steps to the expressions member's: `cases m` (the zero case dies on
--- `2 * n + 4 ≤ 0`), then `simp only [spatialMatchCore, parNodes]`, and the goal becomes
--- `spatialMatchExprs (k+1) pexprs texprs = spatialMatchExprs k pexprs texprs` — precisely the next
--- member's statement at a one-shifted bound, because `matchFuel`'s `+4` and the `parNodes` sum are
--- *the same* expression as `fuelBound (parNodes t + parNodes p) 0` (`parNodes` of a `Par` is its
--- expression list's count). The side condition the next member needs, `2 * (parNodesExprs pexprs +
--- parNodesExprs texprs) + 3 ≤ k`, is `omega` from `hm`. So the mutual family is the right shape and the
--- arithmetic is slack in the direction the design needs; what remains is the volume.
+-- **The first link, checked; and the second link is where the design has to be got right (same day).**
+-- The core's obligation reduces in two steps (`cases m`, the zero case dying on `2 * n + 4 ≤ 0`, then
+-- `simp only [spatialMatchCore, parNodes]`) to `spatialMatchExprs (k+1) pexprs texprs =
+-- spatialMatchExprs k pexprs texprs` — the next member's statement, because `matchFuel`'s `+4` and its
+-- `parNodes` sum are *the same expression* as the invariant at the entry point (`parNodes` of a `Par`
+-- is its expression list's count). So the family is the right shape.
+--
+-- What the fixed schedule `2 * n + (4 - k)` then runs into is the **list member's element call**:
+-- `matchListPar (f+1) patterns targets` calls `spatialMatchCore f t p` for an element pair, and the
+-- core's constant is *fixed at 4* by `matchFuel`, so the derivation needs
+-- `2 * (parNodes t + parNodes p) + 4 ≤ f` from the list's own `2 * (parNodesListPar patterns +
+-- parNodesListPar targets) + c ≤ f + 1`. That is `2 * (n_list - n_elem) + c ≥ 5`, and `n_list - n_elem
+-- = 0` for a **single-element** list — so `c ≥ 5`, i.e. the constants would have to *grow* down the
+-- chain while the caller's hypothesis must *imply* the callee's. The fixed-depth-offset schedule is
+-- therefore wrong, and what makes the obligation true is the *doubling*: every nesting level adds at
+-- least one node to *each* side (the enclosing collection) and so adds ≥ 4 to `matchFuel` while
+-- consuming only ~2 of it. The budget has to be stated as slack that the extra nodes supply — an
+-- invariant like `2 * n + c ≤ f` with `c` re-derived per call site, and the single-element case is the
+-- tight one to check — rather than as a constant per depth. That is the piece to design first next
+-- time; the equality's content is unchanged (the corpus held it even when the constant was one short).
 def matchFuel (target pattern : Par) : Nat := 2 * (parNodes target + parNodes pattern) + 4
 
 mutual
