@@ -112,18 +112,18 @@ def rustAnchorFailures : IO (List String) := do
   return failures
 
 /-- One line of `spec/laws.tsv`. Columns: number, clause, layer, status, declarations, axioms, corpus,
-rust, falsifiable, statement, note. Tab-separated with a header, so a consumer can read it by column.
-Newlines and tabs inside a field would break the format, so they are folded to spaces. -/
+rust, witness, falsifiable, statement, note. Tab-separated with a header, so a consumer can read it by
+column. Newlines and tabs inside a field would break the format, so they are folded to spaces. -/
 def tsvRow (l : Law) : String :=
   let flat (s : String) : String := (s.replace "\t" " ").replace "\n" " "
   String.intercalate "\t" [
     toString l.number, l.clause, l.layer, l.status.wire, joinNames l.declarations,
-    joinNames l.axioms, l.corpus.getD "-", joinStrs l.rust, flat (l.falsifiable.getD "-"),
-    flat l.statement, flat l.note]
+    joinNames l.axioms, l.corpus.getD "-", joinStrs l.rust, joinNames l.witness,
+    flat (l.falsifiable.getD "-"), flat l.statement, flat l.note]
 
 def tsv : String :=
   String.intercalate "\n" <|
-    ("number\tclause\tlayer\tstatus\tdeclarations\taxioms\tcorpus\trust\tfalsifiable\tstatement\tnote"
+    ("number\tclause\tlayer\tstatus\tdeclarations\taxioms\tcorpus\trust\twitness\tfalsifiable\tstatement\tnote"
       :: ordered.map tsvRow)
 
 /-- The summary sentence both documents open with — the one number that replaces the three competing
@@ -152,12 +152,12 @@ def markdown : String :=
     let statement :=
       if l.note.isEmpty then l.statement else s!"{l.statement} <br/> <em>{l.note}</em>"
     let cells := [num, statement, l.status.wire, joinNames l.declarations, joinNames l.axioms,
-      l.corpus.getD "-", joinStrs l.rust, l.falsifiable.getD "*owed*"]
+      l.corpus.getD "-", joinStrs l.rust, joinNames l.witness, l.falsifiable.getD "*owed*"]
     "| " ++ String.intercalate " | " (cells.map mdCell) ++ " |"
   let table (layer : String) : String :=
     let rows := ordered.filter (·.layer == layer)
-    "| Law | Invariant | Status | Lean | Rests on | Tied by | Models | Falsified by |\n\
-     |---|---|---|---|---|---|---|---|\n"
+    "| Law | Invariant | Status | Lean | Rests on | Tied by | Models | Witness | Falsified by |\n\
+     |---|---|---|---|---|---|---|---|---|\n"
       ++ String.intercalate "\n" (rows.map one)
   String.intercalate "\n\n" (layers.map fun layer => s!"### {layer}\n\n{table layer}")
 
@@ -256,8 +256,12 @@ run_cmd do
       failures := failures.push s!"law {n}: duplicate clause letter in {cs}"
 
   -- 3. Reference integrity: a row citing a theorem that no longer exists is a row that stopped meaning
-  -- anything, and no grep can see that.
+  -- anything, and no grep can see that. `witness` is here because it is the one field that *became*
+  -- checkable rather than being written checkable: the `falsifiable` sentence it is extracted from also
+  -- names Rust tests and `file:line` references, which no check can resolve, so those stay prose and the
+  -- Lean half is a declaration list.
   let cited := (register.map (·.declarations)).join ++ claimedAxioms
+    ++ (register.map (·.witness)).join
   let gone := missing env cited
   if !gone.isEmpty then
     failures := failures.push s!"reference integrity: {gone.length} cited declaration(s) do not exist \
@@ -278,13 +282,30 @@ run_cmd do
     failures := failures.push s!"axiom accounting: {absent.length} axiom(s) cited by a row but not \
       declared in the tree (discharged? then delete the citation): {absent.map (·.toString)}"
 
+  -- 4b. An axiom may not be a falsifiability witness. A row that names the assumption it rests on as the
+  -- thing that would falsify it is naming decoration: an axiom cannot fail.
+  let axiomDeco := (register.map (·.witness)).join.filter (fun n => tree.contains n)
+  if !axiomDeco.isEmpty then
+    failures := failures.push s!"non-vacuity: {axiomDeco.eraseDups.length} `witness` name(s) are axioms \
+      — a falsifier that cannot fail is not one: {axiomDeco.eraseDups.map (·.toString)}"
+
   -- 5. A proved law must be falsifiable — the non-vacuity ratchet. `numeric_channels_nonneg`
   -- (`0 ≤ b.number` on a `Nat`) and `finality_iff_supermajority` (which restates its own definition)
   -- were both "proven" and neither could fail. A law nobody can imagine being false is not yet a law.
+  --
+  -- 5b extends it from prose to declarations: the `falsifiable` sentence must be anchored on something the
+  -- environment has, either a named witness or the corpus that pins the row to the node. Row 3's
+  -- sentence had been naming a declaration that did not exist; a sentence nothing checks is how that
+  -- happens.
   for l in register do
     if (l.status == .provedTied || l.status == .provedModel) && l.falsifiable.isNone then
       failures := failures.push s!"non-vacuity: law {l.number}{l.clause} is `{l.status.wire}` with no \
         `falsifiable` witness — say what would make it false, or why it cannot be"
+    if (l.status == .provedTied || l.status == .provedModel)
+        && l.witness.isEmpty && l.corpus.isNone then
+      failures := failures.push s!"non-vacuity: law {l.number}{l.clause} is `{l.status.wire}` with \
+        neither a `witness` declaration nor a `corpus` — the falsifiability claim is prose nothing \
+        checks; name the declaration it rests on"
 
   -- 6. A proved law that rests on an axiom must say so in its own row. Law 1a is the case this exists
   -- for: "proven, residually 30 axioms" in a document, with the qualification nowhere near the claim.

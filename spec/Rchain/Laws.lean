@@ -50,6 +50,16 @@ or the reason it cannot fail. A law that cannot fail constrains nothing: `numeri
 (the pass has since deleted the first and re-scoped the second onto the finalizer's gate).
 `none` means the witness is owed, and the count of those is the measure of how much of this catalog is
 still unfalsifiable.
+
+`witness` is `falsifiable`'s machine half — the Lean declarations the claim rests on, checked by name
+exactly as `declarations` is. `falsifiable` itself is a sentence that mixes three kinds of name: Lean
+declarations, Rust property tests (`an_open_value_at_the_variable_leaves_a_free_variable` in
+`rholang/src/property_tests.rs`; `a_rigged_replay_matches_its_recorded_trace` in
+`rspace/src/property_tests.rs`), and `file:line` references. Nothing read any of them, so a `falsifiable`
+that had rotted — naming a theorem since renamed, or one never written — would have read exactly like a
+live one. `witness` is the part that can be checked; a `proved*` row must name at least one declaration
+or carry a `corpus`, and no witness may be an `axiom` — a row whose falsifier is the assumption that
+cannot fail is naming decoration.
 -/
 
 -- The register is data, and `Name` is the one type it needs from outside the prelude. `autoImplicit`
@@ -138,6 +148,16 @@ structure Law where
   /-- What would have to hold for this law to be false: a witness, a negative case, or why it cannot
   fail. `none` = owed. -/
   falsifiable : Option String := none
+  /-- **The machine half of `falsifiable`**: the declarations the falsifiability claim rests on — a
+  refutation (`*_is_false`), a negative case (`a_*`, `*_refuses_*`), a strictness or minimality fact, or
+  the theorem that carries the claim where the law is a positive property with no failing instance in the
+  model. Every name is checked against the elaborated environment, exactly like `declarations`; a
+  `provedTied`/`provedModel` row must name at least one, or carry a `corpus` (the corpus *is* the
+  falsifier for a tied row); and no name may be an `axiom` — a falsifier that cannot fail is not one.
+  The standard is deliberately "the claim is anchored", not "a counterexample exists": a law of the shape
+  `f (step p) ⊆ f p` has no failing instance *inside its own model*, so demanding one would produce
+  filler witnesses, which is the failure mode the `vacuous` status exists to prevent. -/
+  witness : List Lean.Name := []
   /-- A note where the status needs qualifying. -/
   note : String := ""
 
@@ -227,6 +247,7 @@ def laws : List Law := [
     declarations := [`Rchain.StrCong, `Rchain.strCong_equivalence, `Rchain.strCong_comm,
       `Rchain.strCong_assoc, `Rchain.strCong_ident, `Rchain.strCong_nil_left],
     rust := ["models/src/ast.rs"],
+    witness := [`Rchain.reduce_not_deterministic],
     falsifiable := some "`reduce_not_deterministic` (`Rchain/Concurrent.lean`) exhibits two distinct \
       reductions of one term, which is what makes `≡` — rather than syntactic identity — the relation \
       reduction needs",
@@ -244,6 +265,7 @@ def laws : List Law := [
       `Rchain.bound_is_closed_free_is_not, `Rchain.sort_subst, `Rchain.subst_closed],
     rust := ["rholang/src/substitute.rs"],
     axioms := [`Rchain.sort_subst, `Rchain.subst_closed],
+    witness := [`Rchain.the_identity_satisfies_sort_subst, `Rchain.the_identity_satisfies_subst_closed, `Rchain.bound_is_closed_free_is_not],
     falsifiable := some "`the_identity_satisfies_sort_subst` and \
       `the_identity_satisfies_subst_closed`: `noSubst` — the function that substitutes *nothing* — \
       satisfies both laws, so the trio is satisfied by a substitution that does not substitute; that \
@@ -283,6 +305,7 @@ def laws : List Law := [
     status := .provedModel,
     declarations := [`Rchain.Reduce, `Rchain.reduce_closed, `Rchain.reduce_not_deterministic],
     rust := ["rholang/src/reduce.rs"],
+    witness := [`Rchain.reduce_not_deterministic],
     falsifiable := some "`reduce_not_deterministic` proves confluence is **false** on the flat `Par`, \
       so the law's statement is bounded by a published disproof rather than an assertion"
     },
@@ -293,6 +316,7 @@ def laws : List Law := [
     declarations := [`Rchain.reduce_freeVars_subset, `Rchain.freeVarOf_receivePar,
       `Rchain.freeVarOf_parMerge],
     rust := ["rholang/src/reduce.rs"],
+    witness := [`Rchain.reduce_freeVars_subset],
     falsifiable := some "a `comm` whose receive body mentions a level free in neither the send nor the \
       receive would refute it — the shape a body that is not a function of the datum it consumed \
       produces, and the one the port's capture-avoiding `substitute_par` (`rholang/src/substitute.rs`) \
@@ -317,6 +341,7 @@ def laws : List Law := [
     axioms := [`Rchain.concrete_matches_iff_eq, `Rchain.fuel_saturation],
     corpus := some "match",
     rust := ["rholang/src/matcher/spatial_matcher.rs"],
+    witness := [`Rchain.aggregateUpdates_rejects_double_bind, `Rchain.freeMapMerge_overwrites],
     falsifiable := some "the corpus's three-valued verdicts (`true`/`false`/`rejected`) include the \
       rejected case a twice-bound pattern produces — the shape the previous law-5 axiom *denied* and \
       which `spec/conformance/match.tsv` now pins (AUDIT C26) — and `freeMapMerge_overwrites` is the \
@@ -350,6 +375,7 @@ def laws : List Law := [
       `Rchain.freeVarOf_iff_closed, `Rchain.closed_iff_no_freeVars, `Rchain.Closed_parMerge_iff,
       `Rchain.Closed_receivePar_iff, `Rchain.closed_anyPat],
     rust := ["models/src/types.rs"],
+    witness := [`Rchain.free_var_is_not_closed, `Rchain.bound_var_is_closed, `Rchain.free_var_is_free_under_par],
     falsifiable := some "both sides are `decide`d on concrete terms: `bound_var_is_closed` (a `.bound` \
       occurrence is closed — the model reads it as a back-reference the normalizer resolves), \
       `free_var_is_not_closed` (a `.free 3` occurrence is not, and the **level** is what the predicate \
@@ -372,6 +398,7 @@ def laws : List Law := [
     declarations := [`Rchain.joinKey, `Rchain.joinKey_perm],
     axioms := [`Rchain.hashHashes],
     rust := ["rspace/src/hashing/stable_hash_provider.rs"],
+    witness := [`Rchain.joinKey_perm, `Rchain.Comparator.sortList_perm],
     falsifiable := some "`joinKey_perm` follows from `Cmp.sortList_perm` — the join key is *defined* as \
       hash-of-sorted-hashes, mirroring `hash_seq` + `hash_hashes` — so removing the sort from the \
       definition would falsify it: two permutations of one channel list would then hash differently",
@@ -388,6 +415,7 @@ def laws : List Law := [
       `Rchain.commId, `Rchain.comm_content_addressed],
     rust := ["rspace/src/trace/event.rs", "rspace/src/space_matcher.rs", "rspace/src/rspace.rs"],
     axioms := [],
+    witness := [`Rchain.comm_content_addressed, `Rchain.Comparator.sortList_perm],
     falsifiable := some "`comm_content_addressed` is proved from `sortList_perm`: two comms whose \
       produces are permutations of one another have the same identity. Dropping the sort from \
       `produceRefs` — which is what `Comm::apply` would be without `produce_refs.sort_by_key` — would \
@@ -407,6 +435,7 @@ def laws : List Law := [
       `Rchain.effect_commute_of_disjoint_closure, `Rchain.effect_reorder_diverges],
     rust := ["rspace/src/merger/state_change.rs", "rspace/src/merger/event_log_merging_logic.rs"],
     axioms := [],
+    witness := [`Rchain.mergeChanges_assoc, `Rchain.mergeChanges_comm, `Rchain.join_last_wins, `Rchain.nonConflicting_not_necessary, `Rchain.effect_reorder_diverges],
     falsifiable := some "`mergeChanges_assoc` is structural (concatenation of the added/removed lists, \
       right-biased overwrite of the join map); `mergeChanges_comm` *needs* the disjointness hypothesis — \
       without it the theorem is false twice over: the added/removed lists concatenate in operand order \
@@ -453,6 +482,7 @@ def laws : List Law := [
       `Rchain.the_encoder_is_not_canonical_over_the_models_types],
     axioms := [],
     rust := ["rspace/src/history/radix_tree.rs"],
+    witness := [`Rchain.the_encoder_is_not_canonical_over_the_models_types, `Rchain.encodeNode_injective, `Rchain.nodeHash_eq_emptyRoot, `Rchain.root_collision_free],
     falsifiable := some "`root_collision_free` composes Law 19's `blake2b256_collision_free` with \
       `encodeNode_injective`; `nodeHash_eq_emptyRoot` pins the empty root as a fixed point with nothing \
       else hashing to it. A serializer that dropped a field would falsify the first, and a second node \
@@ -497,6 +527,7 @@ def laws : List Law := [
       `Rchain.the_reverse_half_alone_admits_a_phantom_recomputation],
     axioms := [],
     rust := ["rspace/src/replay_rspace.rs", "rspace/src/space_matcher.rs"],
+    witness := [`Rchain.the_forward_half_alone_admits_a_diverging_trace, `Rchain.the_reverse_half_alone_admits_a_phantom_recomputation, `Rchain.a_replay_agrees_with_its_record],
     falsifiable := some "the equivalence is refutable from both sides, and each side has a witness in \
       the tree: `the_forward_half_alone_admits_a_diverging_trace` (one recomputed COMM, two recorded — \
       the forward half passes, the check fails, which is what the RCHAIN-3505 guard lets through on a \
@@ -545,6 +576,7 @@ def laws : List Law := [
       `Rchain.i64_overflowing_stakes_do_not_wrap],
     axioms := [],
     rust := ["block-storage/src/dag/finalizer.rs", "sdk/src/consensus.rs"],
+    witness := [`Rchain.two_thirds_is_not_supermajority, `Rchain.below_two_thirds_is_not_supermajority, `Rchain.large_stake_just_above_two_thirds_is_exact, `Rchain.i64_overflowing_stakes_do_not_wrap, `Rchain.stakeOf_eq_none],
     falsifiable := some "each boundary is an independent witness, and each names the port's own test: \
       `two_thirds_is_not_supermajority` fails the moment the comparison is `≥` (`consensus.rs:24`); \
       `large_stake_just_above_two_thirds_is_exact` is false for the `f64` form the Scala oracle uses \
@@ -573,6 +605,7 @@ def laws : List Law := [
     declarations := [`Rchain.Fringe, `Rchain.fringe_antichain_is_false],
     axioms := [],
     rust := ["block-storage/src/dag/finalizer.rs"],
+    witness := [`Rchain.fringe_antichain_is_false],
     falsifiable := some "the refutation is in the tree: `fringe_antichain_is_false` exhibits two messages \
       from one sender with different ids in one `Fringe`, which is a value the model can build and the \
       finalizer cannot produce",
@@ -591,6 +624,7 @@ def laws : List Law := [
       `Rchain.fringe_monotone_is_false, `Rchain.seenOf_contains_justifications, `Rchain.mem_seenOf_self],
     axioms := [],
     rust := ["block-storage/src/dag/message_state.rs", "block-storage/src/dag/finalizer.rs"],
+    witness := [`Rchain.fringe_monotone_is_false, `Rchain.seen_monotone_is_false],
     falsifiable := some "`fringe_monotone_is_false` exhibits two overlapping fringes (one at 5 and 1, one \
       at 3) where both arms of the disjunction fail — so the axiom was false as written; \
       `seen_monotone_is_false` exhibits two unrelated messages where `b` sees `a` and `a` sees `2` but \
@@ -616,6 +650,7 @@ def laws : List Law := [
       `Rchain.block_number_universal_is_false],
     axioms := [],
     rust := ["casper/src/validate.rs"],
+    witness := [`Rchain.block_number_rejects, `Rchain.block_number_universal_is_false],
     falsifiable := some "`block_number_rejects` is the case the port returns `InvalidBlockNumber` for \
       (`validate.rs:135-140`): an off-by-one — `max + 2`, or `max` itself — fails it. The `-1` seed is \
       falsifiable on its own: a block with no live justification must be numbered `0`, so a model that \
@@ -638,6 +673,7 @@ def laws : List Law := [
       `Rchain.seq_num_universal_is_false],
     axioms := [],
     rust := ["casper/src/validate.rs"],
+    witness := [`Rchain.seq_num_universal_is_false, `Rchain.seq_num_strictly_increases],
     falsifiable := some "a block whose `seqNum` skips or repeats the sender's latest justification is \
       rejected (`InvalidSequenceNumber`, `validate.rs:158-162`), and the `-1` seed is a case of its own: \
       a sender's first block must be `0`. `seq_num_universal_is_false` is the published refutation of \
@@ -662,6 +698,7 @@ def laws : List Law := [
       `Rchain.a_body_encoder_that_canonicalises_is_not_injective],
     axioms := [`Rchain.encodeBody, `Rchain.encodeBody_injective],
     rust := ["casper/src/proto_util.rs", "models/src/casper/protocol/casper_message.rs"],
+    witness := [`Rchain.a_body_encoder_that_truncates_is_not_injective, `Rchain.a_body_encoder_that_canonicalises_is_not_injective, `Rchain.content_addressing, `Rchain.blockHash_changes_with_header],
     falsifiable := some "`content_addressing` composes Law 19's `blake2b256_collision_free` with \
       `encodeBody_injective`, so a serializer that dropped a field would falsify it — and \
       `blockHash_changes_with_header` is the code's own `hash_block_changes_with_timestamp` \
@@ -711,6 +748,7 @@ def laws : List Law := [
       `Rchain.the_resolution_does_not_depend_on_the_iteration_order, `Rchain.Comparator.le_of_not_lt],
     axioms := [],
     rust := ["sdk/src/dag/merging.rs", "casper/src/merging.rs"],
+    witness := [`Rchain.equal_cost_and_size_do_not_make_equal_options, `Rchain.the_minimum_is_unique, `Rchain.the_resolution_does_not_depend_on_the_iteration_order],
     falsifiable := some "the linearity the word *unique* needs is itself checked: \
       `equal_cost_and_size_do_not_make_equal_options` exhibits two options that agree on the key's \
       first two components (`[1, 2]` and `[1, 3]`, both cost 2 and length 2 under a unit cost) that the \
@@ -739,6 +777,7 @@ def laws : List Law := [
       `Rchain.merge_diff_round_trip, `Rchain.mergeRandoms_perm],
     rust := ["rholang/src/merging.rs", "rspace/src/merger/event_log_index.rs"],
     axioms := [],
+    witness := [`Rchain.checkedAdd_refuses_overflow, `Rchain.checkedSub_refuses_overflow, `Rchain.mergeRandoms_perm],
     falsifiable := some "the refusal is a witness rather than a remark: `checkedAdd i64Max 1 = none` \
       and `checkedAdd i64Min (-1) = none` (`checkedAdd_refuses_overflow`), which a `checkedAdd` that \
       wrapped would fail; `mergeRandoms_perm` is the statement that the merged RNG does not depend on \
@@ -765,6 +804,7 @@ def laws : List Law := [
     axioms := [],
     rust := ["block-storage/src/dag/metadata_store.rs", "models/src/fringe_data.rs",
       "block-storage/src/dag/finalizer.rs"],
+    witness := [`Rchain.height_map_universal_is_false, `Rchain.fringe_identity_order_independent_is_false, `Rchain.contiguous_skip_leaves_hole, `Rchain.fringeId_perm],
     falsifiable := some "`contiguous_skip_leaves_hole` is the negative case the store's check exists for: \
       a block whose number is not the successor of the current maximum leaves a hole (what \
       `validate_dag_state` reports, `metadata_store.rs:83-86`) — and the store **cannot derive** the \
@@ -818,6 +858,7 @@ def laws : List Law := [
     status := .provedModel,
     declarations := [`Rchain.queue_commit_path_ordered, `Rchain.pathSorted_head_minimal],
     rust := ["rspace/src/concurrent/channel_queue.rs"],
+    witness := [`Rchain.queue_commit_path_ordered, `Rchain.pathSorted_head_minimal],
     falsifiable := some "`queue_commit_path_ordered` is an induction on the run — a commit rule that \
       removed a claim which was not head-on-all would falsify it — and `pathSorted_head_minimal` is \
       the bakery argument's core: an unordered queue, or a head with a smaller path behind it, would \
@@ -839,6 +880,7 @@ def laws : List Law := [
     status := .provedModel,
     declarations := [`Rchain.gate_await_closure_orders, `Rchain.one_hop_depth2_diverges],
     rust := ["rholang/src/reduce.rs", "rholang/src/scheduler.rs"],
+    witness := [`Rchain.one_hop_depth2_diverges, `Rchain.gate_await_closure_orders],
     falsifiable := some "`one_hop_depth2_diverges` is a proved depth-2 counterexample to the pruning \
       rule the law forbids — the law and the disproof of its tempting weakening are published together \
       — and `gate_await_closure_orders` is false for a chain with a missing link (a dependency of \
@@ -874,6 +916,7 @@ def laws : List Law := [
     status := .provedModel,
     declarations := [`Rchain.read_state_determines_outcome],
     rust := ["rspace/src/space_matcher.rs", "rspace/src/rspace.rs"],
+    witness := [`Rchain.certificate_blind_late_writer_diverges],
     falsifiable := some "stated as an implication from two states agreeing on the effect's closure, so \
       it is falsifiable by a state pair that agrees on the closure yet yields different traces — the \
       depth-2 stale read of Law 24 is exactly the shape that would produce one",
@@ -888,6 +931,7 @@ def laws : List Law := [
       `Rchain.s3_pair_fails_validation, `Rchain.serializable_writer_chain,
       `Rchain.pinned_run_publication, `Rchain.certificate_blind_late_writer_diverges],
     rust := ["rspace/src/concurrent/channel_queue.rs", "casper/src/runtime_manager.rs"],
+    witness := [`Rchain.certificate_blind_late_writer_diverges, `Rchain.s3_pair_fails_validation, `Rchain.serializable_writer_chain],
     falsifiable := some "the certificate's blind spot is *published* as a theorem \
       (`certificate_blind_late_writer_diverges`): a late-writer run passes the certificate and still \
       diverges, which is why the oracle backstop stays load-bearing",
@@ -903,6 +947,7 @@ def laws : List Law := [
     declarations := [`Rchain.published, `Rchain.published_state_is_the_oracles,
       `Rchain.fallback_rerun_published, `Rchain.Published],
     rust := ["casper/src/runtime_manager.rs", "rspace/src/concurrent/channel_queue.rs"],
+    witness := [`Rchain.published_state_is_the_oracles, `Rchain.fallback_rerun_published],
     falsifiable := some "the rule is the Rust's own (`casper/src/runtime_manager.rs:1013,1044`): accept \
       the speculative run only when it agrees with the oracle, and otherwise ship the oracle's result. \
       A publication rule that shipped the speculative state unconditionally would falsify \
@@ -923,6 +968,7 @@ def laws : List Law := [
     status := .owed,
     declarations := [`Rchain.shard_scope_deterministic_is_false, `Rchain.ValidShardId, `Rchain.Leg],
     rust := ["node/src/web/http.rs", "shared/src/refined.rs"],
+    witness := [`Rchain.shard_scope_deterministic_is_false],
     falsifiable := none,
     note := "**the axiom this row used to cite was FALSE** — `∀ l : Leg, ValidShardId l.shard` over a \
       freely constructible record, refuted by `Leg.mk \"\" 0 0` (`shard_scope_deterministic_is_false`, \
@@ -951,6 +997,7 @@ def laws : List Law := [
       `Rchain.all_prepared_legs_commit, `Rchain.an_already_committed_leg_still_commits,
       `Rchain.an_aborted_reply_moves_the_decision],
     rust := ["casper/src/txn_coordinator.rs"],
+    witness := [`Rchain.txn_atomic_is_false, `Rchain.an_already_committed_leg_still_commits, `Rchain.an_aborted_reply_moves_the_decision, `Rchain.every_leg_reaches_the_one_decision, `Rchain.all_prepared_legs_commit],
     falsifiable := some "`every_leg_reaches_the_one_decision` says every leg's phase-two outcome is the \
       *single* decision or `\"not prepared\"` — so a leg that voted abort cannot carry an outcome that \
       disagrees with a prepared leg's, and `all_prepared_legs_commit` is the all-ready case. The retry \
@@ -981,6 +1028,7 @@ def laws : List Law := [
       `Rchain.abort_after_commit_is_an_error, `Rchain.prepare_refuses_overdraft],
     axioms := [],
     rust := ["rholang/src/native_state.rs"],
+    witness := [`Rchain.commit_after_abort_is_an_error, `Rchain.abort_after_commit_is_an_error, `Rchain.prepare_refuses_overdraft, `Rchain.txnPrepare_idempotent],
     falsifiable := some "the negatives are the witnesses: a second `prepare` that re-escrowed would fail \
       `txnPrepare_idempotent`, and the port's own test pins the balance after a repeated \
       `txn_prepare`/`txn_commit` (`native_state.rs:1442-1479`, and \
@@ -1010,6 +1058,7 @@ def laws : List Law := [
       `Rchain.an_abort_vote_aborts_a_prepared_record, `Rchain.a_committed_record_stays_committed,
       `Rchain.Ledger.record_setRecord, `Rchain.txnCommit_fixes],
     rust := ["casper/src/txn_coordinator.rs"],
+    witness := [`Rchain.commit_record_deterministic_is_false, `Rchain.coordinator_decision_committed_iff, `Rchain.an_abort_is_absorbing, `Rchain.a_commit_is_absorbing, `Rchain.a_committed_record_stays_committed, `Rchain.an_abort_vote_aborts_a_prepared_record],
     falsifiable := some "`coordinator_decision_committed_iff` is the decision half, proved against the \
       port's own two lines; the witness that the *old* statement was false is \
       `commit_record_deterministic_is_false` — a record whose state is `committed` while a vote is \
@@ -1046,6 +1095,7 @@ def laws : List Law := [
     declarations := [`Rchain.lexemes, `Rchain.lexemes_decide, `Rchain.longestMatchIn],
     corpus := some "lex",
     rust := ["rholang/src/parser.rs", "node/tests/lean_lex_corpus.rs"],
+    witness := [`Rchain.lexemes_decide],
     falsifiable := some "the `decide`d `lexemes_decide` fails if two spellings collide or if a row's \
       spelling is not its own longest match — a table where `<` shadowed `<=` breaks the `<=` row; the \
       Rust consumer (`node/tests/lean_lex_corpus.rs`) runs each sample through the real lexer, so a \
@@ -1116,6 +1166,7 @@ def laws : List Law := [
       `Rchain.a_list_pattern_cannot_skip_a_target_element],
     axioms := [`Rchain.concrete_matches_iff_eq, `Rchain.fuel_saturation],
     corpus := some "match",
+    witness := [`Rchain.arithmetic_pattern_refutes_the_unrestricted_tie, `Rchain.a_list_pattern_cannot_skip_a_target_element, `Rchain.the_walk_past_empty_pars_is_paid_for],
     falsifiable := some "19 cases with three-valued verdicts; the once-false law-5 axiom was replaced \
       *because* a corpus case contradicted it (AUDIT C26), the fuel bound was one step short until the \
       `decide` refused to compile, and `concrete_matches_iff_eq` **was false as stated** until case 15 \
@@ -1166,6 +1217,7 @@ def laws : List Law := [
     declarations := [`Rchain.replyCatalog, `Rchain.replyCatalog_decide],
     corpus := some "protocol",
     rust := ["rholang/src/system_processes.rs", "spec/API-SCHEMA.md"],
+    witness := [`Rchain.replyCatalog_decide],
     falsifiable := some "`replyCatalog_decide` requires namespaced unique urns, the reply kind \
       agreeing with its slots, and the declared arity agreeing with the arguments as written; the gate \
       additionally requires a `spec/API-SCHEMA.md` row per catalog urn, so a urn without a documented \
@@ -1203,6 +1255,7 @@ def laws : List Law := [
       `Rchain.parsToPar_merged, `Rchain.unforgPair_refutes_the_old_statement],
     corpus := some "json",
     rust := ["node/src/api/rho_expr.rs"],
+    witness := [`Rchain.unforgPair_refutes_the_old_statement, `Rchain.decode_encode, `Rchain.parToJE_getD_round],
     falsifiable := some "the **statement was false as written**, and the falsification is in the tree: \
       the domain predicate `flatPar` accepted a par of two unforgeables, which the decoder drops and \
       the encoder then writes as *no value at all* — `unforgPair_refutes_the_old_statement` is that \
@@ -1227,6 +1280,7 @@ def laws : List Law := [
     declarations := [`Rchain.envelopeCatalog, `Rchain.envelopeCatalog_decide],
     corpus := some "envelope",
     rust := ["node/src/api/grpc/tonic.rs", "node/src/api/dto.rs"],
+    witness := [`Rchain.envelopeCatalog_decide],
     falsifiable := some "`envelopeCatalog_decide`: no key contains an underscore (C16's rule), keys \
       distinct, union tags capitalized, names unique; `node/tests/lean_envelope_corpus.rs` holds *both* \
       parties to the catalog — the DTOs' serialization and the served `OPENAPI_JSON` document — so a \
@@ -1246,6 +1300,7 @@ def laws : List Law := [
       `Rchain.a_bond_pools_but_does_not_activate, `Rchain.a_boundary_activates_the_pool],
     axioms := [],
     rust := ["rholang/src/native_state.rs"],
+    witness := [`Rchain.closeBlock_off_a_boundary, `Rchain.epochStep_conserves, `Rchain.the_ledger_steps_leave_the_coins, `Rchain.a_bond_pools_but_does_not_activate, `Rchain.a_boundary_activates_the_pool],
     falsifiable := some "`the_epoch_gate_does_nothing_off_a_boundary` builds the off-boundary state — a \
       staged withdrawal *and* a full reward pot — and asserts the whole state is unchanged, then that \
       the same call at the boundary moves it and pays it; the bond half is in the same test (pooled at \
@@ -1283,6 +1338,7 @@ def laws : List Law := [
     status := .provedModel,
     declarations := [`Rchain.rewardPot, `Rchain.reward],
     rust := ["rholang/src/native_state.rs"],
+    witness := [`Rchain.the_dust_is_real],
     falsifiable := some "`Rchain.the_dust_is_real` decides an instance: minimum bond 3, bonds `[4, 5]`, \
       pot 10 — each validator is paid 3, so the epoch distributes **6 of 10**. A statement that said the \
       shares sum to the pot is refuted by that line, and so is one that dropped either division. On the \
@@ -1302,6 +1358,7 @@ def laws : List Law := [
     declarations := [`Rchain.sum_rewards_le_pot, `Rchain.list_sum_div_le, `Rchain.div_add_div_le,
       `Rchain.nsum_map_mul_left, `Rchain.the_dust_is_real],
     rust := ["rholang/src/native_state.rs"],
+    witness := [`Rchain.the_dust_is_real, `Rchain.sum_rewards_le_pot],
     falsifiable := some "the inequality is **strict in an instance**: `the_dust_is_real` is minimum \
       bond 3, bonds `[4, 5]`, pot 10, six units distributed of ten (`decide`d, so the strictness is a \
       computation rather than a remark), and `an_epoch_splits_the_pot_and_keeps_the_dust` reads the \
@@ -1328,6 +1385,7 @@ def laws : List Law := [
       `Rchain.the_reward_is_committed_before_the_leave],
     axioms := [],
     rust := ["rholang/src/native_state.rs"],
+    witness := [`Rchain.a_staged_withdrawal_moves_no_coins, `Rchain.the_move_escrows_the_bond_and_pays_nothing, `Rchain.a_due_claim_is_paid_its_bond_plus_its_committed, `Rchain.a_claim_before_its_deadline_is_not_paid, `Rchain.the_move_does_not_disturb_the_ledger, `Rchain.the_reward_is_committed_before_the_leave],
     falsifiable := some "`withdraw_stages_the_validator_until_the_next_boundary` asserts the three \
       stages separately — still bonded and still active with a deadline after the request; out of the \
       pool and escrowed (vault balance still zero) after the first boundary; paid after the second — \
@@ -1384,6 +1442,7 @@ def laws : List Law := [
     declarations := [`Rchain.prefixes, `Rchain.peak, `Rchain.itotal, `Rchain.peak_four,
       `Rchain.peak_refunds_first, `Rchain.itotal_refunds_first],
     rust := ["rholang/src/storage.rs"],
+    witness := [`Rchain.peak_refunds_first, `Rchain.itotal_refunds_first],
     falsifiable := some "two halves, and the Rust test asserts both: \
       `a_matched_produce_refunds_its_storage_before_the_event_costs` (1) checks the matched call's total \
       against the same op *without* a match plus the COMM cost minus the two refunds — which fails if a \
