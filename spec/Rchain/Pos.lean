@@ -324,7 +324,7 @@ theorem payDue_conserves (s : PosState) (n : Nat) {s' : PosState} (h : payDue s 
   · exact absurd h (by simp)
 
 /-- Steps 1, 2 and 4 leave the coin fields exactly as they were: they are ledger steps. -/
-theorem the_ledger_steps_leave_the_coins (r : Validator → Nat) (s : PosState) (n : Nat) :
+theorem the_ledger_steps_leave_the_coins (r : Validator → Nat) (s : PosState) :
     totalRev (commitRewards r s) = totalRev s ∧
     totalRev (movePending s) = totalRev s ∧
     totalRev (reselect s) = totalRev s :=
@@ -348,9 +348,9 @@ theorem epochStep_conserves (r : Validator → Nat) (s : PosState) (n : Nat) {s'
       simp only [hpay, Option.map_some, Option.some.injEq] at h
       cases h
       have hcon := payDue_conserves (movePending (commitRewards r s)) n hpay
-      have hres := (the_ledger_steps_leave_the_coins r paid n).2.2
-      have hmov := (the_ledger_steps_leave_the_coins r (commitRewards r s) n).2.1
-      have hcom := (the_ledger_steps_leave_the_coins r s n).1
+      have hres := (the_ledger_steps_leave_the_coins r paid).2.2
+      have hmov := (the_ledger_steps_leave_the_coins r (commitRewards r s)).2.1
+      have hcom := (the_ledger_steps_leave_the_coins r s).1
       rw [hres, hcon, hmov, hcom]
 
 /-- Off a boundary the transition writes nothing — stated of `closeBlock`, so it is a fact about the gate

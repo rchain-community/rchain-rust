@@ -67,7 +67,7 @@ between the two peaks completes the refunds-first order and fails the other.
 The hypotheses are the charges' own: `s` non-negative (a storage cost) and `r` non-positive (a refund).
 Both are needed — with a negative `s` the comparison can go the other way. -/
 theorem peak_refunds_first (s₁ s₂ r₁ r₂ : Int)
-    (hs₁ : 0 ≤ s₁) (hs₂ : 0 ≤ s₂) (hr₁ : r₁ ≤ 0) (hr₂ : r₂ ≤ 0) :
+    (hs₂ : 0 ≤ s₂) (hr₁ : r₁ ≤ 0) (hr₂ : r₂ ≤ 0) :
     peak [r₁, r₂, s₁, s₂] ≤ peak [s₁, s₂, r₁, r₂] := by
   rw [peak_four, peak_four]
   -- The right-hand chain, spelled out once: every member of the left-hand chain is below it.
