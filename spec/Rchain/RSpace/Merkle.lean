@@ -49,19 +49,24 @@ deriving DecidableEq
     model keeps the list; the width is carried by `WellFormed` below rather than by the type. -/
 abbrev Node := List Item
 
+/-- One slot's part of the invariant: a prefix inside the encoder's 7-bit length field, and a payload of
+    exactly 32 bytes. -/
+def ItemWF (it : Item) : Prop :=
+  match it with
+  | .empty => True
+  | .leaf pref value => pref.length < 128 ∧ value.length = 32
+  | .node pref ptr => pref.length < 128 ∧ ptr.length = 32
+
+/-- Every slot of a node satisfies `ItemWF`. -/
+def ItemsWF (n : Node) : Prop := ∀ it ∈ n, ItemWF it
+
 /-- **The invariant the code carries structurally and this model carries as a predicate.** The code's
     `Node` is `[Item; 256]` (256 slots, and the Rust type makes any other length unrepresentable), its
     values and pointers are `Hash32` (exactly 32 bytes), and a prefix is a path suffix of a 32-byte key,
     so it is shorter than 128 bytes — which is what the encoder's 7-bit length field needs. Without all
     three, the encoding is not canonical; with them it is, and the operations that build nodes maintain
     them. -/
-def WellFormed (n : Node) : Prop :=
-  n.length = 256 ∧
-  ∀ it ∈ n,
-    (match it with
-      | .empty => True
-      | .leaf pref value => pref.length < 128 ∧ value.length = 32
-      | .node pref ptr => pref.length < 128 ∧ ptr.length = 32)
+def WellFormed (n : Node) : Prop := n.length = 256 ∧ ItemsWF n
 
 /-- One item's record: the slot index, a byte holding the prefix length with the top bit as the
     leaf/pointer tag, the prefix bytes, then the value's 32 bytes (`encode`, `radix_tree.rs:60-75`). The
@@ -100,13 +105,231 @@ theorem the_encoder_is_not_canonical_over_the_models_types :
       ≠ [Item.leaf [] (witnessMsg.take 32), Item.leaf [] [9]] := by
   decide
 
-/-- The encoding is **canonical on the nodes the trie builds**: the slots are written in order with
-    their index, so distinct well-formed nodes have distinct encodings. Stated as an axiom — the proof
-    (a list induction unpacking the records, with the invariant supplying `len < 128` and the 32-byte
-    widths) is owed, and the file's header records why it is not merely assumed: it is *false* without
-    the hypothesis, as `the_encoder_is_not_canonical_over_the_models_types` shows. -/
-axiom encodeNode_injective {a b : Node} (ha : WellFormed a) (hb : WellFormed b) :
-    encodeNode a = encodeNode b → a = b
+/-! ## The canonicity proof
+
+`encodeNode_injective` used to be an axiom here. It is a theorem now, and the shape of the proof is the
+one the code's own decoder would have: a record is self-describing — its header carries the slot index
+and a `length | kind` byte, so a reader knows where its payload ends — and `WellFormed` supplies the two
+facts that makes true (32-byte payloads, prefixes under 128 so the 7-bit field is not truncated). The
+width, 256 slots, is what rules out the last ambiguity: a byte stream that ends after a record could
+belong to a node with any number of trailing empty slots, and `WellFormed` says the number is 256.
+
+Two hypotheses do the work, and both are false of the model's *types* — which is why
+`the_encoder_is_not_canonical_over_the_models_types` above is still the reason the statement carries
+them. -/
+
+/-- **A slot index is written as one byte, and on the range the trie uses that is injective.** -/
+theorem byteOf_injective {i j : Nat} (hi : i < 256) (hj : j < 256) (h : byteOf i = byteOf j) :
+    i = j := by
+  have := congrArg Fin.val h
+  simp only [byteOf, Fin.val_mk] at this
+  omega
+
+/-- A length that fits the 7-bit field is its own remainder. -/
+theorem mod128_of_lt {n : Nat} (h : n < 128) : n % 128 = n := Nat.mod_eq_of_lt h
+
+/-- An empty slot encodes to nothing, and nothing else does. -/
+theorem encodeItem_eq_nil_iff (i : Nat) (it : Item) : encodeItem i it = [] ↔ it = Item.empty := by
+  cases it <;> simp [encodeItem]
+
+/-- A nonempty slot's record begins with its own index byte. -/
+theorem encodeItem_head (i : Nat) {it : Item} (h : it ≠ Item.empty) (r : Msg) :
+    (encodeItem i it ++ r).head? = some (byteOf i) := by
+  cases it <;> simp_all [encodeItem]
+
+/-- And such a record is never the empty message. -/
+theorem encodeItem_append_ne_nil {i : Nat} {it : Item} (h : it ≠ Item.empty) (r : Msg) :
+    encodeItem i it ++ r ≠ [] := by
+  cases it <;> simp_all [encodeItem]
+
+/-- **The first byte of a nonempty encoding is the index of its first nonempty slot**, and that index
+    lies inside the slots the list covers. -/
+theorem encodeNodeAux_head {s : Node} {i : Nat} (h : encodeNodeAux i s ≠ []) :
+    ∃ k, i ≤ k ∧ k < i + s.length ∧ (encodeNodeAux i s).head? = some (byteOf k) := by
+  induction s generalizing i with
+  | nil => simp [encodeNodeAux] at h
+  | cons it rest ih =>
+      cases it with
+      | empty =>
+          simp only [encodeNodeAux, encodeItem, List.nil_append] at h ⊢
+          obtain ⟨k, hk₁, hk₂, hhead⟩ := ih h
+          exact ⟨k, by omega, by simp only [List.length_cons]; omega, hhead⟩
+      | leaf pref value =>
+          exact ⟨i, Nat.le_refl i, by simp only [List.length_cons]; omega,
+            by simp [encodeNodeAux, encodeItem]⟩
+      | node pref ptr =>
+          exact ⟨i, Nat.le_refl i, by simp only [List.length_cons]; omega,
+            by simp [encodeNodeAux, encodeItem]⟩
+
+/-- A suffix's encoding never begins with the byte of an *earlier* slot: its first record is at a slot at
+    or after the suffix's own start, and those two bytes differ on the range the trie uses. This is the
+    step that rules out the empty-slot-versus-record ambiguity. -/
+theorem encodeNodeAux_head_ne_byteOf {s : Node} {i j : Nat} (h : encodeNodeAux i s ≠ [])
+    (hij : j < i) (hb : i + s.length ≤ 256) :
+    (encodeNodeAux i s).head? ≠ some (byteOf j) := by
+  obtain ⟨k, hk₁, hk₂, hhead⟩ := encodeNodeAux_head h
+  intro hc
+  have hkj : byteOf k = byteOf j := (Option.some.injEq _ _).mp (by rw [← hhead, hc])
+  have := byteOf_injective (by omega) (by omega) hkj
+  omega
+
+/-- **A record determines itself.** Two nonempty slots encoded at the same index whose bytes agree are
+    the same slot, and so are the bytes after them: the header's kind bit and length field say where the
+    payload ends, so no byte stream has two readings. -/
+theorem encodeItem_injective_at {it jt : Item} {i : Nat} {r r' : Msg}
+    (hi : it ≠ Item.empty) (hj : jt ≠ Item.empty) (hwi : ItemWF it) (hwj : ItemWF jt)
+    (h : encodeItem i it ++ r = encodeItem i jt ++ r') : it = jt ∧ r = r' := by
+  match it, jt, hwi, hwj with
+  | .leaf pref val, .leaf pref' val', ⟨hpi, hvi⟩, ⟨hpi', hvi'⟩ =>
+      simp only [encodeItem] at h
+      injection h with _ htail
+      injection htail with htag hrest
+      have hlen : pref.length % 128 = pref'.length % 128 :=
+        byteOf_injective (by omega) (by omega) htag
+      rw [mod128_of_lt hpi, mod128_of_lt hpi'] at hlen
+      obtain ⟨h1, h2⟩ :=
+        List.append_inj hrest (by simp only [List.length_append, hvi, hvi', hlen])
+      obtain ⟨hpref, hval⟩ := List.append_inj h1 (by simp only [hlen])
+      exact ⟨by rw [hpref, hval], h2⟩
+  | .node pref ptr, .node pref' ptr', ⟨hpi, hvi⟩, ⟨hpi', hvi'⟩ =>
+      simp only [encodeItem] at h
+      injection h with _ htail
+      injection htail with htag hrest
+      have htag' : 128 + pref.length % 128 = 128 + pref'.length % 128 :=
+        byteOf_injective (by omega) (by omega) htag
+      have hlen : pref.length % 128 = pref'.length % 128 := by omega
+      rw [mod128_of_lt hpi, mod128_of_lt hpi'] at hlen
+      obtain ⟨h1, h2⟩ :=
+        List.append_inj hrest (by simp only [List.length_append, hvi, hvi', hlen])
+      obtain ⟨hpref, hptr⟩ := List.append_inj h1 (by simp only [hlen])
+      exact ⟨by rw [hpref, hptr], h2⟩
+  | .leaf pref _, .node pref' _, ⟨hpi, _⟩, _ =>
+      simp only [encodeItem] at h
+      injection h with _ htail
+      injection htail with htag _
+      have hlen : pref.length % 128 = 128 + pref'.length % 128 :=
+        byteOf_injective (by omega) (by omega) htag
+      rw [mod128_of_lt hpi] at hlen
+      omega
+  | .node pref _, .leaf pref' _, ⟨hpi, _⟩, ⟨hpi', _⟩ =>
+      simp only [encodeItem] at h
+      injection h with _ htail
+      injection htail with htag _
+      have hlen : 128 + pref.length % 128 = pref'.length % 128 :=
+        byteOf_injective (by omega) (by omega) htag
+      rw [mod128_of_lt hpi'] at hlen
+      omega
+
+/-- **The encoding is canonical on well-formed nodes.** Two nodes of the same width whose encodings agree
+    are equal: each record carries its slot and its own extent, so a byte stream has one reading, and
+    `WellFormed` supplies the two facts that makes true plus the width that rules out a stream ending in
+    empty slots. -/
+theorem encodeNodeAux_injective (s t : Node) (i : Nat)
+    (hs : ItemsWF s) (ht : ItemsWF t) (hlen : s.length = t.length)
+    (hi : i + s.length ≤ 256) (h : encodeNodeAux i s = encodeNodeAux i t) : s = t := by
+  induction s generalizing t i with
+  | nil =>
+      cases t with
+      | nil => rfl
+      | cons jt rest' => simp only [List.length_nil, List.length_cons] at hlen; omega
+  | cons it rest ih =>
+      have hs_head : ItemWF it := hs it (List.mem_cons_self ..)
+      have hs_rest : ItemsWF rest := fun x hx => hs x (List.mem_cons_of_mem _ hx)
+      have hi' : i + 1 + rest.length ≤ 256 := by
+        simp only [List.length_cons] at hi; omega
+      cases t with
+      | nil => simp only [List.length_nil, List.length_cons] at hlen; omega
+      | cons jt rest' =>
+          have ht_head : ItemWF jt := ht jt (List.mem_cons_self ..)
+          have ht_rest : ItemsWF rest' := fun x hx => ht x (List.mem_cons_of_mem _ hx)
+          have hlen' : rest.length = rest'.length := by
+            simp only [List.length_cons] at hlen; omega
+          rw [encodeNodeAux, encodeNodeAux] at h
+          cases hjt : jt with
+          | empty =>
+              cases hit : it with
+              | empty =>
+                  simp only [hit, hjt, encodeItem, List.nil_append] at h
+                  exact congrArg (List.cons Item.empty)
+                    (ih rest' (i + 1) hs_rest ht_rest hlen' hi' h)
+              | leaf pref value =>
+                  simp only [hit, hjt, encodeItem, List.nil_append] at h
+                  have hright : (encodeNodeAux (i + 1) rest').head? = some (byteOf i) := by
+                    rw [← h]
+                    exact encodeItem_head (it := Item.leaf pref value) i (by simp) _
+                  exact absurd hright
+                    (encodeNodeAux_head_ne_byteOf (s := rest') (i := i + 1) (j := i)
+                      (by rw [← h]; exact encodeItem_append_ne_nil (it := Item.leaf pref value) (by simp) _) (by omega) (by rw [← hlen']; exact hi'))
+              | node pref ptr =>
+                  simp only [hit, hjt, encodeItem, List.nil_append] at h
+                  have hright : (encodeNodeAux (i + 1) rest').head? = some (byteOf i) := by
+                    rw [← h]
+                    exact encodeItem_head (it := Item.node pref ptr) i (by simp) _
+                  exact absurd hright
+                    (encodeNodeAux_head_ne_byteOf (s := rest') (i := i + 1) (j := i)
+                      (by rw [← h]; exact encodeItem_append_ne_nil (it := Item.node pref ptr) (by simp) _) (by omega) (by rw [← hlen']; exact hi'))
+          | leaf pref' value' =>
+              cases hit : it with
+              | empty =>
+                  simp only [hit, hjt, encodeItem, List.nil_append] at h
+                  have hleft : (encodeNodeAux (i + 1) rest).head? = some (byteOf i) := by
+                    rw [h]
+                    exact encodeItem_head (it := Item.leaf pref' value') i (by simp) _
+                  exact absurd hleft
+                    (encodeNodeAux_head_ne_byteOf (s := rest) (i := i + 1) (j := i)
+                      (by rw [h]; exact encodeItem_append_ne_nil (it := Item.leaf pref' value') (by simp) _) (by omega) hi')
+              | leaf pref value =>
+                  rw [hit, hjt] at h
+                  obtain ⟨heq, hrest⟩ :=
+                    encodeItem_injective_at (it := Item.leaf pref value)
+                      (jt := Item.leaf pref' value') (by simp) (by simp) (hit ▸ hs_head)
+                      (hjt ▸ ht_head) h
+                  rw [heq]
+                  exact congrArg (List.cons (Item.leaf pref' value'))
+                    (ih rest' (i + 1) hs_rest ht_rest hlen' hi' hrest)
+              | node pref ptr =>
+                  rw [hit, hjt] at h
+                  obtain ⟨heq, _⟩ :=
+                    encodeItem_injective_at (it := Item.node pref ptr)
+                      (jt := Item.leaf pref' value') (by simp) (by simp) (hit ▸ hs_head)
+                      (hjt ▸ ht_head) h
+                  exact absurd heq (by simp)
+          | node pref' ptr' =>
+              cases hit : it with
+              | empty =>
+                  simp only [hit, hjt, encodeItem, List.nil_append] at h
+                  have hleft : (encodeNodeAux (i + 1) rest).head? = some (byteOf i) := by
+                    rw [h]
+                    exact encodeItem_head (it := Item.node pref' ptr') i (by simp) _
+                  exact absurd hleft
+                    (encodeNodeAux_head_ne_byteOf (s := rest) (i := i + 1) (j := i)
+                      (by rw [h]; exact encodeItem_append_ne_nil (it := Item.node pref' ptr') (by simp) _) (by omega) hi')
+              | leaf pref value =>
+                  rw [hit, hjt] at h
+                  obtain ⟨heq, _⟩ :=
+                    encodeItem_injective_at (it := Item.leaf pref value)
+                      (jt := Item.node pref' ptr') (by simp) (by simp) (hit ▸ hs_head)
+                      (hjt ▸ ht_head) h
+                  exact absurd heq (by simp)
+              | node pref ptr =>
+                  rw [hit, hjt] at h
+                  obtain ⟨heq, hrest⟩ :=
+                    encodeItem_injective_at (it := Item.node pref ptr)
+                      (jt := Item.node pref' ptr') (by simp) (by simp) (hit ▸ hs_head)
+                      (hjt ▸ ht_head) h
+                  rw [heq]
+                  exact congrArg (List.cons (Item.node pref' ptr'))
+                    (ih rest' (i + 1) hs_rest ht_rest hlen' hi' hrest)
+
+/-- The encoding is **canonical on the nodes the trie builds**: distinct well-formed nodes have distinct
+    encodings. This was the file's `axiom encodeNode_injective`; it is a theorem now, and the two
+    hypothesis it carries are exactly what the code's own types hold — the proof above reads the encoder
+    the way a decoder would. -/
+theorem encodeNode_injective {a b : Node} (ha : WellFormed a) (hb : WellFormed b) :
+    encodeNode a = encodeNode b → a = b := by
+  obtain ⟨halen, ha'⟩ := ha
+  obtain ⟨hblen, hb'⟩ := hb
+  exact encodeNodeAux_injective a b 0 ha' hb' (by rw [halen, hblen]) (by rw [halen]; omega)
 
 /-- The node's hash: Blake2b256 over the canonical encoding (`hash_node`, `radix_tree.rs:139-142`).
 

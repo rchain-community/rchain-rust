@@ -433,13 +433,16 @@ def laws : List Law := [
     statement := "Merkle determinism: the radix trie is content-addressed and collision-free **on the \
       nodes the trie can build** (`WellFormed`: 256 slots, 32-byte values, prefixes under 128 bytes), \
       with a defined empty root",
-    status := .owed,
-    declarations := [`Rchain.Item, `Rchain.Node, `Rchain.WellFormed, `Rchain.byteOf,
-      `Rchain.encodeItem, `Rchain.encodeNodeAux, `Rchain.encodeNode, `Rchain.nodeHash,
-      `Rchain.emptyNode, `Rchain.emptyNode_wellFormed, `Rchain.emptyRoot,
+    status := .provedModel,
+    declarations := [`Rchain.Item, `Rchain.Node, `Rchain.ItemWF, `Rchain.ItemsWF, `Rchain.WellFormed,
+      `Rchain.byteOf, `Rchain.byteOf_injective, `Rchain.encodeItem, `Rchain.encodeItem_eq_nil_iff,
+      `Rchain.encodeItem_head, `Rchain.encodeItem_injective_at, `Rchain.encodeNodeAux,
+      `Rchain.encodeNodeAux_head, `Rchain.encodeNodeAux_head_ne_byteOf,
+      `Rchain.encodeNodeAux_injective, `Rchain.encodeNode, `Rchain.encodeNode_injective,
+      `Rchain.nodeHash, `Rchain.emptyNode, `Rchain.emptyNode_wellFormed, `Rchain.emptyRoot,
       `Rchain.root_collision_free, `Rchain.nodeHash_eq_emptyRoot,
       `Rchain.the_encoder_is_not_canonical_over_the_models_types],
-    axioms := [`Rchain.encodeNode_injective],
+    axioms := [],
     rust := ["rspace/src/history/radix_tree.rs"],
     falsifiable := some "`root_collision_free` composes Law 19's `blake2b256_collision_free` with \
       `encodeNode_injective`; `nodeHash_eq_emptyRoot` pins the empty root as a fixed point with nothing \
@@ -465,9 +468,13 @@ def laws : List Law := [
       `encodeNode` is now a **definition** mirroring `radix_tree.rs:48-77` (index truncation and all), \
       `WellFormed` names the invariant, `encodeNode_injective` carries it, and \
       `root_collision_free`/`nodeHash_eq_emptyRoot` inherit it — stronger where it matters, because the \
-      hypothesis is exactly what the trie's operations maintain. The narrowed axiom's proof (a list \
-      induction unpacking the records) is owed, which is why this row is `owed` rather than \
-      `provedModel`" },
+      hypothesis is exactly what the trie's operations maintain. **And the narrowed statement is now \
+      proved, not owed** (2026-09-23, Programme D unit 11): `encodeNode_injective` is a theorem, by the \
+      argument a decoder would make — each record carries its slot index and a `length | kind` byte, so \
+      it determines its own extent, and `WellFormed` supplies the two facts that makes true (32-byte \
+      payloads, prefixes under 128 so the 7-bit field is not truncated) plus the width that rules out a \
+      stream ending in empty slots. So the hash path's canonicity no longer rests on an assumption: the \
+      only axioms left under `root_collision_free` are Law 19's hash idealization" },
   { number := 11, layer := "RSpace",
     statement := "Replay determinism: the port's replay check — every recomputed COMM has a recorded \
       occurrence **and** no recorded COMM is left unconsumed — holds exactly when the recomputation and \
