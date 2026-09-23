@@ -61,12 +61,23 @@ cargo llvm-cov --workspace --all-features --summary-only   # then read the lowes
 At the time of writing the thinnest *behavioural* files (as opposed to error-enum `Display` arms,
 which read as 1% because nothing formats them, and to trait/`mod` declaration files, which have no
 behaviour to cover) are the ones with **one test over hundreds of lines** — `casper/src/runtime_manager.rs`
-(1219 lines, 1 test), `node/src/api/grpc/tonic.rs` (972, 1 — 26 `*_to_wire`/`*_from_wire` conversions
-with none), `casper/src/api/block_api_impl.rs` (837, 1) and `rholang/src/reduce.rs` (3405, 15). They
+(1304 lines, 1 test), `node/src/api/grpc/tonic.rs` (1413, 7), `casper/src/api/block_api_impl.rs`
+(915, 2) and `rholang/src/reduce.rs` (3405, 14). They
 have a test, so the file-level census of item 10 does not reach them: they are item 11, the second
 track, ordered by uncovered lines from the report above. `rspace/src/history/history.rs` and
 `comm/src/discovery/kademlia_handle_rpc.rs` read as thin because they *are* declarations plus
 delegations; they are recorded in `## Exempt modules` rather than left to mislead this list.
+
+`tonic.rs` is the counter-example to the earlier version of this paragraph, which called its 26
+wire conversions untested. They are covered: `the_domain_to_wire_conversions_carry_every_field` names
+sixteen directly, and the nested ones are reached through the conversions that call them
+(`report_produce/consume/comm_to_wire` through `single_report_to_wire`'s round trip,
+`deploy_info_with_event_data_to_wire` through `block_event_info_to_wire`'s, `bond_info_to_wire`
+through the light block's bonds), while `a_missing_inner_message_is_an_error_naming_the_field`
+exercises each of the seven `ok_or` arms with the message it produces. That work landed on
+2026-09-14 (`56cacf32b`, "the census closes") and the paragraph kept saying "26 … with none" until
+2026-09-23: **a "Not covered" claim is itself a claim, and nothing recomputes it** — the linter checks
+that a *named* test exists, not that the prose around it is still true.
 
 The counts are a **floor, not a target**: the linter fails only when the register claims *more* than
 the tree holds, so this table may lag as tests are added (it reports the drift) but can never
