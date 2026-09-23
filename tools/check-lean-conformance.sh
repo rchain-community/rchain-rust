@@ -22,8 +22,10 @@
 #   7. **The static audits** — protocol agreement and channel balance over the vendored sources.
 #   8. **The law register is current** — `lake exe rchain-laws` re-emits `spec/laws.tsv` and
 #      `spec/LAWS.md`, and `git status` proves they are what `Rchain/Laws.lean` says. The register's own
-#      checks — numbering 1..43, reference integrity, axiom accounting, and that every *proved* law has
-#      a falsifiability witness — run in step 1, because they need the elaborated environment.
+#      checks — numbering 1..`lawCeiling`, reference integrity, axiom accounting, and that every
+#      *proved* law carries a falsifiability witness — run in step 1, because they need the elaborated
+#      environment. The documents that quote the register's totals are re-derived from `spec/laws.tsv`
+#      here too (`tools/emit-lean-counts.sh`), so a number in prose cannot drift from it.
 #
 # Usage: tools/check-lean-conformance.sh
 set -euo pipefail
@@ -187,6 +189,22 @@ if [[ -x "$ROOT/tools/emit-lean-laws.sh" ]]; then
   else
     fail "spec/laws.tsv / spec/LAWS.md are not what the Lean defines — re-emit and commit:"
     printf '%s\n' "$dirty" | sed 's/^/      /'
+  fi
+
+  # --- 5c. and the documents that quote the register still agree with it ---------
+  # `tools/emit-lean-counts.sh` rewrites the totals inside `<!-- counts:KEY -->…<!-- counts:end -->`
+  # spans in the reader-facing documents from `spec/laws.tsv`, and fails on a register total written by
+  # hand outside one. It is the same emit-and-diff discipline as above, one layer out: the *numbers* in
+  # `TYPE-SYSTEM.md`'s and `laws-30-43.md`'s prose now come off the register, which is what stops the
+  # class of defect this pass found there (three "30 element-comparator axioms" claims, a page saying
+  # "48 laws and 57 entries" beside its own "49 laws, 58 entries", a gate comment reading "1..43").
+  if [[ -x "$ROOT/tools/emit-lean-counts.sh" ]]; then
+    if "$ROOT/tools/emit-lean-counts.sh" --check >/tmp/lean-counts.log 2>&1; then
+      tail -1 /tmp/lean-counts.log | sed 's/^/ok    /'
+    else
+      fail "the documents' law counts are not the register's — see /tmp/lean-counts.log:"
+      sed 's/^/      /' /tmp/lean-counts.log
+    fi
   fi
 fi
 

@@ -5,7 +5,7 @@ first, then jump to the single page that answers your question. It mirrors the d
 [`AGENTS.md`](../../AGENTS.md) but is organized by *goal* rather than by artifact.
 
 The **authoritative formal specification** is the [`spec/`](../../spec/) tree — the law catalog
-([`spec/INVENTORY.md`](../../spec/INVENTORY.md), **49 rows**: the 29 calculus laws, 14 covering the
+([`spec/INVENTORY.md`](../../spec/INVENTORY.md), **<!-- counts:entries -->58 entries<!-- counts:end -->**: the 29 calculus laws, 14 covering the
 surface a client writes, 4 for the Proof-of-Stake epoch, one for the fee consequence of a denied
 deploy, and one for what a matched deploy is charged), the ρ-calculus core
 ([`spec/RHO-CALCULUS.md`](../../spec/RHO-CALCULUS.md)), and the ρ→CoC type discipline
@@ -38,7 +38,7 @@ deploy, and one for what a matched deploy is charged), the ρ-calculus core
 
 ## The invariant catalog, in one screen
 
-RChain's behavior is pinned by **49 laws** ([`spec/INVENTORY.md`](../../spec/INVENTORY.md)): the 29
+RChain's behavior is pinned by **<!-- counts:laws -->49 laws<!-- counts:end -->** ([`spec/INVENTORY.md`](../../spec/INVENTORY.md)): the 29
 below, about the calculus, rows 30–43 about the surface a client writes and a matcher reads
 ([Laws 30–43](formal/laws-30-43.md)), rows 44–47 about the native Proof-of-Stake epoch
 ([Laws 44–47](formal/laws-44-47.md)), row 48 about the fee consequence of a denied deploy (a rule
@@ -76,8 +76,8 @@ lived there and **nothing errored**:
 
 | Artifact | What it proves/states | Build |
 |---|---|---|
-| `spec/Rchain/*.lean` (Lean 4) | Law 1, `≡`/`⟶` core, `Closed`, totality fundamentals **proven**; law 5's matcher is **defined** with `spatialMatch_implies_linear` proven and its two soundness/saturation axioms owed; Laws 3, 4, 7–18 **stated**; Laws 20–22 **proven** in `Scheduler.lean` (path order, the bakery core, and the await chain; the *global* liveness statement needs a finiteness hypothesis and is not a theorem as the old axiom stated it); Laws 23–25 in `SchedulerOnchain.lean` — Law 23 proven, Law 24 fully proven (`pinned_run_publication`, with no certificate hypothesis), Law 25 **proven** (`published_state_is_the_oracles`); crypto **axiomatized**. The register is `spec/laws.tsv` / `spec/LAWS.md`, emitted from `Rchain/Laws.lean` | `cd spec && lake build` |
+| `spec/Rchain/*.lean` (Lean 4) | the model half of the register: each law's Lean declarations, its status (`proved-tied`/`proved-model`/`owed`/…), the axioms it rests on and the declarations that would falsify it. **Per-law status lives in one place** — [`spec/LAWS.md`](../../spec/LAWS.md), emitted from `Rchain/Laws.lean` and refused stale by the gate; this table no longer restates it, because a status repeated here is a status nothing checks (see `laws-44-47.md` for what that cost) | `cd spec && lake build` |
 | `spec/coq/*.v` (Coq) | Laws 2–6 (substitution / α-equivalence metatheory) **stated** | `make -C spec/coq` |
 | `spec/conformance/*.tsv` | the conformance corpora: *emitted* from the Lean definitions, committed, and read by a Rust consumer that runs the same cases through the node | `tools/emit-lean-corpus.sh` |
-| `spec/INVENTORY.md` | the 49-row law catalog with source-of-truth + status | — |
+| `spec/INVENTORY.md` | the law catalog (<!-- counts:laws-entries -->49 laws and 58 entries<!-- counts:end -->) with source-of-truth + status | — |
 | `spec/TYPE-SYSTEM.md` | the ρ→CoC type discipline (totality, refinements) | — |

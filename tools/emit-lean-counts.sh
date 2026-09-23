@@ -1,0 +1,213 @@
+#!/usr/bin/env bash
+#
+# emit-lean-counts.sh — keep the prose's law/axiom counts equal to the register's.
+#
+# The drift this closes is old and repeated: two documents said "29 laws" while the tree held 43; the
+# register's own header said "all 43 laws" after 49 existed; `laws-30-43.md` carried both "49 laws, 58
+# entries today" and, three paragraphs later, "48 laws and 57 entries"; `TYPE-SYSTEM.md` said "30
+# element-comparator axioms" in three places two programmes after that number became 4. Every one of
+# those was a *live* claim about a machine-emitted total, restated by hand, and nothing read them.
+#
+# So the totals are generated. A prose file marks the span it wants filled:
+#
+#     ... counts *entries* rather than laws (<!-- counts:laws -->49 laws<!-- counts:end -->, ...
+#
+# and this script rewrites every marked span from `spec/laws.tsv` (the register's own emission). Keys:
+#
+#     laws, entries, laws-entries, axioms, summary,
+#     proved-laws, proved-tied-laws, proved-model-laws, owed-laws, open-laws,
+#     orphaned-laws, vacuous-laws, axiom-by-design-laws
+#
+# `--check` (what the gate runs) rewrites into a scratch copy and refuses a diff, the same discipline
+# `emit-lean-laws.sh` uses for `spec/laws.tsv` itself. It also fails on a **hand-written** register total
+# in one of these files: a digit followed by `laws`/`entries`/`axioms` where the digit is one of the
+# register's own totals (current or known-past) and the line carries no marker.
+#
+# The limit of that scan, stated rather than implied: it catches the class that actually rots — a writer
+# copying a total out of the register — and not every possible count. "the 29 laws" is the *name of a
+# section* (laws 1–29) and is left alone; "four (30, 31, 33, 36) are open" is spelled out and therefore
+# outside it; and a sentence about history ("the tree grew to 43 laws while both said 29") is a record,
+# not a claim, which is why the scan is scoped to the reader-facing documents and not to `spec/Rchain/`'s
+# module docs, where those records live. A count that a reader is meant to believe gets a marker.
+#
+# Usage: tools/emit-lean-counts.sh [--check]
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+SPEC="$ROOT/spec"
+TSV="$SPEC/laws.tsv"
+check=0
+[[ "${1:-}" == "--check" ]] && check=1
+
+if [[ ! -f "$TSV" ]]; then
+  echo "FAIL  $TSV does not exist — run tools/emit-lean-laws.sh first" >&2
+  exit 1
+fi
+
+# --- the totals, straight off the register's own emission -------------------------------------------
+col() { awk -F'\t' -v s="$1" 'NR>1 && $4==s {print $1}' "$TSV" | sort -u | wc -l | tr -d ' '; }
+entries="$(awk 'NR>1' "$TSV" | wc -l | tr -d ' ')"
+n_laws="$(awk -F'\t' 'NR>1{print $1}' "$TSV" | sort -u | wc -l | tr -d ' ')"
+n_axioms="$(awk -F'\t' 'NR>1 && $6 != "-" {print $6}' "$TSV" \
+  | tr ',' '\n' | sed -e 's/^ *//' -e 's/ *$//' | grep -v '^$' | sort -u | wc -l | tr -d ' ')"
+n_proved_tied="$(col proved-tied)"
+n_proved_model="$(col proved-model)"
+n_proved="$(awk -F'\t' 'NR>1 && ($4=="proved-tied" || $4=="proved-model") {print $1}' "$TSV" \
+  | sort -u | wc -l | tr -d ' ')"
+
+value_of() {
+  case "$1" in
+    laws)                 printf '%s laws' "$n_laws" ;;
+    entries)              printf '%s entries' "$entries" ;;
+    laws-entries)         printf '%s laws and %s entries' "$n_laws" "$entries" ;;
+    axioms)               printf '%s axioms' "$n_axioms" ;;
+    summary)              head -1 "$SPEC/LAWS.md" ;;
+    proved-laws)          printf '%s' "$n_proved" ;;
+    proved-tied-laws)     printf '%s' "$n_proved_tied" ;;
+    proved-model-laws)    printf '%s' "$n_proved_model" ;;
+    owed-laws)            col owed ;;
+    open-laws)            col open ;;
+    orphaned-laws)        col orphaned ;;
+    vacuous-laws)         col vacuous ;;
+    axiom-by-design-laws) col axiom-by-design ;;
+    *) return 1 ;;
+  esac
+}
+
+FILES=(
+  "$SPEC/README.md"
+  "$SPEC/TYPE-SYSTEM.md"
+  "$SPEC/INVENTORY.md"
+  "$SPEC/coq/README.md"
+  "$ROOT/docs/src/ai-entrypoint.md"
+)
+for f in "$ROOT"/docs/src/formal/*.md; do FILES+=("$f"); done
+
+# The map as `key=value` lines, reused for both the rewrite and the scan.
+map="$(for k in laws entries laws-entries axioms summary proved-laws proved-tied-laws proved-model-laws \
+                 owed-laws open-laws orphaned-laws vacuous-laws axiom-by-design-laws; do
+          printf '%s=%s\n' "$k" "$(value_of "$k")"
+        done)"
+
+# --- the scan for hand-written totals --------------------------------------------------------------
+# Current totals plus the ones that have already gone stale at least once, so a document that states one
+# of them by hand is caught on the next run rather than after the next programme.
+stale_numbers="$(printf '%s\n' "$n_laws" "$entries" "$n_axioms" "$n_proved" 43 48 57 30 34 49 58 21 \
+  | sort -u | paste -sd'|' -)"
+# The scan reads **paragraphs**, not lines, and that is load-bearing: the first version was line-based
+# and matched only `N axioms`, so it missed two of `TYPE-SYSTEM.md`'s three stale claims (one wrapped as
+# `30 residual element-comparator` / `comparator-law axioms`). A scan that misses the instances it exists
+# for is worse than none, so the paragraph is joined before matching.
+#
+# It is two linear steps — a stale number at a word boundary, then the noun within the next 80
+# characters — rather than one pattern with `(word ){0,3}` between them. That is not style: the
+# one-pattern version (`(49|…)[- ]([A-Za-z_*.\`-]+[- ]){0,3}(laws?|…)`) *hung*, because a `+` inside a
+# bounded repetition is the classic exponential-backtracking shape and the paragraphs here are long
+# bullets that nearly match. A gate step that can hang is worse than no gate step.
+#
+# The match is `[[ … =~ ]]` and not `awk`/`grep -P` for the same reason the pattern had to change: the
+# `awk` on Debian and Ubuntu is mawk 1.3.4, which *panics* (`REcompile() - panic: parser returns ERR_7`)
+# on an interval following a group.
+numpat='(^|[^A-Za-z0-9])('"$stale_numbers"')[- ]'
+# The noun may not be followed by a hyphen: `law-42` and `law-5` are cross-references to a named law, and
+# a first draft that accepted the hyphen flagged "listed law 34 ... carried the law-42 sentence" as a
+# count. The hyphenated *count* form (`the 29-law catalog`) is handled by the number step, which consumes
+# the `29-` and leaves `law catalog` as the window.
+nounpat='(laws?|entries|axioms?)([^A-Za-z0-9-]|$)'
+scan_hits=0
+for f in "${FILES[@]}"; do
+  [[ -f "$f" ]] || continue
+  buf=""
+  file_hits=""
+  scan_buf() { # $1 = the paragraph
+    [[ -n "$1" ]] || return 0
+    [[ "$1" =~ '<!-- counts:' ]] && return 0
+    [[ "$1" =~ $numpat ]] || return 0
+    local rest="${1#*"${BASH_REMATCH[0]}"}"
+    if [[ "${rest:0:80}" =~ $nounpat ]]; then
+      file_hits+="      ${1:0:150}"$'\n'
+    fi
+  }
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    if [[ -z "${line//[[:space:]]/}" ]]; then
+      scan_buf "$buf"; buf=""
+    else
+      buf+="$line "
+    fi
+  done < "$f"
+  scan_buf "$buf"
+  if [[ -n "$file_hits" ]]; then
+    printf 'FAIL  %s states a register total by hand — wrap it in <!-- counts:… -->:\n%s' \
+      "${f#"$ROOT"/}" "$file_hits" >&2
+    scan_hits=1
+  fi
+done
+
+# --- rewrite or check ------------------------------------------------------------------------------
+# Keys are validated before anything is written: a typo in a marker must be a message a person can act
+# on, not a `???` committed into a document.
+known_keys=" $(printf '%s\n' "$map" | cut -d= -f1 | paste -sd' ' -) "
+for f in "${FILES[@]}"; do
+  [[ -f "$f" ]] || continue
+  while IFS= read -r key; do
+    [[ -z "$key" ]] && continue
+    if [[ "$known_keys" != *" $key "* ]]; then
+      printf 'FAIL  %s has <!-- counts:%s -->, which is not a key (known: %s)\n' \
+        "${f#"$ROOT"/}" "$key" "${known_keys# }" >&2
+      exit 1
+    fi
+  done < <(grep -o '<!-- counts:[a-z-]* -->' "$f" | grep -v 'counts:end' \
+    | sed -e 's/<!-- counts://' -e 's/ -->//' || true)
+  if grep -q '<!-- counts:' "$f"; then
+    # every opener must have its closer on the same line, since only single-line spans are generated
+    if ! awk '/<!-- counts:[a-z-]+ -->/ && !/<!-- counts:end -->/' "$f" | grep -q .; then :; else
+      printf 'FAIL  %s has a counts block with no <!-- counts:end --> on the same line\n' \
+        "${f#"$ROOT"/}" >&2
+      exit 1
+    fi
+  fi
+done
+
+changed=0
+for f in "${FILES[@]}"; do
+  [[ -f "$f" ]] || continue
+  tmp="$(mktemp)"
+  printf '%s\n' "$map" | awk -v mapfile=/dev/stdin '
+    BEGIN { while ((getline line < mapfile) > 0) {
+              i = index(line, "="); if (i > 0) V[substr(line,1,i-1)] = substr(line,i+1) } }
+    {
+      # The span is *consumed* as it is replaced — marker, value and closer all go into `out`, and the
+      # search continues past them. The first version searched the rewritten line again, re-matched the
+      # marker it had just handled and looped forever: a gate step that hangs is worse than no gate step.
+      out = ""; rest = $0
+      while (match(rest, /<!-- counts:[a-z-]+ -->/)) {
+        key = substr(rest, RSTART, RLENGTH); gsub(/<!-- counts:| -->/, "", key)
+        pre = substr(rest, 1, RSTART + RLENGTH - 1)
+        tail = substr(rest, RSTART + RLENGTH)
+        if (!match(tail, /<!-- counts:end -->/)) { out = out rest; rest = ""; break }
+        out = out pre (key in V ? V[key] : "???") "<!-- counts:end -->"
+        rest = substr(tail, RSTART + RLENGTH)
+      }
+      print out rest
+    }' "$f" > "$tmp"
+  if ! cmp -s "$f" "$tmp"; then
+    if [[ $check -eq 1 ]]; then
+      printf 'FAIL  %s is not what the register says — re-emit:\n' "${f#"$ROOT"/}" >&2
+      diff "$f" "$tmp" | head -12 | sed 's/^/      /' >&2 || true
+      changed=1
+    else
+      cp "$tmp" "$f"
+      printf 'emitted  %s\n' "${f#"$ROOT"/}"
+    fi
+  fi
+  rm -f "$tmp"
+done
+
+if [[ $check -eq 1 ]]; then
+  if [[ $scan_hits -eq 0 && $changed -eq 0 ]]; then
+    printf 'ok    every marked count matches the register (%s)\n' \
+      "$(printf '%s' "$(value_of laws-entries)")"
+  else
+    exit 1
+  fi
+fi

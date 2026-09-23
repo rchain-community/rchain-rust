@@ -33,6 +33,7 @@ import Rchain.Pos
 import Rchain.Charging
 import Rchain.Crypto.Random
 import Rchain.Crypto.Spec
--- The law register (`Rchain/Laws.lean`) is pure data with no imports: the catalog of all 43 laws, and
--- the rows `Rchain/LawsMain.lean` checks the tree against.
+-- The law register (`Rchain/Laws.lean`) is pure data with no imports: the catalog of every law, and the
+-- rows `Rchain/LawsMain.lean` checks the tree against. (Its own count is `lawCeiling`, checked against
+-- the rows at build time; a number written in a comment here is a number nothing checks.)
 import Rchain.Laws

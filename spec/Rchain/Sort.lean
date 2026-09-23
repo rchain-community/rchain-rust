@@ -739,18 +739,19 @@ mutual
   termination_by l => sizeOf l
 end
 
-/-! ## Lawfulness: `lt_trans` (RESIDUAL AXIOMS — **12**, down from 69)
+/-! ## Lawfulness: `lt_trans` (the residual axioms are counted by the register, not here)
 
-The 12 **list** comparators' `eq_iff`/`swap`/`lt_trans` laws are now **discharged** (direct induction
+The **list** comparators' `eq_iff`/`swap`/`lt_trans` laws are now **discharged** (direct induction
 on the list, composing the element law with `lex_eq_iff`/`swap_lex`/`lex_lt_trans`); they were never
-the hard part. The remaining **12 axioms** are `cmpExpr`'s `eq_iff` and `swap` plus the ten element
-comparators' `lt_trans` laws (`cmpPar`/`cmpSend`/…/`cmpConnective`; `cmpGUnforgeable_lt_trans` is
-proved), which need mutual induction over the AST.
+the hard part. The element comparators' `lt_trans` laws (`cmpPar`/`cmpSend`/…/`cmpConnective`;
+`cmpGUnforgeable_lt_trans` is proved) need mutual induction over the AST, which is why some of them are
+still axioms — and *which* ones, and how many, is `Rchain/Laws.lean`'s law 1b row to say.
 
-**This header said 33 and `spec/INVENTORY.md` said 30, and both were wrong** — counted by
-`Rchain/Laws.lean` (the law register), whose axiom-accounting check compares the axioms its rows cite
-against the elaborated environment, so a number here cannot drift again without the register
-disagreeing.
+**This header has twice carried a wrong number** (33, then 12, when the tree held 69 at one point and
+the register counts a different set). It carries none now, deliberately: the register's axiom-accounting
+check compares the axioms its rows cite against the elaborated environment, so a number written *there*
+cannot drift without the build failing, and a number written *here* can. `tools/emit-lean-counts.sh`
+holds the reader-facing documents to the same rule.
 
 Discharging the element laws is blocked by a Lean limitation, not by choice:
 

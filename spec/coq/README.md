@@ -23,9 +23,13 @@ Install Coq if needed: `opam install coq` (or `apt install coq`).
 `sortPar`, `sortPar_idempotent`, `sortPar_comm`). `Laws.v` states Laws 2–6 (`alpha_equiv`, `substPar`
 with `subst_commutes_sort`, `reduce`, `spatial_matches` + `binds_at_most_once`, `closed` +
 `closed_decidable`) as **axioms** — Coq owns the *definitions* (capture-avoiding de Bruijn
-substitution, α-equivalence, Autosubst-style), which remain the Phase-1 obligations. This mirrors the
-Lean track: Law 1's 30 element-comparator `axiom`s in [`../Rchain/Sort.lean`](../Rchain/Sort.lean), and
-the stated-but-not-defined laws in `Rchain/{Subst,Reduce,Match,FreeVars}.lean`.
+substitution, α-equivalence, Autosubst-style), which remain the Phase-1 obligations.
+
+This is **no longer a mirror of the Lean track**, and the difference is the part worth stating: Lean's
+law 1a (`sortPar_idempotent`/`sortPar_comm`) is *proved*, and its `substPar`, `spatialMatch` and
+`freeVarOf` are *definitions*, not axioms; the comparison this paragraph used to draw was against a
+Lean it no longer describes. See [`../LAWS.md`](../LAWS.md) for what the Lean half actually rests on —
+the register is emitted from `Rchain/Laws.lean` and refused stale by the gate.
 
 ## Mapping to the Scala source of truth
 
@@ -35,4 +39,4 @@ the stated-but-not-defined laws in `Rchain/{Subst,Reduce,Match,FreeVars}.lean`.
 | `sort` | `models/.../rholang/sorter/ordering.scala` |
 | `Proc` (binary Phase-0 form) | `models/src/main/protobuf/RhoTypes.proto` (`Par`/`Send`/`Receive`/`New`/`Match`) |
 
-See [`../INVENTORY.md`](../INVENTORY.md) for the full 29-law catalog.
+See [`../INVENTORY.md`](../INVENTORY.md) for the full catalog (<!-- counts:laws-entries -->49 laws and 58 entries<!-- counts:end -->).

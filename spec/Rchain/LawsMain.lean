@@ -12,10 +12,11 @@ tree — a renamed theorem, a dropped law, an axiom added without a row that jus
 the gap `tools/check-lean-conformance.sh`'s `sorry` scan cannot cover: `sorry` is rare in this tree (zero),
 `axiom` is how a law is actually assumed, and there were 62 of them with nothing counting.
 
-**Run time** (`main`). The catalog itself: `spec/laws.tsv` (data) and `--format md` (the tables
-`spec/INVENTORY.md` and `docs/src/formal/the-43-laws.md` are generated from). Both are committed and the
-gate re-emits them and refuses a diff — the same discipline the conformance corpora already follow, which
-is what stops the law count drifting from 43 to 29 again.
+**Run time** (`main`). The catalog itself: `spec/laws.tsv` (data) and `spec/LAWS.md` (the tables, via
+`--format md`). Both are committed and the gate re-emits them and refuses a diff — the same discipline the
+conformance corpora already follow, which is what stops the law count drifting (two documents once said
+29 while the tree held 43). The reader-facing documents that *used* to restate those totals by hand now
+take them from `spec/laws.tsv` through `tools/emit-lean-counts.sh`, whose markers the same gate checks.
 
 **How this relates to `spec/INVENTORY.md`.** That file is the reader-facing catalogue, and
 `tools/audit-test-register.sh`'s check 8 already verifies that its rows name files which exist (for rows
@@ -144,7 +145,7 @@ delimiters. -/
 def mdCell (s : String) : String := (s.replace "|" "\\|").replace "\n" " "
 
 /-- The register as Markdown: a table per layer, one row per law, with the axioms it rests on and what
-would falsify it. This is the generated half of `docs/src/formal/the-43-laws.md`. -/
+would falsify it. This is `spec/LAWS.md`, which the reader-facing pages link to rather than restate. -/
 def markdown : String :=
   let layers := (laws.map (·.layer)).eraseDups
   let one (l : Law) : String :=

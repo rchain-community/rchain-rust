@@ -71,8 +71,11 @@ Three refinements make the interpreter's partiality impossible:
   and preserved by composition, structural congruence, and canonicalization (Part II).
 - **`WellScoped Γ t`** — every bound level of `t` is within `Γ` (the variable half of the judgment,
   enforced by `HasVarSort`).
-- **`BindsAtMostOnce`** (Law 5, stated) — a pattern binds each free variable at most once; carried by
-  the `freeCount` fields of `ReceiveBind`/`MatchCase`.
+- **`linear`** (Law 5) — a pattern binds each free variable at most once. It is `Rchain/Match.lean`'s
+  `linear` (no repeated level in `freeLevelsOfPar`), and what the *port* enforces is its **normalizer**
+  (`normalizer.rs`, `UnexpectedReuseOfNameContextFree`), not its matcher: the matcher refuses a
+  twice-bound pattern only on the aggregation path. The `BindsAtMostOnce` axiom this bullet used to name
+  was **false as written** (AUDIT C26) and is gone.
 
 ### 1.5 Substitution and reduction (minimal)
 
@@ -126,7 +129,8 @@ spelling is `def Refined α P := { a : α // P a }` with `totalOn_lifts_to_refin
 
 Each theorem is named and `sorry`-free; `#print axioms` on `Rchain.Rho`/`Rchain.Ty` reports only the
 core axioms `propext`, `Classical.choice`, `Quot.sound` (no residual custom axioms — those live in
-`Rchain.Sort`'s 30 element-comparator axioms, which `Ty.lean` does **not** import).
+`Rchain.Sort`'s comparator laws, which `Ty.lean` does **not** import; the register's law 1b row carries
+the current count, and this sentence used to carry a stale one).
 
 ### F1. Sort classification is functional and decidable
 
@@ -285,8 +289,8 @@ round-trip tests are excluded). The typed fix is either a proven-total refinemen
 - `cd spec && lake build` — green (includes `Rchain.Sort`, `Rchain.Rho`, `Rchain.Ty`).
 - `#print axioms Rchain.Rho` / `#print axioms Rchain.Ty` — only `propext`, `Classical.choice`,
   `Quot.sound`; **0 `sorry`** and **0 residual axioms** in `Rho.lean`/`Ty.lean`.
-- `Ty.lean` imports only `Par`/`Cmp`/`Rho` (not `Sort`), so it is independent of the 30 residual element-comparator
-  comparator-law axioms in `Rchain/Sort.lean`.
+- `Ty.lean` imports only `Par`/`Cmp`/`Rho` (not `Sort`), so it is independent of the element-comparator
+  laws in `Rchain/Sort.lean` (law 1b — the register's row carries how many of them are still axioms).
 - Each of the six fundamentals has a named theorem (Part II), with no uncited theorem and no
   uncitable claim.
 
@@ -294,5 +298,5 @@ round-trip tests are excluded). The typed fix is either a proven-total refinemen
 
 - **No Rust code changes** — Part III is the catalogue; refactoring `crates/` is a follow-on.
 - **No self-hosting CoC** — embedded in Lean, not a bespoke type theory as data.
-- **No discharge of the 30 residual element-comparator `Sort.lean` axioms** — the type system is independent of Law 1's
+- **No discharge of the element-comparator `Sort.lean` laws** — the type system is independent of Law 1's
   total-order bundle.

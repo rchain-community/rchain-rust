@@ -198,7 +198,7 @@ sequential one.
   `one_hop_depth2_diverges` (proven), and `depth2_next_step_disjoint` for Law 22 — the half of it
   that has content, since computability at dispatch is a fact about `resolve_children`'s signature.
 
-> **Formal.** The full catalog is 49 rows — [The 29 laws](the-29-laws.md) for the calculus,
+> **Formal.** The full catalog is <!-- counts:laws-entries -->49 laws and 58 entries<!-- counts:end --> — [The 29 laws](the-29-laws.md) for the calculus,
 > [Laws 30–43](laws-30-43.md) for the surface, [Laws 44–47](laws-44-47.md) for the Proof-of-Stake
 > epoch — and the checked rendering is `spec/LAWS.md`. This
 > page is about the first 29. [The 29 laws](the-29-laws.md) /

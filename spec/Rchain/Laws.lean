@@ -1,5 +1,5 @@
 /-!
-# The law register — all 49 laws, in one place, with what each one rests on
+# The law register — every law, in one place, with what each one rests on
 
 `spec/INVENTORY.md` is the prose catalog, and `docs/src/formal/the-29-laws.md`,
 `docs/src/formal/laws-30-43.md` and `docs/src/formal/laws-44-47.md` are its reader-facing rendering, but
