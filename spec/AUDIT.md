@@ -2231,25 +2231,20 @@ port against the **reference document** rather than against itself.
   next: either the replay's produce takes the candidate path (and so never stores the persistent datum
   the play stored on arrival), or the store's contents diverge earlier than the trace shows.
 
-  **The play's trace, and the new clue in it** (same instrumentation on `rspace.rs`; reverted). For the
-  failing input the play reports:
+  **A clue that was my own instrumentation, corrected here.** Running the same prints on the play side
+  showed `options = 1` for op1's consume — the first operation, on a fixture that builds a fresh in-memory
+  store per case — and the previous revision of this entry recorded that as "a candidate on an empty
+  store". It is not: `extract_data_candidates` (`space_matcher.rs:57-82`) returns a `Vec<Option<…>>` with
+  one element *per channel-pattern pair*, `None` when that channel has no matching data — so a
+  single-channel consume reports `1` whether or not anything matched. The play-side trace therefore adds
+  no clue, and the correction is written down because a register that keeps a wrong measurement is worse
+  than one that keeps none.
 
-  ```
-  op1 consume (non-persistent)  options = 1        <- a candidate before any operation has run
-  op2 produce (persistent)      candidate = true
-  op3 consume (persistent)      options = 1
-  op4 produce (persistent)      candidate = true
-  op5 produce (persistent)      candidate = true
-  op6 produce (persistent)      candidate = false
-  ```
-
-  The fixture is fresh per case (`play_and_replay` builds a new in-memory store manager, history and hot
-  store), so `options = 1` at op1 is a candidate on an *empty* store — the store's data read for the
-  channel yields nothing for the replay at op3, yet the play's extraction produces an option at op1. That
-  is where the two diverge first, and it is a *play*-side observation: either `fetch_channel_to_index_data`
-  or `extract_data_candidates` yields an option for a channel with no matching data, or the play's store
-  is not empty at op1 after all. Both are testable in one step, and either would be a defect in the
-  committed port rather than in the test.
+  What that trace *does* show, once read correctly, is agreement: op1's consume on both sides stores its
+  continuation (nothing to match), and op2's produce matches it. The remaining asymmetry to test is the
+  *produce* path: if the replay's `run_matcher_produce` rejects a recorded COMM the play accepted, the
+  replay stores a datum the play did not, its store gains a datum, later pairings shift, and exactly one
+  recorded COMM is left over — which is the shape measured at the top of this entry.
 
   **A failed hypothesis, recorded so it is not retried**: rigging the replay with the *pre*-play state
   (taking a checkpoint before the operations, rather than the test's post-play one) changes nothing —
