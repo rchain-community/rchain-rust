@@ -1,4 +1,4 @@
-# Running a public testnet
+# Running a public testnet of your own
 
 A **persistent, multi-host** network — as opposed to the local Docker [devnet](devnet.md) or the bare
 topology harness (`tools/devnet.sh up --nodes N`, see [Operating the node](operating.md)). This page is
@@ -6,7 +6,8 @@ the operational walkthrough: planning the stake split, the genesis ceremony, joi
 validator to a running chain, monitoring, and the sizing trap that will bite a small host.
 
 It is written from a live two-host testnet (two 1 GB droplets: one genesis master, one joining validator,
-plus observers) and the measurements quoted come from that net.
+plus observers); that net's own page — its hosts, keys, genesis and incident log — is
+[The public testnet](testnet.md), and the measurements quoted here come from it.
 
 > **Security.** A testnet holds no value. Use throwaway keys, publish them deliberately, and expect to
 > rebuild the chain at will — a rebuild resets everything.
