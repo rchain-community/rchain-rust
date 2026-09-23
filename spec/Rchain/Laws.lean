@@ -895,10 +895,21 @@ def laws : List Law := [
   { number := 27, layer := "Cross-shard",
     statement := "Cross-shard atomicity (2PC): every leg that *prepared* reaches the one decision the \
       coordinator made — commit on all of them or abort on all of them",
-    status := .owed,
-    declarations := [`Rchain.txn_atomic_is_false, `Rchain.uniform],
+    status := .provedModel,
+    declarations := [`Rchain.txn_atomic_is_false, `Rchain.uniform, `Rchain.ShardOutcome,
+      `Rchain.voteFromReply, `Rchain.decisionOf, `Rchain.phaseTwoWith, `Rchain.phaseTwoWith_cons,
+      `Rchain.runPhaseTwo, `Rchain.phaseTwoWith_all_prepared, `Rchain.every_leg_reaches_the_one_decision,
+      `Rchain.all_prepared_legs_commit, `Rchain.an_already_committed_leg_still_commits,
+      `Rchain.an_aborted_reply_moves_the_decision],
     rust := ["casper/src/txn_coordinator.rs"],
-    falsifiable := none,
+    falsifiable := some "`every_leg_reaches_the_one_decision` says every leg's phase-two outcome is the \
+      *single* decision or `\"not prepared\"` — so a leg that voted abort cannot carry an outcome that \
+      disagrees with a prepared leg's, and `all_prepared_legs_commit` is the all-ready case. The retry \
+      path is pinned by `an_already_committed_leg_still_commits` (a `committed` reply plus a `ready` one \
+      still commit) against `an_aborted_reply_moves_the_decision` (an `aborted` reply, or an error, is an \
+      abort vote) — the two together are what `vote_from_reply`'s own comment argues for, and reading \
+      `committed` as not-ready would flip the first into an abort and leave one shard committed and \
+      another aborted",
     note := "**the axiom this row used to cite was FALSE** — `∀ r : Run, uniform r` over `Run := List \
       Outcome`, refuted by `[committed, aborted]` (`txn_atomic_is_false`, 2026-09-23). The narrowed \
       statement is the port's own: `run_2pc` decides once (`all_ready`), and phase two applies that \
@@ -906,7 +917,10 @@ def laws : List Law := [
       outcome to be uniform about (`casper/src/txn_coordinator.rs:152-192`). The Rust's comment on \
       `vote_from_reply` (`:196-215`) is the differential reference for the retry path: a re-run \
       answering `committed` must count as ready, or the other legs abort and the run stops being \
-      uniform on exactly the path recovery makes reachable" },
+      uniform on exactly the path recovery makes reachable. **The run is modelled now** (2026-09-23, \
+      Programme D unit 6): `runPhaseTwo` is the port's phase two, `decisionOf` its two decision lines \
+      over `voteFromReply`'s booleans, and the three theorems above are the narrowed statement — so the \
+      row is a model claim rather than a claim about the Rust evidenced by tests" },
   { number := 28, layer := "Cross-shard",
     statement := "Leg idempotency: `txn_prepare`/`txn_commit`/`txn_abort` are idempotent under the \
       transaction id — a retried leg returns the record it already has — and the two terminal verbs \
@@ -939,10 +953,13 @@ def laws : List Law := [
   { number := 29, layer := "Cross-shard",
     statement := "The coordinator's decision is a *function* of its votes — `committed` iff every \
       participant voted ready — and it is a durable record a prepared participant can recover",
-    status := .owed,
+    status := .provedModel,
     declarations := [`Rchain.commit_record_deterministic_is_false, `Rchain.allReady,
       `Rchain.coordinatorDecision, `Rchain.allReady_eq_true,
-      `Rchain.coordinator_decision_committed_iff],
+      `Rchain.coordinator_decision_committed_iff, `Rchain.TxnState.IsTerminal,
+      `Rchain.CoordRecord.recordVote, `Rchain.an_abort_is_absorbing, `Rchain.a_commit_is_absorbing,
+      `Rchain.an_abort_vote_aborts_a_prepared_record, `Rchain.a_committed_record_stays_committed,
+      `Rchain.Ledger.record_setRecord, `Rchain.txnCommit_fixes],
     rust := ["casper/src/txn_coordinator.rs"],
     falsifiable := some "`coordinator_decision_committed_iff` is the decision half, proved against the \
       port's own two lines; the witness that the *old* statement was false is \
@@ -953,8 +970,13 @@ def laws : List Law := [
       (`commit_record_deterministic_is_false`). Split in two: the **decision half is now proved** — \
       `allReady`/`coordinatorDecision` are the Rust's `all_ready`/`decision` lines, and \
       `coordinator_decision_committed_iff` says `committed` iff every vote is ready — while the \
-      **durability half stays owed**: that a prepared participant recovers the decision from the durable \
-      record needs the coordinator's record writes modelled. The row is `owed` because one half is" },
+      **durability half is now modelled too** (2026-09-23, Programme D unit 6): `CoordRecord.recordVote` \
+      is the port's `record_vote` (`gateway/ledger.rs:158-178`), whose first line — a terminal record \
+      ignores later votes — is the fix for AUDIT §15 C1, and the four theorems are the port's own \
+      `an_abort_is_absorbing` / `a_commit_is_absorbing` plus the contrast that shows the guard is a \
+      choice rather than a fact about votes (`an_abort_vote_aborts_a_prepared_record`). On the \
+      participant's side the durability is `Ledger.record_setRecord` (a written record reads back) with \
+      `txnCommit_fixes`; the row is `owed` no longer" },
 
   -- ── Laws 30–43: the surface the ten silent defects live in ──────────────────────────────────────
   { number := 30, layer := "Rholang",

@@ -379,4 +379,174 @@ theorem coordinator_decision_committed_iff (votes : List Vote) :
     · intro hall
       exact absurd (h ((allReady_eq_true votes).mpr hall)) (by simp)
 
+/-! ### The run the two laws are about (`run_2pc`)
+
+`coordinatorDecision` decides from a list of votes; the port's `run_2pc`
+(`casper/src/txn_coordinator.rs:151-195`) *produces* that list from the phase-one replies and then
+applies the one decision to every leg that prepared. This section adds that half, so law 27's narrowed
+statement is a theorem about the run rather than a claim about an arbitrary `Run` — the shape the
+falsification of `txn_atomic` (`txn_atomic_is_false`) left owed. -/
+
+/-- A participant's phase-one reply as the coordinator reads it (`ShardOutcome`). -/
+inductive ShardOutcome where
+  | value (p : String)
+  | error (msg : String)
+deriving DecidableEq
+
+/-- **The reply-to-vote map** (`vote_from_reply`, `txn_coordinator.rs:196-215`): a value is a ready vote
+    only for `"ready" | "prepared" | "committed"`; anything else — an abort, an unexpected string, a
+    timeout — is an abort vote. The middle two are the *retry* cases its doc comment is about: the
+    participant is idempotent under `txn_id`, so a re-run can be answered with an already-terminal
+    state, and reading `committed` as "not ready" would abort the other legs and leave one shard
+    committed and another aborted *on exactly the path recovery makes reachable*. -/
+def voteFromReply : ShardOutcome → Bool
+  | .value p => p == "ready" || p == "prepared" || p == "committed"
+  | .error _ => false
+
+/-- The decision from the replies: `all_ready` then `"commit"` or `"abort"`
+    (`txn_coordinator.rs:177-179`, over the booleans `vote_from_reply` produces). -/
+def decisionOf (replies : List ShardOutcome) : String :=
+  if replies.all voteFromReply then "commit" else "abort"
+
+/-- **Phase two** (`txn_coordinator.rs:181-194`): the one decision is applied to every leg that voted
+    ready; a leg that voted abort gets `"not prepared"` — it never locked resources, so it has nothing
+    to commit or compensate. -/
+def phaseTwoWith (dec : String) (replies : List ShardOutcome) : List ShardOutcome :=
+  replies.map (fun r => if voteFromReply r then .value dec else .error "not prepared")
+
+/-- The cons case as an equation, so the induction can rewrite the folded form rather than unfold the
+    `map` (which would put the tail out of reach of the induction hypothesis). -/
+theorem phaseTwoWith_cons (dec : String) (r : ShardOutcome) (rs : List ShardOutcome) :
+    phaseTwoWith dec (r :: rs)
+      = (if voteFromReply r then .value dec else .error "not prepared") :: phaseTwoWith dec rs := rfl
+
+/-- Phase two with the decision `decisionOf` computed. The helper above exists so the "they all get the
+    same one" theorem can be stated and proved for *any* decision string, which is what makes the
+    induction go through. -/
+def runPhaseTwo (replies : List ShardOutcome) : List ShardOutcome :=
+  phaseTwoWith (decisionOf replies) replies
+
+/-- **Law 27, narrowed and proved: every leg reaches the one decision or nothing.**
+    `txn_atomic_is_false` refuted the old universal form — not every `Run` is uniform, because a leg
+    that never prepared has no outcome to be uniform about. What the coordinator actually guarantees is
+    this: every leg's phase-two outcome is either the *single* decision computed at `:177-179` or
+    `"not prepared"`, so no two prepared legs can disagree. -/
+theorem every_leg_reaches_the_one_decision (replies : List ShardOutcome) :
+    ∀ o ∈ runPhaseTwo replies, o = .error "not prepared" ∨ o = .value (decisionOf replies) := by
+  intro o ho
+  simp only [runPhaseTwo, phaseTwoWith, List.mem_map] at ho
+  obtain ⟨r, _, rfl⟩ := ho
+  by_cases h : voteFromReply r = true
+  · exact Or.inr (by simp [h])
+  · exact Or.inl (by simp [h])
+
+/-- The helper step: when every reply is a ready vote, the phase-two outcome *is* the decision, for
+    every leg — the induction the next theorem needs, general in the decision string. -/
+theorem phaseTwoWith_all_prepared (dec : String) (replies : List ShardOutcome)
+    (h : replies.all voteFromReply = true) :
+    phaseTwoWith dec replies = replies.map (fun _ => .value dec) := by
+  induction replies with
+  | nil => simp [phaseTwoWith]
+  | cons r rs ih =>
+      simp only [List.all_cons, Bool.and_eq_true] at h
+      obtain ⟨hr, hrs⟩ := h
+      rw [phaseTwoWith_cons, List.map_cons]
+      simp only [hr, if_true]
+      rw [ih hrs]
+
+/-- **…and when every leg prepared, they all commit**: the run's outcomes are `commit` values, which is
+    law 27's "commit on all prepared legs" — the other branch is the same statement with the other
+    literal, and the legs that did *not* prepare keep their `"not prepared"` outcome, which is what the
+    falsification of the old universal form (`txn_atomic_is_false`) was about. -/
+theorem all_prepared_legs_commit (replies : List ShardOutcome)
+    (h : replies.all voteFromReply = true) :
+    runPhaseTwo replies = replies.map (fun _ => .value "commit") := by
+  have hdec : decisionOf replies = "commit" := by simp [decisionOf, h]
+  rw [runPhaseTwo, hdec]
+  exact phaseTwoWith_all_prepared "commit" replies h
+
+/-- **The retry case the port's comment is about, as a theorem**: a leg answering `committed` and a leg
+    answering `ready` still commit together, so a re-run cannot flip a transaction whose compensation
+    has already run into an abort. -/
+theorem an_already_committed_leg_still_commits :
+    decisionOf [.value "committed", .value "ready"] = "commit" ∧
+    voteFromReply (.value "committed") = true ∧
+    voteFromReply (.value "prepared") = true := by
+  refine ⟨?_, ?_, ?_⟩ <;> decide
+
+/-- **…and the contrast that makes it a choice rather than a tautology**: an aborted or unexpected
+    reply is an abort vote, so it does move the decision to `abort`. -/
+theorem an_aborted_reply_moves_the_decision :
+    decisionOf [.value "committed", .value "aborted"] = "abort" ∧
+    voteFromReply (.value "aborted") = false ∧ voteFromReply (.error "timeout") = false := by
+  refine ⟨?_, ?_, ?_⟩ <;> decide
+
+
+/-! ### Law 29's durability half: the coordinator's vote record
+
+The decision half of law 29 is `coordinator_decision_committed_iff`. The **durability** half is the
+property that makes a recorded decision stick: a participant's `committed`/`aborted` is terminal, so a
+late vote cannot resurrect it. That is not a hypothetical — AUDIT §15 C1 records the port writing a
+terminal record's state from a later vote, *resurrecting* a transaction whose compensation had already
+run, and the guard below is the fix (`casper/src/gateway/ledger.rs:158-178`). This section mirrors
+`record_vote`, so the row's second half is a theorem rather than a sentence. -/
+
+/-- A terminal state: `committed` or `aborted` (`CoordState::is_terminal`). -/
+def TxnState.IsTerminal : TxnState → Prop
+  | .prepared => False
+  | .committed => True
+  | .aborted => True
+
+instance (s : TxnState) : Decidable s.IsTerminal := by
+  cases s <;> unfold TxnState.IsTerminal <;> infer_instance
+
+/-- **`record_vote`** (`ledger.rs:158-178`): a terminal record ignores every later vote — that guard is
+    the C1 fix — and otherwise the vote is recorded (replacing a repeated shard's) and the state
+    recomputed: `aborted` on an abort vote, `committed` when the votes are one per leg and all ready,
+    `prepared` in between. -/
+def CoordRecord.recordVote (r : CoordRecord) (shard : ShardId) (v : Vote) : CoordRecord :=
+  if r.state.IsTerminal then r
+  else
+    let votes :=
+      if r.votes.any (fun p => p.1 = shard) then r.votes.map (fun p => if p.1 = shard then (shard, v) else p)
+      else r.votes ++ [(shard, v)]
+    if v = Vote.abort then { r with votes := votes, state := TxnState.aborted }
+    else if votes.length = r.txn.legs.length && votes.all (fun p => p.2 = Vote.ready) then
+      { r with votes := votes, state := TxnState.committed }
+    else { r with votes := votes, state := TxnState.prepared }
+
+/-- **A recorded abort is absorbing** — the C1 property, and the Rust test of the same name
+    (`an_abort_is_absorbing`). A compensation that has run cannot be undone by a vote that arrives
+    later, which is exactly what the unguarded version of this function got wrong. -/
+theorem an_abort_is_absorbing (r : CoordRecord) (h : r.state = TxnState.aborted) (shard : ShardId)
+    (v : Vote) : r.recordVote shard v = r := by
+  unfold CoordRecord.recordVote
+  rw [h]
+  rfl
+
+/-- **A recorded commit is absorbing**, by the same guard (`a_commit_is_absorbing` in the port's tests). -/
+theorem a_commit_is_absorbing (r : CoordRecord) (h : r.state = TxnState.committed) (shard : ShardId)
+    (v : Vote) : r.recordVote shard v = r := by
+  unfold CoordRecord.recordVote
+  rw [h]
+  rfl
+
+/-- **…and that guard is the whole fix**: on a non-terminal record an abort vote does abort it, so the
+    absorption above is a choice of the function's first line rather than a fact about votes in
+    general — the contrast that makes the previous two theorems worth having. -/
+theorem an_abort_vote_aborts_a_prepared_record (r : CoordRecord) (shard : ShardId)
+    (h : r.state = TxnState.prepared) : (r.recordVote shard Vote.abort).state = TxnState.aborted := by
+  unfold CoordRecord.recordVote
+  rw [h]
+  simp [TxnState.IsTerminal]
+
+/-- **The decision is durable in the sense the law claims**: a record that reaches `committed` keeps it,
+    so a prepared participant re-reading the record after a retry recovers the same decision — which is
+    what `txnCommit_fixes` (`Ledger`, above) supplies on the participant's side and this on the
+    coordinator's. -/
+theorem a_committed_record_stays_committed (r : CoordRecord) (h : r.state = TxnState.committed)
+    (shard : ShardId) (v : Vote) : (r.recordVote shard v).state = TxnState.committed := by
+  rw [a_commit_is_absorbing r h shard v, h]
+
+
 end Rchain
