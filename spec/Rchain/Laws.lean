@@ -190,27 +190,36 @@ def laws : List Law := [
       the model's algebra rather than a claim about the wrong order (it was never a fork between nodes: \
       every node sorts by the score tree). The alignment is safe for the proofs: \
       `sortPar_idempotent`/`sortPar_comm` hold for any comparator, and \
-      `eq_iff`/`swap`/`lt_trans` are order-independent, so the twelve axioms' statements do not change" },
+      `eq_iff`/`swap`/`lt_trans` are order-independent, so the remaining axioms' statements do not change" },
   { number := 1, clause := "b", layer := "Rholang",
     statement := "Each element comparator (`cmpPar`, `cmpSend`, …, `cmpConnective`) is a lawful total \
       order: `eq_iff`, `swap`, `lt_trans`",
     status := .owed,
-    declarations := [`Rchain.cmpPar, `Rchain.cmpSend, `Rchain.cmpExpr],
+    declarations := [`Rchain.cmpPar, `Rchain.cmpSend, `Rchain.cmpExpr, `Rchain.cmpNew_lt_trans,
+      `Rchain.cmpSend_lt_trans, `Rchain.cmpReceiveBind_lt_trans, `Rchain.cmpReceive_lt_trans,
+      `Rchain.cmpMatchCase_lt_trans, `Rchain.cmpMatch_lt_trans, `Rchain.cmpBundle_lt_trans,
+      `Rchain.cmpConnective_lt_trans, `Rchain.Comparator.lex_lt_trans, `Rchain.Comparator.cmpPairF],
     rust := ["models/src/sorter.rs"],
-    axioms := [`Rchain.cmpExpr_eq_iff, `Rchain.cmpExpr_swap,
-      `Rchain.cmpPar_lt_trans, `Rchain.cmpSend_lt_trans, `Rchain.cmpReceiveBind_lt_trans,
-      `Rchain.cmpReceive_lt_trans, `Rchain.cmpNew_lt_trans, `Rchain.cmpMatchCase_lt_trans,
-      `Rchain.cmpMatch_lt_trans, `Rchain.cmpExpr_lt_trans, `Rchain.cmpBundle_lt_trans,
-      `Rchain.cmpConnective_lt_trans],
-    falsifiable := some "`cmpGUnforgeable_lt_trans` is proved while its ten siblings are axioms, and \
-      `cmpListSend_lt_trans` is proved from them — so a counterexample to any element law would be a \
-      counterexample to those proofs. No witness is published for the axioms themselves, which is the \
-      gap: nothing would notice if one of them were false",
-    note := "12 axioms, not 30: this row's own earlier count (and `spec/INVENTORY.md`'s) was stale. \
-      The list comparators' laws were discharged by induction on the list. The `rust` anchor is \
+    axioms := [`Rchain.cmpExpr_eq_iff, `Rchain.cmpExpr_swap, `Rchain.cmpPar_lt_trans,
+      `Rchain.cmpExpr_lt_trans],
+    falsifiable := some "eight of the ten element `lt_trans` laws are theorems now \
+      (`cmpNew`/`cmpSend`/`cmpReceiveBind`/`cmpReceive`/`cmpMatchCase`/`cmpMatch`/`cmpBundle`/\
+      `cmpConnective`), each by the `Comparator.lex_lt_trans` idiom the file's own note validates, and \
+      the list laws are proved from them — so a counterexample to any of the four remaining axioms \
+      would also be a counterexample to those proofs. The two survivors are named rather than hidden: \
+      `cmpPar`'s is an eight-component chain and `cmpExpr`'s three are blocked on the size of its \
+      equation lemmas",
+    note := "**four axioms, from twelve** (2026-09-23). The list comparators' laws were discharged \
+      earlier by induction on the list; the eight element laws above are now theorems, in dependency \
+      order (an element law needs the list lemma of the types *below* it and a list lemma needs the \
+      element law of its own type, so the two families interleave — the order in `Rchain.Sort` is that \
+      topological order, and it is why the section is not alphabetical). The two that stay are \
+      `cmpPar_lt_trans` (an **eight**-component `lex` chain, needing the packaging twice over, which is \
+      what `Rchain.Sort`'s mutual-block note is about) and `cmpExpr`'s three (blocked on the *size* of \
+      its equation lemmas, as the axiom comment in that file records). The `rust` anchor is \
       `models/src/sorter.rs`, because the order these comparators specify *is* the node's score tree \
-      (`node_score(tag, children)`, compared element-wise by `compare_children`), and the `sort` \
-      corpus pins four structures of it against the node — see law 1a's note" },
+      (`node_score(tag, children)`, compared element-wise by `compare_children`), and the `sort` corpus \
+      pins four structures of it against the node — see law 1a's note" },
   { number := 2, layer := "Rholang",
     statement := "α/name equivalence = par order + `| Nil` + top-level arithmetic + α + added \
       eval/quote",
