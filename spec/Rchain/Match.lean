@@ -104,6 +104,41 @@ end
 -- a kernel-reducible matcher for symbolic unfolding, and the two proofs below start from that trade
 -- rather than from the assumption that it is free. Reverted rather than kept, because an annotation
 -- whose benefit is a *future* proof and whose cost is two working checkers is a net loss today.
+-- **The route to `fuel_saturation`, worked out (2026-09-23, Programme D unit 8).** The obligation is
+-- one mutual induction, and the shape is forced by what the definitions reduce to:
+--
+-- 1. **The family is the matcher's five members, and each is stated with its *own* bound**, because a
+--    member is entered one fuel step deeper than the caller: `spatialMatchCore (m+1) t p` reduces to
+--    `spatialMatchExprs m pexprs texprs` while `spatialMatchCore m t p` reduces to
+--    `spatialMatchExprs (m-1) …`. So the goal that has to be proved for the core *is the next member's
+--    statement at a one-shifted bound* — the members' bounds are depth-indexed, which is what the
+--    doubling and the constant in `matchFuel` are for: three steps (core → exprs → expr) consume fuel
+--    before a single element comparison, and every element then consumes at least one.
+-- 2. **The measure is `parNodes`, and each recursive call is on a subterm**, so the side conditions are
+--    arithmetic on it: `parNodesExpr e ≤ parNodesExprs (e :: rest)` for an element of an expression list,
+--    `parNodes p' ≤ parNodesListPar ps` for an element of a collection, `parNodes a + parNodes b` for a
+--    map pair — each provable by the definition alone (a `simp`/`omega` step per case), and each giving
+--    the strict slack the next bound needs.
+-- 3. **No `termination_by`.** The family is structural on both the fuel and the terms, which is what
+--    keeps the kernel reducing it and `decide` checking cases (the reverted experiment above). The
+--    induction is over the *terms*, with the fuel universally quantified above each member's bound —
+--    the shape `coreSat : ∀ m, matchFuel t p ≤ m → spatialMatchCore (m+1) t p = spatialMatchCore m t p`,
+--    and its four siblings with their own bounds.
+--
+-- What that leaves is the list inductions (`matchListPar` walks the pattern's elements, `matchMap` its
+-- pairs) and the per-case arithmetic — volume of a known kind, with the corpus as the behavioural check
+-- in the meantime. Recorded here so the next attempt starts from the reduction shapes rather than
+-- rediscovering that the bounds must be depth-indexed.
+--
+-- **The first link, checked (same day).** Written out with `fuelBound n k := 2 * n + (4 - k)`, the
+-- core's obligation reduces in two steps to the expressions member's: `cases m` (the zero case dies on
+-- `2 * n + 4 ≤ 0`), then `simp only [spatialMatchCore, parNodes]`, and the goal becomes
+-- `spatialMatchExprs (k+1) pexprs texprs = spatialMatchExprs k pexprs texprs` — precisely the next
+-- member's statement at a one-shifted bound, because `matchFuel`'s `+4` and the `parNodes` sum are
+-- *the same* expression as `fuelBound (parNodes t + parNodes p) 0` (`parNodes` of a `Par` is its
+-- expression list's count). The side condition the next member needs, `2 * (parNodesExprs pexprs +
+-- parNodesExprs texprs) + 3 ≤ k`, is `omega` from `hm`. So the mutual family is the right shape and the
+-- arithmetic is slack in the direction the design needs; what remains is the volume.
 def matchFuel (target pattern : Par) : Nat := 2 * (parNodes target + parNodes pattern) + 4
 
 mutual
