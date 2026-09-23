@@ -2196,21 +2196,36 @@ port against the **reference document** rather than against itself.
   replay's tuple space differs from the play's at that point, which the test builds from the play's own
   checkpoint root.
 
-  **The silent path is located** (`replay_rspace.rs`): `locked_produce` asks the recording for the
-  COMMs of that produce (`comms_for_produce`, `:562-568`), and the recording *does* hold one — the
-  leftover above is keyed under it — but `get_comm_or_produce_candidate` (`:268-287`) returns `None` for
-  it, so the code falls through to `store_data` (`:577-584`): no COMM is replayed, no error is raised,
-  and the recording keeps its copy. That is the whole failure in one branch. The next step is that
-  function's per-COMM `run_matcher_produce` and why it finds no candidate for a COMM the play itself
-  produced — with the third candidate below as the field-level suspect.
+  **A trace of the replay, op by op** (instrumenting `locked_produce`/`locked_consume` and the two
+  candidate searches; reverted). Replaying the five operations gives:
 
-  **A third candidate, and the most mechanical of the three**: the recorded COMMs in the log both carry
-  `times_repeated: { …: 0 }` (printed above), and the replay *recomputes* that map as it walks the
-  script — the ops produce the same datum twice, so a replay-side counter can differ from the recorded
-  one. If the containment check compares whole `Comm`s (rather than the consume-and-produce refs the
-  recording is keyed by), a `times_repeated` difference is exactly "the same event, not equal" — which
-  would leave the recording's copy unused while never reporting the recomputed one as absent. That is
-  worth one experiment before the other two.
+  ```
+  op1 consume  comms_for_consume = Some   no candidates -> store
+  op2 produce  comms_for_produce = Some   FIRES comm consume=88f3cb… produces=a21b3a…
+  op3 consume  comms_for_consume = Some   no candidates -> store      <- its recorded COMM is left
+  op4 produce  comms_for_produce = Some   FIRES comm consume=3821ed… produces=a21b3a…
+  op5 produce  comms_for_produce = Some   no candidates -> store
+  ```
+
+  Two things fall out of that, and they are measured rather than inferred. First, the COMM the replay
+  fails to reconstruct is the one whose *consume* is op3's persistent continuation paired with op2's
+  datum — and it is left because op3's own step finds "no candidates", i.e. the candidate search for its
+  recorded COMMs matches nothing in the store at that moment. Second, the replay *does* fire a COMM at op2
+  whose recorded consume **is op3's continuation** — a continuation that cannot be waiting at that point
+  in the play, since op3 has not run yet. So the replay's store contains a waiting continuation before the
+  operation that creates it, and the recordings' pairings are therefore consumed out of order: op2
+  consumes the pairing that belongs to a later step, and the pairing that belongs to op2 is the one left
+  over.
+
+  **A failed hypothesis, recorded so it is not retried**: rigging the replay with the *pre*-play state
+  (taking a checkpoint before the operations, rather than the test's post-play one) changes nothing — the
+  trace above is identical. So the extra continuation is not simply "the play's final state handed to the
+  replay".
+
+  The next step is therefore `run_matcher_produce`'s candidate filter (`replay_rspace.rs:218-225`), which
+  admits a candidate only when the recorded COMM's consume *is* a waiting continuation in the store
+  (`comm.consume == wc.source`), together with `extract_first_match` — the trace says a candidate was
+  found for op2 against a continuation that should not exist yet, which is where the booking goes wrong.
 
   **Not fixed here.** A test that fails on its own recording is a defect worth fixing rather than
   muting: this row registers it with a deterministic reproducer and the measured leftover, and the fix
