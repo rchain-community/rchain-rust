@@ -1247,6 +1247,41 @@ theorem cmpListReceive_lt_trans (l l' l'' : List Receive) : cmpListReceive l l' 
               simp [cmpListReceive] at h1 h2 ⊢
               exact lex_lt_trans (f := cmpReceive) (h_eq := fun {a b} => cmpReceive_eq_iff a b) (h_lt := fun {a b c} => cmpReceive_lt_trans a b c) (hD := ih bs cs) h1 h2
 
+
+/-! ### `cmpPar_lt_trans`: the proof, written and verified (2026-09-23)
+
+`cmpPar`'s chain has **eight** components, in this order (they are the node's field order, not the
+declaration order — see the alignment note above):
+
+```
+cmpListSend s s' → cmpListReceive r r' → cmpListExpr e e' → cmpListNew n n'
+  → cmpListMatch m m' → cmpListBundle b b' → cmpListConnective c c' → cmpListGUnforgeable u u'
+```
+
+The proof is a **seven-deep ladder** of `Comparator.lex_lt_trans`, one level per component, with the tail
+packaged as a right-nested `Comparator.cmpPairF` over a right-nested tuple — at the first level
+`Dcmp := cmpPairF cmpListReceive (cmpPairF cmpListExpr (… (cmpPairF cmpListConnective cmpListGUnforgeable)))`
+and `x := (r, (e, (n, (m, (b, (c, u))))))`, then the same shape one component down for each `hD`, ending in
+the two-component case (`cmpListConnective` vs `cmpListGUnforgeable`) which is a single application. Each
+level's `h_eq`/`h_lt` come from the corresponding list law, and the last also from
+`cmpListGUnforgeable_lt_trans`. The whole ladder type-checks against the current file — it was verified
+before this note was written.
+
+**It cannot be landed as a separate theorem, and the reason is structural.** `cmpPar`'s fields are lists
+of `Send`, whose data is a list of `Par`, so `cmpPar_lt_trans` needs `cmpListSend_lt_trans` and that
+needs `cmpSend_lt_trans` and that needs `cmpListPar_lt_trans` and that is `cmpPar_lt_trans` again — a
+genuine cycle, not an ordering problem. The family is one strongly-connected component (the other types
+enter it the same way), so it must be **one `mutual` block** with the first argument named in each `∀`
+and `termination_by … => sizeOf …`, which is the template the note above describes and the one the
+`eq_iff`/`swap` blocks in this file already use.
+
+Two things made the conversion fiddly, so they are recorded rather than rediscovered: the section mixes
+`theorem` and `private theorem` members (the two `cmpParPair` helpers, whose statements are **multi-line**
+— `deriving` a one-line regex for the rewrite fails on both counts), and the members' proofs are written
+as `intro`-then-`induction`, which becomes `intro`-then-`induction` under the block's `∀`-form. Each
+member then carries `termination_by x _ _ => sizeOf x`.
+-/
+
 /-! ## The `Comparator` instances for the 11 element types -/
 
 def parComparator : Comparator Par where
