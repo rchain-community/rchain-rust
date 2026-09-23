@@ -21,7 +21,6 @@
 //! below, which prints the node's answer rather than asserting it while the question is open).
 
 use rchain_models::ast::{Par, Proc};
-use rchain_models::sorter::sort_par_term;
 use rchain_rholang::normalizer::source_to_adt;
 
 /// The corpus's declared size (`Rchain/Corpus.lean`'s `sortCaseCount`).
@@ -36,22 +35,21 @@ fn normalized(source: &str) -> Proc {
 }
 
 /// **Which of the two the node's canonical order puts first**, read the only way it is observable:
-/// put both in one `par`, sort, and see which element landed at index 0. `lt` means `left` came first.
+/// hand the node both and ask *it* to sort them — `sort_pars` is the node's own list sort, driven by
+/// the same score tree `sort_par` uses — and see which landed first. `lt` means `left` came first.
+///
+/// This works for *any* two terms, not only single sends, which matters: the par's own field order
+/// (which of its eight lists is compared first) is only reachable by comparing two pars with different
+/// field structure, and canonicalization would hide that inside a single par.
 fn node_verdict(left: &Par, right: &Par) -> &'static str {
-    let mut both = left.clone();
-    both.sends.extend(right.sends.iter().cloned());
-    let sorted = sort_par_term(&both);
-    let first = sorted
-        .sends
-        .first()
-        .expect("a two-send par sorts to a two-send par");
-    // Both sides are single sends, so `sends[0]` identifies the side that came first.
-    if *first == left.sends[0] {
+    let sorted = rchain_models::sorter::sort_pars(vec![left.clone(), right.clone()]);
+    let first = sorted.first().expect("two pars sort to two pars");
+    if first == left {
         "lt"
-    } else if *first == right.sends[0] {
+    } else if first == right {
         "gt"
     } else {
-        panic!("neither side's send is at index 0: the sorted form is not one of the inputs");
+        panic!("neither input is at index 0: the sorted list is not a permutation of its input");
     }
 }
 
@@ -145,12 +143,51 @@ fn the_canonical_order_is_the_lean_models_pairwise() {
 /// it is the model that is wrong.
 #[test]
 fn the_field_order_the_two_orders_would_disagree_on() {
-    // `@"a"!!(1)` is persistent on the smaller channel; `@"b"!(1)` is not persistent on the larger one.
-    let persistent_a = normalized("@\"a\"!!(1)");
-    let plain_b = normalized("@\"b\"!(1)");
-    let got = node_verdict(&persistent_a, &plain_b);
-    println!(
-        "node: persistent @\"a\" vs plain @\"b\" -> {got}; the model's comparator says lt \
-         (channel first), the score tree's child order says gt (persistence first)"
-    );
+    // Every pair here is a *candidate corpus row*: the node's answer is what the model must be
+    // aligned to, so this prints the node's verdict for each and nothing is asserted until the model
+    // matches.
+    let pairs: &[(&str, &str)] = &[
+        // the field order: persistence first (score) against channel first (the model's `cmpSend`).
+        ("@\"a\"!!(1)", "@\"b\"!(1)"),
+        // the expression-class order: the tags put every collection *before* the vars and operators.
+        ("@\"c\"!([1])", "@\"c\"!(1 + 2)"),
+        ("@\"c\"!(Set(1))", "@\"c\"!(1 + 2)"),
+        ("@\"c\"!([1])", "@\"c\"!(\"s\")"),
+        // the arithmetic tags: EMULT=102 < EDIV=103 < EPLUS=104 < EMINUS=105 < ELT=106 < … < EEQ=110.
+        ("@\"c\"!(1 * 2)", "@\"c\"!(1 + 2)"),
+        ("@\"c\"!(1 - 2)", "@\"c\"!(1 * 2)"),
+        ("@\"c\"!(1 + 2)", "@\"c\"!(1 == 2)"),
+        ("@\"c\"!(1 / 2)", "@\"c\"!(1 + 2)"),
+        ("@\"c\"!(1 < 2)", "@\"c\"!(1 == 2)"),
+        // agreeing pairs, for contrast: grounds first, then collections in tag order.
+        ("@\"c\"!(1)", "@\"c\"!(\"s\")"),
+        ("@\"c\"!([1])", "@\"c\"!((1, 2))"),
+        ("@\"c\"!([1])", "@\"c\"!({})"),
+        ("@\"c\"!(1)", "@\"c\"!(1 + 2)"),
+        ("@\"c\"!(-1)", "@\"c\"!(1 * 2)"),
+        // the **par's own field order**: a par with `news` and `exprs` against a par with `exprs`
+        // only. The node's `sort_par` gathers exprs *before* news; the model's `cmpPar` compares news
+        // first — so the two orders disagree exactly here, and this pair is the only kind that can see
+        // it (canonicalization hides it inside a single par).
+        ("new x in { Nil } | 1", "[1]"),
+        ("[1]", "new x in { Nil } | 1"),
+        // `GBool`'s **polarity**: the node scores `true` as 0 and `false` as 1, so `false` sorts
+        // *after* `true` — the reverse of the model's `linearOrderComparator Bool`.
+        ("@\"c\"!(false)", "@\"c\"!(true)"),
+        ("@\"c\"!(true)", "@\"c\"!(false)"),
+        // the bool/int/str/uri order within the grounds (tags 1,2,3,4).
+        ("@\"c\"!(true)", "@\"c\"!(1)"),
+        ("@\"c\"!(1)", "@\"c\"!(\"s\")"),
+        // the remaining argument positions: `eand`(113) < `eor`(114) < `emod`(122) in the tags, while
+        // the model's declaration order puts `emod` before both.
+        ("@\"c\"!(1 % 2)", "@\"c\"!(1 && 2)"),
+        ("@\"c\"!(1 && 2)", "@\"c\"!(1 || 2)"),
+        ("@\"c\"!(1 %% 2)", "@\"c\"!(1 % 2)"),
+    ];
+    for (left, right) in pairs {
+        let l = normalized(left);
+        let r = normalized(right);
+        let got = if l == r { "eq" } else { node_verdict(&l, &r) };
+        println!("node: {left}  vs  {right}  ->  {got}");
+    }
 }

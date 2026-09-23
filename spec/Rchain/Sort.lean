@@ -736,6 +736,37 @@ constructors are where `Json.lean`'s **`rfl`-proved `@[simp]` arm lemmas** are t
 That is a multi-unit job (the family's definitions, the `sortX_*` lemmas that mention them, the corpus
 re-emission) and the register will not let it land half-done: the axiom-accounting check fails if a row
 cites an axiom that is gone, so each replacement and its rows move together.
+
+### What the score order actually is, and where this model differs (extracted 2026-09-23)
+
+The `sort` corpus (`spec/conformance/sort.tsv` + `rholang/tests/lean_sort_corpus.rs`) ties the two
+orders pairwise, and reading `models/src/sorter.rs`'s `sort_*` functions against this file gives the
+scoped divergence. **The model's comparators are an order on a *coarser* algebra**, so the alignment is
+partial by construction; what can be aligned is listed first.
+
+**Alignable and pinnable by a corpus row** (each verdict below was *observed* from the node, not read):
+
+| where | the node's order | this model's | pinned by |
+|---|---|---|---|
+| `Send` | `persistent, chan, data…, connective_used` | `chan, data, persist` | `@"a"!!(1)` vs `@"b"!(1)` → **gt** |
+| `Par` | `sends, receives, exprs, news, matches, bundles, connectives, unforgeables` | `sends, receives, news, exprs, matches, unforgeables, bundles, connectives` | `new x in { Nil } \| 1` vs `[1]` → **lt** |
+| `Expr` classes | tags: grounds(1-4) < `elist`(6) < `etuple`(7) < `eset`(8) < `emap`(9) < vars(50-52) < `evar`(100) < `eneg`(101) < `emult`(102) < `ediv`(103) < `eplus`(104) < `eminus`(105) < `elt`(106) < `ele`(107) < `egt`(108) < `ege`(109) < `eeq`(110) < `eneq`(111) < `enot`(112) < `emod`(122) | declaration order: grounds, `evar`, `eneg`, `enot`, `eplus`…`emod`, `elist`…`emap` | `[1]` vs `1 + 2` → **lt**; `1 * 2` vs `1 + 2` → **lt**; `1 - 2` vs `1 * 2` → **gt** |
+| `Ground.bool` | `true` scores 0, `false` 1 — **false sorts after true** | `linearOrderComparator Bool` (false first) | `false` vs `true` → **gt** |
+
+**Not alignable without extending the model's algebra** (the boundary, stated rather than fixed):
+`Receive`'s `persistent, peek` first and its `bind_count` child; `ReceiveBind`'s `source` first with
+`free_count` **dropped from the score**; `New`'s `uri` (sorted) and `injections` (key-sorted) children;
+`Bundle`'s flags folded into the tag; `EList`/`ESet`/`EMap`'s `remainder` **before** the elements (and a
+list with no remainder scoring `-1`, *before* `ABSENT = 0`); `MatchCase`/`Match`/`EMethod`'s
+`connective_used`; `Var`'s `Empty`(0); `GUnforgeable`'s `gDeployerId`(10) **before** `gDeployId`(11) —
+the reverse of the port's own enum order; `Connective`'s tags (400-409). And twelve of the node's 33
+`Expr` constructors — `GByteArray`(116), `EMethod`(115), `EMatches`(118), `EPercentPercent`(119),
+`EPlusPlus`(120), `EMinusMinus`(121), `EShortAnd`(123), `EShortOr`(124), `GBigInt`(13) and the rest —
+**do not exist in this model at all**, so a term containing one cannot be compared here. The corpus
+cannot carry rows for those either: `1 && 2` parses to a method call, not to `eand`, which is why the
+three operator-spelling probes below the corpus stay probes.
+
+Aligning the four alignable rows is the next unit; each has its row already, so the corpus is the test.
 -/
 
 axiom cmpPar_lt_trans (p q r : Par) : cmpPar p q = Ordering.lt → cmpPar q r = Ordering.lt → cmpPar p r = Ordering.lt

@@ -169,16 +169,24 @@ def laws : List Law := [
       *declaration* order while the node sorts by its **score tree** \
       (`models/src/sorter.rs`'s `sort_send`/`sort_expr` build `node_score(tag, children)` with the tags \
       in `BOOL=1 < INT=2 < STRING=3 < ELIST=6 < ETUPLE=7 < ESET=8 < EMAP=9 < … < BOUND_VAR=50 < … < \
-      EVAR=100 < …`), and the two orders differ in at least two places the corpus already shows: \
-      **a send's field order** (the score compares *persistence* first — `sort_send`'s children are \
-      `[persistent, chan, data…, connective_use]` — while the model's `cmpSend` compares the channel \
-      first) and **the expression-class order** (the tags put the collections *before* vars and the \
-      arithmetic/boolean operators, while the model's declaration order puts them last). So the model's \
-      `sortPar` is not the node's `sort_par` for those inputs — a claim about the wrong function rather \
-      than a fork between nodes (every node sorts by the score tree). The fix is to align the \
-      comparators with the tags, which the proofs survive: `sortPar_idempotent`/`sortPar_comm` hold for \
-      any comparator, and `eq_iff`/`swap`/`lt_trans` are order-independent, so the twelve axioms' \
-      statements do not change" },
+      EVAR=100 < …`), and a reading of every `sort_*` against this model's comparators shows the \
+      divergence is **across eleven types**, not two — with the model ordering a *coarser* algebra \
+      (21 `Expr` constructors against the node's 33, no `EMethod`/`GByteArray`/`EShortAnd`/`GBigInt`, no \
+      `New` uri/injections, no connective tags). Four places are **alignable and pinned by a corpus row, \
+      each verdict observed from the node rather than read**: a send's field order (`persistent` first — \
+      `@\"a\"!!(1)` vs `@\"b\"!(1)` → `gt`), the par's own field order (`exprs` before `news`, \
+      `unforgeables` last — `new x in { Nil } | 1` vs `[1]` → `lt`), the expression-class order \
+      (collections before vars and operators — `[1]` vs `1 + 2` → `lt`, `1 * 2` vs `1 + 2` → `lt`, \
+      `1 - 2` vs `1 * 2` → `gt`), and `GBool`'s **polarity** (`true` scores 0 and `false` 1, so `false` \
+      sorts *after* `true` — `false` vs `true` → `gt`, the reverse of the model's `Bool` order). The \
+      rest — `Receive`/`ReceiveBind`/`New`/`Bundle`/`EList`/`ESet`/`EMap`/`Var`/`GUnforgeable` (where \
+      `gDeployerId`(10) sorts *before* `gDeployId`(11), the reverse of the port's enum) / `Connective` — \
+      needs the algebra extended first, and the twelve unrepresented constructors cannot appear in a \
+      corpus row at all. `Rchain/Sort.lean`'s note carries the tables and the boundary. So the model's \
+      `sortPar` is not the node's `sort_par` — a claim about the wrong order rather than a fork between \
+      nodes (every node sorts by the score tree, so nodes agree with each other). The alignment is safe \
+      for the proofs: `sortPar_idempotent`/`sortPar_comm` hold for any comparator, and \
+      `eq_iff`/`swap`/`lt_trans` are order-independent, so the twelve axioms' statements do not change" },
   { number := 1, clause := "b", layer := "Rholang",
     statement := "Each element comparator (`cmpPar`, `cmpSend`, …, `cmpConnective`) is a lawful total \
       order: `eq_iff`, `swap`, `lt_trans`",
