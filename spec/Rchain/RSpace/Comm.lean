@@ -24,6 +24,39 @@ functions, so they said nothing —
   this model "recompute" and "record" would be the *same function*, so the subset claim would be `rfl`.
   What would give it content is a model of the recorded store, so that the two are different functions
   that must agree; the proof is owed to that modelling step, not to a tactic.
+
+## The modelling step, designed (attempted 2026-09-23; not landed)
+
+The design was worked out and carried a proof far enough to say what is missing, so it is written here
+rather than rediscovered:
+
+* `occurrences : List Comm → Comm → Nat` — the multiplicity the replay's multimap keys by, defined by
+  its own recursion so the lemmas stay inside `if`/`Nat` arithmetic;
+* `removeOne : List Comm → Comm → Option (List Comm)` — the Rust's `remove_bindings_for`, `none` being
+  the `ReplayCommNotInTrace` case;
+* `Replays : List Comm → List Comm → List Comm → Prop` — the replay as a **relation** (a `done`
+  constructor and a `step` that removes one occurrence), chosen over an `Option`-valued function
+  because this prelude's `Option`/`List` lemma set is too thin for the `bind` reasoning;
+* the law is then `Replays recomputed recorded [] ↔ ∀ c, occurrences recomputed c = occurrences recorded c`
+  — the two sides are different inputs, so it can fail — plus two **insufficiency** theorems, one per
+  half of the Rust's check (a forward-only checker passes on `([], [c])`; a reverse-only checker passes
+  on a phantom COMM offset by a recorded one), each with its witness.
+
+The three `removeOne`/`occurrences` lemmas were proved; the remaining work is the main theorem's two
+directions, and it is **plumbing, not modelling**: three obstructions were hit and are recorded because
+each costs a build cycle to rediscover —
+
+1. the quantified hypothesis's `if` does not reduce: `h : ∀ c, (if e = c then 1 else 0) + …` must be
+   *instantiated* (`h e`) before `if_pos`/`if_neg` can fire, because at the quantified statement the
+   condition is open;
+2. **shadowing**: naming the induction's pattern variables `c`/`cs` puts them in the way of the
+   statement's own `∀ c` binder, and a shadowed `if` condition is the same non-reduction in a
+   harder-to-see form — rename them (`hd`/`rest`, and the quantified variable to `e`);
+3. `simp only [occurrences, …]` leaves `0 + x` shapes that need `omega` (or `simpa`) to normalise, so
+   every `simp` step in this proof needs an arithmetic step after it.
+
+Reverted rather than left half-built: the register is unchanged (law 11 stays `vacuous`) and the tree
+stays green, which is the better trade for a proof that was two or three cycles from closing.
 -/
 
 namespace Rchain
