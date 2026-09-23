@@ -226,6 +226,26 @@ proptest! {
     }
 }
 
+/// **Law 3's *hypothesis*, pinned on the code side.** The closedness law holds because the
+/// substituted *value* is closed, not because substitution is closed-preserving in general: put an
+/// open value at the variable and a free variable necessarily ends up in the result. That is why
+/// `Rchain/Subst.lean`'s `subst_closed` carries `∀ v, Closed (σ v)` — the statement without it is
+/// false of this very function, and the property test below it would be false too.
+///
+/// Not a `proptest!` property: it is a fixed boundary case, and it is the boundary the model's axiom
+/// got wrong (the register's law-3 note records the finding).
+#[test]
+fn an_open_value_at_the_variable_leaves_a_free_variable() {
+    let term = from_expr(Expr::EVar(Box::new(Var::BoundVar(0))));
+    let open = from_expr(Expr::EVar(Box::new(Var::FreeVar(0))));
+    let out = crate::substitute::substitute_par(&term, 0, &Env::make_env([open]))
+        .expect("substitution");
+    assert!(
+        !is_closed(&out),
+        "an open value at the variable must leave a free variable behind"
+    );
+}
+
 /// **A wildcard (or free variable) in *term* position is an illegal substitution**, not a silent
 /// pass-through: `substitute_par` returns `SubstituteError`, which is what Scala's
 /// `maybeSubstitute(Var)` does (`SubstituteError(s"Illegal Substitution [$term]")` for anything that

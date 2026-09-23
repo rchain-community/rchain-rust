@@ -94,7 +94,7 @@ overstate coverage.
 |---|---|---|---|
 | 1 | Rholang | `models/src/property_tests.rs` `law1_sorting_is_idempotent`, `law1_parallel_composition_sorts_commutatively` | Lean `Sort.lean`; `sorter.rs` unit tests |
 | 2 | Rholang | `law2_canonical_equality_agrees_with_canonical_hashing`, `law2_sorting_a_sequence_depends_only_on_its_elements` | `Rho.lean` (≡ core) |
-| 3 | Rholang | `rholang/src/property_tests.rs` `law3_substituting_a_closed_value_keeps_the_term_closed`, `law3_substitution_and_sorting_commute` | Lean `Subst.lean` |
+| 3 | Rholang | `rholang/src/property_tests.rs` `law3_substituting_a_closed_value_keeps_the_term_closed`, `law3_substitution_and_sorting_commute`, `an_open_value_at_the_variable_leaves_a_free_variable` | Lean `Subst.lean` |
 | 4 | Rholang | `law4_the_same_program_reduces_to_the_same_state` | `casper/tests/determinism.rs`; Lean `Reduce.lean` |
 | 5 | Rholang | `law5_a_pattern_that_binds_a_variable_twice_never_matches`, `law5_a_variable_bind_pattern_matches_any_datum`, `law5_a_ground_pattern_matches_only_itself` | Lean `Match.lean` |
 | 6 | Rholang | `law6_a_closed_term_is_accepted_and_the_predicate_agrees` | Lean `Ty.lean` |

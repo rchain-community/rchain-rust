@@ -223,13 +223,33 @@ def laws : List Law := [
       reduction needs",
     note := "the deep α half is Coq's obligation (`spec/coq/Laws.v`), where it is an `Axiom`" },
   { number := 3, layer := "Rholang",
-    statement := "Capture-avoiding de Bruijn substitution; `sort (subst t) = subst (sort t)`",
-    status := .deferred,
+    statement := "Capture-avoiding de Bruijn substitution; `sort (subst t) = subst (sort t)`, and \
+      substitution preserves closedness **given a closed image**",
+    status := .owed,
     declarations := [`Rchain.substPar, `Rchain.sort_subst, `Rchain.subst_closed],
+    rust := ["rholang/src/substitute.rs"],
     axioms := [`Rchain.substPar, `Rchain.sort_subst, `Rchain.subst_closed],
-    falsifiable := none,
-    note := "`substPar` is an `axiom`, so the two laws are statements about an undefined function; the \
-      metatheory lives in Coq" },
+    falsifiable := some "`the_identity_satisfies_sort_subst` and \
+      `the_identity_satisfies_subst_closed`: `noSubst` — the function that substitutes *nothing* — \
+      satisfies both laws, so the trio is satisfied by a substitution that does not substitute; that \
+      is the vacuity, published as theorems rather than asserted. The narrowed law's boundary is \
+      pinned from the code side by `an_open_value_at_the_variable_leaves_a_free_variable` \
+      (`rholang/src/property_tests.rs`), which holds exactly because the port's substitution is *not* \
+      closed-preserving for an open image",
+    note := "**the three axioms are postulates, not a definition, and as stated they constrained \
+      substitution not at all** (2026-09-23): `substPar` is an `axiom`, so the two laws are statements \
+      about an undefined function — and they are satisfied by `noSubst` \
+      (`the_identity_satisfies_*`), which substitutes nothing. The second law's statement also \
+      **lacked the hypothesis that makes it true**: `Closed` is `Ty.lean`'s \"no `Var.free`\" \
+      (`closedVar` counts `bound` as closed), so for `σ` mapping a bound variable to an open term the \
+      conclusion is false of any operation that actually substitutes \
+      (`bound_is_closed_free_is_not`). The Rust's own test carries exactly that hypothesis \
+      (`law3_substituting_a_closed_value_keeps_the_term_closed`, whose value is `arb_closed`), so the \
+      statement is narrowed to `∀ v, Closed (σ v) → Closed t → Closed (substPar σ t)`. What closes \
+      this row is Programme D's unit 5: define `substPar` by mirroring the code the law describes \
+      (`rholang/src/substitute.rs:164` — an `Env<Par>` keyed by de Bruijn level with a shift, and a \
+      `depth` incremented inside receive and match-case *patterns*), at which point both laws become \
+      theorems about a definition" },
   { number := 4, clause := "a", layer := "Rholang",
     statement := "Reduction (COMM): a send and a matching receive on one channel reduce to the \
       receive's body",
