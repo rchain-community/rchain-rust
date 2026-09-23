@@ -262,7 +262,13 @@ def laws : List Law := [
     falsifiable := some "`reduce_not_deterministic` (`Rchain/Concurrent.lean`) exhibits two distinct \
       reductions of one term, which is what makes `≡` — rather than syntactic identity — the relation \
       reduction needs",
-    note := "the deep α half is Coq's obligation (`spec/coq/Laws.v`), where it is an `Axiom`" },
+    note := "**nobody owns “deep α”, and nobody needs to** (2026-09-23): with de Bruijn *levels* the \
+      representation is canonical, so deep α-equivalence *is* equality — what is left is the *structural* \
+      congruence (`P | Q = Q | P`, `P | Nil = P`, associativity, congruence), which is what `StrCong` \
+      states and what the Coq mirror states. That mirror is an `Inductive` over `parMerge`/`nilPar` now, \
+      with `refl`/`symm`/`trans` as **constructors** rather than axioms, a weight invariant \
+      (`alpha_equiv_weight`) and a non-vacuity witness (`a_send_is_not_alpha_equiv_to_nil`). The note \
+      this replaces said the deep-α half was Coq's obligation; no track can deliver it and none needs it" },
   { number := 3, layer := "Rholang",
     statement := "Capture-avoiding de Bruijn substitution; `sort (subst t) = subst (sort t)`, and \
       substitution preserves closedness **given a closed image**",
@@ -354,7 +360,7 @@ def laws : List Law := [
     axioms := [`Rchain.concrete_matches_iff_eq, `Rchain.fuel_saturation],
     corpus := some "match",
     rust := ["rholang/src/matcher/spatial_matcher.rs"],
-    coq := ["spec/coq/Laws.v:spatial_matches"],
+    coq := ["spec/coq/Laws.v:spatial_matches", "spec/coq/Laws.v:linear"],
     witness := [`Rchain.aggregateUpdates_rejects_double_bind, `Rchain.freeMapMerge_overwrites],
     falsifiable := some "the corpus's three-valued verdicts (`true`/`false`/`rejected`) include the \
       rejected case a twice-bound pattern produces — the shape the previous law-5 axiom *denied* and \
@@ -381,7 +387,11 @@ def laws : List Law := [
       **tuple**, which the port matches (`spatial_matcher.rs:496-501`) — so a tuple pattern the node \
       matches read as silence here, and the law's own statement was false of the model until \
       `modelledPar` was added to it. Cases 15/16 of `spec/conformance/match.tsv` are the pair that \
-      caught it; the arm is not an axiom, it is a clause" },
+      caught it; the arm is not an axiom, it is a clause. **The Coq half, split by kind** (2026-09-23): \
+      `spec/coq/Laws.v`'s `linear` is a **definition** now (with `linear_decidable` and the witness \
+      `a_double_binding_is_not_linear`), mirroring Lean's own predicate; `spatial_matches` stays a \
+      **signature**, because mirroring the matcher in Coq is the analogue of this file's owed proofs \
+      and not part of the honest-and-gated tier" },
   { number := 6, layer := "Rholang",
     statement := "No globally free variables in a program",
     status := .provedModel,
@@ -403,7 +413,11 @@ def laws : List Law := [
       the corresponding induction. It discharges two axioms — the opaque predicate and the tie — which \
       the row used to record as 'a defined-but-undefined-elsewhere predicate'. What makes the \
       mirroring exact is the model's de Bruijn *levels*: `closedVar` reads `.bound` as bound and \
-      `.free` as open, so the checker refuses exactly the occurrences the predicate accepts" },
+      `.free` as open, so the checker refuses exactly the occurrences the predicate accepts. **The Coq \
+      half is a definition too now** (2026-09-23): `spec/coq/Laws.v` defines `closed` over the flat \
+      family — the recursive function passed as a value to `forallb`, the idiom the guard checker \
+      accepts — keeps `closed_decidable`'s statement unchanged (a changed statement is a changed law), \
+      and proves a free level is not closed" },
 
   -- ── RSpace: the tuple space (Laws 7–11) ─────────────────────────────────────────────────────────
   { number := 7, layer := "RSpace",

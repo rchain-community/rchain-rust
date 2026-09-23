@@ -21,7 +21,10 @@ par    : p ≡ p'  →  q ≡ q'  →  p|q ≡ p'|q'
 In Lean these are the constructors of `StrCong`; the equivalence theorem `strCong_equivalence` is
 proven, as are `strCong_comm`, `strCong_assoc`, `strCong_ident`, and `strCong_nil_left`. This is the
 "par order + `| Nil` + associativity + congruence" fragment of Law 2. The *full* Law 2 (deep
-α-equivalence plus `@`/`*`) is the Coq track's obligation (`alpha_equiv` in `spec/coq/Laws.v`).
+α-equivalence plus `@`/`*`) is **not a second obligation**: with de Bruijn *levels* the representation is
+canonical, so deep α is equality, and what is left is this structural congruence. `spec/coq/Laws.v`'s
+`alpha_equiv` is an `Inductive` mirroring `StrCong` — refl/symm/trans are constructors, not axioms —
+which is the same statement, with a weight invariant and a non-vacuity witness behind it.
 
 The executable form is `name-equivalence.k` (names equivalent up to par order, `| Nil`, top-level
 arithmetic, α, and added `@`/`*`).

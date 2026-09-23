@@ -106,7 +106,7 @@ fi
 # CI used to take whatever `apt-get install coq` gave the runner image, so the tested and the deployed
 # Coq agreed by luck, and a Coq upgrade could have changed what the files mean without anything
 # noticing. The file is the checkable half; how CI provision that version is CI's business.
-COQ_AXIOM_CEILING=14   # the trust surface of spec/coq/, counted by step 4b below. Lower it with a discharge.
+COQ_AXIOM_CEILING=8    # the trust surface of spec/coq/, counted by step 4b below. Lower it with a discharge.
 if [[ -f "$SPEC/coq/Makefile" ]]; then
   if ! command -v coqc >/dev/null 2>&1; then
     fail "spec/coq exists but coqc is not installed"
