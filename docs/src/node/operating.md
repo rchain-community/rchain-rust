@@ -33,6 +33,11 @@ Notes for operators:
   under `<data-dir>/shard/<shard-id segments>/`. A directory records the shard that owns it
   (`shard-id`), and a mismatch is a startup error rather than a node silently running the wrong
   chain — so keep a shard's position in the list stable.
+- **Serving state.** `disable-state-exporter = true` makes this node refuse a peer's store-items
+  (state-sync) request before it walks the trie — the operator's switch for who may pull this node's
+  state (`NodeRunning.scala:314-320`; the port serves the request otherwise, bounded by a per-peer
+  rate limit and a `take` cap). A node that refuses still *receives* state from others: the flag
+  gates the serving half only.
 - **Sync.** LFS sync is not shard-aware, so a multi-shard node must reach its shards from their own
   genesis (genesis master / `--standalone`) or from existing local state.
 - **Cross-shard transactions.** Set `api-server.enable-txn-api = true` on a gateway to serve

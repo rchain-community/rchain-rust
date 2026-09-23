@@ -266,8 +266,12 @@ macro_rules! len_newtype {
     };
 }
 
-// `ByteLen`/`ShortLen` are reserved for the deferred seed-length refinement (spec/AUDIT.md §8
-// item 1c); they have no production consumer yet.
+// `ByteLen`/`ShortLen` are **unused**: the seed work in AUDIT §8 (the "`split_byte` seed" bullet)
+// landed as checked `u8::try_from`/`u16::try_from` at the call sites rather than as a typed length, so
+// these are a seam nothing arrived at. The comment here used to say they were "reserved for the
+// deferred seed-length refinement (spec/AUDIT.md §8 item 1c)" — §8 has no `1c`, and its seed entry is
+// a *fix* rather than a deferral, so the citation named a decision that was never written down. Kept,
+// with their unit tests, as the typed form that refinement would take; delete them if it is dropped.
 len_newtype!(ByteLen, u8);
 len_newtype!(ShortLen, u16);
 len_newtype!(WireLen, u32);

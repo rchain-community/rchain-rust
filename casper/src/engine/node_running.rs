@@ -285,6 +285,92 @@ pub async fn handle_finalized_fringe_request(
     log.info(source, &format!("FinalizedFringe sent to {peer}"));
 }
 
+/// Serve a peer's store-items (state-sync) request from the exporter (port of
+/// `handleStoreItemsRequest`), unless the operator disabled the exporter.
+///
+/// `disable_state_exporter` is the one thing that turns this node into a non-server of state: the
+/// Scala gates the whole handler on it (`NodeRunning.scala:314-320`) after logging
+/// "the node is configured to not respond to StoreItemsMessage", and does nothing else. The flag's
+/// point is an operator's choice about who may pull this node's trie (a state-exfiltration and
+/// bandwidth-amplification surface), so the refusal must be *before* the walk and before any send.
+#[allow(clippy::too_many_arguments)]
+pub async fn handle_store_items_request<E: RSpaceExporter>(
+    transport: &dyn TransportLayer,
+    conf: &RPConf,
+    exporter: &E,
+    log: &dyn Log,
+    log_source: LogSource,
+    peer: &PeerNode,
+    req: &StoreItemsMessageRequest,
+    disable_state_exporter: bool,
+) {
+    if disable_state_exporter {
+        log.info(
+            log_source,
+            &format!(
+                "Received StoreItemsMessage request but the node is configured to not respond to \
+                 StoreItemsMessage, from {}.",
+                peer.endpoint.host
+            ),
+        );
+        return;
+    }
+    // Validate-on-ingress: a negative skip/take would wrap to a huge `usize` via `as` and make
+    // `get_nodes` iterate the whole trie.
+    let (Ok(skip), Ok(take)) = (usize::try_from(req.skip), usize::try_from(req.take)) else {
+        log.info(
+            log_source,
+            "Dropping store-items request with negative skip/take",
+        );
+        return;
+    };
+    // Bound the walk: a peer-controlled `take` of i32::MAX would traverse and serialize the whole
+    // trie (state exfiltration + CPU/IO/bandwidth amplification, repeatable per peer).
+    if take > MAX_STORE_ITEMS_TAKE {
+        log.info(
+            log_source,
+            &format!("Dropping store-items request with take {take} > {MAX_STORE_ITEMS_TAKE}"),
+        );
+        return;
+    }
+    let nodes = exporter.get_nodes(&req.start_path, skip, take);
+    let history_keys: Vec<Blake2b256Hash> = nodes
+        .iter()
+        .filter(|n| !n.is_leaf)
+        .map(|n| n.hash)
+        .collect();
+    let data_keys: Vec<Blake2b256Hash> =
+        nodes.iter().filter(|n| n.is_leaf).map(|n| n.hash).collect();
+    let history_items = exporter.get_history_items(&history_keys, |b: &[u8]| b.to_vec());
+    let data_items = exporter.get_data_items(&data_keys, |b: &[u8]| b.to_vec());
+    let last_path = nodes.last().map(|n| n.path.clone()).unwrap_or_default();
+
+    let response = StoreItemsMessage {
+        start_path: req.start_path.clone(),
+        last_path,
+        history_items,
+        data_items,
+    };
+    log.info(
+        log_source,
+        &format!(
+            "Sending {} history and {} data store items to {}",
+            response.history_items.len(),
+            response.data_items.len(),
+            peer.endpoint.host
+        ),
+    );
+    // Stream the response (matching Scala's `streamToPeer`); the unary `send_to_peer` path does
+    // not deliver to the syncing peer, which stalls LFS state sync.
+    transport_layer_syntax::stream_to_peer(
+        transport,
+        conf,
+        peer,
+        StoreItemsMessageSerde.mk_packet(&response),
+    )
+    .await;
+}
+
 /// Bound on the inbound block queue. The channel is created upstream (node crate) with
 /// `tokio::sync::mpsc::channel(MAX_PENDING_BLOCKS)`; `NodeRunning` only holds the bounded sender and
 /// drops blocks (via `try_send`) rather than blocking the inbound task when it is full.
@@ -304,6 +390,9 @@ pub struct NodeRunning<E: RSpaceExporter> {
     incoming_blocks: tokio::sync::mpsc::Sender<BlockMessage>,
     block_request_limit: Arc<PeerRateLimiter>,
     exporter: E,
+    /// Operator switch: refuse store-items (state-sync) requests (port of the Scala's
+    /// `disableStateExporter`).
+    disable_state_exporter: bool,
 }
 
 impl<E: RSpaceExporter> NodeRunning<E> {
@@ -318,6 +407,7 @@ impl<E: RSpaceExporter> NodeRunning<E> {
         validator_id: Option<ValidatorIdentity>,
         incoming_blocks: tokio::sync::mpsc::Sender<BlockMessage>,
         exporter: E,
+        disable_state_exporter: bool,
     ) -> Self {
         NodeRunning {
             transport,
@@ -333,70 +423,8 @@ impl<E: RSpaceExporter> NodeRunning<E> {
                 DEFAULT_BLOCK_REQUEST_LIMIT_PER_SEC,
             )),
             exporter,
+            disable_state_exporter,
         }
-    }
-
-    /// Serve a peer's store-items (state-sync) request from the exporter (port of
-    /// `handleStoreItemsRequest`).
-    async fn handle_store_items_request(&self, peer: &PeerNode, req: &StoreItemsMessageRequest) {
-        // Validate-on-ingress: a negative skip/take would wrap to a huge `usize` via `as` and make
-        // `get_nodes` iterate the whole trie.
-        let (Ok(skip), Ok(take)) = (usize::try_from(req.skip), usize::try_from(req.take)) else {
-            self.log.info(
-                self.log_source,
-                "Dropping store-items request with negative skip/take",
-            );
-            return;
-        };
-        // Bound the walk: a peer-controlled `take` of i32::MAX would traverse and serialize the
-        // whole trie (state exfiltration + CPU/IO/bandwidth amplification, repeatable per peer).
-        if take > MAX_STORE_ITEMS_TAKE {
-            self.log.info(
-                self.log_source,
-                &format!("Dropping store-items request with take {take} > {MAX_STORE_ITEMS_TAKE}"),
-            );
-            return;
-        }
-        let nodes = self.exporter.get_nodes(&req.start_path, skip, take);
-        let history_keys: Vec<Blake2b256Hash> = nodes
-            .iter()
-            .filter(|n| !n.is_leaf)
-            .map(|n| n.hash)
-            .collect();
-        let data_keys: Vec<Blake2b256Hash> =
-            nodes.iter().filter(|n| n.is_leaf).map(|n| n.hash).collect();
-        let history_items = self
-            .exporter
-            .get_history_items(&history_keys, |b: &[u8]| b.to_vec());
-        let data_items = self
-            .exporter
-            .get_data_items(&data_keys, |b: &[u8]| b.to_vec());
-        let last_path = nodes.last().map(|n| n.path.clone()).unwrap_or_default();
-
-        let response = StoreItemsMessage {
-            start_path: req.start_path.clone(),
-            last_path,
-            history_items,
-            data_items,
-        };
-        self.log.info(
-            self.log_source,
-            &format!(
-                "Sending {} history and {} data store items to {}",
-                response.history_items.len(),
-                response.data_items.len(),
-                peer.endpoint.host
-            ),
-        );
-        // Stream the response (matching Scala's `streamToPeer`); the unary `send_to_peer` path does
-        // not deliver to the syncing peer, which stalls LFS state sync.
-        transport_layer_syntax::stream_to_peer(
-            self.transport.as_ref(),
-            &self.conf,
-            peer,
-            StoreItemsMessageSerde.mk_packet(&response),
-        )
-        .await;
     }
 
     /// Handle an incoming casper message from a peer (port of `handle`).
@@ -607,7 +635,17 @@ impl<E: RSpaceExporter> NodeRunning<E> {
                 }
             }
             CasperMessage::StoreItemsMessageRequest(req) => {
-                self.handle_store_items_request(peer, req).await;
+                handle_store_items_request(
+                    self.transport.as_ref(),
+                    &self.conf,
+                    &self.exporter,
+                    self.log.as_ref(),
+                    self.log_source,
+                    peer,
+                    req,
+                    self.disable_state_exporter,
+                )
+                .await;
             }
             CasperMessage::StoreItemsMessage(_) => {}
             CasperMessage::FinalizedFringe(_) => {}
@@ -718,6 +756,119 @@ mod tests {
         async fn stream(&self, peers: &[PeerNode], blob: Blob) {
             self.streams.lock().unwrap().push((peers.to_vec(), blob));
         }
+    }
+
+    /// A store-items server for the gate test: one leaf and one internal node, so the handler has
+    /// something to send when it is allowed to.
+    struct MockExporter;
+
+    impl rchain_shared::state::TrieExporter<Blake2b256Hash> for MockExporter {
+        fn get_nodes(
+            &self,
+            _start_path: &[(Blake2b256Hash, Option<u8>)],
+            _skip: usize,
+            _take: usize,
+        ) -> Vec<rchain_shared::state::TrieNode<Blake2b256Hash>> {
+            let leaf = Blake2b256Hash::from_bytes([7u8; 32]);
+            let branch = Blake2b256Hash::from_bytes([8u8; 32]);
+            vec![
+                rchain_shared::state::TrieNode {
+                    hash: leaf,
+                    is_leaf: true,
+                    path: vec![],
+                },
+                rchain_shared::state::TrieNode {
+                    hash: branch,
+                    is_leaf: false,
+                    path: vec![(branch, None)],
+                },
+            ]
+        }
+
+        fn get_history_items<Value>(
+            &self,
+            keys: &[Blake2b256Hash],
+            from_buffer: impl Fn(&[u8]) -> Value,
+        ) -> Vec<(Blake2b256Hash, Value)> {
+            keys.iter().map(|k| (*k, from_buffer(&[1u8]))).collect()
+        }
+
+        fn get_data_items<Value>(
+            &self,
+            keys: &[Blake2b256Hash],
+            from_buffer: impl Fn(&[u8]) -> Value,
+        ) -> Vec<(Blake2b256Hash, Value)> {
+            keys.iter().map(|k| (*k, from_buffer(&[2u8]))).collect()
+        }
+    }
+
+    impl RSpaceExporter for MockExporter {
+        fn get_root(&self) -> Option<Blake2b256Hash> {
+            Some(Blake2b256Hash::from_bytes([8u8; 32]))
+        }
+    }
+
+    /// A store-items request is answered when the operator has left the exporter enabled.
+    ///
+    /// The two tests below are the pair the Scala's flag is for (`NodeRunning.scala:314-320`): the
+    /// node either serves its trie to a peer or refuses before touching it. The refusal has to be
+    /// *before* the walk and before any send — a node that refuses after traversing has already
+    /// spent the bandwidth the flag exists to save.
+    #[tokio::test]
+    async fn store_items_request_is_served_when_the_exporter_is_enabled() {
+        let local = peer("src", 40400);
+        let remote = peer("peer", 40400);
+        let transport = Arc::new(MockTransport::default());
+
+        handle_store_items_request(
+            transport.as_ref(),
+            &conf(&local),
+            &MockExporter,
+            &NopLog,
+            LogSource::new("test"),
+            &remote,
+            &StoreItemsMessageRequest {
+                start_path: vec![],
+                skip: 0,
+                take: 10,
+            },
+            false,
+        )
+        .await;
+
+        let streams = transport.streams.lock().unwrap();
+        assert_eq!(streams.len(), 1, "one state-sync response");
+        assert_eq!(streams[0].0, vec![remote.clone()]);
+        assert_eq!(streams[0].1.packet.type_id, "StoreItemsMessage");
+    }
+
+    /// …and is refused, silently, when the operator has disabled the exporter — no response at all.
+    #[tokio::test]
+    async fn store_items_request_is_refused_when_the_exporter_is_disabled() {
+        let local = peer("src", 40400);
+        let remote = peer("peer", 40400);
+        let transport = Arc::new(MockTransport::default());
+
+        handle_store_items_request(
+            transport.as_ref(),
+            &conf(&local),
+            &MockExporter,
+            &NopLog,
+            LogSource::new("test"),
+            &remote,
+            &StoreItemsMessageRequest {
+                start_path: vec![],
+                skip: 0,
+                take: 10,
+            },
+            true,
+        )
+        .await;
+
+        assert!(
+            transport.streams.lock().unwrap().is_empty(),
+            "a node with `disable-state-exporter` must not stream its trie to a peer"
+        );
     }
 
     #[tokio::test]

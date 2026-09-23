@@ -191,9 +191,9 @@ pub async fn apply<I: RSpaceImporter + Send + 'static, E: RSpaceExporter>(
     incoming_blocks: mpsc::Sender<BlockMessage>,
     spec: ShardSpec,
     trim_state: bool,
-    // The store-items response is served unconditionally; `disable_state_exporter` would gate it,
-    // but the config flag is not yet threaded through, so it is accepted and ignored for now.
-    _disable_state_exporter: bool,
+    // Operator switch, threaded to `NodeRunning`: when set, this node refuses store-items
+    // (state-sync) requests (port of the Scala's `disableStateExporter`).
+    disable_state_exporter: bool,
     validator_identity_opt: Option<ValidatorIdentity>,
     standalone: bool,
     transport: Arc<dyn TransportLayer>,
@@ -279,6 +279,7 @@ pub async fn apply<I: RSpaceImporter + Send + 'static, E: RSpaceExporter>(
         validator_identity_opt,
         incoming_blocks,
         exporter,
+        disable_state_exporter,
     );
     log.info(source, "Making a transition to Running state.");
     wait_for_first_connection(&connections, log.as_ref()).await;
