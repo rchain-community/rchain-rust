@@ -263,6 +263,38 @@ rather than marking the row done on the strength of the definition alone. -/
 axiom sort_subst (σ : Var → Par) (t : Par) :
     sortPar (substPar σ 0 t) = sortPar (substPar σ 0 (sortPar t))
 
+/-! ### `subst_closed`, attempted again — where it now stands (2026-09-23, Programme D unit 12)
+
+The closure law was attempted a second time, on top of what this file now has (the definition) and what
+`Rchain.Ty` gained in the same session (`closed_sortPar`: canonicalization preserves closedness, in the
+checker-level *equation* form the collection arms need — `substExprToPar` sorts a set's and a map's
+children *inside* its recursion).
+
+**What closed.** The whole mutual block over the substitution family (21 members) is *stated* and
+type-checks as a `mutual ... termination_by sizeOf` block in the `sortPar_idempotent` template, with σ
+and the closed-image hypothesis threaded explicitly (they must be parameters, not auto-bound per member,
+or the mutual recursion does not typecheck). The structural members — the ten list walks, `substNew`,
+`substBundle`, the `parMerge` composition in `substPar` — close, as do the vacuous case (`.evar (.free k)`
+contradicts the hypothesis) and the two `sortListPar`/`sortListParPair` absorptions.
+
+**The obstruction, confirmed and removed.** The closure checkers in `Ty.lean` (`closed`, `closedListPar`,
+…) carried `termination_by` clauses, which made them **well-founded** and therefore non-reducing: a
+rewrite had to go through `closedListX.eq_def`, `rw [closedListX]` failed outright, and the `&&`-chain a
+`closedListX` unfolding leaves on a *goal* is left-nested where `Bool.and_eq_true` wants it
+right-nested. The clauses were **not needed** — the family is structural (every arm takes a field or an
+element) and Lean infers that on its own — so they are gone, the checkers reduce by `rfl`/`rw` again, and
+the register builds unchanged. That is the same trade `Match.lean` records for the matcher, and the same
+conclusion: an annotation that costs kernel reduction is worth having only when something needs it.
+
+**What remains, and it is two mechanical classes.** (1) The map member: after the goal's `&&`-chain is
+split, the first conjunct is the *left-nested* `(a && b) = true` rather than the two facts, so the
+extraction needs `Bool.and_eq_true.mpr` on that sub-term. (2) The list walks: the obligations left are
+`sizeOf x < sizeOf l` for `x` an element of `l`, which the default `decreasing_by` does not discharge and
+`omega` cannot see — `List.sizeOf_lt_of_mem` is the fact to feed it. Twenty-one members are stated and
+type-check; the ten structural walks and the `parMerge` composition close; what is left is a pass over
+those two shapes.
+-/
+
 /-- **The closedness law, with the closed-image hypothesis it needs**: `σ`'s values must themselves be
     closed, which the earlier statement of this axiom lacked — `σ := fun _ => free 0` makes the
     conclusion false of any operation that substitutes at a bound occurrence, and the Rust's own test

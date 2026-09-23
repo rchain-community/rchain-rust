@@ -117,25 +117,18 @@ mutual
         closedListSend s && closedListReceive r && closedListNew n &&
         closedListExpr e && closedListMatch m && closedListGUnforgeable u &&
         closedListBundle b && closedListConnective c
-  termination_by p => sizeOf p
   def closedSend : Send → Bool
     | Send.mk c d _ => closed c && closedListPar d
-  termination_by s => sizeOf s
   def closedReceiveBind : ReceiveBind → Bool
     | ReceiveBind.mk ps s _ => closedListPar ps && closed s
-  termination_by s => sizeOf s
   def closedReceive : Receive → Bool
     | Receive.mk bs b _ _ => closedListReceiveBind bs && closed b
-  termination_by s => sizeOf s
   def closedNew : New → Bool
     | New.mk _ b => closed b
-  termination_by s => sizeOf s
   def closedMatchCase : MatchCase → Bool
     | MatchCase.mk p s _ => closed p && closed s
-  termination_by s => sizeOf s
   def closedMatch : Match → Bool
     | Match.mk t cs => closed t && closedListMatchCase cs
-  termination_by s => sizeOf s
   def closedExpr : Expr → Bool
     | Expr.ground _ => true
     | Expr.evar v => closedVar v
@@ -158,67 +151,51 @@ mutual
     | Expr.etuple ps => closedListPar ps
     | Expr.eset ps r => closedListPar ps && closedRemainder r
     | Expr.emap kvs r => closedListParPair kvs && closedRemainder r
-  termination_by s => sizeOf s
   def closedBundle : Bundle → Bool
     | Bundle.mk b _ _ => closed b
-  termination_by s => sizeOf s
   def closedGUnforgeable : GUnforgeable → Bool
     | _ => true
-  termination_by s => sizeOf s
   def closedConnective : Connective → Bool
     | Connective.connAnd ps => closedListPar ps
     | Connective.connOr ps => closedListPar ps
     | Connective.connNot p => closed p
     | Connective.connVarRef _ _ => true
-  termination_by s => sizeOf s
   def closedListSend : List Send → Bool
     | [] => true
     | a :: as => closedSend a && closedListSend as
-  termination_by l => sizeOf l
   def closedListReceive : List Receive → Bool
     | [] => true
     | a :: as => closedReceive a && closedListReceive as
-  termination_by l => sizeOf l
   def closedListNew : List New → Bool
     | [] => true
     | a :: as => closedNew a && closedListNew as
-  termination_by l => sizeOf l
   def closedListExpr : List Expr → Bool
     | [] => true
     | a :: as => closedExpr a && closedListExpr as
-  termination_by l => sizeOf l
   def closedListMatch : List Match → Bool
     | [] => true
     | a :: as => closedMatch a && closedListMatch as
-  termination_by l => sizeOf l
   def closedListGUnforgeable : List GUnforgeable → Bool
     | [] => true
     | a :: as => closedGUnforgeable a && closedListGUnforgeable as
-  termination_by l => sizeOf l
   def closedListBundle : List Bundle → Bool
     | [] => true
     | a :: as => closedBundle a && closedListBundle as
-  termination_by l => sizeOf l
   def closedListConnective : List Connective → Bool
     | [] => true
     | a :: as => closedConnective a && closedListConnective as
-  termination_by l => sizeOf l
   def closedListPar : List Par → Bool
     | [] => true
     | a :: as => closed a && closedListPar as
-  termination_by l => sizeOf l
   def closedListReceiveBind : List ReceiveBind → Bool
     | [] => true
     | a :: as => closedReceiveBind a && closedListReceiveBind as
-  termination_by l => sizeOf l
   def closedListMatchCase : List MatchCase → Bool
     | [] => true
     | a :: as => closedMatchCase a && closedListMatchCase as
-  termination_by l => sizeOf l
   def closedListParPair : List (Par × Par) → Bool
     | [] => true
     | (a, b) :: as => closed a && closed b && closedListParPair as
-  termination_by l => sizeOf l
 end
 
 /-- `Closed p` — the process has no free variables (Law 6). Decidable (via the `closed*` `Bool`
@@ -411,7 +388,7 @@ theorem closedListParPair_all (l : List (Par × Par)) :
 theorem closedListGUnforgeable_eq_true (l : List GUnforgeable) : closedListGUnforgeable l = true := by
   induction l with
   | nil => rfl
-  | cons a as ih => simp [closedListGUnforgeable, closedGUnforgeable, ih]
+  | cons _ as ih => simp [closedListGUnforgeable, closedGUnforgeable, ih]
 
 theorem closedListSend_sorted (l : List Send)
     (hf : ∀ x ∈ l, closedSend (sortSend x) = closedSend x) :
