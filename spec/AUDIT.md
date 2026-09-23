@@ -2196,36 +2196,44 @@ port against the **reference document** rather than against itself.
   replay's tuple space differs from the play's at that point, which the test builds from the play's own
   checkpoint root.
 
-  **A trace of the replay, op by op** (instrumenting `locked_produce`/`locked_consume` and the two
-  candidate searches; reverted). Replaying the five operations gives:
+  **The failing input, and a case-aligned trace** (instrumenting `locked_produce`/`locked_consume`, both
+  candidate searches and the replay's store reads; all reverted). Proptest shrinks the committed seed to
+  six operations, and `PROPTEST_CASES=1` fails on it deterministically in ~0.03 s:
 
   ```
-  op1 consume  comms_for_consume = Some   no candidates -> store
-  op2 produce  comms_for_produce = Some   FIRES comm consume=88f3cb… produces=a21b3a…
-  op3 consume  comms_for_consume = Some   no candidates -> store      <- its recorded COMM is left
-  op4 produce  comms_for_produce = Some   FIRES comm consume=3821ed… produces=a21b3a…
-  op5 produce  comms_for_produce = Some   no candidates -> store
+  ops = [(false,false,2,2), (true,true,2,2), (false,true,2,1),
+         (true,true,2,2),  (true,true,2,1), (true,true,0,0)]
   ```
 
-  Two things fall out of that, and they are measured rather than inferred. First, the COMM the replay
-  fails to reconstruct is the one whose *consume* is op3's persistent continuation paired with op2's
-  datum — and it is left because op3's own step finds "no candidates", i.e. the candidate search for its
-  recorded COMMs matches nothing in the store at that moment. Second, the replay *does* fire a COMM at op2
-  whose recorded consume **is op3's continuation** — a continuation that cannot be waiting at that point
-  in the play, since op3 has not run yet. So the replay's store contains a waiting continuation before the
-  operation that creates it, and the recordings' pairings are therefore consumed out of order: op2
-  consumes the pairing that belongs to a later step, and the pairing that belongs to op2 is the one left
-  over.
+  Replayed op by op — the first column is the branch the replay took, the second what the *recording*
+  offered it for that operation:
+
+  ```
+  op1 consume (non-persistent)  recorded = [(consume 3821…, non-persistent)]
+  op2 produce (persistent)      recorded = [(consume 88f3…, persistent), (consume 3821…, non-persistent)]
+  op3 consume (persistent)      recorded = [(consume 88f3…, persistent)]
+        store read at op3: data_in_store = 0, matched = 0        <- its recorded COMM is left
+  ```
+
+  **Two measurements, and they do not require the log's ordering to be believed.** First, at op3 — a
+  persistent consume whose recorded COMM *exists* — the replay's own store is read and holds **zero**
+  data on the channel, so there is nothing to match and the recorded COMM stays in the multimap: that is
+  the leftover the reverse check reports. Second, at op2 the recording offers the replay a COMM whose
+  consume is a **persistent** continuation, and op1's is the only non-persistent one — so the recording
+  holds a pairing with a continuation created by a *later* operation (legitimately: the play formed that
+  COMM when op3's consume arrived and matched op2's still-present datum).
+
+  **Where that leaves the search.** The play's and the replay's commit paths are structurally identical
+  (`rspace.rs:300-329` against `replay_rspace.rs:389-425`), and both respect the *datum's* persist flag
+  when removing matches — so the divergence is not in committing a COMM but in *which* COMMs the replay's
+  searches accept, and in what ends up in its store. The measured pair — a produce that is offered a
+  COMM it cannot have formed yet, and a consume that then finds an empty channel — is the shape to chase
+  next: either the replay's produce takes the candidate path (and so never stores the persistent datum
+  the play stored on arrival), or the store's contents diverge earlier than the trace shows.
 
   **A failed hypothesis, recorded so it is not retried**: rigging the replay with the *pre*-play state
-  (taking a checkpoint before the operations, rather than the test's post-play one) changes nothing — the
-  trace above is identical. So the extra continuation is not simply "the play's final state handed to the
-  replay".
-
-  The next step is therefore `run_matcher_produce`'s candidate filter (`replay_rspace.rs:218-225`), which
-  admits a candidate only when the recorded COMM's consume *is* a waiting continuation in the store
-  (`comm.consume == wc.source`), together with `extract_first_match` — the trace says a candidate was
-  found for op2 against a continuation that should not exist yet, which is where the booking goes wrong.
+  (taking a checkpoint before the operations, rather than the test's post-play one) changes nothing —
+  the trace above is identical.
 
   **Not fixed here.** A test that fails on its own recording is a defect worth fixing rather than
   muting: this row registers it with a deterministic reproducer and the measured leftover, and the fix
