@@ -4,15 +4,20 @@ import Rchain.Casper.Stake
 # Laws 44–47 — Proof-of-Stake: the epoch gate, the reward split, and the dust
 
 The port's native PoS state (`rholang/src/native_state.rs`) implements the validator lifecycle — bond,
-withdraw, slash, trust — and **takes epoch transitions immediately**: `close_block` refunds quarantined
-withdrawers and recomputes `pos:active` on every block, never reading `PosParams.epoch_length`. The Scala
-contract it replaces (`legacy/casper/src/main/resources/Pos.rhox`) gates the whole of that on
-`blockNumber % epochLength == 0` (:517), computes an epoch's rewards at the boundary
-(`getCurrentEpochRewards`, :241-256), commits them (`commitCurrentEpochRewards`, :568-576), and pays out
-only the withdrawers whose quarantine has expired (:556-567, :592-621).
+withdraw, slash, trust — and **the epoch gate it used to skip now exists**: where `close_block` once
+refunded quarantined withdrawers and recomputed `pos:active` on *every* block, never reading
+`PosParams.epoch_length`, it now runs those steps only at a boundary, matching the Scala contract it
+replaces (`legacy/casper/src/main/resources/Pos.rhox`: `blockNumber % $$epochLength$$ == 0`, :517;
+rewards computed at the boundary, `getCurrentEpochRewards` :241-256, and committed,
+`commitCurrentEpochRewards` :568-576; only expired quarantines paid, :556-567, :592-621). The port
+keeps the contract's *meaning* for a zero epoch length (`native_state.rs:577-585`: the divisor is
+`max(epoch_length, 1)`, so a zero means one-block epochs rather than a division fault).
 
-This module is the **specification first** half of closing that gap (the plan's rule for Programme III):
-the rule stated, modelled, and proved where it can be, before the Rust implements it.
+Laws 44 and 47 remain `open` for a different reason: what they name is the **state machine** the gate
+guards, and until this module grows one the laws are claims about the Rust evidenced by Rust tests.
+That is this file's Programme C item, and the two properties are conservation (an epoch moves value
+between the vaults and mints none) and the release rule (a withdrawal is staged, then escrowed out of
+the pool, then paid `bond + committed` — and only at a boundary past its quarantine).
 
 ## The reward split does not conserve, and the law has to say so
 

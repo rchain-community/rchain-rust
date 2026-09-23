@@ -790,6 +790,50 @@ That is a multi-unit job (the family's definitions, the `sortX_*` lemmas that me
 re-emission) and the register will not let it land half-done: the axiom-accounting check fails if a row
 cites an axiom that is gone, so each replacement and its rows move together.
 
+### The idiom, validated on `cmpSend` (2026-09-23, later the same day)
+
+The *shape* of the proof is no longer speculative, so what is settled is recorded here — the next attempt
+should start from this code rather than from a description. First: the old obstruction ("a `mutual`
+theorem block over the **two-argument** `cmpX` family hangs the termination checker") is a *measure*
+problem, not a proof-shape problem. With one argument named in the `∀` — `∀ p : Par, ∀ q r : Par, …` —
+and `termination_by p _ _ => sizeOf p`, the measure descends structurally, exactly as the `eq_iff` and
+`swap` blocks below already do. Those blocks are the template, and they carry **both** the element and
+the list laws, which is what the cycle requires (the eleven standalone list lemmas at the end of this
+section are the roll-up of the same proofs from the current axioms).
+
+Second, the part that had no recorded answer: a `lex` chain of eight components (as `cmpPar` is) cannot
+be handed to `lex_lt_trans` component by component, because that lemma's tail argument must be a
+**single** comparison function — the tail has to be packaged as a comparator on a product, which is what
+`Cmp.lean`'s `cmpPairF` is for. Verified end to end on `cmpSend` (three levels: `Bool`, then
+`Par × List Par`), with the axioms standing in for the induction hypotheses:
+
+```lean
+simp only [cmpSend] at h1 h2 ⊢
+refine lex_lt_trans (f := (linearOrderComparator Bool).cmp)
+  (h_eq := fun {a b} => (linearOrderComparator Bool).eq_iff (a := a) (b := b))
+  (h_lt := fun {a b c} h1 h2 => (linearOrderComparator Bool).lt_trans h1 h2)
+  (Dcmp := cmpPairF cmpPar cmpListPar) (x := (c, d)) (y := (c', d')) (z := (c'', d''))
+  (hD := ?_) h1 h2
+intro hx hy
+exact lex_lt_trans (f := cmpPar) (h_eq := fun {a b} => cmpPar_eq_iff a b)
+  (h_lt := fun {a b c} h1 h2 => cmpPar_lt_trans a b c h1 h2) (Dcmp := cmpListPar)
+  (x := d) (y := d') (z := d'') (hD := fun h1 h2 => cmpListPar_lt_trans d d' d'' h1 h2) hx hy
+```
+
+Two details that cost time, so they are written down: `x`/`y`/`z` must be given **explicitly as the
+packaged tuples**, because `cmpPairF` cannot reduce against a metavariable of product type (its match has
+nothing to split); and the head must be named as a `Comparator`'s field (`(linearOrderComparator
+Bool).cmp`), because `cmpSend`'s persistence flag is compared with `_root_.cmp` — the natural order,
+unlike `Ground.bool`, whose polarity the node reverses (`cmpBool`).
+
+**What remains is volume, not novelty — with one exception.** `cmpPar`'s chain is eight deep, so its tail
+packages as a right-nested product and the proof nests seven `lex_lt_trans` applications; the small
+structures are the same shape in fewer steps. The exception is `cmpExpr`: 21 groups mean a 21×21×21 case
+analysis whose `simp` must **not** unfold the 21-arm match (the recorded reason its two laws are axioms),
+so it needs the `cmpExpr` arm lemmas — `rfl`-proved, as `Json.lean`'s are — *before* the nesting for its
+five shapes (grounds / the four collections / a var / monadic / binary). That is the first piece to do
+next time, and it pays twice: the same arm lemmas are what `cmpExpr`'s `eq_iff` and `swap` need.
+
 ### What the score order actually is, and where this model still differs (extracted, then aligned, 2026-09-23)
 
 The `sort` corpus (`spec/conformance/sort.tsv` + `rholang/tests/lean_sort_corpus.rs`) ties the two
