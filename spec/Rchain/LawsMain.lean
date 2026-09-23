@@ -63,9 +63,10 @@ rather than a quietly larger catalog.
 It was 43 — the catalog of laws 1–43 — until Programme B's implementation gaps were opened as their own
 laws rather than as prose in `spec/RUST-FIRST.md`: 44–47 are the Proof-of-Stake epoch, its split, its
 conservation and its withdrawal — the four the port did not implement when the ceiling was written —
-and 48 is the fee consequence of a denied deploy, which the plan's Programme B opened as a row because
-it is a rule neither this port nor the Scala it was ported from implements." -/
-def lawCeiling : Nat := 48
+48 is the fee consequence of a denied deploy, which the plan's Programme B opened as a row because it
+is a rule neither this port nor the Scala it was ported from implements, and 49 is the gas a matched
+deploy is charged — the first row about cost rather than state." -/
+def lawCeiling : Nat := 49
 
 /-- How many laws carry a given status, for the summary line. -/
 def statusCount (s : Status) : Nat := (laws.filter (·.status == s)).length

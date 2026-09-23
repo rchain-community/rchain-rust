@@ -30,6 +30,7 @@ import Rchain.Casper.Stake
 import Rchain.Casper.Fringe
 import Rchain.Casper.Validate
 import Rchain.Pos
+import Rchain.Charging
 import Rchain.Crypto.Random
 import Rchain.Crypto.Spec
 -- The law register (`Rchain/Laws.lean`) is pure data with no imports: the catalog of all 43 laws, and

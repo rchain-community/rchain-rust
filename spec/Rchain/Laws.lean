@@ -1,5 +1,5 @@
 /-!
-# The law register — all 48 laws, in one place, with what each one rests on
+# The law register — all 49 laws, in one place, with what each one rests on
 
 `spec/INVENTORY.md` is the prose catalog, and `docs/src/formal/the-29-laws.md`,
 `docs/src/formal/laws-30-43.md` and `docs/src/formal/laws-44-47.md` are its reader-facing rendering, but
@@ -9,7 +9,7 @@ said 29, that the two tables contradicted each other on Laws 5 and 24, or that L
 axioms" were really 12. This module is the single source of truth those documents are generated from,
 and `Rchain/LawsMain.lean` (the `rchain-laws` executable) is what enforces it:
 
-1. **Numbering** — every law 1..48 is present, with no gaps, so a law cannot be quietly dropped.
+1. **Numbering** — every law 1..49 is present, with no gaps, so a law cannot be quietly dropped.
 2. **Reference integrity** — every declaration a row names actually exists in `Rchain`. A renamed or
    deleted theorem fails this, instead of leaving a row that cites a proof that is gone.
 3. **Axiom accounting** — the set of axioms cited by these rows is *exactly* the set of `axiom`
@@ -1117,7 +1117,33 @@ def laws : List Law := [
       rewarded *for this deploy*' could even be stated. Closing it means choosing an objective and a \
       refund path that the Scala does not have, which is a consensus change without an oracle; the \
       decision taken is to leave it open *with the reason*, in the row and in the doc, rather than to \
-      implement a proposal and call it a port" }
+      implement a proposal and call it a port" },
+  -- ── Rholang: what a deploy is charged (Law 49) ─────────────────────────────────────────────────
+  { number := 49, layer := "Rholang",
+    statement := "For a matched produce/consume the charged gas is the Scala's: the storage is charged       up front and what the match consumed is **refunded** — the continuation's consume storage and the       produce storage of every removed datum — *before* the event and COMM costs",
+    status := .provedModel,
+    declarations := [`Rchain.prefixes, `Rchain.peak, `Rchain.itotal, `Rchain.peak_four,
+      `Rchain.peak_refunds_first, `Rchain.itotal_refunds_first],
+    rust := ["rholang/src/storage.rs"],
+    falsifiable := some "two halves, and the Rust test asserts both: \
+      `a_matched_produce_refunds_its_storage_before_the_event_costs` (1) checks the matched call's total \
+      against the same op *without* a match plus the COMM cost minus the two refunds — which fails if a \
+      refund is dropped — and (2) finds a balance between the two peaks at which the deploy completes, \
+      failing one phlo below it. The Lean side carries the second half as arithmetic: \
+      `peak_refunds_first` says the refunds-first order's peak is at most the other's, and \
+      `itotal_refunds_first` says their totals are *equal* — so a test that checked only the total \
+      would pass with the refunds charged last, and (2) is what cannot",
+    note := "**the first law about gas rather than about state**, and the reason it needed a model is \
+      the *peak*, not the sum: `CostAccounting::charge` refuses a step that would take the balance \
+      negative, so what a deploy needs is the largest prefix total of its charges. A refund credited \
+      before the event and COMM charges lowers that peak; one credited after them does not — the two \
+      sequences then need 192 and 200 phlo respectively for the same 184 of work, which is what the \
+      test's tight balance measures. The port charged the storage and never refunded it, recording the \
+      gap as a 'safe over-charge': safe because no deployer is ever *under*-charged, which is exactly \
+      why it survived review. Modelled at the instance the charge sequence has (two charges, two \
+      refunds) rather than in general: the general form is the same argument iterated, and the \
+      iteration needs a permutation lemma over `List` that carries no further content — `Charging.lean` \
+      says so rather than proving a statement no caller uses" }
 ]
 
 /-- Every law number the catalog defines. Laws with clauses repeat. -/

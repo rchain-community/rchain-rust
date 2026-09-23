@@ -229,6 +229,7 @@ not found in that file. Coverage claims live here rather than in prose so they c
 | G7 | `casper/tests/determinism.rs` | `a_genesis_replay_without_the_vaults_does_not_reproduce_the_genesis` |
 | G12 | `rholang/src/storage.rs` | `produce_at_charges_the_storage_up_front` |
 | G12 | `rholang/src/storage.rs` | `commit_produce_charges_the_event_at_the_commit` |
+| G12 | `rholang/src/storage.rs` | `a_matched_produce_refunds_its_storage_before_the_event_costs` |
 | G8 | `block-storage/src/dag/finalizer.rs` | `calculate_finalization_advances_fringe_on_fork` |
 | G9 | `comm/src/peer_node.rs` | `from_hex_rejects_malformed_input` |
 | G9 | `comm/src/peer_node.rs` | `from_address_rejects_malformed_uris` |
@@ -387,7 +388,7 @@ hard mode would fail on, so that a half-finished sweep is legible instead of inv
 | G9 malformed input | ✅ `NodeIdentifier`/`KeySegment`/`BlockHash` + deploy-signature verify |
 | G10 TLS trust-manager | ✅ wrong-hostname + stale-cert rejection |
 | G11 transport socket | ✅ loopback mutual-TLS gRPC round trip |
-| G12 scheduled-path charging | ✅ `produce_at_charges_the_storage_up_front`, `produce_at_fails_before_storing_when_the_balance_is_spent`, `commit_produce_charges_the_event_at_the_commit` |
+| G12 scheduled-path charging | ✅ `produce_at_charges_the_storage_up_front`, `produce_at_fails_before_storing_when_the_balance_is_spent`, `commit_produce_charges_the_event_at_the_commit`; ✅ the **storage refund** on a match (law 49) — the total *and* the order, `a_matched_produce_refunds_its_storage_before_the_event_costs`, which the port did not charge at all as recently as 2026-09-23 (a "safe over-charge") |
 
 *(✅ = covered; ⏸ = deferred with the seam documented above.)*
 

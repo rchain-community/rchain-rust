@@ -21,7 +21,9 @@ use rchain_rspace::tuple_space::{
     ContResult, Result as RSpaceResult, Tuplespace as RSpaceTuplespace,
 };
 
-use crate::accounting::{CostAccounting, Costs};
+use rchain_crypto::hash::blake2b512_random::Blake2b512Random;
+
+use crate::accounting::{Cost, CostAccounting, Costs};
 use crate::errors::RholangError;
 use crate::matcher::{fold_match, spatial_match, FreeMap};
 use crate::reduce::{Application, PendingProduce, ScheduledConsume, ScheduledProduce, Tuplespace};
@@ -96,9 +98,35 @@ impl Match<BindPattern, ListParWithRandom> for RhoMatch {
     }
 }
 
+/// The identity of an op whose result is being charged (the Scala's `TriggeredBy`): the random state
+/// it was created with, which is what the refunds compare a continuation's id against.
+fn consume_id(continuation: &TaggedContinuation) -> Result<Blake2b512Random, RholangError> {
+    match continuation {
+        TaggedContinuation::ParBody(value) => Ok(value.random_state.copy()),
+        // The Scala's `Blake2b512Random(ByteBuffer.allocate(8).putLong(value).array())`: a big-endian
+        // long, which is `ByteBuffer`'s default order.
+        TaggedContinuation::ScalaBodyRef(value) => {
+            Ok(Blake2b512Random::from_init(&value.to_be_bytes()))
+        }
+        TaggedContinuation::Empty => {
+            Err(RholangError::BugFoundError("Damn you pROTOBUF".to_string()))
+        }
+    }
+}
+
 /// The charging tuplespace bridge: adapts the async rspace to the async rholang `Tuplespace` (port
-/// of `ChargingRSpace`). Charges the produce/consume storage + event/COMM costs (C-2); the Scala
-/// storage *refund* on a matched continuation is not yet modeled (safe over-charge).
+/// of `ChargingRSpace`). Charges the produce/consume storage + event/COMM costs, and **refunds** the
+/// storage an op consumed when it matched:
+///
+/// * a non-persistent continuation's consume storage, and the consume storage of the persistent
+///   continuation this op itself triggered (`refundForConsume`);
+/// * the produce storage of every datum the op removed, save a *persistent* datum the op did not
+///   itself produce — that one stays in the space, so its storage is still owed
+///   (`refundForRemovingProduces`).
+///
+/// Both are charged *before* the event and COMM costs, in the Scala's order (`ChargingRSpace.scala:121-127`),
+/// which is what makes them refunds rather than rebates: a charge that arrives after the exhaustion
+/// check cannot save a deploy that had already run out.
 #[derive(Clone)]
 pub struct ChargingRSpace {
     space: RhoTuplespace,
@@ -109,6 +137,47 @@ impl ChargingRSpace {
     /// Wrap `space` with the cost cell, charging produce/consume (port of `chargingRSpace`).
     pub fn new(space: RhoTuplespace, cost: Arc<CostAccounting>) -> Self {
         ChargingRSpace { space, cost }
+    }
+
+    /// The storage refunds a *matched* op is owed (port of `handleResult`'s `Some` arm, and of the two
+    /// helpers it calls).
+    ///
+    /// `trigger_id` is the id of the op that triggered the COMM: for a produce, its own random state;
+    /// for a consume, the id of the continuation *it* installed, which is what `consume_id` derives.
+    /// (The trigger's *persistence* is not needed here — the caller's `!persist` guard on the event
+    /// cost is the same value, which is the Scala's `lastIteration = !triggeredBy.persistent`.)
+    fn refund_storage(
+        &self,
+        cont: &ContResult<SortedProc, BindPattern, TaggedContinuation>,
+        data: &[RSpaceResult<SortedProc, ListParWithRandom>],
+        trigger_id: &Blake2b512Random,
+    ) -> Result<(), RholangError> {
+        // `refundForConsume`. A persistent continuation that is *not* the one this op triggered keeps
+        // its storage charged: it stays in the space and will be charged again when it next fires (the
+        // Scala's comment: "We refund for non-persistent continuations, and for the persistent
+        // continuation triggering the comm. That persistent continuation is going to be charged for
+        // (without refund) once it has no matches in TS"). A non-persistent continuation is consumed by
+        // the match, so its storage is refunded here — that is the whole point: the consume storage was
+        // charged up front, and the op that paid it is gone.
+        if !cont.persistent || &consume_id(&cont.continuation)? == trigger_id {
+            let cost =
+                Costs::storage_cost_consume(&cont.channels, &cont.patterns, &cont.continuation);
+            self.cost
+                .charge(Cost::new(-cost.value, "consume storage refund"))?;
+        }
+        // `refundForRemovingProduces`: every datum this op removed is refunded its produce cost —
+        // except a persistent datum that this op did not itself produce, which stays in the space. The
+        // channel is taken from the *continuation's* channels, positionally, as the Scala's `zip` does
+        // (`data.channel` is not consulted).
+        let mut refund: i64 = 0;
+        for (channel, datum) in cont.channels.iter().zip(data) {
+            if !datum.persistent || &datum.removed_datum.random_state == trigger_id {
+                refund += Costs::storage_cost_produce(channel, &datum.removed_datum).value;
+            }
+        }
+        self.cost
+            .charge(Cost::new(-refund, "produces storage refund"))?;
+        Ok(())
     }
 }
 
@@ -122,6 +191,9 @@ impl Tuplespace for ChargingRSpace {
     ) -> Result<Application, RholangError> {
         self.cost
             .charge(Costs::storage_cost_produce(channel, &data))?;
+        // The triggering op's id, captured before the datum moves into the space (the Scala's
+        // `TriggeredBy = Produce(data.randomState, persist)`).
+        let trigger_id = data.random_state.copy();
         let result = self
             .space
             .produce(channel.clone(), data, persist)
@@ -129,7 +201,8 @@ impl Tuplespace for ChargingRSpace {
             .map_err(|e| RholangError::ReduceError(e.to_string()))?;
         match &result {
             None => self.cost.charge(Costs::event_storage_cost(1))?,
-            Some((cont, _)) => {
+            Some((cont, data_list)) => {
+                self.refund_storage(cont, data_list, &trigger_id)?;
                 if !persist {
                     self.cost.charge(Costs::event_storage_cost(1))?;
                 }
@@ -153,6 +226,11 @@ impl Tuplespace for ChargingRSpace {
             patterns,
             &continuation,
         ))?;
+        // The triggering op's id (the Scala's `TriggeredBy = Consume(consumeId(continuation), persist,
+        // channels.size)`). Computed *before* the space call because the continuation moves into it —
+        // the Scala computes it after the op instead; the only difference is which partial state a
+        // protobuf-bug continuation leaves behind, and that fails the deploy either way.
+        let trigger_id = consume_id(&continuation)?;
         let result = self
             .space
             .consume(channels, patterns, continuation, persist, peeks)
@@ -162,7 +240,8 @@ impl Tuplespace for ChargingRSpace {
             None => self
                 .cost
                 .charge(Costs::event_storage_cost(channels.len() as i64))?,
-            Some((cont, _)) => {
+            Some((cont, data_list)) => {
+                self.refund_storage(cont, data_list, &trigger_id)?;
                 if !persist {
                     self.cost
                         .charge(Costs::event_storage_cost(channels.len() as i64))?;
@@ -306,7 +385,15 @@ mod tests {
 
     struct MockSpace {
         produced: Mutex<Vec<(SortedProc, ListParWithRandom, bool)>>,
+        /// When set, `produce` reports a match instead of storing — the shape a refund is owed for.
+        matched: Mutex<Option<Matched>>,
     }
+
+    /// What `produce` returns when it matched: the continuation, and the datum it removed.
+    type Matched = (
+        ContResult<SortedProc, BindPattern, TaggedContinuation>,
+        Vec<RSpaceResult<SortedProc, ListParWithRandom>>,
+    );
 
     #[async_trait]
     impl RSpaceTuplespace<SortedProc, BindPattern, ListParWithRandom, TaggedContinuation>
@@ -345,7 +432,11 @@ mod tests {
                 .lock()
                 .unwrap_or_else(|p| p.into_inner())
                 .push((channel, data, persist));
-            Ok(None)
+            Ok(self
+                .matched
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .clone())
         }
 
         async fn install(
@@ -362,6 +453,7 @@ mod tests {
     fn charging_space(initial: i64) -> (ChargingRSpace, Arc<CostAccounting>, Arc<MockSpace>) {
         let mock = Arc::new(MockSpace {
             produced: Mutex::new(Vec::new()),
+            matched: Mutex::new(None),
         });
         let cost = Arc::new(CostAccounting::from_initial(Cost::new(initial, "init")));
         let charging = ChargingRSpace::new(mock.clone() as RhoTuplespace, cost.clone());
@@ -449,10 +541,126 @@ mod tests {
         );
     }
 
+    /// **A matched op is refunded the storage it consumed, and the refund lands *before* the event
+    /// and COMM costs** (`ChargingRSpace.scala:105-127`). Two assertions, because the two are
+    /// different facts:
+    ///
+    /// * the matched call costs what the *same* op with no match costs, plus the COMM cost the match
+    ///   adds, **minus the two refunds** — the consume storage of the continuation and the produce
+    ///   storage of the datum the op removed, which the Scala charges as negative `Cost`s;
+    /// * with a balance that cannot cover the event/COMM costs on its own, the op still **completes**,
+    ///   which is only true if the refunds were credited first. Order is not decoration: `charge`
+    ///   raises `OutOfPhlogistonsError` when the balance would go negative, so a refund arriving after
+    ///   the check cannot save a deploy that had already run out.
+    #[tokio::test]
+    async fn a_matched_produce_refunds_its_storage_before_the_event_costs() {
+        let channel = sample_channel();
+        let data = lpw(vec![par(vec![Expr::GInt(42)])]);
+        let removed = lpw(vec![par(vec![Expr::GInt(7)])]);
+        let cont = ContResult {
+            continuation: TaggedContinuation::ParBody(rchain_models::runtime::ParWithRandom {
+                body: SortedProc::new(par(vec![Expr::GInt(0)])),
+                random_state: Blake2b512Random::new_random(128),
+            }),
+            // Non-persistent: the continuation is consumed by the match, so its storage is refunded.
+            persistent: false,
+            channels: vec![channel.clone()],
+            patterns: vec![BindPattern {
+                patterns: Vec::new(),
+                free_count: 0,
+                remainder: None,
+            }],
+            peek: false,
+        };
+        let removed_results = vec![RSpaceResult {
+            channel: channel.clone(),
+            matched_datum: removed.clone(),
+            removed_datum: removed.clone(),
+            persistent: false,
+        }];
+
+        // One space per reading: `total_charged` is cumulative, so two calls in one account would
+        // compare a sum against a single call's charges.
+        let (unmatched_space, unmatched_cost, _) = charging_space(1_000_000);
+        unmatched_space
+            .produce(&channel, data.clone(), false)
+            .await
+            .unwrap();
+        let unmatched = unmatched_cost.total_charged();
+
+        let (matched_space, matched_cost, mock) = charging_space(1_000_000);
+        *mock.matched.lock().unwrap() = Some((cont.clone(), removed_results));
+        matched_space.produce(&channel, data, false).await.unwrap();
+        let matched = matched_cost.total_charged();
+
+        let consume_refund =
+            Costs::storage_cost_consume(&cont.channels, &cont.patterns, &cont.continuation).value;
+        let produce_refund = Costs::storage_cost_produce(&channel, &removed).value;
+        assert!(
+            consume_refund > 0 && produce_refund > 0,
+            "both refunds have content ({consume_refund}, {produce_refund})"
+        );
+        assert_eq!(
+            matched,
+            unmatched + Costs::comm_event_storage_cost(1).value - consume_refund - produce_refund,
+            "a match refunds the consume storage and the removed datum's produce storage \
+             (consume {consume_refund}, produce {produce_refund})"
+        );
+
+        let cont_for_tight = cont.clone();
+        // Order, which the total above cannot see (a sum is order-independent but a *running* balance
+        // is not): `charge` refuses a step that would take the balance negative, so what a deploy
+        // needs is the largest prefix sum of its charges, and a refund credited *before* a later charge
+        // lowers that peak. With the refunds last the peak is `storage + event + comm`; with them first
+        // it is that minus the refunds — so a balance in between completes under one order and fails
+        // under the other.
+        let tight_datum = lpw(vec![par(vec![Expr::GInt(1)])]);
+        let removed_results_for_tight = vec![RSpaceResult {
+            channel: channel.clone(),
+            matched_datum: tight_datum.clone(),
+            removed_datum: tight_datum.clone(),
+            persistent: false,
+        }];
+        let storage = Costs::storage_cost_produce(&channel, &tight_datum).value;
+        let event = Costs::event_storage_cost(1).value;
+        let comm = Costs::comm_event_storage_cost(1).value;
+        let tight_refund = produce_refund;
+        let peak_with_refunds_first = storage + event + comm - consume_refund - tight_refund;
+        assert!(
+            peak_with_refunds_first < storage + event + comm,
+            "the refunds have to move the peak for this to test order at all"
+        );
+
+        let (tight_space, tight_cost, mock) = charging_space(1_000_000);
+        *mock.matched.lock().unwrap() = Some((cont, removed_results_for_tight.clone()));
+        tight_cost.set(Cost::new(peak_with_refunds_first, "tight"));
+        assert!(
+            tight_space
+                .produce(&channel, tight_datum.clone(), false)
+                .await
+                .is_ok(),
+            "at the refunds-first peak the deploy completes — the refund was credited before the \
+             event and COMM charges"
+        );
+
+        let (tighter_space, tighter_cost, mock) = charging_space(1_000_000);
+        *mock.matched.lock().unwrap() = Some((cont_for_tight, removed_results_for_tight));
+        tighter_cost.set(Cost::new(peak_with_refunds_first - 1, "tighter"));
+        assert!(
+            tighter_space
+                .produce(&channel, tight_datum, false)
+                .await
+                .is_err(),
+            "one phlo less and it does not, which is what makes the assertion above about the \
+             refund and not about a generous balance"
+        );
+    }
+
     #[tokio::test]
     async fn charging_rspace_charges_and_enforces_balance() {
         let mock: RhoTuplespace = Arc::new(MockSpace {
             produced: Mutex::new(Vec::new()),
+            matched: Mutex::new(None),
         });
         let cost = Arc::new(CostAccounting::from_initial(Cost::new(1_000_000, "init")));
         let charging = ChargingRSpace::new(mock, cost.clone());
@@ -475,6 +683,7 @@ mod tests {
         let tiny = ChargingRSpace::new(
             Arc::new(MockSpace {
                 produced: Mutex::new(Vec::new()),
+                matched: Mutex::new(None),
             }),
             tiny_cost,
         );
