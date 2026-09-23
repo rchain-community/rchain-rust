@@ -2196,6 +2196,14 @@ port against the **reference document** rather than against itself.
   replay's tuple space differs from the play's at that point, which the test builds from the play's own
   checkpoint root.
 
+  **The silent path is located** (`replay_rspace.rs`): `locked_produce` asks the recording for the
+  COMMs of that produce (`comms_for_produce`, `:562-568`), and the recording *does* hold one — the
+  leftover above is keyed under it — but `get_comm_or_produce_candidate` (`:268-287`) returns `None` for
+  it, so the code falls through to `store_data` (`:577-584`): no COMM is replayed, no error is raised,
+  and the recording keeps its copy. That is the whole failure in one branch. The next step is that
+  function's per-COMM `run_matcher_produce` and why it finds no candidate for a COMM the play itself
+  produced — with the third candidate below as the field-level suspect.
+
   **A third candidate, and the most mechanical of the three**: the recorded COMMs in the log both carry
   `times_repeated: { …: 0 }` (printed above), and the replay *recomputes* that map as it walks the
   script — the ops produce the same datum twice, so a replay-side counter can differ from the recorded
