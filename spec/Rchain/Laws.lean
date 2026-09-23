@@ -761,11 +761,19 @@ def laws : List Law := [
 
   -- ── Cross-shard: two-phase commit (Laws 26–29) ───────────────────────────────────────────────────
   { number := 26, clause := "a", layer := "Cross-shard",
-    statement := "A deploy/block's effects bind to exactly one shard",
-    status := .deferred,
-    declarations := [`Rchain.shard_scope_deterministic],
-    axioms := [`Rchain.shard_scope_deterministic],
-    falsifiable := none },
+    statement := "A deploy/block's effects bind to exactly one shard, and the leg a gateway admits \
+      carries a validated shard id",
+    status := .owed,
+    declarations := [`Rchain.shard_scope_deterministic_is_false, `Rchain.ValidShardId, `Rchain.Leg],
+    rust := ["node/src/web/http.rs", "shared/src/refined.rs"],
+    falsifiable := none,
+    note := "**the axiom this row used to cite was FALSE** — `∀ l : Leg, ValidShardId l.shard` over a \
+      freely constructible record, refuted by `Leg.mk \"\" 0 0` (`shard_scope_deterministic_is_false`, \
+      2026-09-23). The axiom is deleted rather than kept beside its own refutation (a false axiom makes \
+      everything provable). What the law is about is the *ingress*: the port rejects an invalid shard id \
+      at the boundary (`ShardId::try_from` on `TxnLegDto.shard_id`, `node/src/web/http.rs:203-218`, with \
+      the boundary test that pins the 400), so the narrowed statement is about the function that admits \
+      a leg — which needs that function modelled before it can be proved" },
   { number := 26, clause := "b", layer := "Cross-shard",
     statement := "The shard id is a validated, ordered value",
     status := .open,
@@ -777,12 +785,20 @@ def laws : List Law := [
     status := .open,
     falsifiable := none },
   { number := 27, layer := "Cross-shard",
-    statement := "Cross-shard atomicity (2PC): a transaction commits on every participant or aborts on \
-      every one — no run leaves a strict subset committed",
-    status := .deferred,
-    declarations := [`Rchain.txn_atomic],
-    axioms := [`Rchain.txn_atomic],
-    falsifiable := none },
+    statement := "Cross-shard atomicity (2PC): every leg that *prepared* reaches the one decision the \
+      coordinator made — commit on all of them or abort on all of them",
+    status := .owed,
+    declarations := [`Rchain.txn_atomic_is_false, `Rchain.uniform],
+    rust := ["casper/src/txn_coordinator.rs"],
+    falsifiable := none,
+    note := "**the axiom this row used to cite was FALSE** — `∀ r : Run, uniform r` over `Run := List \
+      Outcome`, refuted by `[committed, aborted]` (`txn_atomic_is_false`, 2026-09-23). The narrowed \
+      statement is the port's own: `run_2pc` decides once (`all_ready`), and phase two applies that \
+      decision to every leg that voted ready — a leg that did not prepare never locked, so it has no \
+      outcome to be uniform about (`casper/src/txn_coordinator.rs:152-192`). The Rust's comment on \
+      `vote_from_reply` (`:196-215`) is the differential reference for the retry path: a re-run \
+      answering `committed` must count as ready, or the other legs abort and the run stops being \
+      uniform on exactly the path recovery makes reachable" },
   { number := 28, layer := "Cross-shard",
     statement := "Leg idempotency: `txn_prepare`/`txn_commit`/`txn_abort` are idempotent under the \
       transaction id — a retried leg returns the record it already has — and the two terminal verbs \
@@ -813,12 +829,24 @@ def laws : List Law := [
       fourth constructor (`proposed`) that the code does not have (`:106-111`); a transaction with no \
       record is `none`, which is how the verbs spell it" },
   { number := 29, layer := "Cross-shard",
-    statement := "Decision durability and record determinism: the coordinator's decision is a durable, \
-      content-addressed record; a prepared participant can always recover it",
-    status := .deferred,
-    declarations := [`Rchain.commit_record_deterministic],
-    axioms := [`Rchain.commit_record_deterministic],
-    falsifiable := none },
+    statement := "The coordinator's decision is a *function* of its votes — `committed` iff every \
+      participant voted ready — and it is a durable record a prepared participant can recover",
+    status := .owed,
+    declarations := [`Rchain.commit_record_deterministic_is_false, `Rchain.allReady,
+      `Rchain.coordinatorDecision, `Rchain.allReady_eq_true,
+      `Rchain.coordinator_decision_committed_iff],
+    rust := ["casper/src/txn_coordinator.rs"],
+    falsifiable := some "`coordinator_decision_committed_iff` is the decision half, proved against the \
+      port's own two lines; the witness that the *old* statement was false is \
+      `commit_record_deterministic_is_false` — a record whose state is `committed` while a vote is \
+      `abort` — which contains no false claim and could not, since the record is a free type",
+    note := "**the axiom this row used to cite was FALSE** — a property of *every* `CoordRecord` (`:77` \
+      is freely constructible), refuted by `{state := committed, votes := [\"\", abort]}` \
+      (`commit_record_deterministic_is_false`). Split in two: the **decision half is now proved** — \
+      `allReady`/`coordinatorDecision` are the Rust's `all_ready`/`decision` lines, and \
+      `coordinator_decision_committed_iff` says `committed` iff every vote is ready — while the \
+      **durability half stays owed**: that a prepared participant recovers the decision from the durable \
+      record needs the coordinator's record writes modelled. The row is `owed` because one half is" },
 
   -- ── Laws 30–43: the surface the ten silent defects live in ──────────────────────────────────────
   { number := 30, layer := "Rholang",

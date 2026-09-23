@@ -138,31 +138,40 @@ structure CoordRecord where
 abbrev Run := List Outcome
 ```
 
-The four laws are **stated** (their proofs are a later obligation, as Laws 20–25 were before their
-proofs):
+**Three of the four laws were stated as axioms over freely-constructible model types, and all three
+statements were FALSE** (found and refuted 2026-09-23, the consolidation pass's own remedy: a false
+axiom is worse than an owed one, because anything follows from it). Each is deleted rather than kept
+beside its own refutation, and the refutation is published in its place:
 
 ```lean
-axiom shard_scope_deterministic (l : Leg) : ValidShardId l.shard
+-- Law 26: `Leg` is `{shard, effect, compensation}` and `ValidShardId s := s ≠ ""`
+theorem shard_scope_deterministic_is_false :
+    ¬ (∀ l : Leg, ValidShardId l.shard) :=
+  fun h => (h ⟨"", 0, 0⟩) rfl
 
-def uniform (r : Run) : Prop :=
-  (∀ o ∈ r, o = Outcome.committed) ∨ (∀ o ∈ r, o = Outcome.aborted)
+-- Law 27: `Run := List Outcome`, so a mixed run is an inhabitant
+theorem txn_atomic_is_false : ¬ (∀ r : Run, uniform r)   -- witness: [committed, aborted]
 
-axiom txn_atomic (r : Run) : uniform r
-
-def applyEffect (st : ShardId → Nat) (l : Leg) : ShardId → Nat :=
-  fun s => if s = l.shard then l.effect else st s
-
-axiom leg_idempotent (st : ShardId → Nat) (l : Leg) :
-  applyEffect (applyEffect st l) l = applyEffect st l
-
-axiom commit_record_deterministic (r : CoordRecord) :
-  r.state = TxnState.committed ↔ (∀ v ∈ r.votes, v.2 = Vote.ready)
+-- Law 29: `CoordRecord` is `{txn, state, votes}`, so a record can contradict its own state
+theorem commit_record_deterministic_is_false :
+    ¬ (∀ r : CoordRecord, r.state = TxnState.committed ↔ ∀ v ∈ r.votes, v.2 = Vote.ready)
 ```
 
-`txn_atomic` is the load-bearing statement: every run is *uniform* — all committed or all aborted —
-which is exactly "no partial merge". `commit_record_deterministic` pins the decision rule (commit iff
-every vote is `ready`) and makes the record a deterministic function of the votes, so recovery and
-replay re-derive it.
+**What each law is actually about**, read off the port rather than the type:
+
+- **26** — the *gateway's ingress*: a leg's shard id is validated at the boundary
+  (`ShardId::try_from` on `TxnLegDto.shard_id`, `node/src/web/http.rs:203-218`), so the claim is about
+  the function that admits a leg. Stating it needs that function modelled.
+- **27** — `run_2pc`'s *outcomes*, not `List Outcome`'s: the coordinator decides once (`all_ready`) and
+  phase two applies that one decision to every leg that voted ready; a leg that did not prepare never
+  locked, so it has no outcome to be uniform about.
+- **29** — split in two, and **the decision half is proved**: `allReady` and `coordinatorDecision` are
+  the port's own two lines (`txn_coordinator.rs:177-179`), and `coordinator_decision_committed_iff`
+  gives `committed` iff every vote is ready — so the recorded decision *is* a function of the votes. The
+  durability half (a prepared participant recovers it) needs the coordinator's record writes modelled.
+
+Law 28 is different in kind: `leg_idempotent` is a **theorem** about the model's own `applyEffect`
+(that row is `proved-model`), not an axiom.
 
 ## Rust realization (status)
 

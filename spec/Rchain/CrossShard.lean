@@ -10,18 +10,25 @@ commit** discipline that turns two idempotent legs into one atomic unit
 (`docs/src/formal/cross-shard-transactions.md`).
 
 * **Law 26 — shard scope determinism.** A deploy/block's effects bind to exactly one shard; the shard
-  id is a validated, ordered value, and the RNG seed + unforgeable names are shard-scoped.
-  `shard_scope_deterministic`.
+  id is a validated, ordered value, and the RNG seed + unforgeable names are shard-scoped. **The
+  statement this module used to carry as an axiom (`∀ l, ValidShardId l.shard`) was false and is
+  refuted** (`shard_scope_deterministic_is_false`); the law's real content is about the gateway's
+  ingress, and stating it needs that function modelled.
 
-* **Law 27 — cross-shard atomicity (2PC).** A transaction commits on every participant or aborts on
-  every participant — no run leaves a strict subset committed. `txn_atomic`.
+* **Law 27 — cross-shard atomicity (2PC).** The transaction reaches one decision, and every leg that
+  prepared follows it. **The axiom this module used to carry (`∀ r : Run, uniform r`) was false over
+  `Run := List Outcome` and is refuted** (`txn_atomic_is_false`); the narrowed statement is `run_2pc`'s
+  (`txn_coordinator.rs:152-192`).
 
 * **Law 28 — leg idempotency.** `prepare`/`commit`/`abort` are idempotent under the transaction id,
-  so re-delivery and client retry are safe. `leg_idempotent`.
+  so re-delivery and client retry are safe. `leg_idempotent` — a **theorem** about the model's own
+  `applyEffect`, not an axiom.
 
-* **Law 29 — decision durability & record determinism.** The coordinator's decision is a durable,
-  content-addressed record; a prepared participant recovers it (the 2PC *blocking* caveat).
-  `commit_record_deterministic`.
+* **Law 29 — decision durability & record determinism.** The coordinator's decision is a function of
+  its votes (proved: `coordinator_decision_committed_iff` over `allReady`/`coordinatorDecision`, which
+  are the port's own two lines) and a durable record a prepared participant recovers. **The axiom this
+  module used to carry was false** — it asserted a property of *every* `CoordRecord`, a free type —
+  and is refuted (`commit_record_deterministic_is_false`); the durability half stays owed.
 -/
 
 namespace Rchain
@@ -85,10 +92,20 @@ abbrev Run := List Outcome
 
 /-! ## Law 26 — shard scope determinism -/
 
-/-- **Law 26.** A leg carries a *valid* shard id, and a deploy/block's effects bind to exactly that
-    one shard; the shard id names the unforgeable names and seeds the RNG
-    (`casper/src/block_random_seed.rs`), so shard scope is a function of the id. **Stated.** -/
-axiom shard_scope_deterministic (l : Leg) : ValidShardId l.shard
+/-- **Law 26 was stated as `∀ l : Leg, ValidShardId l.shard`, and that statement is FALSE** — `Leg` is
+    a freely constructible record (`:58`), so an empty shard id is an inhabitant the statement cannot
+    hold of. The axiom is deleted and the refutation published in its place (2026-09-23, the
+    consolidation pass's own remedy: "a false axiom is worse than an owed one, because anything follows
+    from it", and each of the nine it found is refuted rather than dropped quietly).
+
+    **What the law is actually about**: the *gateway's ingress*. The port validates a leg's shard id at
+    the boundary — `ShardId::try_from` on `TxnLegDto.shard_id` (`node/src/web/http.rs:203-218`, with the
+    400 the boundary test pins) — so the claim to state is about the function that admits a leg, not
+    about every record the model can build. Stating it needs that function modelled (Step 4 of the
+    plan); until then the row is `owed` with this sentence as its narrowed statement. -/
+theorem shard_scope_deterministic_is_false :
+    ¬ (∀ l : Leg, ValidShardId l.shard) :=
+  fun h => (h ⟨"", 0, 0⟩) rfl
 
 /-! ## Law 27 — cross-shard atomicity (2PC) -/
 
@@ -97,9 +114,25 @@ axiom shard_scope_deterministic (l : Leg) : ValidShardId l.shard
 def uniform (r : Run) : Prop :=
   (∀ o ∈ r, o = Outcome.committed) ∨ (∀ o ∈ r, o = Outcome.aborted)
 
-/-- **Law 27.** Every run is uniform: the transaction commits on all participants or aborts on
-    all; no run leaves a strict subset committed. **Stated.** -/
-axiom txn_atomic (r : Run) : uniform r
+/-- **Law 27 was stated as `∀ r : Run, uniform r`, and that statement is FALSE** — `Run` is
+    `List Outcome` (`:84`), so `[committed, aborted]` refutes it. Deleted, and the refutation published
+    in its place, as law 26's was.
+
+    **What the law is actually about**, read off the port (`casper/src/txn_coordinator.rs:152-192`): the
+    phase-two outcomes of the legs that *prepared*. `all_ready` decides commit-or-abort once, and phase
+    two then applies that one decision to every leg that voted ready — a leg that did not prepare is
+    never locked and gets an error rather than an outcome. So uniformity holds over the prepared set,
+    and the claim to state is `run_2pc`'s, not `List Outcome`'s. The Rust's own comment on
+    `vote_from_reply` (`:196-215`) is the differential reference for *why* a re-run answering
+    `committed` must count as ready: reading it as "not ready" would abort the other legs and leave one
+    shard committed and another aborted — Law 27 broken on exactly the retry path recovery makes
+    reachable. -/
+theorem txn_atomic_is_false : ¬ (∀ r : Run, uniform r) := by
+  intro h
+  have hv := h [Outcome.committed, Outcome.aborted]
+  rcases hv with h1 | h2
+  · exact absurd (h1 Outcome.aborted (by simp)) (by simp)
+  · exact absurd (h2 Outcome.committed (by simp)) (by simp)
 
 /-! ## Law 28 — leg idempotency -/
 
@@ -290,12 +323,60 @@ theorem prepare_refuses_overdraft (g : Ledger) (id : Nat) (payer payee : String)
 
 /-! ## Law 29 — decision durability & record determinism -/
 
-/-- **Law 29.** The coordinator's recorded state is the deterministic decision of its votes —
-    `committed` iff every participant voted `ready` — so a `prepared` participant can always recover
-    the decision from the durable record, and the merge/close record is re-derivable on replay.
-    **Stated** (the recovery window is the 2PC blocking caveat: a prepared participant holds its
-    lock until it recovers the decision). -/
-axiom commit_record_deterministic (r : CoordRecord) :
-  r.state = TxnState.committed ↔ (∀ v ∈ r.votes, v.2 = Vote.ready)
+/-- **Law 29 was stated as a property of *every* `CoordRecord`, and that statement is FALSE** — the
+    record is freely constructible (`:77`), so `{state := committed, votes := [("", abort)]}` refutes
+    it. Deleted, and the refutation published in its place.
+
+    **What is provable now, and what is not.** The *decision* half is a function in the port, so it is
+    modelled below and proved (`coordinator_decision_committed_iff`): `committed` iff every vote is
+    ready, which is the Rust's `all_ready` line for line. The *durability* half — that a `prepared`
+    participant can recover that decision from the durable record — needs the coordinator's record
+    writes modelled (Step 4 of the plan); the row stays `owed` with this sentence as its narrowed
+    statement. -/
+theorem commit_record_deterministic_is_false :
+    ¬ (∀ r : CoordRecord,
+        r.state = TxnState.committed ↔ (∀ v ∈ r.votes, v.2 = Vote.ready)) := by
+  intro h
+  have hv := (h { txn := ⟨0, []⟩, state := TxnState.committed, votes := [("", Vote.abort)] }).mp rfl
+  exact absurd (hv ("", Vote.abort) (by simp)) (by simp)
+
+/-! ## The coordinator's decision, modelled from the port
+
+`txn_coordinator.rs:177-179` is two lines — `let all_ready = ready.iter().all(|&b| b)` and
+`let decision = if all_ready { "commit" } else { "abort" }` — over the *booleans* `vote_from_reply`
+produces. The model below is those two lines, so the decision half of law 29 is a theorem about the
+port's own function rather than a claim about an arbitrary record. -/
+
+/-- Every vote is a ready vote — the Rust's `ready.iter().all(|&b| b)`. -/
+def allReady : List Vote → Bool
+  | [] => true
+  | v :: vs => decide (v = Vote.ready) && allReady vs
+
+/-- The coordinator's decision: `committed` iff every vote was ready. -/
+def coordinatorDecision (votes : List Vote) : TxnState :=
+  if allReady votes then TxnState.committed else TxnState.aborted
+
+/-- `all`-fold is `true` exactly when every element satisfies the predicate. -/
+theorem allReady_eq_true (votes : List Vote) :
+    allReady votes = true ↔ ∀ v ∈ votes, v = Vote.ready := by
+  induction votes with
+  | nil => simp [allReady]
+  | cons v vs ih => simp [allReady, ih, decide_eq_true_eq]
+
+/-- **The decision half of law 29, proved**: the coordinator commits exactly when every participant
+    voted ready (`txn_coordinator.rs:177-179`) — so the recorded decision is a function of the votes,
+    which is what makes it re-derivable on replay. -/
+theorem coordinator_decision_committed_iff (votes : List Vote) :
+    coordinatorDecision votes = TxnState.committed ↔ ∀ v ∈ votes, v = Vote.ready := by
+  rw [coordinatorDecision]
+  by_cases h : allReady votes = true
+  · rw [if_pos h]
+    exact ⟨fun _ => (allReady_eq_true votes).mp h, fun _ => rfl⟩
+  · rw [if_neg h]
+    constructor
+    · intro hc
+      exact absurd hc (by simp)
+    · intro hall
+      exact absurd (h ((allReady_eq_true votes).mpr hall)) (by simp)
 
 end Rchain
