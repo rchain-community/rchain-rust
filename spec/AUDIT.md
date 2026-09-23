@@ -260,6 +260,13 @@ Under the new oracle (the ρ-calculus spec, not Scala), the following were **fix
   `assert!` → `Result`; the runtime uses a 32 MiB worker stack (the blessed terms recurse past the
   2 MiB default).
 
+- **`rho_expr.rs` `unsafe_decode` fixed** — `rho_expr_to_par` and `unforg_to_par` now return
+  `Result<Par, String>` and decode their hex leaves with `base16::try_decode`, so an invalid byte string is
+  an error at the API boundary rather than a silently truncated value (`node/src/api/rho_expr.rs:293,334`;
+  commit `2ac5ea931`). This entry was listed here as *not done* until it was checked — the third stale
+  claim of this family the audits have found, and the one with the widest blast radius, since an
+  unchecked decode is exactly the shape of the defects this document exists to record.
+
 **Assessed (not fixed — unreachable / boundary / over-engineering):**
 
 - **Length prefixes** (`radix_tree` `& 0x7F`, `certificate_helper` DER, `merging`/`block_random_seed`
@@ -273,9 +280,6 @@ Under the new oracle (the ρ-calculus spec, not Scala), the following were **fix
   already `BlockHeight` with discharge at the DTO.
 - **DTO boundary** (`deploy_service.rs`, `node/src/api/dto.rs`, `web/*`): `String`/`Vec<u8>` at the
   wire edge is acceptable; validate-on-ingress remains a follow-up (noted, not done).
-- **`rho_expr.rs` `unsafe_decode`**: converting `rho_expr_to_par`/`unforg_to_par` to `Result` is a
-  follow-up (the recursive `.map` would become `try_collect`).
-
 **Cast triage (Phase 2):** the ~300 `cast` sites were triaged. The overwhelming majority are **faithful
 Scala fixed-width equivalents** — matcher `len() as i32` (Scala `Int`), trie `byte as usize`/`u8 as usize`
 (widening), `i as u8` `split_byte` (Scala `Byte`), config `as i64`/`as u64`/`as f64` (Scala `Long`),
