@@ -16,8 +16,8 @@ pub struct NodeConf {
     pub standalone: bool,
     pub autopropose: bool,
     pub propose_on_deploy: bool,
-    /// Attest to a remote block that carries deploys (see `--attest-on-new-deploys`).
-    pub attest_on_new_deploys: bool,
+    /// Attest to a remote block that carries deploys (see `--attest-on-new-blocks`).
+    pub attest_on_new_blocks: bool,
     pub protocol_server: ProtocolServer,
     pub protocol_client: ProtocolClient,
     pub peers_discovery: PeersDiscovery,

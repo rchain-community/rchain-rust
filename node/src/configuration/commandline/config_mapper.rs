@@ -385,7 +385,7 @@ pub fn from_options(options: &Options) -> Hocon {
         flag(&mut e, "metrics.sigar", run.sigar);
 
         flag(&mut e, "dev-mode", run.dev_mode);
-        flag(&mut e, "attest-on-new-deploys", run.attest_on_new_deploys);
+        flag(&mut e, "attest-on-new-blocks", run.attest_on_new_blocks);
         opt_str(
             &mut e,
             "dev.deployer-private-key",

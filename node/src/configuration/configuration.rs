@@ -261,7 +261,7 @@ mod tests {
             standalone: false,
             autopropose: false,
             propose_on_deploy: false,
-            attest_on_new_deploys: false,
+            attest_on_new_blocks: false,
             dev_mode: false,
             protocol_server: ProtocolServer {
                 network_id: "testnet".to_string(),
@@ -574,7 +574,7 @@ mod tests {
             standalone: true,
             autopropose: false,
             propose_on_deploy: false,
-            attest_on_new_deploys: false,
+            attest_on_new_blocks: false,
             dev_mode: true,
             protocol_server: ProtocolServer {
                 network_id: "testnet".to_string(),
