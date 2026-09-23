@@ -4,4 +4,6 @@ envelope	LightBlockInfo	the `block` field of most responses	version,shardId,bloc
 envelope	DeployInfo	the `deploys` entries of a block response	deployer,term,timestamp,sig,sigAlgorithm,phloPrice,phloLimit,validAfterBlockNumber,cost,errored,systemDeployError	-
 envelope	RhoDataResponse	POST /api/v1/data-at-name	expr,block	-
 envelope	ExploratoryDeployResponse	POST /api/v1/explore-deploy	expr,block,replySource	-
+envelope	PooledDeploys	GET /api/v1/deploys	deploys	-
+envelope	FaucetResponse	POST /api/v1/faucet	deployId,amount,to	-
 envelope	DeployExecStatus	the `deployResult` body of a deploy response	-	ProcessedWithSuccess:deployResult,block;ProcessedWithError:deployError,block;NotProcessed:status

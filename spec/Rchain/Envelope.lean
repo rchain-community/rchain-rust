@@ -81,6 +81,13 @@ def envelopeCatalog : List EnvelopeRow :=
   -- fact rather than a guess (AUDIT C38).
   , { name := "ExploratoryDeployResponse", endpoint := "POST /api/v1/explore-deploy",
       keys := ["expr", "block", "replySource"] }
+  -- The two rows AUDIT C29 found missing: the document `$ref`s both, neither had a row, so neither
+  -- was checked — and a response a client can call with no declaration is the shape this law exists
+  -- to refuse.
+  , { name := "PooledDeploys", endpoint := "GET /api/v1/deploys",
+      keys := ["deploys"] }
+  , { name := "FaucetResponse", endpoint := "POST /api/v1/faucet",
+      keys := ["deployId", "amount", "to"] }
   , { name := "DeployExecStatus", endpoint := "the `deployResult` body of a deploy response",
       keys := [],
       variants :=
@@ -99,7 +106,7 @@ theorem envelopeCatalog_decide :
   decide
 
 /-- The count the Rust consumer asserts it read. -/
-def envelopeCaseCount : Nat := 7
+def envelopeCaseCount : Nat := 9
 
 /-- The catalog carries exactly `envelopeCaseCount` rows. -/
 theorem envelopeCatalog_length : envelopeCatalog.length = envelopeCaseCount := by decide

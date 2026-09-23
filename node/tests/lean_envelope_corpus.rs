@@ -25,13 +25,14 @@ mod common;
 
 use rchain_models::casper::protocol::deploy_service::{BondInfo, DeployInfo, LightBlockInfo};
 use rchain_node::api::dto::{
-    ApiStatus, ExploratoryDeployResponse, NodeCapabilities, RhoDataResponse, VersionInfo,
+    ApiStatus, ExploratoryDeployResponse, FaucetResponse, NodeCapabilities, PooledDeploys,
+    RhoDataResponse, VersionInfo,
 };
 use rchain_node::web::http::OPENAPI_JSON;
 use serde_json::Value;
 
 /// The catalog's declared size (`Rchain/Envelope.lean`'s `envelopeCaseCount`).
-const ENVELOPE_CASES: usize = 7;
+const ENVELOPE_CASES: usize = 9;
 
 #[tokio::test]
 async fn every_envelope_is_the_lean_catalogs_and_the_served_schemas() {
@@ -46,6 +47,40 @@ async fn every_envelope_is_the_lean_catalogs_and_the_served_schemas() {
     let doc: Value =
         serde_json::from_str(OPENAPI_JSON).expect("the served OpenAPI document parses");
     let schemas = &doc["components"]["schemas"];
+
+    // **Every `$ref` in the document resolves.** The check the corpus already ran compared the
+    // document's *declared* schemas to the catalog, and skipped any response the document did not
+    // declare at all — so the three dangling references AUDIT C29 found (`NodeCapabilities`,
+    // `PooledDeploys`, `FaucetResponse`) were invisible to the check built to catch this class. A
+    // client that generates its types from this document resolves every reference, so a dangling one
+    // is a client-side error rather than a cosmetic gap.
+    {
+        let mut dangling: Vec<String> = Vec::new();
+        let mut declared: Vec<String> = Vec::new();
+        if let Some(map) = schemas.as_object() {
+            declared = map.keys().cloned().collect();
+        }
+        for text in [OPENAPI_JSON] {
+            let mut rest = text;
+            while let Some(i) = rest.find("#/components/schemas/") {
+                rest = &rest[i + "#/components/schemas/".len()..];
+                let end = rest
+                    .find(|c: char| !(c.is_alphanumeric() || c == '_'))
+                    .unwrap_or(rest.len());
+                let name = &rest[..end];
+                if !declared.iter().any(|d| d == name) {
+                    dangling.push(name.to_string());
+                }
+                rest = &rest[end..];
+            }
+        }
+        dangling.sort();
+        dangling.dedup();
+        assert!(
+            dangling.is_empty(),
+            "the served OpenAPI document references schemas it does not declare: {dangling:?}"
+        );
+    }
 
     let mut cases = 0usize;
     for (i, line) in text.lines().enumerate() {
@@ -115,7 +150,13 @@ async fn every_envelope_is_the_lean_catalogs_and_the_served_schemas() {
         }
 
         // (b) The served document, where it declares this schema at all.
-        if !schemas[name].is_null() {
+        // A catalog row is a response a client can call, so the document must declare its schema —
+        // the presence is the check, not a condition on the check (AUDIT C29).
+        assert!(
+            !schemas[name].is_null(),
+            "{name}: the catalog names this response and the served OpenAPI document declares no schema for it"
+        );
+        {
             if variants_column == "-" {
                 assert_eq!(
                     sorted_keys(&schema_keys(&schemas[name])),
@@ -256,6 +297,14 @@ fn dto_by_name(name: &str) -> Value {
             expr: Vec::new(),
             block: light_block(),
             reply_source: "none".to_string(),
+        }),
+        "PooledDeploys" => to_json(&PooledDeploys {
+            deploys: Vec::new(),
+        }),
+        "FaucetResponse" => to_json(&FaucetResponse {
+            deploy_id: "0".into(),
+            amount: 0,
+            to: "0".into(),
         }),
         other => panic!("no DTO arm for the catalog row {other:?}"),
     }

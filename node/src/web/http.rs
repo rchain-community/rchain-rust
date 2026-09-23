@@ -780,6 +780,43 @@ pub const OPENAPI_JSON: &str = r##"{
           { "type": "object", "properties": { "deployError": { "type": "string" }, "block": { "$ref": "#/components/schemas/LightBlockInfo" } } },
           { "type": "object", "properties": { "status": { "type": "string" } } }
         ]
+      },
+      "NodeCapabilities": {
+        "type": "object",
+        "properties": {
+          "autopropose": { "type": "boolean" },
+          "proposeOnDeploy": { "type": "boolean" },
+          "manualPropose": { "type": "boolean" },
+          "adminHttp": { "type": "boolean" },
+          "devMode": { "type": "boolean" },
+          "faucet": { "type": "boolean" }
+        }
+      },
+      "PooledDeploy": {
+        "type": "object",
+        "properties": {
+          "deployId": { "type": "string" },
+          "timestamp": { "type": "integer", "format": "int64" },
+          "deployer": { "type": "string" },
+          "term": { "type": "string" },
+          "phloPrice": { "type": "integer", "format": "int64" },
+          "phloLimit": { "type": "integer", "format": "int64" },
+          "validAfterBlockNumber": { "type": "integer", "format": "int64" }
+        }
+      },
+      "PooledDeploys": {
+        "type": "object",
+        "properties": {
+          "deploys": { "type": "array", "items": { "$ref": "#/components/schemas/PooledDeploy" } }
+        }
+      },
+      "FaucetResponse": {
+        "type": "object",
+        "properties": {
+          "deployId": { "type": "string" },
+          "amount": { "type": "integer", "format": "int64" },
+          "to": { "type": "string" }
+        }
       }
     }
   }
