@@ -13,6 +13,7 @@ namespace Rchain
 /-- A bonded validator. -/
 structure Validator where
   id : Nat
+deriving DecidableEq
 
 /-- A bond: a validator and its (non-negative) stake. -/
 structure Bond where
