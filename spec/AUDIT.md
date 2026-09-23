@@ -2231,10 +2231,25 @@ port against the **reference document** rather than against itself.
   next: either the replay's produce takes the candidate path (and so never stores the persistent datum
   the play stored on arrival), or the store's contents diverge earlier than the trace shows.
 
-  **The next experiment, and it is cheap**: instrument the *play* the same way and diff the two traces
-  operation by operation. The play and the replay run the same script, so the first operation whose branch
-  (or store read) differs is the divergence — and the measurements above say it is at or before op2's
-  produce, since the replay's store is already missing what the play's op3 consumes.
+  **The play's trace, and the new clue in it** (same instrumentation on `rspace.rs`; reverted). For the
+  failing input the play reports:
+
+  ```
+  op1 consume (non-persistent)  options = 1        <- a candidate before any operation has run
+  op2 produce (persistent)      candidate = true
+  op3 consume (persistent)      options = 1
+  op4 produce (persistent)      candidate = true
+  op5 produce (persistent)      candidate = true
+  op6 produce (persistent)      candidate = false
+  ```
+
+  The fixture is fresh per case (`play_and_replay` builds a new in-memory store manager, history and hot
+  store), so `options = 1` at op1 is a candidate on an *empty* store — the store's data read for the
+  channel yields nothing for the replay at op3, yet the play's extraction produces an option at op1. That
+  is where the two diverge first, and it is a *play*-side observation: either `fetch_channel_to_index_data`
+  or `extract_data_candidates` yields an option for a channel with no matching data, or the play's store
+  is not empty at op1 after all. Both are testable in one step, and either would be a defect in the
+  committed port rather than in the test.
 
   **A failed hypothesis, recorded so it is not retried**: rigging the replay with the *pre*-play state
   (taking a checkpoint before the operations, rather than the test's post-play one) changes nothing —
