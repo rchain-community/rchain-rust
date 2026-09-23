@@ -412,25 +412,44 @@ def laws : List Law := [
       changes including the join map, and falsified before it was believed (a left-side-dropping \
       `combine` makes it fail in 0.01s)" },
   { number := 10, layer := "RSpace",
-    statement := "Merkle determinism: the radix trie is content-addressed, collision-free, with a \
-      defined empty root",
-    status := .provedModel,
-    declarations := [`Rchain.Item, `Rchain.Node, `Rchain.encodeNode, `Rchain.nodeHash,
-      `Rchain.emptyNode, `Rchain.emptyRoot, `Rchain.root_collision_free,
-      `Rchain.nodeHash_eq_emptyRoot],
-    axioms := [`Rchain.encodeNode, `Rchain.encodeNode_injective],
+    statement := "Merkle determinism: the radix trie is content-addressed and collision-free **on the \
+      nodes the trie can build** (`WellFormed`: 256 slots, 32-byte values, prefixes under 128 bytes), \
+      with a defined empty root",
+    status := .owed,
+    declarations := [`Rchain.Item, `Rchain.Node, `Rchain.WellFormed, `Rchain.byteOf,
+      `Rchain.encodeItem, `Rchain.encodeNodeAux, `Rchain.encodeNode, `Rchain.nodeHash,
+      `Rchain.emptyNode, `Rchain.emptyNode_wellFormed, `Rchain.emptyRoot,
+      `Rchain.root_collision_free, `Rchain.nodeHash_eq_emptyRoot,
+      `Rchain.the_encoder_is_not_canonical_over_the_models_types],
+    axioms := [`Rchain.encodeNode_injective],
     rust := ["rspace/src/history/radix_tree.rs"],
     falsifiable := some "`root_collision_free` composes Law 19's `blake2b256_collision_free` with \
       `encodeNode_injective`; `nodeHash_eq_emptyRoot` pins the empty root as a fixed point with nothing \
       else hashing to it. A serializer that dropped a field would falsify the first, and a second node \
       hashing to the empty root the second — which is why the store *refuses* a colliding write \
-      (`radix_tree.rs:208-223,226-258`) rather than tolerating one",
-    note := "**the ghost constant is gone.** `trieRoot : NodeHash` had no arguments — a constant — which \
-      is why nothing could be proved about it; the root is now `nodeHash ∘ encodeNode` over the node \
-      type the code has (`[Item; 256]`, `radix_tree.rs:15-35`), with `emptyRoot` the empty node's hash. \
-      The two collision statements, which were statements about the *hash* wearing a trie's name, are \
-      now theorems composing Law 19's axiom with `encodeNode_injective` — the serializer's canonicity, \
-      which a hash cannot supply, so it is stated as this row's own axiom" },
+      (`radix_tree.rs:208-223,226-258`) rather than tolerating one. **And the canonicity axiom was \
+      itself falsified**: `the_encoder_is_not_canonical_over_the_models_types` exhibits two distinct \
+      nodes with one encoding (a 35-byte value re-reads as a second item), which is why the axiom and \
+      both theorems now carry `WellFormed` — the invariant the code carries in its types and the model \
+      did not",
+    note := "**the ghost constant is gone, and then the axiom it left behind was falsified.** \
+      `trieRoot : NodeHash` had no arguments — a constant — which is why nothing could be proved about \
+      it; the root became `nodeHash ∘ encodeNode`, with the collision statements theorems composing Law \
+      19's axiom with `encodeNode_injective`. That axiom was then **false as stated** (2026-09-23): it \
+      claimed canonicity over `Node := List Item` and `Hash := List Byte`, both wider than the code's \
+      `[Item; 256]` and `Hash32([u8; 32])`, and the encoder writes neither width — so a value whose \
+      length is not 32 has more than one reading, and a witness exists \
+      (`the_encoder_is_not_canonical_over_the_models_types`; the two nodes are a one-item node with a \
+      35-byte value and a two-item node, and their encodings are the same 37 bytes). The code is not \
+      vulnerable: the type `[Item; 256]`, the 32-byte `Hash32`, and prefixes that are suffixes of a \
+      32-byte key (so under 128, inside the 7-bit length field) make the second reading \
+      unrepresentable. So the statement was narrowed to the invariant rather than the model widened: \
+      `encodeNode` is now a **definition** mirroring `radix_tree.rs:48-77` (index truncation and all), \
+      `WellFormed` names the invariant, `encodeNode_injective` carries it, and \
+      `root_collision_free`/`nodeHash_eq_emptyRoot` inherit it — stronger where it matters, because the \
+      hypothesis is exactly what the trie's operations maintain. The narrowed axiom's proof (a list \
+      induction unpacking the records) is owed, which is why this row is `owed` rather than \
+      `provedModel`" },
   { number := 11, layer := "RSpace",
     statement := "Replay determinism: a recomputed COMM agrees with the recorded trace, and the port \
       checks membership **both** ways — a recomputed COMM absent from the trace fails, and a recorded \
