@@ -2167,26 +2167,46 @@ port against the **reference document** rather than against itself.
   `check_replay_data()` is `Ok` — the *reverse* half of law 11 (no recorded COMM left unconsumed).
   It panics with "a replay of its own recording must check clean".
 
-  **Measured**: five consecutive `cargo test -p rchain-rspace --lib law11` runs gave three passes and
-  two failures (the failures finish in ~0.2-0.3 s against ~1.0 s for a pass, so the replay exits early);
-  a sixth run failed again. CI caught the same test on the docs-only tip above while the neighbouring
-  tips were green, which is the shape of a flaky test rather than a broken commit.
+  **The flake is a deterministic failure on one input, and it is now pinpointed.** Proptest's
+  regression seed is committed (`rspace/proptest-regressions/property_tests.txt`, seed `c9f7be73…`), so
+  every run replays it: running with `PROPTEST_CASES=1` fails **8 times out of 8** in 0.03 s. The input
+  is five operations:
 
-  **Minimal input, captured**: a six-operation script of alternating produces and consumes at
-  `prop_assert!` (`property_tests.rs:583`), e.g. `(false,false,2,0), (true,true,2,2), (false,true,2,0),
-  (true,true,2,2), …` — a mix of persistent and non-persistent operations, no peeks. That is *not* a
-  safe input for this property: a replay of the script that produced the recording ought to check clean
-  by construction, so either the replay's recomputation is not a function of the recording alone (a real
-  determinism gap — the thing law 11 is about) or the harness records and replays different things.
+  ```
+  op1 consume c2 "pattern" (non-persistent)   op2 produce c2 "d2" (persistent)
+  op3 consume c2 "pattern" (persistent)       op4 produce c2 "d2" (persistent)
+  op5 produce c2 "d0" (non-persistent)
+  ```
 
-  **Not diagnosed here, and the two candidates are named so the next look is not from scratch.** (1) The
-  harness: the test takes the trace with `create_soft_checkpoint` (which `std::mem::take`s the event log,
-  `rspace.rs:639-649`) and *then* calls `create_checkpoint` for the root (which takes the log again,
-  `:569-581`) — if the second call contributes events, the root and the recording are not of the same
-  play. (2) The replay path: a persistent consume fires once per datum in play and may be *replayed*
-  differently when the rig's multimap is keyed per consume-ref, which is the `unused_comm_event` the
-  assertion reports. A test that fails on its own output is a defect worth fixing rather than muting:
-  this row registers it, and the fix should come with the failure kept as a regression case.
+  **What the check reports, exactly** — instrumenting `check_replay_data`'s message to name the leftovers
+  (reverted) shows the reverse check leaving **one** COMM (counted twice: once under its consume key and
+  once under its produce key, hence "2 elements left"):
+
+  ```
+  leftover consume keys  [88 f3 cb f8 …]   the persistent consume (op3)
+  leftover produce keys  [58 42 9a 76 …]   the first persistent datum (op2)
+  ```
+
+  So the one COMM the replay fails to reconstruct is the persistent consume matched against the datum
+  that was *already there* — and, importantly, the replay raises **no** `ReplayCommNotInTrace` while
+  leaving it: it runs all five operations, and the forward half of its check never fires. A replay that
+  neither consumes a recorded COMM nor rejects it is the shape to chase: either the produce-side lookup
+  (`comms_for_produce`) misses the COMM the recording holds for that produce, or the matching step in
+  the replay finds no candidate and stores the continuation instead — and the second would mean the
+  replay's tuple space differs from the play's at that point, which the test builds from the play's own
+  checkpoint root.
+
+  **A third candidate, and the most mechanical of the three**: the recorded COMMs in the log both carry
+  `times_repeated: { …: 0 }` (printed above), and the replay *recomputes* that map as it walks the
+  script — the ops produce the same datum twice, so a replay-side counter can differ from the recorded
+  one. If the containment check compares whole `Comm`s (rather than the consume-and-produce refs the
+  recording is keyed by), a `times_repeated` difference is exactly "the same event, not equal" — which
+  would leave the recording's copy unused while never reporting the recomputed one as absent. That is
+  worth one experiment before the other two.
+
+  **Not fixed here.** A test that fails on its own recording is a defect worth fixing rather than
+  muting: this row registers it with a deterministic reproducer and the measured leftover, and the fix
+  should land with the seed kept as a regression case.
 
 - **The class, recorded once, because it is the consolidation pass's whole justification: an axiom that
   is false is worse than one that is owed, because anything follows from it.** Nine axioms the pass
