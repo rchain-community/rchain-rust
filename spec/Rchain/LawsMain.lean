@@ -52,6 +52,18 @@ def entryCount : Nat := laws.length
 /-- The number of distinct laws — the number the documents were disagreeing about (19, 29, 43). -/
 def lawCount : Nat := (laws.map (·.number)).eraseDups.length
 
+/-- **The ceiling the numbering check requires: deliberately hand-maintained, and deliberately not
+derived from the rows.** `lawCount` above counts what is *there*; a check that compared that count to
+the rows would be comparing the register to itself, and a law dropped from the list would take its own
+evidence with it — which is exactly the drift this register was built to stop (43 laws in the tree while
+two documents said 29). So the ceiling is a number a person bumps when a law is added, the check below
+requires the rows to be exactly `1..lawCeiling`, and adding a law without bumping it is a build failure
+rather than a quietly larger catalog.
+
+It was 43 — the catalog of laws 1–43 — until Programme B's implementation gaps were opened as their own
+laws rather than as prose in `spec/RUST-FIRST.md`." -/
+def lawCeiling : Nat := 43
+
 /-- How many laws carry a given status, for the summary line. -/
 def statusCount (s : Status) : Nat := (laws.filter (·.status == s)).length
 
@@ -226,11 +238,12 @@ run_cmd do
   -- 1. Numbering: 1..43, no gaps. A law silently dropped is a `FAIL` here rather than a quietly
   -- smaller catalog.
   let nums := (register.map (·.number)).eraseDups.erase 0 |>.mergeSort (· ≤ ·)
-  let expected := List.range 43 |>.map (· + 1)
+  let expected := List.range lawCeiling |>.map (· + 1)
   if nums != expected then
     failures := failures.push s!"numbering: the register has {nums.length} distinct numbers, expected \
-      1..43; missing {expected.filter (fun n => !nums.contains n)}, \
-      unexpected {nums.filter (fun n => !expected.contains n)}"
+      1..{lawCeiling}; missing {expected.filter (fun n => !nums.contains n)}, \
+      unexpected {nums.filter (fun n => !expected.contains n)} — bump `lawCeiling` when a law is \
+      added, or the new law is uncounted (that is what this constant is for)"
 
   -- 2. Clauses: a law's clause letters are distinct, so `16a`/`16b` cannot collide.
   for n in nums do
