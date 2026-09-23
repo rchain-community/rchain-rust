@@ -1262,14 +1262,17 @@ async fn setup_shard_runtime(
                 })
             })
         };
-        // Dev-mode dummy deploy: if `dev.deployer-private-key` is set (requires `--dev-mode`), inject a
-        // signed `Nil` deploy whenever the pool is empty so `--autopropose` keeps producing blocks.
-        let dummy_deploy_opt = conf
-            .dev
-            .deployer_private_key
-            .as_deref()
-            .and_then(|hex| base16::decode(hex))
-            .map(|bytes| (PrivateKey::new(bytes), "Nil".to_string()));
+        // Dev-mode dummy deploy: inject a signed `Nil` deploy whenever the pool is empty, so a proposal
+        // always has something to include.
+        //
+        // Gated on `--autopropose` as well as the deployer key, and that gate is the point: the key on
+        // its own is what enables `/api/faucet` (below), so a node that wants a faucet is not thereby
+        // forced to keep proposing empty blocks. Proposing with nothing to include is otherwise a no-op
+        // (`block_creator.rs`), which is the behaviour the network wants — a chain that advances on
+        // content rather than on wall-clock time (see #70).
+        let dummy_deploy_opt =
+            dummy_deploy_key(conf.autopropose, conf.dev.deployer_private_key.as_deref())
+                .map(|key| (key, "Nil".to_string()));
 
         let proposer = Proposer::apply(
             validator,
@@ -2119,5 +2122,39 @@ mod tests {
 
         drop(importer);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+/// The dummy-deploy key, when this node should inject one: `--autopropose` **and** a deployer key.
+///
+/// The key alone is deliberately not enough. The same `dev.deployer-private-key` enables the
+/// `/api/faucet` endpoint, so gating the injector on it alone would force every node that wants a
+/// faucet to keep proposing empty blocks — the opposite of what the network wants. With nothing to
+/// include, a proposal is already a no-op (`block_creator.rs`), so a chain should advance on content
+/// rather than on wall-clock time (see #70).
+fn dummy_deploy_key(autopropose: bool, deployer_private_key: Option<&str>) -> Option<PrivateKey> {
+    if !autopropose {
+        return None;
+    }
+    deployer_private_key
+        .and_then(base16::decode)
+        .map(PrivateKey::new)
+}
+
+#[cfg(test)]
+mod dummy_deploy_tests {
+    use super::dummy_deploy_key;
+
+    #[test]
+    fn the_dummy_deploy_needs_autopropose_and_not_just_a_key() {
+        let key = "0a".repeat(32);
+
+        // The intentional case: continuous production is opted into explicitly.
+        assert!(dummy_deploy_key(true, Some(&key)).is_some());
+        // The case that matters: a faucet key alone must not imply empty blocks.
+        assert!(dummy_deploy_key(false, Some(&key)).is_none());
+        // And with no key there is nothing to sign with, either way.
+        assert!(dummy_deploy_key(true, None).is_none());
+        assert!(dummy_deploy_key(false, None).is_none());
     }
 }
