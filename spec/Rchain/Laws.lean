@@ -607,10 +607,14 @@ def laws : List Law := [
       any two blocks, which no port rule states" },
   { number := 16, clause := "c", layer := "Casper",
     statement := "Content addressing: `hash_block` clears `block_hash` and `sig` and hashes every other \
-      proto field canonically, so equal hashes determine equal bodies",
-    status := .provedModel,
-    declarations := [`Rchain.Block, `Rchain.BlockBody, `Rchain.Block.body, `Rchain.encodeBody,
-      `Rchain.blockHash, `Rchain.content_addressing, `Rchain.blockHash_changes_with_header],
+      proto field canonically, so equal hashes determine equal bodies **that the serializer can \
+      represent** (`Canonical`: numbers inside `int64`, justifications in the port's sorted order)",
+    status := .owed,
+    declarations := [`Rchain.Block, `Rchain.BlockBody, `Rchain.Block.body, `Rchain.Parent.key,
+      `Rchain.Canonical, `Rchain.encodeBody, `Rchain.blockHash, `Rchain.content_addressing,
+      `Rchain.blockHash_changes_with_header,
+      `Rchain.a_body_encoder_that_truncates_is_not_injective,
+      `Rchain.a_body_encoder_that_canonicalises_is_not_injective],
     axioms := [`Rchain.encodeBody, `Rchain.encodeBody_injective],
     rust := ["casper/src/proto_util.rs", "models/src/casper/protocol/casper_message.rs"],
     falsifiable := some "`content_addressing` composes Law 19's `blake2b256_collision_free` with \
@@ -619,7 +623,14 @@ def laws : List Law := [
       (`proto_util.rs:155-162`) derived: two blocks differing in **any** hashed field must hash \
       differently, which is why the informational timestamp is in the body even though no consensus rule \
       reads it. A `hash_block` that stopped clearing `sig` would falsify \
-      `hash_block_is_deterministic_and_ignores_sig` (`:138-144`) and, transitively, this",
+      `hash_block_is_deterministic_and_ignores_sig` (`:138-144`) and, transitively, this. **And the \
+      canonicity axiom was falsified before it was narrowed**, two ways, because the model's body is \
+      wider than the bytes the port writes: \
+      `a_body_encoder_that_truncates_is_not_injective` (the proto's `blockNumber` is an `int64`, \
+      `CasperMessage.proto:72`, so any encoder that mirrors it identifies `2^63` with `2^63 + 2^64`) \
+      and `a_body_encoder_that_canonicalises_is_not_injective` (`to_proto` sorts the justifications \
+      before hashing, `casper_message.rs:636`, so it cannot distinguish a body from the same body \
+      permuted)",
     note := "**the old row was a postulate about a field no function computed** — `hash = \
       Blake2b256(block − {hash, sig})` over `Block.hash : Nat`, which the note below it admitted was not \
       true even of its own model (an injective `Nat → Nat` does not exist). `Block.hash` is gone; the \
@@ -630,7 +641,14 @@ def laws : List Law := [
       The body is the **hashed** body: the port hashes every field except `block_hash` and `sig` \
       (`proto_util.rs:58-64`, `BlockMessage` at `casper_message.rs:563-585`), so the model carries the \
       timestamp and the rest of the header, and `blockHash_changes_with_header` is the statement a \
-      narrower body could not make" },
+      narrower body could not make. **What the third pass found (2026-09-23)**: the canonicity axiom \
+      was still stated over types wider than the port's — a `Nat` block number against the proto's \
+      `int64`, and `justifications` in arrival order against the sorted order `to_proto` writes — so it \
+      was false of any encoder the port could be using, and the two refutation theorems above say so \
+      with witnesses. The statement was narrowed to `Canonical` rather than the model widened (the \
+      widths and the sorted order are properties of the *code*, which the model's validation rules \
+      deliberately do not carry, since they fold over the list in any order). The narrowed canonicity's \
+      proof is owed, which is why this row is `owed` rather than `provedModel`" },
   { number := 16, clause := "d", layer := "Casper",
     statement := "The bonds cache equals the PoS state",
     status := .open,

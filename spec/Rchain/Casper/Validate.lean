@@ -25,6 +25,7 @@ structure Parent where
   number : Nat
   seqNum : Nat
   validationFailed : Bool
+deriving DecidableEq
 
 /-- A block, as the model has it. It carries **no** hash field: the port's block hash is *computed* from
     the body (`hash_block`, `casper/src/proto_util.rs:58-64`), so the model computes it too rather than
@@ -52,6 +53,7 @@ structure Block where
       load-bearing, because the hash covers them and a model without it would claim the hash ignores the
       header. -/
   header : Msg
+deriving DecidableEq
 
 /-- The maximum block number among a block's **non-failed** justifications — the port's
     `max_block_number`, which starts at `-1` so that a block with no live justification must be numbered
@@ -132,10 +134,61 @@ def Block.body (b : Block) : BlockBody := b
     `Rchain.RSpace.encodeNode`, because the serializer is not the law. -/
 axiom encodeBody : BlockBody → Msg
 
-/-- The encoding is **canonical**: equal encodings are equal bodies. `to_bytes` over a canonical proto
-    has this property, and it must be stated because the model's encoding is abstract — a hash can make
-    an encoding collision-resistant but never canonical. -/
-axiom encodeBody_injective {a b : BlockBody} : encodeBody a = encodeBody b → a = b
+/-- A justification's canonical key: the order `to_proto` sorts them into before hashing. -/
+def Parent.key (p : Parent) : Nat × Nat × Nat := (p.sender, p.number, p.seqNum)
+
+/-- **What the serializer can represent**: the numbers fit the proto's `int64` fields
+    (`CasperMessage.proto:72,74` — `blockNumber` and `seqNum`, and the Rust's `timestamp` likewise), and
+    the justifications are already in the port's canonical order (`misc`/`casper_message.rs:636` sorts
+    them, so their order is not part of what is hashed).
+
+    Both halves are properties of the *model* rather than of the code, which is why they are a
+    hypothesis here: the code's `blockNumber`/`seqNum` **are** `i64` and its justifications are sorted
+    before the bytes are written. The model's are a `Nat` and whatever order the block arrived in,
+    because its validation rules fold over them in any order (Law 16a/16b). -/
+def Canonical (b : BlockBody) : Prop :=
+  b.number < 2 ^ 63 ∧ b.seqNum < 2 ^ 63 ∧ b.timestamp < 2 ^ 63 ∧
+  b.justifications.Pairwise (fun p q => p.key < q.key)
+
+/-- The encoding is **canonical on the bodies the port can hash**: equal encodings are equal bodies,
+    given `Canonical`. Stated as an axiom because the model's encoding is abstract — a hash can make an
+    encoding collision-resistant but never canonical — and stated *with the hypothesis* because the
+    un-narrowed form is false of any encoder the port could be using: the two theorems below exhibit,
+    respectively, a truncating and a canonicalising encoder that cannot be injective over this model's
+    `BlockBody`. -/
+axiom encodeBody_injective {a b : BlockBody} (ha : Canonical a) (hb : Canonical b) :
+    encodeBody a = encodeBody b → a = b
+
+/-- **The un-narrowed axiom is false, first way: the model's numbers are wider than the proto's.** An
+    encoder that mirrors the port writes `blockNumber` as an `int64` varint
+    (`CasperMessage.proto:72`), so it identifies every pair of numbers with the same residue mod 2^64 —
+    and `2^63` and `2^63 + 2^64` are two different `Nat`s with one image. -/
+theorem a_body_encoder_that_truncates_is_not_injective
+    (enc : BlockBody → Msg)
+    (h : ∀ a b : BlockBody, a.number % 2 ^ 64 = b.number % 2 ^ 64 → enc a = enc b) :
+    ¬ Function.Injective enc := by
+  intro hinj
+  have hbad : (2 : Nat) ^ 63 ≠ 2 ^ 63 + 2 ^ 64 := by decide
+  have heq : (⟨2 ^ 63, 0, 0, [], 0, []⟩ : BlockBody) = ⟨2 ^ 63 + 2 ^ 64, 0, 0, [], 0, []⟩ :=
+    hinj (h _ _ (by decide))
+  exact hbad (congrArg Block.number heq)
+
+/-- **The un-narrowed axiom is false, second way: the port hashes a *canonical* order.** `to_proto`
+    sorts the justifications before writing them (`casper_message.rs:636`), so an encoder that mirrors
+    it cannot distinguish a body from the same body with its justifications permuted — and those are two
+    different `BlockBody`s. -/
+theorem a_body_encoder_that_canonicalises_is_not_injective
+    (enc : BlockBody → Msg)
+    (h : ∀ a b : BlockBody, a.justifications.Perm b.justifications → enc a = enc b) :
+    ¬ Function.Injective enc := by
+  -- Both facts are decided on *closed* terms: `decide` refuses an expected type with `let`-bound
+  -- locals in it ("must not contain free or meta variables"), so the parents are written out.
+  have hne : (⟨0, 0, 0, [⟨0, 0, 0, false⟩, ⟨1, 1, 1, false⟩], 0, []⟩ : BlockBody)
+      ≠ ⟨0, 0, 0, [⟨1, 1, 1, false⟩, ⟨0, 0, 0, false⟩], 0, []⟩ := by decide
+  have hperm : ([⟨0, 0, 0, false⟩, ⟨1, 1, 1, false⟩] : List Parent).Perm
+      [⟨1, 1, 1, false⟩, ⟨0, 0, 0, false⟩] := by decide
+  intro hinj
+  exact hne (hinj (h _ _ hperm))
 
 /-- The block's content hash, as the port computes it: Blake2b256 over the canonical encoding of the
     body (`hash_block`, `casper/src/proto_util.rs:58-64`). -/
@@ -146,17 +199,18 @@ noncomputable def blockHash (b : Block) : Hash := blake2b256 (encodeBody b.body)
     relies on and pins from both sides — `hash_block_is_deterministic_and_ignores_sig` (`proto_util.rs:138-144`,
     two blocks differing only in `sig` hash identically) and `hash_block_changes_with_body` (`:147-152`).
     The old axiom said it about a bare `hash : Nat` field, with no relation to any hashing function. -/
-theorem content_addressing {a b : Block} (h : blockHash a = blockHash b) : a.body = b.body :=
-  encodeBody_injective (blake2b256_collision_free _ _ h)
+theorem content_addressing {a b : Block} (ha : Canonical a.body) (hb : Canonical b.body)
+    (h : blockHash a = blockHash b) : a.body = b.body :=
+  encodeBody_injective ha hb (blake2b256_collision_free _ _ h)
 
 /-- **The port's `hash_block_changes_with_timestamp` (`proto_util.rs:155-162`), derived.** Because
     `hash_block` covers every field except `block_hash` and `sig`, two blocks differing in **any** hashed
     field hash differently. This is the statement a model that carried only `(number, seqNum, parents)`
     could not make — and the reason the body carries `timestamp` and `header`. -/
-theorem blockHash_changes_with_header {a b : Block} (h : a.header ≠ b.header) :
-    blockHash a ≠ blockHash b := by
+theorem blockHash_changes_with_header {a b : Block} (ha : Canonical a.body) (hb : Canonical b.body)
+    (h : a.header ≠ b.header) : blockHash a ≠ blockHash b := by
   intro hh
-  exact h (by simpa using congrArg Block.header (content_addressing hh))
+  exact h (by simpa using congrArg Block.header (content_addressing ha hb hh))
 
 -- Law 17's arithmetic is not in this file. `numeric_channels_nonneg` lived here until the
 -- consolidation pass and claimed numeric channels are non-negative — which is **false of the code**:
