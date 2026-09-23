@@ -705,15 +705,21 @@ def laws : List Law := [
     statement := "Content addressing: `hash_block` clears `block_hash` and `sig` and hashes every other \
       proto field canonically, so equal hashes determine equal bodies **that the serializer can \
       represent** (`Canonical`: numbers inside `int64`, justifications in the port's sorted order)",
-    status := .owed,
+    status := .provedModel,
     declarations := [`Rchain.Block, `Rchain.BlockBody, `Rchain.Block.body, `Rchain.Parent.key,
-      `Rchain.Canonical, `Rchain.encodeBody, `Rchain.blockHash, `Rchain.content_addressing,
-      `Rchain.blockHash_changes_with_header,
+      `Rchain.Canonical, `Rchain.sortParents, `Rchain.sortParents_of_pairwise, `Rchain.encodeParent,
+      `Rchain.decodeParent, `Rchain.decodeParent_encodeParent, `Rchain.decodeParents,
+      `Rchain.decodeParents_length_encodings, `Rchain.encodeBody, `Rchain.canonicalise,
+      `Rchain.taggedVarint, `Rchain.taggedVarint_varint, `Rchain.taggedVarint_varintField,
+      `Rchain.taggedVarint_bytesField, `Rchain.decodeBody, `Rchain.decodeBody_encodeBody,
+      `Rchain.encodeBody_injective,
+      `Rchain.the_body_encoder_is_not_injective_without_canonical,
+      `Rchain.blockHash, `Rchain.content_addressing, `Rchain.blockHash_changes_with_header,
       `Rchain.a_body_encoder_that_truncates_is_not_injective,
       `Rchain.a_body_encoder_that_canonicalises_is_not_injective],
-    axioms := [`Rchain.encodeBody, `Rchain.encodeBody_injective],
+    axioms := [],
     rust := ["casper/src/proto_util.rs", "models/src/casper/protocol/casper_message.rs"],
-    witness := [`Rchain.a_body_encoder_that_truncates_is_not_injective, `Rchain.a_body_encoder_that_canonicalises_is_not_injective, `Rchain.content_addressing, `Rchain.blockHash_changes_with_header],
+    witness := [`Rchain.the_body_encoder_is_not_injective_without_canonical, `Rchain.a_body_encoder_that_truncates_is_not_injective, `Rchain.a_body_encoder_that_canonicalises_is_not_injective, `Rchain.content_addressing, `Rchain.blockHash_changes_with_header],
     falsifiable := some "`content_addressing` composes Law 19's `blake2b256_collision_free` with \
       `encodeBody_injective`, so a serializer that dropped a field would falsify it — and \
       `blockHash_changes_with_header` is the code's own `hash_block_changes_with_timestamp` \
@@ -727,7 +733,12 @@ def laws : List Law := [
       `CasperMessage.proto:72`, so any encoder that mirrors it identifies `2^63` with `2^63 + 2^64`) \
       and `a_body_encoder_that_canonicalises_is_not_injective` (`to_proto` sorts the justifications \
       before hashing, `casper_message.rs:636`, so it cannot distinguish a body from the same body \
-      permuted)",
+      permuted). **And the axiom is gone**, so the refutation is now about the *definition the port \
+      runs* rather than about a hypothesis: `the_body_encoder_is_not_injective_without_canonical` \
+      exhibits `2^63` and `2^63 + 2^64` as one image of `encodeBody` itself, and `Canonical`'s number \
+      bound is what recovers the value from the residue (`int64_eq_of_lt`, `Rchain/Proto.lean`). Drop \
+      `Canonical` from `encodeBody_injective` and the proof breaks at `decodeBody_encodeBody`, which \
+      returns `canonicalise b` — a different body exactly when the hypothesis fails",
     note := "**the old row was a postulate about a field no function computed** — `hash = \
       Blake2b256(block − {hash, sig})` over `Block.hash : Nat`, which the note below it admitted was not \
       true even of its own model (an injective `Nat → Nat` does not exist). `Block.hash` is gone; the \
@@ -744,8 +755,21 @@ def laws : List Law := [
       was false of any encoder the port could be using, and the two refutation theorems above say so \
       with witnesses. The statement was narrowed to `Canonical` rather than the model widened (the \
       widths and the sorted order are properties of the *code*, which the model's validation rules \
-      deliberately do not carry, since they fold over the list in any order). The narrowed canonicity's \
-      proof is owed, which is why this row is `owed` rather than `provedModel`" },
+      deliberately do not carry, since they fold over the list in any order). **The fourth pass \
+      (2026-09-23) discharged it**: `encodeBody` is now a **definition** (`Rchain/Casper/Validate.lean`) \
+      over protobuf's wire format (`Rchain/Proto.lean`: the base-128 `varint` and its self-delimiting \
+      decode, `varintField`, `bytesField`, the 64-bit narrowing), with the round trip \
+      (`decodeBody_encodeBody` — the encoder's own inverse returns `canonicalise b`, which is the \
+      hypothesis's whole content) and injectivity (`encodeBody_injective`) as theorems about it, so this \
+      row's axiom citation is empty. **What is still prose, and is named rather than implied**: `prost`'s \
+      `encode_to_vec` is an external crate (0.13.5, `Cargo.lock`), so \"these bytes are the node's \
+      bytes\" is a tie no Lean theorem can make until a `body` conformance layer exists (`Corpus.lean`, \
+      `emit-lean-corpus.sh`'s `LAYERS`, `spec/conformance/body.tsv`, a Rust consumer, the gate's \
+      layer-to-consumer map). No axiom was added for `prost` — the layer is the follow-up. **A \
+      measurement worth keeping**: the first spelling of `decodeBody` was a `guard`-per-tag do-block, \
+      and it did not slow the *elaborator* down — it slowed the **compiler** down: `lean --profile` \
+      reports 128 ms of elaboration and `compilation of Rchain.decodeBody took 98.6s`, with the build \
+      swelling past 5 GB until it aborted. One `taggedVarint` per field compiles in 224 ms" },
   { number := 16, clause := "d", layer := "Casper",
     statement := "The bonds cache equals the PoS state",
     status := .open,

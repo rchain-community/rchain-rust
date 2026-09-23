@@ -1,6 +1,7 @@
 import Rchain.Casper.Fringe
 import Rchain.Cmp
 import Rchain.Crypto.Spec
+import Rchain.Proto
 
 /-!
 # Laws 16–18 — block/merge/storage validation
@@ -49,9 +50,9 @@ structure Block where
   /-- Every **other** field `hash_block` covers — `version`, `shard_id`, the two state hashes, `bonds`,
       the three rejected sets, `state`, `sig_algorithm` (`BlockMessage`,
       `models/src/casper/protocol/casper_message.rs:563-585`) — as one canonical serialization. Its type
-      is abstract, like `encodeBody` below, because the field *list* is not the law; its **presence** is
-      load-bearing, because the hash covers them and a model without it would claim the hash ignores the
-      header. -/
+      is abstract, unlike `encodeBody` below (which is a definition and writes this field as one
+      length-delimited blob), because the field *list* is not the law; its **presence** is load-bearing,
+      because the hash covers them and a model without it would claim the hash ignores the header. -/
   header : Msg
 deriving DecidableEq
 
@@ -130,10 +131,6 @@ abbrev BlockBody := Block
 /-- A block's body — the identity here, named because the law is stated about the body. -/
 def Block.body (b : Block) : BlockBody := b
 
-/-- The canonical encoding of a body — the serialization `hash_block` hashes. Abstract, like
-    `Rchain.RSpace.encodeNode`, because the serializer is not the law. -/
-axiom encodeBody : BlockBody → Msg
-
 /-- A justification's canonical key: the order `to_proto` sorts them into before hashing. -/
 def Parent.key (p : Parent) : Nat × Nat × Nat := (p.sender, p.number, p.seqNum)
 
@@ -150,14 +147,231 @@ def Canonical (b : BlockBody) : Prop :=
   b.number < 2 ^ 63 ∧ b.seqNum < 2 ^ 63 ∧ b.timestamp < 2 ^ 63 ∧
   b.justifications.Pairwise (fun p q => p.key < q.key)
 
-/-- The encoding is **canonical on the bodies the port can hash**: equal encodings are equal bodies,
-    given `Canonical`. Stated as an axiom because the model's encoding is abstract — a hash can make an
-    encoding collision-resistant but never canonical — and stated *with the hypothesis* because the
-    un-narrowed form is false of any encoder the port could be using: the two theorems below exhibit,
-    respectively, a truncating and a canonicalising encoder that cannot be injective over this model's
-    `BlockBody`. -/
-axiom encodeBody_injective {a b : BlockBody} (ha : Canonical a) (hb : Canonical b) :
-    encodeBody a = encodeBody b → a = b
+/-! ## The block-body encoder — what `hash_block` hashes, as a definition
+
+This block used to be two axioms (`axiom encodeBody`, `axiom encodeBody_injective`) with the note that
+they were "assumed of an undefined function, so they constrain nothing". They are now a definition over
+protobuf's wire format (`Rchain/Proto.lean`) and a theorem about it — and the hypothesis the theorem
+needs is **load-bearing**, which `the_body_encoder_is_not_injective_without_canonical` proves: the
+encoder is *not* injective without `Canonical`.
+
+The field list and their order are `BlockMessageProto`'s (`models/proto/casper.proto:45-66`) and the
+justification order is the Rust's (`casper_message.rs:633-675`: `to_proto` sorts `justifications`,
+`bonds` and the three rejected sets "for Law 16 determinism"). Four things cannot be mirrored byte for
+byte, and saying so is part of the point:
+
+* `number`, `seqNum` and `timestamp` are the proto's `int64` fields (tags 32, 48, 136, wire type 0), so
+  they are written as **64-bit** varints. That is what makes `Canonical`'s number bounds load-bearing:
+  the bytes determine the residue, and the bound is what makes the residue the value
+  (`int64_eq_of_lt`).
+* `sender` is `bytes` in the proto and an abstract id (`Nat`) in the model, so it is written as an
+  ordinary varint under its own tag. The port writes 32 bytes; the model has no 32-byte form to write.
+* `justifications` are `repeated bytes` (32-byte block hashes) in the port and structured `Parent`s
+  here — the metadata the number checks read (`validate.rs:121-162`). The sort order is `Parent.key`,
+  which is the port's `justifications.sort()` (on hashes) carried over to the objects carrying those
+  hashes' metadata.
+* `header` is the model's bundle of *every other* hashed field (`version`, `shardId`, the two state
+  hashes, `bonds`, the three rejected sets, `state`, `sigAlgorithm`), written as one length-delimited
+  blob.
+
+**The residue, stated rather than implied.** `prost`'s `encode_to_vec` is an external crate (0.13.5,
+`Cargo.lock`), not vendored, so "these bytes are the node's bytes" remains a *prose* tie. What is
+machine-checked here is the *structure*: which fields are hashed, in what order, with which collection
+sorted — the part a missing length prefix or an unordered map would break, and the part that is a
+merkle-root collision between distinct states if it is wrong.
+
+**Why this does not need a permutation lemma.** The port's sort makes its encoder insensitive to the
+order of `justifications`, so the port's hash identifies blocks differing only in that order — which is
+the content of the *existing* `a_body_encoder_that_canonicalises_is_not_injective` below, stated for
+*any* order-insensitive encoder and therefore not instantiable at this one. That is not a gap: it is the
+reason `Canonical` carries `justifications.Pairwise (key <)`, and with that hypothesis the sort *is* the
+identity (`sortParents_of_pairwise`), so the two facts compose into injectivity on the port's domain.
+Proving `Perm l l' → sortParents l = sortParents l'` would be needed only to state injectivity *without*
+`Canonical`, and without `Canonical` injectivity is false. -/
+
+/-- The port's justification order — `to_proto`'s `justifications.sort()`, on the model's objects rather
+    than on their hashes. Keyed on `Parent.key`, which `Canonical` requires to be strictly increasing. -/
+def sortParents (l : List Parent) : List Parent := l.insertionSort (fun p q => p.key ≤ q.key)
+
+/-- **The sort is the identity on the port's domain** — how `Canonical`'s ordering clause turns the sort
+    into nothing at all. -/
+theorem sortParents_of_pairwise {l : List Parent} (h : l.Pairwise (fun p q => p.key < q.key)) :
+    sortParents l = l := by
+  unfold sortParents
+  exact List.Sorted.insertionSort_eq (h.imp (fun hab => le_of_lt hab))
+
+/-- The wire form of one justification: three varints and its flag byte. -/
+def encodeParent (p : Parent) : Msg :=
+  varint p.sender ++ varint p.number ++ varint p.seqNum
+    ++ [if p.validationFailed then (1 : Byte) else 0]
+
+/-- The inverse of `encodeParent`. -/
+def decodeParent (m : Msg) : Option (Parent × Msg) := do
+  let (sender, m) ← decodeVarint m
+  let (number, m) ← decodeVarint m
+  let (seqNum, m) ← decodeVarint m
+  match m with
+  | [] => failure
+  | b :: rest => pure (⟨sender, number, seqNum, (b : Nat) == 1⟩, rest)
+
+/-- **A justification is self-delimiting**, with no length prefix — sound only because each field in it
+    is. -/
+theorem decodeParent_encodeParent (p : Parent) (r : Msg) :
+    decodeParent (encodeParent p ++ r) = some (p, r) := by
+  obtain ⟨sender, number, seqNum, failed⟩ := p
+  simp [encodeParent, decodeParent, decodeVarint_varint, List.append_assoc]
+  cases failed <;> rfl
+
+/-- Decode `k` justifications in sequence (the encoder writes their count, not their byte length). -/
+def decodeParents : Nat → Msg → Option (List Parent × Msg)
+  | 0, m => some ([], m)
+  | k + 1, m => do
+      let (p, m) ← decodeParent m
+      let (ps, m) ← decodeParents k m
+      pure (p :: ps, m)
+
+/-- The count-prefixed justification list round-trips. -/
+theorem decodeParents_length_encodings (l : List Parent) (r : Msg) :
+    decodeParents l.length ((l.map encodeParent).join ++ r) = some (l, r) := by
+  induction l with
+  | nil => simp [decodeParents]
+  | cons p ps ih =>
+    simp only [List.map_cons, List.join_cons, List.length_cons, List.append_assoc]
+    simp [decodeParents, decodeParent_encodeParent, ih]
+
+/-- **The encoder**: every field `hash_block` covers, in the proto's field-number order, with the
+    justification collection in the port's canonical order. -/
+def encodeBody (b : BlockBody) : Msg :=
+  varintField 32 (int64 b.number)
+    ++ varintField 48 (int64 b.seqNum)
+    ++ varintField 40 b.sender
+    ++ varintField 136 (int64 b.timestamp)
+    ++ varint 74 ++ varint b.justifications.length
+    ++ ((sortParents b.justifications).map encodeParent).join
+    ++ bytesField 114 b.header
+
+/-- The canonical form the encoder is **blind** to: the three fields it narrows to 64 bits, and the
+    justification order it sorts. The round trip below returns this, which is exactly why `Canonical` is
+    the hypothesis the injectivity theorem needs.
+
+    Written as a constructor rather than an update: Lean 4.12's parser rejects a `{ b with … }` (or a
+    bare `{ … }` literal) whose field list has **a line break after a comma** — `unexpected identifier;
+    expected '}'` — while the same text inside `[ … ]` parses, which is why the register rows
+    (`Laws.lean`) get away with it and this definition did not. -/
+def canonicalise (b : BlockBody) : BlockBody :=
+  ⟨int64 b.number, int64 b.seqNum, b.sender, sortParents b.justifications, int64 b.timestamp,
+    b.header⟩
+
+/-- One tagged `varint` field: read the field's tag, check it is the expected one, then read the value. -/
+def taggedVarint (tag : Nat) (m : Msg) : Option (Nat × Msg) :=
+  match decodeVarint m with
+  | some (t, m) => if t = tag then decodeVarint m else none
+  | none => none
+
+/-- **A tagged `varint` field is self-delimiting too**, and reading it consumes exactly the field: what
+    follows the value is what followed the field. -/
+theorem taggedVarint_varintField (tag n : Nat) (r : Msg) :
+    taggedVarint tag (varintField tag n ++ r) = some (n, r) := by
+  simp [taggedVarint, varintField, List.append_assoc, decodeVarint_varint]
+
+/-- A tagged `varint` field written by hand — a tag, then a value that is not a `varintField` (the
+    justification count, tag 74) — reads back the same way.
+
+    The parentheses are load-bearing: `++` is **left**-associative, so `varint tag ++ varint n ++ r` is
+    `(varint tag ++ varint n) ++ r`, while the goal `decodeBody_encodeBody` reaches this step with is the
+    reassociated `varint tag ++ (varint n ++ r)` — `List.append_assoc` is what puts it in that shape.
+    Stated without the parentheses the lemma compiles, reads correctly, and never fires. -/
+theorem taggedVarint_varint (tag n : Nat) (r : Msg) :
+    taggedVarint tag (varint tag ++ (varint n ++ r)) = some (n, r) := by
+  simp [taggedVarint, decodeVarint_varint]
+
+/-- A length-delimited field reads back as its payload and the bytes after it — the length prefix is
+    consumed and the payload is returned whole. -/
+theorem taggedVarint_bytesField (tag : Nat) (p r : Msg) :
+    taggedVarint tag (bytesField tag p ++ r) = some (p.length, p ++ r) := by
+  simp [taggedVarint, bytesField, List.append_assoc, decodeVarint_varint]
+
+/-- The inverse of `encodeBody`, one field at a time (each field is self-delimiting, which is what makes
+    that possible).
+
+    **Why this is not the `guard`-per-tag do-block it first was.** That spelling — a `let (t, m) ←
+    decodeVarint m` and a `guard (t = …)` for each of the six tags — elaborated in 128 ms and then made
+    the **compiler** take **98.6 s** and 5 GB on this one definition (`lean --profile`: `compilation of
+    Rchain.decodeBody took 98.6s`), which is what left the build unusable. The eighteen nested closures
+    are what the code generator choked on. This form, one `taggedVarint` per field, compiles in 224 ms. -/
+def decodeBody (m : Msg) : Option (BlockBody × Msg) := do
+  let (number, m) ← taggedVarint 32 m
+  let (seqNum, m) ← taggedVarint 48 m
+  let (sender, m) ← taggedVarint 40 m
+  let (timestamp, m) ← taggedVarint 136 m
+  let (k, m) ← taggedVarint 74 m
+  let (js, m) ← decodeParents k m
+  let (hlen, m) ← taggedVarint 114 m
+  pure (⟨number, seqNum, sender, js, timestamp, m.take hlen⟩, m.drop hlen)
+
+/-- **The round trip**: the encoder's own inverse recovers the body up to exactly what the encoding
+    cannot see — the 64-bit narrowing and the justification order. -/
+theorem decodeBody_encodeBody (b : BlockBody) (r : Msg) :
+    decodeBody (encodeBody b ++ r) = some (canonicalise b, r) := by
+  obtain ⟨number, seqNum, sender, js, timestamp, header⟩ := b
+  -- The encoder writes the justification count, so the decoder is handed `js.length`; the lemma about
+  -- the round trip is stated for the list it actually encoded, `sortParents js`.
+  have hlen : js.length = (sortParents js).length :=
+    (List.length_insertionSort (fun p q : Parent => p.key ≤ q.key) js).symm
+  simp [encodeBody, decodeBody, canonicalise, hlen, taggedVarint_varintField, taggedVarint_varint,
+    taggedVarint_bytesField, decodeParents_length_encodings, List.append_assoc,
+    List.take_left, List.drop_left]
+
+/-- **Law 16c's injectivity, as a theorem about a definition**: on the bodies the port can hash — the
+    numbers fit their `int64` fields and the justifications are already in the port's order — equal
+    encodings are equal bodies. `content_addressing` below composes this with Law 19's collision-freedom
+    to get the hash-level law. -/
+theorem encodeBody_injective {a b : BlockBody} (ha : Canonical a) (hb : Canonical b)
+    (h : encodeBody a = encodeBody b) : a = b := by
+  have hda := decodeBody_encodeBody a []
+  have hdb := decodeBody_encodeBody b []
+  rw [h] at hda
+  have hcanon : canonicalise a = canonicalise b :=
+    congrArg Prod.fst (Option.some.inj (hda.symm.trans hdb))
+  have hn : a.number = b.number :=
+    int64_eq_of_lt ha.1 hb.1 (congrArg Block.number hcanon)
+  have hs : a.seqNum = b.seqNum :=
+    int64_eq_of_lt ha.2.1 hb.2.1 (congrArg Block.seqNum hcanon)
+  have ht : a.timestamp = b.timestamp :=
+    int64_eq_of_lt ha.2.2.1 hb.2.2.1 (congrArg Block.timestamp hcanon)
+  have hj : a.justifications = b.justifications := by
+    have h' := congrArg Block.justifications hcanon
+    simp only [canonicalise] at h'
+    rwa [sortParents_of_pairwise ha.2.2.2, sortParents_of_pairwise hb.2.2.2] at h'
+  obtain ⟨an, asq, asd, aj, ats, ah⟩ := a
+  obtain ⟨bn, bsq, bsd, bj, bts, bh⟩ := b
+  -- `canonicalise` narrows the three numbers and sorts the justifications; the other two fields it
+  -- carries over untouched, so they are equal for the same reason and have to be said.
+  have hsd : asd = bsd := congrArg Block.sender hcanon
+  have hh : ah = bh := congrArg Block.header hcanon
+  simp only at hn hs ht hj
+  subst hn; subst hs; subst hsd; subst hj; subst ht; subst hh; rfl
+
+/-- **`Canonical` is load-bearing, not decoration**: the *un-narrowed* statement — "equal encodings are
+    equal bodies" — is false of **this** encoder, in the first of the two ways the witnesses below name.
+    The encoder writes the three `int64` fields as 64-bit values, so a body numbered `2^63` and one
+    numbered `2^63 + 2^64` are different bodies with the same bytes — and the first is exactly the
+    largest number `Canonical` admits. -/
+theorem the_body_encoder_is_not_injective_without_canonical : ¬ Function.Injective encodeBody := by
+  intro hinj
+  have hres : int64 (2 ^ 63 + 2 ^ 64) = int64 (2 ^ 63) := by
+    have h1 : ((2 : Nat) ^ 63 + 2 ^ 64) % 2 ^ 64 = 2 ^ 63 := by
+      rw [show (2 : Nat) ^ 63 + 2 ^ 64 = 2 ^ 63 + 1 * 2 ^ 64 by rw [Nat.one_mul],
+        Nat.add_mul_mod_self_right, Nat.mod_eq_of_lt (by omega)]
+    simp only [int64]
+    rw [h1, Nat.mod_eq_of_lt (by omega)]
+  have hne : (⟨2 ^ 63, 0, 0, [], 0, []⟩ : BlockBody) ≠ ⟨2 ^ 63 + 2 ^ 64, 0, 0, [], 0, []⟩ := by
+    intro heq
+    have := congrArg Block.number heq
+    simp only at this
+    omega
+  refine hne (hinj ?_)
+  simp only [encodeBody, sortParents, List.insertionSort, hres]
 
 /-- **The un-narrowed axiom is false, first way: the model's numbers are wider than the proto's.** An
     encoder that mirrors the port writes `blockNumber` as an `int64` varint
