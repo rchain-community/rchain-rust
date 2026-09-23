@@ -19,29 +19,30 @@ tools/audit-test-register.sh --deferred-ok # reports what hard mode would fail o
 ### The census: files, not per-crate totals
 
 The counts below were the register's only measure for most of its life, and a per-crate total cannot
-see a file that has *no* test. A census of every `*.rs` under `*/src` — **354 files** — shows what the
-totals hid: **282 files carry at least one test, 72 are exempt** (the table in `## Exempt modules`),
+see a file that has *no* test. A census of every `*.rs` under `*/src` — **356 files** — shows what the
+totals hid: **281 files carry at least one test, 75 are exempt** (66 rows in `## Exempt modules`, some
+naming several files),
 and **no file is left without one or the other** — the linter's check 7 passes in hard mode, and CI and `make` now run it in hard mode (the `--deferred-ok` flag was dropped when the last file closed).
 
 ## Inventory
 
-**1363 `#[test]`/`#[tokio::test]` unit functions + 102 integration tests** across 13 crates, with **6
+**1379 `#[test]`/`#[tokio::test]` unit functions + 119 integration tests** across 13 crates, with **26
 laws** carrying a randomized property test and **10 benchmark functions** in 6 Criterion groups. Only
-**3 of 12 crates have integration tests** (`rholang`, `casper`, `node`).
+**3 of 13 crates have integration tests** (`rholang`, `casper`, `node`).
 
 | Crate | Unit | Integration | Property (laws) | Bench |
 |---|---|---|---|---|
 | `sdk` | 46 | — | 2 | — |
 | `shared` | 83 | — | — | — |
-| `crypto` | 89 | — | — | — |
+| `crypto` | 90 | — | — | — |
 | `graphz` | 18 | — | — | — |
 | `models` | 153 | — | 5 | — |
 | `block-storage` | 40 | — | 3 | — |
 | `comm` | 123 | — | — | — |
-| `rspace` | 167 | — | 7 | — |
-| `rholang` | 204 | 50 | 7 | — |
-| `casper` | 239 | 47 | 3 | — |
-| `node` | 178 | 12 | — | — |
+| `rspace` | 169 | — | 8 | — |
+| `rholang` | 213 | 53 | 7 | — |
+| `casper` | 243 | 53 | 3 | — |
+| `node` | 181 | 13 | — | — |
 | `qucalc` | 20 | — | — | — |
 | `rspace-bench` | — | — | — | 10 |
 
