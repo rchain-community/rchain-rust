@@ -553,6 +553,7 @@ pub fn wire_block_processing(
     min_phlo_price: i64,
     log: Arc<dyn Log>,
     autopropose: Option<Arc<dyn Fn() + Send + Sync>>,
+    attest_on_new_deploys: Option<Arc<dyn Fn(&BlockMessage) + Send + Sync>>,
 ) -> (
     mpsc::Sender<BlockMessage>,
     mpsc::UnboundedSender<BlockMessage>,
@@ -561,21 +562,15 @@ pub fn wire_block_processing(
         mpsc::channel(rchain_casper::engine::node_running::MAX_PENDING_BLOCKS);
     let (validated_blocks_tx, validated_blocks_rx) = mpsc::unbounded_channel();
 
-    // Tap the validated-blocks stream for autopropose (fire a propose on each validated block).
-    let validated_blocks_rx = match autopropose {
-        Some(tap) => {
-            let (tap_tx, tap_rx) = mpsc::unbounded_channel();
-            let mut rx = validated_blocks_rx;
-            tokio::spawn(async move {
-                while let Some(block) = rx.recv().await {
-                    tap();
-                    let _ = tap_tx.send(block);
-                }
-            });
-            tap_rx
-        }
-        None => validated_blocks_rx,
-    };
+    // Tap the validated-blocks stream: for autopropose (propose on each validated block) and, when
+    // `--attest-on-new-deploys` is on, for attestation (propose on each *remote* block that carries
+    // deploys). The taps compose — each forwards the stream after firing.
+    let autopropose_tap: Option<Arc<dyn Fn(&BlockMessage) + Send + Sync>> =
+        autopropose.map(|tap| {
+            Arc::new(move |_: &BlockMessage| tap()) as Arc<dyn Fn(&BlockMessage) + Send + Sync>
+        });
+    let validated_blocks_rx = tap_validated_blocks(validated_blocks_rx, autopropose_tap);
+    let validated_blocks_rx = tap_validated_blocks(validated_blocks_rx, attest_on_new_deploys);
 
     // Block receiver: incoming + validated blocks → a queue of dependency-free block hashes.
     let receiver_state = Arc::new(tokio::sync::Mutex::new(
@@ -1185,6 +1180,43 @@ async fn setup_shard_runtime(
         None
     };
 
+    // Attest-on-new-deploys tap: propose when a *remote* block carries deploys. With nothing of our own
+    // to include, that proposal becomes an empty attestation (`block_creator.rs`'s attestation branch) —
+    // the only way a validator holding no deploys can move its latest message, and therefore the only
+    // way a finality quorum forms when every deploy arrives at one node.
+    //
+    // Reacting only to blocks that carry deploys is deliberate: an attestation is itself an empty block,
+    // so reacting to those would let validators ping-pong attestations forever on a chain that can never
+    // reach the threshold. Reacting to state transitions bounds the work by real activity (#70).
+    let attest_on_new_deploys: Option<Arc<dyn Fn(&BlockMessage) + Send + Sync>> =
+        match (&proposer_parts, conf.attest_on_new_deploys, validator_opt) {
+            (Some(pp), true, Some(identity)) => {
+                let tap_log = log.clone();
+                let tap_tx = pp.queue_tx.clone();
+                // Our own sender bytes: `Validator` is exactly `Validator::from_slice(public_key.bytes())`
+                // (see `block_creator.rs`), so comparing bytes identifies our own blocks.
+                let me: Vec<u8> = identity.public_key.bytes().to_vec();
+                Some(Arc::new(move |block: &BlockMessage| {
+                    let carries_deploys =
+                        !block.state.deploys.is_empty() || !block.state.system_deploys.is_empty();
+                    if !attest_warranted(&me, block.sender.as_bytes(), carries_deploys) {
+                        return;
+                    }
+                    let (otx, _orx) = tokio::sync::oneshot::channel();
+                    if let Err(e) = tap_tx.try_send((true, otx)) {
+                        tap_log.warn(
+                            LogSource::new("coop.rchain.node.runtime.Setup"),
+                            &format!(
+                                "attest request not queued ({e}) — this validator will not attest \
+                                 to the new deploys"
+                            ),
+                        );
+                    }
+                }))
+            }
+            _ => None,
+        };
+
     // Block receiver + processor streams (spawned internally).
     let (incoming_blocks_tx, _validated_blocks_tx) = wire_block_processing(
         comm_state,
@@ -1193,6 +1225,7 @@ async fn setup_shard_runtime(
         conf.casper.min_phlo_price,
         log.clone(),
         autopropose,
+        attest_on_new_deploys,
     );
 
     // This shard's slice of the peer-message stream (fed by the router).
@@ -2156,5 +2189,55 @@ mod dummy_deploy_tests {
         // And with no key there is nothing to sign with, either way.
         assert!(dummy_deploy_key(true, None).is_none());
         assert!(dummy_deploy_key(false, None).is_none());
+    }
+}
+
+/// Forward a validated-blocks stream, running `tap` on each block first (when there is one).
+fn tap_validated_blocks(
+    rx: mpsc::UnboundedReceiver<BlockMessage>,
+    tap: Option<Arc<dyn Fn(&BlockMessage) + Send + Sync>>,
+) -> mpsc::UnboundedReceiver<BlockMessage> {
+    let Some(tap) = tap else {
+        return rx;
+    };
+    let (tap_tx, tap_rx) = mpsc::unbounded_channel();
+    let mut rx = rx;
+    tokio::spawn(async move {
+        while let Some(block) = rx.recv().await {
+            tap(&block);
+            let _ = tap_tx.send(block);
+        }
+    });
+    tap_rx
+}
+
+/// Whether a validated block is a reason for this node to attest: it came from someone else, and it
+/// carries deploys — i.e. it is a state transition worth finalising.
+///
+/// The "someone else" half matters because our own block already attests to itself; the "carries
+/// deploys" half is what bounds the work, because an attestation is itself an empty block, so reacting
+/// to those would let validators ping-pong attestations forever on a chain that can never reach the
+/// threshold ([#70]).
+///
+/// [#70]: https://github.com/rchain-community/rchain-rust/issues/70
+fn attest_warranted(me: &[u8], sender: &[u8], carries_deploys: bool) -> bool {
+    carries_deploys && sender != me
+}
+
+#[cfg(test)]
+mod attest_warranted_tests {
+    use super::attest_warranted;
+
+    #[test]
+    fn a_remote_block_with_deploys_is_a_reason_to_attest() {
+        let me = vec![1u8; 65];
+        let other = vec![2u8; 65];
+
+        // A remote state transition: attest, so the quorum can form without us holding a deploy.
+        assert!(attest_warranted(&me, &other, true));
+        // Our own block already attests to itself.
+        assert!(!attest_warranted(&me, &me, true));
+        // An attestation (an empty block) is not a reason to attest again.
+        assert!(!attest_warranted(&me, &other, false));
     }
 }

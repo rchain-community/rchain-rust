@@ -238,6 +238,15 @@ pub struct Run {
     #[arg(long = "propose-on-deploy")]
     pub propose_on_deploy: bool,
 
+    /// Attest to a remote block that carries deploys, by proposing.
+    ///
+    /// With nothing of our own to include that proposal is an empty attestation (`block_creator.rs`),
+    /// which is the only way a validator holding no deploys can move its latest message — and therefore
+    /// the only way a finality quorum forms when every deploy arrives at one node. Scoped to blocks that
+    /// carry deploys so attestations cannot ping-pong on a chain that cannot reach the threshold.
+    #[arg(long = "attest-on-new-deploys")]
+    pub attest_on_new_deploys: bool,
+
     /// Disable UPnP.
     #[arg(long = "no-upnp")]
     pub no_upnp: bool,
