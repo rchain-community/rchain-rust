@@ -684,14 +684,36 @@ def laws : List Law := [
     falsifiable := none,
     note := "no Lean declaration; the Rust side is `BTreeMap<S, NonNegI64>` bonds" },
   { number := 17, clause := "a", layer := "Casper",
-    statement := "Merge determinism: a rejection resolves to a unique minimum-cost candidate",
-    status := .open,
-    falsifiable := none,
-    note := "no Lean statement, and the Rust suggests why: the merge takes the *branch set* \
-      (`casper/src/merging.rs`'s `compute_merged_state` over the conflict predicate at \
-      `rspace/src/merger/event_log_merging_logic.rs:100-158`) — it does not choose among candidates, so \
-      a claim about a unique minimum-cost candidate has nothing in the code to be stated against. What \
-      the code does have is Law 9's non-conflict condition, which is modelled there" },
+    statement := "Merge determinism: a rejection resolves to a unique minimum-cost candidate — the \
+      rejection option is the minimum of `(total cost, size, the sorted set)`, and a minimum of a set \
+      is unique, so the resolution is a function of the conflict set and not of the iteration order",
+    status := .provedModel,
+    declarations := [`Rchain.RejectionOption, `Rchain.totalCost, `Rchain.optionKey,
+      `Rchain.optionKeyComparator, `Rchain.optionComparator, `Rchain.pickRejection,
+      `Rchain.pickRejection_eq_none_iff, `Rchain.pickRejection_mem, `Rchain.pickRejection_minimal,
+      `Rchain.equal_cost_and_size_do_not_make_equal_options, `Rchain.the_minimum_is_unique,
+      `Rchain.the_resolution_does_not_depend_on_the_iteration_order, `Rchain.Comparator.le_of_not_lt],
+    axioms := [],
+    rust := ["sdk/src/dag/merging.rs", "casper/src/merging.rs"],
+    falsifiable := some "the linearity the word *unique* needs is itself checked: \
+      `equal_cost_and_size_do_not_make_equal_options` exhibits two options that agree on the key's \
+      first two components (`[1, 2]` and `[1, 3]`, both cost 2 and length 2 under a unit cost) that the \
+      comparator still separates (`cmp = lt`) — drop the set from the key and they compare equal, \
+      `min_by` returns whichever the `BTreeSet` yielded first, and \
+      `the_resolution_does_not_depend_on_the_iteration_order` is false. The port's own test asserts the \
+      same case (`compute_optimal_rejection_minimizes_cost_then_size`: `{1}` must win)",
+    note := "**The note this row carried was wrong, and the code was right** (found 2026-09-23, \
+      Programme D unit 10). It said the port \"does not choose among candidates, so a claim about a \
+      unique minimum-cost candidate has nothing in the code to be stated against\". It does choose: \
+      `resolve_conflict_set` (`sdk/src/dag/merging.rs:395`) closes the conflict map under \
+      dependencies, computes the rejection options, extends them with what an overflow forces, and \
+      `compute_optimal_rejection` (`:279-295`) picks one — `options.iter().min_by(|a, b| (cost(a), \
+      a.len(), a).cmp(&(cost(b), b.len(), b)))`. The row's word *unique* is therefore load-bearing \
+      rather than decorative, and it is exactly the property the model proves: the key is linear, so \
+      no two distinct options compare equal, so the minimum is unique, so `min_by` over a `BTreeSet` \
+      cannot be observed to depend on iteration order. The model is of the *selection*; the conflict \
+      predicate and the branch sets it runs over are Law 9's (`rspace/src/merger/\
+      event_log_merging_logic.rs:100-158`), which is modelled there" },
   { number := 17, clause := "b", layer := "Casper",
     statement := "The merge's arithmetic is the checked 64-bit one — a value that would leave `i64` is \
       **refused, not wrapped** — and the merged RNG is a function of the *set* of branch generators",

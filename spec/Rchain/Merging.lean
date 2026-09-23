@@ -114,4 +114,191 @@ theorem mergeRandoms_perm (rs ss : List Random) (h : List.Perm rs ss) :
     (Comparator.sortList_perm (Comparator.linearOrderComparator Nat)
       (List.Perm.map Random.state h))
 
+/-! ## Law 17a — the rejection a conflict set resolves to, and why it is unique
+
+`sdk/src/dag/merging.rs`'s `resolve_conflict_set` (`:395-445`) turns a conflict set into
+`(accepted, rejected)`: it closes the conflict map under dependencies, computes the *rejection options*
+(settling a conflict means rejecting a branch, together with whatever depends on it), extends them with
+whatever an overflow forces, and then picks one — `compute_optimal_rejection` (`:278-295`):
+
+    options.iter().min_by(|a, b| (cost(a), a.len(), a).cmp(&(cost(b), b.len(), b)))
+
+**This row used to say the port "does not choose among candidates, so a claim about a unique
+minimum-cost candidate has nothing in the code to be stated against" — that was wrong**, and the line
+above is the choice. The law's word *unique* is load-bearing, and not decoration: `min_by` returns an
+element of a `BTreeSet`, so the answer is a function of the *set* only if no two distinct options
+compare equal. The key `(total cost, size, the sorted set)` is linear, which is why it works —
+`optionComparator` below, built from `Rchain.Cmp`'s comparators, whose `eq_iff` is the fact
+`the_minimum_is_unique` turns on. -/
+
+/-- A rejection option: the port holds these in a `BTreeSet`, so a **sorted** list here, and a deploy is
+    a `Nat` — the resolution never looks inside one. -/
+abbrev RejectionOption := List Nat
+
+/-- The total cost of rejecting a set of deploys — the port's `a.iter().map(&target_f).sum()`. Written
+    as a `foldl` because this prelude has no `List.sum`. -/
+def totalCost (cost : Nat → Int) (o : RejectionOption) : Int :=
+  o.foldl (fun acc d => acc + cost d) 0
+
+/-- The port's `min_by` key: total cost, size, and the set itself. -/
+def optionKey (cost : Nat → Int) (o : RejectionOption) : Int × Nat × List Nat :=
+  (totalCost cost o, o.length, o)
+
+/-- The lexicon on those keys, in the port's order: cost, then size, then the sorted set element-wise. -/
+def optionKeyComparator : Comparator (Int × Nat × List Nat) :=
+  Comparator.cmpPair (Comparator.linearOrderComparator Int)
+    (Comparator.cmpPair (Comparator.linearOrderComparator Nat)
+      (Comparator.listComparator (Comparator.linearOrderComparator Nat)))
+
+/-- The port's option order, on options: the key's order pulled back along `optionKey`. The three laws
+    come from the key's comparator, `eq_iff` using that the key *contains* the option (its third
+    component), which is exactly why no two distinct options can compare equal. -/
+def optionComparator (cost : Nat → Int) : Comparator RejectionOption where
+  cmp a b := optionKeyComparator.cmp (optionKey cost a) (optionKey cost b)
+  eq_iff := by
+    intro a b
+    constructor
+    · intro h
+      have hk : optionKey cost a = optionKey cost b := optionKeyComparator.eq_iff.mp h
+      exact congrArg (fun t : Int × Nat × List Nat => t.2.2) hk
+    · intro h; subst h; exact optionKeyComparator.eq_iff.mpr rfl
+  swap := by intro a b; exact optionKeyComparator.swap
+  lt_trans := by intro a b c h1 h2; exact optionKeyComparator.lt_trans h1 h2
+
+/-- `compute_optimal_rejection`'s fold. It keeps the *last* of equal minima where Rust's `min_by` keeps
+    the first — invisible, because comparing equal under `optionComparator` means being the *same set*
+    (`eq_iff`), which is the fact the uniqueness theorem below states. -/
+def pickRejection (cost : Nat → Int) : List RejectionOption → Option RejectionOption
+  | [] => none
+  | o :: os =>
+      match pickRejection cost os with
+      | none => some o
+      | some m => some (if (optionComparator cost).cmp o m = Ordering.lt then o else m)
+
+/-- The fold answers `none` exactly when it was given nothing. -/
+theorem pickRejection_eq_none_iff (cost : Nat → Int) (os : List RejectionOption) :
+    pickRejection cost os = none ↔ os = [] := by
+  constructor
+  · intro h
+    cases os with
+    | nil => rfl
+    | cons o os =>
+        cases hp : pickRejection cost os with
+        | none => exact absurd h (by simp [pickRejection, hp])
+        | some m => exact absurd h (by simp [pickRejection, hp])
+  · intro h; subst h; rfl
+
+/-- The fold returns an option it was given. -/
+theorem pickRejection_mem (cost : Nat → Int) : ∀ (os : List RejectionOption) (m : RejectionOption),
+    pickRejection cost os = some m → m ∈ os := by
+  intro os
+  induction os with
+  | nil => intro m h; simp [pickRejection] at h
+  | cons o os ih =>
+      intro m h
+      cases hp : pickRejection cost os with
+      | none =>
+          simp only [pickRejection, hp] at h
+          injection h with h'; subst h'
+          exact List.mem_cons_self ..
+      | some m' =>
+          by_cases hlt : (optionComparator cost).cmp o m' = Ordering.lt
+          · simp only [pickRejection, hp, if_pos hlt] at h
+            injection h with h'; subst h'
+            exact List.mem_cons_self ..
+          · simp only [pickRejection, hp, if_neg hlt] at h
+            injection h with h'; subst h'
+            exact List.mem_cons_of_mem _ (ih m' hp)
+
+/-- **It is a minimum**: no option the fold saw is smaller. -/
+theorem pickRejection_minimal (cost : Nat → Int) : ∀ (os : List RejectionOption) (m : RejectionOption),
+    pickRejection cost os = some m → ∀ o ∈ os, (optionComparator cost).le m o := by
+  intro os
+  induction os with
+  | nil => intro m h; simp [pickRejection] at h
+  | cons o os ih =>
+      intro m h
+      cases hp : pickRejection cost os with
+      | none =>
+          have hos : os = [] := (pickRejection_eq_none_iff cost os).mp hp
+          subst hos
+          simp only [pickRejection, hp] at h
+          injection h with h'; subst h'
+          intro o' ho'
+          rw [List.mem_singleton] at ho'
+          subst ho'
+          exact Comparator.le_refl _ _
+      | some m' =>
+          have hmin : ∀ o' ∈ os, (optionComparator cost).le m' o' := ih m' hp
+          by_cases hlt : (optionComparator cost).cmp o m' = Ordering.lt
+          · simp only [pickRejection, hp, if_pos hlt] at h
+            injection h with h'; subst h'
+            intro o' ho'
+            rcases List.mem_cons.mp ho' with rfl | hmem
+            · exact Comparator.le_refl _ _
+            · exact Comparator.le_trans _ (Or.inl hlt) (hmin o' hmem)
+          · simp only [pickRejection, hp, if_neg hlt] at h
+            injection h with h'; subst h'
+            intro o' ho'
+            rcases List.mem_cons.mp ho' with rfl | hmem
+            · exact Comparator.le_of_not_lt _ hlt
+            · exact hmin o' hmem
+
+/-- **The key's third component is load-bearing.** Two options can agree on cost *and* size — the key's
+    first two components — and the set then separates them. Drop it and the comparison is not linear,
+    `min_by` returns whichever the `BTreeSet` happened to yield first, and the resolution stops being a
+    function of the conflict set. This is the port's own case (`compute_optimal_rejection_minimizes_
+    cost_then_size`, where every deploy costs 1 and `{1}` must win). -/
+theorem equal_cost_and_size_do_not_make_equal_options :
+    totalCost (fun _ => 1) ([1, 2] : RejectionOption) = totalCost (fun _ => 1) [1, 3] ∧
+    ([1, 2] : RejectionOption).length = ([1, 3] : RejectionOption).length ∧
+    (optionComparator (fun _ => 1)).cmp [1, 2] [1, 3] = Ordering.lt := by
+  refine ⟨?_, ?_, ?_⟩ <;> decide
+
+/-- **Law 17a — the minimum is unique.** Two options that are both minimal for the same set are the
+    same option. This is `le_antisymm` of the port's own key, and it is why `min_by` over a `BTreeSet`
+    is a function of the set: **the iteration order cannot be observed**. -/
+theorem the_minimum_is_unique (cost : Nat → Int) {os : List RejectionOption}
+    {m₁ m₂ : RejectionOption} (h₁ : m₁ ∈ os) (hm₁ : ∀ o ∈ os, (optionComparator cost).le m₁ o)
+    (h₂ : m₂ ∈ os) (hm₂ : ∀ o ∈ os, (optionComparator cost).le m₂ o) : m₁ = m₂ :=
+  Comparator.le_antisymm _ (hm₁ m₂ h₂) (hm₂ m₁ h₁)
+
+/-- **And that is what the port relies on**: two orderings of the same options resolve to the same
+    rejection, because each is a minimum of the same set. The proof is `the_minimum_is_unique` — there
+    is no appeal to the iteration order anywhere. -/
+theorem the_resolution_does_not_depend_on_the_iteration_order (cost : Nat → Int)
+    {os os' : List RejectionOption} (h : List.Perm os os') :
+    pickRejection cost os = pickRejection cost os' := by
+  cases hsome : pickRejection cost os with
+  | none =>
+      have hos : os = [] := (pickRejection_eq_none_iff cost os).mp hsome
+      cases os' with
+      | nil => rw [← hsome, hos]
+      | cons a as =>
+          rw [hos] at h
+          exact absurd h.length_eq (by simp)
+  | some m =>
+      cases hsome' : pickRejection cost os' with
+      | none =>
+          have hos' : os' = [] := (pickRejection_eq_none_iff cost os').mp hsome'
+          have hos : os = [] := by
+            cases os with
+            | nil => rfl
+            | cons a as =>
+                rw [hos'] at h
+                exact absurd h.length_eq (by simp)
+          rw [hos] at hsome
+          exact absurd hsome (by simp [pickRejection])
+      | some m' =>
+          have hmem : m ∈ os := pickRejection_mem cost os m hsome
+          have hmin : ∀ o ∈ os, (optionComparator cost).le m o :=
+            pickRejection_minimal cost os m hsome
+          have hmem' : m' ∈ os' := pickRejection_mem cost os' m' hsome'
+          have hmin' : ∀ o ∈ os', (optionComparator cost).le m' o :=
+            pickRejection_minimal cost os' m' hsome'
+          have heq : m = m' :=
+            the_minimum_is_unique cost hmem hmin (h.symm.mem_iff.mp hmem')
+              (fun o ho => hmin' o (h.mem_iff.mp ho))
+          rw [heq]
+
 end Rchain

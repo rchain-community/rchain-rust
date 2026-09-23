@@ -70,6 +70,14 @@ theorem le_antisymm (C : Comparator α) {a b : α} (hab : C.le a b) (hba : C.le 
     · rw [hb] at hba; cases hba
   · exact C.eq_iff.mp hab
 
+/-- `a ≤ b` exactly when `b` is not strictly below `a` — totality in the contrapositive form, which is
+    the shape a fold's "keep the smaller" step leaves behind. -/
+theorem le_of_not_lt (C : Comparator α) {a b : α} (h : ¬ C.cmp b a = Ordering.lt) : C.le a b := by
+  rcases C.total b a with hlt | heq | hgt
+  · exact absurd hlt h
+  · exact Or.inr (by rw [C.swap, heq]; rfl)
+  · exact Or.inl (by rw [C.swap, hgt]; rfl)
+
 theorem le_total (C : Comparator α) (a b : α) : C.le a b ∨ C.le b a := by
   by_cases h : C.cmp a b = Ordering.gt
   · right; left; rw [C.swap, h]; rfl
