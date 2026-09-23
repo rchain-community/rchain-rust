@@ -196,6 +196,7 @@ def laws : List Law := [
       order: `eq_iff`, `swap`, `lt_trans`",
     status := .owed,
     declarations := [`Rchain.cmpPar, `Rchain.cmpSend, `Rchain.cmpExpr],
+    rust := ["models/src/sorter.rs"],
     axioms := [`Rchain.cmpExpr_eq_iff, `Rchain.cmpExpr_swap,
       `Rchain.cmpPar_lt_trans, `Rchain.cmpSend_lt_trans, `Rchain.cmpReceiveBind_lt_trans,
       `Rchain.cmpReceive_lt_trans, `Rchain.cmpNew_lt_trans, `Rchain.cmpMatchCase_lt_trans,
@@ -205,8 +206,11 @@ def laws : List Law := [
       `cmpListSend_lt_trans` is proved from them — so a counterexample to any element law would be a \
       counterexample to those proofs. No witness is published for the axioms themselves, which is the \
       gap: nothing would notice if one of them were false",
-    note := "12 axioms, not 30: `Sort.lean`'s own header says 33 and `spec/INVENTORY.md` says 30, and \
-      both are stale. The list comparators' laws were discharged by induction on the list" },
+    note := "12 axioms, not 30: this row's own earlier count (and `spec/INVENTORY.md`'s) was stale. \
+      The list comparators' laws were discharged by induction on the list. The `rust` anchor is \
+      `models/src/sorter.rs`, because the order these comparators specify *is* the node's score tree \
+      (`node_score(tag, children)`, compared element-wise by `compare_children`), and the `sort` \
+      corpus pins four structures of it against the node — see law 1a's note" },
   { number := 2, layer := "Rholang",
     statement := "α/name equivalence = par order + `| Nil` + top-level arithmetic + α + added \
       eval/quote",
