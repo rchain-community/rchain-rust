@@ -137,7 +137,7 @@ partial map whose only non-concreteness is the remainder (C22 item 3), each with
 *not* match beside it. -/
 
 /-- The number of cases the matching layer carries. -/
-def matchCaseCount : Nat := 17
+def matchCaseCount : Nat := 19
 
 /-- One matching case: the bind's source, the target's source, the model's view of both, and the
 verdict. The verdict is `decide`d against `spatialMatch` (`matchCases_decide`), which is what makes
@@ -225,6 +225,25 @@ def matchCases : List MatchCase :=
   , { bind := "@(1, 2)", target := "(1, 2, 3)",
       patternPar := tuplePat [intPar 1, intPar 2],
       targetPar := tuplePat [intPar 1, intPar 2, intPar 3], expected := false }
+    -- 18. the shape that falsified the fuel's **measure** rather than its constant: a target padded
+    -- with `Nil`s, which the *set* member must walk past to find the pattern's counterpart (it
+    -- searches — `list_match_single` → `find_matches`, `spatial_matcher.rs:729-815`). `parNodes`
+    -- counted a `Par` with an empty `exprs` field as zero nodes, so six `Nil`s were free in the budget
+    -- while costing six steps: `matchFuel` was 12, the walk needed 13, and the model answered `false`
+    -- where the node answers `true`. AUDIT C47; `Match.lean`'s
+    -- `the_walk_past_empty_pars_is_paid_for` is the model-side ratchet. Six `Nil`s is the boundary —
+    -- at five the old measure also answered `true`, which is why no unpadded case could find it.
+  , { bind := "@Set(1, ..._)", target := "Set(Nil, Nil, Nil, Nil, Nil, Nil, 1)",
+      patternPar := setPat [intPar 1] wildRem,
+      targetPar := setPat (List.replicate 6 nilPar ++ [intPar 1]) none, expected := true }
+    -- 19. the same padded shape in a **list**, on the rejection side: a list is matched positionally
+    -- (`fold_match`), so a pattern element cannot skip a leading target element. The model *did* skip
+    -- it — the searcher was wired into the list arm, so `@[1, ..._]` matched `[Nil, 1]` in the model
+    -- and not on the node: the spec over-claimed a match, the one direction the boundary note says the
+    -- corpus exists to catch. AUDIT C48; `Match.lean`'s `a_list_pattern_cannot_skip_a_target_element`.
+  , { bind := "@[1, ..._]", target := "[Nil, 1]",
+      patternPar := listPat [intPar 1] wildRem,
+      targetPar := listPat [nilPar, intPar 1] none, expected := false }
   ]
 
 /-- Every matching case's verdict holds of the model. `decide`, because the clauses are structurally

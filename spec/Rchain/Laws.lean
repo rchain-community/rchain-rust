@@ -1061,21 +1061,31 @@ def laws : List Law := [
       wildcards, remainders) — over the shapes the clauses cover, which `modelledPar` names",
     status := .owed,
     declarations := [`Rchain.spatialMatchCore, `Rchain.spatialMatchExprs, `Rchain.spatialMatchExpr,
-      `Rchain.matchListPar, `Rchain.matchMap, `Rchain.modelledPar, `Rchain.modelledExpr,
-      `Rchain.arithmetic_pattern_refutes_the_unrestricted_tie],
+      `Rchain.matchListPar, `Rchain.matchListPos, `Rchain.matchMap, `Rchain.modelledPar,
+      `Rchain.modelledExpr, `Rchain.arithmetic_pattern_refutes_the_unrestricted_tie,
+      `Rchain.the_walk_past_empty_pars_is_paid_for,
+      `Rchain.a_list_pattern_cannot_skip_a_target_element],
     axioms := [`Rchain.concrete_matches_iff_eq, `Rchain.fuel_saturation],
     corpus := some "match",
-    falsifiable := some "17 cases with three-valued verdicts; the once-false law-5 axiom was replaced \
+    falsifiable := some "19 cases with three-valued verdicts; the once-false law-5 axiom was replaced \
       *because* a corpus case contradicted it (AUDIT C26), the fuel bound was one step short until the \
       `decide` refused to compile, and `concrete_matches_iff_eq` **was false as stated** until case 15 \
       — a tuple pattern, which the port matches (`spatial_matcher.rs:496-501`) and the clauses had no \
-      arm for — made the `decide` refuse (AUDIT C44). The tie now carries `modelledPar` on both sides, \
-      and `arithmetic_pattern_refutes_the_unrestricted_tie` is the term that says why it must: a \
+      arm for — made the `decide` refuse (AUDIT C44). Two further cases are the model's own defects, \
+      one in each direction: case 18 (`@Set(1, ..._)` against `Set(Nil × 6, 1)`) is a match the model \
+      *under*-claimed because the fuel's measure counted an empty `Par` as zero nodes while the set \
+      member walks past it (AUDIT C47), and case 19 (`@[1, ..._]` against `[Nil, 1]`) is a match the \
+      model *over*-claimed because the list arm was wired to the searcher (AUDIT C48) — the direction \
+      the boundary note says the corpus exists to catch. The tie still carries `modelledPar` on both \
+      sides, and `arithmetic_pattern_refutes_the_unrestricted_tie` is the term that says why it must: a \
       concrete arithmetic pattern equals itself and no clause matches it",
     note := "shares its two axioms with Law 5. **The tie's domain was too wide, not merely unproved**: \
       `connectiveUsed pattern = false` admits an arithmetic pattern, which is concrete and unmatchable, \
       so the statement was false of the model — the same class as C26 and C40, found by asking what the \
-      statement says on a term the model has" },
+      statement says on a term the model has. **The clauses are form-specific** and that is load-bearing \
+      in both directions: a list or tuple is positional (`fold_match`, the port's `EList`/`ETuple` \
+      arms), a set or map searches (`list_match_single` → `find_matches`), and `matchListPos`/\
+      `matchListPar` are the two members; `match.tsv` cases 18/19 pin one direction each" },
   { number := 38, layer := "Rholang",
     statement := "Silence is specified: an unmatched receive or `match` yields no reduction **and no \
       error**",

@@ -52,11 +52,28 @@ rather than `connectiveUsed` alone.
 namespace Rchain
 
 mutual
-  /-- The number of nodes a `Par` presents to the matcher: one per expression, one per collection
-  element and per map pair, descending through the collection forms. It bounds a match's step count. -/
+  /-- The number of nodes a `Par` presents to the matcher: **one for the `Par` itself**, one per
+  expression, one per collection element and per map pair, descending through the collection forms. It
+  bounds a match's step count.
+
+  **The `Par` itself used to count as zero, and that was a defect in the measure** (found 2026-09-23,
+  Programme D unit 8, while designing `fuel_saturation` rather than while testing). A `Par` whose
+  `exprs` field is empty still costs the matcher **one fuel step** when it sits in a collection's
+  element list: `matchListPar`'s "same patterns, fewer targets" branch drops one target per step
+  (`:220-225` in the definition below), and that walk is not charged to any node the old measure could
+  see. The consequence is a `false` where the truth is `true`, on a shape the port matches:
+
+  `@[1, ..._]` against `[Nil, Nil, Nil, Nil, Nil, Nil, 1]` — the pattern's single element has six
+  `Nil`s to walk past before it finds its counterpart (the port searches: `list_match` →
+  `find_matches`, `spatial_matcher.rs:729-815`). Both terms measured `parNodes = 2`, so
+  `matchFuel = 12`, while the walk plus the descent needs **13**. The model answered `false`; the node
+  answers `true`. Six `Nil`s is exactly the boundary — at five the old measure answered `true` too, so
+  only a *padded* target exposed it, which is why the 17 corpus cases that shipped did not
+  (`spec/conformance/match.tsv` row 18 is the case now, and
+  `the_walk_past_empty_pars_is_paid_for` below is the ratchet). -/
   def parNodes (p : Par) : Nat :=
     match p with
-    | .mk _ _ _ es _ _ _ _ => parNodesExprs es
+    | .mk _ _ _ es _ _ _ _ => 1 + parNodesExprs es
 
   /-- The nodes an expression list presents. -/
   def parNodesExprs (es : List Expr) : Nat :=
@@ -150,13 +167,30 @@ end
 -- invariant like `2 * n + c ≤ f` with `c` re-derived per call site, and the single-element case is the
 -- tight one to check — rather than as a constant per depth. That is the piece to design first next
 -- time; the equality's content is unchanged (the corpus held it even when the constant was one short).
+--
+-- **Resolved, and the resolution is the measure — which was wrong** (same day, continued). The `c ≥ 5`
+-- above was derived with the *old* `parNodes`, and the reason the constants had to grow was that a `Par`
+-- with an empty `exprs` field counted as **zero** nodes: for a single-element list `parNodesListPar [p]`
+-- was `parNodes p`, so the element's budget and the list's were the same number and the walk could only
+-- be paid for out of the constant. That was not a fixed-schedule problem; it was a defect, and it made
+-- the matcher wrong on a reachable shape (`parNodes`'s doc comment and
+-- `the_walk_past_empty_pars_is_paid_for` below). Counting the `Par` itself makes
+-- `parNodesListPar [p] = 1 + parNodes p`, and the element case becomes **exactly tight**: for an
+-- element that is a collection, the supply is `2 * (parNodes t + parNodes p)`
+-- `= 2 * ((2 + nl_t) + (2 + nl_p))` and the need is `B_core = 3 + B_list(sub) ≤ 2 * (nl_t + nl_p) + 8` —
+-- equal, with no slack. So the invariant is `B_list ≤ 2 * (parNodesListPar patterns +
+-- parNodesListPar targets) + 5`, with `matchFuel`'s `+4` covering the core → exprs → expr descent and
+-- the list's `+5` covering a single-element list's one step. A budget that is tight rather than
+-- comfortable is the right thing to have found *here*, while the measure could still be argued about:
+-- the `+1` per `Par` is exactly the term that was missing, in the counterexample and in the induction.
 def matchFuel (target pattern : Par) : Nat := 2 * (parNodes target + parNodes pattern) + 4
 
 mutual
   /-- `spatialMatchCore fuel target pattern` — does `target` match `pattern` by shape, ignoring the
   linearity `spatialMatch` adds? A variable or wildcard binds anything; a ground value matches itself;
-  a collection matches when every named element has a *distinct* counterpart in the target and the
-  remainder rule holds. Anything else fails closed (see the boundary note above). -/
+  a collection matches by the rule of its *form* — a list or tuple element-wise in order
+  (`matchListPos`), a set or map by search for a distinct counterpart (`matchListPar`, `matchMap`).
+  Anything else fails closed (see the boundary note above). -/
   def spatialMatchCore (fuel : Nat) (target pattern : Par) : Bool :=
     match fuel with
     | 0 => false -- under-supplied fuel: the corpus is what would notice (see `fuel_saturation`)
@@ -189,17 +223,26 @@ mutual
       | .ground g => match target with
         | [.ground g'] => g == g'
         | _ => false
+      -- A **list** is matched *positionally*, and this was wrong until AUDIT C48: the clause called
+      -- the searcher, which let a pattern element find a counterpart anywhere in the target list. The
+      -- port does not search lists — its `EList` arm is `fold_match`
+      -- (`spatial_matcher.rs:467-493`, `SpatialMatcher.scala:482`), which pairs `tlist[0]` with
+      -- `plist[0]` and recurses on the tails, with the remainder taking the *tail* only. So
+      -- `@[1, ..._]` does **not** match `[Nil, 1]`, and `@[1, 3, ..._]` does not match `[1, 2, 3]`;
+      -- the model claimed both. Only the *set* and *map* forms search (`list_match_single` →
+      -- `find_matches`, the MBM assignment), and that is what the two members below are for.
       | .elist ps r => match target with
-        | [.elist ts _] => matchListPar f ps ts r.isSome
+        | [.elist ts _] => matchListPos f ps ts r.isSome
         | _ => false
       -- A **tuple** matches element-wise, with no remainder to absorb a tail — the port's arm
       -- (`spatial_matcher.rs:496-501`, `fold_match(tlist, plist, None, …)`) which this clause set did
       -- not have. Its absence was invisible because the model *fails closed* (every unmodelled shape
       -- answers `false`), and a pattern that matches nothing produces silence rather than an error —
       -- the same shape as C19/C20/C22, where a missing clause read as a client bug. AUDIT C44; the
-      -- corpus's cases 15/16 (`spec/conformance/match.tsv`) are what found it.
+      -- corpus's cases 15/16 (`spec/conformance/match.tsv`) are what found it. It takes the same
+      -- *positional* matcher as the list arm for the same reason (`fold_match(tlist, plist, None, …)`).
       | .etuple ps => match target with
-        | [.etuple ts] => matchListPar f ps ts false
+        | [.etuple ts] => matchListPos f ps ts false
         | _ => false
       | .eset ps r => match target with
         | [.eset ts _] => matchListPar f ps ts r.isSome
@@ -209,8 +252,31 @@ mutual
         | _ => false
       | _ => false
 
-  /-- `matchListPar fuel patterns targets absorb` — every pattern has a **distinct** counterpart among
-  the targets, and when `absorb` is false (the pattern had no remainder) no target may be left over. -/
+  /-- `matchListPos fuel patterns targets absorb` — **lists and tuples**: `patterns`' elements match
+  `targets`' **in order**, and when `absorb` is false (the pattern had no remainder) no target may be
+  left over. This is the port's `fold_match` (`spatial_matcher.rs:596-629`), which pairs the heads and
+  recurses on the tails — there is deliberately **no** branch that drops a target to look further, and
+  adding one was the model's defect (AUDIT C48; the `elist` arm's comment above). The absorbed tail is
+  not inspected, which is the port's rule for a *wildcard* remainder and is an over-approximation for a
+  named one (`fold_match` additionally demands `locally_free_empty` of each absorbed element) — a state
+  a stored datum cannot be in, since it carries no free variable. -/
+  def matchListPos (fuel : Nat) (patterns : List Par) (targets : List Par) (absorb : Bool) : Bool :=
+    match fuel with
+    | 0 => false
+    | f + 1 =>
+      match patterns with
+      | [] => absorb || targets.isEmpty
+      | p :: ps =>
+        match targets with
+        | [] => false
+        | t :: ts => spatialMatchCore f t p && matchListPos f ps ts absorb
+
+  /-- `matchListPar fuel patterns targets absorb` — **sets and maps**: every pattern element has a
+  *distinct* counterpart anywhere among the targets (`matchListPar`'s second branch drops a target to
+  look further), and when `absorb` is false no target may be left over. This is the port's
+  `list_match_single` → `find_matches` (`spatial_matcher.rs:729-815`), which is a bipartite assignment
+  — it searches, because a `ParSet`'s elements are unordered. Applying it to lists as well is AUDIT
+  C48: the `ESet` and `EMap` arms are the only two callers. -/
   def matchListPar (fuel : Nat) (patterns : List Par) (targets : List Par) (absorb : Bool) : Bool :=
     match fuel with
     | 0 => false
@@ -444,11 +510,44 @@ axiom concrete_matches_iff_eq (target pattern : Par) (h : connectiveUsed pattern
     (hp : modelledPar pattern = true) (ht : modelledPar target = true) :
     spatialMatch target pattern = (target = pattern)
 
+/-! ## Two ratchets: the fuel's measure, and the form that decides whether a walk is needed
+
+Both theorems below are the *model* half of cases in `spec/conformance/match.tsv`, which is where the
+node is held to them. They are theorems rather than remarks so that a change to the measure or to the
+clauses has to face them.
+
+The first is the fuel's ratchet: the **set** member searches, so it walks past target elements, and the
+measure has to pay for that walk. It is one `Nil` from where the old measure still answered `true` —
+five `Nil`s needed exactly the fuel the old measure gave, six needed more — which is why the 17 cases
+that shipped, none of them padded, could not have found it.
+
+The second is the *form*'s ratchet: the same padded shape in a **list** must **not** match, because
+lists are positional. Read together they say the split is load-bearing in both directions. -/
+
+/-- **The padded search the port accepts**: `@Set(1, ..._)` against `Set(Nil × 6, 1)`. The set member
+    searches (`list_match_single` → `find_matches`, `spatial_matcher.rs:729-815`), so it walks past six
+    empty pars; the fuel must pay for the walk. With a `Par` counted as zero nodes `matchFuel` was 12
+    and the walk needed 13, so the model answered `false` where the node answers `true` — AUDIT C47.
+    `spec/conformance/match.tsv` row 18 is this case. -/
+theorem the_walk_past_empty_pars_is_paid_for :
+    spatialMatch (oneExpr (.eset (List.replicate 6 nilPar ++ [oneExpr (.ground (.int 1))]) none))
+        (oneExpr (.eset [oneExpr (.ground (.int 1))] (some .wildcard))) = true := by
+  decide
+
+/-- **The same padded shape in a list must not match**: `@[1, ..._]` against `[Nil, 1]`. A list is
+    matched positionally (`fold_match`), so a pattern element cannot skip a leading target element —
+    the port agrees (`spatial_matcher.rs:467-493`). AUDIT C48; `spec/conformance/match.tsv` row 19. -/
+theorem a_list_pattern_cannot_skip_a_target_element :
+    spatialMatch (oneExpr (.elist [nilPar, oneExpr (.ground (.int 1))] none))
+        (oneExpr (.elist [oneExpr (.ground (.int 1))] (some .wildcard))) = false := by
+  decide
+
 /-- The fuel is enough — stated as **saturation**: past `matchFuel`, more fuel changes nothing.
 
 Owed, and checked behaviourally meanwhile: a shortfall makes the matcher answer `false`, and the
-corpus reports that as a disagreement rather than passing silently (it did, twice: `refutable` was
-false for `@[]`/`[]` and `@Set(1, ..._)`/`Set(1, 2)` until the constant in `matchFuel` was fixed). -/
+corpus reports that as a disagreement rather than passing silently (it did, three times now: `refutable`
+was false for `@[]`/`[]` and `@Set(1, ..._)`/`Set(1, 2)` until the constant in `matchFuel` was fixed,
+and row 18 of `match.tsv` is the padded target the measure could not pay for). -/
 axiom fuel_saturation (target pattern : Par) :
     spatialMatchCore (matchFuel target pattern + 1) target pattern
       = spatialMatchCore (matchFuel target pattern) target pattern

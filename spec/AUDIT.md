@@ -2129,6 +2129,36 @@ port against the **reference document** rather than against itself.
   withdrawal keeps the validator active: `examples/pos-withdraw.rho` → `(true, Nil)`, the block's bond
   cache still lists the validator, and the chain keeps extending).
 
+- **C47 — the matcher's fuel was short on a shape the node matches, because the measure it was derived
+  from did not count an empty `Par`** (found 2026-09-23, Programme D unit 8, while *designing*
+  `fuel_saturation` rather than while testing; **the model's defect**, the port is right). The Lean
+  matcher carries explicit fuel so the kernel can reduce it (`decide` checks every corpus case against
+  the clauses). `matchFuel` was `2 * (parNodes target + parNodes pattern) + 4`, and `parNodes` of a
+  `Par` was its expression list's count — so a `Par` whose `exprs` field is empty counted **zero**
+  nodes, while the matcher spends a step walking past it whenever it sits in a collection the *search*
+  member is matching. `@Set(1, ..._)` against `Set(Nil, Nil, Nil, Nil, Nil, Nil, 1)` measured
+  `parNodes = 2` for both sides, so `matchFuel = 12`; the walk plus the descent needs 13. The model
+  answered **false** where the node answers **true** — an under-claim. Six `Nil`s is the boundary: at
+  five the old measure answered `true` too, which is why none of the 17 cases that shipped, none of them
+  padded, could have found it. Fixed by counting the `Par` itself (`parNodes (.mk …) = 1 + …`), kept by
+  `Match.lean`'s `the_walk_past_empty_pars_is_paid_for` and `match.tsv` case 18, and the `+1` turns out
+  to be exactly the term the induction needs: with it the element case of the budget is exactly tight.
+
+- **C48 — the spec over-claimed a match: the *searcher* was wired into the list arm** (found
+  2026-09-23, same unit, by the corpus case C47 added; **the model's defect**, the port is right). The
+  model's `matchListPar` has a branch that drops a target and looks further — a search for a *distinct*
+  counterpart anywhere in the target collection. That is the port's rule for **sets and maps**
+  (`list_match_single` → `find_matches`, a bipartite assignment) but **not** for lists or tuples, whose
+  arms are `fold_match`: strictly positional, heads paired and tails recursed, with the remainder taking
+  the tail (`rholang/src/matcher/spatial_matcher.rs:467-493`, `:496-501`;
+  `legacy/…/SpatialMatcher.scala:482,490`). So the model matched `@[1, ..._]` against `[Nil, 1]` — and
+  `@[1, 3, ..._]` against `[1, 2, 3]` — while the node matches neither; **measured** on the node through
+  the corpus consumer's own path, at `Nil`-padding 0, 1, 2 and 3. This is the direction the boundary
+  note said the corpus exists to catch: the spec claiming a receive fires when it does not. Fixed by
+  splitting the members — `matchListPos` for `.elist`/`.etuple`, `matchListPar` for `.eset`/`.emap` —
+  kept by `Match.lean`'s `a_list_pattern_cannot_skip_a_target_element` and `match.tsv` case 19, both
+  measured against the node.
+
 - **The class, recorded once, because it is the consolidation pass's whole justification: an axiom that
   is false is worse than one that is owed, because anything follows from it.** Nine axioms the pass
   removed were not merely unproved — they were false of the code or of the model that carried them, and
@@ -2189,6 +2219,8 @@ finding that no law covers, and it says why rather than leaving the gap to infer
 | C43 the merge's associativity was untested, under a name that says otherwise | 9 | `Merge.lean`'s `mergeChanges_assoc` (proved) **and** `property_tests.rs`'s `law9_state_change_combine_is_associative`, over arbitrary state changes including the join map; the misnamed `state_change.rs` test now says what it asserts |
 | C44 the matcher had no clause for a tuple, and the port has one | 5, 37 | `match.tsv` cases 15/16 (`@(1, 2)` against `(1, 2)` and against `(1, 2, 3)`) + `lean_match_corpus.rs`; the `ETuple` arm in `Match.lean`, and `modelledPar` on both sides of `concrete_matches_iff_eq`, whose old statement is refuted by `arithmetic_pattern_refutes_the_unrestricted_tie` |
 | C45 the search claimed a step for a join, and the rule fixed the counts the port computes differently | 38, 40 | `silence.tsv` case 13 (a join with one channel filled declares `false`, and the node agrees) + `lean_silence_corpus.rs`; the search's single-bind requirement, the constructors' `freeCount`/`bindCount`/channel parameters, and `takesStep_sound` — three extraction lemmas and `exists_redex_split` |
+| C47 the matcher's fuel was short: the measure counted an empty `Par` as zero nodes | 5, 37 | `match.tsv` case 18 (`@Set(1, ..._)` against `Set(Nil × 6, 1)`) + `lean_match_corpus.rs`; `the_walk_past_empty_pars_is_paid_for`, and `parNodes`'s doc comment carrying the counterexample |
+| C48 the spec over-claimed a match: the searcher was wired into the list and tuple arms | 5, 37 | `match.tsv` case 19 (`@[1, ..._]` against `[Nil, 1]`) + `lean_match_corpus.rs`; `a_list_pattern_cannot_skip_a_target_element`, and the split into `matchListPos` (lists, tuples) / `matchListPar` (sets, maps) |
 
 **The two rows that are not laws are the two worth keeping visible.** C37 is a *harness* finding —
 a measurement that was not a measurement — and no law would have caught it, because the thing that
