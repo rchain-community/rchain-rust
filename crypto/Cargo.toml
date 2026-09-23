@@ -19,3 +19,6 @@ ed25519-dalek = { version = "2", features = ["rand_core"] }
 crypto_box = "0.9"
 rand = "0.8"
 serde = { version = "1", features = ["derive"] }
+# `PrivateKey` zeroes its buffer on drop (AUDIT §12). MIT OR Apache-2.0, already in the lock
+# file as a transitive dependency of `k256`/`p256`.
+zeroize = "1"

@@ -2481,6 +2481,7 @@ dependencies = [
  "sha2",
  "sha3",
  "x509-cert",
+ "zeroize",
 ]
 
 [[package]]

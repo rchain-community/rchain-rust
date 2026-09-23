@@ -122,7 +122,7 @@ mod tests {
 
     #[test]
     fn verifies_signature_with_keypair() {
-        let (PrivateKey(sec), public_key) = Secp256k1.new_key_pair();
+        let (PrivateKey(ref sec), public_key) = Secp256k1.new_key_pair();
         let data = sha256::hash(b"testing");
         let sig = Secp256k1::sign_bytes(&data, &sec).expect("sign with valid secret key");
         assert!(Secp256k1::verify_bytes(&data, &sig, public_key.bytes()));
@@ -206,7 +206,7 @@ mod tests {
     #[test]
     fn normalize_signature_low_s_is_idempotent() {
         // A k256-produced DER signature is already low-S; re-normalizing is a no-op.
-        let (PrivateKey(sec), _pk) = Secp256k1.new_key_pair();
+        let (PrivateKey(ref sec), _pk) = Secp256k1.new_key_pair();
         let data = sha256::hash(b"idempotent");
         let der = Secp256k1::sign_bytes(&data, &sec).expect("sign with valid secret key");
         let once = normalize_signature_low_s("secp256k1", &der);

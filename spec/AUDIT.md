@@ -555,7 +555,17 @@ committed and pushed to `origin/dev`.
 - **`--validator-private-key` visible in `/proc/<pid>/cmdline`** — config design.
 - **Error-body echo** (`node/web/http.rs`) — mostly attacker-input reflection.
 - **Fixed-window rate limiter burst** (`shared/rate_limiter.rs`) — per-server, not per-source.
-- **Missing key zeroization / `Debug` on `PrivateKey`** — deferred hygiene.
+- **Key zeroization / `Debug` on `PrivateKey`** — **fixed** (was "deferred hygiene"). `PrivateKey`
+  implements `Debug` by hand and prints `PrivateKey(<redacted, N bytes>)` instead of the derived
+  output, which printed the raw secret — one `{:?}` in a log line, an error message or a test failure
+  was a leaked key — and it zeroes its buffer on `Drop` (`crypto/src/private_key.rs`). Both are
+  *mitigations and are documented as such*: `Clone` still copies the secret (23 call sites, audited and
+  left alone rather than threading ownership through the signing paths), the allocator may move the
+  buffer, and a zeroing write is not guaranteed to survive optimisation. What is removed is the silent
+  leak. The redaction is observable and so is pinned; zeroization is not, and has no test that would
+  be asserting something it cannot see. Adding `Drop` also surfaced two test sites that moved the key
+  bytes out of the value — the compiler refused them, which is the structural half of the same
+  hygiene.
 
 ### Verification
 
