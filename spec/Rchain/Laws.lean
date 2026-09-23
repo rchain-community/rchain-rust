@@ -155,13 +155,30 @@ def laws : List Law := [
     status := .provedModel,
     declarations := [`Rchain.sortPar_idempotent, `Rchain.sortPar_comm, `Rchain.sortPar,
       `Rchain.parMerge],
+    corpus := some "sort",
     rust := ["models/src/sorter.rs"],
     axioms := [],
     falsifiable := some "`sortPar_idempotent`/`sortPar_comm` are theorems; `spec/INVENTORY.md`'s Law 1 \
       claim of idempotence is falsified by any leaf type whose comparator is not a total order — see \
-      clause b, where exactly that is assumed rather than proved",
+      clause b, where exactly that is assumed rather than proved. The `sort` corpus is the tie: twelve \
+      pairwise verdicts, each `decide`d against the model's `cmpPar`, read back from the node by which \
+      element `sort_par` puts first (`rholang/tests/lean_sort_corpus.rs`)",
     note := "`sortPar_idempotent` is proved only *for* a comparator whose element laws hold; the \
-      element-law half is clause b, and it is axioms" },
+      element-law half is clause b, and it is axioms. **The `sort` corpus found a divergence on its \
+      first run, and it is not yet fixed** (2026-09-23): the model's comparators order by \
+      *declaration* order while the node sorts by its **score tree** \
+      (`models/src/sorter.rs`'s `sort_send`/`sort_expr` build `node_score(tag, children)` with the tags \
+      in `BOOL=1 < INT=2 < STRING=3 < ELIST=6 < ETUPLE=7 < ESET=8 < EMAP=9 < … < BOUND_VAR=50 < … < \
+      EVAR=100 < …`), and the two orders differ in at least two places the corpus already shows: \
+      **a send's field order** (the score compares *persistence* first — `sort_send`'s children are \
+      `[persistent, chan, data…, connective_use]` — while the model's `cmpSend` compares the channel \
+      first) and **the expression-class order** (the tags put the collections *before* vars and the \
+      arithmetic/boolean operators, while the model's declaration order puts them last). So the model's \
+      `sortPar` is not the node's `sort_par` for those inputs — a claim about the wrong function rather \
+      than a fork between nodes (every node sorts by the score tree). The fix is to align the \
+      comparators with the tags, which the proofs survive: `sortPar_idempotent`/`sortPar_comm` hold for \
+      any comparator, and `eq_iff`/`swap`/`lt_trans` are order-independent, so the twelve axioms' \
+      statements do not change" },
   { number := 1, clause := "b", layer := "Rholang",
     statement := "Each element comparator (`cmpPar`, `cmpSend`, …, `cmpConnective`) is a lawful total \
       order: `eq_iff`, `swap`, `lt_trans`",

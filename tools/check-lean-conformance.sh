@@ -144,6 +144,7 @@ if [[ -d "$ROOT/spec/conformance" ]]; then
       silence)  test_name="lean_silence_corpus";   crate="rchain-rholang" ;;
       store)    test_name="lean_store_corpus";     crate="rchain-rholang" ;;
       c21)      test_name="lean_c21_corpus";       crate="rchain-rholang" ;;
+      sort)     test_name="lean_sort_corpus";      crate="rchain-rholang" ;;
       protocol) test_name="lean_protocol_corpus";  crate="rchain-rholang" ;;
       envelope) test_name="lean_envelope_corpus";  crate="rchain-node" ;;
       lex)      test_name="lean_lex_corpus";       crate="rchain-node" ;;

@@ -719,6 +719,132 @@ reports; nothing about the meaning is the consumer's to decide. -/
 def lexLine (l : Lexeme) : String :=
   "lex\t" ++ l.spelling ++ "\t" ++ l.token ++ "\t" ++ l.expected ++ "\t" ++ l.sample
 
+/-! ## Law 1 — the canonical order, pairwise (the `sort` layer)
+
+Every state hash in the system is `sortPar`'s output, and until this layer existed **nothing tied that
+order to the node**: law 1a was `proved-model` over a model a human keeps in sync, and law 1b's
+comparator laws are `owed` (the twelve axioms in `Rchain/Sort.lean`).
+
+**The first design for this layer was vacuous, and finding that out is part of its content.** A corpus of
+"the sorted spelling of this par" cannot tie a comparator at all: the AST's fields are *canonical* values
+(`Sorted<Par>`), so both the node's sorted output and the expected spelling get re-sorted by the *same*
+comparator before anything is compared — any total order satisfies `sortPar src = parse sorted`. That is
+what canonicalization *means*: it is the quotient by the comparator, and a quotient cannot distinguish
+two comparators that induce the same equality. The tie has to be **pairwise**, on structures small
+enough that canonicalization is the identity — which is what this layer is: each case is a *pair* of
+terms and the verdict the model's `cmpPar` gives them, so the node's `Ord` on the same pair is compared
+against the model's answer, with nothing in between to hide a disagreement.
+
+The cases pin the arms a port can get wrong *silently* — the leaf arms, the **ground constructor order**
+(`bool < int < str`), the **collection constructor order** (`elist < etuple < eset`), list arity, an
+arithmetic node's operand order, and the send channel arm — and the layer's own non-degeneracy check
+requires **all three verdicts** to appear, so a table that answered `lt` everywhere could not pass. -/
+
+/-- The number of cases the `sort` layer carries. -/
+def sortCaseCount : Nat := 12
+
+/-- A law-1 case: two terms (as rholang spells them, so the Rust consumer reads the same text) and the
+    verdict the model's `cmpPar` must give the pair. -/
+structure SortCase where
+  /-- The left term, as rholang spells it — a program, so the node's parser accepts it. -/
+  left : String
+  /-- The right term. -/
+  right : String
+  /-- The model's view of the left term. -/
+  leftPar : Par
+  /-- The model's view of the right term. -/
+  rightPar : Par
+  /-- What `cmpPar left right` must answer: `lt`, `eq` or `gt`. -/
+  verdict : String
+
+/-- `@"<channel>"!(<datum>)` as a `Par`: one send on a quoted channel. -/
+def sendPar (channel : String) (datum : Par) : Par :=
+  Par.mk [Send.mk (strPar ("\"" ++ channel ++ "\"")) [datum] false] [] [] [] [] [] [] []
+
+/-- A list expression, as a `Par`. -/
+def listExpr (ps : List Par) : Par := one (.elist ps none)
+
+/-- A set expression, as a `Par`. -/
+def setExpr (ps : List Par) : Par := one (.eset ps none)
+
+/-- A tuple expression, as a `Par`. -/
+def tupleExpr (ps : List Par) : Par := one (.etuple ps)
+
+/-- An integer, as a `Par`. -/
+def intExpr (n : Int) : Par := one (.ground (.int n))
+
+/-- A boolean, as a `Par`. -/
+def boolExpr (b : Bool) : Par := one (.ground (.bool b))
+
+/-- `a + b`, as a `Par`. -/
+def plusExpr (a b : Par) : Par := one (.eplus a b)
+
+/-- The model's verdict for a pair, spelled as the corpus spells it. -/
+def sortVerdict (p q : Par) : String :=
+  match cmpPar p q with
+  | .lt => "lt"
+  | .eq => "eq"
+  | .gt => "gt"
+
+/-- One case holds when the model's verdict for the pair is the verdict the row states. -/
+def sortHolds (c : SortCase) : Bool := sortVerdict c.leftPar c.rightPar == c.verdict
+
+/-- The cases: the leaf arms, the two constructor orders, list arity, an arithmetic node, a send's
+    channel, and the three verdicts between them. -/
+def sortCases : List SortCase :=
+  [ -- 1-3. integers: all three verdicts, so a table that answered one of them everywhere fails.
+    { left := "@\"c\"!(1)", right := "@\"c\"!(2)", leftPar := sendPar "c" (intExpr 1),
+      rightPar := sendPar "c" (intExpr 2), verdict := "lt" },
+    { left := "@\"c\"!(2)", right := "@\"c\"!(1)", leftPar := sendPar "c" (intExpr 2),
+      rightPar := sendPar "c" (intExpr 1), verdict := "gt" },
+    { left := "@\"c\"!(2)", right := "@\"c\"!(2)", leftPar := sendPar "c" (intExpr 2),
+      rightPar := sendPar "c" (intExpr 2), verdict := "eq" },
+    -- 4-6. **the ground constructor order** (`bool < int < str`) — nothing else pins it, and a port
+    --      that ordered grounds by their serialized bytes would put the string first.
+    { left := "@\"c\"!(1)", right := "@\"c\"!(\"a\")", leftPar := sendPar "c" (intExpr 1),
+      rightPar := sendPar "c" (strPar "\"a\""), verdict := "lt" },
+    { left := "@\"c\"!(\"a\")", right := "@\"c\"!(true)", leftPar := sendPar "c" (strPar "\"a\""),
+      rightPar := sendPar "c" (boolExpr true), verdict := "gt" },
+    { left := "@\"c\"!(true)", right := "@\"c\"!(1)", leftPar := sendPar "c" (boolExpr true),
+      rightPar := sendPar "c" (intExpr 1), verdict := "lt" },
+    -- 7-9. **the collection constructor order** (`elist < etuple < eset`) and list arity.
+    { left := "@\"c\"!([1])", right := "@\"c\"!(Set(1))", leftPar := sendPar "c" (listExpr [intExpr 1]),
+      rightPar := sendPar "c" (setExpr [intExpr 1]), verdict := "lt" },
+    --    (`(1, 2)`, not `(1)`: a parenthesised *single* expression is a group, not a one-element
+    --    tuple — the corpus's own first run caught that spelling, because the node parsed `(1)` as the
+    --    integer `1` and answered `gt` where the row said `lt`.)
+    { left := "@\"c\"!([1])", right := "@\"c\"!((1, 2))", leftPar := sendPar "c" (listExpr [intExpr 1]),
+      rightPar := sendPar "c" (tupleExpr [intExpr 1, intExpr 2]), verdict := "lt" },
+    { left := "@\"c\"!([1])", right := "@\"c\"!([1, 2])",
+      leftPar := sendPar "c" (listExpr [intExpr 1]),
+      rightPar := sendPar "c" (listExpr [intExpr 1, intExpr 2]), verdict := "lt" },
+    -- 10-11. an arithmetic node: the operand order decides, and a ground sorts before it.
+    { left := "@\"c\"!(1 + 2)", right := "@\"c\"!(1 + 3)",
+      leftPar := sendPar "c" (plusExpr (intExpr 1) (intExpr 2)),
+      rightPar := sendPar "c" (plusExpr (intExpr 1) (intExpr 3)), verdict := "lt" },
+    { left := "@\"c\"!(1)", right := "@\"c\"!(1 + 2)", leftPar := sendPar "c" (intExpr 1),
+      rightPar := sendPar "c" (plusExpr (intExpr 1) (intExpr 2)), verdict := "lt" },
+    -- 12. the send channel arm.
+    { left := "@\"a\"!(1)", right := "@\"b\"!(1)", leftPar := sendPar "a" (intExpr 1),
+      rightPar := sendPar "b" (intExpr 1), verdict := "lt" } ]
+
+/-- Every case holds of the model — `cmpPar` gives the verdict the row states. `native_decide`, for the
+    reason the `c21` checker uses it: the comparator's reduction over a term is too deep for the kernel
+    and fast for the compiler. -/
+theorem sortCases_decide : sortCases.all sortHolds = true := by native_decide
+
+/-- **The layer is not degenerate**: all three verdicts appear, so a table that answered `lt` (or any
+    single ordering) everywhere could not pass — the non-vacuity ratchet applied to this corpus. -/
+theorem sortCases_verdicts :
+    (sortCases.map (fun c => c.verdict)).eraseDups.length = 3 := by decide
+
+/-- The layer carries exactly `sortCaseCount` cases. -/
+theorem sortCases_length : sortCases.length = sortCaseCount := by decide
+
+/-- One `sort` corpus line: layer, the two terms, and the verdict the node's comparator must give them. -/
+def sortLine (c : SortCase) : String :=
+  "sort\t" ++ c.left ++ "\t" ++ c.right ++ "\t" ++ c.verdict
+
 end Corpus
 end Rchain
 
@@ -730,7 +856,7 @@ def main (args : List String) : IO UInt32 := do
   let want :=
     (args.find? (fun a => a == "flags" || a == "match" || a == "silence" || a == "store"
       || a == "c21" || a == "protocol" || a == "json" || a == "envelope"
-      || a == "lex")).getD "flags"
+      || a == "lex" || a == "sort")).getD "flags"
   let (lines, count) :=
     if want == "c21" then (Corpus.c21Cases.map Corpus.c21Line, Corpus.c21CaseCount)
     else if want == "match" then (Corpus.matchCases.map Corpus.matchLine, Corpus.matchCaseCount)
@@ -744,6 +870,8 @@ def main (args : List String) : IO UInt32 := do
       (Corpus.jsonCases.map Corpus.jsonLine, Corpus.jsonCaseCount)
     else if want == "envelope" then
       (envelopeCatalog.map Corpus.envelopeLine, envelopeCaseCount)
+    else if want == "sort" then
+      (Corpus.sortCases.map Corpus.sortLine, Corpus.sortCaseCount)
     else if want == "lex" then
       (lexemes.map Corpus.lexLine, lexemeCount)
     else (Corpus.flagCases.map Corpus.flagLine, Corpus.flagCaseCount)
