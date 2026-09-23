@@ -834,6 +834,20 @@ so it needs the `cmpExpr` arm lemmas — `rfl`-proved, as `Json.lean`'s are — 
 five shapes (grounds / the four collections / a var / monadic / binary). That is the first piece to do
 next time, and it pays twice: the same arm lemmas are what `cmpExpr`'s `eq_iff` and `swap` need.
 
+**The recorded blocker, measured (2026-09-23).** The note above says `simp`/`rw` "hit recursion depth" on
+the 21-constructor function. Probed, it is worse than that: the straight attempt at `cmpExpr`'s `eq_iff`
+
+    cases s <;> cases t <;> simp [cmpExpr, cmpGround_eq_iff, cmpVar_eq_iff, cmpPar_eq_iff,
+      cmpListPar_eq_iff, cmpOptionVar, cmpListParPair_eq_iff]
+
+with `set_option maxRecDepth 100000` ends in **`Stack overflow detected. Aborting.`** — not a limit the
+tactic's option can raise, because the blow-up is in the native stack. So the arm lemmas are not a
+convenience here, they are the only route: with `cmpExpr` never unfolded, `simp` cannot recurse. The
+volume that follows is the 21×20 cross-constructor cases, which no single `rfl` lemma covers (the
+fallback arms make each pair a *different* reduction), and that is why this stays time-boxed rather than
+being the pass's objective — the `sort` corpus already pins the order against the node, so the residue is
+"axioms that are tied", not "an order nothing checks").
+
 ### What the score order actually is, and where this model still differs (extracted, then aligned, 2026-09-23)
 
 The `sort` corpus (`spec/conformance/sort.tsv` + `rholang/tests/lean_sort_corpus.rs`) ties the two
