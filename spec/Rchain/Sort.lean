@@ -10,10 +10,12 @@ Mirrors `models/src/main/scala/coop/rchain/models/rholang/sorter/ScoreTree.scala
 `ordering.scala`: `Par` (and `ESet`/`EMap`) are canonicalized to a total order so that structural
 equality of the sorted form *is* process equality up to α.
 
-The total order is a hand-rolled structural `cmpPar` (constructor declaration order, lexicographic
-via `lex`), order-isomorphic to the Scala `ScoreTree` order. It is defined by **direct mutual
-recursion** (each list field has its own comparator, so the recursion is fully first-order), which
-Lean accepts with a `sizeOf` measure.
+The total order is a hand-rolled structural `cmpPar`, lexicographic via `lex`, in the node's
+**score-tag** order — the order `models/src/sorter.rs`'s `node_score(tag, children)` trees sort by,
+which is *not* the port's field or declaration order (the `sort` corpus found four places where the
+two disagreed; they are aligned and pinned, and the note above the comparator family lists them and
+the boundary that remains). It is defined by **direct mutual recursion** (each list field has its own
+comparator, so the recursion is fully first-order), which Lean accepts with a `sizeOf` measure.
 
 Law 1 is `sortPar (sortPar p) = sortPar p` (idempotence) and
 `sortPar (parMerge p q) = sortPar (parMerge q p)` (commutativity), proven from the total-order
@@ -26,12 +28,50 @@ open Comparator
 
 /-! ## Leaf comparators (`Ground`, `Var`) -/
 
-/-- Structural comparison of `Ground`, constructor-declaration order (`bool < int < str < uri <
-bytes`). Every constructor but the last needs the `.lt`/`.gt` pair after its own arm: the `.lt` arm
-answers "this constructor against anything later", the `.gt` arm "anything earlier against this one",
-and both are reached only when no earlier group already decided the pair. -/
+/-- `Bool`, compared the way the node's score tree compares it: `sort_gbool` (`models/src/sorter.rs`)
+scores `true` as `0` and `false` as `1`, so **`true` sorts before `false`** — the reverse of
+`linearOrderComparator Bool`. Pinned by the `sort` corpus (`@"c"!(false)` vs `@"c"!(true)` → `gt`,
+`spec/conformance/sort.tsv`). -/
+def cmpBool : Bool → Bool → Ordering
+  | true, true => .eq
+  | true, false => .lt
+  | false, true => .gt
+  | false, false => .eq
+
+/-- `cmpBool` is a lawful comparator. -/
+def boolComparator : Comparator Bool where
+  cmp := cmpBool
+  eq_iff := by intro a b; cases a <;> cases b <;> decide
+  swap := by intro a b; cases a <;> cases b <;> rfl
+  lt_trans := by
+    intro a b c h1 h2
+    cases a <;> cases b <;> cases c <;> simp_all [cmpBool]
+
+/-! These three are deliberately **not** `@[simp]`: a `swap` lemma with both arguments as variables
+    (`cmpBool b a = (cmpBool a b).swap`) makes `simp` loop when it unfolds `cmpGround` — tried, and
+    `simp` hit `maxRecDepth`. The `eq_iff`/`swap` lemmas for `Ground`/`Var` above are `@[simp]` for
+    the same reason only because they are declared *after* the instance whose proof would loop on
+    them. -/
+theorem cmpBool_eq_iff (a b : Bool) : cmpBool a b = Ordering.eq ↔ a = b := boolComparator.eq_iff
+theorem cmpBool_swap (a b : Bool) : cmpBool b a = Ordering.swap (cmpBool a b) := boolComparator.swap
+theorem cmpBool_lt_trans (a b c : Bool) (h1 : cmpBool a b = Ordering.lt) (h2 : cmpBool b c = Ordering.lt) :
+    cmpBool a c = Ordering.lt := boolComparator.lt_trans h1 h2
+
+/-- Structural comparison of `Ground`, in the node's **score-tag** order (`bool < int < str < uri`,
+then `bytes` — see the tag caveat below). Every constructor but the last needs the `.lt`/`.gt` pair
+after its own arm: the `.lt` arm answers "this constructor against anything later", the `.gt` arm
+"anything earlier against this one", and both are reached only when no earlier group already decided
+the pair.
+
+**`bytes` is the one group whose position this model does not get right.** The node has no `GBytes`
+ground: a byte array is `Expr::GByteArray` with tag `116` (`models/src/sorter.rs`), which sorts
+*after* every var and every arithmetic/comparison/logical operator (`EVAR=100 … ENOT=112, EAND=113,
+EOR=114`) and *before* `EMATCHES=118` and `EMOD=122` — while here `Ground.bytes` sits at the end of
+the ground block, before `elist`(6) and hence before every operator. Aligning it is not a reorder but
+a split of the `Expr.ground` group in `cmpExpr`, so it is recorded in the boundary list in the note
+above the comparator family rather than silently left. -/
 def cmpGround : Ground → Ground → Ordering
-  | .bool b, .bool b' => _root_.cmp b b'
+  | .bool b, .bool b' => cmpBool b b'
   | .bool _, _ => .lt | _, .bool _ => .gt
   | .int n, .int n' => _root_.cmp n n'
   | .int _, _ => .lt | _, .int _ => .gt
@@ -64,6 +104,7 @@ def groundComparator : Comparator Ground where
   eq_iff := by
     intro a b
     cases a <;> cases b <;> simp [cmpGround]
+    case bool.bool x y => exact cmpBool_eq_iff x y
     all_goals first
       | exact cmp_eq_eq_iff
       | exact (linearOrderComparator Int).eq_iff
@@ -71,14 +112,15 @@ def groundComparator : Comparator Ground where
   swap := by
     intro a b
     cases a <;> cases b <;> simp [cmpGround]
+    case bool.bool x y => exact cmpBool_swap x y
     all_goals first
       | rfl
-      | exact (linearOrderComparator Bool).swap
       | exact (linearOrderComparator Int).swap
       | exact (listComparator (linearOrderComparator Nat)).swap
   lt_trans := by
     intro a b c h1 h2
     cases a <;> cases b <;> cases c <;> simp [cmpGround] at h1 h2 ⊢
+    case bool.bool.bool x y z => exact cmpBool_lt_trans x y z h1 h2
     all_goals first
       | exact _root_.lt_trans h1 h2
       | exact (listComparator (linearOrderComparator Nat)).lt_trans h1 h2
@@ -111,12 +153,12 @@ def varComparator : Comparator Var where
 mutual
   def cmpPar : Par → Par → Ordering
     | Par.mk s r n e m u b c, Par.mk s' r' n' e' m' u' b' c' =>
-        lex (cmpListSend s s') (lex (cmpListReceive r r') (lex (cmpListNew n n')
-        (lex (cmpListExpr e e') (lex (cmpListMatch m m') (lex (cmpListGUnforgeable u u')
-        (lex (cmpListBundle b b') (cmpListConnective c c')))))))
+        lex (cmpListSend s s') (lex (cmpListReceive r r') (lex (cmpListExpr e e')
+        (lex (cmpListNew n n') (lex (cmpListMatch m m') (lex (cmpListBundle b b')
+        (lex (cmpListConnective c c') (cmpListGUnforgeable u u')))))))
   termination_by p q => sizeOf p + sizeOf q
   def cmpSend : Send → Send → Ordering
-    | Send.mk c d p, Send.mk c' d' p' => lex (cmpPar c c') (lex (cmpListPar d d') (_root_.cmp p p'))
+    | Send.mk c d p, Send.mk c' d' p' => lex (_root_.cmp p p') (lex (cmpPar c c') (cmpListPar d d'))
   termination_by s t => sizeOf s + sizeOf t
   def cmpReceiveBind : ReceiveBind → ReceiveBind → Ordering
     | ReceiveBind.mk ps s n, ReceiveBind.mk ps' s' n' => lex (cmpListPar ps ps') (lex (cmpPar s s') (_root_.cmp n n'))
@@ -133,25 +175,36 @@ mutual
   def cmpMatch : Match → Match → Ordering
     | Match.mk t cs, Match.mk t' cs' => lex (cmpPar t t') (cmpListMatchCase cs cs')
   termination_by s t => sizeOf s + sizeOf t
+  /-- `Expr`, in the node's **score-tag** order (`models/src/sorter.rs`): the four grounds (`bool 1`,
+      `int 2`, `str 3`, `uri 4`), then the collections `elist 6 < etuple 7 < eset 8 < emap 9`, then
+      the vars and the operators `evar 100 < eneg 101 < emult 102 < ediv 103 < eplus 104 <
+      eminus 105 < elt 106 < ele 107 < egt 108 < ege 109 < eeq 110 < eneq 111 < enot 112 <
+      eand 113 < eor 114 < emod 122`. (`Ground.bytes` is the exception — see `cmpGround`.) The arms
+      are in that order because the `.lt`/`.gt` fallback of a group is only reached when no earlier
+      group matched, which is what makes the arm order *be* the group order. -/
   def cmpExpr : Expr → Expr → Ordering
     | Expr.ground g, Expr.ground g' => cmpGround g g'
     | Expr.ground _, _ => .lt | _, Expr.ground _ => .gt
+    | Expr.elist ps r, Expr.elist ps' r' => lex (cmpListPar ps ps') (cmpOptionVar r r')
+    | Expr.elist _ _, _ => .lt | _, Expr.elist _ _ => .gt
+    | Expr.etuple ps, Expr.etuple ps' => cmpListPar ps ps'
+    | Expr.etuple _, _ => .lt | _, Expr.etuple _ => .gt
+    | Expr.eset ps r, Expr.eset ps' r' => lex (cmpListPar ps ps') (cmpOptionVar r r')
+    | Expr.eset _ _, _ => .lt | _, Expr.eset _ _ => .gt
+    | Expr.emap kvs r, Expr.emap kvs' r' => lex (cmpListParPair kvs kvs') (cmpOptionVar r r')
+    | Expr.emap _ _, _ => .lt | _, Expr.emap _ _ => .gt
     | Expr.evar v, Expr.evar v' => cmpVar v v'
     | Expr.evar _, _ => .lt | _, Expr.evar _ => .gt
     | Expr.eneg p, Expr.eneg p' => cmpPar p p'
     | Expr.eneg _, _ => .lt | _, Expr.eneg _ => .gt
-    | Expr.enot p, Expr.enot p' => cmpPar p p'
-    | Expr.enot _, _ => .lt | _, Expr.enot _ => .gt
-    | Expr.eplus p q, Expr.eplus p' q' => lex (cmpPar p p') (cmpPar q q')
-    | Expr.eplus _ _, _ => .lt | _, Expr.eplus _ _ => .gt
-    | Expr.eminus p q, Expr.eminus p' q' => lex (cmpPar p p') (cmpPar q q')
-    | Expr.eminus _ _, _ => .lt | _, Expr.eminus _ _ => .gt
     | Expr.emult p q, Expr.emult p' q' => lex (cmpPar p p') (cmpPar q q')
     | Expr.emult _ _, _ => .lt | _, Expr.emult _ _ => .gt
     | Expr.ediv p q, Expr.ediv p' q' => lex (cmpPar p p') (cmpPar q q')
     | Expr.ediv _ _, _ => .lt | _, Expr.ediv _ _ => .gt
-    | Expr.emod p q, Expr.emod p' q' => lex (cmpPar p p') (cmpPar q q')
-    | Expr.emod _ _, _ => .lt | _, Expr.emod _ _ => .gt
+    | Expr.eplus p q, Expr.eplus p' q' => lex (cmpPar p p') (cmpPar q q')
+    | Expr.eplus _ _, _ => .lt | _, Expr.eplus _ _ => .gt
+    | Expr.eminus p q, Expr.eminus p' q' => lex (cmpPar p p') (cmpPar q q')
+    | Expr.eminus _ _, _ => .lt | _, Expr.eminus _ _ => .gt
     | Expr.elt p q, Expr.elt p' q' => lex (cmpPar p p') (cmpPar q q')
     | Expr.elt _ _, _ => .lt | _, Expr.elt _ _ => .gt
     | Expr.ele p q, Expr.ele p' q' => lex (cmpPar p p') (cmpPar q q')
@@ -164,17 +217,13 @@ mutual
     | Expr.eeq _ _, _ => .lt | _, Expr.eeq _ _ => .gt
     | Expr.eneq p q, Expr.eneq p' q' => lex (cmpPar p p') (cmpPar q q')
     | Expr.eneq _ _, _ => .lt | _, Expr.eneq _ _ => .gt
+    | Expr.enot p, Expr.enot p' => cmpPar p p'
+    | Expr.enot _, _ => .lt | _, Expr.enot _ => .gt
     | Expr.eand p q, Expr.eand p' q' => lex (cmpPar p p') (cmpPar q q')
     | Expr.eand _ _, _ => .lt | _, Expr.eand _ _ => .gt
     | Expr.eor p q, Expr.eor p' q' => lex (cmpPar p p') (cmpPar q q')
     | Expr.eor _ _, _ => .lt | _, Expr.eor _ _ => .gt
-    | Expr.elist ps r, Expr.elist ps' r' => lex (cmpListPar ps ps') (cmpOptionVar r r')
-    | Expr.elist _ _, _ => .lt | _, Expr.elist _ _ => .gt
-    | Expr.etuple ps, Expr.etuple ps' => cmpListPar ps ps'
-    | Expr.etuple _, _ => .lt | _, Expr.etuple _ => .gt
-    | Expr.eset ps r, Expr.eset ps' r' => lex (cmpListPar ps ps') (cmpOptionVar r r')
-    | Expr.eset _ _, _ => .lt | _, Expr.eset _ _ => .gt
-    | Expr.emap kvs r, Expr.emap kvs' r' => lex (cmpListParPair kvs kvs') (cmpOptionVar r r')
+    | Expr.emod p q, Expr.emod p' q' => lex (cmpPar p p') (cmpPar q q')
   termination_by s t => sizeOf s + sizeOf t
   def cmpBundle : Bundle → Bundle → Ordering
     | Bundle.mk b w r, Bundle.mk b' w' r' => lex (cmpPar b b') (lex (_root_.cmp w w') (_root_.cmp r r'))
@@ -278,14 +327,18 @@ mutual
         have hu := cmpListGUnforgeable_eq_iff u u'
         have hb := cmpListBundle_eq_iff b b'
         have hc := cmpListConnective_eq_iff c c'
-        simp [cmpPar, lex_eq_iff, hs, hr, hn, he, hm, hu, hb, hc]
+        -- `tauto` at the end because the comparator's field order is the node's (`persistent` first
+        -- for a `Send`, `exprs` before `news` … for a `Par`), while `Par.mk`/`Send.mk` equality
+        -- decomposes in *declaration* order: the conjunction needs reordering, which `simp` will not
+        -- do on its own.
+        simp [cmpPar, lex_eq_iff, hs, hr, hn, he, hm, hu, hb, hc] <;> tauto
   termination_by p => sizeOf p
 
   theorem cmpSend_eq_iff : ∀ s : Send, ∀ t : Send, cmpSend s t = Ordering.eq ↔ s = t
     | Send.mk c d p, Send.mk c' d' p' => by
         have hc := cmpPar_eq_iff c c'
         have hd := cmpListPar_eq_iff d d'
-        simp [cmpSend, lex_eq_iff, hc, hd, cmp_eq_eq_iff]
+        simp [cmpSend, lex_eq_iff, hc, hd, cmp_eq_eq_iff] <;> tauto
   termination_by s => sizeOf s
 
   theorem cmpReceiveBind_eq_iff : ∀ s : ReceiveBind, ∀ t : ReceiveBind, cmpReceiveBind s t = Ordering.eq ↔ s = t
@@ -737,36 +790,42 @@ That is a multi-unit job (the family's definitions, the `sortX_*` lemmas that me
 re-emission) and the register will not let it land half-done: the axiom-accounting check fails if a row
 cites an axiom that is gone, so each replacement and its rows move together.
 
-### What the score order actually is, and where this model differs (extracted 2026-09-23)
+### What the score order actually is, and where this model still differs (extracted, then aligned, 2026-09-23)
 
 The `sort` corpus (`spec/conformance/sort.tsv` + `rholang/tests/lean_sort_corpus.rs`) ties the two
-orders pairwise, and reading `models/src/sorter.rs`'s `sort_*` functions against this file gives the
-scoped divergence. **The model's comparators are an order on a *coarser* algebra**, so the alignment is
-partial by construction; what can be aligned is listed first.
+orders pairwise, and reading `models/src/sorter.rs`'s `sort_*` functions against this file gave the
+scoped divergence. **Four structures were aligned to the node's score tags and are pinned by corpus
+rows 13–19** (each verdict was *observed* from the node — the Rust consumer's diagnostic read it off
+`sort_pars` — and the model was then corrected to it, not the other way round):
 
-**Alignable and pinnable by a corpus row** (each verdict below was *observed* from the node, not read):
-
-| where | the node's order | this model's | pinned by |
+| where | the node's order (now this model's) | what it was | pinned by |
 |---|---|---|---|
 | `Send` | `persistent, chan, data…, connective_used` | `chan, data, persist` | `@"a"!!(1)` vs `@"b"!(1)` → **gt** |
-| `Par` | `sends, receives, exprs, news, matches, bundles, connectives, unforgeables` | `sends, receives, news, exprs, matches, unforgeables, bundles, connectives` | `new x in { Nil } \| 1` vs `[1]` → **lt** |
-| `Expr` classes | tags: grounds(1-4) < `elist`(6) < `etuple`(7) < `eset`(8) < `emap`(9) < vars(50-52) < `evar`(100) < `eneg`(101) < `emult`(102) < `ediv`(103) < `eplus`(104) < `eminus`(105) < `elt`(106) < `ele`(107) < `egt`(108) < `ege`(109) < `eeq`(110) < `eneq`(111) < `enot`(112) < `emod`(122) | declaration order: grounds, `evar`, `eneg`, `enot`, `eplus`…`emod`, `elist`…`emap` | `[1]` vs `1 + 2` → **lt**; `1 * 2` vs `1 + 2` → **lt**; `1 - 2` vs `1 * 2` → **gt** |
-| `Ground.bool` | `true` scores 0, `false` 1 — **false sorts after true** | `linearOrderComparator Bool` (false first) | `false` vs `true` → **gt** |
+| `Par` | `sends, receives, exprs, news, matches, bundles, connectives, unforgeables` | news before exprs, unforgeables before bundles | `new x in { Nil } \| 1` vs `[1]` → **lt** (and its reverse → **gt**) |
+| `Expr` classes | tags: grounds(1-4) < `elist`(6) < `etuple`(7) < `eset`(8) < `emap`(9) < vars(50-52) < `evar`(100) < `eneg`(101) < `emult`(102) < `ediv`(103) < `eplus`(104) < `eminus`(105) < `elt`(106) < `ele`(107) < `egt`(108) < `ege`(109) < `eeq`(110) < `eneq`(111) < `enot`(112) < `eand`(113) < `eor`(114) < `emod`(122) | declaration order: grounds, `evar`, `eneg`, `enot`, `eplus`…`emod`, `elist`…`emap` | `[1]` vs `1 + 2` → **lt**; `1 * 2` vs `1 + 2` → **lt**; `1 - 2` vs `1 * 2` → **gt** |
+| `Ground.bool` | `true` scores 0, `false` 1 — **`true` sorts first** (`cmpBool`) | `linearOrderComparator Bool` (false first) | `false` vs `true` → **gt** |
 
-**Not alignable without extending the model's algebra** (the boundary, stated rather than fixed):
+Each row is a falsifier, checked rather than assumed: restoring the old order (or flipping one
+polarity) stops `Rchain.Corpus`'s `sortCases_decide` from compiling and the runtime reporter names the
+row — done for all four before they were believed.
+
+**The model's comparators are still an order on a *coarser* algebra** — 21 `Expr` constructors against
+the node's 33 — so the alignment is partial by construction. The boundary, stated rather than fixed:
 `Receive`'s `persistent, peek` first and its `bind_count` child; `ReceiveBind`'s `source` first with
 `free_count` **dropped from the score**; `New`'s `uri` (sorted) and `injections` (key-sorted) children;
 `Bundle`'s flags folded into the tag; `EList`/`ESet`/`EMap`'s `remainder` **before** the elements (and a
 list with no remainder scoring `-1`, *before* `ABSENT = 0`); `MatchCase`/`Match`/`EMethod`'s
 `connective_used`; `Var`'s `Empty`(0); `GUnforgeable`'s `gDeployerId`(10) **before** `gDeployId`(11) —
 the reverse of the port's own enum order; `Connective`'s tags (400-409). And twelve of the node's 33
-`Expr` constructors — `GByteArray`(116), `EMethod`(115), `EMatches`(118), `EPercentPercent`(119),
-`EPlusPlus`(120), `EMinusMinus`(121), `EShortAnd`(123), `EShortOr`(124), `GBigInt`(13) and the rest —
-**do not exist in this model at all**, so a term containing one cannot be compared here. The corpus
-cannot carry rows for those either: `1 && 2` parses to a method call, not to `eand`, which is why the
-three operator-spelling probes below the corpus stay probes.
-
-Aligning the four alignable rows is the next unit; each has its row already, so the corpus is the test.
+`Expr` constructors — `EMethod`(115), `EMatches`(118), `EPercentPercent`(119), `EPlusPlus`(120),
+`EMinusMinus`(121), `EShortAnd`(123), `EShortOr`(124), `GBigInt`(13), `GByteArray`(116) and the rest —
+**do not exist in this model at all**, so a term containing one cannot be compared here; nor can the
+corpus carry such a row, since `1 && 2` parses to a method call rather than to `eand` and `1 %% 2` to
+`EPercentPercent`. `GByteArray` is the sharp case: the model *has* the constructor (`Ground.bytes`) but
+at the wrong tag — the node scores it 116, after every operator — and it cannot be pinned either way,
+because the node's front end has no byte-array literal (`@"c"!(b"a")` is a `SyntaxError`), so the term
+is unspellable rather than merely mis-scored. `Ground.bytes`'s position is therefore left as the one
+known, unpinnable divergence, and `cmpGround`'s doc comment says so.
 -/
 
 axiom cmpPar_lt_trans (p q r : Par) : cmpPar p q = Ordering.lt → cmpPar q r = Ordering.lt → cmpPar p r = Ordering.lt

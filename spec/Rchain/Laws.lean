@@ -160,32 +160,36 @@ def laws : List Law := [
     axioms := [],
     falsifiable := some "`sortPar_idempotent`/`sortPar_comm` are theorems; `spec/INVENTORY.md`'s Law 1 \
       claim of idempotence is falsified by any leaf type whose comparator is not a total order — see \
-      clause b, where exactly that is assumed rather than proved. The `sort` corpus is the tie: twelve \
+      clause b, where exactly that is assumed rather than proved. The `sort` corpus is the tie: nineteen \
       pairwise verdicts, each `decide`d against the model's `cmpPar`, read back from the node by which \
       element `sort_par` puts first (`rholang/tests/lean_sort_corpus.rs`)",
     note := "`sortPar_idempotent` is proved only *for* a comparator whose element laws hold; the \
       element-law half is clause b, and it is axioms. **The `sort` corpus found a divergence on its \
-      first run, and it is not yet fixed** (2026-09-23): the model's comparators order by \
+      first run, and it is now aligned and pinned** (2026-09-23): the model's comparators ordered by \
       *declaration* order while the node sorts by its **score tree** \
       (`models/src/sorter.rs`'s `sort_send`/`sort_expr` build `node_score(tag, children)` with the tags \
       in `BOOL=1 < INT=2 < STRING=3 < ELIST=6 < ETUPLE=7 < ESET=8 < EMAP=9 < … < BOUND_VAR=50 < … < \
-      EVAR=100 < …`), and a reading of every `sort_*` against this model's comparators shows the \
-      divergence is **across eleven types**, not two — with the model ordering a *coarser* algebra \
-      (21 `Expr` constructors against the node's 33, no `EMethod`/`GByteArray`/`EShortAnd`/`GBigInt`, no \
-      `New` uri/injections, no connective tags). Four places are **alignable and pinned by a corpus row, \
-      each verdict observed from the node rather than read**: a send's field order (`persistent` first — \
+      EVAR=100 < …`), and a reading of every `sort_*` against the model showed the divergence across \
+      **eleven types** rather than the two the corpus first exhibited. Four structures were reordered to \
+      the tags and are pinned by corpus rows 13–19, each verdict *observed* from the node (via \
+      `sort_pars`) and the model corrected to it: a send's field order (`persistent` first — \
       `@\"a\"!!(1)` vs `@\"b\"!(1)` → `gt`), the par's own field order (`exprs` before `news`, \
-      `unforgeables` last — `new x in { Nil } | 1` vs `[1]` → `lt`), the expression-class order \
-      (collections before vars and operators — `[1]` vs `1 + 2` → `lt`, `1 * 2` vs `1 + 2` → `lt`, \
-      `1 - 2` vs `1 * 2` → `gt`), and `GBool`'s **polarity** (`true` scores 0 and `false` 1, so `false` \
-      sorts *after* `true` — `false` vs `true` → `gt`, the reverse of the model's `Bool` order). The \
-      rest — `Receive`/`ReceiveBind`/`New`/`Bundle`/`EList`/`ESet`/`EMap`/`Var`/`GUnforgeable` (where \
-      `gDeployerId`(10) sorts *before* `gDeployId`(11), the reverse of the port's enum) / `Connective` — \
-      needs the algebra extended first, and the twelve unrepresented constructors cannot appear in a \
-      corpus row at all. `Rchain/Sort.lean`'s note carries the tables and the boundary. So the model's \
-      `sortPar` is not the node's `sort_par` — a claim about the wrong order rather than a fork between \
-      nodes (every node sorts by the score tree, so nodes agree with each other). The alignment is safe \
-      for the proofs: `sortPar_idempotent`/`sortPar_comm` hold for any comparator, and \
+      `unforgeables` last — `new x in { Nil } | 1` vs `[1]` → `lt`, and its reverse → `gt`), the \
+      expression-class order (collections before vars and operators — `[1]` vs `1 + 2` → `lt`, `1 * 2` \
+      vs `1 + 2` → `lt`, `1 - 2` vs `1 * 2` → `gt`), and `GBool`'s **polarity** (`true` scores 0 and \
+      `false` 1, so `true` sorts first — `false` vs `true` → `gt`). Each row was falsified before it was \
+      believed: restoring the old order stops `Rchain.Corpus`'s `sortCases_decide` from compiling, and \
+      a runtime reporter names the row. **The rest cannot be aligned without extending the model's \
+      algebra** — 21 `Expr` constructors against the node's 33 — so it is a recorded boundary rather \
+      than a fixed defect: `Receive`/`ReceiveBind`/`New`/`Bundle`/`EList`/`ESet`/`EMap`/`Var`/\
+      `GUnforgeable` (where `gDeployerId`(10) sorts *before* `gDeployId`(11), the reverse of the port's \
+      enum) / `Connective`, plus the twelve constructors the model lacks. `Ground.bytes` is the one \
+      unpinnable divergence: the model has it at the wrong tag and the node's front end has no \
+      byte-array literal, so the term is unspellable rather than merely mis-scored. `Rchain/Sort.lean`'s \
+      note carries the table and the boundary. So the model's `sortPar` is now the node's `sort_par` over \
+      the model's algebra rather than a claim about the wrong order (it was never a fork between nodes: \
+      every node sorts by the score tree). The alignment is safe for the proofs: \
+      `sortPar_idempotent`/`sortPar_comm` hold for any comparator, and \
       `eq_iff`/`swap`/`lt_trans` are order-independent, so the twelve axioms' statements do not change" },
   { number := 1, clause := "b", layer := "Rholang",
     statement := "Each element comparator (`cmpPar`, `cmpSend`, …, `cmpConnective`) is a lawful total \

@@ -10,3 +10,10 @@ sort	@"c"!([1])	@"c"!([1, 2])	lt
 sort	@"c"!(1 + 2)	@"c"!(1 + 3)	lt
 sort	@"c"!(1)	@"c"!(1 + 2)	lt
 sort	@"a"!(1)	@"b"!(1)	lt
+sort	@"c"!([1])	@"c"!(1 + 2)	lt
+sort	@"c"!(1 * 2)	@"c"!(1 + 2)	lt
+sort	@"c"!(1 - 2)	@"c"!(1 * 2)	gt
+sort	@"c"!(false)	@"c"!(true)	gt
+sort	@"a"!!(1)	@"b"!(1)	gt
+sort	new x in { Nil } | 1	[1]	lt
+sort	[1]	new x in { Nil } | 1	gt

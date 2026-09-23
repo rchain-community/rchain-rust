@@ -240,7 +240,7 @@ not found in that file. Coverage claims live here rather than in prose so they c
 | corpus | `rholang/tests/legacy_contracts.rs` | `legacy_contracts_parse_and_reduce` |
 | corpus | `rholang/tests/legacy_contracts.rs` | `the_corpus_is_the_size_the_register_records` |
 | corpus | `rholang/tests/lean_sort_corpus.rs` | `the_canonical_order_is_the_lean_models_pairwise` |
-| corpus | `rholang/tests/lean_sort_corpus.rs` | `the_field_order_the_two_orders_would_disagree_on` |
+| corpus | `rholang/tests/lean_sort_corpus.rs` | `the_boundary_the_model_cannot_pin` |
 | corpus | `rholang/tests/legacy_contracts.rs` | `every_skip_entry_names_a_real_corpus_file` |
 | syntax | `rholang/src/parser.rs` | `a_parenthesised_expression_is_a_group_not_a_one_element_tuple` |
 | syntax | `rholang/src/parser.rs` | `a_group_may_not_contain_a_send_or_a_parallel` |

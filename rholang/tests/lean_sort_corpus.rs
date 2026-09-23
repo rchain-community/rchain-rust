@@ -16,15 +16,21 @@
 //!
 //! The cases pin the arms a port can get wrong silently: the leaf arms, the **ground constructor
 //! order** (`bool < int < str`), the **collection constructor order** (`elist < etuple < eset`), list
-//! arity, an arithmetic node's operand order, the send channel arm, and the pair whose field order the
-//! model and the score tree could disagree about (see `the_field_order_the_two_orders_would_disagree_on`
-//! below, which prints the node's answer rather than asserting it while the question is open).
+//! arity, an arithmetic node's operand order, the send channel arm — and, from case 13 on, the four
+//! structures where this corpus's first run showed the model and the node **disagreeing**: a send's
+//! field order, the par's own field order, the expression-class order and `Ground.bool`'s polarity.
+//! The model was corrected to the node's score tags and those rows are its falsifiers.
+//!
+//! `the_boundary_the_model_cannot_pin` below is not an assertion: it prints the node's answer for the
+//! pairs that are *outside* the model's algebra (the twelve `Expr` constructors the model does not
+//! have, and `Ground.bytes`, which the node scores at tag 116 rather than with the grounds) — the
+//! scope of the alignment, kept visible rather than implied.
 
 use rchain_models::ast::{Par, Proc};
 use rchain_rholang::normalizer::source_to_adt;
 
 /// The corpus's declared size (`Rchain/Corpus.lean`'s `sortCaseCount`).
-const SORT_CASES: usize = 12;
+const SORT_CASES: usize = 19;
 
 /// Parse and normalize a closed term, as the node does on the deploy path.
 fn normalized(source: &str) -> Proc {
@@ -90,14 +96,8 @@ fn the_canonical_order_is_the_lean_models_pairwise() {
         let left_par = normalized(left);
         let right_par = normalized(right);
 
-        // Both sides are single sends, which is what makes the sort-based read of the verdict exact:
-        // canonicalizing a one-element field is the identity, so nothing is reordered before the
-        // comparison the row is about.
-        assert_eq!(left_par.sends.len(), 1, "{left}: expected one send");
-        assert_eq!(right_par.sends.len(), 1, "{right}: expected one send");
-
-        // The equality case is its own: the two sides are the same term, and `sends[0]` then matches
-        // both, so it is decided before the positional read.
+        // The equality case is its own: the two sides are the same term, so the sort cannot separate
+        // them and the row says `eq`.
         let got = if left_par == right_par {
             "eq"
         } else {
@@ -111,6 +111,25 @@ fn the_canonical_order_is_the_lean_models_pairwise() {
              score tree `sort_par` sorts by, and a disagreement is a state-hash divergence between two \
              nodes that canonicalize the same block."
         );
+
+        // **The read is only exact if the pair's *scores* differ.** `sort_by` is stable, so two pars
+        // with equal scores come back in the order they went in — and "the first element is the
+        // smaller" would then answer `lt` for *both* directions. That is the same quotient trap the
+        // pairwise design exists to avoid, one level down (the score, not the canonical form). Reading
+        // the pair in both orders and requiring opposite answers is exactly the test that the two
+        // scores differ: a lawful comparator gives opposite answers iff it does not call them equal.
+        if expected != "eq" {
+            let backwards = node_verdict(&right_par, &left_par);
+            let want = if expected == "lt" { "gt" } else { "lt" };
+            assert_eq!(
+                backwards, want,
+                "{left} vs {right}: the node reads {expected} one way and {backwards} the other, so the \
+                 two scores are equal and the stable sort is answering with its input order — the row \
+                 is passing vacuously. Its terms must be made to differ in a score, not just in \
+                 spelling."
+            );
+        }
+
         verdicts.push(expected);
         cases += 1;
     }
@@ -132,57 +151,44 @@ fn the_canonical_order_is_the_lean_models_pairwise() {
     );
 }
 
-/// **An open question, made checkable rather than asserted.** The model's `cmpSend` compares a send's
-/// *channel* first (`Rchain/Sort.lean`'s `cmpSend` is a `lex` over channel, data, persistence), while
-/// the node's score tree builds a send's score with its children in the order
-/// `[persistent, chan, data…, connective_use]` (`models/src/sorter.rs`'s `sort_send`) — so for a pair
-/// whose persistence *and* channel orderings disagree, the two orders can differ. This test prints what
-/// the node answers for such a pair; it is not an assertion, because which side is right is a question
-/// for the corpus's own reference (`ScoreTree.scala`, which the port mirrors) rather than for this
-/// file. When the answer is settled the pair belongs in the corpus proper, with the model corrected if
-/// it is the model that is wrong.
+/// **The boundary, kept visible rather than implied.** The model's comparator family is an order on a
+/// *coarser* algebra than the node's score tree: 21 `Expr` constructors against the node's 33, so a
+/// term containing `EMethod`/`EMatches`/`EShortAnd`/`GBigInt`/… cannot be built here at all, and
+/// `Ground.bytes` — which does exist — is scored by the node as `EBYTEARR`(116), *after* every var and
+/// operator, rather than with the grounds where this model puts it. Those are the terms the alignment
+/// cannot reach; this test prints what the node answers for them so the gap is a measurement rather
+/// than a claim, and asserts nothing, because a corpus row needs a verdict the model can `decide`.
+///
+/// A byte array is the sharper case: the model *has* `Ground.bytes`, but the node's front end has no
+/// byte-array literal (`@"c"!(b"a")` is a `SyntaxError: expected RParen`), so no corpus row can carry
+/// one — the term is unspellable, not merely mis-scored. (Tried here first; that is why this file no
+/// longer probes it.)
+///
+/// The pairs that *were* in this position (the send/par field orders, the expression-class order,
+/// `Ground.bool`'s polarity) are now corpus rows 13–19, with the model aligned to them.
 #[test]
-fn the_field_order_the_two_orders_would_disagree_on() {
-    // Every pair here is a *candidate corpus row*: the node's answer is what the model must be
-    // aligned to, so this prints the node's verdict for each and nothing is asserted until the model
-    // matches.
+fn the_boundary_the_model_cannot_pin() {
     let pairs: &[(&str, &str)] = &[
-        // the field order: persistence first (score) against channel first (the model's `cmpSend`).
-        ("@\"a\"!!(1)", "@\"b\"!(1)"),
-        // the expression-class order: the tags put every collection *before* the vars and operators.
-        ("@\"c\"!([1])", "@\"c\"!(1 + 2)"),
-        ("@\"c\"!(Set(1))", "@\"c\"!(1 + 2)"),
-        ("@\"c\"!([1])", "@\"c\"!(\"s\")"),
-        // the arithmetic tags: EMULT=102 < EDIV=103 < EPLUS=104 < EMINUS=105 < ELT=106 < … < EEQ=110.
-        ("@\"c\"!(1 * 2)", "@\"c\"!(1 + 2)"),
-        ("@\"c\"!(1 - 2)", "@\"c\"!(1 * 2)"),
+        // the operator tags the model does not have: `EMATCHES`(118) / `EPERCENTPERCENT`(119) sit
+        // between `EOR`(114) and `EMOD`(122), so a row could only pin their *relative* position — and
+        // these spellings parse as a method call, not as the expression the model would need.
+        ("@\"c\"!(1 && 2)", "@\"c\"!(1 || 2)"),
+        ("@\"c\"!(1 %% 2)", "@\"c\"!(1 % 2)"),
+        // the remaining argument positions *within* the model's algebra, for contrast: grounds first,
+        // then collections in tag order, then the operators.
         ("@\"c\"!(1 + 2)", "@\"c\"!(1 == 2)"),
         ("@\"c\"!(1 / 2)", "@\"c\"!(1 + 2)"),
         ("@\"c\"!(1 < 2)", "@\"c\"!(1 == 2)"),
-        // agreeing pairs, for contrast: grounds first, then collections in tag order.
         ("@\"c\"!(1)", "@\"c\"!(\"s\")"),
         ("@\"c\"!([1])", "@\"c\"!((1, 2))"),
         ("@\"c\"!([1])", "@\"c\"!({})"),
         ("@\"c\"!(1)", "@\"c\"!(1 + 2)"),
         ("@\"c\"!(-1)", "@\"c\"!(1 * 2)"),
-        // the **par's own field order**: a par with `news` and `exprs` against a par with `exprs`
-        // only. The node's `sort_par` gathers exprs *before* news; the model's `cmpPar` compares news
-        // first — so the two orders disagree exactly here, and this pair is the only kind that can see
-        // it (canonicalization hides it inside a single par).
-        ("new x in { Nil } | 1", "[1]"),
-        ("[1]", "new x in { Nil } | 1"),
-        // `GBool`'s **polarity**: the node scores `true` as 0 and `false` as 1, so `false` sorts
-        // *after* `true` — the reverse of the model's `linearOrderComparator Bool`.
         ("@\"c\"!(false)", "@\"c\"!(true)"),
-        ("@\"c\"!(true)", "@\"c\"!(false)"),
-        // the bool/int/str/uri order within the grounds (tags 1,2,3,4).
-        ("@\"c\"!(true)", "@\"c\"!(1)"),
-        ("@\"c\"!(1)", "@\"c\"!(\"s\")"),
-        // the remaining argument positions: `eand`(113) < `eor`(114) < `emod`(122) in the tags, while
-        // the model's declaration order puts `emod` before both.
-        ("@\"c\"!(1 % 2)", "@\"c\"!(1 && 2)"),
-        ("@\"c\"!(1 && 2)", "@\"c\"!(1 || 2)"),
-        ("@\"c\"!(1 %% 2)", "@\"c\"!(1 % 2)"),
+        // the receive and the bundle: the node's `sort_receive` puts `persistent`/`peek` *before* the
+        // binds and adds a `bind_count` child, neither of which the model's `cmpReceive` has.
+        ("for (x <- @\"c\") { 0 }", "@\"c\"!(1)"),
+        ("bundle+{ 1 }", "1"),
     ];
     for (left, right) in pairs {
         let l = normalized(left);

@@ -738,10 +738,20 @@ against the model's answer, with nothing in between to hide a disagreement.
 The cases pin the arms a port can get wrong *silently* — the leaf arms, the **ground constructor order**
 (`bool < int < str`), the **collection constructor order** (`elist < etuple < eset`), list arity, an
 arithmetic node's operand order, and the send channel arm — and the layer's own non-degeneracy check
-requires **all three verdicts** to appear, so a table that answered `lt` everywhere could not pass. -/
+requires **all three verdicts** to appear, so a table that answered `lt` everywhere could not pass.
+
+Cases 13–19 are the drift this layer was built to find, now closed. The model ordered by
+*declaration* order; the node orders by its **score tree** (`models/src/sorter.rs`'s `node_score(tag,
+children)`), and the first run of this corpus showed the two disagree on four separate structures — a
+send's field order, the par's own field order, the expression-class order and `Ground.bool`'s
+polarity. `Rchain/Sort.lean`'s comparators were reordered to the tags and these rows are the
+falsifiers: restore the declaration order and the rows stop `decide`ing. The verdicts are the node's
+own answers, read off `sort_pars` by the Rust consumer's diagnostic *before* the model was changed, so
+the model was aligned to the node rather than to a guess. What could **not** be aligned is recorded in
+`Sort.lean`'s note (the model's algebra is coarser: 21 `Expr` constructors against the node's 33). -/
 
 /-- The number of cases the `sort` layer carries. -/
-def sortCaseCount : Nat := 12
+def sortCaseCount : Nat := 19
 
 /-- A law-1 case: two terms (as rholang spells them, so the Rust consumer reads the same text) and the
     verdict the model's `cmpPar` must give the pair. -/
@@ -778,6 +788,16 @@ def boolExpr (b : Bool) : Par := one (.ground (.bool b))
 
 /-- `a + b`, as a `Par`. -/
 def plusExpr (a b : Par) : Par := one (.eplus a b)
+
+/-- `a * b`, as a `Par`. -/
+def multExpr (a b : Par) : Par := one (.emult a b)
+
+/-- `a - b`, as a `Par`. -/
+def minusExpr (a b : Par) : Par := one (.eminus a b)
+
+/-- `new x in { body }` with `n` binders, as a `Par`. -/
+def newPar (n : Nat) (body : Par) : Par :=
+  Par.mk [] [] [New.mk n body] [] [] [] [] []
 
 /-- The model's verdict for a pair, spelled as the corpus spells it. -/
 def sortVerdict (p q : Par) : String :=
@@ -826,7 +846,47 @@ def sortCases : List SortCase :=
       rightPar := sendPar "c" (plusExpr (intExpr 1) (intExpr 2)), verdict := "lt" },
     -- 12. the send channel arm.
     { left := "@\"a\"!(1)", right := "@\"b\"!(1)", leftPar := sendPar "a" (intExpr 1),
-      rightPar := sendPar "b" (intExpr 1), verdict := "lt" } ]
+      rightPar := sendPar "b" (intExpr 1), verdict := "lt" },
+    -- 13-19. **the drift the corpus was built to find**, now aligned and pinned. Every verdict below
+    --        was *observed* from the node (the consumer's diagnostic read it off `sort_pars` before
+    --        the model was corrected); the model's comparators now give the same answers, because
+    --        `Rchain/Sort.lean`'s `cmpPar`/`cmpSend`/`cmpExpr`/`cmpGround` were reordered to the
+    --        node's score tags. Each row is the falsifier for one of those reorderings: put the old
+    --        declaration order back and the corresponding row fails to `decide`.
+    -- 13-15. the **expression-class order**: the tags put every collection (6-9) before the vars and
+    --        operators (100+), and the operators among themselves run `EMULT 102 < EDIV 103 <
+    --        EPLUS 104 < EMINUS 105`.
+    { left := "@\"c\"!([1])", right := "@\"c\"!(1 + 2)", leftPar := sendPar "c" (listExpr [intExpr 1]),
+      rightPar := sendPar "c" (plusExpr (intExpr 1) (intExpr 2)), verdict := "lt" },
+    { left := "@\"c\"!(1 * 2)", right := "@\"c\"!(1 + 2)",
+      leftPar := sendPar "c" (multExpr (intExpr 1) (intExpr 2)),
+      rightPar := sendPar "c" (plusExpr (intExpr 1) (intExpr 2)), verdict := "lt" },
+    { left := "@\"c\"!(1 - 2)", right := "@\"c\"!(1 * 2)",
+      leftPar := sendPar "c" (minusExpr (intExpr 1) (intExpr 2)),
+      rightPar := sendPar "c" (multExpr (intExpr 1) (intExpr 2)), verdict := "gt" },
+    -- 16. **`Ground.bool`'s polarity**: the node scores `true` as 0 and `false` as 1, so `false` sorts
+    --     *after* `true` — the reverse of `linearOrderComparator Bool`, and the reason `cmpBool` exists
+    --     rather than a `linearOrderComparator Bool` in `cmpGround`.
+    { left := "@\"c\"!(false)", right := "@\"c\"!(true)", leftPar := sendPar "c" (boolExpr false),
+      rightPar := sendPar "c" (boolExpr true), verdict := "gt" },
+    -- 17. **a send's field order**: the score compares `persistent` first, then the channel, then the
+    --     data — so a *persistent* send on `a` sorts after a plain one on `b`, where comparing channels
+    --     first (the model's old `cmpSend`) says the opposite. This is the pair the divergence note is
+    --     about, and the corpus's first run is what found it.
+    { left := "@\"a\"!!(1)", right := "@\"b\"!(1)",
+      leftPar := sendParP (strPar "\"a\"") [intExpr 1] true, rightPar := sendPar "b" (intExpr 1),
+      verdict := "gt" },
+    -- 18-19. **the par's own field order**: the score gathers `exprs` before `news`, so a par whose only
+    --        field is an expression sorts before one whose only field is a `new` — the reverse of the
+    --        *port's* field order, and a pair no single-par observation can see (canonicalization would
+    --        hide it inside the par). Both directions are rows, so a comparator with the two orders
+    --        swapped fails one of them.
+    { left := "new x in { Nil } | 1", right := "[1]",
+      leftPar := parMerge (newPar 1 nilPar) (intExpr 1), rightPar := listExpr [intExpr 1],
+      verdict := "lt" },
+    { left := "[1]", right := "new x in { Nil } | 1",
+      leftPar := listExpr [intExpr 1], rightPar := parMerge (newPar 1 nilPar) (intExpr 1),
+      verdict := "gt" } ]
 
 /-- Every case holds of the model — `cmpPar` gives the verdict the row states. `native_decide`, for the
     reason the `c21` checker uses it: the comparator's reduction over a term is too deep for the kernel
