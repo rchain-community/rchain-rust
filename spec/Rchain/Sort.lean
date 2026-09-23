@@ -711,6 +711,31 @@ The one-argument `sortX_idempotent` mutual block (above) proves fine; the blocke
 two-argument sum measure. The path forward is a refactor — a single well-founded recursion over a sum
 type `Par ⊕ Send ⊕ … ⊕ List (Par × Par)`, or Mathlib `SizeOf`/`Finset` machinery in Phase 1 — rather
 than more tactics.
+
+### The route, worked out (2026-09-23, after the cross-shard falsification sweep)
+
+**Why the ten are genuinely mutual** (so the next attempt does not re-derive this): the **list** lemmas
+above are proved *conditional on the element axioms* — `cmpListSend_lt_trans`'s body is literally
+`lex_lt_trans … (h_lt := fun {a b c} => cmpSend_lt_trans a b c)` — while the element lemmas need the
+list lemmas, because `cmpExpr`'s twenty constructors compare `cmpPar` and `cmpPar` compares `List Expr`.
+So the cycle is real and runs through `cmpExpr` ↔ `cmpListExpr` ↔ `cmpPar`, not merely through the
+definitions. That is why reordering cannot help and why a `mutual` block was tried.
+
+**What the refactor should be — not a sum type.** `Rchain/Cmp.lean` already carries the algebra:
+`Comparator` is a structure whose **fields are the laws** (`eq_iff`, `swap`, `lt_trans`), and it supplies
+`listComparator : Comparator α → Comparator (List α)` and `cmpPair : Comparator α → Comparator β →
+Comparator (α × β)`, both **built from their components' laws** — so a comparator *composed* from them
+has `eq_iff`/`swap`/`lt_trans` **by construction**, and `cmpListF_lt_trans`/`lex_lt_trans` are the lemmas
+to chain. Define the family by that composition (the hand-rolled mutual recursion was never needed for
+the *semantics*), and all twelve axioms — the ten `lt_trans` plus `cmpExpr`'s `eq_iff`/`swap` — become
+the `lt_trans`/`eq_iff`/`swap` *fields* of the composed comparators. Two things to preserve while doing
+it: the corpus checkers (`matchCases_decide`, `flags.tsv`, `c21.tsv`) `decide` these functions, so the
+composed definitions must stay `def`-unfoldable at concrete arguments; and `cmpExpr`'s twenty
+constructors are where `Json.lean`'s **`rfl`-proved `@[simp]` arm lemmas** are the precedent to copy.
+
+That is a multi-unit job (the family's definitions, the `sortX_*` lemmas that mention them, the corpus
+re-emission) and the register will not let it land half-done: the axiom-accounting check fails if a row
+cites an axiom that is gone, so each replacement and its rows move together.
 -/
 
 axiom cmpPar_lt_trans (p q r : Par) : cmpPar p q = Ordering.lt → cmpPar q r = Ordering.lt → cmpPar p r = Ordering.lt
