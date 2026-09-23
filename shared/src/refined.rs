@@ -266,14 +266,14 @@ macro_rules! len_newtype {
     };
 }
 
-// `ByteLen`/`ShortLen` are **unused**: the seed work in AUDIT §8 (the "`split_byte` seed" bullet)
-// landed as checked `u8::try_from`/`u16::try_from` at the call sites rather than as a typed length, so
-// these are a seam nothing arrived at. The comment here used to say they were "reserved for the
-// deferred seed-length refinement (spec/AUDIT.md §8 item 1c)" — §8 has no `1c`, and its seed entry is
-// a *fix* rather than a deferral, so the citation named a decision that was never written down. Kept,
-// with their unit tests, as the typed form that refinement would take; delete them if it is dropped.
-len_newtype!(ByteLen, u8);
-len_newtype!(ShortLen, u16);
+// `ByteLen`/`ShortLen` were **deleted** (2026-09-23, Programme B's B7): the seed work in AUDIT §8 (the
+// "`split_byte` seed" bullet) landed as checked `u8::try_from`/`u16::try_from` *at the call sites*, and
+// nothing ever constructed either type. A refinement nothing constructs enforces nothing, and the file's
+// other refinements (`NonNegI64`, `ShardId`, `BlockHash`, `WireLen`, `Port`) are all load-bearing, so
+// carrying two that are not would make it harder to tell which is which. The citation they used to
+// justify themselves ("spec/AUDIT.md §8 item 1c") named no such item — that bullet is a fix, not a
+// deferral. Re-add them when a site needs a `usize` length proved to fit the wire's width; that is what
+// `len_newtype!` above is for.
 len_newtype!(WireLen, u32);
 
 /// Decode a `WireLen` from a protobuf `int32` (the `contentLength` wire field), rejecting negative
@@ -490,10 +490,6 @@ mod tests {
 
     #[test]
     fn length_widths() {
-        assert_eq!(u8::from(ByteLen::try_from(255).unwrap()), 255);
-        assert!(ByteLen::try_from(256).is_err());
-        assert_eq!(u16::from(ShortLen::try_from(65535).unwrap()), 65535);
-        assert!(ShortLen::try_from(65536).is_err());
         assert_eq!(
             u32::from(WireLen::try_from(4_000_000_000usize).unwrap()),
             4_000_000_000
