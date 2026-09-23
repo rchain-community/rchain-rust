@@ -2159,6 +2159,35 @@ port against the **reference document** rather than against itself.
   kept by `Match.lean`'s `a_list_pattern_cannot_skip_a_target_element` and `match.tsv` case 19, both
   measured against the node.
 
+- **C49 — the replay property test fails on its own recording, roughly three runs in ten** (found
+  2026-09-23 by CI, on a *docs-only* commit `1e14c2e4f`, so it is pre-existing and unrelated to that
+  change; reproduced locally). `rspace/src/property_tests.rs`'s
+  `law11_a_replayed_script_matches_its_recording` plays a randomized script of produces and consumes,
+  records the trace, rigs a replay runtime with it, replays the same script, and asserts
+  `check_replay_data()` is `Ok` — the *reverse* half of law 11 (no recorded COMM left unconsumed).
+  It panics with "a replay of its own recording must check clean".
+
+  **Measured**: five consecutive `cargo test -p rchain-rspace --lib law11` runs gave three passes and
+  two failures (the failures finish in ~0.2-0.3 s against ~1.0 s for a pass, so the replay exits early);
+  a sixth run failed again. CI caught the same test on the docs-only tip above while the neighbouring
+  tips were green, which is the shape of a flaky test rather than a broken commit.
+
+  **Minimal input, captured**: a six-operation script of alternating produces and consumes at
+  `prop_assert!` (`property_tests.rs:583`), e.g. `(false,false,2,0), (true,true,2,2), (false,true,2,0),
+  (true,true,2,2), …` — a mix of persistent and non-persistent operations, no peeks. That is *not* a
+  safe input for this property: a replay of the script that produced the recording ought to check clean
+  by construction, so either the replay's recomputation is not a function of the recording alone (a real
+  determinism gap — the thing law 11 is about) or the harness records and replays different things.
+
+  **Not diagnosed here, and the two candidates are named so the next look is not from scratch.** (1) The
+  harness: the test takes the trace with `create_soft_checkpoint` (which `std::mem::take`s the event log,
+  `rspace.rs:639-649`) and *then* calls `create_checkpoint` for the root (which takes the log again,
+  `:569-581`) — if the second call contributes events, the root and the recording are not of the same
+  play. (2) The replay path: a persistent consume fires once per datum in play and may be *replayed*
+  differently when the rig's multimap is keyed per consume-ref, which is the `unused_comm_event` the
+  assertion reports. A test that fails on its own output is a defect worth fixing rather than muting:
+  this row registers it, and the fix should come with the failure kept as a regression case.
+
 - **The class, recorded once, because it is the consolidation pass's whole justification: an axiom that
   is false is worse than one that is owed, because anything follows from it.** Nine axioms the pass
   removed were not merely unproved — they were false of the code or of the model that carried them, and
@@ -2220,6 +2249,7 @@ finding that no law covers, and it says why rather than leaving the gap to infer
 | C44 the matcher had no clause for a tuple, and the port has one | 5, 37 | `match.tsv` cases 15/16 (`@(1, 2)` against `(1, 2)` and against `(1, 2, 3)`) + `lean_match_corpus.rs`; the `ETuple` arm in `Match.lean`, and `modelledPar` on both sides of `concrete_matches_iff_eq`, whose old statement is refuted by `arithmetic_pattern_refutes_the_unrestricted_tie` |
 | C45 the search claimed a step for a join, and the rule fixed the counts the port computes differently | 38, 40 | `silence.tsv` case 13 (a join with one channel filled declares `false`, and the node agrees) + `lean_silence_corpus.rs`; the search's single-bind requirement, the constructors' `freeCount`/`bindCount`/channel parameters, and `takesStep_sound` — three extraction lemmas and `exists_redex_split` |
 | C47 the matcher's fuel was short: the measure counted an empty `Par` as zero nodes | 5, 37 | `match.tsv` case 18 (`@Set(1, ..._)` against `Set(Nil × 6, 1)`) + `lean_match_corpus.rs`; `the_walk_past_empty_pars_is_paid_for`, and `parNodes`'s doc comment carrying the counterexample |
+| C49 the replay property test fails on its own recording (~3 runs in 10) | 11 | `rspace/src/property_tests.rs`'s `law11_a_replayed_script_matches_its_recording` — reproduced locally, minimal input captured; CI caught it on a docs-only tip. Two candidates recorded, not diagnosed |
 | C48 the spec over-claimed a match: the searcher was wired into the list and tuple arms | 5, 37 | `match.tsv` case 19 (`@[1, ..._]` against `[Nil, 1]`) + `lean_match_corpus.rs`; `a_list_pattern_cannot_skip_a_target_element`, and the split into `matchListPos` (lists, tuples) / `matchListPar` (sets, maps) |
 
 **The two rows that are not laws are the two worth keeping visible.** C37 is a *harness* finding —
