@@ -201,12 +201,27 @@ port keys balances by address and takes the caller's own `deployerId`:
   39's doc tie keeps that row honest.
 
 **Also deferred, and previously unregistered:** the **`revvaultexport`** offline tooling
-
-**Also deferred, and previously unregistered:** the **`revvaultexport`** offline tooling
 (`legacy/node/src/main/scala/coop/rchain/node/revvaultexport/`, seven files — the rho-trie traverser, the
 balance getter, and the mainnet1 balance/reporting mains). No Rust module and no CLI subcommand exist for
 it; `docs/src/contributor/architecture.md` listed it as a done feature until that claim was checked and
 corrected. A deferral registered here is a decision; an unregistered one was an omission.
+
+**Decided (2026-09-23, Programme B item B4): it stays unported, and the shape a port would take is
+recorded rather than guessed at.** The Scala tool is 322 lines plus two subdirectories, and it does two
+things the contract made hard: `RhoTrieTraverser` walks the interpreted `TreeHashMap` that the old
+`RevVault.rho` kept its addresses in, and `VaultBalanceGetter` then *calls* each vault's `balance`
+through a rholang runtime (with a randomised return name and a phlo budget). **This port's native state
+subsumes the first half outright** — a vault is a `PREFIX_VAULT` leaf, `address → NonNegI64`
+(`native_state.rs`'s `vault_balance`) — so the port's tool would be a *read*, not an evaluation. What it
+would need that does not exist yet: (a) an offline way to open a data directory's rspace store (the
+recovery path does this for cross-shard transactions, so there is precedent) and enumerate the leaves
+under a prefix — `traverse_history` walks a *root-and-path*, and enumerating every leaf of a prefix is a
+different traversal from the exporter's; and (b) for the *reporting* half
+(`mainnet1/reporting`), the transaction store and a DAG traversal, which is a larger input surface
+again. Its "specification" is a doc plus a CLI surface, not a law: there is no invariant here to state
+in the register, and the alternative — forcing a `rnode revvaultexport` row into `spec/INVENTORY.md` —
+would make the catalogue's count mean something other than what it means. Registered as a decision with
+that shape, so the next reader knows both what it is and what it is not.
 
 `default_blessed_terms` installs only the interpreted contracts a consumer actually reaches through
 `rho:registry:lookup` — `ListOps`, `NonNegativeNumber` and `MakeMint` — plus the registry aliases that
