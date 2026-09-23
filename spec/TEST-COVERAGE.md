@@ -213,6 +213,8 @@ not found in that file. Coverage claims live here rather than in prose so they c
 | G7 | `casper/tests/consensus.rs` | `replay_matches_play_for_persistent_and_peek` |
 | G7 | `rholang/tests/execution.rs` | `replay_matches_play` |
 | G7 | `casper/tests/determinism.rs` | `a_tampered_deploy_replays_to_a_rejected_state_hash` |
+| G7 | `casper/tests/determinism.rs` | `play_and_replay_agree_for_a_block_with_a_close_block_deploy` |
+| G7 | `casper/tests/determinism.rs` | `a_genesis_replay_without_the_vaults_does_not_reproduce_the_genesis` |
 | G12 | `rholang/src/storage.rs` | `produce_at_charges_the_storage_up_front` |
 | G12 | `rholang/src/storage.rs` | `commit_produce_charges_the_event_at_the_commit` |
 | G8 | `block-storage/src/dag/finalizer.rs` | `calculate_finalization_advances_fringe_on_fork` |
@@ -368,7 +370,7 @@ hard mode would fail on, so that a half-finished sweep is legible instead of inv
 | G4 gas enforcement | ✅ end-to-end phlo exhaustion; unit charge paths land with G12 |
 | G5 state-sync | ✅ `validate_state_items_{accepts_valid_round_trip,rejects_corrupted_data}` + a populated store's export→import→compare (`a_populated_store_export_import_round_trips`) |
 | G6 history checkpoint/reset/rollback | ✅ `RSpace::create_checkpoint`/`reset`/`revert`. The history *internals* (`history_repository.rs`, `roots_store.rs`, `root_repository.rs`) are not a gap row of their own: they are T1 tier entries in the table below, which the linter enforces, so an open one is a defect rather than a deferred note |
-| G7 replay | ✅ `replay_matches_play{,_for_persistent_and_peek}`; ✅ the negative path — with a finding (AUDIT.md §15 C3): the inner trace check does not fire for a term tamper, so the state-hash comparison in `handle_errors` is what carries the invariant, and `a_tampered_deploy_replays_to_a_rejected_state_hash` pins both halves |
+| G7 replay | ✅ `replay_matches_play{,_for_persistent_and_peek}`; ✅ the negative path — with a finding (AUDIT.md §15 C3): the inner trace check does not fire for a term tamper, so the state-hash comparison in `handle_errors` is what carries the invariant, and `a_tampered_deploy_replays_to_a_rejected_state_hash` pins both halves. ✅ **A block carrying a `CloseBlock` system deploy** — every play/replay test before `play_and_replay_agree_for_a_block_with_a_close_block_deploy` passed an *empty* system-deploy list, so the epoch's native writes were never replayed; and `a_genesis_replay_without_the_vaults_does_not_reproduce_the_genesis` asserts the *divergence* that costs a joining validator the genesis (AUDIT C46) |
 | G8 finalizer | ✅ `calculate_finalization` fork/lockstep |
 | G9 malformed input | ✅ `NodeIdentifier`/`KeySegment`/`BlockHash` + deploy-signature verify |
 | G10 TLS trust-manager | ✅ wrong-hostname + stale-cert rejection |

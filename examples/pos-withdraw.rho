@@ -1,0 +1,19 @@
+// Drive the PoS withdrawal path from a deploy, and report the result on a public name.
+//
+// `rho:rchain:pos!("withdraw", *deployerId, *ret)` only **stages** the request (law 47): it records
+// the epoch-boundary deadline and changes nothing else, so the deployer's validator stays bonded and
+// stays in the active set until that boundary — it keeps proposing. On a devnet the parameters are
+// `epoch-length = 10000` and `quarantine-length = 50000`, so the boundary is far away and the
+// validator is expected to keep producing blocks, which is the observable difference from a model
+// that deactivates on request.
+//
+// Publish the `(Bool, Either)` result so `tools/devnet.sh query pos-withdraw` can read it back:
+//
+//   tools/devnet.sh deploy pos-withdraw.rho && tools/devnet.sh propose
+//   tools/devnet.sh query pos-withdraw
+new pos(`rho:rchain:pos`), deployerId(`rho:rchain:deployerId`), ret in {
+  pos!("withdraw", *deployerId, *ret) |
+  for (@result <- ret) {
+    @"pos-withdraw"!(result)
+  }
+}

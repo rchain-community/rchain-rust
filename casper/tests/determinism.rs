@@ -403,3 +403,183 @@ async fn a_tampered_deploy_replays_to_a_rejected_state_hash() {
         "the validating comparison must reject a state that does not match the block's claim"
     );
 }
+
+/// **A block that carries a `CloseBlock` system deploy replays to the state it played.**
+///
+/// `close_block` is the epoch transition and, since laws 44–47 landed, it writes native PoS state:
+/// the committed-rewards map, the withdrawal requests and their claims, and the active set. Every
+/// other play/replay test in this file passes an **empty** system-deploy list, so none of them
+/// replayed a block with one — which is the gap this test closes, and the reason it is written
+/// against a boundary with all four steps doing work rather than against a non-boundary no-op.
+///
+/// What a regression here looks like in production: a proposer produces a block, and every validator
+/// that re-derives its state by replay refuses it — `merging.rs:514`'s
+/// "regenerated mergeable channels for block … but replay computed … instead of …". That message is
+/// shaped like a mergeable-channel disagreement, but the comparison it fails on is the *post-state
+/// hash*, so the symptom is a chain that stops advancing behind a proposer that sees nothing wrong.
+#[tokio::test]
+async fn play_and_replay_agree_for_a_block_with_a_close_block_deploy() {
+    use rchain_casper::system_deploy::SystemDeploy;
+    use std::collections::BTreeSet;
+
+    let rm = common::build_runtime_manager().await;
+    let rand = Blake2b512Random::from_init(&[0u8; 32]);
+    // The validator is the deployer, so its bond, its withdrawal and its reward are all its own.
+    let validator = rchain_models::validator::Validator::new([0u8; 65]);
+    let pos_genesis = PosGenesis {
+        bonds: [(validator, NonNegI64::try_from(40).unwrap())]
+            .into_iter()
+            .collect(),
+        trusted: BTreeSet::from([validator]),
+        // `epoch_length: 1` makes the block's own close_block a boundary; a positive `minimum_bond`
+        // takes the split out of the case where the contract's formula is undefined.
+        params: rchain_rholang::native_state::PosParams {
+            epoch_length: 1,
+            quarantine_length: 0,
+            minimum_bond: 1,
+            ..Default::default()
+        },
+    };
+    let (_pre, post, _) = rm
+        .compute_genesis(
+            &[],
+            &rand,
+            BlockData::empty(),
+            &pos_genesis,
+            &[seeded_vault()],
+        )
+        .await
+        .expect("compute_genesis");
+
+    // A bond (activating at the boundary), a staged withdrawal, and a deploy that spends phlo so the
+    // epoch's pot is not zero: all four steps of the sequence then do work.
+    let term = r#"new pos(`rho:rchain:pos`), deployerId(`rho:rchain:deployerId`), ret in {
+  pos!("withdraw", *deployerId, *ret) |
+  for (_ <- ret) { @"after"!(1) }
+}"#;
+    // The block's own number, on **both** paths: `block_creator` builds the close deploy from the
+    // block it is creating (`SystemDeploy::close_block(i64::from(block_num), …)`), and the replay
+    // reconstructs it from the block's `BlockData` (`runtime_replay.rs:426`). Passing a close deploy
+    // whose number disagrees with the block's is not a state a real block can be in, and it is what
+    // this test got wrong the first time it ran.
+    let block_data = BlockData {
+        block_number: rchain_shared::refined::BlockHeight::try_from(1).expect("height"),
+        ..BlockData::empty()
+    };
+    let close = SystemDeploy::close_block(1, rand.split_byte(9));
+    let (play_hash, user_results, sys_results) = rm
+        .compute_state(&post, &[deploy(term)], &[close], &rand, block_data.clone())
+        .await
+        .expect("play compute_state");
+    assert!(
+        user_results[0].eval_result.succeeded(),
+        "the staged withdrawal must succeed: {:?}",
+        user_results[0].eval_result.errors
+    );
+    assert_eq!(sys_results.len(), 1, "the block's CloseBlock ran");
+
+    let processed: Vec<ProcessedDeploy> = user_results.into_iter().map(|r| r.deploy).collect();
+    let processed_sys: Vec<ProcessedSystemDeploy> =
+        sys_results.into_iter().map(|r| r.deploy).collect();
+
+    let (replay_hash, _) = rm
+        .replay_compute_state(
+            &post,
+            &processed,
+            &processed_sys,
+            &rand,
+            block_data,
+            true,
+            &pos_genesis,
+            &[],
+        )
+        .await
+        .expect("replay_compute_state");
+
+    assert_eq!(
+        play_hash, replay_hash,
+        "a block whose close_block wrote the epoch's state must replay to the same post-state"
+    );
+}
+
+/// **A genesis replay that omits the genesis vaults does not reproduce the genesis** (finding,
+/// 2026-09-23). This test asserts the *divergence*, on purpose: it is the mechanism behind a real
+/// failure, and it is here so the day someone fixes the path this test fails and says why.
+///
+/// What it pins. The genesis install funds the genesis wallets' REV vaults
+/// (`ca4f5b015`, `RuntimeManager::compute_genesis`'s `for vault in vaults`), and those balances are
+/// `PREFIX_VAULT` leaves in the genesis post-state. A node that did not *create* the genesis has no
+/// mergeable-channel sidecar for it, so `merging.rs:486-506` regenerates one by replaying the block —
+/// and that replay passes `&[]` for the vaults, on the stated assumption that "this is always
+/// non-genesis block replay". It is not: the genesis is what the finalized fringe points at when a
+/// validator joins, and the replay computes a different post-state hash
+/// (`regenerated mergeable channels for block … but replay computed … instead of …`), which the
+/// validator then refuses — so it never indexes block #0 and never advances.
+///
+/// Observed on `tools/devnet.sh up --validators 3` (2026-09-23): the bootstrap proposes happily, and
+/// validators 1 and 2 sit at the height they joined at, logging exactly that message for the genesis
+/// hash. `docs/src/formal/determinism.md` recorded this asymmetry as "safe because genesis is trusted
+/// and never re-validated (an asserted invariant, not a code path)" — the parenthetical is the part
+/// the devnet falsifies.
+///
+/// The fix is not to pass the vaults unconditionally (a non-genesis block's pre-state already has the
+/// post-genesis balances, so re-installing would clobber them): it is to re-install them when the
+/// block being replayed *is* the genesis — `pre_state_hash == empty_state_hash_fixed()` is the exact
+/// test — which needs the genesis vault list reachable from the replay path.
+#[tokio::test]
+async fn a_genesis_replay_without_the_vaults_does_not_reproduce_the_genesis() {
+    let rm = common::build_runtime_manager().await;
+    let rand = Blake2b512Random::from_init(&[0u8; 32]);
+    let vaults = [seeded_vault()];
+    let (empty, post, results) = rm
+        .compute_genesis(
+            &[deploy(r#"@"chan"!(42)"#)],
+            &rand,
+            BlockData::empty(),
+            &PosGenesis::default(),
+            &vaults,
+        )
+        .await
+        .expect("compute_genesis");
+    let processed: Vec<ProcessedDeploy> = results.iter().map(|r| r.deploy.clone()).collect();
+
+    // The genesis replay as `merging.rs` performs it, vaults and all...
+    let (with_vaults, _) = rm
+        .replay_compute_state(
+            &empty,
+            &processed,
+            &[],
+            &rand,
+            BlockData::empty(),
+            false,
+            &PosGenesis::default(),
+            &vaults,
+        )
+        .await
+        .expect("replay with the genesis vaults");
+    assert_eq!(
+        post, with_vaults,
+        "the genesis replays to itself once its vaults are re-installed — which is what makes the \
+         divergence below a missing input rather than a missing rule"
+    );
+
+    // ...and as it performs it today.
+    let (without_vaults, _) = rm
+        .replay_compute_state(
+            &empty,
+            &processed,
+            &[],
+            &rand,
+            BlockData::empty(),
+            false,
+            &PosGenesis::default(),
+            &[],
+        )
+        .await
+        .expect("replay without the genesis vaults");
+    assert_ne!(
+        post, without_vaults,
+        "a genesis replay that omits the vaults must not reproduce the genesis; if this now passes, \
+         the regeneration path was fixed and this test should become its opposite"
+    );
+}

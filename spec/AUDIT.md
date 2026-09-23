@@ -2087,6 +2087,43 @@ port against the **reference document** rather than against itself.
   with both channels filled is a step in the node and has no derivation here; the axiom is a statement
   about the boundary the model actually has, and the row says so.
 
+- **C46 — a validator cannot index the genesis, because the sidecar-regeneration path replays it without
+  its vaults** (found 2026-09-23, on the devnet while checking laws 44–47; **pre-existing**, from
+  `ca4f5b015`, 2026-08-24). `casper/src/merging.rs:455-524` loads a block's mergeable-channel sidecar
+  and, when it is missing, regenerates one by replaying the block — the branch a node takes for a block
+  it *received* rather than proposed. Its replay passes `&[]` for the genesis wallet vaults, with the
+  comment "this is always non-genesis block replay". It is not: after syncing a finalized fringe, a
+  joining validator indexes the **genesis** (block #0), and the genesis's wallet balances are
+  `PREFIX_VAULT` leaves *in* the genesis post-state, so the regenerated hash differs from the block's
+  recorded one and the validator refuses the block —
+  `regenerated mergeable channels for block ae620156… but replay computed ad7be2fa… instead of
+  052c997a…`, repeatedly, while the bootstrap proposes on. Observed on
+  `tools/devnet.sh up --validators 3`: validators 1 and 2 stop at the height they joined at. **The
+  message names the wrong thing**, which is why this survived: the comparison at `:514` is the
+  *post-state hash*, not a channel diff.
+
+  **Reproduced in-process** (`casper/tests/determinism.rs::a_genesis_replay_without_the_vaults_does_not_reproduce_the_genesis`,
+  which asserts the divergence so that the fix fails it): a genesis replay *with* the vaults reproduces
+  the genesis exactly; the same replay without them does not. That test is the finding's evidence and
+  its tripwire.
+
+  **Not fixed here, and why**: the fix is conditional (`pre_state_hash == empty_state_hash_fixed()`
+  ⇒ re-install the genesis vaults — unconditionally would clobber a post-genesis balance), and it needs
+  the genesis vault list reachable from the replay path, which today is only held by the genesis
+  ceremony. That is a change to `merging.rs`'s inputs, not a line. So it is registered: `merging.rs`'s
+  comment states an assumption the devnet falsifies, and
+  `docs/src/formal/determinism.md`'s "genesis-vault re-seed" bullet — which called the asymmetry safe
+  because "genesis is trusted and never re-validated (an asserted invariant, not a code path)" — now
+  carries the counterexample.
+
+  **Two related reds, reported rather than worked around.** (1) The
+  `devnet-fuzz` nightly workflow has failed on **every** run since at least 2026-09-14, each time at
+  "Start the devnet" (`tools/devnet.sh up --validators 3` → `timed out waiting for devnet-bootstrap to
+  serve /api/v1/status`), so its fuzz stages have not executed in ten days and C46 could not have been
+  found there. (2) The 1-validator devnet is green, including a live check of law 47 (a staged
+  withdrawal keeps the validator active: `examples/pos-withdraw.rho` → `(true, Nil)`, the block's bond
+  cache still lists the validator, and the chain keeps extending).
+
 - **The class, recorded once, because it is the consolidation pass's whole justification: an axiom that
   is false is worse than one that is owed, because anything follows from it.** Nine axioms the pass
   removed were not merely unproved — they were false of the code or of the model that carried them, and
