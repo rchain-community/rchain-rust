@@ -173,10 +173,34 @@ The native `rho:*` protocol is installed as ordinary system-process `Definition`
 The `bond` (trust + min/max + vault-funds + `(validator, stake)` into the pool and the staking vault),
 `withdraw` (staged request, quarantined payout), `trust`/`untrust` (stakeholder
 admission/revocation), `slash` (confiscation to the Coop vault) and vault `findOrCreate` methods are
-implemented natively, returning the `(Bool, Either)` result the PoS/vault contracts expect. **Still
-deferred:** the vault **unforgeable-name capability** (the
-simplified model keys vaults by REV address, so `findOrCreate` returns the address rather than a fresh
-unforgeable), and the `revvaultexport` tooling below.
+implemented natively, returning the `(Bool, Either)` result the PoS/vault contracts expect.
+
+**Decided (2026-09-23, Programme B item B2): the vault stays a balance map keyed by REV address — the
+unforgeable-name capability is *not* modelled, and that is a decision rather than a gap.** The oracle
+mints a **purse** capability per vault (`RevVault.rho:103-140`'s `findOrCreate` → `_makeVault`, whose
+`MakeMint` purse is what `transfer`/`deposit`/`getBalance` are called *on*, with an auth key derived
+from the address's unforgeable), so a purse can be *handed to a contract* that then spends from it. This
+port keys balances by address and takes the caller's own `deployerId`:
+
+- **The half that is present, in a different encoding.** A transfer's `from` account is derived from the
+  caller's `rho:rchain:deployerId` (`system_processes.rs`'s `transfer` arm — "capability, not data"),
+  which the deploy's signature makes unforgeable. So "only the holder of a vault can spend it" holds;
+  what is unforgeable is the *deploy's* identity rather than a minted name. `getBalance` takes a string
+  address, which the Scala's does not, and costs nothing: a balance is public chain state, and the
+  address is derivable from a public key anyway.
+- **The half that is lost: delegation.** A contract cannot be handed a vault to spend from; only the key
+  that signs a deploy can spend that key's REV. Nothing in this tree needs it (the wallet, the faucet,
+  the gateway's txn legs and the genesis ceremony all act as the key itself), which is why the decision
+  is to keep the simplification rather than pay for it.
+- **What landing it would cost**, for whoever revisits this: the minted unforgeable must be
+  *deterministic and replayable* — in the contract it is a `new` name, i.e. drawn from the deploy's
+  RNG — so the native call would have to thread the deploy's random seed and persist
+  `address → unforgeable` alongside `unforgeable → balance`, and `transfer`/`getBalance` would change
+  shape for every client. The reply-shape deviation is already recorded where a client would meet it:
+  `spec/API-SCHEMA.md`'s `rho:rchain:revVault` row is marked ❌ open for exactly this reason, and law
+  39's doc tie keeps that row honest.
+
+**Also deferred, and previously unregistered:** the **`revvaultexport`** offline tooling
 
 **Also deferred, and previously unregistered:** the **`revvaultexport`** offline tooling
 (`legacy/node/src/main/scala/coop/rchain/node/revvaultexport/`, seven files — the rho-trie traverser, the

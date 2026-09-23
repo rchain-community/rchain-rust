@@ -1303,7 +1303,9 @@ impl NativeSystemState {
 
     /// Ensure a vault exists for `address`, creating it with a zero balance if absent (port of the
     /// RevVault `findOrCreate` behavior, simplified: the vault is keyed by REV address, so the
-    /// unforgeable-name capability is not modeled).
+    /// unforgeable-name capability is not modeled — `spec/RUST-FIRST.md`'s B2 decision says what that
+    /// costs (delegation) and what it does not (the spend rule, which the caller's `deployerId`
+    /// carries), and `spec/AUDIT.md` §6 holds it as a registered deviation).
     pub async fn find_or_create_vault(&self, address: &str) -> Result<(), String> {
         if self.vault_balance(address).await?.is_none() {
             self.set_vault_balance(address, NonNegI64::zero());
