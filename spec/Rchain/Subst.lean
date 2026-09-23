@@ -286,13 +286,22 @@ element) and Lean infers that on its own — so they are gone, the checkers redu
 the register builds unchanged. That is the same trade `Match.lean` records for the matcher, and the same
 conclusion: an annotation that costs kernel reduction is worth having only when something needs it.
 
-**What remains, and it is two mechanical classes.** (1) The map member: after the goal's `&&`-chain is
-split, the first conjunct is the *left-nested* `(a && b) = true` rather than the two facts, so the
-extraction needs `Bool.and_eq_true.mpr` on that sub-term. (2) The list walks: the obligations left are
-`sizeOf x < sizeOf l` for `x` an element of `l`, which the default `decreasing_by` does not discharge and
-`omega` cannot see — `List.sizeOf_lt_of_mem` is the fact to feed it. Twenty-one members are stated and
-type-check; the ten structural walks and the `parMerge` composition close; what is left is a pass over
-those two shapes.
+**What remains, and it is not the unfolding — it is the measure.** Twenty-one members are stated and
+type-check, the structural walks and the `parMerge` composition close, and the collection arms are
+settled. What blocks the block is that its recursion spans *types*: `substPar_closed` calls
+`substExprsToPar_closed` (a `Par` calling a `List Expr`), and Lean's structural checker skips those
+parameters — "Skipping arguments of type `List Bundle`, as `substPar_closed` has no compatible
+argument" — so no structural descent is inferred; and with `termination_by d x => sizeOf x` the
+obligations are `sizeOf x < sizeOf l` for an element or a subterm, which the default tactic cannot
+discharge without the membership facts (`List.sizeOf_lt_of_mem`) and which a `rw`-extracted hypothesis
+hides behind the `Eq.mp` that `Bool.and_eq_true` leaves.
+
+The way through is already recorded in this repository, for the comparator family: **one theorem over
+the sum type** (`Par ⊕ Send ⊕ … ⊕ List (Par × Par)`) proved by strong induction on `sizeOf`, with the
+family's members as its cases — `Sort.lean`'s note names exactly that ("a single well-founded recursion
+over a sum type"), and it removes both obstacles at once: the measure is a single `Nat` inequality that
+`omega` can finish, and no structural inference is needed at all. The next attempt should start there,
+and the `termination_by` removal above is what makes the *statements* cheap to write.
 -/
 
 /-- **The closedness law, with the closed-image hypothesis it needs**: `σ`'s values must themselves be
