@@ -706,6 +706,15 @@ invariant (#18/#23).
 
 - **#25** — quoted-name lint. Enhancement, not a bug.
 
+**Decided (2026-09-23, Programme A item A6): dropped from this pass's scope, and this line is the
+record.** The issue was triaged as an enhancement — a lint that would report a name that could be
+written unquoted — and it is the only item in the #18–#25 batch that is neither a defect nor a
+correctness question. Its body is not available offline (`legacy/` carries no copy and there is no
+local issue file), so a port cannot be checked against the intent; keeping it as "still open" would be
+the resting-place shape this register exists to avoid. What would revive it: the issue text, or a
+decision that the port *wants* the lint for its own sake — in which case it is a new feature in
+`rholang/src/parser.rs` with its own tests, not a porting task.
+
 ### Verification (this pass)
 
 - `cargo check --workspace` — clean.
@@ -767,6 +776,13 @@ deviation.
   check alone would pass while a tampered block was accepted. Verified:
   `a_tampered_deploy_replays_to_a_rejected_state_hash` (`casper/tests/determinism.rs`) pins both the
   divergence and the rejection — and would fail if the comparison were removed.
+
+  **Decided (2026-09-23, Programme A item A5): kept, and the pin is the invariant's real home.**
+  The workaround is deliberate and the invariant it looks like it drops is carried one level up by
+  `interpreter_util.rs::handle_errors`, which is what `a_tampered_deploy_replays_to_a_rejected_state_hash`
+  exercises end to end. Removing the workaround would make the *inner* trace check stricter than the
+  Scala's for a case the state hash already rejects, so it stays, named here and in the test's own
+  docstring rather than in a TODO.
 
 - **C4 — a saturated inbound queue is reported to callers as `MessageTooLarge`.**
   `comm/src/transport/grpc_transport.rs::process_error` maps a gRPC `ResourceExhausted` to
@@ -947,6 +963,23 @@ The oracle for every one of these is the BNFC grammar the Scala node's Java pars
   (`an_unmatched_consume_result_is_none_and_leaves_a_waiter`, `rholang/src/reporting_runtime.rs`)
   pins what is observed, so closing the gap will fail it and force the update. No consensus impact:
   the reporting runtime is read-only tooling (`/reporting` routes), not the deploy path.
+
+  **Decided (2026-09-23, Programme A item A5): the *intent* is settled — it must match — and the
+  observation stands as a question about the pair the audit built, not about the function.** The
+  Scala's `RuntimeSyntax.scala:553-557` delegates to `runtime.consumeResult(Seq(channel), Seq(pattern))`
+  and its one caller (`consumeSystemResult`, `:427-443`) treats a mismatch as **fatal**
+  (`ConsumeFailed`), which is the intent: consume the result of the deploy that was just run. The
+  port's caller is the same one — `casper/src/runtime_replay.rs:552` — and it *does* match there, which
+  the replay and determinism tests pin; what the audit constructed was a binder/datum pair the caller
+  never builds. Recorded as: no behaviour change, and the next person who touches the reporting
+  runtime has the intent written down instead of an open question.
+
+  **Decided (2026-09-23, Programme A item A5): kept — it is faithful, and the fix belongs to the
+  protocol rather than to this port.** `LfsBlockRequester.validateReceivedBlock`/`ST.getNext` in the
+  Scala have the same ordering and the same predicate, so a peer can stall a sync for one hash in
+  both trees. The residual is a liveness property of a hostile-peer scenario, and the port's
+  behaviour is pinned by the test named here; changing only the port would make it diverge from the
+  oracle in the direction this document exists to prevent.
 
 - **C13 — the pretty printer emitted two `|` separators between the first two items of a group, and
   dropped the `bundle` keyword.** Both are **port** defects (the Scala renders both correctly), and
@@ -1728,6 +1761,14 @@ oracle is, and the test that pins the fix.
   default it would remove. Recorded here so the question is visible, and pinned by
   `an_instance_less_expr_decodes_to_the_default`, which carries the same caveat in the test itself
   rather than only in this register.
+
+  **Decided (2026-09-23, Programme A item A5): kept, and the reason is that the oracle *was*
+  establishable after all.** The Scala's proto→`Expr` conversion has no arm for an instance-less
+  `Expr` either, so a message that decodes to one is not a shape the Scala produces; the port's
+  `GBool(false)` is reachable only from a hand-built proto. Keeping it means a hand-built message
+  decodes to *something* rather than erroring, which is the more conservative of the two choices for
+  a wire path whose other option is a hard failure — and it is pinned by the test named here, so the
+  decision is a pinned behaviour rather than an absence.
 
 ## 18. The parser's soundness sweep (pass 7): C30–C37
 
