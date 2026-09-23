@@ -97,8 +97,20 @@ was honest. Both are required, and both are deterministic.
 
 - **Charging a denied deploy.** RCHIP-02 says the deployer should not be charged and the validator
   should not be rewarded for a denied deploy. The node records the denied set and excludes its
-  effects from the merged state; the *fee* consequence is not implemented (a denied deploy was paid
-  in the block that carried it). Treat as an open design question, not a settled behaviour.
+  effects from the merged state; the *fee* consequence is not implemented — the merge's objective is
+  `DeployChainIndex.deployChainCost`'s sum (`DeployChainIndex.scala:73`, `MergeScope.scala:87`) over
+  the denied set as much as the included one, so a denied deploy's cost still counts. **This is now
+  law 48 in `spec/INVENTORY.md`**, with the decision recorded there: leave it open *with the reason*
+  rather than implement a proposal and call it a port, because closing it means choosing an objective
+  and a refund path the Scala does not have — a consensus change with no oracle. Treat as an open
+  design question, not a settled behaviour.
+
+  **What the epoch work changed about it** (laws 44–47, 2026-09-23): the deployer's phlo used to be
+  burned, so "the validator is not rewarded" was true for want of any reward at all. It is now
+  deposited into the staking vault (`Pos.rhox:397-404`) and distributed by the epoch to the active
+  set, so the RCHIP's second half has become false in a new and *indirect* way: the denied deploy's
+  phlo reaches the validators at the next epoch boundary, and this port's rewards are per-epoch, with
+  no per-deploy counterpart in which "not rewarded *for this deploy*" could be stated.
 - **The RCHIP's `RuntimeManager` obstacle is addressed differently.** The proposal notes that a global
   lock plus a singleton interpreter with global cost state prevented parallel execution. In this port
   block validation **forks a replay runtime** at the block's pre-state

@@ -1,5 +1,5 @@
 /-!
-# The law register — all 47 laws, in one place, with what each one rests on
+# The law register — all 48 laws, in one place, with what each one rests on
 
 `spec/INVENTORY.md` is the prose catalog, and `docs/src/formal/the-29-laws.md`,
 `docs/src/formal/laws-30-43.md` and `docs/src/formal/laws-44-47.md` are its reader-facing rendering, but
@@ -9,7 +9,7 @@ said 29, that the two tables contradicted each other on Laws 5 and 24, or that L
 axioms" were really 12. This module is the single source of truth those documents are generated from,
 and `Rchain/LawsMain.lean` (the `rchain-laws` executable) is what enforces it:
 
-1. **Numbering** — every law 1..47 is present, with no gaps, so a law cannot be quietly dropped.
+1. **Numbering** — every law 1..48 is present, with no gaps, so a law cannot be quietly dropped.
 2. **Reference integrity** — every declaration a row names actually exists in `Rchain`. A renamed or
    deleted theorem fails this, instead of leaving a row that cites a proof that is gone.
 3. **Axiom accounting** — the set of axioms cited by these rows is *exactly* the set of `axiom`
@@ -1091,7 +1091,33 @@ def laws : List Law := [
       longer in the pool — which is why the claim stores the bond and reads the reward from the \
       committed map at payment time (`Pos.rhox:582` and `:604`; the contract's header comment \
       describing the stored pair as `bond + reward` is the *payee's* sum, not the record's). No Lean \
-      model of the transition yet — same Programme C item as law 44" }
+      model of the transition yet — same Programme C item as law 44" },
+  { number := 48, layer := "Casper",
+    statement := "A **denied** deploy's effects are excluded from the merged state, and the merge's \
+      objective counts its cost exactly as an included deploy's — so the fee consequence RCHIP-02 \
+      proposes (the deployer is not charged, the validator is not rewarded) holds in neither tree",
+    status := .open,
+    rust := ["casper/src/merging.rs", "rholang/src/native_state.rs", "docs/src/node/block-merge.md"],
+    falsifiable := some "the statement is a claim about what the port *does not* do, so its falsifier \
+      is an implementation: a test that refunds a denied deploy's phlo, or one that drops its cost \
+      from the merge objective, would refute it. Both halves are visible today — a denied deploy \
+      appears in `BlockMessage::rejected_deploys` while its `deploy_chain_cost` still counts toward \
+      `deployChainCost`'s sum, and its phlo was taken by the pre-charge and now funds the epoch pot \
+      (laws 45/46) rather than being returned",
+    note := "**an open design question shared with the Scala, not a port divergence.** RCHIP-02 is a \
+      proposal: `MergeScope.scala:87` defaults `rejectionCost` to `DeployChainIndex.deployChainCost`, \
+      and `DeployChainIndex.scala:73` defines that as `deploysWithCost.map(_.cost).sum` — the same \
+      objective this port's `merging.rs` computes over the same set. Nothing in either tree refunds a \
+      denied deploy, and `docs/src/node/block-merge.md`'s open-items list has said so since the merge \
+      work landed. **What Programme B changed about it**: before the staking vault existed the \
+      deployer's phlo was *burned*, so 'the validator is not rewarded' was true for want of any \
+      reward; now the phlo is in the pot and the epoch distributes it to the active set (laws 45/46), \
+      so the RCHIP's second half has become false in a new way, indirectly and at epoch granularity — \
+      and the port's epoch rewards have no per-deploy counterpart in which 'the validator is not \
+      rewarded *for this deploy*' could even be stated. Closing it means choosing an objective and a \
+      refund path that the Scala does not have, which is a consensus change without an oracle; the \
+      decision taken is to leave it open *with the reason*, in the row and in the doc, rather than to \
+      implement a proposal and call it a port" }
 ]
 
 /-- Every law number the catalog defines. Laws with clauses repeat. -/

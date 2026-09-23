@@ -47,5 +47,5 @@ decade.
 If you are an AI agent (or want the shortest path to a specific fact), start at
 [Navigation for AI agents](ai-entrypoint.md) — a goal-indexed map of this book and the machine-checked
 specification it links to. The authoritative formal specification lives outside this book, in the
-[`spec/`](../../spec/) tree (the 47-row law catalog, the Lean/Coq proofs, and the conformance corpora
+[`spec/`](../../spec/) tree (the 48-row law catalog, the Lean/Coq proofs, and the conformance corpora
 that bind the two to the node); this book explains it, it does not duplicate it.
