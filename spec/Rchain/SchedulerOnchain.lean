@@ -697,7 +697,7 @@ initial state the record can only carry paths the run itself has committed). -/
 
 /-- A dispatched commit either leaves the record at `c` untouched, or replaces it with a
     write carrying its own path — and then `c` is in the commit's footprint. -/
-theorem dispatched_applyAt_record_path (hdisp : Dispatched e) (p : DfsPath)
+theorem dispatched_applyAt_record_path {e : Effect} (hdisp : Dispatched e) (p : DfsPath)
     (st : State × SpecState) (c : Chan) :
     (applyAt p e st).2 c = st.2 c ∨
       ∃ v b, (applyAt p e st).2 c = some (p, v, b) ∧ c ∈ Effect.footprint e := by
@@ -871,7 +871,7 @@ def commitPrefixState (st : State × SpecState) (run : List (DfsPath × Effect))
   runFold (prefixBefore run p) st
 
 /-- A dispatched commit leaves the data layer unchanged outside its footprint. -/
-theorem dispatched_applyAt_data (hdisp : Dispatched e) (p : DfsPath)
+theorem dispatched_applyAt_data {e : Effect} (hdisp : Dispatched e) (p : DfsPath)
     (st : State × SpecState) (c : Chan) (h : c ∉ Effect.footprint e) :
     (applyAt p e st).1 c = st.1 c := by
   cases e with

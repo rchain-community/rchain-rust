@@ -40,6 +40,10 @@ theorem swap_lex (o1 o2 : Ordering) : Ordering.swap (lex o1 o2) = lex (Ordering.
 
 /-! ## The `Comparator` structure and the induced linear order -/
 
+-- Bound rather than left to `autoImplicit`: the library is compiled with the option off (the lakefile
+-- sets it for every module), so an unbound universe level is an error rather than a variable.
+universe u v
+
 /-- A lawful three-way comparator. -/
 structure Comparator (α : Type u) where
   cmp : α → α → Ordering

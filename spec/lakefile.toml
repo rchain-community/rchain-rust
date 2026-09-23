@@ -16,6 +16,14 @@ rev = "v4.12.0"
 
 [[lean_lib]]
 name = "Rchain"
+# Project-wide, and that is the point: with `autoImplicit` on (Lean's default) a *misspelt* identifier
+# in a statement is silently bound as an implicit variable, which is how `Comparator`'s universe levels,
+# `ParStep.refl`'s `p` and two `SchedulerOnchain` statements got their binders. Turning it off was
+# measured before it was believed: three causes, 49 errors, and every module but three was already
+# clean (2026-09-23).
+[[lean_lib.leanOptions]]
+name = "autoImplicit"
+value = false
 
 # The conformance corpus emitter: `lake exe rchain-corpus --layer flags --out …`. The corpus is the
 # check (see `Rchain/Corpus.lean`) — it is generated from the specification, committed, and consumed

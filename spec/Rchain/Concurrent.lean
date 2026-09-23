@@ -31,7 +31,7 @@ namespace Rchain
 /-- A parallel step `⟹`: reduce a finite number of pairwise-independent redexes at once. `refl`
     reduces nothing, `comm` contracts a COMM redex, and `par` reduces both sides of `parMerge`. -/
 inductive ParStep : Par → Par → Prop where
-  | refl : ParStep p p
+  | refl {p : Par} : ParStep p p
   | comm (chan data body : Par) :
       ParStep (parMerge (sendPar chan [data]) (receivePar chan body)) body
   | par {p q p' q' : Par} : ParStep p p' → ParStep q q' →
