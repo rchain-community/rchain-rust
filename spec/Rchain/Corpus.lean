@@ -258,7 +258,7 @@ now requires as many patterns as data, where it used to fail closed on anything 
 and those cases are what pins the change. -/
 
 /-- The number of cases the silence layer carries (laws 38 and 40). -/
-def silenceCaseCount : Nat := 12
+def silenceCaseCount : Nat := 13
 
 /-- A silence case: the term as rholang spells it, the model's view of it, and whether it steps. -/
 structure SilenceCase where
@@ -285,6 +285,16 @@ def callPar (data : List Par) (patterns : List Par) : Par :=
   -- the two shapes, and the reason `ReduceP`'s constructors take them.
   parMerge (sendParP (strPar "c") data false)
     (receiveParPs (strPar "c") patterns stepBody true)
+
+/-- A **join**: a receive with two binds, `for (x <- @"c"; y <- @"d")`, with a datum on the first
+channel and none on the second. The node fires a join only when *every* bound channel holds a matching
+datum, so this is not a step — and the model's search read one bind at a time, so it said it *was*
+(AUDIT C45). Law 38's corpus case 13 is this term. -/
+def joinPar (datum : Par) : Par :=
+  parMerge (sendParP (strPar "c") [datum] false)
+    (Par.mk [] [Receive.mk
+        [ReceiveBind.mk [namePar 0] (strPar "c") 1, ReceiveBind.mk [namePar 1] (strPar "d") 1]
+        stepBody false 2] [] [] [] [] [] [])
 
 /-- The cases. Case 3 is the shape C22 item 3 turned on, seen from the reduction side rather than the
 matcher's; case 5 is a store pair, the single-step half of the C22 item 1 class; cases 4 and 6 are the
@@ -329,6 +339,13 @@ def silenceCases : List SilenceCase :=
       par := callPar [intPar 9, mapOf [("x", intPar 1), ("y", intPar 2)] none]
         [intPar 2, mapOf [("x", intPar 1)] wildRem],
       steps := false }
+    -- 13. **a join with one of its two channels filled**: `for (x <- @"c"; y <- @"d")` with a datum on
+    -- `@"c"` and none on `@"d"`. The node fires a join only when every bound channel has a matching
+    -- datum, so this is silence — and the search read the binds one at a time, so it said `true`. The
+    -- pair with the rule, which has no join clause at all, is what made the statement false
+    -- (AUDIT C45).
+  , { term := "@\"c\"!(1) | for (x <- @\"c\"; y <- @\"d\") { @\"out\"!(\"step\") }",
+      par := joinPar (intPar 1), steps := false }
   ]
 
 /-- Every silence case's verdict holds of the model, `decide`d against `takesStep`. -/

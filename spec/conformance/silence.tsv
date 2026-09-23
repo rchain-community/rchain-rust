@@ -10,3 +10,4 @@ silence	@"c"!(1, 2, 3) | for (@a, @b <- @"c") { @"out"!("step") }	false
 silence	@"c"!(1, 2) | for (@k, @v, @ret <- @"c") { @"out"!("step") }	false
 silence	@"c"!(1, 2, 3) | for (@k, @v, @ret <- @"c") { @"out"!("step") }	true
 silence	@"c"!(9, {"x": 1, "y": 2}) | for (@2, @{"x": 1, ..._} <- @"c") { @"out"!("step") }	false
+silence	@"c"!(1) | for (x <- @"c"; y <- @"d") { @"out"!("step") }	false

@@ -1989,6 +1989,35 @@ port against the **reference document** rather than against itself.
   passed the linearity check), the corpus carries the two cases, and `rholang/tests/lean_match_corpus.rs`
   holds the node to them — the node agrees on both.
 
+- **C45 — the search claimed a step for a join, and the rule could not have derived one anyway.** Two
+  halves of one law-38 gap, both found by the corpus.
+
+  **The search.** `stepsInReceives` walked a receive's binds one at a time, so
+  `@"c"!(1) | for (x <- @"c"; y <- @"d") { … }` — a *join* with one of its two channels filled — was
+  reported as a step. The node fires a join only when **every** bound channel holds a matching datum, so
+  it is silent there. Corpus case 13 of `spec/conformance/silence.tsv` declares `false` and
+  `silenceCases_decide` refused to compile; `rholang/tests/lean_silence_corpus.rs` holds the node to the
+  same verdict, and the node agrees. The search now requires a **single-bind** receive.
+
+  **The rule.** `ReduceP.comm`/`commPs` built their receive through `receiveParP`/`receiveParPs`, which
+  *fix* `freeCount := patterns.length` and `bindCount := 1` — while the search reads neither. So the rule
+  could not derive terms the search accepted, and `takesStep_sound` was **false as stated** rather than
+  merely unproved. It is not a corner: the port's `free_count` is `count_no_wildcards`
+  (`rholang/src/normalizer.rs:1295-1300`), so an ordinary `for (@a, @b <- c)` has `freeCount = 0` against
+  `patterns.length = 2`, and the node contracts it.
+
+  **Fixed**: the constructors take `freeCount` and `bindCount` as parameters, and take the channel as
+  *two* parameters with a shared-name hypothesis — which is the node's own condition (the send's channel
+  and the bind's source are the same name), so the rule no longer needs an injectivity argument about
+  `stringChan` to be applied. `takesStep_sound` is now a theorem: three extraction lemmas, one per level
+  of the search, and `exists_redex_split`, which presents a par around any send/receive pair as
+  contexts plus redex.
+
+  **What is still owed, and why it is stated where it is**: the complete direction
+  (`takesStep_iff_reduces`, scoped to `allStringChans` by C40). The model has **no join rule**, so a join
+  with both channels filled is a step in the node and has no derivation here; the axiom is a statement
+  about the boundary the model actually has, and the row says so.
+
 - **The class, recorded once, because it is the consolidation pass's whole justification: an axiom that
   is false is worse than one that is owed, because anything follows from it.** Nine axioms the pass
   removed were not merely unproved — they were false of the code or of the model that carried them, and
@@ -2048,6 +2077,7 @@ finding that no law covers, and it says why rather than leaving the gap to infer
 | C42 law 5's linearity is the normalizer's, not the matcher's | 5 | `Match.lean`'s `aggregateUpdates_rejects_double_bind`/`freeMapMerge_overwrites` state the matcher's halves; the enforcing check is `normalizer.rs:111,289,590,1325`, measured on a devnet (both contexts refused, a duplicated datum accepted), and `spec/conformance/match.tsv` documents the matcher in isolation |
 | C43 the merge's associativity was untested, under a name that says otherwise | 9 | `Merge.lean`'s `mergeChanges_assoc` (proved) **and** `property_tests.rs`'s `law9_state_change_combine_is_associative`, over arbitrary state changes including the join map; the misnamed `state_change.rs` test now says what it asserts |
 | C44 the matcher had no clause for a tuple, and the port has one | 5, 37 | `match.tsv` cases 15/16 (`@(1, 2)` against `(1, 2)` and against `(1, 2, 3)`) + `lean_match_corpus.rs`; the `ETuple` arm in `Match.lean`, and `modelledPar` on both sides of `concrete_matches_iff_eq`, whose old statement is refuted by `arithmetic_pattern_refutes_the_unrestricted_tie` |
+| C45 the search claimed a step for a join, and the rule fixed the counts the port computes differently | 38, 40 | `silence.tsv` case 13 (a join with one channel filled declares `false`, and the node agrees) + `lean_silence_corpus.rs`; the search's single-bind requirement, the constructors' `freeCount`/`bindCount`/channel parameters, and `takesStep_sound` — three extraction lemmas and `exists_redex_split` |
 
 **The two rows that are not laws are the two worth keeping visible.** C37 is a *harness* finding —
 a measurement that was not a measurement — and no law would have caught it, because the thing that

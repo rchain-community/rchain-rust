@@ -17,7 +17,7 @@ mod common;
 use common::build_runtime_pair;
 
 /// The corpus's declared size (`Rchain/Corpus.lean`'s `silenceCaseCount`).
-const SILENCE_CASES: usize = 12;
+const SILENCE_CASES: usize = 13;
 
 #[tokio::test]
 async fn silence_agrees_with_the_lean_model() {

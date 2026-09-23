@@ -32,7 +32,8 @@ proved *about the Lean model* and a law proved *and checked against the running 
   definitions; the rows it could not are `owed`, and their notes say what is missing.
 - `axiomByDesign` — postulated because the primitive is cryptographic (Law 19). The only status that
   should survive the work this register begins.
-- `owed` — the definition exists and the proof does not. `takesStep_iff_reduces`, `decode_encode`.
+- `owed` — the definition exists and the proof does not. `takesStep_iff_reduces` is the last one in
+  the language layer (`TakesStep_sound` left it when the rule's receive shape was widened, AUDIT C45).
 - `deferred` — the `axiom` *is* the definition, so there is nothing yet to prove anything about.
   `substPar` is the remaining example; `joinKey`, `trieRoot` and `mergeChanges` left this status in the
   consolidation pass, when the Rust's own definitions were modelled.
@@ -920,17 +921,27 @@ def laws : List Law := [
     statement := "Silence is specified: an unmatched receive or `match` yields no reduction **and no \
       error**",
     status := .owed,
-    declarations := [`Rchain.ReduceP, `Rchain.takesStep, `Rchain.receiveParP],
-    axioms := [`Rchain.takesStep_iff_reduces, `Rchain.takesStep_sound],
+    declarations := [`Rchain.ReduceP, `Rchain.takesStep, `Rchain.receiveParP,
+      `Rchain.takesStep_sound, `Rchain.stepsInSends_sound, `Rchain.stepsInReceives_sound,
+      `Rchain.stepsInBinds_sound, `Rchain.exists_redex_split],
+    axioms := [`Rchain.takesStep_iff_reduces],
     corpus := some "silence",
-    falsifiable := some "`ReduceP`'s only datum-consuming rule carries `spatialMatches data pattern` \
-      as a hypothesis, so silence is a consequence of the rule; the corpus's 6 cases each run on their \
-      own runtime with a control datum, and a case that stepped when it should not would fail",
-    note := "the rule is the law; the tie from the rule to the search is owed and named. It was \
-      *false* as first stated — `takesStep p = true ↔ ∃ q', ReduceP p q'` for every `p`, refuted by \
-      `chan = nilPar` (AUDIT C40) — so it is now domain-restricted to `allStringChans p`, with the sound \
-      direction split out unconditionally as `takesStep_sound`, which is the half the corpus leans on. \
-      A false axiom is worse than an owed proof: anything follows from it" },
+    falsifiable := some "`ReduceP`'s datum-consuming rules carry the match *and* the channel name as \
+      hypotheses, so silence is a consequence of the rule; the corpus's 13 cases each run on their own \
+      runtime with a control datum, and a case that stepped when it should not would fail — case 13 is \
+      what found that the *search* claimed a step for a join, which the node does not (AUDIT C45)",
+    note := "**the sound direction is proved** (`takesStep_sound`): when the search reports a step, a \
+      derivation exists. It was not provable as written, and the obstacle was a modelling gap rather \
+      than an induction: the rule's constructors built their receive through \
+      `receiveParP`/`receiveParPs`, which *fix* `freeCount := patterns.length` and `bindCount := 1`, so \
+      the rule could not derive what the search accepted — the port's `free_count` is `count_no_wildcards` \
+      (`normalizer.rs:1295-1300`), so an ordinary `for (@a, @b <- c)` has `freeCount = 0` against \
+      `patterns.length = 2` and the node contracts it (AUDIT C45). Both constructors now take those two \
+      fields as parameters, and take the channel as *two* parameters with a shared-name hypothesis — the \
+      node's own condition. **What is still owed** is the complete direction: the rule fires only on a \
+      single-bind receive, so a *join* with one channel filled is silent here and in the node, while a \
+      join with both channels filled is a step in the node and has no derivation here — the model has no \
+      join rule, and the domain-restricted `takesStep_iff_reduces` is stated over exactly that boundary" },
   { number := 39, layer := "Protocol",
     statement := "Every `rho:*` urn's reply arity and shape equals its `spec/API-SCHEMA.md` row",
     status := .provedTied,
