@@ -238,8 +238,8 @@ proptest! {
 fn an_open_value_at_the_variable_leaves_a_free_variable() {
     let term = from_expr(Expr::EVar(Box::new(Var::BoundVar(0))));
     let open = from_expr(Expr::EVar(Box::new(Var::FreeVar(0))));
-    let out = crate::substitute::substitute_par(&term, 0, &Env::make_env([open]))
-        .expect("substitution");
+    let out =
+        crate::substitute::substitute_par(&term, 0, &Env::make_env([open])).expect("substitution");
     assert!(
         !is_closed(&out),
         "an open value at the variable must leave a free variable behind"
