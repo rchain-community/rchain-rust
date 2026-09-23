@@ -70,9 +70,12 @@ to the running node by a conformance corpus), `proved-model` (proved about the L
 declarations that would falsify it.
 
 This section used to restate that per law, and it is a fair example of why it should not: by the time it
-was replaced it called Law 1 "30 element-comparator axioms" (the register counts 4), described Laws
-26–29 as "stated" (two of them are `proved-model`), and called Law 3's substitution "stated" long after
-it became a definition. A status repeated by hand is a status nothing checks.
+was replaced it had Law 1 resting on thirty element-comparator axioms (the register counts four),
+described Laws 26–29 as "stated" (two of them are `proved-model`), and called Law 3's substitution
+"stated" long after it became a definition. A status repeated by hand is a status nothing checks — and
+the numbers are spelled out here on purpose: `tools/emit-lean-counts.sh` fails on a register total
+written in digits outside a generated span, which is how this paragraph was caught when it first quoted
+the old figure, and a *historical* figure is still a figure a reader may believe.
 
 Three categories are worth stating *here*, because they are not per-law facts:
 
