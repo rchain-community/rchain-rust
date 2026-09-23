@@ -1,7 +1,13 @@
 import Rchain.Par
 import Rchain.Cmp
 
-set_option maxHeartbeats 100000000
+-- The budget is **measured**, not inherited: on this file's `eq_iff`/`swap` blocks a budget of
+-- 1,000,000 heartbeats fails with 80 declarations over it, and 2,000,000 passes. This is 4,000,000 —
+-- 2x the measured floor, and 25x below the 100,000,000 that stood here, which was a rumour nobody had
+-- measured and which would have hidden a great deal. Heartbeat counts are deterministic for a given
+-- Lean version and set of options, so this number is portable; the *recursion depth* limits this file's
+-- docstrings record are not, which is why those remain described as attempts rather than settings.
+set_option maxHeartbeats 4000000
 
 /-!
 # Canonicalization (Law 1) over the flat `Par`

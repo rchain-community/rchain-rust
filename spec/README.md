@@ -56,6 +56,7 @@ spec/
     Casper/            Laws 14–18: Stake/Fringe/Validate (14a/16/18 proven, 14b/15 owed)
     Crypto/            Law 19: Random/Spec (axiomatized by design)
   INVENTORY.md         the law catalog (Laws 1–29): source-of-truth → theorem → Rust test
+  STYLE.md             conventions of this tree: naming, measured options, what is deliberately absent
 ```
 
 Laws 12–13 (Rosette) are **orphaned**: the `rosette`/`roscala` VM is out of scope (not wired into
