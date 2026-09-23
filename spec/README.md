@@ -16,8 +16,16 @@ silently drop them.
 
 ```sh
 cd spec
-lake build        # compiles the formalization
+lake build        # the library, the corpus emitter and the law register
 ```
+
+Three things are compiled, and all three matter. The library is the formalization. `rchain-corpus` is the
+conformance emitter, whose `decide`d verdicts are what the Rust tests read 1:1. `rchain-laws` is the law
+register, and *elaborating it is the check*: its compile-time checks (numbering, reference integrity, axiom
+accounting in both directions, non-vacuity) only run when the module is built, so a `sorry` scan cannot
+stand in for them. `defaultTargets` in `lakefile.toml` names all three so that a bare `lake build` is the
+whole gate; `tools/check-lean-conformance.sh` remains the full gate (it additionally re-emits the corpora
+and the register and refuses a diff).
 
 The build requires **Mathlib** (pinned to `v4.12.0` in `lakefile.toml`); the `.lean` files already
 import `Mathlib.Data.*`/`Mathlib.Order.*` for `Multiset`/`Finset`/`Order`.
@@ -42,8 +50,8 @@ spec/
     Scheduler.lean     Laws 20–22: claim-queue path order, gate refinement, depth-2 counterexample
     SchedulerOnchain.lean  Laws 23–25: validated speculation (write-record layer + certificate + fallback)
     CrossShard.lean    Laws 26–29: shard scope determinism + 2PC cross-shard atomicity
-    Concurrent.lean    concurrency-model soundness theorems (standalone, not imported by the root)
-    Tree.lean          tree-model confluence up to `StrCongT` (standalone)
+    Concurrent.lean    concurrency-model soundness theorems
+    Tree.lean          tree-model confluence up to `StrCongT`
     RSpace/            Laws 7–11: Join/Comm/Merge/Merkle (7–10 proven, 11 vacuous)
     Casper/            Laws 14–18: Stake/Fringe/Validate (14a/16/18 proven, 14b/15 owed)
     Crypto/            Law 19: Random/Spec (axiomatized by design)

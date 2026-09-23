@@ -1,6 +1,13 @@
 name = "rchain-spec"
 version = "0.1.0"
-defaultTargets = ["Rchain"]
+
+# The executables are default targets, and that is load-bearing. A module that is an `lean_exe` root is
+# not pulled in by the library target, so `defaultTargets = ["Rchain"]` — which is what this file said
+# until 2026-09-23 — made a bare `lake build` compile neither `Rchain/Corpus.lean` (every `decide`d
+# conformance verdict) nor `Rchain/LawsMain.lean` (the register's own checks, which only run when the
+# module is elaborated). `tools/check-lean-conformance.sh` always built all three; a maintainer following
+# `README.md` did not. Building is not running, so this changes nothing about the emitted artefacts.
+defaultTargets = ["Rchain", "Rchain.Corpus", "Rchain.LawsMain"]
 
 [[require]]
 name = "mathlib"
