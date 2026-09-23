@@ -469,28 +469,39 @@ def laws : List Law := [
       induction unpacking the records) is owed, which is why this row is `owed` rather than \
       `provedModel`" },
   { number := 11, layer := "RSpace",
-    statement := "Replay determinism: a recomputed COMM agrees with the recorded trace, and the port \
-      checks membership **both** ways — a recomputed COMM absent from the trace fails, and a recorded \
-      COMM the replay never consumes fails too",
-    status := .vacuous,
-    declarations := [`Rchain.Comm, `Rchain.produceRefs, `Rchain.commId, `Rchain.Trace],
+    statement := "Replay determinism: the port's replay check — every recomputed COMM has a recorded \
+      occurrence **and** no recorded COMM is left unconsumed — holds exactly when the recomputation and \
+      the recorded trace have the same COMM occurrences",
+    status := .provedModel,
+    declarations := [`Rchain.Comm, `Rchain.produceRefs, `Rchain.commId, `Rchain.Trace, `Rchain.CommRef,
+      `Rchain.refOf, `Rchain.refsOf, `Rchain.occurrences, `Rchain.removeOne, `Rchain.Replays,
+      `Rchain.forwardHolds, `Rchain.reverseHolds, `Rchain.removeOne_eq_some_iff,
+      `Rchain.replays_iff_same_occurrences, `Rchain.a_replay_agrees_with_its_record,
+      `Rchain.the_forward_half_alone_admits_a_diverging_trace,
+      `Rchain.the_reverse_half_alone_admits_a_phantom_recomputation],
     axioms := [],
     rust := ["rspace/src/replay_rspace.rs", "rspace/src/space_matcher.rs"],
-    falsifiable := some "the port's check has a negative case on each side, so the law is falsifiable in \
-      both directions: `ReplayCommNotInTrace` when the recomputed COMM is not in the record, and \
-      `Unused COMM event` when the record keeps an entry the replay never consumed \
-      (`rspace/src/replay_rspace.rs:580-590`). The Rust's own tests assert each fires — \
-      `a_rig_whose_comm_never_happens_is_reported` (`:663-696`) for the second, \
-      `a_rigged_replay_matches_its_recorded_trace` (`:635-651`) for the first",
-    note := "`replayEvents` and `replay_comm_subset` are **deleted**, and the reason they are is the \
-      finding: in this model the replay runs the same matcher over the same recorded producers, so \
-      \"recomputed\" and \"recorded\" would be the *same function* and the subset claim would be `rfl` \
-      (argued in `Rchain/RSpace/Comm.lean`'s header). What would give the law content is a model of the \
-      recorded store as a structure *distinct* from the recomputation, so that the two must be shown to \
-      agree; the proof is owed to that modelling step, not to a tactic. The law is real in the code and \
-      **stronger than this register used to say** — the Rust checks membership in both directions, \
-      forward at `replay_rspace.rs:330-332` and reverse at `:580-590` — so the re-scoping is to \
-      `Rchain.Trace` plus that bidirectional check, which also stops Law 11 from being Law 8 restated" },
+    falsifiable := some "the equivalence is refutable from both sides, and each side has a witness in \
+      the tree: `the_forward_half_alone_admits_a_diverging_trace` (one recomputed COMM, two recorded — \
+      the forward half passes, the check fails, which is what the RCHAIN-3505 guard lets through on a \
+      failed deploy) and `the_reverse_half_alone_admits_a_phantom_recomputation` (one recorded, two \
+      recomputed — the reverse half passes, the check fails). In the port, each half has its own error \
+      that the Rust's tests assert fires: `ReplayCommNotInTrace` (`replay_rspace.rs:330-332`, \
+      `a_rigged_replay_matches_its_recorded_trace` `:635-651`) and `Unused COMM event` \
+      (`:576-586`, `a_rig_whose_comm_never_happens_is_reported` `:663-696`)",
+    note := "**The modelling step the row previously owed, landed** (2026-09-23, Programme D unit 9). \
+      The row was `vacuous` because \"recompute\" and \"record\" were the *same function* in the model, \
+      so the claim was `rfl`. The record is now an **input** — `Replays recomputed recorded` — and the \
+      equivalence with occurrence equality is `replays_iff_same_occurrences`; the two sides are \
+      independent values, so the claim can fail, and both halves are proved necessary. Two deliberate \
+      scoping notes: what this does **not** model is the recomputation itself (`recomputed` is an input; \
+      that the node recomputes the same log is law 25's business), and the record is a flat list of \
+      refs, whereas the port's multimap is keyed per consume — a faithful-enough flattening because \
+      `commId` already carries the consume, which is why the key here is `refOf` (`commId` flattened). \
+      **The live hazard is stated as a theorem**: `check_replay_data_with_fix` \
+      (`casper/src/runtime_replay.rs:587-599`) drops the reverse half when `eval_successful` is false, \
+      so on that path the check *is* the forward half and a diverging trace passes — the \
+      divergence-masking TODO the plan flagged, now a change the register can see" },
 
   -- ── Rosette: the actor VM (Laws 12–13) ──────────────────────────────────────────────────────────
   { number := 12, layer := "Rosette",

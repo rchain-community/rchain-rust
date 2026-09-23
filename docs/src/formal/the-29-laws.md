@@ -21,8 +21,8 @@ deferred); **axiom** = postulated by design (a cryptographic primitive).
 > `Rchain/Laws.lean` and refused stale by the gate. It counts clauses rather than laws and separates
 > **`proved-tied`** (proved *and* tied to the node by a corpus) from **`proved-model`** (proved about a
 > model a human keeps in sync); this page's plainer words are the narrative reading of the same rows.
-> Its total is **32 of 49 laws proved at all** — eight tied to the node by a corpus, twenty-three over
-> the model — with two more proved but *vacuous* (their statements restate their own definitions). Where the
+> Its total is **33 of 49 laws proved at all** — eight tied to the node by a corpus, twenty-five over
+> the model — with one more law proved but *vacuous* (its statement restates its own definition). Where the
 > two disagree, the register is right — and it
 > was right about this page's law 5, which used to call an almost-vacuous lemma "correctly stated".
 
@@ -45,7 +45,7 @@ deferred); **axiom** = postulated by design (a cryptographic primitive).
 | **8** | deterministic COMM (produce refs sorted; content-addressed events) | the comm event | `RSpace/Comm.lean` — `produceRefs`/`commId` defined over the Rust's own sort, `comm_content_addressed` (**proved**) |
 | **9** | merge is a monoid; non-conflicting logs commute | state merging | `RSpace/Merge.lean` — `mergeChanges` defined (added/removed concatenate, the join map is right-biased overwrite), `NonConflicting` defined, `mergeChanges_assoc`/`_comm` (**proved**) |
 | **10** | Merkle determinism (content-addressed radix trie, collision-free, empty root) | history | `RSpace/Merkle.lean` — `nodeHash`/`emptyNode`/`emptyRoot` defined over the node type the code has, `root_collision_free`/`nodeHash_eq_emptyRoot` (**proved**) |
-| **11** | replay determinism (recomputed COMM ⊆ recorded trace) | replay | `RSpace/Comm.lean` — **vacuous**: in the model "recomputed" and "recorded" would be the same function, so the claim would be `rfl`; the port checks membership **both** ways (`replay_rspace.rs:330-332`, `:580-590`), and re-stating the law needs a model of the recorded store |
+| **11** | replay determinism (recomputed COMM ⊆ recorded trace) | replay | `RSpace/Comm.lean` — the recorded trace is an **input** now (`Replays recomputed recorded`), and the check is **proved** to hold exactly when the two agree on occurrences (`replays_iff_same_occurrences`); neither half suffices, each with a witness, and the second witness is the port's own guard — `check_replay_data_with_fix` drops the reverse half on a failed deploy (RCHAIN-3505) |
 
 ## Rosette — the actor VM (Laws 12–13)
 
