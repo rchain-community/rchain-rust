@@ -205,6 +205,7 @@ not found in that file. Coverage claims live here rather than in prose so they c
 | G3 | `rholang/src/native_state.rs` | `an_epoch_splits_the_pot_and_keeps_the_dust` |
 | G3 | `rholang/src/native_state.rs` | `a_released_withdrawal_pays_the_bond_plus_the_committed_rewards` |
 | G4 | `casper/tests/consensus.rs` | `deploy_exceeding_phlo_limit_fails_and_next_runs` |
+| G4 | `node/tests/deploy_block.rs` | `a_failed_deploy_reports_its_reason_over_http` |
 | G5 | `rspace/src/state/mod.rs` | `validate_state_items_accepts_valid_round_trip` |
 | G5 | `rspace/src/state/mod.rs` | `validate_state_items_rejects_corrupted_data` |
 | G5 | `rspace/src/state/instances.rs` | `a_populated_store_export_import_round_trips` |

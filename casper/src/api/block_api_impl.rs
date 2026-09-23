@@ -359,12 +359,11 @@ impl BlockApi for BlockApiImpl {
                     block: light_block,
                 })
             } else {
-                // The execution tracker (for the precise error message) is deferred.
+                // The failure reason the reducer recorded when the deploy ran (issue #15), read back
+                // from the block rather than reported as unavailable.
                 let light_block = get_light_block_info(&block);
                 Ok(DeployExecStatus::ProcessedWithError {
-                    deploy_error:
-                        "<deploy error message not available in cache or deploy executed on another node>"
-                            .to_string(),
+                    deploy_error: deploy_error_text(deploy),
                     block: light_block,
                 })
             }
@@ -373,6 +372,10 @@ impl BlockApi for BlockApiImpl {
                 status: "Pooled".to_string(),
             })
         } else {
+            // The Scala's fourth `NotProcessed` reason, `"Running"`, is absent by construction: it came
+            // from a per-node `BlockExecutionTracker` this port does not have, and the nearest
+            // derivation ("in neither the DAG nor the pool") is also true of a deploy whose block was
+            // just proposed. Registered in `spec/AUDIT.md` §6.
             Ok(DeployExecStatus::NotProcessed {
                 status: "Unknown".to_string(),
             })
@@ -789,6 +792,32 @@ fn propose_result_message(result: (ProposeResult, Option<BlockMessage>)) -> Stri
     }
 }
 
+/// The text for a failed deploy's `ProcessedWithError`.
+///
+/// The Scala reads it out of the node's **execution tracker** — a per-node cache of the deploys this
+/// node's block creator ran (`BlockApiImpl.scala:200-207`,
+/// `executionTracker.findDeploy(deployId).collect { case DeployStatusError(msg) => msg }`) — and falls
+/// back to `"<deploy error message not available in cache or deploy executed on another node>"` when
+/// the tracker has nothing, which is exactly what a node that did *not* run the deploy returns. This
+/// port keeps the reason in the block instead: `ProcessedDeploy.system_deploy_error` is where the
+/// reducer's failure was recorded when the deploy ran (issue #15, `runtime_manager.rs`), it is
+/// replayed and compared like the rest of the deploy's record, and every node holding the block has
+/// it. So the answer is the same message wherever the Scala has one, and *better* than the Scala's
+/// placeholder where it does not — with the placeholder kept for a deploy whose record carries no
+/// message (a block from a node that predates issue #15, or a failure recorded without a reason).
+fn deploy_error_text(
+    deploy: &rchain_models::casper::protocol::casper_message::ProcessedDeploy,
+) -> String {
+    deploy
+        .system_deploy_error
+        .as_deref()
+        .filter(|message| !message.is_empty())
+        .unwrap_or(
+            "<deploy error message not available in cache or deploy executed on another node>",
+        )
+        .to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -814,6 +843,55 @@ mod tests {
             sig: vec![],
             timestamp: 0,
         }
+    }
+
+    /// **A failed deploy reports the reason the reducer gave it**, not a placeholder. The three arms
+    /// are the three real cases: a message (the common one — `runtime_manager.rs` records the
+    /// reducer's first error), no message (a block from a node that predates issue #15), and an empty
+    /// message (a failure recorded without a reason, which the API must not render as nothing at all).
+    #[test]
+    fn a_failed_deploy_reports_the_recorded_reason() {
+        use rchain_models::casper::protocol::casper_message::{
+            DeployData, PCost, ProcessedDeploy, SignedDeployData,
+        };
+
+        fn failed_with(error: Option<&str>) -> ProcessedDeploy {
+            ProcessedDeploy {
+                deploy: SignedDeployData {
+                    data: DeployData {
+                        attachments: Vec::new(),
+                        term: "Nil".to_string(),
+                        timestamp: 0,
+                        phlo_price: 1,
+                        phlo_limit: 10,
+                        valid_after_block_number: 0,
+                        shard_id: "root".to_string(),
+                    },
+                    deployer: vec![0u8; 65],
+                    sig: vec![1, 2, 3],
+                    sig_algorithm: "secp256k1".to_string(),
+                },
+                cost: PCost { cost: 0 },
+                deploy_log: Vec::new(),
+                is_failed: true,
+                system_deploy_error: error.map(str::to_string),
+            }
+        }
+
+        assert_eq!(
+            deploy_error_text(&failed_with(Some("Out of phlogistons after 7 steps"))),
+            "Out of phlogistons after 7 steps"
+        );
+        assert!(
+            deploy_error_text(&failed_with(None))
+                .starts_with("<deploy error message not available"),
+            "a deploy whose record carries no message keeps the Scala's placeholder"
+        );
+        assert!(
+            deploy_error_text(&failed_with(Some("")))
+                .starts_with("<deploy error message not available"),
+            "an empty message is no message"
+        );
     }
 
     #[test]

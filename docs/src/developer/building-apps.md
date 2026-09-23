@@ -176,8 +176,11 @@ upgrade; no genesis reset).
 Three ways, in order of increasing specificity:
 
 1. **Poll a deploy's result** — after a deploy, `GET /api/v1/deploy-status/{deploySignature}` returns a
-   `DeployExecStatus`: `processedWithSuccess` (with the `deployResult` expression), `processedWithError`,
-   or `notProcessed` (not yet in a block).
+   `DeployExecStatus`: `ProcessedWithSuccess` (with the `deployResult` expression),
+   `ProcessedWithError` (with the reducer's `deployError` text — the reason the deploy failed), or
+   `NotProcessed` (not yet in a block). **The variant tags are PascalCase and the fields camelCase**,
+   which is the shape law 43's envelope catalogue pins (`spec/conformance/envelope.tsv`) — a client
+   switching on `processedWithError` matches nothing and errors nowhere.
 2. **Run a term and read its result** — `POST /api/v1/explore-deploy` runs a rholang term against the
    current state without signing or persisting a deploy, and returns the reduced expression.
 3. **Read data at a name** — subscribe with the CLI, or read point-in-time by block hash over HTTP.
@@ -236,7 +239,7 @@ curl -s -X POST http://localhost:40403/api/v1/faucet \
 ```
 
 The response is `{ "deployId": "<hex>", "amount": 30000000, "to": "<rev-address>" }`. The transfer is
-a normal deploy, so poll `GET /api/v1/deploy-status/{deployId}` for `processedWithSuccess`. The
+a normal deploy, so poll `GET /api/v1/deploy-status/{deployId}` for `ProcessedWithSuccess`. The
 endpoint is **dev-mode only** (a node without `--deployer-private-key` returns `400`) and is
 rate-limited to one drip per second.
 

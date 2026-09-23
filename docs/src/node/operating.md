@@ -202,12 +202,20 @@ Deploys reach a node through the **external gRPC** port (40401 by default) or `P
   from the node's own height the way the faucet, the browser client and `txn_coordinator` already do.
   Short chains hide this: below the lifespan, `-1` is not yet "expired".
 
-- **`deploy-status` reports the outcome, not the reason.** A success returns
-  `{"processedWithSuccess": {"deployResult": […], "block": …}}`; a failure returns
-  `{"processedWithError": {"deployError": "<deploy error message not available in cache or deploy
-  executed on another node>", "block": …}}`; a deploy still in the pool returns
-  `{"notProcessed": {"status": "Pooled"}}`. The error text is not retained (issue #15), so a failed deploy
-  tells you *that* it failed and not why.
+- **`deploy-status` reports the outcome *and the reason*.** A success returns
+  `{"ProcessedWithSuccess": {"deployResult": […], "block": …}}`; a failure returns
+  `{"ProcessedWithError": {"deployError": "<the reducer's reason>", "block": …}}` — for phlo exhaustion,
+  `"Computation ran out of phlogistons."`; a deploy still in the pool returns
+  `{"NotProcessed": {"status": "Pooled"}}`; and a deploy the node has no record of returns
+  `"Unknown"`. **The variant tags are PascalCase and the fields camelCase**, which is what law 43's
+  envelope catalogue declares (`spec/conformance/envelope.tsv`) — a client switching on
+  `processedWithError` (as this page used to say) matches nothing, and nothing errors.
+
+  The reason comes from the block's recorded failure (issue #15), so it is available on any node
+  holding the block. The placeholder
+  `"<deploy error message not available in cache or deploy executed on another node>"` survives for one
+  case only: a deploy whose record carries no message at all (a block from a node that predates
+  issue #15), which is also the only case the Scala's per-node execution tracker could answer.
 
   To read a term's **return value** — usually what you actually want — have the term send its result
   somewhere it can be read back, using the registry result-slot pattern that the browser client and
