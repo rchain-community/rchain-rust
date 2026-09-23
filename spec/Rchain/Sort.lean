@@ -1287,6 +1287,38 @@ Two things made the conversion fiddly, so they are recorded rather than rediscov
 — `deriving` a one-line regex for the rewrite fails on both counts), and the members' proofs are written
 as `intro`-then-`induction`, which becomes `intro`-then-`induction` under the block's `∀`-form. Each
 member then carries `termination_by x _ _ => sizeOf x`.
+
+**Measured 2026-09-23: the ladder above cannot land *as written* — the block's termination checker
+refuses it, and the refusal is structural rather than hard.** Standalone, the ladder's calls go to
+*theorems* (`cmpListSend_lt_trans` and friends) and carry no termination obligation, which is why it
+type-checks. Inside the `mutual` block those same calls are recursive, and every one of them is made from
+inside a `fun {a b c} …` lambda whose arguments are **not** structural subterms of the member's own
+arguments: `termination_by p _ _ => sizeOf p` has nothing to say about an arbitrary `a : List Send`, so
+the obligation is unprovable rather than merely unproved. The element members' proofs have the same
+shape — `hD := fun h1 h2 => cmpPar_lt_trans b b' b'' h1 h2` **is** accepted (those are fields) while
+`h_lt := fun {a b c} h1 h2 => cmpPar_lt_trans a b c h1 h2` is not. A probe of the whole converted block
+confirms the diagnosis: with each such `h_lt` stubbed out, every termination goal disappears.
+
+**What a landing needs — the design, so the next attempt writes it rather than deriving it.**
+
+1. A **pointwise** `lex_lt_trans` (in `Cmp.lean`, beside `lex_lt_trans`): the same statement, but with
+   `h_lt` taken at the *specific* triple —
+   `{a b c : α} (h_lt : f a b = Ordering.lt → f b c = Ordering.lt → f a c = Ordering.lt) {Dcmp} {x y z} (hD) :
+   lex … → lex … → lex …`. Its proof is the case analysis `lex_lt_trans` already performs
+   (`lex_lt_iff` + `rcases`), which invokes `h_lt` only at that triple, so nothing is lost.
+2. Every same-block call then becomes a **partial application on fields** —
+   `h_lt := cmpListSend_lt_trans s s' s''` — and the caller must also pass `(a := s) (b := s') (c := s'')`,
+   because the pointwise `h_lt`'s telescope mentions them before it: without them the elaborator reaches
+   `h_lt` with `a b c` still metavariables and fails, which is the error the probe reported.
+3. A level whose head comparator is **generic** (`Bool`, `Nat`) keeps the general `lex_lt_trans`:
+   rewriting those to the pointwise form breaks them, since a `fun {a b c} h1 h2 => …` does not unify
+   with an arrow type.
+4. A member whose **field name collides with its statement's binder** — `cmpReceiveBind`'s field `s`
+   against the `∀ s : ReceiveBind, …` — must have one of the two renamed: the pattern shadows the binder,
+   and the `h_lt` argument then names nothing.
+
+The block, its member set and its measure are otherwise as described above. The probe was iterated to the
+point where only those four items were outstanding.
 -/
 
 /-! ## The `Comparator` instances for the 11 element types -/
