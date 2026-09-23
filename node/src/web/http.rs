@@ -201,6 +201,18 @@ async fn api_txn_run(State(state): State<HttpState>, Json(req): Json<TxnRequest>
     let mut legs = Vec::with_capacity(req.legs.len());
     for leg in &req.legs {
         match rchain_shared::refined::ShardId::try_from(leg.shard_id.clone()) {
+            // An empty `to` is the one field of a leg with no check anywhere behind this handler: the
+            // amount is caught by the ledger's `NonNegI64` refinement in `GatewayTxn::run`, and the
+            // shard id above. A commit that credits `""` is not a request the coordinator should open
+            // (AUDIT §8's validate-on-ingress note, corrected: everything else *is* stopped, just later
+            // than the boundary).
+            Ok(_) if leg.to.trim().is_empty() => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(format!("leg on shard '{}' has an empty 'to'", leg.shard_id)),
+                )
+                    .into_response()
+            }
             Ok(shard_id) => legs.push(rchain_casper::gateway::GatewayLeg {
                 shard_id,
                 amount: leg.amount,
@@ -1539,6 +1551,48 @@ mod tests {
 
     fn txn_body(txn_id: &str, legs: serde_json::Value) -> crate::api::dto::TxnRequest {
         serde_json::from_value(serde_json::json!({ "txnId": txn_id, "legs": legs })).unwrap()
+    }
+
+    /// The two ingress checks that are *not* at the boundary — pinned here because a client sees the
+    /// 400 either way, and the difference is only which layer says it. The amount's check is the
+    /// ledger's `NonNegI64` refinement (`GatewayTxn::run`), the shard's is `ShardId::try_from`, and the
+    /// empty `to` is the one this handler has to make itself (AUDIT §8).
+    #[tokio::test]
+    async fn a_leg_with_an_empty_to_is_rejected_before_the_gateway_runs() {
+        let response = api_txn_run(
+            State(txn_state(Some(gateway().await), true)),
+            Json(txn_body(
+                "6161",
+                serde_json::json!([{ "shardId": "/root", "amount": 10, "to": "   " }]),
+            )),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        assert!(
+            String::from_utf8_lossy(&body).contains("empty 'to'"),
+            "{}",
+            String::from_utf8_lossy(&body)
+        );
+    }
+
+    #[tokio::test]
+    async fn a_negative_leg_amount_is_rejected_by_the_ledgers_refinement() {
+        let response = api_txn_run(
+            State(txn_state(Some(gateway().await), true)),
+            Json(txn_body(
+                "6262",
+                serde_json::json!([{ "shardId": "/root", "amount": -1, "to": "1111abc" }]),
+            )),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        assert!(
+            String::from_utf8_lossy(&body).contains("amount"),
+            "{}",
+            String::from_utf8_lossy(&body)
+        );
     }
 
     #[tokio::test]

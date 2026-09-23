@@ -279,7 +279,18 @@ Under the new oracle (the ρ-calculus spec, not Scala), the following were **fix
   `i32` query depth and the potentially-negative lower bound are legitimate API types; `m.height` is
   already `BlockHeight` with discharge at the DTO.
 - **DTO boundary** (`deploy_service.rs`, `node/src/api/dto.rs`, `web/*`): `String`/`Vec<u8>` at the
-  wire edge is acceptable; validate-on-ingress remains a follow-up (noted, not done).
+  wire edge is acceptable — **and the values behind them are stopped, which this bullet previously
+  denied.** Checked field by field rather than re-asserted: `TxnRequest.txn_id` is strict hex of at most
+  64 bytes at the handler (`web/http.rs:191-198`), `TxnLegDto.shard_id` goes through
+  `ShardId::try_from` with a 400 (`:203-218`), `TxnLegDto.amount` is caught by the *ledger's*
+  `NonNegI64` refinement in `GatewayTxn::run` (`casper/src/gateway/mod.rs:277-279`, tested in
+  `ledger.rs`), `FaucetRequest.address` by `RevAddress::is_valid` (`web_api_impl.rs:526`), and the
+  block-hash strings by `BlockHash::try_from` where they are used. The `depth: i32` this section's
+  "API heights" bullet already triaged as legitimate is therefore the only one deliberately unchecked.
+  **One field had no check anywhere** — `TxnLegDto.to` — and now has one at the boundary
+  (`web/http.rs`), with two tests pinning the ingress behaviour a client sees (the empty `to`, and the
+  negative amount the refinement rejects). The original note was a *claim*, and the claim was wrong: the
+  boundary was never the problem, only the layer that answers.
 **Cast triage (Phase 2):** the ~300 `cast` sites were triaged. The overwhelming majority are **faithful
 Scala fixed-width equivalents** — matcher `len() as i32` (Scala `Int`), trie `byte as usize`/`u8 as usize`
 (widening), `i as u8` `split_byte` (Scala `Byte`), config `as i64`/`as u64`/`as f64` (Scala `Long`),
