@@ -1,6 +1,7 @@
 (* Rchain flat `Par` ADT (M2 gate) — mirrors spec/Rchain/Par.lean.
 
-   The Scala source of truth is `models/src/main/protobuf/RhoTypes.proto:32-43`:
+   The source of truth for the shape is the proto's `Par` — `models/proto/RhoTypes.proto`
+   (Rust) and its Scala original `legacy/models/src/main/protobuf/RhoTypes.proto`:
    `Par` is a **flat** record of 8 *repeated* (list) fields, not a tree. Each field's
    element type is a small record with its own arity and flags. Binders use de Bruijn
    *levels* (`Bound`/`Free`), matching the Scala `Var` (`bound_var`/`free_var`/`wildcard`).

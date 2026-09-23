@@ -145,6 +145,14 @@ structure Law where
   anchor whose file does not exist. The anchor names the *code*, not the test: where a conformance
   corpus exists it is already in `corpus`, and where a property test exists it is named in the note. -/
   rust : List String := []
+  /-- **The Coq declaration(s) this law is stated over**, as `spec/coq/<file>.v:<symbol>` anchors. The
+  file must exist and the symbol must occur in it; the check is deliberately that, and not "is it a
+  proof", because for most of this catalog's Coq half the honest answer is *no* — `Laws.v` states laws
+  2–6 as axioms. Which of them are axioms is counted and printed by step 4b of
+  `tools/check-lean-conformance.sh`, whose ceiling is the ratchet; this field's job is to stop the
+  register's prose about Coq ("`Laws.v` has `substPar`") from being the only thing that names it. Empty
+  on every row that makes no Coq claim, which is most of them. -/
+  coq : List String := []
   /-- What would have to hold for this law to be false: a witness, a negative case, or why it cannot
   fail. `none` = owed. -/
   falsifiable : Option String := none
@@ -178,6 +186,7 @@ def laws : List Law := [
     corpus := some "sort",
     rust := ["models/src/sorter.rs"],
     axioms := [],
+    coq := ["spec/coq/Sort.v:sortPar_idempotent", "spec/coq/Sort.v:sortPar_comm"],
     falsifiable := some "`sortPar_idempotent`/`sortPar_comm` are theorems; `spec/INVENTORY.md`'s Law 1 \
       claim of idempotence is falsified by any leaf type whose comparator is not a total order — see \
       clause b, where exactly that is assumed rather than proved. The `sort` corpus is the tie: nineteen \
@@ -222,6 +231,7 @@ def laws : List Law := [
     rust := ["models/src/sorter.rs"],
     axioms := [`Rchain.cmpExpr_eq_iff, `Rchain.cmpExpr_swap, `Rchain.cmpPar_lt_trans,
       `Rchain.cmpExpr_lt_trans],
+    coq := ["spec/coq/Sort.v:cmpPar"],
     falsifiable := some "eight of the ten element `lt_trans` laws are theorems now \
       (`cmpNew`/`cmpSend`/`cmpReceiveBind`/`cmpReceive`/`cmpMatchCase`/`cmpMatch`/`cmpBundle`/\
       `cmpConnective`), each by the `Comparator.lex_lt_trans` idiom the file's own note validates, and \
@@ -247,6 +257,7 @@ def laws : List Law := [
     declarations := [`Rchain.StrCong, `Rchain.strCong_equivalence, `Rchain.strCong_comm,
       `Rchain.strCong_assoc, `Rchain.strCong_ident, `Rchain.strCong_nil_left],
     rust := ["models/src/ast.rs"],
+    coq := ["spec/coq/Laws.v:alpha_equiv", "spec/coq/Laws.v:alpha_equiv_refl"],
     witness := [`Rchain.reduce_not_deterministic],
     falsifiable := some "`reduce_not_deterministic` (`Rchain/Concurrent.lean`) exhibits two distinct \
       reductions of one term, which is what makes `≡` — rather than syntactic identity — the relation \
@@ -265,6 +276,7 @@ def laws : List Law := [
       `Rchain.bound_is_closed_free_is_not, `Rchain.sort_subst, `Rchain.subst_closed],
     rust := ["rholang/src/substitute.rs"],
     axioms := [`Rchain.sort_subst, `Rchain.subst_closed],
+    coq := ["spec/coq/Laws.v:substPar", "spec/coq/Laws.v:subst_commutes_sort"],
     witness := [`Rchain.the_identity_satisfies_sort_subst, `Rchain.the_identity_satisfies_subst_closed, `Rchain.bound_is_closed_free_is_not],
     falsifiable := some "`the_identity_satisfies_sort_subst` and \
       `the_identity_satisfies_subst_closed`: `noSubst` — the function that substitutes *nothing* — \
@@ -305,6 +317,7 @@ def laws : List Law := [
     status := .provedModel,
     declarations := [`Rchain.Reduce, `Rchain.reduce_closed, `Rchain.reduce_not_deterministic],
     rust := ["rholang/src/reduce.rs"],
+    coq := ["spec/coq/Laws.v:reduce"],
     witness := [`Rchain.reduce_not_deterministic],
     falsifiable := some "`reduce_not_deterministic` proves confluence is **false** on the flat `Par`, \
       so the law's statement is bounded by a published disproof rather than an assertion"
@@ -341,6 +354,7 @@ def laws : List Law := [
     axioms := [`Rchain.concrete_matches_iff_eq, `Rchain.fuel_saturation],
     corpus := some "match",
     rust := ["rholang/src/matcher/spatial_matcher.rs"],
+    coq := ["spec/coq/Laws.v:spatial_matches"],
     witness := [`Rchain.aggregateUpdates_rejects_double_bind, `Rchain.freeMapMerge_overwrites],
     falsifiable := some "the corpus's three-valued verdicts (`true`/`false`/`rejected`) include the \
       rejected case a twice-bound pattern produces — the shape the previous law-5 axiom *denied* and \
@@ -375,6 +389,7 @@ def laws : List Law := [
       `Rchain.freeVarOf_iff_closed, `Rchain.closed_iff_no_freeVars, `Rchain.Closed_parMerge_iff,
       `Rchain.Closed_receivePar_iff, `Rchain.closed_anyPat],
     rust := ["models/src/types.rs"],
+    coq := ["spec/coq/Laws.v:closed", "spec/coq/Laws.v:closed_decidable"],
     witness := [`Rchain.free_var_is_not_closed, `Rchain.bound_var_is_closed, `Rchain.free_var_is_free_under_par],
     falsifiable := some "both sides are `decide`d on concrete terms: `bound_var_is_closed` (a `.bound` \
       occurrence is closed — the model reads it as a back-reference the normalizer resolves), \

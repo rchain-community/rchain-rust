@@ -63,39 +63,28 @@ Laws 12–13 (Rosette) are **orphaned**: the `rosette`/`roscala` VM is out of sc
 
 ## Proven vs stated
 
-- **Proven**: Law 1 (`sortPar_idempotent`, `sortPar_comm` in `Rchain/Sort.lean`), Law 2's core
-  (`StrCong` ≡ in `Rchain/Rho.lean`), Law 4's core (`Reduce` ⟶ COMM in `Rchain/Rho.lean` +
-  `reduce_closed` in `Rchain/Ty.lean`), Law 6 (`Closed` + the preservation fundamentals in
-  `Rchain/Ty.lean`), Law 9's effect-level strengthening (`effect_commute_of_disjoint_closure` and
-  `effect_reorder_diverges` in `Rchain/Effect.lean` — the disjoint-closure commute was an axiom and
-  is now proven by locality induction), Law 20's per-channel path-order core
-  (`queue_commit_path_ordered` in `Rchain/Scheduler.lean`), Law 21 (`gate_exec_refines_apply` and
-  the depth-2 counterexample `one_hop_depth2_diverges` in `Rchain/Scheduler.lean`), and Law 22
-  (`next_step_closure_computable` in `Rchain/Scheduler.lean`). The one residual of Law 1 is the
-  lawfulness of the 10 element comparators
-  (`cmpPar`/`cmpSend`/…/`cmpConnective`), declared as 30
-  `cmpX_eq_iff`/`cmpX_swap`/`cmpX_lt_trans` axioms in `Rchain/Sort.lean` (the 12 list-comparator and
-  `cmpGUnforgeable` laws are proven by direct induction). The remaining element laws need mutual
-  induction over the AST, which hangs Lean's termination checker for the two-argument `cmpX` family.
-  The sum-type `Sortable`/`cmpSortable` definition is in place (termination proven); the remaining step
-  is its laws proof by well-founded induction — see the note in `Rchain/Sort.lean`.
-- **Stated** (axiom, precise signature, definition deferred): Laws 3 (`Subst.lean`), 4-full
-  (`Reduce.lean`), 5 (`Match.lean`). Each states the law's signature over the `Par`/abstract data types;
-  the definitions (capture-avoiding substitution, α-equivalence) are Coq's obligation. The RSpace and
-  Casper rows this list used to hold are no longer axioms: the consolidation pass modelled the Rust's
-  own definitions (`joinKey`, `Comm`, `mergeChanges`, `nodeHash`, `blockHash`, the number/seqNum checks,
-  the finalizer's gate) and made the laws theorems over them, with the remaining obligations named in
-  `spec/LAWS.md`'s rows.
-  Law 20's liveness half (`law20_deadlock_freedom` in `Rchain/Scheduler.lean`) is stated; its
-  per-channel path-order core (`queue_commit_path_ordered`) is proven. Laws 26–29
-  (`CrossShard.lean`) state the sharding + two-phase-commit cross-shard model; the per-shard
-  participant (`rho:txn`) and the client-side coordinator (`casper/src/txn_coordinator.rs`) are
-  implemented, and the `ShardId` newtype + `parent-shard-id` hierarchy (`shared/src/refined.rs`,
-  `ShardSpec`/`ShardMemberships`) are implemented, the multi-shard gateway with its durable
-  coordinator ledger is implemented, and the proofs remain `stated`.
-- **Axiomatized** (never proven, by design): Law 19's cryptographic primitives (Blake2b, secp256k1,
-  Curve25519) are modeled as abstract interfaces whose required properties are *postulated*
-  (`Crypto/Random.lean`, `Crypto/Spec.lean`). Proving real crypto is out of scope.
+**Per-law status lives in one place.** [`LAWS.md`](LAWS.md) is emitted from `Rchain/Laws.lean` and the
+gate refuses a stale copy: each row says what a law's proof is worth — `proved-tied` (proved *and* tied
+to the running node by a conformance corpus), `proved-model` (proved about the Lean model), `owed`,
+`open`, `orphaned`, `vacuous`, or `axiomatized by design` — together with the axioms it rests on and the
+declarations that would falsify it.
+
+This section used to restate that per law, and it is a fair example of why it should not: by the time it
+was replaced it called Law 1 "30 element-comparator axioms" (the register counts 4), described Laws
+26–29 as "stated" (two of them are `proved-model`), and called Law 3's substitution "stated" long after
+it became a definition. A status repeated by hand is a status nothing checks.
+
+Three categories are worth stating *here*, because they are not per-law facts:
+
+- **`axiomByDesign`** — Law 19's cryptographic primitives (Blake2b, secp256k1, Curve25519) are abstract
+  interfaces whose properties are *postulated* (`Crypto/Random.lean`, `Crypto/Spec.lean`). Proving real
+  crypto is out of scope; this is the register's one deliberate boundary.
+- **`proved-tied` vs `proved-model`** — a conformance corpus is the only mechanical Lean↔Rust link this
+  repo has, so only a law whose layer has a Rust consumer can be `proved-tied`. The rest are claims
+  about a model a human keeps in sync, and the register says which rows are which.
+- **The Coq track** ([`coq/`](coq/)) states its laws as axioms and proves nothing yet; the register's
+  rows that make a Coq claim carry an anchor the emitter resolves, and the gate counts the Coq axioms
+  against a printed ceiling and pins the Coq version.
 
 ## How laws drive the Rust port
 

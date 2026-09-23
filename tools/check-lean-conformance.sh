@@ -102,13 +102,76 @@ else
 fi
 
 # --- 4. the Coq builds ---------------------------------------------------------
+# The version is pinned in `spec/coq/coq-version` and asserted here rather than installed by the gate:
+# CI used to take whatever `apt-get install coq` gave the runner image, so the tested and the deployed
+# Coq agreed by luck, and a Coq upgrade could have changed what the files mean without anything
+# noticing. The file is the checkable half; how CI provision that version is CI's business.
+COQ_AXIOM_CEILING=14   # the trust surface of spec/coq/, counted by step 4b below. Lower it with a discharge.
 if [[ -f "$SPEC/coq/Makefile" ]]; then
   if ! command -v coqc >/dev/null 2>&1; then
     fail "spec/coq exists but coqc is not installed"
-  elif (cd "$SPEC/coq" && make >/tmp/coq-build.log 2>&1); then
-    ok "coq build (spec/coq/)"
   else
-    fail "coq build (spec/coq/) — see /tmp/coq-build.log"
+    want="$(tr -d '[:space:]' <"$SPEC/coq/coq-version" 2>/dev/null || true)"
+    have="$(coqc --version 2>/dev/null | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)"
+    if [[ -n "$want" && "$want" != "$have" ]]; then
+      fail "Coq is $have but spec/coq/coq-version pins $want — the definitions are checked against one Coq, not 'a Coq 8.x'"
+    else
+      ok "coq version ($have, pinned)"
+    fi
+    if (cd "$SPEC/coq" && make >/tmp/coq-build.log 2>&1); then
+      ok "coq build (spec/coq/)"
+    else
+      fail "coq build (spec/coq/) — see /tmp/coq-build.log"
+    fi
+  fi
+fi
+
+# --- 4b. the Coq's own trust surface -------------------------------------------
+# Nothing read the Coq's axioms before this step: the Lean `sorry` scan covers `spec/Rchain/**` and no
+# check looked at a `.v` file at all, so the 15 `Axiom`s there — one of them *false* as written
+# (`binds_at_most_once`, deleted 2026-09-23; AUDIT C26 said so and Coq still carried it) — were
+# invisible. Counted rather than forbidden, and printed on *every* run: all of them are there today, so
+# a zero-tolerance rule would be red on arrival and switched off on day one, and an unchanged ceiling
+# that nobody can see is a ratchet in name only. `Admitted` counts too, because it is an axiom in the
+# kernel; `Unset Guard|Positivity Checking` counts because that is how a non-terminating recursion or an
+# ill-founded inductive is smuggled past the checker.
+if [[ -f "$SPEC/coq/Makefile" ]]; then
+  # The comment stripper uses `index` and never re-scans from the front of a shortened string. The
+  # `match`-based version looked equivalent and was not: after stripping `(* … *)` from a whole-line
+  # comment it left a shorter line, and `match("", /\(\*/)` in mawk *re-entered* the loop, so every
+  # paragraph after the first such comment was treated as comment text and silently dropped from the
+  # count (it reported 5 of 14). A count that under-reports is worse than none. This loop consumes at
+  # least two characters per iteration, so it terminates.
+  coq_axioms="$(awk '
+    function strip(line,   i, j, out) {
+      out = ""
+      while (1) {
+        i = index(line, "(*")
+        if (i == 0) return out line
+        out = out substr(line, 1, i - 1)
+        line = substr(line, i + 2)
+        j = index(line, "*)")
+        if (j == 0) { inblock = 1; return out }
+        line = substr(line, j + 2)
+      }
+    }
+    { line = $0
+      if (inblock) {
+        j = index(line, "*)")
+        if (j == 0) next
+        line = strip(substr(line, j + 2)); inblock = 0
+        if (line == "") next
+      } else { line = strip(line) }
+      if (line ~ /(^|[^A-Za-z_])(Axiom|Axioms|Parameter|Parameters|Conjecture|Admitted|admit|Unset[ \t]+(Guard|Positivity)[ \t]+Checking)([^A-Za-z_]|$)/) {
+        printf "%s:%d: %s\n", FILENAME, FNR, line
+      }
+    }' "$SPEC"/coq/*.v)"
+  n_coq="$(printf '%s\n' "$coq_axioms" | grep -c . || true)"
+  if ((n_coq > COQ_AXIOM_CEILING)); then
+    fail "the Coq trust surface grew: $n_coq axiom(s)/admit(s), ceiling $COQ_AXIOM_CEILING:"
+    printf '%s\n' "$coq_axioms" | sed 's/^/      /'
+  else
+    ok "coq trust surface: $n_coq axiom(s)/admit(s), ceiling $COQ_AXIOM_CEILING"
   fi
 fi
 

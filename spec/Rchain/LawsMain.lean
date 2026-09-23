@@ -112,19 +112,58 @@ def rustAnchorFailures : IO (List String) := do
         failures := failures ++ [s!"law {l.number}{l.clause} cites `{a}`, which does not exist"]
   return failures
 
+/-- Read a file, trying the path as given and then relative to the repo root (the parent of `spec/`). -/
+def readAnchorFile (p : String) : IO (Option String) := do
+  try
+    return some (← IO.FS.readFile p)
+  catch _ =>
+    try
+      return some (← IO.FS.readFile (".." / p))
+    catch _ =>
+      return none
+
+/-- **The Coq anchors, checked against the files themselves.** `spec/coq/Laws.v:substPar` must be a file
+that exists *and* a file that mentions `substPar`. That is a weaker claim than the `rust` field makes of
+a Rust file — it resolves a symbol, not a line — and weaker than a proof: whether that symbol is a
+theorem or an `Axiom` is not this field's question, because for most of this catalog's Coq half the
+answer is "an axiom" and step 4b of the gate is the thing that counts those. What it does catch is the
+register saying a law is stated in Coq when the declaration is not there at all, which no check could
+see before. -/
+def coqAnchorFailures : IO (List String) := do
+  let mut failures : List String := []
+  for l in Laws.laws do
+    for a in l.coq do
+      match a.splitOn ":" with
+      | [path, sym] =>
+        if sym.isEmpty then
+          failures := failures ++ [s!"law {l.number}{l.clause} cites Coq `{a}` with an empty symbol"]
+        else
+          match (← readAnchorFile path) with
+          | none =>
+            failures := failures ++ [s!"law {l.number}{l.clause} cites Coq `{a}`, whose file does not \
+              exist"]
+          | some content =>
+            if (content.splitOn sym).length < 2 then
+              failures := failures ++ [s!"law {l.number}{l.clause} cites Coq `{a}`, but `{path}` never \
+                mentions `{sym}`"]
+      | _ =>
+        failures := failures ++ [s!"law {l.number}{l.clause} cites Coq `{a}`, which is not \
+          `path:symbol`"]
+  return failures
+
 /-- One line of `spec/laws.tsv`. Columns: number, clause, layer, status, declarations, axioms, corpus,
-rust, witness, falsifiable, statement, note. Tab-separated with a header, so a consumer can read it by
-column. Newlines and tabs inside a field would break the format, so they are folded to spaces. -/
+rust, coq, witness, falsifiable, statement, note. Tab-separated with a header, so a consumer can read it
+by column. Newlines and tabs inside a field would break the format, so they are folded to spaces. -/
 def tsvRow (l : Law) : String :=
   let flat (s : String) : String := (s.replace "\t" " ").replace "\n" " "
   String.intercalate "\t" [
     toString l.number, l.clause, l.layer, l.status.wire, joinNames l.declarations,
-    joinNames l.axioms, l.corpus.getD "-", joinStrs l.rust, joinNames l.witness,
+    joinNames l.axioms, l.corpus.getD "-", joinStrs l.rust, joinStrs l.coq, joinNames l.witness,
     flat (l.falsifiable.getD "-"), flat l.statement, flat l.note]
 
 def tsv : String :=
   String.intercalate "\n" <|
-    ("number\tclause\tlayer\tstatus\tdeclarations\taxioms\tcorpus\trust\twitness\tfalsifiable\tstatement\tnote"
+    ("number\tclause\tlayer\tstatus\tdeclarations\taxioms\tcorpus\trust\tcoq\twitness\tfalsifiable\tstatement\tnote"
       :: ordered.map tsvRow)
 
 /-- The summary sentence both documents open with — the one number that replaces the three competing
@@ -153,12 +192,13 @@ def markdown : String :=
     let statement :=
       if l.note.isEmpty then l.statement else s!"{l.statement} <br/> <em>{l.note}</em>"
     let cells := [num, statement, l.status.wire, joinNames l.declarations, joinNames l.axioms,
-      l.corpus.getD "-", joinStrs l.rust, joinNames l.witness, l.falsifiable.getD "*owed*"]
+      l.corpus.getD "-", joinStrs l.rust, joinStrs l.coq, joinNames l.witness,
+      l.falsifiable.getD "*owed*"]
     "| " ++ String.intercalate " | " (cells.map mdCell) ++ " |"
   let table (layer : String) : String :=
     let rows := ordered.filter (·.layer == layer)
-    "| Law | Invariant | Status | Lean | Rests on | Tied by | Models | Witness | Falsified by |\n\
-     |---|---|---|---|---|---|---|---|---|\n"
+    "| Law | Invariant | Status | Lean | Rests on | Tied by | Models | Coq | Witness | Falsified by |\n\
+     |---|---|---|---|---|---|---|---|---|---|\n"
       ++ String.intercalate "\n" (rows.map one)
   String.intercalate "\n\n" (layers.map fun layer => s!"### {layer}\n\n{table layer}")
 
@@ -174,11 +214,13 @@ def main (args : List String) : IO UInt32 := do
   -- Check 9 first, and before writing anything: a register whose anchors do not resolve must not be
   -- able to emit. The gate re-emits the register and diffs it, so a failing check here fails the gate.
   let anchorFailures ← Rchain.Laws.rustAnchorFailures
+  let coqFailures ← Rchain.Laws.coqAnchorFailures
+  let anchorFailures := anchorFailures ++ coqFailures
   unless anchorFailures.isEmpty do
     for f in anchorFailures do
       IO.eprintln s!"rchain-laws: {f}"
-    IO.eprintln s!"rchain-laws: {anchorFailures.length} Rust anchor(s) do not resolve — the register \
-      claims to model code that is not there"
+    IO.eprintln s!"rchain-laws: {anchorFailures.length} anchor(s) do not resolve — the register \
+      claims to model code, or to be stated in Coq, that is not there"
     return 1
   let format :=
     match args.findIdx? (fun a => a == "--format") with
