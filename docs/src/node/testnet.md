@@ -71,22 +71,59 @@ the wrong chain, with a dead faucet link; that is fixed in
 
 Two practical notes:
 
-- the wallet needs a key holding REV to deploy or transfer — import one of the funded keys below;
+- the wallet needs a key holding REV to deploy or transfer — fund that key's address from the **faucet**
+  ([Getting REV](#getting-rev--the-faucet) below), rather than importing a funded key that belongs to
+  someone else;
 - it does not need a node's admin API: both testnet nodes run `--propose-on-deploy`, so the node that
   receives a deploy proposes it.
 
-## Keys and funds
+## Getting REV — the faucet
 
-Genesis funds the standard dev keys from `scripts/localnet/pk.txt` with 1,000,000,000,000 each,
-so anything already wired to those keys works unchanged:
+Test REV comes from a **faucet**, not from an account someone hands you. There are two doors to it, and
+both sign the same `revVault` transfer.
 
-| key | REV address |
+**From r-wallet, or any client: the node's own faucet.**
+
+```
+POST https://<node>/api/faucet   {"address": "<your REV address>"}
+→ {"deployId":"3045…","amount":30000000,"to":"1111…"}        # 30,000,000 drops = 0.3 REV
+```
+
+That is the endpoint r-wallet calls against whichever node it is pointed at, and it is all the wallet
+needs to fund a fresh address. It is a **dev-mode** endpoint: the node must have been started with
+`--dev-mode --deployer-private-key`, and it signs the transfer from that deployer's wallet. Without the
+key a node answers `400 "faucet requires --dev-mode --deployer-private-key"`, and reports `faucet: false`
+in its capability list.
+
+| node | faucet |
 |---|---|
-| `deployer` (`3554e876…`) | the facilitator faucet's key |
-| `dave` (`7707a3e0…`) | `1111pJu4TJaJDNJDTinnftr2fcHvMfnDeTRXRzwgPfwuKmGMa5juj` |
-| `alice`, `bob`, `carol` | see `wallet.txt` |
+| `playground.rhobot.net` (and `rnodeapi.rhobot.net`) | ✅ **works** — dev-mode plus a deployer key |
+| `testnet.rhobot.net` | ❌ **by design** — that key is also the dummy-deploy injector, and this net's idle chain is load-bearing for its sizing ([K7](#known-issues)). See the room faucet below |
 
-These are throwaway development keys, published on purpose. Never use them for anything real.
+**In a room: `/facil faucet`.**
+
+A quantum-os facilitator started with `--key <funded deploy key>` answers
+
+```
+/facil faucet <your REV address>     # or just /facil faucet, once it has remembered your address
+```
+
+and signs a fixed **10 REV** transfer to it. It remembers the address per peer, has no rate limit — a
+faucet on a test system is meant to be asked repeatedly — and refuses to move anything if it was started
+without a key. Plain English works too: `/facil ask give me some test rev` routes to the same function,
+never to an LLM decision to move funds.
+
+To put that faucet on **this** net, give a facilitator a funded testnet key and point it here; it will
+also answer over HTTP, in the same wire shape as the node's own endpoint:
+
+```sh
+node scripts/qos-cli/agent.mjs --room <room> --role facilitator \
+  --rnode https://testnet.rhobot.net --key <a funded key on this net> --faucet-http 8080
+```
+
+**The one thing the faucet needs is your REV address**: `/rholang key show` prints it in the playground,
+and r-wallet shows the address of the key you hold. Test REV holds no value — never send a faucet an
+address whose key you care about.
 
 ## What works today
 
@@ -212,6 +249,21 @@ validator is active — no top-N truncation to reason about.
 
 `--validator-private-key-path` (a file, not a flag value) works because the fix merged
 2026-09-21; on older binaries it is silently ignored and the key must be passed inline.
+
+### Genesis wallets
+
+`wallets.txt` funds the standard dev keys from `scripts/localnet/pk.txt` with 1,000,000,000,000 each, so
+tooling already wired to them works unchanged, and so a facilitator can be handed a deploy key that has
+REV to give away:
+
+| key | REV address |
+|---|---|
+| `deployer` (`3554e876…`) | the facilitator faucet's key |
+| `dave` (`7707a3e0…`) | `1111pJu4TJaJDNJDTinnftr2fcHvMfnDeTRXRzwgPfwuKmGMa5juj` |
+| `alice`, `bob`, `carol` | see `wallet.txt` |
+
+Throwaway development keys, published on purpose. Never use them for anything real. Users are not sent
+here — they get REV from the faucet; this table is the answer to "which address funds them".
 
 ## Operating the nodes
 
