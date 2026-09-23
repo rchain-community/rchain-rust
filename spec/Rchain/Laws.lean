@@ -226,9 +226,15 @@ def laws : List Law := [
     statement := "Capture-avoiding de Bruijn substitution; `sort (subst t) = subst (sort t)`, and \
       substitution preserves closedness **given a closed image**",
     status := .owed,
-    declarations := [`Rchain.substPar, `Rchain.sort_subst, `Rchain.subst_closed],
+    declarations := [`Rchain.substPar, `Rchain.substSend, `Rchain.substReceive,
+      `Rchain.substReceiveBind, `Rchain.substNew, `Rchain.substMatch, `Rchain.substMatchCase,
+      `Rchain.substBundle, `Rchain.substConnective, `Rchain.substListConnective,
+      `Rchain.substExprsToPar, `Rchain.substExprToPar, `Rchain.substListPar,
+      `Rchain.substListParPair, `Rchain.oneExpr, `Rchain.noSubst,
+      `Rchain.the_identity_satisfies_sort_subst, `Rchain.the_identity_satisfies_subst_closed,
+      `Rchain.bound_is_closed_free_is_not, `Rchain.sort_subst, `Rchain.subst_closed],
     rust := ["rholang/src/substitute.rs"],
-    axioms := [`Rchain.substPar, `Rchain.sort_subst, `Rchain.subst_closed],
+    axioms := [`Rchain.sort_subst, `Rchain.subst_closed],
     falsifiable := some "`the_identity_satisfies_sort_subst` and \
       `the_identity_satisfies_subst_closed`: `noSubst` — the function that substitutes *nothing* — \
       satisfies both laws, so the trio is satisfied by a substitution that does not substitute; that \
@@ -236,10 +242,22 @@ def laws : List Law := [
       pinned from the code side by `an_open_value_at_the_variable_leaves_a_free_variable` \
       (`rholang/src/property_tests.rs`), which holds exactly because the port's substitution is *not* \
       closed-preserving for an open image",
-    note := "**the three axioms are postulates, not a definition, and as stated they constrained \
-      substitution not at all** (2026-09-23): `substPar` is an `axiom`, so the two laws are statements \
-      about an undefined function — and they are satisfied by `noSubst` \
-      (`the_identity_satisfies_*`), which substitutes nothing. The second law's statement also \
+    note := "**`substPar` is a definition now** (2026-09-23, Programme D unit 5): a `mutual` family \
+      mirroring `substitute_par_no_sort` and the arms it calls (`rholang/src/substitute.rs:116-306`) — \
+      sends, receives and their binds, `new`, match cases, bundles, connectives and expressions, with \
+      the list walks the port writes as loops, the splice a substituted occurrence performs \
+      (`par_concat`, `:58`), the depth gate (`0` substitutes, `d ≥ 1` is a pattern position, \
+      `maybe_substitute_var` `:21-40`), and the set/map children sorted inside the recursion \
+      (`:437`, `:454`). Three differences from the port are *representational* and are written up in the \
+      file: the model's `Var` is level-based so there is no environment `shift` to do under binders \
+      (`env.rs:36-41`), `σ` is total where the port's `Env` is partial and errors on a \
+      `FreeVar`/`Wildcard` at depth 0, and the port's bundle-of-bundle merge has no model counterpart. \
+      **What that buys**: the two laws are now statements about a *function*, so they are falsifiable \
+      instance by instance rather than postulates over nothing — the earlier vacuity is gone \
+      (`noSubst`, `the_identity_satisfies_*` are kept for the record: they show the laws *alone* never \
+      identified substitution, which is why the definition had to be written). **What is owed**: both \
+      laws are still axioms, the proofs being the mutual induction over the twelve functions plus the \
+      list facts; the closedness one carries the closed-image hypothesis, which the previous version \
       **lacked the hypothesis that makes it true**: `Closed` is `Ty.lean`'s \"no `Var.free`\" \
       (`closedVar` counts `bound` as closed), so for `σ` mapping a bound variable to an open term the \
       conclusion is false of any operation that actually substitutes \
