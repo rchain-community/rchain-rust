@@ -238,9 +238,12 @@ consequences operators run into:
   treats a missing fringe as a failure will report an idle chain as unhealthy. Joining nodes can still
   sync — they restore from the **approved** fringe, persisted at the genesis ceremony by
   `put_approved_block` — but a node needing a *later* fringe to catch up quickly has none available.
-- `withdraw` does **not** remove stake from the pool at once: it deactivates the validator immediately and
-  escrows the stake until the quarantine deadline, so the stake keeps counting against the 2/3 threshold
-  until `close_block` refunds it (`rholang/src/native_state.rs`).
+- `withdraw` does **not** remove stake from the pool at once, and does not deactivate the validator
+  either: the request only stages a deadline (`pendingWithdrawers`), so the validator keeps validating,
+  keeps earning, and its stake keeps counting against the 2/3 threshold until the next epoch boundary.
+  The boundary moves the stake out of the pool into an escrowed claim, and the claim is paid once its
+  quarantine has elapsed — at a later boundary (`rholang/src/native_state.rs`, `close_block`; the
+  boundary is `blockNumber % epochLength == 0`).
 
 A net that must keep finalising while otherwise idle should either give its founding validator more than
 2/3 of the pool as a genesis stake, or run a second validator with `--autopropose`. [Running a public

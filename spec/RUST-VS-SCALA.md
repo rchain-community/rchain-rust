@@ -94,10 +94,12 @@ invariants.
   residual) remain to discharge — they need the sum-type `cmpSortable` laws proof (well-founded
   induction); the definition is in place. Everything else is proven or stated.
 - **Native PoS lifecycle**: the dynamic-validator lifecycle is implemented natively — trusted
-  stakeholder admission (`trust`/`untrust`), minimum/maximum-bond validation, immediate pool/active-set
-  updates with a top-N active cap, quarantined withdrawals, and stake-confiscating slashing to the Coop
-  vault (documented in `spec/RUST-FIRST.md`). Still deferred: reward computation/distribution and the
-  vault unforgeable-name capability (the vault stays a balance map keyed by REV address).
+  stakeholder admission (`trust`/`untrust`), minimum/maximum-bond validation, pool updates with a
+  top-N active cap applied **at epoch boundaries**, the epoch reward split and its committed-rewards
+  map, staged withdrawals paid out of the staking vault after quarantine, and stake-confiscating
+  slashing to the Coop vault (documented in `spec/RUST-FIRST.md`, modelled in `spec/Rchain/Pos.lean`).
+  Still deferred: the vault **unforgeable-name capability** (the vault stays a balance map keyed by
+  REV address) and the `revvaultexport` tooling.
 - **Accepted-faithful residuals** (by design, not defects — see `AUDIT.md` §5/§11): plaintext
   external-IP discovery (M7), the DAG `seen`-cache O(N²) (H6), and the rate-limited-but-plaintext
   Kademlia discovery bind.

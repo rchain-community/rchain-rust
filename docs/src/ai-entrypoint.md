@@ -5,8 +5,8 @@ first, then jump to the single page that answers your question. It mirrors the d
 [`AGENTS.md`](../../AGENTS.md) but is organized by *goal* rather than by artifact.
 
 The **authoritative formal specification** is the [`spec/`](../../spec/) tree — the law catalog
-([`spec/INVENTORY.md`](../../spec/INVENTORY.md), **43 rows**: the 29 calculus laws plus 14 covering the
-surface a client writes), the ρ-calculus core
+([`spec/INVENTORY.md`](../../spec/INVENTORY.md), **47 rows**: the 29 calculus laws, 14 covering the
+surface a client writes, and 4 for the Proof-of-Stake epoch), the ρ-calculus core
 ([`spec/RHO-CALCULUS.md`](../../spec/RHO-CALCULUS.md)), and the ρ→CoC type discipline
 ([`spec/TYPE-SYSTEM.md`](../../spec/TYPE-SYSTEM.md)). This book explains those; it never duplicates them.
 
@@ -37,9 +37,10 @@ surface a client writes), the ρ-calculus core
 
 ## The invariant catalog, in one screen
 
-RChain's behavior is pinned by **43 laws** ([`spec/INVENTORY.md`](../../spec/INVENTORY.md)): the 29
-below, about the calculus, and rows 30–43 about the surface a client writes and a matcher reads
-([Laws 30–43](formal/laws-30-43.md)). The first 29 group as:
+RChain's behavior is pinned by **47 laws** ([`spec/INVENTORY.md`](../../spec/INVENTORY.md)): the 29
+below, about the calculus, rows 30–43 about the surface a client writes and a matcher reads
+([Laws 30–43](formal/laws-30-43.md)), and rows 44–47 about the native Proof-of-Stake epoch
+([Laws 44–47](formal/laws-44-47.md)). The first 29 group as:
 
 - **Rholang (Laws 1–6)** — canonicalization, α-equivalence, substitution, reduction, spatial matching,
   closedness.
@@ -75,5 +76,5 @@ lived there and **nothing errored**:
 | `spec/Rchain/*.lean` (Lean 4) | Law 1, `≡`/`⟶` core, `Closed`, totality fundamentals **proven**; law 5's matcher is **defined** with `spatialMatch_implies_linear` proven and its two soundness/saturation axioms owed; Laws 3, 4, 7–18 **stated**; Laws 20–22 **proven** in `Scheduler.lean` (path order, the bakery core, and the await chain; the *global* liveness statement needs a finiteness hypothesis and is not a theorem as the old axiom stated it); Laws 23–25 in `SchedulerOnchain.lean` — Law 23 proven, Law 24 fully proven (`pinned_run_publication`, with no certificate hypothesis), Law 25 **proven** (`published_state_is_the_oracles`); crypto **axiomatized**. The register is `spec/laws.tsv` / `spec/LAWS.md`, emitted from `Rchain/Laws.lean` | `cd spec && lake build` |
 | `spec/coq/*.v` (Coq) | Laws 2–6 (substitution / α-equivalence metatheory) **stated** | `make -C spec/coq` |
 | `spec/conformance/*.tsv` | the conformance corpora: *emitted* from the Lean definitions, committed, and read by a Rust consumer that runs the same cases through the node | `tools/emit-lean-corpus.sh` |
-| `spec/INVENTORY.md` | the 43-row law catalog with source-of-truth + status | — |
+| `spec/INVENTORY.md` | the 47-row law catalog with source-of-truth + status | — |
 | `spec/TYPE-SYSTEM.md` | the ρ→CoC type discipline (totality, refinements) | — |

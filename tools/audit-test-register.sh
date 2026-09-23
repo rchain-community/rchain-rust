@@ -361,7 +361,7 @@ while IFS= read -r row; do
   fi
 done < <(grep -E '^\| *[0-9]+ \|' "$ROOT/spec/INVENTORY.md")
 if (( law_bad == 0 )); then
-  ok "$law_rows law row(s) 30-43 name real files or state their status"
+  ok "$law_rows law row(s) 30+ name real files or state their status"
 fi
 
 # --- summary -----------------------------------------------------------------

@@ -61,8 +61,9 @@ requires the rows to be exactly `1..lawCeiling`, and adding a law without bumpin
 rather than a quietly larger catalog.
 
 It was 43 — the catalog of laws 1–43 — until Programme B's implementation gaps were opened as their own
-laws rather than as prose in `spec/RUST-FIRST.md`." -/
-def lawCeiling : Nat := 43
+laws rather than as prose in `spec/RUST-FIRST.md`: 44–47 are the Proof-of-Stake epoch, its split, its
+conservation and its withdrawal, the four the port did not implement when the ceiling was written." -/
+def lawCeiling : Nat := 47
 
 /-- How many laws carry a given status, for the summary line. -/
 def statusCount (s : Status) : Nat := (laws.filter (·.status == s)).length

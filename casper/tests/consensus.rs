@@ -5,6 +5,7 @@ mod common;
 use std::collections::BTreeSet;
 
 use rchain_casper::genesis::contracts::Vault;
+use rchain_casper::system_deploy::SystemDeploy;
 use rchain_crypto::hash::blake2b512_random::Blake2b512Random;
 use rchain_crypto::public_key::PublicKey;
 use rchain_models::block::state_hash::StateHash;
@@ -229,11 +230,17 @@ async fn bond_deploy_updates_the_active_validator_set() {
   pos!("bond", *deployerId, 30, *ret) |
   for (_ <- ret) { Nil }
 }"#;
+    // The block's closing system deploy, which `block_creator` appends to every block. It is what
+    // makes the bond *active*: the contract's `bond` only joins the pool (`Pos.rhox:355`), and the
+    // active set is recomputed inside `closeBlock` (`:546`) — an epoch boundary, which with these
+    // permissive parameters every block is. Without it the deploy would pool the stake and leave the
+    // validator out of the consensus set.
+    let close = SystemDeploy::close_block(1, fixed_rand().split_byte(2));
     let (post_state, user_results, sys_results) = rm
         .compute_state(
             &post,
             &[deploy_with_key(term, vec![0u8; 65])],
-            &[],
+            &[close],
             &rand,
             BlockData::empty(),
         )

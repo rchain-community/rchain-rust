@@ -6,9 +6,10 @@ and the Rust realization. The canonical catalog is
 [`spec/INVENTORY.md`](../../../spec/INVENTORY.md); this page is the reader-facing rendering of the same
 mapping.
 
-**The catalog is 43 rows.** The 29 below are the *calculus*; rows **30–43** are the *surface* the
+**The catalog is 47 rows.** The 29 below are the *calculus*; rows **30–43** are the *surface* the
 matcher reads — grammar, lexing, normalization, matching, reply shapes, the JSON envelope — and they
-are [Laws 30–43](laws-30-43.md). The surface rows exist because every defect that started that
+are [Laws 30–43](laws-30-43.md); rows **44–47** are the native Proof-of-Stake epoch, and they are
+[Laws 44–47](laws-44-47.md). The surface rows exist because every defect that started that
 programme (AUDIT C9–C22) lived there and **nothing errored**: the laws below constrain the calculus,
 and a client never touches the calculus directly.
 
@@ -19,8 +20,8 @@ deferred); **axiom** = postulated by design (a cryptographic primitive).
 > `Rchain/Laws.lean` and refused stale by the gate. It counts clauses rather than laws and separates
 > **`proved-tied`** (proved *and* tied to the node by a corpus) from **`proved-model`** (proved about a
 > model a human keeps in sync); this page's plainer words are the narrative reading of the same rows.
-> Its total is **25 of 43 laws proved at all** — six tied to the node by a corpus, nineteen over the
-> model — with two more proved but *vacuous* (their statements restate their own definitions). Where the
+> Its total is **31 of 47 laws proved at all** — eight tied to the node by a corpus, twenty-three over
+> the model — with two more proved but *vacuous* (their statements restate their own definitions). Where the
 > two disagree, the register is right — and it
 > was right about this page's law 5, which used to call an almost-vacuous lemma "correctly stated".
 

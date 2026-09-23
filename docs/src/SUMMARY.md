@@ -22,6 +22,7 @@
 - [Grammar and sorts](formal/grammar-sorts.md)
 - [The 29 laws](formal/the-29-laws.md)
 - [Laws 30–43: the surface](formal/laws-30-43.md)
+- [Laws 44–47: the Proof-of-Stake epoch](formal/laws-44-47.md)
 - [The concurrency model](formal/concurrency-model.md)
 - [Determinism of the block state transition](formal/determinism.md)
 - [Structural congruence and reduction](formal/congruence-reduction.md)

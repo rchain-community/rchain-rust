@@ -1,14 +1,15 @@
 /-!
-# The law register — all 43 laws, in one place, with what each one rests on
+# The law register — all 47 laws, in one place, with what each one rests on
 
-`spec/INVENTORY.md` is the prose catalog, and `docs/src/formal/the-29-laws.md` and
-`docs/src/formal/laws-30-43.md` are its reader-facing rendering, but none of the three is *checkable*:
+`spec/INVENTORY.md` is the prose catalog, and `docs/src/formal/the-29-laws.md`,
+`docs/src/formal/laws-30-43.md` and `docs/src/formal/laws-44-47.md` are its reader-facing rendering, but
+none of the three is *checkable*:
 nothing noticed that the tree grew to 43 laws while both still
 said 29, that the two tables contradicted each other on Laws 5 and 24, or that Law 1's "30 residual
 axioms" were really 12. This module is the single source of truth those documents are generated from,
 and `Rchain/LawsMain.lean` (the `rchain-laws` executable) is what enforces it:
 
-1. **Numbering** — every law 1..43 is present, with no gaps, so a law cannot be quietly dropped.
+1. **Numbering** — every law 1..47 is present, with no gaps, so a law cannot be quietly dropped.
 2. **Reference integrity** — every declaration a row names actually exists in `Rchain`. A renamed or
    deleted theorem fails this, instead of leaving a row that cites a proof that is gone.
 3. **Axiom accounting** — the set of axioms cited by these rows is *exactly* the set of `axiom`
@@ -1014,7 +1015,83 @@ def laws : List Law := [
       parties to the catalog — the DTOs' serialization and the served `OPENAPI_JSON` document — so a \
       row that no longer matches either one fails",
     note := "checked for the envelope's keys and tags; the types behind them and the document's \
-      coverage are named as the boundary (AUDIT C29 fixed the two rows the check found stale)" }
+      coverage are named as the boundary (AUDIT C29 fixed the two rows the check found stale)" },
+  -- ── Proof-of-Stake: the epoch, its split, and the withdrawal (Laws 44–47) ───────────────────────
+  { number := 44, layer := "PoS",
+    statement := "Membership takes effect at an **epoch boundary**: the epoch sequence runs only when \
+      `blockNumber % epochLength = 0`, and off a boundary a bond is pooled but not activated, a \
+      withdrawal is staged but not moved, and no claim is paid",
+    status := .open,
+    rust := ["rholang/src/native_state.rs"],
+    falsifiable := some "`the_epoch_gate_does_nothing_off_a_boundary` builds the off-boundary state — a \
+      staged withdrawal *and* a full reward pot — and asserts the whole state is unchanged, then that \
+      the same call at the boundary moves it and pays it; the bond half is in the same test (pooled at \
+      once, still not active at a non-boundary block), and the two membership changes carry their own: \
+      `bond_escrows_the_stake_and_activates_at_the_boundary`, \
+      `withdraw_stages_the_validator_until_the_next_boundary`",
+    note := "**no Lean model of the transition, and the row says so rather than borrowing the reward \
+      model's credit.** `Rchain/Pos.lean` models the epoch's *arithmetic* — the pot and the split — \
+      not `close_block`'s four steps or the gate over them, so the statement above is a claim about the \
+      Rust, evidenced by those tests and anchored here. What is worth formalizing is not the gate \
+      itself (`if boundary then … else s` restates its own definition, which is the `vacuous` shape) \
+      but the **conservation** an epoch preserves: the staking vault plus the Coop vault plus every user \
+      vault is invariant, which is what makes a payout a transfer rather than a mint. That is this \
+      row's Programme C item" },
+  { number := 45, layer := "PoS",
+    statement := "The epoch's split: `pot * (bondᵢ / minimumBond) / (activeBonds / minimumBond)` per \
+      active validator, out of `pot = posBalance − totalBond − totalWithdraw − committedRewards`, \
+      committed per validator and paid only when the validator leaves",
+    status := .provedModel,
+    declarations := [`Rchain.rewardPot, `Rchain.reward],
+    rust := ["rholang/src/native_state.rs"],
+    falsifiable := some "`Rchain.the_dust_is_real` decides an instance: minimum bond 3, bonds `[4, 5]`, \
+      pot 10 — each validator is paid 3, so the epoch distributes **6 of 10**. A statement that said the \
+      shares sum to the pot is refuted by that line, and so is one that dropped either division. On the \
+      Rust side `an_epoch_splits_the_pot_and_keeps_the_dust` builds exactly that state (bonds 4 and 5, \
+      `minimum_bond` 3, a pot of 10 paid in as phlo) and reads the split back, so the implementation is \
+      checked against the arithmetic rather than against a remembered number",
+    note := "the formula is the Scala's `getCurrentEpochRewards` (`Pos.rhox:241-256`), and the port's \
+      `epoch_reward` agrees with it wherever the contract is *defined*; where it is not — \
+      `minimumBond = 0`, or a normaliser of zero — the contract divides by zero and faults the deploy, \
+      and the port pays zero instead (registered in `AUDIT.md` §6). The model's `reward` is total, so \
+      the two-part statement is: the model is the formula, and the Rust is the model on the model's \
+      domain" },
+  { number := 46, layer := "PoS",
+    statement := "The split **does not conserve**: `Σ rewards ≤ pot`, and the difference is the dust of \
+      two integer divisions — which is not lost but stays in the pot for the next epoch",
+    status := .provedModel,
+    declarations := [`Rchain.sum_rewards_le_pot, `Rchain.list_sum_div_le, `Rchain.div_add_div_le,
+      `Rchain.nsum_map_mul_left, `Rchain.the_dust_is_real],
+    rust := ["rholang/src/native_state.rs"],
+    falsifiable := some "the inequality is **strict in an instance**: `the_dust_is_real` is minimum \
+      bond 3, bonds `[4, 5]`, pot 10, six units distributed of ten (`decide`d, so the strictness is a \
+      computation rather than a remark), and `an_epoch_splits_the_pot_and_keeps_the_dust` reads the \
+      same four units back out of the Rust's pot afterwards — the dust is still there for the next \
+      epoch",
+    note := "the row this register most needed from Programme B: a conservation law written as an \
+      *equality* would have been false, and the Scala's own comment does not say which it means. The \
+      two divisions are the whole content — the model decides the question by computing `Pos.rhox`'s \
+      arithmetic in `Nat` — and the Lean statement's hypothesis is the case the contract leaves \
+      defined (`0 < activeBonds / minimumBond`), which is the same boundary `AUDIT.md` §6 records on \
+      the Rust side" },
+  { number := 47, layer := "PoS",
+    statement := "A withdrawal is **staged**: the request records `quarantineLength + epochLength * \
+      (1 + blockNumber / epochLength)` and changes nothing else; the validator leaves the pool at the \
+      next boundary, and is paid `bond + committed rewards` at the first boundary past its quarantine",
+    status := .open,
+    rust := ["rholang/src/native_state.rs"],
+    falsifiable := some "`withdraw_stages_the_validator_until_the_next_boundary` asserts the three \
+      stages separately — still bonded and still active with a deadline after the request; out of the \
+      pool and escrowed (vault balance still zero) after the first boundary; paid after the second — \
+      and `a_released_withdrawal_pays_the_bond_plus_the_committed_rewards` asserts the *sum* \
+      (`bond 40 + committed 5 = 45`) **and** that the staking vault is exactly emptied by it, which \
+      fails if the payout is not the claim's own two parts",
+    note := "the contract's ordering is the law's substance: the reward is committed *before* the \
+      move, so a validator earns in the epoch it leaves and is paid that reward later, when it is no \
+      longer in the pool — which is why the claim stores the bond and reads the reward from the \
+      committed map at payment time (`Pos.rhox:582` and `:604`; the contract's header comment \
+      describing the stored pair as `bond + reward` is the *payee's* sum, not the record's). No Lean \
+      model of the transition yet — same Programme C item as law 44" }
 ]
 
 /-- Every law number the catalog defines. Laws with clauses repeat. -/

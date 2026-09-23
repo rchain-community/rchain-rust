@@ -201,6 +201,9 @@ not found in that file. Coverage claims live here rather than in prose so they c
 | G3 | `rholang/src/native_state.rs` | `bond_requires_trust_admission` |
 | G3 | `casper/tests/consensus.rs` | `bond_deploy_updates_the_active_validator_set` |
 | G3 | `rholang/src/native_state.rs` | `the_phlo_charge_funds_the_pot_and_the_refund_returns_the_surplus` |
+| G3 | `rholang/src/native_state.rs` | `the_epoch_gate_does_nothing_off_a_boundary` |
+| G3 | `rholang/src/native_state.rs` | `an_epoch_splits_the_pot_and_keeps_the_dust` |
+| G3 | `rholang/src/native_state.rs` | `a_released_withdrawal_pays_the_bond_plus_the_committed_rewards` |
 | G4 | `casper/tests/consensus.rs` | `deploy_exceeding_phlo_limit_fails_and_next_runs` |
 | G5 | `rspace/src/state/mod.rs` | `validate_state_items_accepts_valid_round_trip` |
 | G5 | `rspace/src/state/mod.rs` | `validate_state_items_rejects_corrupted_data` |
@@ -288,17 +291,24 @@ hard mode would fail on, so that a half-finished sweep is legible instead of inv
   which would be a production change for a test.
 
 - **G3 — PoS lifecycle mutations** (`rholang/src/native_state.rs`). ✅ `bond` trust admission +
-  min/max + funds + activation, `withdraw` deactivation + quarantine refund via `close_block`,
-  `slash`/`untrust` confiscation to the Coop vault, active-set top-N selection, genesis install,
-  `pre_charge` incl. insufficient funds, and the revVault deposit/transfer paths. ✅ The staking vault
-  and its flow: `bond_moves_the_stake_into_the_staking_vault`,
+  min/max + funds, deferred activation at the boundary, `withdraw` staging + quarantine payout via
+  `close_block`, `slash`/`untrust` confiscation to the Coop vault, active-set top-N selection, genesis
+  install, `pre_charge` incl. insufficient funds, and the revVault deposit/transfer paths. ✅ The
+  staking vault and its flow: `bond_moves_the_stake_into_the_staking_vault`,
   `the_phlo_charge_funds_the_pot_and_the_refund_returns_the_surplus` (the charge in, the surplus back
   out, the burned phlo left as the pot) and
   `a_short_staking_vault_fails_the_transfer_rather_than_half_paying` — with the *conservation* of
   total REV across bond / slash / charge / refund / withdrawal asserted by the `total_rev` helper in
-  every one of them. *Seam:* `NativeSystemState` over `InMemNativeStore::empty()`, plus the
-  end-to-end deploy → active-set → replay path in `casper/tests/consensus.rs`. **Not covered:**
-  reward distribution (deferred as a *feature*, not a test).
+  every one of them. ✅ The epoch: `the_epoch_gate_does_nothing_off_a_boundary` (law 44 — nothing
+  changes off a boundary, and a bond becomes a validator only *at* one),
+  `an_epoch_splits_the_pot_and_keeps_the_dust` (laws 45/46 — the model's `the_dust_is_real` case, six
+  distributed of ten, read back from the implementation),
+  `a_released_withdrawal_pays_the_bond_plus_the_committed_rewards` (law 47's payoff, including the
+  order that lets a validator earn in the epoch it leaves),
+  `an_epoch_with_a_zero_normaliser_pays_nothing`, and
+  `a_drafted_vault_floors_the_pot_instead_of_wrapping`. *Seam:* `NativeSystemState` over
+  `InMemNativeStore::empty()`, plus the end-to-end deploy → boundary → active-set → replay path in
+  `casper/tests/consensus.rs` (which now passes the CloseBlock system deploy a real block carries).
 
 - **G4 — Gas-metering enforcement** (`rholang/src/storage.rs` `ChargingRSpace::produce/consume`).
   ✅ end-to-end: `deploy_exceeding_phlo_limit_fails_and_next_runs` in `casper/tests/consensus.rs`.

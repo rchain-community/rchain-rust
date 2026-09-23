@@ -21,8 +21,10 @@ validator's share is a correctness parameter, not a cosmetic one.
   observers bonding `100` each do not push it under the threshold. At `300`/`100`, a single observer
   bonding `100` took the founder to 60% and finality stopped dead — blocks kept extending the DAG and
   nothing was finalised.
-- `withdraw` is not an immediate escape: it deactivates the validator now but **escrows the stake until the
-  quarantine deadline**, so it keeps counting against 2/3 (`rholang/src/native_state.rs`, `close_block`).
+- `withdraw` is not an immediate escape: it only stages the request, the validator keeps validating until
+  the next epoch boundary, and the stake stays in the pool until then and **escrowed until the quarantine
+  deadline** after that — so it keeps counting against 2/3 throughout (`rholang/src/native_state.rs`,
+  `close_block`).
 - If the ratio cannot be guaranteed (or the net must keep finalising while idle), run a second validator
   with `--autopropose`, and remember the [block production modes](operating.md#block-production-modes).
 

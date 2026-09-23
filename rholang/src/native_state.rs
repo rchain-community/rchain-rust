@@ -53,8 +53,10 @@ use crate::util::rev_address::RevAddress;
 const VALIDATOR_LEN: usize = 65;
 /// The size of a serialized `(Validator, NonNegI64)` bond entry (65-byte key + 8-byte stake).
 const BOND_ENTRY_LEN: usize = VALIDATOR_LEN + 8;
-/// The size of a serialized `(Validator, i64)` withdrawer entry.
-const WITHDRAWER_ENTRY_LEN: usize = VALIDATOR_LEN + 8;
+/// The size of a serialized withdrawal entry (65-byte key + 8-byte bond + 8-byte deadline).
+const WITHDRAWER_ENTRY_LEN: usize = VALIDATOR_LEN + 8 + 8;
+/// The size of a serialized withdrawal *request* entry (65-byte key + 8-byte deadline).
+const PENDING_ENTRY_LEN: usize = VALIDATOR_LEN + 8;
 /// The size of a serialized trusted-set entry.
 const TRUSTED_ENTRY_LEN: usize = VALIDATOR_LEN;
 /// `PosParams` serializes as five little-endian `i64`s.
@@ -80,6 +82,20 @@ pub fn pos_trusted_key() -> Blake2b256Hash {
 /// Leaf key for pending withdrawers (`validator → quarantine deadline block`).
 pub fn pos_withdrawers_key() -> Blake2b256Hash {
     Blake2b256Hash::create(b"pos:withdrawers")
+}
+
+/// Leaf key for the withdrawal *requests* — `validator → epoch-boundary deadline`
+/// (`Pos.rhox`'s `pendingWithdrawers`). A request stays here until the next epoch boundary, where
+/// `close_block` moves it into [`pos_withdrawers_key`] and takes the validator out of the pool.
+pub fn pos_pending_withdrawers_key() -> Blake2b256Hash {
+    Blake2b256Hash::create(b"pos:pending_withdrawers")
+}
+
+/// Leaf key for rewards earned but not yet paid out — `validator → NonNegI64`
+/// (`Pos.rhox`'s `committedRewards`). A validator's entry accumulates across epochs and is paid with
+/// its bond when its withdrawal is released.
+pub fn pos_committed_key() -> Blake2b256Hash {
+    Blake2b256Hash::create(b"pos:committed")
 }
 
 /// Leaf key for the immutable PoS parameters.
@@ -329,18 +345,66 @@ pub fn decode_trusted(bytes: &[u8]) -> Result<BTreeSet<Validator>, String> {
         .collect())
 }
 
-/// Canonically encode pending withdrawers (`validator → deadline`, sorted, LE deadline).
-pub fn encode_withdrawers(withdrawers: &BTreeMap<Validator, i64>) -> Vec<u8> {
-    let mut out = Vec::with_capacity(withdrawers.len() * WITHDRAWER_ENTRY_LEN);
-    for (v, deadline) in withdrawers {
+/// Canonically encode pending withdrawers (`validator → epoch-boundary deadline`, sorted, LE
+/// deadline).
+pub fn encode_pending_withdrawers(pending: &BTreeMap<Validator, i64>) -> Vec<u8> {
+    let mut out = Vec::with_capacity(pending.len() * PENDING_ENTRY_LEN);
+    for (v, deadline) in pending {
         out.extend_from_slice(v.as_bytes());
         out.extend_from_slice(&deadline.to_le_bytes());
     }
     out
 }
 
-/// Decode pending withdrawers (inverse of [`encode_withdrawers`]).
-pub fn decode_withdrawers(bytes: &[u8]) -> Result<BTreeMap<Validator, i64>, String> {
+/// Decode pending withdrawers (inverse of [`encode_pending_withdrawers`]).
+pub fn decode_pending_withdrawers(bytes: &[u8]) -> Result<BTreeMap<Validator, i64>, String> {
+    if bytes.len() % PENDING_ENTRY_LEN != 0 {
+        return Err(format!(
+            "pending withdrawers encoding has {} bytes, not a multiple of {PENDING_ENTRY_LEN}",
+            bytes.len()
+        ));
+    }
+    let mut out = BTreeMap::new();
+    for chunk in bytes.chunks_exact(PENDING_ENTRY_LEN) {
+        let validator = Validator::from_slice(&chunk[..VALIDATOR_LEN]);
+        let deadline: [u8; 8] = chunk[VALIDATOR_LEN..PENDING_ENTRY_LEN]
+            .try_into()
+            .map_err(|_| "pending withdrawers encoding: invalid deadline length".to_string())?;
+        out.insert(validator, i64::from_le_bytes(deadline));
+    }
+    Ok(out)
+}
+
+/// An escrowed withdrawal (`Pos.rhox`'s `withdrawers` entry): the bond taken out of the pool at the
+/// epoch boundary that moved the validator out, and the block at which it may be paid.
+///
+/// The stored amount is the **bond** alone: `movePendingWithdrawer` sets the entry from
+/// `allBonds.get(pk)` (`Pos.rhox:582`), and the reward is added at payment time from the committed
+/// map (`removeQuarantinedWithdrawers`, `:604` — `bonds + committedRewards.getOrElse(pk, 0)`). The
+/// contract's header comment describes the pair as `(original bond + reward, quantinue length)`
+/// (`:189-192`), which is what the payee *receives*; the code at `:582` is what is stored, and the
+/// difference is what makes the epoch's last reward reach a validator that has already left the pool.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Withdrawal {
+    /// The stake escrowed out of the pool when the validator was moved here.
+    pub bond: NonNegI64,
+    /// The block at which the claim may be paid (`currentBlockNumber >= deadline`).
+    pub deadline: i64,
+}
+
+/// Canonically encode withdrawals: 65-byte validator, LE bond, LE deadline.
+pub fn encode_withdrawers(withdrawers: &BTreeMap<Validator, Withdrawal>) -> Vec<u8> {
+    let mut out = Vec::with_capacity(withdrawers.len() * WITHDRAWER_ENTRY_LEN);
+    for (v, w) in withdrawers {
+        out.extend_from_slice(v.as_bytes());
+        out.extend_from_slice(&i64::from(w.bond).to_le_bytes());
+        out.extend_from_slice(&w.deadline.to_le_bytes());
+    }
+    out
+}
+
+/// Decode withdrawals (inverse of [`encode_withdrawers`]).
+pub fn decode_withdrawers(bytes: &[u8]) -> Result<BTreeMap<Validator, Withdrawal>, String> {
     if bytes.len() % WITHDRAWER_ENTRY_LEN != 0 {
         return Err(format!(
             "withdrawers encoding has {} bytes, not a multiple of {WITHDRAWER_ENTRY_LEN}",
@@ -350,10 +414,21 @@ pub fn decode_withdrawers(bytes: &[u8]) -> Result<BTreeMap<Validator, i64>, Stri
     let mut out = BTreeMap::new();
     for chunk in bytes.chunks_exact(WITHDRAWER_ENTRY_LEN) {
         let validator = Validator::from_slice(&chunk[..VALIDATOR_LEN]);
-        let deadline: [u8; 8] = chunk[VALIDATOR_LEN..WITHDRAWER_ENTRY_LEN]
+        let bond: [u8; 8] = chunk[VALIDATOR_LEN..VALIDATOR_LEN + 8]
+            .try_into()
+            .map_err(|_| "withdrawers encoding: invalid bond length".to_string())?;
+        let bond = NonNegI64::try_from(i64::from_le_bytes(bond))
+            .map_err(|e| format!("withdrawers encoding: {e}"))?;
+        let deadline: [u8; 8] = chunk[VALIDATOR_LEN + 8..WITHDRAWER_ENTRY_LEN]
             .try_into()
             .map_err(|_| "withdrawers encoding: invalid deadline length".to_string())?;
-        out.insert(validator, i64::from_le_bytes(deadline));
+        out.insert(
+            validator,
+            Withdrawal {
+                bond,
+                deadline: i64::from_le_bytes(deadline),
+            },
+        );
     }
     Ok(out)
 }
@@ -437,7 +512,7 @@ pub struct PosGenesis {
 impl PosGenesis {
     /// The initial active set (top-N of the pool by stake).
     pub fn active_bonds(&self) -> BTreeMap<Validator, NonNegI64> {
-        select_active(&self.bonds, &BTreeMap::new(), &self.params)
+        select_active(&self.bonds, &BTreeMap::<Validator, ()>::new(), &self.params)
     }
 
     /// The initial bond sum — the amount the staking vault is created with (`Pos.rhox:167-174`:
@@ -455,9 +530,18 @@ impl PosGenesis {
 /// Select the active validator set from the pool: drop zero-stake and withdrawing validators, sort
 /// by descending stake then ascending `Validator` (deterministic), and truncate to
 /// `number_of_active_validators` (`0` = unlimited).
-pub fn select_active(
+///
+/// Generic over what the withdrawal map holds, because only its key set matters here and the port has
+/// two of them: the staged requests (`validator → deadline`, `pendingWithdrawers`) and the claims
+/// (`validator → Withdrawal`, `withdrawers`).
+///
+/// **This is `pickActiveValidators` with a different selection rule** — the contract takes the first
+/// `$$numberOfActiveValidators$$` entries of the bonds map in *key* order (`Pos.rhox:718-726`, whose
+/// own TODO marks it a placeholder for a random selection), and the port takes the highest-staked.
+/// Registered in `spec/AUDIT.md` §6.
+pub fn select_active<V>(
     pool: &BTreeMap<Validator, NonNegI64>,
-    withdrawers: &BTreeMap<Validator, i64>,
+    withdrawers: &BTreeMap<Validator, V>,
     params: &PosParams,
 ) -> BTreeMap<Validator, NonNegI64> {
     let mut candidates: Vec<(&Validator, NonNegI64)> = pool
@@ -486,6 +570,97 @@ fn checked_i64(value: i128, what: &str) -> Result<i64, String> {
 fn balance_plus(balance: NonNegI64, delta: i64, what: &str) -> Result<NonNegI64, String> {
     let sum = checked_i64(i128::from(i64::from(balance)) + i128::from(delta), what)?;
     NonNegI64::try_from(sum).map_err(|_| format!("{what} would become negative: {sum}"))
+}
+
+/// The epoch length the port **divides by**.
+///
+/// The contract divides by `$$epochLength$$` directly, in both of law 44's places — the boundary test
+/// (`Pos.rhox:517`, `blockNumber % $$epochLength$$`) and the withdrawal deadline (`:381`,
+/// `blockNumber / $$epochLength$$`). With `epochLength == 0` both fault. The port's default parameters
+/// are permissive (`epoch_length: 0`, see [`PosParams::default`]), and the meaning of a zero epoch
+/// length is "every block is an epoch boundary" — which is what `epochLength == 1` means to the
+/// contract. So the divisor is `max(epoch_length, 1)`, which agrees with the contract for every
+/// `epoch_length >= 1` and turns the unrepresentable zero into the one-block epoch it must mean.
+fn epoch_divisor(params: &PosParams) -> i64 {
+    if params.epoch_length <= 0 {
+        1
+    } else {
+        params.epoch_length
+    }
+}
+
+/// Is `block_number` an epoch boundary (`Pos.rhox:517`)? At a non-boundary the contract does
+/// **nothing at all** — no reward, no activation, no payment.
+fn is_epoch_boundary(params: &PosParams, block_number: i64) -> bool {
+    block_number % epoch_divisor(params) == 0
+}
+
+/// The epoch's distributable pot: the staking vault less every outstanding claim on it — the bonded
+/// pool, the escrowed withdrawals, and the rewards already committed but not yet paid
+/// (`Pos.rhox:249`: `posBalance - totalBond - totalWithdraw - totalCommittedRewards`).
+///
+/// **Floored at zero.** The Scala computes this in `Long`, so a vault that cannot cover the
+/// outstanding claims yields a *negative* pot and therefore negative rewards; this port's balances are
+/// `NonNegI64` and a negative reward is not a value it will model. Through the protocol the floor is
+/// unreachable — every debit is bounded by the credit that funded it, so the vault always covers its
+/// claims — which is why this is a defensive floor and not a silent clamp, and why
+/// `a_drafted_vault_floors_the_pot_instead_of_wrapping` has to build the diverged state by hand.
+///
+/// One consequence of the formula, and not a bug in it: the dust an epoch leaves un-distributed is
+/// **not lost**. It stays in the pot, so the next epoch distributes it along with its own phlo.
+fn epoch_pot(
+    vault: NonNegI64,
+    bonds: &BTreeMap<Validator, NonNegI64>,
+    withdrawers: &BTreeMap<Validator, Withdrawal>,
+    committed: &BTreeMap<Validator, NonNegI64>,
+) -> Result<i64, String> {
+    let claims: i128 = bonds
+        .values()
+        .map(|s| i128::from(i64::from(*s)))
+        .sum::<i128>()
+        + withdrawers
+            .values()
+            .map(|w| i128::from(i64::from(w.bond)))
+            .sum::<i128>()
+        + committed
+            .values()
+            .map(|s| i128::from(i64::from(*s)))
+            .sum::<i128>();
+    checked_i64((i128::from(i64::from(vault)) - claims).max(0), "epoch pot")
+}
+
+/// One active validator's share of the pot (`Pos.rhox:249`):
+///
+/// ```text
+/// pot * (bond / minimumBond) / (activeBonds / minimumBond)
+/// ```
+///
+/// two integer divisions, which is why the shares do not add up to the pot: see
+/// `Rchain.sum_rewards_le_pot` in `spec/Rchain/Pos.lean`, whose statement is the inequality and whose
+/// `the_dust_is_real` is the case where it is strict.
+///
+/// **Zero where the contract's formula is undefined.** `minimumBond == 0`, or a normaliser of zero
+/// (`activeBonds < minimumBond`), makes the Scala divide by zero — which faults the `closeBlock`
+/// deploy rather than producing a value. The port's parameters are permissive by default
+/// (`minimum_bond: 0`), so a fault is not a rule it can copy, and zero is the only value that leaves
+/// the epoch total. That is the same case the Lean model leaves as a hypothesis
+/// (`hD : 0 < activeBonds / minimumBond`): the model states the theorem for the defined case, the port
+/// pays nothing in the undefined one. `an_epoch_with_a_zero_normaliser_pays_nothing` pins it.
+fn epoch_reward(pot: i64, minimum_bond: i64, active_bonds: i64, bond: i64) -> Result<i64, String> {
+    if minimum_bond <= 0 {
+        return Ok(0);
+    }
+    let normaliser = active_bonds / minimum_bond;
+    if normaliser <= 0 {
+        return Ok(0);
+    }
+    // The product is exact in `i128` rather than wrapped as the Scala's `Long` multiplication would
+    // be, and the quotient is checked rather than clamped: `active_bonds / minimum_bond` is at least
+    // `bond / minimum_bond` for an active validator, so the model's lemma bounds the quotient by the
+    // pot — the check cannot fire, and if the reasoning is wrong it is an error rather than a silent
+    // clamp.
+    let scaled = i128::from(pot) * i128::from(bond / minimum_bond);
+    checked_i64(scaled / i128::from(normaliser), "epoch reward")
 }
 
 /// The typed native system state, wrapping the shared byte-oriented [`InMemNativeStore`].
@@ -591,7 +766,7 @@ impl NativeSystemState {
     }
 
     /// Read the pending withdrawers (`validator → quarantine deadline`).
-    pub async fn withdrawers(&self) -> Result<BTreeMap<Validator, i64>, String> {
+    pub async fn withdrawers(&self) -> Result<BTreeMap<Validator, Withdrawal>, String> {
         match self.store.get(PREFIX_POS, &pos_withdrawers_key()).await? {
             Some(bytes) => decode_withdrawers(&bytes),
             None => Ok(BTreeMap::new()),
@@ -599,12 +774,48 @@ impl NativeSystemState {
     }
 
     /// Write the pending withdrawers.
-    pub fn set_withdrawers(&self, withdrawers: &BTreeMap<Validator, i64>) {
+    pub fn set_withdrawers(&self, withdrawers: &BTreeMap<Validator, Withdrawal>) {
         self.store.put(
             PREFIX_POS,
             pos_withdrawers_key(),
             encode_withdrawers(withdrawers),
         );
+    }
+
+    /// Read the withdrawal *requests* (`validator → epoch-boundary deadline`; the contract's
+    /// `pendingWithdrawers`).
+    pub async fn pending_withdrawers(&self) -> Result<BTreeMap<Validator, i64>, String> {
+        match self
+            .store
+            .get(PREFIX_POS, &pos_pending_withdrawers_key())
+            .await?
+        {
+            Some(bytes) => decode_pending_withdrawers(&bytes),
+            None => Ok(BTreeMap::new()),
+        }
+    }
+
+    /// Write the withdrawal requests.
+    pub fn set_pending_withdrawers(&self, pending: &BTreeMap<Validator, i64>) {
+        self.store.put(
+            PREFIX_POS,
+            pos_pending_withdrawers_key(),
+            encode_pending_withdrawers(pending),
+        );
+    }
+
+    /// Read the committed rewards (`validator → NonNegI64`).
+    pub async fn committed_rewards(&self) -> Result<BTreeMap<Validator, NonNegI64>, String> {
+        match self.store.get(PREFIX_POS, &pos_committed_key()).await? {
+            Some(bytes) => decode_bonds(&bytes),
+            None => Ok(BTreeMap::new()),
+        }
+    }
+
+    /// Write the committed rewards (the same canonical encoding as the bond maps).
+    pub fn set_committed_rewards(&self, committed: &BTreeMap<Validator, NonNegI64>) {
+        self.store
+            .put(PREFIX_POS, pos_committed_key(), encode_bonds(committed));
     }
 
     /// Read the immutable PoS parameters (permissive defaults if absent).
@@ -700,13 +911,17 @@ impl NativeSystemState {
     }
 
     /// Install the genesis PoS state: the pool, the trusted set, the parameters, the derived active
-    /// set, an empty withdrawer map, an empty Coop vault, and a staking vault holding exactly the
-    /// initial bond sum. This is the deterministic entry point shared by genesis creation and
-    /// genesis replay.
+    /// set, empty withdrawal/commitment maps, an empty Coop vault, and a staking vault holding
+    /// exactly the initial bond sum. This is the deterministic entry point shared by genesis creation
+    /// and genesis replay.
     ///
     /// The vault is funded with the bond sum and nothing more, so the *pot* an epoch distributes
     /// (`vault − bonded − withdrawers − committed rewards`) is **zero** at genesis: the rewards an
     /// epoch pays come from the phlo of the deploys since the last boundary, not from the bonds.
+    ///
+    /// The genesis active set is taken directly from the pool (`Pos.rhox:178`,
+    /// `pickActiveValidators!($$initialBonds$$.toList(), *initialActiveCh)`), because genesis *is* a
+    /// boundary.
     pub fn install_genesis(&self, genesis: &PosGenesis) -> Result<(), String> {
         // Computed before anything is written, so a genesis whose bond sum does not fit an `i64`
         // leaves the store untouched rather than half-installed.
@@ -716,13 +931,15 @@ impl NativeSystemState {
         } else {
             genesis.trusted.clone()
         };
-        let withdrawers = BTreeMap::new();
+        let withdrawers: BTreeMap<Validator, Withdrawal> = BTreeMap::new();
         let active = select_active(&genesis.bonds, &withdrawers, &genesis.params);
         self.set_bonds(&genesis.bonds);
         self.set_active(&active);
         self.set_trusted(&trusted);
         self.set_params(&genesis.params);
         self.set_withdrawers(&withdrawers);
+        self.set_pending_withdrawers(&BTreeMap::new());
+        self.set_committed_rewards(&BTreeMap::new());
         self.set_coop_balance(NonNegI64::zero());
         self.set_pos_vault_balance(bond_sum);
         Ok(())
@@ -730,7 +947,14 @@ impl NativeSystemState {
 
     // --- PoS: validator lifecycle ----------------------------------------
 
-    /// Bond `amount` stake for `validator` and activate it (dynamic validator lifecycle).
+    /// Bond `amount` stake for `validator` (port of the PoS `bond`, `Pos.rhox:330-362`).
+    ///
+    /// The stake moves out of the validator's vault into the staking vault and into the pool. The
+    /// validator becomes **active at the next epoch boundary**, not here: the contract's `bond` only
+    /// writes `allBonds` (`:355`), and `activeValidators` is recomputed by `pickActiveValidators`
+    /// inside `closeBlock` (`:546`). With the permissive default parameters that is the same block's
+    /// `close_block`, so a bonded validator is active by the block's post-state; with an epoch length
+    /// greater than one it waits, exactly as the contract does.
     ///
     /// Rejected when the validator is already bonded/active, is not in the trusted stakeholder set,
     /// the amount is outside `[minimum_bond, maximum_bond]`, or the validator's REV vault cannot
@@ -788,16 +1012,28 @@ impl NativeSystemState {
         // to pay out of, and the epoch would distribute a pot that does not exist.
         self.credit_pos_vault(stake).await?;
         pool.insert(*validator, amount);
-        let withdrawers = self.withdrawers().await?;
-        let new_active = select_active(&pool, &withdrawers, &params);
+        // The pool only. Activation is the epoch boundary's (`close_block`'s
+        // `pickActiveValidators`, `Pos.rhox:546`), which is why this does not touch `pos:active`:
+        // promoting a validator mid-epoch would change the consensus set inside an epoch, which is
+        // the rule law 44 is about.
         self.set_bonds(&pool);
-        self.set_active(&new_active);
-        let _ = block_number; // activation is immediate in this model (dynamic validation)
+        let _ = block_number; // the contract's `bond` reads no block data at all
         Ok(Ok(()))
     }
 
-    /// Request withdrawal of a validator's bond. The validator deactivates immediately; the stake is
-    /// escrowed until the quarantine deadline and refunded by [`Self::close_block`].
+    /// Request withdrawal of a validator's bond (port of the PoS `withdraw`, `Pos.rhox:363-387`).
+    ///
+    /// The request only **stages** the withdrawal. The validator stays bonded and stays in the active
+    /// set, earning, until the next epoch boundary — the contract's `withdraw` writes
+    /// `pendingWithdrawers` and nothing else. The deadline it records is
+    /// `quarantineLength + epochLength * (1 + blockNumber / epochLength)` (`:381`): the end of the
+    /// epoch *after* this one, plus the quarantine, so the money is payable at the first boundary at
+    /// which the quarantine has elapsed.
+    ///
+    /// A repeat request re-stages with a fresh deadline, which is what the contract's unconditional
+    /// `.set` does (`:378-381`). Before this, the port deactivated the validator immediately and
+    /// refused a second request: neither is the contract's rule — the first is the deviation law 47
+    /// is about, and the second refused a request the contract accepts.
     pub async fn withdraw(
         &self,
         validator: &Validator,
@@ -807,65 +1043,179 @@ impl NativeSystemState {
         if !pool.contains_key(validator) {
             return Ok(Err("User is not bonded".to_string()));
         }
-        let mut withdrawers = self.withdrawers().await?;
-        if withdrawers.contains_key(validator) {
-            return Ok(Err("Validator has already requested withdrawal".to_string()));
-        }
         let params = self.params().await?;
         let deadline = checked_i64(
-            i128::from(block_number) + i128::from(params.quarantine_length),
+            i128::from(params.quarantine_length)
+                + i128::from(params.epoch_length)
+                    * (1 + i128::from(block_number) / i128::from(epoch_divisor(&params))),
             "withdraw deadline",
         )?;
-        withdrawers.insert(*validator, deadline);
-        // Deactivate immediately so the validator stops participating in consensus.
+        let mut pending = self.pending_withdrawers().await?;
+        pending.insert(*validator, deadline);
+        self.set_pending_withdrawers(&pending);
+        Ok(Ok(()))
+    }
+
+    /// Close a block — the **epoch transition**, which happens only at an epoch boundary
+    /// (`Pos.rhox:517`: if `blockNumber % $$epochLength$$ != 0`, nothing happens at all).
+    ///
+    /// At a boundary the contract runs one sequence, and the order carries the meaning
+    /// (`Pos.rhox:528-551`):
+    ///
+    /// 1. **reward** — every pooled validator's share of the pot, computed from the state *as it
+    ///    stands*, is added to the committed map (`getCurrentEpochRewards`, `:241-256`, then
+    ///    `commitCurrentEpochRewards`, `:568-576`). A validator that is not in the active set gets an
+    ///    entry of zero, so the committed map has a key for every pooled validator.
+    /// 2. **move** — each staged withdrawal becomes a claim: `withdrawers[pk] = (pool[pk], deadline)`
+    ///    and the validator leaves the pool (`movePendingWithdrawer`, `:577-587`). This is what a
+    ///    request staged during the epoch waited for, and because step 1 ran first, the epoch it
+    ///    spent its last blocks in still paid it.
+    /// 3. **pay** — every claim whose deadline has passed is paid `bond + committed[pk]` out of the
+    ///    staking vault, and both entries are removed (`removeQuarantinedWithdrawers`, `:592-621`).
+    /// 4. **re-select** the active set from what is left of the pool (`pickActiveValidators`, `:546`)
+    ///    — the only place a bonded validator becomes active, and the only place a validator that was
+    ///    below the active cap can be promoted into it.
+    ///
+    /// Rewards are computed before steps 2–4 change anything, so the sequence is **not idempotent**:
+    /// a second call at the same height would distribute the pot again (which is the previous epoch's
+    /// dust, since the committed claims now cover the rest). The system deploy calls it once per
+    /// block.
+    pub async fn close_block(&self, block_number: i64) -> Result<Result<(), String>, String> {
+        let params = self.params().await?;
+        if !is_epoch_boundary(&params, block_number) {
+            // `Pos.rhox:519`: "Epoch change does not occur." Nothing is written — no reward, no
+            // activation, no payment. The active set is not even recomputed, which is faithful: the
+            // contract's membership changes take effect at boundaries, and every change (bond's
+            // insertion, slash's removal) is applied to the *pool* immediately where the contract
+            // applies it.
+            return Ok(Ok(()));
+        }
+
+        let mut pool = self.bonds().await?;
+        let mut withdrawers = self.withdrawers().await?;
+        let mut pending = self.pending_withdrawers().await?;
+        let mut committed = self.committed_rewards().await?;
+
+        // 1. The epoch's rewards, from the state as it stands.
+        let rewards = self
+            .epoch_rewards(&pool, &withdrawers, &committed, &params)
+            .await?;
+        for (validator, reward) in &rewards {
+            let carried = committed
+                .get(validator)
+                .copied()
+                .unwrap_or(NonNegI64::zero());
+            committed.insert(
+                *validator,
+                balance_plus(carried, i64::from(*reward), "committed reward")?,
+            );
+        }
+
+        // 2. Staged withdrawals become claims against the vault.
+        for (validator, deadline) in std::mem::take(&mut pending) {
+            if let Some(bond) = pool.remove(&validator) {
+                withdrawers.insert(validator, Withdrawal { bond, deadline });
+            }
+            // A pending validator that is no longer in the pool — slashed, or untrusted — has no
+            // stake to claim, and its entry is dropped with it. The contract zeroes a slashed
+            // validator's bond but leaves it in `pendingWithdrawers` (`Pos.rhox:491`), so at the next
+            // boundary it lands in `withdrawers` with a zero amount and is never paid; dropping it
+            // here is the same payable outcome without the permanent tombstone. Registered in
+            // `spec/AUDIT.md` §6.
+        }
+
+        // 3. Pay the claims whose quarantine has elapsed.
+        let due: Vec<Validator> = withdrawers
+            .iter()
+            .filter(|(_, w)| w.deadline <= block_number)
+            .map(|(v, _)| *v)
+            .collect();
+        for validator in due {
+            let Some(claim) = withdrawers.remove(&validator) else {
+                continue;
+            };
+            let reward = committed.remove(&validator).unwrap_or(NonNegI64::zero());
+            let payable = balance_plus(claim.bond, i64::from(reward), "withdrawal payment")?;
+            self.debit_pos_vault(i64::from(payable)).await?;
+            let address = self.vault_address(&validator)?;
+            let balance = self
+                .vault_balance(&address)
+                .await?
+                .unwrap_or(NonNegI64::zero());
+            self.set_vault_balance(
+                &address,
+                balance_plus(balance, i64::from(payable), "refund")?,
+            );
+        }
+
+        // 4. The active set for the epoch that starts now.
         let active = select_active(&pool, &withdrawers, &params);
+        self.set_bonds(&pool);
         self.set_withdrawers(&withdrawers);
+        self.set_pending_withdrawers(&pending);
+        self.set_committed_rewards(&committed);
         self.set_active(&active);
         Ok(Ok(()))
     }
 
-    /// Close a block: refund any withdrawal whose quarantine has elapsed, and recompute the active
-    /// set from the pool (minus withdrawing validators). Called at the end of every block; epoch
-    /// bookkeeping is intentionally immediate in this model.
-    pub async fn close_block(&self, block_number: i64) -> Result<Result<(), String>, String> {
-        let mut pool = self.bonds().await?;
-        let mut withdrawers = self.withdrawers().await?;
-        let mut refunded: Vec<(Validator, NonNegI64)> = Vec::new();
-        for (validator, deadline) in withdrawers.clone() {
-            if deadline <= block_number {
-                if let Some(stake) = pool.remove(&validator) {
-                    refunded.push((validator, stake));
-                }
-                withdrawers.remove(&validator);
-            }
-        }
-        for (validator, stake) in &refunded {
-            let address = self.vault_address(validator)?;
-            let balance = match self.vault_balance(&address).await? {
-                Some(b) => b,
-                None => NonNegI64::zero(),
+    /// Step 1 of the epoch sequence: every pooled validator's share of the pot, zero for the ones
+    /// outside the active set (`getCurrentEpochRewards`, `Pos.rhox:241-256`).
+    ///
+    /// The active set it reads is the **stored** one, not a recomputation — which is what makes a
+    /// validator that bonded during this epoch earn nothing yet (it is not in the active set until
+    /// step 4) and a validator whose withdrawal was staged this epoch earn its last reward here.
+    async fn epoch_rewards(
+        &self,
+        pool: &BTreeMap<Validator, NonNegI64>,
+        withdrawers: &BTreeMap<Validator, Withdrawal>,
+        committed: &BTreeMap<Validator, NonNegI64>,
+        params: &PosParams,
+    ) -> Result<BTreeMap<Validator, NonNegI64>, String> {
+        let active = self.active().await?;
+        let pot = epoch_pot(
+            self.pos_vault_balance().await?,
+            pool,
+            withdrawers,
+            committed,
+        )?;
+        let active_bonds: i128 = pool
+            .iter()
+            .filter(|(v, _)| active.contains_key(*v))
+            .map(|(_, stake)| i128::from(i64::from(*stake)))
+            .sum();
+        let active_bonds = checked_i64(active_bonds, "active bonds")?;
+        let mut rewards = BTreeMap::new();
+        for (validator, stake) in pool {
+            let reward = if active.contains_key(validator) {
+                epoch_reward(pot, params.minimum_bond, active_bonds, i64::from(*stake))?
+            } else {
+                0
             };
-            let new_balance = NonNegI64::try_from(i64::from(balance) + i64::from(*stake))
-                .map_err(|e| format!("withdraw refund: {e}"))?;
-            self.set_vault_balance(&address, new_balance);
+            rewards.insert(
+                *validator,
+                NonNegI64::try_from(reward).map_err(|e| e.to_string())?,
+            );
         }
-        let params = self.params().await?;
-        let active = select_active(&pool, &withdrawers, &params);
-        self.set_bonds(&pool);
-        self.set_withdrawers(&withdrawers);
-        self.set_active(&active);
-        Ok(Ok(()))
+        Ok(rewards)
     }
 
     /// Remove a validator and confiscate its stake to the Coop slashing vault (port of the PoS
     /// `slash` behavior). A pending withdrawal is cancelled (the stake is forfeited).
+    ///
+    /// Removal is **immediate** in the contract, unlike bonding: the slashing contract deletes the
+    /// validator from `activeValidators` and zeroes its bond in the same state update as the transfer
+    /// (`Pos.rhox:486-495`), so law 44's epoch gate does not apply to it. What the contract does not
+    /// do is take the validator out of `pendingWithdrawers`; the port does, with the same payable
+    /// outcome (see the note in `close_block`).
     pub async fn slash(&self, validator: &Validator) -> Result<Result<(), String>, String> {
         let mut pool = self.bonds().await?;
         let mut active = self.active().await?;
         let mut withdrawers = self.withdrawers().await?;
+        let mut pending = self.pending_withdrawers().await?;
         let stake = pool.remove(validator);
         active.remove(validator);
         withdrawers.remove(validator);
+        pending.remove(validator);
         if let Some(stake) = stake {
             // The stake leaves the staking vault for the Coop multisig vault (`Pos.rhox:470-482`:
             // `posVault!("transfer", coopMultiVaultAddr, valBond, posAuthKey)`). Debiting the source
@@ -1285,7 +1635,7 @@ mod tests {
             number_of_active_validators: 2,
             ..PosParams::default()
         };
-        let active = select_active(&pool, &BTreeMap::new(), &params);
+        let active = select_active(&pool, &BTreeMap::<Validator, ()>::new(), &params);
         assert_eq!(
             active.keys().copied().collect::<Vec<_>>(),
             vec![validator(2), validator(3)]
@@ -1326,6 +1676,7 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
+        native.close_block(1).await.unwrap().unwrap();
         assert!(native.active().await.unwrap().contains_key(&v2));
     }
 
@@ -1366,8 +1717,13 @@ mod tests {
             .is_ok());
     }
 
+    /// A bond escrows the stake and joins the pool immediately, and becomes **active at the epoch
+    /// boundary** — the contract's `bond` writes only `allBonds` (`Pos.rhox:355`) and
+    /// `activeValidators` is recomputed inside `closeBlock` (`:546`). With the permissive default
+    /// parameters every block is a boundary, so the boundary is the same block's `close_block`; a
+    /// validator active before it would be a consensus set that changes inside an epoch.
     #[tokio::test]
-    async fn bond_deducts_vault_and_activates() {
+    async fn bond_escrows_the_stake_and_activates_at_the_boundary() {
         let native = native_with(&[validator(1)], PosParams::default(), &[]).await;
         let v = validator(1);
         fund(&native, &v, 100).await;
@@ -1388,7 +1744,13 @@ mod tests {
             ),
             60
         );
-        assert_eq!(i64::from(native.bonds().await.unwrap()[&v]), 40);
+        assert_eq!(i64::from(native.bonds().await.unwrap()[&v]), 40, "pooled");
+        assert!(
+            !native.active().await.unwrap().contains_key(&v),
+            "a bonded validator is not in the consensus set until the boundary"
+        );
+
+        native.close_block(1).await.unwrap().unwrap();
         assert!(native.active().await.unwrap().contains_key(&v));
     }
 
@@ -1410,9 +1772,19 @@ mod tests {
         assert!(result.is_err(), "already bonded must be rejected");
     }
 
+    /// **Law 47 — a withdrawal is staged, not immediate.** The request records a deadline and changes
+    /// nothing else: the validator stays bonded and stays in the active set (the contract's
+    /// `withdraw` writes only `pendingWithdrawers`, `Pos.rhox:377-382`). It is moved out of the pool
+    /// at the *next* epoch boundary and paid at the first boundary at which its quarantine has
+    /// elapsed.
+    ///
+    /// `epoch_length: 1` makes every block a boundary, so the arithmetic is the contract's own:
+    /// `quarantineLength + epochLength * (1 + blockNumber / epochLength)` at block 5 with a
+    /// quarantine of 10 is `10 + 1 * 6 = 16`.
     #[tokio::test]
-    async fn withdraw_deactivates_then_refunds_after_quarantine() {
+    async fn withdraw_stages_the_validator_until_the_next_boundary() {
         let params = PosParams {
+            epoch_length: 1,
             quarantine_length: 10,
             ..PosParams::default()
         };
@@ -1420,14 +1792,39 @@ mod tests {
         let v = validator(1);
         native.set_vault_balance(&vault_address_of(&v), NonNegI64::zero());
 
-        // Withdraw at block 5 -> refund at block >= 15.
         native.withdraw(&v, 5).await.unwrap().unwrap();
+        assert_eq!(
+            native.pending_withdrawers().await.unwrap()[&v],
+            16,
+            "the request stages a deadline, and only that"
+        );
         assert!(
-            !native.active().await.unwrap().contains_key(&v),
-            "withdrawing validator is deactivated immediately"
+            native.bonds().await.unwrap().contains_key(&v),
+            "the stake stays in the pool until the boundary"
+        );
+        assert!(
+            native.active().await.unwrap().contains_key(&v),
+            "and the validator keeps validating — and earning — until then"
         );
 
+        // The boundary moves it out of the pool and into an escrowed claim.
         native.close_block(10).await.unwrap().unwrap();
+        assert!(native.pending_withdrawers().await.unwrap().is_empty());
+        assert!(
+            !native.bonds().await.unwrap().contains_key(&v),
+            "withdrawn validator removed from the pool at the boundary"
+        );
+        assert_eq!(
+            native.withdrawers().await.unwrap()[&v],
+            Withdrawal {
+                bond: NonNegI64::try_from(40).unwrap(),
+                deadline: 16,
+            }
+        );
+        assert!(
+            !native.active().await.unwrap().contains_key(&v),
+            "and out of the active set"
+        );
         assert_eq!(
             i64::from(
                 native
@@ -1437,14 +1834,11 @@ mod tests {
                     .unwrap()
             ),
             0,
-            "stake remains escrowed before the quarantine elapses"
+            "the stake is still escrowed: block 10 is before the deadline of 16"
         );
 
-        native.close_block(15).await.unwrap().unwrap();
-        assert!(
-            !native.bonds().await.unwrap().contains_key(&v),
-            "withdrawn validator removed from the pool"
-        );
+        native.close_block(16).await.unwrap().unwrap();
+        assert!(native.withdrawers().await.unwrap().is_empty());
         assert_eq!(
             i64::from(
                 native
@@ -1454,7 +1848,317 @@ mod tests {
                     .unwrap()
             ),
             40,
-            "stake refunded after quarantine"
+            "the stake is paid out at the first boundary past the quarantine"
+        );
+    }
+
+    /// **Law 44 — the epoch gate.** `close_block` changes *nothing* except at a boundary
+    /// (`Pos.rhox:517-519`): no reward is committed, no staged withdrawal moves, no claim is paid,
+    /// and the active set is not recomputed. Done at a non-boundary, the whole sequence is a no-op
+    /// even when there is a pending withdrawal and a full pot waiting.
+    #[tokio::test]
+    async fn the_epoch_gate_does_nothing_off_a_boundary() {
+        let params = PosParams {
+            epoch_length: 10,
+            quarantine_length: 0,
+            ..PosParams::default()
+        };
+        let native = native_with(&[validator(1)], params, &[(validator(1), 40)]).await;
+        let v = validator(1);
+        native.set_vault_balance(&vault_address_of(&v), NonNegI64::zero());
+        let addr = vault_address_of(&v);
+        // Fund the pot the way the protocol does: a deploy pays its phlo into the staking vault.
+        let payer = PublicKey::new(vec![9u8; 65]);
+        let payer_addr = RevAddress::from_public_key(&payer).unwrap().to_base58();
+        native.set_vault_balance(&payer_addr, NonNegI64::try_from(10).unwrap());
+        native.pre_charge(&payer, 10).await.unwrap().unwrap();
+        native.withdraw(&v, 3).await.unwrap().unwrap();
+        let before = (
+            native.pending_withdrawers().await.unwrap(),
+            native.committed_rewards().await.unwrap(),
+            native.bonds().await.unwrap(),
+            native.active().await.unwrap(),
+        );
+
+        // 7 is not a multiple of 10: nothing happens.
+        native.close_block(7).await.unwrap().unwrap();
+        assert_eq!(
+            (
+                native.pending_withdrawers().await.unwrap(),
+                native.committed_rewards().await.unwrap(),
+                native.bonds().await.unwrap(),
+                native.active().await.unwrap(),
+            ),
+            before,
+            "an epoch that does not occur changes nothing at all"
+        );
+        assert_eq!(
+            i64::from(native.pos_vault_balance().await.unwrap()),
+            50,
+            "the pot is untouched — no reward was committed"
+        );
+        assert_eq!(
+            i64::from(native.vault_balance(&addr).await.unwrap().unwrap()),
+            0,
+            "and no claim was paid"
+        );
+
+        // 10 is a boundary: the sequence runs. The request staged at block 3 was given the deadline
+        // `0 + 10 * (1 + 3 / 10) = 10`, so this boundary both moves it out of the pool and pays it.
+        native.close_block(10).await.unwrap().unwrap();
+        assert!(
+            native.pending_withdrawers().await.unwrap().is_empty(),
+            "the staged withdrawal moved at the boundary"
+        );
+        assert!(
+            !native.bonds().await.unwrap().contains_key(&v),
+            "out of the pool"
+        );
+        assert_eq!(
+            i64::from(native.vault_balance(&addr).await.unwrap().unwrap()),
+            40,
+            "and paid: the bond, plus the epoch's committed reward"
+        );
+
+        // The gate's other half, with an epoch length a block cannot reach: a bond joins the pool at
+        // once but joins the *consensus set* only at a boundary.
+        let native = native_with(&[validator(1)], params, &[]).await;
+        let v2 = validator(1);
+        fund(&native, &v2, 100).await;
+        native
+            .bond(&v2, NonNegI64::try_from(40).unwrap(), 7)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            native.bonds().await.unwrap().contains_key(&v2),
+            "pooled at once"
+        );
+        assert!(!native.active().await.unwrap().contains_key(&v2));
+        native.close_block(9).await.unwrap().unwrap();
+        assert!(
+            !native.active().await.unwrap().contains_key(&v2),
+            "9 is not a boundary either"
+        );
+        native.close_block(10).await.unwrap().unwrap();
+        assert!(
+            native.active().await.unwrap().contains_key(&v2),
+            "the boundary is where a bond becomes a validator"
+        );
+    }
+
+    /// **Laws 45 and 46 — the split, checked against the model rather than a remembered number.**
+    /// `Rchain/Pos.lean`'s `the_dust_is_real` is the `decide`d case `minimumBond = 3`, bonds
+    /// `[4, 5]`, pot `10`: the normaliser is `9 / 3 = 3`, each scaled share is `4 / 3 = 5 / 3 = 1`,
+    /// and each validator is paid `10 * 1 / 3 = 3` — **6 distributed of 10**, the rest being the dust
+    /// of two integer divisions. This test builds exactly that state and reads the split back, so the
+    /// implementation is checked against the arithmetic the Lean proves rather than against itself.
+    #[tokio::test]
+    async fn an_epoch_splits_the_pot_and_keeps_the_dust() {
+        let params = PosParams {
+            minimum_bond: 3,
+            epoch_length: 1,
+            ..PosParams::default()
+        };
+        let native = native_with(
+            &[validator(1), validator(2)],
+            params,
+            &[(validator(1), 4), (validator(2), 5)],
+        )
+        .await;
+        // Fill the pot with exactly 10 the way a deploy's phlo does.
+        let payer = PublicKey::new(vec![9u8; 65]);
+        let payer_addr = RevAddress::from_public_key(&payer).unwrap().to_base58();
+        native.set_vault_balance(&payer_addr, NonNegI64::try_from(10).unwrap());
+        native.pre_charge(&payer, 10).await.unwrap().unwrap();
+        assert_eq!(
+            i64::from(native.pos_vault_balance().await.unwrap()),
+            9 + 10,
+            "the vault holds the bonds plus the phlo"
+        );
+
+        native.close_block(1).await.unwrap().unwrap();
+
+        let committed = native.committed_rewards().await.unwrap();
+        assert_eq!(
+            i64::from(committed[&validator(1)]),
+            3,
+            "10 * (4 / 3) / (9 / 3) = 3"
+        );
+        assert_eq!(
+            i64::from(committed[&validator(2)]),
+            3,
+            "10 * (5 / 3) / (9 / 3) = 3"
+        );
+        assert!(
+            i64::from(committed[&validator(1)]) + i64::from(committed[&validator(2)]) < 10,
+            "the shares do not sum to the pot — that inequality is the law"
+        );
+        assert_eq!(
+            i64::from(native.pos_vault_balance().await.unwrap()),
+            19,
+            "the vault is not debited by a commitment: the reward is paid when the validator leaves"
+        );
+        assert_eq!(
+            epoch_pot(
+                native.pos_vault_balance().await.unwrap(),
+                &native.bonds().await.unwrap(),
+                &native.withdrawers().await.unwrap(),
+                &native.committed_rewards().await.unwrap(),
+            )
+            .unwrap(),
+            4,
+            "the four units of dust stay in the pot, and the next epoch distributes them"
+        );
+    }
+
+    /// **Law 47's payoff.** A validator that earns, then asks to leave, is paid **its bond plus every
+    /// reward committed while it was bonded** — including the epoch it spent its last blocks in, which
+    /// is exactly what the sequence's order (commit, then move, then pay) is for.
+    #[tokio::test]
+    async fn a_released_withdrawal_pays_the_bond_plus_the_committed_rewards() {
+        let params = PosParams {
+            epoch_length: 1,
+            quarantine_length: 0,
+            // A positive minimum, or the split is the undefined case and pays nothing.
+            minimum_bond: 3,
+            ..PosParams::default()
+        };
+        let native = native_with(&[validator(1)], params, &[(validator(1), 40)]).await;
+        let v = validator(1);
+        native.set_vault_balance(&vault_address_of(&v), NonNegI64::zero());
+        // 5 of phlo for the epoch, charged to a deployer.
+        let payer = PublicKey::new(vec![9u8; 65]);
+        let payer_addr = RevAddress::from_public_key(&payer).unwrap().to_base58();
+        native.set_vault_balance(&payer_addr, NonNegI64::try_from(5).unwrap());
+        native.pre_charge(&payer, 5).await.unwrap().unwrap();
+
+        // Stage the request, then close the block: the boundary pays the epoch's reward into the
+        // committed map *and* moves the validator out of the pool, in that order.
+        native.withdraw(&v, 1).await.unwrap().unwrap();
+        native.close_block(1).await.unwrap().unwrap();
+        assert_eq!(
+            i64::from(native.committed_rewards().await.unwrap()[&v]),
+            5,
+            "the epoch it was still active for paid it the whole pot (one validator, no rounding)"
+        );
+        assert!(
+            !native.bonds().await.unwrap().contains_key(&v),
+            "and it left the pool at the same boundary"
+        );
+
+        // The claim's deadline is 0 + 1 * (1 + 1) = 2, so the next boundary pays it.
+        assert_eq!(
+            native.withdrawers().await.unwrap()[&v].deadline,
+            2,
+            "quarantineLength + epochLength * (1 + blockNumber / epochLength)"
+        );
+        native.close_block(2).await.unwrap().unwrap();
+        assert_eq!(
+            i64::from(
+                native
+                    .vault_balance(&vault_address_of(&v))
+                    .await
+                    .unwrap()
+                    .unwrap()
+            ),
+            45,
+            "bond 40 + committed 5, out of the staking vault"
+        );
+        assert!(
+            native.committed_rewards().await.unwrap().is_empty(),
+            "the claim is spent: committed and withdrawers both cleared"
+        );
+        assert!(native.withdrawers().await.unwrap().is_empty());
+        assert_eq!(
+            i64::from(native.pos_vault_balance().await.unwrap()),
+            0,
+            "the vault is exactly emptied — the phlo went to the validator, not to nowhere"
+        );
+    }
+
+    /// Where the contract's formula is undefined the port pays nothing rather than faulting. With
+    /// `minimum_bond == 0` the Scala's `bonds / $$minimumBond$$` is a division by zero, and the
+    /// port's parameters are permissive by default, so a fault is not a rule it can copy; a
+    /// normaliser of zero (`activeBonds < minimumBond`) is the same story. `Pos.lean` states its
+    /// theorem for `0 < activeBonds / minimumBond` and says nothing about the rest — this is what the
+    /// port does with the rest.
+    #[tokio::test]
+    async fn an_epoch_with_a_zero_normaliser_pays_nothing() {
+        // minimum_bond 0: the normaliser is a division by zero in the contract.
+        let native = native_with(
+            &[validator(1)],
+            PosParams {
+                epoch_length: 1,
+                ..PosParams::default()
+            },
+            &[(validator(1), 40)],
+        )
+        .await;
+        let payer = PublicKey::new(vec![9u8; 65]);
+        let payer_addr = RevAddress::from_public_key(&payer).unwrap().to_base58();
+        native.set_vault_balance(&payer_addr, NonNegI64::try_from(5).unwrap());
+        native.pre_charge(&payer, 5).await.unwrap().unwrap();
+
+        native.close_block(1).await.unwrap().unwrap();
+        assert_eq!(
+            i64::from(native.committed_rewards().await.unwrap()[&validator(1)]),
+            0,
+            "an undefined split pays zero"
+        );
+        assert_eq!(
+            i64::from(native.pos_vault_balance().await.unwrap()),
+            45,
+            "and the pot is left where it was"
+        );
+
+        // A normaliser of zero with a positive minimum: bonds below the minimum scale to nothing.
+        let native = native_with(
+            &[validator(1)],
+            PosParams {
+                minimum_bond: 100,
+                epoch_length: 1,
+                ..PosParams::default()
+            },
+            &[(validator(1), 40)],
+        )
+        .await;
+        let native = native;
+        native.set_vault_balance(&payer_addr, NonNegI64::try_from(5).unwrap());
+        native.pre_charge(&payer, 5).await.unwrap().unwrap();
+        native.close_block(1).await.unwrap().unwrap();
+        assert_eq!(
+            i64::from(native.committed_rewards().await.unwrap()[&validator(1)]),
+            0
+        );
+    }
+
+    /// The pot floors at zero instead of wrapping. The state this needs cannot be reached through the
+    /// protocol — every debit is bounded by the credit that funded it, so the vault always covers its
+    /// claims — so the test builds the diverged ledger by hand to show the floor holds. The Scala
+    /// computes the pot in `Long` and would produce a *negative* reward here; `NonNegI64` has no such
+    /// value, and the model's subtraction is `Nat` (floored), so the port floors with it.
+    #[tokio::test]
+    async fn a_drafted_vault_floors_the_pot_instead_of_wrapping() {
+        let native = native_with(
+            &[validator(1)],
+            PosParams {
+                epoch_length: 1,
+                minimum_bond: 3,
+                ..PosParams::default()
+            },
+            &[(validator(1), 40)],
+        )
+        .await;
+        // Drain the vault below the bonded pool: a ledger that has already diverged.
+        native.debit_pos_vault(35).await.unwrap();
+        assert_eq!(i64::from(native.pos_vault_balance().await.unwrap()), 5);
+
+        native.close_block(1).await.unwrap().unwrap();
+        assert_eq!(
+            i64::from(native.committed_rewards().await.unwrap()[&validator(1)]),
+            0,
+            "a pot of nothing pays nothing — not a wrap, and not a negative reward"
         );
     }
 

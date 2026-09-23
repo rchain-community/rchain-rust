@@ -36,7 +36,9 @@ The PoS leaves under `PREFIX_POS`:
 | `pos:bonds` | the full bond **pool** (`Validator → NonNegI64`) |
 | `pos:active` | the **active** consensus validator set (top-N of the pool) |
 | `pos:trusted` | the trusted validator-**stakeholder** set (admission gate) |
-| `pos:withdrawers` | pending withdrawers (`Validator → quarantine deadline`) |
+| `pos:withdrawers` | escrowed withdrawals (`Validator → (bond, deadline)`), moved here at the boundary |
+| `pos:pending_withdrawers` | withdrawal **requests** (`Validator → epoch-boundary deadline`) |
+| `pos:committed` | rewards earned but not yet paid (`Validator → NonNegI64`) |
 | `pos:params` | immutable PoS parameters (min/max bond, epoch, quarantine, active cap) |
 | `pos:coop` | the Coop slashing-vault balance (confiscated stake) |
 | `pos:vault` | the staking-vault balance — escrowed bonds + the phlo that funds the rewards |
@@ -58,7 +60,9 @@ The typed layer is `rholang/src/native_state.rs` (`NativeSystemState`), wrapping
   `HistoryRepository::checkpoint_with_native`.
 - `NativeSystemState` exposes typed accessors — `bonds()`/`set_bonds()` (the pool),
   `active()`/`set_active()` (the consensus set), `trusted()`/`set_trusted()`,
-  `withdrawers()`/`set_withdrawers()`, `params()`/`set_params()`, `coop_balance()`/`set_coop_balance()`,
+  `withdrawers()`/`set_withdrawers()`, `pending_withdrawers()`/`set_pending_withdrawers()`,
+  `committed_rewards()`/`set_committed_rewards()`, `params()`/`set_params()`,
+  `coop_balance()`/`set_coop_balance()`,
   `pos_vault_balance()`/`set_pos_vault_balance()`, `vault_balance()`/`set_vault_balance()`, and
   `registry_lookup()`/`registry_insert()`, with canonical byte encodings (sorted `BTreeMap`,
   fixed-width `Validator` + little-endian stake).
@@ -94,15 +98,47 @@ The validator lifecycle is native and on-chain (`rholang/src/native_state.rs`):
 2. **trusted** — admission into the validator *stakeholder group* (`pos:trusted`). Only a trusted key
    may bond. A genesis validator is trusted by construction; a trusted stakeholder admits a new key
    via `rho:rchain:pos!("trust", *deployerId, targetPubKey, *ret)`, and revokes via `"untrust"`.
-3. **bonded → active** — `"bond"` checks trust, `[minimum_bond, maximum_bond]`, and the deployer's
-   REV vault, moves the stake into the staking vault, inserts it into the pool, and recomputes
-   `pos:active` (top `number_of_active_validators` by descending stake, deterministic tie-break). A
-   bonded validator is immediately eligible to propose; the block's bond cache is the active set at
-   the block post-state.
-4. **withdrawing** — `"withdraw"` deactivates the validator immediately and escrows the stake until
-   the quarantine deadline; `close_block` refunds it.
-5. **removed** — `slash` (consensus, for bonded offenders) and `untrust` (governance) remove the
+3. **bonded** — `"bond"` checks trust, `[minimum_bond, maximum_bond]`, and the deployer's REV vault,
+   moves the stake into the staking vault, and inserts it into the pool (`pos:bonds`). It does **not**
+   activate: the contract's `bond` writes only `allBonds` (`Pos.rhox:355`).
+4. **active** — the consensus set (`pos:active`), recomputed **only at an epoch boundary** (see below),
+   as the top `number_of_active_validators` of the pool by descending stake with a deterministic
+   key-ascending tie-break (`0` = unlimited). A validator leaves the active set at once if it is
+   slashed, which the contract also does in place (`Pos.rhox:486-495`).
+5. **withdrawing** — `"withdraw"` only **stages** the request (`pos:pending_withdrawers`, the
+   contract's `pendingWithdrawers`): the validator stays bonded and keeps validating until the next
+   epoch boundary, where it is moved out of the pool (`pos:withdrawers`, holding the bond and a
+   deadline) and paid `bond + committed rewards` at the first boundary past its quarantine.
+6. **removed** — `slash` (consensus, for bonded offenders) and `untrust` (governance) remove the
    validator and confiscate the stake to the Coop vault (`pos:coop`).
+
+## The epoch (`close_block`)
+
+`close_block` is the epoch transition and it does **nothing at all** off a boundary
+(`Pos.rhox:517-519`; with the permissive default parameters every block is one). At a boundary it runs
+one sequence, in this order, because the order carries the meaning (`Pos.rhox:528-551`):
+
+1. **reward** — every pooled validator's share of the pot, computed from the state *as it stands*, is
+   added to the committed map (`pos:committed`, the contract's `committedRewards`). A validator
+   outside the active set gets an entry of zero, so the map has a key for every pooled validator.
+2. **move** — each staged withdrawal becomes a claim: `withdrawers[pk] = (pool[pk], deadline)`, and the
+   validator leaves the pool. Because step 1 ran first, the epoch it spent its last blocks in still
+   paid it.
+3. **pay** — every claim whose deadline has passed is paid `bond + committed[pk]` out of the staking
+   vault, and both entries are removed.
+4. **re-select** the active set — the only place a bonded validator becomes active, and the only place
+   one below the active cap can be promoted into it.
+
+The pot is `vault − bonded − withdrawers − committed`, and one validator's share is
+`pot * (bond / minimum_bond) / (active_bonds / minimum_bond)` — **two** integer divisions, so the
+shares do not sum to the pot. The remainder is not lost: it stays in the pot and the next epoch
+distributes it. `spec/Rchain/Pos.lean` states the inequality (`sum_rewards_le_pot`) and decides an
+instance where it is strict (`the_dust_is_real`: minimum bond 3, bonds [4, 5], pot 10 — six units
+distributed of ten), and `an_epoch_splits_the_pot_and_keeps_the_dust` builds exactly that state and
+reads the split back, so the implementation is checked against the arithmetic rather than against a
+remembered number. Where the contract's formula is undefined (a zero minimum bond, or a normaliser of
+zero) the port pays zero rather than faulting; §6 of `spec/AUDIT.md` records that and the other
+epoch-boundary deviations.
 
 `compute_bonds` (used by finality, the supermajority check, and `Validate::bonds_cache`) reads
 `pos:active`; `getBonds` returns the pool and `getActiveValidators` the active set.
@@ -134,13 +170,13 @@ The native `rho:*` protocol is installed as ordinary system-process `Definition`
 - `rho:io:http` — the deterministic HTTP-result oracle (RCHIP #54): `record` (first writer wins),
   `get`, `check`, `height`, over the `http:records` leaf.
 
-The `bond` (trust + min/max + vault-funds + `(validator, stake)` into the pool and the staking vault,
-recomputing the active set), `withdraw` (immediate deactivation, quarantined refund), `trust`/`untrust` (stakeholder
+The `bond` (trust + min/max + vault-funds + `(validator, stake)` into the pool and the staking vault),
+`withdraw` (staged request, quarantined payout), `trust`/`untrust` (stakeholder
 admission/revocation), `slash` (confiscation to the Coop vault) and vault `findOrCreate` methods are
 implemented natively, returning the `(Bool, Either)` result the PoS/vault contracts expect. **Still
-deferred:** reward computation/distribution and the vault **unforgeable-name capability** (the
+deferred:** the vault **unforgeable-name capability** (the
 simplified model keys vaults by REV address, so `findOrCreate` returns the address rather than a fresh
-unforgeable).
+unforgeable), and the `revvaultexport` tooling below.
 
 **Also deferred, and previously unregistered:** the **`revvaultexport`** offline tooling
 (`legacy/node/src/main/scala/coop/rchain/node/revvaultexport/`, seven files — the rho-trie traverser, the
