@@ -36,6 +36,7 @@ gone fails the register's accounting — with the narrowing and the two witnesse
 -/
 
 namespace Rchain
+open Comparator
 
 /-! ## The operation, defined (mirroring `rholang/src/substitute.rs`)
 
@@ -213,6 +214,556 @@ mutual
     | (a, b) :: xs => (substPar σ d a, substPar σ d b) :: substListParPair σ d xs
 end
 
+/-! ## The two `single` lemmas
+
+`substExprToPar` and `substConnective` do not return a `Par` with the expression or connective in the
+corresponding field at an arbitrary place: they return `singleExpr`/`singleConnective`, whose only
+non-empty field is the last. `sortPar` of one is therefore the sorted form `sortExpr`/`sortConnective`
+produce, which is what the members' induction steps consume. These are `Par`-level, but they are about
+the two `single` constructors this file defines, so they live here. -/
+
+/-- A `Par` with one expression sorts to the `Par` with the sorted expression. -/
+private theorem sortPar_singleExpr (e : Expr) :
+    sortPar (singleExpr e) = singleExpr (sortExpr e) := by
+  cases e <;> simp [singleExpr, sortExpr, sortPar, sortListExpr, sortListPar, sortListParPair,
+    sortList, Comparator.sortList, List.insertionSort, sortListPar_eq_map, List.map_nil]
+
+/-- The same for the connective constructor. -/
+private theorem sortPar_singleConnective (c : Connective) :
+    sortPar (singleConnective c) = singleConnective (sortConnective c) := by
+  cases c <;> simp [singleConnective, sortConnective, sortPar, sortListConnective, sortListPar,
+    sortList, Comparator.sortList, List.insertionSort, sortListPar_eq_map, List.map_nil]
+
+/-! ## The substitution walks as maps
+
+`substListX` is a structural walk, so these are inductions — but they are inductions about the
+*definition*, not about the block: they let a member write `substListX σ d l` as a `map`, which is the
+form in which the list members' two ingredients — the head's element law and the induction
+hypothesis — are both usable. -/
+
+private theorem substListSend_eq_map (σ : Var → Par) (d : Nat) (l : List Send) :
+    substListSend σ d l = l.map (substSend σ d) := by
+  induction l <;> simp [substListSend, *]
+
+private theorem substListReceive_eq_map (σ : Var → Par) (d : Nat) (l : List Receive) :
+    substListReceive σ d l = l.map (substReceive σ d) := by
+  induction l <;> simp [substListReceive, *]
+
+private theorem substListReceiveBind_eq_map (σ : Var → Par) (d : Nat) (l : List ReceiveBind) :
+    substListReceiveBind σ d l = l.map (substReceiveBind σ d) := by
+  induction l <;> simp [substListReceiveBind, *]
+
+private theorem substListNew_eq_map (σ : Var → Par) (d : Nat) (l : List New) :
+    substListNew σ d l = l.map (substNew σ d) := by
+  induction l <;> simp [substListNew, *]
+
+private theorem substListMatch_eq_map (σ : Var → Par) (d : Nat) (l : List Match) :
+    substListMatch σ d l = l.map (substMatch σ d) := by
+  induction l <;> simp [substListMatch, *]
+
+private theorem substListMatchCase_eq_map (σ : Var → Par) (d : Nat) (l : List MatchCase) :
+    substListMatchCase σ d l = l.map (substMatchCase σ d) := by
+  induction l <;> simp [substListMatchCase, *]
+
+private theorem substListBundle_eq_map (σ : Var → Par) (d : Nat) (l : List Bundle) :
+    substListBundle σ d l = l.map (substBundle σ d) := by
+  induction l <;> simp [substListBundle, *]
+
+private theorem substListPar_eq_map (σ : Var → Par) (d : Nat) (l : List Par) :
+    substListPar σ d l = l.map (substPar σ d) := by
+  induction l <;> simp [substListPar, *]
+
+private theorem substListParPair_eq_map (σ : Var → Par) (d : Nat) (l : List (Par × Par)) :
+    substListParPair σ d l = l.map (fun x => (substPar σ d x.1, substPar σ d x.2)) := by
+  induction l with
+  | nil => rfl
+  | cons x xs ih => cases x with | mk a b => simp [substListParPair, ih]
+
+/-! ## Permutation invariance of the two folds
+
+`substExprsToPar`/`substListConnective` fold by `parMerge`, and `sortPar` sees a `parMerge` tree only
+as its sorted fields — so the fold is invariant under permutation, which is what lets the expression
+and connective members change their target's `orderedInsert`-shaped argument back into a cons. -/
+
+private theorem sortPar_substExprsToPar_perm (σ : Var → Par) (d : Nat) {l l' : List Expr}
+    (h : List.Perm l l') :
+    sortPar (substExprsToPar σ d l) = sortPar (substExprsToPar σ d l') := by
+  induction h with
+  | nil => rfl
+  | cons x _ ih => simp only [substExprsToPar]; exact sortPar_parMerge rfl ih
+  | swap x y l =>
+      show sortPar (parMerge (substExprToPar σ d y)
+              (parMerge (substExprToPar σ d x) (substExprsToPar σ d l)))
+          = sortPar (parMerge (substExprToPar σ d x)
+              (parMerge (substExprToPar σ d y) (substExprsToPar σ d l)))
+      rw [← parMerge_assoc (substExprToPar σ d y) (substExprToPar σ d x) (substExprsToPar σ d l),
+          ← parMerge_assoc (substExprToPar σ d x) (substExprToPar σ d y) (substExprsToPar σ d l)]
+      exact sortPar_parMerge (sortPar_comm _ _) rfl
+  | trans _ _ ih1 ih2 => exact ih1.trans ih2
+
+private theorem sortPar_substListConnective_perm (σ : Var → Par) (d : Nat) {l l' : List Connective}
+    (h : List.Perm l l') :
+    sortPar (substListConnective σ d l) = sortPar (substListConnective σ d l') := by
+  induction h with
+  | nil => rfl
+  | cons x _ ih => simp only [substListConnective]; exact sortPar_parMerge rfl ih
+  | swap x y l =>
+      show sortPar (parMerge (substConnective σ d y)
+              (parMerge (substConnective σ d x) (substListConnective σ d l)))
+          = sortPar (parMerge (substConnective σ d x)
+              (parMerge (substConnective σ d y) (substListConnective σ d l)))
+      rw [← parMerge_assoc (substConnective σ d y) (substConnective σ d x) (substListConnective σ d l),
+          ← parMerge_assoc (substConnective σ d x) (substConnective σ d y) (substListConnective σ d l)]
+      exact sortPar_parMerge (sortPar_comm _ _) rfl
+  | trans _ _ ih1 ih2 => exact ih1.trans ih2
+
+set_option maxHeartbeats 1000000 in
+set_option maxRecDepth 10000 in
+mutual
+  /-- **The commuting law's induction.** Every member says the same thing of its own type: substituting
+      then canonicalizing is canonicalizing after substituting into the canonical form. -/
+  theorem sortPar_subst (σ : Var → Par) (d : Nat) :
+      ∀ t : Par, sortPar (substPar σ d t) = sortPar (substPar σ d (sortPar t))
+    | Par.mk s r n e m u b c => by
+      simp only [substPar, sortPar]
+      have hpiece : sortPar (Par.mk (substListSend σ d s) (substListReceive σ d r)
+            (substListNew σ d n) [] (substListMatch σ d m) u (substListBundle σ d b) [])
+          = sortPar (Par.mk (substListSend σ d (sortList sendComparator (sortListSend s)))
+              (substListReceive σ d (sortList receiveComparator (sortListReceive r)))
+              (substListNew σ d (sortList newComparator (sortListNew n))) []
+              (substListMatch σ d (sortList matchComparator (sortListMatch m)))
+              (sortList gUnforgeableComparator (sortListGUnforgeable u))
+              (substListBundle σ d (sortList bundleComparator (sortListBundle b))) []) := by
+        simp only [sortPar, Par.mk.injEq]
+        exact ⟨sortListSend_subst σ d s, sortListReceive_subst σ d r, sortListNew_subst σ d n,
+          trivial, sortListMatch_subst σ d m, sortListGUnforgeable_subst σ d u,
+          sortListBundle_subst σ d b, trivial⟩
+      exact (sortPar_parMerge (sortPar_parMerge (sortExprsToPar_subst σ d e)
+        (sortListConnective_subst σ d c)) hpiece).trans rfl
+  termination_by t => sizeOf t
+
+  theorem sortSend_subst (σ : Var → Par) (d : Nat) :
+      ∀ x : Send, sortSend (substSend σ d x) = sortSend (substSend σ d (sortSend x))
+    | Send.mk c dta p => by
+      simp only [substSend, sortSend]
+      rw [sortPar_subst σ d c, sortListPar_subst σ d dta]
+  termination_by x => sizeOf x
+
+  theorem sortReceiveBind_subst (σ : Var → Par) (d : Nat) :
+      ∀ x : ReceiveBind,
+        sortReceiveBind (substReceiveBind σ d x) = sortReceiveBind (substReceiveBind σ d (sortReceiveBind x))
+    | ReceiveBind.mk ps src fc => by
+      simp only [substReceiveBind, sortReceiveBind]
+      rw [sortListPar_subst σ (d + 1) ps, sortPar_subst σ d src]
+  termination_by x => sizeOf x
+
+  theorem sortReceive_subst (σ : Var → Par) (d : Nat) :
+      ∀ x : Receive,
+        sortReceive (substReceive σ d x) = sortReceive (substReceive σ d (sortReceive x))
+    | Receive.mk bs body p n => by
+      simp only [substReceive, sortReceive]
+      rw [show receiveBindComparator.sortList (sortListReceiveBind (substListReceiveBind σ d bs))
+            = receiveBindComparator.sortList
+                (sortListReceiveBind (substListReceiveBind σ d
+                  (receiveBindComparator.sortList (sortListReceiveBind bs))))
+          from sortListReceiveBind_subst σ d bs,
+          show sortPar (substPar σ d body) = sortPar (substPar σ d (sortPar body))
+          from sortPar_subst σ d body]
+  termination_by x => sizeOf x
+
+  theorem sortNew_subst (σ : Var → Par) (d : Nat) :
+      ∀ x : New, sortNew (substNew σ d x) = sortNew (substNew σ d (sortNew x))
+    | New.mk n b => by simp only [substNew, sortNew]; rw [sortPar_subst σ d b]
+  termination_by x => sizeOf x
+
+  theorem sortMatchCase_subst (σ : Var → Par) (d : Nat) :
+      ∀ x : MatchCase,
+        sortMatchCase (substMatchCase σ d x) = sortMatchCase (substMatchCase σ d (sortMatchCase x))
+    | MatchCase.mk p src fc => by
+      simp only [substMatchCase, sortMatchCase]
+      rw [sortPar_subst σ (d + 1) p, sortPar_subst σ d src]
+  termination_by x => sizeOf x
+
+  theorem sortMatch_subst (σ : Var → Par) (d : Nat) :
+      ∀ x : Match, sortMatch (substMatch σ d x) = sortMatch (substMatch σ d (sortMatch x))
+    | Match.mk t cs => by
+      simp only [substMatch, sortMatch]
+      rw [sortPar_subst σ d t, sortListMatchCase_subst σ d cs]
+  termination_by x => sizeOf x
+
+  theorem sortBundle_subst (σ : Var → Par) (d : Nat) :
+      ∀ x : Bundle, sortBundle (substBundle σ d x) = sortBundle (substBundle σ d (sortBundle x))
+    | Bundle.mk body w r => by
+      simp only [substBundle, sortBundle]; rw [sortPar_subst σ d body]
+  termination_by x => sizeOf x
+
+  theorem sortExprToPar_subst (σ : Var → Par) (d : Nat) :
+      ∀ e : Expr, sortPar (substExprToPar σ d e) = sortPar (substExprToPar σ d (sortExpr e))
+    | .ground g => by simp only [substExprToPar.eq_def, sortExpr.eq_def, sortPar_singleExpr]
+    | .evar (.bound k) => by simp only [substExprToPar.eq_def, sortExpr.eq_def]
+    | .evar (.free k) => by simp only [substExprToPar.eq_def, sortExpr.eq_def, sortPar_singleExpr]
+    | .evar .wildcard => by simp only [substExprToPar.eq_def, sortExpr.eq_def, sortPar_singleExpr]
+    | .eneg p => by
+      simp only [substExprToPar.eq_def, sortExpr.eq_def, sortPar_singleExpr]
+      rw [sortPar_subst σ d p]
+    | .enot p => by
+      simp only [substExprToPar.eq_def, sortExpr.eq_def, sortPar_singleExpr]
+      rw [sortPar_subst σ d p]
+    | .eplus a b => by
+      simp only [substExprToPar.eq_def, sortExpr.eq_def, sortPar_singleExpr]
+      rw [sortPar_subst σ d a, sortPar_subst σ d b]
+    | .eminus a b => by
+      simp only [substExprToPar.eq_def, sortExpr.eq_def, sortPar_singleExpr]
+      rw [sortPar_subst σ d a, sortPar_subst σ d b]
+    | .emult a b => by
+      simp only [substExprToPar.eq_def, sortExpr.eq_def, sortPar_singleExpr]
+      rw [sortPar_subst σ d a, sortPar_subst σ d b]
+    | .ediv a b => by
+      simp only [substExprToPar.eq_def, sortExpr.eq_def, sortPar_singleExpr]
+      rw [sortPar_subst σ d a, sortPar_subst σ d b]
+    | .emod a b => by
+      simp only [substExprToPar.eq_def, sortExpr.eq_def, sortPar_singleExpr]
+      rw [sortPar_subst σ d a, sortPar_subst σ d b]
+    | .elt a b => by
+      simp only [substExprToPar.eq_def, sortExpr.eq_def, sortPar_singleExpr]
+      rw [sortPar_subst σ d a, sortPar_subst σ d b]
+    | .ele a b => by
+      simp only [substExprToPar.eq_def, sortExpr.eq_def, sortPar_singleExpr]
+      rw [sortPar_subst σ d a, sortPar_subst σ d b]
+    | .egt a b => by
+      simp only [substExprToPar.eq_def, sortExpr.eq_def, sortPar_singleExpr]
+      rw [sortPar_subst σ d a, sortPar_subst σ d b]
+    | .ege a b => by
+      simp only [substExprToPar.eq_def, sortExpr.eq_def, sortPar_singleExpr]
+      rw [sortPar_subst σ d a, sortPar_subst σ d b]
+    | .eeq a b => by
+      simp only [substExprToPar.eq_def, sortExpr.eq_def, sortPar_singleExpr]
+      rw [sortPar_subst σ d a, sortPar_subst σ d b]
+    | .eneq a b => by
+      simp only [substExprToPar.eq_def, sortExpr.eq_def, sortPar_singleExpr]
+      rw [sortPar_subst σ d a, sortPar_subst σ d b]
+    | .eand a b => by
+      simp only [substExprToPar.eq_def, sortExpr.eq_def, sortPar_singleExpr]
+      rw [sortPar_subst σ d a, sortPar_subst σ d b]
+    | .eor a b => by
+      simp only [substExprToPar.eq_def, sortExpr.eq_def, sortPar_singleExpr]
+      rw [sortPar_subst σ d a, sortPar_subst σ d b]
+    | .elist ps r => by
+      simp only [substExprToPar.eq_def, sortExpr.eq_def, sortPar_singleExpr]
+      exact congrArg (fun t => singleExpr (.elist t r)) (sortListPar_subst σ d ps)
+    | .etuple ps => by
+      simp only [substExprToPar.eq_def, sortExpr.eq_def, sortPar_singleExpr]
+      exact congrArg (fun t => singleExpr (.etuple t)) (sortListPar_subst σ d ps)
+    | .eset ps r => by
+      -- `substExprToPar` sorts a set's children and `sortExpr` sorts them again, so both sides
+      -- carry a double `sortListPar` that the outer `sortList` cannot see through.
+      simp only [substExprToPar.eq_def, sortExpr.eq_def, sortPar_singleExpr]
+      have h1 := congrArg (fun t => singleExpr (.eset t r))
+        (sortList_sortListPar_idem (substListPar σ d ps))
+      have h2 := congrArg (fun t => singleExpr (.eset t r)) (sortListPar_subst σ d ps)
+      have h3 := congrArg (fun t => singleExpr (.eset t r))
+        (sortList_sortListPar_idem (substListPar σ d (sortList parComparator (sortListPar ps))))
+      exact h1.trans (h2.trans h3.symm)
+    | .emap kvs r => by
+      simp only [substExprToPar.eq_def, sortExpr.eq_def, sortPar_singleExpr]
+      have h1 := congrArg (fun t => singleExpr (.emap t r))
+        (sortList_sortListParPair_idem (substListParPair σ d kvs))
+      have h2 := congrArg (fun t => singleExpr (.emap t r)) (sortListParPair_subst σ d kvs)
+      have h3 := congrArg (fun t => singleExpr (.emap t r)) (sortList_sortListParPair_idem
+        (substListParPair σ d
+          (sortList (Comparator.cmpPair parComparator parComparator) (sortListParPair kvs))))
+      exact h1.trans (h2.trans h3.symm)
+  termination_by e => sizeOf e
+
+  theorem sortConnective_subst (σ : Var → Par) (d : Nat) :
+      ∀ c : Connective,
+        sortPar (substConnective σ d c) = sortPar (substConnective σ d (sortConnective c))
+    | Connective.connAnd ps => by
+      simp only [substConnective, sortConnective, sortPar_singleConnective]
+      exact congrArg (fun t => singleConnective (.connAnd t)) (sortListPar_subst σ d ps)
+    | Connective.connOr ps => by
+      simp only [substConnective, sortConnective, sortPar_singleConnective]
+      exact congrArg (fun t => singleConnective (.connOr t)) (sortListPar_subst σ d ps)
+    | Connective.connNot p => by
+      simp only [substConnective, sortConnective, sortPar_singleConnective]
+      exact congrArg (fun t => singleConnective (.connNot t)) (sortPar_subst σ d p)
+    | Connective.connVarRef dep k => by
+      simp only [substConnective, sortConnective]
+  termination_by c => sizeOf c
+
+  theorem sortExprsToPar_subst (σ : Var → Par) (d : Nat) :
+      ∀ l : List Expr,
+        sortPar (substExprsToPar σ d l)
+          = sortPar (substExprsToPar σ d (sortList exprComparator (sortListExpr l)))
+    | [] => by simp [substExprsToPar, sortList, sortListExpr]
+    | e :: es => by
+      simp only [substExprsToPar, sortListExpr, List.map_cons]
+      have hperm : List.Perm (sortList exprComparator (sortExpr e :: sortListExpr es))
+          (sortExpr e :: sortList exprComparator (sortListExpr es)) :=
+        List.perm_orderedInsert exprComparator.le (sortExpr e)
+          (sortList exprComparator (sortListExpr es))
+      rw [sortPar_substExprsToPar_perm σ d hperm]
+      simp only [substExprsToPar]
+      exact sortPar_parMerge (sortExprToPar_subst σ d e) (sortExprsToPar_subst σ d es)
+  termination_by l => sizeOf l
+
+  theorem sortListConnective_subst (σ : Var → Par) (d : Nat) :
+      ∀ l : List Connective,
+        sortPar (substListConnective σ d l)
+          = sortPar (substListConnective σ d (sortList connectiveComparator (sortListConnective l)))
+    | [] => by simp [substListConnective, sortList, sortListConnective]
+    | c :: cs => by
+      simp only [substListConnective, sortListConnective, List.map_cons]
+      have hperm : List.Perm (sortList connectiveComparator (sortConnective c :: sortListConnective cs))
+          (sortConnective c :: sortList connectiveComparator (sortListConnective cs)) :=
+        List.perm_orderedInsert connectiveComparator.le (sortConnective c)
+          (sortList connectiveComparator (sortListConnective cs))
+      rw [sortPar_substListConnective_perm σ d hperm]
+      simp only [substListConnective]
+      exact sortPar_parMerge (sortConnective_subst σ d c) (sortListConnective_subst σ d cs)
+  termination_by l => sizeOf l
+
+  theorem sortListSend_subst (σ : Var → Par) (d : Nat) :
+      ∀ l : List Send,
+        sortList sendComparator (sortListSend (substListSend σ d l))
+          = sortList sendComparator
+              (sortListSend (substListSend σ d (sortList sendComparator (sortListSend l))))
+    | [] => by simp [substListSend, sortListSend]
+    | x :: xs => by
+      simp only [substListSend_eq_map, sortListSend_eq_map, List.map_map, List.map_cons]
+      rw [sortList_cons, sortList_cons]
+      have hperm : List.Perm
+          ((List.orderedInsert sendComparator.le (sortSend x)
+            (sortList sendComparator (List.map sortSend xs))).map (sortSend ∘ substSend σ d))
+          ((sortSend x :: sortList sendComparator (List.map sortSend xs)).map
+            (sortSend ∘ substSend σ d)) :=
+        (List.perm_orderedInsert sendComparator.le (sortSend x)
+          (sortList sendComparator (List.map sortSend xs))).map _
+      rw [sortList_perm _ hperm]
+      simp only [List.map_cons]
+      have IH : sortList sendComparator (List.map (sortSend ∘ substSend σ d) xs)
+          = sortList sendComparator
+              (List.map (sortSend ∘ substSend σ d) (sortList sendComparator (List.map sortSend xs))) := by
+        simpa only [substListSend_eq_map, sortListSend_eq_map, List.map_map] using
+          sortListSend_subst σ d xs
+      exact sortList_cons_congr sendComparator (sortSend_subst σ d x) IH
+  termination_by l => sizeOf l
+
+  theorem sortListReceiveBind_subst (σ : Var → Par) (d : Nat) :
+      ∀ l : List ReceiveBind,
+        sortList receiveBindComparator (sortListReceiveBind (substListReceiveBind σ d l))
+          = sortList receiveBindComparator
+              (sortListReceiveBind (substListReceiveBind σ d
+                (sortList receiveBindComparator (sortListReceiveBind l))))
+    | [] => by simp [substListReceiveBind, sortListReceiveBind]
+    | x :: xs => by
+      simp only [substListReceiveBind_eq_map, sortListReceiveBind_eq_map, List.map_map, List.map_cons]
+      rw [sortList_cons, sortList_cons]
+      have hperm : List.Perm
+          ((List.orderedInsert receiveBindComparator.le (sortReceiveBind x)
+            (sortList receiveBindComparator (List.map sortReceiveBind xs))).map (sortReceiveBind ∘ substReceiveBind σ d))
+          ((sortReceiveBind x :: sortList receiveBindComparator (List.map sortReceiveBind xs)).map (sortReceiveBind ∘ substReceiveBind σ d)) :=
+        (List.perm_orderedInsert receiveBindComparator.le (sortReceiveBind x)
+          (sortList receiveBindComparator (List.map sortReceiveBind xs))).map _
+      rw [sortList_perm _ hperm]
+      simp only [List.map_cons]
+      have IH : sortList receiveBindComparator (List.map (sortReceiveBind ∘ substReceiveBind σ d) xs)
+          = sortList receiveBindComparator (List.map (sortReceiveBind ∘ substReceiveBind σ d) (sortList receiveBindComparator (List.map sortReceiveBind xs))) := by
+        simpa only [substListReceiveBind_eq_map, sortListReceiveBind_eq_map, List.map_map] using sortListReceiveBind_subst σ d xs
+      exact sortList_cons_congr receiveBindComparator (sortReceiveBind_subst σ d x) IH
+  termination_by l => sizeOf l
+
+  theorem sortListReceive_subst (σ : Var → Par) (d : Nat) :
+      ∀ l : List Receive,
+        sortList receiveComparator (sortListReceive (substListReceive σ d l))
+          = sortList receiveComparator
+              (sortListReceive (substListReceive σ d (sortList receiveComparator (sortListReceive l))))
+    | [] => by simp [substListReceive, sortListReceive]
+    | x :: xs => by
+      simp only [substListReceive_eq_map, sortListReceive_eq_map, List.map_map, List.map_cons]
+      rw [sortList_cons, sortList_cons]
+      have hperm : List.Perm
+          ((List.orderedInsert receiveComparator.le (sortReceive x)
+            (sortList receiveComparator (List.map sortReceive xs))).map (sortReceive ∘ substReceive σ d))
+          ((sortReceive x :: sortList receiveComparator (List.map sortReceive xs)).map (sortReceive ∘ substReceive σ d)) :=
+        (List.perm_orderedInsert receiveComparator.le (sortReceive x)
+          (sortList receiveComparator (List.map sortReceive xs))).map _
+      rw [sortList_perm _ hperm]
+      simp only [List.map_cons]
+      have IH : sortList receiveComparator (List.map (sortReceive ∘ substReceive σ d) xs)
+          = sortList receiveComparator (List.map (sortReceive ∘ substReceive σ d) (sortList receiveComparator (List.map sortReceive xs))) := by
+        simpa only [substListReceive_eq_map, sortListReceive_eq_map, List.map_map] using sortListReceive_subst σ d xs
+      exact sortList_cons_congr receiveComparator (sortReceive_subst σ d x) IH
+  termination_by l => sizeOf l
+
+  theorem sortListNew_subst (σ : Var → Par) (d : Nat) :
+      ∀ l : List New,
+        sortList newComparator (sortListNew (substListNew σ d l))
+          = sortList newComparator
+              (sortListNew (substListNew σ d (sortList newComparator (sortListNew l))))
+    | [] => by simp [substListNew, sortListNew]
+    | x :: xs => by
+      simp only [substListNew_eq_map, sortListNew_eq_map, List.map_map, List.map_cons]
+      rw [sortList_cons, sortList_cons]
+      have hperm : List.Perm
+          ((List.orderedInsert newComparator.le (sortNew x)
+            (sortList newComparator (List.map sortNew xs))).map (sortNew ∘ substNew σ d))
+          ((sortNew x :: sortList newComparator (List.map sortNew xs)).map (sortNew ∘ substNew σ d)) :=
+        (List.perm_orderedInsert newComparator.le (sortNew x)
+          (sortList newComparator (List.map sortNew xs))).map _
+      rw [sortList_perm _ hperm]
+      simp only [List.map_cons]
+      have IH : sortList newComparator (List.map (sortNew ∘ substNew σ d) xs)
+          = sortList newComparator (List.map (sortNew ∘ substNew σ d) (sortList newComparator (List.map sortNew xs))) := by
+        simpa only [substListNew_eq_map, sortListNew_eq_map, List.map_map] using sortListNew_subst σ d xs
+      exact sortList_cons_congr newComparator (sortNew_subst σ d x) IH
+  termination_by l => sizeOf l
+
+  theorem sortListMatchCase_subst (σ : Var → Par) (d : Nat) :
+      ∀ l : List MatchCase,
+        sortList matchCaseComparator (sortListMatchCase (substListMatchCase σ d l))
+          = sortList matchCaseComparator
+              (sortListMatchCase (substListMatchCase σ d (sortList matchCaseComparator (sortListMatchCase l))))
+    | [] => by simp [substListMatchCase, sortListMatchCase]
+    | x :: xs => by
+      simp only [substListMatchCase_eq_map, sortListMatchCase_eq_map, List.map_map, List.map_cons]
+      rw [sortList_cons, sortList_cons]
+      have hperm : List.Perm
+          ((List.orderedInsert matchCaseComparator.le (sortMatchCase x)
+            (sortList matchCaseComparator (List.map sortMatchCase xs))).map (sortMatchCase ∘ substMatchCase σ d))
+          ((sortMatchCase x :: sortList matchCaseComparator (List.map sortMatchCase xs)).map (sortMatchCase ∘ substMatchCase σ d)) :=
+        (List.perm_orderedInsert matchCaseComparator.le (sortMatchCase x)
+          (sortList matchCaseComparator (List.map sortMatchCase xs))).map _
+      rw [sortList_perm _ hperm]
+      simp only [List.map_cons]
+      have IH : sortList matchCaseComparator (List.map (sortMatchCase ∘ substMatchCase σ d) xs)
+          = sortList matchCaseComparator (List.map (sortMatchCase ∘ substMatchCase σ d) (sortList matchCaseComparator (List.map sortMatchCase xs))) := by
+        simpa only [substListMatchCase_eq_map, sortListMatchCase_eq_map, List.map_map] using sortListMatchCase_subst σ d xs
+      exact sortList_cons_congr matchCaseComparator (sortMatchCase_subst σ d x) IH
+  termination_by l => sizeOf l
+
+  theorem sortListMatch_subst (σ : Var → Par) (d : Nat) :
+      ∀ l : List Match,
+        sortList matchComparator (sortListMatch (substListMatch σ d l))
+          = sortList matchComparator
+              (sortListMatch (substListMatch σ d (sortList matchComparator (sortListMatch l))))
+    | [] => by simp [substListMatch, sortListMatch]
+    | x :: xs => by
+      simp only [substListMatch_eq_map, sortListMatch_eq_map, List.map_map, List.map_cons]
+      rw [sortList_cons, sortList_cons]
+      have hperm : List.Perm
+          ((List.orderedInsert matchComparator.le (sortMatch x)
+            (sortList matchComparator (List.map sortMatch xs))).map (sortMatch ∘ substMatch σ d))
+          ((sortMatch x :: sortList matchComparator (List.map sortMatch xs)).map (sortMatch ∘ substMatch σ d)) :=
+        (List.perm_orderedInsert matchComparator.le (sortMatch x)
+          (sortList matchComparator (List.map sortMatch xs))).map _
+      rw [sortList_perm _ hperm]
+      simp only [List.map_cons]
+      have IH : sortList matchComparator (List.map (sortMatch ∘ substMatch σ d) xs)
+          = sortList matchComparator (List.map (sortMatch ∘ substMatch σ d) (sortList matchComparator (List.map sortMatch xs))) := by
+        simpa only [substListMatch_eq_map, sortListMatch_eq_map, List.map_map] using sortListMatch_subst σ d xs
+      exact sortList_cons_congr matchComparator (sortMatch_subst σ d x) IH
+  termination_by l => sizeOf l
+
+  theorem sortListBundle_subst (σ : Var → Par) (d : Nat) :
+      ∀ l : List Bundle,
+        sortList bundleComparator (sortListBundle (substListBundle σ d l))
+          = sortList bundleComparator
+              (sortListBundle (substListBundle σ d (sortList bundleComparator (sortListBundle l))))
+    | [] => by simp [substListBundle, sortListBundle]
+    | x :: xs => by
+      simp only [substListBundle_eq_map, sortListBundle_eq_map, List.map_map, List.map_cons]
+      rw [sortList_cons, sortList_cons]
+      have hperm : List.Perm
+          ((List.orderedInsert bundleComparator.le (sortBundle x)
+            (sortList bundleComparator (List.map sortBundle xs))).map (sortBundle ∘ substBundle σ d))
+          ((sortBundle x :: sortList bundleComparator (List.map sortBundle xs)).map (sortBundle ∘ substBundle σ d)) :=
+        (List.perm_orderedInsert bundleComparator.le (sortBundle x)
+          (sortList bundleComparator (List.map sortBundle xs))).map _
+      rw [sortList_perm _ hperm]
+      simp only [List.map_cons]
+      have IH : sortList bundleComparator (List.map (sortBundle ∘ substBundle σ d) xs)
+          = sortList bundleComparator (List.map (sortBundle ∘ substBundle σ d) (sortList bundleComparator (List.map sortBundle xs))) := by
+        simpa only [substListBundle_eq_map, sortListBundle_eq_map, List.map_map] using sortListBundle_subst σ d xs
+      exact sortList_cons_congr bundleComparator (sortBundle_subst σ d x) IH
+  termination_by l => sizeOf l
+
+  theorem sortListGUnforgeable_subst (σ : Var → Par) (d : Nat) :
+      ∀ l : List GUnforgeable,
+        sortList gUnforgeableComparator (sortListGUnforgeable l)
+          = sortList gUnforgeableComparator
+              (sortListGUnforgeable (sortList gUnforgeableComparator (sortListGUnforgeable l)))
+    | l => by
+      -- `sortGUnforgeable` is the identity (it has no `Par` to sort), so both sides are `sortList`
+      -- of `l` — and `sortList C (l.map id)` is `sortList C l`.
+      simp only [sortListGUnforgeable_eq_map]
+      exact sortList_map_congr gUnforgeableComparator sortGUnforgeable sortGUnforgeable l
+        (fun x => rfl)
+  termination_by l => sizeOf l
+
+  theorem sortListParPair_subst (σ : Var → Par) (d : Nat) :
+      ∀ l : List (Par × Par),
+        sortList (Comparator.cmpPair parComparator parComparator) (sortListParPair (substListParPair σ d l))
+          = sortList (Comparator.cmpPair parComparator parComparator)
+              (sortListParPair (substListParPair σ d
+                (sortList (Comparator.cmpPair parComparator parComparator) (sortListParPair l))))
+    | [] => by simp [substListParPair, sortListParPair]
+    | x :: xs => by
+      cases x with
+      | mk a b =>
+        simp only [substListParPair_eq_map, sortListParPair_eq_map, List.map_map, List.map_cons,
+          Function.comp_apply]
+        rw [sortList_cons, sortList_cons]
+        have hperm : List.Perm
+            ((List.orderedInsert (Comparator.cmpPair parComparator parComparator).le
+              (sortParPair (a, b))
+              (sortList (Comparator.cmpPair parComparator parComparator) (List.map sortParPair xs))).map
+              (sortParPair ∘ fun y => (substPar σ d y.1, substPar σ d y.2)))
+            ((sortParPair (a, b) ::
+              sortList (Comparator.cmpPair parComparator parComparator) (List.map sortParPair xs)).map
+              (sortParPair ∘ fun y => (substPar σ d y.1, substPar σ d y.2))) :=
+          (List.perm_orderedInsert (Comparator.cmpPair parComparator parComparator).le (sortParPair (a, b))
+            (sortList (Comparator.cmpPair parComparator parComparator)
+              (List.map sortParPair xs))).map _
+        rw [sortList_perm _ hperm]
+        simp only [List.map_cons, Function.comp_apply, sortParPair, Prod.mk.injEq]
+        have IH : sortList (Comparator.cmpPair parComparator parComparator)
+              (List.map (sortParPair ∘ fun y => (substPar σ d y.1, substPar σ d y.2)) xs)
+            = sortList (Comparator.cmpPair parComparator parComparator)
+              (List.map (sortParPair ∘ fun y => (substPar σ d y.1, substPar σ d y.2))
+                (sortList (Comparator.cmpPair parComparator parComparator)
+                  (List.map sortParPair xs))) := by
+          simpa only [substListParPair_eq_map, sortListParPair_eq_map, List.map_map] using
+            sortListParPair_subst σ d xs
+        exact sortList_cons_congr (Comparator.cmpPair parComparator parComparator)
+          (by
+            simp only [Prod.mk.injEq]
+            exact ⟨sortPar_subst σ d a, sortPar_subst σ d b⟩) IH
+  termination_by l => sizeOf l
+
+  theorem sortListPar_subst (σ : Var → Par) (d : Nat) :
+      ∀ l : List Par,
+        sortList parComparator (sortListPar (substListPar σ d l))
+          = sortList parComparator (sortListPar (substListPar σ d (sortList parComparator (sortListPar l))))
+    | [] => by simp [substListPar, sortListPar]
+    | x :: xs => by
+      simp only [substListPar_eq_map, sortListPar_eq_map, List.map_map, List.map_cons]
+      rw [sortList_cons, sortList_cons]
+      have hperm : List.Perm
+          ((List.orderedInsert parComparator.le (sortPar x)
+            (sortList parComparator (List.map sortPar xs))).map (sortPar ∘ substPar σ d))
+          ((sortPar x :: sortList parComparator (List.map sortPar xs)).map (sortPar ∘ substPar σ d)) :=
+        (List.perm_orderedInsert parComparator.le (sortPar x)
+          (sortList parComparator (List.map sortPar xs))).map _
+      rw [sortList_perm _ hperm]
+      simp only [List.map_cons]
+      have IH : sortList parComparator (List.map (sortPar ∘ substPar σ d) xs)
+          = sortList parComparator (List.map (sortPar ∘ substPar σ d) (sortList parComparator (List.map sortPar xs))) := by
+        simpa only [substListPar_eq_map, sortListPar_eq_map, List.map_map] using sortListPar_subst σ d xs
+      exact sortList_cons_congr parComparator (sortPar_subst σ d x) IH
+  termination_by l => sizeOf l
+end
+
 /-! ## The record, kept: the axioms constrained nothing, and the law needed its hypothesis
 
 These three are the finding the previous version of this file published, and they stay because the
@@ -241,12 +792,12 @@ theorem bound_is_closed_free_is_not :
   refine ⟨?_, ?_⟩ <;> native_decide
 
 
-/-! ### The two laws, and what is proved of them
+/-! ### The two laws, both proved
 
-`substPar` is a definition now, so the laws are statements about a function rather than postulates about
-nothing. Both are stated below; the closedness one is proved, and the commuting one is stated as an
-axiom with its proof obligations recorded — the honest split the register's `owed` status exists for,
-rather than marking the row done on the strength of the definition alone. -/
+`substPar` is a definition, so the laws are statements about a function rather than postulates about
+nothing, and as of 2026-09-24 both are *theorems*: the closedness one from the checker-level `mutual`
+block below, and the commuting one from the `mutual` block above, whose 22 members are one per helper
+of the substitution family. -/
 
 /-- **The commuting law**: canonicalization before or after substitution gives the same term, both sides
     sorted. This is the port's `law3_substitution_and_sorting_commute`
@@ -254,14 +805,14 @@ rather than marking the row done on the strength of the definition alone. -/
     *no-sort* core the port's `substitute_par_no_sort` is (`substitute.rs:116`), while its public entry
     point sorts once at the end (`:169`).
 
-    **Owed.** The proof needs the mutual induction plus the permutation lemmas the splice makes
-    necessary: a substituted occurrence contributes a whole `Par` (`parMerge`), so a value carrying
-    sends lands them in the target's `sends` field *after* whatever was there, which is why the port's
-    final sort is not redundant and why the statement has `sortPar` on both sides. `Sort.lean`'s
-    `sortList_append_comm` and `sortList_idempotent` are the lemmas that argument runs on. Recorded as
-    owed rather than asserted as proved. -/
-axiom sort_subst (σ : Var → Par) (t : Par) :
-    sortPar (substPar σ 0 t) = sortPar (substPar σ 0 (sortPar t))
+    **Proved** on 2026-09-24 by the `mutual` block above, which states the same law one type at a time
+    (`sortPar_subst`, `sortSend_subst`, …); this is its depth-`0` instance. A substituted occurrence
+    contributes a whole `Par` (`parMerge`), which is why both sides are sorted — the splice appends a
+    value's fields after whatever the target already had, and the final sort is what makes the order
+    irrelevant. -/
+theorem sort_subst (σ : Var → Par) (t : Par) :
+    sortPar (substPar σ 0 t) = sortPar (substPar σ 0 (sortPar t)) :=
+  sortPar_subst σ 0 t
 
 /-! ### `subst_closed`, attempted again — where it now stands (2026-09-23, Programme D unit 12)
 

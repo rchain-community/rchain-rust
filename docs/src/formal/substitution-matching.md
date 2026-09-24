@@ -18,18 +18,25 @@ theorem subst_classify (σ : Subst) (p : Par) : classify (subst σ p) = classify
 theorem subst_preserves_sort (σ : Subst) {t : Par} {s : PSort} (h : HasSort t s) : HasSort (subst σ t) s
 ```
 
-The **deep** capture-avoiding substitution is stated (not defined) in
-[`spec/Rchain/Subst.lean`](../../../spec/Rchain/Subst.lean), with the law it must satisfy:
+The **deep** capture-avoiding substitution is *defined* in
+[`spec/Rchain/Subst.lean`](../../../spec/Rchain/Subst.lean) — a `mutual` family mirroring
+`rholang/src/substitute.rs` — and both of its laws are theorems:
 
 ```lean
-axiom substPar : (Var → Par) → Par → Par
-axiom sort_subst (σ : Var → Par) (t : Par) : sortPar (substPar σ t) = substPar σ (sortPar t)
-axiom subst_closed (σ : Var → Par) (t : Par) : Closed t → Closed (substPar σ t)
+theorem sort_subst (σ : Var → Par) (t : Par) :
+    sortPar (substPar σ 0 t) = sortPar (substPar σ 0 (sortPar t))
+theorem subst_closed (σ : Var → Par) (t : Par)
+    (hσ : ∀ v, Closed (σ v)) (h : Closed t) : Closed (substPar σ t)
 ```
 
 `sort_subst` is the exact Law-3 statement: **canonicalization commutes with substitution**
-(`sort(subst t) = subst(sort t)`). `subst_closed` is the companion guarantee that substitution does not
-introduce free variables.
+(`sort(subst t) = subst(sort t)`) — with `sortPar` on both sides because the file's `substPar` is the
+*no-sort* core the port's `substitute_par_no_sort` is. It is the depth-`0` instance of
+`sortPar_subst`, one of the 22 members of the `mutual` block that states the law one type at a time.
+`subst_closed` is the companion guarantee that substitution does not introduce free variables, and it
+carries the **closed-image hypothesis** without which it is false (`Closed` counts a *bound*
+occurrence as closed, so an open image escapes into a closed term); the Rust's own test carries the
+same hypothesis.
 
 The Coq track owns the *definition* of capture-avoiding de Bruijn substitution (Autosubst-style):
 `substPar` and `subst_commutes_sort` in [`spec/coq/Laws.v`](../../../spec/coq/Laws.v). The K executable

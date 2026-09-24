@@ -1737,6 +1737,103 @@ end
 theorem sortPar_comm (p q : Par) : sortPar (parMerge p q) = sortPar (parMerge q p) := by
   simp [parMerge, sortPar, sortList_append_comm]
 
+/-! ## The sorting facts law 3's commuting proof needs
+
+`substPar`'s swap with `sortPar` meets `sortList` in three shapes the canonicalization lemmas above do
+not cover. A substituted occurrence is spliced in by `parMerge`, so `sortList` of an *append* has to
+be a function of the two sorts. The sorted form of a list field is an `orderedInsert` — the list
+members' induction can compare the inserted head with an element law, but the sorted list cannot be
+taken apart into head and tail without `sortList_cons`. And every list member says "sorting a walk is
+a function of the walk's sort", whose general form is `sortList_map_congr`.
+
+They are facts about `sortList` and `parMerge` alone — no substitution appears — which is why they
+live here rather than in `Subst.lean`, which keeps only the substitution-specific helpers private. -/
+
+/-- `sortList` of an append is a function of the two sorts. -/
+theorem sortList_append_congr {α : Type*} (C : Comparator α) {X X' Y Y' : List α}
+    (hx : sortList C X = sortList C X') (hy : sortList C Y = sortList C Y') :
+    sortList C (X ++ Y) = sortList C (X' ++ Y') := by
+  have hx0 : List.Perm (sortList C X) X := List.perm_insertionSort (r := C.le) X
+  have hx1 : List.Perm (sortList C X') X' := List.perm_insertionSort (r := C.le) X'
+  have hy0 : List.Perm (sortList C Y) Y := List.perm_insertionSort (r := C.le) Y
+  have hy1 : List.Perm (sortList C Y') Y' := List.perm_insertionSort (r := C.le) Y'
+  have hx' : List.Perm X X' := by rw [← hx] at hx1; exact hx0.symm.trans hx1
+  have hy' : List.Perm Y Y' := by rw [← hy] at hy1; exact hy0.symm.trans hy1
+  exact sortList_perm C (List.Perm.append hx' hy')
+
+/-- `parMerge` is *propositionally* associative — each field is an append. `sortPar_parMerge` cannot
+    see this on its own, because `sortPar` only appears at the top of a `parMerge` tree, and the
+    permutation lemmas need it at every node. -/
+theorem parMerge_assoc (p q r : Par) :
+    parMerge (parMerge p q) r = parMerge p (parMerge q r) := by
+  simp [parMerge, List.append_assoc]
+
+/-- `sortList` of a cons is `orderedInsert`, because `insertionSort` folds from the right. This is
+    what lets an induction *see* the head of a sorted list. -/
+theorem sortList_cons {α : Type*} (C : Comparator α) (a : α) (as : List α) :
+    sortList C (a :: as) = List.orderedInsert C.le a (sortList C as) := by
+  simp [sortList, List.insertionSort]
+
+/-- Two conses sort alike when their heads are equal and their tails sort alike. -/
+theorem sortList_cons_congr {α : Type*} (C : Comparator α) {a a' : α} {as as' : List α}
+    (ha : a = a') (h : sortList C as = sortList C as') :
+    sortList C (a :: as) = sortList C (a' :: as') := by
+  rw [sortList_cons, sortList_cons, ha, h]
+
+/-- Sorting a map is a function of the map's sort, when `f` respects `g`'s sort key: the list members
+    are all of this shape, with `g` the type's canonicalizer and `f` its substitution. -/
+theorem sortList_map_congr {α : Type*} (C : Comparator α) (f g : α → α) (l : List α)
+    (hf : ∀ x, f x = f (g x)) :
+    sortList C (l.map f) = sortList C ((sortList C (l.map g)).map f) := by
+  have hperm : sortList C ((sortList C (l.map g)).map f) = sortList C ((l.map g).map f) :=
+    sortList_perm C ((List.perm_insertionSort (r := C.le) (l.map g)).map f)
+  rw [hperm, List.map_map]
+  exact congrArg (sortList C) (List.map_congr_left (fun y _ => hf y))
+
+/-- An idempotent map under a canonical sort is absorbed — `sortList_field_idem` without the inner
+    sort, which is the form the set/map arms of `substExprToPar` produce. -/
+theorem sortList_map_absorb {α : Type*} (C : Comparator α) (f : α → α)
+    (hf : ∀ x, f (f x) = f x) (l : List α) :
+    sortList C ((l.map f).map f) = sortList C (l.map f) := by
+  rw [List.map_map]
+  exact sortList_perm C (List.Perm.of_eq (List.map_congr_left (fun x _ => hf x)))
+
+/-- `eset` and `emap` sort their children *inside* `substExprToPar`, and `sortExpr` sorts them again,
+    so those arms carry a double `sortListPar` that the outer `sortList` cannot see through. -/
+theorem sortList_sortListPar_idem (l : List Par) :
+    sortList parComparator (sortListPar (sortListPar l))
+      = sortList parComparator (sortListPar l) := by
+  simp only [sortListPar_eq_map]
+  exact sortList_map_absorb parComparator sortPar sortPar_idempotent l
+
+/-- The `Par × Par` version, for `emap`. -/
+theorem sortList_sortListParPair_idem (l : List (Par × Par)) :
+    sortList (Comparator.cmpPair parComparator parComparator) (sortListParPair (sortListParPair l))
+      = sortList (Comparator.cmpPair parComparator parComparator) (sortListParPair l) := by
+  simp only [sortListParPair_eq_map]
+  exact sortList_map_absorb _ sortParPair sortParPair_idempotent l
+
+/-- Sorting a merge is a function of the two sorts: the fields are sorted unions, so replacing either
+    side by anything with the same sort gives the same result. This is what `substExprsToPar` and
+    `substListConnective` need, since they build their result by `parMerge`. -/
+theorem sortPar_parMerge {a b a' b' : Par}
+    (ha : sortPar a = sortPar a') (hb : sortPar b = sortPar b') :
+    sortPar (parMerge a b) = sortPar (parMerge a' b') := by
+  cases a with | mk s1 r1 n1 e1 m1 u1 b1 c1 =>
+  cases a' with | mk s1' r1' n1' e1' m1' u1' b1' c1' =>
+  cases b with | mk s2 r2 n2 e2 m2 u2 b2 c2 =>
+  cases b' with | mk s2' r2' n2' e2' m2' u2' b2' c2' =>
+  simp only [sortPar] at ha hb
+  injection ha with ha1 ha2 ha3 ha4 ha5 ha6 ha7 ha8
+  injection hb with hb1 hb2 hb3 hb4 hb5 hb6 hb7 hb8
+  simp only [parMerge, sortPar, Par.mk.injEq]
+  simp only [List.map_append, sortListSend_eq_map, sortListReceive_eq_map, sortListNew_eq_map,
+    sortListExpr_eq_map, sortListMatch_eq_map, sortListGUnforgeable_eq_map, sortListBundle_eq_map,
+    sortListConnective_eq_map] at ha1 ha2 ha3 ha4 ha5 ha6 ha7 ha8 hb1 hb2 hb3 hb4 hb5 hb6 hb7 hb8 ⊢
+  exact ⟨sortList_append_congr _ ha1 hb1, sortList_append_congr _ ha2 hb2,
+    sortList_append_congr _ ha3 hb3, sortList_append_congr _ ha4 hb4,
+    sortList_append_congr _ ha5 hb5, sortList_append_congr _ ha6 hb6,
+    sortList_append_congr _ ha7 hb7, sortList_append_congr _ ha8 hb8⟩
 
 end Rchain
 

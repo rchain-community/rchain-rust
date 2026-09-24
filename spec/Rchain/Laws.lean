@@ -279,16 +279,17 @@ def laws : List Law := [
   { number := 3, layer := "Rholang",
     statement := "Capture-avoiding de Bruijn substitution; `sort (subst t) = subst (sort t)`, and \
       substitution preserves closedness **given a closed image**",
-    status := .owed,
+    status := .provedModel,
     declarations := [`Rchain.substPar, `Rchain.substSend, `Rchain.substReceive,
       `Rchain.substReceiveBind, `Rchain.substNew, `Rchain.substMatch, `Rchain.substMatchCase,
       `Rchain.substBundle, `Rchain.substConnective, `Rchain.substListConnective,
       `Rchain.substExprsToPar, `Rchain.substExprToPar, `Rchain.substListPar,
       `Rchain.substListParPair, `Rchain.oneExpr, `Rchain.noSubst,
       `Rchain.the_identity_satisfies_sort_subst, `Rchain.the_identity_satisfies_subst_closed,
-      `Rchain.bound_is_closed_free_is_not, `Rchain.sort_subst, `Rchain.subst_closed],
+      `Rchain.bound_is_closed_free_is_not, `Rchain.sort_subst, `Rchain.subst_closed,
+      `Rchain.sortPar_subst, `Rchain.sortListPar_subst, `Rchain.sortPar_parMerge,
+      `Rchain.sortList_append_congr, `Rchain.sortList_cons, `Rchain.sortList_map_congr],
     rust := ["rholang/src/substitute.rs"],
-    axioms := [`Rchain.sort_subst],
     coq := ["spec/coq/Laws.v:substPar", "spec/coq/Laws.v:subst_commutes_sort"],
     witness := [`Rchain.the_identity_satisfies_sort_subst, `Rchain.the_identity_satisfies_subst_closed, `Rchain.bound_is_closed_free_is_not],
     falsifiable := some "`the_identity_satisfies_sort_subst` and \
@@ -331,10 +332,21 @@ def laws : List Law := [
       needed**: the mutual-theorem idiom `Sort.lean`'s comparator laws use carries this family too, and \
       the obstruction the earlier attempts hit was a *shape*, not a measure (the `termination_by` clause \
       must name a prefix of the equation patterns, so the members use variable patterns with the \
-      destructuring inside). It needs `set_option maxHeartbeats 1000000`, measured. `sort_subst` is the \
-      one law of this row still owed, and it is the harder half: the splice makes a substituted \
-      occurrence contribute a whole `Par`, so the proof needs the permutation lemmas \
-      (`sortList_append_comm`, `sortList_idempotent`) as well as the same induction" },
+      destructuring inside). It needs `set_option maxHeartbeats 1000000`, measured. **And the commuting \
+      law is proved too (2026-09-24)**: `sort_subst` is a *theorem* now, statement unchanged, resting on \
+      a `mutual` block of 22 members — one per helper of the substitution family. What it needed beyond \
+      the same induction is three shapes `Sort.lean` did not have: `sortList_append_congr` (a \
+      substituted occurrence is spliced in by `parMerge`, so `sortList` of an *append* has to be a \
+      function of the two sorts), `sortPar_parMerge` (the merge congruence), and `sortList_cons` (the \
+      sorted form of a field is an `orderedInsert`, which an induction has to take apart); plus \
+      permutation invariance of the two `parMerge` folds (`substExprsToPar`, `substListConnective`), \
+      since `sortPar` sees a `parMerge` tree only as its sorted fields. The part worth keeping is a \
+      *failure*: the ten list members cannot be a single application of `sortList_map_congr`, because \
+      that applies the element law to an *arbitrary* element of the list and no termination measure \
+      justifies it — Lean rejects the block — so they are structural inductions whose only two calls, \
+      the head's element law and the tail's theorem, are subterms. This row has **no axioms of its \
+      own**: `sort_subst` was the last one, and what the row's theorems still rest on is `cmpExpr`'s \
+      three, which law 1's row owns and counts" },
   { number := 4, clause := "a", layer := "Rholang",
     statement := "Reduction (COMM): a send and a matching receive on one channel reduce to the \
       receive's body",
