@@ -145,29 +145,29 @@ browser/macro client adds it via `wrapProgram` — so a term written for the bro
 ```rholang
 // read the pool
 new return, pos(`rho:rchain:pos`), ret in {
-  pos!("getBonds", *ret) | for (@b <- ret) { return!(b) }
+  pos!("getBonds", [*ret]) | for (@b <- ret) { return!(b) }
 }
 // → {"expr":[{"ExprMap":{"data":{"0410b8c5…":{"ExprInt":{"data":1000}},"04675f16…":{"ExprInt":{"data":100}}}}}]}
 
 // read the consensus set
 new return, pos(`rho:rchain:pos`), ret in {
-  pos!("getActiveValidators", *ret) | for (@v <- ret) { return!(v) }
+  pos!("getActiveValidators", [*ret]) | for (@v <- ret) { return!(v) }
 }
 
 // confer trust on a newcomer (deploy signed by a trusted, funded key)
 new return, pos(`rho:rchain:pos`), deployerId(`rho:rchain:deployerId`), ret in {
-  pos!("trust", *deployerId, "<65-byte hex pubkey>".hexToBytes(), *ret) |
+  pos!("trust", [*deployerId, "<65-byte hex pubkey>".hexToBytes(), *ret]) |
   for (@r <- ret) { return!(r) }
 }
 
 // bond yourself (deploy signed by the newcomer; stake within [minimum, maximum])
 new return, pos(`rho:rchain:pos`), deployerId(`rho:rchain:deployerId`), ret in {
-  pos!("bond", *deployerId, 100, *ret) | for (@r <- ret) { return!(r) }
+  pos!("bond", [*deployerId, 100, *ret]) | for (@r <- ret) { return!(r) }
 }
 
 // withdraw (deactivates immediately; stake escrowed until the quarantine deadline)
 new return, pos(`rho:rchain:pos`), deployerId(`rho:rchain:deployerId`), ret in {
-  pos!("withdraw", *deployerId, *ret) | for (@r <- ret) { return!(r) }
+  pos!("withdraw", [*deployerId, *ret]) | for (@r <- ret) { return!(r) }
 }
 ```
 

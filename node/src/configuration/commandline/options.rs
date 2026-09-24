@@ -238,6 +238,20 @@ pub struct Run {
     #[arg(long = "propose-on-deploy")]
     pub propose_on_deploy: bool,
 
+    /// Attest to remote blocks, by proposing.
+    ///
+    /// With nothing of our own to include, that proposal is an empty attestation (`block_creator.rs`):
+    /// the way a validator holding no deploys moves its latest message, and therefore the way a finality
+    /// quorum forms when every deploy arrives at one node.
+    ///
+    /// It fires on **any** remote block, not only deploy-bearing ones. The fringe rule needs a full
+    /// partition — every justification sender's message seen by every bonded sender — which takes more
+    /// than one round, because the attestations have to see each other. What bounds the traffic is the
+    /// proposer's own guard, not this predicate: `suppress_attestation` refuses to attest once nothing
+    /// unfinalized carries deploys, or while a supermajority is out of reach.
+    #[arg(long = "attest-on-new-blocks")]
+    pub attest_on_new_blocks: bool,
+
     /// Disable UPnP.
     #[arg(long = "no-upnp")]
     pub no_upnp: bool,
