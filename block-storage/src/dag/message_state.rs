@@ -15,7 +15,7 @@ use crate::errors::StorageError;
 ///
 /// Invariant: `latest_msgs` is keyed by sender, so the one-message-per-sender invariant is
 /// structural (a map cannot hold two entries for one sender); every entry is also present in
-/// `msg_map`. `insert_msg` enforces the subset invariant with a `debug_assert!`.
+/// `msg_map`. `insert_msg_mut` enforces the subset invariant with a `debug_assert!`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DagMessageState<M, S> {
     pub latest_msgs: BTreeMap<S, Message<M, S>>,
@@ -72,53 +72,65 @@ where
         }
     }
 
-    /// Insert a message (no-op if its id is already present). Only a higher `sender_seq` replaces
-    /// the sender's latest message (the Law 15 monotonicity invariant).
-    pub fn insert_msg(&self, msg: &Message<M, S>) -> Self {
+    /// Insert a message **in place** (no-op if its id is already present). Only a higher
+    /// `sender_seq` replaces the sender's latest message (the Law 15 monotonicity invariant).
+    ///
+    /// The in-place form is what a *bulk* caller must use. The Scala's `insertMsg` returns a state
+    /// built with `Map + (k -> v)` over an **immutable** map, whose structural sharing makes that
+    /// O(log N); the Rust `BTreeMap` has no structural sharing, so a persistent-shaped
+    /// implementation that clones the map per insert costs O(N) per call — and O(N²) when each
+    /// entry's own `seen` set is deep-copied with it. Rebuilding a stored chain through
+    /// [`Self::insert_msg`] that way was Θ(N³): a 5,844-block devnet restart spent longer than the
+    /// devnet's own 120 s healthcheck inside `BlockDagKeyValueStorage::create` and looked like a
+    /// hang (AUDIT C55).
+    pub fn insert_msg_mut(&mut self, msg: &Message<M, S>) {
         if self.msg_map.contains_key(&msg.id) {
-            return self.clone();
+            return;
         }
-        let mut new_msg_map = self.msg_map.clone();
-        new_msg_map.insert(msg.id.clone(), msg.clone());
-
-        let mut new_latest_msgs = self.latest_msgs.clone();
-        let replace = new_latest_msgs
+        let replace = self
+            .latest_msgs
             .get(&msg.sender)
             .map(|cur| msg.sender_seq > cur.sender_seq)
             .unwrap_or(true);
+        self.msg_map.insert(msg.id.clone(), msg.clone());
         if replace {
-            new_latest_msgs.insert(msg.sender.clone(), msg.clone());
+            self.latest_msgs.insert(msg.sender.clone(), msg.clone());
         }
 
         debug_assert!(
-            new_latest_msgs
+            self.latest_msgs
                 .values()
-                .all(|m| new_msg_map.contains_key(&m.id)),
+                .all(|m| self.msg_map.contains_key(&m.id)),
             "latest_msgs must be a subset of msg_map"
         );
-
-        Self {
-            latest_msgs: new_latest_msgs,
-            msg_map: new_msg_map,
-        }
     }
 
-    /// Insert a message into the map **without** promoting it to the sender's latest message.
+    /// [`Self::insert_msg_mut`] as a value: one clone, then the insert. Kept for the callers that
+    /// hand the next state on (the per-block path and `create_msg_and_update_sender`), so the
+    /// acceptance rule lives in exactly one place.
+    pub fn insert_msg(&self, msg: &Message<M, S>) -> Self {
+        let mut next = self.clone();
+        next.insert_msg_mut(msg);
+        next
+    }
+
+    /// [`Self::insert_msg_without_latest`] in place.
     ///
     /// Used for validation-failed blocks: they must be recorded in the map (so
     /// `neglectedInvalidBlock` and justification-regression can see them) but must not become a
     /// proposer's parent, otherwise a single failed block would wedge block production (H-2).
-    pub fn insert_msg_without_latest(&self, msg: &Message<M, S>) -> Self {
+    pub fn insert_msg_without_latest_mut(&mut self, msg: &Message<M, S>) {
         if self.msg_map.contains_key(&msg.id) {
-            return self.clone();
+            return;
         }
-        let mut new_msg_map = self.msg_map.clone();
-        new_msg_map.insert(msg.id.clone(), msg.clone());
+        self.msg_map.insert(msg.id.clone(), msg.clone());
+    }
 
-        Self {
-            latest_msgs: self.latest_msgs.clone(),
-            msg_map: new_msg_map,
-        }
+    /// [`Self::insert_msg_without_latest_mut`] as a value: one clone, then the insert.
+    pub fn insert_msg_without_latest(&self, msg: &Message<M, S>) -> Self {
+        let mut next = self.clone();
+        next.insert_msg_without_latest_mut(msg);
+        next
     }
 
     /// Create a new message for `creator` and insert it.

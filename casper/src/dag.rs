@@ -83,7 +83,11 @@ impl BlockDagKeyValueStorage {
             let block = block_metadata_store.get_unchecked(hash).await?;
             let msg = message_from_block_metadata(&block, &dag_msg_state.msg_map)
                 .ok_or_else(|| "justification not present in message map".to_string())?;
-            dag_msg_state = dag_msg_state.insert_msg(&msg);
+            // In place: this loop folds the whole stored chain through the state, and the
+            // persistent-shaped `insert_msg` clones the map (and every message's `seen` set) on
+            // each step — Θ(N³) over a stored chain, which is what made a 5,844-block restart take
+            // longer than the devnet waits for one (AUDIT C55).
+            dag_msg_state.insert_msg_mut(&msg);
             if !fringe_states.contains_key(&msg.fringe) {
                 let fringe_hash = FringeData::fringe_hash_of(&msg.fringe);
                 let fd = fringe_data_store
@@ -259,11 +263,11 @@ impl BlockDagStorage for BlockDagKeyValueStorage {
                 .ok_or_else(|| "justification not present in message map".to_string())?;
             // H-2: a validation-failed block is recorded in the map (for `neglectedInvalidBlock`
             // and justification-regression) but must not become the sender's latest message.
-            repr.dag_message_state = if block_metadata.validation_failed {
-                repr.dag_message_state.insert_msg_without_latest(&msg)
+            if block_metadata.validation_failed {
+                repr.dag_message_state.insert_msg_without_latest_mut(&msg);
             } else {
-                repr.dag_message_state.insert_msg(&msg)
-            };
+                repr.dag_message_state.insert_msg_mut(&msg);
+            }
             repr.fringe_states.insert(msg.fringe.clone(), fringe_data);
             repr.dag_set = dag_set;
             repr.child_map = child_map;
@@ -387,8 +391,8 @@ mod tests {
         }
     }
 
-    async fn build_storage() -> Arc<BlockDagKeyValueStorage> {
-        let metadata_store = Arc::new(
+    async fn empty_metadata_store() -> Arc<BlockMetadataStore> {
+        Arc::new(
             BlockMetadataStore::create(Arc::new(KeyValueTypedStoreCodec::new(
                 in_memory(),
                 Arc::new(BlockHashCodec),
@@ -396,7 +400,12 @@ mod tests {
             )))
             .await
             .unwrap(),
-        );
+        )
+    }
+
+    async fn build_storage_over(
+        metadata_store: Arc<BlockMetadataStore>,
+    ) -> Arc<BlockDagKeyValueStorage> {
         let fringe_store: Arc<dyn KeyValueTypedStore<Blake2b256Hash, FringeData>> =
             Arc::new(KeyValueTypedStoreCodec::new(
                 in_memory(),
@@ -425,6 +434,10 @@ mod tests {
             .await
             .unwrap(),
         )
+    }
+
+    async fn build_storage() -> Arc<BlockDagKeyValueStorage> {
+        build_storage_over(empty_metadata_store().await).await
     }
 
     #[tokio::test]
@@ -558,5 +571,68 @@ mod tests {
         let err = storage.add_deploy(deploy_with_id(MAX_POOLED_DEPLOYS)).await;
         assert!(err.is_err(), "deploy pool must reject once full");
         assert!(err.unwrap_err().contains("full"));
+    }
+
+    fn chain_hash(i: usize) -> BlockHash {
+        let mut bytes = [0u8; 32];
+        bytes[..8].copy_from_slice(&(i as u64).to_le_bytes());
+        BlockHash::new(bytes)
+    }
+
+    /// Store a chain of `n` blocks: block `i` sits at height `i` and justifies block `i - 1`, so
+    /// its `seen` set is its whole ancestry — which is what a restore has to fold.
+    async fn store_chain(store: &BlockMetadataStore, n: usize) {
+        let mut hashes: Vec<BlockHash> = Vec::with_capacity(n);
+        for i in 0..n {
+            let h = chain_hash(i);
+            let parents: Vec<BlockHash> = if i == 0 {
+                Vec::new()
+            } else {
+                vec![hashes[i - 1]]
+            };
+            store.add(meta(h, &parents, i as i64)).await.unwrap();
+            hashes.push(h);
+        }
+    }
+
+    /// AUDIT C55 — restoring a stored chain must not rebuild the message state once per block.
+    ///
+    /// `BlockDagKeyValueStorage::create` folds every stored block through the message state. The
+    /// oracle folds through a *persistent* map — `DagMessageState.scala`'s `msgMap + (k -> v)` over
+    /// Scala's immutable `Map`, structurally shared, O(log N). A `BTreeMap` has no structural
+    /// sharing, so the same-shaped `insert_msg` deep-copies the map per block, and every entry's
+    /// own `seen` set with it, making the restore Θ(N³) in copies and Θ(N²) in memory. On
+    /// 2026-09-24 a 5,844-block devnet bootstrap spent longer inside this loop than
+    /// `tools/devnet.sh` waits for `/api/v1/status`, at ~100% of one core and with no further log
+    /// line — which read as a hang and was reported as one.
+    ///
+    /// The bound is a cost bound, not a semantic one: the rebuild produces the same state either
+    /// way, which is exactly why nothing caught it. Measured on the authoring machine at N=1500 in
+    /// a debug test build: 5.1 s in place, 108.6 s copying — a 21× gap, widening with N (the one is
+    /// Θ(N²), the other Θ(N³)). The constants below sit at N=1200, where that gap is 3.3 s against
+    /// 55.6 s: the bound leaves the fixed fold 4.6× of headroom (so a CI runner several times
+    /// slower does not trip it) and the copying fold 3.7× over it. Recalibrate from those two
+    /// numbers if either side ever changes.
+    #[tokio::test]
+    async fn restoring_a_stored_chain_is_not_cubic_in_the_message_state() {
+        const N: usize = 1200;
+        const BOUND: std::time::Duration = std::time::Duration::from_secs(15);
+
+        let metadata_store = empty_metadata_store().await;
+        store_chain(&metadata_store, N).await;
+
+        let started = std::time::Instant::now();
+        let storage = build_storage_over(metadata_store).await;
+        let elapsed = started.elapsed();
+
+        // The fold did happen — so the tripwire cannot pass by never doing the work.
+        let repr = storage.get_representation().await;
+        assert_eq!(repr.dag_message_state.msg_map.len(), N);
+
+        assert!(
+            elapsed < BOUND,
+            "restoring a {N}-block chain took {elapsed:?} (bound {BOUND:?}): the message state is \
+             being rebuilt per block instead of extended in place"
+        );
     }
 }

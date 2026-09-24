@@ -16,24 +16,36 @@ where
     msg_map.get(id).cloned()
 }
 
-/// The slice of messages between `upper_bound` and `lower_bound` (including upper-bound messages).
+/// The ids of the messages between `upper_bound` and `lower_bound` (including upper-bound
+/// messages) — `upper.seen \ lower.seen`, restricted to the map.
+///
+/// **Ids in, ids out — no message is copied.** The Scala's `upperSeen -- lowerSeen` is a set
+/// difference over `Set[Message]`, and Scala's immutable `Set` holds *references* to the same
+/// case-class instances, so the oracle never copies a message to answer this. Returning the
+/// messages from Rust does copy them, and a `Message` carries its `seen` set — of size Θ(N) for a
+/// chain of N blocks — so building the operands and the result cost Θ(N) *per message*. Two calls
+/// per block made the merge scope Θ(N²) in copies: measured at 0.78 GiB of churn per block for
+/// N = 5,855, pinning a core and growing without bound (AUDIT C56). Every caller needs only
+/// `is_empty` and the ids, and a message's id determines its content — the same injectivity
+/// `msg_map` already relies on by keying on the id.
 pub fn between<M, S>(
     msg_map: &BTreeMap<M, Message<M, S>>,
-    upper_bound: &BTreeSet<Message<M, S>>,
-    lower_bound: &BTreeSet<Message<M, S>>,
-) -> BTreeSet<Message<M, S>>
+    upper_bound: &BTreeSet<M>,
+    lower_bound: &BTreeSet<M>,
+) -> BTreeSet<M>
 where
     M: Ord + Clone,
     S: Ord + Clone,
 {
-    let upper_seen: BTreeSet<Message<M, S>> = upper_bound
-        .iter()
-        .flat_map(|m| m.seen.iter().filter_map(|id| msg_at(msg_map, id)))
-        .collect();
-    let lower_seen: BTreeSet<Message<M, S>> = lower_bound
-        .iter()
-        .flat_map(|m| m.seen.iter().filter_map(|id| msg_at(msg_map, id)))
-        .collect();
+    let seen_ids = |bound: &BTreeSet<M>| -> BTreeSet<M> {
+        bound
+            .iter()
+            .filter_map(|id| msg_map.get(id))
+            .flat_map(|m| m.seen.iter().filter(|id| msg_map.contains_key(id)).cloned())
+            .collect()
+    };
+    let upper_seen = seen_ids(upper_bound);
+    let lower_seen = seen_ids(lower_bound);
     upper_seen.difference(&lower_seen).cloned().collect()
 }
 
@@ -150,6 +162,30 @@ mod tests {
         let map: BTreeMap<i32, Message<i32, i32>> =
             [(0, m0.clone()), (1, m1)].into_iter().collect();
         assert_eq!(find_with_empty_parents(&map).unwrap().id, 0);
+    }
+
+    /// `between` is `upper.seen \ lower.seen`, restricted to ids the map holds — and it answers
+    /// with ids, so no message (and no `seen` set) is copied to produce it (AUDIT C56).
+    #[test]
+    fn between_is_the_id_set_difference_restricted_to_the_map() {
+        let ids = |xs: &[i32]| -> BTreeSet<i32> { xs.iter().copied().collect() };
+        let m0 = msg(0, &[], &[0]);
+        let m1 = msg(1, &[], &[0, 1]);
+        // Block 2 is *not* in the map: its id must be dropped from the result, exactly as the
+        // `filter_map` over the map did before.
+        let map: BTreeMap<i32, Message<i32, i32>> =
+            [(0, m0.clone()), (1, m1.clone())].into_iter().collect();
+
+        // {m1}.seen \ {m0}.seen = {0,1} \ {0} = {1}
+        assert_eq!(between(&map, &ids(&[1]), &ids(&[0])), ids(&[1]));
+        // {m1}.seen \ {} = {0,1}
+        assert_eq!(between(&map, &ids(&[1]), &ids(&[])), ids(&[0, 1]));
+        // The upper bound may be an id the map does not hold: it contributes nothing.
+        assert_eq!(
+            between(&map, &ids(&[9]), &ids(&[])),
+            BTreeSet::new(),
+            "an upper-bound id outside the map must contribute no seen ids"
+        );
     }
 
     #[test]

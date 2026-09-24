@@ -2233,36 +2233,41 @@ port against the **reference document** rather than against itself.
   production decision is pinned by `is_genesis_pre_state_is_true_only_for_the_empty_state`
   (`interpreter_util.rs`, both branches).
 
-  **Verification status, stated exactly — the devnet half is *blocked*, not passed.** What is verified:
-  `cargo check --workspace --all-targets` clean, `casper/tests/determinism.rs` 7/7 (including the
-  tripwire), `is_genesis_pre_state_is_true_only_for_the_empty_state`, and the register gate. What is
-  **not** verified is the end-to-end path, because `tools/devnet.sh up --validators 3` no longer reaches
-  a running chain at all: the bootstrap sits at ~100% CPU with three log lines (the last from
-  `comm/src/upnp/mod.rs:103`) and never serves `/api/v1/status`, so `up` exits 1 with
-  `timed out waiting for devnet-bootstrap to serve /api/v1/status` and validators 1 and 2 log
-  `PeerUnavailable` for it without ever receiving a block. **This is pre-existing, and the control is
-  decisive**: the same command against the pre-change image (26-hour-old `rnode:local`, retagged
-  `rnode:control`) fails identically — 104% CPU, three log lines, the same timeout — so the stall is
-  not this change, and it is the same failure the `devnet-fuzz` nightly has hit since 2026-09-14 (below).
-  The consequence for this row: since no block was ever produced, no genesis indexing happened and the
-  absence of the `regenerated mergeable channels` message in the container logs is **not** evidence that
-  the fix works. C46's end-to-end check lands when the bootstrap starts again, and that is its own unit.
-  What this row does record is that the two call sites now supply the vaults, that the condition is the
-  genesis exactly, and that a node without the files fails loudly rather than computing a wrong state.
+  **Verification status — passed end-to-end (2026-09-24).** What is verified: `cargo check --workspace
+  --all-targets` clean, `casper/tests/determinism.rs` 7/7 (including the tripwire),
+  `is_genesis_pre_state_is_true_only_for_the_empty_state`, and the register gate. The end-to-end half
+  landed after C55 was found and fixed: on a freshly built image of `11b2200dc`,
+  `tools/devnet.sh up --validators 3` reaches a running chain and the joining validators **track it** —
+  bootstrap `latestBlockNumber` 37, validator-1 37, validator-2 36, with **zero** occurrences of
+  `regenerated mergeable channels` and zero refusals in either validator's log. That absence is
+  evidence *now* in a way it was not before, because blocks were produced: both validators indexed
+  block #0, which is the replay this fix repairs, and then followed the chain past the height they
+  joined at. What this row records is that the two call sites supply the vaults, that the condition is
+  the genesis exactly, and that a node without the files fails loudly rather than computing a wrong
+  state.
 
-  **Two related reds, reported rather than worked around.** (1) The
-  `devnet-fuzz` nightly workflow has failed on **every** run since at least 2026-09-14, each time at
-  "Start the devnet" (`tools/devnet.sh up --validators 3` → `timed out waiting for devnet-bootstrap to
-  serve /api/v1/status`), so its fuzz stages have not executed in ten days and C46 could not have been
-  found there. **Local signature (2026-09-24, Programme F), which is as far as this row takes it**:
-  reproduced on this machine, and *not* caused by the C46 fix — the pre-change image fails identically.
-  The bootstrap container runs at ~100–104% CPU, writes exactly three log lines (the last from
-  `comm/src/upnp/mod.rs:103`, "No need to open any port"), and its healthcheck never connects to
-  `localhost:40403`; validators 1 and 2 come up "healthy" on their own ports and log `PeerUnavailable`
-  for the bootstrap every 10 s, then give up after 10 attempts. So the stall is a *silent CPU-bound
-  spin in bootstrap startup*, after UPnP/port setup and before the first genesis log line — the shape
-  that makes it worth a `perf`/stack sample rather than log reading, and a separate unit from C46.
-  Diagnosing it is what unblocks C46's end-to-end check. (2) The 1-validator devnet is green, including a live check of law 47 (a staged
+  **The stall that blocked this check was C55 — and the red reported alongside it was a different
+  defect.** *(Correcting this row's earlier reading.)* The bootstrap stall is C55 below: a Θ(N³)
+  rebuild of the stored DAG, not the ceremony, not the comm layer, and not a regression of any kind.
+  The `devnet-fuzz` nightly's ten days of red is **not** that stall, although both surface as
+  `timed out waiting for devnet-bootstrap to serve /api/v1/status` — a symptom class, not a cause. In
+  all 11 runs (2026-09-14 → 2026-09-24, CI runs `34825931798` … `35976009772`) the bootstrap **exits**
+  rather than spinning:
+
+  ```
+  INFO  [coop.rchain.node.runtime.NodeRuntime] No need to open any port
+  ERROR [coop.rchain.node.runtime.Setup] NodeLaunch exited with error: FAILED PARSING WALLETS FILE: /genesis/wallets.txt
+  Permission denied (os error 13)
+  ...error: invalid value 'rnode:// 99c6cf…@devnet-bootstrap?protocol=40400&discovery=40404'
+          for '--bootstrap <BOOTSTRAP>': Can not parse the bootstrap address
+  ```
+
+  Two harness defects, both fixed in this pass in `tools/devnet.sh`: the genesis directory is created
+  without traversal permission for the container's `rnode` uid (`chmod -R a+rX` in `genesis_files`),
+  and `bootstrap_id` took the last `=`-field of an unnormalised `openssl x509 -subject`, which yields
+  ` <hex>` with a leading space on the OpenSSL releases that print `CN = <hex>` (now `-nameopt
+  RFC2253` plus a whitespace strip). A CI job also starts with no volume, so it could never have
+  carried C55's signature at all. (2) The 1-validator devnet is green, including a live check of law 47 (a staged
   withdrawal keeps the validator active: `examples/pos-withdraw.rho` → `(true, Nil)`, the block's bond
   cache still lists the validator, and the chain keeps extending).
 
@@ -2595,6 +2600,87 @@ port against the **reference document** rather than against itself.
   `lean_match_corpus` has been run against it; the `decide`d corpus cases cannot see this class at all,
   because they are the model agreeing with itself.
 
+- **C55 — the devnet bootstrap never starts: restoring a stored chain folded the message state once per
+  block, at Θ(N³)** (found 2026-09-24, by stack sample after a day of log reading; **fixed**, and it is
+  what C46's end-to-end check was waiting behind). `BlockDagKeyValueStorage::create` rebuilds the
+  in-memory DAG by folding every stored block through `DagMessageState::insert_msg`, which is written
+  as a *persistent* operation — it clones the whole message map, and with it every message's `seen`
+  set — and returns the new state. The oracle does the same thing in shape: `insertMsg` is
+  `msgMap + ((msg.id, msg))` over Scala's **immutable** `Map` (`DagMessageState.scala:66`), a HAMT
+  with structural sharing, so the same expression is O(log N) and copies nothing. `BTreeMap::clone` is
+  a deep copy of every `Message` (id, height, sender, sender_seq, bonds_map, parents, fringe, and a
+  `seen` set that holds the block's whole ancestry), so a rebuild of N blocks costs Σᵢ O(i · i) =
+  Θ(N³) element copies and leaves Θ(N²) `seen` entries live. **The port kept the code and lost the
+  asymptotics** — the same failure mode as C51's sibling below, and the reason both were invisible to
+  tests: the state they build is identical either way.
+
+  **What was observable.** `tools/devnet.sh up --validators 3` never reached `latestBlockNumber > 0`,
+  so `up` exited 1 after its 120 s healthcheck; the container sat at ~100–104% of *one* core (measured
+  on the host as 0.94 core) with 698 MiB RSS and exactly **three** log lines — the UPnP messages, which
+  `create_comm_state` buffers and flushes only *after* `who_am_i::fetch_local_peer_node` returns
+  (`node_runtime.rs:170-181`), so the stall is strictly downstream of UPnP and WhoAmI. The next
+  observable event should have been `"Starting as genesis master, creating genesis block..."`
+  (`node_launch.rs:216`), which never appeared; nor did `"Sending genesis block..."`. A `gdb` stack on
+  the pegged thread put it exactly: `rchain_casper::dag::BlockDagKeyValueStorage::create` at
+  `dag.rs:83`, called from `setup_shard` (`node_runtime.rs:1322`) in the **main** `block_on` path —
+  which is why nothing else progressed, and why the HTTP API (bound later, in `serve()`) was never
+  bound. The message map held **5,844** entries at that point.
+
+  **Corroboration from the data directory, which is how the region was bounded before the stack.** The
+  failing run's container volume still carried the store-open timeline: `eval/*` and `blockstorage`
+  opened at 13:07:03, `deploypoolstorage` at 13:07:07, `dagstorage` at 13:09:12 — and
+  `rspace/{cold,history}` **never**, their lock files still holding the previous run's timestamps. The
+  rebuild sits between `dagstorage` and `create_history_repository(…, "rspace")`, which is precisely
+  where the stack landed.
+
+  **Fixed** by giving `DagMessageState` in-place insertion (`insert_msg_mut`,
+  `insert_msg_without_latest_mut`) and leaving the persistent forms as one clone plus the same in-place
+  insert — so the acceptance rule (Law 15's monotonicity, and the subset invariant the `debug_assert!`
+  checks) still lives in exactly one place. `create` folds in place; the loop is Θ(N²) in the `seen`
+  sets it must build, which is inherent. Falsified first: `casper/src/dag.rs`'s
+  `restoring_a_stored_chain_is_not_cubic_in_the_message_state` drives `create` over a synthetic 1,200-block
+  chain and bounds the fold; measured at N=1500 in a debug test build it is **5.1 s in place against
+  108.6 s copying**, so the bound sits ~4.6× above the fixed fold and ~3.7× below the copying one.
+  End to end on the same 5,881-block chain: **23 s to serve** (previously: never).
+
+  **The trap that made it read as a code regression, recorded because it cost a day.** `tools/devnet.sh`
+  mounts a **named** volume (`-v ${name}-data:/var/lib/rnode`), which `up` reuses and only `down -v`
+  removes — so the *first* run against a fresh volume creates its genesis with an empty DAG, skips the
+  loop body entirely, and works; every later run rebuilds the accumulated chain and the cost explodes
+  as autopropose extends it. Nothing in the code changed, and the handover's exculpation of the C46
+  change — "the pre-change image fails identically" — was true but empty: the control run reused the
+  very state it was controlling for. A CI job, which starts with no volume, could never have carried
+  this signature at all.
+
+- **C56 — the per-block merge scope copied every message it looked at** (found 2026-09-24, while
+  measuring C55's fix; **fixed**; the `seen`-set floor is owed and named). `MergeScope::from_fringes`
+  computes `upper.seen \ lower.seen` — law 15's `seenOf` — and did it by materialising *messages*:
+  `message_map::between` collected `msg_map.get(id).cloned()` into `BTreeSet<Message>`, and a `Message`
+  carries its `seen` set, of size Θ(N) for a chain of N blocks. Two calls per block therefore cost
+  Θ(N²) in copies, on top of `Message`'s derived `Ord`, which compares `seen` as well. The oracle's
+  `upperSeen -- lowerSeen` is a difference over `Set[Message]`, and Scala's immutable `Set` holds
+  *references* to the same case-class instances — it never copies a message to answer this. Measured on
+  the same 5,855-block chain, isolated (one node, no peers): **0.78 GiB of churn per block** at one
+  core and no plateau — 10.4 → 18.3 GiB over 180 s while producing 10 blocks — against **70 MiB flat**
+  on a fresh chain of ~85 blocks, which is the ~4,700× that Θ(N²) against Θ(1) predicts.
+
+  **Fixed** by making `between` take ids and return ids (`&BTreeSet<M> → BTreeSet<M>`), reading each
+  bound's `seen` through the map; the call site keeps its three "not in dag" errors by checking
+  membership instead of cloning. Nothing downstream wanted the messages: both results were used only as
+  `is_empty()` and `.map(|m| m.id)`. Same chain, same isolation, after: **~4 MB per block, plateauing**
+  (9.79 → 9.87 GiB over 140 s while producing 18 blocks) and CPU falling from a pinned 100% to 40%.
+  Pinned by `between_is_the_id_set_difference_restricted_to_the_map` (which also closes the function's
+  coverage gap).
+
+  **Owed, and stated rather than implied.** The steady state is still **~9.8 GiB for a 5,881-block
+  chain** — the live structure's floor, which a `Message` holding its whole ancestor set makes
+  Θ(N²)-and-worse in N — and growth resumes at **~0.86 GiB per block while two peers sync from that
+  node**, a peer-sync cost this pass did not attribute (`perf` is unusable on this host and LMDB will
+  not open under `valgrind`: a 1 TB map is `EINVAL` there, which is why the attribution above rests on
+  measurement and the stack rather than on a profile). A devnet whose chain reaches the thousands of
+  blocks is therefore still heavy; what is fixed is that it starts, and that a block no longer costs
+  a gigabyte.
+
 - **The class, recorded once, because it is the consolidation pass's whole justification: an axiom that
   is false is worse than one that is owed, because anything follows from it.** Nine axioms the pass
   removed were not merely unproved — they were false of the code or of the model that carried them, and
@@ -2655,7 +2741,7 @@ finding that no law covers, and it says why rather than leaving the gap to infer
 | C43 the merge's associativity was untested, under a name that says otherwise | 9 | `Merge.lean`'s `mergeChanges_assoc` (proved) **and** `property_tests.rs`'s `law9_state_change_combine_is_associative`, over arbitrary state changes including the join map; the misnamed `state_change.rs` test now says what it asserts |
 | C44 the matcher had no clause for a tuple, and the port has one | 5, 37 | `match.tsv` cases 15/16 (`@(1, 2)` against `(1, 2)` and against `(1, 2, 3)`) + `lean_match_corpus.rs`; the `ETuple` arm in `Match.lean`, and `modelledPar` on both sides of `concrete_matches_iff_eq`, whose old statement is refuted by `arithmetic_pattern_refutes_the_unrestricted_tie` |
 | C45 the search claimed a step for a join, and the rule fixed the counts the port computes differently | 38, 40 | `silence.tsv` case 13 (a join with one channel filled declares `false`, and the node agrees) + `lean_silence_corpus.rs`; the search's single-bind requirement, the constructors' `freeCount`/`bindCount`/channel parameters, and `takesStep_sound` — three extraction lemmas and `exists_redex_split` |
-| C46 a joining validator could not index the genesis: its sidecar regeneration replayed block #0 without the genesis vaults | 11 | **fixed (2026-09-24)**: `is_genesis_pre_state` conditions the vault re-install at both genesis-replay call sites, `genesis_descriptors_from_config` reads the network's genesis files on any node (`node_runtime.rs`), `tools/devnet.sh` gives validators 1..n−1 the files — and `interpreter_util.rs`'s `is_genesis_pre_state_is_true_only_for_the_empty_state` pins the condition that keeps an unconditional re-install from clobbering post-genesis balances. The row was missing from this table until then, which is its own small finding: law 11 is the law that covers it — a replay that does not reproduce the record — and the table's promise is that every incident names one |
+| C46 a joining validator could not index the genesis: its sidecar regeneration replayed block #0 without the genesis vaults | 11 | **fixed (2026-09-24)**: `is_genesis_pre_state` conditions the vault re-install at both genesis-replay call sites, `genesis_descriptors_from_config` reads the network's genesis files on any node (`node_runtime.rs`), `tools/devnet.sh` gives validators 1..n−1 the files — and `interpreter_util.rs`'s `is_genesis_pre_state_is_true_only_for_the_empty_state` pins the condition that keeps an unconditional re-install from clobbering post-genesis balances. The row was missing from this table until then, which is its own small finding: law 11 is the law that covers it — a replay that does not reproduce the record — and the table's promise is that every incident names one. **Verified end to end (2026-09-24)**, once C55 unblocked the devnet: on a fresh volume, `tools/devnet.sh up --validators 3` reaches a chain and both joining validators index block #0 and then track it (bootstrap 37, validator-1 37, validator-2 36) with zero `regenerated mergeable channels` and zero refusals in their logs |
 | C47 the matcher's fuel was short: the measure counted an empty `Par` as zero nodes | 5, 37 | `match.tsv` case 18 (`@Set(1, ..._)` against `Set(Nil × 6, 1)`) + `lean_match_corpus.rs`; `the_walk_past_empty_pars_is_paid_for`, and `parNodes`'s doc comment carrying the counterexample |
 | C52 a peer's `BindPattern` could carry a negative `free_count`, which silently changed what the receive bound | 5, 37 | **fixed (2026-09-24)**: `bind_pattern_from_proto` validates the count like its two siblings already did, so a message that would have applied the continuation with a wrong number of bindings is refused where it arrives. Falsified first — restoring the pass-through fails the new assertion in `models/src/wire.rs`'s `the_runtime_payloads_round_trip`. The same three lines' `unwrap_or_default()` (a count the pattern cannot satisfy becomes `Nil`) and `FreeCount::from_nonneg`'s `debug_assert!` are recorded as owed, with the durable fix named: `BindPattern.free_count` should be a `FreeCount` |
 | C53 a store error read as an absent radix node | 10 | **fixed at the read boundary (2026-09-24)**: `load_node_from_store` propagates the store error instead of `.ok()`-ing it into the same `None` a missing node produces — the Scala keeps it in `F` (`RadixTree.scala:569`). Falsified first: restoring `.ok()` fails `radix_tree`'s `a_store_error_is_not_a_missing_node`, which pins both halves (the error surfaces; an absent node is still `None`). The *flattening above it* is owed and named — `load_node -> Node` and the `History` trait have no error channel where the Scala's `F[Node]` does, so an I/O failure can still become an empty node under the oracle's own `no_assert` root load |
@@ -2663,6 +2749,8 @@ finding that no law covers, and it says why rather than leaving the gap to infer
 | C50 the matcher's fuel was short again: the measure had no `etuple` case, so a tuple's contents were charged to nothing | 5, 37 | `match.tsv` case 20 (`@((1, 2), (3, 4))` against itself) + `lean_match_corpus.rs`; `a_nested_tuple_is_paid_for`, `a_tuple_pays_for_its_own_contents`, and `parNodesExpr`'s doc comment carrying the counterexample. While the defect stood it also **refuted** the axiom `concrete_matches_iff_eq` |
 | C51 the tie's domain admitted a two-expression `Par`, which no clause accepts — so the tie was false | 5, 37 | the axiom `concrete_matches_iff_eq` is **deleted**; `a_two_expression_pattern_refutes_the_modelled_tie` is the counterexample, and rows 5/37 owe the tie for a **singleton** pattern instead |
 | C48 the spec over-claimed a match: the searcher was wired into the list and tuple arms | 5, 37 | `match.tsv` case 19 (`@[1, ..._]` against `[Nil, 1]`) + `lean_match_corpus.rs`; `a_list_pattern_cannot_skip_a_target_element`, and the split into `matchListPos` (lists, tuples) / `matchListPar` (sets, maps) |
+| C55 the devnet bootstrap never starts: restoring a stored chain folded the message state per block, at Θ(N³) | 15 | **fixed (2026-09-24)**: `DagMessageState::insert_msg_mut` / `insert_msg_without_latest_mut` extend the state in place (the persistent forms are now one clone plus that same insert, so the monotonicity and subset rules still live in one place), and `BlockDagKeyValueStorage::create` uses the in-place form. Falsified first — `restoring_a_stored_chain_is_not_cubic_in_the_message_state` bounds the fold over a synthetic 1,200-block chain; measured 5.1 s in place against 108.6 s copying at N=1500. End to end, a 5,881-block restart serves in 23 s where it previously never served at all. The named-volume path in `tools/devnet.sh` is what hid it (first run fresh, every later run a rebuild) and is now the reason `up` must not leave a state whose second run differs from its first |
+| C56 the per-block merge scope copied every message it looked at — Θ(N²) in copies per block | 15 | **fixed (2026-09-24)**: `message_map::between` takes ids and returns ids (`&BTreeSet<M> -> BTreeSet<M>`), so nothing clones a `Message` (and its `seen` set) to answer `upper.seen \ lower.seen`; the call site keeps its three "not in dag" errors by checking membership. Measured, isolated, on a 5,855-block chain: **0.78 GiB per block → ~4 MB per block, plateauing**, CPU a pinned 100% → 40%. Pinned by `between_is_the_id_set_difference_restricted_to_the_map`. **Owed**: the live structure still floors at ~9.8 GiB for that chain and grows ~0.86 GiB/block while peers sync from it — unattributed, and the reason no profile is attached |
 
 **The two rows that are not laws are the two worth keeping visible.** C37 is a *harness* finding —
 a measurement that was not a measurement — and no law would have caught it, because the thing that

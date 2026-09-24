@@ -598,46 +598,30 @@ impl MergeScope {
         prune_fringe: &BTreeSet<BlockHash>,
         dag_data: &BTreeMap<BlockHash, Message<BlockHash, Validator>>,
     ) -> Result<(MergeScope, Option<BlockHash>), String> {
-        let merge_msgs: BTreeSet<Message<BlockHash, Validator>> = merge_fringe
-            .iter()
-            .map(|h| {
-                dag_data
-                    .get(h)
-                    .cloned()
-                    .ok_or_else(|| format!("merge fringe not in dag: {}", h.to_hex()))
-            })
-            .collect::<Result<_, String>>()?;
-        let final_msgs: BTreeSet<Message<BlockHash, Validator>> = final_fringe
-            .iter()
-            .map(|h| {
-                dag_data
-                    .get(h)
-                    .cloned()
-                    .ok_or_else(|| format!("final fringe not in dag: {}", h.to_hex()))
-            })
-            .collect::<Result<_, String>>()?;
-        let prune_msgs: BTreeSet<Message<BlockHash, Validator>> = prune_fringe
-            .iter()
-            .map(|h| {
-                dag_data
-                    .get(h)
-                    .cloned()
-                    .ok_or_else(|| format!("prune fringe not in dag: {}", h.to_hex()))
-            })
-            .collect::<Result<_, String>>()?;
+        // Every fringe is checked against the DAG before use, as before — but the scope itself is
+        // computed over ids, so no message is copied. A `Message` carries its `seen` set (Θ(N) for
+        // a chain of N blocks), and cloning the operands and the result per block was Θ(N²) in
+        // copies (AUDIT C56).
+        let require_in_dag = |fringe: &BTreeSet<BlockHash>, what: &str| -> Result<(), String> {
+            match fringe.iter().find(|h| !dag_data.contains_key(h)) {
+                Some(h) => Err(format!("{what} not in dag: {}", h.to_hex())),
+                None => Ok(()),
+            }
+        };
+        require_in_dag(merge_fringe, "merge fringe")?;
+        require_in_dag(final_fringe, "final fringe")?;
+        require_in_dag(prune_fringe, "prune fringe")?;
 
-        let c_scope = message_map::between(dag_data, &merge_msgs, &final_msgs);
-        let f_scope = message_map::between(dag_data, &final_msgs, &prune_msgs);
+        let c_scope_ids = message_map::between(dag_data, merge_fringe, final_fringe);
+        let f_scope_ids = message_map::between(dag_data, final_fringe, prune_fringe);
 
-        let f_scope_ids: BTreeSet<BlockHash> = f_scope.iter().map(|m| m.id).collect();
-        let base_msg = if f_scope.is_empty() {
+        let base_msg = if f_scope_ids.is_empty() {
             let genesis = message_map::find_with_empty_parents(dag_data)
                 .ok_or_else(|| "Final scope is empty but no genesis found.".to_string())?;
             Some(genesis.id)
         } else {
             None
         };
-        let c_scope_ids: BTreeSet<BlockHash> = c_scope.iter().map(|m| m.id).collect();
         let conflict_scope: BTreeSet<BlockHash> = c_scope_ids
             .difference(&base_msg.into_iter().collect())
             .copied()

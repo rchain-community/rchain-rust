@@ -80,6 +80,9 @@ Commands:
   --propose-on-deploy | --no-propose-on-deploy
                                  propose a block immediately after a deploy (default: on for devnet)
   --admin | --no-admin           publish the admin HTTP API (40405) to the host (default: on for devnet)
+  --fresh                        discard the nodes' data volumes first, so the bootstrap creates the
+                                 genesis rather than rebuilding its stored chain (a *restart* rebuilds
+                                 and replays the accumulated chain; `up` says which one it is doing)
   --effect-scheduler MODE        effect-scheduler mode: dfs (default), gate, relaxed-validated, or
                                  relaxed — the last is rejected on the block path at runtime, which
                                  is how tools/devnet-fuzz.py --mode scheduler exercises that guard
@@ -120,6 +123,11 @@ genesis_files() {
   else
     : > "$dir/wallets.txt"
   fi
+  # The containers read these as the image's `rnode` uid (1000), which is not necessarily the uid
+  # that created the directory. On a CI runner whose temp dir is not world-traversable the bootstrap
+  # died with `FAILED PARSING WALLETS FILE: /genesis/wallets.txt — Permission denied`, which the
+  # healthcheck reports only as a timeout (the nightly's red from 2026-09-14 to 2026-09-24).
+  chmod -R a+rX "$dir"
 }
 
 wait_for_cert() {
@@ -135,9 +143,17 @@ wait_for_cert() {
 }
 
 bootstrap_id() {
+  # The node's certificate carries the node id as its CN, but `openssl x509 -subject` renders that
+  # differently across releases (`subject=CN=<hex>` vs `subject=CN = <hex>`), and taking the last
+  # `=`-field of an unnormalized rendering yields a value with a leading space. That is how the
+  # devnet-fuzz nightly fed every joining validator `rnode:// <hex>@…` and lost it to
+  # `Can not parse the bootstrap address` — a timeout at the healthcheck, ten days running.
+  # `-nameopt RFC2253` is one fixed shape, and the whitespace strip covers the rest.
   docker exec "$BOOTSTRAP" cat /var/lib/rnode/node.certificate.pem \
-    | openssl x509 -noout -subject \
-    | awk -F'=' '{print $NF}'
+    | openssl x509 -noout -subject -nameopt RFC2253 \
+    | sed -n 's/^subject=//p' \
+    | tr -d '[:space:]' \
+    | sed -n 's/^CN=//p'
 }
 
 # Wait until the bootstrap serves /api/v1/status and (if autopropose is on) is producing blocks.
@@ -199,11 +215,13 @@ cmd_up() {
   ADMIN=true
   DEPLOYER=true
   EFFECT_SCHEDULER=""   # default: the node's own default (dfs)
+  FRESH=false
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --validators) n="${2:?}"; shift 2 ;;
       --observers)  m="${2:?}"; shift 2 ;;
+      --fresh) FRESH=true; shift ;;
       --effect-scheduler)
         EFFECT_SCHEDULER="${2:?}"
         case "$EFFECT_SCHEDULER" in
@@ -239,6 +257,26 @@ cmd_up() {
   local genesis_dir
   genesis_dir="$(mktemp -d)"
   genesis_files "$genesis_dir" "$n"
+
+  # `up` reuses each node's `${name}-data` volume, so a second run against an accumulated chain is a
+  # *restart*: it rebuilds and replays what the first run wrote. That is a different animal from a
+  # fresh start — the whole of AUDIT C55 was a bootstrap that worked against a fresh volume and
+  # appeared to hang on every later one, silently — so say which one this is, every time.
+  local reused=() c v
+  c="$BOOTSTRAP"
+  if docker volume inspect "${c}-data" >/dev/null 2>&1; then reused+=("$c"); fi
+  for (( v = 1; v < n; v++ )); do
+    c="$(validator_name "$v")"
+    if docker volume inspect "${c}-data" >/dev/null 2>&1; then reused+=("$c"); fi
+  done
+  if $FRESH && (( ${#reused[@]} > 0 )); then
+    echo "==> --fresh: discarding the data volumes of ${reused[*]}"
+    for c in "${reused[@]}"; do docker volume rm "${c}-data" >/dev/null 2>&1 || true; done
+    reused=()
+  elif (( ${#reused[@]} > 0 )); then
+    echo "==> restarting against existing data volumes: ${reused[*]}"
+    echo "    (each rebuilds its accumulated chain; pass --fresh to start from genesis instead)"
+  fi
 
   # Validator 0 = bootstrap: creates + approves genesis (autopropose optional).
   echo "==> starting $BOOTSTRAP (validator 0, standalone, creates genesis)"

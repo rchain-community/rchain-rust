@@ -204,6 +204,8 @@ not found in that file. Coverage claims live here rather than in prose so they c
 |---|---|---|
 | G1 | `casper/src/dag.rs` | `insert_rejects_equivocation_same_seq_num` |
 | G2 | `casper/src/dag.rs` | `add_deploy_rejects_when_pool_full` |
+| G2 | `casper/src/dag.rs` | `restoring_a_stored_chain_is_not_cubic_in_the_message_state` |
+| G2 | `block-storage/src/dag/message_map.rs` | `between_is_the_id_set_difference_restricted_to_the_map` |
 | G2 | `comm/src/transport/chunker.rs` | `chunk_it_rejects_too_small_max_message_size` |
 | G2 | `comm/src/transport/stream_handler.rs` | `restore_rejects_oversized_decompressed_content` |
 | G2 | `shared/src/rate_limiter.rs` | `admits_exactly_max_per_window_then_refuses` |
@@ -307,6 +309,16 @@ hard mode would fail on, so that a half-finished sweep is legible instead of inv
   honest test is **socket-level** (open `MAX+K` streams and assert the last is unanswered; precedent
   `node/src/api/grpc/tonic.rs` `serves_and_answers_propose`) — preferred over extracting an accessor,
   which would be a production change for a test.
+  **Unbounded *cost* is the same gap one step in**, and two instances of it are now pinned (AUDIT
+  C55/C56): the DAG restore that rebuilds the message state per block (`Θ(N³)`, which is why a
+  5,844-block devnet bootstrap never served) is bounded by
+  `casper/src/dag.rs` `restoring_a_stored_chain_is_not_cubic_in_the_message_state`, whose bound was
+  calibrated against the copying implementation (5.1 s in place vs 108.6 s copying at N=1500); and the
+  per-block merge scope's `seen` difference (`Θ(N²)` in copies, 0.78 GiB per block measured) is answered
+  in ids by `message_map::between`, pinned by
+  `block-storage/src/dag/message_map.rs` `between_is_the_id_set_difference_restricted_to_the_map`.
+  Both tests are *cost* claims rather than value claims — they fail when the work returns, which is the
+  only way this class is visible at all, since both implementations produce identical state.
 
 - **G3 — PoS lifecycle mutations** (`rholang/src/native_state.rs`). ✅ `bond` trust admission +
   min/max + funds, deferred activation at the boundary, `withdraw` staging + quarantine payout via
