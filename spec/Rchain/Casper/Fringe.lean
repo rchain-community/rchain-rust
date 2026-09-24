@@ -122,4 +122,49 @@ theorem finality_iff_supermajority (prev next : Fringe) (supp : SupportMap) (bon
       isSuperMajority (fullPartitionStake supp bonds) (totalStake bonds) ∧ next ≠ prev := by
   simp [nextFringe, calculateFringe]
 
+/-! ### Law 15's transitive half: the closure the finalizer leans on
+
+`seenOf` gives the *one-step* fact (a message sees what its justifications saw). What the finalizer
+actually leans on is its transitive closure — a message sees everything reachable through the
+justification chain — and the relation below is that reachability, stated over the port's construction
+rather than over a bare `Message` (which is what made the old axiom false: any two unrelated messages
+refute it, `seen_monotone_is_false`).
+
+The hypothesis `b.seen = seenOf js b.id` is the port's own construction (`new_seen`,
+`block-storage/src/dag/message_state.rs:54-59`), not an invariant to be proved — the same shape as the
+tie's `pathPar`, a domain the clauses have an arm for. -/
+
+/-- **Justification reachability**: `b` is built from justifications that include `a`, or `c` is built from
+    justifications that include a `b` which reaches `a`.
+
+Every argument is explicit on purpose: in an `induction … with` arm the binders are named positionally,
+so an implicit index shifts every name in the arm (`rw [hseen]` then rewrites with a `Message` and fails
+with "equality or iff proof expected"). This is the shape that names cleanly. -/
+inductive Reaches : Message → Message → Prop where
+  /-- The one-step case: `a` is one of `b`'s justifications. -/
+  | step (a : Message) (b : Message) (js : List Message) (hseen : b.seen = seenOf js b.id)
+      (ha : a ∈ js) : Reaches a b
+  /-- The transitive case: `c` is built from a justification `b` that reaches `a`. -/
+  | trans (a : Message) (b : Message) (c : Message) (js : List Message)
+      (hseen : c.seen = seenOf js c.id) (hb : b ∈ js) (hab : Reaches a b) : Reaches a c
+
+/-- **Law 15's transitive half, proved**: whatever a message reaches, it sees. The one-step case is the
+    inclusion `seenOf` gives directly; the transitive case composes it with the induction hypothesis,
+    which is exactly the closure the old axiom asserted of *any* two messages. -/
+theorem seen_monotone_of_reaches (a b : Message) (h : Reaches a b) : a.seen ⊆ b.seen := by
+  induction h with
+  | step b js hseen ha =>
+    intro x hx
+    rw [hseen]
+    exact List.mem_append_left _
+      (List.mem_join.mpr ⟨a.seen, List.mem_map.mpr ⟨a, ha, rfl⟩, hx⟩)
+  | trans b c js hseen hb _hab =>
+    -- the arm's *induction hypothesis* is the inaccessible one here (the constructor's own `hab` is a
+    -- normal binder), so it is named before use
+    rename_i ih
+    intro x hx
+    rw [hseen]
+    exact List.mem_append_left _
+      (List.mem_join.mpr ⟨b.seen, List.mem_map.mpr ⟨b, hb, rfl⟩, ih hx⟩)
+
 end Rchain

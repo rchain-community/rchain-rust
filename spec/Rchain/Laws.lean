@@ -807,7 +807,8 @@ def laws : List Law := [
       **derived** fringe and the **constructed** seen set; over bare values both claims are false and \
       their refutations are proved",
     status := .owed,
-    declarations := [`Rchain.Message, `Rchain.seenOf, `Rchain.seen_monotone_is_false,
+    declarations := [`Rchain.Message, `Rchain.seenOf, `Rchain.Reaches,
+      `Rchain.seen_monotone_of_reaches, `Rchain.seen_monotone_is_false,
       `Rchain.fringe_monotone_is_false, `Rchain.seenOf_contains_justifications, `Rchain.mem_seenOf_self],
     axioms := [],
     rust := ["block-storage/src/dag/message_state.rs", "block-storage/src/dag/finalizer.rs"],
@@ -823,9 +824,15 @@ def laws : List Law := [
       (`message_state.rs:54-59`), which the model now has (`seenOf`, with both halves proved: \
       `seenOf_contains_justifications` and `mem_seenOf_self`); and height monotonicity relates \
       *successive* fringes of one validator, which the finalizer's advance gate produces \
-      (`finalizer.rs:186-211`, `:214`). What remains owed is the **transitive** closure the finalizer leans on — \
-      `a ∈ b.seen → a.seen ⊆ b.seen` — which follows from the construction by induction over the DAG, \
-      and the DAG is not modelled here. The old row's claim that the seen set is monotone \"(no \
+      (`finalizer.rs:186-211`, `:214`). **The transitive closure is proved, along the relation that does not need a lookup** (2026-09-24): \
+      `Reaches a b` (a is a justification of b, or of a justification that reaches it) gives \
+      `a.seen ⊆ b.seen` by induction (`seen_monotone_of_reaches`), and the hypothesis it needs — that a \
+      message's seen set *is* `seenOf` of its justifications — is the port's own construction \
+      (`message_state.rs:54-59`), stated rather than assumed. Falsified by mutation: a `seenOf` that \
+      drops the union breaks both the one-step lemma and this proof's two steps. **What remains owed** is \
+      the two things that form does not cover: the row's literal `a ∈ b.seen → a.seen ⊆ b.seen`, which \
+      needs an id→message map (so the *id* can be turned back into the *value*) that the DAG model would \
+      bring, and height monotonicity between successive advances The old row's claim that the seen set is monotone \"(no \
       regression)\" was true of the port and false of the value the axiom quantified over" },
   { number := 16, clause := "a", layer := "Casper",
     statement := "Block number = max(parent) + 1 — as the port's check, which **rejects** a block whose \
