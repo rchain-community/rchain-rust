@@ -286,6 +286,66 @@ mod tests {
         }
     }
 
+    /// A store that refuses every write and counts the attempts, so an importer's success claim can be
+    /// checked against what the store was actually asked to do.
+    struct RefusingStore {
+        attempts: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl KeyValueStore for RefusingStore {
+        fn get(&self, _keys: &[Vec<u8>]) -> Result<Vec<Option<Vec<u8>>>, String> {
+            Err("the store is down".to_string())
+        }
+        fn put(&mut self, _pairs: Vec<(Vec<u8>, Vec<u8>)>) -> Result<(), String> {
+            self.attempts
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Err("the store refuses writes".to_string())
+        }
+        fn delete(&mut self, _keys: &[Vec<u8>]) -> Result<usize, String> {
+            Err("the store is down".to_string())
+        }
+        fn entries(&self) -> Result<Vec<(Vec<u8>, Vec<u8>)>, String> {
+            Err("the store is down".to_string())
+        }
+    }
+
+    /// **An import that cannot write is not a successful import** — U12's write half, and the worse
+    /// half of AUDIT C63: an import that silently restores *less* state than it was given is a
+    /// wrong-state claim, not a missing read. `RSpaceImporterStore`'s setters dropped the store's
+    /// result (`let _ = store.put(..)`), so the LFS sync marks a chunk done, resumes from a root
+    /// whose nodes were never written, and reports success.
+    ///
+    /// Falsifier in its pre-fix (witnessing) form, because the fix changes the setters' signatures:
+    /// all four writes are refused by the store, and the three calls below return `()` — the same
+    /// answer a successful import gives, so no caller can tell the difference.
+    #[test]
+    fn an_import_that_cannot_write_is_not_a_successful_import() {
+        let attempts = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut importer = RSpaceImporterStore::new(
+            Box::new(RefusingStore {
+                attempts: attempts.clone(),
+            }),
+            Box::new(RefusingStore {
+                attempts: attempts.clone(),
+            }),
+            Box::new(RefusingStore {
+                attempts: attempts.clone(),
+            }),
+        );
+        let items = vec![(Blake2b256Hash::from_bytes([0x11; 32]), vec![1u8, 2, 3])];
+        importer.set_history_items(&items, |v: &Vec<u8>| v.clone());
+        importer.set_data_items(&items, |v: &Vec<u8>| v.clone());
+        importer.set_root(Blake2b256Hash::from_bytes([0x22; 32]));
+
+        // THE WITNESS: four writes attempted, four refused, and `()` returned by all three calls —
+        // the import reports exactly what a successful one reports.
+        assert_eq!(
+            attempts.load(std::sync::atomic::Ordering::SeqCst),
+            4,
+            "the writes were attempted (and refused): the success claim is the defect"
+        );
+    }
+
     /// **A store error is not an empty traversal, and not an empty state.**
     ///
     /// `RSpaceExporterStore` read its stores through `unwrap_or_default()`, so a store that is down
