@@ -21,3 +21,5 @@ sort	1 && 2	1 and 2	gt
 sort	1 || 2	1 or 2	gt
 sort	1 matches 2	1 == 2	gt
 sort	1 && 2	1 || 2	lt
+sort	1 matches 2	1 % 2	lt
+sort	1 && 2	1 % 2	gt

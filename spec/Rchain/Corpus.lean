@@ -840,10 +840,12 @@ polarity. `Rchain/Sort.lean`'s comparators were reordered to the tags and these 
 falsifiers: restore the declaration order and the rows stop `decide`ing. The verdicts are the node's
 own answers, read off `sort_pars` by the Rust consumer's diagnostic *before* the model was changed, so
 the model was aligned to the node rather than to a guess. What could **not** be aligned is recorded in
-`Sort.lean`'s note (the model's algebra is coarser: 21 `Expr` constructors against the node's 33). -/
+`Sort.lean`'s note (the model's algebra is coarser: 24 `Expr` constructors against the node's 33 — rows
+20–22 closed three of the gap's eight, and rows 23–25 pin those three constructors' *placement*, which
+no earlier row could see). -/
 
 /-- The number of cases the `sort` layer carries. -/
-def sortCaseCount : Nat := 23
+def sortCaseCount : Nat := 25
 
 /-- A law-1 case: two terms (as rholang spells them, so the Rust consumer reads the same text) and the
     verdict the model's `cmpPar` must give the pair. -/
@@ -1009,7 +1011,25 @@ def sortCases : List SortCase :=
     { left := "1 && 2", right := "1 || 2",
       leftPar := one (.eshortand (one (.ground (.int 1))) (one (.ground (.int 2)))),
       rightPar := one (.eshortor (one (.ground (.int 1))) (one (.ground (.int 2)))),
-      verdict := "lt" } ]
+      verdict := "lt" },
+    -- 24-25. **The interleaving with `emod`, which no other row can see.** Row 23 pins `&&` against
+    -- `||` *within* the late block; these two pin the block's position against `EMOD` 122, which is
+    -- the placement the arm order could have got wrong in a way nothing else would catch — every
+    -- other spelling that separates an interleaved order from a *trailing* one involves a
+    -- constructor the model lacks (`%%`, `BigInt`, `++`, `--`). Both verdicts were observed from the
+    -- node before the rows were written (`rholang/tests/lean_sort_corpus.rs`'s boundary test prints
+    -- them): `EMATCHES` 118 < `EMOD` 122 ⇒ `lt`, and `EMOD` 122 < `ESHORTAND` 123 ⇒ `gt`.
+    -- The third pair observed with them, `1 matches 2` against `1 && 2`, is deliberately *not* a row:
+    -- its verdict follows transitively from these two, and a row that cannot fail independently of
+    -- another row is not a second falsifier. It stays a boundary observation.
+    { left := "1 matches 2", right := "1 % 2",
+      leftPar := one (.ematches (one (.ground (.int 1))) (one (.ground (.int 2)))),
+      rightPar := one (.emod (one (.ground (.int 1))) (one (.ground (.int 2)))),
+      verdict := "lt" },
+    { left := "1 && 2", right := "1 % 2",
+      leftPar := one (.eshortand (one (.ground (.int 1))) (one (.ground (.int 2)))),
+      rightPar := one (.emod (one (.ground (.int 1))) (one (.ground (.int 2)))),
+      verdict := "gt" } ]
 
 /-- Every case holds of the model — `cmpPar` gives the verdict the row states. `native_decide`, for the
     reason the `c21` checker uses it: the comparator's reduction over a term is too deep for the kernel

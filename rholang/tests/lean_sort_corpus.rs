@@ -33,7 +33,7 @@ use rchain_models::ast::{Par, Proc};
 use rchain_rholang::normalizer::source_to_adt;
 
 /// The corpus's declared size (`Rchain/Corpus.lean`'s `sortCaseCount`).
-const SORT_CASES: usize = 23;
+const SORT_CASES: usize = 25;
 
 /// Parse and normalize a closed term, as the node does on the deploy path.
 fn normalized(source: &str) -> Proc {
@@ -190,6 +190,16 @@ fn the_boundary_the_model_cannot_pin() {
         ("BigInt(42)", "Set(1)"),
         ("[1] ++ [2]", "[1] + [2]"),
         ("Set(1) -- Set(1)", "Set(1)"),
+        // **The `%` interleaving, observed here before any row is written.** Every constructor now
+        // exists, so these are rows in waiting rather than boundary cases: they are the *only*
+        // spellable pairs that separate the node's interleaved operator block (`EMATCHES` 118 before
+        // `EMOD` 122 before `ESHORTAND` 123) from a trailing placement of the three new constructors —
+        // a placement the model's arm order could have had and that no existing row would catch,
+        // because `and`/`or`/`==` sit well below all three. Read off this print, not off the tag
+        // constants, per this file's convention.
+        ("1 matches 2", "1 % 2"),
+        ("1 && 2", "1 % 2"),
+        ("1 matches 2", "1 && 2"),
         // the remaining argument positions *within* the model's algebra, for contrast: grounds first,
         // then collections in tag order, then the operators.
         ("@\"c\"!(1 + 2)", "@\"c\"!(1 == 2)"),
