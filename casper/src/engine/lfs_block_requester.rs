@@ -70,23 +70,32 @@ async fn validate_received_block(
 }
 
 /// Save a received block to the store and mark it done (port of `saveBlock`).
+///
+/// **The write is the point of this function, so its failure is not discarded** (AUDIT C65): the
+/// oracle's `saveBlock` is `containsBlock` then `putBlockToStore` in `F`, and a failed write fails
+/// the sync attempt rather than being swallowed. Discarding it and marking the block done anyway
+/// would leave the requester believing it holds a block it never persisted, and — because `done`
+/// removes the key from the request map — it would never be requested again: a permanently missing
+/// block in a "synced" state.
 async fn save_block(
     st: &Arc<tokio::sync::Mutex<St>>,
     block_store: &BlockStore,
     block: &BlockMessage,
-) {
+) -> Result<(), String> {
     let already_saved = block_store
         .contains(&[block.block_hash])
-        .await
-        .unwrap_or_default()
+        .await?
         .first()
         .copied()
         .unwrap_or(false);
     if !already_saved {
-        let _ = block_store.put(&[(block.block_hash, block.clone())]).await;
+        block_store
+            .put(&[(block.block_hash, block.clone())])
+            .await?;
     }
     let mut guard = st.lock().await;
     *guard = guard.done(&block.block_hash);
+    Ok(())
 }
 
 /// Process an incoming block: validate it, save it, and trigger the next request (port of
@@ -98,13 +107,14 @@ async fn process_block(
     source: LogSource,
     request_tx: &tokio::sync::mpsc::Sender<bool>,
     block: &BlockMessage,
-) {
+) -> Result<(), String> {
     let is_valid = validate_received_block(st, block, log, source).await;
     if is_valid {
-        save_block(st, block_store, block).await;
+        save_block(st, block_store, block).await?;
     }
     // Trigger the request queue (without resending already-requested blocks).
     let _ = request_tx.send(false).await;
+    Ok(())
 }
 
 /// Take the next set of hashes to request, enqueue existing ones for processing, and broadcast
@@ -115,7 +125,7 @@ async fn request_next(
     block_store: &BlockStore,
     comm_util: &CommUtil,
     resend: bool,
-) {
+) -> Result<(), String> {
     let is_end = { st.lock().await.is_finished() };
     let hashes = {
         let mut guard = st.lock().await;
@@ -125,7 +135,11 @@ async fn request_next(
     };
 
     let hashes_vec: Vec<BlockHash> = hashes.iter().copied().collect();
-    let contains = block_store.contains(&hashes_vec).await.unwrap_or_default();
+    // A failed read must not read as "nothing to request" (AUDIT C65): `unwrap_or_default()` yields
+    // an empty `Vec<bool>`, the `zip` below yields nothing, and every hash is silently neither
+    // reported as existing nor requested — the walk then does nothing until the idle resend nudges
+    // it. The oracle's `filterA(containsBlock)` propagates instead.
+    let contains = block_store.contains(&hashes_vec).await?;
     let mut existing = Vec::new();
     let mut missing = Vec::new();
     for (h, c) in hashes_vec.into_iter().zip(contains) {
@@ -144,6 +158,7 @@ async fn request_next(
             comm_util.broadcast_request_for_block(h, Some(1)).await;
         }
     }
+    Ok(())
 }
 
 /// Request all blocks needed for the last finalized state (port of `LfsBlockRequester.stream`).
@@ -157,7 +172,7 @@ pub async fn request_blocks(
     block_store: &BlockStore,
     comm_util: &CommUtil,
     log: &dyn Log,
-) -> St {
+) -> Result<St, String> {
     let source = LogSource::new("casper.engine.LfsBlockRequester");
 
     // Finalized block hashes from which LFS sync starts.
@@ -182,7 +197,7 @@ pub async fn request_blocks(
             let resend = tokio::select! {
                 r = request_rx.recv() => match r {
                     Some(r) => r,
-                    None => return,
+                    None => return Ok::<(), String>(()),
                 },
                 _ = tokio::time::sleep(request_timeout) => {
                     log.warn(
@@ -192,9 +207,9 @@ pub async fn request_blocks(
                     true
                 }
             };
-            request_next(&st, &response_hash_tx, block_store, comm_util, resend).await;
+            request_next(&st, &response_hash_tx, block_store, comm_util, resend).await?;
             if st.lock().await.is_finished() {
-                return;
+                return Ok(());
             }
         }
     };
@@ -207,9 +222,10 @@ pub async fn request_blocks(
                 block = incoming_blocks.recv() => {
                     match block {
                         Some(block) => {
-                            process_block(&st, block_store, log, source, &request_tx, &block).await;
+                            process_block(&st, block_store, log, source, &request_tx, &block)
+                                .await?;
                         }
-                        None => return,
+                        None => return Ok::<(), String>(()),
                     }
                 }
                 hash = response_hash_rx.recv() => {
@@ -227,10 +243,11 @@ pub async fn request_blocks(
                                     source,
                                     &format!("Process existing block #{}", block.block_number),
                                 );
-                                process_block(&st, block_store, log, source, &request_tx, &block).await;
+                                process_block(&st, block_store, log, source, &request_tx, &block)
+                                    .await?;
                             }
                         }
-                        None => return,
+                        None => return Ok(()),
                     }
                 }
             }
@@ -239,13 +256,15 @@ pub async fn request_blocks(
 
     tokio::pin!(request_loop);
     tokio::pin!(response_loop);
+    // Either loop ending ends the walk; an error from either fails the sync attempt, which is what
+    // the oracle's `compile.drain` does with a store failure (AUDIT C65).
     tokio::select! {
-        _ = &mut request_loop => {},
-        _ = &mut response_loop => {},
+        outcome = &mut request_loop => outcome?,
+        outcome = &mut response_loop => outcome?,
     }
 
     let guard = st.lock().await;
-    guard.clone()
+    Ok(guard.clone())
 }
 
 #[cfg(test)]
@@ -261,7 +280,7 @@ mod tests {
     use rchain_models::validator::Validator;
     use rchain_shared::log::{LogSource, NopLog};
     use rchain_shared::store::InMemoryKeyValueStore;
-    use rchain_shared::typed_store::KeyValueTypedStoreCodec;
+    use rchain_shared::typed_store::{KeyValueTypedStore, KeyValueTypedStoreCodec};
 
     use crate::proto_util::hash_block;
     use async_trait::async_trait;
@@ -408,8 +427,8 @@ mod tests {
 
         // Receive it first (`done` requires the `Received` status), then save twice.
         assert!(validate_received_block(&st, &block, &NopLog, source()).await);
-        save_block(&st, &block_store, &block).await;
-        save_block(&st, &block_store, &block).await;
+        save_block(&st, &block_store, &block).await.unwrap();
+        save_block(&st, &block_store, &block).await.unwrap();
 
         assert_eq!(
             block_store
@@ -540,7 +559,8 @@ mod tests {
             &comm_util,
             &NopLog,
         )
-        .await;
+        .await
+        .expect("a healthy store");
         let elapsed = started.elapsed();
         println!(
             "walk of {N} blocks: {elapsed:?} (idle timeout {REQUEST_TIMEOUT:?}), finished: {}",
@@ -567,5 +587,179 @@ mod tests {
              {BOUND:?}, idle timeout {REQUEST_TIMEOUT:?}): the walk is advancing on the idle resend \
              rather than on the response, so each block costs one request timeout"
         );
+    }
+    /// A block store that fails what it is told to fail — the fault injection AUDIT C65's two
+    /// falsifiers need, since both defects live on error paths that a healthy store never reaches.
+    struct FailingStore {
+        inner: BlockStore,
+        fail_puts: bool,
+        fail_reads: bool,
+    }
+
+    #[async_trait]
+    impl KeyValueTypedStore<BlockHash, BlockMessage> for FailingStore {
+        async fn get(&self, keys: &[BlockHash]) -> Result<Vec<Option<BlockMessage>>, String> {
+            if self.fail_reads {
+                return Err("store is unreadable".to_string());
+            }
+            self.inner.get(keys).await
+        }
+
+        async fn put(&self, pairs: &[(BlockHash, BlockMessage)]) -> Result<(), String> {
+            if self.fail_puts {
+                return Err("store refuses writes".to_string());
+            }
+            self.inner.put(pairs).await
+        }
+
+        async fn delete(&self, keys: &[BlockHash]) -> Result<usize, String> {
+            self.inner.delete(keys).await
+        }
+
+        async fn contains(&self, keys: &[BlockHash]) -> Result<Vec<bool>, String> {
+            if self.fail_reads {
+                return Err("store is unreadable".to_string());
+            }
+            self.inner.contains(keys).await
+        }
+
+        async fn to_map(&self) -> Result<BTreeMap<BlockHash, BlockMessage>, String> {
+            self.inner.to_map().await
+        }
+    }
+
+    /// The comm state a walk runs with, pointed at a transport that answers every request.
+    fn comm_state(
+        blocks: &[BlockMessage],
+        incoming: tokio::sync::mpsc::Sender<BlockMessage>,
+    ) -> CommUtil {
+        let by_hash: BTreeMap<BlockHash, BlockMessage> =
+            blocks.iter().map(|b| (b.block_hash, b.clone())).collect();
+        let connections: ConnectionsCell =
+            Arc::new(tokio::sync::RwLock::new(vec![peer("bootstrap")]));
+        let conf = RPConf {
+            local: peer("local"),
+            network_id: "testnet".to_string(),
+            bootstrap: None,
+            default_timeout: Duration::from_secs(10),
+            max_num_of_connections: 10,
+            clear_connections: ClearConnectionsConf {
+                num_of_connections_pinged: 10,
+            },
+        };
+        CommUtil::new(
+            Arc::new(ServingTransport {
+                blocks: by_hash,
+                incoming,
+            }),
+            conf,
+            connections,
+            Arc::new(NopLog),
+        )
+    }
+
+    /// **AUDIT C65, first half: a failed block write fails the walk, and the block is not marked
+    /// done.**
+    ///
+    /// `save_block` read `already_saved` through `unwrap_or_default()` (a store error reading as "not
+    /// saved"), **discarded** the result of `put`, and marked the block `done` regardless — so on a
+    /// write failure the requester believed it held a block it never persisted, and `done` removes the
+    /// key from the request map, which means it would never be requested again. The oracle's
+    /// `saveBlock` is `containsBlock` then `putBlockToStore` in `F`: a failed write fails the sync
+    /// attempt.
+    ///
+    /// Falsified in the witnessing form: with the discard restored (`let _ = block_store.put(..)`)
+    /// this returns `Ok`, the block is marked done, and the store is empty — success reported over a
+    /// silent loss, which is what the assertion below refuses.
+    #[tokio::test]
+    async fn a_failed_block_write_fails_the_walk_instead_of_marking_the_block_done() {
+        let blocks = chain(3);
+        let tip = blocks.last().expect("a non-empty chain").block_hash;
+        let inner = store().await;
+        let failing: BlockStore = Arc::new(FailingStore {
+            inner: inner.clone(),
+            fail_puts: true,
+            fail_reads: false,
+        });
+        let (incoming_tx, mut incoming_rx) = tokio::sync::mpsc::channel(64);
+        let comm_util = comm_state(&blocks, incoming_tx);
+        let fringe = FinalizedFringe {
+            hashes: vec![tip],
+            state_hash: StateHash::new([0u8; 32]),
+        };
+
+        let outcome = request_blocks(
+            &fringe,
+            &mut incoming_rx,
+            Duration::from_secs(5),
+            &failing,
+            &comm_util,
+            &NopLog,
+        )
+        .await;
+
+        assert!(
+            outcome.is_err(),
+            "a store that refuses the write must fail the walk; reporting success would leave the \
+             block marked done with nothing persisted"
+        );
+        assert!(
+            !inner.to_map().await.expect("readable").contains_key(&tip),
+            "nothing was persisted, so nothing may be reported as saved"
+        );
+    }
+
+    /// **AUDIT C65, second half: a failed `contains` must not read as "nothing to request".**
+    ///
+    /// `request_next` computed the request set from
+    /// `block_store.contains(&hashes).await.unwrap_or_default()`: an error yields an **empty**
+    /// `Vec<bool>`, the `zip` yields nothing, and every hash is silently neither reported as existing
+    /// nor requested. The walk then does nothing until the idle resend nudges it — a stall that looks
+    /// exactly like a pacing property. The oracle's `filterA(containsBlock)` propagates the error.
+    ///
+    /// Falsified in the witnessing form: with `unwrap_or_default()` restored the call neither fails
+    /// nor progresses, so the bounded wait below fires and the assertion reports the stall. The bound
+    /// is 5 s against a 1 s idle timeout, so a *timeout-driven* walk would have had five chances to
+    /// do something and done nothing.
+    #[tokio::test]
+    async fn a_failed_store_read_fails_the_walk_instead_of_requesting_nothing() {
+        let blocks = chain(3);
+        let tip = blocks.last().expect("a non-empty chain").block_hash;
+        let inner = store().await;
+        let failing: BlockStore = Arc::new(FailingStore {
+            inner,
+            fail_puts: false,
+            fail_reads: true,
+        });
+        let (incoming_tx, mut incoming_rx) = tokio::sync::mpsc::channel(64);
+        let comm_util = comm_state(&blocks, incoming_tx);
+        let fringe = FinalizedFringe {
+            hashes: vec![tip],
+            state_hash: StateHash::new([0u8; 32]),
+        };
+
+        let outcome = tokio::time::timeout(
+            Duration::from_secs(5),
+            request_blocks(
+                &fringe,
+                &mut incoming_rx,
+                Duration::from_secs(1),
+                &failing,
+                &comm_util,
+                &NopLog,
+            ),
+        )
+        .await;
+
+        match outcome {
+            Ok(result) => assert!(
+                result.is_err(),
+                "a store whose reads fail must fail the walk, not report an empty request set"
+            ),
+            Err(_) => panic!(
+                "the walk neither failed nor progressed: a failed `contains` read as \"nothing to \
+                 request\", so it waited on the idle resend instead of surfacing the error"
+            ),
+        }
     }
 }

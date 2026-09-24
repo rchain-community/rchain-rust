@@ -293,6 +293,9 @@ async fn run_approved_state_sync<I: RSpaceImporter + Send + 'static>(
 
     let (block_st, tuple_res) = tokio::join!(block_fut, tuple_fut);
     tuple_res.map_err(|e| e.to_string())?;
+    // A store failure while walking the blocks fails the sync attempt (the oracle's stream fails
+    // the same way) rather than leaving a block marked done that was never persisted (AUDIT C65).
+    let block_st = block_st.map_err(|e| e.to_string())?;
 
     // The fringe tuple-space request above only hydrates the finalized-fringe root itself. Casper's
     // read/validation APIs (explore, data-at-name, and mergeable-sidecar regeneration during block

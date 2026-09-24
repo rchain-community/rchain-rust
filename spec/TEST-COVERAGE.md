@@ -213,6 +213,8 @@ not found in that file. Coverage claims live here rather than in prose so they c
 | G2 | `comm/src/transport/chunker.rs` | `chunking_a_page_does_not_copy_it_whole` |
 | G2 | `casper/src/engine/node_running.rs` | `a_store_items_page_costs_the_dispatch_loop_this_long` |
 | G2 | `casper/src/engine/lfs_block_requester.rs` | `the_walk_advances_on_responses_not_on_the_idle_timeout` |
+| G2 | `casper/src/engine/lfs_block_requester.rs` | `a_failed_block_write_fails_the_walk_instead_of_marking_the_block_done` |
+| G2 | `casper/src/engine/lfs_block_requester.rs` | `a_failed_store_read_fails_the_walk_instead_of_requesting_nothing` |
 | G2 | `casper/src/dag.rs` | `fringe_states_are_keyed_by_the_stores_own_key` |
 | G2 | `casper/src/dag.rs` | `the_representation_digest_pins_the_value_and_moves_with_it` |
 | G2 | `casper/src/dag.rs` | `the_index_is_shared_with_the_representation_not_copied` |

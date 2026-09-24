@@ -3275,13 +3275,53 @@ port against the **reference document** rather than against itself.
      joins a 30 s block walk with a 120 s state sync and then requests every downloaded block's state
      root). **That attribution is the remaining question, named with its experiment**: timestamp block
      arrivals against tuple-space page completions in a fresh validator's log to see whether they
-     interleave — the distinguishing observation is whether arrivals cluster at page boundaries.
+     interleave — the distinguishing observation is whether arrivals cluster at page boundaries. It is
+     *not* C65's swallowed store error, and that is checkable rather than argued: `request_next` can only
+     broadcast after a successful `contains`, and the server logged 63 requests, all answered — so the
+     store read was succeeding and that defect was not firing on this run.
   4. **The consequence, stated as a liveness fact rather than a cost preference**: a fresh validator
      does not "join" a long chain in any useful sense — it is hours-to-days behind, and the *chain
      length* is what makes it so. Two levers, neither of them a one-liner: the **extent** (bounding the
      walk as the Scala does needs a way to satisfy `dag.insert` without the full ancestry, i.e. a
      design change, not a cutoff) and the **per-generation latency** (item 3). This unit fixes
      neither; it names both, so the next one starts from the measurement rather than the symptom.
+
+
+- **C65 — the block store's side of LFS sync swallowed two failures the oracle propagates, so a
+  transient store error became a permanently missing block** (found 2026-09-24 by the Phase-0 sweep,
+  Programme F's U13; **fixed**, both halves, falsifier first). The same class U12 closed in the
+  tuple-space importer, unfixed on the block path it runs beside:
+
+  1. **A failed block write was discarded and the block marked done anyway.** `save_block` read
+     `already_saved` through `contains(..).unwrap_or_default().first().copied().unwrap_or(false)` — a
+     store error reading as "not saved" — then `let _ = block_store.put(..)`, and then recorded the
+     block as `done` regardless. `done` removes the key from the request map, so a block that was never
+     persisted was also **never requested again**: a permanently missing block in a state the requester
+     reports as synced, with a done bit claiming otherwise. The oracle's `saveBlock` is
+     `containsBlock(..)` then `putBlockToStore(..)` in `F` and only then `st.done`: a failed write fails
+     the sync attempt, and NodeSyncing's own `Lfs state sync failed` path is where it lands.
+  2. **A failed store read read as "nothing to request".** `request_next` computed its work set from
+     `block_store.contains(&hashes).await.unwrap_or_default()`: an error yields an **empty** `Vec<bool>`,
+     the `zip` yields nothing, and every hash is silently neither reported as existing nor requested —
+     so the walk does nothing until the idle resend nudges it. The oracle's
+     `hashes.toList.filterA(containsBlock)` propagates.
+
+  **Fixed** by making the walk fallible end to end: `save_block`/`process_block`/`request_next` return
+  `Result<(), String>`, `request_blocks` returns `Result<St, String>`, and a store failure from either
+  loop ends the walk as an error (`node_syncing.rs` already had the `Lfs state sync failed` channel, so
+  the failure reaches a caller that can retry the attempt — which is where the oracle's stream failure
+  lands too). **Falsified in the witnessing form, both halves**, against this tree:
+  `a_failed_block_write_fails_the_walk_instead_of_marking_the_block_done` (with the discard restored the
+  walk returns success over an empty store) and
+  `a_failed_store_read_fails_the_walk_instead_of_requesting_nothing` (with `unwrap_or_default()` restored
+  the walk neither fails nor progresses for the whole 5 s bound against a 1 s idle timeout).
+
+  **Why this is recorded next to C64, and what it does *not* change.** Defect 2's symptom is
+  *indistinguishable* from a pacing stall — a walk with an empty request set waits on exactly the
+  timeout whose warning C64 reports — so the cadence finding had to rule it out rather than assume:
+  `request_next` can only broadcast after a successful `contains`, and the devnet logged **63 block
+  requests, all answered**, so that call was succeeding there and the defect was not firing. C64's
+  attribution therefore stands on evidence, not on the absence of a suspect.
 
 
 ## 20. The back-sweep: every incident to its law and its case
@@ -3395,6 +3435,7 @@ finding that no law covers, and it says why rather than leaving the gap to infer
 | C61 a peer-supplied resume prefix of 128 bytes entered the segment invariant by one byte | 10 | **fixed (2026-09-24)**: `create_last_prefix` routes the prefix through the checked constructor (`KeySegment::try_from`) instead of a hand-written `> 128` bound, so a size of 128 is refused rather than built and then silently truncated to zero by the radix encoder's 7-bit size field. Falsified first: `a_128_byte_resume_prefix_is_refused` fails against the old bound. The three other decode sites the appendix named are measured in range by construction and carry comments saying why; `head()`/`tail()`'s empty-segment panic keeps its existing pin and its reachability argument (`trimming_an_empty_key_panics`) |
 | C62 the sync path copied the page it served 3×, and `/metrics` had no wire | 10 | **fixed (2026-09-24)**: `chunk_it` borrows the packet instead of cloning it twice and owns a buffer only when LZ4 compresses — the chunk proto's `Vec<u8>` is the one copy the wire requires — pinned by `comm/src/transport/chunker.rs`'s `chunking_a_page_does_not_copy_it_whole`, whose instrument is time *relative to one explicit copy of the same payload in the same process* (machine-speed invariant) and which was falsified in this tree at 3.84–3.96× against a 2.0 bound (1.30–1.33× for the borrow); and the DAG now publishes `messages`/`seen_entries`/`fringe_states`/`index_entries`/`logical_bytes` into the node's `MetricsRegistry`, whose snapshot `/metrics` renders before scraping (`node/src/web/http.rs`), where nothing in production had ever called `report_period_snapshot` — the route served `EMPTY_SCRAPE_DATA` forever. Pinned by `the_metrics_route_serves_the_registrys_own_numbers` and `the_dag_publishes_its_own_gauges`, both falsified here (removing the publish restores the placeholder / leaves the gauges unset). **Measured, deliberately not fixed**: `handle_store_items_request` is awaited inline in the shard's dispatch loop — an LFS page (750 × 4 KiB) holds it ~50 ms (18 + 32 ms of chunking) and the cap's largest page (10,000 nodes) ~580 ms — and a page still has only a node-count cap, no byte cap |
 | C64 a fresh validator cannot catch up: 1.5 blocks/minute, ~70 hours for a 6,300-block chain | 10 | **measured, no pacing defect**: the requester's loop and `LfsState` mirror the Scala's `requestStream`/`ST` element for element, and isolated against a transport that answers every request a 6-block walk with the production 30 s `requestTimeout` finishes in **3.85 ms** — `casper/src/engine/lfs_block_requester.rs`'s `the_walk_advances_on_responses_not_on_the_idle_timeout`, bound 5 s, *below one idle timeout*, so a walk advancing on the resend cannot pass. The length is the **registered §6 deviation** (the port walks the full ancestry to genesis, the Scala stops at `lowerBound`, ~50 blocks below the fringe): one generation per block on a chain, 6,300 round trips against ~50. The **~25 s per generation is not the requester's** — the server answered **63/63** requests with zero drops and the validators received exactly those 63 blocks — it is the syncing node's shared message loop with the concurrent state sync; the discriminating experiment is recorded with it. Consequence: a fresh validator is hours-to-days behind on a long chain, and the chain length is what makes it so |
+| C65 the block store's side of LFS sync swallowed a failed write and a failed read, where the oracle propagates both | 10 | **fixed (2026-09-24)**: `save_block` marked a block `done` even when `put` failed (and discarded the error), so a block that was never persisted was also never re-requested — a permanently missing block in a "synced" state — and `request_next`'s `contains(..).unwrap_or_default()` made a store error an *empty* work set, so the walk requested nothing until the idle resend. Both now propagate: the walk is fallible end to end (`Result<St, String>`, reaching NodeSyncing's existing `Lfs state sync failed` path), matching the oracle's `F`-typed `saveBlock`/`filterA`. Falsified in the witnessing form: `a_failed_block_write_fails_the_walk_instead_of_marking_the_block_done` and `a_failed_store_read_fails_the_walk_instead_of_requesting_nothing`, each failing with its defect restored — the second reproducing C64's stall signature exactly, which is why C64's cadence had to rule it out (63 requests, all answered ⇒ `contains` was succeeding) |
 | C53 a store error read as an absent radix node | 10 | **fixed at the read boundary (2026-09-24)**: `load_node_from_store` propagates the store error instead of `.ok()`-ing it into the same `None` a missing node produces — the Scala keeps it in `F` (`RadixTree.scala:569`). Falsified first: restoring `.ok()` fails `radix_tree`'s `a_store_error_is_not_a_missing_node`, which pins both halves (the error surfaces; an absent node is still `None`). **The flattening above it is closed too** (2026-09-24, C53's own unit). `load_node` returns `Result<Node, String>` — the port's counterpart of the oracle's `F[Node]` — so the `no_assert` arm propagates a store error instead of standing the empty trie in for a root that could not be read, and the error travels the whole way up: `RadixTreeImpl::{read, update, delete, make_actions, construct_node_from_item}` → `History::{read, reset}` → `RadixHistory::{new, read, reset}` → `HistoryRepository::{reset, get_history_reader, get_native_reader}` → `create_play_rspace` → the `ISpace::reset` impls, which already returned `Result<(), String>` and now have something to report. **`no_assert` keeps the oracle's meaning for *absence***: `load_node` still asserts-or-empties for a *missing* node (`RadixTree.scala:586-598`), because the fix is to separate unreadability from absence, not to turn both into errors. The one boundary the port cannot fail *at*: `HistoryRepository::get_history_reader`/`get_native_reader` return `Arc<dyn HistoryReader>` and are called from `casper`, `node` and `rspace-bench`, so a load failure is carried *inside* the reader (`RSpaceHistoryReaderImpl::unreadable`) and answered on the first read, where the reader trait is already fallible — deferred, never dropped. Falsified first: `a_store_error_is_not_an_empty_root`, in its pre-fix form, failed — a store that is down yielded `empty_node()`, `left` and `right` the same 256-`Empty` array — and it now pins all three shapes (the `load_node` error, the still-not-an-error absence, and `RadixHistory::new` refusing). `cargo check --workspace --all-targets` is clean, so no consumer was left half-converted. **The same class was still live one layer out — in the state-export path's stores, where the consequence is under-reported state rather than a misread node: see C63** |
 | C49 the replay property test fails on its own recording (~3 runs in 10) | 11 | **closed, and it was not the code**: the fixture rigged the replay with the play's *post-play* root, so the "replay" began from a half-finished tuple space — `rspace/src/property_tests.rs`'s `law11_a_replayed_script_matches_its_recording`, now taking the checkpoint before the script, passes over 4000 cases where it failed deterministically at `PROPTEST_CASES=1`. The seed stays as the pinned input; `check_replay_data` was never at fault |
 | C50 the matcher's fuel was short again: the measure had no `etuple` case, so a tuple's contents were charged to nothing | 5, 37 | `match.tsv` case 20 (`@((1, 2), (3, 4))` against itself) + `lean_match_corpus.rs`; `a_nested_tuple_is_paid_for`, `a_tuple_pays_for_its_own_contents`, and `parNodesExpr`'s doc comment carrying the counterexample. While the defect stood it also **refuted** the axiom `concrete_matches_iff_eq` |
