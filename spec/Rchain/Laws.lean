@@ -418,10 +418,12 @@ def laws : List Law := [
       free-variable half in as many words, and names the half it does not." },
   { number := 5, layer := "Rholang",
     statement := "Spatial matching; a free variable is bound at most once — enforced by the port's \
-      **normalizer** before any matcher runs, and inside the matcher only on the aggregation path \
-      (`aggregate_updates`), while its element-pair and conjunction paths overwrite silently",
+      **normalizer** before any matcher runs, and, inside the matcher, at the **entry**: \
+      `spatial_match` refuses a pattern `linear` rejects before any clause runs, so neither its \
+      element-pair nor its conjunction path is reached with a level bound twice (`aggregate_updates` \
+      stays, as the collection path's check on the *bindings* rather than on the pattern)",
     status := .owed,
-    declarations := [`Rchain.spatialMatch, `Rchain.spatialMatches, `Rchain.spatialMatchCore,
+    declarations := [`Rchain.linear, `Rchain.spatialMatch, `Rchain.spatialMatches, `Rchain.spatialMatchCore,
       `Rchain.aggregateUpdates, `Rchain.aggregateUpdates_rejects_double_bind,
       `Rchain.freeMapMerge_overwrites, `Rchain.fuel_saturation,
       `Rchain.a_nested_tuple_is_paid_for, `Rchain.a_tuple_pays_for_its_own_contents,
@@ -430,7 +432,7 @@ def laws : List Law := [
       `Rchain.a_set_pattern_of_the_same_length_still_matches,
       `Rchain.a_permuted_pattern_is_refused, `Rchain.an_unaligned_variable_pattern_is_refused],
     corpus := some "match",
-    rust := ["rholang/src/matcher/spatial_matcher.rs"],
+    rust := ["rholang/src/matcher/spatial_matcher.rs", "models/src/types.rs"],
     coq := ["spec/coq/Laws.v:spatial_matches", "spec/coq/Laws.v:linear"],
     witness := [`Rchain.aggregateUpdates_rejects_double_bind, `Rchain.freeMapMerge_overwrites,
       `Rchain.a_shorter_set_pattern_is_refused, `Rchain.a_shorter_map_pattern_is_refused,
@@ -447,20 +449,33 @@ def laws : List Law := [
       what makes them fail",
     note := "`spatialMatch_implies_linear` is `h.2` of a conjunct inside `spatialMatch`'s own \
       definition, so it holds by construction — and it is **not the port's predicate**. The port's \
-      *enforcing* check is the **normalizer's**, not the matcher's: a pattern that binds a name twice is \
+      *outermost* enforcing check is the **normalizer's**: a pattern that binds a name twice is \
       refused before any matcher runs, in both contexts (`normalizer.rs:111,289,590,1325`, \
       `UnexpectedReuseOfNameContextFree`/`…ProcContextFree`). **Probed on a devnet** (AUDIT C42): \
       `for (@[v, v] <- x)`, `for (v <- x & v <- y)` and `for (@{\"k\": v, ...v} <- x)` each return 400 \
       with `Free variable v is used twice as a binder …`, while a duplicated *datum* \
       (`x!([*a, *a])` against `for (@[p, q] <- x)`) returns 200 with the same unforgeable hash twice. \
-      Inside the matcher the check exists in exactly one place — `aggregate_updates` \
-      (`spatial_matcher.rs:644-665`), reached only from the collection path (`list_match`'s tail, \
-      `:800`) — while the element-pair path (`fold_match`, `:595-629`) and the conjunction path \
-      (`ConnAnd`, `:325-334`) thread their maps with no check, a binding being a plain `insert` \
-      (`:477-480`), so a level bound twice would overwrite right-biased with no error. The model \
-      carries both halves (`aggregateUpdates_rejects_double_bind`, `freeMapMerge_overwrites`), which is \
-      what makes the law a statement about the matcher's clauses — and the probe is what says the \
-      matcher half is defence-in-depth rather than a defect, exactly as C42 records. **Owed**: the two \
+      **The matcher now enforces it itself, and this is what C42 changed** (2026-09-24): `spatial_match` \
+      (`spatial_matcher.rs:227`) is `if !linear(pattern) { no match }` followed by the clauses, which \
+      moved to `spatial_match_core` — the same split, with the same names, that the model makes \
+      (`spatialMatch … && linear pattern`) — and the store's own entry reaches the clauses the same \
+      way, `RhoMatch::get` handing `&spatial_match` to `fold_match` (`storage.rs:75`). `linear` \
+      (`models/src/types.rs:93`) is the walk `freeLevelsOfPar` mirrors, levels and all. **One guard is \
+      enough, and that is an argument rather than a hope**: the clauses descend only into sub-terms \
+      `linear`'s own walk reaches — a send's channel and data, a receive's body, a `new`'s body, a \
+      `match`'s target and cases, a bundle's, a connective's members, a collection's elements — so a \
+      sub-pattern's free levels are a sub-multiset of the whole pattern's, and a linear pattern has \
+      only linear sub-patterns. Guarding every recursive call would re-walk the pattern at each depth \
+      and buy nothing. The clauses' plain `insert` is still what they do — `freeMapMerge_overwrites` \
+      is still the model's statement of that — and what the guard changes is that no pattern reaching \
+      them carries a repeated level. **`aggregate_updates` stays as the inner check** \
+      (`spatial_matcher.rs:686-696`): it reads the free maps the collection path's bipartite search \
+      produced, each element having been matched from a fresh map (`:812`), and refuses a level that \
+      two of them introduced — a clash *between bindings* rather than a property of the pattern, which \
+      is the sense in which the entry guard does not subsume it as a check. From a term it has no \
+      reachable producer any more (the normalizer refuses those shapes first), and the model keeps \
+      both halves: `aggregateUpdates_rejects_double_bind` for the check and `freeMapMerge_overwrites` \
+      for the clauses. **Owed**: the two \
       proofs above. **A third thing this row's corpus found** (AUDIT C44): the clauses had no arm for a \
       **tuple**, which the port matches (`spatial_matcher.rs:496-501`) — so a tuple pattern the node \
       matches read as silence here, and the law's own statement was false of the model until \

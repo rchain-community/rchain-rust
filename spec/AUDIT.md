@@ -1480,10 +1480,22 @@ oracle is, and the test that pins the fix.
   that reason: a `lean_exe` root is not compiled by `lake build` alone, so its theorems would otherwise
   never run (found by that same deliberate-break check).
 
-  **Residual (recorded, not fixed):** the element loops still accept a remainder *without* a preceding
-  comma (`[1 ..._]`), which the grammar's `","`-separated list does not. The parser is more permissive
-  than the BNFC there; the *soundness* direction of law 30 (every accepted term is in the grammar) is
-  what would pin it, and that row is not landed yet.
+  **Residual (§6, a deviation — and this paragraph's direction was wrong; corrected in place):** a
+  remainder *with* a preceding comma (`[1, ..._]`, `{a: 1, ...r}`, `Set(1, ...r)`) has no derivation.
+  The grammar's list rule is `[X] ::= X | X "," [X]` (`separator Proc ","`, `rholang_mercury.cf:78`),
+  so a separator may only stand *between* two elements, and `ProcRemainder` follows the list with no
+  terminal of its own (`CollectList ::= "[" [Proc] ProcRemainder "]"`, `:179`). The comma-**less**
+  `[1 ..._]` is the **derivable** form — a one-element list takes the singleton rule, which carries no
+  separator at all — so the port's acceptance of it needs no excuse, and the earlier reading of this
+  paragraph (which called the comma-less form the underivable one) had it backwards. The *comma* form
+  is law 31's **deviation**: it is how the vendored contracts are written (C31 below records the 31
+  sites), so the port accepts it deliberately rather than refusing it — the guard is
+  `parser.rs:1108-1110` (break before `parse_proc` meets the ellipsis), with the same shape in the map
+  (`:1179-1181`) and set (`:1201-1203`) loops, and both spellings are pinned by `parser.rs:1530`'s
+  `a_comma_before_a_remainder_is_the_deviation_the_contracts_use` (`[a, ...rest]`, `{name: *voter,
+  ...tail}`, `Set(a, ...rest)` and `[a ...rest]` all stay accepted). What is still unlanded is not a
+  parser fix but the *model's* half of law 30/31 — the grammar as data and this deviation list as data
+  (`Rchain/Parse.lean`, Phase 2's G3).
 
 - **C25 (fixed) — `Group!("new", …)` answered nothing because it read a dictionary genesis never
   writes.** A wallet-case failure (`newGroup`); the symptom was that `Group.rho`'s `new` contract
@@ -3016,7 +3028,7 @@ finding that no law covers, and it says why rather than leaving the gap to infer
 | C22 item 1 a reader consumed its store | 41 | `store.tsv`'s five cases + `casper/tests/genesis_registry.rs`'s `a_read_does_not_destroy_the_inbox` |
 | C22 item 2 a wrong-arity capability call | 40 | `silence.tsv` case 10 (`write!(key, value)` against a three-argument `write`) — and the *rule* now has `commPs`, which is what makes the arity a rule clause (C40) |
 | C22 item 3 a map remainder treated as concrete | 35 | `flags.tsv`'s remainder rows |
-| C24 `[1 ..._]` and `@{..._}` | 35, 31 | `flags.tsv` (C24's own case) + the deviation row for the comma form `[1, ..._]` — and the model's derivation of the comma-less form is now *stated* (`ProcRemainder` follows the list with no terminal) |
+| C24 `[1 ..._]` and `@{..._}` | 35, 31 | `flags.tsv` (C24's own case) + `rholang/src/parser.rs`'s `collection_remainders_parse_for_lists_and_sets_not_only_maps`, and both remainder spellings are pinned by `:1530`'s `a_comma_before_a_remainder_is_the_deviation_the_contracts_use`. The comma-less form is *derivable* (the grammar's singleton list rule carries no separator); the comma form is a law-31 deviation, and its row in the deviation **list as data** is G3's (`Rchain/Parse.lean`), still to land |
 | C25 `Group!("new")` answered nothing | 41 (measured) | `casper/tests/genesis_registry.rs`'s two group-creation tests; the store *does* restore, so the audit's earlier "permanent loss" reading was wrong and is corrected in place |
 | C26 law 5 was three axioms, one false | 37 | the definitional matcher + `match.tsv`; the theorem is the definition now |
 | C27 the base-sort receive never named its channel | 38, 40 | `Rho.lean`'s `receivePar` (fixed) + `Ty.lean`'s `closed_anyPat` |
@@ -3047,7 +3059,7 @@ finding that no law covers, and it says why rather than leaving the gap to infer
 | C51 the tie's domain admitted a two-expression `Par`, which no clause accepts — so the tie was false | 5, 37 | the axiom `concrete_matches_iff_eq` is **deleted**; `a_two_expression_pattern_refutes_the_modelled_tie` is the counterexample, and rows 5/37 owe the tie for a **singleton** pattern instead |
 | C48 the spec over-claimed a match: the searcher was wired into the list and tuple arms | 5, 37 | `match.tsv` case 19 (`@[1, ..._]` against `[Nil, 1]`) + `lean_match_corpus.rs`; `a_list_pattern_cannot_skip_a_target_element`, and the split into `matchListPos` (lists, tuples) / `matchListPar` (sets, maps) |
 | C55 the devnet bootstrap never starts: restoring a stored chain folded the message state per block, at Θ(N³) | 15 | **fixed (2026-09-24)**: `DagMessageState::insert_msg_mut` / `insert_msg_without_latest_mut` extend the state in place (the persistent forms are now one clone plus that same insert, so the monotonicity and subset rules still live in one place), and `BlockDagKeyValueStorage::create` uses the in-place form. Falsified first — `restoring_a_stored_chain_is_not_cubic_in_the_message_state` bounds the fold over a synthetic 1,200-block chain; measured 5.1 s in place against 108.6 s copying at N=1500. End to end, a 5,881-block restart serves in 23 s where it previously never served at all. The named-volume path in `tools/devnet.sh` is what hid it (first run fresh, every later run a rebuild) and is now the reason `up` must not leave a state whose second run differs from its first |
-| C56 the per-block merge scope copied every message it looked at — Θ(N²) in copies per block | 15 | **fixed (2026-09-24)**: `message_map::between` takes ids and returns ids (`&BTreeSet<M> -> BTreeSet<M>`), so nothing clones a `Message` (and its `seen` set) to answer `upper.seen \ lower.seen`; the call site keeps its three "not in dag" errors by checking membership. Measured, isolated, on a 5,855-block chain: **0.78 GiB per block → ~4 MB per block, plateauing**, CPU a pinned 100% → 40%. Pinned by `between_is_the_id_set_difference_restricted_to_the_map`. **Owed**: the live structure still floors at ~9.8 GiB for that chain and grows ~0.86 GiB/block while peers sync from it — unattributed, and the reason no profile is attached |
+| C56 the per-block merge scope copied every message it looked at — Θ(N²) in copies per block | 15 | **fixed (2026-09-24)**: `message_map::between` takes ids and returns ids (`&BTreeSet<M> -> BTreeSet<M>`), so nothing clones a `Message` (and its `seen` set) to answer `upper.seen \ lower.seen`; the call site keeps its three "not in dag" errors by checking membership. Measured, isolated, on a 5,855-block chain: **0.78 GiB per block → ~4 MB per block, plateauing**, CPU a pinned 100% → 40%. Pinned by `between_is_the_id_set_difference_restricted_to_the_map`. **Owed**: the steady floor the live structure sits on (~9.8 GiB of process RSS on that chain) is the Θ(N²) `seen` *residency* — H6's accepted-faithful residual, ≈553 MB at 5,881 blocks plus set overhead — together with `fringe_states`, keyed by the fringe *set* rather than the hash the store already uses; §20 below states both with numbers. The **~0.86 GiB/block this cell called *unattributed* was the DAG being copied** on the per-block and per-request paths, attributed and fixed in `494336e70` (§20 below: `get_representation` by value, `insert`'s per-block clone, `Message.seen`) |
 
 **The two rows that are not laws are the two worth keeping visible.** C37 is a *harness* finding —
 a measurement that was not a measurement — and no law would have caught it, because the thing that
