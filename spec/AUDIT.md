@@ -2927,6 +2927,74 @@ port against the **reference document** rather than against itself.
   evidence for it is a new row whose verdict was measured on the node before the clause moved.
 
 
+- **C60 — the tie's domain was still too wide, and the port's matcher is not the clauses at all: the
+  fast path, the store's canonicalization, and the shapes they decide** (found and measured 2026-09-24,
+  Programme F/the Lean pass; **the domain predicate changed, no port change**). Three findings, each
+  measured on the node through the receive path before anything was written down, and each of which
+  changes what law 37's owed tie can even say.
+
+  **(1) The domain `modelledPar` + "a singleton expression list" + "canonical contents" is still too
+  wide, and the shape that shows it is C51's own, nested.** A collection holding a *two-expression* `Par`
+  is modelled and connective-free, its own expression list is a singleton, and the clauses answer
+  `false` for the value against itself — because `spatialMatchExprs`' arm is `[p]` and the *inner*
+  list has two entries:
+
+  ```
+  twoExprs = 1 | 2,  setHoldingTwo = Set(twoExprs)
+  modelledPar setHoldingTwo = true          connectiveUsed setHoldingTwo = false
+  spatialMatch setHoldingTwo setHoldingTwo = false      -- equality would say true
+  ```
+
+  The hypothesis therefore has to hold *at every level*: `pathPar` (a `Par` with every field but
+  `exprs` empty, holding exactly one expression, that expression a ground or a remainder-free collection
+  of `pathPar`s) is the predicate that says what "the shapes the clauses cover" always meant, and
+  `a_nested_multi_expression_par_is_outside_the_path_domain` / `a_single_expression_par_is_in_the_path_domain`
+  are its pins in both directions. `linear_of_pathPar` is the free-level half, proved.
+
+  **(2) The port does not run these clauses for a concrete pattern at all.** `spatial_match_core`'s first
+  act is `if !pattern.connective_used { return guard(fm, pattern == target) }`
+  (`spatial_matcher.rs:193-196`) — and the port's *normalizer* names that same line as "the
+  `pattern == target` short-circuit" (`normalizer.rs:1601`, in the comment explaining why a remainder
+  must set `connective_used`). So on a connective-free pattern the answer is *equality*, not the clauses'
+  verdict, and the two differ on a shape the node can hold:
+
+  ```
+  node:  @Set(1 | 2)  vs Set(1 | 2)   -> true      model: spatialMatch -> false
+  node:  @[1 | 2]     vs [1 | 2]      -> true      model: spatialMatch -> false
+  ```
+
+  (A tuple cannot hold a par — `(1 | 2)` is a syntax error, measured.) This is C44's class again — a
+  cost the model pays for a clause it does not have — except that the missing piece is not a clause: it
+  is the short-circuit. It is **not** patched here, because patching it is a modelling decision for law
+  37's row (adding the short-circuit makes the concrete domain definitional, which changes what the tie
+  *is*), and because half of it would be worse than none: see (3).
+
+  **(3) Both sides of every real match are already canonical, in the *port's* sense, and the model's
+  `sortPar` is not that sense.** `BindPattern.patterns` and `ListParWithRandom.pars` are
+  `Vec<SortedProc>` (`models/src/runtime.rs:20-36`), so the matcher receives `sort_par_term`-canonicalized
+  terms on both sides; a datum is additionally `par_set`-deduplicated at `eval_expr`. The port's
+  canonicalization sorts a `Par`'s *fields* and canonicalizes each collection element **in place** —
+  `sort_expr`'s `EList`/`ETuple`/`ESet`/`EMap` arms are `ps.iter().map(sort_par)` with no `sort_by`
+  (`models/src/sorter.rs:600-676`) — which is why the node keeps `[2, 1]` and `[1, 2]` apart (measured:
+  `@[2, 1]` against `[1, 2]` is `false`) while a set literal's non-canonical order is harmless (measured:
+  `@Set(2, 1)` against `Set(1, 2)` is `true`). **The model's `sortExpr` sorts collection contents**
+  (`Rchain/Sort.lean:2010-2013`, `sortList parComparator (sortListPar ps)`), so it identifies
+  `[2, 1]` and `[1, 2]` where the node does not. That divergence is definitional and none of the
+  corpora can see it — a `sort.tsv` verdict is a pairwise verdict *between* terms, not a witness to what
+  sorting a collection does to it, and the match corpus builds its `Par`s from literals — so it is
+  recorded here as measured-from-the-definitions with its observability **unmeasured**, rather than
+  claimed as a defect: whether it is observable depends on where the model applies `sortPar`, which is
+  the next thing to check rather than assume.
+
+  **The consequence for the row**, which is why all three belong in one entry: law 37's obligation is
+  stated as "the clauses decide exactly equality on the domain", and (2)+(3) mean the *port* does not
+  decide that way on the domain the model can express — it decides by equality against the canonical
+  form, and only consults the clauses when the pattern carries a variable or a remainder. The tie is
+  still a true statement about the clauses (and is what `pathPar` is for), but its role changes: it
+  justifies the short-circuit rather than describing the port's route. With (1) fixed and (2)+(3)
+  measured, the remaining work is a modelling decision, and the row's note now says so.
+
+
 ## 20. The back-sweep: every incident to its law and its case
 
 The programme began with ten defects of one class — "nothing errors" — found on a running node,

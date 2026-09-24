@@ -1377,9 +1377,12 @@ def laws : List Law := [
       `Rchain.a_nested_tuple_is_paid_for, `Rchain.a_two_expression_pattern_refutes_the_modelled_tie,
       `Rchain.a_shorter_set_pattern_is_refused, `Rchain.a_shorter_map_pattern_is_refused,
       `Rchain.a_set_pattern_of_the_same_length_still_matches,
-      `Rchain.a_permuted_pattern_is_refused, `Rchain.an_unaligned_variable_pattern_is_refused],
+      `Rchain.a_permuted_pattern_is_refused, `Rchain.an_unaligned_variable_pattern_is_refused,
+      `Rchain.pathPar, `Rchain.linear_of_pathPar, `Rchain.pathExpr, `Rchain.pathPars, `Rchain.pathPairs,
+      `Rchain.a_nested_multi_expression_par_is_outside_the_path_domain,
+      `Rchain.a_single_expression_par_is_in_the_path_domain],
     corpus := some "match",
-    witness := [`Rchain.arithmetic_pattern_refutes_the_unrestricted_tie, `Rchain.a_list_pattern_cannot_skip_a_target_element, `Rchain.the_walk_past_empty_pars_is_paid_for, `Rchain.a_shorter_set_pattern_is_refused, `Rchain.a_shorter_map_pattern_is_refused, `Rchain.a_permuted_pattern_is_refused],
+    witness := [`Rchain.arithmetic_pattern_refutes_the_unrestricted_tie, `Rchain.a_list_pattern_cannot_skip_a_target_element, `Rchain.the_walk_past_empty_pars_is_paid_for, `Rchain.a_shorter_set_pattern_is_refused, `Rchain.a_shorter_map_pattern_is_refused, `Rchain.a_permuted_pattern_is_refused, `Rchain.a_nested_multi_expression_par_is_outside_the_path_domain, `Rchain.a_single_expression_par_is_in_the_path_domain],
     falsifiable := some "19 cases with three-valued verdicts; the once-false law-5 axiom was replaced \
       *because* a corpus case contradicted it (AUDIT C26), the fuel bound was one step short until the \
       `decide` refused to compile, and `concrete_matches_iff_eq` **was false as stated** until case 15 \
@@ -1420,7 +1423,7 @@ def laws : List Law := [
       cannot — is pinned by `a_permuted_pattern_is_refused`. The tie's domain is therefore the \
       **canonical** shapes, where the walk and the port's backtracking assignment agree: not the \
       duplicate-element corner only (C54), but the sorted-and-duplicate-free form on both sides, \
-      which is what `sortPar` fixes for the model's collections and `par_set` for the node's" },
+      which is what `sortPar` fixes for the model's collections and `par_set` for the node's.       **And the domain itself was wrong, not just unproved** (2026-09-24, AUDIT C60): `modelledPar` plus       a singleton expression list plus canonical contents still admits a shape the clauses reject —       nest a two-expression `Par` inside a collection and the *inner* list is not a singleton, so       `spatialMatch` answers `false` for the value against itself while it is modelled and       connective-free (`a_nested_multi_expression_par_is_outside_the_path_domain`). The hypothesis has       to hold at *every* level, and `pathPar` is that predicate — a `Par` whose fields but `exprs` are       empty, holding exactly one expression, that expression a ground or a collection of `pathPar`s       with no remainder. It is what \"the shapes the clauses cover\" was always meant to name, and       `linear_of_pathPar` is the free-level consequence the row used to leave implicit. **AUDIT C60       also measures what the domain leaves out, and it is not all unmodelled shapes**: the port's       matcher never reaches these clauses for a *concrete* pattern at all — it short-circuits at       `if !pattern.connective_used { pattern == target }` (`spatial_matcher.rs:193-196`, named as such       in the port's own normalizer at `normalizer.rs:1601`) — and both sides of a real match are       already canonical, because the RSpace payload types are `Sorted<Par>`       (`models/src/runtime.rs:20-36`). Measured: the node **matches** `@Set(1 | 2)` against itself       (`true`) where the clauses here answer `false`. Closing that is a modelling change to       `spatialMatch` — the short-circuit and the canonicalization — rather than a clause, and it is       named as the row's next step instead of being assumed" },
   { number := 38, layer := "Rholang",
     statement := "Silence is specified: an unmatched receive or `match` yields no reduction **and no \
       error**",

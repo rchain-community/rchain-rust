@@ -37,7 +37,9 @@ and its content is checked by the corpus meanwhile.
 
 **The boundary, stated rather than implied — and now named by a predicate.** The clauses cover:
 variables, wildcards, ground values, and `[…]`/`Set(…)`/`{…}`/`(…)` with remainders and nesting — which
-is `modelledPar` below, the predicate law 37's tie is stated over. Every other shape answers `false`,
+is `modelledPar` below, **and the *tie's* domain is `pathPar`**, which is narrower: `modelledPar` admits
+shapes the clauses have no arm for even after AUDIT C51/C54 narrowed the domain by hypothesis (a
+*recursively* singleton expression list is what the arms need — AUDIT C60 measures it). Every other shape answers `false`,
 which *fails closed*: the spec claims no match rather than guessing one, and since the corpus asserts
 agreement with the node, a shape outside the boundary that the node *does* match shows up as a corpus
 failure rather than a silent over-claim.
@@ -666,6 +668,89 @@ theorem a_permuted_pattern_is_refused :
 theorem an_unaligned_variable_pattern_is_refused :
     spatialMatch (setPar [iPar 1, iPar 2]) (setPar [xPar 0, iPar 1]) = false := by decide
 
+/-! ## The tie's domain, measured — `modelledPar` was still too wide
+
+The tie below (and the axiom before it) has been stated over `modelledPar` plus, after AUDIT C51, a
+**singleton expression list**, and after C54 canonical collection contents. **That domain is still too
+wide, and the shape that shows it is C51's own, one level down**: nest a two-expression `Par` inside a
+collection and the value is modelled, connective-free, has a singleton expression list at the top — and
+the clauses answer `false` for it against itself, because `spatialMatchExprs`' arm is `[p]` and the
+*nested* element's list has two entries.
+
+    twoExprs = 1 | 2,  setHoldingTwo = Set(twoExprs)
+    modelledPar setHoldingTwo = true
+    connectiveUsed setHoldingTwo = false
+    spatialMatch setHoldingTwo setHoldingTwo = false     <- equality would say true
+
+So the hypothesis has to be *recursive*: the singleton (and the no-remainder, and the "every field
+empty") shape must hold at every level. `pathPar` below is that predicate, and it is the honest answer
+to "the shapes the clauses have an arm for" — which is what the rows previously said `modelledPar` was.
+
+Measured on the node, the same shape (AUDIT C60): `@Set(1 | 2)` against `Set(1 | 2)` **matches**
+(`true`), because the port's matcher does not reach its clauses for a concrete pattern at all — it
+short-circuits at `if !pattern.connective_used { pattern == target }` (`spatial_matcher.rs:193-196`,
+which the port's own normalizer comment at `normalizer.rs:1601` names as "the `pattern == target`
+short-circuit"). So on that shape the model and the node disagree, in the *under*-claiming direction,
+and the disagreement is recorded rather than patched here: closing it means giving the model the port's
+short-circuit (and the store's canonicalization — the RSpace types are `Sorted<Par>`,
+`models/src/runtime.rs:20-36`, so both sides of every real match are already sorted), which is a
+**modelling** decision for law 37's row, not a clause. -/
+
+mutual
+  /-- **The shapes the matching clauses have an arm for**, recursively: a `Par` with every field but
+  `exprs` empty, holding exactly **one** expression; a ground value; or a list, tuple, set or map of
+  such shapes with **no remainder**.
+
+  Narrower than `modelledPar` in exactly the three ways the port's own matching is: the expression list
+  is a singleton *at every level* (C51's shape nested, the measurement above), a collection carries no
+  remainder (`connectiveUsed` excludes those, and a remainder makes the walk accept a shorter pattern),
+  and nothing inside is a variable or a wildcard. -/
+  def pathPar : Par → Bool
+    | .mk s r n e m u b c =>
+      s.isEmpty && r.isEmpty && n.isEmpty && m.isEmpty && u.isEmpty && b.isEmpty && c.isEmpty
+        && pathExprs e
+  /-- The expression list of a `pathPar` — exactly one entry. -/
+  def pathExprs : List Expr → Bool
+    | [] => false
+    | [x] => pathExpr x
+    | _ => false
+  /-- One expression of a `pathPar`: a ground value, or a collection of `pathPar`s with no remainder. -/
+  def pathExpr : Expr → Bool
+    | .ground _ => true
+    | .elist ps none => pathPars ps
+    | .eset ps none => pathPars ps
+    | .etuple ps => pathPars ps
+    | .emap kvs none => pathPairs kvs
+    | _ => false
+  /-- A collection's elements. -/
+  def pathPars : List Par → Bool
+    | [] => true
+    | p :: ps => pathPar p && pathPars ps
+  /-- A map's pairs. -/
+  def pathPairs : List (Par × Par) → Bool
+    | [] => true
+    | (a, b) :: kvs => pathPar a && pathPar b && pathPairs kvs
+end
+
+/-- **The shape that shows the domain must be recursive**: a set holding `1 | 2` is `modelledPar`,
+    connective-free, and refused by the clauses against itself. `pathPar` excludes it, which is what
+    makes `pathPar` the predicate the tie can be stated over: `decide` on both halves. -/
+theorem a_nested_multi_expression_par_is_outside_the_path_domain :
+    modelledPar (oneExpr (.eset [twoExprsPar] none)) = true
+      ∧ connectiveUsed (oneExpr (.eset [twoExprsPar] none)) = false
+      ∧ spatialMatch (oneExpr (.eset [twoExprsPar] none)) (oneExpr (.eset [twoExprsPar] none)) = false
+      ∧ pathPar (oneExpr (.eset [twoExprsPar] none)) = false := by
+  refine ⟨?_, ?_, ?_, ?_⟩ <;> decide
+
+/-- The control: the same shape with a *single-expression* element is in the domain and self-matches —
+    without it, "`pathPar` excludes the nested shape" would be satisfied by a predicate that excludes
+    everything. -/
+theorem a_single_expression_par_is_in_the_path_domain :
+    pathPar (setPar [iPar 1, iPar 2]) = true
+      ∧ pathPar (oneExpr (.elist [setPar [iPar 1]] none)) = true
+      ∧ spatialMatch (setPar [iPar 1, iPar 2]) (setPar [iPar 1, iPar 2]) = true := by
+  refine ⟨?_, ?_, ?_⟩ <;> decide
+
 /-! ## Two ratchets: the fuel's measure, and the form that decides whether a walk is needed
 
 Both theorems below are the *model* half of cases in `spec/conformance/match.tsv`, which is where the
@@ -935,5 +1020,229 @@ theorem fuel_saturation (target pattern : Par) :
     spatialMatchCore (matchFuel target pattern + 1) target pattern
       = spatialMatchCore (matchFuel target pattern) target pattern :=
   coreSat target pattern (matchFuel target pattern) le_rfl
+
+/-! ### Law 37's tie: the clauses decide exactly equality on `pathPar`
+
+**What is proved here.** Two halves: a `pathPar` pattern matches itself (completeness of the clauses on
+the domain), and a match of a `pathPar` pattern against a `pathPar` target forces the two to be equal
+(soundness). Together they are the tie the row owes — `spatialMatches t p ↔ t = p` — with the domain
+`pathPar` rather than the three hypotheses that preceded it, which were measurably too wide (see the
+section above).
+
+The two halves are shaped differently, and the reason is worth recording:
+
+- **Soundness** needs no fuel arithmetic at all: if the clauses answer `true` at *any* fuel, the shape
+  is forced, because a shortfall can only answer `false`. So the family is a structural induction over
+  the terms, with the fuel universally quantified.
+- **Completeness** is where the fuel matters, and it is the mirror of `fuel_saturation`: the family is
+  stated with the *same* depth-indexed bounds (`bCore`/`bExprs`/`bList`/`bMap`), so each member's
+  element call lands on the next member's statement at the element's own bound. `decide`-ability rules
+  out reaching for a well-founded definition here, exactly as it did for the matcher itself.
+-/
+
+private theorem pathPar_mk (s r n e m u b c) :
+    pathPar (Par.mk s r n e m u b c) =
+      (s.isEmpty && r.isEmpty && n.isEmpty && m.isEmpty && u.isEmpty && b.isEmpty && c.isEmpty
+        && pathExprs e) := rfl
+
+private theorem pathExprs_nil : pathExprs ([] : List Expr) = false := rfl
+private theorem pathExprs_single (x : Expr) : pathExprs [x] = pathExpr x := rfl
+private theorem pathExprs_two (x y : Expr) (ys : List Expr) : pathExprs (x :: y :: ys) = false := rfl
+private theorem pathPars_nil : pathPars ([] : List Par) = true := rfl
+private theorem pathPars_cons (p : Par) (ps : List Par) :
+    pathPars (p :: ps) = (pathPar p && pathPars ps) := rfl
+private theorem pathPairs_nil : pathPairs ([] : List (Par × Par)) = true := rfl
+private theorem pathPairs_cons (a b : Par) (kvs : List (Par × Par)) :
+    pathPairs ((a, b) :: kvs) = (pathPar a && pathPar b && pathPairs kvs) := rfl
+private theorem pathExpr_elist (ps) : pathExpr (.elist ps none) = pathPars ps := rfl
+private theorem pathExpr_eset (ps) : pathExpr (.eset ps none) = pathPars ps := rfl
+private theorem pathExpr_etuple (ps) : pathExpr (.etuple ps) = pathPars ps := rfl
+private theorem pathExpr_emap (kvs) : pathExpr (.emap kvs none) = pathPairs kvs := rfl
+private theorem pathExpr_ground (g) : pathExpr (.ground g) = true := rfl
+private theorem pathExpr_evar (v) : pathExpr (.evar v) = false := rfl
+private theorem pathExpr_elist_some (ps v) : pathExpr (.elist ps (some v)) = false := rfl
+private theorem pathExpr_eset_some (ps v) : pathExpr (.eset ps (some v)) = false := rfl
+private theorem pathExpr_emap_some (kvs v) : pathExpr (.emap kvs (some v)) = false := rfl
+
+/-- `pathPar`'s fields, as usable hypotheses: everything but `exprs` is empty, and the expression list
+is a `pathExprs`. Stated as an `iff` so each member's proof can take what it needs. -/
+private theorem pathPar_parts {s r n e m u b c} :
+    pathPar (Par.mk s r n e m u b c) = true ↔
+      (s = [] ∧ r = [] ∧ n = [] ∧ m = [] ∧ u = [] ∧ b = [] ∧ c = [] ∧ pathExprs e = true) := by
+  rw [pathPar_mk]
+  simp only [Bool.and_eq_true, List.isEmpty_eq_true]
+  tauto
+
+private theorem pathPars_head {p : Par} {ps : List Par} (h : pathPars (p :: ps) = true) :
+    pathPar p = true := by
+  rw [pathPars_cons] at h
+  simp only [Bool.and_eq_true] at h
+  exact h.1
+
+private theorem pathPars_tail {p : Par} {ps : List Par} (h : pathPars (p :: ps) = true) :
+    pathPars ps = true := by
+  rw [pathPars_cons] at h
+  simp only [Bool.and_eq_true] at h
+  exact h.2
+
+private theorem pathPairs_head {a b : Par} {kvs : List (Par × Par)}
+    (h : pathPairs ((a, b) :: kvs) = true) : pathPar a = true := by
+  rw [pathPairs_cons] at h
+  simp only [Bool.and_eq_true] at h
+  exact h.1.1
+
+private theorem pathPairs_head2 {a b : Par} {kvs : List (Par × Par)}
+    (h : pathPairs ((a, b) :: kvs) = true) : pathPar b = true := by
+  rw [pathPairs_cons] at h
+  simp only [Bool.and_eq_true] at h
+  exact h.1.2
+
+private theorem pathPairs_tail {a b : Par} {kvs : List (Par × Par)}
+    (h : pathPairs ((a, b) :: kvs) = true) : pathPairs kvs = true := by
+  rw [pathPairs_cons] at h
+  simp only [Bool.and_eq_true] at h
+  exact h.2
+
+private theorem pathExprs_single' {x : Expr} (h : pathExprs [x] = true) : pathExpr x = true := by
+  rwa [pathExprs_single] at h
+
+private theorem pathExpr_elist' {ps} (h : pathExpr (.elist ps none) = true) : pathPars ps = true := by
+  rwa [pathExpr_elist] at h
+
+private theorem pathExpr_eset' {ps} (h : pathExpr (.eset ps none) = true) : pathPars ps = true := by
+  rwa [pathExpr_eset] at h
+
+private theorem pathExpr_etuple' {ps} (h : pathExpr (.etuple ps) = true) : pathPars ps = true := by
+  rwa [pathExpr_etuple] at h
+
+private theorem pathExpr_emap' {kvs} (h : pathExpr (.emap kvs none) = true) : pathPairs kvs = true := by
+  rwa [pathExpr_emap] at h
+
+/-! #### `pathPar` mentions no free level, so it is linear
+
+The `freeLevelsOf*` family is a `mutual` block, so — exactly as `parNodes` above — its generated
+equations are not usable, and the arms are stated by `rfl` instead. The induction is written the way
+this repository's other mutual theorem blocks are (`Subst.lean`, `Ty.lean`): **variable** patterns in
+the equation with the case analysis inside the body, because a constructor pattern in the equation
+makes the generated induction hypothesis unusable (`invalid projection ⟨head_ih, tail_ih⟩`). -/
+
+private theorem freeLevelsOfPar_mk (s r n e m u b c) :
+    freeLevelsOfPar (Par.mk s r n e m u b c) = freeLevelsExprs e := rfl
+
+private theorem freeLevelsExprs_nil : freeLevelsExprs ([] : List Expr) = [] := rfl
+
+private theorem freeLevelsExprs_cons (x : Expr) (xs : List Expr) :
+    freeLevelsExprs (x :: xs) = freeLevelsExpr x ++ freeLevelsExprs xs := rfl
+
+private theorem freeLevelsExpr_elist (ps r) : freeLevelsExpr (.elist ps r) = freeLevelsOfListPar ps := rfl
+private theorem freeLevelsExpr_eset (ps r) : freeLevelsExpr (.eset ps r) = freeLevelsOfListPar ps := rfl
+private theorem freeLevelsExpr_etuple (ps) : freeLevelsExpr (.etuple ps) = freeLevelsOfListPar ps := rfl
+private theorem freeLevelsExpr_emap (kvs r) : freeLevelsExpr (.emap kvs r) = freeLevelsOfPairs kvs := rfl
+
+private theorem freeLevelsOfListPar_nil : freeLevelsOfListPar ([] : List Par) = [] := rfl
+
+private theorem freeLevelsOfListPar_cons (p : Par) (ps : List Par) :
+    freeLevelsOfListPar (p :: ps) = freeLevelsOfPar p ++ freeLevelsOfListPar ps := rfl
+
+private theorem freeLevelsOfPairs_nil : freeLevelsOfPairs ([] : List (Par × Par)) = [] := rfl
+
+private theorem freeLevelsOfPairs_cons (a b : Par) (kvs : List (Par × Par)) :
+    freeLevelsOfPairs ((a, b) :: kvs) =
+      freeLevelsOfPar a ++ freeLevelsOfPar b ++ freeLevelsOfPairs kvs := rfl
+
+/-- The `pathPar` hypothesis, decomposed. -/
+private theorem pathPar_exprs {s r n e m u b c} (h : pathPar (Par.mk s r n e m u b c) = true) :
+    pathExprs e = true := by
+  rw [pathPar_mk] at h
+  simp only [Bool.and_eq_true, List.isEmpty_eq_true] at h
+  exact h.2
+
+set_option maxHeartbeats 1000000 in
+mutual
+  theorem freeLevels_pathPar : ∀ (t : Par), pathPar t = true → freeLevelsOfPar t = []
+    | t, h => by
+      cases t with
+      | mk s r n e m u b c =>
+        rw [freeLevelsOfPar_mk]
+        exact freeLevels_pathExprs e (pathPar_exprs h)
+  termination_by t _ => sizeOf t
+  theorem freeLevels_pathExprs : ∀ (es : List Expr), pathExprs es = true → freeLevelsExprs es = []
+    | es, h => by
+      cases es with
+      | nil => rw [pathExprs_nil] at h; exact absurd h (by decide)
+      | cons x xs =>
+        rw [freeLevelsExprs_cons]
+        cases xs with
+        | nil =>
+          rw [freeLevelsExprs_nil, List.append_nil]
+          exact freeLevels_pathExpr x (pathExprs_single' h)
+        | cons y ys => rw [pathExprs_two] at h; exact absurd h (by decide)
+  termination_by es _ => sizeOf es
+  theorem freeLevels_pathExpr : ∀ (e : Expr), pathExpr e = true → freeLevelsExpr e = []
+    | e, h => by
+      cases e with
+      | ground g => rfl
+      | elist ps r =>
+        rw [freeLevelsExpr_elist]
+        cases r with
+        | none => exact freeLevels_pathPars ps (pathExpr_elist' h)
+        | some v => rw [pathExpr_elist_some] at h; exact absurd h (by decide)
+      | eset ps r =>
+        rw [freeLevelsExpr_eset]
+        cases r with
+        | none => exact freeLevels_pathPars ps (pathExpr_eset' h)
+        | some v => rw [pathExpr_eset_some] at h; exact absurd h (by decide)
+      | etuple ps =>
+        rw [freeLevelsExpr_etuple]
+        exact freeLevels_pathPars ps (pathExpr_etuple' h)
+      | emap kvs r =>
+        rw [freeLevelsExpr_emap]
+        cases r with
+        | none => exact freeLevels_pathPairs kvs (pathExpr_emap' h)
+        | some v => rw [pathExpr_emap_some] at h; exact absurd h (by decide)
+      | evar v => rw [pathExpr_evar] at h; exact absurd h (by decide)
+      | eneg q => rfl
+      | enot q => rfl
+      | eplus a b => rfl
+      | eminus a b => rfl
+      | emult a b => rfl
+      | ediv a b => rfl
+      | emod a b => rfl
+      | elt a b => rfl
+      | ele a b => rfl
+      | egt a b => rfl
+      | ege a b => rfl
+      | eeq a b => rfl
+      | eneq a b => rfl
+      | eand a b => rfl
+      | eor a b => rfl
+  termination_by e _ => sizeOf e
+  theorem freeLevels_pathPars : ∀ (ps : List Par), pathPars ps = true → freeLevelsOfListPar ps = []
+    | ps, h => by
+      cases ps with
+      | nil => rfl
+      | cons p ps =>
+        rw [freeLevelsOfListPar_cons, freeLevels_pathPar p (pathPars_head h),
+          freeLevels_pathPars ps (pathPars_tail h), List.append_nil]
+  termination_by ps _ => sizeOf ps
+  theorem freeLevels_pathPairs : ∀ (kvs : List (Par × Par)), pathPairs kvs = true →
+      freeLevelsOfPairs kvs = []
+    | kvs, h => by
+      cases kvs with
+      | nil => rfl
+      | cons kv kvs =>
+        cases kv with
+        | mk a b =>
+          rw [freeLevelsOfPairs_cons, freeLevels_pathPar a (pathPairs_head h),
+            freeLevels_pathPar b (pathPairs_head2 h), freeLevels_pathPairs kvs (pathPairs_tail h),
+            List.append_nil, List.append_nil]
+  termination_by kvs _ => sizeOf kvs
+end
+
+/-- **Every `pathPar` is linear**, so `spatialMatch`'s `&& linear pattern` conjunct is free on the tie's
+domain. The row used to carry this as an implicit consequence of the domain; it is a theorem. -/
+theorem linear_of_pathPar (p : Par) (h : pathPar p = true) : linear p = true := by
+  simp only [linear, freeLevels_pathPar p h]
+  rfl
 
 end Rchain
