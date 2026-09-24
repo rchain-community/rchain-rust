@@ -22,10 +22,13 @@ This module replaces all three with a definition and the theorems that hold of i
   `spatialMatches_decidable` — now an instance rather than an axiom;
 - **law 5, correctly stated**: an accepted match binds each free level at most once
   (`spatialMatch_implies_linear`) — the Scala's `addedVars.distinct`, the Rust's `BindPattern::free_count`;
-- law 37's tie to law 35 (`concrete_matches_iff_eq`): a pattern with nothing connective in it matches
-  exactly the targets structurally equal to it, which is why `spatial_match`'s fast path
-  (`if !pattern.connective_used { pattern == target }`) is sound. **Proof owed** — stated here, with its
-  content checked by the corpus, and recorded as owed in `spec/INVENTORY.md` row 37.
+- law 37's tie to law 35: a modelled pattern with nothing connective in it and a **singleton**
+  expression list matches exactly the targets structurally equal to it, which is why `spatial_match`'s
+  fast path (`if !pattern.connective_used { pattern == target }`) is sound. **Owed — and the axiom that
+  stood here was false**: the version quantifying over `modelledPar` alone admits a `Par` with two
+  expressions, which is modelled, connective-free and unmatchable
+  (`a_two_expression_pattern_refutes_the_modelled_tie`, AUDIT C51), so it was deleted rather than
+  narrowed in place, and `spec/INVENTORY.md` row 37 names what is owed now.
 
 One thing is owed rather than proven, and is named rather than left implicit: that proof. `fuel_saturation`
 — the statement that the fuel is *enough* — is a **theorem** now (the family of depth-indexed bounds
@@ -505,23 +508,43 @@ theorem arithmetic_pattern_refutes_the_unrestricted_tie :
       ∧ modelledPar arithmeticTuple = false := by
   refine ⟨?_, ?_, ?_⟩ <;> decide
 
-/-- **Law 37's tie to law 35, and the justification of the Rust's fast path**: a *modelled*, concrete
-pattern matches exactly the targets structurally equal to it — so `if !pattern.connective_used
-{ pattern == target }` decides the same question the clauses would, for the shapes the clauses cover.
+/-- `1 | 2` as one `Par`: a legal model value with **two** expressions. -/
+def twoExprsPar : Par := Par.mk [] [] [] [.ground (.int 1), .ground (.int 2)] [] [] [] []
 
-**The domain is part of the statement now.** It read `∀ target pattern, connectiveUsed pattern = false
-→ spatialMatch target pattern = (target = pattern)`, which is false: `arithmeticTuple` is concrete and
-equal to itself and no clause matches it (`arithmetic_pattern_refutes_the_unrestricted_tie`), and the
-`modelledPar` hypotheses are what exclude it. Both sides carry one — the clauses read only the two
-`exprs` fields, so a target with a send in it would "match" a pattern it is not equal to.
+/-- **The tie's domain was still too wide, and the axiom is gone** (AUDIT C51). `modelledPar` accepts
+this value — a `Par` with two expressions — and `spatialMatchExprs` has no arm for anything but a
+singleton, so the pattern is modelled, connective-free, equal to itself, and **rejected**: the tie's
+conclusion is `false = true` on it. The same defect class as C44 — a domain that admits a shape the
+clauses do not — one level up: not a missing *clause* but a missing *hypothesis*.
 
-**Proof owed**: reducing the clauses to equality is an induction over the pattern — its expression list,
-the collections' element lists, a map's pairs, the tuples, and the fuel. Its *content* is checked today
-by `spec/conformance/match.tsv` (every verdict `decide`d against the definitions above, with the Rust
-held to the same cases); the proof itself is recorded as owed in `spec/INVENTORY.md` row 37. -/
-axiom concrete_matches_iff_eq (target pattern : Par) (h : connectiveUsed pattern = false)
-    (hp : modelledPar pattern = true) (ht : modelledPar target = true) :
-    spatialMatch target pattern = (target = pattern)
+The statement was **deleted rather than narrowed in place**. What the row owes is the tie for a pattern
+whose expression list is a **singleton** (equivalently, for the shapes the clauses have an arm for), and
+that is a proof obligation now rather than an assumption: a statement about the model has to say what
+the model does on every value it admits, not only the ones a stored datum can be. The old statement is
+kept refuted here, and `spec/INVENTORY.md` row 37 carries what is owed instead. -/
+theorem a_two_expression_pattern_refutes_the_modelled_tie :
+    modelledPar twoExprsPar = true ∧ connectiveUsed twoExprsPar = false
+      ∧ ¬ ((spatialMatch twoExprsPar twoExprsPar = true) = (twoExprsPar = twoExprsPar)) := by
+  refine ⟨?_, ?_, ?_⟩
+  · decide
+  · decide
+  · intro h
+    have h1 : ¬ (spatialMatch twoExprsPar twoExprsPar = true) := by
+      rw [show spatialMatch twoExprsPar twoExprsPar = false from by decide]
+      exact Bool.false_ne_true
+    exact h1 (h.mpr rfl)
+
+/-! ### The tie, owed rather than assumed
+
+**What the fast path needs**: for a modelled pattern whose expression list is a **singleton** and which
+has nothing connective in it, the clauses accept exactly the targets structurally equal to it — which is
+why `if !pattern.connective_used { pattern == target }` decides the same question the clauses would, for
+the shapes the clauses cover. `arithmetic_pattern_refutes_the_unrestricted_tie` and
+`a_two_expression_pattern_refutes_the_modelled_tie` are the two domains that were too wide, and the
+remaining obligation is that induction: over the pattern's expression list, the collections' element
+lists, a map's pairs, the tuples, and the fuel. Its content is checked behaviourally by
+`spec/conformance/match.tsv` (every verdict `decide`d against the clauses, with the Rust held to the
+same cases). -/
 
 /-! ## Two ratchets: the fuel's measure, and the form that decides whether a walk is needed
 

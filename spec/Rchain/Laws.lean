@@ -387,8 +387,8 @@ def laws : List Law := [
     declarations := [`Rchain.spatialMatch, `Rchain.spatialMatches, `Rchain.spatialMatchCore,
       `Rchain.aggregateUpdates, `Rchain.aggregateUpdates_rejects_double_bind,
       `Rchain.freeMapMerge_overwrites, `Rchain.fuel_saturation,
-      `Rchain.a_nested_tuple_is_paid_for, `Rchain.a_tuple_pays_for_its_own_contents],
-    axioms := [`Rchain.concrete_matches_iff_eq],
+      `Rchain.a_nested_tuple_is_paid_for, `Rchain.a_tuple_pays_for_its_own_contents,
+      `Rchain.a_two_expression_pattern_refutes_the_modelled_tie],
     corpus := some "match",
     rust := ["rholang/src/matcher/spatial_matcher.rs"],
     coq := ["spec/coq/Laws.v:spatial_matches", "spec/coq/Laws.v:linear"],
@@ -435,7 +435,16 @@ def laws : List Law := [
       `modelledPar`, connective-free and equal to itself, so its conclusion evaluated to `false = \
       true`. The refutation is two lines of `decide` and is *not* kept, because with the measure fixed \
       the same `decide` fails; what the episode says is that this row's axiom is only as true as the \
-      fuel beneath it, which is exactly what `fuel_saturation` is for. **The Coq half, split by kind** (2026-09-23): \
+      fuel beneath it, which is exactly what `fuel_saturation` is for. **And the tie's own axiom was \
+      false, so it is gone** (AUDIT C51, same day, found by asking what the statement says of a value \
+      the model *admits*): `modelledPar` accepts a `Par` with two expressions, and the clauses have no \
+      arm that accepts a multi-expression pattern, so the pattern is modelled, connective-free, equal \
+      to itself and rejected — the tie's conclusion is `false = true` on it \
+      (`a_two_expression_pattern_refutes_the_modelled_tie`). Same class as C44 one level up: not a \
+      missing *clause* but a missing *hypothesis*. What this row owes is the tie for a pattern whose \
+      expression list is a **singleton** — the shapes the clauses have an arm for — and it is owed \
+      rather than asserted, because a statement about the model has to say what the model does on every \
+      value it admits, not only the ones a stored datum can be. **The Coq half, split by kind** (2026-09-23): \
       `spec/coq/Laws.v`'s `linear` is a **definition** now (with `linear_decidable` and the witness \
       `a_double_binding_is_not_linear`), mirroring Lean's own predicate; `spatial_matches` stays a \
       **signature**, because mirroring the matcher in Coq is the analogue of this file's owed proofs \
@@ -1265,8 +1274,7 @@ def laws : List Law := [
       `Rchain.modelledExpr, `Rchain.arithmetic_pattern_refutes_the_unrestricted_tie,
       `Rchain.the_walk_past_empty_pars_is_paid_for,
       `Rchain.a_list_pattern_cannot_skip_a_target_element, `Rchain.fuel_saturation,
-      `Rchain.a_nested_tuple_is_paid_for],
-    axioms := [`Rchain.concrete_matches_iff_eq],
+      `Rchain.a_nested_tuple_is_paid_for, `Rchain.a_two_expression_pattern_refutes_the_modelled_tie],
     corpus := some "match",
     witness := [`Rchain.arithmetic_pattern_refutes_the_unrestricted_tie, `Rchain.a_list_pattern_cannot_skip_a_target_element, `Rchain.the_walk_past_empty_pars_is_paid_for],
     falsifiable := some "19 cases with three-valued verdicts; the once-false law-5 axiom was replaced \
@@ -1287,7 +1295,13 @@ def laws : List Law := [
       ran out — AUDIT C50). **The tie's domain was too wide, not merely unproved**: \
       `connectiveUsed pattern = false` admits an arithmetic pattern, which is concrete and unmatchable, \
       so the statement was false of the model — the same class as C26 and C40, found by asking what the \
-      statement says on a term the model has. **The clauses are form-specific** and that is load-bearing \
+      statement says on a term the model has. **And it was false a second time, for a second reason \
+      (AUDIT C51)**: with `modelledPar` as the only domain predicate the tie still admitted a `Par` with \
+      **two** expressions, which the clauses reject while the value equals itself — so the axiom is \
+      **deleted** and what the row owes is the tie for a **singleton** pattern, the shapes the clauses \
+      cover (`a_two_expression_pattern_refutes_the_modelled_tie` is the ratchet, and the lesson is that \
+      a domain predicate has to be checked against *every* value the model admits, not the ones a \
+      reachable datum can be). **The clauses are form-specific** and that is load-bearing \
       in both directions: a list or tuple is positional (`fold_match`, the port's `EList`/`ETuple` \
       arms), a set or map searches (`list_match_single` → `find_matches`), and `matchListPos`/\
       `matchListPar` are the two members; `match.tsv` cases 18/19 pin one direction each" },

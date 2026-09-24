@@ -2282,6 +2282,23 @@ port against the **reference document** rather than against itself.
   the shapes it happens to contain. The measure is now adequate on every shape the search tried; that
   is *evidence*, not a proof, and the proof is `fuel_saturation`.
 
+- **C51 — the tie's domain predicate admitted a shape the clauses reject, so the tie was false**
+  (found 2026-09-24, by asking what the statement says on a *value the model admits* rather than on a
+  reachable term; **the model's defect**, and this time in a *statement* rather than in a definition).
+  `concrete_matches_iff_eq` said: a modelled, connective-free pattern matches exactly the targets equal
+  to it — law 37's tie, which is what justifies the port's fast path
+  (`if !pattern.connective_used { pattern == target }`). `modelledPar` accepts
+  `Par.mk [] [] [] [e₁, e₂] [] [] [] []` — a legal model value holding **two** expressions — while
+  `spatialMatchExprs` has an arm for nothing but a singleton, so `spatialMatch p p` answers `false` and
+  `p = p` holds: the tie's conclusion was `false = true`. Two lines of `decide`, and the counterexample
+  is kept: `a_two_expression_pattern_refutes_the_modelled_tie`. The axiom is **deleted** rather than
+  narrowed in place — the row owes the tie for a pattern with a **singleton** expression list — because
+  a changed statement is a changed law, and the honest close of a false domain predicate is to say what
+  is owed rather than to assume the corrected version. Same class as C44 one level up: C44 was a missing
+  *clause*, this is a missing *hypothesis*. What it says about the method: a domain predicate
+  (`modelledPar` here, the "not reachable" argument in several earlier entries) has to be checked
+  against every value the model admits, not only the ones a reachable term can be.
+
 - **The class, recorded once, because it is the consolidation pass's whole justification: an axiom that
   is false is worse than one that is owed, because anything follows from it.** Nine axioms the pass
   removed were not merely unproved — they were false of the code or of the model that carried them, and
@@ -2345,6 +2362,7 @@ finding that no law covers, and it says why rather than leaving the gap to infer
 | C47 the matcher's fuel was short: the measure counted an empty `Par` as zero nodes | 5, 37 | `match.tsv` case 18 (`@Set(1, ..._)` against `Set(Nil × 6, 1)`) + `lean_match_corpus.rs`; `the_walk_past_empty_pars_is_paid_for`, and `parNodes`'s doc comment carrying the counterexample |
 | C49 the replay property test fails on its own recording (~3 runs in 10) | 11 | `rspace/src/property_tests.rs`'s `law11_a_replayed_script_matches_its_recording` — reproduced locally, minimal input captured; CI caught it on a docs-only tip. Two candidates recorded, not diagnosed |
 | C50 the matcher's fuel was short again: the measure had no `etuple` case, so a tuple's contents were charged to nothing | 5, 37 | `match.tsv` case 20 (`@((1, 2), (3, 4))` against itself) + `lean_match_corpus.rs`; `a_nested_tuple_is_paid_for`, `a_tuple_pays_for_its_own_contents`, and `parNodesExpr`'s doc comment carrying the counterexample. While the defect stood it also **refuted** the axiom `concrete_matches_iff_eq` |
+| C51 the tie's domain admitted a two-expression `Par`, which no clause accepts — so the tie was false | 5, 37 | the axiom `concrete_matches_iff_eq` is **deleted**; `a_two_expression_pattern_refutes_the_modelled_tie` is the counterexample, and rows 5/37 owe the tie for a **singleton** pattern instead |
 | C48 the spec over-claimed a match: the searcher was wired into the list and tuple arms | 5, 37 | `match.tsv` case 19 (`@[1, ..._]` against `[Nil, 1]`) + `lean_match_corpus.rs`; `a_list_pattern_cannot_skip_a_target_element`, and the split into `matchListPos` (lists, tuples) / `matchListPar` (sets, maps) |
 
 **The two rows that are not laws are the two worth keeping visible.** C37 is a *harness* finding —
