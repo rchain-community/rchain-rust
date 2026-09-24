@@ -182,7 +182,7 @@ pub fn traverse_history(
     start_path: &[(Blake2b256Hash, Option<u8>)],
     skip: i32,
     take: i32,
-    get_from_history: &dyn Fn(&Blake2b256Hash) -> Option<Vec<u8>>,
+    get_from_history: &dyn Fn(&Blake2b256Hash) -> Result<Option<Vec<u8>>, String>,
 ) -> Result<Vec<TrieNode<Blake2b256Hash>>, String> {
     let settings = ExportDataSettings {
         flag_node_prefixes: false,
@@ -239,6 +239,35 @@ pub fn validate_state_items(
     skip: i32,
     get_from_history: &dyn Fn(&Blake2b256Hash) -> Option<Vec<u8>>,
 ) -> Result<(), StateValidationError> {
+    // The total form is the trait's compatibility arm — `casper`'s importer calls it with a closure
+    // over `RSpaceImporter::get_history_item`, which cannot report a store error either — so it
+    // delegates to the checked form with a closure that never fails. The port's own validation path
+    // (`exporters.rs`) calls the checked form and gets the store's error instead of a verdict about
+    // the *chunk* (U11).
+    validate_state_items_checked(
+        history_items,
+        data_items,
+        start_path,
+        chunk_size,
+        skip,
+        &|h| Ok(get_from_history(h)),
+    )
+}
+
+/// [`validate_state_items`] with a reader that can report a failure.
+///
+/// The oracle's `validateStateItems` takes `getFromHistory: KeyHash => F[Option[ByteVector]]`
+/// (`RSpaceImporter.scala`), so "the target store could not be read" and "the node is absent" are
+/// different inputs — and without the distinction a store error makes the traversal come up short and
+/// the verdict names the peer's data: `"History items are corrupted."` (U11).
+pub fn validate_state_items_checked(
+    history_items: &[(Blake2b256Hash, Vec<u8>)],
+    data_items: &[(Blake2b256Hash, Vec<u8>)],
+    start_path: &[(Blake2b256Hash, Option<u8>)],
+    chunk_size: i32,
+    skip: i32,
+    get_from_history: &dyn Fn(&Blake2b256Hash) -> Result<Option<Vec<u8>>, String>,
+) -> Result<(), StateValidationError> {
     let received = history_items.len() as i32;
     let is_end = received < chunk_size;
     if !(received == chunk_size || is_end) {
@@ -261,9 +290,9 @@ pub fn validate_state_items(
         trie_map.insert(trie_hash, trie_bytes.clone());
     }
 
-    let get_node = |hash: &Blake2b256Hash| -> Option<Vec<u8>> {
+    let get_node = |hash: &Blake2b256Hash| -> Result<Option<Vec<u8>>, String> {
         match trie_map.get(hash) {
-            Some(bytes) => Some(bytes.clone()),
+            Some(bytes) => Ok(Some(bytes.clone())),
             None => get_from_history(hash),
         }
     };
@@ -313,6 +342,18 @@ pub fn validate_state_items(
 pub trait RSpaceExporter: TrieExporter<Blake2b256Hash> {
     /// The current root, if set (port of `getRoot`; `None` is the `NoRootError` case).
     fn get_root(&self) -> Option<Blake2b256Hash>;
+
+    /// [`RSpaceExporter::get_root`], with an unreadable roots store reported rather than flattened
+    /// into the `None` that means "no root".
+    ///
+    /// The oracle is `def getRoot: F[KeyHash]` (`RSpaceExporter.scala:15`), so `None` there is the
+    /// *absence* of a root and the failure travels in `F`; the port's total signature gave the two
+    /// the same answer, which `StateManager::is_empty` reads as "the state is empty" (U11). The
+    /// default delegates to the total form so implementations that cannot fail are unaffected;
+    /// [`crate::state::instances::RSpaceExporterStore`] overrides it with the real read.
+    fn try_get_root(&self) -> Result<Option<Blake2b256Hash>, String> {
+        Ok(self.get_root())
+    }
 }
 
 /// The rspace state manager (port of `RSpaceStateManager`).
@@ -380,7 +421,7 @@ mod tests {
     #[test]
     fn traverse_history_emits_leaf_and_last_node() {
         let (store, root_hash, leaf_hash) = single_leaf_store();
-        let get = |h: &Blake2b256Hash| store.get(h).cloned();
+        let get = |h: &Blake2b256Hash| Ok(store.get(h).cloned());
         let nodes = traverse_history(&[(root_hash, None)], 0, 10, &get).unwrap();
         assert_eq!(nodes.len(), 2);
         assert!(nodes[0].is_leaf);

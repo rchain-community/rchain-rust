@@ -30,7 +30,15 @@ pub struct ExportDataSettings {
 }
 
 /// The `getNodeDataFromStore` callback: reads the serialized bytes of a node, or `None` if absent.
-pub type NodeDataReader<'a> = &'a dyn Fn(&Blake2b256Hash) -> Option<Vec<u8>>;
+/// Reads one serialized node by hash.
+///
+/// `Result<Option<..>, String>` rather than a bare `Option`: `None` is the *absence* of a node (which
+/// this module treats as "not found" or, for the root, as "nothing to export"), and a store that
+/// cannot be read is a different fact — the oracle's counterpart is
+/// `getFromHistory: Blake2b256Hash => F[Option[ByteVector]]` (`RSpaceExporter.scala:28`). Flattening
+/// the two made a store error read as an empty export, or as a short traversal that the validation
+/// then called corruption (AUDIT C53's class in a consumer; U11).
+pub type NodeDataReader<'a> = &'a dyn Fn(&Blake2b256Hash) -> Result<Option<Vec<u8>>, String>;
 
 #[derive(Clone)]
 struct NodeData {
@@ -65,7 +73,7 @@ fn init_node_path(
     let mut path: Vec<NodeData> = Vec::new();
 
     loop {
-        let node_bytes = get_node_data(&hash)
+        let node_bytes = get_node_data(&hash)?
             .ok_or_else(|| format!("Export error: node with key {} not found.", hash.to_hex()))?;
         let node = decode(&SerializedNode::try_from(node_bytes.as_slice())?);
         if rest_prefix.is_empty() {
@@ -188,7 +196,7 @@ fn add_node_ptr(
     get_node_data: NodeDataReader,
     settings: &ExportDataSettings,
 ) -> Result<StepData, String> {
-    let child_bytes = get_node_data(&ptr)
+    let child_bytes = get_node_data(&ptr)?
         .ok_or_else(|| format!("Export error: Node with key {} not found", ptr.to_hex()))?;
     let child_decoded = decode(&SerializedNode::try_from(child_bytes.as_slice())?);
     let child_np = cur_node_prefix.append(item_index).concat(ptr_prefix);
@@ -337,7 +345,9 @@ pub fn sequential_export(
             "Export error: invalid initial conditions (skipSize, takeSize)==(0,0).".to_string(),
         );
     }
-    let root_node_ser = match get_node_data(&root_hash) {
+    // `None` is the *absence* of the root — an empty export, as before. An unreadable store is not
+    // that, and does not hide behind it.
+    let root_node_ser = match get_node_data(&root_hash)? {
         Some(bytes) => bytes,
         None => return Ok((ExportData::default(), None)),
     };
@@ -417,7 +427,9 @@ mod tests {
     fn export_empty_root() {
         let root_hash = empty_root_hash();
         let store: HashMap<Blake2b256Hash, Vec<u8>> = HashMap::from([(root_hash, Vec::new())]);
-        let get = |h: &Blake2b256Hash| store.get(h).cloned();
+        // A map read is total, so the reader answers `Ok(...)`: the `Result` carries a *store*
+        // failure, and there is none here.
+        let get = |h: &Blake2b256Hash| Ok(store.get(h).cloned());
 
         let (data, last_prefix) =
             sequential_export(root_hash, None, 0, 10, &get, &all_settings()).unwrap();
@@ -442,7 +454,7 @@ mod tests {
             None,
             0,
             10,
-            &|h| store.get(h).cloned(),
+            &|h| Ok(store.get(h).cloned()),
             &all_settings(),
         )
         .unwrap();

@@ -12,7 +12,9 @@ use rchain_crypto::hash::blake2b256_hash::Blake2b256Hash;
 use rchain_shared::state::TrieNode;
 use rchain_shared::store::KeyValueStore;
 
-use crate::state::{validate_state_items, EmptyHistoryException, RSpaceExporter, StoreItems};
+use crate::state::{
+    validate_state_items_checked, EmptyHistoryException, RSpaceExporter, StoreItems,
+};
 
 /// Export one chunk of history + data items and the resume path (port of
 /// `RSpaceExporterItems.getHistoryAndData`).
@@ -28,7 +30,9 @@ pub fn get_history_and_data<E: RSpaceExporter>(
     ),
     String,
 > {
-    let nodes = exporter.get_nodes(start_path, skip, take);
+    // The *checked* reads: a store that cannot be read is not "no nodes" — that flatten turned a
+    // store error into `EmptyHistoryException` here (U11).
+    let nodes = exporter.try_get_nodes(start_path, skip, take)?;
     let last = nodes
         .last()
         .cloned()
@@ -50,8 +54,8 @@ pub fn get_history_and_data<E: RSpaceExporter>(
         .into_iter()
         .collect();
 
-    let history_items = exporter.get_history_items(&history_keys, |b: &[u8]| b.to_vec());
-    let data_items = exporter.get_data_items(&data_keys, |b: &[u8]| b.to_vec());
+    let history_items = exporter.try_get_history_items(&history_keys, |b: &[u8]| b.to_vec())?;
+    let data_items = exporter.try_get_data_items(&data_keys, |b: &[u8]| b.to_vec())?;
 
     let mut last_path = last.path;
     last_path.push((last.hash, None));
@@ -85,14 +89,17 @@ pub fn write_to_disk<E: RSpaceExporter>(
         // Validate the chunk against the trie (re-reads the target history store).
         {
             let hs: &dyn KeyValueStore = &*history_store;
-            let get_from_history = |k: &Blake2b256Hash| -> Option<Vec<u8>> {
-                hs.get(&[k.to_byte_array().to_vec()])
-                    .unwrap_or_default()
+            // A read of the *target* store: its failure must not become `None`, which the validation
+            // would then report as `"History items are corrupted."` — a verdict about the peer's
+            // chunk for a store that is merely unreadable (U11).
+            let get_from_history = |k: &Blake2b256Hash| -> Result<Option<Vec<u8>>, String> {
+                Ok(hs
+                    .get(&[k.to_byte_array().to_vec()])?
                     .into_iter()
                     .next()
-                    .flatten()
+                    .flatten())
             };
-            validate_state_items(
+            validate_state_items_checked(
                 &history.items,
                 &data.items,
                 &start_path,
@@ -137,8 +144,10 @@ pub fn write_to_disk_dir<E: RSpaceExporter>(
 ) -> Result<(), String> {
     use rchain_shared::lmdb::LmdbStoreManager;
 
+    // The checked read: "no root" (an empty state) and "the roots store could not be read" were the
+    // same `None` (U11).
     let root = exporter
-        .get_root()
+        .try_get_root()?
         .ok_or_else(|| "exporter has no root to export".to_string())?;
     let history_manager = LmdbStoreManager::new(&dir.join("history"), 10 * 1024 * 1024 * 1024)?;
     let cold_manager = LmdbStoreManager::new(&dir.join("cold"), 10 * 1024 * 1024 * 1024)?;
@@ -157,6 +166,8 @@ pub fn write_to_disk_dir<E: RSpaceExporter>(
 mod tests {
     use super::*;
     use rchain_shared::state::TrieExporter;
+
+    use crate::state::instances::RSpaceExporterStore;
 
     fn leaf_hash() -> Blake2b256Hash {
         Blake2b256Hash::from_bytes([0x42; 32])
@@ -205,6 +216,57 @@ mod tests {
         fn get_root(&self) -> Option<Blake2b256Hash> {
             None
         }
+    }
+
+    /// A `KeyValueStore` whose every operation fails, so a store error is observable as one.
+    struct FailingStore;
+
+    impl KeyValueStore for FailingStore {
+        fn get(&self, _keys: &[Vec<u8>]) -> Result<Vec<Option<Vec<u8>>>, String> {
+            Err("the store is down".to_string())
+        }
+        fn put(&mut self, _pairs: Vec<(Vec<u8>, Vec<u8>)>) -> Result<(), String> {
+            Err("the store is down".to_string())
+        }
+        fn delete(&mut self, _keys: &[Vec<u8>]) -> Result<usize, String> {
+            Err("the store is down".to_string())
+        }
+        fn entries(&self) -> Result<Vec<(Vec<u8>, Vec<u8>)>, String> {
+            Err("the store is down".to_string())
+        }
+    }
+
+    /// **A store that cannot be read is not an empty history.**
+    ///
+    /// `get_history_and_data` reads its chunk through `TrieExporter::get_nodes`, whose store-backed
+    /// implementation flattened a store error into "no nodes" — so the caller's `nodes.last()`
+    /// answered `None` and the *verdict* named the wrong thing: `EmptyHistoryException`, i.e. "this
+    /// state has no history", for a state whose store is momentarily unreadable. The oracle's
+    /// exporter is `F`-shaped (`RSpaceExporter.scala:15,29`), so the port is flattening a channel
+    /// that exists (AUDIT C53's class in a consumer; U11).
+    ///
+    /// Falsifier in its pre-fix (witnessing) form: the misleading verdict is asserted as the defect,
+    /// and `exporters.rs`'s validation closure has the same shape one level down. The post-fix form
+    /// asserts that the store's own error comes back.
+    #[test]
+    fn a_store_error_is_not_an_empty_history() {
+        let exporter = RSpaceExporterStore::new(
+            Box::new(FailingStore),
+            Box::new(FailingStore),
+            Box::new(FailingStore),
+        );
+        // Pre-fix the verdict here was `EmptyHistoryException` — "this state has no history" — and
+        // the assertion below failed on that string, which is what made the flatten visible.
+        let err = get_history_and_data(&exporter, &[(root_hash(), None)], 0, 10)
+            .expect_err("a store that is down must not be reported as an empty history");
+        assert!(
+            err.contains("the store is down"),
+            "the error names the failure, not the state: {err}"
+        );
+        assert!(
+            !err.contains("EmptyHistoryException"),
+            "…and not the empty-history verdict: {err}"
+        );
     }
 
     #[test]
