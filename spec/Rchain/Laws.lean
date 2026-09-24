@@ -228,16 +228,18 @@ def laws : List Law := [
       `Rchain.cmpSend_lt_trans, `Rchain.cmpReceiveBind_lt_trans, `Rchain.cmpReceive_lt_trans,
       `Rchain.cmpMatchCase_lt_trans, `Rchain.cmpMatch_lt_trans, `Rchain.cmpBundle_lt_trans,
       `Rchain.cmpConnective_lt_trans, `Rchain.cmpListPar_lt_trans,
-      `Rchain.Comparator.lex_lt_trans, `Rchain.Comparator.lex_lt_trans_at, `Rchain.Comparator.cmpPairF],
+      `Rchain.Comparator.lex_lt_trans, `Rchain.Comparator.lex_lt_trans_at, `Rchain.Comparator.cmpPairF,
+      `Rchain.exprTag, `Rchain.cmpExpr_eq_iff, `Rchain.cmpExpr_tag_lt, `Rchain.cmpExpr_tag_gt,
+      `Rchain.cmpExpr_ground, `Rchain.cmpExpr_elist, `Rchain.cmpOptionVar_eq_iff],
     rust := ["models/src/sorter.rs"],
-    axioms := [`Rchain.cmpExpr_eq_iff, `Rchain.cmpExpr_swap, `Rchain.cmpExpr_lt_trans],
+    axioms := [`Rchain.cmpExpr_swap, `Rchain.cmpExpr_lt_trans],
     coq := ["spec/coq/Sort.v:cmpPar"],
     falsifiable := some "eight of the ten element `lt_trans` laws are theorems now \
       (`cmpNew`/`cmpSend`/`cmpReceiveBind`/`cmpReceive`/`cmpMatchCase`/`cmpMatch`/`cmpBundle`/\
       `cmpConnective`), each by the `Comparator.lex_lt_trans` idiom the file's own note validates, and \
       the list laws are proved from them, and `cmpPar_lt_trans` joined them on 2026-09-24 — so a \
-      counterexample to any of the three remaining axioms would also be a counterexample to those \
-      proofs. The survivors are named rather than hidden: `cmpExpr`'s three are blocked on the size of \
+      counterexample to either of the two remaining axioms would also be a counterexample to those \
+      proofs. The survivors are named rather than hidden: `cmpExpr`'s two are blocked on the size of \
       its equation lemmas, and the route is the 21 `rfl`-proved `@[simp]` arm lemmas",
     note := "**four axioms, from twelve** (2026-09-23). The list comparators' laws were discharged \
       earlier by induction on the list; the eight element laws above are now theorems, in dependency \
@@ -255,8 +257,18 @@ def laws : List Law := [
       own, because the family is one strongly connected component. What blocked the first attempt is \
       kept in that file's note with the fix: `Cmp.lean`'s pointwise `lex_lt_trans_at`, so each level's \
       `h_lt` is a partial application on *fields* — the only shape the block's termination checker \
-      accepts — plus the last-component and binder-collision details. What is left of this row is \
-      `cmpExpr`'s three" },
+      accepts — plus the last-component and binder-collision details. **What the fifth pass did \
+      (2026-09-24)**: `cmpExpr_eq_iff` is a **theorem**, and the finding is why it took two attempts — \
+      `cmpExpr` is compiled as `WellFounded.fix` (its block is one SCC), so *nothing* unfolds it: `rfl` \
+      does not reduce it on constructors, `cmpExpr.eq_def` times out at `whnf`, and a 441-goal \
+      `simp [cmpExpr]` overflows the stack. The access path is one **arm lemma at a time** \
+      (`simp only [cmpExpr.eq_def]` under a stated heartbeat budget) plus a new `exprTag` numbering the \
+      arm order for the cross cases — whose side conditions need `Nat.reduceLT` in the `simp only` set. \
+      And the law has to be written **one arm at a time too, calling each sub-law on the arm's own \
+      pattern variables**: a `decreasing_by` over the 441-goal `simp` version cannot work, because \
+      `simp` picks the call arguments and the termination checker is then asked for \
+      `sizeOf p < 1 + sizeOf a` with nothing identifying `p`. What is left of this row is `cmpExpr`'s \
+      two — `swap` and `lt_trans` — on the same machinery" },
   { number := 2, layer := "Rholang",
     statement := "α/name equivalence = par order + `| Nil` + top-level arithmetic + α + added \
       eval/quote",

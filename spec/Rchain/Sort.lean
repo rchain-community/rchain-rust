@@ -316,13 +316,306 @@ theorem cmpListGUnforgeable_eq_iff (l l' : List GUnforgeable) : cmpListGUnforgea
       | nil => simp [cmpListGUnforgeable]
       | cons b bs => simp [cmpListGUnforgeable, lex_eq_iff, cmpGUnforgeable_eq_iff, ih, List.cons.injEq]
 
-/-! `cmpExpr` is a 20-constructor well-founded function; `simp`/`rw` on it hit Lean's recursion
-    depth (the equation lemmas are too large), so its laws are axiomatized here. -/
-axiom cmpExpr_eq_iff (s t : Expr) : cmpExpr s t = Ordering.eq ↔ s = t
+/-! **`cmpExpr` is well-founded, so nothing unfolds it — and that is what the arm lemmas are for.** Its block
+is one strongly connected component spanning `Par`, `Expr`, the collections and the lists, so the compiler
+emits it as `WellFounded.fix`: no `rfl` reduces `cmpExpr (.ground g) (.ground g')`, `simp` cannot use
+`cmpExpr.eq_def` (realizing it *times out* at `whnf`), and a plain `cases s <;> cases t <;> simp [cmpExpr]`
+over 441 pairs overflows the stack. What works is asking the equation compiler for one **arm at a time**:
+each `cmpExpr_*` lemma below is one `simp only [cmpExpr.eq_def]` under a stated heartbeat budget. The cross
+cases are the arm *order*, which `exprTag` numbers — and the side condition needs `Nat.reduceLT` in the
+`simp only` set, or the tag lemmas never fire.
+
+With both families `@[simp]`, `cmpExpr`'s law is an ordinary case analysis — and it is written **one arm at
+a time, with the sub-law called on the arm's own pattern variables**, which is not cosmetic: a 441-goal
+`simp` makes the same calls with `simp` choosing the arguments, and the termination checker then sees a
+descent it cannot justify (`sizeOf p < 1 + sizeOf a✝` for a `p` no hypothesis identifies). An earlier
+attempt did exactly that and dead-ended. -/
+
+/-- The arm order `cmpExpr` matches in, as a number. Its arms decide the same-constructor cases and
+    the order below decides the rest: an `Expr` whose tag is smaller compares `lt`. -/
+def exprTag : Expr → Nat
+  | .ground _ => 0
+  | .elist _ _ => 1
+  | .etuple _ => 2
+  | .eset _ _ => 3
+  | .emap _ _ => 4
+  | .evar _ => 5
+  | .eneg _ => 6
+  | .emult _ _ => 7
+  | .ediv _ _ => 8
+  | .eplus _ _ => 9
+  | .eminus _ _ => 10
+  | .elt _ _ => 11
+  | .ele _ _ => 12
+  | .egt _ _ => 13
+  | .ege _ _ => 14
+  | .eeq _ _ => 15
+  | .eneq _ _ => 16
+  | .enot _ => 17
+  | .eand _ _ => 18
+  | .eor _ _ => 19
+  | .emod _ _ => 20
+set_option maxHeartbeats 8000000 in
+@[simp] theorem cmpExpr_ground (g g' : Ground) :
+    cmpExpr (.ground g) (.ground g') = cmpGround g g' := by
+  simp only [cmpExpr.eq_def]
+
+set_option maxHeartbeats 8000000 in
+@[simp] theorem cmpExpr_elist (ps ps' : List Par) (r r' : Option Var) :
+    cmpExpr (.elist ps r) (.elist ps' r') = lex (cmpListPar ps ps') (cmpOptionVar r r') := by
+  simp only [cmpExpr.eq_def]
+
+set_option maxHeartbeats 8000000 in
+@[simp] theorem cmpExpr_etuple (ps ps' : List Par) :
+    cmpExpr (.etuple ps) (.etuple ps') = cmpListPar ps ps' := by
+  simp only [cmpExpr.eq_def]
+
+set_option maxHeartbeats 8000000 in
+@[simp] theorem cmpExpr_eset (ps ps' : List Par) (r r' : Option Var) :
+    cmpExpr (.eset ps r) (.eset ps' r') = lex (cmpListPar ps ps') (cmpOptionVar r r') := by
+  simp only [cmpExpr.eq_def]
+
+set_option maxHeartbeats 8000000 in
+@[simp] theorem cmpExpr_emap (kvs kvs' : List (Par × Par)) (r r' : Option Var) :
+    cmpExpr (.emap kvs r) (.emap kvs' r') = lex (cmpListParPair kvs kvs') (cmpOptionVar r r') := by
+  simp only [cmpExpr.eq_def]
+
+set_option maxHeartbeats 8000000 in
+@[simp] theorem cmpExpr_evar (v v' : Var) :
+    cmpExpr (.evar v) (.evar v') = cmpVar v v' := by
+  simp only [cmpExpr.eq_def]
+
+set_option maxHeartbeats 8000000 in
+@[simp] theorem cmpExpr_eneg (p p' : Par) :
+    cmpExpr (.eneg p) (.eneg p') = cmpPar p p' := by
+  simp only [cmpExpr.eq_def]
+
+set_option maxHeartbeats 8000000 in
+@[simp] theorem cmpExpr_emult (p p' q q' : Par) :
+    cmpExpr (.emult p q) (.emult p' q') = lex (cmpPar p p') (cmpPar q q') := by
+  simp only [cmpExpr.eq_def]
+
+set_option maxHeartbeats 8000000 in
+@[simp] theorem cmpExpr_ediv (p p' q q' : Par) :
+    cmpExpr (.ediv p q) (.ediv p' q') = lex (cmpPar p p') (cmpPar q q') := by
+  simp only [cmpExpr.eq_def]
+
+set_option maxHeartbeats 8000000 in
+@[simp] theorem cmpExpr_eplus (p p' q q' : Par) :
+    cmpExpr (.eplus p q) (.eplus p' q') = lex (cmpPar p p') (cmpPar q q') := by
+  simp only [cmpExpr.eq_def]
+
+set_option maxHeartbeats 8000000 in
+@[simp] theorem cmpExpr_eminus (p p' q q' : Par) :
+    cmpExpr (.eminus p q) (.eminus p' q') = lex (cmpPar p p') (cmpPar q q') := by
+  simp only [cmpExpr.eq_def]
+
+set_option maxHeartbeats 8000000 in
+@[simp] theorem cmpExpr_elt (p p' q q' : Par) :
+    cmpExpr (.elt p q) (.elt p' q') = lex (cmpPar p p') (cmpPar q q') := by
+  simp only [cmpExpr.eq_def]
+
+set_option maxHeartbeats 8000000 in
+@[simp] theorem cmpExpr_ele (p p' q q' : Par) :
+    cmpExpr (.ele p q) (.ele p' q') = lex (cmpPar p p') (cmpPar q q') := by
+  simp only [cmpExpr.eq_def]
+
+set_option maxHeartbeats 8000000 in
+@[simp] theorem cmpExpr_egt (p p' q q' : Par) :
+    cmpExpr (.egt p q) (.egt p' q') = lex (cmpPar p p') (cmpPar q q') := by
+  simp only [cmpExpr.eq_def]
+
+set_option maxHeartbeats 8000000 in
+@[simp] theorem cmpExpr_ege (p p' q q' : Par) :
+    cmpExpr (.ege p q) (.ege p' q') = lex (cmpPar p p') (cmpPar q q') := by
+  simp only [cmpExpr.eq_def]
+
+set_option maxHeartbeats 8000000 in
+@[simp] theorem cmpExpr_eeq (p p' q q' : Par) :
+    cmpExpr (.eeq p q) (.eeq p' q') = lex (cmpPar p p') (cmpPar q q') := by
+  simp only [cmpExpr.eq_def]
+
+set_option maxHeartbeats 8000000 in
+@[simp] theorem cmpExpr_eneq (p p' q q' : Par) :
+    cmpExpr (.eneq p q) (.eneq p' q') = lex (cmpPar p p') (cmpPar q q') := by
+  simp only [cmpExpr.eq_def]
+
+set_option maxHeartbeats 8000000 in
+@[simp] theorem cmpExpr_enot (p p' : Par) :
+    cmpExpr (.enot p) (.enot p') = cmpPar p p' := by
+  simp only [cmpExpr.eq_def]
+
+set_option maxHeartbeats 8000000 in
+@[simp] theorem cmpExpr_eand (p p' q q' : Par) :
+    cmpExpr (.eand p q) (.eand p' q') = lex (cmpPar p p') (cmpPar q q') := by
+  simp only [cmpExpr.eq_def]
+
+set_option maxHeartbeats 8000000 in
+@[simp] theorem cmpExpr_eor (p p' q q' : Par) :
+    cmpExpr (.eor p q) (.eor p' q') = lex (cmpPar p p') (cmpPar q q') := by
+  simp only [cmpExpr.eq_def]
+
+set_option maxHeartbeats 8000000 in
+@[simp] theorem cmpExpr_emod (p p' q q' : Par) :
+    cmpExpr (.emod p q) (.emod p' q') = lex (cmpPar p p') (cmpPar q q') := by
+  simp only [cmpExpr.eq_def]
+
+set_option maxHeartbeats 20000000 in
+set_option maxRecDepth 10000 in
+/-- The cross cases, by tag: a smaller tag compares `lt`. -/
+@[simp] theorem cmpExpr_tag_lt {s t : Expr} (h : exprTag s < exprTag t) : cmpExpr s t = .lt := by
+  cases s <;> cases t <;> simp_all [exprTag, Nat.reduceLT] <;> simp only [cmpExpr.eq_def]
+
+set_option maxHeartbeats 20000000 in
+set_option maxRecDepth 10000 in
+/-- And the mirror. -/
+@[simp] theorem cmpExpr_tag_gt {s t : Expr} (h : exprTag t < exprTag s) : cmpExpr s t = .gt := by
+  cases s <;> cases t <;> simp_all [exprTag, Nat.reduceLT] <;> simp only [cmpExpr.eq_def]
+
+/-- The remainder's comparator reflects equality — needed by the collection arms. -/
+@[simp] theorem cmpOptionVar_eq_iff (r r' : Option Var) : cmpOptionVar r r' = Ordering.eq ↔ r = r' := by
+  cases r with
+  | none => cases r' <;> simp [cmpOptionVar]
+  | some a =>
+    cases r' with
+    | none => simp [cmpOptionVar]
+    | some b => rw [cmpOptionVar, cmpVar_eq_iff, Option.some.injEq]
+
 
 /-! The remaining 9 element + 11 list `eq_iff` laws, by one-argument mutual induction
     (the first argument always descends structurally; cf. `sortX_idempotent`). -/
 mutual
+  /-- Law 1's element law for `Expr`, inside the family because the family is one SCC: its `Par`-valued
+      arms need this block's `cmpPar_eq_iff`, and the block needs this one. -/
+  theorem cmpExpr_eq_iff : ∀ s : Expr, ∀ t : Expr, cmpExpr s t = Ordering.eq ↔ s = t
+    | (.ground g), t => by
+        cases t
+        case ground g' =>
+          rw [cmpExpr_ground, cmpGround_eq_iff g g', Expr.ground.injEq]
+        all_goals simp only [exprTag, Nat.reduceLT, cmpExpr_tag_lt, cmpExpr_tag_gt,
+          reduceCtorEq]
+    | (.elist ps r), t => by
+        cases t
+        case elist ps' r' =>
+          rw [cmpExpr_elist, lex_eq_iff, cmpListPar_eq_iff ps ps', cmpOptionVar_eq_iff r r', Expr.elist.injEq]
+        all_goals simp only [exprTag, Nat.reduceLT, cmpExpr_tag_lt, cmpExpr_tag_gt,
+          reduceCtorEq]
+    | (.etuple ps), t => by
+        cases t
+        case etuple ps' =>
+          rw [cmpExpr_etuple, cmpListPar_eq_iff ps ps', Expr.etuple.injEq]
+        all_goals simp only [exprTag, Nat.reduceLT, cmpExpr_tag_lt, cmpExpr_tag_gt,
+          reduceCtorEq]
+    | (.eset ps r), t => by
+        cases t
+        case eset ps' r' =>
+          rw [cmpExpr_eset, lex_eq_iff, cmpListPar_eq_iff ps ps', cmpOptionVar_eq_iff r r', Expr.eset.injEq]
+        all_goals simp only [exprTag, Nat.reduceLT, cmpExpr_tag_lt, cmpExpr_tag_gt,
+          reduceCtorEq]
+    | (.emap kvs r), t => by
+        cases t
+        case emap kvs' r' =>
+          rw [cmpExpr_emap, lex_eq_iff, cmpListParPair_eq_iff kvs kvs', cmpOptionVar_eq_iff r r', Expr.emap.injEq]
+        all_goals simp only [exprTag, Nat.reduceLT, cmpExpr_tag_lt, cmpExpr_tag_gt,
+          reduceCtorEq]
+    | (.evar v), t => by
+        cases t
+        case evar v' =>
+          rw [cmpExpr_evar, cmpVar_eq_iff v v', Expr.evar.injEq]
+        all_goals simp only [exprTag, Nat.reduceLT, cmpExpr_tag_lt, cmpExpr_tag_gt,
+          reduceCtorEq]
+    | (.eneg p), t => by
+        cases t
+        case eneg p' =>
+          rw [cmpExpr_eneg, cmpPar_eq_iff p p', Expr.eneg.injEq]
+        all_goals simp only [exprTag, Nat.reduceLT, cmpExpr_tag_lt, cmpExpr_tag_gt,
+          reduceCtorEq]
+    | (.enot p), t => by
+        cases t
+        case enot p' =>
+          rw [cmpExpr_enot, cmpPar_eq_iff p p', Expr.enot.injEq]
+        all_goals simp only [exprTag, Nat.reduceLT, cmpExpr_tag_lt, cmpExpr_tag_gt,
+          reduceCtorEq]
+    | (.emult p q), t => by
+        cases t
+        case emult p' q' =>
+          rw [cmpExpr_emult, lex_eq_iff, cmpPar_eq_iff p p', cmpPar_eq_iff q q', Expr.emult.injEq]
+        all_goals simp only [exprTag, Nat.reduceLT, cmpExpr_tag_lt, cmpExpr_tag_gt,
+          reduceCtorEq]
+    | (.ediv p q), t => by
+        cases t
+        case ediv p' q' =>
+          rw [cmpExpr_ediv, lex_eq_iff, cmpPar_eq_iff p p', cmpPar_eq_iff q q', Expr.ediv.injEq]
+        all_goals simp only [exprTag, Nat.reduceLT, cmpExpr_tag_lt, cmpExpr_tag_gt,
+          reduceCtorEq]
+    | (.eplus p q), t => by
+        cases t
+        case eplus p' q' =>
+          rw [cmpExpr_eplus, lex_eq_iff, cmpPar_eq_iff p p', cmpPar_eq_iff q q', Expr.eplus.injEq]
+        all_goals simp only [exprTag, Nat.reduceLT, cmpExpr_tag_lt, cmpExpr_tag_gt,
+          reduceCtorEq]
+    | (.eminus p q), t => by
+        cases t
+        case eminus p' q' =>
+          rw [cmpExpr_eminus, lex_eq_iff, cmpPar_eq_iff p p', cmpPar_eq_iff q q', Expr.eminus.injEq]
+        all_goals simp only [exprTag, Nat.reduceLT, cmpExpr_tag_lt, cmpExpr_tag_gt,
+          reduceCtorEq]
+    | (.elt p q), t => by
+        cases t
+        case elt p' q' =>
+          rw [cmpExpr_elt, lex_eq_iff, cmpPar_eq_iff p p', cmpPar_eq_iff q q', Expr.elt.injEq]
+        all_goals simp only [exprTag, Nat.reduceLT, cmpExpr_tag_lt, cmpExpr_tag_gt,
+          reduceCtorEq]
+    | (.ele p q), t => by
+        cases t
+        case ele p' q' =>
+          rw [cmpExpr_ele, lex_eq_iff, cmpPar_eq_iff p p', cmpPar_eq_iff q q', Expr.ele.injEq]
+        all_goals simp only [exprTag, Nat.reduceLT, cmpExpr_tag_lt, cmpExpr_tag_gt,
+          reduceCtorEq]
+    | (.egt p q), t => by
+        cases t
+        case egt p' q' =>
+          rw [cmpExpr_egt, lex_eq_iff, cmpPar_eq_iff p p', cmpPar_eq_iff q q', Expr.egt.injEq]
+        all_goals simp only [exprTag, Nat.reduceLT, cmpExpr_tag_lt, cmpExpr_tag_gt,
+          reduceCtorEq]
+    | (.ege p q), t => by
+        cases t
+        case ege p' q' =>
+          rw [cmpExpr_ege, lex_eq_iff, cmpPar_eq_iff p p', cmpPar_eq_iff q q', Expr.ege.injEq]
+        all_goals simp only [exprTag, Nat.reduceLT, cmpExpr_tag_lt, cmpExpr_tag_gt,
+          reduceCtorEq]
+    | (.eeq p q), t => by
+        cases t
+        case eeq p' q' =>
+          rw [cmpExpr_eeq, lex_eq_iff, cmpPar_eq_iff p p', cmpPar_eq_iff q q', Expr.eeq.injEq]
+        all_goals simp only [exprTag, Nat.reduceLT, cmpExpr_tag_lt, cmpExpr_tag_gt,
+          reduceCtorEq]
+    | (.eneq p q), t => by
+        cases t
+        case eneq p' q' =>
+          rw [cmpExpr_eneq, lex_eq_iff, cmpPar_eq_iff p p', cmpPar_eq_iff q q', Expr.eneq.injEq]
+        all_goals simp only [exprTag, Nat.reduceLT, cmpExpr_tag_lt, cmpExpr_tag_gt,
+          reduceCtorEq]
+    | (.eand p q), t => by
+        cases t
+        case eand p' q' =>
+          rw [cmpExpr_eand, lex_eq_iff, cmpPar_eq_iff p p', cmpPar_eq_iff q q', Expr.eand.injEq]
+        all_goals simp only [exprTag, Nat.reduceLT, cmpExpr_tag_lt, cmpExpr_tag_gt,
+          reduceCtorEq]
+    | (.eor p q), t => by
+        cases t
+        case eor p' q' =>
+          rw [cmpExpr_eor, lex_eq_iff, cmpPar_eq_iff p p', cmpPar_eq_iff q q', Expr.eor.injEq]
+        all_goals simp only [exprTag, Nat.reduceLT, cmpExpr_tag_lt, cmpExpr_tag_gt,
+          reduceCtorEq]
+    | (.emod p q), t => by
+        cases t
+        case emod p' q' =>
+          rw [cmpExpr_emod, lex_eq_iff, cmpPar_eq_iff p p', cmpPar_eq_iff q q', Expr.emod.injEq]
+        all_goals simp only [exprTag, Nat.reduceLT, cmpExpr_tag_lt, cmpExpr_tag_gt,
+          reduceCtorEq]
+  termination_by s => sizeOf s
+
   theorem cmpPar_eq_iff : ∀ p : Par, ∀ q : Par, cmpPar p q = Ordering.eq ↔ p = q
     | Par.mk s r n e m u b c, Par.mk s' r' n' e' m' u' b' c' => by
         have hs := cmpListSend_eq_iff s s'
@@ -899,9 +1192,12 @@ axiom cmpExpr_lt_trans (s t u : Expr) : cmpExpr s t = Ordering.lt → cmpExpr t 
 
 /-! ### The `lt_trans` laws
 
-`cmpExpr`'s element law is the one axiom left of law 1's residual: its three laws wait on the `cmpExpr`
-arm lemmas (`Json.lean:356-386`'s precedent — 21 `rfl`-proved `@[simp]` arms), because `cmpExpr`'s 21
-groups mean a 21×21×21 case analysis whose `simp` must not unfold the 21-arm match.
+`cmpExpr`'s element law was law 1's last axiom *blocker*, and the obstacle was never the `lt_trans`
+case analysis: it is that `cmpExpr` is compiled as `WellFounded.fix`, so nothing unfolds it. The fix is
+the arm-lemma machinery above (`exprTag`, 21 `@[simp]` arms, the two tag lemmas) — with it
+`cmpExpr_eq_iff` is a theorem, and the two laws left here (`swap`, `lt_trans`) are written the same way:
+one arm at a time, each sub-law called on the arm's own pattern variables. A 21×21×21 `simp` is *not* the
+route, and a `decreasing_by` over one is not either — see the note above for why.
 
 Everything else in the family is proved, and the `Par` half of it is **one `mutual` block** below,
 because the family is one strongly connected component. What stays *outside* the block, and why: the two
