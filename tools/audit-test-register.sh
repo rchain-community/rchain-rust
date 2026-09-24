@@ -458,6 +458,11 @@ while IFS=$'\034' read -r num clause layer status decls axioms corpus rust coq w
         # the model's names are snake_case and the oracle's camelCase: compare both spellings
         camel="$(printf '%s' "$id" | awk -F_ '{s=$1; for(i=2;i<=NF;i++) s=s toupper(substr($i,1,1)) substr($i,2); print s}')"
         [[ "$camel" != "$id" && "$window" == *"$camel"* ]] && { hit="$id"; break; }
+        # …and the other direction: a row that names the *model's* `checkMinMessages` is citing the
+        # port's `check_min_messages`, so the row's own spelling must be snake-ised too. Without this
+        # the rule reported a correct citation stale (found on law 14b's row, 2026-09-24).
+        snake="$(printf '%s' "$id" | awk '{s=""; for(i=1;i<=length($0);i++){c=substr($0,i,1); if (c ~ /[A-Z]/) s=s "_" tolower(c); else s=s c} print s}')"
+        [[ "$snake" != "$id" && "$window" == *"$snake"* ]] && { hit="$id"; break; }
       done <<< "$row_idents"
       if [[ -z "$hit" ]]; then
         fail "law ${num}${clause}: \`$cite_path:$from-$to\` holds no identifier the row names — $(sed -n "${from}p" "$file" | cut -c1-60)"

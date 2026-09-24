@@ -787,21 +787,38 @@ def laws : List Law := [
       recorded open *with its reason* rather than invented here" },
   { number := 14, clause := "b", layer := "Casper",
     statement := "A fringe holds one message per bonded validator (an antichain) — **of the fringe the \
-      finalizer derives**; over a bare `Fringe` the claim is false and its refutation is proved",
-    status := .owed,
-    declarations := [`Rchain.Fringe, `Rchain.fringe_antichain_is_false],
+      derivation publishes**; over a bare `Fringe` the claim is false and its refutation is proved. What \
+      the walk and the layer earn is pairwise-distinct **senders**; the step to one per *bonded* \
+      validator rests on `checkMinMessages`' count comparison, which is the upstream epoch TODO (law \
+      14a's row records it as fidelity)",
+    status := .provedModel,
+    declarations := [`Rchain.derivedFringe_antichain, `Rchain.Fringe, `Rchain.fringe_antichain_is_false,
+      `Rchain.Dag],
     axioms := [],
     rust := ["block-storage/src/dag/finalizer.rs"],
-    witness := [`Rchain.fringe_antichain_is_false],
-    falsifiable := some "the refutation is in the tree: `fringe_antichain_is_false` exhibits two messages \
-      from one sender with different ids in one `Fringe`, which is a value the model can build and the \
-      finalizer cannot produce",
+    witness := [`Rchain.derivedFringe_antichain, `Rchain.fringe_antichain_is_false,
+      `Rchain.a_derivation_is_an_antichain],
+    falsifiable := some "**both directions, and a mutation that makes the statement false rather than \
+      merely unproved.** `fringe_antichain_is_false` refutes the unrestricted form on a bare `Fringe` — a \
+      value the model can build and the derivation cannot publish — and `a_derivation_is_an_antichain` is \
+      a `decide`d instance where the derivation *does* publish a two-sender layer. The mutation is one \
+      word: `layerInsert`'s filter dropped (`m :: l.filter …` → `m :: l`), and then \
+      `a_derivation_is_an_antichain` and `a_derivation_publishes_a_layer` are **false of the model** \
+      (the layer's senders stop being `[0, 1]`) while `derivedFringe_antichain`'s proof breaks with them",
     note := "**the axiom that stood here was false**: it quantified over a *bare* `Fringe`, and a \
-      `Fringe` is freely constructed, so the refutation is three lines. What it is missing is not a \
-      hypothesis on the value but the **derivation** — the fringe the port publishes comes from \
-      `calculate_finalization`, which advances only on the support gate and only to a strictly new layer \
-      (`finalizer.rs:186-211`, `:214`) — and the model has no DAG from which to derive it. Owed: the derivation, \
-      at which point the statement becomes provable rather than falsified" },
+      `Fringe` is freely constructed, so the refutation is three lines. What it was missing was not a \
+      hypothesis on the value but the **derivation**, and that is modelled now \
+      (`Rchain/Casper/Dag.lean`, 2026-09-24): the walk (`self_parents`, `finalizer.rs:74-95`), the min \
+      messages (`finalizer.rs:186-211`), the count gate (`finalizer.rs:99`), the layer fold \
+      (`calculate_next_layer`, `finalizer.rs:109-127`) and the stake gate (law 14a's \
+      `calculate_fringe`, so its support map stays an argument as it is for `nextFringe`). **And the \
+      antichain is a property of the fold, not of the type it is stored in**: the port keeps the layer in \
+      a `BTreeMap<sender, Message>`, which gives distinct senders for free — modelling *that* would make \
+      this row true by construction, the shape G6 refused one unit earlier — so the model carries the \
+      derivation's own data and states the antichain about the fold. **What it does not claim**: \
+      pairwise-distinct *senders* is what the walk and the layer earn; the step to one per *bonded* \
+      validator rests on `checkMinMessages`' count comparison — the epoch TODO whose body law 14a's row \
+      records as fidelity rather than oversight — so the theorem is named for what it proves" },
   { number := 15, layer := "Casper",
     statement := "The fringe is monotone by height and the seen set is monotone (no regression) — the \
       **derived** fringe and the **constructed** seen set; over bare values both claims are false and \
