@@ -1,0 +1,66 @@
+parse	[1 ..._]	accept	derivable
+parse	[]	accept	derivable
+parse	[1]	accept	derivable
+parse	[1, 2]	accept	derivable
+parse	[...rest]	accept	derivable
+parse	Set(..._)	accept	derivable
+parse	{..._}	accept	derivable
+parse	{a : 1}	accept	derivable
+parse	(1,)	accept	derivable
+parse	(1, 2)	accept	derivable
+parse	c!(1)	accept	derivable
+parse	c!!(1)	accept	derivable
+parse	new x in Nil	accept	derivable
+parse	for(x <- c) {Nil}	accept	derivable
+parse	x | y	accept	derivable
+parse	[1, 2, 3]	accept	derivable
+parse	contract f(x ...@rest) = {Nil}	reject	derivable
+parse	[1 2]	reject	refused
+parse	(1 2)	reject	refused
+parse	[1, 2 3]	reject	refused
+parse	{a : 1 b : 2}	reject	refused
+parse	Set(1 2)	reject	refused
+parse	(1, 2 3)	reject	refused
+parse	a.b(1 2)	reject	refused
+parse	c!(1 2)	reject	refused
+parse	x |	reject	refused
+parse	a.b	reject	refused
+parse	new x in	reject	refused
+parse	[1,]	accept	deviation
+parse	Set(1,)	accept	deviation
+parse	{a : 1,}	accept	deviation
+parse	c!(1,)	accept	deviation
+parse	contract c(@x,) = {Nil}	accept	deviation
+parse	new x, in Nil	accept	deviation
+parse	(1, 2,)	accept	deviation
+parse	a.b(1,)	accept	deviation
+parse	for(x <- @"c";) {Nil}	accept	deviation
+parse	[a, ...rest]	accept	deviation
+parse	{name : *voter, ...tail}	accept	deviation
+parse	Set(a, ...rest)	accept	deviation
+parse	contract f(x ...@rest) = {Nil}	reject	deviation
+parse	for(x <- c ?!) {Nil}	reject	deviation
+parse	[1]	accept	printer
+parse	Set(1)	accept	printer
+parse	{1 : 2}	accept	printer
+parse	(1, 2)	accept	printer
+parse	x /\ y	accept	printer
+parse	x \/ y	accept	printer
+parse	x.get(1)	accept	printer
+parse	c!!(1)	accept	printer
+parse	c!(1)	accept	printer
+parse	contract f(x) = {Nil}	accept	printer
+parse	contract f(x ...@rest) = {Nil}	reject	printer
+parse	for(x <- c) {Nil}	accept	printer
+parse	for(x <= c) {Nil}	accept	printer
+parse	for(x <<- c) {Nil}	accept	printer
+parse	for(x <- c ?!) {Nil}	reject	printer
+parse	for(x <- c!?(1)) {Nil}	accept	printer
+parse	new x in Nil	accept	printer
+parse	new x(`rho:id:y`) in Nil	accept	printer
+parse	x | y	accept	printer
+parse	[...rest]	accept	printer
+parse	Set(...rest)	accept	printer
+parse	{...rest}	accept	printer
+parse	[]	accept	printer
+parse	[1]	accept	printer

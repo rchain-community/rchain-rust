@@ -8,6 +8,7 @@ import Rchain.Protocol
 import Rchain.Json
 import Rchain.Envelope
 import Rchain.Lex
+import Rchain.Parse
 
 /-!
 # The conformance corpus, generated from the specification
@@ -770,6 +771,25 @@ reports; nothing about the meaning is the consumer's to decide. -/
 def lexLine (l : Lexeme) : String :=
   "lex\t" ++ l.spelling ++ "\t" ++ l.token ++ "\t" ++ l.expected ++ "\t" ++ l.sample
 
+/-! ## Laws 30 and 31 — the parse layer
+
+The tables are the law (`Rchain/Parse.lean`: `grammarFragment`, `derives`, `parseDeviations`, and
+`parseCases` with `parseCases_decide` checking every verdict); this layer renders them. Each row is a
+source and what the node must do with it — `accept` or `reject` — so the Rust consumer
+(`rholang/tests/lean_parse_corpus.rs`) runs the node's parser on that source and reports; nothing
+about the verdict is the consumer's to decide.
+
+The source is **rendered from the case's tokens** (`renderTokens`), not written beside them, so a row
+cannot carry a spelling its verdict was not decided from — the drift is impossible by construction
+rather than checked. -/
+
+/-- One parse corpus line: layer, the source the tokens spell, the verdict the node must give, and
+which half of the layer the row belongs to (`derivable` / `refused` / `deviation` / `printer`) — the
+consumer pins a count for each half, so a list that silently shrank is caught where it shrank. -/
+def parseLine (c : ParseCase) : String :=
+  "parse\t" ++ renderTokens c.tokens ++ "\t" ++ (if c.expect then "accept" else "reject")
+    ++ "\t" ++ c.kind.tag
+
 /-! ## Law 1 — the canonical order, pairwise (the `sort` layer)
 
 Every state hash in the system is `sortPar`'s output, and until this layer existed **nothing tied that
@@ -967,7 +987,7 @@ def main (args : List String) : IO UInt32 := do
   let want :=
     (args.find? (fun a => a == "flags" || a == "match" || a == "silence" || a == "store"
       || a == "c21" || a == "protocol" || a == "json" || a == "envelope"
-      || a == "lex" || a == "sort")).getD "flags"
+      || a == "lex" || a == "sort" || a == "parse")).getD "flags"
   let (lines, count) :=
     if want == "c21" then (Corpus.c21Cases.map Corpus.c21Line, Corpus.c21CaseCount)
     else if want == "match" then (Corpus.matchCases.map Corpus.matchLine, Corpus.matchCaseCount)
@@ -985,6 +1005,8 @@ def main (args : List String) : IO UInt32 := do
       (Corpus.sortCases.map Corpus.sortLine, Corpus.sortCaseCount)
     else if want == "lex" then
       (lexemes.map Corpus.lexLine, lexemeCount)
+    else if want == "parse" then
+      (parseCases.map Corpus.parseLine, parseCaseCount)
     else (Corpus.flagCases.map Corpus.flagLine, Corpus.flagCaseCount)
   if lines.length != count then
     IO.eprintln s!"rchain-corpus: {want}: the case list and the declared count disagree"

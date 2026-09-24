@@ -15,7 +15,7 @@ SPEC="$ROOT/spec"
 OUT="$SPEC/conformance"
 
 # One entry per corpus layer: `<layer>` maps to `lake exe rchain-corpus --layer <layer>`.
-LAYERS=(flags match silence store c21 protocol json envelope lex sort)
+LAYERS=(flags match silence store c21 protocol json envelope lex sort parse)
 
 mkdir -p "$OUT"
 for layer in "${LAYERS[@]}"; do

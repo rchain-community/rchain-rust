@@ -1,5 +1,7 @@
 import Rchain.Syntax
 import Rchain.Surface
+import Rchain.Print
+import Rchain.Parse
 import Rchain.Par
 import Rchain.Cmp
 import Rchain.Rho
