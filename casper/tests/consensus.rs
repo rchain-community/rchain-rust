@@ -227,7 +227,7 @@ async fn bond_deploy_updates_the_active_validator_set() {
         .expect("compute_genesis");
 
     let term = r#"new pos(`rho:rchain:pos`), deployerId(`rho:rchain:deployerId`), ret in {
-  pos!("bond", *deployerId, 30, *ret) |
+  pos!("bond", [*deployerId, 30, *ret]) |
   for (_ <- ret) { Nil }
 }"#;
     // The block's closing system deploy, which `block_creator` appends to every block. It is what
