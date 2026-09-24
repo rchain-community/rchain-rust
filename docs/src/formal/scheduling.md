@@ -397,7 +397,7 @@ that distinct channels no longer contend on one store-wide mutex — the claim q
 
 ## On-chain scheduling: validated speculation (Laws 23–25)
 
-[The channel scheduler](channel-scheduling.md) (Laws 20–22) ships the sound schedulers — the
+The channel scheduler (above, Laws 20–22) ships the sound schedulers — the
 per-channel claim queue and the DFS gate — and the *relaxed* mode, whose free cross-channel
 interleaving may diverge from the sequential reducer's final state and event log. That is why the
 casper block paths hard-reject `Relaxed`: a relaxed trace must never reach a block's event log.
