@@ -45,8 +45,9 @@ pub fn profiles() -> Vec<Profile> {
 pub struct Configuration;
 
 impl Configuration {
-    /// Build a `NodeConf` from CLI options (port of `Configuration.build`). The kamon config
-    /// (the 4th return value in Scala) is deferred.
+    /// Build a `NodeConf` from CLI options (port of `Configuration.build`). The kamon config (the
+    /// 4th return value in Scala) is not carried: the reporter switches are checked here instead —
+    /// refused or noted, never left as settings nothing reads (`check_metrics_config`, AUDIT C315).
     pub fn build(options: &Options) -> Result<(NodeConf, Profile, Option<PathBuf>), String> {
         let profile = match &options.profile {
             Some(name) => profiles()
@@ -105,6 +106,14 @@ impl Configuration {
             }
         }
 
+        // AUDIT C315: the Kamon reporter switches. Checked here, where the operator-facing
+        // configuration errors already live (`check_shard_config_exclusivity`, the shard quorum
+        // check), so a `run` asking for a reporter this port does not have fails at startup instead
+        // of running with a setting that reports nothing.
+        if let Some(note) = check_metrics_config(&node_conf.metrics)? {
+            println!("{note}");
+        }
+
         Ok((check_dev_mode(node_conf), profile, config_file))
     }
 }
@@ -132,6 +141,53 @@ fn resolve_validator_private_key(node_conf: &mut NodeConf) -> Result<(), String>
     let key = rchain_crypto::util::key_util::load_validator_private_key(&path)?;
     node_conf.casper.validator_private_key = Some(rchain_shared::base16::encode(key.bytes()));
     Ok(())
+}
+
+/// What this port does about the Kamon reporter switches (`metrics.*`, AUDIT C315).
+///
+/// The oracle's `kamon.conf` gates a Prometheus scrape endpoint (`prometheus { enabled = false }`)
+/// and configures InfluxDB, Zipkin and Sigar reporters that *push*. This port carries no Kamon: it
+/// always serves Prometheus text at `GET /metrics`, and has no InfluxDB or UDP sender, no Zipkin
+/// span reporter and no Sigar collector — so a switch for one of those can only mislead the operator
+/// who sets it, whether the node then says nothing or starts with a knob nothing reads.
+///
+/// - The four reporters with no counterpart are **refused**: an error naming each one that was set,
+///   at startup, before anything runs.
+/// - `prometheus` is accepted and **noted**: the endpoint it asks for does exist here — always on,
+///   not gated by the switch — which is what the note says. A `false` value cannot be told apart from
+///   the default once the layers are merged, so that direction is documented rather than reported
+///   (the flag's help text and `defaults.conf` both say the endpoint is not gated).
+///
+/// `Ok(None)` means the operator asked for nothing and there is nothing to say.
+fn check_metrics_config(metrics: &super::model::Metrics) -> Result<Option<String>, String> {
+    let mut absent: Vec<&str> = Vec::new();
+    if metrics.influxdb {
+        absent.push("influxdb");
+    }
+    if metrics.influxdb_udp {
+        absent.push("influxdb-udp");
+    }
+    if metrics.zipkin {
+        absent.push("zipkin");
+    }
+    if metrics.sigar {
+        absent.push("sigar");
+    }
+    if !absent.is_empty() {
+        return Err(format!(
+            "unimplemented metrics reporter(s) enabled: {}. This port has no InfluxDB sender, no \
+             InfluxDB UDP sender, no Zipkin span reporter and no Sigar collector, so these settings \
+             would report nothing — refused rather than accepted and ignored. `GET /metrics` serves \
+             Prometheus text and is always on; unset the setting to start.",
+            absent.join(", ")
+        ));
+    }
+    Ok(metrics.prometheus.then(|| {
+        "metrics.prometheus is set: `GET /metrics` serves Prometheus text in this port and is always \
+         on, so the setting is already satisfied — it does not gate the endpoint (a `false` value \
+         does not disable it either)."
+            .to_string()
+    }))
 }
 
 /// If not in dev mode, strip the deployer private key (port of `Configuration.checkDevMode`).
@@ -363,6 +419,90 @@ mod tests {
             },
             default_data_dir: "/var/lib/rnode".to_string(),
         }
+    }
+
+    /// Build a node config the way `main.rs` does — a real `Options` parse, then
+    /// `Configuration::build` — from a `run` invocation. The data dir is private to `case` so no
+    /// stray `/var/lib/rnode/rnode.conf` can reach a test; `config_file`, when given, is written to
+    /// `<data-dir>/rnode.conf`, which is where `build` looks by default.
+    fn build_run(case: &str, flags: &[&str], config_file: Option<&str>) -> Result<NodeConf, String> {
+        use clap::Parser as _;
+        let dir = std::env::temp_dir().join(format!("rchain_metrics_{}_{case}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("a writable temp data dir");
+        if let Some(body) = config_file {
+            std::fs::write(dir.join("rnode.conf"), body).expect("write the test config file");
+        }
+        let mut args: Vec<String> = vec![
+            "rchain".to_string(),
+            "run".to_string(),
+            "--data-dir".to_string(),
+            dir.to_string_lossy().into_owned(),
+        ];
+        args.extend(flags.iter().map(|f| (*f).to_string()));
+        let options = Options::parse_from(args);
+        Configuration::build(&options).map(|(conf, _, _)| conf)
+    }
+
+    /// A `run` that asks for no reporter builds exactly as before: the refusal is the *only* new
+    /// gate, and it cannot fire for an operator who asked for nothing.
+    #[test]
+    fn a_config_without_the_metrics_switches_still_builds() {
+        let conf = build_run("no_flags", &[], None).expect("a plain run must still build");
+        assert_eq!(
+            conf.metrics,
+            Metrics {
+                prometheus: false,
+                influxdb: false,
+                influxdb_udp: false,
+                zipkin: false,
+                sigar: false,
+            }
+        );
+    }
+
+    /// AUDIT C315: the four reporter switches have no counterpart in this port, so asking for one is
+    /// an error at startup naming it — rather than a setting that is accepted and reports nothing.
+    #[test]
+    fn metrics_reporters_absent_from_this_port_are_refused() {
+        for (flag, name) in [
+            ("--influxdb", "influxdb"),
+            ("--influxdb-udp", "influxdb-udp"),
+            ("--zipkin", "zipkin"),
+            ("--sigar", "sigar"),
+        ] {
+            let err = build_run(name, &[flag], None)
+                .expect_err("a reporter with no implementation must be refused");
+            assert!(err.contains("unimplemented"), "{flag}: {err}");
+            assert!(err.contains(name), "{flag} must be named in the error: {err}");
+            assert!(
+                err.contains("/metrics"),
+                "{flag}: the error must say what the port does serve: {err}"
+            );
+        }
+    }
+
+    /// The same refusal reaches an operator who never touched the CLI: a Scala-shaped config file
+    /// that enables a reporter is refused too, because the check reads the merged config.
+    #[test]
+    fn a_config_file_enabling_an_absent_reporter_is_refused_too() {
+        let err = build_run("config_file", &[], Some("metrics {\n  influxdb = true\n}\n"))
+            .expect_err("a config file enabling an absent reporter must be refused");
+        assert!(err.contains("influxdb"), "{err}");
+    }
+
+    /// `--prometheus` is accepted: the endpoint it asks for *does* exist here (always on rather than
+    /// gated), so the honest answer is a note, not a refusal — and refusing it would break every
+    /// Scala-shaped config that sets it for a feature the port already provides.
+    #[test]
+    fn prometheus_is_accepted_with_a_note_that_the_endpoint_is_always_on() {
+        let conf = build_run("prometheus", &["--prometheus"], None).expect("prometheus is accepted");
+        assert!(conf.metrics.prometheus, "the setting is still parsed");
+        let note = check_metrics_config(&conf.metrics)
+            .expect("accepted")
+            .expect("a note, not silence");
+        assert!(note.contains("/metrics"), "{note}");
+        assert!(note.contains("always on"), "{note}");
     }
 
     #[test]

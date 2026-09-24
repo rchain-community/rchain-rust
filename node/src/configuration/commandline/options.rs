@@ -504,23 +504,24 @@ pub struct Run {
     #[arg(long = "system-contract-pub-key")]
     pub system_contract_pub_key: Option<String>,
 
-    /// Enable the Prometheus metrics reporter.
+    /// Accepted for config compatibility: this port always serves Prometheus text at `GET /metrics`,
+    /// so the setting is already satisfied and does not gate the endpoint.
     #[arg(long = "prometheus")]
     pub prometheus: bool,
 
-    /// Enable the InfluxDB metrics reporter.
+    /// Refused at startup: this port has no InfluxDB metrics reporter to enable.
     #[arg(long = "influxdb")]
     pub influxdb: bool,
 
-    /// Enable the InfluxDB UDP metrics reporter.
+    /// Refused at startup: this port has no InfluxDB UDP metrics reporter to enable.
     #[arg(long = "influxdb-udp")]
     pub influxdb_udp: bool,
 
-    /// Enable the Zipkin span reporter.
+    /// Refused at startup: this port has no Zipkin span reporter to enable.
     #[arg(long = "zipkin")]
     pub zipkin: bool,
 
-    /// Enable Sigar host system metrics.
+    /// Refused at startup: this port has no Sigar host-metrics collector to enable.
     #[arg(long = "sigar")]
     pub sigar: bool,
 
