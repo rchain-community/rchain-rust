@@ -108,7 +108,13 @@ fn candidates() -> Vec<Case> {
         },
         // skipping, at its smallest: everything default, so only the present-but-empty `state` is
         // written — the row that decides whether a present sub-message is skipped.
-        Case { block_number: 0, sender: vec![], seq_num: 0, justifications: vec![], timestamp: 0 },
+        Case {
+            block_number: 0,
+            sender: vec![],
+            seq_num: 0,
+            justifications: vec![],
+            timestamp: 0,
+        },
         // a genesis block with a sender: `timestamp = 0` is C57's smallest instance of the difference,
         // alongside `blockNumber`/`seqNum`.
         Case {
@@ -169,8 +175,8 @@ fn unhex(s: &str) -> Vec<u8> {
 }
 
 fn rows() -> Vec<Row> {
-    let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../spec/conformance/body.tsv");
+    let path =
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../spec/conformance/body.tsv");
     let text = std::fs::read_to_string(&path).expect("spec/conformance/body.tsv");
     text.lines()
         .filter(|l| !l.trim().is_empty())
@@ -236,7 +242,8 @@ fn the_node_encoder_reproduces_the_corpus_bytes() {
         "no row encodes to (nearly) nothing, so the default-skipping rule is not exercised"
     );
     assert!(
-        rows.iter().any(|r| r.sender.len() >= 2 && r.justifications.len() >= 2),
+        rows.iter()
+            .any(|r| r.sender.len() >= 2 && r.justifications.len() >= 2),
         "no row has several non-default fields, so the field-order rule is not exercised"
     );
 }
