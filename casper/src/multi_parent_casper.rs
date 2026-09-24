@@ -145,19 +145,41 @@ where
     let prev_fringe_state = fringe_record.state_hash;
     let prev_fringe_rejected_deploys = fringe_record.rejected_deploys.clone();
 
-    // Bonds map: from the latest justification for an empty fringe, else from the PoS contract.
+    // Bonds map: from the newest justification's *state* while nothing has finalised, else from the PoS
+    // contract at the fringe.
     let bonds_map = if prev_fringe.is_empty() {
-        // When the fringe is empty (genesis), the bonds map is taken from the justifications.
-        // They must all agree — a forged or disagreeing bonds map would otherwise be silently
-        // picked from an arbitrary justification (M-1).
-        let mut iter = justifications.iter().map(|j| j.bonds_map.clone());
-        let first = iter.next().unwrap_or_default();
-        for other in iter {
-            if other != first {
-                return Err("justifications disagree on the bonds map".to_string());
+        // There is no fringe state to ask, so take the newest justification's state — not the bond map
+        // carried inside the blocks. Those are each claimant's own view, and they *necessarily* disagree
+        // the moment the bond set changes, because the justifications are the validators' latest messages
+        // and they straddle the change. Requiring them to agree therefore wedged a chain permanently on
+        // the first bond or withdrawal before its first finalisation, with no way back (#73). A block's
+        // state follows from the DAG alone, so honest nodes agree on it by construction.
+        //
+        // The genesis never reaches this branch: it has no parents, and an empty parent set is refused
+        // above (its pre-state comes from config).
+        let newest = newest_justification(&justifications)
+            .ok_or_else(|| "no justifications to read the bonds map from".to_string())?;
+        let newest_block = get_block_unsafe(block_store, &newest.block_hash).await?;
+        let state_hash = StateHash::from_slice(newest_block.post_state_hash.as_bytes());
+        match runtime.compute_bonds(&state_hash).await {
+            Ok(bonds) => bonds,
+            // The newest parent's state is not readable (pruned history). Fall back to the maps the
+            // justifications carry, and to the rule that they must agree: that is what this branch did
+            // unconditionally before, so a chain in this state behaves exactly as it used to.
+            Err(err) => {
+                let mut iter = justifications.iter().map(|j| j.bonds_map.clone());
+                let first = iter.next().unwrap_or_default();
+                for other in iter {
+                    if other != first {
+                        return Err(format!(
+                            "justifications disagree on the bonds map, and the newest justification's \
+                             state is unavailable: {err}"
+                        ));
+                    }
+                }
+                first
             }
         }
-        first
     } else {
         let state_hash = StateHash::from_slice(prev_fringe_state.as_bytes());
         runtime.compute_bonds(&state_hash).await?
@@ -455,5 +477,78 @@ mod tests {
             matches!(internal, ValidateError::Internal(message) if message.contains("store")),
             "an internal error carries its cause and no block outcome"
         );
+    }
+}
+
+/// The justification whose state answers for the bond map while nothing has finalised: the newest, by
+/// height and then by hash so every node picks the same one. See the call site for why the bond maps the
+/// blocks carry cannot be used instead ([#73]).
+///
+/// [#73]: https://github.com/rchain-community/rchain-rust/issues/73
+fn newest_justification(justifications: &[BlockMetadata]) -> Option<&BlockMetadata> {
+    justifications.iter().max_by(|a, b| {
+        a.block_num
+            .cmp(&b.block_num)
+            .then_with(|| a.block_hash.cmp(&b.block_hash))
+    })
+}
+
+#[cfg(test)]
+mod newest_justification_tests {
+    use super::newest_justification;
+    use rchain_models::block_hash::BlockHash;
+    use rchain_models::block_metadata::BlockMetadata;
+    use rchain_shared::refined::BlockHeight;
+    use std::collections::{BTreeMap, BTreeSet};
+
+    fn meta(byte: u8, block_num: i64) -> BlockMetadata {
+        BlockMetadata {
+            block_hash: BlockHash::new([byte; 32]),
+            block_num: BlockHeight::try_from(block_num).unwrap(),
+            sender: rchain_models::validator::Validator::new([0u8; 65]),
+            seq_num: 0.try_into().unwrap(),
+            justifications: BTreeSet::new(),
+            bonds_map: BTreeMap::new(),
+            validated: true,
+            validation_failed: false,
+            fringe: BTreeSet::new(),
+            fringe_state_hash: rchain_models::block::state_hash::StateHash::new([0u8; 32]),
+            member_of_fringe: None,
+        }
+    }
+
+    #[test]
+    fn the_tallest_justification_answers_for_the_bonds() {
+        let js = [meta(1, 5), meta(2, 9), meta(3, 7)];
+        let picked = newest_justification(&js).expect("one of them");
+        assert_eq!(i64::from(picked.block_num), 9);
+    }
+
+    /// Equal heights must not depend on the order of the slice: two nodes holding the same DAG have to
+    /// read the same bond map, or one of them refuses a block the other accepted.
+    #[test]
+    fn equal_heights_break_by_hash_so_every_node_agrees() {
+        let forwards = [meta(1, 9), meta(2, 9)];
+        let backwards = [meta(2, 9), meta(1, 9)];
+        let expected = meta(2, 9);
+        assert_eq!(
+            newest_justification(&forwards)
+                .expect("one of them")
+                .block_hash,
+            newest_justification(&backwards)
+                .expect("one of them")
+                .block_hash
+        );
+        assert_eq!(
+            newest_justification(&forwards)
+                .expect("one of them")
+                .block_hash,
+            expected.block_hash
+        );
+    }
+
+    #[test]
+    fn no_justifications_answers_for_nothing() {
+        assert!(newest_justification(&[]).is_none());
     }
 }

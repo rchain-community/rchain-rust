@@ -1395,6 +1395,18 @@ impl SystemProcesses {
                     .ok_or_else(|| illegal_arg("pos method must be a string"))?;
                 let rest = RhoList::unapply(rest_par)
                     .ok_or_else(|| illegal_arg("pos arguments must be a list"))?;
+                eprintln!("[pos] called: {} with {} argument(s)", op, rest.len());
+                // A Rholang *list literal* reaches us wrapped — one element that is the list — while a
+                // list built as a program value (the tests, `RhoList::apply`) arrives unwrapped. Accept
+                // both: no `pos` method takes a list as its only argument, so unwrapping a
+                // single-element list is unambiguous. Getting this wrong is invisible — the send simply
+                // does not match and the deploy still looks successful.
+                let rest: &[Par] = match rest {
+                    [only] if RhoList::unapply(only).is_some() => {
+                        RhoList::unapply(only).unwrap_or(rest)
+                    }
+                    _ => rest,
+                };
                 // The current block number drives the bond/withdraw quarantine bookkeeping.
                 let block_number = {
                     let bd = block_data.lock().unwrap_or_else(|p| p.into_inner());
@@ -1406,6 +1418,7 @@ impl SystemProcesses {
                             return Err(illegal_arg("getBonds expects a return channel"));
                         };
                         let bonds = native.bonds().await.map_err(|e| illegal_arg(&e))?;
+                        eprintln!("[pos] getBonds -> {} entries", bonds.len());
                         let kvs: Vec<(Par, Par)> = bonds
                             .iter()
                             .map(|(v, stake)| {
@@ -1427,7 +1440,23 @@ impl SystemProcesses {
                             .active_validators()
                             .await
                             .map_err(|e| illegal_arg(&e))?;
+                        eprintln!("[pos] getActiveValidators -> {} entries", validators.len());
                         let ps: Vec<Par> = validators
+                            .iter()
+                            .map(|v| RhoByteArray::apply(v.as_bytes().to_vec()))
+                            .collect();
+                        cc.produce(&rand, &[RhoSet::apply(ps)], ret, path).await
+                    }
+                    // The admission diagnostic: what the *state* says about trust. Without it, a `trust`
+                    // that reported success and did not stick is indistinguishable from one that never
+                    // ran, because a returned error value is still a successful deploy (#74).
+                    "getTrusted" => {
+                        let [ret] = rest else {
+                            return Err(illegal_arg("getTrusted expects a return channel"));
+                        };
+                        let trusted = native.trusted().await.map_err(|e| illegal_arg(&e))?;
+                        eprintln!("[pos] getTrusted -> {} entries", trusted.len());
+                        let ps: Vec<Par> = trusted
                             .iter()
                             .map(|v| RhoByteArray::apply(v.as_bytes().to_vec()))
                             .collect();
@@ -1435,6 +1464,7 @@ impl SystemProcesses {
                     }
                     "bond" => {
                         let [deployer_id, amount, ret] = rest else {
+                            eprintln!("[pos] bad argument shape: bond");
                             return Err(illegal_arg(
                                 "bond expects deployerId, amount and return channel",
                             ));
@@ -1456,17 +1486,22 @@ impl SystemProcesses {
                             .map_err(|e| illegal_arg(&e))?
                         {
                             Ok(()) => {
+                                eprintln!("[pos] ok");
                                 RhoTupleN::apply(vec![RhoBoolean::apply(true), RhoNil::apply()])
                             }
-                            Err(msg) => RhoTupleN::apply(vec![
-                                RhoBoolean::apply(false),
-                                RhoString::apply(msg),
-                            ]),
+                            Err(msg) => {
+                                eprintln!("[pos] refused: {msg}");
+                                RhoTupleN::apply(vec![
+                                    RhoBoolean::apply(false),
+                                    RhoString::apply(msg),
+                                ])
+                            }
                         };
                         cc.produce(&rand, &[out], ret, path).await
                     }
                     "withdraw" => {
                         let [deployer_id, ret] = rest else {
+                            eprintln!("[pos] bad argument shape: withdraw");
                             return Err(illegal_arg(
                                 "withdraw expects deployerId and return channel",
                             ));
@@ -1482,17 +1517,22 @@ impl SystemProcesses {
                             .map_err(|e| illegal_arg(&e))?
                         {
                             Ok(()) => {
+                                eprintln!("[pos] ok");
                                 RhoTupleN::apply(vec![RhoBoolean::apply(true), RhoNil::apply()])
                             }
-                            Err(msg) => RhoTupleN::apply(vec![
-                                RhoBoolean::apply(false),
-                                RhoString::apply(msg),
-                            ]),
+                            Err(msg) => {
+                                eprintln!("[pos] refused: {msg}");
+                                RhoTupleN::apply(vec![
+                                    RhoBoolean::apply(false),
+                                    RhoString::apply(msg),
+                                ])
+                            }
                         };
                         cc.produce(&rand, &[out], ret, path).await
                     }
                     "trust" | "untrust" => {
                         let [deployer_id, target, ret] = rest else {
+                            eprintln!("[pos] bad argument shape: trust/untrust");
                             return Err(illegal_arg(
                                 "trust/untrust expects deployerId, target public key and return channel",
                             ));
@@ -1513,12 +1553,16 @@ impl SystemProcesses {
                         };
                         let out = match result.map_err(|e| illegal_arg(&e))? {
                             Ok(()) => {
+                                eprintln!("[pos] ok");
                                 RhoTupleN::apply(vec![RhoBoolean::apply(true), RhoNil::apply()])
                             }
-                            Err(msg) => RhoTupleN::apply(vec![
-                                RhoBoolean::apply(false),
-                                RhoString::apply(msg),
-                            ]),
+                            Err(msg) => {
+                                eprintln!("[pos] refused: {msg}");
+                                RhoTupleN::apply(vec![
+                                    RhoBoolean::apply(false),
+                                    RhoString::apply(msg),
+                                ])
+                            }
                         };
                         cc.produce(&rand, &[out], ret, path).await
                     }

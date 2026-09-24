@@ -354,8 +354,8 @@ means a **new genesis and a new chain**.
 **(b) Live, on a running chain** — a trusted key confers trust, then the newcomer bonds:
 
 ```
-1. a trusted key deploys        pos!("trust", *deployerId, "<newcomer 65-byte pubkey>".hexToBytes(), *ret)
-2. the newcomer deploys         pos!("bond",  *deployerId, <stake>, *ret)      # 1..100 here
+1. a trusted key deploys        pos!("trust", [*deployerId, "<newcomer 65-byte pubkey>".hexToBytes(), *ret])
+2. the newcomer deploys         pos!("bond",  [*deployerId, <stake>, *ret])      # 1..100 here
 ```
 
 Two funding prerequisites, both easy to miss and both **verified working here** (the general form, with
@@ -379,19 +379,19 @@ with `Top level free variables are not allowed`.
 ```
 // read the pool (works today)
 new return, pos(`rho:rchain:pos`), ret in {
-  pos!("getBonds", *ret) | for (@b <- ret) { return!(b) }
+  pos!("getBonds", [*ret]) | for (@b <- ret) { return!(b) }
 }
 // → {"expr":[{"ExprMap":[["0410b8c5…0c3c73",{"ExprInt":1000}],["04675f16…514404",{"ExprInt":100}]]}]}
 
 // read the consensus set (works today)
 new return, pos(`rho:rchain:pos`), ret in {
-  pos!("getActiveValidators", *ret) | for (@v <- ret) { return!(v) }
+  pos!("getActiveValidators", [*ret]) | for (@v <- ret) { return!(v) }
 }
 // → {"expr":[{"ExprSet":[{"ExprBytes":"0410b8c5…"},{"ExprBytes":"04675f16…"}]}]}
 
 // confer trust on a newcomer (deploy signed by a trusted, funded key)
 new return, pos(`rho:rchain:pos`), deployerId(`rho:rchain:deployerId`), ret in {
-  pos!("trust", *deployerId, "<65-byte hex pubkey>".hexToBytes(), *ret) |
+  pos!("trust", [*deployerId, "<65-byte hex pubkey>".hexToBytes(), *ret]) |
   for (@r <- ret) { return!(r) }
 }
 

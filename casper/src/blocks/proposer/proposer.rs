@@ -489,29 +489,36 @@ where
         }
     }
 
-    let creators_latest = pre_state
+    // Attestation timing (the port's `newlySeen`/`waitingForSupermajority` guard, corrected).
+    //
+    // The port derived "newly seen" as `seen(our own latest message's justifications) \ seen(parents)`.
+    // Our own message is one of the parents and everything it justifies is an ancestor of the parents, so
+    // that difference is empty by construction: `new_state_transition` was always false and
+    // `attestation_stake` always zero, hence `waiting_for_supermajority` always true. The empty-attestation
+    // branch in `block_creator.rs` was therefore unreachable, and the dev-mode dummy deploy was the only
+    // thing that ever got past this guard — which is why `--autopropose` could not produce a block on its
+    // own. See #70.
+    //
+    // What the guard needs is (a) whether an unfinalized state transition exists to attest to, and (b) how
+    // much stake is moving on the fringe we are building on. (b) is the senders of the *parents'* latest
+    // messages, excluding ourselves: our own message is the attestation we are about to add, and it is
+    // counted on the other side of the comparison.
+    let parents: Vec<BlockMessage> = {
+        let mut v = Vec::new();
+        for h in &parent_hashes {
+            if let Some(b) = get_block(block_store, h).await? {
+                v.push(b);
+            }
+        }
+        v
+    };
+    let new_state_transition = parents.iter().any(|b| has_deploys(b));
+    let new_senders: BTreeSet<Validator> = pre_state
         .justifications
         .iter()
-        .find(|m| m.sender == creators_validator);
-    let newly_seen: BTreeSet<BlockHash> = match creators_latest {
-        Some(m) => m
-            .justifications
-            .iter()
-            .flat_map(|h| seen(h))
-            .collect::<BTreeSet<_>>()
-            .difference(&parent_seen)
-            .copied()
-            .collect(),
-        None => BTreeSet::new(),
-    };
-    let mut new_blocks = Vec::new();
-    for h in &newly_seen {
-        if let Some(b) = get_block(block_store, h).await? {
-            new_blocks.push(b);
-        }
-    }
-    let new_state_transition = new_blocks.iter().any(|b| has_deploys(b));
-    let new_senders: BTreeSet<Validator> = new_blocks.iter().map(|b| b.sender).collect();
+        .map(|m| m.sender.clone())
+        .filter(|s| *s != creators_validator)
+        .collect();
     let attestation_stake: i128 = pre_state_bonds
         .iter()
         .filter(|(v, _)| new_senders.contains(v))
@@ -521,8 +528,13 @@ where
         .values()
         .map(|s| i128::from(i64::from(*s)))
         .sum();
-    let waiting_for_supermajority =
-        !(new_state_transition || is_super_majority(attestation_stake, pre_state_bonds_stake));
+    let own_stake: i128 = pre_state_bonds
+        .iter()
+        .filter(|(v, _)| **v == creators_validator)
+        .map(|(_, s)| i128::from(i64::from(*s)))
+        .sum();
+    let waiting_for_supermajority = !(new_state_transition
+        || attestation_reaches_supermajority(attestation_stake, own_stake, pre_state_bonds_stake));
 
     let suppress_attestation = nothing_to_finalize || waiting_for_supermajority;
 
@@ -757,5 +769,39 @@ mod tests {
         assert_eq!(result.propose_status, ProposeStatus::ProposeSuccess);
         assert!(block_opt.is_some());
         assert!(matches!(rx.await.unwrap(), ProposerResult::Success { .. }));
+    }
+}
+
+/// Whether this validator should attest now: its own weight plus the stake already moving on the fringe
+/// reaches a supermajority.
+///
+/// Counting our own weight is the point. Without it, a validator whose attestation is exactly what would
+/// complete the quorum can never be the one to add it — it is always "waiting for a supermajority" that
+/// only its own message could create. With it, four validators at equal stake attest as soon as one of
+/// them has moved (25% + 25% … 75% > 2/3), while a lone 10% validator still waits (10% + 0 < 2/3), which
+/// is the anti-spam property the original rule was protecting.
+fn attestation_reaches_supermajority(
+    moving_stake: i128,
+    own_stake: i128,
+    total_stake: i128,
+) -> bool {
+    is_super_majority(moving_stake + own_stake, total_stake)
+}
+
+#[cfg(test)]
+mod attestation_guard_tests {
+    use super::attestation_reaches_supermajority;
+
+    #[test]
+    fn a_validator_counts_its_own_weight_toward_the_quorum() {
+        // Four validators at 100 each: one other has moved, we hold 100 -> 200 of 400 is not > 2/3.
+        assert!(!attestation_reaches_supermajority(100, 100, 400));
+        // Two others have moved (the deploy-holder plus one) -> 300 of 400 is > 2/3, so we attest.
+        assert!(attestation_reaches_supermajority(200, 100, 400));
+        // A single node holding everything attests on its own.
+        assert!(attestation_reaches_supermajority(0, 100, 100));
+        // A lone 10% validator on a net where nobody has moved still waits.
+        assert!(!attestation_reaches_supermajority(0, 10, 100));
+        assert!(!attestation_reaches_supermajority(10, 10, 100));
     }
 }

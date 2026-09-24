@@ -553,6 +553,7 @@ pub fn wire_block_processing(
     min_phlo_price: i64,
     log: Arc<dyn Log>,
     autopropose: Option<Arc<dyn Fn() + Send + Sync>>,
+    attest_on_new_blocks: Option<Arc<dyn Fn(&BlockMessage) + Send + Sync>>,
 ) -> (
     mpsc::Sender<BlockMessage>,
     mpsc::UnboundedSender<BlockMessage>,
@@ -561,21 +562,15 @@ pub fn wire_block_processing(
         mpsc::channel(rchain_casper::engine::node_running::MAX_PENDING_BLOCKS);
     let (validated_blocks_tx, validated_blocks_rx) = mpsc::unbounded_channel();
 
-    // Tap the validated-blocks stream for autopropose (fire a propose on each validated block).
-    let validated_blocks_rx = match autopropose {
-        Some(tap) => {
-            let (tap_tx, tap_rx) = mpsc::unbounded_channel();
-            let mut rx = validated_blocks_rx;
-            tokio::spawn(async move {
-                while let Some(block) = rx.recv().await {
-                    tap();
-                    let _ = tap_tx.send(block);
-                }
-            });
-            tap_rx
-        }
-        None => validated_blocks_rx,
-    };
+    // Tap the validated-blocks stream: for autopropose (propose on each validated block) and, when
+    // `--attest-on-new-blocks` is on, for attestation (propose on each *remote* block that carries
+    // deploys). The taps compose — each forwards the stream after firing.
+    let autopropose_tap: Option<Arc<dyn Fn(&BlockMessage) + Send + Sync>> =
+        autopropose.map(|tap| {
+            Arc::new(move |_: &BlockMessage| tap()) as Arc<dyn Fn(&BlockMessage) + Send + Sync>
+        });
+    let validated_blocks_rx = tap_validated_blocks(validated_blocks_rx, autopropose_tap);
+    let validated_blocks_rx = tap_validated_blocks(validated_blocks_rx, attest_on_new_blocks);
 
     // Block receiver: incoming + validated blocks → a queue of dependency-free block hashes.
     let receiver_state = Arc::new(tokio::sync::Mutex::new(
@@ -1185,6 +1180,43 @@ async fn setup_shard_runtime(
         None
     };
 
+    // Attest-on-new-blocks tap: propose when a *remote* block is validated. With nothing of our own to
+    // include, that proposal becomes an empty attestation (`block_creator.rs`'s attestation branch) — the
+    // way a validator holding no deploys moves its latest message, and therefore the way a finality quorum
+    // forms when every deploy arrives at one node.
+    //
+    // It reacts to any remote block, including other validators' attestations, because the fringe rule
+    // needs a *full partition*: every justification sender's message seen by every bonded sender. Reacting
+    // only to deploy-bearing blocks gave exactly one round of attestations and the fringe never advanced.
+    // What bounds the traffic is the proposer's `suppress_attestation`, not this predicate: an idle chain
+    // attests not at all, and one that cannot reach a supermajority stops after a round (#70).
+    let attest_on_new_blocks: Option<Arc<dyn Fn(&BlockMessage) + Send + Sync>> =
+        match (&proposer_parts, conf.attest_on_new_blocks, validator_opt) {
+            (Some(pp), true, Some(identity)) => {
+                let tap_log = log.clone();
+                let tap_tx = pp.queue_tx.clone();
+                // Our own sender bytes: `Validator` is exactly `Validator::from_slice(public_key.bytes())`
+                // (see `block_creator.rs`), so comparing bytes identifies our own blocks.
+                let me: Vec<u8> = identity.public_key.bytes().to_vec();
+                Some(Arc::new(move |block: &BlockMessage| {
+                    if !attest_warranted(&me, block.sender.as_bytes()) {
+                        return;
+                    }
+                    let (otx, _orx) = tokio::sync::oneshot::channel();
+                    if let Err(e) = tap_tx.try_send((true, otx)) {
+                        tap_log.warn(
+                            LogSource::new("coop.rchain.node.runtime.Setup"),
+                            &format!(
+                                "attest request not queued ({e}) — this validator will not attest \
+                                 to the new block"
+                            ),
+                        );
+                    }
+                }))
+            }
+            _ => None,
+        };
+
     // Block receiver + processor streams (spawned internally).
     let (incoming_blocks_tx, _validated_blocks_tx) = wire_block_processing(
         comm_state,
@@ -1193,6 +1225,7 @@ async fn setup_shard_runtime(
         conf.casper.min_phlo_price,
         log.clone(),
         autopropose,
+        attest_on_new_blocks,
     );
 
     // This shard's slice of the peer-message stream (fed by the router).
@@ -1262,14 +1295,17 @@ async fn setup_shard_runtime(
                 })
             })
         };
-        // Dev-mode dummy deploy: if `dev.deployer-private-key` is set (requires `--dev-mode`), inject a
-        // signed `Nil` deploy whenever the pool is empty so `--autopropose` keeps producing blocks.
-        let dummy_deploy_opt = conf
-            .dev
-            .deployer_private_key
-            .as_deref()
-            .and_then(|hex| base16::decode(hex))
-            .map(|bytes| (PrivateKey::new(bytes), "Nil".to_string()));
+        // Dev-mode dummy deploy: inject a signed `Nil` deploy whenever the pool is empty, so a proposal
+        // always has something to include.
+        //
+        // Gated on `--autopropose` as well as the deployer key, and that gate is the point: the key on
+        // its own is what enables `/api/faucet` (below), so a node that wants a faucet is not thereby
+        // forced to keep proposing empty blocks. Proposing with nothing to include is otherwise a no-op
+        // (`block_creator.rs`), which is the behaviour the network wants — a chain that advances on
+        // content rather than on wall-clock time (see #70).
+        let dummy_deploy_opt =
+            dummy_deploy_key(conf.autopropose, conf.dev.deployer_private_key.as_deref())
+                .map(|key| (key, "Nil".to_string()));
 
         let proposer = Proposer::apply(
             validator,
@@ -2119,5 +2155,92 @@ mod tests {
 
         drop(importer);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+/// The dummy-deploy key, when this node should inject one: `--autopropose` **and** a deployer key.
+///
+/// The key alone is deliberately not enough. The same `dev.deployer-private-key` enables the
+/// `/api/faucet` endpoint, so gating the injector on it alone would force every node that wants a
+/// faucet to keep proposing empty blocks — the opposite of what the network wants. With nothing to
+/// include, a proposal is already a no-op (`block_creator.rs`), so a chain should advance on content
+/// rather than on wall-clock time (see #70).
+fn dummy_deploy_key(autopropose: bool, deployer_private_key: Option<&str>) -> Option<PrivateKey> {
+    if !autopropose {
+        return None;
+    }
+    deployer_private_key
+        .and_then(base16::decode)
+        .map(PrivateKey::new)
+}
+
+#[cfg(test)]
+mod dummy_deploy_tests {
+    use super::dummy_deploy_key;
+
+    #[test]
+    fn the_dummy_deploy_needs_autopropose_and_not_just_a_key() {
+        let key = "0a".repeat(32);
+
+        // The intentional case: continuous production is opted into explicitly.
+        assert!(dummy_deploy_key(true, Some(&key)).is_some());
+        // The case that matters: a faucet key alone must not imply empty blocks.
+        assert!(dummy_deploy_key(false, Some(&key)).is_none());
+        // And with no key there is nothing to sign with, either way.
+        assert!(dummy_deploy_key(true, None).is_none());
+        assert!(dummy_deploy_key(false, None).is_none());
+    }
+}
+
+/// Forward a validated-blocks stream, running `tap` on each block first (when there is one).
+fn tap_validated_blocks(
+    rx: mpsc::UnboundedReceiver<BlockMessage>,
+    tap: Option<Arc<dyn Fn(&BlockMessage) + Send + Sync>>,
+) -> mpsc::UnboundedReceiver<BlockMessage> {
+    let Some(tap) = tap else {
+        return rx;
+    };
+    let (tap_tx, tap_rx) = mpsc::unbounded_channel();
+    let mut rx = rx;
+    tokio::spawn(async move {
+        while let Some(block) = rx.recv().await {
+            tap(&block);
+            let _ = tap_tx.send(block);
+        }
+    });
+    tap_rx
+}
+
+/// Whether a validated block is a reason for this node to attest: any block from someone else.
+///
+/// Deliberately not restricted to blocks that carry deploys. The fringe rule requires a *full partition* —
+/// every justification sender's message seen by every bonded sender — so the round that finalises a state
+/// transition is the one in which the validators' attestations see each other. Restricting this to
+/// deploy-bearing blocks produced exactly one round, and the fringe never advanced ([#70]).
+///
+/// The traffic is bounded by the proposer's guard, not here: `suppress_attestation` refuses to attest while
+/// nothing unfinalized carries deploys (so an idle chain produces nothing) or while a supermajority is out
+/// of reach (so a chain that has lost over a third of its stake does not spin). Each remote block can also
+/// prompt at most one proposal in response.
+///
+/// [#70]: https://github.com/rchain-community/rchain-rust/issues/70
+fn attest_warranted(me: &[u8], sender: &[u8]) -> bool {
+    sender != me
+}
+
+#[cfg(test)]
+mod attest_warranted_tests {
+    use super::attest_warranted;
+
+    #[test]
+    fn any_remote_block_is_a_reason_to_attest() {
+        let me = vec![1u8; 65];
+        let other = vec![2u8; 65];
+
+        // Another validator's block — whether a state transition or its attestation — is a reason for us
+        // to add ours: the fringe needs the attestations to see each other.
+        assert!(attest_warranted(&me, &other));
+        // Our own block already attests to itself.
+        assert!(!attest_warranted(&me, &me));
     }
 }
