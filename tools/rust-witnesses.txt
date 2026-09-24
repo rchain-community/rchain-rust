@@ -9,7 +9,7 @@
 # is the oracle for what a law's proof is worth, and a list of Rust tests kept anywhere else is a
 # second copy of that judgement. It lives here only because `rustWitness` does not exist yet: the
 # tree was red when this was written (the sort unit's `Sort.lean` does not elaborate, so the register
-# cannot be emitted), and the 56 witnesses below were prose (`falsifiable`/`note` names nothing read)
+# cannot be emitted), and the 65 witnesses below were prose (`falsifiable`/`note` names nothing read)
 # until this list made them executable. When the field lands, this file is deleted and the gate pipes
 # the column instead.
 #
@@ -34,6 +34,14 @@
 # `models/src/property_tests.rs:law2_sorting_a_sequence_depends_only_on_its_elements` is law 1a's
 # content. Their names are left alone — two of them are cited in `spec/TEST-COVERAGE.md`, so renaming
 # is a two-file change — and the register's rows say which is which.
+#
+# **Nine of these do not carry a law number in their name, and that is the point.** Rows 16a, 16b,
+# 17b, 14b, 26a and 27 are witnessed by tests named for their behaviour — `block_number_must_be_parent_max_plus_one`,
+# `calculate_next_layer_picks_max_sender_seq`, `two_shard_2pc_aborts_all_when_a_leg_fails`, … — which a
+# scan for `fn lawNN_` cannot see. A row was read as "no witness" four times in this pass for that
+# reason, so the rule this list paid for: **grep for the behaviour, not for the law number.**
+block-storage/src/dag/finalizer.rs:calculate_next_layer_picks_max_sender_seq
+block-storage/src/dag/finalizer.rs:check_min_messages_needs_all_bonded_senders
 block-storage/src/dag/finalizer.rs:law14_fringe_requires_supermajority
 block-storage/src/dag/metadata_store.rs:law18_contiguous_height_map_is_valid
 block-storage/src/dag/metadata_store.rs:law18_height_map_with_holes_errors
@@ -50,6 +58,10 @@ casper/src/property_tests.rs:law27_a_legless_record_cannot_commit
 casper/src/property_tests.rs:law27_an_abort_vote_prevents_a_later_commit
 casper/src/property_tests.rs:law27_and_law29_the_state_agrees_with_the_votes
 casper/src/property_tests.rs:law29_a_terminal_record_never_changes_again
+casper/src/validate.rs:block_number_must_be_parent_max_plus_one
+casper/src/validate.rs:sequence_number_must_be_creator_latest_plus_one
+casper/tests/cross_shard_txn.rs:two_shard_2pc_aborts_all_when_a_leg_fails
+casper/tests/cross_shard_txn.rs:two_shard_2pc_commits_all
 models/src/casper/protocol/casper_message.rs:law16_to_proto_sorts_justifications
 models/src/fringe_data.rs:law18_fringe_hash_is_order_independent
 models/src/property_tests.rs:law1b_every_permutation_of_a_collection_sorts_alike
@@ -58,6 +70,9 @@ models/src/property_tests.rs:law1_sorting_is_idempotent
 models/src/property_tests.rs:law2_canonical_equality_agrees_with_canonical_hashing
 models/src/property_tests.rs:law2_sorting_a_sequence_depends_only_on_its_elements
 models/src/property_tests.rs:law6_a_closed_term_is_accepted_and_the_predicate_agrees
+node/src/web/http.rs:a_leg_with_an_empty_to_is_rejected_before_the_gateway_runs
+node/src/web/http.rs:api_txn_run_rejects_an_invalid_leg_shard_or_an_empty_leg_list
+rholang/src/merging.rs:calculate_diff_rejects_i64_overflow_instead_of_wrapping
 rholang/src/native_state.rs:an_epoch_splits_the_pot_and_keeps_the_dust
 rholang/src/native_state.rs:a_released_withdrawal_pays_the_bond_plus_the_committed_rewards
 rholang/src/native_state.rs:bond_escrows_the_stake_and_activates_at_the_boundary
