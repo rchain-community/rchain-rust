@@ -2,7 +2,7 @@
 
 **Laws this document carries:** 26–29 — shard scope, cross-shard atomicity, leg idempotency, and the durable decision record.
 
-[Cross-shard invoke](shard-invoke.md) specifies the *primitive*: a remote deploy is an ordinary
+[Cross-shard invoke](../node/shard-invoke.md) specifies the *primitive*: a remote deploy is an ordinary
 caller-signed deploy submitted to a **different shard**'s deploy service, and `deployerId` is
 shard-independent, so the same key is the same account on every shard. That primitive can *reach*
 another shard, but it cannot make a pair of legs **atomic**: the escrow example
@@ -61,7 +61,7 @@ list, and the biconditional holds verbatim on a stored record
 ## Messages
 
 Each message is a signed remote deploy (reusing the
-[`shard_invoke`](shard-invoke.md) primitive), **idempotent under `txn_id`** so re-delivery and client
+[`shard_invoke`](../node/shard-invoke.md) primitive), **idempotent under `txn_id`** so re-delivery and client
 retry are safe (Law 28).
 
 | Message | Effect on the participant |
