@@ -220,6 +220,93 @@ theorem encodeItem_injective_at {it jt : Item} {i : Nat} {r r' : Msg}
       rw [mod128_of_lt hpi'] at hlen
       omega
 
+/-- The `cons`/`cons` case of `encodeNodeAux_injective`: two heads of the trie, either of which may be
+    empty, a leaf or a node. Batched out of the induction so that the induction reads as an induction —
+    the sixteen cases are its own concern, and the induction hypothesis arrives as a function of
+    `encodeNodeAux (i + 1) rest = encodeNodeAux (i + 1) rest'` rather than as a rewrite. -/
+private theorem encodeNodeAux_injective_cons (it jt : Item) (rest rest' : Node) (i : Nat)
+    (hs_head : ItemWF it) (ht_head : ItemWF jt) (hi' : i + 1 + rest.length ≤ 256)
+    (hlen' : rest.length = rest'.length)
+    (ih : encodeNodeAux (i + 1) rest = encodeNodeAux (i + 1) rest' → rest = rest')
+    (h : encodeNodeAux i (it :: rest) = encodeNodeAux i (jt :: rest')) :
+    it :: rest = jt :: rest' := by
+            rw [encodeNodeAux, encodeNodeAux] at h
+            cases hjt : jt with
+            | empty =>
+                cases hit : it with
+                | empty =>
+                    simp only [hit, hjt, encodeItem, List.nil_append] at h
+                    exact congrArg (List.cons Item.empty)
+                      (ih h)
+                | leaf pref value =>
+                    simp only [hit, hjt, encodeItem, List.nil_append] at h
+                    have hright : (encodeNodeAux (i + 1) rest').head? = some (byteOf i) := by
+                      rw [← h]
+                      exact encodeItem_head (it := Item.leaf pref value) i (by simp) _
+                    exact absurd hright
+                      (encodeNodeAux_head_ne_byteOf (s := rest') (i := i + 1) (j := i)
+                        (by rw [← h]; exact encodeItem_append_ne_nil (it := Item.leaf pref value) (by simp) _) (by omega) (by rw [← hlen']; exact hi'))
+                | node pref ptr =>
+                    simp only [hit, hjt, encodeItem, List.nil_append] at h
+                    have hright : (encodeNodeAux (i + 1) rest').head? = some (byteOf i) := by
+                      rw [← h]
+                      exact encodeItem_head (it := Item.node pref ptr) i (by simp) _
+                    exact absurd hright
+                      (encodeNodeAux_head_ne_byteOf (s := rest') (i := i + 1) (j := i)
+                        (by rw [← h]; exact encodeItem_append_ne_nil (it := Item.node pref ptr) (by simp) _) (by omega) (by rw [← hlen']; exact hi'))
+            | leaf pref' value' =>
+                cases hit : it with
+                | empty =>
+                    simp only [hit, hjt, encodeItem, List.nil_append] at h
+                    have hleft : (encodeNodeAux (i + 1) rest).head? = some (byteOf i) := by
+                      rw [h]
+                      exact encodeItem_head (it := Item.leaf pref' value') i (by simp) _
+                    exact absurd hleft
+                      (encodeNodeAux_head_ne_byteOf (s := rest) (i := i + 1) (j := i)
+                        (by rw [h]; exact encodeItem_append_ne_nil (it := Item.leaf pref' value') (by simp) _) (by omega) hi')
+                | leaf pref value =>
+                    rw [hit, hjt] at h
+                    obtain ⟨heq, hrest⟩ :=
+                      encodeItem_injective_at (it := Item.leaf pref value)
+                        (jt := Item.leaf pref' value') (by simp) (by simp) (hit ▸ hs_head)
+                        (hjt ▸ ht_head) h
+                    rw [heq]
+                    exact congrArg (List.cons (Item.leaf pref' value'))
+                      (ih hrest)
+                | node pref ptr =>
+                    rw [hit, hjt] at h
+                    obtain ⟨heq, _⟩ :=
+                      encodeItem_injective_at (it := Item.node pref ptr)
+                        (jt := Item.leaf pref' value') (by simp) (by simp) (hit ▸ hs_head)
+                        (hjt ▸ ht_head) h
+                    exact absurd heq (by simp)
+            | node pref' ptr' =>
+                cases hit : it with
+                | empty =>
+                    simp only [hit, hjt, encodeItem, List.nil_append] at h
+                    have hleft : (encodeNodeAux (i + 1) rest).head? = some (byteOf i) := by
+                      rw [h]
+                      exact encodeItem_head (it := Item.node pref' ptr') i (by simp) _
+                    exact absurd hleft
+                      (encodeNodeAux_head_ne_byteOf (s := rest) (i := i + 1) (j := i)
+                        (by rw [h]; exact encodeItem_append_ne_nil (it := Item.node pref' ptr') (by simp) _) (by omega) hi')
+                | leaf pref value =>
+                    rw [hit, hjt] at h
+                    obtain ⟨heq, _⟩ :=
+                      encodeItem_injective_at (it := Item.leaf pref value)
+                        (jt := Item.node pref' ptr') (by simp) (by simp) (hit ▸ hs_head)
+                        (hjt ▸ ht_head) h
+                    exact absurd heq (by simp)
+                | node pref ptr =>
+                    rw [hit, hjt] at h
+                    obtain ⟨heq, hrest⟩ :=
+                      encodeItem_injective_at (it := Item.node pref ptr)
+                        (jt := Item.node pref' ptr') (by simp) (by simp) (hit ▸ hs_head)
+                        (hjt ▸ ht_head) h
+                    rw [heq]
+                    exact congrArg (List.cons (Item.node pref' ptr'))
+                      (ih hrest)
+
 /-- **The encoding is canonical on well-formed nodes.** Two nodes of the same width whose encodings agree
     are equal: each record carries its slot and its own extent, so a byte stream has one reading, and
     `WellFormed` supplies the two facts that makes true plus the width that rules out a stream ending in
@@ -244,82 +331,9 @@ theorem encodeNodeAux_injective (s t : Node) (i : Nat)
           have ht_rest : ItemsWF rest' := fun x hx => ht x (List.mem_cons_of_mem _ hx)
           have hlen' : rest.length = rest'.length := by
             simp only [List.length_cons] at hlen; omega
-          rw [encodeNodeAux, encodeNodeAux] at h
-          cases hjt : jt with
-          | empty =>
-              cases hit : it with
-              | empty =>
-                  simp only [hit, hjt, encodeItem, List.nil_append] at h
-                  exact congrArg (List.cons Item.empty)
-                    (ih rest' (i + 1) hs_rest ht_rest hlen' hi' h)
-              | leaf pref value =>
-                  simp only [hit, hjt, encodeItem, List.nil_append] at h
-                  have hright : (encodeNodeAux (i + 1) rest').head? = some (byteOf i) := by
-                    rw [← h]
-                    exact encodeItem_head (it := Item.leaf pref value) i (by simp) _
-                  exact absurd hright
-                    (encodeNodeAux_head_ne_byteOf (s := rest') (i := i + 1) (j := i)
-                      (by rw [← h]; exact encodeItem_append_ne_nil (it := Item.leaf pref value) (by simp) _) (by omega) (by rw [← hlen']; exact hi'))
-              | node pref ptr =>
-                  simp only [hit, hjt, encodeItem, List.nil_append] at h
-                  have hright : (encodeNodeAux (i + 1) rest').head? = some (byteOf i) := by
-                    rw [← h]
-                    exact encodeItem_head (it := Item.node pref ptr) i (by simp) _
-                  exact absurd hright
-                    (encodeNodeAux_head_ne_byteOf (s := rest') (i := i + 1) (j := i)
-                      (by rw [← h]; exact encodeItem_append_ne_nil (it := Item.node pref ptr) (by simp) _) (by omega) (by rw [← hlen']; exact hi'))
-          | leaf pref' value' =>
-              cases hit : it with
-              | empty =>
-                  simp only [hit, hjt, encodeItem, List.nil_append] at h
-                  have hleft : (encodeNodeAux (i + 1) rest).head? = some (byteOf i) := by
-                    rw [h]
-                    exact encodeItem_head (it := Item.leaf pref' value') i (by simp) _
-                  exact absurd hleft
-                    (encodeNodeAux_head_ne_byteOf (s := rest) (i := i + 1) (j := i)
-                      (by rw [h]; exact encodeItem_append_ne_nil (it := Item.leaf pref' value') (by simp) _) (by omega) hi')
-              | leaf pref value =>
-                  rw [hit, hjt] at h
-                  obtain ⟨heq, hrest⟩ :=
-                    encodeItem_injective_at (it := Item.leaf pref value)
-                      (jt := Item.leaf pref' value') (by simp) (by simp) (hit ▸ hs_head)
-                      (hjt ▸ ht_head) h
-                  rw [heq]
-                  exact congrArg (List.cons (Item.leaf pref' value'))
-                    (ih rest' (i + 1) hs_rest ht_rest hlen' hi' hrest)
-              | node pref ptr =>
-                  rw [hit, hjt] at h
-                  obtain ⟨heq, _⟩ :=
-                    encodeItem_injective_at (it := Item.node pref ptr)
-                      (jt := Item.leaf pref' value') (by simp) (by simp) (hit ▸ hs_head)
-                      (hjt ▸ ht_head) h
-                  exact absurd heq (by simp)
-          | node pref' ptr' =>
-              cases hit : it with
-              | empty =>
-                  simp only [hit, hjt, encodeItem, List.nil_append] at h
-                  have hleft : (encodeNodeAux (i + 1) rest).head? = some (byteOf i) := by
-                    rw [h]
-                    exact encodeItem_head (it := Item.node pref' ptr') i (by simp) _
-                  exact absurd hleft
-                    (encodeNodeAux_head_ne_byteOf (s := rest) (i := i + 1) (j := i)
-                      (by rw [h]; exact encodeItem_append_ne_nil (it := Item.node pref' ptr') (by simp) _) (by omega) hi')
-              | leaf pref value =>
-                  rw [hit, hjt] at h
-                  obtain ⟨heq, _⟩ :=
-                    encodeItem_injective_at (it := Item.leaf pref value)
-                      (jt := Item.node pref' ptr') (by simp) (by simp) (hit ▸ hs_head)
-                      (hjt ▸ ht_head) h
-                  exact absurd heq (by simp)
-              | node pref ptr =>
-                  rw [hit, hjt] at h
-                  obtain ⟨heq, hrest⟩ :=
-                    encodeItem_injective_at (it := Item.node pref ptr)
-                      (jt := Item.node pref' ptr') (by simp) (by simp) (hit ▸ hs_head)
-                      (hjt ▸ ht_head) h
-                  rw [heq]
-                  exact congrArg (List.cons (Item.node pref' ptr'))
-                    (ih rest' (i + 1) hs_rest ht_rest hlen' hi' hrest)
+          have hstep : encodeNodeAux (i + 1) rest = encodeNodeAux (i + 1) rest' → rest = rest' :=
+            fun hh => ih rest' (i + 1) hs_rest ht_rest hlen' hi' hh
+          exact encodeNodeAux_injective_cons it jt rest rest' i hs_head ht_head hi' hlen' hstep h
 
 /-- The encoding is **canonical on the nodes the trie builds**: distinct well-formed nodes have distinct
     encodings. This was the file's `axiom encodeNode_injective`; it is a theorem now, and the two
