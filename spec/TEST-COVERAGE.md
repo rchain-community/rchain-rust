@@ -26,7 +26,7 @@ and **no file is left without one or the other** — the linter's check 7 passes
 
 ## Inventory
 
-**1410 `#[test]`/`#[tokio::test]` unit functions + 119 integration tests** across 13 crates, with **26
+**1411 `#[test]`/`#[tokio::test]` unit functions + 119 integration tests** across 13 crates, with **26
 laws** carrying a randomized property test and **10 benchmark functions** in 6 Criterion groups. Only
 **3 of 13 crates have integration tests** (`rholang`, `casper`, `node`).
 
@@ -39,7 +39,7 @@ laws** carrying a randomized property test and **10 benchmark functions** in 6 C
 | `models` | 155 | — | 5 | — |
 | `block-storage` | 41 | — | 3 | — |
 | `comm` | 124 | — | — | — |
-| `rspace` | 171 | — | 8 | — |
+| `rspace` | 172 | — | 8 | — |
 | `rholang` | 226 | 55 | 7 | — |
 | `casper` | 255 | 53 | 3 | — |
 | `node` | 181 | 13 | — | — |
@@ -698,6 +698,7 @@ green diff. These are all of them.
 | `models/src/types.rs` — `FreeCount::from_nonneg` deleted; `from_len(usize)` + `Add` are the carrier's total entry points; `count_free_vars_refined` is the typed sibling of `count_free_vars`; `rholang/src/normalizer.rs`'s five count sites use `checked_level_count`; `rholang/src/storage_printer.rs::to_receive` returns `Option<Par>` and refuses a malformed stored row with the module's own fixed message | The deleted constructor guarded a negative count with `debug_assert!` — compiled out in release, so the invalid value crossed silently in the builds that matter (both directions measured: with the carrier the probe does not compile; with the old shape restored it compiles and passes in release). Refusing a malformed *stored* row in the printer's own diagnostic channel is the same decision one layer down, and the port's count convention cannot reproduce the value exactly (measured: 1 vs 2 for a collection remainder) | `free_count_from_len_saturates_and_add_preserves_the_invariant`, `every_free_count_constructor_stays_in_the_domain`, `a_negative_stored_free_count_refuses_the_row`, `the_walk_ignores_a_collection_remainder_where_the_normalizer_counts_it` |
 | `rholang/src/matcher/spatial_matcher.rs::handle_remainder` — comment and a pinning test only; the `.unwrap_or_default()` **stays** | U1's appendix named this site as a partiality spot. Measured 2026-09-24, it is not: the absent free level is the accumulator's **zero** — `handle_remainder` is called once per collection field and starts from the empty par, which is the Scala's own reading (`SpatialMatcher.scala:258`, `getOrElse(level, VectorPar())`). Making the absent level an error fails five existing tests of the module (they are the C19/C20 remainder semantics). The site now carries the reasoning so the sweep does not re-open it (U1 site 2) | `handle_remainder_starts_an_absent_level_from_the_merge_identity` |
 | `rspace/src/state/mod.rs::create_last_prefix` — the export/resume prefix is built through the checked `KeySegment::try_from` and a bounded slice, not through a hand-written `> 128` test plus the total constructor | The resume path is peer-supplied and codes the prefix size in a raw byte: a value of 128 was one byte over the segment invariant the radix encoder enforces by writing the size in 7 bits (`radix_tree.rs:121`), so the value was built and then silently truncated to *zero* on the way out — the prefix dropped, the restored tree desynchronized against its own hash. The Scala reaches `KeySegment.apply`'s `require(bv.size <= 127)`; this port's documented stance for the same input is an `Err`, and the checked constructor *is* that invariant (its test already refused 128 before this site used it) — so the fix is one boundary instead of two, and `TryFrom` gains the production caller it did not have (AUDIT C61) | `a_128_byte_resume_prefix_is_refused` (written and failing first) |
+| `rspace/src/history/radix_tree.rs`, `history.rs`, `instances/radix_history.rs`, `instances/rspace_history_reader_impl.rs`, `history_repository.rs`, `factory.rs` — `load_node` and the `History` trait's `read`/`reset` return `Result`, so a store error reaches every consumer that can report it; a reader whose root cannot be read carries the failure and answers it on the first read | `load_node`'s signature was a bare `Node`, so its `Err` arm was flattened into `empty_node()` — under `no_assert`, the two root loads included: a history whose `root_hash` names a real root came back with the empty trie as its root *node*, answering "no data" for every key and rebuilding that root from nothing on the next write. The oracle keeps the error in `F` (`load_node: F[Node]`, `RadixTree.scala:586-598`) and lets only *absence* reach `assert(noAssert)`/`emptyNode`, which is the split the port now makes too. The one total boundary (`get_history_reader`, called from `casper`/`node`) defers the error to the first read rather than dropping it (AUDIT C53) | `a_store_error_is_not_an_empty_root` (written and failing first: a store that is down yielded `empty_node()`), which pins the error, the still-not-an-error absence, and `RadixHistory::new` refusing |
 
 ### The census sweep (definition of done items 10–11)
 

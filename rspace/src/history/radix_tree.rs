@@ -172,11 +172,12 @@ impl RadixTreeImpl {
         // The Scala keeps the error in `F` (`store.get1(nodePtr).map(...)`, `RadixTree.scala:569`), so
         // propagating it here is the faithful reading.
         //
-        // **What this does and does not change.** `load_node`'s signature is `Node`, not a `Result`,
-        // so it still flattens: the checked arm's assert now names the *store* rather than claiming
-        // the node is missing, and the `no_assert` arm still returns an empty node. Closing *that* is
-        // the signature change, which the port's `History` trait has no error channel for where the
-        // Scala's `F` does — registered as owed in AUDIT C53 rather than half-done here.
+        // **And the flatten above it is closed too** (2026-09-24, C53's own unit): `load_node` returns
+        // `Result`, so this error is *propagated* rather than turned into an empty node under
+        // `no_assert`. The error channel is the port's counterpart of the Scala's `F`: `RadixTreeImpl`
+        // carries `Result<Node, String>` the way `RadixTree.scala` carries `F[Node]`, and the trait
+        // methods that reach it (`History::read`/`reset`, and the `ISpace::reset` impls that already
+        // returned `Result<(), String>`) carry it up rather than dropping it.
         let bytes = self
             .store
             .get(&[node_ptr])
@@ -196,14 +197,25 @@ impl RadixTreeImpl {
     }
 
     /// Load a node, using the read cache and falling back to the store (port of `loadNode`).
-    pub async fn load_node(&self, node_ptr: Blake2b256Hash, no_assert: bool) -> Node {
+    ///
+    /// The `Err` arm carries the oracle's error channel: `RadixTree.scala`'s `loadNode` is
+    /// `F[Node]` and lets the store's failure through `F`, asserting only on an *absent* node
+    /// (`:586-598`). This used to be a bare `Node`, so a store error became `empty_node()` under
+    /// `no_assert` — the empty trie standing in for a root that could not be read (AUDIT C53).
+    /// `no_assert` therefore still means "a *missing* node is expected here" (the two root loads
+    /// pass it, `RadixHistory::new`/`reset`), and it cannot mean "an unreadable node is fine".
+    pub async fn load_node(
+        &self,
+        node_ptr: Blake2b256Hash,
+        no_assert: bool,
+    ) -> Result<Node, String> {
         if let Some(node) = crate::lock::mlock(&self.cache_read).get(&node_ptr).cloned() {
-            return node;
+            return Ok(node);
         }
         match self.load_node_from_store(node_ptr).await {
             Ok(Some(node)) => {
                 crate::lock::mlock(&self.cache_read).insert(node_ptr, node.clone());
-                node
+                Ok(node)
             }
             Ok(None) => {
                 assert!(
@@ -211,12 +223,11 @@ impl RadixTreeImpl {
                     "Missing node in database. ptr={}",
                     node_ptr.to_hex()
                 );
-                empty_node()
+                Ok(empty_node())
             }
-            Err(e) => {
-                assert!(no_assert, "Corrupt node {}: {e}", node_ptr.to_hex());
-                empty_node()
-            }
+            // Not a default: the store could not be read, and a tree whose root silently became the
+            // empty node would answer "nothing" for every key under it.
+            Err(e) => Err(e),
         }
     }
 
@@ -282,28 +293,31 @@ impl RadixTreeImpl {
     }
 
     /// Read the leaf value at `start_prefix` under `start_node` (port of `read`).
+    ///
+    /// `F[Option[Blake2b256Hash]]` in the oracle (`RadixTree.scala`), so an unreadable node is an
+    /// error here rather than "no value at this key" (AUDIT C53).
     pub async fn read(
         &self,
         start_node: &Node,
         start_prefix: &KeySegment,
-    ) -> Option<Blake2b256Hash> {
+    ) -> Result<Option<Blake2b256Hash>, String> {
         let mut node = start_node.clone();
         let mut prefix = start_prefix.clone();
         loop {
             if prefix.is_empty() {
-                return None;
+                return Ok(None);
             }
             match &node[prefix.head() as usize] {
-                Item::Empty => return None,
+                Item::Empty => return Ok(None),
                 Item::Leaf {
                     prefix: leaf_prefix,
                     value,
                 } => {
-                    return if *leaf_prefix == prefix.tail() {
+                    return Ok(if *leaf_prefix == prefix.tail() {
                         Some(*value)
                     } else {
                         None
-                    };
+                    });
                 }
                 Item::NodePtr {
                     prefix: ptr_prefix,
@@ -312,10 +326,10 @@ impl RadixTreeImpl {
                     let (_, prefix_rest, ptr_prefix_rest) =
                         KeySegment::common_prefix(&prefix.tail(), ptr_prefix);
                     if ptr_prefix_rest.is_empty() {
-                        node = self.load_node(*ptr, false).await;
+                        node = self.load_node(*ptr, false).await?;
                         prefix = prefix_rest;
                     } else {
-                        return None;
+                        return Ok(None);
                     }
                 }
             }
@@ -403,10 +417,10 @@ impl RadixTreeImpl {
 
     /// Construct a node from an item, loading the child for an empty-prefix `NodePtr` (port of
     /// `constructNodeFromItem`).
-    async fn construct_node_from_item(&self, item: &Item) -> Node {
+    async fn construct_node_from_item(&self, item: &Item) -> Result<Node, String> {
         match item {
             Item::NodePtr { prefix, ptr } if prefix.is_empty() => self.load_node(*ptr, false).await,
-            _ => Self::create_node_from_item(item),
+            _ => Ok(Self::create_node_from_item(item)),
         }
     }
 
@@ -417,12 +431,12 @@ impl RadixTreeImpl {
         cur_item: Item,
         ins_prefix: KeySegment,
         ins_value: Blake2b256Hash,
-    ) -> Option<Item> {
+    ) -> Result<Option<Item>, String> {
         match cur_item {
-            Item::Empty => Some(Item::Leaf {
+            Item::Empty => Ok(Some(Item::Leaf {
                 prefix: ins_prefix,
                 value: ins_value,
-            }),
+            })),
             Item::Leaf {
                 prefix: leaf_prefix,
                 value: leaf_value,
@@ -434,12 +448,12 @@ impl RadixTreeImpl {
                 );
                 if leaf_prefix == ins_prefix {
                     if ins_value == leaf_value {
-                        None
+                        Ok(None)
                     } else {
-                        Some(Item::Leaf {
+                        Ok(Some(Item::Leaf {
                             prefix: ins_prefix,
                             value: ins_value,
-                        })
+                        }))
                     }
                 } else {
                     let (comm_prefix, ins_prefix_rest, leaf_prefix_rest) =
@@ -453,7 +467,11 @@ impl RadixTreeImpl {
                         prefix: ins_prefix_rest.tail(),
                         value: ins_value,
                     };
-                    Some(self.save_node_and_create_item(&new_node, &comm_prefix, false))
+                    Ok(Some(self.save_node_and_create_item(
+                        &new_node,
+                        &comm_prefix,
+                        false,
+                    )))
                 }
             }
             Item::NodePtr {
@@ -467,16 +485,17 @@ impl RadixTreeImpl {
                 let (comm_prefix, ins_prefix_rest, ptr_prefix_rest) =
                     KeySegment::common_prefix(&ins_prefix, &ptr_prefix);
                 if ptr_prefix_rest.is_empty() {
-                    let child_node = self.load_node(ptr, false).await;
+                    let child_node = self.load_node(ptr, false).await?;
                     let child_item_idx = ins_prefix_rest.head() as usize;
                     let child_ins_prefix = ins_prefix_rest.tail();
                     let child_item = child_node[child_item_idx].clone();
-                    let child_item_opt = self.update(child_item, child_ins_prefix, ins_value).await;
-                    child_item_opt.map(|new_child_item| {
+                    let child_item_opt =
+                        self.update(child_item, child_ins_prefix, ins_value).await?;
+                    Ok(child_item_opt.map(|new_child_item| {
                         let mut updated_child_node = child_node.clone();
                         updated_child_node[child_item_idx] = new_child_item;
                         self.save_node_and_create_item(&updated_child_node, &comm_prefix, false)
-                    })
+                    }))
                 } else {
                     let mut new_node = empty_node();
                     new_node[ptr_prefix_rest.head() as usize] = Item::NodePtr {
@@ -487,7 +506,11 @@ impl RadixTreeImpl {
                         prefix: ins_prefix_rest.tail(),
                         value: ins_value,
                     };
-                    Some(self.save_node_and_create_item(&new_node, &comm_prefix, false))
+                    Ok(Some(self.save_node_and_create_item(
+                        &new_node,
+                        &comm_prefix,
+                        false,
+                    )))
                 }
             }
         }
@@ -495,17 +518,17 @@ impl RadixTreeImpl {
 
     /// Delete a leaf from the subtree rooted at `cur_item` (port of `delete`).
     #[async_recursion]
-    async fn delete(&self, cur_item: Item, del_prefix: KeySegment) -> Option<Item> {
+    async fn delete(&self, cur_item: Item, del_prefix: KeySegment) -> Result<Option<Item>, String> {
         match cur_item {
-            Item::Empty => None,
+            Item::Empty => Ok(None),
             Item::Leaf {
                 prefix: leaf_prefix,
                 ..
             } => {
                 if leaf_prefix == del_prefix {
-                    Some(Item::Empty)
+                    Ok(Some(Item::Empty))
                 } else {
-                    None
+                    Ok(None)
                 }
             }
             Item::NodePtr {
@@ -515,18 +538,18 @@ impl RadixTreeImpl {
                 let (comm_prefix, del_prefix_rest, ptr_prefix_rest) =
                     KeySegment::common_prefix(&del_prefix, &ptr_prefix);
                 if !ptr_prefix_rest.is_empty() || del_prefix_rest.is_empty() {
-                    None
+                    Ok(None)
                 } else {
-                    let child_node = self.load_node(ptr, false).await;
+                    let child_node = self.load_node(ptr, false).await?;
                     let del_item_idx = del_prefix_rest.head() as usize;
                     let del_item_prefix = del_prefix_rest.tail();
                     let child_item = child_node[del_item_idx].clone();
-                    let child_item_opt = self.delete(child_item, del_item_prefix).await;
-                    child_item_opt.map(|new_child_item| {
+                    let child_item_opt = self.delete(child_item, del_item_prefix).await?;
+                    Ok(child_item_opt.map(|new_child_item| {
                         let mut new_child_node = child_node.clone();
                         new_child_node[del_item_idx] = new_child_item;
                         self.save_node_and_create_item(&new_child_node, &comm_prefix, true)
-                    })
+                    }))
                 }
             }
         }
@@ -534,7 +557,11 @@ impl RadixTreeImpl {
 
     /// Apply a batch of `HistoryAction`s to a subtree (port of `makeActions`).
     #[async_recursion]
-    async fn make_actions(&self, cur_node: &Node, actions: &[HistoryAction]) -> Option<Node> {
+    async fn make_actions(
+        &self,
+        cur_node: &Node,
+        actions: &[HistoryAction],
+    ) -> Result<Option<Node>, String> {
         // Group actions by the first byte of their key.
         let mut grouped: Vec<(u8, Vec<HistoryAction>)> = Vec::new();
         for action in actions {
@@ -553,9 +580,9 @@ impl RadixTreeImpl {
                 let action = &actions_in_group[0];
                 let new_item = match action {
                     HistoryAction::Insert { key, hash } => {
-                        self.update(item, key.tail(), *hash).await
+                        self.update(item, key.tail(), *hash).await?
                     }
-                    HistoryAction::Delete { key } => self.delete(item, key.tail()).await,
+                    HistoryAction::Delete { key } => self.delete(item, key.tail()).await?,
                 };
                 (item_idx, new_item)
             } else {
@@ -570,10 +597,10 @@ impl RadixTreeImpl {
                 if cleared.is_empty() {
                     (item_idx, None)
                 } else {
-                    let created_node = self.construct_node_from_item(&item).await;
+                    let created_node = self.construct_node_from_item(&item).await?;
                     let new_actions: Vec<HistoryAction> =
                         cleared.iter().map(|a| a.trim()).collect();
-                    let new_node_opt = self.make_actions(&created_node, &new_actions).await;
+                    let new_node_opt = self.make_actions(&created_node, &new_actions).await?;
                     let new_item = new_node_opt
                         .map(|n| self.save_node_and_create_item(&n, &KeySegment::empty(), true));
                     (item_idx, new_item)
@@ -588,11 +615,11 @@ impl RadixTreeImpl {
                 new_cur_node[idx] = item;
             }
         }
-        if new_cur_node != *cur_node {
+        Ok(if new_cur_node != *cur_node {
             Some(new_cur_node)
         } else {
             None
-        }
+        })
     }
 
     /// Apply actions to a subtree, persist, and return the new root (port of `saveAndCommit`).
@@ -601,7 +628,7 @@ impl RadixTreeImpl {
         root_node: &Node,
         actions: &[HistoryAction],
     ) -> Result<Option<(Node, Blake2b256Hash)>, String> {
-        let result = match self.make_actions(root_node, actions).await {
+        let result = match self.make_actions(root_node, actions).await? {
             Some(new_root_node) => {
                 let new_root_hash = self.save_node(&new_root_node);
                 self.commit().await?;
@@ -692,6 +719,61 @@ mod tests {
         }
     }
 
+    /// **A store error is not an empty root.** `load_node`'s signature is `Node`, so the checked
+    /// sibling's `Err` arm was flattened into `empty_node()` — under `no_assert = true`, which is
+    /// exactly what the two root loads pass (`RadixHistory::new`/`reset`), a history whose `root_hash`
+    /// names a real root would come back with the **empty trie** as its root node: every read under it
+    /// answers "nothing" and the next write rebuilds the root from nothing. The Scala keeps the error
+    /// in `F` (`loadNodeFromStore: F[Option[Node]]`, `RadixTree.scala:568-598`) and lets only the
+    /// *absent* case reach `assert(noAssert)`/`emptyNode`; this is the port's error channel for it
+    /// (AUDIT C53).
+    ///
+    /// Falsifier, in its pre-fix form: with `load_node` returning a bare `Node`, a store that is down
+    /// yielded `empty_node()` and the first assertion failed (run 2026-09-24: `left` and `right` were
+    /// the same 256-`Empty` array). The signature is `Result` now, so the same case is an `Err` here —
+    /// and the *absent*-node half is asserted beside it, because a fix that turned absence into an
+    /// error would be the opposite bug.
+    #[tokio::test]
+    async fn a_store_error_is_not_an_empty_root() {
+        let failing = RadixTreeImpl::new(Arc::new(FailingStore));
+        let err = failing
+            .load_node(Blake2b256Hash::from_bytes([0x11; 32]), true)
+            .await
+            .expect_err("a store error must never read as an empty root");
+        assert!(
+            err.contains("store error reading node"),
+            "and it must say which failure it was, got: {err}"
+        );
+
+        let empty = in_memory_tree();
+        assert_eq!(
+            empty
+                .load_node(Blake2b256Hash::from_bytes([0x11; 32]), true)
+                .await
+                .expect("an absent node under `no_assert` is the oracle's `emptyNode`"),
+            empty_node(),
+            "absence is still not an error — only unreadability is"
+        );
+
+        // …and the *same* failure at the place a root is actually loaded: the two callers that pass
+        // `no_assert = true` (`RadixHistory::new`/`reset`) refuse to build a history rather than hand
+        // back one whose root is the empty trie — which would answer "no data" for every key of a
+        // state that exists, and rebuild that root from nothing on the next write.
+        let unbuildable = match crate::history::instances::radix_history::RadixHistory::new(
+            Blake2b256Hash::from_bytes([0x11; 32]),
+            Arc::new(FailingStore),
+        )
+        .await
+        {
+            Ok(_) => panic!("a history whose root cannot be read must not be built"),
+            Err(e) => e,
+        };
+        assert!(
+            unbuildable.contains("store error reading node"),
+            "and it must name the failure, got: {unbuildable}"
+        );
+    }
+
     /// **A store error is not a missing node.** Both used to be `None` here, so the caller asserted
     /// "Missing node in database" for an I/O failure — or, under `no_assert`, returned an empty node
     /// for it — and read a `PREFIX_*` leaf as absent when it could not be read at all. The two cases
@@ -738,7 +820,7 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(tree.read(&root1, &key).await, Some(value));
+        assert_eq!(tree.read(&root1, &key).await.expect("read"), Some(value));
 
         // update
         let value2 = Blake2b256Hash::from_bytes([0x43; 32]);
@@ -753,7 +835,7 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(tree.read(&root2, &key).await, Some(value2));
+        assert_eq!(tree.read(&root2, &key).await.expect("read"), Some(value2));
 
         // delete returns to the empty root
         let (root3, _) = tree
@@ -761,7 +843,7 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(tree.read(&root3, &key).await, None);
+        assert_eq!(tree.read(&root3, &key).await.expect("read"), None);
         assert_eq!(root3, empty_node());
     }
 }

@@ -331,7 +331,7 @@ impl<C, P, A, K> HistoryRepository<C, P, A, K> {
         self.roots_repository
             .validate_and_set_current_root(root)
             .await?;
-        let next = self.current_history.reset(root).await;
+        let next = self.current_history.reset(root).await?;
         Ok(Arc::new(HistoryRepository {
             current_history: next,
             roots_repository: self.roots_repository.clone(),
@@ -350,11 +350,14 @@ impl<C, P, A, K> HistoryRepository<C, P, A, K> {
         A: Serialize<A> + Send + Sync + 'static,
         K: Serialize<K> + Send + Sync + 'static,
     {
-        let history = self.current_history.reset(state_hash).await;
-        Arc::new(RSpaceHistoryReaderImpl::new(
-            history,
-            self.leaf_store.clone(),
-        ))
+        // The oracle builds this in `F` (`getHistoryReader: F[HistoryReader]`); the port's signature
+        // is total and its callers are `casper`/`node`, so an unreadable root is carried *into* the
+        // reader and answered on the first read rather than becoming an empty-rooted reader that
+        // reports "no data" for every key (AUDIT C53).
+        Arc::new(match self.current_history.reset(state_hash).await {
+            Ok(history) => RSpaceHistoryReaderImpl::new(history, self.leaf_store.clone()),
+            Err(e) => RSpaceHistoryReaderImpl::unreadable(e, state_hash, self.leaf_store.clone()),
+        })
     }
 
     /// A reader of native system-contract state rooted at `state_hash`.
@@ -368,11 +371,16 @@ impl<C, P, A, K> HistoryRepository<C, P, A, K> {
         A: Serialize<A> + Send + Sync + 'static,
         K: Serialize<K> + Send + Sync + 'static,
     {
-        let history = self.current_history.reset(state_hash).await;
-        Arc::new(RSpaceHistoryReaderImpl::<C, P, A, K>::new(
-            history,
-            self.leaf_store.clone(),
-        ))
+        Arc::new(match self.current_history.reset(state_hash).await {
+            Ok(history) => {
+                RSpaceHistoryReaderImpl::<C, P, A, K>::new(history, self.leaf_store.clone())
+            }
+            Err(e) => RSpaceHistoryReaderImpl::<C, P, A, K>::unreadable(
+                e,
+                state_hash,
+                self.leaf_store.clone(),
+            ),
+        })
     }
 }
 

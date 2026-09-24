@@ -15,7 +15,10 @@ use crate::history::radix_tree::empty_root_hash;
 #[async_trait]
 pub trait History: Send + Sync {
     /// Read the value stored at `key` (port of `read`).
-    async fn read(&self, key: &KeySegment) -> Option<Blake2b256Hash>;
+    ///
+    /// Fallible: the oracle's `read` is `F[Option[Blake2b256Hash]]`, so a node that cannot be read is
+    /// an error rather than "no value at this key" (AUDIT C53).
+    async fn read(&self, key: &KeySegment) -> Result<Option<Blake2b256Hash>, String>;
 
     /// Apply a batch of insert/update/delete actions (port of `process`).
     async fn process(&self, actions: &[HistoryAction]) -> Result<Arc<dyn History>, String>;
@@ -24,7 +27,10 @@ pub trait History: Send + Sync {
     fn root(&self) -> Blake2b256Hash;
 
     /// Return a `History` rooted at `root` (port of `reset`).
-    async fn reset(&self, root: Blake2b256Hash) -> Arc<dyn History>;
+    ///
+    /// Fallible for the same reason as [`History::read`]: the root node is *loaded*, and a store that
+    /// cannot be read must not become an empty root (AUDIT C53).
+    async fn reset(&self, root: Blake2b256Hash) -> Result<Arc<dyn History>, String>;
 }
 
 /// The hash of the empty history root (port of `History.emptyRootHash`).

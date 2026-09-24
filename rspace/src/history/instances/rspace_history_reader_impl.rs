@@ -27,7 +27,20 @@ const PREFIX_JOINS: u8 = 0x02;
 
 /// The history reader implementation (port of `RSpaceHistoryReaderImpl`).
 pub struct RSpaceHistoryReaderImpl<C, P, A, K> {
-    target_history: Arc<dyn History>,
+    /// The history to read through — or the reason it could not be built.
+    ///
+    /// **Why the error lives here rather than in a `Result` return.** The oracle builds a reader in
+    /// `F` (`HistoryRepository.getHistoryReader: F[HistoryReader]`), and so does the port's
+    /// `HistoryRepository::reset`; but the *accessors the node calls* take a reader, not a `Result`
+    /// (`casper`, `node` and the bench all write `history.get_history_reader(root).await`), so a
+    /// signature change there is a unit of its own. Carrying the error is the honest middle: the load
+    /// failure is not *dropped*, it is answered on the first read — and every read path is already
+    /// fallible (`HistoryReader::{get_data,get_continuations,get_joins}` return `Result<_, RSpaceError>`).
+    /// Before this, the failure became an **empty root node** (AUDIT C53), i.e. a reader that answers
+    /// "no data" for every key of a state that exists.
+    target_history: Result<Arc<dyn History>, String>,
+    /// The root this reader was asked for, so `root()` answers even when the load failed.
+    root: Blake2b256Hash,
     leaf_store: ColdKeyValueStore,
     marker: std::marker::PhantomData<(C, P, A, K)>,
 }
@@ -40,11 +53,30 @@ where
     K: Serialize<K> + Send + Sync + 'static,
 {
     pub fn new(target_history: Arc<dyn History>, leaf_store: ColdKeyValueStore) -> Self {
+        let root = target_history.root();
         RSpaceHistoryReaderImpl {
-            target_history,
+            target_history: Ok(target_history),
+            root,
             leaf_store,
             marker: std::marker::PhantomData,
         }
+    }
+
+    /// A reader whose root could **not** be read: every read answers with the reason (AUDIT C53).
+    /// `root` still reports the hash that was asked for, so a caller can tell *which* state it could
+    /// not read.
+    pub fn unreadable(error: String, root: Blake2b256Hash, leaf_store: ColdKeyValueStore) -> Self {
+        RSpaceHistoryReaderImpl {
+            target_history: Err(error),
+            root,
+            leaf_store,
+            marker: std::marker::PhantomData,
+        }
+    }
+
+    /// The history, or the load failure that stands in for it.
+    fn history(&self) -> Result<&Arc<dyn History>, String> {
+        self.target_history.as_ref().map_err(|e| e.clone())
     }
 
     async fn fetch_data(
@@ -56,7 +88,7 @@ where
         // construction — measured 2026-09-24 (U1 item 7), like the two other sites the appendix named.
         let mut seg = vec![prefix];
         seg.extend_from_slice(key.as_bytes());
-        match self.target_history.read(&KeySegment::new(seg)).await {
+        match self.history()?.read(&KeySegment::new(seg)).await? {
             Some(leaf_hash) => {
                 let data = self.leaf_store.get(&[leaf_hash]).await?;
                 Ok(data.into_iter().next().flatten())
@@ -75,7 +107,7 @@ where
     K: Serialize<K> + Send + Sync + 'static,
 {
     fn root(&self) -> Blake2b256Hash {
-        self.target_history.root()
+        self.root
     }
 
     async fn get_data(&self, key: Blake2b256Hash) -> Result<Vec<Datum<A>>, RSpaceError> {
@@ -137,6 +169,7 @@ where
         Arc::new(BaseReader {
             reader: Arc::new(RSpaceHistoryReaderImpl {
                 target_history: self.target_history.clone(),
+                root: self.root,
                 leaf_store: self.leaf_store.clone(),
                 marker: std::marker::PhantomData,
             }),
@@ -146,6 +179,7 @@ where
     fn reader_binary(&self) -> Arc<dyn HistoryReaderBinary<C, P, A, K>> {
         Arc::new(RSpaceHistoryReaderImpl {
             target_history: self.target_history.clone(),
+            root: self.root,
             leaf_store: self.leaf_store.clone(),
             marker: std::marker::PhantomData,
         })
@@ -298,7 +332,9 @@ mod tests {
             .await
             .expect("cold store");
             Rig {
-                history: RadixHistory::new(empty_root(), StdArc::new(history_store)).await,
+                history: RadixHistory::new(empty_root(), StdArc::new(history_store))
+                    .await
+                    .expect("an empty root is readable"),
                 cold: StdArc::new(cold),
             }
         }

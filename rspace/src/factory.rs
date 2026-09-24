@@ -44,7 +44,7 @@ pub async fn create_history_repository<C, P, A, K>(
 
     let roots_repo = Arc::new(RootRepository::new(RootsStore::new(roots_store)));
     let root = roots_repo.current_root().await?;
-    let history = RadixHistory::new(root, Arc::new(history_store)).await;
+    let history = RadixHistory::new(root, Arc::new(history_store)).await?;
 
     Ok(Arc::new(HistoryRepository::new(
         history,

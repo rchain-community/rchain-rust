@@ -23,18 +23,20 @@ pub struct RadixHistory {
 }
 
 impl RadixHistory {
+    /// Build the history rooted at `root` — or refuse, if that root cannot be *read* (an absent root
+    /// under `no_assert` is still the oracle's empty node; AUDIT C53).
     pub async fn new(
         root: Blake2b256Hash,
         store: Arc<dyn KeyValueTypedStore<Blake2b256Hash, Vec<u8>>>,
-    ) -> Arc<dyn History> {
+    ) -> Result<Arc<dyn History>, String> {
         let impl_ = Arc::new(RadixTreeImpl::new(store.clone()));
-        let root_node = impl_.load_node(root, true).await;
-        Arc::new(RadixHistory {
+        let root_node = impl_.load_node(root, true).await?;
+        Ok(Arc::new(RadixHistory {
             root_hash: root,
             root_node,
             impl_,
             store,
-        })
+        }))
     }
 
     fn copy(&self, root_hash: Blake2b256Hash, root_node: Node, impl_: Arc<RadixTreeImpl>) -> Self {
@@ -59,7 +61,7 @@ impl History for RadixHistory {
         self.root_hash
     }
 
-    async fn read(&self, key: &KeySegment) -> Option<Blake2b256Hash> {
+    async fn read(&self, key: &KeySegment) -> Result<Option<Blake2b256Hash>, String> {
         self.impl_.read(&self.root_node, key).await
     }
 
@@ -84,10 +86,10 @@ impl History for RadixHistory {
         }
     }
 
-    async fn reset(&self, root: Blake2b256Hash) -> Arc<dyn History> {
+    async fn reset(&self, root: Blake2b256Hash) -> Result<Arc<dyn History>, String> {
         let impl_ = Arc::new(RadixTreeImpl::new(self.store.clone()));
-        let root_node = impl_.load_node(root, true).await;
-        Arc::new(self.copy(root, root_node, impl_))
+        let root_node = impl_.load_node(root, true).await?;
+        Ok(Arc::new(self.copy(root, root_node, impl_)))
     }
 }
 
@@ -120,7 +122,12 @@ mod tests {
         .await
         .expect("in-memory store");
         let root = empty_root();
-        (RadixHistory::new(root, StdArc::new(store)).await, root)
+        (
+            RadixHistory::new(root, StdArc::new(store))
+                .await
+                .expect("a fresh history is readable"),
+            root,
+        )
     }
 
     fn key(b: u8) -> KeySegment {
@@ -141,7 +148,7 @@ mod tests {
         let (history, root) = history().await;
         assert_eq!(history.root(), root);
         assert_eq!(history.root(), empty_root_hash());
-        assert_eq!(history.read(&key(1)).await, None);
+        assert_eq!(history.read(&key(1)).await.expect("read"), None);
     }
 
     /// Committing an insert moves the root, and the **same actions from the same starting root
@@ -159,16 +166,16 @@ mod tests {
 
         // The committed values are readable at the new root…
         assert_eq!(
-            a.read(&key(1)).await,
+            a.read(&key(1)).await.expect("read"),
             Some(Blake2b256Hash::from_bytes([0x11; 32]))
         );
         assert_eq!(
-            a.read(&key(2)).await,
+            a.read(&key(2)).await.expect("read"),
             Some(Blake2b256Hash::from_bytes([0x22; 32]))
         );
         // …and the history it came from is unchanged: `process` returns a *new* history.
         assert_eq!(first.root(), empty_root());
-        assert_eq!(first.read(&key(1)).await, None);
+        assert_eq!(first.read(&key(1)).await.expect("read"), None);
     }
 
     /// An empty action list commits nothing and returns a history at the same root (the
@@ -185,7 +192,10 @@ mod tests {
         assert_ne!(after.root(), root);
         let no_op = after.process(&[]).await.expect("commit");
         assert_eq!(no_op.root(), after.root());
-        assert_eq!(no_op.read(&key(1)).await, after.read(&key(1)).await);
+        assert_eq!(
+            no_op.read(&key(1)).await.expect("read"),
+            after.read(&key(1)).await.expect("read")
+        );
     }
 
     /// Two actions on one key are refused by an assertion: `save_and_commit` would apply them in an
@@ -221,22 +231,26 @@ mod tests {
         let (history, root) = history().await;
         let after = history.process(&[insert(1, 0x11)]).await.expect("commit");
 
-        let rewound = after.reset(root).await;
+        let rewound = after.reset(root).await.expect("reset");
         assert_eq!(rewound.root(), root);
-        assert_eq!(rewound.read(&key(1)).await, None, "the insert is gone");
+        assert_eq!(
+            rewound.read(&key(1)).await.expect("read"),
+            None,
+            "the insert is gone"
+        );
 
         // …and the history it was reset from still has it (the reset was on a new value).
         assert_eq!(after.root(), after.root());
         assert_eq!(
-            after.read(&key(1)).await,
+            after.read(&key(1)).await.expect("read"),
             Some(Blake2b256Hash::from_bytes([0x11; 32]))
         );
 
         // Resetting to the newer root again finds the value: the store kept both.
-        let back = rewound.reset(after.root()).await;
+        let back = rewound.reset(after.root()).await.expect("reset");
         assert_eq!(back.root(), after.root());
         assert_eq!(
-            back.read(&key(1)).await,
+            back.read(&key(1)).await.expect("read"),
             Some(Blake2b256Hash::from_bytes([0x11; 32]))
         );
     }
@@ -254,9 +268,9 @@ mod tests {
             .expect("commit");
 
         assert_ne!(deleted.root(), inserted.root());
-        assert_eq!(deleted.read(&key(1)).await, None);
+        assert_eq!(deleted.read(&key(1)).await.expect("read"), None);
         assert_eq!(
-            inserted.read(&key(1)).await,
+            inserted.read(&key(1)).await.expect("read"),
             Some(Blake2b256Hash::from_bytes([0x11; 32])),
             "the earlier root still reads the value"
         );
