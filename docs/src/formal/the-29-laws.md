@@ -21,7 +21,7 @@ deferred); **axiom** = postulated by design (a cryptographic primitive).
 > `Rchain/Laws.lean` and refused stale by the gate. It counts clauses rather than laws and separates
 > **`proved-tied`** (proved *and* tied to the node by a corpus) from **`proved-model`** (proved about a
 > model a human keeps in sync); this page's plainer words are the narrative reading of the same rows.
-> Its total is **<!-- counts:proved-laws -->37<!-- counts:end --> of <!-- counts:laws -->49 laws<!-- counts:end --> proved at all — <!-- counts:proved-tied-laws -->9<!-- counts:end --> tied to the node by a corpus, <!-- counts:proved-model-laws -->28<!-- counts:end --> over
+> Its total is **<!-- counts:proved-laws -->40<!-- counts:end --> of <!-- counts:laws -->49 laws<!-- counts:end --> proved at all — <!-- counts:proved-tied-laws -->12<!-- counts:end --> tied to the node by a corpus, <!-- counts:proved-model-laws -->28<!-- counts:end --> over
 > the model — with one more law proved but *vacuous* (its statement restates its own definition). Where the
 > two disagree, the register is right — and it
 > was right about this page's law 5, which used to call an almost-vacuous lemma "correctly stated".

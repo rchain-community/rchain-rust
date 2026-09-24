@@ -1525,9 +1525,25 @@ oracle is, and the test that pins the fix.
   `parser.rs:1108-1110` (break before `parse_proc` meets the ellipsis), with the same shape in the map
   (`:1179-1181`) and set (`:1201-1203`) loops, and both spellings are pinned by `parser.rs:1530`'s
   `a_comma_before_a_remainder_is_the_deviation_the_contracts_use` (`[a, ...rest]`, `{name: *voter,
-  ...tail}`, `Set(a, ...rest)` and `[a ...rest]` all stay accepted). What is still unlanded is not a
-  parser fix but the *model's* half of law 30/31 — the grammar as data and this deviation list as data
-  (`Rchain/Parse.lean`, Phase 2's G3).
+  ...tail}`, `Set(a, ...rest)` and `[a ...rest]` all stay accepted).
+
+  **Landed as the model's half (G3: `Rchain/Parse.lean` + `Rchain/Print.lean` + the `parse` corpus).**
+  The grammar's list sites are data (`grammarFragment`), `derives` decides a token list, and
+  `parseDeviations` is law 31's list with each row's *direction* checked against `derives` — so the
+  comma-less form is derivable and the comma form is a registered deviation, exactly as this paragraph
+  now says. The Rust consumer (`rholang/tests/lean_parse_corpus.rs`) then found three deviations the
+  tree did not know: a `NameRemainder` in a **contract's** parameter list
+  (`contract f(x ...@rest) = { Nil }`) is derived by `PContr` and refused by the port's parameter loop
+  (`parser.rs:426-431`), and `ReceiveSendSource`'s `Name "?!"` is derived and refused by the receipt
+  parser (`:1271-1315`) — while its sibling `SendReceiveSource` (`Name "!?" "(" [Proc] ")"`) **is**
+  implemented (`Tok::BangQ`, read by `parse_name_source`). So the `refuses` direction of law 31, which
+  had no row, has two.
+
+  **One claim this residual's neighbourhood makes is now recorded where it belongs:** a
+  *process-position connective* (`x /\ y`) is refused by the **normalizer** (`normalizer.rs:1762`,
+  `TopLevelLogicalConnectivesNotAllowedError`), not by the parser — `parse("x /\\ y")` is `Ok`. That
+  refusal is a fact about law 34/35's layer rather than laws 30/31's, so it is **not** a row of the
+  parse layer's deviation list; the parse layer carries it as a note instead.
 
 - **C25 (fixed) — `Group!("new", …)` answered nothing because it read a dictionary genesis never
   writes.** A wallet-case failure (`newGroup`); the symptom was that `Group.rho`'s `new` contract

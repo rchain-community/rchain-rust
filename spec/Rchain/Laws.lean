@@ -1324,16 +1324,58 @@ def laws : List Law := [
 
   -- ── Laws 30–43: the surface the ten silent defects live in ──────────────────────────────────────
   { number := 30, layer := "Rholang",
-    statement := "Every term the parser accepts is in the BNFC grammar (`rholang_mercury.cf`)",
-    status := .open,
-    falsifiable := none,
-    note := "`parser.rs` is more permissive in places (AUDIT C24's residual); needs `Rchain/Parse.lean` \
-      and the grammar as data. The gate already reserves the `parse` corpus's consumer \
-      (`tools/check-lean-conformance.sh:207`, `lean_parse_corpus`) with nothing behind it yet" },
+    statement := "Every term the parser accepts is in the BNFC grammar (`rholang_mercury.cf`) — \
+      **modulo the deviations law 31 names**, and checked as a `decide`d corpus with the soundness \
+      direction separated: the derivable cases must be derivable, and the `refused` cases are an \
+      accepted term outside the grammar",
+    status := .provedTied,
+    declarations := [`Rchain.grammarFragment, `Rchain.derives, `Rchain.parseDeviations,
+      `Rchain.parseCases_decide, `Rchain.deviations_decide],
+    corpus := some "parse",
+    rust := ["rholang/src/parser.rs", "rholang/tests/lean_parse_corpus.rs"],
+    witness := [`Rchain.parseCases_decide, `Rchain.deviations_decide],
+    falsifiable := some "the corpus's **refused** half is the soundness direction made falsifiable: \
+      `[1 2]`, `(1 2)`, `[1, 2 3]`, `{a : 1 b : 2}`, `Set(1 2)`, `(1, 2 3)`, `a.b(1 2)`, `c!(1 2)`, \
+      `x |`, `a.b` and `new x in` are spelled with no separator or with trailing input, so the grammar \
+      refuses them (AUDIT C30) and a parser that grew more permissive fails one — the Rust consumer \
+      parses each spelling and must get the refusal. The derivable half is `parseCases_decide`; its \
+      `contract` bind/param case is `false` *and* derivable, which is the deviation list showing beside \
+      the derive rather than after it",
+    note := "**the model exists now, and the corpus is not a tautology** (2026-09-24). `grammarFragment` \
+      is the grammar as data (13 productions) with `derives` a computable predicate over it, and \
+      `parseCases` is the corpus — the derivable cases, the refused cases, the deviation rows and the \
+      printer's witnesses — with `parseCases_decide` a `decide`d theorem over all of it. **What its \
+      first Rust run found is the reason the layer earns its name**: three rows disagreed with the \
+      node, which is the direction a `decide`d corpus cannot catch, because a corpus that only agrees \
+      with itself proves only that (`rholang/tests/lean_parse_corpus.rs` is the other half). **And the \
+      openness this row carried resolves differently than it was written**: the parser's permissiveness \
+      is the **deviation list**, not an unrecorded residual — the comma-less remainder `[1 ..._]` \
+      needs no deviation at all (`[X] ::= X | X \",\" [X]` puts a separator only *between* elements, \
+      and `ProcRemainder` follows the list carrying no terminal), which corrected AUDIT C24's reading \
+      (the comma form is law 31's deviation, recorded below) — and the gate's reserved consumer is now \
+      a real one (`tools/check-lean-conformance.sh:207`, `lean_parse_corpus`)" },
   { number := 31, layer := "Rholang",
-    statement := "Every BNFC term is accepted, modulo a data list of documented deviations",
-    status := .open,
-    falsifiable := none },
+    statement := "Every BNFC term is accepted, modulo a **data list of documented deviations** \
+      (`Rchain.parseDeviations`), each row's direction `decide`d against the grammar rather than \
+      asserted",
+    status := .provedTied,
+    declarations := [`Rchain.grammarFragment, `Rchain.derives, `Rchain.parseDeviations,
+      `Rchain.parseCases_decide, `Rchain.deviations_decide],
+    corpus := some "parse",
+    rust := ["rholang/src/parser.rs", "rholang/tests/lean_parse_corpus.rs"],
+    witness := [`Rchain.parseCases_decide, `Rchain.deviations_decide],
+    falsifiable := some "`deviations_decide` decides each row's direction against `derives`: an \
+      `accepts` row is a spelling the grammar derives, and a `refuses` row is one it does not and the \
+      node still accepts — so a list widened to excuse a spelling the grammar already derives, or a row \
+      whose direction is mis-stated, fails the `decide`. Each row is also a corpus case \
+      (`deviationCases`), so the Rust consumer is the second half",
+    note := "Law 31's deviation list is **data in `Rchain/Parse.lean` (`parseDeviations`)**, each row's \
+      direction `decide`d against `derives`: the `accepts` rows are AUDIT C31's trailing-separator and \
+      comma-before-remainder sites, and the `refuses` rows — a `NameRemainder` in a contract's \
+      parameter list and `ReceiveSendSource`'s `Name \"?!\"` — were found by the layer's Rust \
+      consumer, not by reading. A process-position connective is **not** a row: the parser accepts it \
+      and the refusal is the normalizer's (`normalizer.rs:1762`, \
+      `TopLevelLogicalConnectivesNotAllowedError`), which belongs to law 34/35's layer" },
   { number := 32, layer := "Rholang",
     statement := "Lexical determinism: comments, the `_`/`_ident` rule, `bundle0`, number forms and \
       the operator spellings each lex one way",
@@ -1349,10 +1391,34 @@ def laws : List Law := [
     note := "checked for the *operator* surface only; comments, `_`/`_ident`, `bundle0` and the literal \
       forms are named as the boundary and belong to laws 30/31/33" },
   { number := 33, layer := "Rholang",
-    statement := "`parse (print p) ≡ p` on `Par` (the C13 round-trip)",
-    status := .open,
-    falsifiable := none,
-    note := "needs `Rchain/Print.lean`, which does not exist" },
+    statement := "`parse (print p) ≡ p` on `Par` (the C13 round-trip) — **what is checked is two \
+      halves**: the model's, that the printer's output is a grammar term (`derives` on `printToks`), \
+      and the identity itself, which runs on the node in the Rust consumer, **modulo the three named \
+      warts**",
+    status := .provedTied,
+    declarations := [`Rchain.printToks, `Rchain.printSurf, `Rchain.renderTokens, `Rchain.printWarts,
+      `Rchain.warts_are_not_derivable],
+    corpus := some "parse",
+    rust := ["rholang/src/pretty_printer.rs", "rholang/tests/lean_parse_corpus.rs"],
+    witness := [`Rchain.warts_are_not_derivable],
+    falsifiable := some "the round trip is the corpus's `printer` rows: each production's witness is \
+      printed, the printed tokens must be derivable (`derives (printToks w.term)`, which is what \
+      filters `printerCases`), and the node must accept them — so a printer that emitted an \
+      underivable spelling drops out of the corpus and a parser that refused a printed term fails the \
+      consumer. **The three warts are exemptions, and they are pinned rather than tolerated**: \
+      `warts_are_not_derivable` decides that the `singleton-tuple` (`(1,)` prints as `(1)`) and \
+      `not-spelling` (`~(x)`) spellings are *not* in the grammar, and the consumer asserts the \
+      `urn-in-new` wart happened (`new x(`rho:id:y`) in Nil` prints as `new x0 in { Nil }`), so a wart \
+      cannot rot into a no-op by being silently fixed or silently dropped",
+    note := "**the printer's half is a model claim now** (2026-09-24): `printToks`/`printSurf` mirror \
+      `pretty_printer.rs` and `renderTokens` is the surface, so `derives (printToks t)` is a statement \
+      about a *definition* rather than about the port's behaviour. The two other tables are data for \
+      the same reason the rest of this tree keeps its gaps in tables: `printWarts` (the three faithful \
+      warts above, the first two inherited from `PrettyPrinter.scala` and the third the layer's \
+      consumer finding) and the layout / bundle-padding / core-vs-surface rows, each a spelling the \
+      port emits by design. The C13 regression this row was opened for is the consumer: it prints each \
+      witness through the node's own printer and parses the result back, which is the half the model \
+      cannot state about the port" },
   { number := 34, layer := "Rholang",
     statement := "A *value* position (a condition, target, datum, element, pattern, name) is normalized \
       against an **empty** `par` — only a statement continuation inherits what precedes it. **Checked on \
