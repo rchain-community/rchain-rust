@@ -236,23 +236,22 @@ impl<MId: Ord + Clone + std::fmt::Debug> Default for BlockReceiverState<MId> {
 
 /// Check whether a block is stored but not yet validated into the DAG (port of
 /// `BlockReceiver.notValidated`).
+///
+/// **A store that cannot be read is an error, not "not validated".** The oracle reads presence inside
+/// `F` (`BlockStore[F].contains`, `NodeRunning.scala:127,231`); the port's `unwrap_or_default()`
+/// answered `false`, and `false` is *also* what an already-validated block answers — two meanings its
+/// callers cannot tell apart, read silently as "fetch this block again" (AUDIT C67). The read is the
+/// same checked one the receiver's other presence sites use, so it is shared rather than re-derived.
 pub async fn not_validated(
     block_store: &BlockStore,
     dag: &dyn BlockDagStorage,
     hash: &BlockHash,
-) -> bool {
-    let in_store = block_store
-        .contains(&[*hash])
-        .await
-        .unwrap_or_default()
-        .first()
-        .copied()
-        .unwrap_or(false);
-    if !in_store {
-        return false;
+) -> Result<bool, String> {
+    if !crate::engine::node_running::block_is_known(block_store, hash).await? {
+        return Ok(false);
     }
     let repr = dag.get_representation().await;
-    !repr.contains(hash)
+    Ok(!repr.contains(hash))
 }
 
 // -------------------------------------------------------------------------------------------------
@@ -457,7 +456,20 @@ async fn incoming_blocks(
 
         let mut parents_to_validate = BTreeSet::new();
         for hash in &block.justifications {
-            if not_validated(&block_store, dag.as_ref(), hash).await {
+            let validated = match not_validated(&block_store, dag.as_ref(), hash).await {
+                Ok(validated) => validated,
+                Err(e) => {
+                    log.error(
+                        source,
+                        &format!(
+                            "Failed to read whether block {} is validated, skipping: {e}",
+                            hash.to_hex()
+                        ),
+                    );
+                    continue;
+                }
+            };
+            if validated {
                 parents_to_validate.insert(*hash);
             }
         }
@@ -567,6 +579,87 @@ mod tests {
         ) -> Result<std::collections::BTreeMap<BlockHash, BlockMessage>, String> {
             Err("the block store is down".to_string())
         }
+    }
+
+    /// A `BlockDagStorage` that is never reached: `not_validated` returns on the failing block-store
+    /// read before it looks at the DAG, so this stub only has to exist.
+    struct UnusedDag;
+
+    #[async_trait::async_trait]
+    impl BlockDagStorage for UnusedDag {
+        async fn get_representation(
+            &self,
+        ) -> Arc<rchain_block_storage::dag::representation::DagRepresentation> {
+            todo!("not_validated returns before this on a failing block store")
+        }
+        async fn insert(
+            &self,
+            _block_metadata: rchain_models::block_metadata::BlockMetadata,
+            _block: BlockMessage,
+        ) -> Result<(), String> {
+            todo!("unreachable")
+        }
+        async fn lookup(
+            &self,
+            _block_hash: &BlockHash,
+        ) -> Result<Option<rchain_models::block_metadata::BlockMetadata>, String> {
+            todo!("unreachable")
+        }
+        async fn lookup_by_deploy_id(
+            &self,
+            _deploy_id: &rchain_block_storage::dag::dag_storage::DeployId,
+        ) -> Result<Option<BlockHash>, String> {
+            todo!("unreachable")
+        }
+        async fn add_deploy(
+            &self,
+            _deploy: rchain_models::casper::protocol::casper_message::SignedDeployData,
+        ) -> Result<(), String> {
+            todo!("unreachable")
+        }
+        async fn pooled_deploys(
+            &self,
+        ) -> Result<
+            std::collections::BTreeMap<
+                rchain_block_storage::dag::dag_storage::DeployId,
+                rchain_models::casper::protocol::casper_message::SignedDeployData,
+            >,
+            String,
+        > {
+            todo!("unreachable")
+        }
+        async fn contains_deploy_in_pool(
+            &self,
+            _deploy_id: &rchain_block_storage::dag::dag_storage::DeployId,
+        ) -> Result<bool, String> {
+            todo!("unreachable")
+        }
+    }
+
+    /// **A store that cannot be read is not "not validated".**
+    ///
+    /// `false` is what an *already validated* block answers too, so a flattened store error is a
+    /// meaning the caller cannot tell from a legitimate one — it re-fetches a block it has, silently
+    /// (AUDIT C67). The oracle's `contains` is in `F`, so the Scala's failure reaches its caller.
+    ///
+    /// Falsifier, both forms. Pre-fix this site carried the *same* `unwrap_or_default()` expression
+    /// `block_is_known` carried, and that one's witnessing form was run pre-fix
+    /// (`a_store_that_cannot_be_read_is_not_an_unknown_block`, 2026-09-24); after the fix
+    /// `not_validated` **delegates** to that checked read, so the two cannot drift. Here the refusal is
+    /// asserted through this function's own signature.
+    #[tokio::test]
+    async fn a_store_that_cannot_be_read_is_not_an_unvalidated_block() {
+        let block_store: BlockStore = Arc::new(FailingBlockStore);
+        let dag = UnusedDag;
+        let hash = BlockHash::new([0x11; 32]);
+
+        let err = not_validated(&block_store, &dag, &hash)
+            .await
+            .expect_err("a block store that cannot be read must not answer \"not validated\"");
+        assert!(
+            err.contains("the block store is down"),
+            "and the refusal must name the failure, got: {err}"
+        );
     }
 
     /// **A store that cannot be read is not "the parent is not stored".**

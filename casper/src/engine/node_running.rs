@@ -156,22 +156,36 @@ pub async fn handle_block_request(
         );
         return;
     }
-    let has_block = block_store
-        .contains(&[hash])
-        .await
-        .unwrap_or_default()
-        .first()
-        .copied()
-        .unwrap_or(false);
+    // A store that cannot be read skips the answer: an unanswered request is retryable, where a
+    // `false` answer would be a state claim (AUDIT C67).
+    let has_block = match block_is_known(block_store, &hash).await {
+        Ok(known) => known,
+        Err(e) => {
+            log.error(
+                source,
+                &format!(
+                    "Received request for block {} from {peer}. Dropped: the block store could not be read: {e}",
+                    hash.to_hex()
+                ),
+            );
+            return;
+        }
+    };
     if has_block {
-        if let Some(block) = block_store
-            .get(&[hash])
-            .await
-            .unwrap_or_default()
-            .into_iter()
-            .flatten()
-            .next()
-        {
+        let stored = match block_by_hash(block_store, &hash).await {
+            Ok(block) => block,
+            Err(e) => {
+                log.error(
+                    source,
+                    &format!(
+                        "Received request for block {} from {peer}. Dropped: the block store could not be read: {e}",
+                        hash.to_hex()
+                    ),
+                );
+                return;
+            }
+        };
+        if let Some(block) = stored {
             transport_layer_syntax::stream_to_peer(
                 transport,
                 conf,
@@ -407,6 +421,42 @@ pub async fn handle_store_items_request<E: RSpaceExporter>(
 /// drops blocks (via `try_send`) rather than blocking the inbound task when it is full.
 pub const MAX_PENDING_BLOCKS: usize = 1024;
 
+/// Whether the block store holds `hash` — the `contains` half of the receiver's presence reads.
+///
+/// **A store that cannot be read is an error, not "unknown".** The oracle reads presence inside `F`
+/// (`BlockStore[F].contains`, `NodeRunning.scala:127,231`), so a store error is an error there and its
+/// caller logs it and moves on; the port's `unwrap_or_default()` answered `false` — "unknown" — and
+/// each handler acted on that negative, silently. A store answering fewer presence bits than keys is
+/// refused too, rather than read as "not known".
+pub(crate) async fn block_is_known(
+    block_store: &BlockStore,
+    hash: &BlockHash,
+) -> Result<bool, String> {
+    let contains = block_store.contains(&[*hash]).await?;
+    contains.first().copied().ok_or_else(|| {
+        format!(
+            "the block store answered no presence bit for {}",
+            hash.to_hex()
+        )
+    })
+}
+
+/// The block at `hash`, if the store holds it — the `get` half of the same reads.
+///
+/// `Ok(None)` is a block the store genuinely does not hold; an unreadable store is an `Err`, because
+/// the oracle's `getUnsafe` (`BlockStoreSyntax.scala:33-35`) lifts both into an error in `F`.
+pub(crate) async fn block_by_hash(
+    block_store: &BlockStore,
+    hash: &BlockHash,
+) -> Result<Option<BlockMessage>, String> {
+    Ok(block_store
+        .get(&[*hash])
+        .await?
+        .into_iter()
+        .flatten()
+        .next())
+}
+
 /// The running-state engine (port of the `NodeRunning` class): message handling and the
 /// store-items (LFS state-sync) serving are ported.
 pub struct NodeRunning<E: RSpaceExporter> {
@@ -463,14 +513,19 @@ impl<E: RSpaceExporter> NodeRunning<E> {
         match msg {
             CasperMessage::BlockHashMessage(bhm) => {
                 let hash = bhm.block_hash;
-                let ignore = self
-                    .block_store
-                    .contains(&[hash])
-                    .await
-                    .unwrap_or_default()
-                    .first()
-                    .copied()
-                    .unwrap_or(false);
+                let ignore = match block_is_known(&self.block_store, &hash).await {
+                    Ok(known) => known,
+                    Err(e) => {
+                        self.log.error(
+                            self.log_source,
+                            &format!(
+                                "Dropping a block-hash message for {}: the block store could not be read: {e}",
+                                hash.to_hex()
+                            ),
+                        );
+                        return;
+                    }
+                };
                 handle_block_hash_message(
                     &self.block_retriever,
                     self.log.as_ref(),
@@ -493,14 +548,19 @@ impl<E: RSpaceExporter> NodeRunning<E> {
                         );
                     }
                 }
-                let known = self
-                    .block_store
-                    .contains(&[b.block_hash])
-                    .await
-                    .unwrap_or_default()
-                    .first()
-                    .copied()
-                    .unwrap_or(false);
+                let known = match block_is_known(&self.block_store, &b.block_hash).await {
+                    Ok(known) => known,
+                    Err(e) => {
+                        self.log.error(
+                            self.log_source,
+                            &format!(
+                                "Dropping a block message for {}: the block store could not be read: {e}",
+                                b.block_hash.to_hex()
+                            ),
+                        );
+                        return;
+                    }
+                };
                 if known {
                     self.log.debug(
                         self.log_source,
@@ -551,25 +611,47 @@ impl<E: RSpaceExporter> NodeRunning<E> {
             }
             CasperMessage::HasBlock(hb) => {
                 let hash = BlockHash::from_slice(&hb.hash);
-                let known = self
-                    .block_store
-                    .contains(&[hash])
-                    .await
-                    .unwrap_or_default()
-                    .first()
-                    .copied()
-                    .unwrap_or(false);
+                let known = match block_is_known(&self.block_store, &hash).await {
+                    Ok(known) => known,
+                    Err(e) => {
+                        self.log.error(
+                            self.log_source,
+                            &format!(
+                                "Dropping a has-block message for {}: the block store could not be read: {e}",
+                                hash.to_hex()
+                            ),
+                        );
+                        return;
+                    }
+                };
                 if known {
-                    if not_validated(&self.block_store, self.dag.as_ref(), &hash).await {
-                        if let Some(block) = self
-                            .block_store
-                            .get(&[hash])
-                            .await
-                            .unwrap_or_default()
-                            .into_iter()
-                            .flatten()
-                            .next()
-                        {
+                    let validated = match not_validated(&self.block_store, self.dag.as_ref(), &hash)
+                        .await
+                    {
+                        Ok(validated) => validated,
+                        Err(e) => {
+                            self.log.error(
+                                self.log_source,
+                                &format!("Dropping a has-block message for {}: {e}", hash.to_hex()),
+                            );
+                            return;
+                        }
+                    };
+                    if validated {
+                        let stored = match block_by_hash(&self.block_store, &hash).await {
+                            Ok(block) => block,
+                            Err(e) => {
+                                self.log.error(
+                                    self.log_source,
+                                    &format!(
+                                        "Dropping a has-block message for {}: the block store could not be read: {e}",
+                                        hash.to_hex()
+                                    ),
+                                );
+                                return;
+                            }
+                        };
+                        if let Some(block) = stored {
                             if self.incoming_blocks.try_send(block).is_err() {
                                 self.log.warn(
                                     self.log_source,
@@ -687,6 +769,62 @@ impl<E: RSpaceExporter> NodeRunning<E> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A block store whose every read fails, so a read error is observable as one.
+    struct FailingBlockStore;
+
+    #[async_trait::async_trait]
+    impl rchain_shared::typed_store::KeyValueTypedStore<BlockHash, BlockMessage> for FailingBlockStore {
+        async fn get(&self, _keys: &[BlockHash]) -> Result<Vec<Option<BlockMessage>>, String> {
+            Err("the block store is down".to_string())
+        }
+        async fn put(&self, _pairs: &[(BlockHash, BlockMessage)]) -> Result<(), String> {
+            Err("the block store is down".to_string())
+        }
+        async fn delete(&self, _keys: &[BlockHash]) -> Result<usize, String> {
+            Err("the block store is down".to_string())
+        }
+        async fn contains(&self, _keys: &[BlockHash]) -> Result<Vec<bool>, String> {
+            Err("the block store is down".to_string())
+        }
+        async fn to_map(
+            &self,
+        ) -> Result<std::collections::BTreeMap<BlockHash, BlockMessage>, String> {
+            Err("the block store is down".to_string())
+        }
+    }
+
+    /// **A store that cannot be read is not "the block is not known"** (AUDIT C67).
+    ///
+    /// The oracle reads presence inside `F` (`BlockStore[F].contains`, `NodeRunning.scala:127,231`),
+    /// so a store error is an error there; the port's `unwrap_or_default()` answered `false` — "not
+    /// known" — and the *consequence* differs per handler (a duplicate block admitted, a block
+    /// re-saved, a response never sent), while the silence is the same everywhere: nothing tells the
+    /// operator the block store is failing.
+    ///
+    /// Falsifier, both forms. Pre-fix (witnessing): the failing store was answered with `false` and
+    /// `None`, and those assertions **passed on exactly that** (run 2026-09-24 before the change).
+    /// Post-fix: both are `Err`, naming the failure.
+    #[tokio::test]
+    async fn a_store_that_cannot_be_read_is_not_an_unknown_block() {
+        let block_store: BlockStore = Arc::new(FailingBlockStore);
+        let hash = BlockHash::new([0x11; 32]);
+
+        let err = block_is_known(&block_store, &hash)
+            .await
+            .expect_err("a block store that cannot be read must not answer \"unknown block\"");
+        assert!(
+            err.contains("the block store is down"),
+            "and the refusal must name the failure, got: {err}"
+        );
+        let err = block_by_hash(&block_store, &hash)
+            .await
+            .expect_err("…nor \"no block\" for the read that returns it");
+        assert!(
+            err.contains("the block store is down"),
+            "and the refusal must name the failure, got: {err}"
+        );
+    }
     use async_trait::async_trait;
     use rchain_block_storage::dag::codecs::{BlockHashCodec, BlockMessageCodec};
     use rchain_comm::errors::CommErr;

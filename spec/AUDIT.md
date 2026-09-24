@@ -3499,7 +3499,21 @@ finding that no law covers, and it says why rather than leaving the gap to infer
   answers fewer presence bits than keys is refused too. Falsified in the witnessing form:
   `a_store_that_cannot_be_read_is_not_an_unstored_parent` first asserted `vec![(hash, true)]` for a
   `FailingBlockStore` and **passed on exactly that** (run 2026-09-24), then flipped to the refusal.
-  *Next in this unit*: the seven `node_running.rs` sites and `block_receiver.rs:247`.
+  **Fixed: the receiver's presence and block reads — the seven `node_running.rs` sites and
+  `block_receiver.rs:247`.** Three checked reads now carry them: `block_is_known` (the four `contains`
+  sites), `block_by_hash` (the three `get` sites) and `not_validated` (which *delegates* to
+  `block_is_known`, so the two cannot drift), each returned as `Result` and each call site deciding
+  per its channel: the HasBlockRequest handler skips the answer (an unanswered request is retryable, a
+  `false` answer is a state claim) and the rest log with the hash and skip, which is the policy
+  `handle_store_items_request` already carries in that file. Falsified in the witnessing form:
+  `a_store_that_cannot_be_read_is_not_an_unknown_block` first asserted `false`/`None` for a
+  `FailingBlockStore` and **passed on exactly that** (run 2026-09-24), then flipped; `not_validated`'s
+  site carried the *same* expression, and `a_store_that_cannot_be_read_is_not_an_unvalidated_block`
+  asserts its refusal through its own signature. **The distinction that decides these sites**: the
+  flatten often takes the *conservative* direction (an unreadable store marking a parent "not stored",
+  or a block "unknown", only causes a redundant fetch), so a reader who checks the direction will call
+  the site benign — **the direction is safe; the silence is not**, and the oracle's `F` propagates to a
+  caller that logs.
   *Benign, with the reason*: `block_receiver.rs:376` — a read failure takes the *conservative* direction
   ("not stored" → it re-`put`s the block) and the doomed put's error is logged with the block hash two
   lines later, so the operator sees the store failing and no wrong state claim is made; and
