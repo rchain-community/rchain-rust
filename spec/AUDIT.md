@@ -1120,7 +1120,13 @@ oracle is, and the test that pins the fix.
   oracle sends `(blockNumber, sender)` and never exposes `seqNum`
   (`legacy/.../SystemProcesses.scala:355-361`; consumer
   `legacy/casper/src/test/resources/BlockDataContractTest.rho:15-16` binds a two-name pattern, so a
-  three-element send cannot match it); the registry's **shorthand table is unimplemented and never
+  three-element send cannot match it) — and **the vendored source was edited to match, which nothing
+  recorded until 2026-09-24**: `casper/src/genesis/resources/RevVault.rho` is the one blessed contract
+  that differs from its `legacy/` original beyond the shorthand re-derivation, and its one hunk is
+  exactly the block-data consumer's pattern. `tools/audit-vendored-sources.sh` (run by
+  `make check-register`) now diffs every vendored contract against its original and requires each
+  difference to be an allowlisted entry naming its register row, so the next such edit is visible
+  rather than waiting for someone to read for something else; the registry's **shorthand table is unimplemented and never
   seeded** — ⚠️ **resolved since** (`spec/GENESIS.md`): genesis now installs `ListOps`,
   `NonNegativeNumber` and `MakeMint` and seeds the shorthand aliases natively, so
   `lookup!(\`rho:rchain:revVault\`, *ch)` resolves to a callable value. The original finding stands

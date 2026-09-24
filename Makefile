@@ -31,8 +31,13 @@ test-all: test-unit test-integration
 # The coverage register must match the tree: no overstated counts, no phantom tests, no deferred
 # rows, and **no source file without a test or a declared exemption** (the census-sweep finish line).
 # This runs the linter in hard mode: every check fails the build rather than reporting.
+#
+# `audit-vendored-sources.sh` is here rather than in the formal gate because it is a static audit of
+# the tree, not a build: the blessed contracts are the *oracle's own source text*, vendored, so an
+# edit to one is a specification change wearing a comment's clothes. Nothing diffed them until now.
 check-register:
 	tools/audit-test-register.sh
+	tools/audit-vendored-sources.sh
 
 # The formal gate: build the Lean and Coq specifications, refuse a stale or un-consumed conformance
 # corpus, and check the Rust 1:1 against it. `spec` (below) is only the Lean half — this is what CI
