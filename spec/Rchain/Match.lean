@@ -1326,5 +1326,117 @@ theorem mapList_len : ∀ (pairs targets : List (Par × Par)) (m : Nat),
       simp only [List.length_cons] at this ⊢; omega
   | _, _, 0, h => by change false = true at h; exact absurd h (by decide)
 termination_by pairs targets _ _ => sizeOf pairs + sizeOf targets
+/-! ### The soundness half's shape facts — and why the half itself is not landed yet
+
+The tie's ⇒ direction needs one ingredient beyond the length family above: **the clauses discriminate on
+the pattern's constructor *and* on the target's**, so a proof that follows them has to know both forms.
+The lemmas below are that knowledge and they compile; the half itself does not, and the diagnosis is
+recorded here rather than left to a session's memory.
+
+- `pathExpr_cases` turns `pathExpr e = true` into the five forms the clauses have an arm for — ground, or
+  a list/set/tuple/map with no remainder — and its own proof doubles as the record of which constructors
+  `pathExpr` admits. `pathExpr_elist_rem`/`_eset_rem`/`_emap_rem` extract the remainder condition, and
+  the `pathExpr_<ctor>` lemmas are the `rfl` restatements of the `_ => false` arms (this block's
+  generated equations are unusable, exactly as `parNodes`' note records).
+- **What blocked the half, each measured once:**
+  1. the **fuel** must be in successor form before any clause reduces, so every member has to case on it
+     first and re-state its inter-member calls at the predecessor;
+  2. the right **measure** for a `mutual` block of these members is the fuel, not `sizeOf` sums — with
+     sums, `omega` cannot discharge the cross-level obligations (`eq_of_expr` → `eq_of_listPos` compares
+     `sizeOf ps + sizeOf ts` against `sizeOf (.elist ps none) + sizeOf (.elist ts none)`);
+  3. the **target's form must be known** for a `change` to fire, so each of the 25 pattern/target
+     combinations wants its own `rfl` reduction lemma (`spatialMatchExpr (f+1) (.ground g) [.ground g'] =
+     (g == g')` and its four siblings per pattern form). Related: `Ground` has **no `LawfulBEq`
+     instance**, so the ground case cannot go through `LawfulBEq.eq_of_beq`, and a `simp_all` over the 25
+     constructor pairs exceeds a 1M-heartbeat budget.
+- **The next attempt** should state those 25 `rfl` reduction lemmas first (they make every `change`
+  unnecessary), keep `termination_by m` with `decreasing_by all_goals (simp_wf; omega)`, and prove the
+  ground comparison once inside its own lemma. The **completeness** half — the mirror of
+  `fuel_saturation` at the same depth-indexed bounds — is unaffected by all of this: it needs no shape
+  discrimination beyond the guard's `if`. -/
+
+private theorem pathPar_fields {s r n e m u b c} (h : pathPar (Par.mk s r n e m u b c) = true) :
+    s = [] ∧ r = [] ∧ n = [] ∧ m = [] ∧ u = [] ∧ b = [] ∧ c = [] := by
+  have h' := pathPar_parts.mp h
+  exact ⟨h'.1, h'.2.1, h'.2.2.1, h'.2.2.2.1, h'.2.2.2.2.1, h'.2.2.2.2.2.1, h'.2.2.2.2.2.2.1⟩
+
+private theorem pathExprs_tail_nil : ∀ (x : Expr) (xs : List Expr), pathExprs (x :: xs) = true → xs = []
+  | _x, [], _h => rfl
+  | _x, _y :: _ys, h => by rw [pathExprs_two] at h; exact absurd h (by decide)
+
+private theorem pathExpr_eneg (q : Par) : pathExpr (.eneg q) = false := rfl
+private theorem pathExpr_enot (q : Par) : pathExpr (.enot q) = false := rfl
+private theorem pathExpr_eplus (a b : Par) : pathExpr (.eplus a b) = false := rfl
+private theorem pathExpr_eminus (a b : Par) : pathExpr (.eminus a b) = false := rfl
+private theorem pathExpr_emult (a b : Par) : pathExpr (.emult a b) = false := rfl
+private theorem pathExpr_ediv (a b : Par) : pathExpr (.ediv a b) = false := rfl
+private theorem pathExpr_emod (a b : Par) : pathExpr (.emod a b) = false := rfl
+private theorem pathExpr_elt (a b : Par) : pathExpr (.elt a b) = false := rfl
+private theorem pathExpr_ele (a b : Par) : pathExpr (.ele a b) = false := rfl
+private theorem pathExpr_egt (a b : Par) : pathExpr (.egt a b) = false := rfl
+private theorem pathExpr_ege (a b : Par) : pathExpr (.ege a b) = false := rfl
+private theorem pathExpr_eeq (a b : Par) : pathExpr (.eeq a b) = false := rfl
+private theorem pathExpr_eneq (a b : Par) : pathExpr (.eneq a b) = false := rfl
+private theorem pathExpr_eand (a b : Par) : pathExpr (.eand a b) = false := rfl
+private theorem pathExpr_eor (a b : Par) : pathExpr (.eor a b) = false := rfl
+
+private theorem pathExpr_elist_rem (ps : List Par) (r : Option Var) :
+    pathExpr (.elist ps r) = true → r = none := by
+  rcases r with _ | v
+  · intro _; rfl
+  · intro h; rw [pathExpr_elist_some] at h; exact absurd h (by decide)
+
+private theorem pathExpr_eset_rem (ps : List Par) (r : Option Var) :
+    pathExpr (.eset ps r) = true → r = none := by
+  rcases r with _ | v
+  · intro _; rfl
+  · intro h; rw [pathExpr_eset_some] at h; exact absurd h (by decide)
+
+private theorem pathExpr_emap_rem (kvs : List (Par × Par)) (r : Option Var) :
+    pathExpr (.emap kvs r) = true → r = none := by
+  rcases r with _ | v
+  · intro _; rfl
+  · intro h; rw [pathExpr_emap_some] at h; exact absurd h (by decide)
+
+/-- **`pathExpr`'s five forms, as a disjunction.** The clauses discriminate on the *expression's*
+constructor and on the target's, so a proof that follows them has to know both forms; this turns the
+`pathExpr e = true` hypothesis into five alternatives instead of making the proof case over all 21
+`Expr` constructors twice, and its own proof doubles as the record of which constructors `pathExpr`
+admits (no variables, no wildcard, no remainder). -/
+private theorem pathExpr_cases {e : Expr} (h : pathExpr e = true) :
+    (∃ g, e = .ground g) ∨ (∃ ps, e = .elist ps none) ∨ (∃ ps, e = .eset ps none)
+      ∨ (∃ ps, e = .etuple ps) ∨ (∃ kvs, e = .emap kvs none) := by
+  cases e with
+  | ground g => exact Or.inl ⟨g, rfl⟩
+  | elist ps r =>
+    have hr := pathExpr_elist_rem ps r h
+    subst hr
+    exact Or.inr (Or.inl ⟨ps, rfl⟩)
+  | eset ps r =>
+    have hr := pathExpr_eset_rem ps r h
+    subst hr
+    exact Or.inr (Or.inr (Or.inl ⟨ps, rfl⟩))
+  | etuple ps => exact Or.inr (Or.inr (Or.inr (Or.inl ⟨ps, rfl⟩)))
+  | emap kvs r =>
+    have hr := pathExpr_emap_rem kvs r h
+    subst hr
+    exact Or.inr (Or.inr (Or.inr (Or.inr ⟨kvs, rfl⟩)))
+  | evar v => rw [pathExpr_evar] at h; exact absurd h (by decide)
+  | eneg q => rw [pathExpr_eneg] at h; exact absurd h (by decide)
+  | enot q => rw [pathExpr_enot] at h; exact absurd h (by decide)
+  | eplus a b => rw [pathExpr_eplus] at h; exact absurd h (by decide)
+  | eminus a b => rw [pathExpr_eminus] at h; exact absurd h (by decide)
+  | emult a b => rw [pathExpr_emult] at h; exact absurd h (by decide)
+  | ediv a b => rw [pathExpr_ediv] at h; exact absurd h (by decide)
+  | emod a b => rw [pathExpr_emod] at h; exact absurd h (by decide)
+  | elt a b => rw [pathExpr_elt] at h; exact absurd h (by decide)
+  | ele a b => rw [pathExpr_ele] at h; exact absurd h (by decide)
+  | egt a b => rw [pathExpr_egt] at h; exact absurd h (by decide)
+  | ege a b => rw [pathExpr_ege] at h; exact absurd h (by decide)
+  | eeq a b => rw [pathExpr_eeq] at h; exact absurd h (by decide)
+  | eneq a b => rw [pathExpr_eneq] at h; exact absurd h (by decide)
+  | eand a b => rw [pathExpr_eand] at h; exact absurd h (by decide)
+  | eor a b => rw [pathExpr_eor] at h; exact absurd h (by decide)
+
 
 end Rchain
