@@ -396,7 +396,11 @@ def laws : List Law := [
       rejected case a twice-bound pattern produces — the shape the previous law-5 axiom *denied* and \
       which `spec/conformance/match.tsv` now pins (AUDIT C26) — and `freeMapMerge_overwrites` is the \
       counterexample inside the model: the same repeated level the aggregation path refuses is silently \
-      overwritten on the fold path",
+      overwritten on the fold path. This row's fuel axiom was falsified **in fact**, not only in \
+      principle (AUDIT C50): with the old measure a tuple nested three deep is `modelledPar`, \
+      connective-free and equal to itself while the matcher answered `false`, so \
+      `concrete_matches_iff_eq` evaluated to `false = true` — two lines of `decide`, and the fix is \
+      what makes them fail",
     note := "`spatialMatch_implies_linear` is `h.2` of a conjunct inside `spatialMatch`'s own \
       definition, so it holds by construction — and it is **not the port's predicate**. The port's \
       *enforcing* check is the **normalizer's**, not the matcher's: a pattern that binds a name twice is \
@@ -417,7 +421,20 @@ def laws : List Law := [
       **tuple**, which the port matches (`spatial_matcher.rs:496-501`) — so a tuple pattern the node \
       matches read as silence here, and the law's own statement was false of the model until \
       `modelledPar` was added to it. Cases 15/16 of `spec/conformance/match.tsv` are the pair that \
-      caught it; the arm is not an axiom, it is a clause. **The Coq half, split by kind** (2026-09-23): \
+      caught it; the arm is not an axiom, it is a clause. **A fourth thing, and it is the one that \
+      matters most** (AUDIT C50, 2026-09-24, found while *attempting* `fuel_saturation`): the fuel did \
+      not pay for a **tuple's** walk. `parNodesExpr` had no `etuple` arm, so a tuple's contents were \
+      charged to no node while the tuple clause walks them exactly as the list arm does — the budget \
+      stayed constant as the nesting deepened. Two levels need 13 and were given 12, so the model \
+      answered `false` where the node answers `true`, on a shape needing **no** padding (`@((1, 2), \
+      (3, 4))` against itself; a search over 300 generated shapes rejected 40, and three-deep tuples \
+      were rejected at every depth the measure could reach). Case 20 of `spec/conformance/match.tsv` is \
+      the ratchet that would have caught it. The reason this belongs in the row rather than only in \
+      AUDIT: **`concrete_matches_iff_eq` was *false* while the defect stood** — a tuple three deep is \
+      `modelledPar`, connective-free and equal to itself, so its conclusion evaluated to `false = \
+      true`. The refutation is two lines of `decide` and is *not* kept, because with the measure fixed \
+      the same `decide` fails; what the episode says is that this row's axiom is only as true as the \
+      fuel beneath it, which is exactly what `fuel_saturation` is for. **The Coq half, split by kind** (2026-09-23): \
       `spec/coq/Laws.v`'s `linear` is a **definition** now (with `linear_decidable` and the witness \
       `a_double_binding_is_not_linear`), mirroring Lean's own predicate; `spatial_matches` stays a \
       **signature**, because mirroring the matcher in Coq is the analogue of this file's owed proofs \

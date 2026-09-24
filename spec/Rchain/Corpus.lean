@@ -137,7 +137,7 @@ partial map whose only non-concreteness is the remainder (C22 item 3), each with
 *not* match beside it. -/
 
 /-- The number of cases the matching layer carries. -/
-def matchCaseCount : Nat := 19
+def matchCaseCount : Nat := 20
 
 /-- One matching case: the bind's source, the target's source, the model's view of both, and the
 verdict. The verdict is `decide`d against `spatialMatch` (`matchCases_decide`), which is what makes
@@ -244,6 +244,17 @@ def matchCases : List MatchCase :=
   , { bind := "@[1, ..._]", target := "[Nil, 1]",
       patternPar := listPat [intPar 1] wildRem,
       targetPar := listPat [nilPar, intPar 1] none, expected := false }
+    -- 20. the *second* instance of the measure defect, on another arm: `parNodesExpr` had **no
+    -- `etuple` case**, so a tuple's contents were charged to no node and `matchFuel` did not grow with
+    -- the nesting — while the tuple clause walks its elements through `matchListPos` exactly as the
+    -- list arm does. Each nesting level costs the matcher 4 units and a `Par`-and-expression pair
+    -- contributes 4, so `@((1, 2), (3, 4))` against itself needed 13 and was given 12: a `false` where
+    -- the node answers `true`, and unlike case 18 **no padding** is needed to expose it. AUDIT C50;
+    -- `Match.lean`'s `a_nested_tuple_is_paid_for` is the model-side ratchet.
+  , { bind := "@((1, 2), (3, 4))", target := "((1, 2), (3, 4))",
+      patternPar := tuplePat [tuplePat [intPar 1, intPar 2], tuplePat [intPar 3, intPar 4]],
+      targetPar := tuplePat [tuplePat [intPar 1, intPar 2], tuplePat [intPar 3, intPar 4]],
+      expected := true }
   ]
 
 /-- Every matching case's verdict holds of the model. `decide`, because the clauses are structurally

@@ -81,11 +81,23 @@ mutual
     | [] => 0
     | e :: rest => parNodesExpr e + parNodesExprs rest
 
-  /-- The nodes an expression presents. -/
+  /-- The nodes an expression presents. **The `etuple` arm was missing, and that was the same defect
+  as the `Par`-counts-as-zero one** (found 2026-09-24, while attempting `fuel_saturation`): the tuple
+  clause walks its elements through `matchListPos` exactly as the list arm does, but it fell into the
+  `_ => 1` catch-all, so a tuple's *contents* were charged to no node and `matchFuel` did not grow with
+  them. Every nesting level of a tuple costs the matcher 4 units (core → exprs → expr → listPos, then
+  the element) and a `Par`-and-expression pair contributes exactly 4, so the arm is what makes a nested
+  tuple *pay for itself* — without it the fuel is constant while the walk deepens, and the matcher
+  answers `false` on a shape the node matches: `@( ( (1) ) )` against itself needs 13 and was given 12.
+  `a_nested_tuple_is_paid_for` below is the ratchet; the shapes that exposed it (three-deep tuples with
+  a wildcard leaf, and nested tuple/list/set/map mixtures) are what a `#eval` search over generated
+  shapes found — 40 of 300 generated matching shapes were rejected, and none of them is in the corpus,
+  which is why the 19 cases that shipped did not. -/
   def parNodesExpr (e : Expr) : Nat :=
     match e with
     | .elist ps _ => 1 + parNodesListPar ps
     | .eset ps _ => 1 + parNodesListPar ps
+    | .etuple ps => 1 + parNodesListPar ps
     | .emap kvs _ => 1 + parNodesPairs kvs
     | _ => 1
 
@@ -540,6 +552,30 @@ theorem the_walk_past_empty_pars_is_paid_for :
 theorem a_list_pattern_cannot_skip_a_target_element :
     spatialMatch (oneExpr (.elist [nilPar, oneExpr (.ground (.int 1))] none))
         (oneExpr (.elist [oneExpr (.ground (.int 1))] (some .wildcard))) = false := by
+  decide
+
+/-- **The second instance of the measure defect, on a different arm**: `@((1, 2), (3, 4))` against
+    itself. The tuple clause walks its elements (`matchListPos`), so each nesting level costs 4 units
+    while contributing 4 to `matchFuel` — but `parNodesExpr` had no `etuple` arm, so a tuple's contents
+    were charged to nothing and the fuel did not grow with the nesting. Two levels need 13 and were
+    given 12, so the model answered `false` where the node answers `true`. Unlike the `Nil` padding of
+    the set case, this shape needs **no** padding to expose it — the smallest nested tuple fails — and
+    a `#eval` search over generated shapes found 40 of 300 matching shapes rejected. AUDIT C50;
+    `spec/conformance/match.tsv` row 20 is this case. -/
+theorem a_nested_tuple_is_paid_for :
+    spatialMatch (oneExpr (.etuple [oneExpr (.etuple [oneExpr (.ground (.int 1)), oneExpr (.ground (.int 2))]),
+        oneExpr (.etuple [oneExpr (.ground (.int 3)), oneExpr (.ground (.int 4))])]))
+      (oneExpr (.etuple [oneExpr (.etuple [oneExpr (.ground (.int 1)), oneExpr (.ground (.int 2))]),
+        oneExpr (.etuple [oneExpr (.ground (.int 3)), oneExpr (.ground (.int 4))])])) = true := by
+  decide
+
+/-- **A tuple's walk is charged to its own nodes**: the tuple's count is the two `Par` wrappers plus
+    its elements' counts, which is what the missing arm denied — under the old measure the left side
+    was 2 whatever the elements were, so a nested tuple's walk was free. With the `etuple` arm the
+    budget grows by 8 per nesting level against a cost of 4. -/
+theorem a_tuple_pays_for_its_own_contents :
+    parNodes (oneExpr (.etuple [oneExpr (.ground (.int 1)), oneExpr (.ground (.int 2))]))
+      = 2 + parNodes (oneExpr (.ground (.int 1))) + parNodes (oneExpr (.ground (.int 2))) := by
   decide
 
 /-- The fuel is enough — stated as **saturation**: past `matchFuel`, more fuel changes nothing.

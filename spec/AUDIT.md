@@ -2254,6 +2254,34 @@ port against the **reference document** rather than against itself.
   muting: this row registers it with a deterministic reproducer and the measured leftover, and the fix
   should land with the seed kept as a regression case.
 
+- **C50 — the matcher's fuel was short a *second* time: the measure had no `etuple` case, so a tuple's
+  contents were charged to no node** (found 2026-09-24, while *attempting* `fuel_saturation` — the same
+  way C47 was found, and by the same kind of instrument: the obligation's arithmetic; **the model's
+  defect**, the port is right). `parNodesExpr` had arms for `elist`, `eset` and `emap` and sent
+  everything else — `etuple` among it — to `_ => 1`. The tuple clause walks its elements through
+  `matchListPos` exactly as the list arm does, and each nesting level costs the matcher 4 units
+  (core → exprs → expr → listPos, then the element) while a `Par`-and-expression pair contributes
+  exactly 4 — so with the arm missing the budget was *constant* while the walk deepened, and `matchFuel`
+  stopped bounding the step count. The smallest case needs no padding: `@((1, 2), (3, 4))` against
+  itself needs 13 and was given 12, so the model answered **false** where the node answers **true**. A
+  search over generated shapes (`#eval`, 300 shapes, deterministic seed) put the rate at **40 of 300
+  matching shapes rejected**; three-deep tuples are rejected at *every* depth reachable by `matchFuel`
+  growth, because the constant did not grow at all. Fixed by counting the tuple's elements
+  (`parNodesExpr (.etuple ps) = 1 + parNodesListPar ps`), kept by `Match.lean`'s
+  `a_nested_tuple_is_paid_for` / `a_tuple_pays_for_its_own_contents` and `match.tsv` case 20.
+
+  **The consequence worth more than the defect: an *axiom* of the register was false while it stood.**
+  `concrete_matches_iff_eq` says `(spatialMatch t p = true) = (t = p)` for modelled, connective-free
+  pairs. A tuple nested three deep is modelled, connective-free and equal to itself, and the short
+  measure made the matcher answer `false` — so the axiom's conclusion evaluated to `false = true`. The
+  refutation is two lines of `decide` (written during this pass and *not* kept: with the measure fixed
+  the same `decide` fails, which is exactly the point — the axiom was falsifiable only while the defect
+  stood, and a defect is what its `fuel_saturation` companion exists to rule out). What is left is the
+  proof obligation the row already owed, and the lesson is the general one for this register: a law can
+  be false for a reason no test *of the law* sees, because the corpus only disagrees with the Rust on
+  the shapes it happens to contain. The measure is now adequate on every shape the search tried; that
+  is *evidence*, not a proof, and the proof is `fuel_saturation`.
+
 - **The class, recorded once, because it is the consolidation pass's whole justification: an axiom that
   is false is worse than one that is owed, because anything follows from it.** Nine axioms the pass
   removed were not merely unproved — they were false of the code or of the model that carried them, and
@@ -2316,6 +2344,7 @@ finding that no law covers, and it says why rather than leaving the gap to infer
 | C45 the search claimed a step for a join, and the rule fixed the counts the port computes differently | 38, 40 | `silence.tsv` case 13 (a join with one channel filled declares `false`, and the node agrees) + `lean_silence_corpus.rs`; the search's single-bind requirement, the constructors' `freeCount`/`bindCount`/channel parameters, and `takesStep_sound` — three extraction lemmas and `exists_redex_split` |
 | C47 the matcher's fuel was short: the measure counted an empty `Par` as zero nodes | 5, 37 | `match.tsv` case 18 (`@Set(1, ..._)` against `Set(Nil × 6, 1)`) + `lean_match_corpus.rs`; `the_walk_past_empty_pars_is_paid_for`, and `parNodes`'s doc comment carrying the counterexample |
 | C49 the replay property test fails on its own recording (~3 runs in 10) | 11 | `rspace/src/property_tests.rs`'s `law11_a_replayed_script_matches_its_recording` — reproduced locally, minimal input captured; CI caught it on a docs-only tip. Two candidates recorded, not diagnosed |
+| C50 the matcher's fuel was short again: the measure had no `etuple` case, so a tuple's contents were charged to nothing | 5, 37 | `match.tsv` case 20 (`@((1, 2), (3, 4))` against itself) + `lean_match_corpus.rs`; `a_nested_tuple_is_paid_for`, `a_tuple_pays_for_its_own_contents`, and `parNodesExpr`'s doc comment carrying the counterexample. While the defect stood it also **refuted** the axiom `concrete_matches_iff_eq` |
 | C48 the spec over-claimed a match: the searcher was wired into the list and tuple arms | 5, 37 | `match.tsv` case 19 (`@[1, ..._]` against `[Nil, 1]`) + `lean_match_corpus.rs`; `a_list_pattern_cannot_skip_a_target_element`, and the split into `matchListPos` (lists, tuples) / `matchListPar` (sets, maps) |
 
 **The two rows that are not laws are the two worth keeping visible.** C37 is a *harness* finding —
