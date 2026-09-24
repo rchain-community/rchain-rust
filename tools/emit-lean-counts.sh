@@ -85,6 +85,10 @@ FILES=(
   # (and, worse, cited Lean declarations the tree no longer has — a class this scan cannot see, found
   # by hand on 2026-09-24). It is in the list now, so its totals are the register's.
   "$ROOT/AGENTS.md"
+  # The contributor-facing architecture page had the same defect for the same reason: a "Remaining"
+  # bullet restating per-law statuses that had moved on. That bullet now points at the register; this
+  # entry is what keeps it pointing.
+  "$ROOT/docs/src/contributor/architecture.md"
 )
 for f in "$ROOT"/docs/src/formal/*.md; do FILES+=("$f"); done
 

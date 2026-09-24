@@ -210,10 +210,19 @@ A `Total` operation composed from `Total` parts is `Total` — the formal "no `.
 | Crypto | `crypto` | Blake2b/Curve25519/secp256k1 (**axiom**, Law 19) | fixed-width coercion → `TryFrom` |
 | Wire | `comm`, `shared` | `Packet`/`Protocol` (protobuf) | decode/optional fields → `Except` |
 
-### 3.2 Partiality catalogue (production `.unwrap()`/`.expect(`/`panic!` sites)
+### 3.2 Partiality catalogue — **historical** (the sites below were production panic sources)
 
-Each site below is a **production** panic source (test-only `assert!`/`assert_eq!`/`unwrap()` in
-round-trip tests are excluded). The typed fix is either a proven-total refinement (per Part I) or an
+**Read this table as the record of a sweep, not as a list of current sites.** It was written in the
+present tense ("each site below *is* a production panic source") and then went stale in the worst
+direction: the sites were fixed, and the table kept claiming they existed. The live answer is the
+gate — `tools/audit-type-system.sh` reports zero hard violations (`panic`/`unsafe`/`silent`/`escape`),
+which is the only statement about the tree that anything re-checks; this table says what the sweep
+found and how each class was typed, and a reader looking for *current* partiality should run the gate
+rather than read it. (The tense was the defect, not the content: the same information as a record is
+what makes the remediation auditable.)
+
+Each entry was a **production** panic source (test-only `assert!`/`assert_eq!`/`unwrap()` in
+round-trip tests were excluded). The typed fix is either a proven-total refinement (per Part I) or an
 `Option`/`Except` at a declared boundary.
 
 #### `models`

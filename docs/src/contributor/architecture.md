@@ -104,13 +104,18 @@ block receiver/processor streams, the transport/protocol server + peer-message s
 `NodeLaunch.apply`, and the request-dependencies loop.
 Remaining:
 
-- **Formalization** — Law 1 (canonical order), Law 2 core (`≡`), Law 4 core (`⟶`), and Law 6
-  (`Closed`) are **proven** in Lean (`spec/Rchain/`); Laws 3, 4-full, 5, and 7–19 are **stated** with
-  precise signatures (`Subst`/`Reduce`/`Match`/`FreeVars`/`RSpace/*`/`Casper/*`/`Crypto/*`), and Law
-  19's crypto primitives are axiomatized by design. Law 1's 30 element-comparator `axiom`s remain to discharge
-  (blocked on a mutual-recursion refactor). Laws 12–13 (Rosette) are **orphaned** (the VM is out of
-  scope). See [`spec/README.md`](../../../spec/README.md) and
-  [`spec/INVENTORY.md`](../../../spec/INVENTORY.md).
+- **Formalization** — **the per-law status is not restated here, deliberately**: a status repeated by
+  hand is one nothing checks, and this bullet carried a stale one for exactly that reason (it said
+  laws 3, 4-full, 5 and 7–19 were "stated" long after most became definitions and theorems, and it
+  called Law 1 conditional on thirty comparator `axiom`s after the register had counted them down to
+  two). The answer to "is this proved?" is
+  [`spec/Rchain/Laws.lean`](../../../spec/Rchain/Laws.lean), emitted to
+  [`spec/LAWS.md`](../../../spec/LAWS.md) and [`spec/laws.tsv`](../../../spec/laws.tsv) and gated by
+  `tools/check-lean-conformance.sh`; [`spec/INVENTORY.md`](../../../spec/INVENTORY.md) is the narrative
+  version and [`spec/README.md`](../../../spec/README.md) the entry point. Two facts are worth keeping
+  here because they are about *scope* rather than status: Law 19's crypto primitives are axiomatized by
+  design (the one deliberate boundary), and Laws 12–13 (Rosette) are **orphaned** — the VM is out of
+  scope.
 - **Cast / raw-byte remediation** — the ~300 `as`-cast sites from the adversarial audit were **triaged**
   (see [`spec/AUDIT.md`](../../../spec/AUDIT.md) §8): two genuinely untrusted-input narrowing casts were
   fixed; the remainder are documented-faithful Scala fixed-width equivalents. The *safe-by-construction
