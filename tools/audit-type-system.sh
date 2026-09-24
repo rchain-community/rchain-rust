@@ -16,6 +16,9 @@
 #   silent  — silent defaulting of a fallible numeric conversion: `try_into().unwrap()`,
 #             `try_into().expect(`, `try_into().unwrap_or(`, `try_from(..).unwrap_or(`,
 #             `..parse(..).unwrap_or(`. A fallible conversion must not be flattened to 0/Default.
+#   escape  — a refinement newtype surrendering its invariant: `impl … Deref … for`, or a public
+#             tuple field. Scoped to the files holding the refinements (see `REFINEMENT_FILES`);
+#             `spec/TYPE-SYSTEM.md` §1.7 is the rule.
 #
 # Soft reports (exit 0, informational — refined by `cargo clippy` + manual review):
 #   cast    — narrowing / signedness-changing numeric casts (`as i8/i32/i64/u8/u32/..`).
@@ -23,7 +26,7 @@
 #             (a hex decode that skips non-hex and never length-checks).
 #   get     — index access and `.get(..).unwrap()`-style lookups.
 #
-# Usage: tools/audit-type-system.sh [panic|unsafe|silent|cast|lax|get]   (default: all)
+# Usage: tools/audit-type-system.sh [panic|unsafe|silent|escape|cast|lax|get]   (default: all)
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 CRATES=(sdk shared crypto graphz models block-storage comm rspace rholang casper regex node)
@@ -99,7 +102,7 @@ note() {
   local kind="$1" file="$2" line="$3" text="$4"
   printf '  %s\n' "$file:$line: $text"
   case "$kind" in
-    panic|unsafe|silent) hard_failures=$((hard_failures + 1)) ;;
+    panic|unsafe|silent|escape) hard_failures=$((hard_failures + 1)) ;;
   esac
 }
 
@@ -124,6 +127,48 @@ scan() {
   done
 }
 
+# The refinement newtypes must not surrender the invariant they exist to carry.
+#
+# `spec/TYPE-SYSTEM.md` §1.7 states the rule — no `Deref` (which drops `P` mid-domain), no public
+# accessor returning the raw inner, and no public tuple field (which is the same escape by
+# construction) — and until this class existed nothing checked it: it was a promise in prose, unlike
+# the panic/unsafe/silent classes. The tree satisfies it today (no `impl … Deref` on any refinement;
+# every refinement field is private), so this is a ratchet that can only stay green.
+#
+# Scoped to the files that hold the refinements rather than to the workspace: a `Deref` on some
+# other wrapper type is a design choice, not a type escape, and a check that fired on those would be
+# switched off within a week.
+REFINEMENT_FILES=(
+  "shared/src/refined.rs"                      # BlockHeight, SeqNum, Port, Hash32, ShardId
+  "crypto/src/hash/blake2b512_random.rs"       # SerializedRandom
+  "rspace/src/history/radix_tree.rs"           # SerializedNode
+)
+
+# The types the rule is about, **named** rather than pattern-matched: the same files hold error
+# types with public fields (`RefineError(pub String)`), which are not refinements and would be false
+# positives. Adding a refinement means adding it here, which is the point — a new invariant should
+# touch its audit.
+REFINEMENT_TYPES=(BlockHeight SeqNum Port Hash32 ShardId SerializedRandom SerializedNode)
+
+scan_escapes() {
+  local rel f name pattern line text
+  # Any `Deref` impl in a refinement home, whatever it is on.
+  pattern='impl[^;{]*Deref[^;{]*for'
+  for name in "${REFINEMENT_TYPES[@]}"; do
+    pattern="$pattern|pub struct ${name}\(pub "
+  done
+  for rel in "${REFINEMENT_FILES[@]}"; do
+    f="$ROOT/$rel"
+    [ -f "$f" ] || continue
+    # `grep -n` on the file directly, so the reported line is the file's: filtering through more
+    # pipes first (as the `scan` classes do with their comment stripper) renumbers the stream.
+    while IFS=: read -r line text; do
+      [ -n "$line" ] || continue
+      note escape "$f" "$line" "$text"
+    done < <(awk "$STRIP_AWK" "$f" | grep -nE "$pattern")
+  done
+}
+
 run_class() {
   local cls="$1"
   echo "===== class: $cls ====="
@@ -134,15 +179,16 @@ run_class() {
     cast)    scan cast '\bas (i8|i16|i32|i64|u8|u16|u32|u64|usize|isize|f32|f64)\b' '' ;;
     lax)     scan lax 'from_str_radix\([^)]*\)\.(unwrap_or|unwrap|expect)\(|unsafe_decode\(' '' ;;
     get)     scan get '\.get\([^)]*\)\.(unwrap|expect)\(|\.(next|last|first|pop)\(\)\.(unwrap|expect)\(|\b[a-zA-Z_]+\[[0-9]+\]' '' ;;
+    escape)  scan_escapes ;;
     *)
-      echo "unknown class: $cls (expected panic|unsafe|silent|cast|lax|get)" >&2
+      echo "unknown class: $cls (expected panic|unsafe|silent|escape|cast|lax|get)" >&2
       exit 2
       ;;
   esac
 }
 
 if [ "$#" -eq 0 ]; then
-  classes=(panic unsafe silent cast lax get)
+  classes=(panic unsafe silent escape cast lax get)
 else
   classes=("$@")
 fi
@@ -153,7 +199,7 @@ done
 echo
 echo "===== summary ====="
 if [ "$hard_failures" -gt 0 ]; then
-  echo "FAIL: $hard_failures hard violation(s) (panic/unsafe/silent) in production code."
+  echo "FAIL: $hard_failures hard violation(s) (panic/unsafe/silent/escape) in production code."
   exit 1
 fi
-echo "OK: no hard production violations (panic/unsafe/silent)."
+echo "OK: no hard production violations (panic/unsafe/silent/escape)."

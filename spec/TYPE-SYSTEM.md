@@ -275,12 +275,17 @@ round-trip tests are excluded). The typed fix is either a proven-total refinemen
 > **Machine gate.** `tools/audit-type-system.sh` is the authoritative, re-runnable gate: it strips
 > `#[cfg(test)]` blocks (brace-depth aware), then fails on production `.unwrap()`/`.expect(`/`panic!`/
 > `unreachable!`/`todo!`/`unimplemented!` (whitelisting `sdk/src/primitive.rs` `getUnsafe`),
-> `unsafe {`, and silent defaulting of a fallible numeric conversion (`try_into()…unwrap[_or]`,
-> `try_from(…)…unwrap_or`, `parse(…)…unwrap_or`). Its `cast`/`get` classes are candidate finders.
-> The gate is green (`panic`/`unsafe`/`silent` clean). The full adversarial-audit findings — the
-> fixed type-system violations, the *faithful* casts (Scala `Int`/`Long`/`Byte` fixed-width ports
-> that must **not** be "fixed"), the ρ-calculus mirroring notes, the red-team register, and the
-> Scala-deviation register — are recorded in [`AUDIT.md`](AUDIT.md).
+> `unsafe {`, silent defaulting of a fallible numeric conversion (`try_into()…unwrap[_or]`,
+> `try_from(…)…unwrap_or`, `parse(…)…unwrap_or`), and — the `escape` class — a refinement newtype
+> surrendering its invariant (`impl … Deref … for`, or a public tuple field) in the files that hold
+> the refinements. That last class is what makes §1.7's "no type escape" rule a *check* rather than a
+> promise: it was stated here and verified by nothing until 2026-09-24, and the tree satisfies it
+> (no `Deref` on any refinement, every refinement field private), so it is a ratchet. Its
+> `cast`/`get` classes are candidate finders. The gate is green (`panic`/`unsafe`/`silent`/`escape`
+> clean). The full adversarial-audit findings — the fixed type-system violations, the *faithful*
+> casts (Scala `Int`/`Long`/`Byte` fixed-width ports that must **not** be "fixed"), the ρ-calculus
+> mirroring notes, the red-team register, and the Scala-deviation register — are recorded in
+> [`AUDIT.md`](AUDIT.md).
 
 ---
 
