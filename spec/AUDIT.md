@@ -3434,8 +3434,11 @@ port against the **reference document** rather than against itself.
   2. **The comment/string stripping had to be repaired before the token set could widen — and the blind
      spot was already there.** The state machine tracked a *single* block-comment level, so Lean's
      nested block comments closed at the first `-/` and the rest of the comment was scanned as code.
-     That was invisible for as long as the tokens were `sorry`/`admit` (no prose line happens to carry
-     those words) and became 23 immediate hits when `partial`/`opaque` were added — exactly the
+     **Stated at its worst, because that is what it was: a `sorry` written inside a nested comment would
+     have been invisible to the gate that exists to find it** — the ratchet's zero was, for those
+     regions, a statement about nothing, and nothing in the pass's history would have noticed. It was
+     invisible for as long as the tokens were `sorry`/`admit` (no prose line happens to carry those
+     words) and became 23 immediate hits when `partial`/`opaque` were added — exactly the
      "`external` contains `extern`"-class of trap the token shape already guarded against, one level
      down. String literals were scanned too, and the register keeps its own row prose in them
      (`note := "...opaque..."`): 11 more hits. Both are handled now — nesting depth, strings with
