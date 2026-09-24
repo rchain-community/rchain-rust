@@ -665,7 +665,7 @@ def laws : List Law := [
       `encodeNode_injective`; `nodeHash_eq_emptyRoot` pins the empty root as a fixed point with nothing \
       else hashing to it. A serializer that dropped a field would falsify the first, and a second node \
       hashing to the empty root the second — which is why the store *refuses* a colliding write \
-      (`save_node`, `radix_tree.rs:220-229` — its collision assert is the refusal) rather than tolerating one. **And the canonicity axiom was \
+      (`save_node`, `radix_tree.rs:239-248` — its collision assert is the refusal) rather than tolerating one. **And the canonicity axiom was \
       itself falsified**: `the_encoder_is_not_canonical_over_the_models_types` exhibits two distinct \
       nodes with one encoding (a 35-byte value re-reads as a second item), which is why the axiom and \
       both theorems now carry `WellFormed` — the invariant the code carries in its types and the model \
@@ -950,7 +950,14 @@ def laws : List Law := [
     statement := "The bonds cache equals the PoS state",
     status := .open,
     falsifiable := none,
-    note := "no Lean declaration; the Rust side is `BTreeMap<S, NonNegI64>` bonds" },
+    note := "**no model, and the gap is now stated rather than implied** (the register sweep found \
+      this row and 26c saying nothing, 2026-09-24). The cache is `Finalizer`'s `bonds_map` \
+      (`block-storage/src/dag/finalizer.rs:29`), a `BTreeMap<S, NonNegI64>` filled from the PoS state \
+      at finalization: the PoS side exists in the model as `PosState`'s bonds (laws 44–47) and the \
+      cache does not, so the equality has no right-hand side to be stated against. Closing it means a \
+      cache type plus the sync sites as its hypothesis, and what that buys is a *fidelity* claim about \
+      the node's bookkeeping rather than a property of the calculus — the honest shape is law 48's: \
+      open, with the reason, until a sync site is modelled for another law's sake" },
   { number := 17, clause := "a", layer := "Casper",
     statement := "Merge determinism: a rejection resolves to a unique minimum-cost candidate — the \
       rejection option is the minimum of `(total cost, size, the sorted set)`, and a minimum of a set \
@@ -1223,12 +1230,29 @@ def laws : List Law := [
     statement := "The shard id is a validated, ordered value",
     status := .open,
     falsifiable := none,
-    note := "no Lean declaration; the Rust side is the `ShardId` newtype with its parent-shard-id \
-      hierarchy (`shared/src/refined.rs`)" },
+    note := "**half of this row is already in the model**, and saying which half is what makes the row \
+      answerable: `ShardId` with `validShardId` (non-empty, ASCII) is `Rchain/CrossShard.lean:118`, \
+      which is what law 26a's `admitLeg` validates, and the Rust's is the same newtype \
+      (`shared/src/refined.rs:372`, whose `TryFrom<String>` is that validation). What is **not** \
+      modelled is the *ordering* and the `parent`/`child` hierarchy (`refined.rs:374-386`, `child` \
+      prefixing the id), so closing the row is two small things: an `Ord` the row can point at, and \
+      `validShardId (s.child n) = validShardId s` as a `decide`d witness — unit-sized, not a research \
+      question" },
   { number := 26, clause := "c", layer := "Cross-shard",
     statement := "The RNG seed and unforgeable names are shard-scoped",
     status := .open,
-    falsifiable := none },
+    falsifiable := none,
+    note := "**this row's note was empty until 2026-09-24, which is a defect of its own**: an `open` \
+      row with nothing in it reads as safe because nobody recomputes a negative, and the register's \
+      sweep is what found it. What it lacks, stated: the model has no shard in either object — the \
+      seed is a `Blake2b512Random` over the block's randomness and the deploy index, and an \
+      unforgeable name derives from the deploy (`GPrivate`'s id, `GDeployId`'s sig; both printed at \
+      `rholang/src/pretty_printer.rs:518-520`) rather than from a shard, while `ShardId` appears in \
+      the model only at the ingress (26a's `admitLeg`) and at the merge (26's legs). What would close \
+      it is a decision this row does not currently make: if the node does scope them, the model needs \
+      a shard in the seed derivation plus a theorem that one deploy in two shards yields different \
+      names; if it does not, the row is a **design claim** (law 48's shape) and should say so. Either \
+      way the question is written down now, which is what the empty note prevented" },
   { number := 27, layer := "Cross-shard",
     statement := "Cross-shard atomicity (2PC): every leg that *prepared* reaches the one decision the \
       coordinator made — commit on all of them or abort on all of them",
@@ -1466,7 +1490,14 @@ def laws : List Law := [
     statement := "The normalizer's output is well-scoped and closed (Law 6 through every path)",
     status := .open,
     falsifiable := none,
-    note := "reuses `TotalOn`/`Refined` (`Rchain/Ty.lean`)" },
+    note := "**the pieces exist and the statement has no subject yet**: `TotalOn`/`Refined` \
+      (`Rchain/Ty.lean`) are the checker-level vocabulary the row names and Law 6's `Closed` is what \
+      the claim would be written in, but the *normalizer* is only partly modelled — \
+      `Surface.lean`'s `normalizeAt` threads the binder stack and not an accumulated `par`, which is \
+      law 34's row's own gap — so \"through every path\" has no definition of the paths to range over. \
+      Closing it is **G6's** accumulator plus a well-scopedness checker on the result: a modelling \
+      unit rather than a proof of what is here, and one that should land *after* G6, because the \
+      statement is about the function G6 changes" },
   { number := 37, layer := "Rholang",
     statement := "Match soundness and completeness (Law 5 strengthened: partial collections, \
       wildcards, remainders) — over the shapes the clauses cover, which `modelledPar` names",
@@ -1767,7 +1798,14 @@ def laws : List Law := [
       instance; the *general* form of that instance (a `foldl` induction over `setKey` for any pool and \
       any reward function) remains owed, and is recorded as owed rather than glossed — the instance \
       catches a dropped or reordered commitment, the general lemma would catch nothing more about \
-      *this* mechanism" },
+      *this* mechanism. **Read against the contract before accepting that argument (2026-09-24), and \
+      it holds**: the removal *is* a `ListOps fold` \
+      (`casper/src/genesis/resources/Pos.rhox:607`, `computeRemove`), but it folds over a literal \
+      `setKey` sequence with no parametric pool or reward function to vary, so a general `foldl` \
+      induction would quantify over a function the contract does not have — and what the ordering \
+      actually is, and what the decided instance pins, is the *phase* order: `payWithdraw` reads \
+      `committedRewards` at `:604` and `computeRemove` deletes it only from `:610`, the payments \
+      awaited first (`:601`). Owed with that reason, rather than as an aspiration" },
   { number := 48, layer := "Casper",
     statement := "A **denied** deploy's effects are excluded from the merged state, and the merge's \
       objective counts its cost exactly as an included deploy's — so the fee consequence RCHIP-02 \
