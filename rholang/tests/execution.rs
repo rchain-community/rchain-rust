@@ -8,10 +8,10 @@ mod common;
 
 use rchain_crypto::hash::blake2b256_hash::Blake2b256Hash;
 use rchain_crypto::hash::blake2b512_random::Blake2b512Random;
-use rchain_models::ast::Expr;
+use rchain_models::ast::{Expr, GPrivate, GUnforgeable};
 use rchain_models::par_ops::from_expr;
 use rchain_models::sorted::SortedProc;
-use rchain_models::types::Closed;
+use rchain_models::types::{is_closed, Closed};
 use rchain_rholang::accounting::Cost;
 use rchain_rholang::env::Env;
 use rchain_rholang::errors::RholangError;
@@ -149,6 +149,59 @@ async fn peek_and_persistent_work() {
         rt.get_data_par(&chan("p2")).await.unwrap(),
         vec![from_expr(Expr::GInt(42))]
     );
+}
+
+/// **Law 4a's freshness clause and Law 4b.** `new` allocates a *fresh* unforgeable name — a name no
+/// other `new` can collide with, and which is not a free variable — and the reduction introduces no
+/// free variable the term did not already have.
+///
+/// The mechanism is `alloc` (`rholang/src/reduce.rs:1962-1981`): each fresh name is one `rand.next()`
+/// bound to `Par { unforgeables: [GPrivate { id }] }`, and the RNG state is advanced *past* the
+/// allocation before the body runs — the fix for issue #19, whose bug was a nested `new` drawing the
+/// same bytes as its parent. That is this test's falsifier: it sends two `new`s' names to one
+/// channel and requires their ids to differ, so reverting the RNG advance fails it. The second
+/// clause is the datum's shape — exactly one `GPrivate`, with `is_closed` true — because a name that
+/// arrived as a free variable would be neither.
+///
+/// (Law 4a's *other* half — a send and its matching receive reducing to the receive's body — is
+/// already asserted by `peek_and_persistent_work`'s `@"peek"!(x)` carrying the sent `42`, and by
+/// `list_channel_matches`.)
+#[tokio::test]
+async fn law4_new_allocates_fresh_names_and_the_reduct_is_closed() {
+    let (rt, _) = build_runtime_pair().await;
+    let r = rt
+        .evaluate(
+            r#"new a in { @"out"!(*a) | new b in { @"out"!(*b) } }"#,
+            &fixed_rand(),
+        )
+        .await
+        .unwrap();
+    assert!(r.succeeded(), "the term errors: {:?}", r.errors);
+
+    let data = rt.get_data_par(&chan("out")).await.unwrap();
+    assert_eq!(
+        data.len(),
+        2,
+        "both fresh names reach the channel: {data:?}"
+    );
+
+    let ids: Vec<Vec<u8>> = data
+        .iter()
+        .map(|p| match p.unforgeables.as_slice() {
+            [GUnforgeable::GPrivate(GPrivate { id })] => id.clone(),
+            other => panic!("a `new`-bound name must be exactly one GPrivate, got {other:?}"),
+        })
+        .collect();
+    assert_ne!(
+        ids[0], ids[1],
+        "a nested `new` must not reuse its parent's bytes — issue #19"
+    );
+    for datum in &data {
+        assert!(
+            is_closed(datum),
+            "the reduct must hold no free variable: {datum:?}"
+        );
+    }
 }
 
 #[tokio::test]

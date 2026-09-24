@@ -136,6 +136,50 @@ proptest! {
         prop_assert_eq!(sort_pars(ps), sort_pars(reversed));
     }
 
+    /// **Law 1b — the element comparator is lawful.** `cmpPar`'s transitivity (`cmpPar_lt_trans`,
+    /// with `cmpExpr`'s `eq_iff`/`swap`/`lt_trans`) is the row's content, and its *observable*
+    /// consequence is that a collection's canonical order is a function of the collection, not of the
+    /// order the elements arrived in. This walks all six permutations of three elements and requires
+    /// one answer.
+    ///
+    /// **What it adds over the tests beside it, measured rather than claimed.** A temporary
+    /// non-transitive relation planted in `Tree::cmp` (a `rem_euclid 3` cycle among `Int` leaves,
+    /// which `arb_ground` can reach) fails this test, and tells the two above apart:
+    /// `law1_parallel_composition_sorts_commutatively` — pairwise, `p|q` vs `q|p` — **passes** the
+    /// plant, because every pairwise comparison still answers consistently; `law2_sorting_a_sequence_
+    /// depends_only_on_its_elements` — one permutation, reversal — **fails** it. So the honest
+    /// statement is that this is exhaustive coverage of the small permutations, not a unique
+    /// falsifier: reversal reaches this cycle too, and a relation that survives reversal while
+    /// failing a 3-cycle is asserted by nothing here. That boundary is the same shape as law 1a's,
+    /// where the corpus pins the verdicts the model can spell.
+    #[test]
+    fn law1b_every_permutation_of_a_collection_sorts_alike(
+        a in arb_proc_par(2),
+        b in arb_proc_par(2),
+        c in arb_proc_par(2),
+    ) {
+        let permutations = [
+            [&a, &b, &c],
+            [&a, &c, &b],
+            [&b, &a, &c],
+            [&b, &c, &a],
+            [&c, &a, &b],
+            [&c, &b, &a],
+        ];
+        let expected = sort_pars(permutations[0].iter().copied().cloned().collect());
+        for (i, permutation) in permutations.iter().enumerate() {
+            let sorted = sort_pars(permutation.iter().copied().cloned().collect());
+            prop_assert_eq!(
+                &sorted,
+                &expected,
+                "permutation {} of [a,b,c] sorted differently: {:?} beside {:?}",
+                i,
+                sorted,
+                expected
+            );
+        }
+    }
+
     /// **Law 6.** A program has no globally free variables: a term built from grounds, bound vars and
     /// wildcards is `Closed`, and the predicate and the `Closed` newtype agree on every term.
     #[test]

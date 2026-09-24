@@ -1208,8 +1208,20 @@ mod tests {
         );
     }
 
+    /// **The wire order of `bonds`/`rejected_blocks` — and the boundary this test is on.** Its
+    /// name claimed to witness `to_proto`'s sorts for these two fields; *measured*, it cannot: with
+    /// both `bonds.sort_by` and `rejected_blocks.sort()` deleted, this test passes — and so do the
+    /// other 155 tests in this crate, so nothing else catches them either. The reason is the types:
+    /// both fields are collected from a `BTreeMap`/`BTreeSet`, whose iteration order is already the
+    /// sorted order the assertion checks, so the sorts are redundant here and no input can make them
+    /// observable. (The *justifications* sort is a real witness — `to_proto_sorts_justifications`
+    /// builds an unsorted `Vec` — and it is a different field.)
+    ///
+    /// So this pins the wire order the block hash depends on, which is worth keeping; what it must
+    /// not do is read as evidence for the sorts. The register's Law 16c row carries the boundary:
+    /// `Canonical` (justifications sorted) is checked for the field that can be unsorted.
     #[test]
-    fn law16_to_proto_sorts_bonds_and_rejections() {
+    fn to_proto_keeps_bonds_and_rejections_in_sorted_order() {
         let mut block = empty_block();
         block.bonds = BTreeMap::from([
             (validator(3), 1.try_into().unwrap()),
