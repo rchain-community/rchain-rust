@@ -259,6 +259,36 @@ pub async fn not_validated(
 // Stream wiring (port of `BlockReceiver.apply`)
 // -------------------------------------------------------------------------------------------------
 
+/// Each justification paired with whether it still needs requesting — the `parents` list
+/// `BlockReceiverState::end_stored` takes.
+///
+/// Extracted so the read's failure behaviour is testable without a stream fixture (the
+/// `load_node`/`load_node_from_store` split, applied to a block-store read).
+///
+/// **A read that fails is an error, not "not stored".** The oracle reads presence inside `F`
+/// (`BlockStore[F].contains`, `NodeRunning.scala:127,231`), so a store error is an error there and the
+/// caller logs it; the port's `unwrap_or_default()` answered `true` — "not stored" — which only causes
+/// a redundant request, **but silently**: the operator never learns the block store is failing (AUDIT
+/// C67's owed log line). A store that answers fewer presence bits than keys is refused too, rather
+/// than read as "not stored".
+pub(crate) async fn parents_not_stored(
+    block_store: &BlockStore,
+    justifications: &[BlockHash],
+) -> Result<Vec<(BlockHash, bool)>, String> {
+    let mut parents = Vec::with_capacity(justifications.len());
+    for hash in justifications {
+        let contains = block_store.contains(&[*hash]).await?;
+        let stored = contains.first().copied().ok_or_else(|| {
+            format!(
+                "the block store answered no presence bit for {}",
+                hash.to_hex()
+            )
+        })?;
+        parents.push((*hash, !stored));
+    }
+    Ok(parents)
+}
+
 /// Check that a block is cryptographically safe and part of the same shard (port of
 /// `checkIfOfInterest`).
 async fn check_if_of_interest(
@@ -390,17 +420,21 @@ async fn incoming_blocks(
             }
         }
 
-        let mut parents = Vec::new();
-        for hash in &block.justifications {
-            let not_stored = !block_store
-                .contains(&[*hash])
-                .await
-                .unwrap_or_default()
-                .first()
-                .copied()
-                .unwrap_or(false);
-            parents.push((*hash, not_stored));
-        }
+        // The loop's own failure idiom (as for `end_stored` below): log with the block, skip it, and
+        // let the peer or the retriever offer it again.
+        let parents = match parents_not_stored(&block_store, &block.justifications).await {
+            Ok(parents) => parents,
+            Err(e) => {
+                log.error(
+                    source,
+                    &format!(
+                        "Failed to read whether block {}'s parents are stored, skipping: {e}",
+                        block.block_hash.to_hex()
+                    ),
+                );
+                continue;
+            }
+        };
 
         let pending_requests = {
             let mut guard = state.lock().await;
@@ -510,6 +544,54 @@ pub fn apply(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A block store whose every read fails, so a read error is observable as one.
+    struct FailingBlockStore;
+
+    #[async_trait::async_trait]
+    impl rchain_shared::typed_store::KeyValueTypedStore<BlockHash, BlockMessage> for FailingBlockStore {
+        async fn get(&self, _keys: &[BlockHash]) -> Result<Vec<Option<BlockMessage>>, String> {
+            Err("the block store is down".to_string())
+        }
+        async fn put(&self, _pairs: &[(BlockHash, BlockMessage)]) -> Result<(), String> {
+            Err("the block store is down".to_string())
+        }
+        async fn delete(&self, _keys: &[BlockHash]) -> Result<usize, String> {
+            Err("the block store is down".to_string())
+        }
+        async fn contains(&self, _keys: &[BlockHash]) -> Result<Vec<bool>, String> {
+            Err("the block store is down".to_string())
+        }
+        async fn to_map(
+            &self,
+        ) -> Result<std::collections::BTreeMap<BlockHash, BlockMessage>, String> {
+            Err("the block store is down".to_string())
+        }
+    }
+
+    /// **A store that cannot be read is not "the parent is not stored".**
+    ///
+    /// The oracle reads presence inside `F` (`BlockStore[F].contains`, `NodeRunning.scala:127,231`),
+    /// so a store error is an error there; the port's `unwrap_or_default()` answered `true` — "not
+    /// stored" — which only causes a redundant request (the *conservative* direction), but silently:
+    /// the operator never learns that the block store is failing (AUDIT C67's owed log line).
+    ///
+    /// Falsifier, both forms. Pre-fix (witnessing): a failing store was answered with
+    /// `vec![(hash, true)]` — "not stored" — silently, and that assertion **passed on exactly that**
+    /// (run 2026-09-24 before the change). Post-fix: an `Err` naming the failure.
+    #[tokio::test]
+    async fn a_store_that_cannot_be_read_is_not_an_unstored_parent() {
+        let block_store: BlockStore = Arc::new(FailingBlockStore);
+        let hash = BlockHash::new([0x11; 32]);
+
+        let err = parents_not_stored(&block_store, &[hash])
+            .await
+            .expect_err("a block store that cannot be read must not answer \"not stored\"");
+        assert!(
+            err.contains("the block store is down"),
+            "and the refusal must name the failure, got: {err}"
+        );
+    }
 
     type MId = String;
 

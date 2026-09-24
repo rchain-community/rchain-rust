@@ -3499,7 +3499,7 @@ finding that no law covers, and it says why rather than leaving the gap to infer
   answers fewer presence bits than keys is refused too. Falsified in the witnessing form:
   `a_store_that_cannot_be_read_is_not_an_unstored_parent` first asserted `vec![(hash, true)]` for a
   `FailingBlockStore` and **passed on exactly that** (run 2026-09-24), then flipped to the refusal.
-  *Next in this unit*:
+  *Next in this unit*: the seven `node_running.rs` sites and `block_receiver.rs:247`.
   *Benign, with the reason*: `block_receiver.rs:376` — a read failure takes the *conservative* direction
   ("not stored" → it re-`put`s the block) and the doomed put's error is logged with the block hash two
   lines later, so the operator sees the store failing and no wrong state claim is made; and
