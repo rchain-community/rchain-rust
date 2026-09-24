@@ -282,3 +282,91 @@ async fn bond_deploy_updates_the_active_validator_set() {
         "replay must reproduce the bond post-state"
     );
 }
+
+/// The admission flow as a network performs it: a trustee admits a key in one block, and that key bonds in
+/// a later block. This is the flow the testnet could not complete — `trust` reported success and the next
+/// block's `bond` answered "Validator is not trusted" — and the single-block test above cannot see it,
+/// because there the trustee is both the deployer and the genesis bond.
+#[tokio::test]
+async fn a_trustee_admits_an_observer_and_it_bonds_in_the_next_block() {
+    let rm = build_runtime_manager().await;
+    let rand = fixed_rand();
+    let trustee = Validator::new([1u8; 65]);
+    let newcomer = Validator::new([2u8; 65]);
+    let trustee_address =
+        RevAddress::from_public_key(&PublicKey::new(vec![1u8; 65])).expect("trustee rev address");
+    let newcomer_address =
+        RevAddress::from_public_key(&PublicKey::new(vec![2u8; 65])).expect("newcomer rev address");
+    let vaults = vec![
+        Vault {
+            rev_address: trustee_address,
+            initial_balance: NonNegI64::try_from(1_000_000).unwrap(),
+        },
+        Vault {
+            rev_address: newcomer_address,
+            initial_balance: NonNegI64::try_from(1_000_000).unwrap(),
+        },
+    ];
+    let pos_genesis = PosGenesis {
+        bonds: [(trustee, NonNegI64::try_from(1000).unwrap())]
+            .into_iter()
+            .collect(),
+        trusted: BTreeSet::from([trustee]),
+        params: PosParams {
+            minimum_bond: 1,
+            ..PosParams::default()
+        },
+    };
+    let (_pre, genesis_post, _) = rm
+        .compute_genesis(&[], &rand, BlockData::empty(), &pos_genesis, &vaults)
+        .await
+        .expect("compute_genesis");
+
+    // Block 1: the trustee admits the newcomer. Nothing about the newcomer is in the genesis.
+    let newcomer_hex = rchain_shared::base16::encode(newcomer.as_bytes());
+    let trust_term = format!(
+        "new pos(`rho:rchain:pos`), deployerId(`rho:rchain:deployerId`), ret in {{\n  \
+         pos!(\"trust\", [*deployerId, \"{newcomer_hex}\".hexToBytes(), *ret]) | for (_ <- ret) {{ Nil }}\n}}"
+    );
+    let (state1, user1, _) = rm
+        .compute_state(
+            &genesis_post,
+            &[deploy_with_key(&trust_term, vec![1u8; 65])],
+            &[SystemDeploy::close_block(1, fixed_rand().split_byte(2))],
+            &rand,
+            BlockData::empty(),
+        )
+        .await
+        .expect("play block 1");
+    assert!(
+        user1[0].eval_result.succeeded(),
+        "the trust deploy must succeed: {:?}",
+        user1[0].eval_result.errors
+    );
+
+    // Block 2: the newcomer bonds, in a later block with a pre-state that should carry the trust.
+    let bond_term = "new pos(`rho:rchain:pos`), deployerId(`rho:rchain:deployerId`), ret in {\n  \
+                     pos!(\"bond\", [*deployerId, 100, *ret]) | for (_ <- ret) { Nil }\n}";
+    let (state2, user2, _) = rm
+        .compute_state(
+            &state1,
+            &[deploy_with_key(bond_term, vec![2u8; 65])],
+            &[SystemDeploy::close_block(2, fixed_rand().split_byte(3))],
+            &rand,
+            BlockData::empty(),
+        )
+        .await
+        .expect("play block 2");
+    assert!(
+        user2[0].eval_result.succeeded(),
+        "the bond deploy must succeed: {:?}",
+        user2[0].eval_result.errors
+    );
+    assert!(
+        rm.compute_bonds(&StateHash::from_slice(state2.as_bytes()))
+            .await
+            .unwrap()
+            .contains_key(&newcomer),
+        "the admitted newcomer is now an active validator"
+    );
+}

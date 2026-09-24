@@ -1447,6 +1447,21 @@ impl SystemProcesses {
                             .collect();
                         cc.produce(&rand, &[RhoSet::apply(ps)], ret, path).await
                     }
+                    // The admission diagnostic: what the *state* says about trust. Without it, a `trust`
+                    // that reported success and did not stick is indistinguishable from one that never
+                    // ran, because a returned error value is still a successful deploy (#74).
+                    "getTrusted" => {
+                        let [ret] = rest else {
+                            return Err(illegal_arg("getTrusted expects a return channel"));
+                        };
+                        let trusted = native.trusted().await.map_err(|e| illegal_arg(&e))?;
+                        eprintln!("[pos] getTrusted -> {} entries", trusted.len());
+                        let ps: Vec<Par> = trusted
+                            .iter()
+                            .map(|v| RhoByteArray::apply(v.as_bytes().to_vec()))
+                            .collect();
+                        cc.produce(&rand, &[RhoSet::apply(ps)], ret, path).await
+                    }
                     "bond" => {
                         let [deployer_id, amount, ret] = rest else {
                             eprintln!("[pos] bad argument shape: bond");
