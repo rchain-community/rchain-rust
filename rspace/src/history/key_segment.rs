@@ -153,7 +153,9 @@ mod tests {
 
         // Growth that stays inside the bound still succeeds, so the refusal is the bound and not the
         // operation: 127 + 0 is fine, and so is a 126-byte segment plus one byte.
-        let kept = maximal.concat(&KeySegment::empty()).expect("127 + 0 <= 127");
+        let kept = maximal
+            .concat(&KeySegment::empty())
+            .expect("127 + 0 <= 127");
         assert_eq!(kept.len(), 127);
         let near_max = KeySegment::try_from(vec![0u8; 126]).expect("126 <= 127");
         assert_eq!(near_max.append(7).expect("126 + 1 <= 127").len(), 127);

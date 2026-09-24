@@ -370,8 +370,7 @@ mod tests {
             self.history = self
                 .history
                 .process(&[HistoryAction::Insert {
-                    key: KeySegment::try_from(segment)
-                        .expect("1 + 32 = 33 bytes is at most 127"),
+                    key: KeySegment::try_from(segment).expect("1 + 32 = 33 bytes is at most 127"),
                     hash: leaf_hash,
                 }])
                 .await

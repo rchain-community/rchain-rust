@@ -620,9 +620,9 @@ impl RadixTreeImpl {
                     let new_node_opt = self.make_actions(&created_node, &new_actions).await?;
                     let new_item = match new_node_opt {
                         None => None,
-                        Some(n) => Some(
-                            self.save_node_and_create_item(&n, &KeySegment::empty(), true)?,
-                        ),
+                        Some(n) => {
+                            Some(self.save_node_and_create_item(&n, &KeySegment::empty(), true)?)
+                        }
                     };
                     (item_idx, new_item)
                 }

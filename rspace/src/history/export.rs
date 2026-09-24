@@ -184,11 +184,7 @@ fn add_leaf(
     let mut leaf_prefixes = p.exp_data.leaf_prefixes.clone();
     let mut leaf_values = p.exp_data.leaf_values.clone();
     if settings.flag_leaf_prefixes {
-        leaf_prefixes.push(
-            cur_node_prefix
-                .append(item_index)?
-                .concat(leaf_prefix)?,
-        );
+        leaf_prefixes.push(cur_node_prefix.append(item_index)?.concat(leaf_prefix)?);
     }
     if settings.flag_leaf_values {
         leaf_values.push(leaf_hash);
@@ -220,9 +216,7 @@ fn add_node_ptr(
     let child_bytes = get_node_data(&ptr)?
         .ok_or_else(|| format!("Export error: Node with key {} not found", ptr.to_hex()))?;
     let child_decoded = decode(&SerializedNode::try_from(child_bytes.as_slice())?);
-    let child_np = cur_node_prefix
-        .append(item_index)?
-        .concat(ptr_prefix)?;
+    let child_np = cur_node_prefix.append(item_index)?.concat(ptr_prefix)?;
     let child_node_data = NodeData {
         prefix: child_np.clone(),
         decoded: child_decoded,

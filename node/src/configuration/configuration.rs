@@ -425,9 +425,14 @@ mod tests {
     /// `Configuration::build` — from a `run` invocation. The data dir is private to `case` so no
     /// stray `/var/lib/rnode/rnode.conf` can reach a test; `config_file`, when given, is written to
     /// `<data-dir>/rnode.conf`, which is where `build` looks by default.
-    fn build_run(case: &str, flags: &[&str], config_file: Option<&str>) -> Result<NodeConf, String> {
+    fn build_run(
+        case: &str,
+        flags: &[&str],
+        config_file: Option<&str>,
+    ) -> Result<NodeConf, String> {
         use clap::Parser as _;
-        let dir = std::env::temp_dir().join(format!("rchain_metrics_{}_{case}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("rchain_metrics_{}_{case}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("a writable temp data dir");
         if let Some(body) = config_file {
@@ -474,7 +479,10 @@ mod tests {
             let err = build_run(name, &[flag], None)
                 .expect_err("a reporter with no implementation must be refused");
             assert!(err.contains("unimplemented"), "{flag}: {err}");
-            assert!(err.contains(name), "{flag} must be named in the error: {err}");
+            assert!(
+                err.contains(name),
+                "{flag} must be named in the error: {err}"
+            );
             assert!(
                 err.contains("/metrics"),
                 "{flag}: the error must say what the port does serve: {err}"
@@ -486,8 +494,12 @@ mod tests {
     /// that enables a reporter is refused too, because the check reads the merged config.
     #[test]
     fn a_config_file_enabling_an_absent_reporter_is_refused_too() {
-        let err = build_run("config_file", &[], Some("metrics {\n  influxdb = true\n}\n"))
-            .expect_err("a config file enabling an absent reporter must be refused");
+        let err = build_run(
+            "config_file",
+            &[],
+            Some("metrics {\n  influxdb = true\n}\n"),
+        )
+        .expect_err("a config file enabling an absent reporter must be refused");
         assert!(err.contains("influxdb"), "{err}");
     }
 
@@ -496,7 +508,8 @@ mod tests {
     /// Scala-shaped config that sets it for a feature the port already provides.
     #[test]
     fn prometheus_is_accepted_with_a_note_that_the_endpoint_is_always_on() {
-        let conf = build_run("prometheus", &["--prometheus"], None).expect("prometheus is accepted");
+        let conf =
+            build_run("prometheus", &["--prometheus"], None).expect("prometheus is accepted");
         assert!(conf.metrics.prometheus, "the setting is still parsed");
         let note = check_metrics_config(&conf.metrics)
             .expect("accepted")
