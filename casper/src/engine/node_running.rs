@@ -101,6 +101,24 @@ const DEFAULT_BLOCK_REQUEST_LIMIT_PER_SEC: u32 = 100;
 /// a `take=i32::MAX` cannot traverse/serialize the whole trie.
 const MAX_STORE_ITEMS_TAKE: usize = 10_000;
 
+/// Byte cap on a store-items page this node will serve (AUDIT C73). `MAX_STORE_ITEMS_TAKE` bounds how
+/// many nodes a request may name; this bounds how much data the walk may hand back, because a node's
+/// *value* size is not bounded by the request at all — the maximal `take` with fat values is tens of
+/// megabytes of the responder's memory per request, repeated per peer.
+///
+/// **Refused, never truncated.** The requester recomputes the page it expects and requires the received
+/// keys to match (`validate_state_items`), so a short page is not a smaller answer — it is a wrong state
+/// claim the importer would then validate its own traversal against (the same reason the unreadable-store
+/// path drops rather than serving an empty page, AUDIT C63). This handler has no error reply to send, so
+/// the policy is the one it already applies to an over-large `take`: drop, log, and let the requester
+/// time out and retry. The oracle has no such cap (it serves whatever it is asked), which makes this a
+/// registered deviation — the responder's only defence that is not a lie.
+///
+/// 32 MiB is ~10× the largest *legitimate* page (`PAGE_SIZE = 750` nodes × 4 KiB items ≈ 3 MB) and below
+/// the ~41 MB the maximal `take` produces at that item size, so the two caps bracket the same hostile
+/// request from both sides.
+pub const MAX_STORE_ITEMS_BYTES: usize = 32 * 1024 * 1024;
+
 /// Per-peer fixed-window rate limiter for block requests (H4): bounds the outbound bandwidth a
 /// single peer can pull by requesting blocks. Documented Scala deviation: Scala serves every block
 /// request with no limit.
@@ -388,6 +406,25 @@ pub async fn handle_store_items_request<E: RSpaceExporter>(
             return;
         }
     };
+    // The byte cap (AUDIT C73): see `MAX_STORE_ITEMS_BYTES` for why this refuses rather than truncates.
+    // It is checked here, after assembly and before the response exists, so an oversized page is never
+    // serialised and never sent.
+    let page_bytes: usize = history_items
+        .iter()
+        .map(|(_, v)| v.len())
+        .chain(data_items.iter().map(|(_, v)| v.len()))
+        .sum();
+    if page_bytes > MAX_STORE_ITEMS_BYTES {
+        log.error(
+            log_source,
+            &format!(
+                "Dropping store-items request: the page is {page_bytes} bytes > \
+                 {MAX_STORE_ITEMS_BYTES} — refusing rather than truncating, since a short page is a \
+                 wrong state claim (the requester recomputes it)"
+            ),
+        );
+        return;
+    }
     let last_path = nodes.last().map(|n| n.path.clone()).unwrap_or_default();
 
     let response = StoreItemsMessage {
@@ -1066,7 +1103,11 @@ mod tests {
     async fn a_store_items_page_costs_the_dispatch_loop_this_long() {
         const ITEM_BYTES: usize = 4096;
 
-        for (label, nodes) in [("LFS page", 750usize), ("cap", 10_000)] {
+        // The second case is the largest page the *byte* cap admits at this item size, not the largest
+        // `take`: 10,000 nodes of 4 KiB is ~41 MB, which `MAX_STORE_ITEMS_BYTES` now refuses outright
+        // rather than truncating (AUDIT C73, and its own test). Measuring a refused page would measure
+        // nothing, so this is 6,000 nodes ≈ 24 MB — the biggest loop turn a peer can actually buy.
+        for (label, nodes) in [("LFS page", 750usize), ("byte-capped page", 6_000)] {
             let local = peer("src", 40400);
             let remote = peer("peer", 40400);
             let transport = Arc::new(MockTransport::default());
@@ -1312,5 +1353,85 @@ mod tests {
         assert_eq!(sends[0].0, remote);
         let packet = rchain_comm::rp::protocol_helper::to_packet(&sends[0].1).unwrap();
         assert_eq!(packet.type_id, "BlockRequest");
+    }
+    /// **AUDIT C73**: a page over the byte cap is refused — dropped, never truncated.
+    ///
+    /// `MAX_STORE_ITEMS_TAKE` bounds how many nodes a request may name; nothing bounded how much data
+    /// they carry, so the maximal `take` with fat values is tens of megabytes of the responder's memory
+    /// per request, per peer. The page is now dropped rather than shortened: the requester recomputes
+    /// the page it expects and requires the received keys to match (`validate_state_items`), so a short
+    /// page is a wrong state claim rather than a smaller answer — the same policy this handler already
+    /// applies to an unreadable store (C63) and to an over-large `take`.
+    ///
+    /// Both directions in one test, so neither can pass vacuously: the over-cap page must not be sent,
+    /// and a legitimate page must still be served (the drop cannot be "this handler stopped working").
+    /// Falsified against this tree: with the cap's check removed, the over-cap page is streamed and the
+    /// first assertion fails.
+    #[tokio::test]
+    async fn a_page_over_the_byte_cap_is_dropped_not_truncated() {
+        let local = peer("src", 40400);
+        let remote = peer("peer", 40400);
+
+        // Over the cap: 200 nodes × 200 KiB items, split about evenly into history and data.
+        const FAT_NODES: usize = 200;
+        const FAT_ITEM: usize = 200 * 1024;
+        let fat_bytes = FAT_NODES
+            .checked_mul(FAT_ITEM)
+            .expect("the fixture's page size is small");
+        assert!(
+            fat_bytes > MAX_STORE_ITEMS_BYTES,
+            "the fixture must exceed the cap ({fat_bytes} bytes), or this test proves nothing"
+        );
+        let transport = Arc::new(MockTransport::default());
+        handle_store_items_request(
+            transport.as_ref(),
+            &conf(&local),
+            &PageExporter {
+                count: FAT_NODES,
+                payload: FAT_ITEM,
+            },
+            &NopLog,
+            LogSource::new("test"),
+            &remote,
+            &StoreItemsMessageRequest {
+                start_path: vec![],
+                skip: 0,
+                take: i32::try_from(FAT_NODES).expect("nodes fit i32"),
+            },
+            false,
+        )
+        .await;
+        assert!(
+            transport.streams.lock().unwrap().is_empty(),
+            "an over-cap page must be dropped: a truncated page is a wrong state claim, and the peer \
+             cannot tell it from a real one"
+        );
+
+        // Under the cap: the largest legitimate page (`PAGE_SIZE = 750` × 4 KiB ≈ 3 MB) is served.
+        let transport = Arc::new(MockTransport::default());
+        handle_store_items_request(
+            transport.as_ref(),
+            &conf(&local),
+            &PageExporter {
+                count: 750,
+                payload: 4096,
+            },
+            &NopLog,
+            LogSource::new("test"),
+            &remote,
+            &StoreItemsMessageRequest {
+                start_path: vec![],
+                skip: 0,
+                take: 750,
+            },
+            false,
+        )
+        .await;
+        assert_eq!(
+            transport.streams.lock().unwrap().len(),
+            1,
+            "a legitimate page must still be served — otherwise the drop above is the handler \
+             refusing everything"
+        );
     }
 }
