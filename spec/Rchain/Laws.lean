@@ -36,8 +36,9 @@ proved *about the Lean model* and a law proved *and checked against the running 
 - `owed` — the definition exists and the proof does not. `takesStep_iff_reduces` is the last one in
   the language layer (`TakesStep_sound` left it when the rule's receive shape was widened, AUDIT C45).
 - `deferred` — the `axiom` *is* the definition, so there is nothing yet to prove anything about.
-  `substPar` is the remaining example; `joinKey`, `trieRoot` and `mergeChanges` left this status in the
-  consolidation pass, when the Rust's own definitions were modelled.
+  **Empty now**: `substPar` was the last example and is a `mutual` definition since 2026-09-23;
+  `joinKey`, `trieRoot` and `mergeChanges` left this status in the consolidation pass, when the Rust's
+  own definitions were modelled.
 - `open` — in the catalog, no formalization (laws 30, 31, 33, 34, 36).
 - `orphaned` — out of scope because the VM it describes was not ported (laws 12, 13).
 - `retired` — the port has **no rule of this shape**, with the evidence in the row's note and its `rust`
