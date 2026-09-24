@@ -510,6 +510,42 @@ pub struct ProposerParts {
 /// `Setup.setupNodeProgram`). Returns the `(incoming_blocks, validated_blocks)` channel senders so the
 /// transport and proposer can plug into the pipeline. `NodeLaunch.apply` and the proposer are wired
 /// separately.
+/// Feed each validated hash's block from the store into the processor queue (the
+/// `blockReceiverStream.evalMap(blockStore.getUnsafe)` half of the receiver).
+///
+/// Extracted so its failure behaviour is testable without a node fixture — the
+/// `load_node`/`load_node_from_store` split, applied to a block-store read.
+///
+/// **A read that fails is reported, not skipped.** The oracle's `getUnsafe`
+/// (`block-storage/.../BlockStoreSyntax.scala:33-35`) lifts an absent *or errored* read into
+/// `BlockStoreInconsistencyError` in `F`; the port's `.ok()` dropped the block from the
+/// validate→process path with nothing recorded, so a node could leave a peer's block unprocessed and
+/// say nothing at all. A spawned task has no reply to send, so the honest answer is the log line —
+/// naming the hash, because the hash is what makes the gap actionable.
+pub(crate) async fn pump_validated_blocks(
+    block_store: &BlockStore,
+    validation_rx: &mut mpsc::UnboundedReceiver<BlockHash>,
+    processor_input_tx: &mpsc::Sender<BlockMessage>,
+    log: &dyn Log,
+) {
+    while let Some(hash) = validation_rx.recv().await {
+        match block_store.get(&[hash]).await {
+            Ok(mut v) => {
+                if let Some(block) = v.pop().flatten() {
+                    let _ = processor_input_tx.send(block).await;
+                }
+            }
+            Err(e) => log.error(
+                LogSource::new("node.runtime.block_processing"),
+                &format!(
+                    "a validated block could not be read back from the block store: {}: {e}",
+                    hash.to_hex()
+                ),
+            ),
+        }
+    }
+}
+
 pub fn wire_block_processing(
     comm_state: &CommState,
     parts: &ShardParts,
@@ -571,19 +607,11 @@ pub fn wire_block_processing(
         mpsc::channel(rchain_casper::engine::node_running::MAX_PENDING_BLOCKS);
     let load_blocks = {
         let block_store = parts.block_store.clone();
+        let log = log.clone();
         let mut validation_rx = validation_rx;
         async move {
-            while let Some(hash) = validation_rx.recv().await {
-                if let Some(block) = block_store
-                    .get(&[hash])
-                    .await
-                    .ok()
-                    .and_then(|mut v| v.pop())
-                    .flatten()
-                {
-                    let _ = processor_input_tx.send(block).await;
-                }
-            }
+            pump_validated_blocks(&block_store, &mut validation_rx, &processor_input_tx, &*log)
+                .await;
         }
     };
     tokio::spawn(load_blocks);
@@ -1605,6 +1633,102 @@ async fn check_shard_data_dir(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A block store whose every read fails, so a read error is observable as one.
+    struct FailingBlockStore;
+
+    #[async_trait::async_trait]
+    impl rchain_shared::typed_store::KeyValueTypedStore<BlockHash, BlockMessage> for FailingBlockStore {
+        async fn get(&self, _keys: &[BlockHash]) -> Result<Vec<Option<BlockMessage>>, String> {
+            Err("the block store is down".to_string())
+        }
+        async fn put(&self, _pairs: &[(BlockHash, BlockMessage)]) -> Result<(), String> {
+            Err("the block store is down".to_string())
+        }
+        async fn delete(&self, _keys: &[BlockHash]) -> Result<usize, String> {
+            Err("the block store is down".to_string())
+        }
+        async fn contains(&self, _keys: &[BlockHash]) -> Result<Vec<bool>, String> {
+            Err("the block store is down".to_string())
+        }
+        async fn to_map(
+            &self,
+        ) -> Result<std::collections::BTreeMap<BlockHash, BlockMessage>, String> {
+            Err("the block store is down".to_string())
+        }
+    }
+
+    /// A log that records what it was told, so "nothing was reported" is falsifiable.
+    #[derive(Default)]
+    struct RecordingLog {
+        messages: std::sync::Mutex<Vec<String>>,
+    }
+
+    impl RecordingLog {
+        fn messages(&self) -> Vec<String> {
+            self.messages.lock().expect("not poisoned").clone()
+        }
+    }
+
+    impl Log for RecordingLog {
+        fn is_trace_enabled(&self, _source: LogSource) -> bool {
+            false
+        }
+        fn trace(&self, _source: LogSource, _msg: &str) {}
+        fn debug(&self, _source: LogSource, _msg: &str) {}
+        fn info(&self, _source: LogSource, _msg: &str) {}
+        fn warn(&self, _source: LogSource, msg: &str) {
+            self.messages
+                .lock()
+                .expect("not poisoned")
+                .push(msg.to_string());
+        }
+        fn error(&self, _source: LogSource, msg: &str) {
+            self.messages
+                .lock()
+                .expect("not poisoned")
+                .push(msg.to_string());
+        }
+    }
+
+    /// **A block that cannot be read back is reported, not skipped** (AUDIT C67).
+    ///
+    /// The oracle's `getUnsafe` (`block-storage/.../BlockStoreSyntax.scala:33-35`) lifts an absent
+    /// *or errored* read into `BlockStoreInconsistencyError` in `F`; the port's `.ok()` dropped the
+    /// block from the validate→process path with nothing recorded, so a node could leave a peer's
+    /// block unprocessed and say nothing.
+    ///
+    /// Falsifier, both forms. Pre-fix (witnessing): the read fails and **nothing is reported**, and
+    /// the assertion `log.messages().is_empty()` **passed on exactly that** (run 2026-09-24 before the
+    /// change). Post-fix: one line, naming the hash and the store's error.
+    #[tokio::test]
+    async fn a_block_that_cannot_be_read_back_is_reported() {
+        let block_store: BlockStore = Arc::new(FailingBlockStore);
+        let log = RecordingLog::default();
+        let (processor_input_tx, _processor_input_rx) = mpsc::channel(1);
+        let (validation_tx, mut validation_rx) = mpsc::unbounded_channel();
+        validation_tx
+            .send(BlockHash::new([0x11; 32]))
+            .expect("send");
+        drop(validation_tx);
+
+        pump_validated_blocks(&block_store, &mut validation_rx, &processor_input_tx, &log).await;
+
+        let messages = log.messages();
+        assert_eq!(
+            messages.len(),
+            1,
+            "a block-store read failure must be reported once: {messages:?}"
+        );
+        assert!(
+            messages[0].contains("11".repeat(32).as_str()),
+            "and the line must name the block, got: {messages:?}"
+        );
+        assert!(
+            messages[0].contains("the block store is down"),
+            "and the store's own error, got: {messages:?}"
+        );
+    }
     use crate::configuration::configuration::parse_defaults;
     use crate::configuration::hocon::node_conf_from_hocon;
 
