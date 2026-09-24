@@ -1438,5 +1438,335 @@ private theorem pathExpr_cases {e : Expr} (h : pathExpr e = true) :
   | eand a b => rw [pathExpr_eand] at h; exact absurd h (by decide)
   | eor a b => rw [pathExpr_eor] at h; exact absurd h (by decide)
 
+/-! ### The clause reductions: one `rfl` lemma per pattern/target pair
+
+The soundness half follows the clauses, and the clauses discriminate on the pattern's constructor *and*
+on the target's. These thirty restatements are that knowledge written down — five for the expression-list
+level (a singleton pattern list is the `[p]` arm's `spatialMatchExpr` once the pattern's form is known)
+and twenty-five for the expression level. With them a member's proof is a `rw` and a case analysis, and
+no `change` against a *stuck* match is needed — which is exactly what blocked the first attempt at this
+half.
+
+They hold by `rfl` because the kernel reduces the match at constructors: the fuel is in successor form,
+the pattern's form is known, and for the mismatched pairs the constructor clash selects `_ => false`. The
+two guard arms keep their `if`, because the guard *is* the clause. -/
+
+private theorem sms_ground (f : Nat) (g : Ground) (ts : List Expr) :
+    spatialMatchExprs (f + 1) [Expr.ground g] ts = spatialMatchExpr f (.ground g) ts := rfl
+private theorem sms_elist (f : Nat) (ps : List Par) (ts : List Expr) :
+    spatialMatchExprs (f + 1) [Expr.elist ps none] ts = spatialMatchExpr f (.elist ps none) ts := rfl
+private theorem sms_eset (f : Nat) (ps : List Par) (ts : List Expr) :
+    spatialMatchExprs (f + 1) [Expr.eset ps none] ts = spatialMatchExpr f (.eset ps none) ts := rfl
+private theorem sms_etuple (f : Nat) (ps : List Par) (ts : List Expr) :
+    spatialMatchExprs (f + 1) [Expr.etuple ps] ts = spatialMatchExpr f (.etuple ps) ts := rfl
+private theorem sms_emap (f : Nat) (kvs : List (Par × Par)) (ts : List Expr) :
+    spatialMatchExprs (f + 1) [Expr.emap kvs none] ts = spatialMatchExpr f (.emap kvs none) ts := rfl
+
+private theorem sme_ground_ground (f : Nat) (g g' : Ground) :
+    spatialMatchExpr (f + 1) (.ground g) [.ground g'] = (g == g') := rfl
+private theorem sme_ground_elist (f : Nat) (g : Ground) (ps : List Par) (r : Option Var) :
+    spatialMatchExpr (f + 1) (.ground g) [.elist ps r] = false := rfl
+private theorem sme_ground_eset (f : Nat) (g : Ground) (ps : List Par) (r : Option Var) :
+    spatialMatchExpr (f + 1) (.ground g) [.eset ps r] = false := rfl
+private theorem sme_ground_etuple (f : Nat) (g : Ground) (ps : List Par) :
+    spatialMatchExpr (f + 1) (.ground g) [.etuple ps] = false := rfl
+private theorem sme_ground_emap (f : Nat) (g : Ground) (kvs : List (Par × Par)) (r : Option Var) :
+    spatialMatchExpr (f + 1) (.ground g) [.emap kvs r] = false := rfl
+
+private theorem sme_elist_ground (f : Nat) (ps : List Par) (g' : Ground) :
+    spatialMatchExpr (f + 1) (.elist ps none) [.ground g'] = false := rfl
+private theorem sme_elist_elist (f : Nat) (ps ts : List Par) (r : Option Var) :
+    spatialMatchExpr (f + 1) (.elist ps none) [.elist ts r] = matchListPos f ps ts false := rfl
+private theorem sme_elist_eset (f : Nat) (ps ts : List Par) (r : Option Var) :
+    spatialMatchExpr (f + 1) (.elist ps none) [.eset ts r] = false := rfl
+private theorem sme_elist_etuple (f : Nat) (ps ts : List Par) :
+    spatialMatchExpr (f + 1) (.elist ps none) [.etuple ts] = false := rfl
+private theorem sme_elist_emap (f : Nat) (ps : List Par) (kvs : List (Par × Par)) (r : Option Var) :
+    spatialMatchExpr (f + 1) (.elist ps none) [.emap kvs r] = false := rfl
+
+private theorem sme_eset_ground (f : Nat) (ps : List Par) (g' : Ground) :
+    spatialMatchExpr (f + 1) (.eset ps none) [.ground g'] = false := rfl
+private theorem sme_eset_elist (f : Nat) (ps ts : List Par) (r : Option Var) :
+    spatialMatchExpr (f + 1) (.eset ps none) [.elist ts r] = false := rfl
+private theorem sme_eset_eset (f : Nat) (ps ts : List Par) (r : Option Var) :
+    spatialMatchExpr (f + 1) (.eset ps none) [.eset ts r]
+      = (if (ps.length == ts.length) = true then matchListPar f ps ts false else false) := rfl
+private theorem sme_eset_etuple (f : Nat) (ps ts : List Par) :
+    spatialMatchExpr (f + 1) (.eset ps none) [.etuple ts] = false := rfl
+private theorem sme_eset_emap (f : Nat) (ps : List Par) (kvs : List (Par × Par)) (r : Option Var) :
+    spatialMatchExpr (f + 1) (.eset ps none) [.emap kvs r] = false := rfl
+
+private theorem sme_etuple_ground (f : Nat) (ps : List Par) (g' : Ground) :
+    spatialMatchExpr (f + 1) (.etuple ps) [.ground g'] = false := rfl
+private theorem sme_etuple_elist (f : Nat) (ps ts : List Par) (r : Option Var) :
+    spatialMatchExpr (f + 1) (.etuple ps) [.elist ts r] = false := rfl
+private theorem sme_etuple_eset (f : Nat) (ps ts : List Par) (r : Option Var) :
+    spatialMatchExpr (f + 1) (.etuple ps) [.eset ts r] = false := rfl
+private theorem sme_etuple_etuple (f : Nat) (ps ts : List Par) :
+    spatialMatchExpr (f + 1) (.etuple ps) [.etuple ts] = matchListPos f ps ts false := rfl
+private theorem sme_etuple_emap (f : Nat) (ps : List Par) (kvs : List (Par × Par)) (r : Option Var) :
+    spatialMatchExpr (f + 1) (.etuple ps) [.emap kvs r] = false := rfl
+
+private theorem sme_emap_ground (f : Nat) (kvs : List (Par × Par)) (g' : Ground) :
+    spatialMatchExpr (f + 1) (.emap kvs none) [.ground g'] = false := rfl
+private theorem sme_emap_elist (f : Nat) (kvs : List (Par × Par)) (ts : List Par) (r : Option Var) :
+    spatialMatchExpr (f + 1) (.emap kvs none) [.elist ts r] = false := rfl
+private theorem sme_emap_eset (f : Nat) (kvs : List (Par × Par)) (ts : List Par) (r : Option Var) :
+    spatialMatchExpr (f + 1) (.emap kvs none) [.eset ts r] = false := rfl
+private theorem sme_emap_etuple (f : Nat) (kvs : List (Par × Par)) (ts : List Par) :
+    spatialMatchExpr (f + 1) (.emap kvs none) [.etuple ts] = false := rfl
+private theorem sme_emap_emap (f : Nat) (kvs tks : List (Par × Par)) (r : Option Var) :
+    spatialMatchExpr (f + 1) (.emap kvs none) [.emap tks r]
+      = (if (kvs.length == tks.length) = true then matchMap f kvs tks false else false) := rfl
+
+/-- The guard's own content, read off the `if`: a true answer gives the body, and it gives the length
+    equality the body's soundness statement needs. -/
+private theorem guard_true {c b : Bool} (h : (if c = true then b else false) = true) : b = true := by
+  by_cases hc : c = true
+  · rwa [if_pos hc] at h
+  · rw [if_neg hc] at h; exact absurd h (by decide)
+
+private theorem guard_len {c b : Bool} (h : (if c = true then b else false) = true) : c = true := by
+  by_cases hc : c = true
+  · exact hc
+  · rw [if_neg hc] at h; exact absurd h (by decide)
+
+/-- **`Ground`'s `BEq` turned back into an equality.** The derived `BEq` has **no `LawfulBEq`
+    instance** — there is a `BEq Ground` and no law for it — so `beq_iff_eq`/`eq_of_beq` cannot be
+    applied to a `Ground`, and `simp`/`simpa` cannot reduce the comparison either (a derived `BEq` has no
+    simp lemmas). `deriving LawfulBEq` is not available in this toolchain ("no default handler for
+    'LawfulBEq'"), so the arms are written out: the *terms* are definitionally the fields' comparisons,
+    which is why the five matching arms hand `h` straight to the fields' law, and the twenty mismatches
+    have `h : false = true` on the nose. -/
+private theorem ground_beq_eq : ∀ (g g' : Ground), (g == g') = true → g = g'
+  | .bool x, .bool x', h => congrArg Ground.bool (LawfulBEq.eq_of_beq (α := Bool) h)
+  | .int x, .int x', h => congrArg Ground.int (LawfulBEq.eq_of_beq (α := Int) h)
+  | .str x, .str x', h => congrArg Ground.str (LawfulBEq.eq_of_beq (α := List Nat) h)
+  | .uri x, .uri x', h => congrArg Ground.uri (LawfulBEq.eq_of_beq (α := List Nat) h)
+  | .bytes x, .bytes x', h => congrArg Ground.bytes (LawfulBEq.eq_of_beq (α := List Nat) h)
+  | .bool x, .int x', h => absurd h Bool.false_ne_true
+  | .bool x, .str x', h => absurd h Bool.false_ne_true
+  | .bool x, .uri x', h => absurd h Bool.false_ne_true
+  | .bool x, .bytes x', h => absurd h Bool.false_ne_true
+  | .int x, .bool x', h => absurd h Bool.false_ne_true
+  | .int x, .str x', h => absurd h Bool.false_ne_true
+  | .int x, .uri x', h => absurd h Bool.false_ne_true
+  | .int x, .bytes x', h => absurd h Bool.false_ne_true
+  | .str x, .bool x', h => absurd h Bool.false_ne_true
+  | .str x, .int x', h => absurd h Bool.false_ne_true
+  | .str x, .uri x', h => absurd h Bool.false_ne_true
+  | .str x, .bytes x', h => absurd h Bool.false_ne_true
+  | .uri x, .bool x', h => absurd h Bool.false_ne_true
+  | .uri x, .int x', h => absurd h Bool.false_ne_true
+  | .uri x, .str x', h => absurd h Bool.false_ne_true
+  | .uri x, .bytes x', h => absurd h Bool.false_ne_true
+  | .bytes x, .bool x', h => absurd h Bool.false_ne_true
+  | .bytes x, .int x', h => absurd h Bool.false_ne_true
+  | .bytes x, .str x', h => absurd h Bool.false_ne_true
+  | .bytes x, .uri x', h => absurd h Bool.false_ne_true
+
+/-! **The soundness half: a match of a `pathPar` pattern forces equality.** No bound appears anywhere — a
+shortfall can only answer `false`, so if the clauses answer `true` at *some* fuel the shape is forced.
+That is why this half needs no arithmetic, and the completeness half does.
+
+The measure is the **fuel**: every inter-member call happens at the predecessor, and `cases m` is what
+puts it in successor form for the clause reductions to fire. `sizeOf` sums do not work here — `omega`
+cannot discharge the cross-level obligations (`eq_of_expr` → `eq_of_listPos` compares
+`sizeOf ps + sizeOf ts` against `sizeOf (.elist ps none) + sizeOf (.elist ts none)`). -/
+set_option maxHeartbeats 4000000 in
+mutual
+  theorem eq_of_core (t p : Par) (m : Nat) (ht : pathPar t = true) (hp : pathPar p = true)
+      (h : spatialMatchCore m t p = true) : t = p := by
+    cases m with
+    | zero => change false = true at h; exact absurd h (by decide)
+    | succ k =>
+      cases t with | mk ts tr tn te tm tu tb tc =>
+      cases p with | mk ps pr pn pe pm pu pb pc =>
+      change spatialMatchExprs k pe te = true at h
+      have hpe : pathExprs pe = true := pathPar_exprs hp
+      have hte : pathExprs te = true := pathPar_exprs ht
+      have h1 : te = pe := (eq_of_exprs pe te k hpe hte h).symm
+      have ht' := pathPar_fields ht
+      have hp' := pathPar_fields hp
+      rw [h1, ht'.1, ht'.2.1, ht'.2.2.1, ht'.2.2.2.1, ht'.2.2.2.2.1, ht'.2.2.2.2.2.1, ht'.2.2.2.2.2.2,
+        hp'.1, hp'.2.1, hp'.2.2.1, hp'.2.2.2.1, hp'.2.2.2.2.1, hp'.2.2.2.2.2.1, hp'.2.2.2.2.2.2]
+  termination_by m
+  decreasing_by all_goals (simp_wf; omega)
+  theorem eq_of_exprs (ps ts : List Expr) (m : Nat) (hp : pathExprs ps = true)
+      (ht : pathExprs ts = true) (h : spatialMatchExprs m ps ts = true) : ps = ts := by
+    cases m with
+    | zero => change false = true at h; exact absurd h (by decide)
+    | succ k =>
+      cases ps with
+      | nil => rw [pathExprs_nil] at hp; exact absurd hp (by decide)
+      | cons x xs =>
+        have hxs : xs = [] := pathExprs_tail_nil x xs hp
+        subst hxs
+        have hx : pathExpr x = true := by rwa [pathExprs_single] at hp
+        cases ts with
+        | nil => rw [pathExprs_nil] at ht; exact absurd ht (by decide)
+        | cons y ys =>
+          have hys : ys = [] := pathExprs_tail_nil y ys ht
+          subst hys
+          have hy : pathExpr y = true := by rwa [pathExprs_single] at ht
+          rcases pathExpr_cases hx with ⟨g, rfl⟩ | ⟨ps', rfl⟩ | ⟨ps', rfl⟩ | ⟨ps', rfl⟩ | ⟨kvs, rfl⟩
+          · rw [sms_ground] at h
+            exact (eq_of_expr (.ground g) y k hx hy h).symm
+          · rw [sms_elist] at h
+            exact (eq_of_expr (.elist ps' none) y k hx hy h).symm
+          · rw [sms_eset] at h
+            exact (eq_of_expr (.eset ps' none) y k hx hy h).symm
+          · rw [sms_etuple] at h
+            exact (eq_of_expr (.etuple ps') y k hx hy h).symm
+          · rw [sms_emap] at h
+            exact (eq_of_expr (.emap kvs none) y k hx hy h).symm
+  termination_by m
+  decreasing_by all_goals (simp_wf; omega)
+  theorem eq_of_expr (e y : Expr) (m : Nat) (hp : pathExpr e = true) (hy : pathExpr y = true)
+      (h : spatialMatchExpr m e [y] = true) : [y] = [e] := by
+    cases m with
+    | zero => change false = true at h; exact absurd h (by decide)
+    | succ k =>
+      rcases pathExpr_cases hy with ⟨g', rfl⟩ | ⟨ts, rfl⟩ | ⟨ts, rfl⟩ | ⟨ts, rfl⟩ | ⟨tks, rfl⟩
+      · rcases pathExpr_cases hp with ⟨g, rfl⟩ | ⟨ps, rfl⟩ | ⟨ps, rfl⟩ | ⟨ps, rfl⟩ | ⟨kvs, rfl⟩
+        · rw [sme_ground_ground] at h
+          rw [ground_beq_eq g g' h]
+        · rw [sme_elist_ground] at h; exact absurd h (by decide)
+        · rw [sme_eset_ground] at h; exact absurd h (by decide)
+        · rw [sme_etuple_ground] at h; exact absurd h (by decide)
+        · rw [sme_emap_ground] at h; exact absurd h (by decide)
+      · rcases pathExpr_cases hp with ⟨g, rfl⟩ | ⟨ps, rfl⟩ | ⟨ps, rfl⟩ | ⟨ps, rfl⟩ | ⟨kvs, rfl⟩
+        · rw [sme_ground_elist] at h; exact absurd h (by decide)
+        · rw [sme_elist_elist] at h
+          rw [eq_of_listPos ps ts k (pathExpr_elist' hp) (pathExpr_elist' hy) h]
+        · rw [sme_eset_elist] at h; exact absurd h (by decide)
+        · rw [sme_etuple_elist] at h; exact absurd h (by decide)
+        · rw [sme_emap_elist] at h; exact absurd h (by decide)
+      · rcases pathExpr_cases hp with ⟨g, rfl⟩ | ⟨ps, rfl⟩ | ⟨ps, rfl⟩ | ⟨ps, rfl⟩ | ⟨kvs, rfl⟩
+        · rw [sme_ground_eset] at h; exact absurd h (by decide)
+        · rw [sme_elist_eset] at h; exact absurd h (by decide)
+        · rw [sme_eset_eset] at h
+          rw [eq_of_listPar ps ts k (pathExpr_eset' hp) (pathExpr_eset' hy)
+            (LawfulBEq.eq_of_beq (α := Nat) (guard_len h)) (guard_true h)]
+        · rw [sme_etuple_eset] at h; exact absurd h (by decide)
+        · rw [sme_emap_eset] at h; exact absurd h (by decide)
+      · rcases pathExpr_cases hp with ⟨g, rfl⟩ | ⟨ps, rfl⟩ | ⟨ps, rfl⟩ | ⟨ps, rfl⟩ | ⟨kvs, rfl⟩
+        · rw [sme_ground_etuple] at h; exact absurd h (by decide)
+        · rw [sme_elist_etuple] at h; exact absurd h (by decide)
+        · rw [sme_eset_etuple] at h; exact absurd h (by decide)
+        · rw [sme_etuple_etuple] at h
+          rw [eq_of_listPos ps ts k (pathExpr_etuple' hp) (pathExpr_etuple' hy) h]
+        · rw [sme_emap_etuple] at h; exact absurd h (by decide)
+      · rcases pathExpr_cases hp with ⟨g, rfl⟩ | ⟨ps, rfl⟩ | ⟨ps, rfl⟩ | ⟨ps, rfl⟩ | ⟨kvs, rfl⟩
+        · rw [sme_ground_emap] at h; exact absurd h (by decide)
+        · rw [sme_elist_emap] at h; exact absurd h (by decide)
+        · rw [sme_eset_emap] at h; exact absurd h (by decide)
+        · rw [sme_etuple_emap] at h; exact absurd h (by decide)
+        · rw [sme_emap_emap] at h
+          rw [eq_of_map kvs tks k (pathExpr_emap' hp) (pathExpr_emap' hy)
+            (LawfulBEq.eq_of_beq (α := Nat) (guard_len h)) (guard_true h)]
+  termination_by m
+  decreasing_by all_goals (simp_wf; omega)
+  theorem eq_of_listPos (ps ts : List Par) (m : Nat) (hp : pathPars ps = true)
+      (ht : pathPars ts = true) (h : matchListPos m ps ts false = true) : ps = ts := by
+    cases m with
+    | zero => change false = true at h; exact absurd h (by decide)
+    | succ k =>
+      cases ps with
+      | nil =>
+        change (false || ts.isEmpty) = true at h
+        simp only [Bool.or_eq_true, List.isEmpty_eq_true] at h
+        rcases h with h | h
+        · exact absurd h (by decide)
+        · rw [h]
+      | cons p ps =>
+        cases ts with
+        | nil => change false = true at h; exact absurd h (by decide)
+        | cons t ts =>
+          change (spatialMatchCore k t p && matchListPos k ps ts false) = true at h
+          rw [Bool.and_eq_true] at h
+          have h1 : t = p := eq_of_core t p k (pathPars_head ht) (pathPars_head hp) h.1
+          have h2 : ps = ts := eq_of_listPos ps ts k (pathPars_tail hp) (pathPars_tail ht) h.2
+          rw [h1, h2]
+  termination_by m
+  decreasing_by all_goals (simp_wf; omega)
+  theorem eq_of_listPar (ps ts : List Par) (m : Nat) (hp : pathPars ps = true)
+      (ht : pathPars ts = true) (hl : ps.length = ts.length)
+      (h : matchListPar m ps ts false = true) : ps = ts := by
+    cases m with
+    | zero => change false = true at h; exact absurd h (by decide)
+    | succ k =>
+      cases ps with
+      | nil =>
+        change (false || ts.isEmpty) = true at h
+        simp only [Bool.or_eq_true, List.isEmpty_eq_true] at h
+        rcases h with h | h
+        · exact absurd h (by decide)
+        · rw [h]
+      | cons p ps =>
+        cases ts with
+        | nil => change false = true at h; exact absurd h (by decide)
+        | cons t ts =>
+          change (((spatialMatchCore k t p && matchListPar k ps ts false)
+            || matchListPar k (p :: ps) ts false)) = true at h
+          rw [Bool.or_eq_true] at h
+          rcases h with h | h
+          · rw [Bool.and_eq_true] at h
+            have hlen : ps.length = ts.length := by
+              simp only [List.length_cons] at hl; omega
+            have h1 : t = p := eq_of_core t p k (pathPars_head ht) (pathPars_head hp) h.1
+            have h2 : ps = ts := eq_of_listPar ps ts k (pathPars_tail hp) (pathPars_tail ht) hlen h.2
+            rw [h1, h2]
+          · exfalso
+            have hlen := listPar_len (p :: ps) ts k h
+            simp only [List.length_cons] at hl hlen; omega
+  termination_by m
+  decreasing_by all_goals (simp_wf; omega)
+  theorem eq_of_map (kvs tks : List (Par × Par)) (m : Nat) (hp : pathPairs kvs = true)
+      (ht : pathPairs tks = true) (hl : kvs.length = tks.length)
+      (h : matchMap m kvs tks false = true) : kvs = tks := by
+    cases m with
+    | zero => change false = true at h; exact absurd h (by decide)
+    | succ k =>
+      cases kvs with
+      | nil =>
+        change (false || tks.isEmpty) = true at h
+        simp only [Bool.or_eq_true, List.isEmpty_eq_true] at h
+        rcases h with h | h
+        · exact absurd h (by decide)
+        · rw [h]
+      | cons kv kvs =>
+        cases kv with
+        | mk k1 k2 =>
+          cases tks with
+          | nil => change false = true at h; exact absurd h (by decide)
+          | cons tk tks =>
+            obtain ⟨t1, t2⟩ := tk
+            change (((spatialMatchCore k t1 k1 && spatialMatchCore k t2 k2 && matchMap k kvs tks false)
+              || matchMap k ((k1, k2) :: kvs) tks false)) = true at h
+            rw [Bool.or_eq_true] at h
+            rcases h with h | h
+            · rw [Bool.and_eq_true, Bool.and_eq_true] at h
+              have hlen : kvs.length = tks.length := by
+                simp only [List.length_cons] at hl; omega
+              have h1 : t1 = k1 := eq_of_core t1 k1 k (pathPairs_head ht) (pathPairs_head hp) h.1.1
+              have h2 : t2 = k2 := eq_of_core t2 k2 k (pathPairs_head2 ht) (pathPairs_head2 hp) h.1.2
+              have h3 : kvs = tks := eq_of_map kvs tks k (pathPairs_tail hp) (pathPairs_tail ht) hlen h.2
+              rw [h1, h2, h3]
+            · exfalso
+              have hlen := mapList_len ((k1, k2) :: kvs) tks k h
+              simp only [List.length_cons] at hl hlen; omega
+  termination_by m
+  decreasing_by all_goals (simp_wf; omega)
+end
+
+/-- **Law 37's tie, the soundness half, in the row's shape**: an accepted match forces equality, for any
+    two `pathPar` values. The `linear` conjunct and the fuel are discharged by the model — the first by
+    the domain (no free levels, so the list is `Nodup`), the second by nothing at all, since a shortfall
+    can only answer `false`. -/
+theorem spatialMatches_imp_eq {t p : Par} (ht : pathPar t = true) (hp : pathPar p = true)
+    (h : spatialMatch t p = true) : t = p := by
+  rw [spatialMatch, Bool.and_eq_true] at h
+  exact eq_of_core t p (matchFuel t p) ht hp h.1
 
 end Rchain

@@ -1500,7 +1500,8 @@ def laws : List Law := [
       statement is about the function G6 changes" },
   { number := 37, layer := "Rholang",
     statement := "Match soundness and completeness (Law 5 strengthened: partial collections, \
-      wildcards, remainders) — over the shapes the clauses cover, which `modelledPar` names",
+      wildcards, remainders) — over the shapes the clauses cover, which `pathPar` names, and its \
+      **soundness half is proved** (`spatialMatches_imp_eq`: an accepted match forces equality)",
     status := .owed,
     declarations := [`Rchain.spatialMatchCore, `Rchain.spatialMatchExprs, `Rchain.spatialMatchExpr,
       `Rchain.matchListPar, `Rchain.matchListPos, `Rchain.matchMap, `Rchain.modelledPar,
@@ -1513,10 +1514,10 @@ def laws : List Law := [
       `Rchain.a_permuted_pattern_is_refused, `Rchain.an_unaligned_variable_pattern_is_refused,
       `Rchain.pathPar, `Rchain.linear_of_pathPar, `Rchain.pathExpr, `Rchain.pathPars, `Rchain.pathPairs,
       `Rchain.a_nested_multi_expression_par_is_outside_the_path_domain,
-      `Rchain.a_single_expression_par_is_in_the_path_domain],
+      `Rchain.a_single_expression_par_is_in_the_path_domain, `Rchain.spatialMatches_imp_eq],
     corpus := some "match",
-    witness := [`Rchain.arithmetic_pattern_refutes_the_unrestricted_tie, `Rchain.a_list_pattern_cannot_skip_a_target_element, `Rchain.the_walk_past_empty_pars_is_paid_for, `Rchain.a_shorter_set_pattern_is_refused, `Rchain.a_shorter_map_pattern_is_refused, `Rchain.a_permuted_pattern_is_refused, `Rchain.a_nested_multi_expression_par_is_outside_the_path_domain, `Rchain.a_single_expression_par_is_in_the_path_domain],
-    falsifiable := some "19 cases with three-valued verdicts; the once-false law-5 axiom was replaced \
+    witness := [`Rchain.arithmetic_pattern_refutes_the_unrestricted_tie, `Rchain.a_list_pattern_cannot_skip_a_target_element, `Rchain.the_walk_past_empty_pars_is_paid_for, `Rchain.a_shorter_set_pattern_is_refused, `Rchain.a_shorter_map_pattern_is_refused, `Rchain.a_permuted_pattern_is_refused, `Rchain.a_nested_multi_expression_par_is_outside_the_path_domain, `Rchain.a_single_expression_par_is_in_the_path_domain, `Rchain.spatialMatches_imp_eq],
+    falsifiable := some "the corpus's 22 cases with three-valued verdicts; the once-false law-5 axiom was replaced \
       *because* a corpus case contradicted it (AUDIT C26), the fuel bound was one step short until the \
       `decide` refused to compile, and `concrete_matches_iff_eq` **was false as stated** until case 15 \
       — a tuple pattern, which the port matches (`spatial_matcher.rs:496-501`) and the clauses had no \
@@ -1556,7 +1557,19 @@ def laws : List Law := [
       cannot — is pinned by `a_permuted_pattern_is_refused`. The tie's domain is therefore the \
       **canonical** shapes, where the walk and the port's backtracking assignment agree: not the \
       duplicate-element corner only (C54), but the sorted-and-duplicate-free form on both sides, \
-      which is what `sortPar` fixes for the model's collections and `par_set` for the node's.       **And the domain itself was wrong, not just unproved** (2026-09-24, AUDIT C60): `modelledPar` plus       a singleton expression list plus canonical contents still admits a shape the clauses reject —       nest a two-expression `Par` inside a collection and the *inner* list is not a singleton, so       `spatialMatch` answers `false` for the value against itself while it is modelled and       connective-free (`a_nested_multi_expression_par_is_outside_the_path_domain`). The hypothesis has       to hold at *every* level, and `pathPar` is that predicate — a `Par` whose fields but `exprs` are       empty, holding exactly one expression, that expression a ground or a collection of `pathPar`s       with no remainder. It is what \"the shapes the clauses cover\" was always meant to name, and       `linear_of_pathPar` is the free-level consequence the row used to leave implicit. **AUDIT C60       also measures what the domain leaves out, and it is not all unmodelled shapes**: the port's       matcher never reaches these clauses for a *concrete* pattern at all — it short-circuits at       `if !pattern.connective_used { pattern == target }` (`spatial_matcher.rs:193-196`, named as such       in the port's own normalizer at `normalizer.rs:1601`) — and both sides of a real match are       already canonical, because the RSpace payload types are `Sorted<Par>`       (`models/src/runtime.rs:20-36`). Measured: the node **matches** `@Set(1 | 2)` against itself       (`true`) where the clauses here answer `false`. Closing that is a modelling change to       `spatialMatch` — the short-circuit and the canonicalization — rather than a clause, and it is       named as the row's next step instead of being assumed" },
+      which is what `sortPar` fixes for the model's collections and `par_set` for the node's.       **And the domain itself was wrong, not just unproved** (2026-09-24, AUDIT C60): `modelledPar` plus       a singleton expression list plus canonical contents still admits a shape the clauses reject —       nest a two-expression `Par` inside a collection and the *inner* list is not a singleton, so       `spatialMatch` answers `false` for the value against itself while it is modelled and       connective-free (`a_nested_multi_expression_par_is_outside_the_path_domain`). The hypothesis has       to hold at *every* level, and `pathPar` is that predicate — a `Par` whose fields but `exprs` are       empty, holding exactly one expression, that expression a ground or a collection of `pathPar`s       with no remainder. It is what \"the shapes the clauses cover\" was always meant to name, and       `linear_of_pathPar` is the free-level consequence the row used to leave implicit. **AUDIT C60       also measures what the domain leaves out, and it is not all unmodelled shapes**: the port's       matcher never reaches these clauses for a *concrete* pattern at all — it short-circuits at       `if !pattern.connective_used { pattern == target }` (`spatial_matcher.rs:193-196`, named as such       in the port's own normalizer at `normalizer.rs:1601`) — and both sides of a real match are       already canonical, because the RSpace payload types are `Sorted<Par>`       (`models/src/runtime.rs:20-36`). Measured: the node **matches** `@Set(1 | 2)` against itself       (`true`) where the clauses here answer `false`. Closing that is a modelling change to       `spatialMatch` — the short-circuit and the canonicalization — rather than a clause, and it is       named as the row's next step instead of being assumed. **The tie is half proved** (2026-09-24): \
+      `spatialMatches_imp_eq` is the *soundness* direction — an accepted match forces equality — over
+      `pathPar` on both sides. It rests on nothing but the clauses: a six-member `mutual` family in
+      `Match.lean` (`eq_of_core`/`eq_of_exprs`/`eq_of_expr`/`eq_of_listPos`/`eq_of_listPar`/`eq_of_map`),
+      the thirty `rfl` clause reductions above them, and the length facts. **No fuel bound appears
+      anywhere**: a shortfall can only answer `false`, so an answer of `true` at *any* fuel forces the
+      shape — which is why this is the cheap half and the other is not. Falsified by mutation rather than
+      argued: reversing the positional walk's element comparison breaks the family's `change` on the
+      clause *and* breaks `fuel_saturation`. **What is still owed** is the completeness direction — a
+      `pathPar` pattern matches itself — whose shape is the mirror of `fuel_saturation` at the same
+      depth-indexed bounds. One trap, worth keeping: the family's members are `private`, so only
+      `spatialMatches_imp_eq` is citable from the register — a row naming `eq_of_core` would fail the
+      reference check" },
   { number := 38, layer := "Rholang",
     statement := "Silence is specified: an unmatched receive or `match` yields no reduction **and no \
       error**",
