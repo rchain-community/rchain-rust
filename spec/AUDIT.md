@@ -3383,6 +3383,44 @@ port against the **reference document** rather than against itself.
   as much a part of its calibration as the numbers it uses.
 
 
+- **C70 — the gate could not see a nested comment, and the widened token set is the only check that
+  sees an assumption which is not an `axiom`** (found and fixed 2026-09-24, Programme F's hygiene unit;
+  **harness**, no law — what was wrong is the instrument, not the term). Two findings in one scan, both
+  in `tools/check-lean-conformance.sh`:
+
+  1. **Every other check is blind to an assumption that is not an `axiom`.** `Laws.lean`'s accounting is
+     exact equality over `axiom` *declarations*; the gate's other steps check `sorry`/`admit`, module
+     completeness, the emitted corpora and the counts. So a definition written `opaque` (its body hidden
+     from reduction), or `partial`/`unsafe`/`extern`, or a body swapped for an untrusted one with
+     `@[implemented_by]`, is neither an axiom nor a `sorry` and passes every one of them. The scan now
+     refuses those tokens — the point of the unit is that an assumption *arriving* should be refused
+     rather than discovered later, and that the tree declares all of its assumptions as `axiom`s it
+     counts.
+  2. **The comment/string stripping had to be repaired before the token set could widen — and the blind
+     spot was already there.** The state machine tracked a *single* block-comment level, so Lean's
+     nested block comments closed at the first `-/` and the rest of the comment was scanned as code.
+     That was invisible for as long as the tokens were `sorry`/`admit` (no prose line happens to carry
+     those words) and became 23 immediate hits when `partial`/`opaque` were added — exactly the
+     "`external` contains `extern`"-class of trap the token shape already guarded against, one level
+     down. String literals were scanned too, and the register keeps its own row prose in them
+     (`note := "...opaque..."`): 11 more hits. Both are handled now — nesting depth, strings with
+     escapes and line continuations, and a character literal holding a double quote (two of the tree's
+     files have one) which must not open a string — and the tree scans clean.
+
+  **Falsified in both directions at scan level**, which is the level the change lives at: the gate's own
+  `awk` program, extracted from the script so the probe runs the identical text, over the tree's own file
+  list plus probe files (nothing planted in the tree, so no peer's gate run could see it). A probe
+  carrying each token fires on all five and **not** on `external`; a prose-only probe and a
+  string-carried-prose probe fire on none; a nested comment containing `partial` fires on nothing while a
+  real `sorry` beside it fires (the original ratchet intact); and a `'"'` character literal does not
+  blind a following `opaque`. The tree's own files, which mention these words in prose constantly,
+  produce zero hits.
+
+  **What was not run: the whole gate.** Its first step is `lake build`, and the Lean slot belongs to the
+  lead — so the end-to-end run of the modified gate is owed and named in this unit's handover rather than
+  assumed here. The scan step is the one that changed, and it is the step that was exercised.
+
+
 ## 20. The back-sweep: every incident to its law and its case
 
 The programme began with ten defects of one class — "nothing errors" — found on a running node,
@@ -3590,6 +3628,7 @@ finding that no law covers, and it says why rather than leaving the gap to infer
 | C55 the devnet bootstrap never starts: restoring a stored chain folded the message state per block, at Θ(N³) | 15 | **fixed (2026-09-24)**: `DagMessageState::insert_msg_mut` / `insert_msg_without_latest_mut` extend the state in place (the persistent forms are now one clone plus that same insert, so the monotonicity and subset rules still live in one place), and `BlockDagKeyValueStorage::create` uses the in-place form. Falsified first — `restoring_a_stored_chain_is_not_cubic_in_the_message_state` bounds the fold over a synthetic 1,200-block chain; measured 5.1 s in place against 108.6 s copying at N=1500. End to end, a 5,881-block restart serves in 23 s where it previously never served at all. The named-volume path in `tools/devnet.sh` is what hid it (first run fresh, every later run a rebuild) and is now the reason `up` must not leave a state whose second run differs from its first |
 | C56 the per-block merge scope copied every message it looked at — Θ(N²) in copies per block | 15 | **fixed (2026-09-24)**: `message_map::between` takes ids and returns ids (`&BTreeSet<M> -> BTreeSet<M>`), so nothing clones a `Message` (and its `seen` set) to answer `upper.seen \ lower.seen`; the call site keeps its three "not in dag" errors by checking membership. Measured, isolated, on a 5,855-block chain: **0.78 GiB per block → ~4 MB per block, plateauing**, CPU a pinned 100% → 40%. Pinned by `between_is_the_id_set_difference_restricted_to_the_map`. **Owed**: the steady floor is the Θ(N²) `seen` *residency*, H6's accepted-faithful residual — **measured on the running node at 556 MB of the DAG's own `logical_bytes` (5,885 blocks, `/metrics`), in a 1.18 GiB resident process**, which advances ~1.3 MB per block. (The ~9.8 GiB this cell used to quote was the pre-Stage-1/3/4/5 tree, where the DAG was copied per read and per insert; that figure is retired with the copies.) §20 below states it with numbers The *copies* the tail still had are gone (Stage 5, §20): `fringe_states` is keyed by the store's own hash, the merge indexes rejections for the final scope only, the index is `Arc`-shared with the representation, and the sync-path chunker borrows the page instead of copying it 3× The **~0.86 GiB/block this cell called *unattributed* was the DAG being copied** on the per-block and per-request paths, attributed and fixed in `494336e70` (§20 below: `get_representation` by value, `insert`'s per-block clone, `Message.seen`). **The serving term is now measured on the fixed tree** — two fresh validators pulling from a node on the 5,844-block artifact (extended to 6,339 by the run): the server grew **115 MB while serving 263 blocks ≈ 0.44 MB per block** (window peak 0.71 MB/block), against the retired ~880 MB/block, with 63 of 63 block requests answered and zero `History items are corrupted` / `Validate received state items` on either side. It is *not* the peer reaching the same height, and that is recorded with its reason in §20 |
 | C69 the height-monotone reading of law 15 is false of **both** implementations, and the port's termination guard is unregistered | 14b, 15 | **measured rather than asserted** (2026-09-24, G7). The *unqualified* claim — every message of `prev` at or below every message of the published fringe — is false, because the layer is built from the **justifications** and need not cover the senders `prev` covers: `prev = {m3 (sender 0, height 3)}` with a next layer `{q2 (sender 1, height 2)}` publishes below it, and the gate cannot see it because what `calculate_fringe` reads is the **support map**, not the heights (`block-storage/src/dag/finalizer.rs:165-184`). **The oracle is the same shape**: `Finalizer.scala:144-178`'s `calculateFinalization` ends in `LazyList.unfold(parentFringe)(nextFringe(_).map(nf => (nf, nf))).lastOption` — the gate is the support map and there is **no fringe comparison of any kind** — so the port is faithful here and this is an upstream design property, the `check_min_messages` disposition, not a port gap. What *is* a deviation, and is now in §6: the port's own `if nf == current { break }` (`finalizer.rs:225-226`), whose comment says why — "a non-advancing fringe would loop forever" — and which the oracle does not have. **What the heights are used for** is a *recency key*, not an order requirement: `fringe_height` and `latest_fringe` (`block-storage/src/dag/message_map.rs:54,80`) pick the highest-max-height fringe among *contemporaneous* candidates, which needs "later ⇒ higher" only as a consistency heuristic. The **per-sender** half is provable and the port's walk is why: `self_parents` filters by `!finalized.contains(x)` and never traverses *through* an excluded message, so a min message is the previous sentinel's direct successor. Law 15's statement narrows to that, with the cross-sender refutation kept as a `decide`d witness |
+| C70 the `sorry` ratchet could not see a nested comment, and nothing but this scan saw an `opaque`/`partial`/`extern`/`unsafe`/`@[implemented_by]` assumption | — **harness** | no law: the instrument, not the term. `Laws.lean`'s accounting is exact equality over `axiom` *declarations*, so an `opaque` definition is neither an axiom nor a `sorry` and passed every other step of `tools/check-lean-conformance.sh` — the token set now refuses all five, so an assumption arriving is refused rather than discovered. The stripping had to be repaired first: single-level block tracking closed Lean's *nested* comments at the first `-/` (invisible for `sorry`/`admit`, 23 prose hits once `partial`/`opaque` were added) and string literals were scanned as code, where the register keeps its own row prose (11 more). Both fixed (nesting depth, strings with escapes, a `'"'` char literal must not open a string) and the tree scans clean. Falsified at scan level with the script's own extracted `awk` over probe files: five tokens fire, `external` does not, prose/string/nested cases fire on nothing, the original `sorry` ratchet does. The full gate is owed: its first step is `lake build` and the Lean slot is the lead's |
 
 **The two rows that are not laws are the two worth keeping visible.** C37 is a *harness* finding —
 a measurement that was not a measurement — and no law would have caught it, because the thing that
