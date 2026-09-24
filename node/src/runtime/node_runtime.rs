@@ -1981,10 +1981,17 @@ mod tests {
 
         let hash = Blake2b256Hash::from_bytes([0x33; 32]);
         let value = vec![1u8, 2, 3];
-        importer.set_history_items(&[(hash, value.clone())], |v: &Vec<u8>| v.clone());
-        importer.set_root(hash);
+        importer
+            .set_history_items(&[(hash, value.clone())], |v: &Vec<u8>| v.clone())
+            .expect("in-memory history store");
+        importer.set_root(hash).expect("in-memory roots store");
 
-        assert_eq!(importer.get_history_item(hash), Some(value));
+        assert_eq!(
+            importer
+                .get_history_item(hash)
+                .expect("in-memory history store"),
+            Some(value)
+        );
 
         drop(importer);
         let _ = std::fs::remove_dir_all(&dir);

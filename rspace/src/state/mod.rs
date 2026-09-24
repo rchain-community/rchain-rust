@@ -231,36 +231,12 @@ pub fn traverse_history(
 
 /// Validate a chunk of exported history/data items against the trie (port of
 /// `RSpaceImporter.validateStateItems`).
-pub fn validate_state_items(
-    history_items: &[(Blake2b256Hash, Vec<u8>)],
-    data_items: &[(Blake2b256Hash, Vec<u8>)],
-    start_path: &[(Blake2b256Hash, Option<u8>)],
-    chunk_size: i32,
-    skip: i32,
-    get_from_history: &dyn Fn(&Blake2b256Hash) -> Option<Vec<u8>>,
-) -> Result<(), StateValidationError> {
-    // The total form is the trait's compatibility arm — `casper`'s importer calls it with a closure
-    // over `RSpaceImporter::get_history_item`, which cannot report a store error either — so it
-    // delegates to the checked form with a closure that never fails. The port's own validation path
-    // (`exporters.rs`) calls the checked form and gets the store's error instead of a verdict about
-    // the *chunk* (U11).
-    validate_state_items_checked(
-        history_items,
-        data_items,
-        start_path,
-        chunk_size,
-        skip,
-        &|h| Ok(get_from_history(h)),
-    )
-}
-
-/// [`validate_state_items`] with a reader that can report a failure.
-///
 /// The oracle's `validateStateItems` takes `getFromHistory: KeyHash => F[Option[ByteVector]]`
 /// (`RSpaceImporter.scala`), so "the target store could not be read" and "the node is absent" are
 /// different inputs — and without the distinction a store error makes the traversal come up short and
-/// the verdict names the peer's data: `"History items are corrupted."` (U11).
-pub fn validate_state_items_checked(
+/// the verdict names the peer's data: `"History items are corrupted."` (AUDIT C63). The reader is
+/// therefore fallible here too.
+pub fn validate_state_items(
     history_items: &[(Blake2b256Hash, Vec<u8>)],
     data_items: &[(Blake2b256Hash, Vec<u8>)],
     start_path: &[(Blake2b256Hash, Option<u8>)],
@@ -340,20 +316,13 @@ pub fn validate_state_items_checked(
 
 /// The rspace exporter (port of `RSpaceExporter`).
 pub trait RSpaceExporter: TrieExporter<Blake2b256Hash> {
-    /// The current root, if set (port of `getRoot`; `None` is the `NoRootError` case).
-    fn get_root(&self) -> Option<Blake2b256Hash>;
-
-    /// [`RSpaceExporter::get_root`], with an unreadable roots store reported rather than flattened
-    /// into the `None` that means "no root".
+    /// The current root, if set (port of `getRoot`; `Ok(None)` is the `NoRootError` case).
     ///
-    /// The oracle is `def getRoot: F[KeyHash]` (`RSpaceExporter.scala:15`), so `None` there is the
-    /// *absence* of a root and the failure travels in `F`; the port's total signature gave the two
-    /// the same answer, which `StateManager::is_empty` reads as "the state is empty" (U11). The
-    /// default delegates to the total form so implementations that cannot fail are unaffected;
-    /// [`crate::state::instances::RSpaceExporterStore`] overrides it with the real read.
-    fn try_get_root(&self) -> Result<Option<Blake2b256Hash>, String> {
-        Ok(self.get_root())
-    }
+    /// **Fallible, because the oracle is**: `def getRoot: F[KeyHash]` (`RSpaceExporter.scala:15`), so
+    /// *absence* is `Ok(None)` and an unreadable roots store is `Err`. Flattening them made
+    /// `StateManager::is_empty` answer "the state is empty" for a store that merely failed to answer
+    /// (AUDIT C63).
+    fn get_root(&self) -> Result<Option<Blake2b256Hash>, String>;
 }
 
 /// The rspace state manager (port of `RSpaceStateManager`).
@@ -367,7 +336,10 @@ pub trait RSpaceStateManager: StateManager {
 
 /// The rspace importer (port of `RSpaceImporter`).
 pub trait RSpaceImporter: TrieImporter<Blake2b256Hash> {
-    fn get_history_item(&self, hash: Blake2b256Hash) -> Option<Vec<u8>>;
+    /// One history item, or `Ok(None)` for a hash that is genuinely absent — an unreadable store is
+    /// an `Err`. The Scala's is in `F` (`RSpaceImporter.getHistoryItem`), so the port keeps the same
+    /// distinction `TrieExporter::get_nodes` states (AUDIT C63).
+    fn get_history_item(&self, hash: Blake2b256Hash) -> Result<Option<Vec<u8>>, String>;
 }
 
 #[cfg(test)]
@@ -455,7 +427,7 @@ mod tests {
     fn validate_state_items_accepts_valid_round_trip() {
         let data_value = vec![1, 2, 3];
         let (store, root_hash, root_bytes, data_hash) = leaf_trie(data_value.clone());
-        let get = |h: &Blake2b256Hash| store.get(h).cloned();
+        let get = |h: &Blake2b256Hash| Ok(store.get(h).cloned());
 
         let history_items = vec![(root_hash, root_bytes)];
         let data_items = vec![(data_hash, data_value)];
@@ -474,7 +446,7 @@ mod tests {
     fn validate_state_items_rejects_corrupted_data() {
         let data_value = vec![1, 2, 3];
         let (store, root_hash, root_bytes, data_hash) = leaf_trie(data_value);
-        let get = |h: &Blake2b256Hash| store.get(h).cloned();
+        let get = |h: &Blake2b256Hash| Ok(store.get(h).cloned());
 
         // The data bytes no longer hash to the claimed `data_hash`.
         let history_items = vec![(root_hash, root_bytes)];

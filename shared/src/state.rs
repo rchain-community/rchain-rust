@@ -15,92 +15,67 @@ pub struct TrieNode<KeyHash> {
 /// Traverses a trie and converts it to path-indexed nodes (port of `TrieExporter`).
 pub trait TrieExporter<KeyHash: Clone> {
     /// Get trie nodes with offset from the start path and a number of nodes.
+    ///
+    /// **Fallible, because the oracle is.** `RSpaceExporter.scala`'s `traverseHistory` returns
+    /// `F[Vector[TrieNode]]` and its `getFromHistory` is `Blake2b256Hash => F[Option[ByteVector]]`,
+    /// so "the store could not be read" and "there is no such node" are different answers. A total
+    /// signature forced them into one, and the export path reported the result as an empty history or
+    /// as corruption (AUDIT C63). `Ok(Vec::new())`/`Ok(None)` is the *absence* answer; `Err` is the
+    /// store's.
     fn get_nodes(
         &self,
         start_path: &[(KeyHash, Option<u8>)],
         skip: usize,
         take: usize,
-    ) -> Vec<TrieNode<KeyHash>>;
+    ) -> Result<Vec<TrieNode<KeyHash>>, String>;
 
-    /// Get history values (branch nodes) by key.
+    /// Get history values (branch nodes) by key. Fallible for the same reason as
+    /// [`TrieExporter::get_nodes`]; a key that is genuinely absent is simply not in the result.
     fn get_history_items<Value>(
         &self,
         keys: &[KeyHash],
         from_buffer: impl Fn(&[u8]) -> Value,
-    ) -> Vec<(KeyHash, Value)>;
+    ) -> Result<Vec<(KeyHash, Value)>, String>;
 
-    /// Get data values (leaf nodes) by key.
+    /// Get data values (leaf nodes) by key. Fallible as above.
     fn get_data_items<Value>(
         &self,
         keys: &[KeyHash],
         from_buffer: impl Fn(&[u8]) -> Value,
-    ) -> Vec<(KeyHash, Value)>;
-
-    // --- The checked siblings ---------------------------------------------------------------------
-    //
-    // The three methods above are total, and an implementation whose store can *fail* has nowhere to
-    // put the failure: it reads as "no nodes"/"no items", which the export path then reports as an
-    // empty history or as corruption (AUDIT C53's class in a consumer; U11). The oracle is
-    // `F`-shaped — `RSpaceExporter.scala`'s `traverseHistory` returns `F[Vector[TrieNode]]` and its
-    // `getFromHistory` is `Blake2b256Hash => F[Option[ByteVector]]` — so the port's counterpart is a
-    // *checked* accessor beside the total one, the same shape as `RadixTree`'s
-    // `load_node_from_store`/`load_node`.
-    //
-    // The defaults delegate to the total form, so every existing implementation (including
-    // `casper`'s) keeps compiling and keeps its behaviour: only an implementation backed by a store
-    // that can fail overrides them.
-
-    /// [`TrieExporter::get_nodes`], with a store that could not be read reported rather than
-    /// flattened into an empty traversal.
-    fn try_get_nodes(
-        &self,
-        start_path: &[(KeyHash, Option<u8>)],
-        skip: usize,
-        take: usize,
-    ) -> Result<Vec<TrieNode<KeyHash>>, String> {
-        Ok(self.get_nodes(start_path, skip, take))
-    }
-
-    /// [`TrieExporter::get_history_items`], fallible.
-    fn try_get_history_items<Value>(
-        &self,
-        keys: &[KeyHash],
-        from_buffer: impl Fn(&[u8]) -> Value,
-    ) -> Result<Vec<(KeyHash, Value)>, String> {
-        Ok(self.get_history_items(keys, from_buffer))
-    }
-
-    /// [`TrieExporter::get_data_items`], fallible.
-    fn try_get_data_items<Value>(
-        &self,
-        keys: &[KeyHash],
-        from_buffer: impl Fn(&[u8]) -> Value,
-    ) -> Result<Vec<(KeyHash, Value)>, String> {
-        Ok(self.get_data_items(keys, from_buffer))
-    }
+    ) -> Result<Vec<(KeyHash, Value)>, String>;
 }
 
 /// Writes trie history/data items back (port of `TrieImporter`).
 pub trait TrieImporter<KeyHash: Clone> {
     /// Set history values (branch nodes).
+    ///
+    /// **Fallible, because a refused write is not a completed import.** The settle was `()`: a store
+    /// that refuses every write restored *less* state than it was handed and reported the same
+    /// success a complete import reports — the wrong-state claim AUDIT C63's write half is about (the
+    /// LFS sync is the path that lives on it).
     fn set_history_items<Value>(
         &mut self,
         data: &[(KeyHash, Value)],
         to_buffer: impl Fn(&Value) -> Vec<u8>,
-    );
+    ) -> Result<(), String>;
 
-    /// Set data values (leaf nodes).
+    /// Set data values (leaf nodes). Fallible as above.
     fn set_data_items<Value>(
         &mut self,
         data: &[(KeyHash, Value)],
         to_buffer: impl Fn(&Value) -> Vec<u8>,
-    );
+    ) -> Result<(), String>;
 
-    /// Set the current root hash.
-    fn set_root(&mut self, key: KeyHash);
+    /// Set the current root hash. Fallible as above.
+    fn set_root(&mut self, key: KeyHash) -> Result<(), String>;
 }
 
 /// Checks whether the state is empty (port of `StateManager`).
 pub trait StateManager {
-    fn is_empty(&self) -> bool;
+    /// Whether the state is empty.
+    ///
+    /// Fallible: "there is no root" (an empty state) and "the roots store could not be read" were the
+    /// same `false`/`true` answer, and a caller that acts on "the state is empty" would act on an
+    /// unreadable store (AUDIT C63's residue).
+    fn is_empty(&self) -> Result<bool, String>;
 }

@@ -334,7 +334,19 @@ pub async fn handle_store_items_request<E: RSpaceExporter>(
         );
         return;
     }
-    let nodes = exporter.get_nodes(&req.start_path, skip, take);
+    // A store the exporter cannot read is logged and dropped, the way an over-large `take` is above:
+    // this handler has no error reply to send, and serving an *empty* page would be a state claim —
+    // the importer would then validate its own traversal against it (AUDIT C63).
+    let nodes = match exporter.get_nodes(&req.start_path, skip, take) {
+        Ok(nodes) => nodes,
+        Err(e) => {
+            log.error(
+                log_source,
+                &format!("Dropping store-items request: the trie could not be read: {e}"),
+            );
+            return;
+        }
+    };
     let history_keys: Vec<Blake2b256Hash> = nodes
         .iter()
         .filter(|n| !n.is_leaf)
@@ -342,8 +354,26 @@ pub async fn handle_store_items_request<E: RSpaceExporter>(
         .collect();
     let data_keys: Vec<Blake2b256Hash> =
         nodes.iter().filter(|n| n.is_leaf).map(|n| n.hash).collect();
-    let history_items = exporter.get_history_items(&history_keys, |b: &[u8]| b.to_vec());
-    let data_items = exporter.get_data_items(&data_keys, |b: &[u8]| b.to_vec());
+    let history_items = match exporter.get_history_items(&history_keys, |b: &[u8]| b.to_vec()) {
+        Ok(items) => items,
+        Err(e) => {
+            log.error(
+                log_source,
+                &format!("Dropping store-items request: history items unreadable: {e}"),
+            );
+            return;
+        }
+    };
+    let data_items = match exporter.get_data_items(&data_keys, |b: &[u8]| b.to_vec()) {
+        Ok(items) => items,
+        Err(e) => {
+            log.error(
+                log_source,
+                &format!("Dropping store-items request: data items unreadable: {e}"),
+            );
+            return;
+        }
+    };
     let last_path = nodes.last().map(|n| n.path.clone()).unwrap_or_default();
 
     let response = StoreItemsMessage {
@@ -769,10 +799,10 @@ mod tests {
             _start_path: &[(Blake2b256Hash, Option<u8>)],
             _skip: usize,
             _take: usize,
-        ) -> Vec<rchain_shared::state::TrieNode<Blake2b256Hash>> {
+        ) -> Result<Vec<rchain_shared::state::TrieNode<Blake2b256Hash>>, String> {
             let leaf = Blake2b256Hash::from_bytes([7u8; 32]);
             let branch = Blake2b256Hash::from_bytes([8u8; 32]);
-            vec![
+            Ok(vec![
                 rchain_shared::state::TrieNode {
                     hash: leaf,
                     is_leaf: true,
@@ -783,29 +813,29 @@ mod tests {
                     is_leaf: false,
                     path: vec![(branch, None)],
                 },
-            ]
+            ])
         }
 
         fn get_history_items<Value>(
             &self,
             keys: &[Blake2b256Hash],
             from_buffer: impl Fn(&[u8]) -> Value,
-        ) -> Vec<(Blake2b256Hash, Value)> {
-            keys.iter().map(|k| (*k, from_buffer(&[1u8]))).collect()
+        ) -> Result<Vec<(Blake2b256Hash, Value)>, String> {
+            Ok(keys.iter().map(|k| (*k, from_buffer(&[1u8]))).collect())
         }
 
         fn get_data_items<Value>(
             &self,
             keys: &[Blake2b256Hash],
             from_buffer: impl Fn(&[u8]) -> Value,
-        ) -> Vec<(Blake2b256Hash, Value)> {
-            keys.iter().map(|k| (*k, from_buffer(&[2u8]))).collect()
+        ) -> Result<Vec<(Blake2b256Hash, Value)>, String> {
+            Ok(keys.iter().map(|k| (*k, from_buffer(&[2u8]))).collect())
         }
     }
 
     impl RSpaceExporter for MockExporter {
-        fn get_root(&self) -> Option<Blake2b256Hash> {
-            Some(Blake2b256Hash::from_bytes([8u8; 32]))
+        fn get_root(&self) -> Result<Option<Blake2b256Hash>, String> {
+            Ok(Some(Blake2b256Hash::from_bytes([8u8; 32])))
         }
     }
 
@@ -833,12 +863,13 @@ mod tests {
             count: usize,
             keys: &[Blake2b256Hash],
             from_buffer: impl Fn(&[u8]) -> Value,
-        ) -> Vec<(Blake2b256Hash, Value)> {
+        ) -> Result<Vec<(Blake2b256Hash, Value)>, String> {
             let bytes = vec![1u8; self.payload];
-            keys.iter()
+            Ok(keys
+                .iter()
                 .take(count)
                 .map(|k| (*k, from_buffer(&bytes)))
-                .collect()
+                .collect())
         }
     }
 
@@ -848,15 +879,15 @@ mod tests {
             _start_path: &[(Blake2b256Hash, Option<u8>)],
             _skip: usize,
             take: usize,
-        ) -> Vec<rchain_shared::state::TrieNode<Blake2b256Hash>> {
-            (0..take.min(self.count)).map(|i| self.node(i)).collect()
+        ) -> Result<Vec<rchain_shared::state::TrieNode<Blake2b256Hash>>, String> {
+            Ok((0..take.min(self.count)).map(|i| self.node(i)).collect())
         }
 
         fn get_history_items<Value>(
             &self,
             keys: &[Blake2b256Hash],
             from_buffer: impl Fn(&[u8]) -> Value,
-        ) -> Vec<(Blake2b256Hash, Value)> {
+        ) -> Result<Vec<(Blake2b256Hash, Value)>, String> {
             self.items(self.count, keys, from_buffer)
         }
 
@@ -864,14 +895,14 @@ mod tests {
             &self,
             keys: &[Blake2b256Hash],
             from_buffer: impl Fn(&[u8]) -> Value,
-        ) -> Vec<(Blake2b256Hash, Value)> {
+        ) -> Result<Vec<(Blake2b256Hash, Value)>, String> {
             self.items(self.count, keys, from_buffer)
         }
     }
 
     impl RSpaceExporter for PageExporter {
-        fn get_root(&self) -> Option<Blake2b256Hash> {
-            Some(Blake2b256Hash::from_bytes([8u8; 32]))
+        fn get_root(&self) -> Result<Option<Blake2b256Hash>, String> {
+            Ok(Some(Blake2b256Hash::from_bytes([8u8; 32])))
         }
     }
 

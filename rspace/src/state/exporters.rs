@@ -12,9 +12,7 @@ use rchain_crypto::hash::blake2b256_hash::Blake2b256Hash;
 use rchain_shared::state::TrieNode;
 use rchain_shared::store::KeyValueStore;
 
-use crate::state::{
-    validate_state_items_checked, EmptyHistoryException, RSpaceExporter, StoreItems,
-};
+use crate::state::{validate_state_items, EmptyHistoryException, RSpaceExporter, StoreItems};
 
 /// Export one chunk of history + data items and the resume path (port of
 /// `RSpaceExporterItems.getHistoryAndData`).
@@ -30,9 +28,9 @@ pub fn get_history_and_data<E: RSpaceExporter>(
     ),
     String,
 > {
-    // The *checked* reads: a store that cannot be read is not "no nodes" — that flatten turned a
-    // store error into `EmptyHistoryException` here (U11).
-    let nodes = exporter.try_get_nodes(start_path, skip, take)?;
+    // The reads are fallible: a store that cannot be read is not "no nodes" — that flatten turned a
+    // store error into `EmptyHistoryException` here (AUDIT C63).
+    let nodes = exporter.get_nodes(start_path, skip, take)?;
     let last = nodes
         .last()
         .cloned()
@@ -54,8 +52,8 @@ pub fn get_history_and_data<E: RSpaceExporter>(
         .into_iter()
         .collect();
 
-    let history_items = exporter.try_get_history_items(&history_keys, |b: &[u8]| b.to_vec())?;
-    let data_items = exporter.try_get_data_items(&data_keys, |b: &[u8]| b.to_vec())?;
+    let history_items = exporter.get_history_items(&history_keys, |b: &[u8]| b.to_vec())?;
+    let data_items = exporter.get_data_items(&data_keys, |b: &[u8]| b.to_vec())?;
 
     let mut last_path = last.path;
     last_path.push((last.hash, None));
@@ -99,7 +97,7 @@ pub fn write_to_disk<E: RSpaceExporter>(
                     .next()
                     .flatten())
             };
-            validate_state_items_checked(
+            validate_state_items(
                 &history.items,
                 &data.items,
                 &start_path,
@@ -144,10 +142,10 @@ pub fn write_to_disk_dir<E: RSpaceExporter>(
 ) -> Result<(), String> {
     use rchain_shared::lmdb::LmdbStoreManager;
 
-    // The checked read: "no root" (an empty state) and "the roots store could not be read" were the
-    // same `None` (U11).
+    // "No root" (an empty state) and "the roots store could not be read" were the same `None`
+    // (AUDIT C63).
     let root = exporter
-        .try_get_root()?
+        .get_root()?
         .ok_or_else(|| "exporter has no root to export".to_string())?;
     let history_manager = LmdbStoreManager::new(&dir.join("history"), 10 * 1024 * 1024 * 1024)?;
     let cold_manager = LmdbStoreManager::new(&dir.join("cold"), 10 * 1024 * 1024 * 1024)?;
@@ -183,8 +181,8 @@ mod tests {
             _start_path: &[(Blake2b256Hash, Option<u8>)],
             _skip: usize,
             _take: usize,
-        ) -> Vec<TrieNode<Blake2b256Hash>> {
-            vec![
+        ) -> Result<Vec<TrieNode<Blake2b256Hash>>, String> {
+            Ok(vec![
                 TrieNode {
                     hash: leaf_hash(),
                     is_leaf: true,
@@ -195,26 +193,26 @@ mod tests {
                     is_leaf: false,
                     path: vec![(root_hash(), None)],
                 },
-            ]
+            ])
         }
         fn get_history_items<Value>(
             &self,
             keys: &[Blake2b256Hash],
             from_buffer: impl Fn(&[u8]) -> Value,
-        ) -> Vec<(Blake2b256Hash, Value)> {
-            keys.iter().map(|k| (*k, from_buffer(&[1u8]))).collect()
+        ) -> Result<Vec<(Blake2b256Hash, Value)>, String> {
+            Ok(keys.iter().map(|k| (*k, from_buffer(&[1u8]))).collect())
         }
         fn get_data_items<Value>(
             &self,
             keys: &[Blake2b256Hash],
             from_buffer: impl Fn(&[u8]) -> Value,
-        ) -> Vec<(Blake2b256Hash, Value)> {
-            keys.iter().map(|k| (*k, from_buffer(&[2u8]))).collect()
+        ) -> Result<Vec<(Blake2b256Hash, Value)>, String> {
+            Ok(keys.iter().map(|k| (*k, from_buffer(&[2u8]))).collect())
         }
     }
     impl RSpaceExporter for MockExporter {
-        fn get_root(&self) -> Option<Blake2b256Hash> {
-            None
+        fn get_root(&self) -> Result<Option<Blake2b256Hash>, String> {
+            Ok(None)
         }
     }
 

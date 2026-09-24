@@ -267,8 +267,14 @@ async fn process_store_items<I: RSpaceImporter>(
         })?;
 
         // Import history and data items.
-        importer.set_history_items(&msg.history_items, |v: &Vec<u8>| v.clone());
-        importer.set_data_items(&msg.data_items, |v: &Vec<u8>| v.clone());
+        // A refused write is not a completed import (AUDIT C63's write half): propagating it here is
+        // what makes the LFS sync's "chunk done" claim conditional on the state actually landing.
+        importer
+            .set_history_items(&msg.history_items, |v: &Vec<u8>| v.clone())
+            .map_err(StateValidationError)?;
+        importer
+            .set_data_items(&msg.data_items, |v: &Vec<u8>| v.clone())
+            .map_err(StateValidationError)?;
 
         // Mark the chunk done and trigger the request queue.
         {
@@ -325,7 +331,9 @@ pub async fn request_tuple_space_roots<I: RSpaceImporter>(
 
     let mut start_requests = Vec::with_capacity(state_hashes.len());
     for state_hash in state_hashes {
-        importer.set_root(*state_hash);
+        importer
+            .set_root(*state_hash)
+            .map_err(StateValidationError)?;
         start_requests.push(vec![(*state_hash, None)]);
     }
 
@@ -434,22 +442,26 @@ mod stream_tests {
             &mut self,
             data: &[(Blake2b256Hash, Value)],
             to_buffer: impl Fn(&Value) -> Vec<u8>,
-        ) {
+        ) -> Result<(), String> {
             self.imported_history = data.iter().map(|(h, v)| (*h, to_buffer(v))).collect();
+            Ok(())
         }
         fn set_data_items<Value>(
             &mut self,
             data: &[(Blake2b256Hash, Value)],
             to_buffer: impl Fn(&Value) -> Vec<u8>,
-        ) {
+        ) -> Result<(), String> {
             self.imported_data = data.iter().map(|(h, v)| (*h, to_buffer(v))).collect();
+            Ok(())
         }
-        fn set_root(&mut self, _root: Blake2b256Hash) {}
+        fn set_root(&mut self, _root: Blake2b256Hash) -> Result<(), String> {
+            Ok(())
+        }
     }
 
     impl RSpaceImporter for RecordingImporter {
-        fn get_history_item(&self, hash: Blake2b256Hash) -> Option<Vec<u8>> {
-            self.history.get(&hash).cloned()
+        fn get_history_item(&self, hash: Blake2b256Hash) -> Result<Option<Vec<u8>>, String> {
+            Ok(self.history.get(&hash).cloned())
         }
     }
 

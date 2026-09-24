@@ -28,8 +28,8 @@ impl RNodeStateManagerImpl {
 
 #[async_trait]
 impl RNodeStateManager for RNodeStateManagerImpl {
-    async fn is_empty(&self) -> bool {
-        self.rspace_state_manager.is_empty() && self.block_state_manager.is_empty().await
+    async fn is_empty(&self) -> Result<bool, String> {
+        Ok(self.rspace_state_manager.is_empty()? && self.block_state_manager.is_empty().await)
     }
 }
 
@@ -39,15 +39,15 @@ mod tests {
 
     struct EmptyState;
     impl StateManager for EmptyState {
-        fn is_empty(&self) -> bool {
-            true
+        fn is_empty(&self) -> Result<bool, String> {
+            Ok(true)
         }
     }
 
     struct NonEmptyState;
     impl StateManager for NonEmptyState {
-        fn is_empty(&self) -> bool {
-            false
+        fn is_empty(&self) -> Result<bool, String> {
+            Ok(false)
         }
     }
 
@@ -70,14 +70,14 @@ mod tests {
     #[tokio::test]
     async fn is_empty_conjoins_both() {
         let both_empty = RNodeStateManagerImpl::new(Arc::new(EmptyState), Arc::new(EmptyBlocks));
-        assert!(both_empty.is_empty().await);
+        assert!(both_empty.is_empty().await.expect("in-memory stores"));
 
         let rspace_nonempty =
             RNodeStateManagerImpl::new(Arc::new(NonEmptyState), Arc::new(EmptyBlocks));
-        assert!(!rspace_nonempty.is_empty().await);
+        assert!(!rspace_nonempty.is_empty().await.expect("in-memory stores"));
 
         let blocks_nonempty =
             RNodeStateManagerImpl::new(Arc::new(EmptyState), Arc::new(NonEmptyBlocks));
-        assert!(!blocks_nonempty.is_empty().await);
+        assert!(!blocks_nonempty.is_empty().await.expect("in-memory stores"));
     }
 }

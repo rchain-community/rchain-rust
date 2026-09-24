@@ -23,7 +23,12 @@ pub trait BlockStateManager: Send + Sync {
 /// RNode state manager (port of `RNodeStateManager`).
 #[async_trait]
 pub trait RNodeStateManager: Send + Sync {
-    async fn is_empty(&self) -> bool;
+    /// Whether the whole node state is empty.
+    ///
+    /// Fallible because the rspace half is: "there is no root" and "the roots store could not be
+    /// read" were the same answer, and a caller acting on "the state is empty" would be acting on an
+    /// unreadable store (AUDIT C63's residue).
+    async fn is_empty(&self) -> Result<bool, String>;
 }
 
 /// The latest + in-progress proposal results (port of `ProposerState`).
