@@ -680,7 +680,9 @@ mod tests {
         async fn contains(&self, _keys: &[Blake2b256Hash]) -> Result<Vec<bool>, String> {
             Err("the store is down".to_string())
         }
-        async fn to_map(&self) -> Result<std::collections::BTreeMap<Blake2b256Hash, Vec<u8>>, String> {
+        async fn to_map(
+            &self,
+        ) -> Result<std::collections::BTreeMap<Blake2b256Hash, Vec<u8>>, String> {
             Err("the store is down".to_string())
         }
     }
