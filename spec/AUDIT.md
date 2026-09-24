@@ -2697,6 +2697,41 @@ port against the **reference document** rather than against itself.
   `chan = nilPar`); what this pass adds is that the register now *asks* each proved row for its witness,
   so the next one has somewhere to fail.
 
+- **C57 — law 16c's remaining tie is not a plumbing job: the model's encoder and `prost` disagree in
+  three ways, and the register said only "the layer is the follow-up"** (measured 2026-09-24, Programme
+  F, while sizing the `body` conformance layer; **a boundary finding, no defect, nothing to fix yet —
+  the value is that it is now stated instead of discovered mid-attempt**). Law 16c's row is honest that
+  `prost` is an external crate, so "these bytes are the node's bytes" is prose until a `body` layer
+  exists. Sizing that layer meant reading both encoders, and they do not agree byte for byte:
+
+  1. **Field order.** The model writes tags 4 (`blockNumber`), 6 (`seqNum`), 5 (`sender`), 17
+     (`timestamp`), 9 (`justifications`), 14 — `Rchain/Casper/Validate.lean`'s `encodeBody`. `prost`
+     writes in the generated struct's declaration order, which is the `.proto`'s ascending order
+     (`models/proto/casper.proto:45-66` → `target/*/out/casper.rs`). The model's 4, 6, 5, 17, 9, 14 is
+     not ascending, so the streams differ from the second field onwards.
+  2. **Default-valued fields.** `prost`'s derive-generated encoder omits a field equal to its default
+     (0, `""`, empty bytes, empty `repeated`); the model writes unconditionally
+     (`varintField 32 (int64 b.number)` with no guard). A genesis block's `timestamp = 0` is the
+     smallest instance, and an empty `justifications` list is another.
+  3. **Field set.** The model writes **six** fields and collapses `version`, `shardId`,
+     `preStateHash`, `postStateHash`, `bonds`, the three `rejected*` sets, `state` and `sigAlgorithm`
+     into one opaque `header` blob written at tag 14 — which `prost` reads as `state`, a
+     `RholangStateProto`. So the model's stream is *not* a protobuf encoding of a block body: it is the
+     six fields the law's checks read, in the model's own order, which is what makes it a usable model
+     and an unusable byte-tie.
+
+  **Consequence, so the next attempt does not rediscover it.** A byte-level `body` layer needs the model
+  to mirror `prost`: ascending order, default-skipping, and the full field list with the unmodelled ones
+  as opaque blobs. That changes `encodeBody`'s *subject*, which puts `decodeBody_encodeBody` and
+  `encodeBody_injective` back in play — and §17 already records that `decodeBody`'s first spelling (a
+  `guard`-per-tag do-block) was a **compile-time** hazard: 98.6 s to compile and a build past 5 GB, the
+  delegating `taggedVarint` per field fixing it at 224 ms. The options, recorded and not chosen:
+  **(a)** mirror `prost` over the full field list — the real tie, and the largest; **(b)** mirror it over
+  the modelled subset, with the omitted fields named as a boundary (a case's `header` bytes going into
+  the proto's `state` field) — bounded, and it pins exactly the two rules a hand-written encoder gets
+  wrong, order and skipping; **(c)** leave it prose, which is where it stands. Law 16c's row now cites
+  this entry rather than saying only that the layer is owed.
+
 
 ## 20. The back-sweep: every incident to its law and its case
 

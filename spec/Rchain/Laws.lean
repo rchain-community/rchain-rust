@@ -874,7 +874,15 @@ def laws : List Law := [
       `encode_to_vec` is an external crate (0.13.5, `Cargo.lock`), so \"these bytes are the node's \
       bytes\" is a tie no Lean theorem can make until a `body` conformance layer exists (`Corpus.lean`, \
       `emit-lean-corpus.sh`'s `LAYERS`, `spec/conformance/body.tsv`, a Rust consumer, the gate's \
-      layer-to-consumer map). No axiom was added for `prost` — the layer is the follow-up. **A \
+      layer-to-consumer map). No axiom was added for `prost` — the layer is the follow-up, and **what it \
+      has to overcome is measured now rather than assumed** (AUDIT C57): the model's `encodeBody` and \
+      `prost` disagree in three ways that a byte comparison would hit on its first case — the model \
+      writes tags 4, 6, 5, 17, 9, 14 where `prost` writes the `.proto`'s ascending order; `prost` omits \
+      default-valued fields and the model writes unconditionally; and the model collapses nine fields \
+      into one opaque `header` blob at tag 14, which `prost` reads as `state`. So the layer is a \
+      *modelling* change (mirroring `prost` over the full field list) and not a plumbing one, and it \
+      puts `decodeBody_encodeBody`/`encodeBody_injective` back in play. C57 records the three \
+      divergences, the compile-time hazard below, and the bounded alternative. **A \
       measurement worth keeping**: the first spelling of `decodeBody` was a `guard`-per-tag do-block, \
       and it did not slow the *elaborator* down — it slowed the **compiler** down: `lean --profile` \
       reports 128 ms of elaboration and `compilation of Rchain.decodeBody took 98.6s`, with the build \
