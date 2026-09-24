@@ -227,18 +227,18 @@ def laws : List Law := [
     declarations := [`Rchain.cmpPar, `Rchain.cmpSend, `Rchain.cmpExpr, `Rchain.cmpNew_lt_trans,
       `Rchain.cmpSend_lt_trans, `Rchain.cmpReceiveBind_lt_trans, `Rchain.cmpReceive_lt_trans,
       `Rchain.cmpMatchCase_lt_trans, `Rchain.cmpMatch_lt_trans, `Rchain.cmpBundle_lt_trans,
-      `Rchain.cmpConnective_lt_trans, `Rchain.Comparator.lex_lt_trans, `Rchain.Comparator.cmpPairF],
+      `Rchain.cmpConnective_lt_trans, `Rchain.cmpListPar_lt_trans,
+      `Rchain.Comparator.lex_lt_trans, `Rchain.Comparator.lex_lt_trans_at, `Rchain.Comparator.cmpPairF],
     rust := ["models/src/sorter.rs"],
-    axioms := [`Rchain.cmpExpr_eq_iff, `Rchain.cmpExpr_swap, `Rchain.cmpPar_lt_trans,
-      `Rchain.cmpExpr_lt_trans],
+    axioms := [`Rchain.cmpExpr_eq_iff, `Rchain.cmpExpr_swap, `Rchain.cmpExpr_lt_trans],
     coq := ["spec/coq/Sort.v:cmpPar"],
     falsifiable := some "eight of the ten element `lt_trans` laws are theorems now \
       (`cmpNew`/`cmpSend`/`cmpReceiveBind`/`cmpReceive`/`cmpMatchCase`/`cmpMatch`/`cmpBundle`/\
       `cmpConnective`), each by the `Comparator.lex_lt_trans` idiom the file's own note validates, and \
-      the list laws are proved from them — so a counterexample to any of the four remaining axioms \
-      would also be a counterexample to those proofs. The two survivors are named rather than hidden: \
-      `cmpPar`'s is an eight-component chain and `cmpExpr`'s three are blocked on the size of its \
-      equation lemmas",
+      the list laws are proved from them, and `cmpPar_lt_trans` joined them on 2026-09-24 — so a \
+      counterexample to any of the three remaining axioms would also be a counterexample to those \
+      proofs. The survivors are named rather than hidden: `cmpExpr`'s three are blocked on the size of \
+      its equation lemmas, and the route is the 21 `rfl`-proved `@[simp]` arm lemmas",
     note := "**four axioms, from twelve** (2026-09-23). The list comparators' laws were discharged \
       earlier by induction on the list; the eight element laws above are now theorems, in dependency \
       order (an element law needs the list lemma of the types *below* it and a list lemma needs the \
@@ -249,7 +249,14 @@ def laws : List Law := [
       its equation lemmas, as the axiom comment in that file records). The `rust` anchor is \
       `models/src/sorter.rs`, because the order these comparators specify *is* the node's score tree \
       (`node_score(tag, children)`, compared element-wise by `compare_children`), and the `sort` corpus \
-      pins four structures of it against the node — see law 1a's note" },
+      pins four structures of it against the node — see law 1a's note. **What the fourth pass did \
+      (2026-09-24)**: `cmpPar_lt_trans` is a **theorem** — the seven-deep ladder whose shape an earlier \
+      note recorded — and it is a member of `Rchain.Sort`'s `mutual` block rather than a theorem of its \
+      own, because the family is one strongly connected component. What blocked the first attempt is \
+      kept in that file's note with the fix: `Cmp.lean`'s pointwise `lex_lt_trans_at`, so each level's \
+      `h_lt` is a partial application on *fields* — the only shape the block's termination checker \
+      accepts — plus the last-component and binder-collision details. What is left of this row is \
+      `cmpExpr`'s three" },
   { number := 2, layer := "Rholang",
     statement := "α/name equivalence = par order + `| Nil` + top-level arithmetic + α + added \
       eval/quote",

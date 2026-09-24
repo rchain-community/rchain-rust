@@ -142,6 +142,32 @@ theorem lex_lt_trans {f : α → α → Ordering}
     · exact Or.inl ((h_eq.mp h1e).symm ▸ h2)
     · exact Or.inr ⟨h_eq.mpr ((h_eq.mp h1e).trans (h_eq.mp h2e)), hD h1d h2d⟩
 
+/-- **The pointwise form of `lex_lt_trans`**, and the reason `Sort.lean`'s `lt_trans` block can be
+    written at all. The lemma above takes `h_lt` for *every* triple `a b c`, so a caller inside a
+    `mutual` block has to pass `fun {a b c} h1 h2 => cmpX_lt_trans a b c h1 h2` — a call to a
+    same-block member on arguments that are **not** structural subterms of the member's own arguments,
+    which the termination checker cannot justify (`termination_by p _ _ => sizeOf p` has nothing to say
+    about an arbitrary `a`). This form takes the law at the *specific* triple, which is all the proof
+    below uses, so the caller writes `h_lt := cmpX_lt_trans x x' x''` — a partial application on the
+    fields. `Sort.lean`'s note records the measurement behind that. -/
+theorem lex_lt_trans_at {f : α → α → Ordering}
+    (h_eq : ∀ {a b : α}, f a b = Ordering.eq ↔ a = b)
+    {a b c : α} (h_lt : f a b = Ordering.lt → f b c = Ordering.lt → f a c = Ordering.lt)
+    {Dcmp : β → β → Ordering} {x y z : β}
+    (hD : Dcmp x y = Ordering.lt → Dcmp y z = Ordering.lt → Dcmp x z = Ordering.lt) :
+    lex (f a b) (Dcmp x y) = Ordering.lt →
+    lex (f b c) (Dcmp y z) = Ordering.lt →
+    lex (f a c) (Dcmp x z) = Ordering.lt := by
+  intro h1 h2
+  rw [lex_lt_iff] at h1 h2 ⊢
+  rcases h1 with h1 | ⟨h1e, h1d⟩
+  · rcases h2 with h2 | ⟨h2e, _⟩
+    · exact Or.inl (h_lt h1 h2)
+    · exact Or.inl ((h_eq.mp h2e) ▸ h1)
+  · rcases h2 with h2 | ⟨h2e, h2d⟩
+    · exact Or.inl ((h_eq.mp h1e).symm ▸ h2)
+    · exact Or.inr ⟨h_eq.mpr ((h_eq.mp h1e).trans (h_eq.mp h2e)), hD h1d h2d⟩
+
 /-! ## List and pair comparators -/
 
 /-- Lexicographic comparison of lists, over a bare element comparator. -/

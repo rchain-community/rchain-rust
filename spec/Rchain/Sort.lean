@@ -895,34 +895,24 @@ known, unpinnable divergence, and `cmpGround`'s doc comment says so.
 
 
 
-axiom cmpPar_lt_trans (p q r : Par) : cmpPar p q = Ordering.lt → cmpPar q r = Ordering.lt → cmpPar p r = Ordering.lt
 axiom cmpExpr_lt_trans (s t u : Expr) : cmpExpr s t = Ordering.lt → cmpExpr t u = Ordering.lt → cmpExpr s u = Ordering.lt
 
-/-! ### The `lt_trans` laws, in dependency order
+/-! ### The `lt_trans` laws
 
-Recorded above as axioms, proved here on the `Comparator.lex_lt_trans` idiom the note at `cmpSend`
-validates: the head of a `lex` chain goes to that lemma directly and its tail is packaged as a *single*
-comparison by `Comparator.cmpPairF`, with `x`/`y`/`z` named explicitly (the packaging cannot reduce
-against a metavariable of product type).
+`cmpExpr`'s element law is the one axiom left of law 1's residual: its three laws wait on the `cmpExpr`
+arm lemmas (`Json.lean:356-386`'s precedent — 21 `rfl`-proved `@[simp]` arms), because `cmpExpr`'s 21
+groups mean a 21×21×21 case analysis whose `simp` must not unfold the 21-arm match.
 
-The order below is a dependency order and not alphabetical, because the two families interleave: an
-element law needs the *list* lemma of the types below it, and a list lemma needs the *element* law of its
-own type. Two laws stay axioms, named rather than hidden — `cmpPar`'s is an **eight**-component chain
-(twice the packaging above; this file's mutual-block note is about that) and `cmpExpr`'s three are
-blocked on the size of its equation lemmas.
--/
+Everything else in the family is proved, and the `Par` half of it is **one `mutual` block** below,
+because the family is one strongly connected component. What stays *outside* the block, and why: the two
+`GUnforgeable` laws and `cmpListExpr_lt_trans` are not in the cycle (the latter is about `Expr`, and
+`Expr`'s own element law is the axiom above), and the block needs them — `Par` carries unforgeables and
+exprs, so their laws have to be declared first. -/
 
 private theorem cmpParPair_eq_iff (x y : Par × Par) :
     lex (cmpPar x.1 y.1) (cmpPar x.2 y.2) = Ordering.eq ↔ x = y := by
   rw [lex_eq_iff, cmpPar_eq_iff, cmpPar_eq_iff, Prod.ext_iff]
 
-private theorem cmpParPair_lt_trans (x y z : Par × Par) :
-    lex (cmpPar x.1 y.1) (cmpPar x.2 y.2) = Ordering.lt →
-    lex (cmpPar y.1 z.1) (cmpPar y.2 z.2) = Ordering.lt →
-    lex (cmpPar x.1 z.1) (cmpPar x.2 z.2) = Ordering.lt := by
-  intro h1 h2
-  exact lex_lt_trans (f := cmpPar) (h_eq := fun {a b} => cmpPar_eq_iff a b) (h_lt := fun {a b c} => cmpPar_lt_trans a b c)
-    (hD := cmpPar_lt_trans x.2 y.2 z.2) h1 h2
 
 theorem cmpGUnforgeable_lt_trans (s t u : GUnforgeable) :
     cmpGUnforgeable s t = Ordering.lt → cmpGUnforgeable t u = Ordering.lt → cmpGUnforgeable s u = Ordering.lt := by
@@ -944,19 +934,6 @@ theorem cmpListGUnforgeable_lt_trans (l l' l'' : List GUnforgeable) : cmpListGUn
               simp [cmpListGUnforgeable] at h1 h2 ⊢
               exact lex_lt_trans (f := cmpGUnforgeable) (h_eq := fun {a b} => cmpGUnforgeable_eq_iff a b) (h_lt := fun {a b c} => cmpGUnforgeable_lt_trans a b c) (hD := ih bs cs) h1 h2
 
-theorem cmpListPar_lt_trans (l l' l'' : List Par) : cmpListPar l l' = Ordering.lt → cmpListPar l' l'' = Ordering.lt → cmpListPar l l'' = Ordering.lt := by
-  induction l generalizing l' l'' with
-  | nil => intro h1 h2; cases l' <;> cases l'' <;> simp [cmpListPar] at h1 h2 ⊢
-  | cons a as ih =>
-      intro h1 h2
-      cases l' with
-      | nil => simp [cmpListPar] at h1
-      | cons b bs =>
-          cases l'' with
-          | nil => simp [cmpListPar] at h2
-          | cons c cs =>
-              simp [cmpListPar] at h1 h2 ⊢
-              exact lex_lt_trans (f := cmpPar) (h_eq := fun {a b} => cmpPar_eq_iff a b) (h_lt := fun {a b c} => cmpPar_lt_trans a b c) (hD := ih bs cs) h1 h2
 
 theorem cmpListExpr_lt_trans (l l' l'' : List Expr) : cmpListExpr l l' = Ordering.lt → cmpListExpr l' l'' = Ordering.lt → cmpListExpr l l'' = Ordering.lt := by
   induction l generalizing l' l'' with
@@ -972,354 +949,419 @@ theorem cmpListExpr_lt_trans (l l' l'' : List Expr) : cmpListExpr l l' = Orderin
               simp [cmpListExpr] at h1 h2 ⊢
               exact lex_lt_trans (f := cmpExpr) (h_eq := fun {a b} => cmpExpr_eq_iff a b) (h_lt := fun {a b c} => cmpExpr_lt_trans a b c) (hD := ih bs cs) h1 h2
 
-theorem cmpListParPair_lt_trans (l l' l'' : List (Par × Par)) : cmpListParPair l l' = Ordering.lt → cmpListParPair l' l'' = Ordering.lt → cmpListParPair l l'' = Ordering.lt := by
-  induction l generalizing l' l'' with
-  | nil => intro h1 h2; cases l' <;> cases l'' <;> simp [cmpListParPair] at h1 h2 ⊢
-  | cons a as ih =>
+
+/-! ## The `Par` cycle, as one block
+
+The `lt_trans` laws whose types mention `Par`: `cmpPar` itself, the element laws, and the list
+laws — one strongly connected component, so one `mutual` block. Every same-block call is a
+*partial application on fields* (`h_lt := cmpListSend_lt_trans s s' s''`), which is the only
+shape this block's termination checker accepts; `Cmp.lean`'s `lex_lt_trans_at` is what makes
+that spelling available at each level. -/
+
+mutual
+  theorem cmpPar_lt_trans : ∀ p : Par, ∀ q r : Par,
+      cmpPar p q = Ordering.lt → cmpPar q r = Ordering.lt → cmpPar p r = Ordering.lt
+    | Par.mk s r n e m u b c, Par.mk s' r' n' e' m' u' b' c',
+      Par.mk s'' r'' n'' e'' m'' u'' b'' c'' => by
       intro h1 h2
-      cases l' with
-      | nil => simp [cmpListParPair] at h1
-      | cons b bs =>
-          cases l'' with
-          | nil => simp [cmpListParPair] at h2
-          | cons c cs =>
-              cases a with | mk a1 a2 =>
-              cases b with | mk b1 b2 =>
-              cases c with | mk c1 c2 =>
-              simp [cmpListParPair] at h1 h2 ⊢
-              exact lex_lt_trans (f := fun x y => lex (cmpPar x.1 y.1) (cmpPar x.2 y.2))
-                (h_eq := fun {a b} => cmpParPair_eq_iff a b) (h_lt := fun {a b c} => cmpParPair_lt_trans a b c)
-                (a := (a1, a2)) (b := (b1, b2)) (c := (c1, c2)) (x := as) (y := bs) (z := cs)
-                (hD := ih bs cs) h1 h2
+      simp only [cmpPar] at h1 h2 ⊢
+      refine lex_lt_trans_at (f := cmpListSend)
+        (h_eq := fun {a b} => cmpListSend_eq_iff a b)
+        (a := s) (b := s') (c := s'')
+        (h_lt := (cmpListSend_lt_trans s s' s''))
+        (Dcmp := cmpPairF cmpListReceive (cmpPairF cmpListExpr (cmpPairF cmpListNew (cmpPairF cmpListMatch (cmpPairF cmpListBundle (cmpPairF cmpListConnective (cmpListGUnforgeable)))))))
+        (x := (r, (e, (n, (m, (b, (c, u)))))))
+        (y := (r', (e', (n', (m', (b', (c', u')))))))
+        (z := (r'', (e'', (n'', (m'', (b'', (c'', u'')))))))
+        (hD := ?_) h1 h2
+      intro hx hy
+      refine lex_lt_trans_at (f := cmpListReceive)
+        (h_eq := fun {a b} => cmpListReceive_eq_iff a b)
+        (a := r) (b := r') (c := r'')
+        (h_lt := (cmpListReceive_lt_trans r r' r''))
+        (Dcmp := cmpPairF cmpListExpr (cmpPairF cmpListNew (cmpPairF cmpListMatch (cmpPairF cmpListBundle (cmpPairF cmpListConnective (cmpListGUnforgeable))))))
+        (x := (e, (n, (m, (b, (c, u))))))
+        (y := (e', (n', (m', (b', (c', u'))))))
+        (z := (e'', (n'', (m'', (b'', (c'', u''))))))
+        (hD := ?_) hx hy
+      intro hx hy
+      refine lex_lt_trans (f := cmpListExpr)
+        (h_eq := fun {a b} => cmpListExpr_eq_iff a b)
+        (h_lt := fun {a b c} h1 h2 => cmpListExpr_lt_trans a b c h1 h2)
+        (Dcmp := cmpPairF cmpListNew (cmpPairF cmpListMatch (cmpPairF cmpListBundle (cmpPairF cmpListConnective (cmpListGUnforgeable)))))
+        (x := (n, (m, (b, (c, u)))))
+        (y := (n', (m', (b', (c', u')))))
+        (z := (n'', (m'', (b'', (c'', u'')))))
+        (hD := ?_) hx hy
+      intro hx hy
+      refine lex_lt_trans_at (f := cmpListNew)
+        (h_eq := fun {a b} => cmpListNew_eq_iff a b)
+        (a := n) (b := n') (c := n'')
+        (h_lt := (cmpListNew_lt_trans n n' n''))
+        (Dcmp := cmpPairF cmpListMatch (cmpPairF cmpListBundle (cmpPairF cmpListConnective (cmpListGUnforgeable))))
+        (x := (m, (b, (c, u))))
+        (y := (m', (b', (c', u'))))
+        (z := (m'', (b'', (c'', u''))))
+        (hD := ?_) hx hy
+      intro hx hy
+      refine lex_lt_trans_at (f := cmpListMatch)
+        (h_eq := fun {a b} => cmpListMatch_eq_iff a b)
+        (a := m) (b := m') (c := m'')
+        (h_lt := (cmpListMatch_lt_trans m m' m''))
+        (Dcmp := cmpPairF cmpListBundle (cmpPairF cmpListConnective (cmpListGUnforgeable)))
+        (x := (b, (c, u)))
+        (y := (b', (c', u')))
+        (z := (b'', (c'', u'')))
+        (hD := ?_) hx hy
+      intro hx hy
+      refine lex_lt_trans_at (f := cmpListBundle)
+        (h_eq := fun {a b} => cmpListBundle_eq_iff a b)
+        (a := b) (b := b') (c := b'')
+        (h_lt := (cmpListBundle_lt_trans b b' b''))
+        (Dcmp := cmpPairF cmpListConnective (cmpListGUnforgeable))
+        (x := (c, u))
+        (y := (c', u'))
+        (z := (c'', u''))
+        (hD := ?_) hx hy
+      intro hx hy
+      refine lex_lt_trans_at (f := cmpListConnective)
+        (h_eq := fun {a b} => cmpListConnective_eq_iff a b)
+        (a := c) (b := c') (c := c'')
+        (h_lt := (cmpListConnective_lt_trans c c' c''))
+        (Dcmp := cmpListGUnforgeable)
+        (x := u) (y := u') (z := u'')
+        (hD := fun h1 h2 => cmpListGUnforgeable_lt_trans u u' u'' h1 h2) hx hy
+  termination_by p => sizeOf p
 
-theorem cmpNew_lt_trans (s t u : New) :
-    cmpNew s t = Ordering.lt → cmpNew t u = Ordering.lt → cmpNew s u = Ordering.lt := by
-  obtain ⟨n, b⟩ := s
-  obtain ⟨n', b'⟩ := t
-  obtain ⟨n'', b''⟩ := u
-  intro h1 h2
-  simp only [cmpNew] at h1 h2 ⊢
-  exact Comparator.lex_lt_trans (f := (Comparator.linearOrderComparator Nat).cmp)
-    (h_eq := fun {a b} => (Comparator.linearOrderComparator Nat).eq_iff (a := a) (b := b))
-    (h_lt := fun {a b c} h1 h2 => (Comparator.linearOrderComparator Nat).lt_trans h1 h2)
-    (Dcmp := cmpPar) (a := n) (b := n') (c := n'') (x := b) (y := b') (z := b'')
-    (hD := fun h1 h2 => cmpPar_lt_trans b b' b'' h1 h2) h1 h2
+  theorem cmpSend_lt_trans : ∀ x1 : Send, ∀ x2 x3 : Send,
+      cmpSend x1 x2 = Ordering.lt → cmpSend x2 x3 = Ordering.lt → cmpSend x1 x3 = Ordering.lt
+    | Send.mk c d p, Send.mk c' d' p', Send.mk c'' d'' p'', h1, h2 => by
+        simp only [cmpSend] at h1 h2 ⊢
+        refine lex_lt_trans (f := (Comparator.linearOrderComparator Bool).cmp)
+          (h_eq := fun {a b} => (Comparator.linearOrderComparator Bool).eq_iff (a := a) (b := b))
+          (h_lt := fun {a b c} h1 h2 => (Comparator.linearOrderComparator Bool).lt_trans h1 h2)
+          (Dcmp := cmpPairF cmpPar (cmpListPar))
+          (x := (c, d))
+          (y := (c', d'))
+          (z := (c'', d''))
+          (hD := ?_) h1 h2
+        intro hx hy
+        refine lex_lt_trans_at (f := cmpPar)
+          (h_eq := fun {a b} => cmpPar_eq_iff a b)
+          (a := c) (b := c') (c := c'')
+          (h_lt := (cmpPar_lt_trans c c' c''))
+          (Dcmp := cmpListPar)
+          (x := d) (y := d') (z := d'')
+          (hD := cmpListPar_lt_trans d d' d'') hx hy
+  termination_by x1 => sizeOf x1
 
-theorem cmpSend_lt_trans (s t u : Send) :
-    cmpSend s t = Ordering.lt → cmpSend t u = Ordering.lt → cmpSend s u = Ordering.lt := by
-  obtain ⟨c, d, p⟩ := s
-  obtain ⟨c', d', p'⟩ := t
-  obtain ⟨c'', d'', p''⟩ := u
-  intro h1 h2
-  simp only [cmpSend] at h1 h2 ⊢
-  refine Comparator.lex_lt_trans (f := (Comparator.linearOrderComparator Bool).cmp)
-    (h_eq := fun {a b} => (Comparator.linearOrderComparator Bool).eq_iff (a := a) (b := b))
-    (h_lt := fun {a b c} h1 h2 => (Comparator.linearOrderComparator Bool).lt_trans h1 h2)
-    (Dcmp := Comparator.cmpPairF cmpPar cmpListPar)
-    (x := (c, d)) (y := (c', d')) (z := (c'', d'')) (hD := ?_) h1 h2
-  intro hx hy
-  exact Comparator.lex_lt_trans (f := cmpPar)
-    (h_eq := fun {a b} => cmpPar_eq_iff a b)
-    (h_lt := fun {a b c} h1 h2 => cmpPar_lt_trans a b c h1 h2)
-    (Dcmp := cmpListPar) (x := d) (y := d') (z := d'')
-    (hD := fun h1 h2 => cmpListPar_lt_trans d d' d'' h1 h2) hx hy
+  theorem cmpReceiveBind_lt_trans : ∀ x1 : ReceiveBind, ∀ x2 x3 : ReceiveBind,
+      cmpReceiveBind x1 x2 = Ordering.lt → cmpReceiveBind x2 x3 = Ordering.lt → cmpReceiveBind x1 x3 = Ordering.lt
+    | ReceiveBind.mk ps s n, ReceiveBind.mk ps' s' n', ReceiveBind.mk ps'' s'' n'', h1, h2 => by
+        simp only [cmpReceiveBind] at h1 h2 ⊢
+        refine lex_lt_trans_at (f := cmpListPar)
+          (h_eq := fun {a b} => cmpListPar_eq_iff a b)
+          (a := ps) (b := ps') (c := ps'')
+          (h_lt := (cmpListPar_lt_trans ps ps' ps''))
+          (Dcmp := cmpPairF cmpPar ((Comparator.linearOrderComparator Nat).cmp))
+          (x := (s, n))
+          (y := (s', n'))
+          (z := (s'', n''))
+          (hD := ?_) h1 h2
+        intro hx hy
+        refine lex_lt_trans_at (f := cmpPar)
+          (h_eq := fun {a b} => cmpPar_eq_iff a b)
+          (a := s) (b := s') (c := s'')
+          (h_lt := (cmpPar_lt_trans s s' s''))
+          (Dcmp := (Comparator.linearOrderComparator Nat).cmp)
+          (x := n) (y := n') (z := n'')
+          (hD := fun h1 h2 => (Comparator.linearOrderComparator Nat).lt_trans h1 h2) hx hy
+  termination_by x1 => sizeOf x1
 
-theorem cmpMatchCase_lt_trans (s t u : MatchCase) :
-    cmpMatchCase s t = Ordering.lt → cmpMatchCase t u = Ordering.lt →
-      cmpMatchCase s u = Ordering.lt := by
-  obtain ⟨p, src, fc⟩ := s
-  obtain ⟨p', src', fc'⟩ := t
-  obtain ⟨p'', src'', fc''⟩ := u
-  intro h1 h2
-  simp only [cmpMatchCase] at h1 h2 ⊢
-  refine Comparator.lex_lt_trans (f := cmpPar)
-    (h_eq := fun {a b} => cmpPar_eq_iff a b)
-    (h_lt := fun {a b c} h1 h2 => cmpPar_lt_trans a b c h1 h2)
-    (Dcmp := Comparator.cmpPairF cmpPar (Comparator.linearOrderComparator Nat).cmp)
-    (x := (src, fc)) (y := (src', fc')) (z := (src'', fc'')) (hD := ?_) h1 h2
-  intro hx hy
-  exact Comparator.lex_lt_trans (f := cmpPar)
-    (h_eq := fun {a b} => cmpPar_eq_iff a b)
-    (h_lt := fun {a b c} h1 h2 => cmpPar_lt_trans a b c h1 h2)
-    (Dcmp := (Comparator.linearOrderComparator Nat).cmp) (x := fc) (y := fc') (z := fc'')
-    (hD := fun h1 h2 => (Comparator.linearOrderComparator Nat).lt_trans h1 h2) hx hy
+  theorem cmpReceive_lt_trans : ∀ x1 : Receive, ∀ x2 x3 : Receive,
+      cmpReceive x1 x2 = Ordering.lt → cmpReceive x2 x3 = Ordering.lt → cmpReceive x1 x3 = Ordering.lt
+    | Receive.mk bs b p n, Receive.mk bs' b' p' n', Receive.mk bs'' b'' p'' n'', h1, h2 => by
+        simp only [cmpReceive] at h1 h2 ⊢
+        refine lex_lt_trans_at (f := cmpListReceiveBind)
+          (h_eq := fun {a b} => cmpListReceiveBind_eq_iff a b)
+          (a := bs) (b := bs') (c := bs'')
+          (h_lt := (cmpListReceiveBind_lt_trans bs bs' bs''))
+          (Dcmp := cmpPairF cmpPar (cmpPairF (Comparator.linearOrderComparator Bool).cmp ((Comparator.linearOrderComparator Nat).cmp)))
+          (x := (b, (p, n)))
+          (y := (b', (p', n')))
+          (z := (b'', (p'', n'')))
+          (hD := ?_) h1 h2
+        intro hx hy
+        refine lex_lt_trans_at (f := cmpPar)
+          (h_eq := fun {a b} => cmpPar_eq_iff a b)
+          (a := b) (b := b') (c := b'')
+          (h_lt := (cmpPar_lt_trans b b' b''))
+          (Dcmp := cmpPairF (Comparator.linearOrderComparator Bool).cmp ((Comparator.linearOrderComparator Nat).cmp))
+          (x := (p, n))
+          (y := (p', n'))
+          (z := (p'', n''))
+          (hD := ?_) hx hy
+        intro hx hy
+        refine lex_lt_trans (f := (Comparator.linearOrderComparator Bool).cmp)
+          (h_eq := fun {a b} => (Comparator.linearOrderComparator Bool).eq_iff (a := a) (b := b))
+          (h_lt := fun {a b c} h1 h2 => (Comparator.linearOrderComparator Bool).lt_trans h1 h2)
+          (Dcmp := (Comparator.linearOrderComparator Nat).cmp)
+          (x := n) (y := n') (z := n'')
+          (hD := fun h1 h2 => (Comparator.linearOrderComparator Nat).lt_trans h1 h2) hx hy
+  termination_by x1 => sizeOf x1
 
-theorem cmpBundle_lt_trans (s t u : Bundle) :
-    cmpBundle s t = Ordering.lt → cmpBundle t u = Ordering.lt → cmpBundle s u = Ordering.lt := by
-  obtain ⟨b, w, r⟩ := s
-  obtain ⟨b', w', r'⟩ := t
-  obtain ⟨b'', w'', r''⟩ := u
-  intro h1 h2
-  simp only [cmpBundle] at h1 h2 ⊢
-  refine Comparator.lex_lt_trans (f := cmpPar)
-    (h_eq := fun {a b} => cmpPar_eq_iff a b)
-    (h_lt := fun {a b c} h1 h2 => cmpPar_lt_trans a b c h1 h2)
-    (Dcmp := Comparator.cmpPairF (Comparator.linearOrderComparator Bool).cmp (Comparator.linearOrderComparator Bool).cmp)
-    (a := b) (b := b') (c := b'') (x := (w, r)) (y := (w', r')) (z := (w'', r''))
-    (hD := ?_) h1 h2
-  intro hx hy
-  exact Comparator.lex_lt_trans (f := (Comparator.linearOrderComparator Bool).cmp)
-    (h_eq := fun {a b} => (Comparator.linearOrderComparator Bool).eq_iff (a := a) (b := b))
-    (h_lt := fun {a b c} h1 h2 => (Comparator.linearOrderComparator Bool).lt_trans h1 h2)
-    (Dcmp := (Comparator.linearOrderComparator Bool).cmp) (a := w) (b := w') (c := w'')
-    (x := r) (y := r') (z := r'')
-    (hD := fun h1 h2 => (Comparator.linearOrderComparator Bool).lt_trans h1 h2) hx hy
+  theorem cmpNew_lt_trans : ∀ x1 : New, ∀ x2 x3 : New,
+      cmpNew x1 x2 = Ordering.lt → cmpNew x2 x3 = Ordering.lt → cmpNew x1 x3 = Ordering.lt
+    | New.mk n b, New.mk n' b', New.mk n'' b'', h1, h2 => by
+        simp only [cmpNew] at h1 h2 ⊢
+        refine lex_lt_trans (f := (Comparator.linearOrderComparator Nat).cmp)
+          (h_eq := fun {a b} => (Comparator.linearOrderComparator Nat).eq_iff (a := a) (b := b))
+          (h_lt := fun {a b c} h1 h2 => (Comparator.linearOrderComparator Nat).lt_trans h1 h2)
+          (Dcmp := cmpPar)
+          (x := b) (y := b') (z := b'')
+          (hD := cmpPar_lt_trans b b' b'') h1 h2
+  termination_by x1 => sizeOf x1
 
-theorem cmpConnective_lt_trans (s t u : Connective) :
-    cmpConnective s t = Ordering.lt → cmpConnective t u = Ordering.lt →
-      cmpConnective s u = Ordering.lt := by
-  cases s <;> cases t <;> cases u <;> intro h1 h2
-  all_goals simp only [cmpConnective] at h1 h2 ⊢
-  all_goals first
-    | exact cmpListPar_lt_trans _ _ _ h1 h2
-    | exact cmpPar_lt_trans _ _ _ h1 h2
-    | exact Comparator.lex_lt_trans (f := (Comparator.linearOrderComparator Nat).cmp)
-        (h_eq := fun {a b} => (Comparator.linearOrderComparator Nat).eq_iff (a := a) (b := b))
-        (h_lt := fun {a b c} h1 h2 => (Comparator.linearOrderComparator Nat).lt_trans h1 h2)
-        (Dcmp := (Comparator.linearOrderComparator Nat).cmp)
-        (hD := fun h1 h2 => (Comparator.linearOrderComparator Nat).lt_trans h1 h2) h1 h2
-    | simp_all
+  theorem cmpMatchCase_lt_trans : ∀ x1 : MatchCase, ∀ x2 x3 : MatchCase,
+      cmpMatchCase x1 x2 = Ordering.lt → cmpMatchCase x2 x3 = Ordering.lt → cmpMatchCase x1 x3 = Ordering.lt
+    | MatchCase.mk p src fc, MatchCase.mk p' src' fc', MatchCase.mk p'' src'' fc'', h1, h2 => by
+        simp only [cmpMatchCase] at h1 h2 ⊢
+        refine lex_lt_trans_at (f := cmpPar)
+          (h_eq := fun {a b} => cmpPar_eq_iff a b)
+          (a := p) (b := p') (c := p'')
+          (h_lt := (cmpPar_lt_trans p p' p''))
+          (Dcmp := cmpPairF cmpPar ((Comparator.linearOrderComparator Nat).cmp))
+          (x := (src, fc))
+          (y := (src', fc'))
+          (z := (src'', fc''))
+          (hD := ?_) h1 h2
+        intro hx hy
+        refine lex_lt_trans_at (f := cmpPar)
+          (h_eq := fun {a b} => cmpPar_eq_iff a b)
+          (a := src) (b := src') (c := src'')
+          (h_lt := (cmpPar_lt_trans src src' src''))
+          (Dcmp := (Comparator.linearOrderComparator Nat).cmp)
+          (x := fc) (y := fc') (z := fc'')
+          (hD := fun h1 h2 => (Comparator.linearOrderComparator Nat).lt_trans h1 h2) hx hy
+  termination_by x1 => sizeOf x1
 
-theorem cmpReceiveBind_lt_trans (s t u : ReceiveBind) :
-    cmpReceiveBind s t = Ordering.lt → cmpReceiveBind t u = Ordering.lt →
-      cmpReceiveBind s u = Ordering.lt := by
-  obtain ⟨ps, src, fc⟩ := s
-  obtain ⟨ps', src', fc'⟩ := t
-  obtain ⟨ps'', src'', fc''⟩ := u
-  intro h1 h2
-  simp only [cmpReceiveBind] at h1 h2 ⊢
-  refine Comparator.lex_lt_trans (f := cmpListPar)
-    (h_eq := fun {a b} => cmpListPar_eq_iff a b)
-    (h_lt := fun {a b c} h1 h2 => cmpListPar_lt_trans a b c h1 h2)
-    (Dcmp := Comparator.cmpPairF cmpPar (Comparator.linearOrderComparator Nat).cmp)
-    (x := (src, fc)) (y := (src', fc')) (z := (src'', fc'')) (hD := ?_) h1 h2
-  intro hx hy
-  exact Comparator.lex_lt_trans (f := cmpPar)
-    (h_eq := fun {a b} => cmpPar_eq_iff a b)
-    (h_lt := fun {a b c} h1 h2 => cmpPar_lt_trans a b c h1 h2)
-    (Dcmp := (Comparator.linearOrderComparator Nat).cmp) (x := fc) (y := fc') (z := fc'')
-    (hD := fun h1 h2 => (Comparator.linearOrderComparator Nat).lt_trans h1 h2) hx hy
+  theorem cmpMatch_lt_trans : ∀ x1 : Match, ∀ x2 x3 : Match,
+      cmpMatch x1 x2 = Ordering.lt → cmpMatch x2 x3 = Ordering.lt → cmpMatch x1 x3 = Ordering.lt
+    | Match.mk t1 cs, Match.mk t1' cs', Match.mk t1'' cs'', h1, h2 => by
+        simp only [cmpMatch] at h1 h2 ⊢
+        refine lex_lt_trans_at (f := cmpPar)
+          (h_eq := fun {a b} => cmpPar_eq_iff a b)
+          (a := t1) (b := t1') (c := t1'')
+          (h_lt := (cmpPar_lt_trans t1 t1' t1''))
+          (Dcmp := cmpListMatchCase)
+          (x := cs) (y := cs') (z := cs'')
+          (hD := cmpListMatchCase_lt_trans cs cs' cs'') h1 h2
+  termination_by x1 => sizeOf x1
 
-theorem cmpListNew_lt_trans (l l' l'' : List New) : cmpListNew l l' = Ordering.lt → cmpListNew l' l'' = Ordering.lt → cmpListNew l l'' = Ordering.lt := by
-  induction l generalizing l' l'' with
-  | nil => intro h1 h2; cases l' <;> cases l'' <;> simp [cmpListNew] at h1 h2 ⊢
-  | cons a as ih =>
-      intro h1 h2
-      cases l' with
-      | nil => simp [cmpListNew] at h1
-      | cons b bs =>
-          cases l'' with
-          | nil => simp [cmpListNew] at h2
-          | cons c cs =>
-              simp [cmpListNew] at h1 h2 ⊢
-              exact lex_lt_trans (f := cmpNew) (h_eq := fun {a b} => cmpNew_eq_iff a b) (h_lt := fun {a b c} => cmpNew_lt_trans a b c) (hD := ih bs cs) h1 h2
+  theorem cmpBundle_lt_trans : ∀ x1 : Bundle, ∀ x2 x3 : Bundle,
+      cmpBundle x1 x2 = Ordering.lt → cmpBundle x2 x3 = Ordering.lt → cmpBundle x1 x3 = Ordering.lt
+    | Bundle.mk b w r, Bundle.mk b' w' r', Bundle.mk b'' w'' r'', h1, h2 => by
+        simp only [cmpBundle] at h1 h2 ⊢
+        refine lex_lt_trans_at (f := cmpPar)
+          (h_eq := fun {a b} => cmpPar_eq_iff a b)
+          (a := b) (b := b') (c := b'')
+          (h_lt := (cmpPar_lt_trans b b' b''))
+          (Dcmp := cmpPairF (Comparator.linearOrderComparator Bool).cmp ((Comparator.linearOrderComparator Bool).cmp))
+          (x := (w, r))
+          (y := (w', r'))
+          (z := (w'', r''))
+          (hD := ?_) h1 h2
+        intro hx hy
+        refine lex_lt_trans (f := (Comparator.linearOrderComparator Bool).cmp)
+          (h_eq := fun {a b} => (Comparator.linearOrderComparator Bool).eq_iff (a := a) (b := b))
+          (h_lt := fun {a b c} h1 h2 => (Comparator.linearOrderComparator Bool).lt_trans h1 h2)
+          (Dcmp := (Comparator.linearOrderComparator Bool).cmp)
+          (x := r) (y := r') (z := r'')
+          (hD := fun h1 h2 => (Comparator.linearOrderComparator Bool).lt_trans h1 h2) hx hy
+  termination_by x1 => sizeOf x1
 
-theorem cmpListSend_lt_trans (l l' l'' : List Send) : cmpListSend l l' = Ordering.lt → cmpListSend l' l'' = Ordering.lt → cmpListSend l l'' = Ordering.lt := by
-  induction l generalizing l' l'' with
-  | nil => intro h1 h2; cases l' <;> cases l'' <;> simp [cmpListSend] at h1 h2 ⊢
-  | cons a as ih =>
-      intro h1 h2
-      cases l' with
-      | nil => simp [cmpListSend] at h1
-      | cons b bs =>
-          cases l'' with
-          | nil => simp [cmpListSend] at h2
-          | cons c cs =>
-              simp [cmpListSend] at h1 h2 ⊢
-              exact lex_lt_trans (f := cmpSend) (h_eq := fun {a b} => cmpSend_eq_iff a b) (h_lt := fun {a b c} => cmpSend_lt_trans a b c) (hD := ih bs cs) h1 h2
+  theorem cmpListSend_lt_trans : ∀ l : List Send, ∀ l' l'' : List Send,
+      cmpListSend l l' = Ordering.lt → cmpListSend l' l'' = Ordering.lt → cmpListSend l l'' = Ordering.lt
+    | [], l', l'', h1, h2 => by cases l' <;> cases l'' <;> simp [cmpListSend] at h1 h2 ⊢
+    | a :: as, [], l'', h1, _ => by simp [cmpListSend] at h1
+    | a :: as, b :: bs, [], _, h2 => by simp [cmpListSend] at h2
+    | a :: as, b :: bs, c :: cs, h1, h2 => by
+        simp only [cmpListSend] at h1 h2 ⊢
+        exact lex_lt_trans_at (f := cmpSend) (h_eq := fun {a b} => cmpSend_eq_iff a b)
+          (a := a) (b := b) (c := c) (h_lt := (cmpSend_lt_trans a b c))
+          (Dcmp := cmpListSend) (x := as) (y := bs) (z := cs)
+          (hD := cmpListSend_lt_trans as bs cs) h1 h2
+  termination_by l => sizeOf l
 
-theorem cmpListMatchCase_lt_trans (l l' l'' : List MatchCase) : cmpListMatchCase l l' = Ordering.lt → cmpListMatchCase l' l'' = Ordering.lt → cmpListMatchCase l l'' = Ordering.lt := by
-  induction l generalizing l' l'' with
-  | nil => intro h1 h2; cases l' <;> cases l'' <;> simp [cmpListMatchCase] at h1 h2 ⊢
-  | cons a as ih =>
-      intro h1 h2
-      cases l' with
-      | nil => simp [cmpListMatchCase] at h1
-      | cons b bs =>
-          cases l'' with
-          | nil => simp [cmpListMatchCase] at h2
-          | cons c cs =>
-              simp [cmpListMatchCase] at h1 h2 ⊢
-              exact lex_lt_trans (f := cmpMatchCase) (h_eq := fun {a b} => cmpMatchCase_eq_iff a b) (h_lt := fun {a b c} => cmpMatchCase_lt_trans a b c) (hD := ih bs cs) h1 h2
+  theorem cmpListReceive_lt_trans : ∀ l : List Receive, ∀ l' l'' : List Receive,
+      cmpListReceive l l' = Ordering.lt → cmpListReceive l' l'' = Ordering.lt → cmpListReceive l l'' = Ordering.lt
+    | [], l', l'', h1, h2 => by cases l' <;> cases l'' <;> simp [cmpListReceive] at h1 h2 ⊢
+    | a :: as, [], l'', h1, _ => by simp [cmpListReceive] at h1
+    | a :: as, b :: bs, [], _, h2 => by simp [cmpListReceive] at h2
+    | a :: as, b :: bs, c :: cs, h1, h2 => by
+        simp only [cmpListReceive] at h1 h2 ⊢
+        exact lex_lt_trans_at (f := cmpReceive) (h_eq := fun {a b} => cmpReceive_eq_iff a b)
+          (a := a) (b := b) (c := c) (h_lt := (cmpReceive_lt_trans a b c))
+          (Dcmp := cmpListReceive) (x := as) (y := bs) (z := cs)
+          (hD := cmpListReceive_lt_trans as bs cs) h1 h2
+  termination_by l => sizeOf l
 
-theorem cmpListBundle_lt_trans (l l' l'' : List Bundle) : cmpListBundle l l' = Ordering.lt → cmpListBundle l' l'' = Ordering.lt → cmpListBundle l l'' = Ordering.lt := by
-  induction l generalizing l' l'' with
-  | nil => intro h1 h2; cases l' <;> cases l'' <;> simp [cmpListBundle] at h1 h2 ⊢
-  | cons a as ih =>
-      intro h1 h2
-      cases l' with
-      | nil => simp [cmpListBundle] at h1
-      | cons b bs =>
-          cases l'' with
-          | nil => simp [cmpListBundle] at h2
-          | cons c cs =>
-              simp [cmpListBundle] at h1 h2 ⊢
-              exact lex_lt_trans (f := cmpBundle) (h_eq := fun {a b} => cmpBundle_eq_iff a b) (h_lt := fun {a b c} => cmpBundle_lt_trans a b c) (hD := ih bs cs) h1 h2
+  theorem cmpListNew_lt_trans : ∀ l : List New, ∀ l' l'' : List New,
+      cmpListNew l l' = Ordering.lt → cmpListNew l' l'' = Ordering.lt → cmpListNew l l'' = Ordering.lt
+    | [], l', l'', h1, h2 => by cases l' <;> cases l'' <;> simp [cmpListNew] at h1 h2 ⊢
+    | a :: as, [], l'', h1, _ => by simp [cmpListNew] at h1
+    | a :: as, b :: bs, [], _, h2 => by simp [cmpListNew] at h2
+    | a :: as, b :: bs, c :: cs, h1, h2 => by
+        simp only [cmpListNew] at h1 h2 ⊢
+        exact lex_lt_trans_at (f := cmpNew) (h_eq := fun {a b} => cmpNew_eq_iff a b)
+          (a := a) (b := b) (c := c) (h_lt := (cmpNew_lt_trans a b c))
+          (Dcmp := cmpListNew) (x := as) (y := bs) (z := cs)
+          (hD := cmpListNew_lt_trans as bs cs) h1 h2
+  termination_by l => sizeOf l
 
-theorem cmpListConnective_lt_trans (l l' l'' : List Connective) : cmpListConnective l l' = Ordering.lt → cmpListConnective l' l'' = Ordering.lt → cmpListConnective l l'' = Ordering.lt := by
-  induction l generalizing l' l'' with
-  | nil => intro h1 h2; cases l' <;> cases l'' <;> simp [cmpListConnective] at h1 h2 ⊢
-  | cons a as ih =>
-      intro h1 h2
-      cases l' with
-      | nil => simp [cmpListConnective] at h1
-      | cons b bs =>
-          cases l'' with
-          | nil => simp [cmpListConnective] at h2
-          | cons c cs =>
-              simp [cmpListConnective] at h1 h2 ⊢
-              exact lex_lt_trans (f := cmpConnective) (h_eq := fun {a b} => cmpConnective_eq_iff a b) (h_lt := fun {a b c} => cmpConnective_lt_trans a b c) (hD := ih bs cs) h1 h2
+  theorem cmpListMatch_lt_trans : ∀ l : List Match, ∀ l' l'' : List Match,
+      cmpListMatch l l' = Ordering.lt → cmpListMatch l' l'' = Ordering.lt → cmpListMatch l l'' = Ordering.lt
+    | [], l', l'', h1, h2 => by cases l' <;> cases l'' <;> simp [cmpListMatch] at h1 h2 ⊢
+    | a :: as, [], l'', h1, _ => by simp [cmpListMatch] at h1
+    | a :: as, b :: bs, [], _, h2 => by simp [cmpListMatch] at h2
+    | a :: as, b :: bs, c :: cs, h1, h2 => by
+        simp only [cmpListMatch] at h1 h2 ⊢
+        exact lex_lt_trans_at (f := cmpMatch) (h_eq := fun {a b} => cmpMatch_eq_iff a b)
+          (a := a) (b := b) (c := c) (h_lt := (cmpMatch_lt_trans a b c))
+          (Dcmp := cmpListMatch) (x := as) (y := bs) (z := cs)
+          (hD := cmpListMatch_lt_trans as bs cs) h1 h2
+  termination_by l => sizeOf l
 
-theorem cmpListReceiveBind_lt_trans (l l' l'' : List ReceiveBind) : cmpListReceiveBind l l' = Ordering.lt → cmpListReceiveBind l' l'' = Ordering.lt → cmpListReceiveBind l l'' = Ordering.lt := by
-  induction l generalizing l' l'' with
-  | nil => intro h1 h2; cases l' <;> cases l'' <;> simp [cmpListReceiveBind] at h1 h2 ⊢
-  | cons a as ih =>
-      intro h1 h2
-      cases l' with
-      | nil => simp [cmpListReceiveBind] at h1
-      | cons b bs =>
-          cases l'' with
-          | nil => simp [cmpListReceiveBind] at h2
-          | cons c cs =>
-              simp [cmpListReceiveBind] at h1 h2 ⊢
-              exact lex_lt_trans (f := cmpReceiveBind) (h_eq := fun {a b} => cmpReceiveBind_eq_iff a b) (h_lt := fun {a b c} => cmpReceiveBind_lt_trans a b c) (hD := ih bs cs) h1 h2
+  theorem cmpListBundle_lt_trans : ∀ l : List Bundle, ∀ l' l'' : List Bundle,
+      cmpListBundle l l' = Ordering.lt → cmpListBundle l' l'' = Ordering.lt → cmpListBundle l l'' = Ordering.lt
+    | [], l', l'', h1, h2 => by cases l' <;> cases l'' <;> simp [cmpListBundle] at h1 h2 ⊢
+    | a :: as, [], l'', h1, _ => by simp [cmpListBundle] at h1
+    | a :: as, b :: bs, [], _, h2 => by simp [cmpListBundle] at h2
+    | a :: as, b :: bs, c :: cs, h1, h2 => by
+        simp only [cmpListBundle] at h1 h2 ⊢
+        exact lex_lt_trans_at (f := cmpBundle) (h_eq := fun {a b} => cmpBundle_eq_iff a b)
+          (a := a) (b := b) (c := c) (h_lt := (cmpBundle_lt_trans a b c))
+          (Dcmp := cmpListBundle) (x := as) (y := bs) (z := cs)
+          (hD := cmpListBundle_lt_trans as bs cs) h1 h2
+  termination_by l => sizeOf l
 
-theorem cmpMatch_lt_trans (s t u : Match) :
-    cmpMatch s t = Ordering.lt → cmpMatch t u = Ordering.lt → cmpMatch s u = Ordering.lt := by
-  obtain ⟨t1, cs⟩ := s
-  obtain ⟨t2, cs'⟩ := t
-  obtain ⟨t3, cs''⟩ := u
-  intro h1 h2
-  simp only [cmpMatch] at h1 h2 ⊢
-  exact Comparator.lex_lt_trans (f := cmpPar)
-    (h_eq := fun {a b} => cmpPar_eq_iff a b)
-    (h_lt := fun {a b c} h1 h2 => cmpPar_lt_trans a b c h1 h2)
-    (Dcmp := cmpListMatchCase)
-    (hD := fun h1 h2 => cmpListMatchCase_lt_trans cs cs' cs'' h1 h2) h1 h2
+  theorem cmpListConnective_lt_trans : ∀ l : List Connective, ∀ l' l'' : List Connective,
+      cmpListConnective l l' = Ordering.lt → cmpListConnective l' l'' = Ordering.lt → cmpListConnective l l'' = Ordering.lt
+    | [], l', l'', h1, h2 => by cases l' <;> cases l'' <;> simp [cmpListConnective] at h1 h2 ⊢
+    | a :: as, [], l'', h1, _ => by simp [cmpListConnective] at h1
+    | a :: as, b :: bs, [], _, h2 => by simp [cmpListConnective] at h2
+    | a :: as, b :: bs, c :: cs, h1, h2 => by
+        simp only [cmpListConnective] at h1 h2 ⊢
+        exact lex_lt_trans_at (f := cmpConnective) (h_eq := fun {a b} => cmpConnective_eq_iff a b)
+          (a := a) (b := b) (c := c) (h_lt := (cmpConnective_lt_trans a b c))
+          (Dcmp := cmpListConnective) (x := as) (y := bs) (z := cs)
+          (hD := cmpListConnective_lt_trans as bs cs) h1 h2
+  termination_by l => sizeOf l
 
-theorem cmpReceive_lt_trans (s t u : Receive) :
-    cmpReceive s t = Ordering.lt → cmpReceive t u = Ordering.lt → cmpReceive s u = Ordering.lt := by
-  obtain ⟨bs, b, p, n⟩ := s
-  obtain ⟨bs', b', p', n'⟩ := t
-  obtain ⟨bs'', b'', p'', n''⟩ := u
-  intro h1 h2
-  simp only [cmpReceive] at h1 h2 ⊢
-  refine Comparator.lex_lt_trans (f := cmpListReceiveBind)
-    (h_eq := fun {a b} => cmpListReceiveBind_eq_iff a b)
-    (h_lt := fun {a b c} h1 h2 => cmpListReceiveBind_lt_trans a b c h1 h2)
-    (Dcmp := Comparator.cmpPairF cmpPar
-      (Comparator.cmpPairF (Comparator.linearOrderComparator Bool).cmp
-        (Comparator.linearOrderComparator Nat).cmp))
-    (x := (b, (p, n))) (y := (b', (p', n'))) (z := (b'', (p'', n''))) (hD := ?_) h1 h2
-  intro hx hy
-  exact Comparator.lex_lt_trans (f := cmpPar)
-    (h_eq := fun {a b} => cmpPar_eq_iff a b)
-    (h_lt := fun {a b c} h1 h2 => cmpPar_lt_trans a b c h1 h2)
-    (Dcmp := Comparator.cmpPairF (Comparator.linearOrderComparator Bool).cmp
-      (Comparator.linearOrderComparator Nat).cmp)
-    (x := (p, n)) (y := (p', n')) (z := (p'', n''))
-    (hD := fun hp hn => Comparator.lex_lt_trans
-      (f := (Comparator.linearOrderComparator Bool).cmp)
-      (h_eq := fun {a b} => (Comparator.linearOrderComparator Bool).eq_iff (a := a) (b := b))
-      (h_lt := fun {a b c} h1 h2 => (Comparator.linearOrderComparator Bool).lt_trans h1 h2)
-      (Dcmp := (Comparator.linearOrderComparator Nat).cmp) (x := n) (y := n') (z := n'')
-      (hD := fun h1 h2 => (Comparator.linearOrderComparator Nat).lt_trans h1 h2) hp hn)
-    hx hy
+  theorem cmpListPar_lt_trans : ∀ l : List Par, ∀ l' l'' : List Par,
+      cmpListPar l l' = Ordering.lt → cmpListPar l' l'' = Ordering.lt → cmpListPar l l'' = Ordering.lt
+    | [], l', l'', h1, h2 => by cases l' <;> cases l'' <;> simp [cmpListPar] at h1 h2 ⊢
+    | a :: as, [], l'', h1, _ => by simp [cmpListPar] at h1
+    | a :: as, b :: bs, [], _, h2 => by simp [cmpListPar] at h2
+    | a :: as, b :: bs, c :: cs, h1, h2 => by
+        simp only [cmpListPar] at h1 h2 ⊢
+        exact lex_lt_trans_at (f := cmpPar) (h_eq := fun {a b} => cmpPar_eq_iff a b)
+          (a := a) (b := b) (c := c) (h_lt := (cmpPar_lt_trans a b c))
+          (Dcmp := cmpListPar) (x := as) (y := bs) (z := cs)
+          (hD := cmpListPar_lt_trans as bs cs) h1 h2
+  termination_by l => sizeOf l
 
-theorem cmpListMatch_lt_trans (l l' l'' : List Match) : cmpListMatch l l' = Ordering.lt → cmpListMatch l' l'' = Ordering.lt → cmpListMatch l l'' = Ordering.lt := by
-  induction l generalizing l' l'' with
-  | nil => intro h1 h2; cases l' <;> cases l'' <;> simp [cmpListMatch] at h1 h2 ⊢
-  | cons a as ih =>
-      intro h1 h2
-      cases l' with
-      | nil => simp [cmpListMatch] at h1
-      | cons b bs =>
-          cases l'' with
-          | nil => simp [cmpListMatch] at h2
-          | cons c cs =>
-              simp [cmpListMatch] at h1 h2 ⊢
-              exact lex_lt_trans (f := cmpMatch) (h_eq := fun {a b} => cmpMatch_eq_iff a b) (h_lt := fun {a b c} => cmpMatch_lt_trans a b c) (hD := ih bs cs) h1 h2
+  theorem cmpListReceiveBind_lt_trans : ∀ l : List ReceiveBind, ∀ l' l'' : List ReceiveBind,
+      cmpListReceiveBind l l' = Ordering.lt → cmpListReceiveBind l' l'' = Ordering.lt → cmpListReceiveBind l l'' = Ordering.lt
+    | [], l', l'', h1, h2 => by cases l' <;> cases l'' <;> simp [cmpListReceiveBind] at h1 h2 ⊢
+    | a :: as, [], l'', h1, _ => by simp [cmpListReceiveBind] at h1
+    | a :: as, b :: bs, [], _, h2 => by simp [cmpListReceiveBind] at h2
+    | a :: as, b :: bs, c :: cs, h1, h2 => by
+        simp only [cmpListReceiveBind] at h1 h2 ⊢
+        exact lex_lt_trans_at (f := cmpReceiveBind) (h_eq := fun {a b} => cmpReceiveBind_eq_iff a b)
+          (a := a) (b := b) (c := c) (h_lt := (cmpReceiveBind_lt_trans a b c))
+          (Dcmp := cmpListReceiveBind) (x := as) (y := bs) (z := cs)
+          (hD := cmpListReceiveBind_lt_trans as bs cs) h1 h2
+  termination_by l => sizeOf l
 
-theorem cmpListReceive_lt_trans (l l' l'' : List Receive) : cmpListReceive l l' = Ordering.lt → cmpListReceive l' l'' = Ordering.lt → cmpListReceive l l'' = Ordering.lt := by
-  induction l generalizing l' l'' with
-  | nil => intro h1 h2; cases l' <;> cases l'' <;> simp [cmpListReceive] at h1 h2 ⊢
-  | cons a as ih =>
-      intro h1 h2
-      cases l' with
-      | nil => simp [cmpListReceive] at h1
-      | cons b bs =>
-          cases l'' with
-          | nil => simp [cmpListReceive] at h2
-          | cons c cs =>
-              simp [cmpListReceive] at h1 h2 ⊢
-              exact lex_lt_trans (f := cmpReceive) (h_eq := fun {a b} => cmpReceive_eq_iff a b) (h_lt := fun {a b c} => cmpReceive_lt_trans a b c) (hD := ih bs cs) h1 h2
+  theorem cmpListMatchCase_lt_trans : ∀ l : List MatchCase, ∀ l' l'' : List MatchCase,
+      cmpListMatchCase l l' = Ordering.lt → cmpListMatchCase l' l'' = Ordering.lt → cmpListMatchCase l l'' = Ordering.lt
+    | [], l', l'', h1, h2 => by cases l' <;> cases l'' <;> simp [cmpListMatchCase] at h1 h2 ⊢
+    | a :: as, [], l'', h1, _ => by simp [cmpListMatchCase] at h1
+    | a :: as, b :: bs, [], _, h2 => by simp [cmpListMatchCase] at h2
+    | a :: as, b :: bs, c :: cs, h1, h2 => by
+        simp only [cmpListMatchCase] at h1 h2 ⊢
+        exact lex_lt_trans_at (f := cmpMatchCase) (h_eq := fun {a b} => cmpMatchCase_eq_iff a b)
+          (a := a) (b := b) (c := c) (h_lt := (cmpMatchCase_lt_trans a b c))
+          (Dcmp := cmpListMatchCase) (x := as) (y := bs) (z := cs)
+          (hD := cmpListMatchCase_lt_trans as bs cs) h1 h2
+  termination_by l => sizeOf l
 
+  theorem cmpListParPair_lt_trans : ∀ l : List (Par × Par), ∀ l' l'' : List (Par × Par),
+      cmpListParPair l l' = Ordering.lt → cmpListParPair l' l'' = Ordering.lt → cmpListParPair l l'' = Ordering.lt
+    | [], l', l'', h1, h2 => by cases l' <;> cases l'' <;> simp [cmpListParPair] at h1 h2 ⊢
+    | a :: as, [], l'', h1, _ => by simp [cmpListParPair] at h1
+    | a :: as, b :: bs, [], _, h2 => by simp [cmpListParPair] at h2
+    | (a1, a2) :: as, (b1, b2) :: bs, (c1, c2) :: cs, h1, h2 => by
+        simp only [cmpListParPair] at h1 h2 ⊢
+        exact lex_lt_trans_at (f := fun x y => lex (cmpPar x.1 y.1) (cmpPar x.2 y.2))
+          (h_eq := fun {a b} => cmpParPair_eq_iff a b)
+          (a := (a1, a2)) (b := (b1, b2)) (c := (c1, c2))
+          (h_lt := (cmpParPair_lt_trans (a1, a2) (b1, b2) (c1, c2)))
+          (Dcmp := cmpListParPair) (x := as) (y := bs) (z := cs)
+          (hD := cmpListParPair_lt_trans as bs cs) h1 h2
+  termination_by l => sizeOf l
 
-/-! ### `cmpPar_lt_trans`: the proof, written and verified (2026-09-23)
+  theorem cmpConnective_lt_trans : ∀ x1 : Connective, ∀ x2 x3 : Connective,
+      cmpConnective x1 x2 = Ordering.lt → cmpConnective x2 x3 = Ordering.lt →
+        cmpConnective x1 x3 = Ordering.lt
+    | s, t, u, h1, h2 => by
+      cases s <;> cases t <;> cases u 
+      all_goals simp only [cmpConnective] at h1 h2 ⊢
+      all_goals first
+        | exact cmpListPar_lt_trans _ _ _ h1 h2
+        | exact cmpPar_lt_trans _ _ _ h1 h2
+        | exact Comparator.lex_lt_trans (f := (Comparator.linearOrderComparator Nat).cmp)
+            (h_eq := fun {a b} => (Comparator.linearOrderComparator Nat).eq_iff (a := a) (b := b))
+            (h_lt := fun {a b c} h1 h2 => (Comparator.linearOrderComparator Nat).lt_trans h1 h2)
+            (Dcmp := (Comparator.linearOrderComparator Nat).cmp)
+            (hD := fun h1 h2 => (Comparator.linearOrderComparator Nat).lt_trans h1 h2) h1 h2
+        | simp_all
+  termination_by x1 => sizeOf x1
 
-`cmpPar`'s chain has **eight** components, in this order (they are the node's field order, not the
-declaration order — see the alignment note above):
+  private theorem cmpParPair_lt_trans : ∀ q1 q2 q3 : Par × Par,
+      lex (cmpPar q1.1 q2.1) (cmpPar q1.2 q2.2) = Ordering.lt →
+      lex (cmpPar q2.1 q3.1) (cmpPar q2.2 q3.2) = Ordering.lt →
+      lex (cmpPar q1.1 q3.1) (cmpPar q1.2 q3.2) = Ordering.lt
+    | (x1, x2), (y1, y2), (z1, z2), h1, h2 => by
+      simp only at h1 h2 ⊢
+      exact lex_lt_trans_at (f := cmpPar) (h_eq := fun {a b} => cmpPar_eq_iff a b)
+        (a := x1) (b := y1) (c := z1) (h_lt := (cmpPar_lt_trans x1 y1 z1))
+        (Dcmp := cmpPar) (x := x2) (y := y2) (z := z2)
+        (hD := cmpPar_lt_trans x2 y2 z2) h1 h2
+  termination_by q1 => sizeOf q1
+end
 
-```
-cmpListSend s s' → cmpListReceive r r' → cmpListExpr e e' → cmpListNew n n'
-  → cmpListMatch m m' → cmpListBundle b b' → cmpListConnective c c' → cmpListGUnforgeable u u'
-```
+/-! ### `cmpPar_lt_trans`: landed as a block member (2026-09-24)
 
-The proof is a **seven-deep ladder** of `Comparator.lex_lt_trans`, one level per component, with the tail
-packaged as a right-nested `Comparator.cmpPairF` over a right-nested tuple — at the first level
-`Dcmp := cmpPairF cmpListReceive (cmpPairF cmpListExpr (… (cmpPairF cmpListConnective cmpListGUnforgeable)))`
-and `x := (r, (e, (n, (m, (b, (c, u))))))`, then the same shape one component down for each `hD`, ending in
-the two-component case (`cmpListConnective` vs `cmpListGUnforgeable`) which is a single application. Each
-level's `h_eq`/`h_lt` come from the corresponding list law, and the last also from
-`cmpListGUnforgeable_lt_trans`. The whole ladder type-checks against the current file — it was verified
-before this note was written.
+The proof is the seven-deep ladder the earlier note recorded — one level per component of `cmpPar`'s
+eight-component chain, the tail packaged as a right-nested `Comparator.cmpPairF` over a right-nested
+tuple — and it is a **member of the `mutual` block** above now rather than a theorem of its own, because
+the family is one strongly connected component (`Par`'s fields are lists of `Send`, whose data is a list
+of `Par`).
 
-**It cannot be landed as a separate theorem, and the reason is structural.** `cmpPar`'s fields are lists
-of `Send`, whose data is a list of `Par`, so `cmpPar_lt_trans` needs `cmpListSend_lt_trans` and that
-needs `cmpSend_lt_trans` and that needs `cmpListPar_lt_trans` and that is `cmpPar_lt_trans` again — a
-genuine cycle, not an ordering problem. The family is one strongly-connected component (the other types
-enter it the same way), so it must be **one `mutual` block** with the first argument named in each `∀`
-and `termination_by … => sizeOf …`, which is the template the note above describes and the one the
-`eq_iff`/`swap` blocks in this file already use.
-
-Two things made the conversion fiddly, so they are recorded rather than rediscovered: the section mixes
-`theorem` and `private theorem` members (the two `cmpParPair` helpers, whose statements are **multi-line**
-— `deriving` a one-line regex for the rewrite fails on both counts), and the members' proofs are written
-as `intro`-then-`induction`, which becomes `intro`-then-`induction` under the block's `∀`-form. Each
-member then carries `termination_by x _ _ => sizeOf x`.
-
-**Measured 2026-09-23: the ladder above cannot land *as written* — the block's termination checker
-refuses it, and the refusal is structural rather than hard.** Standalone, the ladder's calls go to
-*theorems* (`cmpListSend_lt_trans` and friends) and carry no termination obligation, which is why it
-type-checks. Inside the `mutual` block those same calls are recursive, and every one of them is made from
-inside a `fun {a b c} …` lambda whose arguments are **not** structural subterms of the member's own
-arguments: `termination_by p _ _ => sizeOf p` has nothing to say about an arbitrary `a : List Send`, so
-the obligation is unprovable rather than merely unproved. The element members' proofs have the same
-shape — `hD := fun h1 h2 => cmpPar_lt_trans b b' b'' h1 h2` **is** accepted (those are fields) while
-`h_lt := fun {a b c} h1 h2 => cmpPar_lt_trans a b c h1 h2` is not. A probe of the whole converted block
-confirms the diagnosis: with each such `h_lt` stubbed out, every termination goal disappears.
-
-**What a landing needs — the design, so the next attempt writes it rather than deriving it.**
-
-1. A **pointwise** `lex_lt_trans` (in `Cmp.lean`, beside `lex_lt_trans`): the same statement, but with
-   `h_lt` taken at the *specific* triple —
-   `{a b c : α} (h_lt : f a b = Ordering.lt → f b c = Ordering.lt → f a c = Ordering.lt) {Dcmp} {x y z} (hD) :
-   lex … → lex … → lex …`. Its proof is the case analysis `lex_lt_trans` already performs
-   (`lex_lt_iff` + `rcases`), which invokes `h_lt` only at that triple, so nothing is lost.
-2. Every same-block call then becomes a **partial application on fields** —
-   `h_lt := cmpListSend_lt_trans s s' s''` — and the caller must also pass `(a := s) (b := s') (c := s'')`,
-   because the pointwise `h_lt`'s telescope mentions them before it: without them the elaborator reaches
-   `h_lt` with `a b c` still metavariables and fails, which is the error the probe reported.
-3. A level whose head comparator is **generic** (`Bool`, `Nat`) keeps the general `lex_lt_trans`:
-   rewriting those to the pointwise form breaks them, since a `fun {a b c} h1 h2 => …` does not unify
-   with an arrow type.
-4. A member whose **field name collides with its statement's binder** — `cmpReceiveBind`'s field `s`
-   against the `∀ s : ReceiveBind, …` — must have one of the two renamed: the pattern shadows the binder,
-   and the `h_lt` argument then names nothing.
-
-The block, its member set and its measure are otherwise as described above. The probe was iterated to the
-point where only those four items were outstanding.
--/
+What blocked the earlier attempt is worth keeping, because it is the shape of the whole conversion and it
+was measured rather than argued: a `fun {a b c} …` lambda whose body calls a *same-block* member cannot
+pass the termination checker — the call's arguments are not structural subterms of the member's own
+arguments, so `termination_by p _ _ => sizeOf p` has nothing to say about them. `Cmp.lean`'s
+`lex_lt_trans_at` is the pointwise form of `lex_lt_trans` that fixes it: its `h_lt` is taken at the
+*specific* triple, so every level writes `(a := s) (b := s') (c := s'') (h_lt := cmpListSend_lt_trans s
+s' s'')` — fields, not lambdas. Four other things the probe found, all recorded here rather than
+rediscovered: a member whose field name collides with its statement's binder (`cmpReceiveBind`'s `s` —
+its statement names its binders `x1 x2 x3` now); the last component of a chain needs
+`(Dcmp := …) (x := u)` rather than another `lex_lt_trans` level; a *generic* level (`Bool`, `Nat`) keeps
+the general `lex_lt_trans`, because rewriting that one to the pointwise form breaks it; and
+`cmpConnective`'s `first | …` cascade stays as written. -/
 
 /-! ## The `Comparator` instances for the 11 element types -/
 
@@ -1697,3 +1739,4 @@ theorem sortPar_comm (p q : Par) : sortPar (parMerge p q) = sortPar (parMerge q 
 
 
 end Rchain
+
