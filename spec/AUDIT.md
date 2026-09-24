@@ -3126,9 +3126,19 @@ port against the **reference document** rather than against itself.
   `[2, 1]` and `[1, 2]` where the node does not. That divergence is definitional and none of the
   corpora can see it — a `sort.tsv` verdict is a pairwise verdict *between* terms, not a witness to what
   sorting a collection does to it, and the match corpus builds its `Par`s from literals — so it is
-  recorded here as measured-from-the-definitions with its observability **unmeasured**, rather than
-  claimed as a defect: whether it is observable depends on where the model applies `sortPar`, which is
-  the next thing to check rather than assume.
+  recorded here as measured-from-the-definitions, then **measured for observability** (2026-09-24): the
+  model applies `sortPar` in exactly four places — `Sort.lean` (law 1's own layer and the comparators),
+  `Subst.lean` (`sort_subst`), `Ty.lean` (`closed_sortPar`, which holds for *any* sorting because sorting
+  can neither introduce nor remove a free level) and `Corpus.lean` (the `sort` layer's emission, whose
+  verdicts are *comparator* verdicts, which the model orders by its score tree and not by the sorted
+  value) — and in **no** tied layer: `Store.lean`, `Match.lean` and `RSpace/*.lean` contain no `sortPar`
+  at all, so no model layer compares a canonical *value*. `Casper/Validate.lean`'s `sortPar...` hits are
+  its own `sortParents`, a different function. **So the divergence is definitional with no tied
+  consequence**, and law 1's own statements (`sortPar_idempotent`, `sortPar_comm`) hold of the coarser
+  form as well. What it does mean is smaller and is named rather than implied: the model's RSpace does not
+  model payload canonicalization at all — the port's `BindPattern`/`ListParWithRandom` are
+  `Vec<SortedProc>` and its `Eq`/`Ord`/`Hash` are canonical by construction — so a *future* model layer
+  that compares payloads would need the port's `sort_par_term`, not this `sortPar`.
 
   **The consequence for the row**, which is why all three belong in one entry: law 37's obligation is
   stated as "the clauses decide exactly equality on the domain", and (2)+(3) mean the *port* does not
