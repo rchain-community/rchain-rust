@@ -831,10 +831,151 @@ theorem cmpListGUnforgeable_swap (l l' : List GUnforgeable) : cmpListGUnforgeabl
           simp only [cmpListGUnforgeable]
           rw [swap_lex, ← cmpGUnforgeable_swap, ← ih bs]
 
-axiom cmpExpr_swap (s t : Expr) : cmpExpr t s = Ordering.swap (cmpExpr s t)
+
 
 /-! The remaining 9 element + 11 list `swap` laws, by one-argument mutual induction. -/
+/-- The remainder's comparator swaps the same way — the collection arms of `cmpExpr_swap` need it. Not
+    `@[simp]`: like `cmpVar_swap`, as a rewrite rule it would loop on variables. -/
+theorem cmpOptionVar_swap (r r' : Option Var) :
+    cmpOptionVar r' r = Ordering.swap (cmpOptionVar r r') := by
+  cases r with
+  | none => cases r' <;> rfl
+  | some a =>
+    cases r' with
+    | none => rfl
+    | some b => exact cmpVar_swap a b
+
 mutual
+  /-- `cmpExpr`'s `swap` law, inside the family for the same reason `eq_iff` is. -/
+  theorem cmpExpr_swap : ∀ s : Expr, ∀ t : Expr, cmpExpr t s = Ordering.swap (cmpExpr s t)
+    | (.ground g), t => by
+        cases t
+        case ground g' =>
+          rw [cmpExpr_ground, cmpExpr_ground, cmpGround_swap g g']
+        all_goals simp only [exprTag, Nat.reduceLT, cmpExpr_tag_lt, cmpExpr_tag_gt,
+          Ordering.swap, reduceCtorEq]
+    | (.elist ps r), t => by
+        cases t
+        case elist ps' r' =>
+          rw [cmpExpr_elist, cmpExpr_elist, swap_lex, ← cmpListPar_swap ps ps', ← cmpOptionVar_swap r r']
+        all_goals simp only [exprTag, Nat.reduceLT, cmpExpr_tag_lt, cmpExpr_tag_gt,
+          Ordering.swap, reduceCtorEq]
+    | (.etuple ps), t => by
+        cases t
+        case etuple ps' =>
+          rw [cmpExpr_etuple, cmpExpr_etuple, ← cmpListPar_swap ps ps']
+        all_goals simp only [exprTag, Nat.reduceLT, cmpExpr_tag_lt, cmpExpr_tag_gt,
+          Ordering.swap, reduceCtorEq]
+    | (.eset ps r), t => by
+        cases t
+        case eset ps' r' =>
+          rw [cmpExpr_eset, cmpExpr_eset, swap_lex, ← cmpListPar_swap ps ps', ← cmpOptionVar_swap r r']
+        all_goals simp only [exprTag, Nat.reduceLT, cmpExpr_tag_lt, cmpExpr_tag_gt,
+          Ordering.swap, reduceCtorEq]
+    | (.emap kvs r), t => by
+        cases t
+        case emap kvs' r' =>
+          rw [cmpExpr_emap, cmpExpr_emap, swap_lex, ← cmpListParPair_swap kvs kvs', ← cmpOptionVar_swap r r']
+        all_goals simp only [exprTag, Nat.reduceLT, cmpExpr_tag_lt, cmpExpr_tag_gt,
+          Ordering.swap, reduceCtorEq]
+    | (.evar v), t => by
+        cases t
+        case evar v' =>
+          rw [cmpExpr_evar, cmpExpr_evar, cmpVar_swap v v']
+        all_goals simp only [exprTag, Nat.reduceLT, cmpExpr_tag_lt, cmpExpr_tag_gt,
+          Ordering.swap, reduceCtorEq]
+    | (.eneg p), t => by
+        cases t
+        case eneg p' =>
+          rw [cmpExpr_eneg, cmpExpr_eneg, cmpPar_swap p p']
+        all_goals simp only [exprTag, Nat.reduceLT, cmpExpr_tag_lt, cmpExpr_tag_gt,
+          Ordering.swap, reduceCtorEq]
+    | (.enot p), t => by
+        cases t
+        case enot p' =>
+          rw [cmpExpr_enot, cmpExpr_enot, cmpPar_swap p p']
+        all_goals simp only [exprTag, Nat.reduceLT, cmpExpr_tag_lt, cmpExpr_tag_gt,
+          Ordering.swap, reduceCtorEq]
+    | (.emult p q), t => by
+        cases t
+        case emult p' q' =>
+          rw [cmpExpr_emult, cmpExpr_emult, swap_lex, ← cmpPar_swap p p', ← cmpPar_swap q q']
+        all_goals simp only [exprTag, Nat.reduceLT, cmpExpr_tag_lt, cmpExpr_tag_gt,
+          Ordering.swap, reduceCtorEq]
+    | (.ediv p q), t => by
+        cases t
+        case ediv p' q' =>
+          rw [cmpExpr_ediv, cmpExpr_ediv, swap_lex, ← cmpPar_swap p p', ← cmpPar_swap q q']
+        all_goals simp only [exprTag, Nat.reduceLT, cmpExpr_tag_lt, cmpExpr_tag_gt,
+          Ordering.swap, reduceCtorEq]
+    | (.eplus p q), t => by
+        cases t
+        case eplus p' q' =>
+          rw [cmpExpr_eplus, cmpExpr_eplus, swap_lex, ← cmpPar_swap p p', ← cmpPar_swap q q']
+        all_goals simp only [exprTag, Nat.reduceLT, cmpExpr_tag_lt, cmpExpr_tag_gt,
+          Ordering.swap, reduceCtorEq]
+    | (.eminus p q), t => by
+        cases t
+        case eminus p' q' =>
+          rw [cmpExpr_eminus, cmpExpr_eminus, swap_lex, ← cmpPar_swap p p', ← cmpPar_swap q q']
+        all_goals simp only [exprTag, Nat.reduceLT, cmpExpr_tag_lt, cmpExpr_tag_gt,
+          Ordering.swap, reduceCtorEq]
+    | (.elt p q), t => by
+        cases t
+        case elt p' q' =>
+          rw [cmpExpr_elt, cmpExpr_elt, swap_lex, ← cmpPar_swap p p', ← cmpPar_swap q q']
+        all_goals simp only [exprTag, Nat.reduceLT, cmpExpr_tag_lt, cmpExpr_tag_gt,
+          Ordering.swap, reduceCtorEq]
+    | (.ele p q), t => by
+        cases t
+        case ele p' q' =>
+          rw [cmpExpr_ele, cmpExpr_ele, swap_lex, ← cmpPar_swap p p', ← cmpPar_swap q q']
+        all_goals simp only [exprTag, Nat.reduceLT, cmpExpr_tag_lt, cmpExpr_tag_gt,
+          Ordering.swap, reduceCtorEq]
+    | (.egt p q), t => by
+        cases t
+        case egt p' q' =>
+          rw [cmpExpr_egt, cmpExpr_egt, swap_lex, ← cmpPar_swap p p', ← cmpPar_swap q q']
+        all_goals simp only [exprTag, Nat.reduceLT, cmpExpr_tag_lt, cmpExpr_tag_gt,
+          Ordering.swap, reduceCtorEq]
+    | (.ege p q), t => by
+        cases t
+        case ege p' q' =>
+          rw [cmpExpr_ege, cmpExpr_ege, swap_lex, ← cmpPar_swap p p', ← cmpPar_swap q q']
+        all_goals simp only [exprTag, Nat.reduceLT, cmpExpr_tag_lt, cmpExpr_tag_gt,
+          Ordering.swap, reduceCtorEq]
+    | (.eeq p q), t => by
+        cases t
+        case eeq p' q' =>
+          rw [cmpExpr_eeq, cmpExpr_eeq, swap_lex, ← cmpPar_swap p p', ← cmpPar_swap q q']
+        all_goals simp only [exprTag, Nat.reduceLT, cmpExpr_tag_lt, cmpExpr_tag_gt,
+          Ordering.swap, reduceCtorEq]
+    | (.eneq p q), t => by
+        cases t
+        case eneq p' q' =>
+          rw [cmpExpr_eneq, cmpExpr_eneq, swap_lex, ← cmpPar_swap p p', ← cmpPar_swap q q']
+        all_goals simp only [exprTag, Nat.reduceLT, cmpExpr_tag_lt, cmpExpr_tag_gt,
+          Ordering.swap, reduceCtorEq]
+    | (.eand p q), t => by
+        cases t
+        case eand p' q' =>
+          rw [cmpExpr_eand, cmpExpr_eand, swap_lex, ← cmpPar_swap p p', ← cmpPar_swap q q']
+        all_goals simp only [exprTag, Nat.reduceLT, cmpExpr_tag_lt, cmpExpr_tag_gt,
+          Ordering.swap, reduceCtorEq]
+    | (.eor p q), t => by
+        cases t
+        case eor p' q' =>
+          rw [cmpExpr_eor, cmpExpr_eor, swap_lex, ← cmpPar_swap p p', ← cmpPar_swap q q']
+        all_goals simp only [exprTag, Nat.reduceLT, cmpExpr_tag_lt, cmpExpr_tag_gt,
+          Ordering.swap, reduceCtorEq]
+    | (.emod p q), t => by
+        cases t
+        case emod p' q' =>
+          rw [cmpExpr_emod, cmpExpr_emod, swap_lex, ← cmpPar_swap p p', ← cmpPar_swap q q']
+        all_goals simp only [exprTag, Nat.reduceLT, cmpExpr_tag_lt, cmpExpr_tag_gt,
+          Ordering.swap, reduceCtorEq]
+  termination_by s => sizeOf s
+
   theorem cmpPar_swap : ∀ p : Par, ∀ q : Par, cmpPar q p = Ordering.swap (cmpPar p q)
     | Par.mk s r n e m u b c, Par.mk s' r' n' e' m' u' b' c' => by
         have hs := cmpListSend_swap s s'
