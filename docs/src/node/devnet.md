@@ -7,6 +7,29 @@ unbonded observers, seeds genesis with a funded deployer wallet, and exposes `de
 The same script's `up --nodes N` mode is the bare 1–5 node *network-topology* harness (no autopropose,
 no deployer wallet, no deploy helpers) — see [Operating the node](operating.md).
 
+## Growth, and the measurement volumes
+
+**Autopropose mints a block every 2 s with no ceiling, deliberately.** On a local testnet the chain
+length is the variable being varied — the 2026-09-24 performance measurements were made against a
+5,844-block chain that existed only because a devnet had been left running — so the timer is documented
+rather than capped (`node/src/runtime/node_runtime.rs`, `AUTOPROPOSE_INTERVAL`). The practical
+consequence is that a devnet left up grows ~1,800 blocks an hour, and the cost of that growth is on
+`/metrics` rather than hidden: the DAG publishes its own gauges (`rchain_dag_messages`,
+`rchain_dag_seen_entries`, `rchain_dag_fringe_states`, `rchain_dag_index_entries`,
+`rchain_dag_logical_bytes`), so a node's footprint can be read off the running process.
+
+Volumes, and what each is for:
+
+| volume | what it is |
+|---|---|
+| `devnet-stale-snapshot` | the **recorded long chain**, mounted by `up --data-volume devnet-stale-snapshot`. It is a live chain: every run that uses it extends it (5,844 blocks when recorded; 6,339 after the 2026-09-24 serving-term runs), so a measurement quoting a height should say which one it measured |
+| `devnet-bootstrap-data`, `devnet-validator-{1,2}-data` | the standard working set: `up` reuses them (each rebuilds its accumulated chain) and `--fresh` discards them |
+| `devnet-perf-boot` | an earlier measurement's bootstrap store, kept for comparison |
+| `perfsync-validator-{1,2}-data` | created by `DEVNET_PREFIX=perfsync up …` for the fresh-peer measurement; **disposable** — `DEVNET_PREFIX=perfsync tools/devnet.sh down -v` removes them and their network |
+
+`up` prints which volumes it is reusing every time, because reusing an accumulated chain silently is how
+one measurement was once mistaken for a hang (AUDIT C55).
+
 > **Security.** The validator and deployer keys baked into the script are throwaway dev keys for a
 > *local* testnet only. Never reuse them for anything with real value.
 

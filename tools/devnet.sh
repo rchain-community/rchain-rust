@@ -27,6 +27,19 @@ NETWORK="${DEVNET_NETWORK:-devnet}"
 BOOTSTRAP="${PREFIX}-bootstrap"
 # The bootstrap's data volume, when a measurement must run against an existing artifact rather than
 # `${BOOTSTRAP}-data` (set by `up --data-volume`). Empty means the default.
+
+# The volumes this checkout has carried, and what each is for (recorded 2026-09-24, so the next reader
+# does not have to guess from `docker volume ls`):
+#   devnet-stale-snapshot      the recorded long chain — *the artifact* measurements run against. It is
+#                              a live chain: each run that mounts it extends it (5,844 blocks when it was
+#                              recorded, 6,339 after the 2026-09-24 serving-term runs), so a measurement
+#                              quoting a height must say which height it measured.
+#   devnet-bootstrap-data      the standard bootstrap's own store; `up` reuses it and `--fresh` discards
+#   devnet-validator-{1,2}-data  the standard validators' stores, same reuse/`--fresh` semantics
+#   devnet-perf-boot           an earlier measurement's bootstrap store, kept for comparison
+#   perfsync-validator-{1,2}-data  created by `DEVNET_PREFIX=perfsync` for the fresh-peer measurement;
+#                              **disposable** — `DEVNET_PREFIX=perfsync tools/devnet.sh down -v` removes
+#                              them and the network they ran on (~40 MiB total)
 BOOTSTRAP_DATA_VOLUME=""
 
 # Throwaway validator keypairs (secp256k1, base16). validator[0] also funds the deployer wallet, so

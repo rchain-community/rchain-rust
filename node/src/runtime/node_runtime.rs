@@ -110,6 +110,15 @@ use rchain_casper::gateway::{GatewayTxn, LocalShard, LocalShardDeployService};
 /// Interval between `--autopropose` timer ticks. Together with the dev-mode dummy deploy this makes a
 /// fresh devnet produce blocks on its own (a lone validator has no peer/deploy to kick the
 /// event-driven propose, so a timer is the missing trigger).
+///
+/// **The growth this produces is unbounded, and that is a decision recorded in `docs/src/node/devnet.md`
+/// ("Growth, and the measurement volumes"), not an oversight** (2026-09-24). Every tick mints a block with
+/// no ceiling: a devnet left running grows ~1,800 blocks an hour, and one reached 5,844 blocks — the chain
+/// that made the DAG's costs visible and through which C55/C56 were found. Capping it would change the
+/// instrument (on a local testnet the chain length *is* the variable), so the decision is to document it
+/// and expose the cost: `/metrics` carries the DAG's five gauges — `rchain_dag_messages`,
+/// `rchain_dag_seen_entries`, `rchain_dag_fringe_states`, `rchain_dag_index_entries` and
+/// `rchain_dag_logical_bytes` — and that doc also states the measurement volumes' disposition.
 const AUTOPROPOSE_INTERVAL: Duration = Duration::from_secs(2);
 
 /// After this many consecutive self-validation failures the autopropose timer halts, so a node with

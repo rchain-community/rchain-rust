@@ -392,6 +392,14 @@ fi
 # exact: a citation usually names the function whose *body* holds the claim ("the early return is at
 # `:1341-1343`"), so the symbol sits a few lines above it. The convention the rows follow is in
 # `spec/STYLE.md`.
+#
+# **What the window match is, and is not**: it is a *substring* test, so a cited line whose window holds
+# a test named after the symbol (`calculate_finalization_returns_none_…` for `calculate_finalization`)
+# counts as holding it. That permissiveness is deliberate — this check's failure mode to avoid is crying
+# wolf on a correct citation, which it did three times today before the camel/snake and dot-shape fixes —
+# and it still catches the rot it exists for, which is a *moved* line: there the window holds nothing the
+# row names at all. Measured both ways (2026-09-24): `finalizer.rs:99` (the symbol's own line) passes;
+# `:45` and `:250` fail; `:400` passes only because a test there is named after the function.
 printf '\n== register anchors (every cited line still holds what the row says) ==\n'
 ANCHOR_CITE='([A-Za-z0-9_][A-Za-z0-9_./-]*\.(rs|v|lean|md|scala|toml|sh|tsv|json|rhox|rho)):([0-9]+)(-([0-9]+))?|:([0-9]+)(-([0-9]+))?'
 ANCHOR_INDEX="$(cd "$ROOT" && git ls-files | awk -F/ '{print $NF"\t"$0}' | sort)"
