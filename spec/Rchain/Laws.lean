@@ -457,7 +457,19 @@ def laws : List Law := [
       missing *clause* but a missing *hypothesis*. What this row owes is the tie for a pattern whose \
       expression list is a **singleton** — the shapes the clauses have an arm for — and it is owed \
       rather than asserted, because a statement about the model has to say what the model does on every \
-      value it admits, not only the ones a stored datum can be. **The Coq half, split by kind** (2026-09-23): \
+      value it admits, not only the ones a stored datum can be. **A third hypothesis, found by probing \
+      the domain rather than by reading it** (2026-09-24, AUDIT C54, and it cost one reverted change): \
+      the collections' **contents must be canonical** beside the singleton list. A target with a \
+      duplicated set element is matched by a shorter pattern in the model (`spatialMatch @{1, 1} @{1}` \
+      answers `true` while `@{1, 1} ≠ @{1}`), so the tie is false on it — and the shape is \
+      **unreachable**, because the node evaluates a set through `par_set`, which deduplicates and sorts \
+      (`models/src/sorter.rs:834`, reached from `reduce.rs:783`), so no stored datum carries a duplicate. \
+      Narrowing the statement to the invariant the code maintains is Law 10's `WellFormed` move again — \
+      the model has no deduplicating set constructor to widen it with. The first attempt at this row \
+      instead changed the *clauses* to enforce the port's no-remainder length check, which the corpus \
+      consumer rejected on its first run — it reports the node answering `true`; C54 carries that record, and the \
+      lesson is that a model change here is not believed until `lean_match_corpus` has run. \
+      **The Coq half, split by kind** (2026-09-23): \
       `spec/coq/Laws.v`'s `linear` is a **definition** now (with `linear_decidable` and the witness \
       `a_double_binding_is_not_linear`), mirroring Lean's own predicate; `spatial_matches` stays a \
       **signature**, because mirroring the matcher in Coq is the analogue of this file's owed proofs \
@@ -1301,7 +1313,11 @@ def laws : List Law := [
       model *over*-claimed because the list arm was wired to the searcher (AUDIT C48) — the direction \
       the boundary note says the corpus exists to catch. The tie still carries `modelledPar` on both \
       sides, and `arithmetic_pattern_refutes_the_unrestricted_tie` is the term that says why it must: a \
-      concrete arithmetic pattern equals itself and no clause matches it",
+      concrete arithmetic pattern equals itself and no clause matches it. Its domain is **three** \
+      hypotheses by now — `modelledPar` on both sides, a singleton pattern expression list, and canonical \
+      collection contents — and the third is AUDIT C54's: a target whose set carries a duplicate element \
+      is matched by a shorter pattern in the model and is unconstructible on the node, so the statement \
+      needs the invariant `par_set` maintains rather than a clause the model lacks",
     note := "shares the tie axiom with Law 5; its `fuel_saturation` is **discharged** now (2026-09-24) — \
       worth saying here because the tie is only as true as the fuel beneath it, and under the short \
       measure the tie was *false* (a tuple three deep is `modelledPar` and unmatchable when the fuel \

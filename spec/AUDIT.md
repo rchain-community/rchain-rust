@@ -2549,6 +2549,52 @@ port against the **reference document** rather than against itself.
   halves together (an error surfaces *and* a genuinely absent node is still `None`), so a fix that made
   missing nodes an error would be caught as the opposite bug.
 
+- **C54 — a wrong fix, caught by the corpus in one run: what the "set pattern over-claims" reading got
+  wrong, and what it tells us about law 37's tie** (found and reverted 2026-09-24, Programme F; **no
+  code change survives**, and the value is the record of how the error was made). The pass attempted law
+  37's owed tie and, before proving anything, *probed the model's domain* — which is the right instinct
+  and is what produced C50/C51. It measured
+
+  ```
+  spatialMatch @{1, 1} @{1} = true        -- the model accepts a longer set target
+  spatialMatch @[1, 1] @[1] = false       -- while its own *positional* member refuses
+  ```
+
+  and read that as a model over-claim: the port's `list_match_single` refuses an unequal length when the
+  pattern has no remainder (`exact_match = !wildcard && remainder.is_none()`, then
+  `if exact_match && plen != tlen { return Ok(Vec::new()) }`, `spatial_matcher.rs:684-693`), so the two
+  **searching** members were made to enforce it — a two-line change to the `eset`/`emap` arms, plus the
+  `exprSat` proof threaded through the guard, plus a corpus row 21 (`@Set(1)` against `Set(1, 1)`,
+  `expected := false`) and the case-count bumps.
+
+  **The corpus consumer rejected it on the first run**: `@Set(1) vs Set(1, 1): the node says true`. The
+  fix had made the model *stricter than the node*, on a shape that node **cannot hold**:
+
+  - `eval_expr`'s `ESet` arm evaluates a set's elements and rebuilds it through `par_set`
+    (`rholang/src/reduce.rs:783`), and `par_set` **deduplicates by raw equality then sorts**
+    (`models/src/sorter.rs:834`, the port of Scala `ParSet.apply`) — so every set *value* on the node is
+    canonical, and the datum `Set(1, 1)` is the datum `Set(1)`. The node's `true` is set *idempotence*,
+    not a search that walked one element too far.
+  - The model's `Par` has no such constructor: `Set(1, 1)` and `Set(1)` are different values, so
+    `spatialMatch` answering `true` there is a statement about a target that no deploy can produce —
+    the same shape as the arithmetic pattern (C51's neighbour: "the model's `false` is right about every
+    reachable term and the law's quantifier was what was wrong").
+
+  **So there was no defect, and the difference it pointed at is a hypothesis the tie needs.** The tie
+  `spatialMatches t p ↔ t = p` cannot hold on a target with duplicated set/map elements, because the
+  model matches it against a shorter pattern while `t ≠ p` — so the owed statement needs, beside C51's
+  **singleton expression list**, that the collections' *contents* are canonical (no repeated element, and
+  the order the node's constructor imposes). That is Law 10's `WellFormed` move again: narrow the
+  statement to the invariant the code maintains rather than widen the model, because the model's
+  algebra has no deduplicating set constructor to widen it *with*.
+
+  **The lesson worth more than the finding.** The error was comparing the model against a *reading of the
+  port* — and against the model's own list member — instead of against the **node**. The corpus consumer
+  is the only thing in the tree that runs the node on the same shape, it disagreed immediately, and it
+  named the direction ("the node says true"). A model change in this area is not believed until
+  `lean_match_corpus` has been run against it; the `decide`d corpus cases cannot see this class at all,
+  because they are the model agreeing with itself.
+
 - **The class, recorded once, because it is the consolidation pass's whole justification: an axiom that
   is false is worse than one that is owed, because anything follows from it.** Nine axioms the pass
   removed were not merely unproved — they were false of the code or of the model that carried them, and
