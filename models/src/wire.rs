@@ -872,7 +872,14 @@ pub fn bind_pattern_from_proto(p: &p::BindPattern) -> Result<BindPattern, Models
             .map(|p| par_from_proto(p).map(SortedProc::new))
             .collect::<Result<Vec<_>, ModelsError>>()?,
         remainder: p.remainder.as_ref().map(var_from_proto),
-        free_count: p.free_count,
+        // Validated at the boundary, as `ReceiveBind` (`:697`) and `MatchCase` (`:770`) already do —
+        // this decoder was the odd one out on the same path. A negative count is not merely
+        // malformed: `RhoMatch::get` fills `0..pattern.free_count` from the match's free map, so a
+        // negative count silently applies the continuation with *no* bound values, and a count larger
+        // than the pattern's free variables pads the extra bindings with `Nil`. Both are a peer's
+        // message changing execution without an error, which is the silent partiality the port's type
+        // discipline exists to refuse.
+        free_count: i32::from(FreeCount::try_from(p.free_count).map_err(ModelsError::Decode)?),
     })
 }
 
@@ -1445,6 +1452,22 @@ mod differential {
             assert_eq!(
                 bind_pattern_from_proto(&bind_pattern_to_proto(&pattern)).expect("pattern"),
                 pattern
+            );
+
+            // A negative count is refused here, as `ReceiveBind`/`MatchCase` already refuse it. The
+            // count is not inert: `RhoMatch::get` fills `0..free_count` from the match's free map, so
+            // a peer's negative count would have applied the continuation with no bound values at all
+            // — silently, which is the failure mode the boundary check exists to make loud.
+            let mut negative = bind_pattern_to_proto(&pattern);
+            negative.free_count = -1;
+            assert!(
+                bind_pattern_from_proto(&negative).is_err(),
+                "a negative free-count must be refused where the message arrives"
+            );
+            negative.free_count = 0;
+            assert!(
+                bind_pattern_from_proto(&negative).is_ok(),
+                "zero is a count, not a negative one"
             );
 
             let random = Blake2b512Random::from_init(&[3u8; 8]);

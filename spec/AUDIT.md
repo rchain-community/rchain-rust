@@ -216,6 +216,7 @@ Every place the Rust port deliberately departs from the Scala oracle, with the r
 | `if`'s condition is normalized against an **empty** par (`normalizer.rs::normalize_if`), as `match`'s target is | `PIfNormalizer.scala:24` passes the caller's `input` through, so the target becomes `<the par before the if> \| <condition>`; `PMatchNormalizer.scala:28` — the *same* desugaring — passes `input.copy(par = VectorPar())` | the Scala contradicts itself: its `if` and `match` desugarings of one construct normalize the target differently, and only the `if` path's version is broken (`if E {A} else {B}` = `match E {true => A; false => B}`, and a process's meaning cannot depend on what precedes it in a `par`). Under the Scala's `if` path every non-first `if` is a silent no-op — see **C21**. The port follows the spec and the Scala's `match` path. **Hard fork:** the normal form of any term whose par holds a non-first `if` changes, so a chain that ran the old rule and upgrades diverges on such a deploy (and on genesis, where the effected normal forms *are* genesis content: `ListOps.rho:203,242`, `MultiSigRevVault.rho:155`, and the rgov family) |
 | HTTP `/api/deploy` + explore routes rate-limited (100 req/s) | Scala HTTP deploy routes are unlimited | match the gRPC deploy rate limit (R10) |
 | PBKDF2 iterations raised `1024 → 310_000` | Scala uses BouncyCastle default `1024` | slow offline brute-force of encrypted keys at rest (R11) |
+| `BindPattern.freeCount` **rejected** when negative at the proto boundary | `RhoTypes.proto:124` — `int32 freeCount`, signed, so negative is representable; the vendored tree does not carry the Scala's `BindPattern` proto conversion, so whether the oracle refuses it there could not be established | the count is not descriptive: `RhoMatch::get` fills `0..free_count` from the match's free map, so a negative count silently applies the continuation with *no* bound values (and an over-large one pads with `Nil`). The port's two siblings on the same field family — `ReceiveBind` (`:118`) and `MatchCase` (`:165`) — already validate it, so this is also what makes the three uniform. A refusal at the declared boundary rather than a clamp (AUDIT C52) |
 | RSpace candidate selection is **sorted-first** by content hash (not newest-first insertion order) | `RSpace.scala`/`RSpaceOps.scala` shuffle candidates via `Random.shuffle` before matching | live Scala is non-deterministic across runs; the port selects the sorted-first candidate for consensus. Implemented per `docs/src/node/sorted-matching.md` (changes post-state hashes only for multi-candidate deploys) |
 | Block validation replays dependency-free blocks **concurrently** (per-block forked `ReplayRhoRuntime`, batch processor), then inserts serially | Scala `BlockProcessor` validates one block at a time | replay is verify-only (Law 11), so concurrent re-validation does not change the committed state — a throughput optimization, not a semantic change. See `docs/src/formal/concurrency-model.md` |
 | LFS sync inserts the downloaded blocks in **ascending** height order (parents before children) | `NodeSyncing.populateDag` `heightMap.flatMap(_._2).toList.reverse` | `BlockDagStorage.insert` requires every justification to already be in the message map, and a justification is always at a strictly lower height; the Scala `reverse` inserts the newest block first and fails with "justification not present in message map" for any fresh observer |
@@ -2409,8 +2410,6 @@ port against the **reference document** rather than against itself.
   believed*.
 
 - **C50 — the matcher's fuel was short a *second* time: the measure had no `etuple` case, so a tuple's
-
-- **C50 — the matcher's fuel was short a *second* time: the measure had no `etuple` case, so a tuple's
   contents were charged to no node** (found 2026-09-24, while *attempting* `fuel_saturation` — the same
   way C47 was found, and by the same kind of instrument: the obligation's arithmetic; **the model's
   defect**, the port is right). `parNodesExpr` had arms for `elist`, `eset` and `emap` and sent
@@ -2454,6 +2453,45 @@ port against the **reference document** rather than against itself.
   *clause*, this is a missing *hypothesis*. What it says about the method: a domain predicate
   (`modelledPar` here, the "not reachable" argument in several earlier entries) has to be checked
   against every value the model admits, not only the ones a reachable term can be.
+
+- **C52 — a peer's `BindPattern` could carry a negative `free_count`, and the count is not inert**
+  (found 2026-09-24, Programme F; **a code defect on the wire boundary**, fixed). `models/src/wire.rs`'s
+  `bind_pattern_from_proto` passed the proto's `i32` straight through — `free_count: p.free_count` —
+  while its two siblings on the same path validated it: `receive_bind_from_proto` (`:697`) and
+  `match_case_from_proto` (`:770`) both do `FreeCount::try_from(…).map_err(ModelsError::Decode)`. So the
+  third carrier of a free-variable count was the odd one out.
+
+  **Why it matters, which is that the field is load-bearing rather than descriptive.** `RhoMatch::get`
+  (`rholang/src/storage.rs:91-93`) builds the continuation's arguments as
+  `(0..pattern.free_count).map(|i| remainder_map.get(&i).cloned().unwrap_or_default())`. A **negative**
+  count makes that range empty, so the receive's body is applied with *no* bound values instead of the
+  pattern's; a count **larger** than the pattern's free variables pads the extra arguments with
+  `Par::default()` (Nil). Either way a peer's message changes execution — silently, with no error, which
+  is the "nothing errors" class this register began with, and on the block path. The decoder is
+  reachable from a peer: it is the `Serialize<BindPattern>` impl's decode (`:971`), the peer client
+  (`casper/src/protocol/client.rs:140`) and the gRPC API (`node/src/api/grpc/tonic.rs`).
+
+  **Fix:** validate at the boundary, exactly as the two siblings do, so the count a `BindPattern` can
+  carry is the same kind of value the other two carriers guarantee. It is a refusal at the *declared*
+  boundary, which is what `spec/TYPE-SYSTEM.md` §1.6 prescribes — not a clamp, which would be the silent
+  partiality the gate exists to refuse. Falsified first: restoring the pass-through fails the new
+  assertion in `the_runtime_payloads_round_trip` with "a negative free-count must be refused where the
+  message arrives".
+
+  **Two adjacent spots found in the same read, recorded rather than changed** — they are the same
+  family and each needs its own decision, so they are named here instead of implied away:
+  (1) the `unwrap_or_default()` in the same three lines above is the *other* direction of the same
+  hole — a count the pattern cannot satisfy becomes `Nil` rather than an error, and since the count is
+  wire-sourced the fix would be to *derive* it from the pattern (`count_free_vars` already exists and
+  `rholang/src/registry.rs:71` uses it for exactly that) rather than trust it, which is a
+  consensus-relevant change worth its own unit; (2) `FreeCount::from_nonneg`
+  (`models/src/types.rs:552-555`) guards the invariant with a `debug_assert!` only, so in release it is
+  an unchecked constructor beside the checked `new`/`TryFrom` — the shape `spec/TYPE-SYSTEM.md:108-118`
+  forbids. Its wire path is now closed by this fix; its remaining callers
+  (`rholang/src/{normalizer,registry,storage_printer}.rs`) pass locally-derived counts, which is why
+  this is recorded as an owed tightening rather than a live defect. The durable fix for both is the one
+  the sibling structs already have: `BindPattern.free_count` should be a `FreeCount`, not an `i32`, so
+  the invariant travels in the type instead of being re-checked at each use.
 
 - **The class, recorded once, because it is the consolidation pass's whole justification: an axiom that
   is false is worse than one that is owed, because anything follows from it.** Nine axioms the pass
@@ -2517,6 +2555,7 @@ finding that no law covers, and it says why rather than leaving the gap to infer
 | C45 the search claimed a step for a join, and the rule fixed the counts the port computes differently | 38, 40 | `silence.tsv` case 13 (a join with one channel filled declares `false`, and the node agrees) + `lean_silence_corpus.rs`; the search's single-bind requirement, the constructors' `freeCount`/`bindCount`/channel parameters, and `takesStep_sound` — three extraction lemmas and `exists_redex_split` |
 | C46 a joining validator could not index the genesis: its sidecar regeneration replayed block #0 without the genesis vaults | 11 | **fixed (2026-09-24)**: `is_genesis_pre_state` conditions the vault re-install at both genesis-replay call sites, `genesis_descriptors_from_config` reads the network's genesis files on any node (`node_runtime.rs`), `tools/devnet.sh` gives validators 1..n−1 the files — and `interpreter_util.rs`'s `is_genesis_pre_state_is_true_only_for_the_empty_state` pins the condition that keeps an unconditional re-install from clobbering post-genesis balances. The row was missing from this table until then, which is its own small finding: law 11 is the law that covers it — a replay that does not reproduce the record — and the table's promise is that every incident names one |
 | C47 the matcher's fuel was short: the measure counted an empty `Par` as zero nodes | 5, 37 | `match.tsv` case 18 (`@Set(1, ..._)` against `Set(Nil × 6, 1)`) + `lean_match_corpus.rs`; `the_walk_past_empty_pars_is_paid_for`, and `parNodes`'s doc comment carrying the counterexample |
+| C52 a peer's `BindPattern` could carry a negative `free_count`, which silently changed what the receive bound | 5, 37 | **fixed (2026-09-24)**: `bind_pattern_from_proto` validates the count like its two siblings already did, so a message that would have applied the continuation with a wrong number of bindings is refused where it arrives. Falsified first — restoring the pass-through fails the new assertion in `models/src/wire.rs`'s `the_runtime_payloads_round_trip`. The same three lines' `unwrap_or_default()` (a count the pattern cannot satisfy becomes `Nil`) and `FreeCount::from_nonneg`'s `debug_assert!` are recorded as owed, with the durable fix named: `BindPattern.free_count` should be a `FreeCount` |
 | C49 the replay property test fails on its own recording (~3 runs in 10) | 11 | **closed, and it was not the code**: the fixture rigged the replay with the play's *post-play* root, so the "replay" began from a half-finished tuple space — `rspace/src/property_tests.rs`'s `law11_a_replayed_script_matches_its_recording`, now taking the checkpoint before the script, passes over 4000 cases where it failed deterministically at `PROPTEST_CASES=1`. The seed stays as the pinned input; `check_replay_data` was never at fault |
 | C50 the matcher's fuel was short again: the measure had no `etuple` case, so a tuple's contents were charged to nothing | 5, 37 | `match.tsv` case 20 (`@((1, 2), (3, 4))` against itself) + `lean_match_corpus.rs`; `a_nested_tuple_is_paid_for`, `a_tuple_pays_for_its_own_contents`, and `parNodesExpr`'s doc comment carrying the counterexample. While the defect stood it also **refuted** the axiom `concrete_matches_iff_eq` |
 | C51 the tie's domain admitted a two-expression `Par`, which no clause accepts — so the tie was false | 5, 37 | the axiom `concrete_matches_iff_eq` is **deleted**; `a_two_expression_pattern_refutes_the_modelled_tie` is the counterexample, and rows 5/37 owe the tie for a **singleton** pattern instead |
