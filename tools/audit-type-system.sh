@@ -162,16 +162,36 @@ scan() {
 # other wrapper type is a design choice, not a type escape, and a check that fired on those would be
 # switched off within a week.
 REFINEMENT_FILES=(
-  "shared/src/refined.rs"                      # BlockHeight, SeqNum, Port, Hash32, ShardId
+  "shared/src/refined.rs"                      # BlockHeight, SeqNum, Port, Hash32, ShardId, NonNegI64, WireLen
   "crypto/src/hash/blake2b512_random.rs"       # SerializedRandom
+  "crypto/src/hash/blake2b256_hash.rs"         # Blake2b256Hash
+  "models/src/block_hash.rs"                   # BlockHash
+  "models/src/block/state_hash.rs"             # StateHash
+  "models/src/validator.rs"                    # Validator
+  "models/src/sorted.rs"                       # Sorted
+  "models/src/types.rs"                        # Closed, WellScoped, FreeCount
   "rspace/src/history/radix_tree.rs"           # SerializedNode
+  "rspace/src/history/key_segment.rs"          # KeySegment
+  "rholang/src/util/rev_address.rs"            # Address, RevAddress
 )
 
 # The types the rule is about, **named** rather than pattern-matched: the same files hold error
-# types with public fields (`RefineError(pub String)`), which are not refinements and would be false
-# positives. Adding a refinement means adding it here, which is the point — a new invariant should
-# touch its audit.
-REFINEMENT_TYPES=(BlockHeight SeqNum Port Hash32 ShardId SerializedRandom SerializedNode)
+# types with public fields (`RefineError(pub String)`) and service structs (`AddressTools`,
+# `RadixTreeImpl`), which are not refinements and would be false positives. Adding a refinement means
+# adding it here, which is the point — a new invariant should touch its audit.
+#
+# 2026-09-24: the roster was 3 files and 7 names, and it was **stale** — eight refinement homes were
+# outside it, so all three forms below were green partly because they could not see the types they
+# exist for. The measure that matters: every one of these names is a struct with a private field
+# whose invariant is established by a constructor, and each home is the module that defines it
+# (`spec/TYPE-SYSTEM.md` §1.7; the roster is what makes "the rule is complete over its scope" true,
+# since a private field can only be written in the defining module). Two of the names — `NonNegI64`,
+# `WireLen` — are macro-generated in `shared/src/refined.rs` (`non_neg_signed!`, `len_newtype!`) and
+# therefore have no literal `pub struct` line of their own; the completeness guard in step G1 knows
+# them by their macro invocation.
+REFINEMENT_TYPES=(BlockHeight SeqNum Port Hash32 ShardId NonNegI64 WireLen SerializedRandom \
+  SerializedNode Blake2b256Hash BlockHash StateHash Validator Sorted Closed WellScoped FreeCount \
+  KeySegment Address RevAddress)
 
 # A public `.get()` on a refinement: matched *inside* an `impl` block that names one of
 # `REFINEMENT_TYPES`, not file-wide — these files also hold error types with public fields
@@ -182,7 +202,13 @@ BEGIN { n = split(TYPES, t, ","); in_impl = 0; depth = 0 }
   # `match()` rather than `$0 ~ /…/`: only `match` is required to set `RSTART`/`RLENGTH` (mawk
   # leaves them untouched for `~`, which silently produced an empty header and a check that never
   # fired — measured 2026-09-24 with a probe).
-  if (!in_impl && match($0, /^[[:space:]]*impl([^;{]*)/)) {
+  #
+  # `[^{]*` and not `([^;{]*)`: the header ends at the body brace, and it may contain a `;` inside a
+  # generic argument. `impl From<[u8; HASH32_LENGTH]> for Hash32` is exactly that shape — the old
+  # class stopped at the `;`, so the header was the string `impl From<[u8;`, `Hash32` was never seen,
+  # and a `pub fn get` inside that impl was invisible to the form that exists for it. (Measured
+  # 2026-09-24; the file is in the roster, so this was a live blind spot, not a hypothetical one.)
+  if (!in_impl && match($0, /^[[:space:]]*impl[^{]*/)) {
     header = substr($0, RSTART, RLENGTH)
     for (i = 1; i <= n; i++) {
       if (header ~ ("(^|[^[:alnum:]_])" t[i] "([^[:alnum:]_]|$)")) { in_impl = 1 }
