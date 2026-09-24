@@ -2017,6 +2017,28 @@ port against the **reference document** rather than against itself.
   pairs to the matcher directly rather than parsing a term. What was wrong was the model's note, which
   implied a term could reach the silent paths; the note and the row now say what the probe showed.
 
+  **Pinned by tests, and the guard map measured (2026-09-24, Programme F).** The probe above was a
+  devnet observation, and the invariant it establishes — a twice-binding pattern is refused — had **no
+  test at all**: `UnexpectedReuseOfNameContextFree` appeared in the crate only at its two raise sites.
+  A regression there would have reached the matcher, i.e. the exact silent-merge shape this finding is
+  about. `normalizer.rs`'s test module now pins four refusal shapes and three negative ones (a
+  duplicated *use*, repeated wildcards, and two patterns each binding the same spelling, which must all
+  be *accepted*), and **which guard covers which shape was measured by breaking each in turn** rather
+  than inferred:
+
+  - `normalize_proc`'s process-context arm (`:289`) refuses a duplicate inside a *process* pattern —
+    the `@`-quoted collection forms and the `match` case (breaking it fails exactly those three tests);
+  - the receive-bind free-map **merge** (`:1325`) refuses a duplicate across a *join*'s binds
+    (breaking it fails exactly the join test);
+  - the name-context arm (`:111`) and `handle_proc_var`'s remainder check (`:590`) are **not exercised
+    by any test in the suite** — this row listed all four as "the enforcing check" without saying which
+    shape reaches which, and no reachable shape isolates the last two.
+
+  Two of the suite's own mistakes are kept in the test's doc comment because the falsification is what
+  found them: three of the four refusal tests asserted only "it errored", so they passed on a *parse*
+  error (a `match` case written with an `@`), and one passed on a *sort* error (a `match` target used
+  without `*`). They now assert the reuse variant specifically.
+
 - **C43 — the merge's associativity was untested, under a test that looks like it tests the
   opposite.** `rspace/src/merger/state_change.rs:203-238` was named `combine_is_associative`, but its own
   comment said "the monoid law tested here is empty-is-identity", and its assertions were the identity
@@ -2489,7 +2511,7 @@ finding that no law covers, and it says why rather than leaving the gap to infer
 | C39 the reply was read from one channel | 39, 43 | `casper/tests/exploratory_reply.rs` (three outcomes) + `replySource` in `envelope.tsv` and the served document |
 | C40 law 38's tie was false, and the relation lacked its arity clause | 38, 40 | `allStringChans` scoping the statement, `commPs` as the rule's arity clause |
 | C41 the diff accumulator could overflow where the merge refuses | 17 | **fixed**: `combining_refuses_a_diff_that_leaves_i64` (`event_log_index.rs`) fails on a `wrapping_add`, and the error reaches the merge through the now-fallible `EventLogIndex::combine`/`branches_are_conflicting`; `Merging.lean`'s `checkedAdd_refuses_overflow`/`mergeRandoms_perm` state the checked half and the call-site canonicalization |
-| C42 law 5's linearity is the normalizer's, not the matcher's | 5 | `Match.lean`'s `aggregateUpdates_rejects_double_bind`/`freeMapMerge_overwrites` state the matcher's halves; the enforcing check is `normalizer.rs:111,289,590,1325`, measured on a devnet (both contexts refused, a duplicated datum accepted), and `spec/conformance/match.tsv` documents the matcher in isolation |
+| C42 law 5's linearity is the normalizer's, not the matcher's | 5 | `Match.lean`'s `aggregateUpdates_rejects_double_bind`/`freeMapMerge_overwrites` state the matcher's halves; the enforcing checks are `normalizer.rs:289` (a duplicate inside a *process* pattern) and `:1325` (a duplicate across a *join*'s binds), **measured by breaking each in turn** and now pinned by tests — four refusal shapes and three negative ones in `normalizer.rs`'s test module, which did not exist before 2026-09-24, when the invariant's only evidence was a devnet probe. `:111`/`:590` are listed in the finding but exercised by no reachable shape; `spec/conformance/match.tsv` documents the matcher in isolation |
 | C43 the merge's associativity was untested, under a name that says otherwise | 9 | `Merge.lean`'s `mergeChanges_assoc` (proved) **and** `property_tests.rs`'s `law9_state_change_combine_is_associative`, over arbitrary state changes including the join map; the misnamed `state_change.rs` test now says what it asserts |
 | C44 the matcher had no clause for a tuple, and the port has one | 5, 37 | `match.tsv` cases 15/16 (`@(1, 2)` against `(1, 2)` and against `(1, 2, 3)`) + `lean_match_corpus.rs`; the `ETuple` arm in `Match.lean`, and `modelledPar` on both sides of `concrete_matches_iff_eq`, whose old statement is refuted by `arithmetic_pattern_refutes_the_unrestricted_tie` |
 | C45 the search claimed a step for a join, and the rule fixed the counts the port computes differently | 38, 40 | `silence.tsv` case 13 (a join with one channel filled declares `false`, and the node agrees) + `lean_silence_corpus.rs`; the search's single-bind requirement, the constructors' `freeCount`/`bindCount`/channel parameters, and `takesStep_sound` — three extraction lemmas and `exists_redex_split` |

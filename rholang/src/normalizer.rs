@@ -1914,4 +1914,103 @@ mod tests {
             "the preceding send must not appear inside the condition"
         );
     }
+
+    // --- Law 5 / 37: a pattern binds each name at most once (AUDIT C42) -------------------------
+    //
+    // These refusals are the *entire* code-side enforcement of the law's linearity half. The matcher
+    // does not enforce it and must not: `handle_remainder` *merges* into a level already bound, and
+    // that merge is load-bearing, because a bare `@v` pattern reaches `handle_remainder` once per
+    // `Par` field and the seven calls accumulate into one binding. So a twice-binding pattern is
+    // refused in the normalizer or it is not refused at all, and the matcher's `aggregate_updates`
+    // is defence-in-depth behind it rather than the guard.
+    //
+    // The invariant was measured on a devnet (AUDIT C42, three shapes) but pinned by no test; these
+    // are that pin. **Which guard covers which shape was measured, by breaking each in turn** — the
+    // falsification is what makes these worth having, and it corrected two things a reading had got
+    // wrong:
+    //
+    // * `normalize_proc`'s free-var arm (`VarSort::ProcSort`, "in process context") refuses a
+    //   duplicate inside a *process* pattern: the `@`-quoted collection forms and the `match` case.
+    //   Breaking it fails exactly those three tests.
+    // * The receive-bind free-map **merge** refuses a duplicate across a *join*'s binds — a name in
+    //   each. Breaking it fails exactly the join test.
+    // * The name-context arm (`VarSort::NameSort`) and `handle_proc_var`'s remainder check are **not
+    //   exercised here**: no shape in this suite isolates them, and claiming otherwise would be
+    //   guessing. A duplicate reaches them only where the two guards above do not fire first.
+    //
+    // The negative cases matter as much as the positives: a check that also fired on a duplicated
+    // *use* or on repeated wildcards would reject legal contracts, so both are asserted too.
+
+    /// The refusal, and **only** the refusal: a source that fails to parse, or that trips a sort
+    /// check, is not evidence for this invariant. Asserting merely "it errored" is exactly the
+    /// temptation here, and it makes the test pass on a typo — which is how three of these read
+    /// before the first falsification run, when only the first asserted the message. It also caught a
+    /// `match` case written with an `@` (a parse error: a case pattern carries no quote) and a
+    /// `match` target used without `*` (a sort error), each of which had been passing quietly.
+    fn reuse_error(source: &str) -> RholangError {
+        match source_to_adt(source) {
+            Ok(_) => panic!("`{source}` must be refused by the normalizer"),
+            Err(e @ RholangError::UnexpectedReuseOfNameContextFree { .. })
+            | Err(e @ RholangError::UnexpectedReuseOfProcContextFree { .. }) => e,
+            Err(other) => panic!("`{source}` was refused, but not as a reuse: {other}"),
+        }
+    }
+
+    /// A name bound twice inside a single collection pattern — C42's first shape. Refused in
+    /// *process* context (the `@` makes the list a process expression).
+    #[test]
+    fn a_name_bound_twice_in_one_collection_pattern_is_refused() {
+        reuse_error("new x in { for (@[v, v] <- x) { Nil } }");
+    }
+
+    /// The same name bound by two *different* channels of one join. This one is a *name* in each
+    /// bind, and the refusal comes from merging the binds' free maps.
+    #[test]
+    fn a_name_bound_by_two_channels_of_a_join_is_refused() {
+        reuse_error("new x, y in { for (v <- x & v <- y) { Nil } }");
+    }
+
+    /// The name bound as an element *and* as the remainder of a map pattern.
+    #[test]
+    fn a_name_bound_as_element_and_remainder_is_refused() {
+        reuse_error(r#"new x in { for (@{"k": v, ...v} <- x) { Nil } }"#);
+    }
+
+    /// A `match` case is a pattern too, and its pattern is normalized on its own path with a fresh
+    /// free map — a hole there would let a twice-binding pattern reach the matcher through `match`
+    /// rather than `for`. (A case pattern carries no `@`: the quote is what makes a *receive* bind a
+    /// name pattern. Writing one with `@` is a parse error, which this test's strict helper is what
+    /// caught — it had been passing on that error.)
+    #[test]
+    fn a_name_bound_twice_in_a_match_case_is_refused() {
+        reuse_error("new x in { match *x { [v, v] => Nil } }");
+    }
+
+    /// **The boundary, and the reason the check is a *binder* check**: a name used twice is not a
+    /// name *bound* twice, and the port accepts the use. AUDIT C42 records the node answering 200
+    /// for a duplicated datum (`x!([*a, *a])`) against `for (@[p, q] <- x)`; this is the normalizer
+    /// half of it, and it fails if the refusal is ever widened to a general twice-used check.
+    #[test]
+    fn a_name_used_twice_is_accepted() {
+        source_to_adt("new a, x in { x!(*a) | x!(*a) }")
+            .expect("using `a` twice is a use, not a second binding");
+    }
+
+    /// **The other direction the check could be wrong, and the more dangerous one**: two separate
+    /// patterns may each bind a variable spelled the same, because a pattern's binders are local to
+    /// it. Refusing this would reject legal contracts, so the check must be per-pattern rather than
+    /// per-`Par` — this fails if it is ever widened that far.
+    #[test]
+    fn two_patterns_may_bind_the_same_spelling() {
+        source_to_adt("new x, y in { for (@v <- x) { Nil } | for (@v <- y) { Nil } }")
+            .expect("each receive's binders are its own");
+    }
+
+    /// Wildcards are not binders, so repeating one is not a repeated binding — the other way the
+    /// check could be wrong in the over-broad direction.
+    #[test]
+    fn repeated_wildcards_are_accepted() {
+        source_to_adt("new x in { for (@[_, _] <- x) { Nil } }")
+            .expect("`_` names nothing, so using it twice binds nothing twice");
+    }
 }
