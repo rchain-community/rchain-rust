@@ -13,17 +13,15 @@ use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 
 use rchain_block_storage::dag::finalizer::Message;
 use rchain_block_storage::dag::message_state::DagMessageState;
-use rchain_block_storage::dag::metadata_store::{
-    add_block_to_dag_state_mut, BlockInfo, DagState,
-};
+use rchain_block_storage::dag::metadata_store::{add_block_to_dag_state_mut, BlockInfo, DagState};
 use rchain_block_storage::dag::representation::DagRepresentation;
 use rchain_crypto::hash::blake2b256_hash::Blake2b256Hash;
 use rchain_crypto::hash::blake2b512_random::Blake2b512Random;
 use rchain_models::ast::{Expr, Par, Var};
 use rchain_models::block_hash::BlockHash;
-use rchain_models::validator::Validator;
 use rchain_models::runtime::{BindPattern, ListParWithRandom, TaggedContinuation};
 use rchain_models::sorted::SortedProc;
+use rchain_models::validator::Validator;
 use rchain_rholang::runtime::{ReplayRhoRuntime, RhoRuntime};
 use rchain_rholang::scheduler::EffectMode;
 use rchain_rholang::storage::RhoMatch;
@@ -400,7 +398,6 @@ fn sched_bench(c: &mut Criterion) {
 
     store_contention(c);
 }
-
 
 /// A chain of `n` messages — block `i` justifies block `i - 1` — built the way the storage's
 /// restore folds a stored chain: `create_message` (which runs the finalizer) then the in-place
