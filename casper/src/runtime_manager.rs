@@ -430,6 +430,27 @@ impl RuntimeManager {
         }
         let checkpoint = runtime.create_soft_checkpoint().await;
         let succeeded = eval_result.errors.is_empty();
+        // The deploy-level outcome, next to the pos call's own log. They can disagree: a deploy whose
+        // state changes are reverted below still logs `[pos] ok` from inside the call, which is how a
+        // `trust` that "reported success" left the trusted set unchanged (#74).
+        eprintln!(
+            "[deploy] deployer={} {} cost={} {}",
+            rchain_shared::base16::encode(&deploy.deployer)
+                .chars()
+                .take(16)
+                .collect::<String>(),
+            if succeeded {
+                "ok"
+            } else {
+                "FAILED (state changes reverted)"
+            },
+            eval_result.cost.value,
+            eval_result
+                .errors
+                .first()
+                .map(|e| e.to_string())
+                .unwrap_or_default()
+        );
         // Surface the reducer's failure reason in the processed deploy (issue #15): a failed user
         // deploy previously recorded only `errored: true` + cost, leaving the deployer no message.
         // `system_deploy_error` is the per-deploy error field the block already carries; explore-deploy
