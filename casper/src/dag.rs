@@ -943,6 +943,20 @@ mod tests {
             expected > 0 && repr.seen_entries() > 0,
             "a non-empty DAG has a non-zero account"
         );
+        // The negative control for a representation-only change, in exact units: this chain's account
+        // is a fixed number. Stage 5's re-keying of `fringe_states`, its `Arc`-ing of the index and
+        // this stage's own gauges must not move it — the accounting reads the *messages*, so a change
+        // that moved this value would be a change to the DAG rather than to how it is held.
+        assert_eq!(
+            repr.logical_bytes(),
+            2032,
+            "the chain's logical bytes are a fixed value, not a function of how the DAG is held"
+        );
+        assert_eq!(
+            repr.seen_entries(),
+            21,
+            "and so is its seen-entry count (Σ|seen| = 21 for this chain)"
+        );
 
         // It moves: one more block, and `logical_bytes` and `seen_entries` grow (a chain's `seen` is
         // its whole ancestry).
