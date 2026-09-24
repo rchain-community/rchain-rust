@@ -30,13 +30,30 @@ Audit dimensions (in the order applied):
 - **`silent`** — `try_into().unwrap()` / `try_into().expect(`, and `unwrap_or(0)` /
   `unwrap_or_default()` on a fallible numeric conversion (a fallible conversion must not be
   silently flattened to 0/Default).
+- **`escape`** (added 2026-09-24) — a refinement newtype surrendering its invariant: `impl … Deref …
+  for`, or a public tuple field, in the three files that hold the refinements. This is what makes
+  `spec/TYPE-SYSTEM.md` §1.7's "no type escape" rule a check rather than a promise.
 
-Its `cast`/`lax`/`get` classes are candidate finders (soft reports). Baseline (post Phase-0 widen,
-`cast` now includes `as i64`, and a new `lax` class catches `from_str_radix(..).unwrap_or(..)` +
-`base16::unsafe_decode`): **`panic`/`unsafe`/`silent` clean**; `cast` = 284 candidates, `lax` = 21,
-`get` = 79; `cargo clippy` casting lints (`--all-targets`) = 263 `cast_possible_truncation`, 51
-`cast_sign_loss`, 26 `cast_precision_loss`, 49 `cast_lossless`. The remediation targets (all 284 cast
-+ 21 lax + raw-byte/newtype bypasses) are the checklist in the ρ-pure remediation plan.
+Its `cast`/`lax`/`get` classes are candidate finders (soft reports). **`panic`/`unsafe`/`silent`/
+`escape` clean.** The soft counts have moved since this section's original baseline (284 cast / 21
+lax / 79 get, post Phase-0 widen) and are re-measured here rather than left to read as current:
+**`cast` = 330, `lax` = 14, `get` = 100 (2026-09-24)** — `cast` and `get` up, `lax` down. The
+remediation targets are the checklist in the ρ-pure remediation plan; the `cast` and `get` drift is
+recorded as a measurement, not diagnosed.
+
+**The `lax` class's hex family, reviewed (2026-09-24, Programme F) — assessed faithful.** `base16`
+carries both a strict `decode`/`try_decode` and a *named, documented* lax `unsafe_decode` ("non-hex
+characters are silently dropped … Use `try_decode` at untrusted boundaries"), so the laxness is
+declared rather than silent — the opposite of the class this register is about. Every production use
+of it takes **trusted** input: the genesis key material and `empty_state_hash_fixed` are source
+literals, and `rgov.rs`'s `contract_key` decodes a hex string it produced itself
+(`base16::encode(blake2b256(…))`). Every ingress uses the checked sibling —
+`node/src/web/http.rs:857-860` calls `BlockHash::try_from_hex` and its comment says why ("a malformed
+block hash … must be a 400, not a panic in `BlockHash::from_hex`"). Two footguns are named rather
+than actioned: `BlockHash::from_hex` is lax *and* panics (via `from_slice`) on a short decode, and
+`models/src/string_syntax.rs`'s `unsafe_decode_hex` plus `rgov.rs`'s `derive_uri` have no callers at
+all — dead public API, so removing them is a cleanup decision rather than a tightening (nothing
+reaches them today).
 
 ---
 
