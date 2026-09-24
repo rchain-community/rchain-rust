@@ -3,6 +3,20 @@
 //!
 //! `ByteStringSyntax.toDirectByteBuffer` (Java NIO), `toByteVector` (scodec), and
 //! `toBlake2b256Hash` (rspace) are deferred.
+//!
+//! **This module is ported surface, and none of it is called.** Measured 2026-09-24: *no* method of
+//! either trait here has a caller anywhere in the workspace — the in-module tests below are the only
+//! uses. It is kept because the Scala has these traits and a reader comparing the two trees should
+//! find them, not because anything reaches them; deleting the checked half would be a fidelity
+//! decision with no defect behind it, so it stays and says this instead.
+//!
+//! **The lax decoders are not ported** (2026-09-24, U1/C53's tail): the Scala's
+//! `unsafeDecodeHex`/`unsafeHexToByteString` — `base16::unsafe_decode`, which silently drops
+//! non-hex characters — had no production caller in the workspace and were the footguns AUDIT §1
+//! named, so they were *deleted* rather than carried as dead surface: a decoder whose name says
+//! "unsafe" and whose body skips validation is the one a future caller reaches for when it wants
+//! "just get bytes out of this", which is exactly what `spec/TYPE-SYSTEM.md` §1.6 forbids. The
+//! checked forms (`decode_hex`, `hex_to_byte_string`) stay as the ported surface.
 
 use rchain_shared::base16;
 
@@ -11,14 +25,8 @@ pub trait StringSyntax {
     /// Decode hex, or `None` on non-hex input (port of `decodeHex`).
     fn decode_hex(&self) -> Option<Vec<u8>>;
 
-    /// Decode hex, ignoring non-hex characters (port of `unsafeDecodeHex`).
-    fn unsafe_decode_hex(&self) -> Vec<u8>;
-
     /// Decode hex to bytes, or `None` (port of `hexToByteString`).
     fn hex_to_byte_string(&self) -> Option<Vec<u8>>;
-
-    /// Decode hex to bytes, ignoring non-hex (port of `unsafeHexToByteString`).
-    fn unsafe_hex_to_byte_string(&self) -> Vec<u8>;
 
     /// Whether the string is pure ASCII (port of `onlyAscii`).
     fn only_ascii(&self) -> bool;
@@ -29,16 +37,8 @@ impl StringSyntax for str {
         base16::decode(self)
     }
 
-    fn unsafe_decode_hex(&self) -> Vec<u8> {
-        base16::unsafe_decode(self)
-    }
-
     fn hex_to_byte_string(&self) -> Option<Vec<u8>> {
         base16::decode(self)
-    }
-
-    fn unsafe_hex_to_byte_string(&self) -> Vec<u8> {
-        base16::unsafe_decode(self)
     }
 
     fn only_ascii(&self) -> bool {
@@ -74,14 +74,12 @@ mod tests {
         assert_eq!("0f".decode_hex(), Some(vec![0x0f]));
         assert_eq!("zz".decode_hex(), None);
         assert_eq!("f".decode_hex(), None);
-        assert_eq!("z1z2z".unsafe_decode_hex(), vec![0x12]);
     }
 
     #[test]
     fn string_hex_to_byte_string() {
         assert_eq!("0f".hex_to_byte_string(), Some(vec![0x0f]));
         assert_eq!("zz".hex_to_byte_string(), None);
-        assert_eq!("z1z2z".unsafe_hex_to_byte_string(), vec![0x12]);
     }
 
     #[test]
