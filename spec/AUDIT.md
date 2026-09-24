@@ -2695,11 +2695,14 @@ port against the **reference document** rather than against itself.
   store — and **does not** stop an I/O failure from becoming an empty node, because `load_node` returns
   `Node`. Saying which of those it is, is the point: a fix reported as closing the hole would be wrong.
 
-  **Owed, and it is the real fix**: an error channel. The Scala's `F[Node]` carries a store failure out
-  of `loadNode` and into `RadixHistory.new`/`reset`, whose callers can then refuse; the port's
-  `load_node -> Node` and its `History` trait have none, so the only available flattening is a panic or
-  an empty node. Closing it means making both fallible — a trait change that reaches `rspace`'s
-  consumers — which is why it is named here rather than half-done. Falsified first: restoring the
+  **Landed (2026-09-24, U12)**: the error channel this paragraph said was owed. The Scala's `F[Node]`
+  carries a store failure out of `loadNode` and into `RadixHistory.new`/`reset`, whose callers can then
+  refuse; the port's `load_node -> Node` and its `History` trait had none, so the only available
+  flattening was a panic or an empty node. Both are fallible now — `load_node` returns
+  `Result<Node, String>` and `RSpaceImporter::get_history_item` returns
+  `Result<Option<Vec<u8>>, String>` — so a store failure and a genuinely absent node are different
+  answers at the boundary that used to have one. The paragraph above is the interim fix that made them
+  distinguishable at the assert; this is the channel. Falsified first: restoring the
   `.ok()` fails `history::radix_tree::tests::a_store_error_is_not_a_missing_node`, which asserts both
   halves together (an error surfaces *and* a genuinely absent node is still `None`), so a fix that made
   missing nodes an error would be caught as the opposite bug.
@@ -3482,6 +3485,44 @@ port against the **reference document** rather than against itself.
   directions.
 
 
+- **C72 — four register cells, three prose paragraphs and two citations called something owed while the
+  tree held it, in the one place the checks cannot see** (found 2026-09-24 by the hygiene unit, while
+  reconciling the records against the tree; **records corrected, no code change**). The pass has two
+  machine checks over its own records — the register audit (citations, counts, named tests) and the Lean
+  gate (the emitted registers, the corpora, the counts) — and this is what they cannot read:
+
+  1. **The law matrix in `spec/TEST-COVERAGE.md` is checked by neither.** A *prose* cell there has no
+     `.tsv` and no count token, so nothing reads it: law 38's cell still said `takesStep_iff_reduces` was
+     **owed** (law 38's row: both directions proved, so it is a theorem and not an axiom), law 42's said
+     `decode_encode` was **owed** (its row: "the axiom is gone, and it was not merely owed"), C13's §20
+     row said the round-trip corpus was "still open" while `Print.lean` and law 33's printer rows exist,
+     and an aggregate row for laws 30/31/33/36 said "not yet defined" while the rows *directly above it
+     in the same table* were proved-tied. Each cell was checked against the register's own row before it
+     moved.
+  2. **Three prose paragraphs named work the tree had done.** `AUDIT.md`'s C53 residue — "**Owed, and it
+     is the real fix**: an error channel" — landed in U12 (`load_node` returns `Result<Node, String>`,
+     `RSpaceImporter::get_history_item` returns `Result<Option<Vec<u8>>, String>`). `AUDIT.md`'s U12 note
+     — "the outright conversion is **blocked** on two production call sites" — landed with the same unit
+     (the three setters through their `?`, `RNodeStateManager::is_empty` fallible).
+     `RUST-VS-SCALA.md` — "the 30 element-comparator axioms … remain to discharge" — is contradicted by
+     law 1b's row ("**no axioms, from twelve — the residual is empty**") and by `Sort.lean` declaring no
+     `axiom` at all.
+  3. **Two citations pointed at a file this tree does not have.** `AGENTS.md` and `spec/INVENTORY.md`
+     cite `casper/src/main/resources/casper.tla` for the bootstrap-ceremony model; it is
+     `legacy/casper/src/main/resources/casper.tla`. Both now say so.
+  4. **`faultTolerance` read as pending work and is legacy-only.** Both mentions cite
+     `integration-tests/test/test_dag_correctness.py`, which exists only under `legacy/` — and the port's
+     integration checklist *mirrors* that suite rather than running it
+     (`tools/run-integration-tests.sh:34`), so no formula is owed here. Recorded as legacy-only.
+
+  **Why nothing caught any of it, which is the generalisable half**: a record is checked where it is
+  *machine-readable* — a `.tsv` count, a citation line, a test name — and unchecked where it is prose.
+  Prose therefore drifts at exactly the rate the tree moves, and it is the part a reader meets first.
+  The cells in that matrix that name a test or a count stayed correct throughout; the four that were
+  sentences did not. The matrix now carries a comment saying so, because the fix for a blind spot is to
+  state where it is, not to promise the next reader will check by hand.
+
+
 ## 20. The back-sweep: every incident to its law and its case
 
 The programme began with ten defects of one class — "nothing errors" — found on a running node,
@@ -3632,15 +3673,17 @@ finding that no law covers, and it says why rather than leaving the gap to infer
   `casper/src/engine/lfs_tuple_space_requester.rs`'s apply path (`:256`'s closure over
   `get_history_item`, `:270,271`'s `set_history_items`/`set_data_items`, `:328`'s `set_root` — the LFS
   sync's own import) and `node/src/state/instances.rs:31`'s `RNodeStateManager::is_empty`, whose
-  `rspace_state_manager.is_empty()` call is the shared trait's. Reported to the lead for the scope
-  decision rather than widened into unilaterally; the witness stays as the pin, and flips to its
-  refusal form when the conversion lands.
+  `rspace_state_manager.is_empty()` call is the shared trait's. **All five landed (U12,
+  2026-09-24)**: the LFS apply path now calls `set_history_items`/`set_data_items`/`set_root` through
+  their `?`, and `RNodeStateManager::is_empty` returns `Result<bool, String>` — so the outright
+  conversion is in place, the residue has no total body to flatten into, and the witness has flipped to
+  its refusal form.
 
 | Incident | Law | What catches it now |
 |---|---|---|
 | C9 `(x)` parsed as a one-element tuple | 30, 31, 33 | `Rchain/Surface.lean`'s production table (a tuple is `TupleSingle`/`TupleMultiple`); `rholang/src/parser.rs`'s unit tests |
 | C10 `/\` and `\/` lexed swapped | 32 | `spec/conformance/lex.tsv` rows `Conj`/`Disj`, each with a discriminating sample — `node/tests/lean_lex_corpus.rs` |
-| C13 printer dropped `bundle` and doubled `|` | 33 | `Rchain/Surface.lean`'s witnesses (`bundle+/-/0/` rows) — the round-trip corpus is `Print.lean`'s, still open |
+| C13 printer dropped `bundle` and doubled `|` | 33 | `Rchain/Surface.lean`'s witnesses (`bundle+/-/0/` rows) — the round-trip corpus is `Print.lean`'s, **landed with law 33**: its printer rows are `spec/conformance/parse.tsv`'s second half, consumed by `rholang/tests/lean_parse_corpus.rs` (this cell said "still open" until AUDIT C72 reconciled it) |
 | C16 `DeployExecStatus` fields snake_case | 43 | `spec/conformance/envelope.tsv`'s `DeployExecStatus` row (variant *and* field keys) + the served document — `node/tests/lean_envelope_corpus.rs` |
 | C17 list/set remainders did not parse | 31 | the `ProcRemainderVar` witness rows and the corpus's remainder cases |
 | C18 `lookup` wrapped its reply in `(uri, value)` | 39 | `spec/conformance/protocol.tsv`'s `rho:registry:lookup` row + the doc tie to `spec/API-SCHEMA.md` |
@@ -3699,6 +3742,7 @@ the corpus refuted it — kept here as a lesson rather than hidden. Its sibling 
 | C56 the per-block merge scope copied every message it looked at — Θ(N²) in copies per block | 15 | **fixed (2026-09-24)**: `message_map::between` takes ids and returns ids (`&BTreeSet<M> -> BTreeSet<M>`), so nothing clones a `Message` (and its `seen` set) to answer `upper.seen \ lower.seen`; the call site keeps its three "not in dag" errors by checking membership. Measured, isolated, on a 5,855-block chain: **0.78 GiB per block → ~4 MB per block, plateauing**, CPU a pinned 100% → 40%. Pinned by `between_is_the_id_set_difference_restricted_to_the_map`. **Owed**: the steady floor is the Θ(N²) `seen` *residency*, H6's accepted-faithful residual — **measured on the running node at 556 MB of the DAG's own `logical_bytes` (5,885 blocks, `/metrics`), in a 1.18 GiB resident process**, which advances ~1.3 MB per block. (The ~9.8 GiB this cell used to quote was the pre-Stage-1/3/4/5 tree, where the DAG was copied per read and per insert; that figure is retired with the copies.) §20 below states it with numbers The *copies* the tail still had are gone (Stage 5, §20): `fringe_states` is keyed by the store's own hash, the merge indexes rejections for the final scope only, the index is `Arc`-shared with the representation, and the sync-path chunker borrows the page instead of copying it 3× The **~0.86 GiB/block this cell called *unattributed* was the DAG being copied** on the per-block and per-request paths, attributed and fixed in `494336e70` (§20 below: `get_representation` by value, `insert`'s per-block clone, `Message.seen`). **The serving term is now measured on the fixed tree** — two fresh validators pulling from a node on the 5,844-block artifact (extended to 6,339 by the run): the server grew **115 MB while serving 263 blocks ≈ 0.44 MB per block** (window peak 0.71 MB/block), against the retired ~880 MB/block, with 63 of 63 block requests answered and zero `History items are corrupted` / `Validate received state items` on either side. It is *not* the peer reaching the same height, and that is recorded with its reason in §20 |
 | C69 the height-monotone reading of law 15 is false of **both** implementations, and the port's termination guard is unregistered | 14b, 15 | **measured rather than asserted** (2026-09-24, G7). The *unqualified* claim — every message of `prev` at or below every message of the published fringe — is false, because the layer is built from the **justifications** and need not cover the senders `prev` covers: `prev = {m3 (sender 0, height 3)}` with a next layer `{q2 (sender 1, height 2)}` publishes below it, and the gate cannot see it because what `calculate_fringe` reads is the **support map**, not the heights (`block-storage/src/dag/finalizer.rs:165-184`). **The oracle is the same shape**: `Finalizer.scala:144-178`'s `calculateFinalization` ends in `LazyList.unfold(parentFringe)(nextFringe(_).map(nf => (nf, nf))).lastOption` — the gate is the support map and there is **no fringe comparison of any kind** — so the port is faithful here and this is an upstream design property, the `check_min_messages` disposition, not a port gap. What *is* a deviation, and is now in §6: the port's own `if nf == current { break }` (`finalizer.rs:225-226`), whose comment says why — "a non-advancing fringe would loop forever" — and which the oracle does not have. **What the heights are used for** is a *recency key*, not an order requirement: `fringe_height` and `latest_fringe` (`block-storage/src/dag/message_map.rs:54,80`) pick the highest-max-height fringe among *contemporaneous* candidates, which needs "later ⇒ higher" only as a consistency heuristic. The **per-sender** half is provable and the port's walk is why: `self_parents` filters by `!finalized.contains(x)` and never traverses *through* an excluded message, so a min message is the previous sentinel's direct successor. Law 15's statement narrows to that, with the cross-sender refutation kept as a `decide`d witness |
 | C70 the `sorry` ratchet could not see a nested comment, and nothing but this scan saw an `opaque`/`partial`/`extern`/`unsafe`/`@[implemented_by]` assumption | — **harness** | no law: the instrument, not the term. `Laws.lean`'s accounting is exact equality over `axiom` *declarations*, so an `opaque` definition is neither an axiom nor a `sorry` and passed every other step of `tools/check-lean-conformance.sh` — the token set now refuses all five, so an assumption arriving is refused rather than discovered. The stripping had to be repaired first: single-level block tracking closed Lean's *nested* comments at the first `-/` (invisible for `sorry`/`admit`, 23 prose hits once `partial`/`opaque` were added) and string literals were scanned as code, where the register keeps its own row prose (11 more). Both fixed (nesting depth, strings with escapes, a `'"'` char literal must not open a string) and the tree scans clean. Falsified at scan level with the script's own extracted `awk` over probe files: five tokens fire, `external` does not, prose/string/nested cases fire on nothing, the original `sorry` ratchet does. The full gate is owed: its first step is `lake build` and the Lean slot is the lead's |
+| C72 four register cells, three prose paragraphs and two citations called something owed while the tree held it | — **records** (no law) | `spec/TEST-COVERAGE.md`'s law matrix is checked by neither machine check — the register audit reads `.tsv` counts, citations and test names, the Lean gate reads the emitted registers, and a *prose* cell is read by nothing: law 38's cell said `takesStep_iff_reduces` was owed (its row: proved, a theorem), law 42's said `decode_encode` was owed (its row: the axiom is gone), C13's §20 row said the round trip was "still open" (law 33's printer rows are `parse.tsv`'s second half), and an aggregate row contradicted the four rows above it in the same table. Plus `AUDIT.md`'s C53 "Owed: an error channel" and its U12 "blocked on two production call sites" (both landed), `RUST-VS-SCALA.md`'s "30 element-comparator axioms" (law 1b: no axioms, from twelve — the residual is empty, and `Sort.lean` declares none), two citations to `casper/src/main/resources/casper.tla` (it is under `legacy/`), and `faultTolerance` read as pending (legacy-only; the port's checklist mirrors that suite, `tools/run-integration-tests.sh:34`). **Why nothing caught it**: a record is checked where it is machine-readable and unchecked where it is prose — so prose drifts at the rate the tree moves. The matrix now says which of its cells are checked |
 
 **The two rows that are not laws are the two worth keeping visible.** C37 is a *harness* finding —
 a measurement that was not a measurement — and no law would have caught it, because the thing that

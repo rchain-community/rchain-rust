@@ -202,6 +202,8 @@ Bottom-up order: `sdk` → `shared` → `crypto` + `graphz` → `models` →
 - **`rosette`/`roscala` are orphaned** (absent from `build.sbt`, imported by nothing) — deferred.
 - **Hoist `Blake2b256Hash`** out of `rspace` into `crypto`/`shared` so `models` stops depending on
   `rspace` (`models/.../ByteStringSyntax.scala`, `FringeData.scala`, `BlockMetadata.scala`).
+  **Done**: `Blake2b256Hash` is `crypto/src/hash/blake2b256_hash.rs` and `models/Cargo.toml` has no
+  `rspace` dependency.
 
 ## Running the node
 
@@ -223,11 +225,14 @@ must be a literal IP (`SocketAddr::from_str` rejects hostnames like `localhost`)
 
 ## Open questions
 
-1. `casper/src/main/resources/casper.tla` models only the genesis **bootstrap ceremony**, not the
+1. `legacy/casper/src/main/resources/casper.tla` (the Scala tree's copy; the port does not carry it)
+   models only the genesis **bootstrap ceremony**, not the
    finality rule — the formal finality spec must be reconstructed from `Finalizer.scala` and
    `MessageMapSyntax.scala`.
-2. The `faultTolerance` field asserted in `integration-tests/test/test_dag_correctness.py` is not
-   computed anywhere in this tree — its formula must be recovered or declared an open question.
+2. The `faultTolerance` field is asserted by the **legacy** suite's
+   `legacy/integration-tests/test/test_dag_correctness.py`, which is not in this tree: the port's
+   integration checklist *mirrors* that suite (`tools/run-integration-tests.sh:34`), it does not run it,
+   so nothing here computes the field. Recorded as legacy-only rather than as an owed formula.
 3. **Rosette scope** — two independent decisions: (a) **formalization**: the Rosette VM is **in
    scope** (Laws 12–13, actor atomicity + reflection, a later proof phase); (b) **rewrite**:
    `rosette`/`roscala` are **deferred** — orphaned (absent from `build.sbt`, imported by nothing).

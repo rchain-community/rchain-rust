@@ -154,11 +154,14 @@ the merge optimizes.
 
 ## Open questions
 
-1. `casper/src/main/resources/casper.tla` models only the genesis **bootstrap ceremony handshake**.
+1. `legacy/casper/src/main/resources/casper.tla` (the Scala tree's copy; not in this tree) models only
+   the genesis **bootstrap ceremony handshake**.
    The finality rule is now formalized in `CasperFinality.tla` (Laws 14/15/16: > 2/3 supermajority,
    fringe antichain + seen-set monotonicity, seqNum strictly increasing), reconstructed from
    `Finalizer.scala` + `MessageMapSyntax.scala`.
-2. The `faultTolerance` field asserted in `integration-tests/test/test_dag_correctness.py:105-111`
+2. The `faultTolerance` field asserted in the legacy suite's
+   `legacy/integration-tests/test/test_dag_correctness.py:105-111` (legacy-only: the port's checklist
+   mirrors that suite, `tools/run-integration-tests.sh:34`, and does not run it)
    is not computed anywhere in this tree — its exact formula is declared an open question;
    `CasperFinality.tla` states the safety margin (`3·support − 2·total`) and the monotonicity the
    test relies on.

@@ -91,6 +91,8 @@ Total in-scope (non-orphaned): roughly **200–220 person-days**.
 - **`rosette`/`roscala` are orphaned** (absent from `build.sbt`, imported by nothing) — deferred.
 - **Hoist `Blake2b256Hash`** out of `rspace` into `crypto`/`shared` so `models` stops depending on
   `rspace` (`models/.../ByteStringSyntax.scala`, `FringeData.scala`, `BlockMetadata.scala`).
+  **Done**: `Blake2b256Hash` is `crypto/src/hash/blake2b256_hash.rs` and `models/Cargo.toml` has no
+  `rspace` dependency.
 
 ## Remaining work
 

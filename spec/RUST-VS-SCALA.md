@@ -90,9 +90,11 @@ invariants.
 
 ## 4. What still lags (honest)
 
-- **Formalization**: the 30 element-comparator axioms in `Rchain/Sort.lean` (Law 1's "total order"
-  residual) remain to discharge — they need the sum-type `cmpSortable` laws proof (well-founded
-  induction); the definition is in place. Everything else is proven or stated.
+- **Formalization**: nothing here any more — law 1b's row reads "**no axioms, from twelve — the
+  residual is empty**" (the list comparators' laws by induction on the list, the element laws as
+  theorems in dependency order), and `Rchain/Sort.lean` declares no `axiom` at all. This bullet used to
+  say "the 30 element-comparator axioms … remain to discharge"; it was stale by the time a reader met it
+  and is corrected here rather than deleted, so the record shows what was discharged (AUDIT C72).
 - **Native PoS lifecycle**: the dynamic-validator lifecycle is implemented natively — trusted
   stakeholder admission (`trust`/`untrust`), minimum/maximum-bond validation, pool updates with a
   top-N active cap applied **at epoch boundaries**, the epoch reward split and its committed-rewards
