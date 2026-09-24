@@ -424,7 +424,7 @@ def laws : List Law := [
       `spatial_match` refuses a pattern `linear` rejects before any clause runs, so neither its \
       element-pair nor its conjunction path is reached with a level bound twice (`aggregate_updates` \
       stays, as the collection path's check on the *bindings* rather than on the pattern)",
-    status := .owed,
+    status := .provedTied,
     declarations := [`Rchain.linear, `Rchain.spatialMatch, `Rchain.spatialMatches, `Rchain.spatialMatchCore,
       `Rchain.aggregateUpdates, `Rchain.aggregateUpdates_rejects_double_bind,
       `Rchain.freeMapMerge_overwrites, `Rchain.fuel_saturation,
@@ -477,8 +477,12 @@ def laws : List Law := [
       is the sense in which the entry guard does not subsume it as a check. From a term it has no \
       reachable producer any more (the normalizer refuses those shapes first), and the model keeps \
       both halves: `aggregateUpdates_rejects_double_bind` for the check and `freeMapMerge_overwrites` \
-      for the clauses. **Owed**: the two \
-      proofs above. **A third thing this row's corpus found** (AUDIT C44): the clauses had no arm for a \
+      for the clauses — and **both are theorems**, which is what this row's debt was \
+      (`aggregateUpdates_rejects_double_bind` at `Match.lean:477`, `freeMapMerge_overwrites` at \
+      `:489`; the file declares no axiom, so neither rests on one). The **tie** this row once shared is \
+      law 37's and is **proved** there (`spatialMatches_iff_eq`) — the row is `proved-tied` on the \
+      `match` corpus, whose three-valued verdicts are the node's half. \
+      **A third thing this row's corpus found** (AUDIT C44): the clauses had no arm for a \
       **tuple**, which the port matches (`spatial_matcher.rs:496-501`) — so a tuple pattern the node \
       matches read as silence here, and the law's own statement was false of the model until \
       `modelledPar` was added to it. Cases 15/16 of `spec/conformance/match.tsv` are the pair that \
