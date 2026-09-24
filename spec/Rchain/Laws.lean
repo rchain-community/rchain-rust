@@ -146,6 +146,20 @@ structure Law where
   anchor whose file does not exist. The anchor names the *code*, not the test: where a conformance
   corpus exists it is already in `corpus`, and where a property test exists it is named in the note. -/
   rust : List String := []
+  /-- **The Rust *tests* this law's claim rests on**, as `path.rs:symbol` anchors — the Rust
+  counterpart of `witness`, and the rung between a conformance corpus and prose. `witness` is checked
+  by name against the elaborated environment and nothing read the Rust names in `falsifiable`/`note`,
+  so a test that asserts a row's own case was indistinguishable from a sentence about one; an anchor
+  here must be a file that exists **and contains `fn <symbol>`** (`Rchain/LawsMain.lean`'s
+  `rustAnchorFailures`), and `tools/check-rust-witnesses.sh` **runs** each one — refusing a name that
+  matches no test, because `cargo test <filter>` exits 0 on an empty match and a registry of renamed
+  or `#[ignore]`d tests would otherwise run green while checking nothing.
+  What it is *not*: a witness is not a proof. A corpus outranks it (three verdicts read off the node
+  beat one assertion), and a row whose statement is over an abstract relation the Rust does not have
+  says so in its note rather than implying the witness covers it. Populated 2026-09-24 from the 65
+  tests a body-read classified as asserting a row's own case; the law-name scan that preceded it
+  could not see nine of them, which is why the rule is *grep for the behaviour, not the law number*. -/
+  rustWitness : List String := []
   /-- **The Coq declaration(s) this law is stated over**, as `spec/coq/<file>.v:<symbol>` anchors. The
   file must exist and the symbol must occur in it; the check is deliberately that, and not "is it a
   proof", because for most of this catalog's Coq half the honest answer is *no* — `Laws.v` states laws
@@ -190,7 +204,7 @@ def laws : List Law := [
     coq := ["spec/coq/Sort.v:sortPar_idempotent", "spec/coq/Sort.v:sortPar_comm"],
     falsifiable := some "`sortPar_idempotent`/`sortPar_comm` are theorems; `spec/INVENTORY.md`'s Law 1 \
       claim of idempotence is falsified by any leaf type whose comparator is not a total order — see \
-      clause b, where exactly that is assumed rather than proved. The `sort` corpus is the tie: nineteen \
+      clause b, where exactly that is assumed rather than proved. The `sort` corpus is the tie: twenty-three \
       pairwise verdicts, each `decide`d against the model's `cmpPar`, read back from the node by which \
       element `sort_par` puts first (`rholang/tests/lean_sort_corpus.rs`)",
     note := "`sortPar_idempotent` is proved only *for* a comparator whose element laws hold; the \
@@ -210,7 +224,8 @@ def laws : List Law := [
       `false` 1, so `true` sorts first — `false` vs `true` → `gt`). Each row was falsified before it was \
       believed: restoring the old order stops `Rchain.Corpus`'s `sortCases_decide` from compiling, and \
       a runtime reporter names the row. **The rest cannot be aligned without extending the model's \
-      algebra** — 21 `Expr` constructors against the node's 33 — so it is a recorded boundary rather \
+      algebra** — 24 `Expr` constructors against the node's 33, the three the re-tagging added being \
+      `ematches`/`eshortand`/`eshortor` — so it is a recorded boundary rather \
       than a fixed defect: `Receive`/`ReceiveBind`/`New`/`Bundle`/`EList`/`ESet`/`EMap`/`Var`/\
       `GUnforgeable` (where `gDeployerId`(10) sorts *before* `gDeployId`(11), the reverse of the port's \
       enum) / `Connective`; and the model lacks **eight** `Expr`-level constructors, *counted* against \
@@ -1291,17 +1306,51 @@ def laws : List Law := [
       `String.trim` does not reduce in Lean, so `isBlank` (all characters `Char.isWhitespace`) is the \
       computable counterpart of `l.to.trim().is_empty()`, which is what keeps the witnesses `decide`d" },
   { number := 26, clause := "b", layer := "Cross-shard",
-    statement := "The shard id is a validated, ordered value",
-    status := .open,
-    falsifiable := none,
-    note := "**half of this row is already in the model**, and saying which half is what makes the row \
-      answerable: `ShardId` with `validShardId` (non-empty, ASCII) is `Rchain/CrossShard.lean:118`, \
-      which is what law 26a's `admitLeg` validates, and the Rust's is the same newtype \
-      (`shared/src/refined.rs:372`, whose `TryFrom<String>` is that validation). What is **not** \
-      modelled is the *ordering* and the `parent`/`child` hierarchy (`refined.rs:374-386`, `child` \
-      prefixing the id), so closing the row is two small things: an `Ord` the row can point at, and \
-      `validShardId (s.child n) = validShardId s` as a `decide`d witness — unit-sized, not a research \
-      question" },
+    statement := "The shard id is a validated, ordered value — the order is the **derived** one (the \
+      port's `#[derive(…, Ord …)]` over the inner `String`), and naming a child under a valid shard \
+      yields a valid one whose path **extends** its parent's",
+    status := .provedModel,
+    declarations := [`Rchain.shardChild, `Rchain.validShardId_child, `Rchain.shardChild_prefix,
+      `Rchain.a_child_sorts_after_its_parent, `Rchain.a_grandchild_sorts_after_its_grandparent,
+      `Rchain.the_child_of_an_invalid_parent_can_be_valid],
+    axioms := [],
+    rust := ["shared/src/refined.rs", "casper/src/gateway/mod.rs", "node/src/runtime/node_runtime.rs"],
+    witness := [`Rchain.validShardId_child, `Rchain.shardChild_prefix,
+      `Rchain.a_child_sorts_after_its_parent, `Rchain.the_child_of_an_invalid_parent_can_be_valid],
+    falsifiable := some "**a mutation for each half.** The order half: `shardChild_prefix` fails for a `child` that \
+      returned its parent, and the two `decide`d instances fail for one that prepended instead of \
+      appending — while the *general* monotonicity is the named boundary (a library gap, not a port \
+      claim), and the guard it would need (`n ≠ \"\"` at the root, where `child` appends only the name) \
+      is a property of the order rather than of the prefix fact. The validity half: `validShardId_child` fails if the characterisation \
+      drops its `isAscii n` term, and `the_child_of_an_invalid_parent_can_be_valid` is the `decide`d \
+      witness that the row's original identity is **false** — `shardChild \"\" \"x\"` is `/x`, valid, \
+      while `\"\"` is not",
+    note := "**the order is derived, so the model needs no instance of its own** (2026-09-24): \
+      `shared/src/refined.rs:372` is \
+      `#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)] pub struct ShardId(String)` — the \
+      lexicographic order on the id string, which `child`'s prefixing makes *structurally meaningful* (a \
+      shard sorts before all of its descendants, and `is_descendant_of` is the separate structural \
+      predicate that agrees with it). Where the order is observable is the two `BTreeMap<ShardId, _>` \
+      sites (`casper/src/gateway/mod.rs:65`, `node/src/runtime/node_runtime.rs:832`) — deterministic \
+      iteration, exactly where a silently different order would bite — and the model's `ShardId` *is* a \
+      `String`, so `decide` and `omega` see the same order the port derives. **And the witness this row \
+      carried needed correcting, which is the part worth keeping**: `validShardId (s.child n) = \
+      validShardId s` is **false in both directions** — the port's `child` constructs the newtype \
+      **directly** (`refined.rs:382-386`), bypassing `TryFrom`, so a non-ASCII name yields an id \
+      `TryFrom` would have refused; and an invalid parent can have a valid child \
+      (`shardChild \"\" \"x\" = \"/x\"`). What holds instead is the characterisation in \
+      `validShardId_child`: given a **valid** parent, the child is valid exactly when the name is ASCII. \
+      AUDIT C78 records the constructor that does not maintain its type's invariant — a finding about the \
+      port's own refinement discipline rather than a deviation from the oracle — and this row states the \
+      corrected form rather than the convenient one, with the refuted version kept beside it so the \
+      next reader does not re-derive it. **And the order half's boundary is named with its cost**: \
+      what the `BTreeMap` sites observe is `shardChild_prefix` (the child's path carries the parent's) \
+      plus the two `decide`d instances; the general \"a child sorts after its parent\" is *statable*, \
+      follows from this plus the lexicographic order's prefix property, and is **not a theorem here** \
+      because this tree compares no `String`s at all (`Cmp.lean` orders by `GString` with no \
+      string-order lemma) — proving it would be the tree's **first** string-order lemma, a modelling \
+      decision rather than a proof step. That is a library gap and not a claim about the port, which is \
+      why the row is `provedModel` on what is proved rather than `owed` on what the toolchain lacks" },
   { number := 26, clause := "c", layer := "Cross-shard",
     statement := "The RNG seed and unforgeable names are shard-scoped",
     status := .open,

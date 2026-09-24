@@ -117,6 +117,85 @@ def isBlank (s : String) : Bool := s.toList.all Char.isWhitespace
     same reason `isBlank` is written over code points). -/
 def validShardId (s : ShardId) : Bool := !s.toList.isEmpty && isAscii s
 
+/-! ### The shard hierarchy (Law 26b) -/
+
+/-- `s.child n` — the shard formed by naming `n` under `s`: `/name` at the root, `s/name` below it
+    (`shared/src/refined.rs:382-386`). The port's order is **derived** from the inner `String`
+    (`#[derive(…, PartialOrd, Ord, …)]`, `:372`), so the model needs no instance of its own: `ShardId`
+    here *is* a `String` and the lexicographic order is the same one. -/
+def shardChild (s : ShardId) (n : String) : ShardId :=
+  if s = "/" then "/" ++ n else s ++ "/" ++ n
+
+/-- `toList` of a concatenation — proved here, because this toolchain has **no lemma for it**: the
+    first draft cited `String.toList_append`, and neither that nor `List.append_toList` exists in it. It
+    holds by `rfl`, the concatenation being definitional. -/
+theorem toList_append (a b : String) : (a ++ b).toList = a.toList ++ b.toList := rfl
+
+/-- A list that ends in a cons is non-empty — definitional, and proved here for the same reason
+    `toList_append` is: this toolchain carries no lemma for it (`List.isEmpty_append` does not exist). -/
+theorem not_isEmpty_cons_append (l : List Char) (c : Char) (t : List Char) :
+    (!(l ++ c :: t).isEmpty) = true := by
+  cases l <;> rfl
+
+/-- `isAscii` of a concatenation — the bridge the child's validity needs. -/
+theorem isAscii_append (a b : String) : isAscii (a ++ b) = (isAscii a && isAscii b) := by
+  simp [isAscii, toList_append, List.all_append]
+
+/-- **Law 26b, the validity half, as the statement that is actually true.** Naming a child under a
+    **valid** shard yields a shard whose validity is exactly the name's ASCII-ness — *not* the row's
+    stated `validShardId (s.child n) = validShardId s`, which is false in both directions: the port's
+    `child` constructs the newtype **directly**, bypassing `TryFrom`, so a non-ASCII name yields an id
+    `TryFrom` would have refused, and an invalid parent can have a valid child (`shardChild "" "x" =
+    "/x"`). The row carries the corrected statement and its witnesses (AUDIT C78). -/
+theorem validShardId_child (s : ShardId) (n : String) (hs : validShardId s = true) :
+    validShardId (shardChild s n) = isAscii n := by
+  unfold validShardId at hs ⊢
+  simp only [Bool.and_eq_true] at hs
+  obtain ⟨_, hascii⟩ := hs
+  unfold shardChild
+  split
+  · have hslash : isAscii "/" = true := by decide
+    have hne' : (!([] ++ '/' :: n.data).isEmpty) = true := not_isEmpty_cons_append [] '/' n.data
+    simp [isAscii_append, toList_append, List.all_append, hne', hslash]
+  · have hslash : isAscii "/" = true := by decide
+    have hne' : (!(s.data ++ '/' :: n.data).isEmpty) = true := not_isEmpty_cons_append s.data '/' n.data
+    simp [isAscii_append, toList_append, List.all_append, hne', hslash, hascii]
+
+/-- The witness pair that shows the row's identity was wrong: the child of the **invalid** empty id is
+    valid, so `validShardId (s.child n) = validShardId s` cannot hold in general. -/
+theorem the_child_of_an_invalid_parent_can_be_valid :
+    (validShardId (shardChild "" "x"), validShardId ("" : ShardId)) = (true, false) := by decide
+
+/-- **The order half, in the form this toolchain can prove**: a child's path carries its parent's as a
+    **prefix** — and no guard is needed, a list being a prefix of itself (the empty name included).
+
+    The general statement — a child *sorts after* its parent, which is what the two
+    `BTreeMap<ShardId, _>` sites (`casper/src/gateway/mod.rs:65`,
+    `node/src/runtime/node_runtime.rs:823`) iterate in — follows from this plus the lexicographic
+    order's prefix property, and it is **not a theorem here**: nothing in this tree compares `String`s
+    at all (`Cmp.lean` orders by `GString` with no string-order lemma), so proving it would be the
+    tree's **first** string-order lemma, which is a modelling decision rather than a proof step. It
+    would also need `n ≠ ""` at the root, where `child` appends only the name and
+    `shardChild "/" "" = "/"` is not a strict extension: that guard belongs to the *order*, which is
+    exactly the part that is the boundary. The instances below are what the `BTreeMap` sites observe. -/
+theorem shardChild_prefix (s : ShardId) (n : String) :
+    s.toList <+: (shardChild s n).toList := by
+  unfold shardChild
+  split
+  · rename_i hs
+    rw [hs]
+    exact ⟨n.toList, by simp [toList_append]⟩
+  · exact ⟨("/" ++ n).toList, by simp [toList_append, List.append_assoc]⟩
+
+/-- The order those `BTreeMap` sites actually observe, on a concrete pair: a child sorts after its
+    parent — `decide`d, because a general monotonicity lemma would be the tree's first string-order
+    lemma (`shardChild_prefix` names that boundary). -/
+theorem a_child_sorts_after_its_parent : (shardChild "/a" "b") > ("/a" : ShardId) := by decide
+
+/-- And the transitive case, `decide`d: a grandchild after its grandparent. -/
+theorem a_grandchild_sorts_after_its_grandparent :
+    (shardChild (shardChild "/a" "b") "c") > ("/a" : ShardId) := by decide
+
 /-- One leg as a client sends it to the gateway's request boundary. -/
 structure IncomingLeg where
   shard : ShardId
