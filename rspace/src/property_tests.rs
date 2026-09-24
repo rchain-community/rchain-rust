@@ -539,6 +539,13 @@ proptest! {
 
             let (play, replay) = play_and_replay().await;
 
+            // The replay must start from the state the play started from, so the checkpoint is taken
+            // *before* the script. `create_checkpoint` also drains the event log, so `recorded` below
+            // then holds exactly this script's events. Taking it after the script rigs the replay with
+            // the play's *end* state — a replay that starts half-finished and diverges wherever the
+            // final state still holds something.
+            let root = play.create_checkpoint().await.expect("checkpoint").root;
+
             // Play the script, recording the trace.
             for (is_produce, persist, channel, payload) in &ops {
                 let channel = format!("c{channel}");
@@ -558,7 +565,6 @@ proptest! {
                 }
             }
             let recorded = play.create_soft_checkpoint().await.log;
-            let root = play.create_checkpoint().await.expect("checkpoint").root;
 
             // Rig the replay with the recording and replay the same script.
             replay.rig_and_reset(root, recorded).await.expect("rig");

@@ -2250,9 +2250,52 @@ port against the **reference document** rather than against itself.
   (taking a checkpoint before the operations, rather than the test's post-play one) changes nothing —
   the trace above is identical.
 
-  **Not fixed here.** A test that fails on its own recording is a defect worth fixing rather than
-  muting: this row registers it with a deterministic reproducer and the measured leftover, and the fix
-  should land with the seed kept as a regression case.
+  **Resolved (2026-09-24, Programme F): the hypothesis above was the right answer, and the experiment
+  that dismissed it was the defect.** The failing shape is fully explained by the fixture, and **no
+  production line changed** — `rspace/src/property_tests.rs` is `#[cfg(test)]` (`lib.rs:25-26`), so
+  this is a test-only repair and carries no consensus risk. (It does not follow that `ReplayRSpace` is
+  proven correct: it follows that this observation was not evidence against it, which is the whole of
+  what the row claimed.) The test rigged the replay with the play's **post-play** root:
+
+  ```rust
+  let recorded = play.create_soft_checkpoint().await.log;
+  let root = play.create_checkpoint().await.expect("checkpoint").root;   // ← after the script
+  ```
+
+  `create_checkpoint` commits the hot store and **drains the event log** (`rspace.rs:592`, the Scala's
+  `eventLog.getAndSet(Seq.empty)`), so `root` is the state *after* all six operations — and
+  `rig_and_reset(root, recorded)` therefore started the "replay" from a half-finished tuple space.
+  Measured before the first replayed operation, on the failing input: `data(c2)=0, conts(c2)=1,
+  joins(c2)=1` — one continuation already installed. The play's op3 leaves its persistent
+  continuation installed, so the replay began with a continuation the play had not yet created: at
+  replayed op2 the produce-side search found `match_candidates=1` while iterating the *later* COMM,
+  and the ops that follow shift by one pairing each. The leftover this entry measured — op3's
+  persistent consume against op2's persistent datum — is that shift, not a lost datum.
+
+  So the two candidates this entry recorded were chasing a phantom, and the ~3-in-10 CI rate is the
+  fraction of random scripts whose final state still holds something (a persistent continuation, or
+  data behind one). **The fix is one line moved**: take `root` before the script, which is also where
+  a replay's starting state comes from. `recorded` is unaffected because the checkpoint already
+  drained the log, so the soft checkpoint taken after the script returns exactly that script's
+  events. The reported trace is byte-identical to the entry above at every operation it recorded.
+  Verified: the seed case passes, and the property passes over **4000 cases** (11.5 s) where it
+  failed deterministically at `PROPTEST_CASES=1` before. The seed is kept: it pins the input, and the
+  audit's own measurement of it is what identified the fixture. **And the repaired test still has
+  teeth**, which is the thing to check when a failing test starts passing: making the replay's produce
+  path never take its recorded candidate — store the datum instead of calling `handle_match` — fails
+  the fixed property at `PROPTEST_CASES=1`, so the fixture fix did not hollow the check out.
+
+  **Why the dismissed hypothesis was wrong, recorded because the failure mode will recur**: the text
+  above says "taking a checkpoint before the operations" changes nothing, which is what the fix does.
+  I could not see that experiment's code, so the *cause* of the mis-measurement is a hypothesis, not a
+  finding — the plausible one is a **soft** checkpoint used for `root`: `create_soft_checkpoint`
+  returns `start_root`, the root as of the checkpoint call, so taking it before the ops and reading
+  `.start_root` after them yields the post-play root — the same wrong answer, with the right-looking
+  edit. What is a finding: the entry had the correct diagnosis in its own text and discarded it on a
+  measurement, which is the reason this register's rule is that each row is *falsified before it is
+  believed*.
+
+- **C50 — the matcher's fuel was short a *second* time: the measure had no `etuple` case, so a tuple's
 
 - **C50 — the matcher's fuel was short a *second* time: the measure had no `etuple` case, so a tuple's
   contents were charged to no node** (found 2026-09-24, while *attempting* `fuel_saturation` — the same
@@ -2360,7 +2403,7 @@ finding that no law covers, and it says why rather than leaving the gap to infer
 | C44 the matcher had no clause for a tuple, and the port has one | 5, 37 | `match.tsv` cases 15/16 (`@(1, 2)` against `(1, 2)` and against `(1, 2, 3)`) + `lean_match_corpus.rs`; the `ETuple` arm in `Match.lean`, and `modelledPar` on both sides of `concrete_matches_iff_eq`, whose old statement is refuted by `arithmetic_pattern_refutes_the_unrestricted_tie` |
 | C45 the search claimed a step for a join, and the rule fixed the counts the port computes differently | 38, 40 | `silence.tsv` case 13 (a join with one channel filled declares `false`, and the node agrees) + `lean_silence_corpus.rs`; the search's single-bind requirement, the constructors' `freeCount`/`bindCount`/channel parameters, and `takesStep_sound` — three extraction lemmas and `exists_redex_split` |
 | C47 the matcher's fuel was short: the measure counted an empty `Par` as zero nodes | 5, 37 | `match.tsv` case 18 (`@Set(1, ..._)` against `Set(Nil × 6, 1)`) + `lean_match_corpus.rs`; `the_walk_past_empty_pars_is_paid_for`, and `parNodes`'s doc comment carrying the counterexample |
-| C49 the replay property test fails on its own recording (~3 runs in 10) | 11 | `rspace/src/property_tests.rs`'s `law11_a_replayed_script_matches_its_recording` — reproduced locally, minimal input captured; CI caught it on a docs-only tip. Two candidates recorded, not diagnosed |
+| C49 the replay property test fails on its own recording (~3 runs in 10) | 11 | **closed, and it was not the code**: the fixture rigged the replay with the play's *post-play* root, so the "replay" began from a half-finished tuple space — `rspace/src/property_tests.rs`'s `law11_a_replayed_script_matches_its_recording`, now taking the checkpoint before the script, passes over 4000 cases where it failed deterministically at `PROPTEST_CASES=1`. The seed stays as the pinned input; `check_replay_data` was never at fault |
 | C50 the matcher's fuel was short again: the measure had no `etuple` case, so a tuple's contents were charged to nothing | 5, 37 | `match.tsv` case 20 (`@((1, 2), (3, 4))` against itself) + `lean_match_corpus.rs`; `a_nested_tuple_is_paid_for`, `a_tuple_pays_for_its_own_contents`, and `parNodesExpr`'s doc comment carrying the counterexample. While the defect stood it also **refuted** the axiom `concrete_matches_iff_eq` |
 | C51 the tie's domain admitted a two-expression `Par`, which no clause accepts — so the tie was false | 5, 37 | the axiom `concrete_matches_iff_eq` is **deleted**; `a_two_expression_pattern_refutes_the_modelled_tie` is the counterexample, and rows 5/37 owe the tie for a **singleton** pattern instead |
 | C48 the spec over-claimed a match: the searcher was wired into the list and tuple arms | 5, 37 | `match.tsv` case 19 (`@[1, ..._]` against `[Nil, 1]`) + `lean_match_corpus.rs`; `a_list_pattern_cannot_skip_a_target_element`, and the split into `matchListPos` (lists, tuples) / `matchListPar` (sets, maps) |
