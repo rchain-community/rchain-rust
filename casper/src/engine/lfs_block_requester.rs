@@ -264,6 +264,19 @@ mod tests {
     use rchain_shared::typed_store::KeyValueTypedStoreCodec;
 
     use crate::proto_util::hash_block;
+    use async_trait::async_trait;
+    use rchain_comm::errors::CommErr;
+    use rchain_comm::peer_node::{NodeIdentifier, PeerNode};
+    use rchain_comm::rp::rp_conf::{ClearConnectionsConf, RPConf};
+    use rchain_comm::transport::chunker::Blob;
+    use rchain_comm::transport::transport_layer::TransportLayer;
+    use rchain_models::casper::protocol::packet_type_tag::FromPacket;
+    use rchain_models::comm::protocol::Protocol;
+    use rchain_shared::refined::{BlockHeight, SeqNum};
+    use std::time::{Duration, Instant};
+
+    use crate::protocol::casper_message_protocol::BlockRequestSerde;
+    use crate::protocol::comm_util::{CommUtil, ConnectionsCell};
 
     fn source() -> LogSource {
         LogSource::new("casper.engine.LfsBlockRequester.test")
@@ -408,6 +421,151 @@ mod tests {
         assert!(
             st.lock().await.is_finished(),
             "the only requested block was saved, so the requester is finished"
+        );
+    }
+    fn peer(name: &str) -> PeerNode {
+        PeerNode::from(
+            NodeIdentifier::new(name.as_bytes().to_vec()),
+            "host".to_string(),
+            rchain_shared::refined::Port::new(40400),
+            rchain_shared::refined::Port::new(40404),
+        )
+    }
+
+    /// A chain of `n` blocks — block `i` justifies block `i - 1` — each with a real
+    /// content-addressed hash, so the requester's `validate::block_hash` accepts it.
+    fn chain(n: usize) -> Vec<BlockMessage> {
+        let mut blocks: Vec<BlockMessage> = Vec::with_capacity(n);
+        for i in 0..n {
+            let justifications: Vec<BlockHash> =
+                blocks.last().map(|b| b.block_hash).into_iter().collect();
+            let mut b = valid_block(&justifications);
+            b.block_number = BlockHeight::try_from(i as i64).expect("a small chain");
+            b.seq_num = SeqNum::try_from(i as i64).expect("a small chain");
+            b.block_hash = hash_block(&b);
+            blocks.push(b);
+        }
+        blocks
+    }
+
+    /// A transport that *answers*: every `BlockRequest` it sees is served by pushing the requested
+    /// block into the requester's incoming channel, the way a peer's `handle_block_request` does.
+    struct ServingTransport {
+        blocks: BTreeMap<BlockHash, BlockMessage>,
+        incoming: tokio::sync::mpsc::Sender<BlockMessage>,
+    }
+
+    #[async_trait]
+    impl TransportLayer for ServingTransport {
+        async fn send(&self, _peer: &PeerNode, _msg: Protocol) -> CommErr<()> {
+            Ok(())
+        }
+
+        async fn broadcast(&self, _peers: &[PeerNode], msg: Protocol) -> Vec<CommErr<()>> {
+            let Some(rchain_models::comm::protocol::protocol::Message::Packet(packet)) =
+                msg.message
+            else {
+                return Vec::new();
+            };
+            if packet.type_id != "BlockRequest" {
+                return Vec::new();
+            }
+            let Ok(request) = BlockRequestSerde.parse(&packet.content) else {
+                return Vec::new();
+            };
+            let Ok(hash) = BlockHash::try_from(request.hash.as_slice()) else {
+                return Vec::new();
+            };
+            if let Some(block) = self.blocks.get(&hash) {
+                let _ = self.incoming.send(block.clone()).await;
+            }
+            Vec::new()
+        }
+
+        async fn stream(&self, _peers: &[PeerNode], _blob: Blob) {}
+    }
+
+    /// **U13's instrument (AUDIT C62's serving term): the LFS block walk advances on *responses*, not
+    /// on the idle resend.**
+    ///
+    /// The devnet showed a fresh validator pulling blocks at ~1.5 per minute, with the requester's own
+    /// `No block responses for 30s. Resending requests.` warning between them. On a chain a block's
+    /// only justification is its parent, so the walk is one generation per block — which makes that
+    /// rate **one idle timeout per block** rather than one round trip. This test isolates the
+    /// requester: a chain of `N` blocks, a transport that answers every request immediately from the
+    /// requester's own point of view, and the production `request_timeout` of 30 s. A
+    /// response-driven walk finishes in milliseconds; a walk that waits for the resend takes
+    /// `N × 30 s`. The bound sits at 5 s — three orders of magnitude above the healthy shape and
+    /// below even one timeout, so it cannot pass by being lucky.
+    #[tokio::test]
+    async fn the_walk_advances_on_responses_not_on_the_idle_timeout() {
+        const N: usize = 6;
+        const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+        const BOUND: Duration = Duration::from_secs(5);
+
+        let blocks = chain(N);
+        let by_hash: BTreeMap<BlockHash, BlockMessage> =
+            blocks.iter().map(|b| (b.block_hash, b.clone())).collect();
+        let tip = blocks.last().expect("a non-empty chain").block_hash;
+        let store = store().await;
+        let (incoming_tx, mut incoming_rx) = tokio::sync::mpsc::channel(64);
+        let transport = Arc::new(ServingTransport {
+            blocks: by_hash,
+            incoming: incoming_tx,
+        });
+        let connections: ConnectionsCell =
+            Arc::new(tokio::sync::RwLock::new(vec![peer("bootstrap")]));
+        let conf = RPConf {
+            local: peer("local"),
+            network_id: "testnet".to_string(),
+            bootstrap: None,
+            default_timeout: Duration::from_secs(10),
+            max_num_of_connections: 10,
+            clear_connections: ClearConnectionsConf {
+                num_of_connections_pinged: 10,
+            },
+        };
+        let comm_util = CommUtil::new(transport, conf, connections, Arc::new(NopLog));
+        let fringe = FinalizedFringe {
+            hashes: vec![tip],
+            state_hash: StateHash::new([0u8; 32]),
+        };
+
+        let started = Instant::now();
+        let state = request_blocks(
+            &fringe,
+            &mut incoming_rx,
+            REQUEST_TIMEOUT,
+            &store,
+            &comm_util,
+            &NopLog,
+        )
+        .await;
+        let elapsed = started.elapsed();
+        println!(
+            "walk of {N} blocks: {elapsed:?} (idle timeout {REQUEST_TIMEOUT:?}), finished: {}",
+            state.is_finished()
+        );
+
+        assert!(state.is_finished(), "the walk completed");
+        let stored = store
+            .contains(
+                &blocks
+                    .iter()
+                    .map(|b| b.block_hash)
+                    .collect::<Vec<BlockHash>>(),
+            )
+            .await
+            .expect("store readable");
+        assert!(
+            stored.iter().all(|c| *c),
+            "every block in the chain was fetched and saved"
+        );
+        assert!(
+            elapsed < BOUND,
+            "a {N}-block walk against a peer that answers every request took {elapsed:?} (bound \
+             {BOUND:?}, idle timeout {REQUEST_TIMEOUT:?}): the walk is advancing on the idle resend \
+             rather than on the response, so each block costs one request timeout"
         );
     }
 }
