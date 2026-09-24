@@ -4,6 +4,7 @@
 //! concrete `BlockDagKeyValueStorage` is casper-owned in Scala, so only the trait is ported here.
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use async_trait::async_trait;
 
@@ -20,7 +21,15 @@ pub type DeployId = Vec<u8>;
 /// the `casper` crate's `BlockDagKeyValueStorage`.
 #[async_trait]
 pub trait BlockDagStorage: Send + Sync {
-    async fn get_representation(&self) -> DagRepresentation;
+    /// The current DAG representation, **shared rather than copied**.
+    ///
+    /// A `DagRepresentation` owns every message, and each message's `seen` is its whole ancestry, so
+    /// it is Θ(N²) in the number of blocks. Returning it by value made every caller pay that copy —
+    /// ~35 call sites, including every per-block path and every peer-request handler, with the read
+    /// lock held for the whole copy; on a node serving a syncing peer that was the difference between
+    /// a flat curve and ~0.86 GiB per block. Callers read fields through `Deref`, so the change is
+    /// invisible to them; the writer takes the copy at most once per insert via `Arc::make_mut`.
+    async fn get_representation(&self) -> Arc<DagRepresentation>;
 
     async fn insert(
         &self,

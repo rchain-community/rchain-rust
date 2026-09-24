@@ -155,11 +155,22 @@ red-team items remain.
 - **H5 — `BlockRetriever.requested` map unbounded.** **Fixed.** `MAX_REQUESTED_BLOCKS = 10_000` caps
   the map (new hashes are rejected with `AdmitHashStatus::CapacityReached`), and
   `MAX_WAITING_LIST_PER_HASH = 32` caps the per-hash waiting list.
-- **H6 — DAG message-state whole-map clone per insert.** **Fixed (partial).** `Finalizer` now
-  borrows the message map (`Finalizer<'a>` holds `&'a BTreeMap`) instead of cloning it on every
-  `create_message`; both call sites (`message_state.rs`, `multi_parent_casper.rs`) pass a reference.
-  The per-message `seen` reachability cache remains an inherent O(N²) structure (faithful to Scala's
-  `seen` cache; capping it would break finalization), documented rather than "fixed".
+- **H6 — DAG message-state whole-map clone per insert.** **Fixed (partial), and the copies are gone
+  as of the 2026-09-24 performance pass.** `Finalizer` borrows the message map (`Finalizer<'a>` holds
+  `&'a BTreeMap`) instead of cloning it on every `create_message`; both call sites
+  (`message_state.rs`, `multi_parent_casper.rs`) pass a reference. `insert` no longer clones
+  `dag_message_state` per block (the guard is scoped to the synchronous region), `get_representation`
+  returns `Arc<DagRepresentation>` instead of a by-value deep copy, and `Message.seen` is
+  `Arc<BTreeSet>` so a `Message` clone is a refcount bump — at N=1,200, 200 reads take 0.17 ms against
+  459 ms with the copy restored, and 50 inserts 230 ms against 339 ms, with a tripwire on each
+  (`casper/src/dag.rs`; C56's row in §20 carries the attribution and the calibration trap: the larger
+  figures a first pass quoted describe the pre-Stage-3 tree, and neither bound caught its own
+  falsifier until it was re-measured). The per-message `seen`
+  reachability cache remains an inherent Θ(N²) *residency* — Σ|seen| × 32 B ≈ 553 MB at a
+  5,881-block chain — faithful to Scala's `seen` cache, and capping it would break finalization. That
+  residency is the residual this row still records: **what was fixed is every copy of it, not its
+  size.** A future pass that wants the size gone has a known, value-preserving design (a dense bitset
+  with a hash→index table, ρ ≈ N²/8 bytes) recorded in C56's §20 row.
 
 ### Medium
 
@@ -2681,14 +2692,55 @@ port against the **reference document** rather than against itself.
   Pinned by `between_is_the_id_set_difference_restricted_to_the_map` (which also closes the function's
   coverage gap).
 
-  **Owed, and stated rather than implied.** The steady state is still **~9.8 GiB for a 5,881-block
-  chain** — the live structure's floor, which a `Message` holding its whole ancestor set makes
-  Θ(N²)-and-worse in N — and growth resumes at **~0.86 GiB per block while two peers sync from that
-  node**, a peer-sync cost this pass did not attribute (`perf` is unusable on this host and LMDB will
-  not open under `valgrind`: a 1 TB map is `EINVAL` there, which is why the attribution above rests on
-  measurement and the stack rather than on a profile). A devnet whose chain reaches the thousands of
-  blocks is therefore still heavy; what is fixed is that it starts, and that a block no longer costs
-  a gigabyte.
+  **The peer-sync half was attributed and fixed (2026-09-24, the performance pass).** What grew
+  ~0.86 GiB per block while peers synced was not the sync path's own bookkeeping — it was the DAG
+  being *copied* all over the per-block and per-request paths:
+
+  - `get_representation` returned `DagRepresentation` **by value**, so every one of ~35 production
+    call sites — every per-block path (`proposer.rs`, `validate.rs`, `multi_parent_casper.rs`), every
+    peer-request handler (`node_running.rs`'s ForkChoiceTip / HasBlockRequest / FinalizedFringeRequest,
+    `block_receiver.rs`) — paid a deep copy of `msg_map` with the read lock held throughout. It now
+    returns `Arc<DagRepresentation>` (a refcount), and the writer takes its copy at most once per
+    insert through `Arc::make_mut`, serialized by the storage's own lock.
+  - `insert` cloned `dag_message_state` once per block purely to avoid holding the read guard across
+    the awaits that follow it; everything it needed is synchronous, so the guard is now scoped to
+    that region and the copy is gone.
+  - `Message.seen` — the set that made a `Message` copy cost Θ(N) — is now `Arc<BTreeSet>`, so a
+    `Message` clone is a refcount bump. **This does not move the value**, which is why it is not a
+    register event: law 15 pins `seen` as the construction `seenOf js id = (js.map (·.seen)).join ++
+    [id]` (`spec/Rchain/Casper/Fringe.lean:90`, both inclusion halves proved), and the representation
+    is not what the law constrains.
+
+  Measured in-process, at N=1,200, debug test build, with the copying behaviour restored for the
+  comparison: **200 representation reads take 459 ms copying against 0.17 ms shared; 50 inserts take
+  339 ms against 230 ms.** Both are now tripwires
+  (`reading_the_dag_representation_does_not_copy_the_message_state`,
+  `adding_a_block_does_not_copy_the_message_state`, `casper/src/dag.rs`).
+
+  **Both had to be rebuilt, because the falsification that the house rule requires found neither
+  could fail as written (2026-09-24).** They were calibrated against the *pre-Stage-3* tree, where
+  `Message.seen` was still a plain `BTreeSet`: those are the figures a first pass quoted — 27.3 s and
+  7.44 s — and they describe the *whole* pre-pass shape, not either tripwire's own falsifier. With
+  `seen` shared, restoring the copy alone costs one to two orders of magnitude less, so both bounds
+  cleared it. The read tripwire now also asserts the *mechanism* — consecutive reads must return the
+  same allocation (`Arc::ptr_eq`), which is deterministic and fails on `Arc::new((**guard).clone())`,
+  the one-line way the copy returns — and keeps a 5 s bound for the slower joint regression. The
+  insert tripwire's ratio is 1.47×, which no timing bound can carry; it now pins the mechanism's
+  persistent half instead (an insert into an unread DAG must leave the representation at the same
+  allocation, so an unconditional copy fails it) and says in its own doc comment what it cannot see.
+  The generalisable rule: **a tripwire calibrated before a sibling change landed is calibrated
+  against a tree that no longer exists** — re-run the falsifier against the tree it lives in, or the
+  bound is prose.
+
+  **Still owed, and now stated with a number rather than a mystery.** The steady *floor* is the
+  Θ(N²) `seen` residency itself — H6 below, unchanged as a decision: at a 5,881-block chain that is
+  Σ|seen| × 32 B ≈ 553 MB plus set overhead, and the DAG also carries `fringe_states` (Θ(N) entries,
+  keyed by the fringe *set* rather than the hash the store already uses). A devnet whose chain reaches
+  the thousands of blocks is still heavy; what changed is that neither reading *nor* extending it
+  copies the DAG any more. Also unfixed and named: a store-items page is materialised and copied 3-4×
+  (decode → `to_vec` → serialise → the chunker's payload clone) with only a node-count cap
+  (`MAX_STORE_ITEMS_TAKE`), and `handle_store_items_request` is awaited inline in the dispatch loop,
+  so one large page stalls every other message for that peer.
 
 - **The class, recorded once, because it is the consolidation pass's whole justification: an axiom that
   is false is worse than one that is owed, because anything follows from it.** Nine axioms the pass

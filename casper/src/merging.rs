@@ -805,6 +805,7 @@ impl MergeScope {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
 
     fn chain(id: u8, cost: i64) -> DeployChainIndex {
         DeployChainIndex {
@@ -861,7 +862,7 @@ mod tests {
             bonds_map: BTreeMap::new(),
             parents: parents.iter().map(|&b| hash(b)).collect(),
             fringe: BTreeSet::new(),
-            seen: seen.iter().map(|&b| hash(b)).collect(),
+            seen: Arc::new(seen.iter().map(|&b| hash(b)).collect()),
         }
     }
 

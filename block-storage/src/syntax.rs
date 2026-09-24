@@ -97,6 +97,7 @@ pub async fn insert_genesis(
 mod tests {
     use super::*;
     use std::collections::BTreeMap;
+    use std::sync::Arc;
     use std::sync::Mutex;
 
     use rchain_models::block_hash::BlockHash;
@@ -128,7 +129,7 @@ mod tests {
 
     #[async_trait::async_trait]
     impl BlockDagStorage for StubDagStorage {
-        async fn get_representation(&self) -> DagRepresentation {
+        async fn get_representation(&self) -> Arc<DagRepresentation> {
             unreachable!("the syntax layer never asks for a representation")
         }
 

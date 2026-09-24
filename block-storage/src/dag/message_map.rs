@@ -138,6 +138,7 @@ where
 mod tests {
     use super::*;
     use rchain_shared::refined::SeqNum;
+    use std::sync::Arc;
 
     fn msg(id: i32, fringe: &[i32], seen: &[i32]) -> Message<i32, i32> {
         Message {
@@ -148,7 +149,7 @@ mod tests {
             bonds_map: BTreeMap::new(),
             parents: BTreeSet::new(),
             fringe: fringe.iter().copied().collect(),
-            seen: seen.iter().copied().collect(),
+            seen: Arc::new(seen.iter().copied().collect()),
         }
     }
 

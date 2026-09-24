@@ -46,14 +46,14 @@ pub fn message_from_block_metadata(
         bonds_map: block.bonds_map.clone(),
         parents: block.justifications.clone(),
         fringe: block.fringe.clone(),
-        seen,
+        seen: Arc::new(seen),
     })
 }
 
 /// The concrete block DAG storage (port of `BlockDagKeyValueStorage`). Fringe pruning (the
 /// `BlockIndex` cache) and deploy-pool expiry run on finalization.
 pub struct BlockDagKeyValueStorage {
-    representation: tokio::sync::RwLock<DagRepresentation>,
+    representation: tokio::sync::RwLock<Arc<DagRepresentation>>,
     lock: tokio::sync::Mutex<()>,
     block_metadata_store: Arc<BlockMetadataStore>,
     fringe_data_store: Arc<dyn KeyValueTypedStore<Blake2b256Hash, FringeData>>,
@@ -111,7 +111,7 @@ impl BlockDagKeyValueStorage {
         };
 
         Ok(BlockDagKeyValueStorage {
-            representation: tokio::sync::RwLock::new(representation),
+            representation: tokio::sync::RwLock::new(Arc::new(representation)),
             lock: tokio::sync::Mutex::new(()),
             block_metadata_store,
             fringe_data_store,
@@ -142,7 +142,9 @@ impl BlockDagKeyValueStorage {
 
 #[async_trait]
 impl BlockDagStorage for BlockDagKeyValueStorage {
-    async fn get_representation(&self) -> DagRepresentation {
+    async fn get_representation(&self) -> Arc<DagRepresentation> {
+        // A pointer copy under a lock held for nanoseconds — this used to be a full Θ(N²) deep copy
+        // with the read lock held throughout (AUDIT C56's owed paragraph).
         self.representation.read().await.clone()
     }
 
@@ -199,32 +201,38 @@ impl BlockDagStorage for BlockDagKeyValueStorage {
         }
 
         // Compute fringe diff and store fringe data.
-        let dag_state = self.representation.read().await.dag_message_state.clone();
         let fringe_hash = FringeData::fringe_hash_of(&block_metadata.fringe);
 
-        let mut justifications: BTreeSet<Message<BlockHash, Validator>> = BTreeSet::new();
-        for j in &block_metadata.justifications {
-            let msg = dag_state
-                .msg_map
-                .get(j)
-                .ok_or_else(|| "justification not present in message map".to_string())?;
-            justifications.insert(msg.clone());
-        }
-        let prev_fringe = message_map::latest_fringe(&dag_state.msg_map, &justifications);
-        let mut fringe_seen: BTreeSet<BlockHash> = BTreeSet::new();
-        for f in &block_metadata.fringe {
-            let msg = dag_state
-                .msg_map
-                .get(f)
-                .ok_or_else(|| "fringe block not present in message map".to_string())?;
-            fringe_seen.extend(msg.seen.iter().copied());
-        }
-        let prev_seen: BTreeSet<BlockHash> = prev_fringe
-            .iter()
-            .flat_map(|m| m.seen.iter().copied())
-            .collect();
-        let fringe_diff: BTreeSet<BlockHash> =
-            fringe_seen.difference(&prev_seen).copied().collect();
+        // One read of the representation, and the guard is a *block expression* rather than a
+        // binding: everything below is synchronous, so the copy this used to take
+        // (`dag_message_state.clone()`, Θ(N²) in the messages' `seen` sets, once per block) bought
+        // nothing except releasing the lock — and a binding left in scope would hold the read lock
+        // across `fringe_data_store.put`, making the write at the end of this function wait on
+        // itself. The borrow checker cannot catch a stale guard; the block can.
+        let fringe_diff: BTreeSet<BlockHash> = {
+            let repr = self.representation.read().await;
+            let msg_map = &repr.dag_message_state.msg_map;
+            let mut justifications: BTreeSet<Message<BlockHash, Validator>> = BTreeSet::new();
+            for j in &block_metadata.justifications {
+                let msg = msg_map
+                    .get(j)
+                    .ok_or_else(|| "justification not present in message map".to_string())?;
+                justifications.insert(msg.clone());
+            }
+            let prev_fringe = message_map::latest_fringe(msg_map, &justifications);
+            let mut fringe_seen: BTreeSet<BlockHash> = BTreeSet::new();
+            for f in &block_metadata.fringe {
+                let msg = msg_map
+                    .get(f)
+                    .ok_or_else(|| "fringe block not present in message map".to_string())?;
+                fringe_seen.extend(msg.seen.iter().copied());
+            }
+            let prev_seen: BTreeSet<BlockHash> = prev_fringe
+                .iter()
+                .flat_map(|m| m.seen.iter().copied())
+                .collect();
+            fringe_seen.difference(&prev_seen).copied().collect()
+        };
 
         let fringe_data = FringeData {
             fringe_hash,
@@ -258,7 +266,12 @@ impl BlockDagStorage for BlockDagKeyValueStorage {
         let mut prune_cache_ids: Vec<BlockHash> = Vec::new();
         let latest_block_number: i64;
         {
-            let mut repr = self.representation.write().await;
+            // The guard is bound so that `Arc::make_mut` has somewhere to borrow the `&mut` from; it
+            // is dropped at the end of this block, before the awaits below. `make_mut` copies only
+            // when a reader still holds a snapshot, and this function is serialized by `self.lock`,
+            // so that is at most one copy per insert — where every reader used to pay one.
+            let mut guard = self.representation.write().await;
+            let repr = Arc::make_mut(&mut *guard);
             let msg = message_from_block_metadata(&block_metadata, &repr.dag_message_state.msg_map)
                 .ok_or_else(|| "justification not present in message map".to_string())?;
             // H-2: a validation-failed block is recorded in the map (for `neglectedInvalidBlock`
@@ -593,6 +606,132 @@ mod tests {
             store.add(meta(h, &parents, i as i64)).await.unwrap();
             hashes.push(h);
         }
+    }
+
+    /// AUDIT C56's owed paragraph, first half — **reading** the DAG must not copy it.
+    ///
+    /// `get_representation` returned `DagRepresentation` **by value**, so every caller paid a deep
+    /// copy of `msg_map`: N messages, each carrying its whole ancestor set behind `seen`, i.e.
+    /// Σ|seen| × 32 B ≈ 23 MB *per read* at N=1,200 and ≈ 550 MB at the 5,844-block devnet chain —
+    /// with the read lock held for the whole copy. Roughly 35 production sites read it, including
+    /// every per-block path and every peer-request handler, which is what grew a peer-serving node
+    /// by ~0.86 GiB per block. A reader now takes a refcount (`Arc<DagRepresentation>`).
+    ///
+    /// A cost bound, not a semantic one: the value is identical either way, which is why no test of
+    /// behaviour could see it.
+    ///
+    /// **Two instruments, because one did not survive its own falsification (2026-09-24).** The
+    /// timing bound alone was calibrated against the *pre-Stage-3* tree — the doc-comment figure of
+    /// 27.3 s is that artifact, where `Message.seen` was still a plain `BTreeSet`. With `seen` shared
+    /// the same restoration costs **459 ms**, which a 5 s bound clears, so the tripwire passed with
+    /// the copy put back. It now asserts the *mechanism* as well: every read must hand back the same
+    /// allocation (`Arc::ptr_eq`), which is exactly "the DAG was not rebuilt" and is deterministic —
+    /// immune to machine load, and 0.17 ms measured against 459 ms, where a timing bound separating
+    /// them by 2,700× would have to sit close enough to the floor to be flaky. The 5 s bound stays
+    /// for the slower regression: the *whole* pre-pass shape (copying and unshared `seen`) is the
+    /// 27.3 s case, which both instruments catch. `--nocapture` prints the window.
+    #[tokio::test]
+    async fn reading_the_dag_representation_does_not_copy_the_message_state() {
+        const N: usize = 1200;
+        const READS: usize = 200;
+        const BOUND: std::time::Duration = std::time::Duration::from_secs(5);
+
+        let metadata_store = empty_metadata_store().await;
+        store_chain(&metadata_store, N).await;
+        let storage = build_storage_over(metadata_store).await;
+
+        // No insert runs here, so the stored `Arc` cannot be replaced under us: every read of an
+        // unchanged DAG must return that same allocation.
+        let first = storage.get_representation().await;
+        let started = std::time::Instant::now();
+        for _ in 0..READS {
+            let repr = storage.get_representation().await;
+            // The read did happen, and returned the whole DAG — so the tripwire cannot pass by
+            // reading something smaller.
+            assert_eq!(repr.dag_message_state.msg_map.len(), N);
+            assert!(
+                Arc::ptr_eq(&first, &repr),
+                "a read of a {N}-block DAG returned a different allocation than the previous one: \
+                 `get_representation` is rebuilding the representation instead of sharing it"
+            );
+        }
+        let elapsed = started.elapsed();
+        println!("{READS} representation reads at N={N}: {elapsed:?}");
+
+        assert!(
+            elapsed < BOUND,
+            "{READS} representation reads of a {N}-block DAG took {elapsed:?} (bound {BOUND:?}): the \
+             DAG is being copied per read instead of shared"
+        );
+    }
+
+    /// AUDIT C56's owed paragraph, second half — **adding** a block must not copy the DAG either.
+    ///
+    /// `insert` cloned `dag_message_state` once per block (again Θ(N) messages, though no longer
+    /// Θ(N) each) purely to avoid holding the read guard across the awaits further down; everything
+    /// it needed from the state is synchronous, so the copy bought nothing. The guard is now scoped
+    /// to the synchronous region and the write path takes `Arc::make_mut`, which copies only while a
+    /// reader holds a snapshot — at most once per insert, serialized by the storage's own lock.
+    ///
+    /// **What this test can and cannot see (measured 2026-09-24).** The transient copy — HEAD's
+    /// `self.representation.read().await.dag_message_state.clone()`, restored verbatim — costs
+    /// **2.2 ms per insert** at N=1,200 against the insert's own 4.6 ms: 50 inserts take **339 ms
+    /// copying against 230 ms fixed**. A 1.47× ratio cannot carry a timing bound, and the 3 s bound
+    /// it used to carry did not catch it. The ratio is small *because* Stage 3 landed: sharing
+    /// `seen` turned the copy into N refcount bumps, so the doc-comment figure of 7.44 s describes
+    /// the pre-Stage-3 tree rather than this falsifier. And with no allocation counter available (a
+    /// `#[global_allocator]` needs `unsafe`, which this crate graph does not admit) that transient
+    /// copy leaves no trace a test can read — only its cost, which nothing here measures.
+    ///
+    /// So the assertion is the mechanism's *persistent* half, which is deterministic: with no reader
+    /// holding a snapshot, `insert` must take `Arc::make_mut`'s no-copy path, leaving the
+    /// representation at the same allocation. An unconditional `Arc::new((**guard).clone())` — the
+    /// plausible way to reintroduce the per-block copy — fails here. The 5 s bound remains as a
+    /// gross-regression smoke bound (the full pre-pass shape lands in the seconds, and C55's own
+    /// tripwire covers the cubic one); it is deliberately not tight enough to be the copy detector,
+    /// and is not claimed to be. The per-*read* half is pinned deterministically by
+    /// `reading_the_dag_representation_does_not_copy_the_message_state`.
+    #[tokio::test]
+    async fn adding_a_block_does_not_copy_the_message_state() {
+        const N: usize = 1200;
+        const K: usize = 50;
+        const BOUND: std::time::Duration = std::time::Duration::from_secs(5);
+
+        let metadata_store = empty_metadata_store().await;
+        store_chain(&metadata_store, N).await;
+        let storage = build_storage_over(metadata_store).await;
+
+        // `as_ptr` off a temporary, so the read does not itself hold a snapshot across the inserts
+        // (which would force `make_mut` to copy, legitimately).
+        let before = Arc::as_ptr(&storage.get_representation().await);
+
+        // A distinct `seq_num` per block: every stored block carries sender `[0; 65]` and seq 0, and
+        // a second block from the same sender at the same seq is refused as an equivocation (H-1).
+        let mut tip = chain_hash(N - 1);
+        let started = std::time::Instant::now();
+        for k in 0..K {
+            let next = chain_hash(N + k);
+            let mut m = meta(next, &[tip], (N + k) as i64);
+            m.seq_num = (k as i64 + 1).try_into().unwrap();
+            storage.insert(m, block(next)).await.unwrap();
+            tip = next;
+        }
+        let elapsed = started.elapsed();
+        println!("{K} inserts at N={N}: {elapsed:?}");
+
+        let repr = storage.get_representation().await;
+        assert_eq!(repr.dag_message_state.msg_map.len(), N + K);
+        assert_eq!(
+            before,
+            Arc::as_ptr(&repr),
+            "inserting into an unread DAG replaced the representation: the message state is being \
+             copied per block instead of extended in place"
+        );
+
+        assert!(
+            elapsed < BOUND,
+            "{K} inserts into a {N}-block DAG took {elapsed:?} (bound {BOUND:?})"
+        );
     }
 
     /// AUDIT C55 — restoring a stored chain must not rebuild the message state once per block.

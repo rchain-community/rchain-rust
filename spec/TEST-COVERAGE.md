@@ -319,6 +319,18 @@ hard mode would fail on, so that a half-finished sweep is legible instead of inv
   `block-storage/src/dag/message_map.rs` `between_is_the_id_set_difference_restricted_to_the_map`.
   Both tests are *cost* claims rather than value claims — they fail when the work returns, which is the
   only way this class is visible at all, since both implementations produce identical state.
+  Two more guard the DAG *representation* since the 2026-09-24 pass stopped copying it —
+  `casper/src/dag.rs` `reading_the_dag_representation_does_not_copy_the_message_state` and
+  `adding_a_block_does_not_copy_the_message_state`. They encode an instrument limit worth naming: a
+  *representation* change — sharing the `seen` set behind `Arc` — is invisible to any assertion about
+  value, so how to fail at all is the whole of their design, and the first version of both did not.
+  Calibrated against the pre-Stage-3 tree (200 reads 27.3 s copying; 50 inserts 7.44 s), they cleared
+  their own falsifiers once `seen` was shared — the copy alone costs 459 ms and 339 ms at N=1,200, and
+  the insert pair differ by 1.47×, which no bound can carry. The read test now asserts the mechanism
+  (`Arc::ptr_eq` across reads: the representation must not be rebuilt) alongside a 5 s bound for the
+  slower joint regression; the insert test asserts the same allocation survives an insert into an
+  unread DAG, and its doc comment says plainly that the transient copy's cost is *not* measured,
+  because no instrument available here can see it (a `#[global_allocator]` needs `unsafe`).
 
 - **G3 — PoS lifecycle mutations** (`rholang/src/native_state.rs`). ✅ `bond` trust admission +
   min/max + funds, deferred activation at the boundary, `withdraw` staging + quarantine payout via

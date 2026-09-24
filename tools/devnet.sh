@@ -21,6 +21,9 @@ IMAGE="${RNODE_IMAGE:-rnode:local}"
 NETWORK="devnet"
 BOOTSTRAP="devnet-bootstrap"
 PREFIX="devnet"
+# The bootstrap's data volume, when a measurement must run against an existing artifact rather than
+# `${BOOTSTRAP}-data` (set by `up --data-volume`). Empty means the default.
+BOOTSTRAP_DATA_VOLUME=""
 
 # Throwaway validator keypairs (secp256k1, base16). validator[0] also funds the deployer wallet, so
 # the deployer private key is validator[0]'s private key.
@@ -83,6 +86,9 @@ Commands:
   --fresh                        discard the nodes' data volumes first, so the bootstrap creates the
                                  genesis rather than rebuilding its stored chain (a *restart* rebuilds
                                  and replays the accumulated chain; `up` says which one it is doing)
+  --data-volume NAME             mount an existing data volume as the *bootstrap's* data directory,
+                                 for measuring against a recorded chain (must already exist; the
+                                 validators still use their own `${name}-data` volumes)
   --effect-scheduler MODE        effect-scheduler mode: dfs (default), gate, relaxed-validated, or
                                  relaxed — the last is rejected on the block path at runtime, which
                                  is how tools/devnet-fuzz.py --mode scheduler exercises that guard
@@ -183,8 +189,13 @@ docker_opts() {
   local name="$1" grpc_host="$2" http_host="$3" admin_host="$4"
   local ports="-p ${grpc_host}:40401 -p ${http_host}:40403"
   if $ADMIN; then ports="$ports -p ${admin_host}:40405"; fi
+  local data="${name}-data"
+  # `--data-volume` names the *bootstrap's* data volume, and only the bootstrap's: the recorded
+  # long chain that measurements run against is the bootstrap's, and pointing every node at one
+  # directory would have them fight over the same LMDB environments.
+  if [[ "$name" == "$BOOTSTRAP" && -n "$BOOTSTRAP_DATA_VOLUME" ]]; then data="$BOOTSTRAP_DATA_VOLUME"; fi
   echo "-d --name $name --network $NETWORK $ports \
-    -v ${name}-data:/var/lib/rnode \
+    -v ${data}:/var/lib/rnode \
     -v ${CONTRACTS_DIR}:/contracts:ro"
 }
 
@@ -222,6 +233,11 @@ cmd_up() {
       --validators) n="${2:?}"; shift 2 ;;
       --observers)  m="${2:?}"; shift 2 ;;
       --fresh) FRESH=true; shift ;;
+      --data-volume)
+        # Only `up` reads this, and only for the bootstrap. It is how a measurement runs against the
+        # recorded long chain (`devnet-stale-snapshot`) instead of `${BOOTSTRAP}-data`; `--fresh`
+        # still clears the standard volumes, so passing both leaves the named artifact alone.
+        BOOTSTRAP_DATA_VOLUME="${2:?--data-volume needs a volume name}"; shift 2 ;;
       --effect-scheduler)
         EFFECT_SCHEDULER="${2:?}"
         case "$EFFECT_SCHEDULER" in
@@ -263,8 +279,20 @@ cmd_up() {
   # fresh start — the whole of AUDIT C55 was a bootstrap that worked against a fresh volume and
   # appeared to hang on every later one, silently — so say which one this is, every time.
   local reused=() c v
+  # `--data-volume` names a volume that must already exist: `docker run -v` would *create* an empty
+  # one, and the run would silently start from genesis instead of from the artifact it was asked to
+  # measure — the same class of quiet substitution that `--fresh` exists to announce.
+  if [[ -n "$BOOTSTRAP_DATA_VOLUME" ]]; then
+    if ! docker volume inspect "$BOOTSTRAP_DATA_VOLUME" >/dev/null 2>&1; then
+      echo "--data-volume ${BOOTSTRAP_DATA_VOLUME}: no such volume" >&2
+      exit 1
+    fi
+    echo "==> bootstrap data volume: $BOOTSTRAP_DATA_VOLUME (bootstrap only; not ${BOOTSTRAP}-data)"
+  fi
   c="$BOOTSTRAP"
-  if docker volume inspect "${c}-data" >/dev/null 2>&1; then reused+=("$c"); fi
+  if [[ -z "$BOOTSTRAP_DATA_VOLUME" ]] && docker volume inspect "${c}-data" >/dev/null 2>&1; then
+    reused+=("$c")
+  fi
   for (( v = 1; v < n; v++ )); do
     c="$(validator_name "$v")"
     if docker volume inspect "${c}-data" >/dev/null 2>&1; then reused+=("$c"); fi

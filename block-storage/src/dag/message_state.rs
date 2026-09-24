@@ -4,6 +4,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::hash::Hash;
+use std::sync::Arc;
 
 use rchain_shared::refined::{BlockHeight, NonNegI64, SeqNum};
 
@@ -68,7 +69,7 @@ where
             bonds_map: fin_bonds_map,
             parents: justification_keys,
             fringe: new_fringe_ids,
-            seen: new_seen,
+            seen: Arc::new(new_seen),
         }
     }
 
@@ -186,6 +187,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
 
     fn msg(id: i32, sender: i32, sender_seq: i64) -> Message<i32, i32> {
         Message {
@@ -196,7 +198,7 @@ mod tests {
             bonds_map: BTreeMap::new(),
             parents: BTreeSet::new(),
             fringe: BTreeSet::new(),
-            seen: [id].into_iter().collect(),
+            seen: Arc::new([id].into_iter().collect()),
         }
     }
 
@@ -243,7 +245,7 @@ mod tests {
             BTreeMap::new(),
             &justifications,
         );
-        assert_eq!(new_msg.seen, [0, 1].into_iter().collect());
+        assert_eq!(*new_msg.seen, [0, 1].into_iter().collect());
         assert_eq!(new_msg.parents, [0].into_iter().collect());
     }
 }

@@ -428,12 +428,15 @@ where
 
     // Attestation suppression: no new state transitions, or not yet a super-majority.
     let dag_repr = dag.get_representation().await;
-    let seen = |h: &BlockHash| {
+    // The ids are what this needs (the two consumers below are a union and a difference), so it
+    // yields them directly rather than cloning the message that holds them — a `Message` clone used
+    // to drag its whole ancestor set along (AUDIT C56).
+    let seen = |h: &BlockHash| -> Vec<BlockHash> {
         dag_repr
             .dag_message_state
             .msg_map
             .get(h)
-            .map(|m| m.seen.clone())
+            .map(|m| m.seen.iter().copied().collect())
             .unwrap_or_default()
     };
     let parent_seen: BTreeSet<BlockHash> = parent_hashes.iter().flat_map(|h| seen(h)).collect();

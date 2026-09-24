@@ -5,6 +5,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::hash::{Hash, Hasher};
+use std::sync::Arc;
 
 use rchain_sdk::consensus::is_super_majority;
 use rchain_shared::refined::{BlockHeight, NonNegI64, SeqNum};
@@ -29,7 +30,18 @@ pub struct Message<M, S> {
     pub parents: BTreeSet<M>,
     pub fringe: BTreeSet<M>,
     /// Cache of seen message ids.
-    pub seen: BTreeSet<M>,
+    ///
+    /// Shared behind an `Arc` because this is the set that makes a `Message` expensive to copy: for
+    /// a chain of N blocks it holds the block's whole ancestry, so `clone`-ing a `Message` used to
+    /// copy Θ(N) ids — which the per-block and per-request paths did constantly (AUDIT C56), and
+    /// which the DAG restore did once per block (C55). A clone is now a refcount bump.
+    ///
+    /// The *value* is unchanged, and that matters: law 15 pins this set as the construction
+    /// `seenOf js id = (js.map (·.seen)).join ++ [id]` (`spec/Rchain/Casper/Fringe.lean:90`), with
+    /// both inclusion halves proved. The representation is not what the law constrains, which is why
+    /// this is not a register event — the Θ(N²) *residency* it implies is H6, still registered as an
+    /// accepted-faithful residual, and still what a future pass would have to decide about.
+    pub seen: Arc<BTreeSet<M>>,
 }
 
 impl<M: Hash, S> Hash for Message<M, S> {
@@ -239,7 +251,7 @@ mod tests {
             bonds_map: BTreeMap::new(),
             parents: parents.iter().copied().collect(),
             fringe: BTreeSet::new(),
-            seen: seen.iter().copied().collect(),
+            seen: Arc::new(seen.iter().copied().collect()),
         }
     }
 

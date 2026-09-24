@@ -524,8 +524,8 @@ mod effectful_tests {
 
     #[async_trait]
     impl BlockDagStorage for MockDag {
-        async fn get_representation(&self) -> DagRepresentation {
-            self.representation.clone()
+        async fn get_representation(&self) -> Arc<DagRepresentation> {
+            Arc::new(self.representation.clone())
         }
         async fn insert(&self, _m: BlockMetadata, _b: BlockMessage) -> Result<(), String> {
             Ok(())

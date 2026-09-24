@@ -101,7 +101,9 @@ invariants.
   Still deferred: the vault **unforgeable-name capability** (the vault stays a balance map keyed by
   REV address) and the `revvaultexport` tooling.
 - **Accepted-faithful residuals** (by design, not defects — see `AUDIT.md` §5/§11): plaintext
-  external-IP discovery (M7), the DAG `seen`-cache O(N²) (H6), and the rate-limited-but-plaintext
+  external-IP discovery (M7), the DAG `seen`-cache Θ(N²) *residency* (H6 — its per-clone cost is no
+  longer paid: `seen` is shared behind `Arc`, and neither reading nor extending the DAG copies it,
+  per the 2026-09-24 pass), and the rate-limited-but-plaintext
   Kademlia discovery bind.
 
 The earlier "deferred/unwired" surface (Kademlia, the HTTP transaction API, block reporting, the
