@@ -1205,8 +1205,8 @@ def laws : List Law := [
     rust := ["casper/src/runtime_manager.rs", "rspace/src/concurrent/channel_queue.rs"],
     witness := [`Rchain.published_state_is_the_oracles, `Rchain.fallback_rerun_published],
     falsifiable := some "the rule is the Rust's own (`validate_relaxed_block`, \
-      `casper/src/runtime_manager.rs:1003`; its acceptance is `comm_multisets_match` over both logs \
-      with `oracle_hash == relaxed_hash`, `:1021-1039`): accept \
+      `casper/src/runtime_manager.rs:1024`; its acceptance is `comm_multisets_match` over both logs \
+      with `oracle_hash == relaxed_hash`, `:1042-1060`): accept \
       the speculative run only when it agrees with the oracle, and otherwise ship the oracle's result. \
       A publication rule that shipped the speculative state unconditionally would falsify \
       `published_state_is_the_oracles`, which is why the theorem is stated over the *rule* rather than \
