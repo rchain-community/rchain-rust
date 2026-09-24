@@ -119,4 +119,4 @@ if (( failures > 0 )); then
   echo "===== $failures of $total Rust witness(es) FAILED ====="
   exit 1
 fi
-echo "===== all $total Rust witness(es) ran and passed ====="
+echo "all $total Rust witness(es) ran and passed"

@@ -347,6 +347,27 @@ if [[ -f "$ROOT/spec/conformance/protocol.tsv" ]]; then
   fi
 fi
 
+# --- the register's Rust half, run by name -------------------------------------
+#
+# Step 9 reads the register's *citations* and 5b/5c its counts, but a `provedModel` row's `rust` cell
+# names a *file* — and a file does not rot yet is also not evidence: the tests that assert a row's case
+# were prose in `falsifiable`/`note`, where nothing read them. `tools/check-rust-witnesses.sh` runs each
+# one by name and refuses a name that matches no test. That refusal is the point: `cargo test <filter>`
+# exits 0 on an empty match, so a registry of renamed, deleted or `#[ignore]`d tests would otherwise
+# run green while checking nothing — the clause checks 9 and 10 also carry.
+#
+# **Transitional, and the file says so in its own header.** The list lives in `tools/rust-witnesses.txt`
+# because the register's `rustWitness` field does not exist yet: the tree was red when this landed (the
+# sort unit's `Sort.lean` does not elaborate, so `laws.tsv` cannot be emitted). When the field lands,
+# this step pipes the column and the file is deleted — a witness list kept anywhere but the register is
+# a second copy of the register's own judgement.
+if "$ROOT/tools/check-rust-witnesses.sh" "$ROOT/tools/rust-witnesses.txt" >/tmp/rust-witnesses.log 2>&1; then
+  tail -1 /tmp/rust-witnesses.log | sed 's/^/ok    /'
+else
+  fail "the register's Rust witnesses do not run — see /tmp/rust-witnesses.log"
+  grep '^FAIL' /tmp/rust-witnesses.log | sed 's/^/      /' | head -5
+fi
+
 # (`tools/audit-protocols.sh` was to be a *static* audit of the vendored protocol content — a
 # "linear consume with no paired produce" walk for law 41 and a call-shape table for law 40. Law 41's
 # half was retired unshipped rather than committed with an exception list over vendored content; the
