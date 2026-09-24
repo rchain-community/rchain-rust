@@ -50,10 +50,54 @@ pub enum ProposerResult {
     },
 }
 
+/// Whether `sender` is in the bonds map the DAG reports — extracted from the
+/// `check_active_validator` closure so that its failure behaviour is testable without a proposer
+/// fixture (the `load_node`/`load_node_from_store` split, applied to a DAG read).
+///
+/// **Fallible, because the oracle is.** `Proposer.scala:240-243` takes the bonds map through
+/// `BlockDagStorage[F].lookupUnsafe`, which lifts an errored *or absent* lookup into an error in
+/// `F` — so the Scala never answers "not bonded" for a DAG it could not read. The port's pre-fix body
+/// flattened both into an empty bonds map, and an empty map answers `false` for every sender: a node
+/// whose DAG could not be read would stop proposing and report `NotBonded`, with no error anywhere
+/// (AUDIT C67, found by the U14 sweep; the falsifier's witnessing form is noted in the test below).
+///
+/// An *absent* block under a height-map key is an inconsistency, not an empty map: the height map
+/// names blocks the message map holds, which is exactly what `lookupUnsafe` refuses.
+pub(crate) async fn is_active_validator(
+    dag: &Arc<dyn BlockDagStorage>,
+    sender: &Validator,
+) -> Result<bool, String> {
+    let dag_repr = dag.get_representation().await;
+    let fringe = dag_repr.dag_message_state.latest_fringe();
+    let bonds_map = if let Some(m) = fringe.iter().next() {
+        m.bonds_map.clone()
+    } else if let Some((height, hashes)) = dag_repr.height_map.iter().next() {
+        match hashes.iter().next() {
+            Some(h) => {
+                dag.lookup(h)
+                    .await?
+                    .ok_or_else(|| {
+                        format!(
+                            "the DAG's height map names {} at height {}, but it is not in the DAG",
+                            h.to_hex(),
+                            i64::from(*height)
+                        )
+                    })?
+                    .bonds_map
+            }
+            None => Default::default(),
+        }
+    } else {
+        Default::default()
+    };
+    Ok(bonds_map.contains_key(sender))
+}
+
 /// The block proposer (port of `Proposer`).
 pub struct Proposer {
     get_latest_seq_number: Arc<dyn Fn(Validator) -> BoxFuture<i64> + Send + Sync>,
-    check_active_validator: Arc<dyn Fn(&ValidatorIdentity) -> BoxFuture<bool> + Send + Sync>,
+    check_active_validator:
+        Arc<dyn Fn(&ValidatorIdentity) -> BoxFuture<Result<bool, String>> + Send + Sync>,
     create_block: Arc<
         dyn Fn(&ValidatorIdentity) -> BoxFuture<Result<BlockCreatorResult, String>> + Send + Sync,
     >,
@@ -69,7 +113,9 @@ impl Proposer {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         get_latest_seq_number: Arc<dyn Fn(Validator) -> BoxFuture<i64> + Send + Sync>,
-        check_active_validator: Arc<dyn Fn(&ValidatorIdentity) -> BoxFuture<bool> + Send + Sync>,
+        check_active_validator: Arc<
+            dyn Fn(&ValidatorIdentity) -> BoxFuture<Result<bool, String>> + Send + Sync,
+        >,
         create_block: Arc<
             dyn Fn(&ValidatorIdentity) -> BoxFuture<Result<BlockCreatorResult, String>>
                 + Send
@@ -96,13 +142,20 @@ impl Proposer {
     }
 
     async fn do_propose(&self) -> Result<(ProposeResult, Option<BlockMessage>), String> {
-        if !(self.check_active_validator)(&self.validator).await {
-            return Ok((
-                ProposeResult {
-                    propose_status: ProposeStatus::NotBonded,
-                },
-                None,
-            ));
+        // A DAG that cannot be read is an error, not `NotBonded` (AUDIT C67): the oracle's
+        // `lookupUnsafe` raises, and reporting "not bonded" would stop this node proposing on a wrong
+        // reason with nothing in the log.
+        match (self.check_active_validator)(&self.validator).await {
+            Ok(true) => {}
+            Ok(false) => {
+                return Ok((
+                    ProposeResult {
+                        propose_status: ProposeStatus::NotBonded,
+                    },
+                    None,
+                ));
+            }
+            Err(e) => return Err(format!("cannot decide whether this node is bonded: {e}")),
         }
 
         match (self.create_block)(&self.validator).await? {
@@ -239,33 +292,13 @@ impl Proposer {
         };
 
         let check_active_validator: Arc<
-            dyn Fn(&ValidatorIdentity) -> BoxFuture<bool> + Send + Sync,
+            dyn Fn(&ValidatorIdentity) -> BoxFuture<Result<bool, String>> + Send + Sync,
         > = {
             let dag = dag.clone();
             Arc::new(move |vi: &ValidatorIdentity| {
                 let sender = Validator::from_slice(vi.public_key.bytes());
                 let dag = dag.clone();
-                Box::pin(async move {
-                    let dag_repr = dag.get_representation().await;
-                    let fringe = dag_repr.dag_message_state.latest_fringe();
-                    let bonds_map = if let Some(m) = fringe.iter().next() {
-                        m.bonds_map.clone()
-                    } else if let Some((_, hashes)) = dag_repr.height_map.iter().next() {
-                        match hashes.iter().next() {
-                            Some(h) => dag
-                                .lookup(h)
-                                .await
-                                .ok()
-                                .flatten()
-                                .map(|m| m.bonds_map)
-                                .unwrap_or_default(),
-                            None => Default::default(),
-                        }
-                    } else {
-                        Default::default()
-                    };
-                    bonds_map.contains_key(&sender)
-                })
+                Box::pin(async move { is_active_validator(&dag, &sender).await })
             })
         };
 
@@ -561,11 +594,98 @@ where
 mod tests {
     use super::*;
 
+    /// A `BlockDagStorage` whose `lookup` fails, so a DAG read error is observable as one, and whose
+    /// representation has an **empty fringe with a non-empty height map** — the shape that sends
+    /// `is_active_validator` to the `lookup` branch.
+    struct FailingLookupDag {
+        first_hash: BlockHash,
+    }
+
+    #[async_trait::async_trait]
+    impl BlockDagStorage for FailingLookupDag {
+        async fn get_representation(
+            &self,
+        ) -> Arc<rchain_block_storage::dag::representation::DagRepresentation> {
+            Arc::new(
+                rchain_block_storage::dag::representation::DagRepresentation {
+                    dag_set: Arc::new(BTreeSet::new()),
+                    child_map: Arc::new(std::collections::BTreeMap::new()),
+                    height_map: Arc::new(std::collections::BTreeMap::from([(
+                        BlockHeight::try_from(1).unwrap(),
+                        BTreeSet::from([self.first_hash]),
+                    )])),
+                    dag_message_state:
+                        rchain_block_storage::dag::message_state::DagMessageState::empty(),
+                    fringe_states: std::collections::BTreeMap::new(),
+                },
+            )
+        }
+
+        /// The failing read: a DAG that cannot answer is the whole point of this stub.
+        async fn lookup(
+            &self,
+            _block_hash: &BlockHash,
+        ) -> Result<Option<rchain_models::block_metadata::BlockMetadata>, String> {
+            Err("the DAG store is down".to_string())
+        }
+
+        // The rest of the trait is not on this path.
+        async fn insert(
+            &self,
+            _block_metadata: rchain_models::block_metadata::BlockMetadata,
+            _block: BlockMessage,
+        ) -> Result<(), String> {
+            todo!("not on the is_active_validator path")
+        }
+        async fn lookup_by_deploy_id(&self, _d: &DeployId) -> Result<Option<BlockHash>, String> {
+            todo!("not on the is_active_validator path")
+        }
+        async fn add_deploy(&self, _d: SignedDeployData) -> Result<(), String> {
+            todo!("not on the is_active_validator path")
+        }
+        async fn pooled_deploys(
+            &self,
+        ) -> Result<std::collections::BTreeMap<DeployId, SignedDeployData>, String> {
+            todo!("not on the is_active_validator path")
+        }
+        async fn contains_deploy_in_pool(&self, _d: &DeployId) -> Result<bool, String> {
+            todo!("not on the is_active_validator path")
+        }
+    }
+
+    /// **A DAG read that fails is not "this node is not bonded"** (AUDIT C67).
+    ///
+    /// The oracle is `Proposer.scala:240-243`, whose `else` branch takes the bonds map through
+    /// `BlockDagStorage[F].lookupUnsafe` — an errored lookup is an error in `F`, so the Scala never
+    /// answers "not bonded" for it. The port flattened the error into an empty bonds map, and an
+    /// empty map answers `false` for every sender, so a node whose DAG could not be read would stop
+    /// proposing and report `NotBonded` — a consensus-adjacent wrong answer with no error anywhere.
+    ///
+    /// Falsifier, both forms. Pre-fix (witnessing): `is_active_validator` answered `false` for a
+    /// failing `lookup`, and the assertion `!is_active_validator(..)` **passed on exactly that**
+    /// (run 2026-09-24 before the change). Post-fix: the same call is an `Err` naming the failure.
+    #[tokio::test]
+    async fn a_dag_read_that_fails_is_not_an_inactive_validator() {
+        let dag: Arc<dyn BlockDagStorage> = Arc::new(FailingLookupDag {
+            first_hash: BlockHash::new([0x11; 32]),
+        });
+        let sender = Validator::new([0x22; rchain_models::validator::LENGTH]);
+
+        let err = is_active_validator(&dag, &sender)
+            .await
+            .expect_err("a DAG that cannot be read must not answer \"not an active validator\"");
+        assert!(
+            err.contains("the DAG store is down"),
+            "and the refusal must name the failure, got: {err}"
+        );
+    }
+
     fn proposer(create: BlockCreatorResult) -> Proposer {
         let get_seq: Arc<dyn Fn(Validator) -> BoxFuture<i64> + Send + Sync> =
             Arc::new(|_v| Box::pin(async { 0i64 }));
-        let check_active: Arc<dyn Fn(&ValidatorIdentity) -> BoxFuture<bool> + Send + Sync> =
-            Arc::new(|_v| Box::pin(async { true }));
+        let check_active: Arc<
+            dyn Fn(&ValidatorIdentity) -> BoxFuture<Result<bool, String>> + Send + Sync,
+        > = Arc::new(|_v| Box::pin(async { Ok(true) }));
         let create_block: Arc<
             dyn Fn(&ValidatorIdentity) -> BoxFuture<Result<BlockCreatorResult, String>>
                 + Send

@@ -3458,11 +3458,17 @@ finding that no law covers, and it says why rather than leaving the gap to infer
   `perf-tail`* — now **fixed as C65**: `lfs_block_requester.rs:86` (a dropped `block_store.put` followed
   by `guard.done(&hash)`: the block was recorded as done and never re-requested) and `:128` (a `contains`
   flatten whose empty `Vec<bool>` emptied both `existing` and `missing`, so the walk requested nothing) —
-  the two worst sites of this family, repaired there with their own falsifiers. *Owed, designed, needing a harness*: `proposer.rs:258`'s
-  `dag.lookup(..).await.ok().flatten().map(..).unwrap_or_default()` inside `check_active_validator` — a
-  read failure becomes an **empty bonds map**, i.e. "not bonded", and the fix is
-  `BoxFuture<Result<bool, String>>` through that closure into `propose`'s error path (all inside
-  `proposer.rs`), whose falsifier needs an `apply`-level harness with a failing DAG stub; and
+  the two worst sites of this family, repaired there with their own falsifiers. **Fixed: the proposer's
+  bonds read.** The closure's body is extracted as `is_active_validator(&dag, &sender) ->
+  Result<bool, String>` (the `load_node`/`load_node_from_store` split, applied to a DAG read, so the
+  behaviour is testable without a proposer fixture) and the `check_active_validator` closure carries
+  `BoxFuture<Result<bool, String>>` into `propose`'s error path — all inside `proposer.rs`, so nothing
+  outside it moved. A failed `lookup` became an empty bonds map, and an empty map answers `false` for
+  every sender: a node whose DAG could not be read stopped proposing and reported `NotBonded`, with no
+  error anywhere. An *absent* block under a height-map key is refused too, because that is the
+  inconsistency `lookupUnsafe` raises on. Falsified in the witnessing form:
+  `a_dag_read_that_fails_is_not_an_inactive_validator` first asserted `!is_active_validator(..)` for a
+  failing DAG and **passed on exactly that** (run 2026-09-24), then flipped to the refusal. *Owed*:
   `node/src/runtime/node_runtime.rs:580`'s `block_store.get(..).await.ok()..`, which silently drops a
   block from the validate→process task — the oracle's `getUnsafe` raises the inconsistency, so the task
   should log it with the hash (it has no reply to send), falsifiable with a recording-log stub.
