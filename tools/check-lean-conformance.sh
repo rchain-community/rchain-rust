@@ -49,12 +49,10 @@ ulimit -s 65536 2>/dev/null || true
 # numbering, reference integrity and axiom accounting) only run when the module is elaborated, so
 # *building* it is the check. A `sorry` scan cannot see an `axiom`; this step is what can.
 if command -v lake >/dev/null 2>&1; then
-  if (cd "$SPEC" && lake build >/tmp/lean-build.log 2>&1 \
-      && lake build rchain-corpus >>/tmp/lean-build.log 2>&1 \
-      && lake build rchain-laws >>/tmp/lean-build.log 2>&1); then
+  if (cd "$SPEC" && timeout 1800 bash -c 'lake build && lake build rchain-corpus && lake build rchain-laws') >/tmp/lean-build.log 2>&1; then
     ok "lake build (spec/, library + executables + the law-register checks)"
   else
-    fail "lake build (spec/) — see /tmp/lean-build.log"
+    fail "lake build (spec/) — see /tmp/lean-build.log (a 124 there is the 1800 s bound above, not a proof error)"
   fi
 else
   fail "lake is not installed (elan: https://github.com/leanprover/elan)"
@@ -276,6 +274,17 @@ fi
 # refuse it, and the limit is inherited by every `lake`/`lean` this script spawns. `lean` has the knob
 # directly (`-s/--tstack`, in Kb) if a caller would rather pass it than raise the process limit. The
 # `ulimit` line itself stays above the mapping with step 1; only this prose could move down.
+#
+# --- and step 1's own bound, in the same shape: a measurement, not a guess ----------------------
+# Step 1 used to run `lake build` **unbounded**, so a module that cannot finish looked like a gate that
+# has not finished — indistinguishable, to a reader waiting on it, from a slow one. The bound is
+# `timeout 1800` around the whole three-target chain, and the measurement behind the number is CI's:
+# the Lean conformance job gets **60 minutes for everything** (`ci.yml:117`), and the cold library build
+# is the largest single item in it. A separate measurement from the sort unit's reland attempt, which is
+# why the bound is generous: that tree did not finish in 1200 s and reached line 719 of 2,448 — an
+# *unfinished* build, not a slow one — so the bound has to be loose enough to pass a real cold build and
+# tight enough to become a loud failure rather than a hang. 1800 s does both; if a future build legitimately
+# needs more, raise it *with* the measurement that says so, the way this comment does.
 
 # --- 5b. the law register is current -------------------------------------------
 # `spec/laws.tsv` and `spec/LAWS.md` are generated from `Rchain/Laws.lean`, and the documents' law counts
