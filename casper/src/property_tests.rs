@@ -37,12 +37,21 @@ fn record(n: u8, names: &[u8]) -> CoordRecord {
     }
 }
 
-/// A name that is **not** a valid shard id: empty, non-ASCII, or containing a separator.
-fn arb_bad_name() -> impl Strategy<Value = String> {
+/// The three shapes the id predicate distinguishes, in one generator: empty, non-ASCII, and
+/// non-empty ASCII **with** separators.
+///
+/// The separator arm is deliberately *accepted* by the predicate — it is here to pin that `TryFrom`
+/// does not reject a `/` — so the generator is named for the shapes it draws, not for a verdict.
+/// (C78, in the fixture: a generator called "bad" whose third arm is in fact accepted is the same
+/// defect as a constructor named "validated" that does not validate. The arm is kept as an
+/// acceptance case rather than made genuinely bad because the genuinely-bad shapes it could draw —
+/// control characters, DEL, non-ASCII — are already the second arm's range, so that repair would
+/// delete real coverage.)
+fn arb_name_shapes() -> impl Strategy<Value = String> {
     prop_oneof![
         Just(String::new()),
         "[^ -~]{1,4}".prop_map(|s| s),       // non-ASCII
-        "/[a-z]{0,3}/{0,2}".prop_map(|s| s), // an extra separator
+        "/[a-z]{0,3}/{0,2}".prop_map(|s| s), // separator-bearing non-empty ASCII: accepted
     ]
 }
 
@@ -56,9 +65,10 @@ proptest! {
         prop_assert_eq!(ShardId::try_from(name.clone()).is_ok(), !name.is_empty() && name.is_ascii());
     }
 
-    /// The rejected shapes, spelled out: an empty name and a non-ASCII name are refused.
+    /// Both verdicts spelled out against the predicate: an empty or non-ASCII name is refused, and
+    /// a separator-bearing non-empty ASCII name is accepted.
     #[test]
-    fn law26_invalid_shard_names_are_refused(name in arb_bad_name()) {
+    fn law26_invalid_shard_names_are_refused(name in arb_name_shapes()) {
         let ok = !name.is_empty() && name.is_ascii();
         prop_assert_eq!(ShardId::try_from(name.clone()).is_ok(), ok, "name {:?}", name);
     }
@@ -70,15 +80,22 @@ proptest! {
     #[test]
     fn law26_a_child_id_nests_under_its_parent(parent_name in "[a-z]{1,4}", child_name in "[a-z]{1,4}") {
         let root = ShardId::root();
-        let parent = root.child(&parent_name);
-        let child = parent.child(&child_name);
+        let parent = root.child(&parent_name).expect("a valid shard name");
+        let child = parent.child(&child_name).expect("a valid shard name");
 
         prop_assert!(parent.is_root() == false);
         prop_assert_eq!(parent.parent(), Some(ShardId::root()));
         prop_assert_eq!(child.parent(), Some(parent.clone()));
         prop_assert!(child.to_string().starts_with(&parent.to_string()));
         prop_assert!(child.to_string().ends_with(&child_name));
-        prop_assert_ne!(child, parent, "a child is a different shard from its parent");
+        prop_assert_ne!(child, parent.clone(), "a child is a different shard from its parent");
+
+        // The composition refuses what the refinement refuses (C78): a name the id predicate
+        // rejects cannot be composed into a child, on either branch.
+        prop_assert!(root.child("").is_err());
+        prop_assert!(root.child("café").is_err());
+        prop_assert!(parent.child("").is_err());
+        prop_assert!(parent.child("café").is_err());
     }
 
     /// **Law 27 (no strict-subset commit).** An `Abort` vote on any leg prevents a commit: however

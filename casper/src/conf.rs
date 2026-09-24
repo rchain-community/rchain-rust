@@ -31,21 +31,24 @@ pub struct ShardSpec {
 
 impl ShardSpec {
     /// Resolve a spec from its authoring form, validating both halves (Law 26: a non-empty, ASCII
-    /// shard id).
+    /// shard id — the parent through `TryFrom`, the name through `ShardId::child`).
     pub fn new(
         shard_name: String,
         parent_shard_id: String,
         genesis_block_data: GenesisBlockData,
         autogen_shard_size: i32,
     ) -> Result<Self, String> {
-        // `ShardId::child` composes the name without validating it, so the name is checked on its
-        // own — otherwise a spec could carry an id that `format_of_fields` would later reject.
-        ShardId::try_from(shard_name.clone())
-            .map_err(|e| format!("invalid shard-name '{shard_name}': {e}"))?;
+        // The name is validated by the type, not here: `child` applies the id refinement's own
+        // predicate to the name it appends (C78), so the pre-check this used to carry is gone — one
+        // predicate in one place, and no drift between the composition and the refinement. The
+        // operator-visible message is preserved by the mapping.
         let parent = ShardId::try_from(parent_shard_id.clone())
             .map_err(|e| format!("invalid parent-shard-id '{parent_shard_id}': {e}"))?;
+        let shard_id = parent
+            .child(&shard_name)
+            .map_err(|e| format!("invalid shard-name '{shard_name}': {e}"))?;
         Ok(ShardSpec {
-            shard_id: parent.child(&shard_name),
+            shard_id,
             shard_name,
             parent_shard_id,
             genesis_block_data,
@@ -186,9 +189,9 @@ mod tests {
         ShardSpec::new(name.to_string(), parent.to_string(), genesis(), 5).expect("valid spec")
     }
 
-    /// A shard id must be non-empty and ASCII (Law 26), and `ShardId::child` does not check its
-    /// argument — so a spec that skipped this validation could carry an id that `format_of_fields`
-    /// would later reject at block validation.
+    /// A shard id must be non-empty and ASCII (Law 26), and `ShardId::child` now refuses an illegal
+    /// name itself (C78) — this pins the operator-visible message `ShardSpec::new` maps out of that
+    /// refusal, and that the parent half is validated too.
     #[test]
     fn a_spec_rejects_an_illegal_name_or_parent() {
         let err = ShardSpec::new(String::new(), "/".to_string(), genesis(), 5)

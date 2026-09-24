@@ -451,7 +451,7 @@ anchor_bad_before=$failures
 # shift was found. A check that scans the wrong column is not evidence, so `\034` it is.) That trap is
 # not exotic: it is what *any* tab-separated register consumer written in shell will do, so a new one
 # should start from this loop rather than from `IFS=$'\t'`.
-while IFS=$'\034' read -r num clause layer status decls axioms corpus rust coq witness falsifiable statement note; do
+while IFS=$'\034' read -r num clause layer status decls axioms corpus rust coq witness falsifiable statement note rustWitness; do
   [[ "$num" == "number" ]] && continue
   # the row's own vocabulary: the backticked, identifier-shaped tokens it names anywhere in its prose
   # `|| true` on every pipeline whose last `grep` may find nothing: under this script's

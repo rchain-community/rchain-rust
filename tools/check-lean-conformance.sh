@@ -356,12 +356,12 @@ fi
 # exits 0 on an empty match, so a registry of renamed, deleted or `#[ignore]`d tests would otherwise
 # run green while checking nothing — the clause checks 9 and 10 also carry.
 #
-# **Transitional, and the file says so in its own header.** The list lives in `tools/rust-witnesses.txt`
-# because the register's `rustWitness` field does not exist yet: the tree was red when this landed (the
-# sort unit's `Sort.lean` does not elaborate, so `laws.tsv` cannot be emitted). When the field lands,
-# this step pipes the column and the file is deleted — a witness list kept anywhere but the register is
-# a second copy of the register's own judgement.
-if "$ROOT/tools/check-rust-witnesses.sh" "$ROOT/tools/rust-witnesses.txt" >/tmp/rust-witnesses.log 2>&1; then
+# The list comes from the register's own `rustWitness` column (14) — one source of truth, so a
+# witness list kept anywhere else could not become a second copy of the register's judgement. That
+# was the shape this step first landed in (`tools/rust-witnesses.txt`, on a red tree where `laws.tsv`
+# could not be emitted) and the file is deleted now that the column exists.
+if awk -F'\t' 'NR > 1 && $14 != "-" { n = split($14, a, ", "); for (i = 1; i <= n; i++) print a[i] }' \
+     "$ROOT/spec/laws.tsv" | "$ROOT/tools/check-rust-witnesses.sh" >/tmp/rust-witnesses.log 2>&1; then
   tail -1 /tmp/rust-witnesses.log | sed 's/^/ok    /'
 else
   fail "the register's Rust witnesses do not run — see /tmp/rust-witnesses.log"

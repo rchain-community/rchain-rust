@@ -96,6 +96,9 @@ mutual
     | Expr.eneq p q, k => freeVarOf p k ∨ freeVarOf q k
     | Expr.eand p q, k => freeVarOf p k ∨ freeVarOf q k
     | Expr.eor p q, k => freeVarOf p k ∨ freeVarOf q k
+    | Expr.ematches p q, k => freeVarOf p k ∨ freeVarOf q k
+    | Expr.eshortand p q, k => freeVarOf p k ∨ freeVarOf q k
+    | Expr.eshortor p q, k => freeVarOf p k ∨ freeVarOf q k
     | Expr.elist ps r, k => freeVarOfListPar ps k ∨ freeVarInRemainder k r
     | Expr.etuple ps, k => freeVarOfListPar ps k
     | Expr.eset ps r, k => freeVarOfListPar ps k ∨ freeVarInRemainder k r
@@ -350,7 +353,8 @@ mutual
       simp only [freeVarOfExpr, closedExpr, freeVarOf_iff_closed]
     | Expr.eplus p q | Expr.eminus p q | Expr.emult p q | Expr.ediv p q | Expr.emod p q
     | Expr.elt p q | Expr.ele p q | Expr.egt p q | Expr.ege p q | Expr.eeq p q
-    | Expr.eneq p q | Expr.eand p q | Expr.eor p q => by
+    | Expr.eneq p q | Expr.eand p q | Expr.eor p q
+    | Expr.ematches p q | Expr.eshortand p q | Expr.eshortor p q => by
       simp only [freeVarOfExpr, closedExpr, not_or, forall_and, Bool.and_eq_true,
         freeVarOf_iff_closed]
     | Expr.elist ps r | Expr.eset ps r => by

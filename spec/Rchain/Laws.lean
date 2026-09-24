@@ -193,6 +193,10 @@ is the purpose, not a defect of this file. -/
 def laws : List Law := [
   -- ── Rholang: the language (Laws 1–6) ────────────────────────────────────────────────────────────
   { number := 1, clause := "a", layer := "Rholang",
+    rustWitness := [
+      "models/src/property_tests.rs:law1_sorting_is_idempotent",
+      "models/src/property_tests.rs:law1_parallel_composition_sorts_commutatively",
+      "models/src/property_tests.rs:law2_sorting_a_sequence_depends_only_on_its_elements"],
     statement := "`Par`/`ESet`/`EMap` are commutative and canonicalization is idempotent and \
       commutative: `sort (sort p) = sort p`, `sort (p | q) = sort (q | p)`",
     status := .provedModel,
@@ -247,6 +251,7 @@ def laws : List Law := [
       `sortPar_idempotent`/`sortPar_comm` hold for any comparator, and \
       `eq_iff`/`swap`/`lt_trans` are order-independent, so the remaining axioms' statements do not change" },
   { number := 1, clause := "b", layer := "Rholang",
+    rustWitness := ["models/src/property_tests.rs:law1b_every_permutation_of_a_collection_sorts_alike"],
     statement := "Each element comparator (`cmpPar`, `cmpSend`, …, `cmpConnective`) is a lawful total \
       order: `eq_iff`, `swap`, `lt_trans`",
     status := .provedModel,
@@ -310,6 +315,7 @@ def laws : List Law := [
       none. `lt_trans` needed the tags rather than 9261 cases, and the arm machinery made \
       `eq_iff`/`swap` ordinary case analyses" },
   { number := 2, layer := "Rholang",
+    rustWitness := ["models/src/property_tests.rs:law2_canonical_equality_agrees_with_canonical_hashing"],
     statement := "α/name equivalence = par order + `| Nil` + top-level arithmetic + α + added \
       eval/quote",
     status := .provedModel,
@@ -329,6 +335,9 @@ def laws : List Law := [
       (`alpha_equiv_weight`) and a non-vacuity witness (`a_send_is_not_alpha_equiv_to_nil`). The note \
       this replaces said the deep-α half was Coq's obligation; no track can deliver it and none needs it" },
   { number := 3, layer := "Rholang",
+    rustWitness := [
+      "rholang/src/property_tests.rs:law3_substituting_a_closed_value_keeps_the_term_closed",
+      "rholang/src/property_tests.rs:law3_substitution_and_sorting_commute"],
     statement := "Capture-avoiding de Bruijn substitution; `sort (subst t) = subst (sort t)`, and \
       substitution preserves closedness **given a closed image**",
     status := .provedModel,
@@ -402,6 +411,9 @@ def laws : List Law := [
       own**: `sort_subst` was the last one, and what the row's theorems still rest on is `cmpExpr`'s \
       three, which law 1's row owns and counts" },
   { number := 4, clause := "a", layer := "Rholang",
+    rustWitness := [
+      "rholang/tests/execution.rs:peek_and_persistent_work",
+      "rholang/tests/execution.rs:list_channel_matches"],
     statement := "Reduction (COMM): a send and a matching receive on one channel reduce to the \
       receive's body",
     status := .provedModel,
@@ -413,6 +425,7 @@ def laws : List Law := [
       so the law's statement is bounded by a published disproof rather than an assertion"
     },
   { number := 4, clause := "b", layer := "Rholang",
+    rustWitness := ["rholang/tests/execution.rs:law4_new_allocates_fresh_names_and_the_reduct_is_closed"],
     statement := "`new` yields fresh unforgeable names: reduction introduces no free variables it did \
       not already have",
     status := .provedModel,
@@ -434,6 +447,9 @@ def laws : List Law := [
       body is checked and nothing else) with `reduce_closed` composed in. So the row proves the \
       free-variable half in as many words, and names the half it does not." },
   { number := 5, layer := "Rholang",
+    rustWitness := [
+      "rholang/src/property_tests.rs:law5_a_pattern_that_binds_a_variable_twice_never_matches",
+      "rholang/src/property_tests.rs:law5_a_pattern_that_binds_distinct_variables_matches"],
     statement := "Spatial matching; a free variable is bound at most once — enforced by the port's \
       **normalizer** before any matcher runs, and, inside the matcher, at the **entry**: \
       `spatial_match` refuses a pattern `linear` rejects before any clause runs, so neither its \
@@ -559,6 +575,7 @@ def laws : List Law := [
       the nodes where `matchFuel` is linear), so it is pinned by `a_permuted_pattern_is_refused` and \
       said here rather than left implicit" },
   { number := 6, layer := "Rholang",
+    rustWitness := ["models/src/property_tests.rs:law6_a_closed_term_is_accepted_and_the_predicate_agrees"],
     statement := "No globally free variables in a program",
     status := .provedModel,
     declarations := [`Rchain.Closed, `Rchain.closed, `Rchain.closed_eq_Closed, `Rchain.freeVarOf,
@@ -587,6 +604,7 @@ def laws : List Law := [
 
   -- ── RSpace: the tuple space (Laws 7–11) ─────────────────────────────────────────────────────────
   { number := 7, layer := "RSpace",
+    rustWitness := ["rspace/src/property_tests.rs:law7_join_hash_commutes"],
     statement := "Join commutativity: channel keys are hashed in sorted order, so the join key is \
       invariant under permutation",
     status := .provedModel,
@@ -603,6 +621,7 @@ def laws : List Law := [
       is Law 1's canonicalization applied to a join key rather than an independent postulate. \
       `hashHashes` is the one primitive that stays axiomatized, in Law 19's class" },
   { number := 8, layer := "RSpace",
+    rustWitness := ["rspace/src/property_tests.rs:law8_comm_sorts_produces"],
     statement := "Deterministic COMM: candidate selection is sorted-first by content hash and produce \
       refs are sorted, so the event trace is content-addressed",
     status := .provedModel,
@@ -622,6 +641,10 @@ def laws : List Law := [
       log. The model keeps the arrival order in `Comm.produces` precisely so the sort has something to \
       remove" },
   { number := 9, layer := "RSpace",
+    rustWitness := [
+      "rspace/src/property_tests.rs:law9_channel_change_is_monoid",
+      "rspace/src/property_tests.rs:law9_disjoint_state_changes_commute",
+      "rspace/src/property_tests.rs:law9_state_change_combine_is_associative"],
     statement := "Merge is a monoid and non-conflicting logs commute — strengthened for effect \
       scheduling: disjoint **closure** (not footprint) implies commutation",
     status := .provedModel,
@@ -665,6 +688,7 @@ def laws : List Law := [
       changes including the join map, and falsified before it was believed (a left-side-dropping \
       `combine` makes it fail in 0.01s)" },
   { number := 10, layer := "RSpace",
+    rustWitness := ["rspace/src/property_tests.rs:law10_merkle_root_is_insertion_order_independent"],
     statement := "Merkle determinism: the radix trie is content-addressed and collision-free **on the \
       nodes the trie can build** (`WellFormed`: 256 slots, 32-byte values, prefixes under 128 bytes), \
       with a defined empty root",
@@ -712,6 +736,7 @@ def laws : List Law := [
       stream ending in empty slots. So the hash path's canonicity no longer rests on an assumption: the \
       only axioms left under `root_collision_free` are Law 19's hash idealization" },
   { number := 11, layer := "RSpace",
+    rustWitness := ["rspace/src/property_tests.rs:law11_a_replayed_script_matches_its_recording"],
     statement := "Replay determinism: the port's replay check — every recomputed COMM has a recorded \
       occurrence **and** no recorded COMM is left unconsumed — holds exactly when the recomputation and \
       the recorded trace have the same COMM occurrences",
@@ -760,6 +785,10 @@ def laws : List Law := [
 
   -- ── Casper / Storage / Crypto (Laws 14–19) ──────────────────────────────────────────────────────
   { number := 14, clause := "a", layer := "Casper",
+    rustWitness := [
+      "block-storage/src/dag/finalizer.rs:law14_fringe_requires_supermajority",
+      "sdk/src/property_tests.rs:law14_super_majority_is_strictly_more_than_two_thirds",
+      "sdk/src/property_tests.rs:law14_the_two_thirds_boundary_survives_past_the_f64_mantissa"],
     statement := "Finality is the fringe's advance gate: the fringe advances iff the supporting stake is \
       a strict supermajority of the bonded stake, as the exact integer comparison `3·stake > 2·total` \
       (no float rounding)",
@@ -801,6 +830,9 @@ def laws : List Law := [
       sender-count comparison is a design decision upstream has not made either — the law-48 shape, \
       recorded open *with its reason* rather than invented here" },
   { number := 14, clause := "b", layer := "Casper",
+    rustWitness := [
+      "block-storage/src/dag/finalizer.rs:calculate_next_layer_picks_max_sender_seq",
+      "block-storage/src/dag/finalizer.rs:check_min_messages_needs_all_bonded_senders"],
     statement := "A fringe holds one message per bonded validator (an antichain) — **of the fringe the \
       derivation publishes**; over a bare `Fringe` the claim is false and its refutation is proved. What \
       the walk and the layer earn is pairwise-distinct **senders**; the step to one per *bonded* \
@@ -835,6 +867,7 @@ def laws : List Law := [
       validator rests on `checkMinMessages`' count comparison — the epoch TODO whose body law 14a's row \
       records as fidelity rather than oversight — so the theorem is named for what it proves" },
   { number := 15, layer := "Casper",
+    rustWitness := ["block-storage/src/property_tests.rs:law15_adding_blocks_only_grows_the_state"],
     statement := "The fringe is monotone by height **per sender** and the seen set is monotone (no \
       regression) — the **derived** fringe and the **constructed** seen set; over bare values both \
       claims are false and their refutations are proved, and the **cross-sender** reading of the height \
@@ -897,6 +930,7 @@ def laws : List Law := [
       the next pass proves a true statement rather than a forked counterexample. The old row's claim that the seen set is monotone \"(no \
       regression)\" was true of the port and false of the value the axiom quantified over" },
   { number := 16, clause := "a", layer := "Casper",
+    rustWitness := ["casper/src/validate.rs:block_number_must_be_parent_max_plus_one"],
     statement := "Block number = max(parent) + 1 — as the port's check, which **rejects** a block whose \
       number is not one more than the maximum of its non-failed justifications (`0` when there is none \
       live)",
@@ -921,6 +955,7 @@ def laws : List Law := [
       maintaining an invariant it states. The model's `Block` carries `justifications` because the check \
       reads them; the `parents : List Nat` field this row's model used does not exist in the port" },
   { number := 16, clause := "b", layer := "Casper",
+    rustWitness := ["casper/src/validate.rs:sequence_number_must_be_creator_latest_plus_one"],
     statement := "`seqNum` strictly increases **under the sender's justification**: the port requires the \
       block's `seqNum` to be one more than the maximum `seqNum` among the justifications whose sender is \
       this block's sender (`0` when there are none)",
@@ -943,6 +978,7 @@ def laws : List Law := [
       the proof is the predicate's elimination. The old model also carried a `seqNum`-ordering axiom over \
       any two blocks, which no port rule states" },
   { number := 16, clause := "c", layer := "Casper",
+    rustWitness := ["models/src/casper/protocol/casper_message.rs:law16_to_proto_sorts_justifications"],
     statement := "Content addressing: `hash_block` clears `block_hash` and `sig` and hashes every other \
       proto field canonically, so equal hashes determine equal bodies **that the serializer can \
       represent** (`Canonical`: numbers inside `int64`, justifications in the port's sorted order)",
@@ -971,7 +1007,7 @@ def laws : List Law := [
       canonicity axiom was falsified before it was narrowed**, two ways, because the model's body is \
       wider than the bytes the port writes: \
       `a_body_encoder_that_truncates_is_not_injective` (the proto's `blockNumber` is an `int64`, \
-      `CasperMessage.proto:72`, so any encoder that mirrors it identifies `2^63` with `2^63 + 2^64`) \
+      `models/proto/casper.proto:49`, so any encoder that mirrors it identifies `2^63` with `2^63 + 2^64`) \
       and `a_body_encoder_that_canonicalises_is_not_injective` (`to_proto` sorts the justifications \
       before hashing, `casper_message.rs:636`, so it cannot distinguish a body from the same body \
       permuted). **And the axiom is gone**, so the refutation is now about the *definition the port \
@@ -1038,6 +1074,11 @@ def laws : List Law := [
       rather than a research question. The row is `open` because the model has no sync site, not \
       because the claim is doubtful" },
   { number := 17, clause := "a", layer := "Casper",
+    rustWitness := [
+      "sdk/src/property_tests.rs:law17_deploys_without_conflicts_need_no_rejection",
+      "sdk/src/property_tests.rs:law17_the_chosen_rejection_is_one_of_the_options",
+      "sdk/src/property_tests.rs:law17_the_chosen_rejection_minimizes_the_total_cost",
+      "sdk/src/property_tests.rs:law17_the_survivors_of_a_rejection_option_are_conflict_free"],
     statement := "Merge determinism: a rejection resolves to a unique minimum-cost candidate — the \
       rejection option is the minimum of `(total cost, size, the sorted set)`, and a minimum of a set \
       is unique, so the resolution is a function of the conflict set and not of the iteration order",
@@ -1070,6 +1111,7 @@ def laws : List Law := [
       predicate and the branch sets it runs over are Law 9's (`are_conflicting`, \
       `rspace/src/merger/event_log_merging_logic.rs:100-158`), which is modelled there" },
   { number := 17, clause := "b", layer := "Casper",
+    rustWitness := ["rholang/src/merging.rs:calculate_diff_rejects_i64_overflow_instead_of_wrapping"],
     statement := "The merge's arithmetic is the checked 64-bit one — a value that would leave `i64` is \
       **refused, not wrapped** — and the merged RNG is a function of the *set* of branch generators",
     status := .provedModel,
@@ -1097,6 +1139,15 @@ def laws : List Law := [
       checked now and its error reaches the merge, with `combining_refuses_a_diff_that_leaves_i64`
       (`rspace/src/merger/event_log_index.rs`) failing on a `wrapping_add`" },
   { number := 18, layer := "Storage",
+    rustWitness := [
+      "block-storage/src/dag/metadata_store.rs:law18_contiguous_height_map_is_valid",
+      "block-storage/src/dag/metadata_store.rs:law18_height_map_with_holes_errors",
+      "block-storage/src/property_tests.rs:law18_a_contiguous_chain_validates",
+      "block-storage/src/property_tests.rs:law18_a_chain_with_a_hole_in_the_middle_is_refused",
+      "block-storage/src/property_tests.rs:law18_a_missing_lowest_height_is_not_a_hole",
+      "block-storage/src/property_tests.rs:law18_the_empty_dag_and_a_lone_block_are_contiguous",
+      "block-storage/src/property_tests.rs:law18_the_state_does_not_depend_on_insertion_order",
+      "models/src/fringe_data.rs:law18_fringe_hash_is_order_independent"],
     statement := "The store's own invariants: the height map is **contiguous** — no holes in block \
       heights — and the fringe identity is **order-independent**, because what the code keys on is a \
       `BTreeSet`, not a list",
@@ -1156,6 +1207,7 @@ def laws : List Law := [
 
   -- ── Scheduler: the effect scheduler (Laws 20–25) ─────────────────────────────────────────────────
   { number := 20, layer := "Scheduler",
+    rustWitness := ["rspace/src/property_tests.rs:law20_per_channel_path_order"],
     statement := "Channel-task linearization (\"1 channel = 1 logical task\"): same-channel ops commit \
       in DFS path order through a per-channel claim queue, and the path-smallest pending claim is \
       always committable",
@@ -1179,6 +1231,7 @@ def laws : List Law := [
       `hinit : ∀ ch, PathSorted (q0 ch)` — the same unused-hypothesis shape as Law 24's — and it is \
       gone, because the suffix property comes from the commit rule rather than from the initial sorting" },
   { number := 21, layer := "Scheduler",
+    rustWitness := ["rholang/src/property_tests.rs:law21_the_gate_scheduler_refines_the_sequential_reference"],
     statement := "DFS-gate linearization: the gate scheduler refines sequential `Effect.apply`; one-hop \
       next-step pruning is unsound",
     status := .provedModel,
@@ -1197,6 +1250,7 @@ def laws : List Law := [
       complete, which is exactly the Rust's 'a linear chain of awaits, not the quadratic \
       all-predecessors join' (`reduce.rs:2341-2345`)" },
   { number := 22, layer := "Scheduler",
+    rustWitness := ["rholang/src/reduce.rs:law22_the_next_step_closure_is_computable_at_dispatch"],
     statement := "Next-step closure is computable at dispatch (the matched datum is concrete); \
       computability does not make cross-channel pruning sound",
     status := .vacuous,
@@ -1218,6 +1272,7 @@ def laws : List Law := [
       `[sp,sq,rp,rq]` merged but `[sp,rp,sq,rq]` concatenated. Found by trying to prove it, which is \
       the argument for proving things" },
   { number := 23, layer := "Scheduler",
+    rustWitness := ["rspace/src/property_tests.rs:law23_read_state_determines_outcome"],
     statement := "Read-determinism: an effect's chosen candidate, commit outcome and event trace are a \
       deterministic function of the state it reads",
     status := .provedModel,
@@ -1230,6 +1285,7 @@ def laws : List Law := [
     note := "the property test `law23_read_state_determines_outcome` (`rspace/src/property_tests.rs`) \
       names it on the Rust side (commit 35dd13b62)" },
   { number := 24, layer := "Scheduler",
+    rustWitness := ["rspace/src/property_tests.rs:law24_record_layer_and_validation"],
     statement := "DFS-order serializability: a concurrent execution is sound for the block path iff \
       every commit read exactly the state the DFS-earlier effects produced (the versioned \
       write-record layer)",
@@ -1248,6 +1304,7 @@ def laws : List Law := [
       ⇒ the gate fold, with **no** certificate hypothesis, because a pinned run *is* the \
       serializability that matters. The certificate *finds* such runs; it is not why the fold is reached" },
   { number := 25, layer := "Scheduler",
+    rustWitness := ["rholang/src/property_tests.rs:law25_the_validated_relaxed_scheduler_refines_sequential"],
     statement := "Validated speculation: commits may reorder iff each validates Law 24; invalidated \
       runs fall back to the whole-run gate re-run, so the published state is the sequential fold's",
     status := .provedModel,
@@ -1272,6 +1329,12 @@ def laws : List Law := [
 
   -- ── Cross-shard: two-phase commit (Laws 26–29) ───────────────────────────────────────────────────
   { number := 26, clause := "a", layer := "Cross-shard",
+    rustWitness := [
+      "node/src/web/http.rs:api_txn_run_rejects_an_invalid_leg_shard_or_an_empty_leg_list",
+      "node/src/web/http.rs:a_leg_with_an_empty_to_is_rejected_before_the_gateway_runs",
+      "casper/src/property_tests.rs:law26_a_shard_id_is_accepted_exactly_when_nonempty_ascii",
+      "casper/src/property_tests.rs:law26_invalid_shard_names_are_refused",
+      "casper/src/property_tests.rs:law26_a_child_id_nests_under_its_parent"],
     statement := "A deploy/block's effects bind to exactly one shard, and the leg a gateway admits \
       carries a validated shard id",
     status := .provedModel,
@@ -1371,6 +1434,9 @@ def laws : List Law := [
       in a second shard would draw the same names.** Closing the row would need the shard in the seed \
       derivation *plus* a two-shard non-collision theorem — a design decision shared with the Scala" },
   { number := 27, layer := "Cross-shard",
+    rustWitness := [
+      "casper/tests/cross_shard_txn.rs:two_shard_2pc_commits_all",
+      "casper/tests/cross_shard_txn.rs:two_shard_2pc_aborts_all_when_a_leg_fails"],
     statement := "Cross-shard atomicity (2PC): every leg that *prepared* reaches the one decision the \
       coordinator made — commit on all of them or abort on all of them",
     status := .provedModel,
@@ -1401,6 +1467,7 @@ def laws : List Law := [
       over `voteFromReply`'s booleans, and the three theorems above are the narrowed statement — so the \
       row is a model claim rather than a claim about the Rust evidenced by tests" },
   { number := 28, layer := "Cross-shard",
+    rustWitness := ["rholang/src/native_state.rs:law28_txn_prepare_rejects_overdraw_and_is_idempotent"],
     statement := "Leg idempotency: `txn_prepare`/`txn_commit`/`txn_abort` are idempotent under the \
       transaction id — a retried leg returns the record it already has — and the two terminal verbs \
       refuse each other",
@@ -1435,6 +1502,11 @@ def laws : List Law := [
       fourth constructor (`proposed`) that the code does not have (`native_state.rs:140`); a transaction with no \
       record is `none`, which is how the verbs spell it" },
   { number := 29, layer := "Cross-shard",
+    rustWitness := [
+      "casper/src/property_tests.rs:law29_a_terminal_record_never_changes_again",
+      "casper/src/property_tests.rs:law27_an_abort_vote_prevents_a_later_commit",
+      "casper/src/property_tests.rs:law27_a_legless_record_cannot_commit",
+      "casper/src/property_tests.rs:law27_and_law29_the_state_agrees_with_the_votes"],
     statement := "The coordinator's decision is a *function* of its votes — `committed` iff every \
       participant voted ready — and it is a durable record a prepared participant can recover",
     status := .provedModel,
@@ -1650,6 +1722,7 @@ def laws : List Law := [
       a checker on `normalizeAt`'s result plus the theorem that every arm preserves it — a modelling \
       unit of its own, and the natural next step now that the function it is about exists" },
   { number := 37, layer := "Rholang",
+    rustWitness := ["rholang/src/property_tests.rs:law5_a_ground_pattern_matches_only_itself"],
     statement := "Match soundness and completeness (Law 5 strengthened: partial collections, \
       wildcards, remainders) — **over the shapes the clauses cover, which `pathPar` names, the clauses decide exactly equality**: `spatialMatches t p ↔ t = p` (`spatialMatches_iff_eq`)",
     status := .provedTied,
@@ -1849,6 +1922,9 @@ def laws : List Law := [
       coverage are named as the boundary (AUDIT C29 fixed the two rows the check found stale)" },
   -- ── Proof-of-Stake: the epoch, its split, and the withdrawal (Laws 44–47) ───────────────────────
   { number := 44, layer := "PoS",
+    rustWitness := [
+      "rholang/src/native_state.rs:the_epoch_gate_does_nothing_off_a_boundary",
+      "rholang/src/native_state.rs:bond_escrows_the_stake_and_activates_at_the_boundary"],
     statement := "Membership takes effect at an **epoch boundary**: the epoch sequence runs only when \
       `blockNumber % epochLength = 0`, and off a boundary a bond is pooled but not activated, a \
       withdrawal is staged but not moved, and no claim is paid",
@@ -1893,6 +1969,7 @@ def laws : List Law := [
       vault is invariant, which is what makes a payout a transfer rather than a mint. That is this \
       row's Programme C item" },
   { number := 45, layer := "PoS",
+    rustWitness := ["rholang/src/native_state.rs:an_epoch_splits_the_pot_and_keeps_the_dust"],
     statement := "The epoch's split: `pot * (bondᵢ / minimumBond) / (activeBonds / minimumBond)` per \
       active validator, out of `pot = posBalance − totalBond − totalWithdraw − committedRewards`, \
       committed per validator and paid only when the validator leaves",
@@ -1913,6 +1990,7 @@ def laws : List Law := [
       the two-part statement is: the model is the formula, and the Rust is the model on the model's \
       domain" },
   { number := 46, layer := "PoS",
+    rustWitness := ["rholang/src/native_state.rs:an_epoch_splits_the_pot_and_keeps_the_dust"],
     statement := "The split **does not conserve**: `Σ rewards ≤ pot`, and the difference is the dust of \
       two integer divisions — which is not lost but stays in the pot for the next epoch",
     status := .provedModel,
@@ -1932,6 +2010,9 @@ def laws : List Law := [
       defined (`0 < activeBonds / minimumBond`), which is the same boundary `AUDIT.md` §6 records on \
       the Rust side" },
   { number := 47, layer := "PoS",
+    rustWitness := [
+      "rholang/src/native_state.rs:withdraw_stages_the_validator_until_the_next_boundary",
+      "rholang/src/native_state.rs:a_released_withdrawal_pays_the_bond_plus_the_committed_rewards"],
     statement := "A withdrawal is **staged**: the request records `quarantineLength + epochLength * \
       (1 + blockNumber / epochLength)` and changes nothing else; the validator leaves the pool at the \
       next boundary, and is paid `bond + committed rewards` at the first boundary past its quarantine",
@@ -2007,6 +2088,7 @@ def laws : List Law := [
       implement a proposal and call it a port" },
   -- ── Rholang: what a deploy is charged (Law 49) ─────────────────────────────────────────────────
   { number := 49, layer := "Rholang",
+    rustWitness := ["rholang/src/storage.rs:a_matched_produce_refunds_its_storage_before_the_event_costs"],
     statement := "For a matched produce/consume the charged gas is the Scala's: the storage is charged       up front and what the match consumed is **refunded** — the continuation's consume storage and the       produce storage of every removed datum — *before* the event and COMM costs",
     status := .provedModel,
     declarations := [`Rchain.prefixes, `Rchain.peak, `Rchain.itotal, `Rchain.peak_four,

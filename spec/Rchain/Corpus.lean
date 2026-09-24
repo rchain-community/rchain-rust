@@ -843,7 +843,7 @@ the model was aligned to the node rather than to a guess. What could **not** be 
 `Sort.lean`'s note (the model's algebra is coarser: 21 `Expr` constructors against the node's 33). -/
 
 /-- The number of cases the `sort` layer carries. -/
-def sortCaseCount : Nat := 19
+def sortCaseCount : Nat := 23
 
 /-- A law-1 case: two terms (as rholang spells them, so the Rust consumer reads the same text) and the
     verdict the model's `cmpPar` must give the pair. -/
@@ -978,7 +978,38 @@ def sortCases : List SortCase :=
       verdict := "lt" },
     { left := "[1]", right := "new x in { Nil } | 1",
       leftPar := listExpr [intExpr 1], rightPar := parMerge (newPar 1 nilPar) (intExpr 1),
-      verdict := "gt" } ]
+      verdict := "gt" },
+    -- 20-22. **The three conflations, now distinguished** (AUDIT C58). Each spelling normalizes to its
+    -- own constructor in the node's algebra — `EAND` 113 vs `ESHORTAND` 123, `EOR` 114 vs `ESHORTOR`
+    -- 124, `EEQ` 110 vs `EMATCHES` 118 — and to the *same* constructor here before this unit, so the
+    -- model answered `eq` where the node answers `gt` and no row could be `decide`d (measured: the
+    -- `native_decide` refusal at the falsifier stage). They are unit 1's falsifiers, and the model's
+    -- re-tagging is what makes them pass: the node's verdict is `gt` for all three, and `cmpPar` now
+    -- says `gt` too.
+    { left := "1 && 2", right := "1 and 2",
+      leftPar := one (.eshortand (one (.ground (.int 1))) (one (.ground (.int 2)))),
+      rightPar := one (.eand (one (.ground (.int 1))) (one (.ground (.int 2)))),
+      verdict := "gt" },
+    { left := "1 || 2", right := "1 or 2",
+      leftPar := one (.eshortor (one (.ground (.int 1))) (one (.ground (.int 2)))),
+      rightPar := one (.eor (one (.ground (.int 1))) (one (.ground (.int 2)))),
+      verdict := "gt" },
+    { left := "1 matches 2", right := "1 == 2",
+      leftPar := one (.ematches (one (.ground (.int 1))) (one (.ground (.int 2)))),
+      rightPar := one (.eeq (one (.ground (.int 1))) (one (.ground (.int 2)))),
+      verdict := "gt" },
+    -- 23. **The one pair that left the boundary list.** `&&` and `||` are *operator tokens* in the
+    -- node (`rholang/src/parser.rs:216-222` — `Tok::OrOr`), not method calls, which is what the
+    -- boundary note in `rholang/tests/lean_sort_corpus.rs` claimed until 2026-09-24 and was wrong
+    -- about. Both constructors exist here now, so the pair is statable: the node's verdict is `lt`
+    -- (`ESHORTAND` 123 < `ESHORTOR` 124), observed from it before the row was written, and `cmpPar`
+    -- says `lt` too. `%%`/`%`, the `BigInt` pairs and `++`/`--` stay boundary pairs — the model still
+    -- has no constructor for `EPERCENTPERCENT`(119), `BIG_INT`(13), `EPLUSPLUS`(120) or
+    -- `EMINUSMINUS`(121).
+    { left := "1 && 2", right := "1 || 2",
+      leftPar := one (.eshortand (one (.ground (.int 1))) (one (.ground (.int 2)))),
+      rightPar := one (.eshortor (one (.ground (.int 1))) (one (.ground (.int 2)))),
+      verdict := "lt" } ]
 
 /-- Every case holds of the model — `cmpPar` gives the verdict the row states. `native_decide`, for the
     reason the `c21` checker uses it: the comparator's reduction over a term is too deep for the kernel

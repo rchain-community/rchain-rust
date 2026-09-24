@@ -1214,6 +1214,9 @@ mutual
       | eneq a b => rfl
       | eand a b => rfl
       | eor a b => rfl
+      | ematches a b => rfl
+      | eshortand a b => rfl
+      | eshortor a b => rfl
   termination_by e _ => sizeOf e
   theorem freeLevels_pathPars : ∀ (ps : List Par), pathPars ps = true → freeLevelsOfListPar ps = []
     | ps, h => by
@@ -1377,6 +1380,9 @@ private theorem pathExpr_eeq (a b : Par) : pathExpr (.eeq a b) = false := rfl
 private theorem pathExpr_eneq (a b : Par) : pathExpr (.eneq a b) = false := rfl
 private theorem pathExpr_eand (a b : Par) : pathExpr (.eand a b) = false := rfl
 private theorem pathExpr_eor (a b : Par) : pathExpr (.eor a b) = false := rfl
+private theorem pathExpr_ematches (a b : Par) : pathExpr (.ematches a b) = false := rfl
+private theorem pathExpr_eshortand (a b : Par) : pathExpr (.eshortand a b) = false := rfl
+private theorem pathExpr_eshortor (a b : Par) : pathExpr (.eshortor a b) = false := rfl
 
 private theorem pathExpr_elist_rem (ps : List Par) (r : Option Var) :
     pathExpr (.elist ps r) = true → r = none := by
@@ -1435,6 +1441,9 @@ private theorem pathExpr_cases {e : Expr} (h : pathExpr e = true) :
   | eneq a b => rw [pathExpr_eneq] at h; exact absurd h (by decide)
   | eand a b => rw [pathExpr_eand] at h; exact absurd h (by decide)
   | eor a b => rw [pathExpr_eor] at h; exact absurd h (by decide)
+  | ematches a b => rw [pathExpr_ematches] at h; exact absurd h (by decide)
+  | eshortand a b => rw [pathExpr_eshortand] at h; exact absurd h (by decide)
+  | eshortor a b => rw [pathExpr_eshortor] at h; exact absurd h (by decide)
 
 /-! ### The clause reductions: one `rfl` lemma per pattern/target pair
 

@@ -22,15 +22,18 @@
 //! The model was corrected to the node's score tags and those rows are its falsifiers.
 //!
 //! `the_boundary_the_model_cannot_pin` below is not an assertion: it prints the node's answer for the
-//! pairs that are *outside* the model's algebra (the twelve `Expr` constructors the model does not
-//! have, and `Ground.bytes`, which the node scores at tag 116 rather than with the grounds) — the
-//! scope of the alignment, kept visible rather than implied.
+//! pairs that are *outside* the model's algebra (the `Expr` constructors the model does not have, and
+//! `Ground.bytes`, which the node scores at tag 116 rather than with the grounds) — the scope of the
+//! alignment, kept visible rather than implied. The three conflation pairs (`&&`/`and`, `||`/`or`,
+//! `matches`/`==`) *were* measured here, and are now corpus rows 20–22 with the model aligned to
+//! them, which is this file's convention for a pair that leaves the boundary — and `&&`/`||` left it
+//! the same way on 2026-09-24, as row 23, once both its constructors existed.
 
 use rchain_models::ast::{Par, Proc};
 use rchain_rholang::normalizer::source_to_adt;
 
 /// The corpus's declared size (`Rchain/Corpus.lean`'s `sortCaseCount`).
-const SORT_CASES: usize = 19;
+const SORT_CASES: usize = 23;
 
 /// Parse and normalize a closed term, as the node does on the deploy path.
 fn normalized(source: &str) -> Proc {
@@ -169,11 +172,24 @@ fn the_canonical_order_is_the_lean_models_pairwise() {
 #[test]
 fn the_boundary_the_model_cannot_pin() {
     let pairs: &[(&str, &str)] = &[
-        // the operator tags the model does not have: `EMATCHES`(118) / `EPERCENTPERCENT`(119) sit
-        // between `EOR`(114) and `EMOD`(122), so a row could only pin their *relative* position — and
-        // these spellings parse as a method call, not as the expression the model would need.
-        ("@\"c\"!(1 && 2)", "@\"c\"!(1 || 2)"),
+        // The pairs whose **model constructor does not exist yet**: `EPERCENTPERCENT`(119),
+        // `BIG_INT`(13), `EPLUSPLUS`(120) and `EMINUSMINUS`(121) are real node tags
+        // (`models/src/sorter.rs:31,53,54,55`) with no `Expr` in `spec/Rchain/Par.lean`, so a row
+        // could only pin their *relative* position.
+        //
+        // **The spelling is not the obstacle, and this note used to say it was.** The operator forms
+        // are lexed as operators (`rholang/src/parser.rs:216-222`), not method calls, which is why
+        // `&&`/`||` left this list for corpus row 23 the moment both its constructors existed, and
+        // why `%%`/`%` will leave it when `EPercentPercent` arrives — that claim was measured false
+        // on 2026-09-24 and is recorded here rather than quietly dropped.
         ("@\"c\"!(1 %% 2)", "@\"c\"!(1 % 2)"),
+        // The terms the model has no value for at all, measured the same way: the node sorts a
+        // `BigInt` *after* the collections (`BIG_INT` 13 against `ELIST` 6) and `++`/`--` after every
+        // arithmetic operator (120/121 against 104), which is the interleaving the re-tagging needs.
+        ("BigInt(42)", "42"),
+        ("BigInt(42)", "Set(1)"),
+        ("[1] ++ [2]", "[1] + [2]"),
+        ("Set(1) -- Set(1)", "Set(1)"),
         // the remaining argument positions *within* the model's algebra, for contrast: grounds first,
         // then collections in tag order, then the operators.
         ("@\"c\"!(1 + 2)", "@\"c\"!(1 == 2)"),

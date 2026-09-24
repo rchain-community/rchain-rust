@@ -172,6 +172,9 @@ mutual
     | .eneq a b => singleExpr (.eneq (substPar σ d a) (substPar σ d b))
     | .eand a b => singleExpr (.eand (substPar σ d a) (substPar σ d b))
     | .eor a b => singleExpr (.eor (substPar σ d a) (substPar σ d b))
+    | .ematches a b => singleExpr (.ematches (substPar σ d a) (substPar σ d b))
+    | .eshortand a b => singleExpr (.eshortand (substPar σ d a) (substPar σ d b))
+    | .eshortor a b => singleExpr (.eshortor (substPar σ d a) (substPar σ d b))
     | .elist ps r => singleExpr (.elist (substListPar σ d ps) r)
     | .etuple ps => singleExpr (.etuple (substListPar σ d ps))
     | .eset ps r => singleExpr (.eset (sortListPar (substListPar σ d ps)) r)
@@ -446,6 +449,15 @@ mutual
       simp only [substExprToPar.eq_def, sortExpr.eq_def, sortPar_singleExpr]
       rw [sortPar_subst σ d a, sortPar_subst σ d b]
     | .eor a b => by
+      simp only [substExprToPar.eq_def, sortExpr.eq_def, sortPar_singleExpr]
+      rw [sortPar_subst σ d a, sortPar_subst σ d b]
+    | .ematches a b => by
+      simp only [substExprToPar.eq_def, sortExpr.eq_def, sortPar_singleExpr]
+      rw [sortPar_subst σ d a, sortPar_subst σ d b]
+    | .eshortand a b => by
+      simp only [substExprToPar.eq_def, sortExpr.eq_def, sortPar_singleExpr]
+      rw [sortPar_subst σ d a, sortPar_subst σ d b]
+    | .eshortor a b => by
       simp only [substExprToPar.eq_def, sortExpr.eq_def, sortPar_singleExpr]
       rw [sortPar_subst σ d a, sortPar_subst σ d b]
     | .elist ps r => by
@@ -1193,6 +1205,18 @@ mutual
       simp only [closedExpr, Bool.and_eq_true] at h ⊢
       exact ⟨(by simpa [closed_eq_Closed] using substPar_closed σ hσ d a (by simpa [closed_eq_Closed] using h.1)), (by simpa [closed_eq_Closed] using substPar_closed σ hσ d b (by simpa [closed_eq_Closed] using h.2))⟩
     | .eor a b, h => by
+      simp only [substExprToPar]; rw [closed_singleExpr_iff]
+      simp only [closedExpr, Bool.and_eq_true] at h ⊢
+      exact ⟨(by simpa [closed_eq_Closed] using substPar_closed σ hσ d a (by simpa [closed_eq_Closed] using h.1)), (by simpa [closed_eq_Closed] using substPar_closed σ hσ d b (by simpa [closed_eq_Closed] using h.2))⟩
+    | .ematches a b, h => by
+      simp only [substExprToPar]; rw [closed_singleExpr_iff]
+      simp only [closedExpr, Bool.and_eq_true] at h ⊢
+      exact ⟨(by simpa [closed_eq_Closed] using substPar_closed σ hσ d a (by simpa [closed_eq_Closed] using h.1)), (by simpa [closed_eq_Closed] using substPar_closed σ hσ d b (by simpa [closed_eq_Closed] using h.2))⟩
+    | .eshortand a b, h => by
+      simp only [substExprToPar]; rw [closed_singleExpr_iff]
+      simp only [closedExpr, Bool.and_eq_true] at h ⊢
+      exact ⟨(by simpa [closed_eq_Closed] using substPar_closed σ hσ d a (by simpa [closed_eq_Closed] using h.1)), (by simpa [closed_eq_Closed] using substPar_closed σ hσ d b (by simpa [closed_eq_Closed] using h.2))⟩
+    | .eshortor a b, h => by
       simp only [substExprToPar]; rw [closed_singleExpr_iff]
       simp only [closedExpr, Bool.and_eq_true] at h ⊢
       exact ⟨(by simpa [closed_eq_Closed] using substPar_closed σ hσ d a (by simpa [closed_eq_Closed] using h.1)), (by simpa [closed_eq_Closed] using substPar_closed σ hσ d b (by simpa [closed_eq_Closed] using h.2))⟩

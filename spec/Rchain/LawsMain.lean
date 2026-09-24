@@ -69,6 +69,17 @@ is a rule neither this port nor the Scala it was ported from implements, and 49 
 deploy is charged — the first row about cost rather than state." -/
 def lawCeiling : Nat := 49
 
+/-- **The ceiling the completeness check requires: the number of *entries*, hand-maintained for
+`lawCeiling`'s own reason.** The numbering check above validates *numbers* (1..`lawCeiling`) and
+reference integrity validates *cited declarations*; neither can see a row **dropped**, because a
+surviving sibling keeps its number and nothing cites a row by identity. So a deleted clause is a
+quietly smaller catalog — measured: 26c's record was deleted by an edit of row 26b's cells and every
+check stayed green, while the emitter's summary read "57 entries" against a baseline of 58 (AUDIT
+C80). Pinned by hand rather than derived, because a check that counted the rows would compare the
+register to itself and a dropped row would take its own evidence along. **Adding a row means bumping
+this** — the same tax `lawCeiling` already carries. -/
+def entryCeiling : Nat := 58
+
 /-- How many laws carry a given status, for the summary line. -/
 def statusCount (s : Status) : Nat := (laws.filter (·.status == s)).length
 
@@ -151,26 +162,65 @@ def coqAnchorFailures : IO (List String) := do
           `path:symbol`"]
   return failures
 
+/-- **The Rust witnesses, checked against the files themselves.** `rholang/src/storage.rs:refund_storage`
+must be a file that exists *and* a file that contains `fn refund_storage`. Weaker than running the test
+— `tools/check-rust-witnesses.sh` does that, and refuses a name that matches no test — and much weaker
+than a proof: this resolves a symbol, exactly as the `coq` field does. What it catches, and the reason
+running alone is not enough, is that a witness whose symbol is not in its file is a *typo or a stale
+name*, and cargo would be paid for before anyone found out. -/
+def rustWitnessFailures : IO (List String) := do
+  let mut failures : List String := []
+  for l in Laws.laws do
+    for a in l.rustWitness do
+      match a.splitOn ":" with
+      | [path, sym] =>
+        if sym.isEmpty then
+          failures := failures ++ [s!"law {l.number}{l.clause} cites Rust witness `{a}` with an empty \
+            symbol"]
+        else
+          match (← readAnchorFile path) with
+          | none =>
+            failures := failures ++ [s!"law {l.number}{l.clause} cites Rust witness `{a}`, whose file \
+              does not exist"]
+          | some content =>
+            if (content.splitOn s!"fn {sym}").length < 2 then
+              failures := failures ++ [s!"law {l.number}{l.clause} cites Rust witness `{a}`, but \
+                `{path}` has no `fn {sym}`"]
+      | _ =>
+        failures := failures ++ [s!"law {l.number}{l.clause} cites Rust witness `{a}`, which is not \
+          `path.rs:symbol`"]
+  return failures
+
 /-- One line of `spec/laws.tsv`. Columns: number, clause, layer, status, declarations, axioms, corpus,
-rust, coq, witness, falsifiable, statement, note. Tab-separated with a header, so a consumer can read it
-by column. Newlines and tabs inside a field would break the format, so they are folded to spaces. -/
+rust, coq, witness, falsifiable, statement, note, rustWitness. Tab-separated with a header, so a consumer
+can read it by column. Newlines and tabs inside a field would break the format, so they are folded to
+spaces. **A new column goes at the end**: `tools/audit-test-register.sh`'s check 9 reads this file with
+one `read` variable per column, so inserting one in the middle silently shifts `falsifiable` into `note`
+and the citation check starts reading prose. (That trap is recorded at check 9 — it was found by
+falsifying the check, not by reading it.) -/
 def tsvRow (l : Law) : String :=
   let flat (s : String) : String := (s.replace "\t" " ").replace "\n" " "
   String.intercalate "\t" [
     toString l.number, l.clause, l.layer, l.status.wire, joinNames l.declarations,
     joinNames l.axioms, l.corpus.getD "-", joinStrs l.rust, joinStrs l.coq, joinNames l.witness,
-    flat (l.falsifiable.getD "-"), flat l.statement, flat l.note]
+    flat (l.falsifiable.getD "-"), flat l.statement, flat l.note, joinStrs l.rustWitness]
 
 def tsv : String :=
   String.intercalate "\n" <|
-    ("number\tclause\tlayer\tstatus\tdeclarations\taxioms\tcorpus\trust\tcoq\twitness\tfalsifiable\tstatement\tnote"
+    ("number\tclause\tlayer\tstatus\tdeclarations\taxioms\tcorpus\trust\tcoq\twitness\tfalsifiable\tstatement\tnote\trustWitness"
       :: ordered.map tsvRow)
+
+/-- How many rows carry a Rust witness — the Rust counterpart of `witness`, and the number that says how
+much of the register's Rust half is *run* rather than described. It is not a status: a witness is not a
+proof, and the corpus rung still outranks it (`spec/LAWS.md`'s header says so beside the count). -/
+def rustWitnessCount : Nat := (laws.filter (·.rustWitness != [])).length
 
 /-- The summary sentence both documents open with — the one number that replaces the three competing
 counts (19 in a stale note, 29 in two documents, 43 in the tree). -/
 def summary : String :=
   s!"{lawCount} laws, {entryCount} entries: {statusCount .provedTied} proved and tied to the node by a \
-conformance corpus, {statusCount .provedModel} proved over the model, \
+conformance corpus, {statusCount .provedModel} proved over the model — of which {rustWitnessCount} carry \
+a Rust witness the gate runs — \
 {statusCount .vacuous} proved but vacuous (the statement restates its own definition), \
 {statusCount .axiomByDesign} axiomatized by design (the cryptographic primitives), \
 {statusCount .owed} owed, {statusCount .deferred} deferred, {statusCount .open} open, \
@@ -215,7 +265,8 @@ def main (args : List String) : IO UInt32 := do
   -- able to emit. The gate re-emits the register and diffs it, so a failing check here fails the gate.
   let anchorFailures ← Rchain.Laws.rustAnchorFailures
   let coqFailures ← Rchain.Laws.coqAnchorFailures
-  let anchorFailures := anchorFailures ++ coqFailures
+  let witnessFailures ← Rchain.Laws.rustWitnessFailures
+  let anchorFailures := anchorFailures ++ coqFailures ++ witnessFailures
   unless anchorFailures.isEmpty do
     for f in anchorFailures do
       IO.eprintln s!"rchain-laws: {f}"
@@ -305,6 +356,14 @@ run_cmd do
       1..{lawCeiling}; missing {expected.filter (fun n => !nums.contains n)}, \
       unexpected {nums.filter (fun n => !expected.contains n)} — bump `lawCeiling` when a law is \
       added, or the new law is uncounted (that is what this constant is for)"
+
+  -- 1b. Completeness: the *entries* against a hand-maintained ceiling, not against themselves. A
+  -- dropped clause keeps its law's number alive in a sibling and is cited by no one, so nothing above
+  -- can see it (AUDIT C80).
+  if entryCount != entryCeiling then
+    failures := failures.push s!"entries: the register has {entryCount} entries, expected \
+      {entryCeiling} — a row dropped from the list takes its own evidence with it, which is what this \
+      ceiling exists to catch; bump `entryCeiling` when a row is added (the tax `lawCeiling` carries)"
 
   -- 2. Clauses: a law's clause letters are distinct, so `16a`/`16b` cannot collide.
   for n in nums do

@@ -64,6 +64,9 @@ mutual
     | eneq   : Par → Par → Expr
     | eand   : Par → Par → Expr
     | eor    : Par → Par → Expr
+    | ematches : Par → Par → Expr
+    | eshortand : Par → Par → Expr
+    | eshortor  : Par → Par → Expr
     | elist  : List Par → Option Var → Expr
     | etuple : List Par → Expr
     | eset   : List Par → Option Var → Expr
@@ -223,7 +226,8 @@ mutual
     | .eneg p | .enot p => connectiveUsed p
     | .eplus p q | .eminus p q | .emult p q | .ediv p q | .emod p q
     | .elt p q | .ele p q | .egt p q | .ege p q | .eeq p q | .eneq p q
-    | .eand p q | .eor p q => connectiveUsed p || connectiveUsed q
+    | .eand p q | .eor p q | .ematches p q | .eshortand p q | .eshortor p q =>
+      connectiveUsed p || connectiveUsed q
     | .elist ps r => connectiveUsedListPar ps || r.isSome
     | .etuple ps => connectiveUsedListPar ps
     | .eset ps r => connectiveUsedListPar ps || r.isSome

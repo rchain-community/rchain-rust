@@ -181,16 +181,30 @@ mutual
   def cmpMatch : Match → Match → Ordering
     | Match.mk t cs, Match.mk t' cs' => lex (cmpPar t t') (cmpListMatchCase cs cs')
   termination_by s t => sizeOf s + sizeOf t
-  /-- `Expr`, in the node's **score-tag** order (`models/src/sorter.rs`): the four grounds (`bool 1`,
-      `int 2`, `str 3`, `uri 4`), then the collections `elist 6 < etuple 7 < eset 8 < emap 9`, then
-      the vars and the operators `evar 100 < eneg 101 < emult 102 < ediv 103 < eplus 104 <
-      eminus 105 < elt 106 < ele 107 < egt 108 < ege 109 < eeq 110 < eneq 111 < enot 112 <
-      eand 113 < eor 114 < emod 122`. (`Ground.bytes` is the exception — see `cmpGround`.) The arms
-      are in that order because the `.lt`/`.gt` fallback of a group is only reached when no earlier
-      group matched, which is what makes the arm order *be* the group order. -/
+  /-- `Expr`, in the node's **score-tag** order (`models/src/sorter.rs`): the ground class first, then
+      the collections `elist 6 < etuple 7 < eset 8 < emap 9`, then the vars and the operators
+      `evar 100 < eneg 101 < emult 102 < ediv 103 < eplus 104 < eminus 105 < elt 106 < ele 107 <
+      egt 108 < ege 109 < eeq 110 < eneq 111 < enot 112 < eand 113 < eor 114 < ematches 118 <
+      emod 122 < eshortand 123 < eshortor 124`. The arms are in that order because the `.lt`/`.gt`
+      fallback of a group is only reached when no earlier group matched, which is what makes the arm
+      order *be* the group order.
+
+      **The ground is one class here and the node's is not** (`bool 1 < int 2 < str 3 < uri 4`, with
+      `bytes` at `EBYTEARR` 116) — the recorded divergence, explained in `exprTag`'s docstring: the
+      split is a re-proof rather than a renumbering, and no corpus row can carry either half because a
+      byte-array literal is unspellable in the node's front end.
+
+      **The last group carries no fallbacks, and that is not an omission**: `eshortor` has the maximal
+      tag, so `cmpExpr (.eshortor _) t` is never `.lt` — every other `t` is caught by an earlier
+      `| _, Expr.T _ _ => .gt` arm and `t = .eshortor` by the group's own pair arm. Adding them back is
+      a type error (`redundant alternative`), which is how this was measured; the general rule is that
+      the last group of this match never needs a fallback pair. -/
   def cmpExpr : Expr → Expr → Ordering
+    -- One `ground` class, first. `cmpGround` orders the five grounds among themselves, which is the
+    -- node's order *within* the class (`bool < int < str < uri < bytes`).
     | Expr.ground g, Expr.ground g' => cmpGround g g'
     | Expr.ground _, _ => .lt | _, Expr.ground _ => .gt
+    -- `ELIST` 6, `ETUPLE` 7, `ESET` 8, `EMAP` 9.
     | Expr.elist ps r, Expr.elist ps' r' => lex (cmpListPar ps ps') (cmpOptionVar r r')
     | Expr.elist _ _, _ => .lt | _, Expr.elist _ _ => .gt
     | Expr.etuple ps, Expr.etuple ps' => cmpListPar ps ps'
@@ -199,6 +213,7 @@ mutual
     | Expr.eset _ _, _ => .lt | _, Expr.eset _ _ => .gt
     | Expr.emap kvs r, Expr.emap kvs' r' => lex (cmpListParPair kvs kvs') (cmpOptionVar r r')
     | Expr.emap _ _, _ => .lt | _, Expr.emap _ _ => .gt
+    -- `EVAR` 100, then the operators 101–114 in tag order.
     | Expr.evar v, Expr.evar v' => cmpVar v v'
     | Expr.evar _, _ => .lt | _, Expr.evar _ => .gt
     | Expr.eneg p, Expr.eneg p' => cmpPar p p'
@@ -229,7 +244,17 @@ mutual
     | Expr.eand _ _, _ => .lt | _, Expr.eand _ _ => .gt
     | Expr.eor p q, Expr.eor p' q' => lex (cmpPar p p') (cmpPar q q')
     | Expr.eor _ _, _ => .lt | _, Expr.eor _ _ => .gt
+    -- `EMATCHES` 118, `EMOD` 122, `ESHORTAND` 123, `ESHORTOR` 124 — note `emod` is *not* last in the
+    -- node, which is why its pair arm is followed by its own fallbacks and then three more groups.
+    | Expr.ematches p q, Expr.ematches p' q' => lex (cmpPar p p') (cmpPar q q')
+    | Expr.ematches _ _, _ => .lt | _, Expr.ematches _ _ => .gt
     | Expr.emod p q, Expr.emod p' q' => lex (cmpPar p p') (cmpPar q q')
+    | Expr.emod _ _, _ => .lt | _, Expr.emod _ _ => .gt
+    | Expr.eshortand p q, Expr.eshortand p' q' => lex (cmpPar p p') (cmpPar q q')
+    | Expr.eshortand _ _, _ => .lt | _, Expr.eshortand _ _ => .gt
+    | Expr.eshortor p q, Expr.eshortor p' q' => lex (cmpPar p p') (cmpPar q q')
+    -- NO fallbacks: see the docstring. `eshortor` is the maximal tag, so `.lt` is unreachable, and
+    -- every cross pair is already caught by the `| _, Expr.T _ _ => .gt` arms above.
   termination_by s t => sizeOf s + sizeOf t
   def cmpBundle : Bundle → Bundle → Ordering
     | Bundle.mk b w r, Bundle.mk b' w' r' => lex (cmpPar b b') (lex (_root_.cmp w w') (_root_.cmp r r'))
@@ -320,41 +345,60 @@ theorem cmpListGUnforgeable_eq_iff (l l' : List GUnforgeable) : cmpListGUnforgea
 is one strongly connected component spanning `Par`, `Expr`, the collections and the lists, so the compiler
 emits it as `WellFounded.fix`: no `rfl` reduces `cmpExpr (.ground g) (.ground g')`, `simp` cannot use
 `cmpExpr.eq_def` (realizing it *times out* at `whnf`), and a plain `cases s <;> cases t <;> simp [cmpExpr]`
-over 441 pairs overflows the stack. What works is asking the equation compiler for one **arm at a time**:
+over one pair per constructor — 441 when that was measured, 576 now that the algebra is 24 constructors —
+overflows the stack. What works is asking the equation compiler for one **arm at a time**:
 each `cmpExpr_*` lemma below is one `simp only [cmpExpr.eq_def]` under a stated heartbeat budget. The cross
 cases are the arm *order*, which `exprTag` numbers — and the side condition needs `Nat.reduceLT` in the
 `simp only` set, or the tag lemmas never fire.
 
 With both families `@[simp]`, `cmpExpr`'s law is an ordinary case analysis — and it is written **one arm at
-a time, with the sub-law called on the arm's own pattern variables**, which is not cosmetic: a 441-goal
-`simp` makes the same calls with `simp` choosing the arguments, and the termination checker then sees a
+a time, with the sub-law called on the arm's own pattern variables**, which is not cosmetic: a whole-
+enumeration `simp` (441 goals when that attempt was made, 576 at today's 24 constructors) makes the same
+calls with `simp` choosing the arguments, and the termination checker then sees a
 descent it cannot justify (`sizeOf p < 1 + sizeOf a✝` for a `p` no hypothesis identifies). An earlier
 attempt did exactly that and dead-ended. -/
 
-/-- The arm order `cmpExpr` matches in, as a number. Its arms decide the same-constructor cases and
-    the order below decides the rest: an `Expr` whose tag is smaller compares `lt`. -/
+/-- The arm order `cmpExpr` matches in, as a number, and the **node's own** score tags
+    (`models/src/sorter.rs:16-58`) constructor for constructor — so the arm order and the tag table are
+    one statement rather than two. One class diverges, and it is the one that cannot be pinned: the node
+    *splits* the ground — `bool` 1, `int` 2, `str` 3, `uri` 4 first, with `bytes` at `EBYTEARR` **116**
+    after `eor` — while the model keeps the five grounds in a single class, tagged 0 and placed first.
+    Splitting it in the term is not a renumbering but a *re-proof*: five classes make
+    `exprTag (.ground g)` a stuck five-way `match` for a variable `g`, and every `cases`-enumerated goal
+    then loses the literal tag the cross lemmas' side conditions fire on. The guard that would restore it
+    does not compose in this toolchain (measured: `first`/`try` around a `case` never fire, and a
+    top-level `case` errors on the other 23 goals), and no corpus row could carry either half anyway — a
+    byte-array literal is unspellable in the node's front end (`@"c"!(b"a")` is a `SyntaxError`). So the
+    divergence is **named** rather than half-taken. What the numbering does pin — the three
+    newly-distinguished constructors' placement among the old ones — is corpus rows 20–25.
+    A `BigInt` ground (`BIG_INT` 13), `EMETHOD` 115, `EPERCENT` 119, `EPLUSPLUS` 120 and `EMINUSMINUS`
+    121 have no constructor here at all, so law 1a is unstatable for them rather than merely unpinned. -/
 def exprTag : Expr → Nat
   | .ground _ => 0
-  | .elist _ _ => 1
-  | .etuple _ => 2
-  | .eset _ _ => 3
-  | .emap _ _ => 4
-  | .evar _ => 5
-  | .eneg _ => 6
-  | .emult _ _ => 7
-  | .ediv _ _ => 8
-  | .eplus _ _ => 9
-  | .eminus _ _ => 10
-  | .elt _ _ => 11
-  | .ele _ _ => 12
-  | .egt _ _ => 13
-  | .ege _ _ => 14
-  | .eeq _ _ => 15
-  | .eneq _ _ => 16
-  | .enot _ => 17
-  | .eand _ _ => 18
-  | .eor _ _ => 19
-  | .emod _ _ => 20
+  | .elist _ _ => 6
+  | .etuple _ => 7
+  | .eset _ _ => 8
+  | .emap _ _ => 9
+  | .evar _ => 100
+  | .eneg _ => 101
+  | .emult _ _ => 102
+  | .ediv _ _ => 103
+  | .eplus _ _ => 104
+  | .eminus _ _ => 105
+  | .elt _ _ => 106
+  | .ele _ _ => 107
+  | .egt _ _ => 108
+  | .ege _ _ => 109
+  | .eeq _ _ => 110
+  | .eneq _ _ => 111
+  | .enot _ => 112
+  | .eand _ _ => 113
+  | .eor _ _ => 114
+  | .ematches _ _ => 118
+  | .emod _ _ => 122
+  | .eshortand _ _ => 123
+  | .eshortor _ _ => 124
+
 set_option maxHeartbeats 8000000 in
 @[simp] theorem cmpExpr_ground (g g' : Ground) :
     cmpExpr (.ground g) (.ground g') = cmpGround g g' := by
@@ -460,17 +504,430 @@ set_option maxHeartbeats 8000000 in
     cmpExpr (.emod p q) (.emod p' q') = lex (cmpPar p p') (cmpPar q q') := by
   simp only [cmpExpr.eq_def]
 
-set_option maxHeartbeats 20000000 in
-set_option maxRecDepth 10000 in
-/-- The cross cases, by tag: a smaller tag compares `lt`. -/
-@[simp] theorem cmpExpr_tag_lt {s t : Expr} (h : exprTag s < exprTag t) : cmpExpr s t = .lt := by
-  cases s <;> cases t <;> simp_all [exprTag, Nat.reduceLT] <;> simp only [cmpExpr.eq_def]
+set_option maxHeartbeats 8000000 in
+@[simp] theorem cmpExpr_ematches (p p' q q' : Par) :
+    cmpExpr (.ematches p q) (.ematches p' q') = lex (cmpPar p p') (cmpPar q q') := by
+  simp only [cmpExpr.eq_def]
 
-set_option maxHeartbeats 20000000 in
-set_option maxRecDepth 10000 in
-/-- And the mirror. -/
+set_option maxHeartbeats 8000000 in
+@[simp] theorem cmpExpr_eshortand (p p' q q' : Par) :
+    cmpExpr (.eshortand p q) (.eshortand p' q') = lex (cmpPar p p') (cmpPar q q') := by
+  simp only [cmpExpr.eq_def]
+
+set_option maxHeartbeats 8000000 in
+@[simp] theorem cmpExpr_eshortor (p p' q q' : Par) :
+    cmpExpr (.eshortor p q) (.eshortor p' q') = lex (cmpPar p p') (cmpPar q q') := by
+  simp only [cmpExpr.eq_def]
+
+set_option maxHeartbeats 8000000 in
+private theorem cmpExpr_ground_tag_lt {g : Ground} {t : Expr}
+    (h : exprTag (.ground g) < exprTag t) : cmpExpr (.ground g) t = .lt := by
+  cases t <;> simp_all [exprTag, Nat.reduceLT] <;> simp only [cmpExpr.eq_def]
+
+set_option maxHeartbeats 8000000 in
+private theorem cmpExpr_ground_tag_gt {g : Ground} {t : Expr}
+    (h : exprTag t < exprTag (.ground g)) : cmpExpr (.ground g) t = .gt := by
+  cases t <;> simp_all [exprTag, Nat.reduceLT] <;> simp only [cmpExpr.eq_def]
+
+set_option maxHeartbeats 8000000 in
+private theorem cmpExpr_elist_tag_lt {ps : List Par} {r : Option Var} {t : Expr}
+    (h : exprTag (.elist ps r) < exprTag t) : cmpExpr (.elist ps r) t = .lt := by
+  cases t <;> simp_all [exprTag, Nat.reduceLT] <;> simp only [cmpExpr.eq_def]
+
+set_option maxHeartbeats 8000000 in
+private theorem cmpExpr_elist_tag_gt {ps : List Par} {r : Option Var} {t : Expr}
+    (h : exprTag t < exprTag (.elist ps r)) : cmpExpr (.elist ps r) t = .gt := by
+  cases t <;> simp_all [exprTag, Nat.reduceLT] <;> simp only [cmpExpr.eq_def]
+
+set_option maxHeartbeats 8000000 in
+private theorem cmpExpr_etuple_tag_lt {ps : List Par} {t : Expr}
+    (h : exprTag (.etuple ps) < exprTag t) : cmpExpr (.etuple ps) t = .lt := by
+  cases t <;> simp_all [exprTag, Nat.reduceLT] <;> simp only [cmpExpr.eq_def]
+
+set_option maxHeartbeats 8000000 in
+private theorem cmpExpr_etuple_tag_gt {ps : List Par} {t : Expr}
+    (h : exprTag t < exprTag (.etuple ps)) : cmpExpr (.etuple ps) t = .gt := by
+  cases t <;> simp_all [exprTag, Nat.reduceLT] <;> simp only [cmpExpr.eq_def]
+
+set_option maxHeartbeats 8000000 in
+private theorem cmpExpr_eset_tag_lt {ps : List Par} {r : Option Var} {t : Expr}
+    (h : exprTag (.eset ps r) < exprTag t) : cmpExpr (.eset ps r) t = .lt := by
+  cases t <;> simp_all [exprTag, Nat.reduceLT] <;> simp only [cmpExpr.eq_def]
+
+set_option maxHeartbeats 8000000 in
+private theorem cmpExpr_eset_tag_gt {ps : List Par} {r : Option Var} {t : Expr}
+    (h : exprTag t < exprTag (.eset ps r)) : cmpExpr (.eset ps r) t = .gt := by
+  cases t <;> simp_all [exprTag, Nat.reduceLT] <;> simp only [cmpExpr.eq_def]
+
+set_option maxHeartbeats 8000000 in
+private theorem cmpExpr_emap_tag_lt {kvs : List (Par × Par)} {r : Option Var} {t : Expr}
+    (h : exprTag (.emap kvs r) < exprTag t) : cmpExpr (.emap kvs r) t = .lt := by
+  cases t <;> simp_all [exprTag, Nat.reduceLT] <;> simp only [cmpExpr.eq_def]
+
+set_option maxHeartbeats 8000000 in
+private theorem cmpExpr_emap_tag_gt {kvs : List (Par × Par)} {r : Option Var} {t : Expr}
+    (h : exprTag t < exprTag (.emap kvs r)) : cmpExpr (.emap kvs r) t = .gt := by
+  cases t <;> simp_all [exprTag, Nat.reduceLT] <;> simp only [cmpExpr.eq_def]
+
+set_option maxHeartbeats 8000000 in
+private theorem cmpExpr_evar_tag_lt {v : Var} {t : Expr}
+    (h : exprTag (.evar v) < exprTag t) : cmpExpr (.evar v) t = .lt := by
+  cases t <;> simp_all [exprTag, Nat.reduceLT] <;> simp only [cmpExpr.eq_def]
+
+set_option maxHeartbeats 8000000 in
+private theorem cmpExpr_evar_tag_gt {v : Var} {t : Expr}
+    (h : exprTag t < exprTag (.evar v)) : cmpExpr (.evar v) t = .gt := by
+  cases t <;> simp_all [exprTag, Nat.reduceLT] <;> simp only [cmpExpr.eq_def]
+
+set_option maxHeartbeats 8000000 in
+private theorem cmpExpr_eneg_tag_lt {p : Par} {t : Expr}
+    (h : exprTag (.eneg p) < exprTag t) : cmpExpr (.eneg p) t = .lt := by
+  cases t <;> simp_all [exprTag, Nat.reduceLT] <;> simp only [cmpExpr.eq_def]
+
+set_option maxHeartbeats 8000000 in
+private theorem cmpExpr_eneg_tag_gt {p : Par} {t : Expr}
+    (h : exprTag t < exprTag (.eneg p)) : cmpExpr (.eneg p) t = .gt := by
+  cases t <;> simp_all [exprTag, Nat.reduceLT] <;> simp only [cmpExpr.eq_def]
+
+set_option maxHeartbeats 8000000 in
+private theorem cmpExpr_enot_tag_lt {p : Par} {t : Expr}
+    (h : exprTag (.enot p) < exprTag t) : cmpExpr (.enot p) t = .lt := by
+  cases t <;> simp_all [exprTag, Nat.reduceLT] <;> simp only [cmpExpr.eq_def]
+
+set_option maxHeartbeats 8000000 in
+private theorem cmpExpr_enot_tag_gt {p : Par} {t : Expr}
+    (h : exprTag t < exprTag (.enot p)) : cmpExpr (.enot p) t = .gt := by
+  cases t <;> simp_all [exprTag, Nat.reduceLT] <;> simp only [cmpExpr.eq_def]
+
+set_option maxHeartbeats 8000000 in
+private theorem cmpExpr_emult_tag_lt {p q : Par} {t : Expr}
+    (h : exprTag (.emult p q) < exprTag t) : cmpExpr (.emult p q) t = .lt := by
+  cases t <;> simp_all [exprTag, Nat.reduceLT] <;> simp only [cmpExpr.eq_def]
+
+set_option maxHeartbeats 8000000 in
+private theorem cmpExpr_emult_tag_gt {p q : Par} {t : Expr}
+    (h : exprTag t < exprTag (.emult p q)) : cmpExpr (.emult p q) t = .gt := by
+  cases t <;> simp_all [exprTag, Nat.reduceLT] <;> simp only [cmpExpr.eq_def]
+
+set_option maxHeartbeats 8000000 in
+private theorem cmpExpr_ediv_tag_lt {p q : Par} {t : Expr}
+    (h : exprTag (.ediv p q) < exprTag t) : cmpExpr (.ediv p q) t = .lt := by
+  cases t <;> simp_all [exprTag, Nat.reduceLT] <;> simp only [cmpExpr.eq_def]
+
+set_option maxHeartbeats 8000000 in
+private theorem cmpExpr_ediv_tag_gt {p q : Par} {t : Expr}
+    (h : exprTag t < exprTag (.ediv p q)) : cmpExpr (.ediv p q) t = .gt := by
+  cases t <;> simp_all [exprTag, Nat.reduceLT] <;> simp only [cmpExpr.eq_def]
+
+set_option maxHeartbeats 8000000 in
+private theorem cmpExpr_eplus_tag_lt {p q : Par} {t : Expr}
+    (h : exprTag (.eplus p q) < exprTag t) : cmpExpr (.eplus p q) t = .lt := by
+  cases t <;> simp_all [exprTag, Nat.reduceLT] <;> simp only [cmpExpr.eq_def]
+
+set_option maxHeartbeats 8000000 in
+private theorem cmpExpr_eplus_tag_gt {p q : Par} {t : Expr}
+    (h : exprTag t < exprTag (.eplus p q)) : cmpExpr (.eplus p q) t = .gt := by
+  cases t <;> simp_all [exprTag, Nat.reduceLT] <;> simp only [cmpExpr.eq_def]
+
+set_option maxHeartbeats 8000000 in
+private theorem cmpExpr_eminus_tag_lt {p q : Par} {t : Expr}
+    (h : exprTag (.eminus p q) < exprTag t) : cmpExpr (.eminus p q) t = .lt := by
+  cases t <;> simp_all [exprTag, Nat.reduceLT] <;> simp only [cmpExpr.eq_def]
+
+set_option maxHeartbeats 8000000 in
+private theorem cmpExpr_eminus_tag_gt {p q : Par} {t : Expr}
+    (h : exprTag t < exprTag (.eminus p q)) : cmpExpr (.eminus p q) t = .gt := by
+  cases t <;> simp_all [exprTag, Nat.reduceLT] <;> simp only [cmpExpr.eq_def]
+
+set_option maxHeartbeats 8000000 in
+private theorem cmpExpr_elt_tag_lt {p q : Par} {t : Expr}
+    (h : exprTag (.elt p q) < exprTag t) : cmpExpr (.elt p q) t = .lt := by
+  cases t <;> simp_all [exprTag, Nat.reduceLT] <;> simp only [cmpExpr.eq_def]
+
+set_option maxHeartbeats 8000000 in
+private theorem cmpExpr_elt_tag_gt {p q : Par} {t : Expr}
+    (h : exprTag t < exprTag (.elt p q)) : cmpExpr (.elt p q) t = .gt := by
+  cases t <;> simp_all [exprTag, Nat.reduceLT] <;> simp only [cmpExpr.eq_def]
+
+set_option maxHeartbeats 8000000 in
+private theorem cmpExpr_ele_tag_lt {p q : Par} {t : Expr}
+    (h : exprTag (.ele p q) < exprTag t) : cmpExpr (.ele p q) t = .lt := by
+  cases t <;> simp_all [exprTag, Nat.reduceLT] <;> simp only [cmpExpr.eq_def]
+
+set_option maxHeartbeats 8000000 in
+private theorem cmpExpr_ele_tag_gt {p q : Par} {t : Expr}
+    (h : exprTag t < exprTag (.ele p q)) : cmpExpr (.ele p q) t = .gt := by
+  cases t <;> simp_all [exprTag, Nat.reduceLT] <;> simp only [cmpExpr.eq_def]
+
+set_option maxHeartbeats 8000000 in
+private theorem cmpExpr_egt_tag_lt {p q : Par} {t : Expr}
+    (h : exprTag (.egt p q) < exprTag t) : cmpExpr (.egt p q) t = .lt := by
+  cases t <;> simp_all [exprTag, Nat.reduceLT] <;> simp only [cmpExpr.eq_def]
+
+set_option maxHeartbeats 8000000 in
+private theorem cmpExpr_egt_tag_gt {p q : Par} {t : Expr}
+    (h : exprTag t < exprTag (.egt p q)) : cmpExpr (.egt p q) t = .gt := by
+  cases t <;> simp_all [exprTag, Nat.reduceLT] <;> simp only [cmpExpr.eq_def]
+
+set_option maxHeartbeats 8000000 in
+private theorem cmpExpr_ege_tag_lt {p q : Par} {t : Expr}
+    (h : exprTag (.ege p q) < exprTag t) : cmpExpr (.ege p q) t = .lt := by
+  cases t <;> simp_all [exprTag, Nat.reduceLT] <;> simp only [cmpExpr.eq_def]
+
+set_option maxHeartbeats 8000000 in
+private theorem cmpExpr_ege_tag_gt {p q : Par} {t : Expr}
+    (h : exprTag t < exprTag (.ege p q)) : cmpExpr (.ege p q) t = .gt := by
+  cases t <;> simp_all [exprTag, Nat.reduceLT] <;> simp only [cmpExpr.eq_def]
+
+set_option maxHeartbeats 8000000 in
+private theorem cmpExpr_eeq_tag_lt {p q : Par} {t : Expr}
+    (h : exprTag (.eeq p q) < exprTag t) : cmpExpr (.eeq p q) t = .lt := by
+  cases t <;> simp_all [exprTag, Nat.reduceLT] <;> simp only [cmpExpr.eq_def]
+
+set_option maxHeartbeats 8000000 in
+private theorem cmpExpr_eeq_tag_gt {p q : Par} {t : Expr}
+    (h : exprTag t < exprTag (.eeq p q)) : cmpExpr (.eeq p q) t = .gt := by
+  cases t <;> simp_all [exprTag, Nat.reduceLT] <;> simp only [cmpExpr.eq_def]
+
+set_option maxHeartbeats 8000000 in
+private theorem cmpExpr_eneq_tag_lt {p q : Par} {t : Expr}
+    (h : exprTag (.eneq p q) < exprTag t) : cmpExpr (.eneq p q) t = .lt := by
+  cases t <;> simp_all [exprTag, Nat.reduceLT] <;> simp only [cmpExpr.eq_def]
+
+set_option maxHeartbeats 8000000 in
+private theorem cmpExpr_eneq_tag_gt {p q : Par} {t : Expr}
+    (h : exprTag t < exprTag (.eneq p q)) : cmpExpr (.eneq p q) t = .gt := by
+  cases t <;> simp_all [exprTag, Nat.reduceLT] <;> simp only [cmpExpr.eq_def]
+
+set_option maxHeartbeats 8000000 in
+private theorem cmpExpr_eand_tag_lt {p q : Par} {t : Expr}
+    (h : exprTag (.eand p q) < exprTag t) : cmpExpr (.eand p q) t = .lt := by
+  cases t <;> simp_all [exprTag, Nat.reduceLT] <;> simp only [cmpExpr.eq_def]
+
+set_option maxHeartbeats 8000000 in
+private theorem cmpExpr_eand_tag_gt {p q : Par} {t : Expr}
+    (h : exprTag t < exprTag (.eand p q)) : cmpExpr (.eand p q) t = .gt := by
+  cases t <;> simp_all [exprTag, Nat.reduceLT] <;> simp only [cmpExpr.eq_def]
+
+set_option maxHeartbeats 8000000 in
+private theorem cmpExpr_eor_tag_lt {p q : Par} {t : Expr}
+    (h : exprTag (.eor p q) < exprTag t) : cmpExpr (.eor p q) t = .lt := by
+  cases t <;> simp_all [exprTag, Nat.reduceLT] <;> simp only [cmpExpr.eq_def]
+
+set_option maxHeartbeats 8000000 in
+private theorem cmpExpr_eor_tag_gt {p q : Par} {t : Expr}
+    (h : exprTag t < exprTag (.eor p q)) : cmpExpr (.eor p q) t = .gt := by
+  cases t <;> simp_all [exprTag, Nat.reduceLT] <;> simp only [cmpExpr.eq_def]
+
+set_option maxHeartbeats 8000000 in
+private theorem cmpExpr_ematches_tag_lt {p q : Par} {t : Expr}
+    (h : exprTag (.ematches p q) < exprTag t) : cmpExpr (.ematches p q) t = .lt := by
+  cases t <;> simp_all [exprTag, Nat.reduceLT] <;> simp only [cmpExpr.eq_def]
+
+set_option maxHeartbeats 8000000 in
+private theorem cmpExpr_ematches_tag_gt {p q : Par} {t : Expr}
+    (h : exprTag t < exprTag (.ematches p q)) : cmpExpr (.ematches p q) t = .gt := by
+  cases t <;> simp_all [exprTag, Nat.reduceLT] <;> simp only [cmpExpr.eq_def]
+
+set_option maxHeartbeats 8000000 in
+private theorem cmpExpr_emod_tag_lt {p q : Par} {t : Expr}
+    (h : exprTag (.emod p q) < exprTag t) : cmpExpr (.emod p q) t = .lt := by
+  cases t <;> simp_all [exprTag, Nat.reduceLT] <;> simp only [cmpExpr.eq_def]
+
+set_option maxHeartbeats 8000000 in
+private theorem cmpExpr_emod_tag_gt {p q : Par} {t : Expr}
+    (h : exprTag t < exprTag (.emod p q)) : cmpExpr (.emod p q) t = .gt := by
+  cases t <;> simp_all [exprTag, Nat.reduceLT] <;> simp only [cmpExpr.eq_def]
+
+set_option maxHeartbeats 8000000 in
+private theorem cmpExpr_eshortand_tag_lt {p q : Par} {t : Expr}
+    (h : exprTag (.eshortand p q) < exprTag t) : cmpExpr (.eshortand p q) t = .lt := by
+  cases t <;> simp_all [exprTag, Nat.reduceLT] <;> simp only [cmpExpr.eq_def]
+
+set_option maxHeartbeats 8000000 in
+private theorem cmpExpr_eshortand_tag_gt {p q : Par} {t : Expr}
+    (h : exprTag t < exprTag (.eshortand p q)) : cmpExpr (.eshortand p q) t = .gt := by
+  cases t <;> simp_all [exprTag, Nat.reduceLT] <;> simp only [cmpExpr.eq_def]
+
+set_option maxHeartbeats 8000000 in
+private theorem cmpExpr_eshortor_tag_lt {p q : Par} {t : Expr}
+    (h : exprTag (.eshortor p q) < exprTag t) : cmpExpr (.eshortor p q) t = .lt := by
+  cases t <;> simp_all [exprTag, Nat.reduceLT] <;> simp only [cmpExpr.eq_def]
+
+set_option maxHeartbeats 8000000 in
+private theorem cmpExpr_eshortor_tag_gt {p q : Par} {t : Expr}
+    (h : exprTag t < exprTag (.eshortor p q)) : cmpExpr (.eshortor p q) t = .gt := by
+  cases t <;> simp_all [exprTag, Nat.reduceLT] <;> simp only [cmpExpr.eq_def]
+
+set_option maxHeartbeats 8000000 in
+/-- The cross cases, by tag: a smaller tag compares `lt`. The 24-arm dispatch, one
+    arm per *left* class, calling the `private cmpExpr_<class>_tag_lt` lemmas above — so the
+    statement and the name are unchanged from the committed file (law 1b cites this name and the
+    law blocks' `simp only` sets name it), while the work is split into 24 separately-budgeted
+    declarations that `set_option profiler true in` can name individually. -/
+@[simp] theorem cmpExpr_tag_lt {s t : Expr} (h : exprTag s < exprTag t) : cmpExpr s t = .lt := by
+  cases s <;> first
+    | exact cmpExpr_ground_tag_lt h
+    | exact cmpExpr_elist_tag_lt h
+    | exact cmpExpr_etuple_tag_lt h
+    | exact cmpExpr_eset_tag_lt h
+    | exact cmpExpr_emap_tag_lt h
+    | exact cmpExpr_evar_tag_lt h
+    | exact cmpExpr_eneg_tag_lt h
+    | exact cmpExpr_enot_tag_lt h
+    | exact cmpExpr_emult_tag_lt h
+    | exact cmpExpr_ediv_tag_lt h
+    | exact cmpExpr_eplus_tag_lt h
+    | exact cmpExpr_eminus_tag_lt h
+    | exact cmpExpr_elt_tag_lt h
+    | exact cmpExpr_ele_tag_lt h
+    | exact cmpExpr_egt_tag_lt h
+    | exact cmpExpr_ege_tag_lt h
+    | exact cmpExpr_eeq_tag_lt h
+    | exact cmpExpr_eneq_tag_lt h
+    | exact cmpExpr_eand_tag_lt h
+    | exact cmpExpr_eor_tag_lt h
+    | exact cmpExpr_ematches_tag_lt h
+    | exact cmpExpr_emod_tag_lt h
+    | exact cmpExpr_eshortand_tag_lt h
+    | exact cmpExpr_eshortor_tag_lt h
+
+set_option maxHeartbeats 8000000 in
+/-- The cross cases, by tag: a smaller tag compares `gt`. The 24-arm dispatch, one
+    arm per *left* class, calling the `private cmpExpr_<class>_tag_gt` lemmas above — so the
+    statement and the name are unchanged from the committed file (law 1b cites this name and the
+    law blocks' `simp only` sets name it), while the work is split into 24 separately-budgeted
+    declarations that `set_option profiler true in` can name individually. -/
 @[simp] theorem cmpExpr_tag_gt {s t : Expr} (h : exprTag t < exprTag s) : cmpExpr s t = .gt := by
-  cases s <;> cases t <;> simp_all [exprTag, Nat.reduceLT] <;> simp only [cmpExpr.eq_def]
+  cases s <;> first
+    | exact cmpExpr_ground_tag_gt h
+    | exact cmpExpr_elist_tag_gt h
+    | exact cmpExpr_etuple_tag_gt h
+    | exact cmpExpr_eset_tag_gt h
+    | exact cmpExpr_emap_tag_gt h
+    | exact cmpExpr_evar_tag_gt h
+    | exact cmpExpr_eneg_tag_gt h
+    | exact cmpExpr_enot_tag_gt h
+    | exact cmpExpr_emult_tag_gt h
+    | exact cmpExpr_ediv_tag_gt h
+    | exact cmpExpr_eplus_tag_gt h
+    | exact cmpExpr_eminus_tag_gt h
+    | exact cmpExpr_elt_tag_gt h
+    | exact cmpExpr_ele_tag_gt h
+    | exact cmpExpr_egt_tag_gt h
+    | exact cmpExpr_ege_tag_gt h
+    | exact cmpExpr_eeq_tag_gt h
+    | exact cmpExpr_eneq_tag_gt h
+    | exact cmpExpr_eand_tag_gt h
+    | exact cmpExpr_eor_tag_gt h
+    | exact cmpExpr_ematches_tag_gt h
+    | exact cmpExpr_emod_tag_gt h
+    | exact cmpExpr_eshortand_tag_gt h
+    | exact cmpExpr_eshortor_tag_gt h
+
+/-! ### The extraction lemmas — what makes `lt_trans` cheap
+
+`exprTag` is injective on classes, so `exprTag s = <tag>` *identifies the constructor*. These 24
+lemmas say so; `cmpExpr_lt_trans`'s equal-tags branch uses two of them per goal to turn the 24^3
+enumeration into 24 goals.
+-/
+
+set_option maxHeartbeats 8000000 in
+private theorem exprTag_eq_ground {s : Expr} (h : exprTag s = 0) : ∃ g, s = .ground g := by
+  cases s <;> first | exact ⟨g, rfl⟩ | simp_all [exprTag]
+
+set_option maxHeartbeats 8000000 in
+private theorem exprTag_eq_elist {s : Expr} (h : exprTag s = 6) : ∃ ps r, s = .elist ps r := by
+  cases s <;> first | exact ⟨ps, r, rfl⟩ | simp_all [exprTag]
+
+set_option maxHeartbeats 8000000 in
+private theorem exprTag_eq_etuple {s : Expr} (h : exprTag s = 7) : ∃ ps, s = .etuple ps := by
+  cases s <;> first | exact ⟨ps, rfl⟩ | simp_all [exprTag]
+
+set_option maxHeartbeats 8000000 in
+private theorem exprTag_eq_eset {s : Expr} (h : exprTag s = 8) : ∃ ps r, s = .eset ps r := by
+  cases s <;> first | exact ⟨ps, r, rfl⟩ | simp_all [exprTag]
+
+set_option maxHeartbeats 8000000 in
+private theorem exprTag_eq_emap {s : Expr} (h : exprTag s = 9) : ∃ kvs r, s = .emap kvs r := by
+  cases s <;> first | exact ⟨kvs, r, rfl⟩ | simp_all [exprTag]
+
+set_option maxHeartbeats 8000000 in
+private theorem exprTag_eq_evar {s : Expr} (h : exprTag s = 100) : ∃ v, s = .evar v := by
+  cases s <;> first | exact ⟨v, rfl⟩ | simp_all [exprTag]
+
+set_option maxHeartbeats 8000000 in
+private theorem exprTag_eq_eneg {s : Expr} (h : exprTag s = 101) : ∃ p, s = .eneg p := by
+  cases s <;> first | exact ⟨p, rfl⟩ | simp_all [exprTag]
+
+set_option maxHeartbeats 8000000 in
+private theorem exprTag_eq_enot {s : Expr} (h : exprTag s = 112) : ∃ p, s = .enot p := by
+  cases s <;> first | exact ⟨p, rfl⟩ | simp_all [exprTag]
+
+set_option maxHeartbeats 8000000 in
+private theorem exprTag_eq_emult {s : Expr} (h : exprTag s = 102) : ∃ p q, s = .emult p q := by
+  cases s <;> first | exact ⟨p, q, rfl⟩ | simp_all [exprTag]
+
+set_option maxHeartbeats 8000000 in
+private theorem exprTag_eq_ediv {s : Expr} (h : exprTag s = 103) : ∃ p q, s = .ediv p q := by
+  cases s <;> first | exact ⟨p, q, rfl⟩ | simp_all [exprTag]
+
+set_option maxHeartbeats 8000000 in
+private theorem exprTag_eq_eplus {s : Expr} (h : exprTag s = 104) : ∃ p q, s = .eplus p q := by
+  cases s <;> first | exact ⟨p, q, rfl⟩ | simp_all [exprTag]
+
+set_option maxHeartbeats 8000000 in
+private theorem exprTag_eq_eminus {s : Expr} (h : exprTag s = 105) : ∃ p q, s = .eminus p q := by
+  cases s <;> first | exact ⟨p, q, rfl⟩ | simp_all [exprTag]
+
+set_option maxHeartbeats 8000000 in
+private theorem exprTag_eq_elt {s : Expr} (h : exprTag s = 106) : ∃ p q, s = .elt p q := by
+  cases s <;> first | exact ⟨p, q, rfl⟩ | simp_all [exprTag]
+
+set_option maxHeartbeats 8000000 in
+private theorem exprTag_eq_ele {s : Expr} (h : exprTag s = 107) : ∃ p q, s = .ele p q := by
+  cases s <;> first | exact ⟨p, q, rfl⟩ | simp_all [exprTag]
+
+set_option maxHeartbeats 8000000 in
+private theorem exprTag_eq_egt {s : Expr} (h : exprTag s = 108) : ∃ p q, s = .egt p q := by
+  cases s <;> first | exact ⟨p, q, rfl⟩ | simp_all [exprTag]
+
+set_option maxHeartbeats 8000000 in
+private theorem exprTag_eq_ege {s : Expr} (h : exprTag s = 109) : ∃ p q, s = .ege p q := by
+  cases s <;> first | exact ⟨p, q, rfl⟩ | simp_all [exprTag]
+
+set_option maxHeartbeats 8000000 in
+private theorem exprTag_eq_eeq {s : Expr} (h : exprTag s = 110) : ∃ p q, s = .eeq p q := by
+  cases s <;> first | exact ⟨p, q, rfl⟩ | simp_all [exprTag]
+
+set_option maxHeartbeats 8000000 in
+private theorem exprTag_eq_eneq {s : Expr} (h : exprTag s = 111) : ∃ p q, s = .eneq p q := by
+  cases s <;> first | exact ⟨p, q, rfl⟩ | simp_all [exprTag]
+
+set_option maxHeartbeats 8000000 in
+private theorem exprTag_eq_eand {s : Expr} (h : exprTag s = 113) : ∃ p q, s = .eand p q := by
+  cases s <;> first | exact ⟨p, q, rfl⟩ | simp_all [exprTag]
+
+set_option maxHeartbeats 8000000 in
+private theorem exprTag_eq_eor {s : Expr} (h : exprTag s = 114) : ∃ p q, s = .eor p q := by
+  cases s <;> first | exact ⟨p, q, rfl⟩ | simp_all [exprTag]
+
+set_option maxHeartbeats 8000000 in
+private theorem exprTag_eq_ematches {s : Expr} (h : exprTag s = 118) : ∃ p q, s = .ematches p q := by
+  cases s <;> first | exact ⟨p, q, rfl⟩ | simp_all [exprTag]
+
+set_option maxHeartbeats 8000000 in
+private theorem exprTag_eq_emod {s : Expr} (h : exprTag s = 122) : ∃ p q, s = .emod p q := by
+  cases s <;> first | exact ⟨p, q, rfl⟩ | simp_all [exprTag]
+
+set_option maxHeartbeats 8000000 in
+private theorem exprTag_eq_eshortand {s : Expr} (h : exprTag s = 123) : ∃ p q, s = .eshortand p q := by
+  cases s <;> first | exact ⟨p, q, rfl⟩ | simp_all [exprTag]
+
+set_option maxHeartbeats 8000000 in
+private theorem exprTag_eq_eshortor {s : Expr} (h : exprTag s = 124) : ∃ p q, s = .eshortor p q := by
+  cases s <;> first | exact ⟨p, q, rfl⟩ | simp_all [exprTag]
+
 
 /-- The remainder's comparator reflects equality — needed by the collection arms. -/
 @[simp] theorem cmpOptionVar_eq_iff (r r' : Option Var) : cmpOptionVar r r' = Ordering.eq ↔ r = r' := by
@@ -612,6 +1069,27 @@ mutual
         cases t
         case emod p' q' =>
           rw [cmpExpr_emod, lex_eq_iff, cmpPar_eq_iff p p', cmpPar_eq_iff q q', Expr.emod.injEq]
+        all_goals simp only [exprTag, Nat.reduceLT, cmpExpr_tag_lt, cmpExpr_tag_gt,
+          reduceCtorEq]
+    | (.ematches p q), t => by
+        cases t
+        case ematches p' q' =>
+          rw [cmpExpr_ematches, lex_eq_iff, cmpPar_eq_iff p p', cmpPar_eq_iff q q',
+            Expr.ematches.injEq]
+        all_goals simp only [exprTag, Nat.reduceLT, cmpExpr_tag_lt, cmpExpr_tag_gt,
+          reduceCtorEq]
+    | (.eshortand p q), t => by
+        cases t
+        case eshortand p' q' =>
+          rw [cmpExpr_eshortand, lex_eq_iff, cmpPar_eq_iff p p', cmpPar_eq_iff q q',
+            Expr.eshortand.injEq]
+        all_goals simp only [exprTag, Nat.reduceLT, cmpExpr_tag_lt, cmpExpr_tag_gt,
+          reduceCtorEq]
+    | (.eshortor p q), t => by
+        cases t
+        case eshortor p' q' =>
+          rw [cmpExpr_eshortor, lex_eq_iff, cmpPar_eq_iff p p', cmpPar_eq_iff q q',
+            Expr.eshortor.injEq]
         all_goals simp only [exprTag, Nat.reduceLT, cmpExpr_tag_lt, cmpExpr_tag_gt,
           reduceCtorEq]
   termination_by s => sizeOf s
@@ -974,6 +1452,24 @@ mutual
           rw [cmpExpr_emod, cmpExpr_emod, swap_lex, ← cmpPar_swap p p', ← cmpPar_swap q q']
         all_goals simp only [exprTag, Nat.reduceLT, cmpExpr_tag_lt, cmpExpr_tag_gt,
           Ordering.swap, reduceCtorEq]
+    | (.ematches p q), t => by
+        cases t
+        case ematches p' q' =>
+          rw [cmpExpr_ematches, cmpExpr_ematches, swap_lex, ← cmpPar_swap p p', ← cmpPar_swap q q']
+        all_goals simp only [exprTag, Nat.reduceLT, cmpExpr_tag_lt, cmpExpr_tag_gt,
+          Ordering.swap, reduceCtorEq]
+    | (.eshortand p q), t => by
+        cases t
+        case eshortand p' q' =>
+          rw [cmpExpr_eshortand, cmpExpr_eshortand, swap_lex, ← cmpPar_swap p p', ← cmpPar_swap q q']
+        all_goals simp only [exprTag, Nat.reduceLT, cmpExpr_tag_lt, cmpExpr_tag_gt,
+          Ordering.swap, reduceCtorEq]
+    | (.eshortor p q), t => by
+        cases t
+        case eshortor p' q' =>
+          rw [cmpExpr_eshortor, cmpExpr_eshortor, swap_lex, ← cmpPar_swap p p', ← cmpPar_swap q q']
+        all_goals simp only [exprTag, Nat.reduceLT, cmpExpr_tag_lt, cmpExpr_tag_gt,
+          Ordering.swap, reduceCtorEq]
   termination_by s => sizeOf s
 
   theorem cmpPar_swap : ∀ p : Par, ∀ q : Par, cmpPar q p = Ordering.swap (cmpPar p q)
@@ -1308,7 +1804,7 @@ Each row is a falsifier, checked rather than assumed: restoring the old order (o
 polarity) stops `Rchain.Corpus`'s `sortCases_decide` from compiling and the runtime reporter names the
 row — done for all four before they were believed.
 
-**The model's comparators are still an order on a *coarser* algebra** — 21 `Expr` constructors against
+**The model's comparators are still an order on a *coarser* algebra** — 24 `Expr` constructors against
 the node's 33 — so the alignment is partial by construction. The boundary, stated rather than fixed:
 `Receive`'s `persistent, peek` first and its `bind_count` child; `ReceiveBind`'s `source` first with
 `free_count` **dropped from the score**; `New`'s `uri` (sorted) and `injections` (key-sorted) children;
@@ -1359,11 +1855,13 @@ theorem exprTag_le_of_cmpExpr_lt {s t : Expr} (h : cmpExpr s t = Ordering.lt) :
 
 `cmpExpr`'s element law was law 1's last axiom *blocker*, and the obstacle was never the `lt_trans`
 case analysis: it is that `cmpExpr` is compiled as `WellFounded.fix`, so nothing unfolds it. The fix is
-the arm-lemma machinery above (`exprTag`, 21 `@[simp]` arms, the two tag lemmas) — with it all three of
+the arm-lemma machinery above (`exprTag`, 24 `@[simp]` arms, the two tag lemmas) — with it all three of
 `cmpExpr`'s laws are theorems. `eq_iff` and `swap` are written one arm at a time, each sub-law called on
-the arm's own pattern variables; `lt_trans` is the one that needs the tags, because a triple has 9261
-cases and the tag lemmas collapse all but 21 of them. A 21×21×21 `simp` is *not* the route, and a
-`decreasing_by` over one is not either — see the note above for why.
+the arm's own pattern variables; `lt_trans` is the one that needs the tags, and it no longer enumerates:
+in its equal-tags branch the tags are equal, so `exprTag`'s injectivity on classes identifies all three
+expressions as instances of **one** constructor, and two extraction lemmas close each goal — 24 goals
+where the earlier shape had 13824 (9261 at 21 constructors). A whole-enumeration `simp` is *not* the
+route, and a `decreasing_by` over one is not either — see the note above for why.
 
 Everything else in the family is proved, and the `Par` half of it is **one `mutual` block** below,
 because the family is one strongly connected component. What stays *outside* the block, and why: the two
@@ -1420,31 +1918,80 @@ mutual
     · have hle : exprTag u ≤ exprTag s := le_of_not_lt hsu
       have hst' : exprTag s = exprTag t := le_antisymm htag_st (le_trans htag_tu hle)
       have hsu' : exprTag s = exprTag u := le_antisymm (le_trans htag_st htag_tu) hle
-      cases s <;> cases t <;> cases u <;>
+      cases s <;>
         first
-          | (rw [exprTag, exprTag] at hst'; exact absurd hst' (by decide))
-          | (rw [exprTag, exprTag] at hsu'; exact absurd hsu' (by decide))
-          | (rw [cmpExpr_ground] at hst htu ⊢; exact groundComparator.lt_trans hst htu)
-          | (rw [cmpExpr_evar] at hst htu ⊢; exact varComparator.lt_trans hst htu)
-          | (rw [cmpExpr_eneg] at hst htu ⊢; exact cmpPar_lt_trans _ _ _ hst htu)
-          | (rw [cmpExpr_enot] at hst htu ⊢; exact cmpPar_lt_trans _ _ _ hst htu)
-          | (rw [cmpExpr_eplus] at hst htu ⊢; refine lex_lt_trans_at (f := cmpPar) (h_eq := fun {a b} => cmpPar_eq_iff a b) (h_lt := cmpPar_lt_trans _ _ _) (Dcmp := cmpPar) (hD := cmpPar_lt_trans _ _ _) hst htu)
-          | (rw [cmpExpr_eminus] at hst htu ⊢; refine lex_lt_trans_at (f := cmpPar) (h_eq := fun {a b} => cmpPar_eq_iff a b) (h_lt := cmpPar_lt_trans _ _ _) (Dcmp := cmpPar) (hD := cmpPar_lt_trans _ _ _) hst htu)
-          | (rw [cmpExpr_emult] at hst htu ⊢; refine lex_lt_trans_at (f := cmpPar) (h_eq := fun {a b} => cmpPar_eq_iff a b) (h_lt := cmpPar_lt_trans _ _ _) (Dcmp := cmpPar) (hD := cmpPar_lt_trans _ _ _) hst htu)
-          | (rw [cmpExpr_ediv] at hst htu ⊢; refine lex_lt_trans_at (f := cmpPar) (h_eq := fun {a b} => cmpPar_eq_iff a b) (h_lt := cmpPar_lt_trans _ _ _) (Dcmp := cmpPar) (hD := cmpPar_lt_trans _ _ _) hst htu)
-          | (rw [cmpExpr_emod] at hst htu ⊢; refine lex_lt_trans_at (f := cmpPar) (h_eq := fun {a b} => cmpPar_eq_iff a b) (h_lt := cmpPar_lt_trans _ _ _) (Dcmp := cmpPar) (hD := cmpPar_lt_trans _ _ _) hst htu)
-          | (rw [cmpExpr_elt] at hst htu ⊢; refine lex_lt_trans_at (f := cmpPar) (h_eq := fun {a b} => cmpPar_eq_iff a b) (h_lt := cmpPar_lt_trans _ _ _) (Dcmp := cmpPar) (hD := cmpPar_lt_trans _ _ _) hst htu)
-          | (rw [cmpExpr_ele] at hst htu ⊢; refine lex_lt_trans_at (f := cmpPar) (h_eq := fun {a b} => cmpPar_eq_iff a b) (h_lt := cmpPar_lt_trans _ _ _) (Dcmp := cmpPar) (hD := cmpPar_lt_trans _ _ _) hst htu)
-          | (rw [cmpExpr_egt] at hst htu ⊢; refine lex_lt_trans_at (f := cmpPar) (h_eq := fun {a b} => cmpPar_eq_iff a b) (h_lt := cmpPar_lt_trans _ _ _) (Dcmp := cmpPar) (hD := cmpPar_lt_trans _ _ _) hst htu)
-          | (rw [cmpExpr_ege] at hst htu ⊢; refine lex_lt_trans_at (f := cmpPar) (h_eq := fun {a b} => cmpPar_eq_iff a b) (h_lt := cmpPar_lt_trans _ _ _) (Dcmp := cmpPar) (hD := cmpPar_lt_trans _ _ _) hst htu)
-          | (rw [cmpExpr_eeq] at hst htu ⊢; refine lex_lt_trans_at (f := cmpPar) (h_eq := fun {a b} => cmpPar_eq_iff a b) (h_lt := cmpPar_lt_trans _ _ _) (Dcmp := cmpPar) (hD := cmpPar_lt_trans _ _ _) hst htu)
-          | (rw [cmpExpr_eneq] at hst htu ⊢; refine lex_lt_trans_at (f := cmpPar) (h_eq := fun {a b} => cmpPar_eq_iff a b) (h_lt := cmpPar_lt_trans _ _ _) (Dcmp := cmpPar) (hD := cmpPar_lt_trans _ _ _) hst htu)
-          | (rw [cmpExpr_eand] at hst htu ⊢; refine lex_lt_trans_at (f := cmpPar) (h_eq := fun {a b} => cmpPar_eq_iff a b) (h_lt := cmpPar_lt_trans _ _ _) (Dcmp := cmpPar) (hD := cmpPar_lt_trans _ _ _) hst htu)
-          | (rw [cmpExpr_eor] at hst htu ⊢; refine lex_lt_trans_at (f := cmpPar) (h_eq := fun {a b} => cmpPar_eq_iff a b) (h_lt := cmpPar_lt_trans _ _ _) (Dcmp := cmpPar) (hD := cmpPar_lt_trans _ _ _) hst htu)
-          | (rw [cmpExpr_etuple] at hst htu ⊢; exact cmpListPar_lt_trans _ _ _ hst htu)
-          | (rw [cmpExpr_elist] at hst htu ⊢; refine lex_lt_trans_at (f := cmpListPar) (h_eq := fun {a b} => cmpListPar_eq_iff a b) (h_lt := cmpListPar_lt_trans _ _ _) (Dcmp := cmpOptionVar) (hD := cmpOptionVar_lt_trans _ _ _) hst htu)
-          | (rw [cmpExpr_eset] at hst htu ⊢; refine lex_lt_trans_at (f := cmpListPar) (h_eq := fun {a b} => cmpListPar_eq_iff a b) (h_lt := cmpListPar_lt_trans _ _ _) (Dcmp := cmpOptionVar) (hD := cmpOptionVar_lt_trans _ _ _) hst htu)
-          | (rw [cmpExpr_emap] at hst htu ⊢; refine lex_lt_trans_at (f := cmpListParPair) (h_eq := fun {a b} => cmpListParPair_eq_iff a b) (h_lt := cmpListParPair_lt_trans _ _ _) (Dcmp := cmpOptionVar) (hD := cmpOptionVar_lt_trans _ _ _) hst htu)
+          | (obtain ⟨g', rfl⟩ := exprTag_eq_ground hst'.symm
+             obtain ⟨g'', rfl⟩ := exprTag_eq_ground hsu'.symm
+             rw [cmpExpr_ground] at hst htu ⊢; exact groundComparator.lt_trans hst htu)
+          | (obtain ⟨v', rfl⟩ := exprTag_eq_evar hst'.symm
+             obtain ⟨v'', rfl⟩ := exprTag_eq_evar hsu'.symm
+             rw [cmpExpr_evar] at hst htu ⊢; exact varComparator.lt_trans hst htu)
+          | (obtain ⟨p', rfl⟩ := exprTag_eq_eneg hst'.symm
+             obtain ⟨p'', rfl⟩ := exprTag_eq_eneg hsu'.symm
+             rw [cmpExpr_eneg] at hst htu ⊢; exact cmpPar_lt_trans _ _ _ hst htu)
+          | (obtain ⟨p', rfl⟩ := exprTag_eq_enot hst'.symm
+             obtain ⟨p'', rfl⟩ := exprTag_eq_enot hsu'.symm
+             rw [cmpExpr_enot] at hst htu ⊢; exact cmpPar_lt_trans _ _ _ hst htu)
+          | (obtain ⟨p', q', rfl⟩ := exprTag_eq_eplus hst'.symm
+             obtain ⟨p'', q'', rfl⟩ := exprTag_eq_eplus hsu'.symm
+             rw [cmpExpr_eplus] at hst htu ⊢; refine lex_lt_trans_at (f := cmpPar) (h_eq := fun {a b} => cmpPar_eq_iff a b) (h_lt := cmpPar_lt_trans _ _ _) (Dcmp := cmpPar) (hD := cmpPar_lt_trans _ _ _) hst htu)
+          | (obtain ⟨p', q', rfl⟩ := exprTag_eq_eminus hst'.symm
+             obtain ⟨p'', q'', rfl⟩ := exprTag_eq_eminus hsu'.symm
+             rw [cmpExpr_eminus] at hst htu ⊢; refine lex_lt_trans_at (f := cmpPar) (h_eq := fun {a b} => cmpPar_eq_iff a b) (h_lt := cmpPar_lt_trans _ _ _) (Dcmp := cmpPar) (hD := cmpPar_lt_trans _ _ _) hst htu)
+          | (obtain ⟨p', q', rfl⟩ := exprTag_eq_emult hst'.symm
+             obtain ⟨p'', q'', rfl⟩ := exprTag_eq_emult hsu'.symm
+             rw [cmpExpr_emult] at hst htu ⊢; refine lex_lt_trans_at (f := cmpPar) (h_eq := fun {a b} => cmpPar_eq_iff a b) (h_lt := cmpPar_lt_trans _ _ _) (Dcmp := cmpPar) (hD := cmpPar_lt_trans _ _ _) hst htu)
+          | (obtain ⟨p', q', rfl⟩ := exprTag_eq_ediv hst'.symm
+             obtain ⟨p'', q'', rfl⟩ := exprTag_eq_ediv hsu'.symm
+             rw [cmpExpr_ediv] at hst htu ⊢; refine lex_lt_trans_at (f := cmpPar) (h_eq := fun {a b} => cmpPar_eq_iff a b) (h_lt := cmpPar_lt_trans _ _ _) (Dcmp := cmpPar) (hD := cmpPar_lt_trans _ _ _) hst htu)
+          | (obtain ⟨p', q', rfl⟩ := exprTag_eq_emod hst'.symm
+             obtain ⟨p'', q'', rfl⟩ := exprTag_eq_emod hsu'.symm
+             rw [cmpExpr_emod] at hst htu ⊢; refine lex_lt_trans_at (f := cmpPar) (h_eq := fun {a b} => cmpPar_eq_iff a b) (h_lt := cmpPar_lt_trans _ _ _) (Dcmp := cmpPar) (hD := cmpPar_lt_trans _ _ _) hst htu)
+          | (obtain ⟨p', q', rfl⟩ := exprTag_eq_elt hst'.symm
+             obtain ⟨p'', q'', rfl⟩ := exprTag_eq_elt hsu'.symm
+             rw [cmpExpr_elt] at hst htu ⊢; refine lex_lt_trans_at (f := cmpPar) (h_eq := fun {a b} => cmpPar_eq_iff a b) (h_lt := cmpPar_lt_trans _ _ _) (Dcmp := cmpPar) (hD := cmpPar_lt_trans _ _ _) hst htu)
+          | (obtain ⟨p', q', rfl⟩ := exprTag_eq_ele hst'.symm
+             obtain ⟨p'', q'', rfl⟩ := exprTag_eq_ele hsu'.symm
+             rw [cmpExpr_ele] at hst htu ⊢; refine lex_lt_trans_at (f := cmpPar) (h_eq := fun {a b} => cmpPar_eq_iff a b) (h_lt := cmpPar_lt_trans _ _ _) (Dcmp := cmpPar) (hD := cmpPar_lt_trans _ _ _) hst htu)
+          | (obtain ⟨p', q', rfl⟩ := exprTag_eq_egt hst'.symm
+             obtain ⟨p'', q'', rfl⟩ := exprTag_eq_egt hsu'.symm
+             rw [cmpExpr_egt] at hst htu ⊢; refine lex_lt_trans_at (f := cmpPar) (h_eq := fun {a b} => cmpPar_eq_iff a b) (h_lt := cmpPar_lt_trans _ _ _) (Dcmp := cmpPar) (hD := cmpPar_lt_trans _ _ _) hst htu)
+          | (obtain ⟨p', q', rfl⟩ := exprTag_eq_ege hst'.symm
+             obtain ⟨p'', q'', rfl⟩ := exprTag_eq_ege hsu'.symm
+             rw [cmpExpr_ege] at hst htu ⊢; refine lex_lt_trans_at (f := cmpPar) (h_eq := fun {a b} => cmpPar_eq_iff a b) (h_lt := cmpPar_lt_trans _ _ _) (Dcmp := cmpPar) (hD := cmpPar_lt_trans _ _ _) hst htu)
+          | (obtain ⟨p', q', rfl⟩ := exprTag_eq_eeq hst'.symm
+             obtain ⟨p'', q'', rfl⟩ := exprTag_eq_eeq hsu'.symm
+             rw [cmpExpr_eeq] at hst htu ⊢; refine lex_lt_trans_at (f := cmpPar) (h_eq := fun {a b} => cmpPar_eq_iff a b) (h_lt := cmpPar_lt_trans _ _ _) (Dcmp := cmpPar) (hD := cmpPar_lt_trans _ _ _) hst htu)
+          | (obtain ⟨p', q', rfl⟩ := exprTag_eq_eneq hst'.symm
+             obtain ⟨p'', q'', rfl⟩ := exprTag_eq_eneq hsu'.symm
+             rw [cmpExpr_eneq] at hst htu ⊢; refine lex_lt_trans_at (f := cmpPar) (h_eq := fun {a b} => cmpPar_eq_iff a b) (h_lt := cmpPar_lt_trans _ _ _) (Dcmp := cmpPar) (hD := cmpPar_lt_trans _ _ _) hst htu)
+          | (obtain ⟨p', q', rfl⟩ := exprTag_eq_eand hst'.symm
+             obtain ⟨p'', q'', rfl⟩ := exprTag_eq_eand hsu'.symm
+             rw [cmpExpr_eand] at hst htu ⊢; refine lex_lt_trans_at (f := cmpPar) (h_eq := fun {a b} => cmpPar_eq_iff a b) (h_lt := cmpPar_lt_trans _ _ _) (Dcmp := cmpPar) (hD := cmpPar_lt_trans _ _ _) hst htu)
+          | (obtain ⟨p', q', rfl⟩ := exprTag_eq_ematches hst'.symm
+             obtain ⟨p'', q'', rfl⟩ := exprTag_eq_ematches hsu'.symm
+             rw [cmpExpr_ematches] at hst htu ⊢; refine lex_lt_trans_at (f := cmpPar) (h_eq := fun {a b} => cmpPar_eq_iff a b) (h_lt := cmpPar_lt_trans _ _ _) (Dcmp := cmpPar) (hD := cmpPar_lt_trans _ _ _) hst htu)
+          | (obtain ⟨p', q', rfl⟩ := exprTag_eq_eshortand hst'.symm
+             obtain ⟨p'', q'', rfl⟩ := exprTag_eq_eshortand hsu'.symm
+             rw [cmpExpr_eshortand] at hst htu ⊢; refine lex_lt_trans_at (f := cmpPar) (h_eq := fun {a b} => cmpPar_eq_iff a b) (h_lt := cmpPar_lt_trans _ _ _) (Dcmp := cmpPar) (hD := cmpPar_lt_trans _ _ _) hst htu)
+          | (obtain ⟨p', q', rfl⟩ := exprTag_eq_eshortor hst'.symm
+             obtain ⟨p'', q'', rfl⟩ := exprTag_eq_eshortor hsu'.symm
+             rw [cmpExpr_eshortor] at hst htu ⊢; refine lex_lt_trans_at (f := cmpPar) (h_eq := fun {a b} => cmpPar_eq_iff a b) (h_lt := cmpPar_lt_trans _ _ _) (Dcmp := cmpPar) (hD := cmpPar_lt_trans _ _ _) hst htu)
+          | (obtain ⟨p', q', rfl⟩ := exprTag_eq_eor hst'.symm
+             obtain ⟨p'', q'', rfl⟩ := exprTag_eq_eor hsu'.symm
+             rw [cmpExpr_eor] at hst htu ⊢; refine lex_lt_trans_at (f := cmpPar) (h_eq := fun {a b} => cmpPar_eq_iff a b) (h_lt := cmpPar_lt_trans _ _ _) (Dcmp := cmpPar) (hD := cmpPar_lt_trans _ _ _) hst htu)
+          | (obtain ⟨ps', rfl⟩ := exprTag_eq_etuple hst'.symm
+             obtain ⟨ps'', rfl⟩ := exprTag_eq_etuple hsu'.symm
+             rw [cmpExpr_etuple] at hst htu ⊢; exact cmpListPar_lt_trans _ _ _ hst htu)
+          | (obtain ⟨ps', r', rfl⟩ := exprTag_eq_elist hst'.symm
+             obtain ⟨ps'', r'', rfl⟩ := exprTag_eq_elist hsu'.symm
+             rw [cmpExpr_elist] at hst htu ⊢; refine lex_lt_trans_at (f := cmpListPar) (h_eq := fun {a b} => cmpListPar_eq_iff a b) (h_lt := cmpListPar_lt_trans _ _ _) (Dcmp := cmpOptionVar) (hD := cmpOptionVar_lt_trans _ _ _) hst htu)
+          | (obtain ⟨ps', r', rfl⟩ := exprTag_eq_eset hst'.symm
+             obtain ⟨ps'', r'', rfl⟩ := exprTag_eq_eset hsu'.symm
+             rw [cmpExpr_eset] at hst htu ⊢; refine lex_lt_trans_at (f := cmpListPar) (h_eq := fun {a b} => cmpListPar_eq_iff a b) (h_lt := cmpListPar_lt_trans _ _ _) (Dcmp := cmpOptionVar) (hD := cmpOptionVar_lt_trans _ _ _) hst htu)
+          | (obtain ⟨kvs', r', rfl⟩ := exprTag_eq_emap hst'.symm
+             obtain ⟨kvs'', r'', rfl⟩ := exprTag_eq_emap hsu'.symm
+             rw [cmpExpr_emap] at hst htu ⊢; refine lex_lt_trans_at (f := cmpListParPair) (h_eq := fun {a b} => cmpListParPair_eq_iff a b) (h_lt := cmpListParPair_lt_trans _ _ _) (Dcmp := cmpOptionVar) (hD := cmpOptionVar_lt_trans _ _ _) hst htu)
   termination_by s => sizeOf s
 
   /-- The list law over `Expr`, inside the family because `cmpPar_lt_trans` needs it and it needs
@@ -2007,6 +2554,9 @@ mutual
     | Expr.eneq p q => Expr.eneq (sortPar p) (sortPar q)
     | Expr.eand p q => Expr.eand (sortPar p) (sortPar q)
     | Expr.eor p q => Expr.eor (sortPar p) (sortPar q)
+    | Expr.ematches p q => Expr.ematches (sortPar p) (sortPar q)
+    | Expr.eshortand p q => Expr.eshortand (sortPar p) (sortPar q)
+    | Expr.eshortor p q => Expr.eshortor (sortPar p) (sortPar q)
     | Expr.elist ps r => Expr.elist (sortList parComparator (sortListPar ps)) r
     | Expr.etuple ps => Expr.etuple (sortList parComparator (sortListPar ps))
     | Expr.eset ps r => Expr.eset (sortList parComparator (sortListPar ps)) r
@@ -2189,7 +2739,8 @@ mutual
         simp [sortExpr, hp]
     | Expr.eplus p q | Expr.eminus p q | Expr.emult p q | Expr.ediv p q | Expr.emod p q |
       Expr.elt p q | Expr.ele p q | Expr.egt p q | Expr.ege p q | Expr.eeq p q |
-      Expr.eneq p q | Expr.eand p q | Expr.eor p q => by
+      Expr.eneq p q | Expr.eand p q | Expr.eor p q
+      | Expr.ematches p q | Expr.eshortand p q | Expr.eshortor p q => by
         have hp := sortPar_idempotent p
         have hq := sortPar_idempotent q
         simp [sortExpr, hp, hq]

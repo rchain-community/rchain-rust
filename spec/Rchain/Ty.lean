@@ -147,6 +147,9 @@ mutual
     | Expr.eneq p q => closed p && closed q
     | Expr.eand p q => closed p && closed q
     | Expr.eor p q => closed p && closed q
+    | Expr.ematches p q => closed p && closed q
+    | Expr.eshortand p q => closed p && closed q
+    | Expr.eshortor p q => closed p && closed q
     | Expr.elist ps r => closedListPar ps && closedRemainder r
     | Expr.etuple ps => closedListPar ps
     | Expr.eset ps r => closedListPar ps && closedRemainder r
@@ -610,6 +613,9 @@ mutual
     | Expr.eneq p q => by simp only [sortExpr, closedExpr, closed_sortPar p, closed_sortPar q]
     | Expr.eand p q => by simp only [sortExpr, closedExpr, closed_sortPar p, closed_sortPar q]
     | Expr.eor p q => by simp only [sortExpr, closedExpr, closed_sortPar p, closed_sortPar q]
+    | Expr.ematches p q => by simp only [sortExpr, closedExpr, closed_sortPar p, closed_sortPar q]
+    | Expr.eshortand p q => by simp only [sortExpr, closedExpr, closed_sortPar p, closed_sortPar q]
+    | Expr.eshortor p q => by simp only [sortExpr, closedExpr, closed_sortPar p, closed_sortPar q]
     | Expr.elist ps _ => by
         have hps : ∀ x ∈ ps, closed (sortPar x) = closed x := fun x _ => closed_sortPar x
         simp only [sortExpr, sortListPar_eq_map, closedExpr]

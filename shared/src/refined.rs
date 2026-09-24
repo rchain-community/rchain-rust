@@ -367,27 +367,55 @@ impl std::fmt::Display for Hash32 {
 /// (`node/src/configuration/defaults.conf` documents the `{parent-shard-id}/{shard-name}` scheme).
 ///
 /// The "no type escape" convention applies: no `Deref`, no public `.get()`. Construction is
-/// [`TryFrom<String>`](TryFrom) (validates non-empty ASCII); discharge is `From<ShardId> for String`.
+/// [`TryFrom<String>`](TryFrom) (validates non-empty ASCII) or [`ShardId::child`] (validates the
+/// name it appends, C78); discharge is `From<ShardId> for String`.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ShardId(String);
 
 impl ShardId {
     /// The root shard id (`/`).
+    ///
+    /// Infallible by construction: `/` is non-empty ASCII, so there is no failing case to report.
     pub fn root() -> Self {
         ShardId("/".to_string())
     }
 
     /// The shard id formed by naming a child `name` under this shard (port of
     /// `{parent-shard-id}/{shard-name}`).
-    pub fn child(&self, name: &str) -> ShardId {
-        if self.0 == "/" {
+    ///
+    /// The name is validated with the predicate `TryFrom` applies to a whole id, so a child id is
+    /// valid by construction (C78: until this, the invariant held by caller discipline at the one
+    /// production call site). The predicate transfers to the *name* because the join is a
+    /// `format!` and the parent is ASCII by invariant: the result is ASCII exactly when `name` is.
+    ///
+    /// Non-emptiness is checked on the name, and here the check is **stricter** than `TryFrom` on
+    /// the result rather than equivalent to it: the result always contains a `/`, so `TryFrom` would
+    /// accept `child("")` — and under the root that id is `/`, the root itself, with a
+    /// trailing-slash id for every other parent. An unnamed shard is not a shard, and refusing it is
+    /// what keeps a child a different shard from its parent.
+    pub fn child(&self, name: &str) -> Result<ShardId, RefineError> {
+        if name.is_empty() {
+            return Err(RefineError::new("shard name must be non-empty"));
+        }
+        if !name.is_ascii() {
+            return Err(RefineError::new(format!(
+                "shard name must be ASCII, got {name:?}"
+            )));
+        }
+        Ok(if self.0 == "/" {
             ShardId(format!("/{name}"))
         } else {
             ShardId(format!("{}/{name}", self.0))
-        }
+        })
     }
 
     /// This shard's parent, or `None` when it is the root (or a bare name with no separator).
+    ///
+    /// Infallible **on a valid id**: the `Some(0)` arm returns the root (valid by construction) and
+    /// the `Some(cut)` arm a prefix cut at a `/`. A `/` is one byte and `self.0` is ASCII by the
+    /// invariant, so the cut lands on a char boundary, and in that arm `cut > 0` — hence a non-empty,
+    /// ASCII prefix. The premise is "`self` is valid", which every constructor above now guarantees
+    /// (C78); nothing here depends on an invalid id.
     pub fn parent(&self) -> Option<ShardId> {
         if self.0 == "/" {
             None
@@ -514,18 +542,49 @@ mod tests {
         assert_eq!(root.segments(), Vec::<&str>::new());
         assert_eq!(root.parent(), None);
 
-        let child = root.child("root");
+        let child = root.child("root").expect("a valid shard name");
         assert_eq!(child.to_string(), "/root");
         assert_eq!(child.parent(), Some(root.clone()));
         assert_eq!(child.segments(), vec!["root"]);
         assert!(child.is_descendant_of(&root));
 
-        let grandchild = child.child("rootchild");
+        let grandchild = child.child("rootchild").expect("a valid shard name");
         assert_eq!(grandchild.to_string(), "/root/rootchild");
         assert_eq!(grandchild.parent(), Some(child.clone()));
         assert!(grandchild.is_descendant_of(&child));
         assert!(grandchild.is_descendant_of(&root));
         assert!(!child.is_descendant_of(&grandchild));
+    }
+
+    /// C78's falsifier. `child` is a *typed* constructor, so the names the id refinement refuses —
+    /// empty and non-ASCII — are refused on both branches (root and nested), not just by the one
+    /// caller that happened to check first.
+    #[test]
+    fn shard_id_child_refuses_the_names_the_refinement_refuses() {
+        let root = ShardId::root();
+        let nested = root.child("root").expect("a valid shard name");
+        for bad in ["", "café", "röot"] {
+            assert!(root.child(bad).is_err(), "the root must refuse {bad:?}");
+            assert!(nested.child(bad).is_err(), "/root must refuse {bad:?}");
+        }
+        // Refusal agrees name-for-name with the refinement's own predicate. Note that `"\u{0}"` is
+        // *ASCII*, so the predicate accepts it and `child` must agree with `TryFrom` rather than
+        // invent a stricter rule here.
+        for name in ["", "café", "röot", "\u{0}", "root", "/root", "a/b"] {
+            assert_eq!(
+                root.child(name).is_ok(),
+                ShardId::try_from(name.to_string()).is_ok(),
+                "child and TryFrom must agree on {name:?}"
+            );
+        }
+        // The no-escape statement: every accepted child id satisfies the refinement.
+        for name in ["root", "/root", "a/b", "x y", "-"] {
+            let id = root.child(name).expect("a valid shard name");
+            assert!(
+                ShardId::try_from(String::from(id)).is_ok(),
+                "child({name:?}) escaped the refinement"
+            );
+        }
     }
 
     #[test]

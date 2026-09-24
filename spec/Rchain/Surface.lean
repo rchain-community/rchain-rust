@@ -483,7 +483,7 @@ def normalizeAt : Surf → Par → List SVar → Option Par
     | _, _ => none
   | .shortAnd a b, acc, Γ =>
     match normalizeAt a nilPar Γ, normalizeAt b nilPar Γ with
-    | some p, some q => some (parMerge acc (parOf (.eand p q)))
+    | some p, some q => some (parMerge acc (parOf (.eshortand p q)))
     | _, _ => none
   | .or a b, acc, Γ =>
     match normalizeAt a nilPar Γ, normalizeAt b nilPar Γ with
@@ -491,11 +491,11 @@ def normalizeAt : Surf → Par → List SVar → Option Par
     | _, _ => none
   | .shortOr a b, acc, Γ =>
     match normalizeAt a nilPar Γ, normalizeAt b nilPar Γ with
-    | some p, some q => some (parMerge acc (parOf (.eor p q)))
+    | some p, some q => some (parMerge acc (parOf (.eshortor p q)))
     | _, _ => none
   | .matches a b, acc, Γ =>
     match normalizeAt a nilPar Γ, normalizeAt b nilPar Γ with
-    | some p, some q => some (parMerge acc (parOf (.eeq p q)))
+    | some p, some q => some (parMerge acc (parOf (.ematches p q)))
     | _, _ => none
   | .par a b, acc, Γ =>
     match normalizeAt a acc Γ with
