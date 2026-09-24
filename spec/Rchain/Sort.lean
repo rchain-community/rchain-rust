@@ -519,6 +519,16 @@ set_option maxHeartbeats 8000000 in
     cmpExpr (.eshortor p q) (.eshortor p' q') = lex (cmpPar p p') (cmpPar q q') := by
   simp only [cmpExpr.eq_def]
 
+/-! **The two cross lemmas, one left class at a time.** HEAD wrote each as a single declaration over the
+whole enumeration (441 goals, one shared `maxHeartbeats 20000000`), and the profile of the reverted
+attempt measured a single `simp` of **230 s** inside that shape — about 29 % of the run — with 191
+further `simp` calls at 150–230 ms; the module-level profiler attributes cost to *tactics*, so the
+declaration itself could not be named from it. Split by left class, each lemma below enumerates `t`
+alone (24 goals), carries its own budget, and is nameable by `set_option profiler true in`; the
+measurement after the split is that no profiled tactic reaches the reporting threshold. The two public
+dispatchers below keep their names and statements, so the law blocks' `simp only` sets and law 1b's
+citations are unchanged. -/
+
 set_option maxHeartbeats 8000000 in
 private theorem cmpExpr_ground_tag_lt {g : Ground} {t : Expr}
     (h : exprTag (.ground g) < exprTag t) : cmpExpr (.ground g) t = .lt := by
