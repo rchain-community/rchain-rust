@@ -262,10 +262,19 @@ cmd_up() {
     http_port=$((HTTP_BASE + i * 1000))
     admin_port=$((ADMIN_BASE + i * 1000))
     echo "==> starting $name (validator $i, bootstraps from $BOOTSTRAP)"
+    # The genesis files go to every *bonded* validator, not only the bootstrap. They are part of the
+    # network configuration: a joining validator replays the genesis block when it first indexes it
+    # (the finalized fringe points at block #0), and the genesis's native PoS state and REV vault
+    # balances are installed outside the block's deploys, so without these files its replay computes
+    # a different post-state and it refuses block #0 forever — AUDIT C46, which this is the
+    # deployment half of. Mounted read-only: a non-ceremony node reads the bonds file strictly and
+    # must not generate one (that would be a different chain's validator set).
     # shellcheck disable=SC2046
     docker run $(docker_opts "$name" "$host_port" "$http_port" "$admin_port") \
+      -v "${genesis_dir}:/genesis:ro" \
       "$IMAGE" $(rnode_run_common "$name") \
         --bootstrap "rnode://${id}@${BOOTSTRAP}?protocol=40400&discovery=40404" \
+        --bonds-file /genesis/bonds.txt --wallets-file /genesis/wallets.txt \
         --validator-private-key "${VALIDATOR_PRIV[$i]}"
   done
 

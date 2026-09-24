@@ -84,11 +84,67 @@ pub fn pos_genesis_from_config(spec: &crate::conf::ShardSpec) -> Result<PosGenes
         std::path::Path::new(&gbd.bonds_file),
         spec.autogen_shard_size,
     )?;
+    Ok(build_pos_genesis(&proof_of_stake_from_config(gbd, bonds)))
+}
+
+/// The genesis descriptors a node needs to *replay* the genesis block: the native PoS state
+/// (`compute_genesis`'s `install_genesis`) and the initial REV vault balances (`set_vault_balance`).
+///
+/// Both are installed as native state **outside** the genesis block's deploys, so neither is
+/// recoverable from the block — a node that replays the genesis without them computes a different
+/// post-state hash and then refuses the block. That is AUDIT C46: a joining validator, which is
+/// exactly the node that indexes the genesis for the first time, used to replay it with
+/// `PosGenesis::default()` and no vaults at all.
+pub struct GenesisDescriptors {
+    pub pos_genesis: PosGenesis,
+    pub vaults: Vec<Vault>,
+}
+
+/// Read the genesis descriptors from the configured genesis files.
+///
+/// Read on **any** node, not only a bootstrap: a joining validator replays the genesis when it
+/// indexes it, and these files are part of the network configuration rather than of the ceremony.
+/// `Ok(None)` means the node has no genesis config at all — the one case in which the genesis is
+/// not replayable, and the caller must not pretend otherwise.
+///
+/// `is_ceremony` is the standalone node's privilege: only it may *create* the bonds file. A syncing
+/// node reads it strictly, because `parse_or_generate` there would mint a fresh validator set and
+/// quietly reconcile it against a different chain's genesis than the one it is syncing.
+///
+/// The vaults use the tolerant `parse_if_exists`: a node whose configuration names a wallets file
+/// that is absent has no vault balances to re-install, which is a state the caller can act on
+/// (empty vaults), unlike a bonds file it would have had to invent.
+pub fn genesis_descriptors_from_config(
+    spec: &crate::conf::ShardSpec,
+    is_ceremony: bool,
+) -> Result<Option<GenesisDescriptors>, String> {
+    let gbd = &spec.genesis_block_data;
+    let bonds_path = std::path::Path::new(&gbd.bonds_file);
+    if !is_ceremony && !bonds_path.exists() {
+        return Ok(None);
+    }
+    let bonds = if is_ceremony {
+        crate::bonds_parser::parse_or_generate(bonds_path, spec.autogen_shard_size)?
+    } else {
+        crate::bonds_parser::parse(bonds_path)?
+    };
+    let vaults = crate::vault_parser::parse_if_exists(std::path::Path::new(&gbd.wallets_file))?;
+    Ok(Some(GenesisDescriptors {
+        pos_genesis: build_pos_genesis(&proof_of_stake_from_config(gbd, bonds)),
+        vaults,
+    }))
+}
+
+/// The configured PoS parameters with an already-parsed validator set.
+fn proof_of_stake_from_config(
+    gbd: &crate::conf::GenesisBlockData,
+    bonds: BTreeMap<PublicKey, NonNegI64>,
+) -> ProofOfStake {
     let validators: Vec<contracts::Validator> = bonds
         .into_iter()
         .map(|(pk, stake)| contracts::Validator { pk, stake })
         .collect();
-    let proof_of_stake = ProofOfStake {
+    ProofOfStake {
         minimum_bond: gbd.bond_minimum,
         maximum_bond: gbd.bond_maximum,
         validators,
@@ -98,8 +154,7 @@ pub fn pos_genesis_from_config(spec: &crate::conf::ShardSpec) -> Result<PosGenes
         pos_multi_sig_public_keys: gbd.pos_multi_sig_public_keys.clone(),
         pos_multi_sig_quorum: gbd.pos_multi_sig_quorum,
         pos_vault_pub_key: gbd.pos_vault_pub_key.clone(),
-    };
-    Ok(build_pos_genesis(&proof_of_stake))
+    }
 }
 
 /// Build the unsigned genesis block from processed deploys (port of
@@ -557,5 +612,87 @@ mod tests {
             ],
             "the install order is part of the chain's identity — a change here is a genesis change"
         );
+    }
+
+    /// A genesis spec whose two files live in `dir` (they need not exist).
+    fn spec_in(dir: &std::path::Path) -> crate::conf::ShardSpec {
+        crate::conf::ShardSpec::new(
+            "root".to_string(),
+            "/".to_string(),
+            crate::conf::GenesisBlockData {
+                genesis_data_dir: dir.to_path_buf(),
+                bonds_file: dir.join("bonds.txt").to_string_lossy().into_owned(),
+                wallets_file: dir.join("wallets.txt").to_string_lossy().into_owned(),
+                bond_minimum: 1,
+                bond_maximum: 100,
+                epoch_length: 100,
+                quarantine_length: 10,
+                genesis_block_number: 0,
+                number_of_active_validators: 1,
+                pos_multi_sig_public_keys: Vec::new(),
+                pos_multi_sig_quorum: 0,
+                pos_vault_pub_key: String::new(),
+                system_contract_pub_key: String::new(),
+            },
+            1,
+        )
+        .expect("a minimal spec")
+    }
+
+    /// **A node with no genesis config cannot replay the genesis, and `None` says so** (AUDIT C46's
+    /// other half). The bonds file is the marker: a wallets file alone is not a genesis config, and a
+    /// non-ceremony node must not invent the validator set it would need.
+    #[test]
+    fn a_node_without_a_bonds_file_has_no_genesis_descriptors() {
+        let dir = std::env::temp_dir().join(format!("rchain-c46-none-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let spec = spec_in(&dir);
+
+        assert!(
+            genesis_descriptors_from_config(&spec, false)
+                .expect("absent files are not an error")
+                .is_none(),
+            "no files at all: the node has no genesis config"
+        );
+
+        std::fs::write(dir.join("wallets.txt"), "").expect("wallets");
+        assert!(
+            genesis_descriptors_from_config(&spec, false)
+                .expect("a stray wallets file is not an error")
+                .is_none(),
+            "the vaults alone are not a genesis config"
+        );
+
+        // A *malformed* bonds file is an error rather than a silent regeneration: a syncing node
+        // that minted its own validator set would reconcile against a different chain's genesis.
+        std::fs::write(dir.join("bonds.txt"), "not-a-public-key 100\n").expect("bonds");
+        assert!(
+            genesis_descriptors_from_config(&spec, false).is_err(),
+            "an unreadable bonds file must fail loudly, not fall back"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// **With the files present, the descriptors carry the pool the genesis installed** — read
+    /// strictly on a non-ceremony node, and read at all, which is what a joining validator's genesis
+    /// replay was missing (AUDIT C46).
+    #[test]
+    fn a_node_with_the_genesis_files_reads_the_pool() {
+        let dir = std::env::temp_dir().join(format!("rchain-c46-some-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let spec = spec_in(&dir);
+        let pub_hex = base16::encode(ceremony_identity().public_key.bytes());
+        std::fs::write(dir.join("bonds.txt"), format!("{pub_hex} 100\n")).expect("bonds");
+        // Empty wallets: no vault balances to re-install, which `parse_if_exists` tolerates.
+        std::fs::write(dir.join("wallets.txt"), "").expect("wallets");
+
+        let d = genesis_descriptors_from_config(&spec, false)
+            .expect("the files are present and well formed")
+            .expect("a node with a bonds file has descriptors");
+        assert_eq!(d.pos_genesis.bonds.len(), 1, "the pool the genesis installed");
+        assert!(d.vaults.is_empty(), "no wallets, no balances");
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

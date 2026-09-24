@@ -40,6 +40,7 @@ use rchain_shared::typed_store::KeyValueTypedStore;
 
 use crate::event_converter::{comm_multisets_match, to_casper_event};
 use crate::genesis::contracts::Vault;
+use crate::interpreter_util::is_genesis_pre_state;
 use crate::rholang::{ReplayFailure, SystemDeployRuntimeResult, UserDeployRuntimeResult};
 use crate::runtime_replay::RuntimeReplayOps;
 use crate::system_deploy::{
@@ -77,6 +78,12 @@ pub struct RuntimeManager {
     /// re-install the genesis native state during the trusted genesis replay; the trie is
     /// authoritative for every non-genesis block.
     genesis_pos: PosGenesis,
+    /// The network's genesis REV vault balances. Like the PoS descriptors these are installed as
+    /// native state *outside* the genesis block's deploys (`compute_genesis`'s `set_vault_balance`
+    /// loop), so a genesis replay cannot recover them from the block and has to be handed them
+    /// (AUDIT C46). Empty on a node with no genesis config, which is the only case in which the
+    /// genesis is not replayable at all.
+    genesis_vaults: Vec<Vault>,
 }
 
 /// Errors private to the runtime-manager play helpers. Distinguishes the Law 24 certificate
@@ -151,6 +158,7 @@ impl RuntimeManager {
             mergeable_store,
             effect_mode,
             genesis_pos: PosGenesis::default(),
+            genesis_vaults: Vec::new(),
         }
     }
 
@@ -160,9 +168,20 @@ impl RuntimeManager {
         self
     }
 
+    /// Set the network's genesis REV vault balances (builder form).
+    pub fn with_genesis_vaults(mut self, genesis_vaults: Vec<Vault>) -> Self {
+        self.genesis_vaults = genesis_vaults;
+        self
+    }
+
     /// The network's genesis PoS descriptors.
     pub fn genesis_pos(&self) -> &PosGenesis {
         &self.genesis_pos
+    }
+
+    /// The network's genesis REV vault balances (empty when the node has no genesis config).
+    pub fn genesis_vaults(&self) -> &[Vault] {
+        &self.genesis_vaults
     }
 
     pub fn get_history_repo(&self) -> &RhoHistoryRepository {
@@ -1036,7 +1055,19 @@ impl RuntimeManager {
                         // No PoS override on the backstop replay; the manager's genesis
                         // descriptors stand in for the (HEAD-era) empty bonds map.
                         &self.genesis_pos,
-                        &[],
+                        // Same condition as the two validation/indexing call sites: a genesis
+                        // replay needs the genesis vault balances, because `compute_genesis`
+                        // installs them natively outside the block's deploys (AUDIT C46). Today
+                        // the genesis does not take this path — the relaxed-validated mode is a
+                        // block-path mode for proposed blocks — but the `&[]` that stood here was
+                        // the same unstated "this is always non-genesis" assumption the audit
+                        // falsified once, and a relaxed-validated node receiving block #0 would
+                        // have reached it.
+                        if is_genesis_pre_state(start_hash) {
+                            self.genesis_vaults()
+                        } else {
+                            &[]
+                        },
                     )
                     .await
                     .map(|(h, _)| h == relaxed_hash)

@@ -503,14 +503,13 @@ async fn play_and_replay_agree_for_a_block_with_a_close_block_deploy() {
 }
 
 /// **A genesis replay that omits the genesis vaults does not reproduce the genesis** (finding,
-/// 2026-09-23). This test asserts the *divergence*, on purpose: it is the mechanism behind a real
-/// failure, and it is here so the day someone fixes the path this test fails and says why.
+/// 2026-09-23; fixed 2026-09-24, Programme F).
 ///
 /// What it pins. The genesis install funds the genesis wallets' REV vaults
 /// (`ca4f5b015`, `RuntimeManager::compute_genesis`'s `for vault in vaults`), and those balances are
 /// `PREFIX_VAULT` leaves in the genesis post-state. A node that did not *create* the genesis has no
-/// mergeable-channel sidecar for it, so `merging.rs:486-506` regenerates one by replaying the block —
-/// and that replay passes `&[]` for the vaults, on the stated assumption that "this is always
+/// mergeable-channel sidecar for it, so `merging.rs` regenerates one by replaying the block — and
+/// that replay used to pass `&[]` for the vaults, on the stated assumption that "this is always
 /// non-genesis block replay". It is not: the genesis is what the finalized fringe points at when a
 /// validator joins, and the replay computes a different post-state hash
 /// (`regenerated mergeable channels for block … but replay computed … instead of …`), which the
@@ -524,8 +523,15 @@ async fn play_and_replay_agree_for_a_block_with_a_close_block_deploy() {
 ///
 /// The fix is not to pass the vaults unconditionally (a non-genesis block's pre-state already has the
 /// post-genesis balances, so re-installing would clobber them): it is to re-install them when the
-/// block being replayed *is* the genesis — `pre_state_hash == empty_state_hash_fixed()` is the exact
-/// test — which needs the genesis vault list reachable from the replay path.
+/// block being replayed *is* the genesis, which is what `is_genesis_pre_state` decides and what the
+/// two call sites (`interpreter_util.rs::replay_block`, `merging.rs`'s sidecar regeneration) now do.
+///
+/// **What this test is, now that the fix has landed.** It is deliberately *not* a tripwire for the
+/// call sites: it exercises the primitive `replay_compute_state` with `&[]` and with the vaults, and
+/// the divergence between those two is unchanged and is the *reason* the call sites must supply them.
+/// The production decision is pinned by `interpreter_util.rs`'s
+/// `is_genesis_pre_state_is_true_only_for_the_empty_state` (the condition is exactly the genesis) and
+/// end to end by the 3-validator devnet, which is where the failure was observed.
 #[tokio::test]
 async fn a_genesis_replay_without_the_vaults_does_not_reproduce_the_genesis() {
     let rm = common::build_runtime_manager().await;

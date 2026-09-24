@@ -51,12 +51,16 @@ pub async fn replay_block(
             with_cost_accounting,
             // Genesis PoS descriptors (pool/trusted/params) come from the network's genesis
             // configuration; the trie is authoritative for every non-genesis block, so this value is
-            // only consumed on the trusted genesis replay path.
+            // only consumed on the genesis replay path.
             runtime.genesis_pos(),
-            // Genesis vault balances are not carried on the block (they are installed at genesis
-            // and re-derived only on the trusted genesis replay path); block replay here is always
-            // cost-accounting (non-genesis), so no vault re-install is needed.
-            &[],
+            // The genesis vault balances, and only for the genesis: they are not carried on the block
+            // (they are installed at genesis) and the pre-state of a later block already holds them,
+            // so re-installing there would clobber post-genesis balances (AUDIT C46).
+            if is_genesis_pre_state(&start_hash) {
+                runtime.genesis_vaults()
+            } else {
+                &[]
+            },
         )
         .await?;
     Ok(state_hash)
@@ -113,6 +117,17 @@ pub fn empty_state_hash_fixed() -> Blake2b256Hash {
     Blake2b256Hash::from_byte_array(&base16::unsafe_decode(
         "0e5751c026e543b2e8ab2eb06099daa1d1e5df47778f7787faab45cdf12fe3a8",
     ))
+}
+
+/// Whether `pre_state_hash` is the genesis block's pre-state — the empty state.
+///
+/// This is the one replay that must re-install the network's genesis descriptors (the native PoS
+/// state and the initial REV vault balances), because `compute_genesis` installs both as native
+/// state *outside* the block's deploys, so no deploy in the genesis recreates them (AUDIT C46).
+/// Every other block's pre-state already carries those balances, so re-installing there would
+/// clobber a post-genesis one — the condition is what keeps the re-install from being unconditional.
+pub fn is_genesis_pre_state(pre_state_hash: &Blake2b256Hash) -> bool {
+    *pre_state_hash == empty_state_hash_fixed()
 }
 
 /// Validate a block by recomputing its pre-state and replaying its deploys (port of
@@ -213,6 +228,21 @@ mod tests {
     fn handle_errors_raises_internal_error() {
         let r = handle_errors(&hash(1), Err(ReplayFailure::internal_error("boom")));
         assert!(r.is_err());
+    }
+
+    /// The condition the genesis-vault re-install hangs on (AUDIT C46). It has to be *exactly* the
+    /// genesis: re-installing the balances on a later block's replay would clobber post-genesis
+    /// balances, which is why the fix is conditional rather than unconditional.
+    #[test]
+    fn is_genesis_pre_state_is_true_only_for_the_empty_state() {
+        assert!(
+            is_genesis_pre_state(&empty_state_hash_fixed()),
+            "the genesis pre-state is the empty state"
+        );
+        assert!(
+            !is_genesis_pre_state(&hash(0xab)),
+            "a post-genesis pre-state must not re-install the genesis vaults"
+        );
     }
 
     #[test]

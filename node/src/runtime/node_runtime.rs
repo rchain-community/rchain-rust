@@ -1364,6 +1364,25 @@ pub async fn setup_shard(
         )
         .await?,
     );
+    // The network's genesis descriptors, read from the configured genesis files on **any** node that
+    // has them, not only a bootstrap. A joining validator replays the genesis when it first indexes
+    // it — that is where AUDIT C46 bit, because the genesis's PoS state and REV vault balances are
+    // installed natively *outside* the block's deploys and so cannot be recovered from the block.
+    // Distinct from `standalone`, which is only about whether this node runs the ceremony: a
+    // non-ceremony node reads the bonds file strictly (it may not mint a validator set), the ceremony
+    // may generate it.
+    //
+    // A *failure* here is fatal, in both directions: an unreadable bonds file must not fall back to a
+    // default PoS genesis, because the node would then replay the genesis against the wrong validator
+    // set. `Ok(None)` is not that case — it means the files are genuinely absent, so the node has no
+    // genesis config and cannot replay the genesis at all; it keeps the defaults and the failure is
+    // left to the replay rather than papered over here.
+    let genesis_descriptors =
+        rchain_casper::genesis::genesis_descriptors_from_config(spec, conf.standalone)?;
+    let (genesis_pos, genesis_vaults) = match genesis_descriptors {
+        Some(d) => (d.pos_genesis, d.vaults),
+        None => (Default::default(), Vec::new()),
+    };
     let runtime_manager = Arc::new(
         RuntimeManager::new(
             rho_runtime,
@@ -1372,17 +1391,8 @@ pub async fn setup_shard(
             mergeable_store,
             effect_mode,
         )
-        .with_genesis_pos(
-            // Only a genesis-ceremony node has the network genesis descriptors locally; a syncing
-            // observer inserts (does not replay) the genesis block. A failure here (an unreadable
-            // bonds file) is fatal: silently falling back to a default PoS genesis would make the
-            // node replay the genesis block against the wrong validator set.
-            if conf.standalone {
-                rchain_casper::genesis::pos_genesis_from_config(spec)?
-            } else {
-                Default::default()
-            },
-        ),
+        .with_genesis_pos(genesis_pos)
+        .with_genesis_vaults(genesis_vaults),
     );
 
     // The eval runtime for the Repl service is node-level (it holds no chain state), and the

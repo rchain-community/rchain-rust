@@ -2121,11 +2121,102 @@ port against the **reference document** rather than against itself.
   because "genesis is trusted and never re-validated (an asserted invariant, not a code path)" — now
   carries the counterexample.
 
+  **The prescribed fix cannot work for the node that failed (found 2026-09-24, Programme F).** Read
+  the prescription against the failing deployment: it needs the vault list at the replay path, and the
+  node whose indexing fails is precisely the node that does not have one. `tools/devnet.sh:257-270`
+  starts validators 1..n−1 with `--bootstrap` and their validator key and nothing else — no
+  `--wallets-file`. The vault list has exactly one production source, `vault_parser::parse`
+  (`vault_parser.rs:16`) called from `node_launch.rs:66` inside `create_genesis_block` — so it exists
+  only in the ceremony, and `parse_if_exists` (`:43`, the tolerant variant) is called by nothing but
+  its own test. They also get no `--bonds-file`, and are not `standalone`, so
+  `node_runtime.rs:1375-1379` gives them `PosGenesis::default()` as well. A joining validator therefore
+  has **neither** the vault balances **nor** the genesis PoS descriptors, and both are installed as
+  native state *outside* the genesis block's deploys (`compute_genesis`'s `set_vault_balance` loop and
+  `install_genesis`) — so neither is recoverable from the block, and no `&[]`-to-something change to
+  `merging.rs` makes its replay reproduce the genesis. The audit's own phrase "only held by the genesis ceremony" is the tell: the
+  ceremony node is validator 0, and validator 0's indexing never fails. The tripwire test cannot see
+  this either — it hands `replay_compute_state` a `RuntimeManager` that already holds the vaults.
+
+  So C46 needed a decision rather than the prescribed line, and the options differed in what they
+  trust: **(a)** give every node the network's genesis config, so the conditional vault re-install is
+  correct; **(b)** trust the genesis — for `pre_state_hash == empty_state_hash_fixed()` skip the
+  `computed != post_state_hash` equality, keeping the channels the replay computes; **(c)** take the
+  sidecar from the post-state instead of replaying. **(c) has no mechanism**, which is why it is
+  recorded as considered-and-rejected rather than left as an option: the trie has exactly three leaf
+  kinds (`history_repository.rs:27-29`: datum, continuation, joins), so there is no
+  number-channel prefix to read, and the sidecar's *key set* — which channels are mergeable — is
+  execution-derived (`get_number_channels_data` takes the `BTreeSet<Par>` from each deploy's
+  `eval_res.mergeable`) and is absent from the block (`ProcessedDeploy` is `{deploy, cost, deploy_log,
+  is_failed, system_deploy_error}`, `casper_message.rs:450-456`, and `mergeable` appears in no
+  `.proto`). What *is* reachable is the post-state by hash (`merging.rs:218`), which is what a
+  weaker "(b) plus a per-channel check against the post-state" would have used.
+
+  **Decided (2026-09-24, Programme F) — (a), the option that keeps the check.** The genesis files are
+  part of the *network configuration*, not of the ceremony, and treating them as ceremony-only conflated
+  two different things: whether a node runs the ceremony (`standalone`) and whether it knows the
+  network's genesis. It is the second that a replay needs.
+
+  - `casper/src/genesis/mod.rs` gains `genesis_descriptors_from_config(spec, is_ceremony)` returning
+    the PoS descriptors **and** the vaults, read on any node that has the files. A non-ceremony node
+    reads the bonds file **strictly** (`bonds_parser::parse`) and may not generate one — autogenerating
+    a validator set on a syncing node would mint a *different* chain's genesis than the one it is
+    syncing, silently. The vaults use `vault_parser::parse_if_exists`: a node whose configuration names
+    an absent wallets file has no balances to re-install, which the caller can act on.
+  - `RuntimeManager` carries them alongside `genesis_pos` (which already had this shape), and
+    `node_runtime.rs` fills both from one call instead of gating on `standalone`.
+  - Both genesis-replay call sites — `interpreter_util.rs::replay_block` (validation) and `merging.rs`'s
+    sidecar regeneration (indexing, the one observed failing) — take the vaults from
+    `runtime.genesis_vaults()` when `is_genesis_pre_state(pre_state_hash)`, and none otherwise. The
+    condition is the whole reason the re-install is safe: a later block's pre-state already carries the
+    balances, so an unconditional re-install would clobber a post-genesis one.
+  - `tools/devnet.sh` mounts `/genesis` into validators 1..n−1 and passes them
+    `--bonds-file`/`--wallets-file`, which is the deployment half: they were the nodes without the
+    config, and read-only is correct because they must not generate a bonds file.
+
+  **What this does not fix, stated rather than implied.** A node that genuinely has no genesis config
+  still cannot replay the genesis: it replays with `PosGenesis::default()` and no vaults, computes a
+  different post-state, and refuses the block. That is now a *configuration* failure with a loud
+  symptom rather than a silent property of the code, which is the honest place to leave it — the
+  alternative was (b), which would have stopped checking that the replay reproduced the genesis at all.
+  The default `genesis_block_data` paths (`/genesis/bonds.txt`, `/genesis/wallets.txt`) are what the
+  devnet and the `docker` profile use; an operator who puts only the bootstrap's paths in the
+  validators' config gets this failure and the message names the block.
+
+  The tripwire test keeps its assertion and changes its role: it pins that the *primitive*
+  `replay_compute_state` diverges without the vaults, which is why the call sites must supply them. The
+  production decision is pinned by `is_genesis_pre_state_is_true_only_for_the_empty_state`
+  (`interpreter_util.rs`, both branches).
+
+  **Verification status, stated exactly — the devnet half is *blocked*, not passed.** What is verified:
+  `cargo check --workspace --all-targets` clean, `casper/tests/determinism.rs` 7/7 (including the
+  tripwire), `is_genesis_pre_state_is_true_only_for_the_empty_state`, and the register gate. What is
+  **not** verified is the end-to-end path, because `tools/devnet.sh up --validators 3` no longer reaches
+  a running chain at all: the bootstrap sits at ~100% CPU with three log lines (the last from
+  `comm/src/upnp/mod.rs:103`) and never serves `/api/v1/status`, so `up` exits 1 with
+  `timed out waiting for devnet-bootstrap to serve /api/v1/status` and validators 1 and 2 log
+  `PeerUnavailable` for it without ever receiving a block. **This is pre-existing, and the control is
+  decisive**: the same command against the pre-change image (26-hour-old `rnode:local`, retagged
+  `rnode:control`) fails identically — 104% CPU, three log lines, the same timeout — so the stall is
+  not this change, and it is the same failure the `devnet-fuzz` nightly has hit since 2026-09-14 (below).
+  The consequence for this row: since no block was ever produced, no genesis indexing happened and the
+  absence of the `regenerated mergeable channels` message in the container logs is **not** evidence that
+  the fix works. C46's end-to-end check lands when the bootstrap starts again, and that is its own unit.
+  What this row does record is that the two call sites now supply the vaults, that the condition is the
+  genesis exactly, and that a node without the files fails loudly rather than computing a wrong state.
+
   **Two related reds, reported rather than worked around.** (1) The
   `devnet-fuzz` nightly workflow has failed on **every** run since at least 2026-09-14, each time at
   "Start the devnet" (`tools/devnet.sh up --validators 3` → `timed out waiting for devnet-bootstrap to
   serve /api/v1/status`), so its fuzz stages have not executed in ten days and C46 could not have been
-  found there. (2) The 1-validator devnet is green, including a live check of law 47 (a staged
+  found there. **Local signature (2026-09-24, Programme F), which is as far as this row takes it**:
+  reproduced on this machine, and *not* caused by the C46 fix — the pre-change image fails identically.
+  The bootstrap container runs at ~100–104% CPU, writes exactly three log lines (the last from
+  `comm/src/upnp/mod.rs:103`, "No need to open any port"), and its healthcheck never connects to
+  `localhost:40403`; validators 1 and 2 come up "healthy" on their own ports and log `PeerUnavailable`
+  for the bootstrap every 10 s, then give up after 10 attempts. So the stall is a *silent CPU-bound
+  spin in bootstrap startup*, after UPnP/port setup and before the first genesis log line — the shape
+  that makes it worth a `perf`/stack sample rather than log reading, and a separate unit from C46.
+  Diagnosing it is what unblocks C46's end-to-end check. (2) The 1-validator devnet is green, including a live check of law 47 (a staged
   withdrawal keeps the validator active: `examples/pos-withdraw.rho` → `(true, Nil)`, the block's bond
   cache still lists the validator, and the chain keeps extending).
 
@@ -2402,6 +2493,7 @@ finding that no law covers, and it says why rather than leaving the gap to infer
 | C43 the merge's associativity was untested, under a name that says otherwise | 9 | `Merge.lean`'s `mergeChanges_assoc` (proved) **and** `property_tests.rs`'s `law9_state_change_combine_is_associative`, over arbitrary state changes including the join map; the misnamed `state_change.rs` test now says what it asserts |
 | C44 the matcher had no clause for a tuple, and the port has one | 5, 37 | `match.tsv` cases 15/16 (`@(1, 2)` against `(1, 2)` and against `(1, 2, 3)`) + `lean_match_corpus.rs`; the `ETuple` arm in `Match.lean`, and `modelledPar` on both sides of `concrete_matches_iff_eq`, whose old statement is refuted by `arithmetic_pattern_refutes_the_unrestricted_tie` |
 | C45 the search claimed a step for a join, and the rule fixed the counts the port computes differently | 38, 40 | `silence.tsv` case 13 (a join with one channel filled declares `false`, and the node agrees) + `lean_silence_corpus.rs`; the search's single-bind requirement, the constructors' `freeCount`/`bindCount`/channel parameters, and `takesStep_sound` — three extraction lemmas and `exists_redex_split` |
+| C46 a joining validator could not index the genesis: its sidecar regeneration replayed block #0 without the genesis vaults | 11 | **fixed (2026-09-24)**: `is_genesis_pre_state` conditions the vault re-install at both genesis-replay call sites, `genesis_descriptors_from_config` reads the network's genesis files on any node (`node_runtime.rs`), `tools/devnet.sh` gives validators 1..n−1 the files — and `interpreter_util.rs`'s `is_genesis_pre_state_is_true_only_for_the_empty_state` pins the condition that keeps an unconditional re-install from clobbering post-genesis balances. The row was missing from this table until then, which is its own small finding: law 11 is the law that covers it — a replay that does not reproduce the record — and the table's promise is that every incident names one |
 | C47 the matcher's fuel was short: the measure counted an empty `Par` as zero nodes | 5, 37 | `match.tsv` case 18 (`@Set(1, ..._)` against `Set(Nil × 6, 1)`) + `lean_match_corpus.rs`; `the_walk_past_empty_pars_is_paid_for`, and `parNodes`'s doc comment carrying the counterexample |
 | C49 the replay property test fails on its own recording (~3 runs in 10) | 11 | **closed, and it was not the code**: the fixture rigged the replay with the play's *post-play* root, so the "replay" began from a half-finished tuple space — `rspace/src/property_tests.rs`'s `law11_a_replayed_script_matches_its_recording`, now taking the checkpoint before the script, passes over 4000 cases where it failed deterministically at `PROPTEST_CASES=1`. The seed stays as the pinned input; `check_replay_data` was never at fault |
 | C50 the matcher's fuel was short again: the measure had no `etuple` case, so a tuple's contents were charged to nothing | 5, 37 | `match.tsv` case 20 (`@((1, 2), (3, 4))` against itself) + `lean_match_corpus.rs`; `a_nested_tuple_is_paid_for`, `a_tuple_pays_for_its_own_contents`, and `parNodesExpr`'s doc comment carrying the counterexample. While the defect stood it also **refuted** the axiom `concrete_matches_iff_eq` |

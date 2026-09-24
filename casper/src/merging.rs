@@ -40,6 +40,7 @@ use rchain_shared::serialize::Serialize;
 
 use crate::block_random_seed::BlockRandomSeed;
 use crate::event_converter::to_rspace_event;
+use crate::interpreter_util::is_genesis_pre_state;
 use crate::runtime_manager::RuntimeManager;
 
 /// A deploy id paired with its execution cost (port of `DeployIdWithCost`).
@@ -495,14 +496,22 @@ impl BlockIndex {
                             &rand,
                             BlockData::from_block(&block),
                             with_cost_accounting,
-                            // Genesis PoS descriptors; only consumed on the genesis replay path (this
-                            // is always non-genesis block replay). See `interpreter_util.rs`.
+                            // Genesis PoS descriptors; consumed only on the genesis replay path
+                            // (`is_genesis_pre_state`). See `interpreter_util.rs`.
                             runtime.genesis_pos(),
-                            // Genesis vault balances are not carried on the block (installed at
-                            // genesis, re-derived only on the trusted genesis replay path); this
-                            // is always non-genesis block replay, so no vault re-install is
-                            // needed - matches interpreter_util.rs's replay_block precedent.
-                            &[],
+                            // The genesis vault balances, and only for the genesis. The claim that
+                            // stood here — "this is always non-genesis block replay" — is what
+                            // AUDIT C46 falsified on a 3-validator devnet: the genesis is what the
+                            // finalized fringe points at when a validator joins, and that validator
+                            // is the one whose indexing takes this branch. Its replay computes a
+                            // different post-state without the balances (they are installed
+                            // natively, outside the block's deploys) and then refuses block #0
+                            // forever.
+                            if is_genesis_pre_state(&pre_state_hash) {
+                                runtime.genesis_vaults()
+                            } else {
+                                &[]
+                            },
                         )
                         .await
                         .map_err(|e| {
