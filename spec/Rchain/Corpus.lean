@@ -504,12 +504,14 @@ def storeLine (c : StoreCase) : String :=
 
 /-! ## Law 34 — the value-position rule (AUDIT C21)
 
-`normalizeAt` threads only a binder stack, so "a value position is normalized against an empty `par`" is a
-property of the definition rather than a statement anything can *falsify* — the accumulator whose misuse
-was C21 does not exist in the model, which is why this law is `owed` rather than proved. What the rule
-can have, and what this layer is, is a **tie to the node on the shape C21 broke**: each case is a term
-whose `if` is *not* first in its `par`, plus that `if`'s condition, and each party normalizes the two
-source strings itself.
+`normalizeAt` threads the **accumulator** now (2026-09-24, G6), so "a value position is normalized
+against an empty `par`" is a statement about a definition that could get it wrong: the ambient C21 leaked
+into the condition *exists* in the model, and this layer is what refuses it. Each case is a term whose
+`if` is *not* first in its `par` — so the `if` receives a non-empty ambient, which is the shape the defect
+needed — plus that `if`'s condition, and each party normalizes the two source strings itself. A model
+whose `ifThen` passed its ambient into the condition fails `c21Holds` on case 1, which is the falsifier
+this layer now is rather than the tie it was: before the accumulator existed the defect was
+*unrepresentable* here, and the row said so.
 
 - The **model's** half is `decide`d here: the `Match` an `if` desugars into has the condition's
   normalization as its target, *and* the term's normalization is not the condition — the non-degeneracy
@@ -580,14 +582,14 @@ def soleTarget : Option Par → Option Par
 /-- **The value-position rule for one case**: the target is the condition, normalized alone — not the
     condition *preceded by* the terms before it, which is what C21 put there. -/
 def c21Holds (c : C21Case) : Bool :=
-  match soleTarget (normalizeAt c.whole []), normalizeAt c.cond [] with
+  match soleTarget (normalizeAt c.whole nilPar []), normalizeAt c.cond nilPar [] with
   | some t, some q => samePar t q
   | _, _ => false
 
 /-- The case is a **probe** rather than its own condition: the term normalizes to something other than
     the condition, so "the target is the condition" cannot hold of the whole by accident. -/
 def c21IsProbe (c : C21Case) : Bool :=
-  match normalizeAt c.whole [], normalizeAt c.cond [] with
+  match normalizeAt c.whole nilPar [], normalizeAt c.cond nilPar [] with
   | some w, some q => !(samePar w q)
   | _, _ => false
 

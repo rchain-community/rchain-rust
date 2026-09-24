@@ -411,140 +411,152 @@ def bundleFlags : SBundle → Bool × Bool
 -- the same reason `Rchain/Json.lean` spells out `renderItems` rather than mapping a lambda.
 mutual
 
-/-- **The desugaring.** One arm per constructor, threading only the binder stack. -/
-def normalizeAt : Surf → List SVar → Option Par
-  | .ground g, _ => groundPar g
-  | .collect c, Γ => collectPar c Γ
-  | .var x, Γ => some (parOf (.evar (nameVar Γ x)))
-  | .varWild, _ => some (parOf (.evar .wildcard))
-  | .nil, _ => some nilPar
-  | .neg p, Γ => (normalizeAt p Γ).map (fun q => parOf (.eneg q))
-  | .not p, Γ => (normalizeAt p Γ).map (fun q => parOf (.enot q))
-  | .negNum p, Γ => (normalizeAt p Γ).map (fun q => parOf (.eneg q))
-  | .mult a b, Γ =>
-    match normalizeAt a Γ, normalizeAt b Γ with
-    | some p, some q => some (parOf (.emult p q))
+/-- **The desugaring**, mirroring the port's `normalize_proc` (`normalizer.rs:152`): one arm per
+constructor, threading the binder stack **and the accumulated `par`** — the accumulator, which is
+`ProcVisitInputs.par` there and is what makes law 34's rule a claim rather than a construction:
+
+- a **value** position (a condition, target, datum, element, pattern, name) is normalized against the
+  *empty* par — `normalizeAt … nilPar Γ` — which is the rule, and the defect C21 shipped was seeding
+  the condition in a desugared `if` with the accumulator instead;
+- a **statement continuation** is the only thing that inherits: the sequencing arm (`.par`) hands the
+  left side's result to the right, the port's `PPar(l, r)` normalizing `r` with `par: result.par`
+  (`normalizer.rs:188-199`);
+- every construct's own result is merged into the accumulator — the port's `prepend_expr` /
+  `prepend_send` shape (`:157`, `:930`), with `parMerge` (a field-wise append, so the corpus's
+  `decide`d verdicts stay `decide`-able). -/
+def normalizeAt : Surf → Par → List SVar → Option Par
+  | .ground g, acc, _ => (groundPar g).map (fun p => parMerge acc p)
+  | .collect c, acc, Γ => (collectPar c Γ).map (fun p => parMerge acc p)
+  | .var x, acc, Γ => some (parMerge acc (parOf (.evar (nameVar Γ x))))
+  | .varWild, acc, _ => some (parMerge acc (parOf (.evar .wildcard)))
+  | .nil, acc, _ => some acc
+  | .neg p, acc, Γ => (normalizeAt p nilPar Γ).map (fun q => parMerge acc (parOf (.eneg q)))
+  | .not p, acc, Γ => (normalizeAt p nilPar Γ).map (fun q => parMerge acc (parOf (.enot q)))
+  | .negNum p, acc, Γ => (normalizeAt p nilPar Γ).map (fun q => parMerge acc (parOf (.eneg q)))
+  | .mult a b, acc, Γ =>
+    match normalizeAt a nilPar Γ, normalizeAt b nilPar Γ with
+    | some p, some q => some (parMerge acc (parOf (.emult p q)))
     | _, _ => none
-  | .div a b, Γ =>
-    match normalizeAt a Γ, normalizeAt b Γ with
-    | some p, some q => some (parOf (.ediv p q))
+  | .div a b, acc, Γ =>
+    match normalizeAt a nilPar Γ, normalizeAt b nilPar Γ with
+    | some p, some q => some (parMerge acc (parOf (.ediv p q)))
     | _, _ => none
-  | .mod a b, Γ =>
-    match normalizeAt a Γ, normalizeAt b Γ with
-    | some p, some q => some (parOf (.emod p q))
+  | .mod a b, acc, Γ =>
+    match normalizeAt a nilPar Γ, normalizeAt b nilPar Γ with
+    | some p, some q => some (parMerge acc (parOf (.emod p q)))
     | _, _ => none
-  | .add a b, Γ =>
-    match normalizeAt a Γ, normalizeAt b Γ with
-    | some p, some q => some (parOf (.eplus p q))
+  | .add a b, acc, Γ =>
+    match normalizeAt a nilPar Γ, normalizeAt b nilPar Γ with
+    | some p, some q => some (parMerge acc (parOf (.eplus p q)))
     | _, _ => none
-  | .sub a b, Γ =>
-    match normalizeAt a Γ, normalizeAt b Γ with
-    | some p, some q => some (parOf (.eminus p q))
+  | .sub a b, acc, Γ =>
+    match normalizeAt a nilPar Γ, normalizeAt b nilPar Γ with
+    | some p, some q => some (parMerge acc (parOf (.eminus p q)))
     | _, _ => none
-  | .lt a b, Γ =>
-    match normalizeAt a Γ, normalizeAt b Γ with
-    | some p, some q => some (parOf (.elt p q))
+  | .lt a b, acc, Γ =>
+    match normalizeAt a nilPar Γ, normalizeAt b nilPar Γ with
+    | some p, some q => some (parMerge acc (parOf (.elt p q)))
     | _, _ => none
-  | .lte a b, Γ =>
-    match normalizeAt a Γ, normalizeAt b Γ with
-    | some p, some q => some (parOf (.ele p q))
+  | .lte a b, acc, Γ =>
+    match normalizeAt a nilPar Γ, normalizeAt b nilPar Γ with
+    | some p, some q => some (parMerge acc (parOf (.ele p q)))
     | _, _ => none
-  | .gt a b, Γ =>
-    match normalizeAt a Γ, normalizeAt b Γ with
-    | some p, some q => some (parOf (.egt p q))
+  | .gt a b, acc, Γ =>
+    match normalizeAt a nilPar Γ, normalizeAt b nilPar Γ with
+    | some p, some q => some (parMerge acc (parOf (.egt p q)))
     | _, _ => none
-  | .gte a b, Γ =>
-    match normalizeAt a Γ, normalizeAt b Γ with
-    | some p, some q => some (parOf (.ege p q))
+  | .gte a b, acc, Γ =>
+    match normalizeAt a nilPar Γ, normalizeAt b nilPar Γ with
+    | some p, some q => some (parMerge acc (parOf (.ege p q)))
     | _, _ => none
-  | .eq a b, Γ =>
-    match normalizeAt a Γ, normalizeAt b Γ with
-    | some p, some q => some (parOf (.eeq p q))
+  | .eq a b, acc, Γ =>
+    match normalizeAt a nilPar Γ, normalizeAt b nilPar Γ with
+    | some p, some q => some (parMerge acc (parOf (.eeq p q)))
     | _, _ => none
-  | .neq a b, Γ =>
-    match normalizeAt a Γ, normalizeAt b Γ with
-    | some p, some q => some (parOf (.eneq p q))
+  | .neq a b, acc, Γ =>
+    match normalizeAt a nilPar Γ, normalizeAt b nilPar Γ with
+    | some p, some q => some (parMerge acc (parOf (.eneq p q)))
     | _, _ => none
-  | .and a b, Γ =>
-    match normalizeAt a Γ, normalizeAt b Γ with
-    | some p, some q => some (parOf (.eand p q))
+  | .and a b, acc, Γ =>
+    match normalizeAt a nilPar Γ, normalizeAt b nilPar Γ with
+    | some p, some q => some (parMerge acc (parOf (.eand p q)))
     | _, _ => none
-  | .shortAnd a b, Γ =>
-    match normalizeAt a Γ, normalizeAt b Γ with
-    | some p, some q => some (parOf (.eand p q))
+  | .shortAnd a b, acc, Γ =>
+    match normalizeAt a nilPar Γ, normalizeAt b nilPar Γ with
+    | some p, some q => some (parMerge acc (parOf (.eand p q)))
     | _, _ => none
-  | .or a b, Γ =>
-    match normalizeAt a Γ, normalizeAt b Γ with
-    | some p, some q => some (parOf (.eor p q))
+  | .or a b, acc, Γ =>
+    match normalizeAt a nilPar Γ, normalizeAt b nilPar Γ with
+    | some p, some q => some (parMerge acc (parOf (.eor p q)))
     | _, _ => none
-  | .shortOr a b, Γ =>
-    match normalizeAt a Γ, normalizeAt b Γ with
-    | some p, some q => some (parOf (.eor p q))
+  | .shortOr a b, acc, Γ =>
+    match normalizeAt a nilPar Γ, normalizeAt b nilPar Γ with
+    | some p, some q => some (parMerge acc (parOf (.eor p q)))
     | _, _ => none
-  | .matches a b, Γ =>
-    match normalizeAt a Γ, normalizeAt b Γ with
-    | some p, some q => some (parOf (.eeq p q))
+  | .matches a b, acc, Γ =>
+    match normalizeAt a nilPar Γ, normalizeAt b nilPar Γ with
+    | some p, some q => some (parMerge acc (parOf (.eeq p q)))
     | _, _ => none
-  | .par a b, Γ =>
-    match normalizeAt a Γ, normalizeAt b Γ with
-    | some p, some q => some (parMerge p q)
-    | _, _ => none
-  | .send n persistent data, Γ =>
+  | .par a b, acc, Γ =>
+    match normalizeAt a acc Γ with
+    | some p => normalizeAt b p Γ
+    | none => none
+  | .send n persistent data, acc, Γ =>
     match namePar n Γ, procsPar data Γ with
-    | some c, some d => some (Par.mk [Send.mk c d persistent] [] [] [] [] [] [] [])
+    | some c, some d => some (parMerge acc (Par.mk [Send.mk c d persistent] [] [] [] [] [] [] []))
     | _, _ => none
-  | .contr n params rest body, Γ =>
-    match namePar n Γ, namesPar params rest Γ, normalizeAt body Γ with
+  | .contr n params rest body, acc, Γ =>
+    match namePar n Γ, namesPar params rest Γ, normalizeAt body nilPar Γ with
     | some c, some pats, some b =>
-      some (Par.mk [] [Receive.mk [ReceiveBind.mk pats c pats.length] b true 1] [] [] [] [] [] [])
+      some (parMerge acc (Par.mk [] [Receive.mk [ReceiveBind.mk pats c pats.length] b true 1] [] [] [] [] [] []))
     | _, _, _ => none
-  | .input receipts body, Γ =>
-    match normalizeAt body Γ with
+  | .input receipts body, acc, Γ =>
+    match normalizeAt body nilPar Γ with
     | some b =>
       match receiptsPar receipts b Γ with
-      | some rs => some (Par.mk [] rs [] [] [] [] [] [])
+      | some rs => some (parMerge acc (Par.mk [] rs [] [] [] [] [] []))
       | none => none
     | none => none
-  | .match target cases, Γ =>
-    match normalizeAt target Γ, casesPar cases Γ with
-    | some t, some cs => some (Par.mk [] [] [] [] [Match.mk t cs] [] [] [])
+  | .match target cases, acc, Γ =>
+    match normalizeAt target nilPar Γ, casesPar cases Γ with
+    | some t, some cs => some (parMerge acc (Par.mk [] [] [] [] [Match.mk t cs] [] [] []))
     | _, _ => none
-  | .bundle b body, Γ =>
-    match normalizeAt body Γ with
-    | some q => some (Par.mk [] [] [] [] [] [] [Bundle.mk q (bundleFlags b).1 (bundleFlags b).2] [])
+  | .bundle b body, acc, Γ =>
+    match normalizeAt body nilPar Γ with
+    | some q => some (parMerge acc (Par.mk [] [] [] [] [] [] [Bundle.mk q (bundleFlags b).1 (bundleFlags b).2] []))
     | none => none
-  | .ifThen c t, Γ =>
-    match normalizeAt c Γ, normalizeAt t Γ with
+  | .ifThen c t, acc, Γ =>
+    match normalizeAt c nilPar Γ, normalizeAt t nilPar Γ with
     | some cond, some thenB =>
-      some (Par.mk [] [] [] [] [Match.mk cond [MatchCase.mk (parOf (.ground (.bool true))) thenB 0]] [] [] [])
+      some (parMerge acc (Par.mk [] [] [] [] [Match.mk cond [MatchCase.mk (parOf (.ground (.bool true))) thenB 0]] [] [] []))
     | _, _ => none
-  | .ifElse c t e, Γ =>
-    match normalizeAt c Γ, normalizeAt t Γ, normalizeAt e Γ with
+  | .ifElse c t e, acc, Γ =>
+    match normalizeAt c nilPar Γ, normalizeAt t nilPar Γ, normalizeAt e nilPar Γ with
     | some cond, some thenB, some elseB =>
-      some (Par.mk [] [] [] [] [Match.mk cond
+      some (parMerge acc (Par.mk [] [] [] [] [Match.mk cond
         [MatchCase.mk (parOf (.ground (.bool true))) thenB 0,
-         MatchCase.mk (parOf (.ground (.bool false))) elseB 0]] [] [] [])
+         MatchCase.mk (parOf (.ground (.bool false))) elseB 0]] [] [] []))
     | _, _, _ => none
-  | .newIn decls body, Γ =>
-    match namesOfDecls decls, normalizeAt body (declNames decls ++ Γ) with
-    | some d, some b => some (Par.mk [] [] [New.mk d b] [] [] [] [] [])
+  | .newIn decls body, acc, Γ =>
+    match namesOfDecls decls, normalizeAt body nilPar (declNames decls ++ Γ) with
+    | some d, some b => some (parMerge acc (Par.mk [] [] [New.mk d b] [] [] [] [] []))
     | _, _ => none
   -- Outside the modelled fragment, each with a row in `surfaceBoundaries`: a simple type has no flat
   -- leaf, a method call is a native dispatch, `select` and `let` need the normalizer's own
   -- machinery, `PSendSynch` and `PVarRef` have no flat constructor, and the pattern connectives in
   -- *process* position are refused by the port itself.
-  | .simpleType _, _ => none
-  | .method _ _ _, _ => none
-  | .eval _, _ => none
-  | .choice _, _ => none
-  | .letIn _ _ _, _ => none
-  | .sendSynch _ _ _, _ => none
-  | .varRef _ _, _ => none
-  | .conj _ _, _ => none
-  | .disj _ _, _ => none
-  | .plusPlus _ _, _ => none
-  | .minusMinus _ _, _ => none
-  | .pctPct _ _, _ => none
+  | .simpleType _, _, _ => none
+  | .method _ _ _, _, _ => none
+  | .eval _, _, _ => none
+  | .choice _, _, _ => none
+  | .letIn _ _ _, _, _ => none
+  | .sendSynch _ _ _, _, _ => none
+  | .varRef _ _, _, _ => none
+  | .conj _ _, _, _ => none
+  | .disj _ _, _, _ => none
+  | .plusPlus _ _, _, _ => none
+  | .minusMinus _ _, _, _ => none
+  | .pctPct _ _, _, _ => none
 
 /-- A ground as a flat `Par`. **`bigint` is outside the domain**: the model's `Ground` has no bigint
 leaf (`Rchain/Syntax.lean`) while the protobuf's `Expr` has `GBigInt` — the same boundary
@@ -560,7 +572,7 @@ def groundPar : SGround → Option Par
 def procsPar : List Surf → List SVar → Option (List Par)
   | [], _ => some []
   | p :: ps, Γ =>
-    match normalizeAt p Γ, procsPar ps Γ with
+    match normalizeAt p nilPar Γ, procsPar ps Γ with
     | some q, some qs => some (q :: qs)
     | _, _ => none
 
@@ -581,7 +593,7 @@ def collectPar : SCollect → List SVar → Option Par
   | .set ps rem, Γ =>
     (procsPar ps Γ).map (fun qs => parOf (.eset qs (rem.map (fun r => nameVar Γ r))))
   | .tuple first rest, Γ =>
-    match normalizeAt first Γ, procsPar rest Γ with
+    match normalizeAt first nilPar Γ, procsPar rest Γ with
     | some f, some rs => some (parOf (.etuple (f :: rs)))
     | _, _ => none
   | .map kvs rem, Γ =>
@@ -593,7 +605,7 @@ def collectPar : SCollect → List SVar → Option Par
 def kvsPar : List SKeyValuePair → List SVar → Option (List (Par × Par))
   | [], _ => some []
   | ⟨k, v⟩ :: rest, Γ =>
-    match normalizeAt k Γ, normalizeAt v Γ, kvsPar rest Γ with
+    match normalizeAt k nilPar Γ, normalizeAt v nilPar Γ, kvsPar rest Γ with
     | some kp, some vp, some rp => some ((kp, vp) :: rp)
     | _, _, _ => none
 
@@ -601,7 +613,7 @@ def kvsPar : List SKeyValuePair → List SVar → Option (List (Par × Par))
 def casesPar : List SCase → List SVar → Option (List MatchCase)
   | [], _ => some []
   | ⟨pat, body⟩ :: rest, Γ =>
-    match normalizeAt pat Γ, normalizeAt body Γ, casesPar rest Γ with
+    match normalizeAt pat nilPar Γ, normalizeAt body nilPar Γ, casesPar rest Γ with
     | some p, some b, some r => some (MatchCase.mk p b 0 :: r)
     | _, _, _ => none
 
@@ -635,7 +647,7 @@ def bindsPar : List SBind → List SVar → Option (List ReceiveBind)
 def namePar : SName → List SVar → Option Par
   | .wild, _ => some (parOf (.evar .wildcard))
   | .var x, Γ => some (parOf (.evar (nameVar Γ x)))
-  | .quote p, Γ => normalizeAt p Γ
+  | .quote p, Γ => normalizeAt p nilPar Γ
 
 end
 
