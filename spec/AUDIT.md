@@ -221,11 +221,12 @@ red-team items remain.
   the DAG now publishes its own gauges (`messages`, `seen_entries`, `fringe_states`, `index_entries`,
   `logical_bytes`) into the node's `MetricsRegistry`, whose snapshot `/metrics` renders: the wire that
   was missing, so every scrape had returned the reporter's placeholder. **The instrument reproduces
-  this row's own figure**: the bench's `dag` curve measures `seen_entries` = 500,500 at N=1,000
-  (a chain's `seen` is its ancestry, so Σ|seen| = N(N+1)/2) and `logical_bytes` = 16.2 MB, which
-  extrapolates at N=5,881 to 17,296,021 × 32 B ≈ **553 MB** — the number this row states, now read off
-  the running node rather than estimated. The floor itself is still not fixed, and that remains the
-  decision this row records.
+  this row's own figure, on the node and at scale**: the bench's `dag` curve measures `seen_entries` =
+  500,500 at N=1,000 (a chain's `seen` is its ancestry, so Σ|seen| = N(N+1)/2) and `logical_bytes` =
+  16.2 MB, and the running devnet node reports **`seen_entries` = 17,319,555 (= 5,885 × 5,886 / 2
+  exactly) with `logical_bytes` = 556 MB**, the ≈553 MB this row estimated from Σ|seen| × 32 B — now
+  read off the structure rather than extrapolated. The floor itself is still not fixed, and that
+  remains the decision this row records.
 
 ### Medium
 
