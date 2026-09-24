@@ -156,9 +156,15 @@ the merge optimizes.
 
 1. `legacy/casper/src/main/resources/casper.tla` (the Scala tree's copy; not in this tree) models only
    the genesis **bootstrap ceremony handshake**.
-   The finality rule is now formalized in `CasperFinality.tla` (Laws 14/15/16: > 2/3 supermajority,
-   fringe antichain + seen-set monotonicity, seqNum strictly increasing), reconstructed from
-   `Finalizer.scala` + `MessageMapSyntax.scala`.
+   The finality rule's **intended invariants are *stated*** in `CasperFinality.tla` (Laws 14/15/16: a
+   > 2/3 supermajority, the fringe antichain, seen-set monotonicity, seqNum strictly increasing),
+   reconstructed from `Finalizer.scala` + `MessageMapSyntax.scala` — **as a reference-tree artefact, not
+   as a checked specification**: it defines the predicates and an `Inv` conjunction (`:140-145`) but no
+   `Init`, no `Next`, no `Spec` and no `THEOREM`, and no model checker is wired to it (measured, AUDIT
+   C79: `grep -cE "^(Init|Next|Spec|Specification) *=" ` → 0, and no `tla2tools`/`TLC`/`tlaps` in
+   `tools/`, the `Makefile` or `.github/`) — so nothing can run it, and wiring it would first need a
+   `Spec` written, which is a modelling decision rather than a dependency. Laws 14/15/16 are **proved in
+   the register** instead (`Rchain/Casper/Fringe.lean`, `Rchain/Casper/Dag.lean`), which supersedes it.
 2. The `faultTolerance` field asserted in the legacy suite's
    `legacy/integration-tests/test/test_dag_correctness.py:105-111` (legacy-only: the port's checklist
    mirrors that suite, `tools/run-integration-tests.sh:34`, and does not run it)
