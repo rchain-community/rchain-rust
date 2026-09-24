@@ -52,6 +52,8 @@ where
         prefix: u8,
         key: Blake2b256Hash,
     ) -> Result<Option<PersistedData>, String> {
+        // A fixed 33-byte shape (one prefix byte plus a 32-byte hash), so `new` is in range by
+        // construction — measured 2026-09-24 (U1 item 7), like the two other sites the appendix named.
         let mut seg = vec![prefix];
         seg.extend_from_slice(key.as_bytes());
         match self.target_history.read(&KeySegment::new(seg)).await {
@@ -322,6 +324,7 @@ mod tests {
                 .put(&[(leaf_hash, leaf)])
                 .await
                 .expect("cold store write");
+            // 33 bytes, as above: in range by construction.
             let mut segment = vec![prefix];
             segment.extend_from_slice(channel_hash.as_bytes());
             self.history = self

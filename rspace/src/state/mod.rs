@@ -84,16 +84,28 @@ fn create_last_prefix(prefix_seq: &[Blake2b256Hash]) -> Result<Option<KeySegment
         return Err("Invalid path during export: expected 5 prefix hashes.".to_string());
     }
     let size_prefix = prefix_seq[0].as_bytes()[0] as usize;
-    if size_prefix > 128 {
-        return Err(format!(
-            "Invalid path during export: prefix size {size_prefix} exceeds 128."
-        ));
-    }
     let mut prefix128 = Vec::with_capacity(128);
     for i in 0..4 {
         prefix128.extend_from_slice(prefix_seq[1 + i].as_bytes());
     }
-    Ok(Some(KeySegment::new(prefix128[..size_prefix].to_vec())))
+    // The **checked constructor** is the boundary here, not a hand-written bound. A `KeySegment` is
+    // at most 127 bytes — the Scala's own `require(bv.size <= 127)` on `KeySegment.apply`, and the
+    // radix encoder's 7-bit size field (`radix_tree.rs:121`'s `second & 0x7F`) — and this port of
+    // `KeySegment(prefix128.take(sizePrefix))` used to accept a peer-supplied 128: one byte over,
+    // which the encoder then silently truncates to *zero*, dropping the whole prefix and
+    // desynchronizing the restored tree. `get` bounds the slice too, so a size past `prefix128` is
+    // refused rather than sliced out of range. Refused, not panicked, because that is this input's
+    // documented stance ("the input is a peer-supplied resume path, so malformed shapes are an `Err`,
+    // not a panic") — where the Scala reaches its `require` and throws.
+    let Some(bytes) = prefix128.get(..size_prefix) else {
+        return Err(format!(
+            "Invalid path during export: prefix size {size_prefix} exceeds 127."
+        ));
+    };
+    Ok(Some(
+        KeySegment::try_from(bytes.to_vec())
+            .map_err(|e| format!("Invalid path during export: {e}"))?,
+    ))
 }
 
 /// Build leaf/history `TrieNode`s from their hashes (port of `constructNodes`).
@@ -323,6 +335,31 @@ mod tests {
     use std::collections::HashMap;
 
     use crate::history::radix_tree::{empty_node, hash_node, Item};
+
+    /// The resume path is peer-supplied and its `sizePrefix` is a *raw byte*: the segment invariant
+    /// caps it at 127 (the encoder writes the size in 7 bits — `radix_tree.rs:121`'s `second & 0x7F` —
+    /// so a 128-byte segment is silently truncated to *zero* on the way back out, dropping the prefix
+    /// and desynchronizing the restored tree). The port of the Scala's `KeySegment(prefix128.take(sizePrefix))`
+    /// bounded it at `> 128`, one byte over: a value the Scala's own `require(bv.size <= 127)`
+    /// refuses, and that this port's documented stance refuses with an `Err` rather than a panic.
+    ///
+    /// Falsifier: with the `> 128` bound restored and `KeySegment::new` back in place of the checked
+    /// constructor, this fails — a 128-byte segment comes back `Ok`.
+    #[test]
+    fn a_128_byte_resume_prefix_is_refused() {
+        let mut hashes = vec![Blake2b256Hash::from_bytes([0u8; 32]); 5];
+        hashes[0] = Blake2b256Hash::from_bytes([128u8; 32]);
+        assert!(
+            create_last_prefix(&hashes).is_err(),
+            "a prefix size of 128 is one byte over the segment invariant"
+        );
+
+        hashes[0] = Blake2b256Hash::from_bytes([127u8; 32]);
+        let segment = create_last_prefix(&hashes)
+            .expect("127 fits")
+            .expect("a segment of one byte is still a segment");
+        assert_eq!(segment.len(), 127);
+    }
 
     fn single_leaf_store() -> (
         HashMap<Blake2b256Hash, Vec<u8>>,

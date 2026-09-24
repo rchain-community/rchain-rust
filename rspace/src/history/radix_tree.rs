@@ -121,6 +121,11 @@ pub fn decode(node: &SerializedNode) -> Node {
         let second = bytes[pos + 1];
         let prefix_size = (second & 0x7F) as usize;
         let prefix_start = pos + 2;
+        // `new` rather than the checked `TryFrom`: `prefix_size` comes from a 7-bit field, so it is
+        // ≤ 127 by the encoding itself — the *same* mask the encoder writes with, which is what makes
+        // 127 the segment invariant. Measured 2026-09-24 (U1 item 7): routing this through `TryFrom`
+        // would add a refusal for an unconstructible case and force an error channel onto `decode`,
+        // which is total by design (`RadixTree.Codecs.decode`).
         let prefix = KeySegment::new(bytes[prefix_start..prefix_start + prefix_size].to_vec());
         let val_start = prefix_start + prefix_size;
         let val = Blake2b256Hash::from_byte_array(&bytes[val_start..val_start + 32]);
