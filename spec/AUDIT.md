@@ -2200,11 +2200,15 @@ port against the **reference document** rather than against itself.
   instrument that passes on the defect it names is not evidence, and only the falsifier distinguishes
   them.
 
-  **One cell is owed, and it is named here so it cannot go quiet.** Law 5's register row and
-  `spec/INVENTORY.md`'s row 5 both still say the matcher enforces this *only* on the aggregation path,
-  "while its element-pair and conjunction paths overwrite silently" — the sentence this change makes
-  false. Both rows are being re-landed with the tie work in the same cells, so the correction rides
-  with that change rather than being written twice.
+  **One cell was owed here, and it was named so it could not go quiet — and it is now discharged.** Law
+  5's register row and `spec/INVENTORY.md`'s row 5 both said the matcher enforced linearity *only* on the
+  aggregation path, "while its element-pair and conjunction paths overwrite silently" — the sentence the
+  entry guard's landing made false. Both cells were re-written *with* that change (`144a900c5`, which
+  states the normalizer's refusal, the matcher's entry guard and `aggregate_updates`' surviving role in
+  their places), and the row followed it to `proved-tied` when its remaining debt turned out to be two
+  theorems that already existed (`cda0b1554`). The correction was *planned* here rather than left
+  implicit, which is why this note now records that it happened: a planned correction is only as good as
+  the line saying so.
 
   Two of the suite's own mistakes are kept in the test's doc comment because the falsification is what
   found them: three of the four refusal tests asserted only "it errored", so they passed on a *parse*
