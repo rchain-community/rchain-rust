@@ -229,18 +229,20 @@ def laws : List Law := [
       `Rchain.cmpMatchCase_lt_trans, `Rchain.cmpMatch_lt_trans, `Rchain.cmpBundle_lt_trans,
       `Rchain.cmpConnective_lt_trans, `Rchain.cmpListPar_lt_trans,
       `Rchain.Comparator.lex_lt_trans, `Rchain.Comparator.lex_lt_trans_at, `Rchain.Comparator.cmpPairF,
-      `Rchain.exprTag, `Rchain.cmpExpr_eq_iff, `Rchain.cmpExpr_swap, `Rchain.cmpExpr_tag_lt,
-      `Rchain.cmpExpr_tag_gt, `Rchain.cmpExpr_ground, `Rchain.cmpExpr_elist,
-      `Rchain.cmpOptionVar_eq_iff, `Rchain.cmpOptionVar_swap],
+      `Rchain.exprTag, `Rchain.cmpExpr_eq_iff, `Rchain.cmpExpr_swap, `Rchain.cmpExpr_lt_trans,
+      `Rchain.cmpExpr_tag_lt, `Rchain.cmpExpr_tag_gt, `Rchain.cmpExpr_ground, `Rchain.cmpExpr_elist,
+      `Rchain.cmpOptionVar_eq_iff, `Rchain.cmpOptionVar_swap, `Rchain.cmpOptionVar_lt_trans,
+      `Rchain.exprTag_le_of_cmpExpr_lt, `Rchain.cmpListExpr_lt_trans],
     rust := ["models/src/sorter.rs"],
-    axioms := [`Rchain.cmpExpr_lt_trans],
+    axioms := [],
     coq := ["spec/coq/Sort.v:cmpPar"],
     falsifiable := some "eight of the ten element `lt_trans` laws are theorems now \
       (`cmpNew`/`cmpSend`/`cmpReceiveBind`/`cmpReceive`/`cmpMatchCase`/`cmpMatch`/`cmpBundle`/\
       `cmpConnective`), each by the `Comparator.lex_lt_trans` idiom the file's own note validates, and \
       the list laws are proved from them, and `cmpPar_lt_trans` joined them on 2026-09-24 — so a \
-      counterexample to the one remaining axiom would also be a counterexample to those proofs. The \
-      survivor is named rather than hidden: `cmpExpr`'s `lt_trans` is blocked on the size of \
+      counterexample would have to be a counterexample to those proofs too. **And the residual is \
+      gone**: `cmpExpr`'s three are *theorems* now (2026-09-24), which is what the second half of this \
+      cell used to be blocked on — the size of \
       its equation lemmas, and the route is the 21 `rfl`-proved `@[simp]` arm lemmas",
     note := "**four axioms, from twelve** (2026-09-23). The list comparators' laws were discharged \
       earlier by induction on the list; the eight element laws above are now theorems, in dependency \
@@ -269,7 +271,8 @@ def laws : List Law := [
       pattern variables**: a `decreasing_by` over the 441-goal `simp` version cannot work, because \
       `simp` picks the call arguments and the termination checker is then asked for \
       `sizeOf p < 1 + sizeOf a` with nothing identifying `p`. What is left of this row is `cmpExpr`'s \
-      one: `lt_trans`, on the same machinery and the tags" },
+      none. `lt_trans` needed the tags rather than 9261 cases, and the arm machinery made \
+      `eq_iff`/`swap` ordinary case analyses" },
   { number := 2, layer := "Rholang",
     statement := "α/name equivalence = par order + `| Nil` + top-level arithmetic + α + added \
       eval/quote",

@@ -1329,16 +1329,41 @@ known, unpinnable divergence, and `cmpGround`'s doc comment says so.
 
 
 
-axiom cmpExpr_lt_trans (s t u : Expr) : cmpExpr s t = Ordering.lt → cmpExpr t u = Ordering.lt → cmpExpr s u = Ordering.lt
+theorem cmpOptionVar_lt_trans (r r' r'' : Option Var)
+    (h1 : cmpOptionVar r r' = Ordering.lt) (h2 : cmpOptionVar r' r'' = Ordering.lt) :
+    cmpOptionVar r r'' = Ordering.lt := by
+  cases r with
+  | none =>
+    cases r' with
+    | none => simp [cmpOptionVar] at h1
+    | some b =>
+      cases r'' with
+      | none => simp [cmpOptionVar] at h2
+      | some c => rfl
+  | some a =>
+    cases r' with
+    | none => simp [cmpOptionVar] at h1
+    | some b =>
+      cases r'' with
+      | none => simp [cmpOptionVar] at h2
+      | some c => exact varComparator.lt_trans h1 h2
+
+theorem exprTag_le_of_cmpExpr_lt {s t : Expr} (h : cmpExpr s t = Ordering.lt) :
+    exprTag s ≤ exprTag t := by
+  by_contra hc
+  have hgt : cmpExpr s t = Ordering.gt := cmpExpr_tag_gt (Nat.lt_of_not_le hc)
+  rw [hgt] at h
+  exact absurd h (by decide)
 
 /-! ### The `lt_trans` laws
 
 `cmpExpr`'s element law was law 1's last axiom *blocker*, and the obstacle was never the `lt_trans`
 case analysis: it is that `cmpExpr` is compiled as `WellFounded.fix`, so nothing unfolds it. The fix is
-the arm-lemma machinery above (`exprTag`, 21 `@[simp]` arms, the two tag lemmas) — with it
-`cmpExpr_eq_iff` is a theorem, and the two laws left here (`swap`, `lt_trans`) are written the same way:
-one arm at a time, each sub-law called on the arm's own pattern variables. A 21×21×21 `simp` is *not* the
-route, and a `decreasing_by` over one is not either — see the note above for why.
+the arm-lemma machinery above (`exprTag`, 21 `@[simp]` arms, the two tag lemmas) — with it all three of
+`cmpExpr`'s laws are theorems. `eq_iff` and `swap` are written one arm at a time, each sub-law called on
+the arm's own pattern variables; `lt_trans` is the one that needs the tags, because a triple has 9261
+cases and the tag lemmas collapse all but 21 of them. A 21×21×21 `simp` is *not* the route, and a
+`decreasing_by` over one is not either — see the note above for why.
 
 Everything else in the family is proved, and the `Par` half of it is **one `mutual` block** below,
 because the family is one strongly connected component. What stays *outside* the block, and why: the two
@@ -1372,19 +1397,7 @@ theorem cmpListGUnforgeable_lt_trans (l l' l'' : List GUnforgeable) : cmpListGUn
               exact lex_lt_trans (f := cmpGUnforgeable) (h_eq := fun {a b} => cmpGUnforgeable_eq_iff a b) (h_lt := fun {a b c} => cmpGUnforgeable_lt_trans a b c) (hD := ih bs cs) h1 h2
 
 
-theorem cmpListExpr_lt_trans (l l' l'' : List Expr) : cmpListExpr l l' = Ordering.lt → cmpListExpr l' l'' = Ordering.lt → cmpListExpr l l'' = Ordering.lt := by
-  induction l generalizing l' l'' with
-  | nil => intro h1 h2; cases l' <;> cases l'' <;> simp [cmpListExpr] at h1 h2 ⊢
-  | cons a as ih =>
-      intro h1 h2
-      cases l' with
-      | nil => simp [cmpListExpr] at h1
-      | cons b bs =>
-          cases l'' with
-          | nil => simp [cmpListExpr] at h2
-          | cons c cs =>
-              simp [cmpListExpr] at h1 h2 ⊢
-              exact lex_lt_trans (f := cmpExpr) (h_eq := fun {a b} => cmpExpr_eq_iff a b) (h_lt := fun {a b c} => cmpExpr_lt_trans a b c) (hD := ih bs cs) h1 h2
+
 
 
 /-! ## The `Par` cycle, as one block
@@ -1396,6 +1409,59 @@ shape this block's termination checker accepts; `Cmp.lean`'s `lex_lt_trans_at` i
 that spelling available at each level. -/
 
 mutual
+  /-- `cmpExpr`'s `lt_trans` — the dispatch described above. -/
+  theorem cmpExpr_lt_trans : ∀ s t u : Expr, cmpExpr s t = Ordering.lt →
+      cmpExpr t u = Ordering.lt → cmpExpr s u = Ordering.lt := by
+    intro s t u hst htu
+    have htag_st : exprTag s ≤ exprTag t := exprTag_le_of_cmpExpr_lt hst
+    have htag_tu : exprTag t ≤ exprTag u := exprTag_le_of_cmpExpr_lt htu
+    by_cases hsu : exprTag s < exprTag u
+    · exact cmpExpr_tag_lt hsu
+    · have hle : exprTag u ≤ exprTag s := le_of_not_lt hsu
+      have hst' : exprTag s = exprTag t := le_antisymm htag_st (le_trans htag_tu hle)
+      have hsu' : exprTag s = exprTag u := le_antisymm (le_trans htag_st htag_tu) hle
+      cases s <;> cases t <;> cases u <;>
+        first
+          | (rw [exprTag, exprTag] at hst'; exact absurd hst' (by decide))
+          | (rw [exprTag, exprTag] at hsu'; exact absurd hsu' (by decide))
+          | (rw [cmpExpr_ground] at hst htu ⊢; exact groundComparator.lt_trans hst htu)
+          | (rw [cmpExpr_evar] at hst htu ⊢; exact varComparator.lt_trans hst htu)
+          | (rw [cmpExpr_eneg] at hst htu ⊢; exact cmpPar_lt_trans _ _ _ hst htu)
+          | (rw [cmpExpr_enot] at hst htu ⊢; exact cmpPar_lt_trans _ _ _ hst htu)
+          | (rw [cmpExpr_eplus] at hst htu ⊢; refine lex_lt_trans_at (f := cmpPar) (h_eq := fun {a b} => cmpPar_eq_iff a b) (h_lt := cmpPar_lt_trans _ _ _) (Dcmp := cmpPar) (hD := cmpPar_lt_trans _ _ _) hst htu)
+          | (rw [cmpExpr_eminus] at hst htu ⊢; refine lex_lt_trans_at (f := cmpPar) (h_eq := fun {a b} => cmpPar_eq_iff a b) (h_lt := cmpPar_lt_trans _ _ _) (Dcmp := cmpPar) (hD := cmpPar_lt_trans _ _ _) hst htu)
+          | (rw [cmpExpr_emult] at hst htu ⊢; refine lex_lt_trans_at (f := cmpPar) (h_eq := fun {a b} => cmpPar_eq_iff a b) (h_lt := cmpPar_lt_trans _ _ _) (Dcmp := cmpPar) (hD := cmpPar_lt_trans _ _ _) hst htu)
+          | (rw [cmpExpr_ediv] at hst htu ⊢; refine lex_lt_trans_at (f := cmpPar) (h_eq := fun {a b} => cmpPar_eq_iff a b) (h_lt := cmpPar_lt_trans _ _ _) (Dcmp := cmpPar) (hD := cmpPar_lt_trans _ _ _) hst htu)
+          | (rw [cmpExpr_emod] at hst htu ⊢; refine lex_lt_trans_at (f := cmpPar) (h_eq := fun {a b} => cmpPar_eq_iff a b) (h_lt := cmpPar_lt_trans _ _ _) (Dcmp := cmpPar) (hD := cmpPar_lt_trans _ _ _) hst htu)
+          | (rw [cmpExpr_elt] at hst htu ⊢; refine lex_lt_trans_at (f := cmpPar) (h_eq := fun {a b} => cmpPar_eq_iff a b) (h_lt := cmpPar_lt_trans _ _ _) (Dcmp := cmpPar) (hD := cmpPar_lt_trans _ _ _) hst htu)
+          | (rw [cmpExpr_ele] at hst htu ⊢; refine lex_lt_trans_at (f := cmpPar) (h_eq := fun {a b} => cmpPar_eq_iff a b) (h_lt := cmpPar_lt_trans _ _ _) (Dcmp := cmpPar) (hD := cmpPar_lt_trans _ _ _) hst htu)
+          | (rw [cmpExpr_egt] at hst htu ⊢; refine lex_lt_trans_at (f := cmpPar) (h_eq := fun {a b} => cmpPar_eq_iff a b) (h_lt := cmpPar_lt_trans _ _ _) (Dcmp := cmpPar) (hD := cmpPar_lt_trans _ _ _) hst htu)
+          | (rw [cmpExpr_ege] at hst htu ⊢; refine lex_lt_trans_at (f := cmpPar) (h_eq := fun {a b} => cmpPar_eq_iff a b) (h_lt := cmpPar_lt_trans _ _ _) (Dcmp := cmpPar) (hD := cmpPar_lt_trans _ _ _) hst htu)
+          | (rw [cmpExpr_eeq] at hst htu ⊢; refine lex_lt_trans_at (f := cmpPar) (h_eq := fun {a b} => cmpPar_eq_iff a b) (h_lt := cmpPar_lt_trans _ _ _) (Dcmp := cmpPar) (hD := cmpPar_lt_trans _ _ _) hst htu)
+          | (rw [cmpExpr_eneq] at hst htu ⊢; refine lex_lt_trans_at (f := cmpPar) (h_eq := fun {a b} => cmpPar_eq_iff a b) (h_lt := cmpPar_lt_trans _ _ _) (Dcmp := cmpPar) (hD := cmpPar_lt_trans _ _ _) hst htu)
+          | (rw [cmpExpr_eand] at hst htu ⊢; refine lex_lt_trans_at (f := cmpPar) (h_eq := fun {a b} => cmpPar_eq_iff a b) (h_lt := cmpPar_lt_trans _ _ _) (Dcmp := cmpPar) (hD := cmpPar_lt_trans _ _ _) hst htu)
+          | (rw [cmpExpr_eor] at hst htu ⊢; refine lex_lt_trans_at (f := cmpPar) (h_eq := fun {a b} => cmpPar_eq_iff a b) (h_lt := cmpPar_lt_trans _ _ _) (Dcmp := cmpPar) (hD := cmpPar_lt_trans _ _ _) hst htu)
+          | (rw [cmpExpr_etuple] at hst htu ⊢; exact cmpListPar_lt_trans _ _ _ hst htu)
+          | (rw [cmpExpr_elist] at hst htu ⊢; refine lex_lt_trans_at (f := cmpListPar) (h_eq := fun {a b} => cmpListPar_eq_iff a b) (h_lt := cmpListPar_lt_trans _ _ _) (Dcmp := cmpOptionVar) (hD := cmpOptionVar_lt_trans _ _ _) hst htu)
+          | (rw [cmpExpr_eset] at hst htu ⊢; refine lex_lt_trans_at (f := cmpListPar) (h_eq := fun {a b} => cmpListPar_eq_iff a b) (h_lt := cmpListPar_lt_trans _ _ _) (Dcmp := cmpOptionVar) (hD := cmpOptionVar_lt_trans _ _ _) hst htu)
+          | (rw [cmpExpr_emap] at hst htu ⊢; refine lex_lt_trans_at (f := cmpListParPair) (h_eq := fun {a b} => cmpListParPair_eq_iff a b) (h_lt := cmpListParPair_lt_trans _ _ _) (Dcmp := cmpOptionVar) (hD := cmpOptionVar_lt_trans _ _ _) hst htu)
+  termination_by s => sizeOf s
+
+  /-- The list law over `Expr`, inside the family because `cmpPar_lt_trans` needs it and it needs
+      `cmpExpr_lt_trans`. -/
+  theorem cmpListExpr_lt_trans : ∀ l : List Expr, ∀ l' l'' : List Expr,
+      cmpListExpr l l' = Ordering.lt → cmpListExpr l' l'' = Ordering.lt → cmpListExpr l l'' = Ordering.lt
+    | [], l', l'', h1, h2 => by cases l' <;> cases l'' <;> simp [cmpListExpr] at h1 h2 ⊢
+    | _ :: _, [], l'', h1, _ => by simp [cmpListExpr] at h1
+    | _ :: _, _ :: _, [], _, h2 => by simp [cmpListExpr] at h2
+    | a :: as, b :: bs, c :: cs, h1, h2 => by
+        simp only [cmpListExpr] at h1 h2 ⊢
+        exact lex_lt_trans_at (f := cmpExpr) (h_eq := fun {a b} => cmpExpr_eq_iff a b)
+          (a := a) (b := b) (c := c) (h_lt := cmpExpr_lt_trans a b c)
+          (Dcmp := cmpListExpr) (x := as) (y := bs) (z := cs)
+          (hD := cmpListExpr_lt_trans as bs cs) h1 h2
+  termination_by l => sizeOf l
+
   theorem cmpPar_lt_trans : ∀ p : Par, ∀ q r : Par,
       cmpPar p q = Ordering.lt → cmpPar q r = Ordering.lt → cmpPar p r = Ordering.lt
     | Par.mk s r n e m u b c, Par.mk s' r' n' e' m' u' b' c',
@@ -1422,9 +1488,10 @@ mutual
         (z := (e'', (n'', (m'', (b'', (c'', u''))))))
         (hD := ?_) hx hy
       intro hx hy
-      refine lex_lt_trans (f := cmpListExpr)
+      refine lex_lt_trans_at (f := cmpListExpr)
         (h_eq := fun {a b} => cmpListExpr_eq_iff a b)
-        (h_lt := fun {a b c} h1 h2 => cmpListExpr_lt_trans a b c h1 h2)
+        (a := e) (b := e') (c := e'')
+        (h_lt := cmpListExpr_lt_trans e e' e'')
         (Dcmp := cmpPairF cmpListNew (cmpPairF cmpListMatch (cmpPairF cmpListBundle (cmpPairF cmpListConnective (cmpListGUnforgeable)))))
         (x := (n, (m, (b, (c, u)))))
         (y := (n', (m', (b', (c', u')))))
