@@ -38,12 +38,13 @@ lives with the printer (the module that must produce it). An `elem` is **one opa
 a name, a pattern, a receipt — carrying its own spelling: the fragment's grammar is stated over tokens
 with the elements' interiors abstracted, which is `Parse.lean`'s boundary rather than a claim made here.
 
-**Three warts are faithful and are pinned rather than fixed** (`printWarts`): Scala's printer prints a
-*one-element tuple* as a group (`(1,)` ⇒ `(1)`, which is the integer `1`), `not x` as `~(x)`, which is
-not rholang at all, and a `new` with a urn without it. The port reproduces all three — its own
-`the_documented_warts_print_what_the_grammar_cannot_read_back` pins the first two, and this layer's Rust
-consumer found the third. `Parse.lean` carries the decidable half for the first two (the grammar cannot
-read those spellings back) and the consumer carries the third (the reparsed term is not the term).
+**Three warts belong to the port's printer** (`printWarts`), and this printer deliberately does *not*
+reproduce them: the port prints a *one-element tuple* as a group (`(1,)` ⇒ `(1)`, the integer), `not x`
+as `~(x)` (the negation), and a `new` with a urn without it. The port's own
+`the_documented_warts_print_what_the_grammar_cannot_read_back` pins the first two; this layer's Rust
+consumer found the third. A corpus row has to be a *grammar* term for law 31's completeness to be a
+claim about the port, so this printer emits `(1,)`, `not x` and the urn — and the consumer's round trip
+asserts each loss with its own detector.
 -/
 
 namespace Rchain
@@ -227,9 +228,11 @@ def printToksAt : Surf → Nat → List Tok
   | .conj a b, _ => [elemOf a 15 (renderTokens (printToksAt a 0)), .term "/\\", elemOf b 16 (renderTokens (printToksAt b 0))]
   | .disj a b, _ => [elemOf a 14 (renderTokens (printToksAt a 0)), .term "\\/", elemOf b 15 (renderTokens (printToksAt b 0))]
   | .eval n, _ => [.term "*", .elem (nameSpelling n)]
-  -- wart 2: the port prints `PNot` as `~(x)`, the *negation* spelling (`pretty_printer.rs`'s ENot,
-  -- `PrettyPrinter.scala:75`), which the grammar reads as `PNegation` of a group.
-  | .not p, _ => [.term "~", .term "(", elemOf p 0 (renderTokens (printToksAt p 0)), .term ")"]
+  -- The port prints `PNot` as `~(x)` — the *negation* spelling (`pretty_printer.rs`'s ENot,
+  -- `PrettyPrinter.scala:75`), which is one of `printWarts`' rows and is asserted by the consumer's
+  -- round trip. This printer emits the grammar's own spelling (`PNot ::= "not" Proc10`), because a
+  -- corpus row has to be a grammar term for law 31's completeness to be a claim about the port.
+  | .not p, _ => [.term "not", elemOf p 10 (renderTokens (printToksAt p 0))]
   | .negNum p, _ => [.term "-", elemOf p 10 (renderTokens (printToksAt p 0))]
   | .mult a b, _ => [elemOf a 10 (renderTokens (printToksAt a 0)), .term "*", elemOf b 11 (renderTokens (printToksAt b 0))]
   | .div a b, _ => [elemOf a 10 (renderTokens (printToksAt a 0)), .term "/", elemOf b 11 (renderTokens (printToksAt b 0))]
@@ -295,15 +298,18 @@ def nameElemsToks : List SName → List Tok
   | n :: m :: ns => .elem (nameSpelling n) :: .term "," :: nameElemsToks (m :: ns)
 
 /-- A collection: the four forms, each with its delimiters and its optional remainder. A *one-element
-tuple* is **wart 1**: the port prints `(1,)` as `(1)`, the trailing comma dropped
-(`pretty_printer.rs`'s ETuple, `PrettyPrinter.scala:117`), which reparses as the integer. -/
+tuple* prints its trailing comma (`TupleSingle ::= "(" Proc ",)"`); the port's printer drops it
+(`pretty_printer.rs`'s ETuple, `PrettyPrinter.scala:117`), which is `printWarts`' first row and is
+asserted by the consumer's round trip. -/
 def collectToks : SCollect → List Tok
   | .list ps rem => [.term "["] ++ elemsToks ps ++ remToks rem ++ [.term "]"]
   | .set ps rem => [.term "Set", .term "("] ++ elemsToks ps ++ remToks rem ++ [.term ")"]
   | .map kvs rem => [.term "{"] ++ kvToks kvs ++ remToks rem ++ [.term "}"]
   | .tuple first rest =>
       match rest with
-      | [] => [.term "(", elemOf first 0 (renderTokens (printToksAt first 0)), .term ")"]
+      -- `TupleSingle ::= "(" Proc ",)"` — the trailing comma is the grammar's, and the port's printer
+      -- drops it (`printWarts`' first row, asserted by the consumer's round trip).
+      | [] => [.term "(", elemOf first 0 (renderTokens (printToksAt first 0)), .term ",", .term ")"]
       | _ => [.term "(", elemOf first 0 (renderTokens (printToksAt first 0)), .term ","] ++ elemsToks rest ++ [.term ")"]
 
 /-- One map pair, as an element. The pair's own spelling (`k : v`, with spaces) is the port's
@@ -410,49 +416,53 @@ def printSurf (t : Surf) : String := renderTokens (printToks t)
 
 Both tables are **data**, for the reason the rest of this tree keeps its gaps in tables: a wart that
 lives in a comment is discovered again by the next reader, and a boundary that lives nowhere is mistaken
-for an omission. Each wart names its production, and `Parse.lean` carries the decidable half — that the
-grammar cannot read these spellings back. -/
+for an omission. The warts are the **port's** printer's: this printer emits the grammar's own spelling
+for each of them, because a corpus row has to be a grammar term for law 31's completeness to be a claim
+about the port. So each claim is checked where it can be — the consumer's round trip, by a detector for
+each wart. -/
 
-/-- A printer wart: a spelling the port emits that the grammar cannot read back, faithful to the Scala
-and pinned rather than fixed. -/
+/-- A wart of the **port's** printer: a spelling it emits for a term that is not the term — either not a
+grammar term at all, or a different one. This printer does *not* reproduce them (see the section note),
+so the table's own checks are only its shape; the claim is the consumer's. -/
 structure PrintWart where
   id : String
   /-- The production it happens on. -/
   production : String
-  /-- What the printer emits, and what that is read as instead. -/
+  /-- What the port's printer emits, and what that is read as instead. -/
   emits : String
-  /-- Why it is reproduced rather than fixed. -/
+  /-- Why it is the port's, and how the consumer asserts the loss. -/
   why : String
 
-/-- The warts. The first two were inherited from `PrettyPrinter.scala` and both are pinned in the port
-(`pretty_printer.rs`'s `the_documented_warts_print_what_the_grammar_cannot_read_back`); the third —
-the `new`-urn drop — is a de-facto wart the port's comments do not record and this layer's Rust
-consumer found. `Parse.lean`'s `warts_are_not_derivable` decides the first two (their spelling is not
-in the grammar at all); the third is a *fidelity* wart instead — the spelling is derivable and the
-printed term is not the term. -/
+/-- The warts. The first two were inherited from `PrettyPrinter.scala` and are pinned in the port
+(`pretty_printer.rs`'s `the_documented_warts_print_what_the_grammar_cannot_read_back`); the third — the
+`new`-urn drop — is a de-facto wart the port's comments do not record and this layer's Rust consumer
+found. Each is asserted *by its own detector* in the consumer's round trip: the urn one requires the
+cleared `New.uri`/`injections` to be the only difference, the tuple one requires the reparse to be the
+element the tuple wrapped, and the `not` one requires it to be a negation. An exemption that cannot
+fail would be this repo's most expensive kind of defect. -/
 def printWarts : List PrintWart :=
   [ ⟨"singleton-tuple", "CollectTuple",
-      "a one-element tuple prints as a group: `(1,)` ⇒ `(1)`, which the grammar reads as the integer 1",
-      "faithful: `PrettyPrinter.scala:117` prints `\"(\" buildSeq \")\"` with no trailing comma, and \
-       the port reproduces it. Rejecting the spelling instead would break reading the printed output \
-       back — which is what law 33 is about — so the model reproduces the wart and says so"⟩
-  , ⟨"urn-in-new", "PNew",
-      "a `new` with a urn prints without it: `new x(`rho:id:y`) in Nil` ⇒ `new x0 in { Nil }`, and the \
-       reparsed term's `New.uri` is empty — the printer *loses* the urn (and `injections`)",
-      "faithful: `pretty_printer.rs`'s New arm renders `bind_count` and the body and ignores `uri` and \
-       `injections`, as `PrettyPrinter.scala` does. Found by this layer's Rust consumer, which is the \
-       tie that makes law 33's round trip a statement about the node: the row is accounted in the \
-       consumer rather than dropped, and the consumer asserts the urn really was lost"⟩
+      "the port prints a one-element tuple as a group: `(1,)` ⇒ `(1)`, which the grammar reads as the \
+       integer 1",
+      "`PrettyPrinter.scala:117` prints `\"(\" buildSeq \")\"` with no trailing comma and the port \
+       reproduces it. This printer emits `(1,)` — the grammar's `TupleSingle` — and the consumer's round \
+       trip asserts the port's loss: the reparsed term is the element the tuple wrapped"⟩
   , ⟨"not-spelling", "PNot",
-      "`not x` prints as `~(x)`, which is not rholang: `~` is process negation over a `Proc15`, and \
-       `(x)` is the group `PExprs ::= \"(\" Proc4 \")\"`",
-      "faithful: `PrettyPrinter.scala:75` prints the negation spelling for a `PNot` node. The fix would \
-       be a spelling the grammar has, not a printer change — and the Scala's output is what the port \
-       must reproduce"⟩
+      "the port prints `not x` as `~(x)`, the *negation* spelling: `~` is process negation over a \
+       `Proc15`, not the `not` of `PNot ::= \"not\" Proc10`",
+      "`PrettyPrinter.scala:75` prints the negation spelling for a `PNot` node. This printer emits \
+       `not x` — the grammar's own spelling — and the consumer asserts the port's reparse is a negation \
+       rather than a `not`"⟩
+  , ⟨"urn-in-new", "PNew",
+      "the port prints a `new` with a urn without it: `new x(`rho:id:y`) in Nil` ⇒ `new x0 in { Nil }`, \
+       so the reparsed term's `New.uri` is empty — the printer *loses* the urn (and `injections`)",
+      "`pretty_printer.rs`'s New arm renders `bind_count` and the body and ignores `uri` and \
+       `injections`, as `PrettyPrinter.scala` does. Found by this layer's Rust consumer rather than by \
+       reading; the consumer asserts the urn really was lost"⟩
   ]
 
-/-- Each wart names a production, says what it emits, and says why it is reproduced — a wart with no
-reason is a bug that has been left in place quietly. `decide`d. -/
+/-- Each wart names a real production, says what the port emits, and says how the loss is asserted — a
+wart with no reason is a bug that has been left in place quietly. `decide`d. -/
 theorem printWarts_decide :
     (printWarts.all (fun w =>
         !w.id.isEmpty && !w.emits.isEmpty && !w.why.isEmpty

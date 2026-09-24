@@ -22,14 +22,14 @@
 //! the `printer` rows, which are `Rchain/Print.lean`'s spelling of every production witness the
 //! fragment can read.
 
-use rchain_models::ast::Par;
+use rchain_models::ast::{Expr, Par};
 use rchain_rholang::normalizer::source_to_adt;
 use rchain_rholang::parser::parse;
 use rchain_rholang::pretty_printer::PrettyPrinter;
 
 /// The corpus's declared size (`Rchain/Parse.lean`'s `parseCaseCount`). A corpus that shrinks silently
 /// is a check that stopped checking, so the count is pinned on both sides.
-const PARSE_CASES: usize = 121;
+const PARSE_CASES: usize = 123;
 
 /// The corpus's four halves, each pinned (`parseCases_by_kind` in `Rchain/Parse.lean`). Pinning them
 /// separately is what makes a *specific* list's shrinkage visible: `refused` is law 30's soundness
@@ -37,15 +37,17 @@ const PARSE_CASES: usize = 121;
 const DERIVABLE_CASES: usize = 17;
 const REFUSED_CASES: usize = 11;
 const DEVIATION_CASES: usize = 14;
-const PRINTER_CASES: usize = 79;
+const PRINTER_CASES: usize = 81;
 
-/// How the `printer`+`accept` rows are accounted for. Most of the witness table spells its variables as
-/// bare names (`x`, `c`, `x /\ y`) and the normalizer rejects a globally free variable, so those rows
-/// never reach the printer — and one row (`new x(`rho:id:y`) in Nil`) loses its urn to the printer's
-/// wart. All three counts are pinned, and they must *sum* to the `printer`+`accept` rows, so a row that
-/// stops normalizing moves the arithmetic instead of disappearing.
+/// How the `printer`+`accept` rows are accounted for. Many of the witness table's rows spell their
+/// variables as bare names (`x`, `c`, `x /\ y`) and the normalizer rejects a globally free variable, so
+/// they never reach the printer; the rows that do reach it either round-trip or are one of the port's
+/// warts. Every count is pinned and they must *sum* to the `printer`+`accept` rows, so a row that stops
+/// normalizing moves the arithmetic instead of disappearing.
 const PRINTER_ROUND_TRIPPED: usize = 43;
 const PRINTER_URN_WARTED: usize = 1;
+const PRINTER_TUPLE_WARTED: usize = 1;
+const PRINTER_NOT_WARTED: usize = 0;
 
 /// The corpus path, with the emitter named in the failure — a missing corpus is a missing
 /// `tools/emit-lean-corpus.sh`, not a test bug.
@@ -175,6 +177,62 @@ fn the_node_parser_agrees_with_the_lean_model() {
 /// the same property over 37 hand-written terms; this test pins it over the *model's* spellings, which
 /// is what ties the printer to the corpus.
 ///
+/// **The port's printer's warts, one detector each.** A detector answers `true` when the difference
+/// between a term and its reprint is *exactly* the loss that wart names. `None` for the reprint means
+/// the node could not read it back at all, which one wart's signature is: the urn detector requires
+/// the cleared `New.uri`/`injections` to be the whole difference, the tuple one requires the reprint to
+/// be the element the tuple wrapped, and the `not` one requires the reprint to be *unreadable* — the
+/// port's `~(x)` is not a term, and C13's own test asserts the same of the printed form. That is what
+/// makes `Rchain/Print.lean`'s `printWarts` a claim rather than a list of excuses: a row that differs
+/// for any other reason fails the test, and the wart section below asserts each detector fires on a
+/// term of its own.
+fn urn_wart(first: &Par, reprinted: Option<&Par>) -> bool {
+    let Some(second) = reprinted else {
+        return false;
+    };
+    // The wart must have a urn to lose: clearing is the *difference* only if the term had one. Without
+    // this the detector fires on any differing term whose `news` are all urn-less — which is every
+    // other wart's row, and a detector that fires on everything detects nothing.
+    if !first
+        .news
+        .iter()
+        .any(|n| !n.uri.is_empty() || !n.injections.is_empty())
+    {
+        return false;
+    }
+    let mut loosened = first.clone();
+    let mut tightened = second.clone();
+    for n in loosened.news.iter_mut() {
+        n.uri.clear();
+        n.injections.clear();
+    }
+    for n in tightened.news.iter_mut() {
+        n.uri.clear();
+        n.injections.clear();
+    }
+    tightened == loosened && first != second
+}
+
+/// The one-element tuple: the port's printer prints `(1,)` as `(1)`, so the reprint is the element the
+/// tuple wrapped — and the tuple is gone.
+fn tuple_wart(first: &Par, reprinted: Option<&Par>) -> bool {
+    let Some(second) = reprinted else {
+        return false;
+    };
+    match first.exprs.as_slice() {
+        [Expr::ETuple(t)] if t.ps.len() == 1 => t.ps[0] == *second,
+        _ => false,
+    }
+}
+
+/// The `not` spelling: the port's printer prints `not x` as `~(x)`, which the node **cannot read back
+/// at all** — `parser.rs`'s group fallback demands a comma, so `~(true)` is "a tuple needs a comma",
+/// and C13's own test asserts the same of the printed form. So the term had the expression `ENot` and
+/// its reprint is unreadable.
+fn not_wart(first: &Par, reprinted: Option<&Par>) -> bool {
+    first.exprs.iter().any(|e| matches!(e, Expr::ENot(_))) && reprinted.is_none()
+}
+
 /// The `printer` rows whose term is not closed are accounted for rather than skipped silently (see
 /// `PRINTER_ROUND_TRIPPED`).
 #[test]
@@ -185,7 +243,7 @@ fn the_printers_output_round_trips_through_the_node() {
         .filter(|r| r.kind == "printer" && r.accept)
         .count();
     let mut round_tripped = 0usize;
-    let mut urn_warted = 0usize;
+    let mut warted = [0usize; 3];
     let mut closed_refused = 0usize;
     for row in rows.iter().filter(|r| r.kind == "printer" && r.accept) {
         let Ok(closed) = source_to_adt(&row.source) else {
@@ -196,47 +254,53 @@ fn the_printers_output_round_trips_through_the_node() {
         };
         let first: Par = closed.into();
         let printed = PrettyPrinter::new().build_string(&first);
-        let second: Par = source_to_adt(&printed)
-            .unwrap_or_else(|e| {
-                panic!(
-                    "printing {:?} produced {printed:?}, which the node cannot read back: {e}",
-                    row.source
-                )
-            })
-            .into();
-        if second == first {
+        // A reprint the node cannot read back is not a bug this test may assume away: it is one of the
+        // signatures a wart can have (`not_wart`), so it goes to the detectors like any difference.
+        let second: Option<Par> = source_to_adt(&printed).map(Par::from).ok();
+        if second.as_ref() == Some(&first) {
             round_tripped += 1;
             continue;
         }
-        // A difference is allowed for exactly one named wart — the printer drops `New`'s `uri` and
-        // `injections` (`Rchain/Print.lean`'s `printWarts`, third row, which this layer's first run
-        // found). Clear them on both sides and require the rest to agree, **and** require the drop to
-        // have happened: the exemption fails if it ever rots into a no-op.
-        let mut loosened = first.clone();
-        let mut tightened = second.clone();
-        for n in loosened.news.iter_mut() {
-            n.uri.clear();
-            n.injections.clear();
+        // A difference has to be one of the port's named warts, and the detector has to fire: there is
+        // no bucket for "the printer did something else".
+        let detectors: [(&str, fn(&Par, Option<&Par>) -> bool); 3] = [
+            ("the `new`-urn wart", urn_wart),
+            ("the one-element-tuple wart", tuple_wart),
+            ("the `not`-spelling wart", not_wart),
+        ];
+        match detectors.iter().position(|(_, d)| d(&first, second.as_ref())) {
+            Some(i) => warted[i] += 1,
+            None => panic!(
+                "printing {:?} produced {printed:?}, which reparses to a different term for no wart \
+                 this test knows (`Rchain/Print.lean`'s `printWarts`) — the printer changed what the \
+                 term means (AUDIT C13: a doubled group separator and a dropped `bundle` keyword were \
+                 both this)",
+                row.source
+            ),
         }
-        for n in tightened.news.iter_mut() {
-            n.uri.clear();
-            n.injections.clear();
-        }
-        assert_eq!(
-            tightened, loosened,
-            "printing {:?} produced {printed:?}, which reparses differently — the printer changed \
-             what the term means (AUDIT C13: a doubled group separator and a dropped `bundle` \
-             keyword were both this). The only difference this test tolerates is the `new`-urn wart \
-             (`Rchain/Print.lean`'s `printWarts`)",
-            row.source
+    }
+
+    // Each wart's detector is exercised on a term of its own, and each is checked with its *own*
+    // detector: a detector that never fires is an exemption that cannot fail, and the corpus cannot
+    // exercise all three by itself (the `not` row's variable is free, so the normalizer refuses it).
+    for (source, detector) in [
+        (
+            "new x(`rho:id:y`) in { Nil }",
+            urn_wart as fn(&Par, Option<&Par>) -> bool,
+        ),
+        ("(1,)", tuple_wart as fn(&Par, Option<&Par>) -> bool),
+        ("not true", not_wart as fn(&Par, Option<&Par>) -> bool),
+    ] {
+        let first: Par = source_to_adt(source)
+            .unwrap_or_else(|e| panic!("{source:?} is closed and must normalize: {e}"))
+            .into();
+        let printed = PrettyPrinter::new().build_string(&first);
+        let second: Option<Par> = source_to_adt(&printed).map(Par::from).ok();
+        assert!(
+            detector(&first, second.as_ref()),
+            "{source:?} is not the wart this table says it is: {printed:?} came back as {second:?}, \
+             and the detector for that wart did not fire (Rchain/Print.lean's `printWarts`)"
         );
-        assert_ne!(
-            second, first,
-            "printing {:?} produced {printed:?}, which differs from the term by something other than \
-             the `new`-urn wart this bucket exists for (Rchain/Print.lean's `printWarts`)",
-            row.source
-        );
-        urn_warted += 1;
     }
 
     assert_eq!(
@@ -245,14 +309,14 @@ fn the_printers_output_round_trips_through_the_node() {
          print is the identity); {round_tripped} were"
     );
     assert_eq!(
-        urn_warted, PRINTER_URN_WARTED,
-        "the `printer` half carries {PRINTER_URN_WARTED} row(s) that lose their `new` urn to the \
-         printer's wart; {urn_warted} did"
+        warted,
+        [PRINTER_URN_WARTED, PRINTER_TUPLE_WARTED, PRINTER_NOT_WARTED],
+        "the `printer` half accrues urn/tuple/`not` warts; it accrued {warted:?}"
     );
     assert_eq!(
-        round_tripped + urn_warted + closed_refused,
+        round_tripped + warted[0] + warted[1] + warted[2] + closed_refused,
         accept_rows,
-        "every `printer` row that must be accepted is round-tripped, urn-warted, or accounted as not \
-         closed: {round_tripped} + {urn_warted} + {closed_refused} != {accept_rows}"
+        "every `printer` row that must be accepted is round-tripped, one of the three warts, or \
+         accounted as not closed: {round_tripped} + {warted:?} + {closed_refused} != {accept_rows}"
     );
 }

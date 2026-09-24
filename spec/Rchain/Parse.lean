@@ -619,10 +619,9 @@ def refusedCaseCount : Nat := 11
 def deviationCaseCount : Nat := 14
 
 /-- How many cases the printer half carries (law 31's completeness direction): one per production
-witness whose printed tokens the fragment reads — which is now every witness but two, the ones this
-printer spells as the port's warts (`(1,)` ⇒ `(1)` and `not x` ⇒ `~(x)`), plus `[1]` twice because
-`Surface.lean`'s table witnesses `CollectList`/`ProcRemainderEmpty` with the same term. -/
-def printerCaseCount : Nat := 79
+witness, which the fragment now reads in full — `[1]` twice, because `Surface.lean`'s table witnesses
+`CollectList`/`ProcRemainderEmpty` with the same term as `CollectList`'s own row. -/
+def printerCaseCount : Nat := 81
 
 /-- How many cases the layer carries, as the sum of its four halves. -/
 def parseCaseCount : Nat :=
@@ -637,14 +636,19 @@ theorem parseCases_by_kind :
       && printerCases.length == printerCaseCount) = true := by
   decide
 
-/-- **The two printer warts, decided**: the printer's output for a one-element tuple and for `not x`
-are not terms of the grammar at all, which is what makes them unreadable rather than merely
-mis-spelled — the model's half of the port's own
-`the_documented_warts_print_what_the_grammar_cannot_read_back`. -/
+/-- **The port's two spelling warts are outside this fragment**, `decide`d: the token lists it emits
+for a one-element tuple and for `not x` are not ones the fragment reads — because the grammar's group
+production (`PExprs ::= "(" Proc4 ")"`) is not a token here. A group contributes no node and this
+printer re-inserts its parentheses inside an element's spelling, which is `parseBoundaries`' `group`
+row. That is exactly *why* the warts are not visible from here: the port's spelling is a grammar term
+alright, but a *different* one — the group is the integer, and `~` is a negation — and that identity
+loss is asserted end to end by `rholang/tests/lean_parse_corpus.rs`'s detectors, not by a theorem about
+tokens. `Rchain/Print.lean`'s `printWarts` names each loss. -/
 theorem warts_are_not_derivable :
-    (derives (printToks (Surf.collect (.tuple (.ground (.int "1")) []))) == false
-      && derives (printToks (Surf.not (.var "x"))) == false) = true := by
+    (derives [.term "(", .elem "1", .term ")"] == false
+      && derives [.term "~", .term "(", .elem "x", .term ")"] == false) = true := by
   decide
+
 
 /-- The layer carries exactly `parseCaseCount` cases. -/
 theorem parseCases_length : parseCases.length = parseCaseCount := by decide

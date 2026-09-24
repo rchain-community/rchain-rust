@@ -49,6 +49,7 @@ parse	`rho:id:x`	accept	printer
 parse	[1]	accept	printer
 parse	Set(1)	accept	printer
 parse	{1 : 2}	accept	printer
+parse	(1,)	accept	printer
 parse	(1, 2)	accept	printer
 parse	x	accept	printer
 parse	_	accept	printer
@@ -69,6 +70,7 @@ parse	*@1	accept	printer
 parse	*_	accept	printer
 parse	x.get(1)	accept	printer
 parse	1 + 2	accept	printer
+parse	not x	accept	printer
 parse	-1	accept	printer
 parse	2 *3	accept	printer
 parse	6 / 2	accept	printer
