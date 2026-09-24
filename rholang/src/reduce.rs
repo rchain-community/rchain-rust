@@ -2014,21 +2014,14 @@ fn resolve_match(
         if let Some(free_map) = spatial_match_result(&target, &pattern.eval())? {
             let mut new_env = (*env).clone();
             for e in 0..i32::from(case.free_count) {
-                // A level the pattern does not bind has no binding in the matcher's free map, and
-                // `free_count` is *defined* as the number of distinct free levels the pattern binds
-                // (`models/src/types.rs:557`), so this is a state the count's own meaning excludes.
-                // Defaulting it to the empty par (the Scala's `freeMap.getOrElse(e, Par())`,
-                // `Reduce.scala:352`) would hand the continuation a variable bound to nothing; the
-                // function is already fallible, so refuse (AUDIT C52's owed line).
-                let binding = free_map.get(&e).cloned().ok_or_else(|| {
-                    RholangError::BugFoundError(format!(
-                        "match case declares free level {e} (free_count {}, the pattern binds {}), \
-                         which the matcher's free map does not carry",
-                        i32::from(case.free_count),
-                        free_map.len()
-                    ))
-                })?;
-                new_env = new_env.put(binding);
+                // A level the case's pattern names and *this match* did not fill becomes the empty
+                // par — the Scala's own `freeMap.getOrElse(e, Par())` (`Reduce.scala:352`), which is
+                // semantics rather than a flatten: a greedy connective pattern
+                // (`match ("success" | "success") { {x | y} => ... }`) binds `x` to the whole par and
+                // leaves `y` empty, and `legacy/.../matching-parallel-processes.rho` documents that as
+                // its expected output. U10 refused here; the corpus refuted the reading by measurement
+                // (U17, AUDIT C52).
+                new_env = new_env.put(free_map.get(&e).cloned().unwrap_or_default());
             }
             return Ok(Some(Effect::Par(
                 (*case.source).clone(),
@@ -3425,22 +3418,24 @@ mod tests {
         );
     }
 
-    /// A case whose declared `free_count` outruns the free levels its pattern actually binds.
+    /// **A level the pattern names and this match did not fill is padded, as the oracle pads.**
     ///
     /// `resolve_match` reads the continuation's environment out of the matcher's free map, one level
-    /// at a time, for `0..free_count`. A count larger than the pattern's free levels asks for a
-    /// binding the matcher never produced: the port answered `unwrap_or_default()`, silently binding
-    /// the continuation's variable to the empty par — the flattening the Scala performs too
-    /// (`Reduce.scala:352`'s `freeMap.getOrElse(e, Par())`). The Scala's count comes from its own
-    /// normalizer and therefore agrees with the pattern, so the branch is unreachable there; a count
-    /// that *disagrees* is exactly the state `free_count`'s meaning — the number of distinct free
-    /// variables in the pattern — excludes. `resolve_match` is fallible, so it refuses instead of
-    /// inventing a binding (the partiality sweep, AUDIT C52's owed lines).
+    /// at a time, for `0..free_count`, and the Scala answers a missing one with the empty par
+    /// (`Reduce.scala:352`'s `freeMap.getOrElse(e, Par())`). That is *semantics*, not a flatten: the
+    /// matcher is greedy by design, so a connective pattern binds its first free var to the whole par
+    /// and leaves the trailing ones empty — `legacy/.../matching-parallel-processes.rho` documents
+    /// exactly that as its expected output (`@1!("success" | "success") | @2!(Nil)`).
     ///
-    /// Falsifier: restore `.cloned().unwrap_or_default()` and this fails — the call returns
-    /// `Ok(Some(..))` with the variable bound to the empty par instead of `BugFoundError`.
+    /// U10 refused here instead, on the reading that such a level contradicts the count's meaning.
+    /// **The corpus refuted the reading by measurement** (U17, AUDIT C52): the state is reachable
+    /// from a well-formed term. The count means "the levels the pattern names", not "the levels a
+    /// given match filled".
+    ///
+    /// Falsifier, in the form that matters: restore the `BugFoundError` and this fails — and so does
+    /// `legacy_contracts`, whose corpus program is the oracle's own vector for it.
     #[test]
-    fn resolve_match_refuses_a_free_count_the_pattern_does_not_bind() {
+    fn resolve_match_pads_a_level_the_pattern_does_not_bind() {
         let cost = CostAccounting::from_initial(Costs::unsafe_max());
         let e = Env::new();
         let rand = Blake2b512Random::from_init(&[]);
@@ -3459,13 +3454,17 @@ mod tests {
         m.cases[0].free_count = rchain_models::types::FreeCount::new(1).expect("1 >= 0");
 
         match resolve_match(&m, &e, &rand, &cost) {
-            Err(RholangError::BugFoundError(msg)) => {
-                assert!(msg.contains("level"), "the refusal names the level: {msg}")
+            Ok(Some(effect)) => {
+                let Effect::Par(_, env, _) = effect else {
+                    panic!("a match evaluates to a par effect")
+                };
+                assert_eq!(
+                    env.get(0),
+                    Some(Par::default()),
+                    "the level the pattern names and the match did not fill is the empty par"
+                );
             }
-            _ => panic!(
-                "a case that declares a binding its pattern never made must be refused, not \
-                 defaulted to the empty par"
-            ),
+            _ => panic!("a case whose pattern matches must reduce, padding the unfilled level"),
         }
     }
 }

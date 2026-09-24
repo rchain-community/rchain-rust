@@ -99,24 +99,24 @@ impl Match<BindPattern, ListParWithRandom> for RhoMatch {
             );
         }
 
-        // **Refused, not padded.** `free_count` is the number of free levels the pattern binds, so a
-        // level the matcher's free map does not carry means the count and the pattern disagree. The
-        // level used to become the empty par — the Scala's own `toSeq`
+        // **Padded, as the oracle pads.** A level the pattern's `free_count` declares and the matcher
+        // did not bind becomes the empty par — the Scala's own `toSeq`
         // (`rholang/interpreter/storage/package.scala:22-29`'s `case None => Par.defaultInstance`) —
-        // so the continuation was handed bindings the pattern never made; the trait's error channel
-        // is what the port was missing, and it exists in the oracle (`Match.get: F[Option[A]]`,
-        // `Match.scala:11`). `resolve_match` (`reduce.rs:2009`), the same shape, refuses for the same
-        // reason (AUDIT C52).
+        // and that is *semantics*, not a flatten: for `for (@{x | y} <- @Nil) { ... }` the binding is
+        // greedy, so `x` gets the whole par and `y` gets the empty one, and
+        // `legacy/.../matching-parallel-processes.rho` documents precisely that as its expected output
+        // (`@1!("success" | "success") | @2!(Nil)`).
+        //
+        // U10 refused here (AUDIT C52), on the reading that a level the map lacks contradicts the
+        // count's meaning. **The corpus refuted the reading by measurement** (U17): a matcher that is
+        // greedy *by design* leaves the trailing levels unbound, so the state is reachable from a
+        // well-formed term — the refusal turned a differential vector into an error. The count's
+        // meaning is "the levels the pattern *names*", not "the levels a given match happened to fill".
         let mut pars = Vec::new();
         for level in 0..pattern.free_count {
-            let binding = remainder_map.get(&level).ok_or_else(|| {
-                RSpaceError::MatcherFailed(format!(
-                    "the pattern declares free level {level} of {} but the matcher bound no value for \
-                     it",
-                    pattern.free_count
-                ))
-            })?;
-            pars.push(SortedProc::new(binding.clone()));
+            pars.push(SortedProc::new(
+                remainder_map.get(&level).cloned().unwrap_or_default(),
+            ));
         }
         Ok(Some(ListParWithRandom {
             pars,
@@ -749,21 +749,20 @@ mod tests {
         );
     }
 
-    /// A `BindPattern` whose declared `free_count` outruns the levels its patterns bind.
+    /// **A level the pattern names and the match did not fill is padded, as the oracle pads.**
     ///
     /// `RhoMatch::get` fills the continuation's environment from the matcher's free map, one level per
-    /// `0..free_count`. A level the map does not carry became the empty par — the Scala's own `toSeq`
-    /// (`interpreter/storage/package.scala:22-29`'s `case None => Par.defaultInstance`) — so the
-    /// continuation was handed bindings the pattern never made. The oracle's `Match.get` returns
-    /// `F[Option[A]]` (`rspace/.../Match.scala:11`), so the port's `-> Option<A>` flattened a channel
-    /// that exists; AUDIT C52 names this as the durable fix, and this is it.
+    /// `0..free_count`, and the Scala answers a missing one with the empty par
+    /// (`interpreter/storage/package.scala:22-29`'s `case None => Par.defaultInstance`). The matcher is
+    /// greedy by design, so `for (@{x | y} <- @Nil)` binds `x` to the whole par and leaves `y` empty —
+    /// `legacy/.../matching-parallel-processes.rho` documents that as its expected output.
     ///
-    /// Falsifier. Its pre-fix form *witnesses* the defect, because the fix changes the method's type
-    /// and a witness is the only thing that can run on both sides: `RhoMatch::get` answered
-    /// `Some(..)` with the two extra levels given the empty par (run 2026-09-24, the assertion below
-    /// passed), and the post-fix form asserts the refusal instead.
+    /// U10 refused here (AUDIT C52); the legacy corpus refuted the reading by measurement (U17).
+    ///
+    /// Falsifier, in the form that matters: restore the `MatcherFailed` and this fails — and so does
+    /// `legacy_contracts`, whose corpus program is the oracle's own vector for it.
     #[test]
-    fn rho_match_refuses_a_free_count_its_pattern_does_not_bind() {
+    fn rho_match_pads_a_free_count_its_pattern_does_not_bind() {
         let pattern = BindPattern {
             patterns: vec![SortedProc::new(Par {
                 exprs: vec![Expr::EVar(Box::new(Var::FreeVar(0)))],
@@ -778,19 +777,24 @@ mod tests {
             random_state: rchain_crypto::hash::blake2b512_random::Blake2b512Random::new_random(128),
         };
 
-        // THE FALSIFIER, post-fix form. Its pre-fix form *witnessed* the defect instead, because the
-        // fix changes the method's type: `RhoMatch::get` answered `Some(..)` with the two extra levels
-        // given the empty par (run 2026-09-24 — the pre-fix assertion `padded.pars.len() == 3` passed,
-        // which is the defect), and the same case is now a `MatcherFailed`.
-        match RhoMatch.get(&pattern, &data) {
-            Err(RSpaceError::MatcherFailed(msg)) => assert!(
-                msg.contains("free level 1 of 3"),
-                "the refusal names the first level it could not bind, and the count, got: {msg}"
-            ),
-            other => panic!(
-                "a pattern that declares three bindings and makes one must be refused, not padded \
-                 with empty pars, got: {other:?}"
-            ),
+        // The oracle's answer: the two levels the pattern names and the match did not fill are the
+        // empty par, and the continuation is applied with them.
+        let padded = RhoMatch
+            .get(&pattern, &data)
+            .expect("the matcher decided")
+            .expect("a bare free variable matches any datum");
+        assert_eq!(padded.pars.len(), 3, "one binding per declared level");
+        assert_eq!(
+            padded.pars[0],
+            SortedProc::new(par(vec![Expr::GInt(42)])),
+            "the level the match filled carries the datum"
+        );
+        for extra in &padded.pars[1..] {
+            assert_eq!(
+                *extra,
+                SortedProc::new(Par::default()),
+                "a declared level the match did not fill is the empty par, as `toSeq` pads it"
+            );
         }
     }
 
