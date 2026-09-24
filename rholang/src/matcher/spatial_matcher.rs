@@ -670,6 +670,19 @@ pub(crate) fn fold_match<T: MatchableTerm>(
     }
 }
 
+/// Merge a collection's leftover `targets` into free `level`.
+///
+/// **The absent level is the accumulator's zero, not a flattened failure.** `handle_remainder` is
+/// called once per collection field of a pattern, each time handing on the accumulated `FreeMap`; on
+/// the *first* field — indeed for every pattern whose remainder level is bound nowhere else, such as
+/// `@[1, ...rest]` — the level is not yet in the map at all, and the merge must start from the empty
+/// par. That is the Scala's own reading (`SpatialMatcher.scala:258`:
+/// `freeMap.inspect[Par](_.getOrElse(level, VectorPar()))`), so `unwrap_or_default()` here is the
+/// identity of the merge, not a default in place of a refusal. Measured 2026-09-24 (U1, site 2 of the
+/// plan's appendix): making the absent level a `BugFoundError` — the appendix's proposed fix — fails
+/// five tests of this module, including `a_named_map_remainder_captures_the_unnamed_entries` and
+/// `binds_free_var`; `handle_remainder_starts_an_absent_level_from_the_merge_identity` below pins the
+/// reading so the sweep does not re-open it.
 fn handle_remainder<T: Clone>(
     fm: &FreeMap,
     targets: &[T],
@@ -1127,6 +1140,39 @@ mod tests {
             .unwrap(),
             None,
             "a list pattern is positional: [1, 3] is not a prefix of [1, 2, 3]"
+        );
+    }
+
+    /// The free level a remainder is merged into is *absent* from the accumulated `FreeMap` on the
+    /// first merge, and that absence is the merge's identity — the level is inserted, and the merger
+    /// is applied to the empty par. This is the Scala's own `getOrElse(level, VectorPar())`
+    /// (`SpatialMatcher.scala:258`), and it is why `handle_remainder`'s `unwrap_or_default()` is not
+    /// a partiality spot: there is no failure to refuse, there is a merge to start.
+    ///
+    /// Falsifier: turning the absent level into a `BugFoundError` — the change U1's appendix proposed
+    /// — fails this test and four others in this module (`a_named_map_remainder_captures_the_unnamed_entries`,
+    /// `a_map_pattern_may_name_fewer_entries_than_the_map_has`,
+    /// `a_map_pattern_naming_an_absent_key_does_not_match`, `a_set_pattern_may_name_fewer_members_than_the_set_has`,
+    /// `binds_free_var`), measured 2026-09-24.
+    #[test]
+    fn handle_remainder_starts_an_absent_level_from_the_merge_identity() {
+        // `level 0` is not in `fm` — the state every `@[1, ...rest]` pattern starts from.
+        let fm = FreeMap::new();
+        let out = handle_remainder(&fm, &[1, 2, 3], 0, &|prev, ts| {
+            assert_eq!(
+                prev,
+                &Par::default(),
+                "the merge starts from the empty par, which is what the default supplies"
+            );
+            Par {
+                exprs: ts.iter().map(|n| Expr::GInt(i64::from(*n))).collect(),
+                ..Default::default()
+            }
+        });
+        assert_eq!(
+            out.get(&0),
+            Some(&par(vec![Expr::GInt(1), Expr::GInt(2), Expr::GInt(3)])),
+            "the leftover targets land under the remainder's level"
         );
     }
 }

@@ -88,6 +88,15 @@ impl Match<BindPattern, ListParWithRandom> for RhoMatch {
             );
         }
 
+        // A level the pattern's `free_count` declares but the matcher never bound becomes the empty
+        // par. **Deliberately left as the Scala has it** (U1's site-1 pair, AUDIT C52): `toSeq`
+        // (`rholang/interpreter/storage/package.scala:22-29`) is `fm.get(i) match { case None =>
+        // Par.defaultInstance }`, so refusing here would *diverge* from the oracle rather than close
+        // a hole. And the channel offers nothing better: `Match::get` (`rspace/src/match_.rs:6`) is
+        // `-> Option<A>`, whose only refusal is `None` — "this datum does not match" — which would
+        // silently drop a match the Scala makes. The durable fix is an error channel on `Match::get`,
+        // unit-large like AUDIT C53's `History` trait. `resolve_match` (`reduce.rs:2009`), the same
+        // shape with a `Result` in hand, refuses.
         let pars = (0..pattern.free_count)
             .map(|i| SortedProc::new(remainder_map.get(&i).cloned().unwrap_or_default()))
             .collect();

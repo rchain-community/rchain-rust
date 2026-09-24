@@ -40,13 +40,12 @@ impl BlockHash {
         self.0.to_hex()
     }
 
-    /// Parse a full 32-byte hex string (panics if it decodes to a different length).
-    pub fn from_hex(s: &str) -> Self {
-        Self::from_slice(&base16::unsafe_decode(s))
-    }
-
-    /// Parse a full 32-byte hex string, rejecting non-hex or wrong-length input (validate-on-ingress
-    /// counterpart of [`BlockHash::from_hex`]).
+    /// Parse a full 32-byte hex string, rejecting non-hex or wrong-length input.
+    ///
+    /// The only hex *constructor* since 2026-09-24: the lax `from_hex` — `unsafe_decode` (non-hex
+    /// stripped) followed by `from_slice`'s length assert, so an arbitrary string could reach a
+    /// panic — was deleted (U1 site 3, AUDIT C52). It had no production caller in the workspace, only
+    /// its own round-trip test; every ingress path already used this checked form (AUDIT §11 R12).
     pub fn try_from_hex(s: &str) -> Result<Self, ModelsError> {
         let bytes = base16::try_decode(s).map_err(ModelsError::Decode)?;
         Self::try_from(bytes.as_slice())
@@ -104,7 +103,7 @@ mod tests {
     #[test]
     fn hex_round_trips() {
         let h = BlockHash::from_slice(&[0xab; 32]);
-        assert_eq!(BlockHash::from_hex(&h.to_hex()), h);
+        assert_eq!(BlockHash::try_from_hex(&h.to_hex()).unwrap(), h);
     }
 
     #[test]

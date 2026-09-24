@@ -26,7 +26,7 @@ and **no file is left without one or the other** — the linter's check 7 passes
 
 ## Inventory
 
-**1379 `#[test]`/`#[tokio::test]` unit functions + 119 integration tests** across 13 crates, with **26
+**1399 `#[test]`/`#[tokio::test]` unit functions + 119 integration tests** across 13 crates, with **26
 laws** carrying a randomized property test and **10 benchmark functions** in 6 Criterion groups. Only
 **3 of 13 crates have integration tests** (`rholang`, `casper`, `node`).
 
@@ -34,14 +34,14 @@ laws** carrying a randomized property test and **10 benchmark functions** in 6 C
 |---|---|---|---|---|
 | `sdk` | 46 | — | 2 | — |
 | `shared` | 83 | — | — | — |
-| `crypto` | 90 | — | — | — |
+| `crypto` | 89 | — | — | — |
 | `graphz` | 18 | — | — | — |
 | `models` | 153 | — | 5 | — |
-| `block-storage` | 40 | — | 3 | — |
-| `comm` | 123 | — | — | — |
-| `rspace` | 169 | — | 8 | — |
-| `rholang` | 213 | 53 | 7 | — |
-| `casper` | 243 | 53 | 3 | — |
+| `block-storage` | 41 | — | 3 | — |
+| `comm` | 124 | — | — | — |
+| `rspace` | 170 | — | 8 | — |
+| `rholang` | 224 | 53 | 7 | — |
+| `casper` | 250 | 53 | 3 | — |
 | `node` | 181 | 13 | — | — |
 | `qucalc` | 20 | — | — | — |
 | `rspace-bench` | — | — | — | 10 |
@@ -663,6 +663,9 @@ green diff. These are all of them.
 | `casper/src/genesis/{mod.rs,standard_deploys.rs,runtime_replay.rs}` + `rholang/src/{native_state.rs,system_processes.rs,runtime.rs}` — genesis installs `ListOps`/`NonNegativeNumber`/`MakeMint`, seeds the shorthand aliases natively (native channels + the blessed contracts' `rho:id` entries), adapts `MakeMint.rho`'s epilogue, and reproduces the seeding on replay | A fresh chain's registry was empty, so `lookup!(\`rho:rchain:revVault\`, *ch)` answered `Nil` — silently, because an unmatched `for` is not an error, which is why the rgov family and the wallet's bonding path failed as if in client code. The `MakeMint` epilogue waits on two channels this port does not have, so it could never register (`spec/GENESIS.md`). The replay twin must seed identically or the replayed genesis hash diverges (Law 11) | `a_fresh_chain_resolves_and_can_call_every_seeded_shorthand`, `the_seeded_registry_is_identical_across_fresh_genesis_ceremonies`, `aliased_contract_uris_are_pinned`, `every_genesis_alias_has_a_source`, `the_make_mint_epilogue_is_adapted`, `a_drifted_make_mint_source_is_an_error` |
 | `casper/src/genesis/rgov.rs` + `casper/src/genesis/resources/rgov/**` — the vendored rgov governance class contracts: fixed keys derived from a named hash, class registration converted from `insertArbitrary` to `insertSigned` (constants instead of per-chain URIs), dependency markers substituted, deploy-time self-tests removed, master-directory template rendered with the installed URIs | Upstream deploys the set per chain and *records* the resulting URIs, so the master directory's member list shifted on every chain and a recorded master URI went stale silently. Installing the classes with fixed keys makes their URIs constants (`spec/GENESIS.md`); the licence position (upstream declares Apache-2.0 but ships no LICENSE file) and every adaptation are recorded in `resources/rgov/NOTICE` | `every_rendered_contract_parses_and_normalizes`, `the_class_registration_is_the_signed_one`, `the_uris_are_constants`, `the_member_directory_imports_the_installed_contracts`, `the_master_directory_template_carries_the_installed_uris`, `the_deploy_time_self_tests_are_removed`, `a_fresh_chain_installs_the_rgov_contracts_and_they_answer` |
 | `casper/src/genesis/rgov.rs` (rewritten), `casper/src/genesis/mod.rs`, `casper/src/runtime_{manager,replay}.rs`, `resources/rgov/**` (11 vendored files) — the vendored rgov set now keeps **upstream's** registration shape, publishes each registered URI, and has it copied onto a chosen constant key; the master directory, three extra slots and the `GetMe` feature are installed at genesis, signed by **the genesis ceremony's key** (not a key derivable from the source, as an earlier revision used) | Two defects, both found on a node: (a) converting the class registration to `insertSigned` changed the stored *value* to `(nonce, value)`, and every rgov consumer destructures the bare value, so the master-directory template stalled silently (`processedWithSuccess`, empty result); (b) installing the template and the feature under *different* keys leaves the feature's registration gated on a capability it cannot see, so the directory answers `Nil` for `GetMe` and a client's first call gets silence. Genesis now makes the whole set resolvable under constants a client hardcodes (`spec/GENESIS.md`). The stall that a probe then showed between "the directory answered `GetMe`" and a client's answer was **not** the genesis installation and not the feature's flow: it was AUDIT C21 (an `if` that was not the first term of its `par` reduced to nothing, so `getMe` never reached its `createMe`), fixed in `normalizer.rs::normalize_if` — see the row above | `the_class_registration_keeps_upstreams_shape`, `the_published_keys_are_constants`, `the_governance_terms_are_signed_by_the_ceremony_key`, `the_extra_slots_term_writes_the_names_the_wallet_asks_for`, `every_rendered_contract_parses_and_normalizes`, `a_fresh_chain_installs_the_rgov_contracts_and_they_answer`, `a_fresh_chain_serves_the_wallets_new_inbox_handshake` |
+| `rholang/src/reduce.rs::resolve_match` — a case's declared free level that the matcher's free map does not carry is a `BugFoundError`, not a binding to the empty par | `free_count` is *defined* as the number of distinct free levels a pattern binds, so a count that outruns the map contradicts its own meaning; the port silently bound the continuation's variable to the empty par, exactly as the Scala does (`Reduce.scala:352`, `freeMap.getOrElse(e, Par())`). `resolve_match` is already fallible, so it refuses — a **deliberate deviation, registered in AUDIT §6**, unreachable from a well-formed term (the normalizer computes the count from the same pattern) and so not a hard fork. Its sibling `RhoMatch::get` (`rholang/src/storage.rs`) **keeps** the Scala's default: `Match::get` (`rspace/src/match_.rs:6`) returns `Option`, whose only refusal is "this datum does not match" — a *worse* lie, and one the Scala does not tell. That sibling's durable fix (an error channel on the trait) is named in AUDIT C52 (U1 site 1) | `resolve_match_refuses_a_free_count_the_pattern_does_not_bind` |
+| `crypto/src/hash/blake2b256_hash.rs::from_hex` and `models/src/block_hash.rs::from_hex` — the dead panicking constructors deleted | Each wrapped `base16::unsafe_decode` (non-hex characters silently stripped) in a constructor that then asserts on a length it cannot reach, and each had **no production caller anywhere in the workspace** — only its own round-trip test. `spec/TYPE-SYSTEM.md` §1.6/§1.7: untrusted bytes are refused at a boundary, not decoded leniently and asserted on later; the checked sibling (`from_hex_either`/`try_from_hex`) is what every ingress path already used (AUDIT §11 R12, U1 site 3) | `from_hex_either_round_trips_and_rejects_bad_input` (`crypto`), `hex_round_trips` (`models`, now over `try_from_hex`) |
+| `rholang/src/matcher/spatial_matcher.rs::handle_remainder` — comment and a pinning test only; the `.unwrap_or_default()` **stays** | U1's appendix named this site as a partiality spot. Measured 2026-09-24, it is not: the absent free level is the accumulator's **zero** — `handle_remainder` is called once per collection field and starts from the empty par, which is the Scala's own reading (`SpatialMatcher.scala:258`, `getOrElse(level, VectorPar())`). Making the absent level an error fails five existing tests of the module (they are the C19/C20 remainder semantics). The site now carries the reasoning so the sweep does not re-open it (U1 site 2) | `handle_remainder_starts_an_absent_level_from_the_merge_identity` |
 
 ### The census sweep (definition of done items 10–11)
 

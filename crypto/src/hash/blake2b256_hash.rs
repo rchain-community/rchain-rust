@@ -59,12 +59,14 @@ impl Blake2b256Hash {
         Self(Hash32::new(arr))
     }
 
-    /// Parse a hex string, ignoring non-hex characters (the Scala `fromHex` / `unsafeDecode`).
-    pub fn from_hex(string: &str) -> Self {
-        Self::from_byte_array(&base16::unsafe_decode(string))
-    }
-
     /// Parse a hex string, failing on invalid input or an incorrect length.
+    ///
+    /// The only hex *constructor* since 2026-09-24: the Scala's `fromHex` — an `unsafeDecode` that
+    /// strips non-hex characters and then panics in `from_byte_array` on a length it cannot reach —
+    /// was ported here as `from_hex` and deleted (U1 site 3, AUDIT C52): it had no production caller
+    /// in the whole workspace, only its own round-trip test, so it was a panicking escape hatch with
+    /// nothing behind it. `spec/TYPE-SYSTEM.md` §1.6's rule is the one that applied: an untrusted
+    /// byte string is refused at the boundary, not decoded leniently and asserted on later.
     pub fn from_hex_either(string: &str) -> Result<Self, CryptoError> {
         match base16::decode(string) {
             Some(bytes) if bytes.len() == LENGTH => Ok(Self::from_byte_array(&bytes)),
@@ -138,14 +140,12 @@ mod tests {
         );
     }
 
+    /// The checked constructor round-trips and refuses malformed input. Absorbs the old
+    /// `from_hex_round_trips`, which pinned the deleted `from_hex` (U1 site 3).
     #[test]
-    fn from_hex_round_trips() {
+    fn from_hex_either_round_trips_and_rejects_bad_input() {
         let h = Blake2b256Hash::create(b"abc");
-        assert_eq!(Blake2b256Hash::from_hex(&h.to_hex()), h);
-    }
-
-    #[test]
-    fn from_hex_either_rejects_bad_input() {
+        assert_eq!(Blake2b256Hash::from_hex_either(&h.to_hex()).unwrap(), h);
         assert!(Blake2b256Hash::from_hex_either("zz").is_err());
         assert!(Blake2b256Hash::from_hex_either("0e5751c026").is_err());
     }

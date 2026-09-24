@@ -2006,7 +2006,21 @@ fn resolve_match(
         if let Some(free_map) = spatial_match_result(&target, &pattern.eval())? {
             let mut new_env = (*env).clone();
             for e in 0..i32::from(case.free_count) {
-                new_env = new_env.put(free_map.get(&e).cloned().unwrap_or_default());
+                // A level the pattern does not bind has no binding in the matcher's free map, and
+                // `free_count` is *defined* as the number of distinct free levels the pattern binds
+                // (`models/src/types.rs:557`), so this is a state the count's own meaning excludes.
+                // Defaulting it to the empty par (the Scala's `freeMap.getOrElse(e, Par())`,
+                // `Reduce.scala:352`) would hand the continuation a variable bound to nothing; the
+                // function is already fallible, so refuse (AUDIT C52's owed line).
+                let binding = free_map.get(&e).cloned().ok_or_else(|| {
+                    RholangError::BugFoundError(format!(
+                        "match case declares free level {e} (free_count {}, the pattern binds {}), \
+                         which the matcher's free map does not carry",
+                        i32::from(case.free_count),
+                        free_map.len()
+                    ))
+                })?;
+                new_env = new_env.put(binding);
             }
             return Ok(Some(Effect::Par(
                 (*case.source).clone(),
@@ -3401,5 +3415,49 @@ mod tests {
             ),
             s("x=7")
         );
+    }
+
+    /// A case whose declared `free_count` outruns the free levels its pattern actually binds.
+    ///
+    /// `resolve_match` reads the continuation's environment out of the matcher's free map, one level
+    /// at a time, for `0..free_count`. A count larger than the pattern's free levels asks for a
+    /// binding the matcher never produced: the port answered `unwrap_or_default()`, silently binding
+    /// the continuation's variable to the empty par — the flattening the Scala performs too
+    /// (`Reduce.scala:352`'s `freeMap.getOrElse(e, Par())`). The Scala's count comes from its own
+    /// normalizer and therefore agrees with the pattern, so the branch is unreachable there; a count
+    /// that *disagrees* is exactly the state `free_count`'s meaning — the number of distinct free
+    /// variables in the pattern — excludes. `resolve_match` is fallible, so it refuses instead of
+    /// inventing a binding (the partiality sweep, AUDIT C52's owed lines).
+    ///
+    /// Falsifier: restore `.cloned().unwrap_or_default()` and this fails — the call returns
+    /// `Ok(Some(..))` with the variable bound to the empty par instead of `BugFoundError`.
+    #[test]
+    fn resolve_match_refuses_a_free_count_the_pattern_does_not_bind() {
+        let cost = CostAccounting::from_initial(Costs::unsafe_max());
+        let e = Env::new();
+        let rand = Blake2b512Random::from_init(&[]);
+        // A well-formed term first: `match 1 { 1 => 2 }` — one case, binding no free level.
+        let mut p: Par = crate::normalizer::source_to_adt("match 1 { 1 => 2 }")
+            .expect("parse")
+            .into();
+        let mut m = p.matches.pop().expect("one match");
+        assert_eq!(
+            i32::from(m.cases[0].free_count),
+            0,
+            "the normalizer's own count agrees with the pattern"
+        );
+        // Now declare one binding more than the pattern has — the shape a count read unvalidated
+        // from the wire can carry.
+        m.cases[0].free_count = rchain_models::types::FreeCount::new(1).expect("1 >= 0");
+
+        match resolve_match(&m, &e, &rand, &cost) {
+            Err(RholangError::BugFoundError(msg)) => {
+                assert!(msg.contains("level"), "the refusal names the level: {msg}")
+            }
+            _ => panic!(
+                "a case that declares a binding its pattern never made must be refused, not \
+                 defaulted to the empty par"
+            ),
+        }
     }
 }
