@@ -808,6 +808,150 @@ mod tests {
         }
     }
 
+    /// A store-items server whose page is `count` nodes of `payload` bytes each — what an LFS
+    /// state-sync request gets from a real trie exporter.
+    struct PageExporter {
+        count: usize,
+        payload: usize,
+    }
+
+    impl PageExporter {
+        fn node(&self, i: usize) -> rchain_shared::state::TrieNode<Blake2b256Hash> {
+            let mut bytes = [0u8; 32];
+            bytes[..8].copy_from_slice(&(i as u64).to_le_bytes());
+            let hash = Blake2b256Hash::from_bytes(bytes);
+            rchain_shared::state::TrieNode {
+                hash,
+                is_leaf: i % 2 == 0,
+                path: vec![(hash, None)],
+            }
+        }
+
+        fn items<Value>(
+            &self,
+            count: usize,
+            keys: &[Blake2b256Hash],
+            from_buffer: impl Fn(&[u8]) -> Value,
+        ) -> Vec<(Blake2b256Hash, Value)> {
+            let bytes = vec![1u8; self.payload];
+            keys.iter()
+                .take(count)
+                .map(|k| (*k, from_buffer(&bytes)))
+                .collect()
+        }
+    }
+
+    impl rchain_shared::state::TrieExporter<Blake2b256Hash> for PageExporter {
+        fn get_nodes(
+            &self,
+            _start_path: &[(Blake2b256Hash, Option<u8>)],
+            _skip: usize,
+            take: usize,
+        ) -> Vec<rchain_shared::state::TrieNode<Blake2b256Hash>> {
+            (0..take.min(self.count)).map(|i| self.node(i)).collect()
+        }
+
+        fn get_history_items<Value>(
+            &self,
+            keys: &[Blake2b256Hash],
+            from_buffer: impl Fn(&[u8]) -> Value,
+        ) -> Vec<(Blake2b256Hash, Value)> {
+            self.items(self.count, keys, from_buffer)
+        }
+
+        fn get_data_items<Value>(
+            &self,
+            keys: &[Blake2b256Hash],
+            from_buffer: impl Fn(&[u8]) -> Value,
+        ) -> Vec<(Blake2b256Hash, Value)> {
+            self.items(self.count, keys, from_buffer)
+        }
+    }
+
+    impl RSpaceExporter for PageExporter {
+        fn get_root(&self) -> Option<Blake2b256Hash> {
+            Some(Blake2b256Hash::from_bytes([8u8; 32]))
+        }
+    }
+
+    /// **A measurement, not a tripwire** (AUDIT C61): what one store-items page costs the shard's
+    /// dispatch loop.
+    ///
+    /// `handle_store_items_request` is awaited *inline* — `node_launch.rs` serves a shard's messages
+    /// from one `while let Some(pm) = packet_rx.recv().await { engine.handle(..).await }` loop, and
+    /// this handler walks the exporter, materialises the page, serialises it and hands it to the
+    /// transport before returning (`node_running.rs`). Nothing else for that shard — a block, a
+    /// fork-choice tip, another peer's request — is handled meanwhile, and the routing loop above it
+    /// (`node_runtime.rs`'s `for tx in targets { tx.send(..).await }` into a 50-deep channel)
+    /// backpressures on the same stall. The plan records this rather than fixing it: moving the
+    /// handler off the loop is a behaviour change, and a bounded page is the cheaper answer.
+    ///
+    /// Measured here in a debug test build, against a page whose items are 4 KiB (a node with
+    /// children), with the *response* the handler produced (so the number is the page's, not a
+    /// synthetic chunker call): an LFS page (`PAGE_SIZE = 750`) and the largest page the cap admits
+    /// (`MAX_STORE_ITEMS_TAKE = 10_000`). `--nocapture` prints both. The gRPC write itself is not
+    /// included — `MockTransport` records the blob — so this is the shard-side cost, which is the
+    /// part that holds the loop.
+    #[tokio::test]
+    async fn a_store_items_page_costs_the_dispatch_loop_this_long() {
+        const ITEM_BYTES: usize = 4096;
+
+        for (label, nodes) in [("LFS page", 750usize), ("cap", 10_000)] {
+            let local = peer("src", 40400);
+            let remote = peer("peer", 40400);
+            let transport = Arc::new(MockTransport::default());
+            let exporter = PageExporter {
+                count: nodes,
+                payload: ITEM_BYTES,
+            };
+
+            let started = std::time::Instant::now();
+            handle_store_items_request(
+                transport.as_ref(),
+                &conf(&local),
+                &exporter,
+                &NopLog,
+                LogSource::new("test"),
+                &remote,
+                &StoreItemsMessageRequest {
+                    start_path: vec![],
+                    skip: 0,
+                    take: i32::try_from(nodes).expect("nodes fit i32"),
+                },
+                false,
+            )
+            .await;
+            let served = started.elapsed();
+
+            let streams = transport.streams.lock().unwrap();
+            let blob = &streams.last().expect("the page was streamed").1;
+            let page_bytes = blob.packet.content.len();
+            // The measured page is the page: one item per requested node, `ITEM_BYTES` each plus
+            // the keys and the protobuf framing.
+            assert!(
+                page_bytes >= nodes * ITEM_BYTES,
+                "{label}: served {page_bytes} B for {nodes} nodes, expected at least {}",
+                nodes * ITEM_BYTES
+            );
+            // Chunking is part of the same loop turn (`stream_to_peer` → `TransportLayer::stream`
+            // → `chunk_it`). At the configured stream limit (256 MiB) this page is one data chunk,
+            // so this is what the page's copy costs inside the loop.
+            let chunked = std::time::Instant::now();
+            let chunks = rchain_comm::transport::chunker::chunk_it(
+                "testnet",
+                blob,
+                usize::try_from(268_435_456i64).expect("fits usize"),
+            )
+            .expect("chunks");
+            let chunking = chunked.elapsed();
+            assert_eq!(chunks.len(), 2, "{label}: header + one data chunk");
+            println!(
+                "{label}: {nodes} nodes, {page_bytes} B served in {served:?} + chunked in \
+                 {chunking:?} — one dispatch loop turn"
+            );
+        }
+    }
+
     /// A store-items request is answered when the operator has left the exporter enabled.
     ///
     /// The two tests below are the pair the Scala's flag is for (`NodeRunning.scala:314-320`): the
