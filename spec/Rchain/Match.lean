@@ -1245,4 +1245,86 @@ theorem linear_of_pathPar (p : Par) (h : pathPar p = true) : linear p = true := 
   simp only [linear, freeLevels_pathPar p h]
   rfl
 
+/-! ### A successful no-remainder walk cannot have more patterns than targets
+
+**The soundness half's arithmetic, in place before the half itself.** The tie is still owed (see the
+domain section above), and when it is proved its soundness direction reads: a successful no-remainder
+walk can only *drop targets*, never patterns, so the pattern count is bounded by the target count —
+which is what stops `matchListPar`'s "same patterns, fewer targets" branch from smuggling a shorter
+pattern past the guard at the call site. These three theorems are that fact.
+
+Two idioms were needed, and both are worth reusing: the three statements are *independently* recursive
+(each one's length argument only ever calls itself), so they are three ordinary recursive theorems
+rather than a `mutual` block — which keeps the compiler's mutual-recursion machinery, and its
+unusable induction hypotheses, out of the way; and the walk's arms are unfolded with `change` rather
+than with the generated equations or a restated arm lemma, because `matchMap` destructures a *pair*
+inside its `match` and neither the equations nor a `simp`-matched restatement can be applied to a
+hypothesis whose shape depends on that reduction (`rw [matchMap_cons_cons] at h` fails with
+"dependent elimination failed"). The composite equation patterns — `| (k1, k2) :: kvs, (t1, t2) :: ts,
+m + 1, h => …` — are what make the case analysis available without `cases` on a variable the compiled
+recursion mentions. -/
+
+set_option maxHeartbeats 1000000 in
+theorem listPar_len : ∀ (patterns targets : List Par) (m : Nat),
+    matchListPar m patterns targets false = true → patterns.length ≤ targets.length
+  | patterns, targets, m, h => by
+    cases m with
+    | zero => simp only [matchListPar] at h; exact absurd h (by decide)
+    | succ k =>
+      cases patterns with
+      | nil => simp only [List.length_nil]; exact Nat.zero_le _
+      | cons p ps =>
+        cases targets with
+        | nil => simp only [matchListPar] at h; exact absurd h (by decide)
+        | cons t ts =>
+          simp only [matchListPar, Bool.or_eq_true, Bool.and_eq_true] at h
+          rcases h with ⟨_, h2⟩ | h
+          · have := listPar_len ps ts k h2
+            simp only [List.length_cons] at this ⊢; omega
+          · have := listPar_len (p :: ps) ts k h
+            simp only [List.length_cons] at this ⊢; omega
+termination_by patterns targets _ _ => sizeOf patterns + sizeOf targets
+
+set_option maxHeartbeats 1000000 in
+theorem listPos_len : ∀ (patterns targets : List Par) (m : Nat),
+    matchListPos m patterns targets false = true → patterns.length ≤ targets.length
+  | patterns, targets, m, h => by
+    cases m with
+    | zero => simp only [matchListPos] at h; exact absurd h (by decide)
+    | succ k =>
+      cases patterns with
+      | nil => simp only [List.length_nil]; exact Nat.zero_le _
+      | cons p ps =>
+        cases targets with
+        | nil => simp only [matchListPos] at h; exact absurd h (by decide)
+        | cons t ts =>
+          simp only [matchListPos, Bool.and_eq_true] at h
+          have := listPos_len ps ts k h.2
+          simp only [List.length_cons] at this ⊢; omega
+termination_by patterns targets _ _ => sizeOf patterns + sizeOf targets
+
+set_option maxHeartbeats 1000000 in
+theorem mapList_len : ∀ (pairs targets : List (Par × Par)) (m : Nat),
+    matchMap m pairs targets false = true → pairs.length ≤ targets.length
+  | [], targets, m + 1, h => by
+    change (false || targets.isEmpty) = true at h
+    simp only [Bool.or_eq_true, List.isEmpty_eq_true] at h
+    rcases h with h | h
+    · exact absurd h (by decide)
+    · rw [h]
+  | (k1, k2) :: kvs, [], m + 1, h => by
+    change false = true at h; exact absurd h (by decide)
+  | (k1, k2) :: kvs, (t1, t2) :: ts, m + 1, h => by
+    change (((spatialMatchCore m t1 k1 && spatialMatchCore m t2 k2 && matchMap m kvs ts false)
+        || matchMap m ((k1, k2) :: kvs) ts false)) = true at h
+    rw [Bool.or_eq_true] at h
+    rcases h with h | h
+    · rw [Bool.and_eq_true, Bool.and_eq_true] at h
+      have := mapList_len kvs ts m h.2
+      simp only [List.length_cons] at this ⊢; omega
+    · have := mapList_len ((k1, k2) :: kvs) ts m h
+      simp only [List.length_cons] at this ⊢; omega
+  | _, _, 0, h => by change false = true at h; exact absurd h (by decide)
+termination_by pairs targets _ _ => sizeOf pairs + sizeOf targets
+
 end Rchain
