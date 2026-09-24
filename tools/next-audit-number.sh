@@ -20,8 +20,13 @@ set -euo pipefail
 audit="$(cd "$(dirname "$0")/.." && pwd)/spec/AUDIT.md"
 [[ -f "$audit" ]] || { echo "no spec/AUDIT.md at $audit" >&2; exit 1; }
 
-# Every `Cn` occurrence, deduplicated and sorted numerically.
-used="$(grep -oE '\bC[0-9]+\b' "$audit" | grep -oE '[0-9]+' | sort -n -u)"
+# Only the two shapes a *finding* number takes: the entry and the §20 table row. A prose mention
+# (`… traced to C66`) is not an allocation — C66 is a gap the numbering race left, and it must read as
+# a gap here too, or the tool would disagree with the register about what is allocated.
+used="$(
+  { grep -oE '^- \*\*C[0-9]+' "$audit"; grep -oE '^\| C[0-9]+ ' "$audit"; } \
+    | grep -oE '[0-9]+' | sort -n -u
+)"
 max="$(printf '%s\n' "$used" | tail -1)"
 
 # Gaps: numbers below the maximum that no finding claims.
