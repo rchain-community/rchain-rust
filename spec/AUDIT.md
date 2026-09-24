@@ -3228,11 +3228,16 @@ port against the **reference document** rather than against itself.
   - **What this run does *not* show, and why**: neither validator reached the bootstrap's height. The
     LFS block walk runs *backwards* from the tip at **~1.5 blocks/minute per validator** (3 blocks in
     120 s, observed mid-walk at #6,018 → #6,008), so a 6,300-block chain is a ~70-hour walk at that
-    cadence. That rate is the **requester's own**: the server answers every request it receives
-    (63/63) and the requester logs its 30 s retry window while waiting, so this is
-    `LfsBlockRequester`'s request cadence, not a serving regression — and it is recorded here precisely
-    because this unit touched the same path, so a later reader does not have to re-derive it. The
-    *functional* three-validator path was verified independently by C46's end-to-end check.
+    cadence. **C64 measures what that rate is, and it is not the requester's pacing**: isolated against
+    a peer that answers every request, a 6-block walk with the production 30 s idle timeout finishes in
+    3.85 ms, so the requester is response-driven and faithful — the server answered every request it
+    received (63/63, and `request_next` can broadcast only after a successful store read), and the
+    ~25 s per generation is spent on the *syncing* node's single message loop, which carries blocks and
+    the concurrent tuple-space state sync. What multiplies that latency into days is the registered §6
+    deviation C64 names: the port walks the full ancestry to genesis, one generation per block, where
+    the oracle's bounded walk makes ~50. It is recorded here because this unit touched the same path,
+    so a later reader does not have to re-derive it. The *functional* three-validator path was verified
+    independently by C46's end-to-end check.
 
   The law is **10**, whose Merkle determinism is what the page is a wire form of: a page is the trie's
   own nodes, and how a node materialises and copies them is the difference between serving a peer and
