@@ -872,7 +872,14 @@ def laws : List Law := [
       termination guard — which the oracle does not have, and which is weaker than a cycle guard. \
       **What remains owed** is the last conjunct: the per-sender height *comparison* itself, the \
       mechanism proved and the arithmetic across a chain not — a small named remainder rather than the \
-      two-sided gap this row used to carry. The old row's claim that the seen set is monotone \"(no \
+      two-sided gap this row used to carry. **And the statement it needs is sharper than it looks**: as \
+      written the comparison is *false*, because the walk takes **every** same-sender parent, so a \
+      same-sender fork on `mv`'s frontier puts a message from the other branch in its output, and that \
+      branch is not below any given sentinel. The port's data does not fork (a validator produces one \
+      block per height, so its messages form a chain — `self_parents` walks as if they do), so the \
+      hypothesis is \"at most one same-sender parent per message\", and with it the comparison \
+      follows from the boundary plus the descent. That is the shape of the last conjunct, named so \
+      the next pass proves a true statement rather than a forked counterexample. The old row's claim that the seen set is monotone \"(no \
       regression)\" was true of the port and false of the value the axiom quantified over" },
   { number := 16, clause := "a", layer := "Casper",
     statement := "Block number = max(parent) + 1 — as the port's check, which **rejects** a block whose \
