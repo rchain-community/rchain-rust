@@ -27,6 +27,34 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 INPUT="${1:--}"
 
+# --- this run's logs ---------------------------------------------------------------------------
+# **A log path derived from the witness alone is shared state.** Two gate runs in this checkout at
+# the same time is routine (a local gate run and a peer session's), and they compute the *same*
+# `/tmp/rust-witness-<slug>.log` for the same witness: the second run's `>"$log"` truncates on open,
+# so if it opens the file between the first run's cargo exiting and the first run's `grep -c`, the
+# first run reads an empty file and reports `matched no test` for a test that ran and passed.
+# Observed 2026-09-24: a concurrent gate run reported six witnesses as `matched no test` and a
+# serial re-run of the same six found two of them `ok (1 test)` with the harness line plainly in the
+# log. The checker therefore manufactured *false failures* — worse than missing one, because a
+# defect in the instrument is read as a defect in the tree.
+#
+# So the work happens in a per-run directory, and nothing is shared. A failing witness's log is
+# copied out to the stable, greppable name the FAIL line quotes (the same name the script has always
+# printed) before the run directory is cleaned up; a passing run leaves nothing behind.
+LOGDIR="$(mktemp -d "${TMPDIR:-/tmp}/rust-witness.XXXXXX")"
+trap 'rm -rf "$LOGDIR"' EXIT
+slug_of() { printf '%s' "$1" | tr -c 'A-Za-z0-9' '-'; }
+
+# The first few lines of a failed log worth showing a human. **Never fails**: `grep` that matches
+# nothing exits 1, and a pipeline is a single command to `set -e`, so a bare call here would end the
+# run at the first build-failing witness (see the call site). A build error is exactly the case with
+# nothing to match, which is why this cannot be left out.
+show_log_extract() {
+  grep -E '^(test .* FAILED|^error(\[|:)|assertion|thread .* panicked)' "$1" 2>/dev/null \
+    | head -4 | sed 's/^/      /' || true
+  return 0
+}
+
 # --- the crate a path belongs to ---------------------------------------------------------------
 # Derived from the path's first segment rather than a per-witness field: the workspace is one crate
 # per sbt module, so the path already says which crate the symbol compiles into, and a second copy
@@ -50,6 +78,7 @@ crate_of() {
 
 total=0
 failures=0
+passed=0
 skip_note=""
 
 while IFS= read -r line || [[ -n "$line" ]]; do
@@ -90,10 +119,18 @@ while IFS= read -r line || [[ -n "$line" ]]; do
     cargo_args=(--lib)
   fi
 
-  log="/tmp/rust-witness-$(printf '%s' "$path:$symbol" | tr -c 'A-Za-z0-9' '-').log"
+  log="$LOGDIR/$(slug_of "$path:$symbol").log"
   if ! (cd "$ROOT" && cargo test -p "$crate" "${cargo_args[@]}" "$symbol" >"$log" 2>&1); then
-    printf 'FAIL  %s:%s — the test failed (see %s)\n' "$path" "$symbol" "$log"
-    grep -E '^(test .* FAILED|assertion|thread .* panicked)' "$log" | head -3 | sed 's/^/      /'
+    kept="/tmp/rust-witness-$(slug_of "$path:$symbol").log"
+    cp "$log" "$kept" 2>/dev/null || true
+    printf 'FAIL  %s:%s — the test failed (see %s)\n' "$path" "$symbol" "$kept"
+    # **Failure-tolerant on purpose.** This extraction matches nothing whenever cargo failed *before*
+    # running a test — a build error is a failing witness whose log has no `test … FAILED` line. Under
+    # `set -euo pipefail` a grep that matches nothing exits 1 and kills the whole script, so the
+    # `continue` below never ran, the remaining witnesses were never checked and the summary never
+    # printed. Observed 2026-09-24: a run stopped after the third witness and reported no count of the
+    # six. The `|| true` is what makes the census complete; it is not defensive decoration.
+    show_log_extract "$kept"
     failures=$((failures + 1))
     continue
   fi
@@ -107,6 +144,7 @@ while IFS= read -r line || [[ -n "$line" ]]; do
     continue
   fi
   printf 'ok    %s:%s (%s, %s test(s))\n' "$path" "$symbol" "$crate" "$matched"
+  passed=$((passed + 1))
 done < <(if [[ "$INPUT" == "-" ]]; then cat; else cat "$INPUT"; fi)
 
 # A check that scanned nothing is not evidence, exactly as in the register's checks 9 and 10.
@@ -115,6 +153,16 @@ if (( total == 0 )); then
   exit 1
 fi
 echo ""
+# Every witness read must reach a verdict, and the summary must print whatever it is: a *census* is
+# only a census if it counts itself. Before 2026-09-24 the failing-test branch could end the script
+# early, and a truncated run's silence about the remaining witnesses was indistinguishable from their
+# passing. `total == passed + failures` is the invariant that makes the summary below meaningful, and
+# a future `continue` path that increments neither is exactly how this instrument would go quiet
+# again — so it fails rather than under-reporting.
+if (( passed + failures != total )); then
+  echo "FAIL  census incomplete: $total witness(es) read but only $((passed + failures)) reached a verdict — a path skipped one"
+  exit 1
+fi
 if (( failures > 0 )); then
   echo "===== $failures of $total Rust witness(es) FAILED ====="
   exit 1
