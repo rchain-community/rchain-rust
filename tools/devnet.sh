@@ -18,9 +18,13 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 IMAGE="${RNODE_IMAGE:-rnode:local}"
-NETWORK="devnet"
-BOOTSTRAP="devnet-bootstrap"
-PREFIX="devnet"
+# The container/volume prefix is overridable so a *second*, independent network can be brought up
+# beside the first — for a measurement against a fresh peer (`DEVNET_PREFIX=perf-sync`) without
+# touching the running network's containers or volumes. `NETWORK` stays its own variable because the
+# default name is what other tooling and the docs expect.
+PREFIX="${DEVNET_PREFIX:-devnet}"
+NETWORK="${DEVNET_NETWORK:-devnet}"
+BOOTSTRAP="${PREFIX}-bootstrap"
 # The bootstrap's data volume, when a measurement must run against an existing artifact rather than
 # `${BOOTSTRAP}-data` (set by `up --data-volume`). Empty means the default.
 BOOTSTRAP_DATA_VOLUME=""
