@@ -3584,6 +3584,52 @@ port against the **reference document** rather than against itself.
   starts from the count instead of from the table.
 
 
+- **C75 — the gate could not see a Lean module at the top of `spec/`, so a `sorry` there was invisible to
+  the ratchet that exists to find it** (found 2026-09-24, Programme F's hygiene unit; **fixed**). Both of
+  the gate's file-scoped steps derived their scope from `Rchain/`: the completeness step built `expected`
+  with `find Rchain -name '*.lean'` *inside* `spec/`, and the token scan listed `spec/Rchain.lean` plus
+  `spec/Rchain/**`. A module at the top of `spec/` is outside both — and outside `lake build` too, since
+  nothing imports it and it is never compiled. A `sorry` written in such a file was invisible **three
+  times over**, and so is an `opaque`, a `partial` or an `unsafe` definition: the scans and the build all
+  agree it does not exist.
+
+  **Falsified before the fix, with two probes** — `spec/ProbeSorry.lean` carrying `sorry` and
+  `spec/ProbeOpaque.lean` carrying `opaque def probeOpaque : Nat := 0` — run against the script's own
+  commands: the token scan over its declared file list reported **0 hits** (neither probe is in the list),
+  and the completeness step's `expected`/`actual` compared **equal** with both files present. Both probes
+  are this row's evidence, and neither was a stray file: the finding is the blind scope, not their
+  existence.
+
+  **Fixed by widening both scopes to every `.lean` under `spec/` except the build tree**, with the policy
+  written into the check rather than left implicit: **a Lean file under `spec/` is either the library
+  root, a module the root imports, or a declared `lean_exe` root — there is no third kind, and a scratch
+  file belongs outside `spec/`**. `.lake/` is excluded explicitly, and the exclusion is exactly why the
+  old scope looked reasonable: it holds **5,668** generated `.lean` files, so a bare
+  `find "$SPEC" -name '*.lean'` would put every one of them in the list. The library root is dropped from
+  `expected` (it *is* the import list, so nothing imports it).
+
+  **Falsified after the fix, both directions**: with the two probes present the token scan reports both
+  lines (`ProbeOpaque.lean:1`'s `opaque` and `ProbeSorry.lean:2`'s `sorry`) and the completeness step
+  fails on the two unimported modules; with them removed, both steps are green again. All four runs are at
+  *step* level, using the script's own commands extracted from it — the whole script was **not** run,
+  because its first step is `lake build`, the Lean slot is the lead's, and the sort unit makes the tree red
+  by construction until it lands.
+
+  **A side effect worth recording, because it is C70's lesson landing on this very edit**: widening the
+  scope shifted the script's line numbers, and `Laws.lean` cites a *line* of it for law 30 — the register
+  audit failed on the stale window, correctly. The explanation was therefore moved **below** the cited
+  mapping and the edit held to a single added line (the mapping sits at 209 against a citation of 207,
+  inside the check's ±8 window). That is the third time this session a line-anchored citation into a
+  script has been moved by an edit above it; the symbol-form re-anchor `register-lean` is landing is the
+  fix, and C70 already carries the recommendation.
+
+  **The class, with three instances**: C70's nested comments (the ratchet's zero was a statement about
+  nothing for any nested region), check 9's collapsed column (a comparison blind to a whole column), and
+  this (a scope that excluded the files). Each was invisible for as long as the blind spot and the defect
+  never coincided, and each was found by *extending or probing the instrument* rather than by reading the
+  claim — the argument for probing an instrument at the edges of its scope as a matter of course.
+
+
 ## 20. The back-sweep: every incident to its law and its case
 
 The programme began with ten defects of one class — "nothing errors" — found on a running node,
@@ -3806,6 +3852,7 @@ the corpus refuted it — kept here as a lesson rather than hidden. Its sibling 
 | C72 four register cells, three prose paragraphs and two citations called something owed while the tree held it | — **records** (no law) | `spec/TEST-COVERAGE.md`'s law matrix is checked by neither machine check — the register audit reads `.tsv` counts, citations and test names, the Lean gate reads the emitted registers, and a *prose* cell is read by nothing: law 38's cell said `takesStep_iff_reduces` was owed (its row: proved, a theorem), law 42's said `decode_encode` was owed (its row: the axiom is gone), C13's §20 row said the round trip was "still open" (law 33's printer rows are `parse.tsv`'s second half), and an aggregate row contradicted the four rows above it in the same table. Plus `AUDIT.md`'s C53 "Owed: an error channel" and its U12 "blocked on two production call sites" (both landed), `RUST-VS-SCALA.md`'s "30 element-comparator axioms" (law 1b: no axioms, from twelve — the residual is empty, and `Sort.lean` declares none), two citations to `casper/src/main/resources/casper.tla` (it is under `legacy/`), and `faultTolerance` read as pending (legacy-only; the port's checklist mirrors that suite, `tools/run-integration-tests.sh:34`). **Why nothing caught it**: a record is checked where it is machine-readable and unchecked where it is prose — so prose drifts at the rate the tree moves. The matrix now says which of its cells are checked |
 | C73 a store-items page had a cap on its count and none on its bytes | 10 | **fixed (2026-09-24)**: `MAX_STORE_ITEMS_TAKE` bounded the nodes a request names, nothing bounded what they carry — the maximal `take` with 4 KiB items is ~41 MB of the responder's memory per request, and a value's size is the chain's choice, not the request's. `MAX_STORE_ITEMS_BYTES = 32 MiB` (≈10× the largest legitimate page) now **refuses** the page: a truncated one is a wrong state claim (the requester recomputes it, `validate_state_items`), so with no error reply the responder's choices are a drop or a lie — and it already drops for an unreadable store (C63) and an over-large `take`. Registered in §6: the oracle has no cap. Falsified both directions in one test — a ~40 MB page is dropped unstreamed, the largest legitimate page is still served — and the check runs before the response exists, so an oversized page is neither serialised nor sent |
 | C74 the name-shape vocabulary is a convention, not a predicate | — **boundary** (no law) | `spec/STYLE.md`'s six shapes cannot be a check over the register, and the measurement is the falsifier: **63 of 126** `witness` entries match a shape and 63 are the model's own declarations (`joinKey_perm`, `mergeChanges_assoc`, …), so a predicate over the field fails on 63 legitimate rows — and renaming them would rename the mathematics. The `falsifiable` prose mentions 275 names, 232 of them declarations under discussion. The *rule* is checked and holds (**0 of 49** proved rows lack both a witness and a corpus), and STYLE.md now states the scope with these numbers, so nobody mechanises the table later |\n
+| C75 the gate could not see a Lean module at the top of `spec/` — a `sorry` there was invisible to the ratchet | — **harness** | both file-scoped steps derived their scope from `Rchain/`: `expected` from `find Rchain …` and the token scan from `spec/Rchain.lean` + `spec/Rchain/**`. A top-level module escapes the completeness check, the token scan *and* `lake build` (nothing imports it), so a `sorry` there was invisible three times over. Falsified before the fix with two probes — `spec/ProbeSorry.lean` (`sorry`) and `spec/ProbeOpaque.lean` (`opaque def`) — over the script's own commands: the scan reported 0 hits and `expected`/`actual` compared equal with both present. Fixed by widening both scopes to every `.lean` under `spec/` except `.lake/` (5,668 generated files, which is why the old scope looked reasonable), with the policy stated in the check: library root, imported module, or declared `lean_exe` root — no third kind. Falsified after: both probes fire the scan and fail completeness; removed, both green. The edit also shifted law 30's line citation and the register audit caught it — explanation moved below the mapping, mapping at 209 against a 207 citation, in-window |
 **The two rows that are not laws are the two worth keeping visible.** C37 is a *harness* finding —
 a measurement that was not a measurement — and no law would have caught it, because the thing that
 was wrong was outside the term. The retired static walk over vendored text (AUDIT §17 C22) is the

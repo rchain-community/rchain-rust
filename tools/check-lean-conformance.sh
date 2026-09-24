@@ -73,7 +73,7 @@ if awk ' BEGIN { SQ = sprintf("%c", 39) }
         if (substr($0,i,2)=="/-") { depth++; i+=2 } else if (c=="\"") { if (substr($0,i-1,1)==SQ) { i++ } else { instring=1; i++ } } else { out=out c; i++ }
       } }
     if (out ~ /(^|[^A-Za-z_])(sorry|admit|opaque|unsafe|partial|extern|implemented_by)([^A-Za-z_]|$)/) printf "%s:%d:%s\n", FILENAME, FNR, out
-  }' "$SPEC/Rchain.lean" $(find "$SPEC/Rchain" -name '*.lean') >/tmp/lean-sorry.log 2>/dev/null; then
+  }' $(find "$SPEC" -name '*.lean' -not -path '*/.lake/*') >/tmp/lean-sorry.log 2>/dev/null; then
   if [[ -s /tmp/lean-sorry.log ]]; then
     fail "an assumption appeared under spec/Rchain (sorry/admit/opaque/unsafe/partial/extern/implemented_by) — see /tmp/lean-sorry.log"
   else
@@ -84,7 +84,8 @@ else
 fi
 
 # --- 3. the library is complete ------------------------------------------------
-expected="$(cd "$SPEC" && find Rchain -name '*.lean' | sed -e 's/\.lean$//' -e 's#/#.#g' | sort)"
+# The library root is the import list itself, and is not imported by anything (`grep -v` here).
+expected="$(cd "$SPEC" && find . -name '*.lean' -not -path './.lake/*' | sed -e 's#^\./##' -e 's/\.lean$//' -e 's#/#.#g' | grep -v '^Rchain$' | sort)"
 # `lean_exe` roots (e.g. the corpus emitter) are executables, not library content: exclude them.
 exe_roots="$(grep -oE 'root = "[^"]+"' "$SPEC/lakefile.toml" | sed -e 's/root = "//' -e 's/"//' \
   | sed -e 's/\./\//g' | sed -e 's#$#.lean#')"
@@ -234,6 +235,21 @@ if [[ -d "$ROOT/spec/conformance" ]]; then
     fi
   done
 fi
+
+# **The scope of the two steps above (the token scan and the completeness check) is every `.lean`
+# under `spec/` except the build tree, and that is a decision rather than an accident of where the walk
+# starts** (2026-09-24, AUDIT C75). Both used to look at `Rchain/**` only, so a module at the top of
+# `spec/` — which nothing imports and `lake build` therefore never compiles — was invisible to the
+# completeness check, to the token scan, and to the build: a `sorry` written in such a file was
+# invisible to the ratchet that exists to find it. Falsified with two probes (`spec/ProbeSorry.lean`
+# with `sorry`, `spec/ProbeOpaque.lean` with an `opaque def`): the scan reported 0 hits and
+# `expected`/`actual` compared equal with both present. The policy the widened scope enforces: a Lean
+# file under `spec/` is either the library root, a module the root imports, or a declared `lean_exe`
+# root — there is no third kind, and a scratch file belongs outside `spec/`. `.lake/` is excluded
+# because it holds 5,668 generated `.lean` files, which is why the old scope looked reasonable.
+#
+# This note sits BELOW the corpus-to-test mapping on purpose: `Laws.lean` cites a *line* of this
+# script for law 30, and a line-anchored citation into a script moves whenever a step above it grows.
 
 # --- 5b. the law register is current -------------------------------------------
 # `spec/laws.tsv` and `spec/LAWS.md` are generated from `Rchain/Laws.lean`, and the documents' law counts
