@@ -3557,6 +3557,29 @@ port against the **reference document** rather than against itself.
   "this handler stopped working". Disabling the check makes the first half fail on exactly that assertion.
 
 
+- **C74 — the name-shape vocabulary is a convention, not a predicate, and the measurement says which half
+  is checkable** (found and measured 2026-09-24, Programme F's hygiene unit; **a boundary finding — no
+  defect, nothing to fix**). `spec/STYLE.md` names six shapes for load-bearing declarations (`the_*`,
+  `a_*`/`an_*`, `*_is_false`, `*_refutes_*`, `*_diverges`, `*_refuses_*`/`*_rejects_*`) and says every
+  `provedTied`/`provedModel` row must name one in its `witness` field or carry a corpus. The rule is
+  checked and holds — **0 of 49 proved rows lack both**. The shapes are not, and the numbers say why:
+
+  - of the **126** entries in the register's `witness` field, **63 match a shape and 63 do not** — the 63
+    are the model's own declarations, which is what the field is *for* (`joinKey_perm`,
+    `mergeChanges_assoc`, `encodeNode_injective`, `reduce_not_deterministic`). A check asserting the
+    shapes over that field fails on 63 legitimate rows, which is the falsification: the imagined check is
+    wrong, not the names. Renaming a declaration to fit a style is renaming the mathematics.
+  - the `falsifiable` column is no better a source: it mentions **275** names, **232** of which are
+    declarations under discussion rather than witnesses, so "the witness is the backticked name" is false
+    as a reading rule too.
+
+  **What this leaves**: the shapes are a convention for whoever *writes* a falsifier, and the machine-checked
+  part of the rule is presence plus existence plus not-an-axiom (checks 3, 4b, 5b). `spec/STYLE.md` now
+  says exactly that, with these numbers, so a reader does not assume the gate enforces a style it cannot.
+  No code and no Lean changed: this row exists so the next person who tries to mechanise the vocabulary
+  starts from the count instead of from the table.
+
+
 ## 20. The back-sweep: every incident to its law and its case
 
 The programme began with ten defects of one class — "nothing errors" — found on a running node,
@@ -3778,7 +3801,7 @@ the corpus refuted it — kept here as a lesson rather than hidden. Its sibling 
 | C70 the `sorry` ratchet could not see a nested comment, and nothing but this scan saw an `opaque`/`partial`/`extern`/`unsafe`/`@[implemented_by]` assumption | — **harness** | no law: the instrument, not the term. `Laws.lean`'s accounting is exact equality over `axiom` *declarations*, so an `opaque` definition is neither an axiom nor a `sorry` and passed every other step of `tools/check-lean-conformance.sh` — the token set now refuses all five, so an assumption arriving is refused rather than discovered. The stripping had to be repaired first: single-level block tracking closed Lean's *nested* comments at the first `-/` (invisible for `sorry`/`admit`, 23 prose hits once `partial`/`opaque` were added) and string literals were scanned as code, where the register keeps its own row prose (11 more). Both fixed (nesting depth, strings with escapes, a `'"'` char literal must not open a string) and the tree scans clean. Falsified at scan level with the script's own extracted `awk` over probe files: five tokens fire, `external` does not, prose/string/nested cases fire on nothing, the original `sorry` ratchet does. The full gate is owed: its first step is `lake build` and the Lean slot is the lead's |
 | C72 four register cells, three prose paragraphs and two citations called something owed while the tree held it | — **records** (no law) | `spec/TEST-COVERAGE.md`'s law matrix is checked by neither machine check — the register audit reads `.tsv` counts, citations and test names, the Lean gate reads the emitted registers, and a *prose* cell is read by nothing: law 38's cell said `takesStep_iff_reduces` was owed (its row: proved, a theorem), law 42's said `decode_encode` was owed (its row: the axiom is gone), C13's §20 row said the round trip was "still open" (law 33's printer rows are `parse.tsv`'s second half), and an aggregate row contradicted the four rows above it in the same table. Plus `AUDIT.md`'s C53 "Owed: an error channel" and its U12 "blocked on two production call sites" (both landed), `RUST-VS-SCALA.md`'s "30 element-comparator axioms" (law 1b: no axioms, from twelve — the residual is empty, and `Sort.lean` declares none), two citations to `casper/src/main/resources/casper.tla` (it is under `legacy/`), and `faultTolerance` read as pending (legacy-only; the port's checklist mirrors that suite, `tools/run-integration-tests.sh:34`). **Why nothing caught it**: a record is checked where it is machine-readable and unchecked where it is prose — so prose drifts at the rate the tree moves. The matrix now says which of its cells are checked |
 | C73 a store-items page had a cap on its count and none on its bytes | 10 | **fixed (2026-09-24)**: `MAX_STORE_ITEMS_TAKE` bounded the nodes a request names, nothing bounded what they carry — the maximal `take` with 4 KiB items is ~41 MB of the responder's memory per request, and a value's size is the chain's choice, not the request's. `MAX_STORE_ITEMS_BYTES = 32 MiB` (≈10× the largest legitimate page) now **refuses** the page: a truncated one is a wrong state claim (the requester recomputes it, `validate_state_items`), so with no error reply the responder's choices are a drop or a lie — and it already drops for an unreadable store (C63) and an over-large `take`. Registered in §6: the oracle has no cap. Falsified both directions in one test — a ~40 MB page is dropped unstreamed, the largest legitimate page is still served — and the check runs before the response exists, so an oversized page is neither serialised nor sent |
-
+| C74 the name-shape vocabulary is a convention, not a predicate | — **boundary** (no law) | `spec/STYLE.md`'s six shapes cannot be a check over the register, and the measurement is the falsifier: **63 of 126** `witness` entries match a shape and 63 are the model's own declarations (`joinKey_perm`, `mergeChanges_assoc`, …), so a predicate over the field fails on 63 legitimate rows — and renaming them would rename the mathematics. The `falsifiable` prose mentions 275 names, 232 of them declarations under discussion. The *rule* is checked and holds (**0 of 49** proved rows lack both a witness and a corpus), and STYLE.md now states the scope with these numbers, so nobody mechanises the table later |\n
 **The two rows that are not laws are the two worth keeping visible.** C37 is a *harness* finding —
 a measurement that was not a measurement — and no law would have caught it, because the thing that
 was wrong was outside the term. The retired static walk over vendored text (AUDIT §17 C22) is the

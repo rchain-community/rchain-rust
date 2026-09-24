@@ -60,6 +60,21 @@ Every `provedTied`/`provedModel` row must name at least one such declaration in 
 carry a `corpus` — the register's check 5b. The names must exist (check 3) and must not themselves be
 axioms (check 4b): a falsifier that cannot fail is not one.
 
+**What is checked, and what is convention — measured 2026-09-24 (AUDIT C74).** The *rule* above is
+machine-checked and holds everywhere: no `proved*` row is without a witness **and** a corpus (0 of 49).
+The *vocabulary* is not a predicate over the register and cannot be one: of the 126 entries in the
+`witness` field, **63 match one of the six shapes and 63 do not** — and the ones that do not are the
+model's own declarations, which the field exists to name (`joinKey_perm`, `mergeChanges_assoc`,
+`encodeNode_injective`, `reduce_not_deterministic`). Renaming those to fit a style would rename the
+mathematics; a check asserting the shapes over the field fails on 63 legitimate rows, which is how the
+claim was falsified rather than argued. The `falsifiable` prose is no better as a source: it mentions
+**275** names, of which **232** are declarations under discussion rather than witnesses.
+
+So the shapes are what an author writing a new falsifier should reach for, and the *falsifier-specific*
+half of the rule — the one the gate can see — is that the name exists, is not an axiom, and that the row
+carries a witness or a corpus at all. A reader who wants to know which shape a given witness takes
+should read the name, not expect a check to have done it.
+
 ## Options that are set deliberately
 
 - **`maxHeartbeats` is measured, not inherited.** `Rchain/Sort.lean` carries a budget of 4,000,000 with
