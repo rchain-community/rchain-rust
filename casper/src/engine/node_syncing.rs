@@ -225,7 +225,7 @@ impl<I: RSpaceImporter + Send + 'static> NodeSyncing<I> {
             };
             tokio::spawn(async move {
                 let source = LogSource::new("casper.engine.NodeSyncing");
-                match run_approved_state_sync(
+                let outcome = run_approved_state_sync(
                     &fringe,
                     transport,
                     conf,
@@ -237,8 +237,8 @@ impl<I: RSpaceImporter + Send + 'static> NodeSyncing<I> {
                     incoming_blocks_rx,
                     tuple_space_rx,
                 )
-                .await
-                {
+                .await;
+                match &outcome {
                     Ok(()) => {
                         if let Err(e) = approved_store
                             .put(&[(FINALIZED_FRINGE_KEY, fringe.clone())])
@@ -250,10 +250,23 @@ impl<I: RSpaceImporter + Send + 'static> NodeSyncing<I> {
                     }
                     Err(e) => log.error(source, &format!("LFS state sync failed: {e}")),
                 }
-                finished.notify_waiters();
+                notify_when_restored(&outcome, &finished);
             });
         }
         Ok(())
+    }
+}
+
+/// Signal the syncing-finished handle **only when the state was actually restored** (AUDIT C66).
+///
+/// The oracle sequences `finished.complete(())` *after* the sync's drain, so a failed attempt leaves
+/// the node in `NodeSyncing` — and its own comment says why the approved block is stored only after
+/// the state is received ("to restart requesting if interrupted with incomplete state"). Notifying
+/// unconditionally means a failed sync moves the node to `NodeRunning` with an incomplete DAG, which
+/// is the one outcome the sequencing exists to prevent.
+fn notify_when_restored(outcome: &Result<(), String>, finished: &tokio::sync::Notify) {
+    if outcome.is_ok() {
+        finished.notify_waiters();
     }
 }
 
@@ -547,5 +560,41 @@ mod tests {
 
         // The whole chain is in the DAG, so the latest block number equals the chain length.
         assert_eq!(dag.get_representation().await.latest_block_number(), n);
+    }
+    /// **AUDIT C66**: a failed LFS sync must not signal the node out of `NodeSyncing`.
+    ///
+    /// Both directions in one test, because the fix is a decision and the decision has two outcomes:
+    /// `Err` must leave the waiter untouched (the oracle's `complete` is sequenced after the drain), and
+    /// `Ok` must wake it (otherwise the node would never leave syncing at all, which the second half
+    /// rules out). Falsified against this tree: with the unconditional `finished.notify_waiters()`
+    /// restored, the first half fails — the waiter is woken by a failed attempt.
+    ///
+    /// What this pins is the *decision*, not the transition: that a failed attempt leaves the node in
+    /// syncing end to end needs a `NodeSyncing` fixture with a failing store and a mock transport,
+    /// which is the next unit's work rather than this one's.
+    #[tokio::test]
+    async fn a_failed_sync_does_not_signal_the_node_out_of_syncing() {
+        // A failed attempt: the waiter must stay asleep.
+        let finished = tokio::sync::Notify::new();
+        let mut waiter = std::pin::pin!(finished.notified());
+        notify_when_restored(&Err("LFS state sync failed".to_string()), &finished);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), &mut waiter)
+                .await
+                .is_err(),
+            "a failed sync signalled the node to leave syncing"
+        );
+
+        // A successful attempt: the waiter must wake — so the assertion above cannot pass by the
+        // signal never being wired at all.
+        let finished = tokio::sync::Notify::new();
+        let mut waiter = std::pin::pin!(finished.notified());
+        notify_when_restored(&Ok(()), &finished);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), &mut waiter)
+                .await
+                .is_ok(),
+            "a restored state must signal the node out of syncing"
+        );
     }
 }
