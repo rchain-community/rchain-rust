@@ -104,8 +104,9 @@ invariants.
   external-IP discovery (M7), the DAG `seen`-cache Θ(N²) *residency* (H6 — its per-clone cost is no
   longer paid: `seen` is shared behind `Arc`, and neither reading nor extending the DAG copies it,
   per the 2026-09-24 pass; the residual *size* is now reported rather than estimated, by the DAG's own
-  `logical_bytes` gauge — the bench's `dag` curve reads 16.2 MB at N=1,000, which extrapolates to
-  ≈553 MB at the 5,881-block devnet chain), and the rate-limited-but-plaintext
+  `logical_bytes` gauge — measured live at **556 MB on the 5,885-block devnet chain, inside a 1.18 GiB
+  process** that advances ~1.3 MB per block, where this row's predecessor figure was an estimate from
+  Σ|seen| × 32 B on a tree that copied the DAG), and the rate-limited-but-plaintext
   Kademlia discovery bind.
 
 The earlier "deferred/unwired" surface (Kademlia, the HTTP transaction API, block reporting, the
