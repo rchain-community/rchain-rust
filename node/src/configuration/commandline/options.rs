@@ -72,8 +72,20 @@ impl std::str::FromStr for EffectScheduler {
     disable_help_flag = true
 )]
 pub struct Options {
-    /// Print help.
-    #[arg(long = "help", action = clap::ArgAction::Help)]
+    // Long-only on purpose: `-h` is a *real* flag in this CLI (`--grpc-host` at this level,
+    // `--api-port-http` under `run`), so help is spelled out rather than abbreviated. `global = true`
+    // is what gives every subcommand a `--help` of its own: the top-level `disable_help_flag = true`
+    // (which is what frees `-h`) also means clap adds no help flag to a subcommand, so `rnode run
+    // --help` was "unexpected argument '--help'" and the options of a subcommand were not
+    // discoverable from the CLI at all (AUDIT C81). The action prints the help of the command it is
+    // found in, so `rnode run --help` prints `run`'s options and exits 0. The help text states the
+    // `-h` convention, because it is the one place an operator looks for it.
+    #[arg(
+        long = "help",
+        global = true,
+        action = clap::ArgAction::Help,
+        help = "Print help for this command (`-h` is not help in this CLI: `--grpc-host` at this level, `--api-port-http` under `run`)"
+    )]
     help: Option<bool>,
     /// Remote gRPC host for client calls.
     #[arg(short = 'h', long = "grpc-host", default_value = "localhost")]
@@ -605,5 +617,52 @@ mod tests {
         assert!(parse(&["find-deploy", "--deploy-id", "zz"]).is_err());
         assert!(parse(&["deploy-status", "--deploy-signature", "zz"]).is_err());
         assert!(parse(&["bond-status", "zz"]).is_err());
+    }
+
+    /// AUDIT C81: every command accepts `--help`, and it prints *that* command's options.
+    ///
+    /// Before this, only the top-level `Options` carried a help flag — `disable_help_flag = true` is
+    /// what frees `-h` for `--grpc-host`, and it also left every subcommand without one — so
+    /// `rnode run --help` was `unexpected argument '--help' found` (exit 2) and a subcommand's
+    /// options could not be discovered from the CLI at all. `global = true` on the long-only help arg
+    /// is the fix: it reaches every subcommand, including the payload-less ones.
+    #[test]
+    fn every_command_accepts_help_for_its_own_options() {
+        for argv in [
+            vec!["--help"],
+            vec!["run", "--help"],
+            vec!["deploy", "--help"],
+            vec!["status", "--help"],
+        ] {
+            let err = parse(&argv).expect_err("help is a DisplayHelp error, which is what exits 0");
+            assert_eq!(
+                err.kind(),
+                clap::error::ErrorKind::DisplayHelp,
+                "{argv:?} must be help, not a usage error"
+            );
+        }
+        // The help shown is the *command's own*: `run`'s options are in `run --help`, not the parent's.
+        let run_help = parse(&["run", "--help"])
+            .expect_err("DisplayHelp")
+            .to_string();
+        assert!(run_help.contains("--api-port-http"), "{run_help}");
+        assert!(run_help.contains("Usage: rnode run"), "{run_help}");
+    }
+
+    /// `-h` is not help in this CLI: it is `--grpc-host` at the top level and `--api-port-http` under
+    /// `run`. That binding is the port's convention and is kept — renaming a short flag is a CLI
+    /// contract change for anyone scripting it — so the help text states the convention where an
+    /// operator looks for help, and this pins that the binding still parses.
+    #[test]
+    fn short_h_is_a_real_flag_and_the_help_says_so() {
+        let top_help = parse(&["--help"]).expect_err("DisplayHelp").to_string();
+        assert!(top_help.contains("-h, --grpc-host"), "{top_help}");
+        assert!(top_help.contains("`-h` is not help"), "{top_help}");
+
+        let opts = parse(&["-h", "example.invalid", "status"]).expect("`-h` takes a value");
+        assert_eq!(opts.grpc_host, "example.invalid");
+
+        let err = parse(&["run", "-h"]).expect_err("`-h` is `--api-port-http` under `run`");
+        assert!(err.to_string().contains("--api-port-http"), "{err}");
     }
 }
