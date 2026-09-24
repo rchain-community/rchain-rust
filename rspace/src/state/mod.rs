@@ -356,8 +356,10 @@ mod tests {
     /// bounded it at `> 128`, one byte over: a value the Scala's own `require(bv.size <= 127)`
     /// refuses, and that this port's documented stance refuses with an `Err` rather than a panic.
     ///
-    /// Falsifier: with the `> 128` bound restored and `KeySegment::new` back in place of the checked
-    /// constructor, this fails — a 128-byte segment comes back `Ok`.
+    /// Falsifier: with the `> 128` bound restored, this fails — a 128-byte segment comes back `Ok`.
+    /// (It once also named putting the total `KeySegment::new` back in place of the checked
+    /// constructor; that half is unreachable by construction now — see the type — since the total
+    /// constructor no longer exists to put back.)
     #[test]
     fn a_128_byte_resume_prefix_is_refused() {
         let mut hashes = vec![Blake2b256Hash::from_bytes([0u8; 32]); 5];
@@ -382,7 +384,7 @@ mod tests {
         let mut root = empty_node();
         let leaf_hash = Blake2b256Hash::from_bytes([0x42; 32]);
         root[0] = Item::Leaf {
-            prefix: KeySegment::new(vec![1]),
+            prefix: KeySegment::try_from(vec![1]).expect("1 byte is at most 127"),
             value: leaf_hash,
         };
         let (root_hash, root_bytes) = hash_node(&root);
@@ -415,7 +417,7 @@ mod tests {
         let data_hash = Blake2b256Hash::create(&data_value);
         let mut root = empty_node();
         root[0] = Item::Leaf {
-            prefix: KeySegment::new(vec![1]),
+            prefix: KeySegment::try_from(vec![1]).expect("1 byte is at most 127"),
             value: data_hash,
         };
         let (root_hash, root_bytes) = hash_node(&root);

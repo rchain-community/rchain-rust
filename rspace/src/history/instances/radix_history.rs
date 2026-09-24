@@ -131,7 +131,7 @@ mod tests {
     }
 
     fn key(b: u8) -> KeySegment {
-        KeySegment::new(vec![b])
+        KeySegment::try_from(vec![b]).expect("1 byte is at most 127")
     }
 
     fn insert(byte: u8, value: u8) -> HistoryAction {

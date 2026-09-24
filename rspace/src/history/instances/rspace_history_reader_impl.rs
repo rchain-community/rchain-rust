@@ -84,11 +84,15 @@ where
         prefix: u8,
         key: Blake2b256Hash,
     ) -> Result<Option<PersistedData>, String> {
-        // A fixed 33-byte shape (one prefix byte plus a 32-byte hash), so `new` is in range by
-        // construction — measured 2026-09-24 (U1 item 7), like the two other sites the appendix named.
+        // A fixed 33-byte shape (one prefix byte plus a 32-byte hash), so the constructor is in range
+        // by construction — measured 2026-09-24 (U1 item 7), like the two other sites the appendix
+        // named. The check is the constructor's now rather than `new`'s caller's, and this function
+        // already has an error channel, so the refusal is propagated instead of unwrapped.
         let mut seg = vec![prefix];
         seg.extend_from_slice(key.as_bytes());
-        match self.history()?.read(&KeySegment::new(seg)).await? {
+        let segment = KeySegment::try_from(seg)
+            .map_err(|e| format!("history read: invalid key segment: {e}"))?;
+        match self.history()?.read(&segment).await? {
             Some(leaf_hash) => {
                 let data = self.leaf_store.get(&[leaf_hash]).await?;
                 Ok(data.into_iter().next().flatten())
@@ -366,7 +370,8 @@ mod tests {
             self.history = self
                 .history
                 .process(&[HistoryAction::Insert {
-                    key: KeySegment::new(segment),
+                    key: KeySegment::try_from(segment)
+                        .expect("1 + 32 = 33 bytes is at most 127"),
                     hash: leaf_hash,
                 }])
                 .await

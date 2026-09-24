@@ -42,7 +42,10 @@ type ColdAction = (Blake2b256Hash, Option<PersistedData>);
 fn key_segment(prefix: u8, hash: Blake2b256Hash) -> KeySegment {
     let mut bytes = vec![prefix];
     bytes.extend_from_slice(hash.as_bytes());
-    KeySegment::new(bytes)
+    // One prefix byte plus a 32-byte hash is 33 bytes, well inside the 127-byte invariant, so the
+    // constructor cannot refuse and this stays total (`expect` states the measurement the deleted
+    // `new` used to take on trust).
+    KeySegment::try_from(bytes).expect("1 + 32 = 33 bytes is at most 127 bytes")
 }
 
 fn calculate_storage_action<C, P, A, K>(

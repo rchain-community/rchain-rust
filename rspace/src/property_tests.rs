@@ -207,7 +207,7 @@ proptest! {
         let actions: Vec<HistoryAction> = pairs
             .iter()
             .map(|(k, v)| HistoryAction::Insert {
-                key: KeySegment::new(k.clone()),
+                key: KeySegment::try_from(k.clone()).expect("test keys are short"),
                 hash: Blake2b256Hash::from_bytes(*v),
             })
             .collect();

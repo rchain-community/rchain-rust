@@ -470,7 +470,7 @@ mod stream_tests {
         let data_hash = Blake2b256Hash::create(&data_value);
         let mut root = empty_node();
         root[0] = Item::Leaf {
-            prefix: KeySegment::new(vec![1]),
+            prefix: KeySegment::try_from(vec![1]).expect("1 byte is at most 127"),
             value: data_hash,
         };
         let (root_hash, root_bytes) = hash_node(&root);

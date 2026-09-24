@@ -43,7 +43,7 @@ mod tests {
     use super::*;
 
     fn key(bytes: &[u8]) -> KeySegment {
-        KeySegment::new(bytes.to_vec())
+        KeySegment::try_from(bytes.to_vec()).expect("test keys are short")
     }
 
     fn hash(byte: u8) -> Blake2b256Hash {

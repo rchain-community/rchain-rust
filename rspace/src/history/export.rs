@@ -95,10 +95,16 @@ fn init_node_path(
             } => {
                 let (prefix_common, prefix_rest, ptr_prefix_rest) =
                     KeySegment::common_prefix(&rest_prefix.tail(), &ptr_prefix);
+                // The diagnostic's prefix is itself a growth operation, so it is rendered fallibly
+                // rather than unwrapped: an over-long path must still report *which* prefix was not
+                // found, not panic while formatting the message.
+                let expected_prefix = node_prefix
+                    .concat(&rest_prefix)
+                    .map(|s| s.to_hex())
+                    .unwrap_or_else(|e| format!("<over-long prefix: {e}>"));
                 assert!(
                     ptr_prefix_rest.is_empty(),
-                    "Export error: node with prefix {} not found.",
-                    node_prefix.concat(&rest_prefix).to_hex()
+                    "Export error: node with prefix {expected_prefix} not found."
                 );
                 path.insert(
                     0,
@@ -110,11 +116,16 @@ fn init_node_path(
                 );
                 hash = ptr;
                 node_prefix = node_prefix
-                    .append(rest_prefix.head())
-                    .concat(&prefix_common);
+                    .append(rest_prefix.head())?
+                    .concat(&prefix_common)?;
                 rest_prefix = prefix_rest;
             }
-            _ => return Err(err_not_found(&node_prefix.concat(&rest_prefix))),
+            _ => {
+                let full_prefix = node_prefix
+                    .concat(&rest_prefix)
+                    .map_err(|e| format!("Export error: {e}"))?;
+                return Err(err_not_found(&full_prefix));
+            }
         }
     }
 }
@@ -147,6 +158,12 @@ fn find_next_non_empty_item(
     }
 }
 
+/// Record a leaf in the export data: the running node prefix grows by the item index and then by
+/// the leaf's own prefix.
+///
+/// Fallible because it **grows** — `cur_node_prefix ++ index ++ leaf_prefix` can pass 127 bytes, and
+/// the growth constructors refuse that rather than mint a segment the radix encoder would truncate
+/// (C61's mechanism). The refusal propagates to the export's existing `Result` channel.
 fn add_leaf(
     p: &StepData,
     leaf_prefix: &KeySegment,
@@ -155,24 +172,28 @@ fn add_leaf(
     cur_node_prefix: &KeySegment,
     new_path: Vec<NodeData>,
     settings: &ExportDataSettings,
-) -> StepData {
+) -> Result<StepData, String> {
     if p.skip > 0 {
-        return StepData {
+        return Ok(StepData {
             path: new_path,
             skip: p.skip,
             take: p.take,
             exp_data: p.exp_data.clone(),
-        };
+        });
     }
     let mut leaf_prefixes = p.exp_data.leaf_prefixes.clone();
     let mut leaf_values = p.exp_data.leaf_values.clone();
     if settings.flag_leaf_prefixes {
-        leaf_prefixes.push(cur_node_prefix.append(item_index).concat(leaf_prefix));
+        leaf_prefixes.push(
+            cur_node_prefix
+                .append(item_index)?
+                .concat(leaf_prefix)?,
+        );
     }
     if settings.flag_leaf_values {
         leaf_values.push(leaf_hash);
     }
-    StepData {
+    Ok(StepData {
         path: new_path,
         skip: p.skip,
         take: p.take,
@@ -183,7 +204,7 @@ fn add_leaf(
             leaf_prefixes,
             leaf_values,
         },
-    }
+    })
 }
 
 fn add_node_ptr(
@@ -199,7 +220,9 @@ fn add_node_ptr(
     let child_bytes = get_node_data(&ptr)?
         .ok_or_else(|| format!("Export error: Node with key {} not found", ptr.to_hex()))?;
     let child_decoded = decode(&SerializedNode::try_from(child_bytes.as_slice())?);
-    let child_np = cur_node_prefix.append(item_index).concat(ptr_prefix);
+    let child_np = cur_node_prefix
+        .append(item_index)?
+        .concat(ptr_prefix)?;
     let child_node_data = NodeData {
         prefix: child_np.clone(),
         decoded: child_decoded,
@@ -268,7 +291,7 @@ fn add_element(
             take: p.take,
             exp_data: p.exp_data.clone(),
         }),
-        Item::Leaf { prefix, value } => Ok(add_leaf(
+        Item::Leaf { prefix, value } => add_leaf(
             p,
             prefix,
             *value,
@@ -276,7 +299,7 @@ fn add_element(
             cur_node_prefix,
             new_path,
             settings,
-        )),
+        ),
         Item::NodePtr { prefix, ptr } => add_node_ptr(
             p,
             prefix,
@@ -443,7 +466,7 @@ mod tests {
         let mut root = empty_node();
         let leaf_hash = Blake2b256Hash::from_bytes([0x42; 32]);
         root[0] = Item::Leaf {
-            prefix: KeySegment::new(vec![1]),
+            prefix: KeySegment::try_from(vec![1]).expect("1 byte is at most 127"),
             value: leaf_hash,
         };
         let (root_hash, root_bytes) = hash_node(&root);
@@ -461,7 +484,10 @@ mod tests {
 
         assert_eq!(data.node_keys, vec![root_hash]);
         assert_eq!(data.leaf_values, vec![leaf_hash]);
-        assert_eq!(data.leaf_prefixes, vec![KeySegment::new(vec![0, 1])]);
+        assert_eq!(
+            data.leaf_prefixes,
+            vec![KeySegment::try_from(vec![0, 1]).expect("2 bytes is at most 127")]
+        );
         assert_eq!(last_prefix, None);
     }
 }

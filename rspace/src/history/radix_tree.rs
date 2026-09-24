@@ -121,12 +121,14 @@ pub fn decode(node: &SerializedNode) -> Node {
         let second = bytes[pos + 1];
         let prefix_size = (second & 0x7F) as usize;
         let prefix_start = pos + 2;
-        // `new` rather than the checked `TryFrom`: `prefix_size` comes from a 7-bit field, so it is
-        // ≤ 127 by the encoding itself — the *same* mask the encoder writes with, which is what makes
-        // 127 the segment invariant. Measured 2026-09-24 (U1 item 7): routing this through `TryFrom`
-        // would add a refusal for an unconstructible case and force an error channel onto `decode`,
-        // which is total by design (`RadixTree.Codecs.decode`).
-        let prefix = KeySegment::new(bytes[prefix_start..prefix_start + prefix_size].to_vec());
+        // Through the checked constructor with a *proof* rather than a caller's promise: `prefix_size`
+        // comes from the same 7-bit mask the encoder writes with, so it is ≤ 127 by the encoding
+        // itself and this `expect` is unreachable. That keeps `decode` total by design
+        // (`RadixTree.Codecs.decode`) where an error channel would have to invent a refusal for an
+        // unconstructible case — C61 measured all three decode sites this way, and the promise is now
+        // local to the site instead of held by `new`'s caller (C78's class).
+        let prefix = KeySegment::try_from(bytes[prefix_start..prefix_start + prefix_size].to_vec())
+            .expect("a 7-bit size field is at most 127");
         let val_start = prefix_start + prefix_size;
         let val = Blake2b256Hash::from_byte_array(&bytes[val_start..val_start + 32]);
         let item = if (second & 0x80) == 0 {
@@ -368,7 +370,7 @@ impl RadixTreeImpl {
         node: &Node,
         prefix: &KeySegment,
         compaction: bool,
-    ) -> Item {
+    ) -> Result<Item, String> {
         if compaction {
             let mut non_empty: Vec<(usize, &Item)> = Vec::new();
             for (idx, item) in node.iter().enumerate() {
@@ -379,25 +381,26 @@ impl RadixTreeImpl {
                     }
                 }
             }
-            match non_empty.len() {
+            Ok(match non_empty.len() {
                 0 => Item::Empty,
                 1 => {
                     let (idx, item) = non_empty[0];
-                    let idx_seg = KeySegment::new(vec![idx as u8]);
+                    let idx_seg = KeySegment::try_from(vec![idx as u8])
+                        .expect("a single byte is at most 127 bytes");
                     match item {
                         Item::Empty => Item::Empty,
                         Item::Leaf {
                             prefix: leaf_prefix,
                             value,
                         } => Item::Leaf {
-                            prefix: prefix.concat(&idx_seg).concat(leaf_prefix),
+                            prefix: prefix.concat(&idx_seg)?.concat(leaf_prefix)?,
                             value: *value,
                         },
                         Item::NodePtr {
                             prefix: ptr_prefix,
                             ptr,
                         } => Item::NodePtr {
-                            prefix: prefix.concat(&idx_seg).concat(ptr_prefix),
+                            prefix: prefix.concat(&idx_seg)?.concat(ptr_prefix)?,
                             ptr: *ptr,
                         },
                     }
@@ -406,12 +409,12 @@ impl RadixTreeImpl {
                     prefix: prefix.clone(),
                     ptr: self.save_node(node),
                 },
-            }
+            })
         } else {
-            Item::NodePtr {
+            Ok(Item::NodePtr {
                 prefix: prefix.clone(),
                 ptr: self.save_node(node),
-            }
+            })
         }
     }
 
@@ -471,7 +474,7 @@ impl RadixTreeImpl {
                         &new_node,
                         &comm_prefix,
                         false,
-                    )))
+                    )?))
                 }
             }
             Item::NodePtr {
@@ -491,11 +494,18 @@ impl RadixTreeImpl {
                     let child_item = child_node[child_item_idx].clone();
                     let child_item_opt =
                         self.update(child_item, child_ins_prefix, ins_value).await?;
-                    Ok(child_item_opt.map(|new_child_item| {
-                        let mut updated_child_node = child_node.clone();
-                        updated_child_node[child_item_idx] = new_child_item;
-                        self.save_node_and_create_item(&updated_child_node, &comm_prefix, false)
-                    }))
+                    match child_item_opt {
+                        None => Ok(None),
+                        Some(new_child_item) => {
+                            let mut updated_child_node = child_node.clone();
+                            updated_child_node[child_item_idx] = new_child_item;
+                            Ok(Some(self.save_node_and_create_item(
+                                &updated_child_node,
+                                &comm_prefix,
+                                false,
+                            )?))
+                        }
+                    }
                 } else {
                     let mut new_node = empty_node();
                     new_node[ptr_prefix_rest.head() as usize] = Item::NodePtr {
@@ -510,7 +520,7 @@ impl RadixTreeImpl {
                         &new_node,
                         &comm_prefix,
                         false,
-                    )))
+                    )?))
                 }
             }
         }
@@ -545,11 +555,18 @@ impl RadixTreeImpl {
                     let del_item_prefix = del_prefix_rest.tail();
                     let child_item = child_node[del_item_idx].clone();
                     let child_item_opt = self.delete(child_item, del_item_prefix).await?;
-                    Ok(child_item_opt.map(|new_child_item| {
-                        let mut new_child_node = child_node.clone();
-                        new_child_node[del_item_idx] = new_child_item;
-                        self.save_node_and_create_item(&new_child_node, &comm_prefix, true)
-                    }))
+                    match child_item_opt {
+                        None => Ok(None),
+                        Some(new_child_item) => {
+                            let mut new_child_node = child_node.clone();
+                            new_child_node[del_item_idx] = new_child_item;
+                            Ok(Some(self.save_node_and_create_item(
+                                &new_child_node,
+                                &comm_prefix,
+                                true,
+                            )?))
+                        }
+                    }
                 }
             }
         }
@@ -601,8 +618,12 @@ impl RadixTreeImpl {
                     let new_actions: Vec<HistoryAction> =
                         cleared.iter().map(|a| a.trim()).collect();
                     let new_node_opt = self.make_actions(&created_node, &new_actions).await?;
-                    let new_item = new_node_opt
-                        .map(|n| self.save_node_and_create_item(&n, &KeySegment::empty(), true));
+                    let new_item = match new_node_opt {
+                        None => None,
+                        Some(n) => Some(
+                            self.save_node_and_create_item(&n, &KeySegment::empty(), true)?,
+                        ),
+                    };
                     (item_idx, new_item)
                 }
             };
@@ -657,11 +678,11 @@ mod tests {
     fn node_encoding_round_trips() {
         let mut node = empty_node();
         node[1] = Item::Leaf {
-            prefix: KeySegment::new(vec![0xff]),
+            prefix: KeySegment::try_from(vec![0xff]).expect("1 byte is at most 127"),
             value: Blake2b256Hash::from_bytes([0x11; 32]),
         };
         node[2] = Item::NodePtr {
-            prefix: KeySegment::new(vec![]),
+            prefix: KeySegment::empty(),
             ptr: Blake2b256Hash::from_bytes([0x22; 32]),
         };
         let decoded = decode(&SerializedNode::try_from(encode(&node).as_slice()).unwrap());
@@ -806,7 +827,7 @@ mod tests {
     async fn insert_read_update_delete_round_trip() {
         let tree = in_memory_tree();
         let root = empty_node();
-        let key = KeySegment::new(vec![1, 2, 3]);
+        let key = KeySegment::try_from(vec![1, 2, 3]).expect("3 bytes is at most 127");
         let value = Blake2b256Hash::from_bytes([0x42; 32]);
 
         let (root1, _) = tree
