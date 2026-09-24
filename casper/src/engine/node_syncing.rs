@@ -800,6 +800,14 @@ mod tests {
         // defect restored: the notification had already fired into an empty waiter set. This is the
         // pass's own rule again (a falsifier must fail against the tree with the defect in it), and the
         // reason the structure below is a `select!` rather than a sleep-then-check.
+        // The waiter captures the `notify_waiters` counter **at creation** (tokio's `notified()`
+        // reads it then and completes on the next poll if it moved), so creating it before the attempt
+        // can signal is what makes the observation independent of *when* the future is polled — no
+        // grace period, and no dependence on the scheduler. The first version created it *after* the
+        // failure and was blind to the defect for exactly that reason; the second bounded the
+        // fixture's progress with a 2 s sleep, which a loaded parallel runner can miss (a flaky
+        // failure rather than a missed defect). Both are the same lesson: what a tripwire observes,
+        // and when it starts observing, are part of its calibration.
         let mut waiter = std::pin::pin!(finished.notified());
         let handle = async {
             engine
@@ -808,26 +816,41 @@ mod tests {
         };
         tokio::pin!(handle);
         let mut handled = false;
-        let notified = loop {
+        // Drive the handler to completion; a generous bound, because this waits on the *fixture*
+        // (a spawned task's failure path), not on anything about the code under test.
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        while !handled {
             tokio::select! {
-                result = &mut handle, if !handled => {
+                result = &mut handle => {
                     result.expect("the fringe message is handled");
                     handled = true;
                 }
-                _ = &mut waiter => break true,
-                _ = tokio::time::sleep(Duration::from_secs(2)) => break false,
+                _ = tokio::time::sleep(Duration::from_millis(10)) => {
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "the fringe handler never returned"
+                    );
+                }
             }
-        };
-        assert!(handled, "the fringe handler ran");
-
+        }
         // The attempt must actually run and fail: without this the "no notification" assertion below
         // would pass on a node that never tried, which is the vacuous shape this test exists to avoid.
-        assert!(
-            log.contains("LFS state sync failed"),
-            "the sync attempt did not fail as the fixture intends, so this test proves nothing"
-        );
+        while !log.contains("LFS state sync failed") {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the sync attempt did not fail as the fixture intends, so this test proves nothing"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
 
-        // …and with the attempt failed, the node must stay where it is.
+        // …and with the attempt failed, the node must stay where it is. One `biased` poll of the
+        // waiter: it is ready if any `notify_waiters` happened after the waiter was created, which is
+        // checked without a time bound.
+        let notified = tokio::select! {
+            biased;
+            _ = &mut waiter => true,
+            _ = tokio::task::yield_now() => false,
+        };
         assert!(
             !notified,
             "a failed sync notified the sync-finished handle: `node_launch` would take the node into \
