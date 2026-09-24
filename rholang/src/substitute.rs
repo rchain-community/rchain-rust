@@ -236,7 +236,11 @@ pub fn substitute_receive_no_sort(
             })
         })
         .collect::<Result<Vec<_>, RholangError>>()?;
-    let body_sub = substitute_par_no_sort(&receive.body, depth, &env.shift(receive.bind_count))?;
+    let body_sub = substitute_par_no_sort(
+        &receive.body,
+        depth,
+        &env.shift(i32::from(receive.bind_count)),
+    )?;
     Ok(Receive {
         binds: binds_sub,
         body: Box::new(body_sub),
@@ -249,7 +253,7 @@ pub fn substitute_receive_no_sort(
 }
 
 pub fn substitute_new_no_sort(new: &New, depth: i32, env: &Env<Par>) -> Result<New, RholangError> {
-    let p_sub = substitute_par_no_sort(&new.p, depth, &env.shift(new.bind_count))?;
+    let p_sub = substitute_par_no_sort(&new.p, depth, &env.shift(i32::from(new.bind_count)))?;
     Ok(New {
         bind_count: new.bind_count,
         p: Box::new(p_sub),

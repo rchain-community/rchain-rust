@@ -296,7 +296,7 @@ fn sort_receive(r: &Receive) -> ScoredTerm<Receive> {
     let mut children = vec![leaf_i64(persistent_score), leaf_i64(peek_score)];
     children.extend(scored_binds.iter().map(|st| st.score.clone()));
     children.push(sorted_body.score.clone());
-    children.push(leaf_i64(r.bind_count as i64));
+    children.push(leaf_i64(i64::from(i32::from(r.bind_count))));
     children.push(leaf_i64(connective_used_score));
 
     ScoredTerm {
@@ -336,7 +336,7 @@ fn sort_new(n: &New) -> ScoredTerm<New> {
             .collect()
     };
 
-    let mut children = vec![leaf_i64(NEW), leaf_i64(n.bind_count as i64)];
+    let mut children = vec![leaf_i64(NEW), leaf_i64(i64::from(i32::from(n.bind_count)))];
     children.extend(uri_score);
     children.extend(injections_score);
     children.push(sorted_par.score.clone());
@@ -868,6 +868,7 @@ pub fn par_map(kvs: Vec<(Par, Par)>) -> ParMap {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::FreeCount;
     use std::collections::BTreeMap;
 
     fn par() -> Par {
@@ -911,7 +912,7 @@ mod tests {
             body: Box::new(body),
             persistent,
             peek,
-            bind_count: 0,
+            bind_count: FreeCount::ZERO,
             locally_free: AlwaysEqual(BitSet::new()),
             connective_used: false,
         }
@@ -1181,7 +1182,7 @@ mod tests {
     #[test]
     fn sort_news_based_on_bindcount_uris_and_body() {
         let new = |bind_count: i32, uri: &[&str], p: Par| New {
-            bind_count,
+            bind_count: FreeCount::try_from(bind_count).expect("non-negative"),
             uri: uri.iter().map(|s| s.to_string()).collect(),
             p: Box::new(p),
             ..New::default()
@@ -1213,7 +1214,7 @@ mod tests {
     fn sort_uris_in_news() {
         let par_new: Par = Par {
             news: vec![New {
-                bind_count: 1,
+                bind_count: FreeCount::ONE,
                 uri: vec!["rho:io:stdout".to_string(), "rho:io:stderr".to_string()],
                 ..New::default()
             }],
@@ -1221,7 +1222,7 @@ mod tests {
         };
         let expected: Par = Par {
             news: vec![New {
-                bind_count: 1,
+                bind_count: FreeCount::ONE,
                 uri: vec!["rho:io:stderr".to_string(), "rho:io:stdout".to_string()],
                 ..New::default()
             }],
@@ -1334,7 +1335,7 @@ mod tests {
     fn wildcard_new(bind_count: i32) -> Par {
         Par {
             news: vec![New {
-                bind_count,
+                bind_count: FreeCount::try_from(bind_count).expect("non-negative"),
                 p: Box::new(Expr::EVar(Box::new(Var::Wildcard)).into_par()),
                 ..New::default()
             }],
@@ -1376,7 +1377,7 @@ mod tests {
     #[test]
     fn unequal_new_have_unequal_scores() {
         let new1 = New {
-            bind_count: 1,
+            bind_count: FreeCount::ONE,
             injections: BTreeMap::from([(
                 "".to_string(),
                 Par {
@@ -1391,7 +1392,7 @@ mod tests {
             ..New::default()
         };
         let new2 = New {
-            bind_count: 1,
+            bind_count: FreeCount::ONE,
             ..New::default()
         };
         assert_ne!(new1, new2);

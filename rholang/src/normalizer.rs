@@ -35,6 +35,21 @@ fn pos() -> SourcePosition {
     SourcePosition { row: 0, column: 0 }
 }
 
+/// A free-level count the normalizer computed, as the carrier — refused rather than clamped (U1,
+/// site 5).
+///
+/// `FreeMap::count_no_wildcards` is a counter that starts at zero and only advances, so a negative
+/// value here is a bug in the normalizer rather than data. But the count is *read back*: `resolve_match`
+/// fills the continuation's environment from the matcher's free map for `0..free_count`, and
+/// `well_scoped_par` uses `bind_count` as a depth, so a count that disagreed with the pattern would
+/// ask for bindings that do not exist. `FreeCount` is what the `free_count`/`bind_count` fields on
+/// every one of these paths hold now; this is the one place the counter's `i32` is narrowed.
+fn checked_level_count(n: i32, what: &str) -> Result<FreeCount, RholangError> {
+    FreeCount::new(n).ok_or_else(|| {
+        RholangError::BugFoundError(format!("negative free-level count for {what}: {n}"))
+    })
+}
+
 fn with_connective_used(mut par: Par) -> Par {
     par.connective_used = true;
     par
@@ -660,7 +675,14 @@ fn normalize_new(
         .collect();
 
     let new_env = input.bound_map_chain.put_all(&new_bindings);
-    let new_count = new_env.count() - input.bound_map_chain.count();
+    // The number of levels this `new` introduces. A `usize`-shaped count of the bindings the walk
+    // just added, narrowed once here — and *checked*: `FreeCount` is the carrier the two
+    // `bind_count`/`free_count` fields on this path hold, and a negative count is a bug in the
+    // normalizer, not data (U1 site 5).
+    let new_count = checked_level_count(
+        new_env.count() - input.bound_map_chain.count(),
+        "new bindings",
+    )?;
     let body_result = normalize_proc(
         body,
         ProcVisitInputs {
@@ -676,7 +698,10 @@ fn normalize_new(
         p: Box::new(body_result.par.clone()),
         uri: uris,
         injections: input.env.clone(),
-        locally_free: AlwaysEqual(from_free(&body_result.par.locally_free.0, new_count)),
+        locally_free: AlwaysEqual(from_free(
+            &body_result.par.locally_free.0,
+            i32::from(new_count),
+        )),
     };
     Ok(ProcVisitOutputs {
         par: prepend_new(&input.par, n),
@@ -717,7 +742,10 @@ fn normalize_match(
             },
         )?;
         let case_env = input.bound_map_chain.absorb_free(&pattern_result.free_map);
-        let bound_count = pattern_result.free_map.count_no_wildcards();
+        let bound_count = checked_level_count(
+            pattern_result.free_map.count_no_wildcards(),
+            "match case pattern",
+        )?;
         let case_body_result = normalize_proc(
             case_body,
             ProcVisitInputs {
@@ -732,12 +760,12 @@ fn normalize_match(
         match_cases.push(MatchCase {
             pattern: Box::new(pattern_result.par.clone().quote()),
             source: Box::new(case_body_result.par.clone()),
-            free_count: FreeCount::from_nonneg(bound_count),
+            free_count: bound_count,
         });
         locally_free = union_free(&locally_free, &pattern_result.par.locally_free.0);
         locally_free = union_free(
             &locally_free,
-            &from_free(&case_body_result.par.locally_free.0, bound_count),
+            &from_free(&case_body_result.par.locally_free.0, i32::from(bound_count)),
         );
         connective_used = connective_used || case_body_result.par.connective_used;
         free_map = case_body_result.free_map;
@@ -816,7 +844,8 @@ fn normalize_contr(
 
     let (remainder_var, remainder_free_map) = normalize_remainder_name(remainder, free_map)?;
     let new_env = input.bound_map_chain.absorb_free(&remainder_free_map);
-    let bound_count = remainder_free_map.count_no_wildcards();
+    let bound_count =
+        checked_level_count(remainder_free_map.count_no_wildcards(), "receive pattern")?;
     let body_result = normalize_proc(
         body,
         ProcVisitInputs {
@@ -832,7 +861,7 @@ fn normalize_contr(
             patterns: formal_pars.into_iter().rev().map(|p| p.quote()).collect(),
             source: Box::new(name_result.par.clone().quote()),
             remainder: remainder_var.map(Box::new),
-            free_count: FreeCount::from_nonneg(bound_count),
+            free_count: bound_count,
         }],
         body: Box::new(body_result.par.clone()),
         persistent: true,
@@ -840,7 +869,7 @@ fn normalize_contr(
         bind_count: bound_count,
         locally_free: AlwaysEqual(union_free(
             &union_free(&name_result.par.locally_free.0, &formal_locally_free),
-            &from_free(&body_result.par.locally_free.0, bound_count),
+            &from_free(&body_result.par.locally_free.0, i32::from(bound_count)),
         )),
         connective_used: name_result.par.connective_used || body_result.par.connective_used,
     };
@@ -1292,12 +1321,13 @@ fn normalize_input(
             patterns_locally_free = union_free(&patterns_locally_free, &res.par.locally_free.0);
         }
         let (opt_var, pattern_free) = normalize_remainder_name(remainder, pattern_free)?;
-        let free_count = pattern_free.count_no_wildcards();
+        let free_count =
+            checked_level_count(pattern_free.count_no_wildcards(), "receive bind pattern")?;
         let rb = ReceiveBind {
             patterns: pattern_pars.into_iter().map(|p| p.quote()).collect(),
             source: Box::new(source_pars[binds.len()].clone().quote()),
             remainder: opt_var.map(Box::new),
-            free_count: FreeCount::from_nonneg(free_count),
+            free_count,
         };
         binds.push((rb, pattern_free));
     }
@@ -1342,7 +1372,8 @@ fn normalize_input(
         },
     )?;
 
-    let bind_count = receive_binds_free_map.count_no_wildcards();
+    let bind_count =
+        checked_level_count(receive_binds_free_map.count_no_wildcards(), "receive binds")?;
     let receive = Receive {
         binds: receive_binds,
         body: Box::new(body_result.par.clone()),
@@ -1351,7 +1382,7 @@ fn normalize_input(
         bind_count,
         locally_free: AlwaysEqual(union_free(
             &union_free(&sources_locally_free, &patterns_locally_free),
-            &from_free(&body_result.par.locally_free.0, bind_count),
+            &from_free(&body_result.par.locally_free.0, i32::from(bind_count)),
         )),
         connective_used: sources_connective_used || body_result.par.connective_used,
     };
@@ -1428,7 +1459,8 @@ fn normalize_let(
     // Build the pattern EList from the LHS names.
     let pattern_par = list_name_to_elist(&decl.0, &decl.1, &input)?;
 
-    let pattern_bound_count = pattern_par.free_map.count_no_wildcards();
+    let pattern_bound_count =
+        checked_level_count(pattern_par.free_map.count_no_wildcards(), "match pattern")?;
     let continuation = normalize_proc(
         &new_continuation,
         ProcVisitInputs {
@@ -1444,14 +1476,17 @@ fn normalize_let(
         cases: vec![MatchCase {
             pattern: Box::new(pattern_par.par.clone().quote()),
             source: Box::new(continuation.par.clone()),
-            free_count: FreeCount::from_nonneg(pattern_bound_count),
+            free_count: pattern_bound_count,
         }],
         locally_free: AlwaysEqual(union_free(
             &union_free(
                 &value_par.par.locally_free.0,
                 &pattern_par.par.locally_free.0,
             ),
-            &from_free(&continuation.par.locally_free.0, pattern_bound_count),
+            &from_free(
+                &continuation.par.locally_free.0,
+                i32::from(pattern_bound_count),
+            ),
         )),
         connective_used: value_par.par.connective_used || continuation.par.connective_used,
     };

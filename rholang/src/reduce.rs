@@ -1887,13 +1887,19 @@ fn resolve_receive(
                     .map(|p| SortedProc::new(p.eval()))
                     .collect(),
                 remainder: rb.remainder.as_deref().cloned(),
+                // `BindPattern.free_count` is still an `i32` (casper/node construct the struct with
+                // literals), so the carrier is discharged here — the one boundary on this path.
                 free_count: i32::from(rb.free_count),
             },
             SortedProc::new(q),
         ));
     }
-    let subst_body =
-        substitute_par_and_charge(&receive.body, 0, &env.shift(receive.bind_count), cost)?;
+    let subst_body = substitute_par_and_charge(
+        &receive.body,
+        0,
+        &env.shift(i32::from(receive.bind_count)),
+        cost,
+    )?;
     Ok(Effect::Consume(
         binds,
         ParWithRandom {
@@ -1934,10 +1940,12 @@ fn resolve_new(
     urn_map: &BTreeMap<String, Par>,
     cost: &CostAccounting,
 ) -> Result<Effect, RholangError> {
-    cost.charge(Costs::new_bindings_cost(new.bind_count as i64))?;
+    cost.charge(Costs::new_bindings_cost(i64::from(i32::from(
+        new.bind_count,
+    ))))?;
     let mut r = (*rand).clone();
     let new_env = alloc(
-        new.bind_count,
+        i32::from(new.bind_count),
         &new.uri,
         &new.injections,
         env,

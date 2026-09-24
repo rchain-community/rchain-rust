@@ -239,7 +239,9 @@ pub struct Receive {
     pub body: Box<Par>,
     pub persistent: bool,
     pub peek: bool,
-    pub bind_count: i32,
+    /// The number of variables this receive binds — a [`FreeCount`], like the `free_count` fields of
+    /// `ReceiveBind`/`MatchCase` on the same path, and validated at the proto boundary (U1).
+    pub bind_count: FreeCount,
     pub locally_free: AlwaysEqual<BitSet>,
     pub connective_used: bool,
 }
@@ -247,7 +249,9 @@ pub struct Receive {
 /// A `new x1, ..., xn in { p }`.
 #[derive(Clone, Debug, PartialEq, Ord, PartialOrd, Eq, Default, Serialize, Deserialize)]
 pub struct New {
-    pub bind_count: i32,
+    /// The number of variables this `new` binds — a [`FreeCount`], validated at the proto boundary
+    /// (U1), so `well_scoped_par`'s `depth + bind_count` needs no clamp.
+    pub bind_count: FreeCount,
     pub p: Box<Par>,
     pub uri: Vec<String>,
     pub injections: BTreeMap<String, Par>,

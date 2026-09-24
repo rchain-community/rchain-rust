@@ -272,10 +272,13 @@ impl PrettyPrinter {
     }
 
     fn build_new(&self, n: &New, indent: i32) -> String {
-        let introduced: Vec<i32> = (0..n.bind_count).map(|i| i + self.bound_shift).collect();
-        let variables = self.build_variables(n.bind_count);
+        // The printer's own arithmetic is `i32` (indices and shifts); the carrier is discharged here,
+        // at the rendering boundary, once.
+        let bind_count = i32::from(n.bind_count);
+        let introduced: Vec<i32> = (0..bind_count).map(|i| i + self.bound_shift).collect();
+        let variables = self.build_variables(bind_count);
         let body = self.with(|c| {
-            c.bound_shift += n.bind_count;
+            c.bound_shift += bind_count;
             c.news_shift_indices.extend(introduced.iter().copied());
         });
         format!(

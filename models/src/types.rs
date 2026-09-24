@@ -59,11 +59,19 @@ pub fn classify(p: &Par) -> PSort {
 /// The `remainder` binding (`ReceiveBind`/`EList`/`ParSet`/`ParMap`) is *not* counted here — callers
 /// with a `remainder` must add 1. `New.injections` is not walked (mirrors `well_scoped_par`).
 pub fn count_free_vars<S: Sort>(p: &Par<S>) -> i32 {
+    i32::from(count_free_vars_refined(p))
+}
+
+/// [`count_free_vars`] as the carrier it is: a count of distinct levels a walk found, so the sign is
+/// impossible and the only bound is width ([`FreeCount::from_len`] states it). The two spellings
+/// walk the same occurrence set — the `i32` form is kept because `casper`'s runtime builders assign
+/// it to `BindPattern.free_count`, an `i32` field the carrier does not cover yet (AUDIT C52).
+pub fn count_free_vars_refined<S: Sort>(p: &Par<S>) -> FreeCount {
     let mut levels = BTreeSet::new();
     collect_free_vars_par(p, &mut |l| {
         levels.insert(l);
     });
-    levels.len() as i32
+    FreeCount::from_len(levels.len())
 }
 
 /// **Law 5's predicate**: no free level occurs twice in `p`, so matching `p` binds each level at most
@@ -433,16 +441,16 @@ fn well_scoped_receive_bind(depth: usize, rb: &ReceiveBind) -> bool {
 
 fn well_scoped_receive(depth: usize, r: &Receive) -> bool {
     r.binds.iter().all(|b| well_scoped_receive_bind(depth, b))
-        && well_scoped_par(depth + r.bind_count.max(0) as usize, &r.body)
+        && well_scoped_par(depth + i32::from(r.bind_count) as usize, &r.body)
 }
 
 fn well_scoped_new(depth: usize, n: &New) -> bool {
-    well_scoped_par(depth + n.bind_count.max(0) as usize, &n.p)
+    well_scoped_par(depth + i32::from(n.bind_count) as usize, &n.p)
 }
 
 fn well_scoped_match_case(depth: usize, mc: &MatchCase) -> bool {
     well_scoped_par(depth, &mc.pattern)
-        && well_scoped_par(depth + i32::from(mc.free_count).max(0) as usize, &mc.source)
+        && well_scoped_par(depth + i32::from(mc.free_count) as usize, &mc.source)
 }
 
 fn well_scoped_match(depth: usize, m: &Match) -> bool {
@@ -572,6 +580,9 @@ impl FreeCount {
     /// The empty-pattern count.
     pub const ZERO: FreeCount = FreeCount(0);
 
+    /// The single-binding count — one level, as in `for (x <- c)`.
+    pub const ONE: FreeCount = FreeCount(1);
+
     /// Validated construction — the declared partiality boundary for a negative count.
     pub fn new(n: i32) -> Option<FreeCount> {
         if n >= 0 {
@@ -581,10 +592,32 @@ impl FreeCount {
         }
     }
 
-    /// Total construction from a count already known non-negative (e.g. `FreeMap::count_no_wildcards`).
-    pub fn from_nonneg(n: i32) -> FreeCount {
-        debug_assert!(n >= 0, "free-count must be non-negative");
-        FreeCount(n)
+    /// Total construction from a count of things that *exist*: a `BTreeSet`'s length
+    /// ([`count_free_vars_refined`]), a level counter, a sum of validated counts.
+    ///
+    /// A `usize` cannot be negative, so the only way out of the domain is width, and reaching
+    /// `i32::MAX` takes 2³¹ distinct free levels — 2³¹ variable nodes, tens of GiB, before the count
+    /// is even formed. Saturation rather than wrapping, which is this tree's rule for exactly this
+    /// shape (`shared/src/refined.rs`'s `BlockHeight`/`SeqNum` `Add`, with the same reasoning): a
+    /// wrap would produce a *negative* "non-negative" count, the one value the carrier exists to
+    /// exclude, where saturation keeps the value in the domain and monotone in its input.
+    ///
+    /// Successor of `from_nonneg`, deleted 2026-09-24 (AUDIT C52): that one took a raw `i32` and
+    /// asserted `n >= 0` in a `debug_assert!` — compiled out in release, so the invalid count was
+    /// carried silently in exactly the builds that matter. Taking the count of a collection makes the
+    /// sign impossible instead of asserted.
+    pub fn from_len(n: usize) -> FreeCount {
+        FreeCount(i32::try_from(n).unwrap_or(i32::MAX))
+    }
+}
+
+/// The carrier's own addition, which preserves the invariant: both operands are non-negative, so the
+/// saturated sum is too ([`FreeCount::from_len`] carries the width argument, and `BlockHeight`'s
+/// `Add` makes the same choice for the same reason).
+impl std::ops::Add for FreeCount {
+    type Output = FreeCount;
+    fn add(self, rhs: FreeCount) -> FreeCount {
+        FreeCount(self.0.saturating_add(rhs.0))
     }
 }
 
@@ -753,7 +786,7 @@ mod tests {
         // `new x in { x }` — the body's `BoundVar(0)` references the `new` binder.
         let program = Par {
             news: vec![New {
-                bind_count: 1,
+                bind_count: FreeCount::ONE,
                 p: Box::new(Par {
                     exprs: vec![Expr::EVar(Box::new(Var::BoundVar(0)))],
                     ..Default::default()
@@ -772,9 +805,44 @@ mod tests {
         assert_eq!(i32::from(FreeCount::new(3).unwrap()), 3);
     }
 
+    /// Every way into the carrier is non-negative — the class-level statement `from_nonneg` broke
+    /// (U1 site 5). Its `debug_assert!(n >= 0)` is compiled out in release, so a negative count
+    /// crossed the boundary silently in exactly the builds that matter; the total constructor now
+    /// takes a `usize` ([`FreeCount::from_len`]), where the sign cannot be written.
     #[test]
-    fn free_count_from_nonneg() {
-        assert_eq!(i32::from(FreeCount::from_nonneg(5)), 5);
+    fn every_free_count_constructor_stays_in_the_domain() {
+        for n in [-1, 0, 1, i32::MIN, i32::MAX] {
+            if let Some(fc) = FreeCount::new(n) {
+                assert!(i32::from(fc) >= 0);
+            }
+            if let Ok(fc) = FreeCount::try_from(n) {
+                assert!(i32::from(fc) >= 0);
+            }
+        }
+        for n in [0usize, 1, usize::MAX] {
+            assert!(i32::from(FreeCount::from_len(n)) >= 0);
+        }
+        assert!(i32::from(FreeCount::ONE) >= 0);
+        assert!(i32::from(FreeCount::ZERO) >= 0);
+    }
+
+    /// The total constructor's only escape is width, and it saturates rather than wrapping — the
+    /// house rule for this shape (`shared/src/refined.rs`'s `BlockHeight`/`SeqNum`): a wrap would
+    /// yield a *negative* "non-negative" count.
+    #[test]
+    fn free_count_from_len_saturates_and_add_preserves_the_invariant() {
+        assert_eq!(i32::from(FreeCount::from_len(5)), 5);
+        assert_eq!(i32::from(FreeCount::from_len(0)), 0);
+        assert_eq!(i32::from(FreeCount::from_len(usize::MAX)), i32::MAX);
+        assert_eq!(
+            i32::from(FreeCount::from_len(2) + FreeCount::from_len(3)),
+            5
+        );
+        assert_eq!(
+            i32::from(FreeCount::from_len(usize::MAX) + FreeCount::from_len(usize::MAX)),
+            i32::MAX,
+            "a saturated sum stays in the domain"
+        );
     }
 
     #[test]
@@ -789,12 +857,12 @@ mod tests {
                     }],
                     source: Box::new(Par::default()),
                     remainder: None,
-                    free_count: FreeCount::from_nonneg(1),
+                    free_count: FreeCount::ONE,
                 }],
                 body: Box::new(Par::default()),
                 persistent: false,
                 peek: false,
-                bind_count: 1,
+                bind_count: FreeCount::ONE,
                 locally_free: Default::default(),
                 connective_used: false,
             }],
@@ -818,7 +886,7 @@ mod tests {
                         .quote(),
                     ),
                     source: Box::new(Par::default()),
-                    free_count: FreeCount::from_nonneg(1),
+                    free_count: FreeCount::ONE,
                 }],
                 locally_free: Default::default(),
                 connective_used: false,

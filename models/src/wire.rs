@@ -652,7 +652,7 @@ pub fn receive_to_proto(r: &a::Receive) -> p::Receive {
         body: Some(par_to_proto(r.body.as_ref())),
         persistent: r.persistent,
         peek: r.peek,
-        bind_count: r.bind_count,
+        bind_count: i32::from(r.bind_count),
         locally_free: bitset_to_bytes(&r.locally_free.0),
         connective_used: r.connective_used,
     }
@@ -669,7 +669,10 @@ pub fn receive_from_proto(p: &p::Receive) -> Result<a::Receive, ModelsError> {
         )?),
         persistent: p.persistent,
         peek: p.peek,
-        bind_count: p.bind_count,
+        // Refused here when negative, like the `free_count` of `ReceiveBind`/`MatchCase` — the same
+        // field family, the same boundary (U1; the carrier is `FreeCount`, so the term cannot hold a
+        // negative count and `well_scoped_par`'s `depth + bind_count` needs no clamp).
+        bind_count: FreeCount::try_from(p.bind_count).map_err(ModelsError::Decode)?,
         locally_free: a::AlwaysEqual(bytes_to_bitset(&p.locally_free)),
         connective_used: p.connective_used,
     })
@@ -700,7 +703,7 @@ pub fn receive_bind_from_proto(p: &p::ReceiveBind) -> Result<a::ReceiveBind, Mod
 
 pub fn new_to_proto(n: &a::New) -> p::New {
     p::New {
-        bind_count: n.bind_count,
+        bind_count: i32::from(n.bind_count),
         p: Some(par_to_proto(n.p.as_ref())),
         uri: n.uri.clone(),
         injections: n
@@ -713,7 +716,7 @@ pub fn new_to_proto(n: &a::New) -> p::New {
 }
 pub fn new_from_proto(p: &p::New) -> Result<a::New, ModelsError> {
     Ok(a::New {
-        bind_count: p.bind_count,
+        bind_count: FreeCount::try_from(p.bind_count).map_err(ModelsError::Decode)?,
         p: Box::new(par_from_proto(
             p.p.as_ref().ok_or(ModelsError::Malformed("p"))?,
         )?),
@@ -1389,12 +1392,12 @@ mod differential {
                     body: Box::new(par(6)),
                     persistent: true,
                     peek: true,
-                    bind_count: 1,
+                    bind_count: FreeCount::ONE,
                     locally_free: bit(2),
                     connective_used: false,
                 }],
                 news: vec![a::New {
-                    bind_count: 3,
+                    bind_count: FreeCount::from_len(3),
                     p: Box::new(par(7)),
                     uri: vec!["rho:io".to_string()],
                     injections: std::collections::BTreeMap::new(),
@@ -1593,6 +1596,47 @@ mod differential {
             assert_eq!(
                 bundle_from_proto(&bundle).expect_err("no body"),
                 ModelsError::Malformed("body")
+            );
+        }
+
+        /// A peer's `New`/`Receive` message may carry a **negative** `bind_count` (`RhoTypes.proto`
+        /// spells it `int32`, which is signed). The field is not inert: it is part of the term's sort
+        /// key (`sorter.rs`'s `leaf_i64(bind_count)`), an input to `well_scoped_par`'s depth
+        /// arithmetic, and — once a `New` is normalized — the extent of the levels the body may
+        /// reference. The port carried it through unvalidated and clamped it where it was used
+        /// (`.max(0)`, `types.rs:436/440`), which both hides the malformed message and keeps a term
+        /// whose count cannot mean anything. Both counters are `FreeCount` carriers now, so the sign
+        /// is refused *here*, at the declared boundary — the same validate-on-ingress rule the
+        /// sibling `free_count` fields follow (AUDIT §11 R12, C52).
+        ///
+        /// Falsifier: with the pass-through restored (`bind_count: p.bind_count`), this fails — both
+        /// decoders answer `Ok` with a negative count in the term.
+        #[test]
+        fn a_negative_bind_count_is_refused_at_the_wire_boundary() {
+            let receive = p::Receive {
+                binds: Vec::new(),
+                body: Some(par_to_proto(&par(0))),
+                persistent: false,
+                peek: false,
+                bind_count: -1,
+                locally_free: Vec::new(),
+                connective_used: false,
+            };
+            assert!(
+                receive_from_proto(&receive).is_err(),
+                "a receive declaring a negative bind count must be refused"
+            );
+
+            let new = p::New {
+                bind_count: -2,
+                p: Some(par_to_proto(&par(0))),
+                uri: Vec::new(),
+                injections: std::collections::BTreeMap::new(),
+                locally_free: Vec::new(),
+            };
+            assert!(
+                new_from_proto(&new).is_err(),
+                "a `new` declaring a negative bind count must be refused"
             );
         }
 

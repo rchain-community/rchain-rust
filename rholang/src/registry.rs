@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 
 use rchain_models::ast::{AlwaysEqual, Expr, New, Par, Receive, ReceiveBind, Send, Var};
 use rchain_models::par_ops::from_expr;
-use rchain_models::types::{count_free_vars, FreeCount};
+use rchain_models::types::{count_free_vars_refined, FreeCount};
 
 use crate::system_processes::FixedChannels;
 
@@ -61,14 +61,18 @@ pub fn registry_bootstrap_ast() -> Par {
 fn bootstrap(channel: &Par) -> New {
     let pattern = from_expr(Expr::EVar(Box::new(Var::FreeVar(0)))).quote();
     New {
-        bind_count: 1,
+        bind_count: FreeCount::ONE,
         p: Box::new(Par {
             receives: vec![Receive {
                 binds: vec![ReceiveBind {
                     patterns: vec![pattern.clone()],
                     source: Box::new(channel.clone().quote()),
                     remainder: None,
-                    free_count: FreeCount::from_nonneg(count_free_vars(&pattern)),
+                    // Derived from the pattern's own shape, not hardcoded: the count is what the
+                    // matcher will bind (`RhoMatch::get` fills `0..free_count`), and `count_free_vars`
+                    // returns the carrier's own `i32` form only because casper's runtime builders
+                    // assign it to `BindPattern.free_count` (U1 site 5).
+                    free_count: count_free_vars_refined(&pattern),
                 }],
                 body: Box::new(Par {
                     sends: vec![Send {
@@ -82,7 +86,7 @@ fn bootstrap(channel: &Par) -> New {
                 }),
                 persistent: false,
                 peek: false,
-                bind_count: 1,
+                bind_count: FreeCount::ONE,
                 locally_free: AlwaysEqual(vec![]),
                 connective_used: false,
             }],
