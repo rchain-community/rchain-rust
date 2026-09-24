@@ -235,7 +235,13 @@ def laws : List Law := [
       enum) / `Connective`; and the model lacks **eight** `Expr`-level constructors, *counted* against \
       the node's tag table rather than summarised (AUDIT C58): `BIG_INT`(13), `EMETHOD`(115), \
       `EMATCHES`(118), `EPERCENT`(119), `EPLUSPLUS`(120), `EMINUSMINUS`(121), `ESHORTAND`(123), \
-      `ESHORTOR`(124). Line them up and the reason they are not \"eight more arms\" is structural: the \
+      `ESHORTOR`(124). **Three of those eight are conflations, not missing arms**, which is the \
+      sharper defect: `EMATCHES`, `ESHORTAND` and `ESHORTOR` *have* constructors (`ematches`, \
+      `eshortand`, `eshortor`, `Par.lean:67-69`), but `Surface.lean:484,492,496` normalises \
+      `.matches`/`.shortAnd`/`.shortOr` onto `eeq`/`eand`/`eor` — so the model answers **`eq`** \
+      where the node's tag table says **`gt`**, a *wrong verdict on a statable pair* rather than a \
+      coarser algebra. The genuinely missing five are `BIG_INT`(13), `EMETHOD`(115), \
+      `EPERCENT`(119), `EPLUSPLUS`(120) and `EMINUSMINUS`(121). Line them up and the reason they are not \"eight more arms\" is structural: the \
       node's tags *interleave* (scalars 1–4, collections 6–9, `BIG_INT` 13, vars 50–52, operators \
       100–124, `EBYTEARR` 116) while `cmpExpr` classifies by constructor *kind*, so a faithful order \
       needs a case split finer than one class per constructor — inside a block that `WellFounded.fix` \
