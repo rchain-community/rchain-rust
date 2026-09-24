@@ -402,7 +402,46 @@ fi
 # `:45` and `:250` fail; `:400` passes only because a test there is named after the function.
 printf '\n== register anchors (every cited line still holds what the row says) ==\n'
 ANCHOR_CITE='([A-Za-z0-9_][A-Za-z0-9_./-]*\.(rs|v|lean|md|scala|toml|sh|tsv|json|rhox|rho)):([0-9]+)(-([0-9]+))?|:([0-9]+)(-([0-9]+))?'
+# **A citation may name a token instead of a line** (`path:identifier`), and that is the form that
+# cannot rot: a line-anchored citation into a script moves whenever a step above it is edited, and
+# nothing in the register can tell. Law 30's moved **twice in one day** (AUDIT C70, C76) — once by a
+# 40-line growth, once by a 13-line `ulimit` comment — and both times the audit was the only thing that
+# could see it. So the symbol form is *checked*, not merely tolerated: the identifier must occur in the
+# cited file, which is the direction that matters, because a renamed function must break its citation
+# here rather than pass as prose.
+ANCHOR_SYM='([A-Za-z0-9_][A-Za-z0-9_./-]*\.(rs|v|lean|md|scala|toml|sh|tsv|json|rhox|rho)):([A-Za-z_][A-Za-z0-9_]*)'
 ANCHOR_INDEX="$(cd "$ROOT" && git ls-files | awk -F/ '{print $NF"\t"$0}' | sort)"
+
+# resolve a citation's path to a file: as written, then by the row's own anchors (basename), then by a
+# unique basename in the tree. Sets the global `file` ("" when it does not resolve) — shared by both
+# citation forms, so the two cannot drift apart in how they resolve a path.
+anchor_resolve() {
+  file=""
+  if [[ "$1" == */* ]]; then
+    for cand in "$ROOT/$1" "$ROOT/spec/$1"; do [[ -f "$cand" ]] && { file="$cand"; break; }; done
+  else
+    local pref matches
+    pref="$(printf '%s\n' "$row_anchors" | grep -E "/$1\$" | head -1 || true)"
+    [[ -n "$pref" && -f "$ROOT/$pref" ]] && file="$ROOT/$pref"
+    if [[ -z "$file" ]]; then
+      matches="$(printf '%s\n' "$ANCHOR_INDEX" | awk -F'\t' -v b="$1" '$1 == b {print $2}')"
+      [[ "$(printf '%s\n' "$matches" | grep -c . || true)" == "1" ]] && file="$ROOT/$matches"
+    fi
+  fi
+}
+
+# Is `$2` present in file `$1`? A citation may name the model's snake_case spelling or the port's
+# camelCase one — the same asymmetry the window check below handles, and for the same reason: refusing
+# a correct citation is the failure mode this check must not have.
+sym_present() {
+  local v="$2" camel snake
+  if grep -qE "(^|[^A-Za-z0-9_])$v([^A-Za-z0-9_]|\$)" "$1"; then return 0; fi
+  camel="$(printf '%s' "$v" | awk -F_ '{s=$1; for(i=2;i<=NF;i++) s=s toupper(substr($i,1,1)) substr($i,2); print s}')"
+  if [[ "$camel" != "$v" ]] && grep -qE "(^|[^A-Za-z0-9_])$camel([^A-Za-z0-9_]|\$)" "$1"; then return 0; fi
+  snake="$(printf '%s' "$v" | awk '{s=""; for(i=1;i<=length($0);i++){c=substr($0,i,1); if (c ~ /[A-Z]/) s=s "_" tolower(c); else s=s c} print s}')"
+  if [[ "$snake" != "$v" ]] && grep -qE "(^|[^A-Za-z0-9_])$snake([^A-Za-z0-9_]|\$)" "$1"; then return 0; fi
+  return 1
+}
 anchor_total=0
 anchor_bad_before=$failures
 # The delimiter is `\034`, not tab, and that is load-bearing: `read` treats tab as IFS *whitespace*,
@@ -438,18 +477,7 @@ while IFS=$'\034' read -r num clause layer status decls axioms corpus rust coq w
       anchor_total=$((anchor_total + 1))
       # A path with an ellipsis is a pointer for a reader, not a citation this can resolve.
       [[ "$cite_path" == *...* ]] && continue
-      # resolve: as written, then the row's own anchors by basename, then a unique basename in the tree
-      file=""
-      if [[ "$cite_path" == */* ]]; then
-        for cand in "$ROOT/$cite_path" "$ROOT/spec/$cite_path"; do [[ -f "$cand" ]] && { file="$cand"; break; }; done
-      else
-        pref="$(printf '%s\n' "$row_anchors" | grep -E "/$cite_path\$" | head -1 || true)"
-        [[ -n "$pref" && -f "$ROOT/$pref" ]] && file="$ROOT/$pref"
-        if [[ -z "$file" ]]; then
-          matches="$(printf '%s\n' "$ANCHOR_INDEX" | awk -F'\t' -v b="$cite_path" '$1 == b {print $2}')"
-          [[ "$(printf '%s\n' "$matches" | grep -c . || true)" == "1" ]] && file="$ROOT/$matches"
-        fi
-      fi
+      anchor_resolve "$cite_path"
       if [[ -z "$file" ]]; then
         fail "law ${num}${clause}: \`$cite_path:$from\` does not resolve — write the path in full (its basename is ambiguous or absent)"
         continue
@@ -474,6 +502,26 @@ while IFS=$'\034' read -r num clause layer status decls axioms corpus rust coq w
       done <<< "$row_idents"
       if [[ -z "$hit" ]]; then
         fail "law ${num}${clause}: \`$cite_path:$from-$to\` holds no identifier the row names — $(sed -n "${from}p" "$file" | cut -c1-60)"
+      fi
+    done
+    # The same row's citations in **symbol form** (`path:identifier`), separated from the line form
+    # because the two have different obligations: a line citation is checked against a window, a symbol
+    # citation against the whole file, and a symbol citation that names nothing must fail here rather
+    # than be skipped — a silently-skipped citation is the blindness this check exists to prevent.
+    symtext="$cell"
+    while [[ "$symtext" =~ $ANCHOR_SYM ]]; do
+      cite="${BASH_REMATCH[0]}"
+      cite_path="${BASH_REMATCH[1]}"; sym="${BASH_REMATCH[3]}"
+      symtext="${symtext#*"$cite"}"
+      anchor_total=$((anchor_total + 1))
+      [[ "$cite_path" == *...* ]] && continue
+      anchor_resolve "$cite_path"
+      if [[ -z "$file" ]]; then
+        fail "law ${num}${clause}: \`$cite_path:$sym\` does not resolve — write the path in full (its basename is ambiguous or absent)"
+        continue
+      fi
+      if ! sym_present "$file" "$sym"; then
+        fail "law ${num}${clause}: \`$cite_path:$sym\` names no \`$sym\` in that file — the symbol form is *checked*, so a rename must land with its citation"
       fi
     done
   done
