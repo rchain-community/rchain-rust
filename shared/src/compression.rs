@@ -12,6 +12,16 @@ pub fn compress(content: &[u8]) -> Vec<u8> {
 }
 
 /// Decompress a raw LZ4 block of exactly `decompressed_length` bytes, or `None` on failure.
+///
+/// **The `Option` is the oracle's shape, not a flattened error** (`Compression.scala:19-21` is
+/// `Try(…).toOption`), so it cannot distinguish "a corrupt LZ4 block" from "not an LZ4 block at all" —
+/// and nothing downstream asks it to: the wire's `compressed` flag decides whether a payload *was*
+/// compressed, and the only production caller (`comm/src/transport/stream_handler.rs`, porting
+/// `StreamHandler.scala:201-211`) turns `None` into "Could not decompress data" rather than passing the
+/// payload through. The length-prefixed codec the `BlockStore` uses is separately fallible
+/// (`block-storage/src/block_store.rs`'s `StorageError::DecompressionError`). Stated because a reader
+/// auditing the `Option` will otherwise re-derive whether a codec failure is being read as a
+/// non-compressed payload — it is not, at any call site.
 pub fn decompress(compressed: &[u8], decompressed_length: usize) -> Option<Vec<u8>> {
     lz4_flex::block::decompress(compressed, decompressed_length).ok()
 }
