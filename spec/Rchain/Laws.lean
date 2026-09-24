@@ -223,7 +223,7 @@ def laws : List Law := [
   { number := 1, clause := "b", layer := "Rholang",
     statement := "Each element comparator (`cmpPar`, `cmpSend`, …, `cmpConnective`) is a lawful total \
       order: `eq_iff`, `swap`, `lt_trans`",
-    status := .owed,
+    status := .provedModel,
     declarations := [`Rchain.cmpPar, `Rchain.cmpSend, `Rchain.cmpExpr, `Rchain.cmpNew_lt_trans,
       `Rchain.cmpSend_lt_trans, `Rchain.cmpReceiveBind_lt_trans, `Rchain.cmpReceive_lt_trans,
       `Rchain.cmpMatchCase_lt_trans, `Rchain.cmpMatch_lt_trans, `Rchain.cmpBundle_lt_trans,
@@ -233,6 +233,7 @@ def laws : List Law := [
       `Rchain.cmpExpr_tag_lt, `Rchain.cmpExpr_tag_gt, `Rchain.cmpExpr_ground, `Rchain.cmpExpr_elist,
       `Rchain.cmpOptionVar_eq_iff, `Rchain.cmpOptionVar_swap, `Rchain.cmpOptionVar_lt_trans,
       `Rchain.exprTag_le_of_cmpExpr_lt, `Rchain.cmpListExpr_lt_trans],
+    corpus := some "sort",
     rust := ["models/src/sorter.rs"],
     axioms := [],
     coq := ["spec/coq/Sort.v:cmpPar"],
@@ -244,14 +245,23 @@ def laws : List Law := [
       gone**: `cmpExpr`'s three are *theorems* now (2026-09-24), which is what the second half of this \
       cell used to be blocked on — the size of \
       its equation lemmas, and the route is the 21 `rfl`-proved `@[simp]` arm lemmas",
-    note := "**four axioms, from twelve** (2026-09-23). The list comparators' laws were discharged \
+    note := "**no axioms, from twelve — the residual is empty** (2026-09-24). The list comparators' laws \
+      were discharged by induction on the list; the eight element laws above are theorems, in dependency \
+      order (an element law needs the list lemma of the types *below* it and a list lemma needs the \
+      element law of its own type, so the two families interleave — the order in `Rchain.Sort` is that \
       earlier by induction on the list; the eight element laws above are now theorems, in dependency \
       order (an element law needs the list lemma of the types *below* it and a list lemma needs the \
       element law of its own type, so the two families interleave — the order in `Rchain.Sort` is that \
-      topological order, and it is why the section is not alphabetical). The two that stay are \
-      `cmpPar_lt_trans` (an **eight**-component `lex` chain, needing the packaging twice over, which is \
-      what `Rchain.Sort`'s mutual-block note is about) and `cmpExpr`'s three (blocked on the *size* of \
-      its equation lemmas, as the axiom comment in that file records). The `rust` anchor is \
+      topological order, and it is why the section is not alphabetical). **The last two landed on \
+      2026-09-24**: `cmpPar_lt_trans` is a theorem — an eight-component `lex` chain, a member of \
+      `Rchain.Sort`'s `mutual` block because the family is one strongly connected component, which is \
+      what that file's note is about — and `cmpExpr`'s three are theorems by the route that note \
+      predicted (the 21 `rfl`-proved `@[simp]` arm lemmas over `exprTag`, since `cmpExpr` is compiled as \
+      `WellFounded.fix` and nothing unfolds it). This row's falsifier is therefore the **`sort` corpus**, \
+      as it is law 1a's: its pairwise verdicts are read back from the node by which element `sort_par` \
+      puts first, so a comparator whose order drifted from the node's score tree fails a row rather than \
+      a proof — which is exactly how the alignment was found in the first place (law 1a's note). The \
+      `rust` anchor is \
       `models/src/sorter.rs`, because the order these comparators specify *is* the node's score tree \
       (`node_score(tag, children)`, compared element-wise by `compare_children`), and the `sort` corpus \
       pins four structures of it against the node — see law 1a's note. **What the fourth pass did \
