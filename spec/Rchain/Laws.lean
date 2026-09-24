@@ -1445,34 +1445,50 @@ def laws : List Law := [
       cannot state about the port" },
   { number := 34, layer := "Rholang",
     statement := "A *value* position (a condition, target, datum, element, pattern, name) is normalized \
-      against an **empty** `par` — only a statement continuation inherits what precedes it. **Checked on \
-      the shapes C21 broke**, not universally: the model threads no accumulator, so the universal \
-      statement is not statable over it",
+      against an **empty** `par`; only a statement continuation inherits what precedes it. The \
+      accumulator that makes the distinction is **modelled** — `normalizeAt` threads the port's \
+      `ProcVisitInputs.par`, and only the sequencing arm (`.par`) hands it on — and **both halves are \
+      checked on the shapes C21 broke**: the value-position half by the corpus (a condition seeded with \
+      the ambient fails `c21Holds`) and the sequencing half by `c21CarriesThePreceding`",
     status := .provedTied,
     declarations := [`Rchain.normalizeAt, `Rchain.Surf],
     corpus := some "c21",
     rust := ["rholang/src/normalizer.rs", "rholang/tests/lean_c21_corpus.rs"],
-    falsifiable := some "**the layer is the witness.** Reintroducing C21's defect in `normalize_if` — \
-      normalizing the condition against `input.par` rather than `Par::default()` — fails case 1 at once, \
-      with the target reported as `@\"c\"!([\"a\"])` beside `(1 == 1)` instead of the condition alone \
-      (verified before the corpus was believed). The corpus has a second failure mode of its own: its \
-      non-degeneracy half (`c21IsProbe`, decided with the rest) fails for a case whose term normalizes \
-      to its own condition, so a case that proved nothing would fail rather than pass quietly",
+    falsifiable := some "**the layer is the witness, and the model's half is now falsifiable too.** In \
+      the port, reintroducing C21's defect in `normalize_if` — normalizing the condition against \
+      `input.par` rather than `Par::default()` — fails case 1 at once, with the target reported as \
+      `@\"c\"!([\"a\"])` beside `(1 == 1)` instead of the condition alone (verified before the corpus was \
+      believed). **In the model it is one word**: the `ifThen` arm's condition call, `nilPar` → `acc`, \
+      and `c21Cases_decide` fails to reduce. The sequencing half has its own falsifier, and it is the \
+      only one that catches it: `.par` handing `nilPar` to its right side leaves `c21Cases_decide` green \
+      — the target is untouched — and fails `c21Cases_carry_the_preceding`. The corpus has a second \
+      failure mode of its own: its non-degeneracy half (`c21IsProbe`, decided with the rest) fails for a \
+      case whose term normalizes to its own condition, so a case that proved nothing would fail rather \
+      than pass quietly",
     note := "**the corpus is the check here, and the model's half is a check rather than a proof of the \
-      rule** — which is the honest shape, not a weakness to hide. `normalizeAt` threads only the binder \
-      stack `Γ` and takes no accumulated `par`, so the parameter whose misuse was C21 does not exist in \
-      the model: \"a value position is normalized against an empty par\" holds of it by construction and \
-      there is nothing to falsify. What the two sides do is normalize the same source text \
-      independently — the model `decide`s (through `cmpPar`, whose `eq_iff` is proved) that the \
-      desugared `Match`'s target is the condition alone, and `lean_c21_corpus.rs` asserts the node's \
-      target equals its own normalization of the condition — so what breaks under a regression is the \
-      **tie**, and it does. Case 3 is the explicit-`match` control (the desugaring that was never \
+      rule** — which is the honest shape, not a weakness to hide. What the two sides do is normalize the \
+      same source text independently: the model `decide`s (through `cmpPar`, whose `eq_iff` is proved) \
+      that the desugared `Match`'s target is the condition alone, and `lean_c21_corpus.rs` asserts the \
+      node's target equals its own normalization of the condition — so what breaks under a regression is \
+      the **tie**, and it does. Case 3 is the explicit-`match` control (the desugaring that was never \
       broken) and case 5 a ground condition, so the layer does not rest on the arithmetic clauses \
       agreeing. AUDIT C21 is the history: the target became the preceding par, the pattern cases are \
       `true`/`false`, an unmatched `match` is not an error, and the `if` reduced to nothing at \
       `processedWithSuccess` — invisible for an `if` in first position, which is the idiom contracts \
-      mostly use. **Still owed**: the accumulator modelled, which would make the *universal* rule \
-      statable; the corpus ties the shape, it does not replace the statement" },
+      mostly use. **The accumulator this row was owed is modelled (2026-09-24, G6), and the sentence it \
+      retires is the one above** — `normalizeAt` threaded only the binder stack, so the parameter whose \
+      misuse was C21 did not exist and the rule held by construction. **The way it had to be done is \
+      the part worth keeping**: the first attempt threaded the ambient only at the *entry* — a wrapper \
+      whose `.par` chained and whose every other construct descended into an ambient-free core. It \
+      compiled, and it was **correct and wrong**: it made C21's defect *unrepresentable* again, which \
+      is this row's own complaint one level up — a rule that holds by construction is a rule nothing \
+      can falsify. What works is the port's own shape: one function whose arms make the choice, each \
+      call site spelling `nilPar` (a value position) or the inherited par (only `.par`'s sequencing), \
+      mirroring `normalize_proc`'s `ProcVisitInputs.par` and `PPar(l, r)`'s `par: result.par` \
+      (`rholang/src/normalizer.rs:188-199`), with each construct's own result merged into the \
+      accumulator (`prepend_expr`'s shape). **What is still not proved is the universal form**: both \
+      halves are checked on the shapes C21 broke, instance by instance, rather than by an induction over \
+      `Surf` — a proof-shape question rather than a modelling one, named here rather than implied" },
   { number := 35, layer := "Rholang",
     statement := "`connective_used` is sound: it holds iff the term contains a connective, free \
       variable, wildcard or remainder, per collection form",

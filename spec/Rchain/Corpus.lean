@@ -593,6 +593,18 @@ def c21IsProbe (c : C21Case) : Bool :=
   | some w, some q => !(samePar w q)
   | _, _ => false
 
+/-- **The rule's second half, which `c21Holds` cannot see**: "only a statement continuation inherits
+    what precedes it". Every case's `if` sits *behind* a statement, so the normalization of the whole
+    must carry **both** — the preceding statement and the desugared `Match`. That is what makes "the
+    condition ignores the ambient" a claim about a live ambient rather than a claim about `nilPar`; and
+    it is the only check on the *sequencing* half, because a definition whose `.par` handed `nilPar` to
+    its right side instead of the left's result still satisfies `c21Holds` — the target is unaffected —
+    while the whole silently loses the statement that preceded it. -/
+def c21CarriesThePreceding (c : C21Case) : Bool :=
+  match normalizeAt c.whole nilPar [] with
+  | some w => w.sends.length + w.receives.length + w.matches.length ≥ 2
+  | none => false
+
 /-- The cases, each a term whose `if` sits behind a statement — the wild shape — with the `match` control
     and a ground condition for the reasons in the section header. -/
 def c21Cases : List C21Case :=
@@ -640,6 +652,13 @@ theorem c21Cases_decide :
 
 /-- The layer carries exactly `c21CaseCount` cases. -/
 theorem c21Cases_length : c21Cases.length = c21CaseCount := by decide
+
+/-- **The sequencing half holds on the same cases**: every whole carries its preceding statement *and*
+    its `Match`, so the ambient the rule talks about is visible in the result and not merely present in
+    the argument. Falsified by mutation rather than argued: making the `.par` arm hand `nilPar` to its
+    right side leaves `c21Cases_decide` green — the target is untouched — and fails this one. -/
+theorem c21Cases_carry_the_preceding :
+    c21Cases.all c21CarriesThePreceding = true := by native_decide
 
 /-- One c21 corpus line: layer, the term, the condition. The consumer normalizes both and asserts the
     relation the model's half above asserts of its own view. -/
