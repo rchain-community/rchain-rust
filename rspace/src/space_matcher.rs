@@ -4,16 +4,20 @@
 
 use std::collections::BTreeMap;
 
+use crate::errors::RSpaceError;
 use crate::internal::{ConsumeCandidate, Datum, ProduceCandidate, WaitingContinuation};
 use crate::match_::Match;
 
 /// Search data for a match with a pattern (port of `findMatchingDataCandidate`).
+///
+/// `F[Option[...]]` in the oracle (`SpaceMatcher.scala`), like every level of this search: a matcher
+/// failure propagates rather than reading as "this datum does not match" (AUDIT C52).
 pub fn find_matching_data_candidate<C, P, A>(
     channel: &C,
     data: &[(Datum<A>, i64)],
     pattern: &P,
     m: &dyn Match<P, A>,
-) -> Option<(ConsumeCandidate<C, A>, Vec<(Datum<A>, i64)>)>
+) -> Result<Option<(ConsumeCandidate<C, A>, Vec<(Datum<A>, i64)>)>, RSpaceError>
 where
     C: Clone,
     A: Clone,
@@ -22,8 +26,8 @@ where
     let mut remaining = data;
     loop {
         match remaining.first() {
-            None => return None,
-            Some((datum, data_index)) => match m.get(pattern, &datum.a) {
+            None => return Ok(None),
+            Some((datum, data_index)) => match m.get(pattern, &datum.a)? {
                 None => {
                     prefix.insert(0, remaining[0].clone());
                     remaining = &remaining[1..];
@@ -46,7 +50,7 @@ where
                         removed_datum: datum.a.clone(),
                         datum_index: *data_index,
                     };
-                    return Some((candidate, indexed_datums));
+                    return Ok(Some((candidate, indexed_datums)));
                 }
             },
         }
@@ -58,7 +62,7 @@ pub fn extract_data_candidates<C, P, A>(
     channel_pattern_pairs: &[(C, P)],
     channel_to_indexed_data: &BTreeMap<C, Vec<(Datum<A>, i64)>>,
     m: &dyn Match<P, A>,
-) -> Vec<Option<ConsumeCandidate<C, A>>>
+) -> Result<Vec<Option<ConsumeCandidate<C, A>>>, RSpaceError>
 where
     C: Ord + Clone,
     A: Clone,
@@ -67,7 +71,7 @@ where
     let mut map = channel_to_indexed_data.clone();
     for (channel, pattern) in channel_pattern_pairs {
         let maybe = match map.get(channel) {
-            Some(indexed_data) => find_matching_data_candidate(channel, indexed_data, pattern, m),
+            Some(indexed_data) => find_matching_data_candidate(channel, indexed_data, pattern, m)?,
             None => None,
         };
         match maybe {
@@ -78,7 +82,7 @@ where
             None => acc.push(None),
         }
     }
-    acc
+    Ok(acc)
 }
 
 /// Find the first waiting continuation whose patterns match all channels (port of
@@ -88,7 +92,7 @@ pub fn extract_first_match<C, P, A, K>(
     match_candidates: &[(WaitingContinuation<P, K>, usize)],
     channel_to_indexed_data: &BTreeMap<C, Vec<(Datum<A>, i64)>>,
     m: &dyn Match<P, A>,
-) -> Option<ProduceCandidate<C, P, A, K>>
+) -> Result<Option<ProduceCandidate<C, P, A, K>>, RSpaceError>
 where
     C: Ord + Clone,
     A: Clone,
@@ -108,17 +112,17 @@ where
                 .collect::<Vec<_>>(),
             channel_to_indexed_data,
             m,
-        );
+        )?;
         if data_candidates.iter().all(|c| c.is_some()) {
-            return Some(ProduceCandidate {
+            return Ok(Some(ProduceCandidate {
                 channels: channels.to_vec(),
                 continuation: wc.clone(),
                 continuation_index: *index,
                 data_candidates: data_candidates.into_iter().flatten().collect(),
-            });
+            }));
         }
     }
-    None
+    Ok(None)
 }
 
 #[cfg(test)]
@@ -129,12 +133,8 @@ mod tests {
 
     struct EqMatch;
     impl Match<i32, i32> for EqMatch {
-        fn get(&self, p: &i32, a: &i32) -> Option<i32> {
-            if p == a {
-                Some(*a)
-            } else {
-                None
-            }
+        fn get(&self, p: &i32, a: &i32) -> std::result::Result<Option<i32>, RSpaceError> {
+            Ok(if p == a { Some(*a) } else { None })
         }
     }
 
@@ -153,7 +153,9 @@ mod tests {
     #[test]
     fn find_matching_data_candidate_finds_first_match() {
         let data = vec![(datum(1), 0), (datum(2), 1)];
-        let result = find_matching_data_candidate(&0i32, &data, &2, &EqMatch).unwrap();
+        let result = find_matching_data_candidate(&0i32, &data, &2, &EqMatch)
+            .expect("the search itself succeeded")
+            .expect("a matching datum is present");
         assert_eq!(result.0.datum.a, 2);
         assert_eq!(result.0.datum_index, 1);
     }
@@ -161,6 +163,8 @@ mod tests {
     #[test]
     fn find_matching_data_candidate_none_when_no_match() {
         let data = vec![(datum(1), 0)];
-        assert!(find_matching_data_candidate(&0i32, &data, &99, &EqMatch).is_none());
+        assert!(find_matching_data_candidate(&0i32, &data, &99, &EqMatch)
+            .expect("the search itself succeeded")
+            .is_none());
     }
 }

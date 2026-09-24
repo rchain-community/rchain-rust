@@ -3,6 +3,8 @@
 //! Randomized (`proptest`) invariants: join commutativity (Law 7), deterministic COMM (Law 8),
 //! and Merkle determinism under insertion reordering (Law 10).
 
+use crate::errors::RSpaceError;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
@@ -491,8 +493,8 @@ proptest! {
 /// A trivial matcher: any pattern matches any datum, which is enough to produce COMM events.
 struct AnyMatch;
 impl crate::match_::Match<String, String> for AnyMatch {
-    fn get(&self, _p: &String, a: &String) -> Option<String> {
-        Some(a.clone())
+    fn get(&self, _p: &String, a: &String) -> Result<Option<String>, RSpaceError> {
+        Ok(Some(a.clone()))
     }
 }
 

@@ -31,6 +31,14 @@ pub enum RSpaceError {
     /// A scheduled consume had an empty channel set or a channel/pattern arity mismatch (a caller
     /// error at the scheduling boundary, not an internal invariant to panic on).
     ConsumeArity(&'static str),
+    /// The matcher itself failed, as opposed to the pattern not matching the datum.
+    ///
+    /// The oracle's `Match.get` returns `F[Option[A]]` (`rspace/.../Match.scala:11`), so "no match"
+    /// and "the match could not be decided" are different answers; the port's trait returned a bare
+    /// `Option`, which made them the same one (AUDIT C52). The payload is the message from the layer
+    /// that knows — `RholangError::BugFoundError` for a pattern whose declared `free_count` outruns
+    /// what the matcher bound.
+    MatcherFailed(String),
 }
 
 impl fmt::Display for RSpaceError {
@@ -50,6 +58,7 @@ impl fmt::Display for RSpaceError {
                 write!(f, "COMM event was not contained in the trace")
             }
             RSpaceError::ConsumeArity(what) => write!(f, "invalid scheduled consume: {what}"),
+            RSpaceError::MatcherFailed(what) => write!(f, "matcher failed: {what}"),
         }
     }
 }

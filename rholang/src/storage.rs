@@ -11,6 +11,7 @@ use rchain_models::ast::{EList, Expr, Par, Var};
 use rchain_models::par_ops::from_expr;
 use rchain_models::runtime::{BindPattern, ListParWithRandom, TaggedContinuation};
 use rchain_models::sorted::SortedProc;
+use rchain_rspace::errors::RSpaceError;
 use rchain_rspace::history::history_repository::HistoryRepository;
 use rchain_rspace::match_::Match;
 use rchain_rspace::scheduled_space::{
@@ -60,13 +61,21 @@ pub fn to_application(
 pub struct RhoMatch;
 
 impl Match<BindPattern, ListParWithRandom> for RhoMatch {
-    fn get(&self, pattern: &BindPattern, data: &ListParWithRandom) -> Option<ListParWithRandom> {
+    fn get(
+        &self,
+        pattern: &BindPattern,
+        data: &ListParWithRandom,
+    ) -> Result<Option<ListParWithRandom>, RSpaceError> {
         let data_pars: Vec<Par> = data.pars.iter().map(|p| p.as_par().clone()).collect();
         let pattern_pars: Vec<Par> = pattern
             .patterns
             .iter()
             .map(|p| p.as_par().clone())
             .collect();
+        // A matcher-internal failure is **not** "no match": this arm used `.ok()?`, which turned a
+        // `RholangError::BugFoundError` into `None`, i.e. the datum would silently never match. The
+        // oracle's `Match.get` is `F[Option[A]]` (`rspace/.../Match.scala:11`); the port's `Option`
+        // return is what forced the two answers into one (AUDIT C52).
         let matches = fold_match(
             &data_pars,
             &pattern_pars,
@@ -74,8 +83,10 @@ impl Match<BindPattern, ListParWithRandom> for RhoMatch {
             &FreeMap::new(),
             &spatial_match,
         )
-        .ok()?;
-        let (caught_rem, free_map) = matches.into_iter().next()?;
+        .map_err(|e| RSpaceError::MatcherFailed(e.to_string()))?;
+        let Some((caught_rem, free_map)) = matches.into_iter().next() else {
+            return Ok(None);
+        };
 
         let mut remainder_map = free_map;
         if let Some(Var::FreeVar(level)) = pattern.remainder.as_ref() {
@@ -88,22 +99,29 @@ impl Match<BindPattern, ListParWithRandom> for RhoMatch {
             );
         }
 
-        // A level the pattern's `free_count` declares but the matcher never bound becomes the empty
-        // par. **Deliberately left as the Scala has it** (U1's site-1 pair, AUDIT C52): `toSeq`
-        // (`rholang/interpreter/storage/package.scala:22-29`) is `fm.get(i) match { case None =>
-        // Par.defaultInstance }`, so refusing here would *diverge* from the oracle rather than close
-        // a hole. And the channel offers nothing better: `Match::get` (`rspace/src/match_.rs:6`) is
-        // `-> Option<A>`, whose only refusal is `None` — "this datum does not match" — which would
-        // silently drop a match the Scala makes. The durable fix is an error channel on `Match::get`,
-        // unit-large like AUDIT C53's `History` trait. `resolve_match` (`reduce.rs:2009`), the same
-        // shape with a `Result` in hand, refuses.
-        let pars = (0..pattern.free_count)
-            .map(|i| SortedProc::new(remainder_map.get(&i).cloned().unwrap_or_default()))
-            .collect();
-        Some(ListParWithRandom {
+        // **Refused, not padded.** `free_count` is the number of free levels the pattern binds, so a
+        // level the matcher's free map does not carry means the count and the pattern disagree. The
+        // level used to become the empty par — the Scala's own `toSeq`
+        // (`rholang/interpreter/storage/package.scala:22-29`'s `case None => Par.defaultInstance`) —
+        // so the continuation was handed bindings the pattern never made; the trait's error channel
+        // is what the port was missing, and it exists in the oracle (`Match.get: F[Option[A]]`,
+        // `Match.scala:11`). `resolve_match` (`reduce.rs:2009`), the same shape, refuses for the same
+        // reason (AUDIT C52).
+        let mut pars = Vec::new();
+        for level in 0..pattern.free_count {
+            let binding = remainder_map.get(&level).ok_or_else(|| {
+                RSpaceError::MatcherFailed(format!(
+                    "the pattern declares free level {level} of {} but the matcher bound no value for \
+                     it",
+                    pattern.free_count
+                ))
+            })?;
+            pars.push(SortedProc::new(binding.clone()));
+        }
+        Ok(Some(ListParWithRandom {
             pars,
             random_state: data.random_state.clone(),
-        })
+        }))
     }
 }
 
@@ -721,11 +739,59 @@ mod tests {
             pars: vec![SortedProc::new(par(vec![Expr::GInt(42)]))],
             random_state: rchain_crypto::hash::blake2b512_random::Blake2b512Random::new_random(128),
         };
-        let result = RhoMatch.get(&pattern, &data).unwrap();
+        let result = RhoMatch
+            .get(&pattern, &data)
+            .expect("the matcher decided")
+            .expect("a bare free variable matches any datum");
         assert_eq!(
             result.pars,
             vec![SortedProc::new(par(vec![Expr::GInt(42)]))]
         );
+    }
+
+    /// A `BindPattern` whose declared `free_count` outruns the levels its patterns bind.
+    ///
+    /// `RhoMatch::get` fills the continuation's environment from the matcher's free map, one level per
+    /// `0..free_count`. A level the map does not carry became the empty par — the Scala's own `toSeq`
+    /// (`interpreter/storage/package.scala:22-29`'s `case None => Par.defaultInstance`) — so the
+    /// continuation was handed bindings the pattern never made. The oracle's `Match.get` returns
+    /// `F[Option[A]]` (`rspace/.../Match.scala:11`), so the port's `-> Option<A>` flattened a channel
+    /// that exists; AUDIT C52 names this as the durable fix, and this is it.
+    ///
+    /// Falsifier. Its pre-fix form *witnesses* the defect, because the fix changes the method's type
+    /// and a witness is the only thing that can run on both sides: `RhoMatch::get` answered
+    /// `Some(..)` with the two extra levels given the empty par (run 2026-09-24, the assertion below
+    /// passed), and the post-fix form asserts the refusal instead.
+    #[test]
+    fn rho_match_refuses_a_free_count_its_pattern_does_not_bind() {
+        let pattern = BindPattern {
+            patterns: vec![SortedProc::new(Par {
+                exprs: vec![Expr::EVar(Box::new(Var::FreeVar(0)))],
+                connective_used: true,
+                ..Default::default()
+            })],
+            remainder: None,
+            free_count: 3,
+        };
+        let data = ListParWithRandom {
+            pars: vec![SortedProc::new(par(vec![Expr::GInt(42)]))],
+            random_state: rchain_crypto::hash::blake2b512_random::Blake2b512Random::new_random(128),
+        };
+
+        // THE FALSIFIER, post-fix form. Its pre-fix form *witnessed* the defect instead, because the
+        // fix changes the method's type: `RhoMatch::get` answered `Some(..)` with the two extra levels
+        // given the empty par (run 2026-09-24 — the pre-fix assertion `padded.pars.len() == 3` passed,
+        // which is the defect), and the same case is now a `MatcherFailed`.
+        match RhoMatch.get(&pattern, &data) {
+            Err(RSpaceError::MatcherFailed(msg)) => assert!(
+                msg.contains("free level 1 of 3"),
+                "the refusal names the first level it could not bind, and the count, got: {msg}"
+            ),
+            other => panic!(
+                "a pattern that declares three bindings and makes one must be refused, not padded \
+                 with empty pars, got: {other:?}"
+            ),
+        }
     }
 
     #[test]

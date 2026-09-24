@@ -290,7 +290,7 @@ where
                 &match_candidates,
                 &channel_to_indexed_data,
                 self.matcher.as_ref(),
-            ) {
+            )? {
                 return Ok(Some(pc));
             }
         }
@@ -347,7 +347,7 @@ where
                 .collect::<Vec<_>>(),
             &channel_to_indexed_data,
             self.matcher.as_ref(),
-        );
+        )?;
         let wk = WaitingContinuation {
             patterns: patterns.to_vec(),
             continuation,
@@ -425,7 +425,7 @@ where
                 .collect::<Vec<_>>(),
             &channel_to_indexed_data,
             self.matcher.as_ref(),
-        );
+        )?;
         match options.into_iter().collect::<Option<Vec<_>>>() {
             None => {
                 let consume_ref = Consume::apply(channels, patterns, &continuation, true);
@@ -663,12 +663,13 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::errors::RSpaceError;
     use rchain_shared::store_manager::InMemoryStoreManager;
 
     struct StrMatch;
     impl Match<String, String> for StrMatch {
-        fn get(&self, _p: &String, a: &String) -> Option<String> {
-            Some(a.clone())
+        fn get(&self, _p: &String, a: &String) -> std::result::Result<Option<String>, RSpaceError> {
+            Ok(Some(a.clone()))
         }
     }
 

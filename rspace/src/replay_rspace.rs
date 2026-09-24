@@ -185,7 +185,7 @@ where
                 .collect::<Vec<_>>(),
             &channel_to_indexed_data,
             matcher.as_ref(),
-        );
+        )?;
         Ok(options.into_iter().collect())
     }
 
@@ -258,7 +258,7 @@ where
                 &match_candidates,
                 &channel_to_indexed_data,
                 matcher.as_ref(),
-            ) {
+            )? {
                 return Ok(Some(pc));
             }
         }
@@ -593,6 +593,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::errors::RSpaceError;
     use std::sync::Arc;
 
     use rchain_shared::store_manager::InMemoryStoreManager;
@@ -607,8 +608,8 @@ mod tests {
     /// A trivial matcher: any pattern matches any datum, which is enough to produce events.
     struct StrMatch;
     impl Match<String, String> for StrMatch {
-        fn get(&self, _p: &String, a: &String) -> Option<String> {
-            Some(a.clone())
+        fn get(&self, _p: &String, a: &String) -> std::result::Result<Option<String>, RSpaceError> {
+            Ok(Some(a.clone()))
         }
     }
 

@@ -126,6 +126,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::errors::RSpaceError;
     use crate::factory::create_reporting_rspace;
     use crate::match_::Match;
     use rchain_shared::store_manager::InMemoryStoreManager;
@@ -134,8 +135,8 @@ mod tests {
     /// here is built exactly as the node builds it.
     struct StrMatch;
     impl Match<String, String> for StrMatch {
-        fn get(&self, _p: &String, a: &String) -> Option<String> {
-            Some(a.clone())
+        fn get(&self, _p: &String, a: &String) -> std::result::Result<Option<String>, RSpaceError> {
+            Ok(Some(a.clone()))
         }
     }
 

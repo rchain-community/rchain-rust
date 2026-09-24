@@ -248,6 +248,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::errors::RSpaceError;
     use std::sync::Arc;
 
     use rchain_shared::store_manager::InMemoryStoreManager;
@@ -261,8 +262,8 @@ mod tests {
     /// Any pattern matches any datum — enough to produce a COMM and therefore a deferred commit.
     struct StrMatch;
     impl Match<String, String> for StrMatch {
-        fn get(&self, _p: &String, a: &String) -> Option<String> {
-            Some(a.clone())
+        fn get(&self, _p: &String, a: &String) -> std::result::Result<Option<String>, RSpaceError> {
+            Ok(Some(a.clone()))
         }
     }
 

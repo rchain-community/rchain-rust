@@ -231,6 +231,7 @@ proptest! {
 
         let matched = RhoMatch
             .get(&pattern, &data)
+            .expect("the matcher decided")
             .unwrap_or_else(|| panic!("a bare variable must match any datum, but did not match {target:?}"));
         for par in &matched.pars {
             prop_assert!(
