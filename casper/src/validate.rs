@@ -551,9 +551,9 @@ mod effectful_tests {
         MockDag {
             metadata,
             representation: DagRepresentation {
-                dag_set: BTreeSet::new(),
-                child_map: BTreeMap::new(),
-                height_map: BTreeMap::new(),
+                dag_set: Arc::new(BTreeSet::new()),
+                child_map: Arc::new(BTreeMap::new()),
+                height_map: Arc::new(BTreeMap::new()),
                 dag_message_state: DagMessageState::empty(),
                 fringe_states: BTreeMap::new(),
             },

@@ -3,7 +3,9 @@
 //! Mirrors `block-storage/src/main/scala/coop/rchain/blockstorage/dag/DagRepresentation.scala`.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
+use rchain_crypto::hash::blake2b256_hash::Blake2b256Hash;
 use rchain_models::block_hash::BlockHash;
 use rchain_models::fringe_data::FringeData;
 use rchain_models::validator::Validator;
@@ -18,11 +20,18 @@ use super::message_state::DagMessageState;
 /// The in-memory state of the DAG — an index of the block metadata store.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DagRepresentation {
-    pub dag_set: BTreeSet<BlockHash>,
-    pub child_map: BTreeMap<BlockHash, BTreeSet<BlockHash>>,
-    pub height_map: BTreeMap<BlockHeight, BTreeSet<BlockHash>>,
+    /// The DAG index — the *same* allocations `BlockMetadataStore` holds (AUDIT C56's owed
+    /// paragraph). Keyed by `Arc` so the store's accessors and this view are one index rather than
+    /// two copies of it, and an insert updates it by moving three pointers.
+    pub dag_set: Arc<BTreeSet<BlockHash>>,
+    pub child_map: Arc<BTreeMap<BlockHash, BTreeSet<BlockHash>>>,
+    pub height_map: Arc<BTreeMap<BlockHeight, BTreeSet<BlockHash>>>,
     pub dag_message_state: DagMessageState<BlockHash, Validator>,
-    pub fringe_states: BTreeMap<BTreeSet<BlockHash>, FringeData>,
+    /// Finalized-fringe data by **`FringeData::fringe_hash_of(fringe)`** — the same key the
+    /// persisted fringe store uses, so this is a faithful cache of it rather than a second, set-keyed
+    /// index (AUDIT C56's owed paragraph; the set key cost a comparison of whole fringe sets per
+    /// lookup and a fresh key construction per insert).
+    pub fringe_states: BTreeMap<Blake2b256Hash, FringeData>,
 }
 
 impl DagRepresentation {
@@ -142,30 +151,34 @@ mod tests {
     fn chain() -> DagRepresentation {
         let (b0, b1, b2) = (hash(0), hash(1), hash(2));
         DagRepresentation {
-            dag_set: [b0, b1, b2].into_iter().collect(),
-            child_map: [
-                (b0, [b1].into_iter().collect()),
-                (b1, [b2].into_iter().collect()),
-                (b2, BTreeSet::new()),
-            ]
-            .into_iter()
-            .collect(),
-            height_map: [
-                (
-                    BlockHeight::try_from(0).unwrap(),
-                    [b0].into_iter().collect(),
-                ),
-                (
-                    BlockHeight::try_from(1).unwrap(),
-                    [b1].into_iter().collect(),
-                ),
-                (
-                    BlockHeight::try_from(2).unwrap(),
-                    [b2].into_iter().collect(),
-                ),
-            ]
-            .into_iter()
-            .collect(),
+            dag_set: Arc::new([b0, b1, b2].into_iter().collect()),
+            child_map: Arc::new(
+                [
+                    (b0, [b1].into_iter().collect()),
+                    (b1, [b2].into_iter().collect()),
+                    (b2, BTreeSet::new()),
+                ]
+                .into_iter()
+                .collect(),
+            ),
+            height_map: Arc::new(
+                [
+                    (
+                        BlockHeight::try_from(0).unwrap(),
+                        [b0].into_iter().collect(),
+                    ),
+                    (
+                        BlockHeight::try_from(1).unwrap(),
+                        [b1].into_iter().collect(),
+                    ),
+                    (
+                        BlockHeight::try_from(2).unwrap(),
+                        [b2].into_iter().collect(),
+                    ),
+                ]
+                .into_iter()
+                .collect(),
+            ),
             dag_message_state: DagMessageState::empty(),
             fringe_states: BTreeMap::new(),
         }
@@ -176,9 +189,9 @@ mod tests {
     #[test]
     fn an_empty_dag_has_no_last_finalized_block() {
         let dag = DagRepresentation {
-            dag_set: BTreeSet::new(),
-            child_map: BTreeMap::new(),
-            height_map: BTreeMap::new(),
+            dag_set: Arc::new(BTreeSet::new()),
+            child_map: Arc::new(BTreeMap::new()),
+            height_map: Arc::new(BTreeMap::new()),
             dag_message_state: DagMessageState::empty(),
             fringe_states: BTreeMap::new(),
         };

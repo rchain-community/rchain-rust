@@ -5,8 +5,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use rchain_block_storage::dag::metadata_store::{
-    add_block_to_dag_state, block_metadata_to_info, recreate_in_memory_state, validate_dag_state,
-    BlockInfo, DagState,
+    add_block_to_dag_state_mut, block_metadata_to_info, recreate_in_memory_state,
+    validate_dag_state, BlockInfo, DagState,
 };
 use rchain_models::block_hash::BlockHash;
 use rchain_models::block_metadata::BlockMetadata;
@@ -42,7 +42,9 @@ impl BlockMetadataStore {
         let info = block_metadata_to_info(&block);
         {
             let mut state = self.dag_state.write().await;
-            *state = add_block_to_dag_state(&info, &state);
+            // In place: the index is `Arc`-shared with the DAG representation, so this copies a map
+            // only if a reader still holds the previous one (AUDIT C56's owed paragraph).
+            add_block_to_dag_state_mut(&info, &mut state);
             validate_dag_state(&state)?;
         }
         self.store.put(&[(block.block_hash, block)]).await?;
@@ -65,15 +67,17 @@ impl BlockMetadataStore {
         self.dag_state.read().await.dag_set.contains(hash)
     }
 
-    pub async fn dag_set(&self) -> BTreeSet<BlockHash> {
+    /// The index's own allocation, not a copy of it: the caller shares the map the store updates
+    /// (AUDIT C56's owed paragraph — this used to hand out a full clone per insert).
+    pub async fn dag_set(&self) -> Arc<BTreeSet<BlockHash>> {
         self.dag_state.read().await.dag_set.clone()
     }
 
-    pub async fn child_map_data(&self) -> BTreeMap<BlockHash, BTreeSet<BlockHash>> {
+    pub async fn child_map_data(&self) -> Arc<BTreeMap<BlockHash, BTreeSet<BlockHash>>> {
         self.dag_state.read().await.child_map.clone()
     }
 
-    pub async fn height_map(&self) -> BTreeMap<BlockHeight, BTreeSet<BlockHash>> {
+    pub async fn height_map(&self) -> Arc<BTreeMap<BlockHeight, BTreeSet<BlockHash>>> {
         self.dag_state.read().await.height_map.clone()
     }
 }

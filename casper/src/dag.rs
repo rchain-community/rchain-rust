@@ -74,7 +74,7 @@ impl BlockDagKeyValueStorage {
         let height_map = block_metadata_store.height_map().await;
 
         let mut dag_msg_state = DagMessageState::<BlockHash, Validator>::empty();
-        let mut fringe_states: BTreeMap<BTreeSet<BlockHash>, FringeData> = BTreeMap::new();
+        let mut fringe_states: BTreeMap<Blake2b256Hash, FringeData> = BTreeMap::new();
 
         for hash in height_map.values().flatten() {
             if dag_msg_state.msg_map.contains_key(hash) {
@@ -88,8 +88,15 @@ impl BlockDagKeyValueStorage {
             // each step — Θ(N³) over a stored chain, which is what made a 5,844-block restart take
             // longer than the devnet waits for one (AUDIT C55).
             dag_msg_state.insert_msg_mut(&msg);
-            if !fringe_states.contains_key(&msg.fringe) {
-                let fringe_hash = FringeData::fringe_hash_of(&msg.fringe);
+            // Keyed by the hash of the fringe — the store's own key (`FringeData.fringe_hash`), so
+            // the in-memory map is a cache of the persisted one and a lookup is one hash compare
+            // rather than a comparison of whole fringe sets (AUDIT C56's owed paragraph).
+            let fringe_hash = FringeData::fringe_hash_of(&msg.fringe);
+            // The entry API rather than `contains_key` + `insert`: the borrow is held across the
+            // store read, so a fringe that is already cached costs no lookup at all.
+            if let std::collections::btree_map::Entry::Vacant(entry) =
+                fringe_states.entry(fringe_hash)
+            {
                 let fd = fringe_data_store
                     .get(&[fringe_hash])
                     .await?
@@ -97,7 +104,7 @@ impl BlockDagKeyValueStorage {
                     .next()
                     .flatten();
                 if let Some(fd) = fd {
-                    fringe_states.insert(msg.fringe.clone(), fd);
+                    entry.insert(fd);
                 }
             }
         }
@@ -281,7 +288,7 @@ impl BlockDagStorage for BlockDagKeyValueStorage {
             } else {
                 repr.dag_message_state.insert_msg_mut(&msg);
             }
-            repr.fringe_states.insert(msg.fringe.clone(), fringe_data);
+            repr.fringe_states.insert(fringe_hash, fringe_data);
             repr.dag_set = dag_set;
             repr.child_map = child_map;
             repr.height_map = height_map;
@@ -419,6 +426,14 @@ mod tests {
     async fn build_storage_over(
         metadata_store: Arc<BlockMetadataStore>,
     ) -> Arc<BlockDagKeyValueStorage> {
+        Arc::new(build_storage_over_unshared(metadata_store).await)
+    }
+
+    /// The same storage, not yet wrapped in an `Arc` — so a test can attach a metrics sink
+    /// (`with_metrics` consumes it) the way the node does.
+    async fn build_storage_over_unshared(
+        metadata_store: Arc<BlockMetadataStore>,
+    ) -> BlockDagKeyValueStorage {
         let fringe_store: Arc<dyn KeyValueTypedStore<Blake2b256Hash, FringeData>> =
             Arc::new(KeyValueTypedStoreCodec::new(
                 in_memory(),
@@ -437,16 +452,9 @@ mod tests {
                 Arc::new(BytesCodec),
                 Arc::new(SignedDeployDataCodec),
             ));
-        Arc::new(
-            BlockDagKeyValueStorage::create(
-                metadata_store,
-                fringe_store,
-                deploy_index,
-                deploy_store,
-            )
+        BlockDagKeyValueStorage::create(metadata_store, fringe_store, deploy_index, deploy_store)
             .await
-            .unwrap(),
-        )
+            .unwrap()
     }
 
     async fn build_storage() -> Arc<BlockDagKeyValueStorage> {
@@ -731,6 +739,150 @@ mod tests {
         assert!(
             elapsed < BOUND,
             "{K} inserts into a {N}-block DAG took {elapsed:?} (bound {BOUND:?})"
+        );
+    }
+
+    /// AUDIT C56's owed paragraph, third part — the DAG index is held **once**: the representation's
+    /// `dag_set`/`child_map`/`height_map` are the store's own allocations.
+    ///
+    /// `BlockMetadataStore`'s accessors used to hand out a full clone per call, and `insert` called
+    /// all three on every block, so the index lived twice and was rebuilt per insert. `Arc`-sharing
+    /// it is a *value-identical* change (the digest test above pins that), so the assertion is the
+    /// mechanism: pointer identity between the store's index and the representation's, which is
+    /// exactly "one index, one update point".
+    ///
+    /// Falsified against this tree (2026-09-24): returning a fresh `Arc::new((*map).clone())` from the
+    /// accessors — the plausible way to reintroduce the second copy while keeping the type — fails
+    /// the first `ptr_eq`. The old shape (a plain `BTreeSet` field) cannot even be compared this way,
+    /// which is why the mechanism, not the bound, is the tripwire.
+    #[tokio::test]
+    async fn the_index_is_shared_with_the_representation_not_copied() {
+        let metadata_store = empty_metadata_store().await;
+        store_chain(&metadata_store, 8).await;
+        let storage = build_storage_over(metadata_store.clone()).await;
+        let repr = storage.get_representation().await;
+
+        assert!(
+            Arc::ptr_eq(&metadata_store.dag_set().await, &repr.dag_set),
+            "the representation's dag_set is the store's allocation, not a copy of it"
+        );
+        assert!(
+            Arc::ptr_eq(&metadata_store.child_map_data().await, &repr.child_map),
+            "the representation's child_map is the store's allocation"
+        );
+        assert!(
+            Arc::ptr_eq(&metadata_store.height_map().await, &repr.height_map),
+            "the representation's height_map is the store's allocation"
+        );
+        // …and it is the same *index*, not merely a shared empty one.
+        assert_eq!(repr.dag_set.len(), 8);
+        assert_eq!(repr.child_map.len(), 8);
+        assert_eq!(repr.height_map.len(), 8);
+
+        // An insert keeps them shared: the store's new index is the representation's, while the
+        // snapshot taken above keeps the old one (copy-on-write, which is what makes the read path
+        // cheap and the writer's copy at most one per insert).
+        let mut m = meta(chain_hash(8), &[chain_hash(7)], 8);
+        m.seq_num = 8.try_into().unwrap();
+        storage.insert(m, block(chain_hash(8))).await.unwrap();
+        let after = storage.get_representation().await;
+        assert!(
+            Arc::ptr_eq(&metadata_store.dag_set().await, &after.dag_set),
+            "an insert moves the pointer, it does not replace the index"
+        );
+        assert_eq!(after.dag_set.len(), 9);
+        assert_eq!(
+            repr.dag_set.len(),
+            8,
+            "the snapshot taken before the insert keeps the index it read"
+        );
+    }
+
+    /// AUDIT C56's owed paragraph, first part — `fringe_states` is keyed by the **fringe store's own
+    /// key**, so the in-memory map is a faithful cache of the persisted one rather than a second
+    /// index with a different identity.
+    ///
+    /// The key is `FringeData::fringe_hash_of(fringe)` — a hash over the sorted fringe, which is what
+    /// `fringe_data_store` is keyed by (`insert`'s `put` and `create`'s `get` both use it). The old
+    /// key was the fringe *set* itself: every lookup compared whole sets, every insert built a fresh
+    /// set key, and the map's identity for a fringe could in principle disagree with the store's.
+    ///
+    /// **How this is falsified (2026-09-24).** The map now *is* the store's index, so the claim is
+    /// checkable by construction rather than by a bound: this test reads the map with the store's key
+    /// and asserts the map's key, the datum's own `fringe_hash`, the persisted datum and the
+    /// finalized block's recorded `member_of_fringe` all agree. Restoring
+    /// `BTreeMap<BTreeSet<BlockHash>, FringeData>` makes the assertion unstatable — the map's `get`
+    /// takes a set while the store's takes the hash, so the two indexes cannot be compared at all —
+    /// and the compile failure is the falsifier; there is no runtime bound here to calibrate against
+    /// a tree that has moved (the pass has paid for that mistake twice), and the *value* half is the
+    /// negative control: `logical_bytes` and the fringe datum are unchanged by the re-keying.
+    #[tokio::test]
+    async fn fringe_states_are_keyed_by_the_stores_own_key() {
+        let storage = build_storage().await;
+        let (genesis, left, right, tip) = (hash(0), hash(1), hash(2), hash(3));
+
+        // Two children of genesis, then a block that justifies only one of them but declares both
+        // as its fringe — so the fringe diff is non-empty and a block is marked with its member
+        // fringe (`insert`'s `member_of_fringe`), which is the record this test compares against.
+        for (seq, h, parents) in [
+            (0i64, genesis, vec![]),
+            (1, left, vec![genesis]),
+            (2, right, vec![genesis]),
+        ] {
+            let mut m = meta(h, &parents, seq);
+            m.seq_num = seq.try_into().unwrap();
+            storage.insert(m, block(h)).await.unwrap();
+        }
+        let fringe: BTreeSet<BlockHash> = [left, right].into_iter().collect();
+        let mut m = meta(tip, &[left], 3);
+        m.seq_num = 3.try_into().unwrap();
+        m.fringe = fringe.clone();
+        storage.insert(m, block(tip)).await.unwrap();
+
+        let repr = storage.get_representation().await;
+        let key = FringeData::fringe_hash_of(&fringe);
+
+        // The map is keyed by the store's key: the empty fringe the genesis blocks declared is
+        // cached under *its* hash, and this fringe under its own — two distinct hashes, no set.
+        assert_eq!(
+            repr.fringe_states.len(),
+            2,
+            "the empty fringe and this one, each by its own hash"
+        );
+        assert!(
+            repr.fringe_states
+                .contains_key(&FringeData::fringe_hash_of(&BTreeSet::new())),
+            "an empty fringe has its own key"
+        );
+        let cached = repr
+            .fringe_states
+            .get(&key)
+            .unwrap_or_else(|| panic!("no fringe data cached under the store's key {key:?}"));
+        assert_eq!(cached.fringe_hash, key, "the datum's own key agrees");
+        assert_eq!(cached.fringe, fringe, "and its fringe is the fringe");
+
+        // The persisted store answers the same key with the same datum: one identity, two places.
+        let persisted = storage
+            .fringe_data_store
+            .get(&[key])
+            .await
+            .unwrap()
+            .into_iter()
+            .next()
+            .flatten()
+            .expect("the fringe data was persisted under that key");
+        assert_eq!(persisted, *cached);
+
+        // And the finalized block records that same key as its member fringe.
+        assert_eq!(
+            storage
+                .lookup(&right)
+                .await
+                .unwrap()
+                .unwrap()
+                .member_of_fringe,
+            Some(key),
+            "a block finalized by the fringe is marked with the fringe's key"
         );
     }
 

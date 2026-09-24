@@ -11,6 +11,7 @@ use rchain_models::block::state_hash::StateHash;
 use rchain_models::block_hash::BlockHash;
 use rchain_models::block_metadata::BlockMetadata;
 use rchain_models::casper::protocol::casper_message::{BlockMessage, SignedDeployData};
+use rchain_models::fringe_data::FringeData;
 use rchain_models::normalizer_env::NormalizerEnv;
 use rchain_models::validator::Validator;
 
@@ -134,7 +135,7 @@ where
     let prev_fringe_hashes: BTreeSet<BlockHash> = prev_fringe.iter().map(|m| m.id).collect();
     let fringe_record = dag_repr
         .fringe_states
-        .get(&prev_fringe_hashes)
+        .get(&FringeData::fringe_hash_of(&prev_fringe_hashes))
         .ok_or_else(|| {
             format!(
                 "Fringe state not available in state cache, fringe: {:?}",

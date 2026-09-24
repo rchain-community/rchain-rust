@@ -118,7 +118,10 @@ proptest! {
         let mut top = 0i64;
         for block in chain(n) {
             let next = add_block_to_dag_state(&block, &state);
-            prop_assert!(next.dag_set.is_superset(&seen), "the seen set must not shrink");
+            prop_assert!(
+                next.dag_set.is_superset(seen.as_ref()),
+                "the seen set must not shrink"
+            );
             prop_assert!(next.child_map.len() >= state.child_map.len());
             let next_top = next
                 .height_map

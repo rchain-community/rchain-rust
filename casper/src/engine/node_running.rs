@@ -23,6 +23,7 @@ use rchain_models::casper::protocol::casper_message::{
     StoreItemsMessage, StoreItemsMessageRequest,
 };
 use rchain_models::casper::protocol::packet_type_tag::ToPacket;
+use rchain_models::fringe_data::FringeData;
 use rchain_rspace::state::RSpaceExporter;
 use rchain_shared::log::{Log, LogSource};
 use rchain_shared::refined::BlockHeight;
@@ -604,7 +605,7 @@ impl<E: RSpaceExporter> NodeRunning<E> {
                     }
                 } else {
                     repr.fringe_states
-                        .get(&latest_fringe_hashes)
+                        .get(&FringeData::fringe_hash_of(&latest_fringe_hashes))
                         .map(|fringe_data| FinalizedFringe {
                             hashes: latest_fringe_hashes.iter().copied().collect(),
                             state_hash: StateHash::from_slice(fringe_data.state_hash.as_bytes()),
