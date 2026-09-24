@@ -57,9 +57,13 @@ fn arb_name_shapes() -> impl Strategy<Value = String> {
 
 proptest! {
     /// **Law 26's validation.** A shard id is accepted exactly when it is non-empty ASCII (the
-    /// validate-on-ingress rule added for C4 in the security pass) — a control character or an empty
-    /// name must not become a shard id, because the id is compared for equality on the consensus
-    /// path.
+    /// validate-on-ingress rule added for C4 in the security pass). The check is about what can travel
+    /// as a **path segment**, not about printable text: it deliberately **admits control characters**
+    /// — NUL, DEL and ESC are ASCII, and the witness below draws them — while the empty name is
+    /// refused because a segment must be non-empty. The id is compared for equality on the consensus
+    /// path, so what the check buys is that a peer-supplied segment and the id it names are the same
+    /// string, not that the name is legible (AUDIT C78's neighbourhood; the model's `validShardId` in
+    /// `spec/Rchain/CrossShard.lean:118` is this same pair of tests).
     #[test]
     fn law26_a_shard_id_is_accepted_exactly_when_nonempty_ascii(name in ".{0,8}") {
         prop_assert_eq!(ShardId::try_from(name.clone()).is_ok(), !name.is_empty() && name.is_ascii());
