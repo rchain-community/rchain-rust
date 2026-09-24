@@ -63,55 +63,16 @@ fi
 # the words occur in prose ("the grammar allows one", "admit one"), and a gate that fires on prose is
 # a gate people learn to work around.
 #
-# The same scan refuses the *other* ways an assumption enters without being an `axiom`: `opaque`
-# (a definition whose body is hidden from reduction), `unsafe`, `partial` and `extern` (elaboration
-# escapes), and `@[implemented_by]` (a body replaced by an untrusted one). `Laws.lean`'s accounting is
-# exact equality over `axiom` *declarations*, so an `opaque` def is neither an axiom nor a `sorry` and
-# every other check in this gate passes it — this scan is the only place it is visible. The token
-# shape matters: the word boundary is what keeps `external` from matching `extern`, and prose is
-# already stripped, so the tree's own uses of these words in doc comments are not false positives.
-# Comments and string literals are stripped first, with two details the previous scan got wrong once
-# the token set widened:
-#   * Lean block comments NEST. The single-level state machine closed a block at the first `-/` it saw,
-#     so the rest of a nested comment was scanned as code — invisible while the only tokens were
-#     `sorry`/`admit`, and exactly what an `opaque` in a doc comment trips over.
-#   * Lean string literals carry the register's own row prose (`note := "...opaque..."`), and Lean
-#     strings span lines. A token inside a string is text ABOUT the code, not code.
-# A character literal holding a double quote (two of the tree's files have one) must not open a string;
-# awk has no quote character in its own syntax, so it is built with sprintf.
-# Known and accepted: a string containing `--` would be read as a line comment (none exists in the
-# tree), and a token split across a line break would be missed (the tree has none).
-if awk '
-  BEGIN { SQUOTE = sprintf("%c", 39) }
-  { line = $0
-    out = ""
-    i = 1
-    n = length(line)
-    while (i <= n) {
-      c = substr(line, i, 1)
-      if (depth > 0) {
-        if (substr(line, i, 2) == "/-") { depth++; i += 2; continue }
-        if (substr(line, i, 2) == "-/") { depth--; i += 2; continue }
-        i++
-      } else if (instring) {
-        if (c == "\\") { i += 2; continue }
-        if (c == "\"") { instring = 0 }
-        i++
-      } else {
-        if (substr(line, i, 2) == "--") { break }
-        if (substr(line, i, 2) == "/-") { depth++; i += 2; continue }
-        if (c == "\"") {
-          if (substr(line, i - 1, 1) == SQUOTE) { i++; continue }
-          instring = 1
-          i++
-          continue
-        }
-        out = out c
-        i++
-      }
-    }
-    line = out
-    if (line ~ /(^|[^A-Za-z_])(sorry|admit|opaque|unsafe|partial|extern|implemented_by)([^A-Za-z_]|$)/) printf "%s:%d:%s\n", FILENAME, FNR, line
+if awk ' BEGIN { SQ = sprintf("%c", 39) }
+  { out = ""; i = 1
+    while (i <= length($0)) { c = substr($0, i, 1)
+      if (depth > 0) { if (substr($0,i,2)=="/-") { depth++; i+=2 } else if (substr($0,i,2)=="-/") { depth--; i+=2 } else i++ }
+      else if (instring) { if (c=="\\") i+=2; else { if (c=="\"") instring=0; i++ } }
+      else {
+        if (substr($0,i,2)=="--") break
+        if (substr($0,i,2)=="/-") { depth++; i+=2 } else if (c=="\"") { if (substr($0,i-1,1)==SQ) { i++ } else { instring=1; i++ } } else { out=out c; i++ }
+      } }
+    if (out ~ /(^|[^A-Za-z_])(sorry|admit|opaque|unsafe|partial|extern|implemented_by)([^A-Za-z_]|$)/) printf "%s:%d:%s\n", FILENAME, FNR, out
   }' "$SPEC/Rchain.lean" $(find "$SPEC/Rchain" -name '*.lean') >/tmp/lean-sorry.log 2>/dev/null; then
   if [[ -s /tmp/lean-sorry.log ]]; then
     fail "an assumption appeared under spec/Rchain (sorry/admit/opaque/unsafe/partial/extern/implemented_by) — see /tmp/lean-sorry.log"
@@ -119,7 +80,7 @@ if awk '
     ok "no sorry/admit/opaque/unsafe/partial/extern/implemented_by under spec/Rchain"
   fi
 else
-  fail "the sorry scan could not run"
+  fail "the assurance scan could not run"
 fi
 
 # --- 3. the library is complete ------------------------------------------------

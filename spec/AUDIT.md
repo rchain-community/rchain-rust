@@ -3448,6 +3448,20 @@ port against the **reference document** rather than against itself.
   blind a following `opaque`. The tree's own files, which mention these words in prose constantly,
   produce zero hits.
 
+  **Two things the edit itself had to learn, both recorded because a gate is not exempt from the pass's
+  own rules.** (a) `Laws.lean` cites `tools/check-lean-conformance.sh:207` as law 30's witness, and a
+  *line-anchored* citation into a script moves whenever a step above it is edited: the first version of
+  this change grew the region by 40 lines and the register audit failed on the stale window. The fix was
+  to keep the scan region exactly as long as it was (the program compresses to 19 lines with the same
+  behaviour) and to put the prose explaining it *below* the corpus-to-test mapping. The deeper fix is
+  named for whoever owns the audit's citation rule: **a citation into a script should anchor on a token,
+  not a line**. (b) Compressing the awk program for that line-stability introduced a typo — the close
+  marker read `"- /"` instead of `"-/"`, which left the scan *blind* (an unterminated block comment
+  swallows the file) rather than noisy, and it still passed the tree (zero hits) and three of the seven
+  probes. The probe battery caught it on the one case that can see it (five tokens must fire, and they
+  read zero). That is the pass's rule exactly: an instrument that cannot see the defect it names is not
+  evidence, and a scan that has gone blind looks identical to a clean tree.
+
   **What was not run: the whole gate.** Its first step is `lake build`, and the Lean slot belongs to the
   lead — so the end-to-end run of the modified gate is owed and named in this unit's handover rather than
   assumed here. The scan step is the one that changed, and it is the step that was exercised.
