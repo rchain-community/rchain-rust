@@ -959,7 +959,7 @@ mutual
             have hpt : 1 ≤ parNodes t := parNodes_pos t
             have hpp : 1 ≤ parNodes p := parNodes_pos p
             rw [coreSat t p k (by simp only [bCore, bList, parNodesListPar_cons, parNodesListPar_nil, parNodes_mk] at hm ⊢; omega),
-                listPosSat rest tl absorb k (by simp only [bList, parNodesListPar_cons, parNodesListPar_nil, parNodes_mk] at hm ⊢; omega)]
+                listPosSat rest tl absorb k (by simp only [bCore, bList, parNodesListPar_cons, parNodesListPar_nil, parNodes_mk] at hm ⊢; omega)]
 
   termination_by sizeOf ps + sizeOf ts
   theorem listParSat (ps ts : List Par) (absorb : Bool)  (m : Nat) (hm : bList ps ts ≤ m) :
@@ -980,8 +980,8 @@ mutual
             have hpt : 1 ≤ parNodes t := parNodes_pos t
             have hpp : 1 ≤ parNodes p := parNodes_pos p
             rw [coreSat t p k (by simp only [bCore, bList, parNodesListPar_cons, parNodesListPar_nil, parNodes_mk] at hm ⊢; omega),
-                listParSat rest tl absorb k (by simp only [bList, parNodesListPar_cons, parNodesListPar_nil, parNodes_mk] at hm ⊢; omega),
-                listParSat (p :: rest) tl absorb k (by simp only [bList, parNodesListPar_cons, parNodesListPar_nil, parNodes_mk] at hm ⊢; omega)]
+                listParSat rest tl absorb k (by simp only [bCore, bList, parNodesListPar_cons, parNodesListPar_nil, parNodes_mk] at hm ⊢; omega),
+                listParSat (p :: rest) tl absorb k (by simp only [bCore, bList, parNodesListPar_cons, parNodesListPar_nil, parNodes_mk] at hm ⊢; omega)]
 
   termination_by sizeOf ps + sizeOf ts
   theorem mapSat (kvs tks : List (Par × Par)) (absorb : Bool)  (m : Nat) (hm : bMap kvs tks ≤ m) :
@@ -1004,12 +1004,10 @@ mutual
                 || matchMap k ((k1, k2) :: rest) tl absorb)
             have ht1 : 1 ≤ parNodes t1 := parNodes_pos t1
             have ht2 : 1 ≤ parNodes t2 := parNodes_pos t2
-            have hk1 : 1 ≤ parNodes k1 := parNodes_pos k1
-            have hk2 : 1 ≤ parNodes k2 := parNodes_pos k2
             rw [coreSat t1 k1 k (by simp only [bCore, bMap, parNodesPairs_cons, parNodes_mk] at hm ⊢; omega),
                 coreSat t2 k2 k (by simp only [bCore, bMap, parNodesPairs_cons, parNodes_mk] at hm ⊢; omega),
-                mapSat rest tl absorb k (by simp only [bMap, parNodesPairs_cons, parNodes_mk] at hm ⊢; omega),
-                mapSat ((k1, k2) :: rest) tl absorb k (by simp only [bMap, parNodesPairs_cons, parNodes_mk] at hm ⊢; omega)]
+                mapSat rest tl absorb k (by simp only [bCore, bMap, parNodesPairs_cons, parNodes_mk] at hm ⊢; omega),
+                mapSat ((k1, k2) :: rest) tl absorb k (by simp only [bCore, bMap, parNodesPairs_cons, parNodes_mk] at hm ⊢; omega)]
   termination_by sizeOf kvs + sizeOf tks
 end
 
@@ -1768,5 +1766,201 @@ theorem spatialMatches_imp_eq {t p : Par} (ht : pathPar t = true) (hp : pathPar 
     (h : spatialMatch t p = true) : t = p := by
   rw [spatialMatch, Bool.and_eq_true] at h
   exact eq_of_core t p (matchFuel t p) ht hp h.1
+
+/-- `Ground`'s self-comparison, per constructor. The derived `BEq` reduces to the *fields'*, so each arm
+    is the field's `LawfulBEq.rfl` — but `α` has to be pinned by a `change` first, since the goal's
+    head is the `Ground` comparison and there is no `LawfulBEq Ground` for the search to find. -/
+private theorem ground_beq_self : ∀ (g : Ground), (g == g) = true
+  | .bool b => by change (b == b) = true; exact LawfulBEq.rfl
+  | .int n => by change (n == n) = true; exact LawfulBEq.rfl
+  | .str l => by change (l == l) = true; exact LawfulBEq.rfl
+  | .uri l => by change (l == l) = true; exact LawfulBEq.rfl
+  | .bytes l => by change (l == l) = true; exact LawfulBEq.rfl
+
+private theorem parNodesExpr_ground (g : Ground) : parNodesExpr (.ground g) = 1 := rfl
+
+/-! ### The completeness half: a `pathPar` pattern matches itself
+
+The tie's ⇐ direction, and the half that needs the fuel *arithmetic* — a shortfall answers `false`, so
+"the clauses accept this shape" is a claim about a **sufficient** bound, not about any bound. The family
+is `fuel_saturation`'s member for member, with the same depth-indexed bounds and the same induction (over
+the terms, with the fuel quantified above each member's bound): `spatialMatchCore (m+1)` reduces to
+`spatialMatchExprs m`, so each member's calls land on the next member at the predecessor, and the bound
+each call needs is the one `omega` derives from the caller's.
+
+Each member is stated at **its own fuel** (`… fuel … = true` with `bX ≤ fuel`), not at `fuel + 1`: the
+`cases fuel` inside is what puts the clause reductions in successor form, and the statement's equality is
+then the same `fuel` the callee's is stated at — the off-by-one that costs a first attempt otherwise. -/
+
+set_option maxHeartbeats 1000000 in
+mutual
+  theorem selfCore (p : Par) (hp : pathPar p = true) (fuel : Nat) (hm : bCore p p ≤ fuel) :
+      spatialMatchCore fuel p p = true := by
+    cases fuel with
+    | zero => exfalso; simp only [bCore] at hm; omega
+    | succ k =>
+      cases p with | mk s r n e ma u b c =>
+      change spatialMatchExprs k e e = true
+      exact selfExprs e (pathPar_exprs hp) k
+        (by simp only [bCore, bExprs, parNodes_mk] at hm ⊢; omega)
+  termination_by sizeOf p
+  theorem selfExprs (es : List Expr) (hp : pathExprs es = true) (fuel : Nat) (hm : bExprs es es ≤ fuel) :
+      spatialMatchExprs fuel es es = true := by
+    cases fuel with
+    | zero => exfalso; simp only [bExprs] at hm; omega
+    | succ k =>
+      cases es with
+      | nil => rw [pathExprs_nil] at hp; exact absurd hp (by decide)
+      | cons x xs =>
+        have hxs : xs = [] := pathExprs_tail_nil x xs hp
+        subst hxs
+        have hx : pathExpr x = true := by rwa [pathExprs_single] at hp
+        rcases pathExpr_cases hx with ⟨g, rfl⟩ | ⟨ps, rfl⟩ | ⟨ps, rfl⟩ | ⟨ps, rfl⟩ | ⟨kvs, rfl⟩
+        · change spatialMatchExpr k (.ground g) [.ground g] = true
+          exact selfExpr (.ground g) hx k (by
+            simp only [bExprs, bExpr, parNodesExprs_cons, parNodesExprs_nil, parNodesExpr_ground] at hm ⊢
+            omega)
+        · change spatialMatchExpr k (.elist ps none) [.elist ps none] = true
+          exact selfExpr (.elist ps none) hx k (by
+            simp only [bExprs, bExpr, parNodesExprs_cons, parNodesExprs_nil, parNodesExpr_elist] at hm ⊢
+            omega)
+        · change spatialMatchExpr k (.eset ps none) [.eset ps none] = true
+          exact selfExpr (.eset ps none) hx k (by
+            simp only [bExprs, bExpr, parNodesExprs_cons, parNodesExprs_nil, parNodesExpr_eset] at hm ⊢
+            omega)
+        · change spatialMatchExpr k (.etuple ps) [.etuple ps] = true
+          exact selfExpr (.etuple ps) hx k (by
+            simp only [bExprs, bExpr, parNodesExprs_cons, parNodesExprs_nil, parNodesExpr_etuple] at hm ⊢
+            omega)
+        · change spatialMatchExpr k (.emap kvs none) [.emap kvs none] = true
+          exact selfExpr (.emap kvs none) hx k (by
+            simp only [bExprs, bExpr, parNodesExprs_cons, parNodesExprs_nil, parNodesExpr_emap] at hm ⊢
+            omega)
+  termination_by sizeOf es
+  theorem selfExpr (e : Expr) (hp : pathExpr e = true) (fuel : Nat) (hm : bExpr e [e] ≤ fuel) :
+      spatialMatchExpr fuel e [e] = true := by
+    cases fuel with
+    | zero => exfalso; simp only [bExpr] at hm; omega
+    | succ k =>
+      rcases pathExpr_cases hp with ⟨g, rfl⟩ | ⟨ps, rfl⟩ | ⟨ps, rfl⟩ | ⟨ps, rfl⟩ | ⟨kvs, rfl⟩
+      · change (g == g) = true
+        exact ground_beq_self g
+      · change matchListPos k ps ps false = true
+        exact selfListPos ps (pathExpr_elist' hp) k (by
+          simp only [bExpr, bList, parNodesExprs_cons, parNodesExprs_nil, parNodesExpr_elist] at hm ⊢
+          omega)
+      · change (if (ps.length == ps.length) = true then matchListPar k ps ps false else false) = true
+        rw [if_pos (show (ps.length == ps.length) = true from LawfulBEq.rfl)]
+        exact selfListPar ps (pathExpr_eset' hp) k (by
+          simp only [bExpr, bList, parNodesExprs_cons, parNodesExprs_nil, parNodesExpr_eset] at hm ⊢
+          omega)
+      · change matchListPos k ps ps false = true
+        exact selfListPos ps (pathExpr_etuple' hp) k (by
+          simp only [bExpr, bList, parNodesExprs_cons, parNodesExprs_nil, parNodesExpr_etuple] at hm ⊢
+          omega)
+      · change (if (kvs.length == kvs.length) = true then matchMap k kvs kvs false else false) = true
+        rw [if_pos (show (kvs.length == kvs.length) = true from LawfulBEq.rfl)]
+        exact selfMap kvs (pathExpr_emap' hp) k (by
+          simp only [bExpr, bMap, parNodesExprs_cons, parNodesExprs_nil, parNodesExpr_emap] at hm ⊢
+          omega)
+  termination_by sizeOf e
+  theorem selfListPos (ps : List Par) (hp : pathPars ps = true) (fuel : Nat) (hm : bList ps ps ≤ fuel) :
+      matchListPos fuel ps ps false = true := by
+    cases fuel with
+    | zero => exfalso; simp only [bList] at hm; omega
+    | succ k =>
+      cases ps with
+      | nil => change (false || ([] : List Par).isEmpty) = true; rfl
+      | cons p ps =>
+        change (spatialMatchCore k p p && matchListPos k ps ps false) = true
+        rw [Bool.and_eq_true]
+        refine ⟨?_, ?_⟩
+        · have hpp : 1 ≤ parNodes p := parNodes_pos p
+          exact selfCore p (pathPars_head hp) k (by
+            simp only [bCore, bList, parNodesListPar_cons, parNodesListPar_nil, parNodes_mk] at hm ⊢
+            omega)
+        · have hpp : 1 ≤ parNodes p := parNodes_pos p
+          exact selfListPos ps (pathPars_tail hp) k (by
+            simp only [bCore, bList, parNodesListPar_cons, parNodesListPar_nil, parNodes_mk] at hm ⊢; omega)
+  termination_by sizeOf ps
+  theorem selfListPar (ps : List Par) (hp : pathPars ps = true) (fuel : Nat) (hm : bList ps ps ≤ fuel) :
+      matchListPar fuel ps ps false = true := by
+    cases fuel with
+    | zero => exfalso; simp only [bList] at hm; omega
+    | succ k =>
+      cases ps with
+      | nil => change (false || ([] : List Par).isEmpty) = true; rfl
+      | cons p ps =>
+        change (((spatialMatchCore k p p && matchListPar k ps ps false)
+          || matchListPar k (p :: ps) ps false)) = true
+        rw [Bool.or_eq_true]
+        left
+        rw [Bool.and_eq_true]
+        refine ⟨?_, ?_⟩
+        · have hpp : 1 ≤ parNodes p := parNodes_pos p
+          exact selfCore p (pathPars_head hp) k (by
+            simp only [bCore, bList, parNodesListPar_cons, parNodesListPar_nil, parNodes_mk] at hm ⊢; omega)
+        · have hpp : 1 ≤ parNodes p := parNodes_pos p
+          exact selfListPar ps (pathPars_tail hp) k (by
+            simp only [bCore, bList, parNodesListPar_cons, parNodesListPar_nil, parNodes_mk] at hm ⊢; omega)
+  termination_by sizeOf ps
+  theorem selfMap (kvs : List (Par × Par)) (hp : pathPairs kvs = true) (fuel : Nat)
+      (hm : bMap kvs kvs ≤ fuel) : matchMap fuel kvs kvs false = true := by
+    cases fuel with
+    | zero => exfalso; simp only [bMap] at hm; omega
+    | succ k =>
+      cases kvs with
+      | nil => change (false || ([] : List (Par × Par)).isEmpty) = true; rfl
+      | cons kv kvs =>
+        cases kv with
+        | mk k1 k2 =>
+          change (((spatialMatchCore k k1 k1 && spatialMatchCore k k2 k2 && matchMap k kvs kvs false)
+            || matchMap k ((k1, k2) :: kvs) kvs false)) = true
+          rw [Bool.or_eq_true]
+          left
+          rw [Bool.and_eq_true, Bool.and_eq_true]
+          refine ⟨⟨?_, ?_⟩, ?_⟩
+          · have hk1 : 1 ≤ parNodes k1 := parNodes_pos k1
+            have hk2 : 1 ≤ parNodes k2 := parNodes_pos k2
+            exact selfCore k1 (pathPairs_head hp) k (by
+              simp only [bCore, bMap, parNodesPairs_cons, parNodes_mk] at hm ⊢; omega)
+          · have hk1 : 1 ≤ parNodes k1 := parNodes_pos k1
+            have hk2 : 1 ≤ parNodes k2 := parNodes_pos k2
+            exact selfCore k2 (pathPairs_head2 hp) k (by
+              simp only [bCore, bMap, parNodesPairs_cons, parNodes_mk] at hm ⊢; omega)
+          · have hk1 : 1 ≤ parNodes k1 := parNodes_pos k1
+            have hk2 : 1 ≤ parNodes k2 := parNodes_pos k2
+            exact selfMap kvs (pathPairs_tail hp) k (by
+              simp only [bCore, bMap, parNodesPairs_cons, parNodes_mk] at hm ⊢; omega)
+  termination_by sizeOf kvs
+end
+
+/-- **Law 37's tie, the completeness half**: a `pathPar` pattern matches itself. With the soundness half
+    (`spatialMatches_imp_eq`) the clauses therefore decide exactly equality on the domain. The fuel here
+    is discharged by the *bound*: `bCore p p` **is** `matchFuel p p`, so `le_rfl` suffices and
+    `fuel_saturation` is not needed — which is the mirror of why the other half needed no bound at all. -/
+theorem eq_imp_spatialMatches {t p : Par} (hp : pathPar p = true) (h : t = p) :
+    spatialMatch t p = true := by
+  rw [h]
+  rw [spatialMatch, Bool.and_eq_true]
+  refine ⟨?_, linear_of_pathPar p hp⟩
+  exact selfCore p hp (matchFuel p p) le_rfl
+
+/-- **Law 37's tie, both halves.** Over `pathPar` values the clauses decide *exactly equality*: the
+    soundness direction is `spatialMatches_imp_eq` (no bound needed) and the completeness direction is
+    `eq_imp_spatialMatches` (the bound, discharged by `bCore` being `matchFuel`). This is the statement
+    the row owed, and the reason the port's `pattern == target` short-circuit is sound *for the shapes
+    the clauses cover*. -/
+theorem spatialMatches_iff_eq {t p : Par} (ht : pathPar t = true) (hp : pathPar p = true) :
+    spatialMatches t p ↔ t = p :=
+  ⟨fun h => spatialMatches_imp_eq ht hp h, fun h => eq_imp_spatialMatches hp h⟩
+
+/-- The tie's two directions, decided on a pair the corpus also carries: a shorter set pattern against a
+    longer canonical target is **refused**, and the target against itself is **accepted**. Two `decide`s,
+    so the biconditional is not vacuous in either direction. -/
+theorem the_tie_decides_a_set_pattern_and_its_shorter_neighbour :
+    ¬ spatialMatches (setPar [iPar 1, iPar 2]) (setPar [iPar 2])
+      ∧ spatialMatch (setPar [iPar 2]) (setPar [iPar 2]) = true := by
+  refine ⟨?_, ?_⟩ <;> decide
 
 end Rchain

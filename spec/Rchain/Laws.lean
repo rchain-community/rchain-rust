@@ -1366,7 +1366,11 @@ def laws : List Law := [
       `contract` bind/param case is `false` *and* derivable, which is the deviation list showing beside \
       the derive rather than after it",
     note := "**the model exists now, and the corpus is not a tautology** (2026-09-24). `grammarFragment` \
-      is the grammar as data (13 productions) with `derives` a computable predicate over it, and \
+      is the grammar as data — **48 rows, one per production of the `.cf`** (it was 13 when this row \
+      landed; U9 grew it to every production, which is why law 31's coverage claim is now 81 of 81 \
+      witnesses and `spec/conformance/parse.tsv` carries 123 cases — the two numbers count different \
+      things: a *witness* is a spelling per production, a *case* is a corpus row) with `derives` a \
+      computable predicate over it, and \
       `parseCases` is the corpus — the derivable cases, the refused cases, the deviation rows and the \
       printer's witnesses — with `parseCases_decide` a `decide`d theorem over all of it. **What its \
       first Rust run found is the reason the layer earns its name**: three rows disagreed with the \
@@ -1379,20 +1383,21 @@ def laws : List Law := [
       (the comma form is law 31's deviation, recorded below) — and the gate's reserved consumer is now \
       a real one (`tools/check-lean-conformance.sh:207`, `lean_parse_corpus`)" },
   { number := 31, layer := "Rholang",
-    statement := "Every BNFC term is accepted, modulo a **data list of documented deviations** \
-      (`Rchain.parseDeviations`), each row's direction `decide`d against the grammar rather than \
-      asserted",
+    statement := "Every production of the grammar (`rholang_mercury.cf`) is accepted, modulo a data \
+      list of documented deviations",
     status := .provedTied,
     declarations := [`Rchain.grammarFragment, `Rchain.derives, `Rchain.parseDeviations,
       `Rchain.parseCases_decide, `Rchain.deviations_decide],
     corpus := some "parse",
     rust := ["rholang/src/parser.rs", "rholang/tests/lean_parse_corpus.rs"],
     witness := [`Rchain.parseCases_decide, `Rchain.deviations_decide],
-    falsifiable := some "`deviations_decide` decides each row's direction against `derives`: an \
-      `accepts` row is a spelling the grammar derives, and a `refuses` row is one it does not and the \
-      node still accepts — so a list widened to excuse a spelling the grammar already derives, or a row \
-      whose direction is mis-stated, fails the `decide`. Each row is also a corpus case \
-      (`deviationCases`), so the Rust consumer is the second half",
+    falsifiable := some "**the coverage is the claim, and it is 81 of 81.** `Surface.lean`'s production \
+      table witnesses every label of the `.cf`, `Rchain/Print.lean` spells each witness, and \
+      `rholang/tests/lean_parse_corpus.rs` runs the node's parser on all 81 spellings — so a production \
+      the port cannot read fails the consumer rather than a reviewer. The deviation list is the \
+      qualification, and each row of it is a claim: `deviations_decide` refuses a row whose direction \
+      the grammar contradicts. Its two `refuses` rows were found by the consumer's first run, not by \
+      reading",
     note := "Law 31's deviation list is **data in `Rchain/Parse.lean` (`parseDeviations`)**, each row's \
       direction `decide`d against `derives`: the `accepts` rows are AUDIT C31's trailing-separator and \
       comma-before-remainder sites, and the `refuses` rows — a `NameRemainder` in a contract's \
@@ -1516,10 +1521,10 @@ def laws : List Law := [
       statement is about the function G6 changes" },
   { number := 37, layer := "Rholang",
     statement := "Match soundness and completeness (Law 5 strengthened: partial collections, \
-      wildcards, remainders) — over the shapes the clauses cover, which `pathPar` names, and its \
-      **soundness half is proved** (`spatialMatches_imp_eq`: an accepted match forces equality)",
-    status := .owed,
-    declarations := [`Rchain.spatialMatchCore, `Rchain.spatialMatchExprs, `Rchain.spatialMatchExpr,
+      wildcards, remainders) — **over the shapes the clauses cover, which `pathPar` names, the clauses decide exactly equality**: `spatialMatches t p ↔ t = p` (`spatialMatches_iff_eq`)",
+    status := .provedTied,
+    declarations := [`Rchain.spatialMatches_iff_eq, `Rchain.eq_imp_spatialMatches,
+      `Rchain.the_tie_decides_a_set_pattern_and_its_shorter_neighbour, `Rchain.spatialMatchCore, `Rchain.spatialMatchExprs, `Rchain.spatialMatchExpr,
       `Rchain.matchListPar, `Rchain.matchListPos, `Rchain.matchMap, `Rchain.modelledPar,
       `Rchain.modelledExpr, `Rchain.arithmetic_pattern_refutes_the_unrestricted_tie,
       `Rchain.the_walk_past_empty_pars_is_paid_for,
@@ -1532,7 +1537,9 @@ def laws : List Law := [
       `Rchain.a_nested_multi_expression_par_is_outside_the_path_domain,
       `Rchain.a_single_expression_par_is_in_the_path_domain, `Rchain.spatialMatches_imp_eq],
     corpus := some "match",
-    witness := [`Rchain.arithmetic_pattern_refutes_the_unrestricted_tie, `Rchain.a_list_pattern_cannot_skip_a_target_element, `Rchain.the_walk_past_empty_pars_is_paid_for, `Rchain.a_shorter_set_pattern_is_refused, `Rchain.a_shorter_map_pattern_is_refused, `Rchain.a_permuted_pattern_is_refused, `Rchain.a_nested_multi_expression_par_is_outside_the_path_domain, `Rchain.a_single_expression_par_is_in_the_path_domain, `Rchain.spatialMatches_imp_eq],
+    rust := ["rholang/src/matcher/spatial_matcher.rs"],
+    witness := [`Rchain.arithmetic_pattern_refutes_the_unrestricted_tie, `Rchain.a_list_pattern_cannot_skip_a_target_element, `Rchain.the_walk_past_empty_pars_is_paid_for, `Rchain.a_shorter_set_pattern_is_refused, `Rchain.a_shorter_map_pattern_is_refused, `Rchain.a_permuted_pattern_is_refused, `Rchain.a_nested_multi_expression_par_is_outside_the_path_domain, `Rchain.a_single_expression_par_is_in_the_path_domain, `Rchain.spatialMatches_imp_eq, `Rchain.eq_imp_spatialMatches,
+      `Rchain.the_tie_decides_a_set_pattern_and_its_shorter_neighbour],
     falsifiable := some "the corpus's 22 cases with three-valued verdicts; the once-false law-5 axiom was replaced \
       *because* a corpus case contradicted it (AUDIT C26), the fuel bound was one step short until the \
       `decide` refused to compile, and `concrete_matches_iff_eq` **was false as stated** until case 15 \
@@ -1581,9 +1588,16 @@ def laws : List Law := [
       anywhere**: a shortfall can only answer `false`, so an answer of `true` at *any* fuel forces the
       shape — which is why this is the cheap half and the other is not. Falsified by mutation rather than
       argued: reversing the positional walk's element comparison breaks the family's `change` on the
-      clause *and* breaks `fuel_saturation`. **What is still owed** is the completeness direction — a
-      `pathPar` pattern matches itself — whose shape is the mirror of `fuel_saturation` at the same
-      depth-indexed bounds. One trap, worth keeping: the family's members are `private`, so only
+      clause *and* breaks `fuel_saturation`. **The completeness direction landed the same day** — a
+      `pathPar` pattern matches itself — as a six-member family in the same file, the mirror of
+      `fuel_saturation` at the same depth-indexed bounds, so the row is closed by `spatialMatches_iff_eq`.
+      Two things it cost, both worth keeping: the members must be stated at **their own fuel**
+      (`… fuel …` with `bX ≤ fuel`), not at `fuel + 1`, or every inter-member call is off by one; and the
+      bound's arithmetic needs `parNodes_pos` in scope explicitly (`omega` cannot see that a `Par`
+      presents at least one node) *and* the goal's `bCore`/`bList` unfolded, since neither is a
+      `[simp]`-tagged definition. Falsified by mutation: dropping the set guard's length condition breaks
+      that family's `if_pos` step, the thirty reductions, and the guard's own ratchets. One trap, worth
+      keeping: the family's members are `private`, so only
       `spatialMatches_imp_eq` is citable from the register — a row naming `eq_of_core` would fail the
       reference check" },
   { number := 38, layer := "Rholang",
