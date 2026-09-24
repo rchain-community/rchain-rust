@@ -300,16 +300,384 @@ The way through is already recorded in this repository, for the comparator famil
 the sum type** (`Par ⊕ Send ⊕ … ⊕ List (Par × Par)`) proved by strong induction on `sizeOf`, with the
 family's members as its cases — `Sort.lean`'s note names exactly that ("a single well-founded recursion
 over a sum type"), and it removes both obstacles at once: the measure is a single `Nat` inequality that
-`omega` can finish, and no structural inference is needed at all. The next attempt should start there,
-and the `termination_by` removal above is what makes the *statements* cheap to write.
+`omega` can finish, and no structural inference is needed at all. **And it is done, by a route this note did not predict (2026-09-24).** The
+*sum type* is not needed: the mutual-**theorem** block `Sort.lean` uses for its comparator laws carries
+this family too. What the earlier attempts were missing is a shape, not a measure — and the two rules
+are recorded because each cost a cycle:
+
+* the `termination_by` clause must name a **prefix of the equation patterns**, so the members are written
+  with *variable* patterns and the destructuring inside (`| t, h => by cases t with | mk s r n e m u b c
+  => …`) with `termination_by t _ => sizeOf t`. Written the other way round — patterns that destructure,
+  a clause naming the `∀`-binder — Lean reports `5 parameters bound in termination_by, but the body …
+  only binds 2`, and it is easy to read that as the measure being wrong;
+* every recursive call must then be on a *destructured* subterm, which the `cases` supplies.
+
+The budget: the proof needs `set_option maxHeartbeats 1000000` (the default 200000 is not enough for the
+`closed`/`Closed` iff over 24 predicates on the substituted terms — measured, not guessed; `Sort.lean`
+carries the same kind of measurement).
 -/
 
-/-- **The closedness law, with the closed-image hypothesis it needs**: `σ`'s values must themselves be
-    closed, which the earlier statement of this axiom lacked — `σ := fun _ => free 0` makes the
-    conclusion false of any operation that substitutes at a bound occurrence, and the Rust's own test
-    carries exactly this hypothesis (`law3_substituting_a_closed_value_keeps_the_term_closed`, whose
-    value is `arb_closed`). -/
-axiom subst_closed (σ : Var → Par) (hσ : ∀ v, Closed (σ v)) (d : Nat) (t : Par) (h : Closed t) :
-    Closed (substPar σ d t)
+/-- A `Par` with one expression is closed exactly when that expression is. -/
+private theorem closed_singleExpr_iff (e : Expr) : Closed (singleExpr e) ↔ closedExpr e = true := by
+  simp [Closed, singleExpr, closedListSend, closedListReceive, closedListNew, closedListExpr,
+        closedListMatch, closedListGUnforgeable, closedListBundle, closedListConnective]
+
+/-- A `Par` with one connective is closed exactly when that connective is. -/
+private theorem closed_singleConnective_iff (c : Connective) :
+    Closed (singleConnective c) ↔ closedConnective c = true := by
+  simp [Closed, singleConnective, closedListSend, closedListReceive, closedListNew, closedListExpr,
+        closedListMatch, closedListGUnforgeable, closedListBundle, closedListConnective]
+
+
+private theorem closedListPar_map_sortPar (l : List Par) :
+    closedListPar (l.map sortPar) = closedListPar l := by
+  rw [closedListPar_all, closedListPar_all, List.all_map]
+  exact all_congr l (fun x _ => closed_sortPar x)
+
+/-- The same for a list of pairs. -/
+private theorem closedListParPair_map_sortParPair (l : List (Par × Par)) :
+    closedListParPair (l.map sortParPair) = closedListParPair l := by
+  rw [closedListParPair_all, closedListParPair_all, List.all_map]
+  exact all_congr l (fun x _ => closed_sortParPair x)
+
+-- Measured, not guessed: the `closed`/`Closed` iff over 24 predicates on the substituted terms needs
+-- more than the default 200000 heartbeats. `Sort.lean` carries the same kind of note for its own budget.
+set_option maxHeartbeats 1000000 in
+
+mutual
+  theorem substPar_closed (σ : Var → Par) (hσ : ∀ v, Closed (σ v)) (d : Nat) :
+      ∀ t : Par, Closed t → Closed (substPar σ d t)
+    | t, h => by
+      cases t with
+      | mk s r n e m u b c =>
+        simp only [Closed] at h
+        obtain ⟨hs, hr, hn, he, hm, hu, hb, hc⟩ := h
+        simp only [substPar]
+        rw [Closed_parMerge_iff, Closed_parMerge_iff]
+        refine ⟨⟨substExprsToPar_closed σ hσ d e he, substListConnective_closed σ hσ d c hc⟩, ?_⟩
+        simp only [Closed]
+        exact ⟨substListSend_closed σ hσ d s hs, substListReceive_closed σ hσ d r hr,
+               substListNew_closed σ hσ d n hn, by simp [closedListExpr],
+               substListMatch_closed σ hσ d m hm, hu,
+               substListBundle_closed σ hσ d b hb, by simp [closedListConnective]⟩
+  termination_by t _ => sizeOf t
+
+  theorem substSend_closed (σ : Var → Par) (hσ : ∀ v, Closed (σ v)) (d : Nat) :
+      ∀ x : Send, closedSend x = true → closedSend (substSend σ d x) = true
+    | x, h => by
+      cases x with
+      | mk ch data p =>
+        simp only [closedSend, Bool.and_eq_true] at h
+        simp only [substSend, closedSend, Bool.and_eq_true]
+        exact ⟨(by simpa [closed_eq_Closed] using substPar_closed σ hσ d ch (by simpa [closed_eq_Closed] using h.1)), substListPar_closed σ hσ d data h.2⟩
+  termination_by x _ => sizeOf x
+
+  theorem substReceiveBind_closed (σ : Var → Par) (hσ : ∀ v, Closed (σ v)) (d : Nat) :
+      ∀ x : ReceiveBind, closedReceiveBind x = true → closedReceiveBind (substReceiveBind σ d x) = true
+    | x, h => by
+      cases x with
+      | mk ps src fc =>
+        simp only [closedReceiveBind, Bool.and_eq_true] at h
+        simp only [substReceiveBind, closedReceiveBind, Bool.and_eq_true]
+        exact ⟨substListPar_closed σ hσ (d + 1) ps h.1, (by simpa [closed_eq_Closed] using substPar_closed σ hσ d src (by simpa [closed_eq_Closed] using h.2))⟩
+  termination_by x _ => sizeOf x
+
+  theorem substReceive_closed (σ : Var → Par) (hσ : ∀ v, Closed (σ v)) (d : Nat) :
+      ∀ x : Receive, closedReceive x = true → closedReceive (substReceive σ d x) = true
+    | x, h => by
+      cases x with
+      | mk binds body p n =>
+        simp only [closedReceive, Bool.and_eq_true] at h
+        simp only [substReceive, closedReceive, Bool.and_eq_true]
+        exact ⟨substListReceiveBind_closed σ hσ d binds h.1, (by simpa [closed_eq_Closed] using substPar_closed σ hσ d body (by simpa [closed_eq_Closed] using h.2))⟩
+  termination_by x _ => sizeOf x
+
+  theorem substNew_closed (σ : Var → Par) (hσ : ∀ v, Closed (σ v)) (d : Nat) :
+      ∀ x : New, closedNew x = true → closedNew (substNew σ d x) = true
+    | x, h => by
+      cases x with
+      | mk n body =>
+        simp only [closedNew] at h ⊢
+        simp only [substNew]
+        exact (by simpa [closed_eq_Closed] using substPar_closed σ hσ d body (by simpa [closed_eq_Closed] using h))
+  termination_by x _ => sizeOf x
+
+  theorem substMatchCase_closed (σ : Var → Par) (hσ : ∀ v, Closed (σ v)) (d : Nat) :
+      ∀ x : MatchCase, closedMatchCase x = true → closedMatchCase (substMatchCase σ d x) = true
+    | x, h => by
+      cases x with
+      | mk p src fc =>
+        simp only [closedMatchCase, Bool.and_eq_true] at h
+        simp only [substMatchCase, closedMatchCase, Bool.and_eq_true]
+        exact ⟨(by simpa [closed_eq_Closed] using substPar_closed σ hσ (d + 1) p (by simpa [closed_eq_Closed] using h.1)), (by simpa [closed_eq_Closed] using substPar_closed σ hσ d src (by simpa [closed_eq_Closed] using h.2))⟩
+  termination_by x _ => sizeOf x
+
+  theorem substMatch_closed (σ : Var → Par) (hσ : ∀ v, Closed (σ v)) (d : Nat) :
+      ∀ x : Match, closedMatch x = true → closedMatch (substMatch σ d x) = true
+    | x, h => by
+      cases x with
+      | mk t cs =>
+        simp only [closedMatch, Bool.and_eq_true] at h
+        simp only [substMatch, closedMatch, Bool.and_eq_true]
+        exact ⟨(by simpa [closed_eq_Closed] using substPar_closed σ hσ d t (by simpa [closed_eq_Closed] using h.1)), substListMatchCase_closed σ hσ d cs h.2⟩
+  termination_by x _ => sizeOf x
+
+  theorem substBundle_closed (σ : Var → Par) (hσ : ∀ v, Closed (σ v)) (d : Nat) :
+      ∀ x : Bundle, closedBundle x = true → closedBundle (substBundle σ d x) = true
+    | x, h => by
+      cases x with
+      | mk body w r =>
+        simp only [closedBundle] at h ⊢
+        simp only [substBundle]
+        exact (by simpa [closed_eq_Closed] using substPar_closed σ hσ d body (by simpa [closed_eq_Closed] using h))
+  termination_by x _ => sizeOf x
+
+  theorem substConnective_closed (σ : Var → Par) (hσ : ∀ v, Closed (σ v)) (d : Nat) :
+      ∀ c : Connective, closedConnective c = true → Closed (substConnective σ d c)
+    | c, h => by
+      cases c with
+      | connAnd ps =>
+        simp only [substConnective, closedConnective] at h ⊢
+        rw [closed_singleConnective_iff]
+        simp only [closedConnective]
+        exact substListPar_closed σ hσ d ps h
+      | connOr ps =>
+        simp only [substConnective, closedConnective] at h ⊢
+        rw [closed_singleConnective_iff]
+        simp only [closedConnective]
+        exact substListPar_closed σ hσ d ps h
+      | connNot p =>
+        simp only [substConnective, closedConnective] at h ⊢
+        rw [closed_singleConnective_iff]
+        simp only [closedConnective]
+        exact (by simpa [closed_eq_Closed] using substPar_closed σ hσ d p (by simpa [closed_eq_Closed] using h))
+      | connVarRef dep k =>
+        simp only [substConnective]
+        by_cases hd : dep = 0
+        · simp only [hd, if_true]
+          exact hσ (.bound k)
+        · simp only [hd, if_false]
+          rw [closed_singleConnective_iff]
+          simp [closedConnective]
+  termination_by c _ => sizeOf c
+
+  theorem substListConnective_closed (σ : Var → Par) (hσ : ∀ v, Closed (σ v)) (d : Nat) :
+      ∀ l : List Connective, closedListConnective l = true → Closed (substListConnective σ d l)
+    | [], _ => by simp [substListConnective, Closed_nil]
+    | c :: cs, h => by
+      simp only [closedListConnective, Bool.and_eq_true] at h
+      simp only [substListConnective]
+      exact Closed_parMerge (substConnective_closed σ hσ d c h.1)
+        (substListConnective_closed σ hσ d cs h.2)
+  termination_by l _ => sizeOf l
+
+  theorem substExprsToPar_closed (σ : Var → Par) (hσ : ∀ v, Closed (σ v)) (d : Nat) :
+      ∀ l : List Expr, closedListExpr l = true → Closed (substExprsToPar σ d l)
+    | [], _ => by simp [substExprsToPar, Closed_nil]
+    | e :: es, h => by
+      simp only [closedListExpr, Bool.and_eq_true] at h
+      simp only [substExprsToPar]
+      exact Closed_parMerge (substExprToPar_closed σ hσ d e h.1)
+        (substExprsToPar_closed σ hσ d es h.2)
+  termination_by l _ => sizeOf l
+
+  theorem substListSend_closed (σ : Var → Par) (hσ : ∀ v, Closed (σ v)) (d : Nat) :
+      ∀ l : List Send, closedListSend l = true → closedListSend (substListSend σ d l) = true
+    | [], _ => by simp [substListSend, closedListSend]
+    | x :: xs, h => by
+      simp only [closedListSend, Bool.and_eq_true] at h
+      simp only [substListSend, closedListSend, Bool.and_eq_true]
+      exact ⟨substSend_closed σ hσ d x h.1, substListSend_closed σ hσ d xs h.2⟩
+  termination_by l _ => sizeOf l
+
+  theorem substListReceive_closed (σ : Var → Par) (hσ : ∀ v, Closed (σ v)) (d : Nat) :
+      ∀ l : List Receive, closedListReceive l = true → closedListReceive (substListReceive σ d l) = true
+    | [], _ => by simp [substListReceive, closedListReceive]
+    | x :: xs, h => by
+      simp only [closedListReceive, Bool.and_eq_true] at h
+      simp only [substListReceive, closedListReceive, Bool.and_eq_true]
+      exact ⟨substReceive_closed σ hσ d x h.1, substListReceive_closed σ hσ d xs h.2⟩
+  termination_by l _ => sizeOf l
+
+  theorem substListReceiveBind_closed (σ : Var → Par) (hσ : ∀ v, Closed (σ v)) (d : Nat) :
+      ∀ l : List ReceiveBind, closedListReceiveBind l = true →
+        closedListReceiveBind (substListReceiveBind σ d l) = true
+    | [], _ => by simp [substListReceiveBind, closedListReceiveBind]
+    | x :: xs, h => by
+      simp only [closedListReceiveBind, Bool.and_eq_true] at h
+      simp only [substListReceiveBind, closedListReceiveBind, Bool.and_eq_true]
+      exact ⟨substReceiveBind_closed σ hσ d x h.1, substListReceiveBind_closed σ hσ d xs h.2⟩
+  termination_by l _ => sizeOf l
+
+  theorem substListNew_closed (σ : Var → Par) (hσ : ∀ v, Closed (σ v)) (d : Nat) :
+      ∀ l : List New, closedListNew l = true → closedListNew (substListNew σ d l) = true
+    | [], _ => by simp [substListNew, closedListNew]
+    | x :: xs, h => by
+      simp only [closedListNew, Bool.and_eq_true] at h
+      simp only [substListNew, closedListNew, Bool.and_eq_true]
+      exact ⟨substNew_closed σ hσ d x h.1, substListNew_closed σ hσ d xs h.2⟩
+  termination_by l _ => sizeOf l
+
+  theorem substListMatch_closed (σ : Var → Par) (hσ : ∀ v, Closed (σ v)) (d : Nat) :
+      ∀ l : List Match, closedListMatch l = true → closedListMatch (substListMatch σ d l) = true
+    | [], _ => by simp [substListMatch, closedListMatch]
+    | x :: xs, h => by
+      simp only [closedListMatch, Bool.and_eq_true] at h
+      simp only [substListMatch, closedListMatch, Bool.and_eq_true]
+      exact ⟨substMatch_closed σ hσ d x h.1, substListMatch_closed σ hσ d xs h.2⟩
+  termination_by l _ => sizeOf l
+
+  theorem substListMatchCase_closed (σ : Var → Par) (hσ : ∀ v, Closed (σ v)) (d : Nat) :
+      ∀ l : List MatchCase, closedListMatchCase l = true →
+        closedListMatchCase (substListMatchCase σ d l) = true
+    | [], _ => by simp [substListMatchCase, closedListMatchCase]
+    | x :: xs, h => by
+      simp only [closedListMatchCase, Bool.and_eq_true] at h
+      simp only [substListMatchCase, closedListMatchCase, Bool.and_eq_true]
+      exact ⟨substMatchCase_closed σ hσ d x h.1, substListMatchCase_closed σ hσ d xs h.2⟩
+  termination_by l _ => sizeOf l
+
+  theorem substListBundle_closed (σ : Var → Par) (hσ : ∀ v, Closed (σ v)) (d : Nat) :
+      ∀ l : List Bundle, closedListBundle l = true → closedListBundle (substListBundle σ d l) = true
+    | [], _ => by simp [substListBundle, closedListBundle]
+    | x :: xs, h => by
+      simp only [closedListBundle, Bool.and_eq_true] at h
+      simp only [substListBundle, closedListBundle, Bool.and_eq_true]
+      exact ⟨substBundle_closed σ hσ d x h.1, substListBundle_closed σ hσ d xs h.2⟩
+  termination_by l _ => sizeOf l
+  theorem substListPar_closed (σ : Var → Par) (hσ : ∀ v, Closed (σ v)) (d : Nat) :
+      ∀ l : List Par, closedListPar l = true → closedListPar (substListPar σ d l) = true
+    | [], _ => by simp [substListPar, closedListPar]
+    | x :: xs, h => by
+      simp only [closedListPar, Bool.and_eq_true] at h
+      simp only [substListPar, closedListPar, Bool.and_eq_true]
+      exact ⟨by simpa [closed_eq_Closed] using
+               (by simpa [closed_eq_Closed] using substPar_closed σ hσ d x (by simpa [closed_eq_Closed] using h.1)),
+             substListPar_closed σ hσ d xs h.2⟩
+  termination_by l _ => sizeOf l
+
+  theorem substListParPair_closed (σ : Var → Par) (hσ : ∀ v, Closed (σ v)) (d : Nat) :
+      ∀ l : List (Par × Par), closedListParPair l = true →
+        closedListParPair (substListParPair σ d l) = true
+    | [], _ => by simp [substListParPair, closedListParPair]
+    | (a, b) :: xs, h => by
+      simp only [closedListParPair, Bool.and_eq_true] at h
+      simp only [substListParPair, closedListParPair, Bool.and_eq_true]
+      exact ⟨⟨by simpa [closed_eq_Closed] using
+                (by simpa [closed_eq_Closed] using substPar_closed σ hσ d a (by simpa [closed_eq_Closed] using h.1.1)),
+              by simpa [closed_eq_Closed] using
+                (by simpa [closed_eq_Closed] using substPar_closed σ hσ d b (by simpa [closed_eq_Closed] using h.1.2))⟩,
+             substListParPair_closed σ hσ d xs h.2⟩
+  termination_by l _ => sizeOf l
+
+  theorem substExprToPar_closed (σ : Var → Par) (hσ : ∀ v, Closed (σ v)) (d : Nat) :
+      ∀ e : Expr, closedExpr e = true → Closed (substExprToPar σ d e)
+    | .ground g, _ => by
+      simp only [substExprToPar]; rw [closed_singleExpr_iff]; simp [closedExpr]
+    | .evar v, h => by
+      cases v with
+      | bound k =>
+        simp only [substExprToPar]
+        by_cases hd : d = 0
+        · simp only [hd, if_true]; exact hσ (.bound k)
+        · simp only [hd, if_false]; rw [closed_singleExpr_iff]; simp [closedExpr, closedVar]
+      | free k =>
+        simp only [substExprToPar]; rw [closed_singleExpr_iff]; simp [closedExpr, closedVar] at h ⊢
+      | wildcard =>
+        simp only [substExprToPar]; rw [closed_singleExpr_iff]; simp [closedExpr, closedVar]
+    | .eneg p, h => by
+      simp only [substExprToPar]; rw [closed_singleExpr_iff]
+      simp only [closedExpr] at h ⊢
+      exact (by simpa [closed_eq_Closed] using substPar_closed σ hσ d p (by simpa [closed_eq_Closed] using h))
+    | .enot p, h => by
+      simp only [substExprToPar]; rw [closed_singleExpr_iff]
+      simp only [closedExpr] at h ⊢
+      exact (by simpa [closed_eq_Closed] using substPar_closed σ hσ d p (by simpa [closed_eq_Closed] using h))
+    | .eplus a b, h => by
+      simp only [substExprToPar]; rw [closed_singleExpr_iff]
+      simp only [closedExpr, Bool.and_eq_true] at h ⊢
+      exact ⟨(by simpa [closed_eq_Closed] using substPar_closed σ hσ d a (by simpa [closed_eq_Closed] using h.1)), (by simpa [closed_eq_Closed] using substPar_closed σ hσ d b (by simpa [closed_eq_Closed] using h.2))⟩
+    | .eminus a b, h => by
+      simp only [substExprToPar]; rw [closed_singleExpr_iff]
+      simp only [closedExpr, Bool.and_eq_true] at h ⊢
+      exact ⟨(by simpa [closed_eq_Closed] using substPar_closed σ hσ d a (by simpa [closed_eq_Closed] using h.1)), (by simpa [closed_eq_Closed] using substPar_closed σ hσ d b (by simpa [closed_eq_Closed] using h.2))⟩
+    | .emult a b, h => by
+      simp only [substExprToPar]; rw [closed_singleExpr_iff]
+      simp only [closedExpr, Bool.and_eq_true] at h ⊢
+      exact ⟨(by simpa [closed_eq_Closed] using substPar_closed σ hσ d a (by simpa [closed_eq_Closed] using h.1)), (by simpa [closed_eq_Closed] using substPar_closed σ hσ d b (by simpa [closed_eq_Closed] using h.2))⟩
+    | .ediv a b, h => by
+      simp only [substExprToPar]; rw [closed_singleExpr_iff]
+      simp only [closedExpr, Bool.and_eq_true] at h ⊢
+      exact ⟨(by simpa [closed_eq_Closed] using substPar_closed σ hσ d a (by simpa [closed_eq_Closed] using h.1)), (by simpa [closed_eq_Closed] using substPar_closed σ hσ d b (by simpa [closed_eq_Closed] using h.2))⟩
+    | .emod a b, h => by
+      simp only [substExprToPar]; rw [closed_singleExpr_iff]
+      simp only [closedExpr, Bool.and_eq_true] at h ⊢
+      exact ⟨(by simpa [closed_eq_Closed] using substPar_closed σ hσ d a (by simpa [closed_eq_Closed] using h.1)), (by simpa [closed_eq_Closed] using substPar_closed σ hσ d b (by simpa [closed_eq_Closed] using h.2))⟩
+    | .elt a b, h => by
+      simp only [substExprToPar]; rw [closed_singleExpr_iff]
+      simp only [closedExpr, Bool.and_eq_true] at h ⊢
+      exact ⟨(by simpa [closed_eq_Closed] using substPar_closed σ hσ d a (by simpa [closed_eq_Closed] using h.1)), (by simpa [closed_eq_Closed] using substPar_closed σ hσ d b (by simpa [closed_eq_Closed] using h.2))⟩
+    | .ele a b, h => by
+      simp only [substExprToPar]; rw [closed_singleExpr_iff]
+      simp only [closedExpr, Bool.and_eq_true] at h ⊢
+      exact ⟨(by simpa [closed_eq_Closed] using substPar_closed σ hσ d a (by simpa [closed_eq_Closed] using h.1)), (by simpa [closed_eq_Closed] using substPar_closed σ hσ d b (by simpa [closed_eq_Closed] using h.2))⟩
+    | .egt a b, h => by
+      simp only [substExprToPar]; rw [closed_singleExpr_iff]
+      simp only [closedExpr, Bool.and_eq_true] at h ⊢
+      exact ⟨(by simpa [closed_eq_Closed] using substPar_closed σ hσ d a (by simpa [closed_eq_Closed] using h.1)), (by simpa [closed_eq_Closed] using substPar_closed σ hσ d b (by simpa [closed_eq_Closed] using h.2))⟩
+    | .ege a b, h => by
+      simp only [substExprToPar]; rw [closed_singleExpr_iff]
+      simp only [closedExpr, Bool.and_eq_true] at h ⊢
+      exact ⟨(by simpa [closed_eq_Closed] using substPar_closed σ hσ d a (by simpa [closed_eq_Closed] using h.1)), (by simpa [closed_eq_Closed] using substPar_closed σ hσ d b (by simpa [closed_eq_Closed] using h.2))⟩
+    | .eeq a b, h => by
+      simp only [substExprToPar]; rw [closed_singleExpr_iff]
+      simp only [closedExpr, Bool.and_eq_true] at h ⊢
+      exact ⟨(by simpa [closed_eq_Closed] using substPar_closed σ hσ d a (by simpa [closed_eq_Closed] using h.1)), (by simpa [closed_eq_Closed] using substPar_closed σ hσ d b (by simpa [closed_eq_Closed] using h.2))⟩
+    | .eneq a b, h => by
+      simp only [substExprToPar]; rw [closed_singleExpr_iff]
+      simp only [closedExpr, Bool.and_eq_true] at h ⊢
+      exact ⟨(by simpa [closed_eq_Closed] using substPar_closed σ hσ d a (by simpa [closed_eq_Closed] using h.1)), (by simpa [closed_eq_Closed] using substPar_closed σ hσ d b (by simpa [closed_eq_Closed] using h.2))⟩
+    | .eand a b, h => by
+      simp only [substExprToPar]; rw [closed_singleExpr_iff]
+      simp only [closedExpr, Bool.and_eq_true] at h ⊢
+      exact ⟨(by simpa [closed_eq_Closed] using substPar_closed σ hσ d a (by simpa [closed_eq_Closed] using h.1)), (by simpa [closed_eq_Closed] using substPar_closed σ hσ d b (by simpa [closed_eq_Closed] using h.2))⟩
+    | .eor a b, h => by
+      simp only [substExprToPar]; rw [closed_singleExpr_iff]
+      simp only [closedExpr, Bool.and_eq_true] at h ⊢
+      exact ⟨(by simpa [closed_eq_Closed] using substPar_closed σ hσ d a (by simpa [closed_eq_Closed] using h.1)), (by simpa [closed_eq_Closed] using substPar_closed σ hσ d b (by simpa [closed_eq_Closed] using h.2))⟩
+    | .elist ps r, h => by
+      simp only [substExprToPar]; rw [closed_singleExpr_iff]
+      simp only [closedExpr, Bool.and_eq_true] at h ⊢
+      exact ⟨substListPar_closed σ hσ d ps h.1, h.2⟩
+    | .etuple ps, h => by
+      simp only [substExprToPar]; rw [closed_singleExpr_iff]
+      simp only [closedExpr] at h ⊢
+      exact substListPar_closed σ hσ d ps h
+    | .eset ps r, h => by
+      simp only [substExprToPar]; rw [closed_singleExpr_iff]
+      simp only [closedExpr, Bool.and_eq_true] at h ⊢
+      refine ⟨?_, h.2⟩
+      rw [sortListPar_eq_map, closedListPar_map_sortPar]
+      exact substListPar_closed σ hσ d ps h.1
+    | .emap kvs r, h => by
+      simp only [substExprToPar]; rw [closed_singleExpr_iff]
+      simp only [closedExpr, Bool.and_eq_true] at h ⊢
+      refine ⟨?_, h.2⟩
+      rw [sortListParPair_eq_map, closedListParPair_map_sortParPair]
+      exact substListParPair_closed σ hσ d kvs h.1
+  termination_by e _ => sizeOf e
+end
+
+/-- **The closedness law, with the closed-image hypothesis it needs** — a **theorem about the
+    definition** since 2026-09-24, with the statement the axiom carried unchanged (a changed statement
+    is a changed law). `σ`'s values must be closed: `σ := fun _ => free 0` makes the conclusion false of
+    any operation that substitutes at a bound occurrence, and the Rust's own test carries exactly this
+    hypothesis (`law3_substituting_a_closed_value_keeps_the_term_closed`, whose value is `arb_closed`).
+
+    The block above proves it at the checker level (`closed … = true`, the same shape `Ty.lean`'s
+    `closed*` block uses); this wrapper states it in the `Closed` form the law is written in. -/
+theorem subst_closed (σ : Var → Par) (hσ : ∀ v, Closed (σ v)) (d : Nat) (t : Par) (h : Closed t) :
+    Closed (substPar σ d t) :=
+  substPar_closed σ hσ d t h
 
 end Rchain

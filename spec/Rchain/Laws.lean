@@ -288,7 +288,7 @@ def laws : List Law := [
       `Rchain.the_identity_satisfies_sort_subst, `Rchain.the_identity_satisfies_subst_closed,
       `Rchain.bound_is_closed_free_is_not, `Rchain.sort_subst, `Rchain.subst_closed],
     rust := ["rholang/src/substitute.rs"],
-    axioms := [`Rchain.sort_subst, `Rchain.subst_closed],
+    axioms := [`Rchain.sort_subst],
     coq := ["spec/coq/Laws.v:substPar", "spec/coq/Laws.v:subst_commutes_sort"],
     witness := [`Rchain.the_identity_satisfies_sort_subst, `Rchain.the_identity_satisfies_subst_closed, `Rchain.bound_is_closed_free_is_not],
     falsifiable := some "`the_identity_satisfies_sort_subst` and \
@@ -323,7 +323,18 @@ def laws : List Law := [
       this row is Programme D's unit 5: define `substPar` by mirroring the code the law describes \
       (`rholang/src/substitute.rs:164` — an `Env<Par>` keyed by de Bruijn level with a shift, and a \
       `depth` incremented inside receive and match-case *patterns*), at which point both laws become \
-      theorems about a definition" },
+      theorems about a definition. **And that is what happened (2026-09-24)**: the closedness law is a \
+      *theorem* now — `subst_closed`'s statement unchanged, resting on a `mutual` **theorem** block over \
+      the substitution family (21 members, one per helper) that states the checker-level facts \
+      (`closed … = true`), with `closed_eq_Closed` carrying it back to the `Closed` form the law is \
+      written in. The route this note predicted — a strong induction over the sum type — was **not \
+      needed**: the mutual-theorem idiom `Sort.lean`'s comparator laws use carries this family too, and \
+      the obstruction the earlier attempts hit was a *shape*, not a measure (the `termination_by` clause \
+      must name a prefix of the equation patterns, so the members use variable patterns with the \
+      destructuring inside). It needs `set_option maxHeartbeats 1000000`, measured. `sort_subst` is the \
+      one law of this row still owed, and it is the harder half: the splice makes a substituted \
+      occurrence contribute a whole `Par`, so the proof needs the permutation lemmas \
+      (`sortList_append_comm`, `sortList_idempotent`) as well as the same induction" },
   { number := 4, clause := "a", layer := "Rholang",
     statement := "Reduction (COMM): a send and a matching receive on one channel reduce to the \
       receive's body",
