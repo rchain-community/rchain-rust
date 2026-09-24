@@ -1082,7 +1082,20 @@ impl NativeSystemState {
     /// block.
     pub async fn close_block(&self, block_number: i64) -> Result<Result<(), String>, String> {
         let params = self.params().await?;
-        if !is_epoch_boundary(&params, block_number) {
+        let boundary = is_epoch_boundary(&params, block_number);
+        // The epoch decision, logged where it is made. Everything about validator membership that is not
+        // immediate - activation, rewards, withdrawal processing - happens here and nowhere else, and until
+        // this line existed the only way to tell whether it ran was to infer it from a changed active set.
+        eprintln!(
+            "[pos] close_block {} boundary={} epoch_length={} max_active={} bond=[{}, {}]",
+            block_number,
+            boundary,
+            params.epoch_length,
+            params.number_of_active_validators,
+            params.minimum_bond,
+            params.maximum_bond
+        );
+        if !boundary {
             // `Pos.rhox:519`: "Epoch change does not occur." Nothing is written — no reward, no
             // activation, no payment. The active set is not even recomputed, which is faithful: the
             // contract's membership changes take effect at boundaries, and every change (bond's

@@ -458,6 +458,23 @@ where
         .map(|(v, _)| *v)
         .collect();
     let to_slash: BTreeSet<Validator> = slashable_offenders(&pre_state.justifications, &bonded);
+    if !to_slash.is_empty() {
+        // The consequence, logged where it is decided. The validation failure that caused it is already
+        // logged by the block processor; nothing connected the two, so a slashing used to be visible only as
+        // the pool getting smaller later on (`getBonds` counting one fewer validator).
+        eprintln!(
+            "[pos] slashing {} bonded validator(s) whose block failed validation here: {}",
+            to_slash.len(),
+            to_slash
+                .iter()
+                .map(|v| rchain_shared::base16::encode(v.as_bytes())
+                    .chars()
+                    .take(8)
+                    .collect::<String>())
+                .collect::<Vec<_>>()
+                .join(" ")
+        );
+    }
 
     // An epoch boundary is a block whose height is a positive multiple of `epoch_length` (matching
     // the PoS contract's `blockNumber % epochLength == 0`). A non-positive `epoch_length` disables

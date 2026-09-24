@@ -274,3 +274,77 @@ source of truth.
 
 `--use-random-ports` (or explicit `--protocol-port`/`--discovery-port`/`--api-port-*`) lets a second node
 run beside an existing one on the same host, which is useful for testing.
+
+## Three things that bite when you actually run one
+
+Learned by building a three-validator network from a one-validator genesis, one node at a time, on
+2026-09-24. Each of these cost real debugging time; each is cheap to avoid once known.
+
+### The genesis PoS parameters are part of the chain's identity
+
+They are written into the genesis block's post-state, so a node that omits them computes a *different*
+genesis post-state and refuses every block above it:
+
+```
+ERROR [casper.blocks.BlockProcessor] Block <hash> processing error: validateBlockCheckpoint failed:
+regenerated mergeable channels for block <genesis> but replay computed <other-hash> instead
+```
+
+Worse, the failure is quiet about its cause, and a joiner whose parameters happen to match some *other*
+node on its host will happily sync that node's chain instead — which is what happened when the third
+validator was started on a host that already ran a node with the defaults: it joined that chain (height 113
+against the intended chain's 12) because the two had identical default parameters.
+
+The shipped defaults are devnet-shaped (`defaults.conf`: `epoch-length 10000`,
+`quarantine-length 50000`, `bond-maximum i64::MAX`, `number-of-active-validators 100`). Set them explicitly
+on **every** node, and keep them identical:
+
+```
+--epoch-length 10 --quarantine-length 10 --bond-minimum 1 --bond-maximum 100 --number-of-active-validators 10
+```
+
+A 10000-block epoch is not a detail: the active set is only recomputed at a boundary, so a validator that
+bonds on a chain with that epoch does not become active for another 10000 blocks. It sits in the pool
+(`getBonds` counts it) while the active set — and therefore consensus — ignores it.
+
+### A validator is slashed for a block that fails validation, not for staying silent
+
+`block_creator` attaches a `slash` system deploy for every bonded validator whose latest justification
+carries `validation_failed`:
+
+```rust
+let offenders = pre_state.justifications.iter()
+    .filter(|m| m.validation_failed)
+    .map(|m| m.sender)
+    .collect();
+let to_slash = offenders.intersection(&bonded);
+```
+
+and `NativeSystemState::slash` removes that validator from the pool, the active set, the withdrawers and the
+pending withdrawers, and moves its stake to the Coop multisig vault - confiscation, not deactivation.
+
+Two consequences worth knowing before running a network.
+
+**A silent validator is not slashed; it is a drag instead.** One that never proposes keeps its bond, stays in
+the active set (the top-N is chosen by stake) and counts in the >2/3 denominator that finality needs. The
+protocol is asymmetric: going offline is free, while a block that *fails validation on another node* costs
+the sender its stake.
+
+**A state divergence becomes mutual slashing.** `validation_failed` is recorded against the *sender* of the
+block that could not be validated, whatever the cause. When two nodes disagree about the state - a
+configuration difference, or a replay that cannot regenerate a mergeable channel - each records the other as
+an offender and proposes to slash it; the other rejects that block as invalid and becomes an offender in
+turn. On this build that happened between the second and third validators, whose genesis parameters differed
+from the master's: both were slashed, and the only trace was the pool shrinking (`getBonds` went 3 -> 1).
+The validation failure itself is logged; the slashing that follows it was not, until now.
+
+
+### Attesting on every remote block is a block storm with three validators
+
+`--attest-on-new-blocks` makes a validator attest when it sees a remote block, which is what gets its stake
+into the finality count. With three validators, each attestation is itself a remote block for the other two,
+so the chain grows continuously: 276 blocks of mostly empty attestations in about a minute, finalised only to
+block 11, and the 1 GB hosts at 40% CPU with the memory cost that implies (see the sizing trap above).
+
+Attestation has to be bounded — one per height per sender, or gated on the finaliser having something to
+finalise — rather than "one per remote block seen". Recorded on #70.
