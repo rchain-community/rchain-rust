@@ -24,22 +24,49 @@ Audit dimensions (in the order applied):
 (brace-depth aware), then **fails** (exit 1) on:
 
 - **`panic`** — production `.unwrap()` / `.expect(` / `panic!` / `unreachable!` / `todo!` /
-  `unimplemented!`, whitelisting `sdk/src/primitive.rs` (the Scala `getUnsafe` escape hatch); the
-  rholang parser's `expect(Tok::…)` method is excluded (a method, not `Result::expect`).
+  `unimplemented!`, `assert!`/`assert_eq!`/`assert_ne!` **and their `debug_` forms** (the `debug_`
+  forms joined the class on 2026-09-24 — see the blind-spot paragraph below), whitelisting
+  `sdk/src/primitive.rs` (the Scala `getUnsafe` escape hatch); the rholang parser's `expect(Tok::…)`
+  method is excluded (a method, not `Result::expect`).
 - **`unsafe`** — `unsafe {` (must be zero; the crate graph is entirely safe Rust).
 - **`silent`** — `try_into().unwrap()` / `try_into().expect(`, and `unwrap_or(0)` /
   `unwrap_or_default()` on a fallible numeric conversion (a fallible conversion must not be
   silently flattened to 0/Default).
 - **`escape`** (added 2026-09-24) — a refinement newtype surrendering its invariant: `impl … Deref …
-  for`, or a public tuple field, in the three files that hold the refinements. This is what makes
+  for`, a public tuple field, **or a public `.get()`** — the third form `spec/TYPE-SYSTEM.md:112-115`
+  names, added to the scan on 2026-09-24 (see the blind-spot paragraph), in the three files that hold
+  the refinements. The `.get()` form is matched *inside an `impl` block that names a refinement type*
+  rather than file-wide, because those files also hold error types with public fields
+  (`RefineError(pub String)`) whose accessors are not escapes. This is what makes
   `spec/TYPE-SYSTEM.md` §1.7's "no type escape" rule a check rather than a promise.
+
+**Two classes could not see the defect they named, until 2026-09-24 (Programme F, U2), and both
+were falsified by probe before they were fixed.** The `panic` pattern was `\bassert(_eq|_ne)?!\(`, and
+a word boundary never occurs before `assert` in `debug_assert!` — `_` *is* a word character — so the
+tree's production `debug_assert!`s were invisible to the class that exists for them. The one that
+mattered is `FreeCount::from_nonneg`'s `debug_assert!(n >= 0)`: it guarded a constructor that stored
+whatever `i32` it was handed, so a negative count crossed the boundary *silently in release builds*
+exactly where the guard was compiled out — see C52's row. And `scan_escapes` checked `Deref` and the
+public tuple field but **not the public `.get()`** that `spec/TYPE-SYSTEM.md:112-115` names beside
+them, so the escape count was green partly because the form was not looked for. *Measured:* with a
+`debug_assert!` and a `pub fn get(&self)` on a refinement added to the tree, the gate printed "OK: no
+hard production violations" and exited 0. After the two pattern fixes the same probes are reported and
+the gate exits 1; a control accessor of that shape on `RefineError` (not a refinement) is *not*
+reported; the probes were then removed. An instrument that cannot see the defect it names is not
+evidence — this pass has now paid for that lesson twice (the two cost tripwires, and law 5's property
+that could not fail). The one site the widened `panic` pattern finds in the tree,
+`block-storage/src/dag/message_state.rs:101`'s `latest_msgs ⊆ msg_map`, is whitelisted beside its
+justification where the whitelist is defined — an internal self-consistency check on two fields of one
+struct, not a value carrying a fallible conversion — and `casper/src/block_random_seed.rs`'s
+`debug_assert!(shard_id.is_ascii())` was already listed.
 
 Its `cast`/`lax`/`get` classes are candidate finders (soft reports). **`panic`/`unsafe`/`silent`/
 `escape` clean.** The soft counts have moved since this section's original baseline (284 cast / 21
 lax / 79 get, post Phase-0 widen) and are re-measured here rather than left to read as current:
-**`cast` = 330, `lax` = 14, `get` = 100 (2026-09-24)** — `cast` and `get` up, `lax` down. The
-remediation targets are the checklist in the ρ-pure remediation plan; the `cast` and `get` drift is
-recorded as a measurement, not diagnosed.
+**`cast` = 326, `lax` = 12, `get` = 101 (2026-09-24)** — `cast` and `get` drift with the tree, and
+`lax`'s drop of two is this pass's own work: both deleted `from_hex` helpers were `unsafe_decode`
+callers. The remediation targets are the checklist in the ρ-pure remediation plan; the `cast` and
+`get` drift is recorded as a measurement, not diagnosed.
 
 **The `lax` class's hex family, reviewed (2026-09-24, Programme F) — assessed faithful.** `base16`
 carries both a strict `decode`/`try_decode` and a *named, documented* lax `unsafe_decode` ("non-hex
@@ -50,10 +77,13 @@ literals, and `rgov.rs`'s `contract_key` decodes a hex string it produced itself
 (`base16::encode(blake2b256(…))`). Every ingress uses the checked sibling —
 `node/src/web/http.rs:857-860` calls `BlockHash::try_from_hex` and its comment says why ("a malformed
 block hash … must be a 400, not a panic in `BlockHash::from_hex`"). Two footguns are named rather
-than actioned: `BlockHash::from_hex` is lax *and* panics (via `from_slice`) on a short decode, and
-`models/src/string_syntax.rs`'s `unsafe_decode_hex` plus `rgov.rs`'s `derive_uri` have no callers at
-all — dead public API, so removing them is a cleanup decision rather than a tightening (nothing
-reaches them today).
+than actioned: `BlockHash::from_hex` — lax *and* panicking (via `from_slice`) on a short decode — and
+its `crypto` twin `Blake2b256Hash::from_hex` were **deleted** (2026-09-24, U1 site 3): each had no
+production caller anywhere in the workspace, only its own round-trip test, and every ingress already
+used the checked sibling (`try_from_hex`/`from_hex_either`); two more are named rather than acted on,
+`models/src/string_syntax.rs`'s `unsafe_decode_hex` and `rgov.rs`'s `derive_uri`, which have no
+callers at all — dead public API, so removing them is a cleanup decision rather than a tightening
+(nothing reaches them today).
 
 ---
 

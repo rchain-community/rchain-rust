@@ -62,12 +62,28 @@ TEST_ONLY_FILE_RE='(_tests?|test_)\.rs$|/property_tests\.rs$'
 # Panic-class whitelist (suffix-matched against the file path). These are the deliberate escapes:
 # get_unsafe (Scala `getUnsafe`) and the Scala-oracle `TODO`/`NotImplementedError` stubs.
 #
-# The following are `assert!`/`assert_eq!` **internal invariants** on internally-produced data
-# (fixed-size-array constructor length checks, radix-tree corrupt-node detection, empty-channels /
-# channels==patterns, DAG-state contiguity, config buffer-size). The `from_slice` length asserts in
-# block_hash/state_hash/validator (and `Blake2b256Hash::from_byte_array`) are now reachable only from
-# internally-produced data: untrusted wire/API bytes use the checked `TryFrom<&[u8]>`/`try_from_hex`
-# constructors (validate-on-ingress, see spec/AUDIT.md §11 R12).
+# The following are `assert!`/`assert_eq!`/`debug_assert!` **internal invariants** on
+# internally-produced data (fixed-size-array constructor length checks, radix-tree corrupt-node
+# detection, empty-channels / channels==patterns, DAG-state contiguity, config buffer-size). The
+# `from_slice` length asserts in block_hash/state_hash/validator (and
+# `Blake2b256Hash::from_byte_array`) are now reachable only from internally-produced data: untrusted
+# wire/API bytes use the checked `TryFrom<&[u8]>`/`try_from_hex` constructors (validate-on-ingress,
+# see spec/AUDIT.md §11 R12).
+#
+# `block-storage/src/dag/message_state.rs` is the one entry added by the `debug_assert!` half of this
+# class becoming visible (2026-09-24, U2 of Programme F): `latest_msgs` is a subset of `msg_map`,
+# maintained by `insert_msg_mut` over two fields of one struct. That is the category above — a
+# development-time self-consistency check on internally-produced data, with no value constructed from
+# untrusted input and nothing invalid produced in release. Reviewed rather than restructured because
+# the site is another writer's file and the check reports a *bug* rather than carrying a value; a
+# reader who wants it enforced in release should give `insert_msg_mut`'s callers an error channel,
+# which is a change to that state's API, not to this class. `casper/src/block_random_seed.rs`'s
+# `debug_assert!(shard_id.is_ascii())` is the same shape and was already listed.
+#
+# Note the asymmetry this class now states plainly: an *assert* that a value is in its domain
+# (`FreeCount::from_nonneg`'s `debug_assert!(n >= 0)`, deleted 2026-09-24) is **not** whitelisted —
+# it silently accepted an invalid value in release. A `debug_assert!` on a *relation between two
+# internally-produced structures* is whitelisted. Neither is invisible any more.
 WHITELIST_PANIC=(
   '/sdk/src/primitive.rs'
   '/models/src/block_hash.rs'
@@ -76,6 +92,7 @@ WHITELIST_PANIC=(
   '/crypto/src/hash/blake2b256_hash.rs'
   '/crypto/src/hash/blake2b512_random.rs'
   '/block-storage/src/dag/metadata_store.rs'
+  '/block-storage/src/dag/message_state.rs'
   '/comm/src/transport/buffer/limited_buffer.rs'
   '/rspace/src/history/radix_tree.rs'
   '/rspace/src/history/export.rs'
@@ -130,10 +147,16 @@ scan() {
 # The refinement newtypes must not surrender the invariant they exist to carry.
 #
 # `spec/TYPE-SYSTEM.md` §1.7 states the rule — no `Deref` (which drops `P` mid-domain), no public
-# accessor returning the raw inner, and no public tuple field (which is the same escape by
+# accessor returning the raw inner (`.get()`), and no public tuple field (which is the same escape by
 # construction) — and until this class existed nothing checked it: it was a promise in prose, unlike
-# the panic/unsafe/silent classes. The tree satisfies it today (no `impl … Deref` on any refinement;
-# every refinement field is private), so this is a ratchet that can only stay green.
+# the panic/unsafe/silent classes. The tree satisfies it today (no `impl … Deref` on any refinement,
+# no `.get()`, every refinement field private), so this is a ratchet that can only stay green.
+#
+# **All three forms are scanned.** The first two were, from the start; the public `.get()` — the
+# third form `spec/TYPE-SYSTEM.md:112-115` names — was not until 2026-09-24, so the count below was
+# green partly because the form was unscanned. That is the same class of defect as a tripwire whose
+# bound passes on the defect it names: an instrument that cannot see what it claims to check is not
+# evidence (see the header's note on `debug_assert!`).
 #
 # Scoped to the files that hold the refinements rather than to the workspace: a `Deref` on some
 # other wrapper type is a design choice, not a type escape, and a check that fired on those would be
@@ -150,6 +173,27 @@ REFINEMENT_FILES=(
 # touch its audit.
 REFINEMENT_TYPES=(BlockHeight SeqNum Port Hash32 ShardId SerializedRandom SerializedNode)
 
+# A public `.get()` on a refinement: matched *inside* an `impl` block that names one of
+# `REFINEMENT_TYPES`, not file-wide — these files also hold error types with public fields
+# (`RefineError(pub String)`) whose accessors are not escapes and would be false positives.
+ESCAPE_GET_AWK='
+BEGIN { n = split(TYPES, t, ","); in_impl = 0; depth = 0 }
+{
+  # `match()` rather than `$0 ~ /…/`: only `match` is required to set `RSTART`/`RLENGTH` (mawk
+  # leaves them untouched for `~`, which silently produced an empty header and a check that never
+  # fired — measured 2026-09-24 with a probe).
+  if (!in_impl && match($0, /^[[:space:]]*impl([^;{]*)/)) {
+    header = substr($0, RSTART, RLENGTH)
+    for (i = 1; i <= n; i++) {
+      if (header ~ ("(^|[^[:alnum:]_])" t[i] "([^[:alnum:]_]|$)")) { in_impl = 1 }
+    }
+  }
+  if (in_impl && $0 ~ /pub (const )?fn get[[:space:]]*(<[^>]*>)?\(/) { print NR ": " $0 }
+  depth += gsub(/\{/, "{") - gsub(/\}/, "}")
+  if (depth <= 0) { depth = 0; in_impl = 0 }
+}
+'
+
 scan_escapes() {
   local rel f name pattern line text
   # Any `Deref` impl in a refinement home, whatever it is on.
@@ -157,6 +201,8 @@ scan_escapes() {
   for name in "${REFINEMENT_TYPES[@]}"; do
     pattern="$pattern|pub struct ${name}\(pub "
   done
+  local types
+  types="$(IFS=,; echo "${REFINEMENT_TYPES[*]}")"
   for rel in "${REFINEMENT_FILES[@]}"; do
     f="$ROOT/$rel"
     [ -f "$f" ] || continue
@@ -166,6 +212,11 @@ scan_escapes() {
       [ -n "$line" ] || continue
       note escape "$f" "$line" "$text"
     done < <(awk "$STRIP_AWK" "$f" | grep -nE "$pattern")
+    # The public `.get()` form, scope-tracked (see `ESCAPE_GET_AWK`).
+    while IFS=: read -r line text; do
+      [ -n "$line" ] || continue
+      note escape "$f" "$line" "$text"
+    done < <(awk -v TYPES="$types" "$ESCAPE_GET_AWK" "$f")
   done
 }
 
@@ -173,7 +224,11 @@ run_class() {
   local cls="$1"
   echo "===== class: $cls ====="
   case "$cls" in
-    panic)   scan panic '\.unwrap\(\)|\.expect\(|panic!|unreachable!|todo!|unimplemented!|\bassert(_eq|_ne)?!\(|unwrap_or_else\(\s*\|\|\s*panic!' panic ;;
+    # `(debug_)?assert` rather than `\bassert`: a word boundary is a boundary between a word and a
+    # non-word character, and `_` *is* a word character, so `\bassert` never matched `debug_assert!` —
+    # the four production `debug_assert!`s were invisible to the class that exists for them until
+    # 2026-09-24 (see the header). The preceding-character class keeps `xassert!` out.
+    panic)   scan panic '\.unwrap\(\)|\.expect\(|panic!|unreachable!|todo!|unimplemented!|(^|[^[:alnum:]_])(debug_)?assert(_eq|_ne)?!\(|unwrap_or_else\(\s*\|\|\s*panic!' panic ;;
     unsafe)  scan unsafe 'unsafe[[:space:]]*\{' '' ;;
     silent)  scan silent 'try_into\(\)\.(unwrap|expect)\(|try_(into\(\)|from\(.*\))\.unwrap_or(\(0\)|_default\(\))|\.parse(::<[^>]+>)?\(\)\.unwrap_or(\(0\)|_default\(\))' '' ;;
     cast)    scan cast '\bas (i8|i16|i32|i64|u8|u16|u32|u64|usize|isize|f32|f64)\b' '' ;;
