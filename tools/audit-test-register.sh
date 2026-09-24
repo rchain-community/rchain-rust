@@ -472,6 +472,52 @@ if (( failures == anchor_bad_before )); then
   ok "$anchor_total register citation(s) resolve, and each cited window holds what the row names"
 fi
 
+# --- 10. a layer count is that layer's count ---------------------------------
+#
+# Check 9 covers a row's *citations* against the tree; this covers its **counts**. The counts emitter
+# owns the marked spans and the `N laws`/`N entries` phrasing, and `INVENTORY.md`'s cells and the
+# register's notes were unchecked prose — so a cell could say "66 rows" about a corpus that had grown
+# to 123 and nothing read it. Measured before writing this (2026-09-24): 15 count claims in
+# `INVENTORY.md`, 13 of them layer counts, 11 correct — and the one that was wrong, `envelope.tsv`
+# described as 6 rows against a file of 9, had been wrong since it was written.
+#
+# The rule is deliberately narrow, because a check that reads any number near any word would fire on
+# arithmetic and on history. A count is judged only when it is written
+# **`N rows|cases|verdicts|lines`** — the number *before* the count word — and the most recent
+# `conformance/<layer>.tsv` named *earlier in the same line* supplies the layer. Two shapes are
+# therefore outside it, and they are boundary rather than exception (named here so a reader knows the
+# check is not claiming them): a **Lean** count (`parseDeviations`, 14 rows — the deviation table, not a
+# corpus, and `INVENTORY.md` says so in the cell), and a **range** (`cases 7–12`, where the word comes
+# before the number). Both are counted by nothing, and neither is silently skipped.
+printf '\n== register counts (a count beside a corpus file is that file'"'"'s count) ==\n'
+count_total=0
+count_bad_before=$failures
+for src in "$ROOT/spec/INVENTORY.md" "$ROOT/spec/laws.tsv"; do
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    last_layer=""
+    while IFS= read -r tok; do
+      case "$tok" in
+        conformance/*.tsv)
+          last_layer="$(basename "$tok" .tsv)" ;;
+        *)
+          [[ -z "$last_layer" ]] && continue
+          n="$(printf '%s' "$tok" | tr -dc '0-9')"
+          wish="$(wc -l < "$ROOT/spec/conformance/$last_layer.tsv" 2>/dev/null || echo 0)"
+          count_total=$((count_total + 1))
+          if [[ "$n" != "$wish" ]]; then
+            fail "$(basename "$src"): '$tok' counts $last_layer, whose committed corpus has $wish line(s)"
+          fi ;;
+      esac
+    done < <(printf '%s' "$line" \
+      | grep -oE 'conformance/[a-z0-9_]+\.tsv|[(]?[*]{0,2}[0-9]+ (rows|cases|verdicts|lines)' || true)
+  done < "$src"
+done
+# A check that matched nothing is not evidence, exactly as in check 9.
+(( count_total > 0 )) || fail "no register counts found — this check is vacuous (the count phrasing moved?)"
+if (( failures == count_bad_before )); then
+  ok "$count_total layer count(s) agree with their committed corpus"
+fi
+
 # --- summary -----------------------------------------------------------------
 printf '\n===== summary =====\n'
 if (( failures == 0 )); then
