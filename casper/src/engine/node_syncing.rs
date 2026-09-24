@@ -427,22 +427,36 @@ async fn populate_dag(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use async_trait::async_trait;
     use rchain_block_storage::dag::codecs::{
         Blake2b256HashCodec, BlockHashCodec, BlockMessageCodec, BlockMetadataCodec,
         FringeDataCodec, SignedDeployDataCodec,
     };
     use rchain_block_storage::dag::dag_storage::DeployId;
+    use rchain_comm::errors::CommErr;
+    use rchain_comm::peer_node::{NodeIdentifier, PeerNode};
+    use rchain_comm::rp::rp_conf::{ClearConnectionsConf, RPConf};
+    use rchain_comm::transport::chunker::Blob;
+    use rchain_comm::transport::transport_layer::TransportLayer;
     use rchain_crypto::hash::blake2b256_hash::Blake2b256Hash;
     use rchain_models::block::state_hash::StateHash;
     use rchain_models::casper::protocol::casper_message::{
         BlockMessage, RholangState, SignedDeployData,
     };
+    use rchain_models::comm::protocol::Protocol;
     use rchain_models::fringe_data::FringeData;
     use rchain_models::validator::Validator;
-    use rchain_shared::log::NopLog;
+    use rchain_rspace::state::RSpaceImporter;
+    use rchain_shared::log::{Log, LogSource, NopLog};
     use rchain_shared::refined::BlockHeight;
+    use rchain_shared::state::TrieImporter;
     use rchain_shared::store::{InMemoryKeyValueStore, KeyValueStore};
     use rchain_shared::typed_store::{BytesCodec, KeyValueTypedStore, KeyValueTypedStoreCodec};
+    use std::time::Duration;
+
+    use crate::protocol::comm_util::{CommUtil, ConnectionsCell};
+    use rchain_block_storage::approved_store::{ApprovedStore, FINALIZED_FRINGE_KEY};
+    use rchain_block_storage::dag::codecs::{ByteCodec, FringeCodec};
 
     use crate::block_metadata_store::BlockMetadataStore;
     use crate::dag::BlockDagKeyValueStorage;
@@ -524,6 +538,118 @@ mod tests {
         )
     }
 
+    fn peer(name: &str) -> PeerNode {
+        PeerNode::from(
+            NodeIdentifier::new(name.as_bytes().to_vec()),
+            "host".to_string(),
+            rchain_shared::refined::Port::new(40400),
+            rchain_shared::refined::Port::new(40404),
+        )
+    }
+
+    /// A logger that keeps its lines: the end-to-end test needs the *evidence that the attempt ran and
+    /// failed*, without which "no notification arrived" could pass because nothing happened at all.
+    #[derive(Default)]
+    struct RecordingLog {
+        lines: std::sync::Mutex<Vec<String>>,
+    }
+
+    impl RecordingLog {
+        fn contains(&self, needle: &str) -> bool {
+            self.lines
+                .lock()
+                .expect("log lock")
+                .iter()
+                .any(|l| l.contains(needle))
+        }
+    }
+
+    impl Log for RecordingLog {
+        fn is_trace_enabled(&self, _source: LogSource) -> bool {
+            false
+        }
+        fn trace(&self, _source: LogSource, _msg: &str) {}
+        fn debug(&self, _source: LogSource, _msg: &str) {}
+        fn info(&self, _source: LogSource, msg: &str) {
+            self.lines.lock().expect("log lock").push(msg.to_string());
+        }
+        fn warn(&self, _source: LogSource, msg: &str) {
+            self.lines.lock().expect("log lock").push(msg.to_string());
+        }
+        fn error(&self, _source: LogSource, msg: &str) {
+            self.lines.lock().expect("log lock").push(msg.to_string());
+        }
+    }
+
+    /// A transport that answers nothing: this fixture's failure comes from the stores, not the wire.
+    struct SilentTransport;
+
+    #[async_trait]
+    impl TransportLayer for SilentTransport {
+        async fn send(&self, _peer: &PeerNode, _msg: Protocol) -> CommErr<()> {
+            Ok(())
+        }
+        async fn broadcast(&self, _peers: &[PeerNode], _msg: Protocol) -> Vec<CommErr<()>> {
+            Vec::new()
+        }
+        async fn stream(&self, _peers: &[PeerNode], _blob: Blob) {}
+    }
+
+    /// A block store whose reads fail — the block walk's first store touch is a `contains`, so the
+    /// attempt fails immediately rather than waiting out the walk's idle timeout.
+    struct UnreadableBlockStore {
+        inner: BlockStore,
+    }
+
+    #[async_trait]
+    impl KeyValueTypedStore<BlockHash, BlockMessage> for UnreadableBlockStore {
+        async fn get(&self, keys: &[BlockHash]) -> Result<Vec<Option<BlockMessage>>, String> {
+            self.inner.get(keys).await
+        }
+        async fn put(&self, pairs: &[(BlockHash, BlockMessage)]) -> Result<(), String> {
+            self.inner.put(pairs).await
+        }
+        async fn delete(&self, keys: &[BlockHash]) -> Result<usize, String> {
+            self.inner.delete(keys).await
+        }
+        async fn contains(&self, _keys: &[BlockHash]) -> Result<Vec<bool>, String> {
+            Err("block store is unreadable".to_string())
+        }
+        async fn to_map(&self) -> Result<BTreeMap<BlockHash, BlockMessage>, String> {
+            self.inner.to_map().await
+        }
+    }
+
+    /// An importer that refuses to open a root, so the tuple-space leg fails at once instead of
+    /// waiting out its 120 s timeout — `set_root` is fallible since AUDIT C67's sibling work.
+    struct RefusingImporter;
+
+    impl TrieImporter<Blake2b256Hash> for RefusingImporter {
+        fn set_history_items<Value>(
+            &mut self,
+            _data: &[(Blake2b256Hash, Value)],
+            _to_buffer: impl Fn(&Value) -> Vec<u8>,
+        ) -> Result<(), String> {
+            Ok(())
+        }
+        fn set_data_items<Value>(
+            &mut self,
+            _data: &[(Blake2b256Hash, Value)],
+            _to_buffer: impl Fn(&Value) -> Vec<u8>,
+        ) -> Result<(), String> {
+            Ok(())
+        }
+        fn set_root(&mut self, _root: Blake2b256Hash) -> Result<(), String> {
+            Err("state store unavailable".to_string())
+        }
+    }
+
+    impl RSpaceImporter for RefusingImporter {
+        fn get_history_item(&self, _hash: Blake2b256Hash) -> Result<Option<Vec<u8>>, String> {
+            Ok(None)
+        }
+    }
+
     /// Regression test for the LFS-sync "justification not present in message map" failure: the
     /// DAG must be populated parents-before-children, i.e. in ascending block height order. The
     /// prior code reversed the height map and inserted the newest block first, whose justification
@@ -595,6 +721,128 @@ mod tests {
                 .await
                 .is_ok(),
             "a restored state must signal the node out of syncing"
+        );
+    }
+    /// **U16 / AUDIT C68, end to end: a failed sync must leave the node in syncing.**
+    ///
+    /// The unit-level test pins the decision (`notify_when_restored`); this pins the *transition* the
+    /// decision exists for. `node_launch` waits on the `finished` handle as the only signal to leave
+    /// `NodeSyncing` for `NodeRunning`, so "the node stayed out of running" is exactly "the handle was
+    /// never notified" — asserted here through the real handler, with a real sync attempt that really
+    /// fails (which the recording log proves, so the assertion cannot pass because nothing ran).
+    ///
+    /// Falsified both directions against this tree: with the unconditional `finished.notify_waiters()`
+    /// restored, this fails — the waiter wakes on a failed attempt. (The positive direction, that a
+    /// *successful* attempt does notify, is pinned by
+    /// `a_failed_sync_does_not_signal_the_node_out_of_syncing`'s `Ok` half; a full successful sync
+    /// through this fixture would need a transport that serves the whole state, which is the next
+    /// unit's work rather than this one's.)
+    #[tokio::test]
+    async fn a_failed_sync_leaves_the_node_in_syncing() {
+        let bootstrap = peer("bootstrap");
+        let log = Arc::new(RecordingLog::default());
+
+        let inner_store: BlockStore = Arc::new(KeyValueTypedStoreCodec::new(
+            in_memory(),
+            Arc::new(BlockHashCodec),
+            Arc::new(BlockMessageCodec),
+        ));
+        let block_store: BlockStore = Arc::new(UnreadableBlockStore { inner: inner_store });
+        let dag = build_dag().await;
+        let approved_store: ApprovedStore = Arc::new(KeyValueTypedStoreCodec::new(
+            in_memory(),
+            Arc::new(ByteCodec),
+            Arc::new(FringeCodec),
+        ));
+
+        let transport: Arc<dyn TransportLayer> = Arc::new(SilentTransport);
+        let conf = RPConf {
+            local: peer("local"),
+            network_id: "testnet".to_string(),
+            bootstrap: Some(bootstrap.clone()),
+            default_timeout: Duration::from_secs(10),
+            max_num_of_connections: 10,
+            clear_connections: ClearConnectionsConf {
+                num_of_connections_pinged: 10,
+            },
+        };
+        let connections: ConnectionsCell =
+            Arc::new(tokio::sync::RwLock::new(vec![bootstrap.clone()]));
+        let comm_util = Arc::new(CommUtil::new(
+            transport.clone(),
+            conf.clone(),
+            connections,
+            log.clone(),
+        ));
+
+        let mut engine = NodeSyncing::new(
+            transport,
+            conf,
+            block_store,
+            dag,
+            approved_store.clone(),
+            comm_util,
+            log.clone(),
+            None,
+            false,
+            RefusingImporter,
+        );
+        let finished = engine.finished_handle();
+
+        let fringe = FinalizedFringe {
+            hashes: vec![hash(7)],
+            state_hash: StateHash::new([7u8; 32]),
+        };
+
+        // The waiter is registered *before* the attempt can signal — polled by the same `select!` that
+        // drives the handler — because `Notify::notify_waiters` only wakes waiters already registered.
+        // The first version of this test created the waiter *after* the failure and passed with the
+        // defect restored: the notification had already fired into an empty waiter set. This is the
+        // pass's own rule again (a falsifier must fail against the tree with the defect in it), and the
+        // reason the structure below is a `select!` rather than a sleep-then-check.
+        let mut waiter = std::pin::pin!(finished.notified());
+        let handle = async {
+            engine
+                .handle(&bootstrap, &CasperMessage::FinalizedFringe(fringe))
+                .await
+        };
+        tokio::pin!(handle);
+        let mut handled = false;
+        let notified = loop {
+            tokio::select! {
+                result = &mut handle, if !handled => {
+                    result.expect("the fringe message is handled");
+                    handled = true;
+                }
+                _ = &mut waiter => break true,
+                _ = tokio::time::sleep(Duration::from_secs(2)) => break false,
+            }
+        };
+        assert!(handled, "the fringe handler ran");
+
+        // The attempt must actually run and fail: without this the "no notification" assertion below
+        // would pass on a node that never tried, which is the vacuous shape this test exists to avoid.
+        assert!(
+            log.contains("LFS state sync failed"),
+            "the sync attempt did not fail as the fixture intends, so this test proves nothing"
+        );
+
+        // …and with the attempt failed, the node must stay where it is.
+        assert!(
+            !notified,
+            "a failed sync notified the sync-finished handle: `node_launch` would take the node into \
+             NodeRunning on an empty or partial DAG"
+        );
+
+        // The approved block is not recorded either — the oracle sequences that after the state, and a
+        // recorded fringe is what a restart would treat as a restored state.
+        assert_eq!(
+            approved_store
+                .get(&[FINALIZED_FRINGE_KEY])
+                .await
+                .expect("approved store readable")[0],
+            None,
+            "a failed sync must not record the fringe as approved"
         );
     }
 }

@@ -216,6 +216,7 @@ not found in that file. Coverage claims live here rather than in prose so they c
 | G2 | `casper/src/engine/lfs_block_requester.rs` | `a_failed_block_write_fails_the_walk_instead_of_marking_the_block_done` |
 | G2 | `casper/src/engine/lfs_block_requester.rs` | `a_failed_store_read_fails_the_walk_instead_of_requesting_nothing` |
 | G2 | `casper/src/engine/node_syncing.rs` | `a_failed_sync_does_not_signal_the_node_out_of_syncing` |
+| G2 | `casper/src/engine/node_syncing.rs` | `a_failed_sync_leaves_the_node_in_syncing` |
 | G2 | `casper/src/dag.rs` | `fringe_states_are_keyed_by_the_stores_own_key` |
 | G2 | `casper/src/dag.rs` | `the_representation_digest_pins_the_value_and_moves_with_it` |
 | G2 | `casper/src/dag.rs` | `the_index_is_shared_with_the_representation_not_copied` |
