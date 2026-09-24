@@ -425,11 +425,17 @@ def laws : List Law := [
       `Rchain.aggregateUpdates, `Rchain.aggregateUpdates_rejects_double_bind,
       `Rchain.freeMapMerge_overwrites, `Rchain.fuel_saturation,
       `Rchain.a_nested_tuple_is_paid_for, `Rchain.a_tuple_pays_for_its_own_contents,
-      `Rchain.a_two_expression_pattern_refutes_the_modelled_tie],
+      `Rchain.a_two_expression_pattern_refutes_the_modelled_tie,
+      `Rchain.a_shorter_set_pattern_is_refused, `Rchain.a_shorter_map_pattern_is_refused,
+      `Rchain.a_set_pattern_of_the_same_length_still_matches,
+      `Rchain.a_permuted_pattern_is_refused, `Rchain.an_unaligned_variable_pattern_is_refused],
     corpus := some "match",
     rust := ["rholang/src/matcher/spatial_matcher.rs"],
     coq := ["spec/coq/Laws.v:spatial_matches", "spec/coq/Laws.v:linear"],
-    witness := [`Rchain.aggregateUpdates_rejects_double_bind, `Rchain.freeMapMerge_overwrites],
+    witness := [`Rchain.aggregateUpdates_rejects_double_bind, `Rchain.freeMapMerge_overwrites,
+      `Rchain.a_shorter_set_pattern_is_refused, `Rchain.a_shorter_map_pattern_is_refused,
+      `Rchain.a_set_pattern_of_the_same_length_still_matches,
+      `Rchain.a_permuted_pattern_is_refused],
     falsifiable := some "the corpus's three-valued verdicts (`true`/`false`/`rejected`) include the \
       rejected case a twice-bound pattern produces — the shape the previous law-5 axiom *denied* and \
       which `spec/conformance/match.tsv` now pins (AUDIT C26) — and `freeMapMerge_overwrites` is the \
@@ -497,7 +503,25 @@ def laws : List Law := [
       `spec/coq/Laws.v`'s `linear` is a **definition** now (with `linear_decidable` and the witness \
       `a_double_binding_is_not_linear`), mirroring Lean's own predicate; `spatial_matches` stays a \
       **signature**, because mirroring the matcher in Coq is the analogue of this file's owed proofs \
-      and not part of the honest-and-gated tier" },
+      and not part of the honest-and-gated tier. \
+      **And the member was over-claiming, which the guard fixes** (2026-09-24). Measured on the node \
+      through the receive path and *then* `decide`d: `@Set(2)` against `Set(1, 2)` and `@{\"b\": 2}` \
+      against `{\"a\": 1, \"b\": 2}` answer **false** there while the model answered `true` — the walk \
+      drops leading targets, and with no remainder and no wildcard the port refuses an unequal length \
+      before it searches at all (`exact_match = !wildcard && remainder.is_none()`, then \
+      `if exact_match && plen != tlen`, `spatial_matcher.rs:684-693`). The clause now carries that \
+      guard, and corpus rows 21/22 are the node's half of it. **This is AUDIT C54's reverted change \
+      re-landed**, and why it was withdrawn is the part worth keeping: the row written for it \
+      (`@Set(1)` against `Set(1, 1)`) is answered `true` by the node, because `par_set` deduplicates \
+      what `eval_expr` stores — so that row compared the model's *literal* against a different \
+      *value*, and the conclusion drawn from it (\"there was no defect\") does not follow. The guard \
+      was right; the row was not. **The opposite direction is a residue rather than a repair**: a \
+      pattern *permuted* relative to the target (`@Set(2, 1)`, `@Set(x, 1)` against `Set(1, 2)`) is \
+      matched by the node, whose assignment backtracks, and refused by the walk here, which cannot \
+      reorder. The two agree on canonical inputs — the tie's domain — and widening the walk is a \
+      *measure* change, not another clause (a backtracking search needs a fuel at least quadratic in \
+      the nodes where `matchFuel` is linear), so it is pinned by `a_permuted_pattern_is_refused` and \
+      said here rather than left implicit" },
   { number := 6, layer := "Rholang",
     statement := "No globally free variables in a program",
     status := .provedModel,
@@ -1350,9 +1374,12 @@ def laws : List Law := [
       `Rchain.modelledExpr, `Rchain.arithmetic_pattern_refutes_the_unrestricted_tie,
       `Rchain.the_walk_past_empty_pars_is_paid_for,
       `Rchain.a_list_pattern_cannot_skip_a_target_element, `Rchain.fuel_saturation,
-      `Rchain.a_nested_tuple_is_paid_for, `Rchain.a_two_expression_pattern_refutes_the_modelled_tie],
+      `Rchain.a_nested_tuple_is_paid_for, `Rchain.a_two_expression_pattern_refutes_the_modelled_tie,
+      `Rchain.a_shorter_set_pattern_is_refused, `Rchain.a_shorter_map_pattern_is_refused,
+      `Rchain.a_set_pattern_of_the_same_length_still_matches,
+      `Rchain.a_permuted_pattern_is_refused, `Rchain.an_unaligned_variable_pattern_is_refused],
     corpus := some "match",
-    witness := [`Rchain.arithmetic_pattern_refutes_the_unrestricted_tie, `Rchain.a_list_pattern_cannot_skip_a_target_element, `Rchain.the_walk_past_empty_pars_is_paid_for],
+    witness := [`Rchain.arithmetic_pattern_refutes_the_unrestricted_tie, `Rchain.a_list_pattern_cannot_skip_a_target_element, `Rchain.the_walk_past_empty_pars_is_paid_for, `Rchain.a_shorter_set_pattern_is_refused, `Rchain.a_shorter_map_pattern_is_refused, `Rchain.a_permuted_pattern_is_refused],
     falsifiable := some "19 cases with three-valued verdicts; the once-false law-5 axiom was replaced \
       *because* a corpus case contradicted it (AUDIT C26), the fuel bound was one step short until the \
       `decide` refused to compile, and `concrete_matches_iff_eq` **was false as stated** until case 15 \
@@ -1384,7 +1411,16 @@ def laws : List Law := [
       reachable datum can be). **The clauses are form-specific** and that is load-bearing \
       in both directions: a list or tuple is positional (`fold_match`, the port's `EList`/`ETuple` \
       arms), a set or map searches (`list_match_single` → `find_matches`), and `matchListPos`/\
-      `matchListPar` are the two members; `match.tsv` cases 18/19 pin one direction each" },
+      `matchListPar` are the two members; `match.tsv` cases 18/19 pin one direction each. \
+      **The set/map member's third direction, measured and then fixed** (2026-09-24, row 5's note \
+      carries the detail): the walk over-claimed a *shorter canonical* pattern against a *longer \
+      canonical* target, where the port refuses an unequal length before searching \
+      (`spatial_matcher.rs:684-693`). The clause now has that guard, corpus rows 21/22 hold the node \
+      to it, and the opposite residue — a permuted pattern, which the node matches and the walk \
+      cannot — is pinned by `a_permuted_pattern_is_refused`. The tie's domain is therefore the \
+      **canonical** shapes, where the walk and the port's backtracking assignment agree: not the \
+      duplicate-element corner only (C54), but the sorted-and-duplicate-free form on both sides, \
+      which is what `sortPar` fixes for the model's collections and `par_set` for the node's" },
   { number := 38, layer := "Rholang",
     statement := "Silence is specified: an unmatched receive or `match` yields no reduction **and no \
       error**",

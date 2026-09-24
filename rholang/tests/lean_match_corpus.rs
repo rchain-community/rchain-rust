@@ -24,7 +24,7 @@ use common::build_runtime_pair;
 
 /// The corpus's declared size (`Rchain/Corpus.lean`'s `matchCaseCount`). A corpus that shrinks
 /// silently is a check that stopped checking, so the count is pinned on both sides.
-const MATCH_CASES: usize = 20;
+const MATCH_CASES: usize = 22;
 
 #[tokio::test]
 async fn the_matcher_agrees_with_the_lean_model() {

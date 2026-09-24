@@ -260,11 +260,29 @@ mutual
       | .etuple ps => match target with
         | [.etuple ts] => matchListPos f ps ts false
         | _ => false
+      -- The **no-remainder length guard**, and it was missing until 2026-09-24: with no remainder and
+      -- no wildcard the port demands equal lengths before it searches at all (`exact_match = !wildcard
+      -- && remainder.is_none()`, then `if exact_match && plen != tlen { return Ok(Vec::new()) }`,
+      -- `spatial_matcher.rs:684-693`), and the walk below does not — it drops *leading* targets, so a
+      -- shorter canonical pattern matched a longer canonical target. Measured on the node, exactly:
+      -- `@Set(2)` against `Set(1, 2)` and `@{"b": 2}` against `{"a": 1, "b": 2}` are **false** there
+      -- and were `true` here. The remainder is the whole of the condition: a `..._` wildcard and a
+      -- `...rest` name both leave `absorb` true and the guard off (measured: `@Set(1, ..._)` against
+      -- `Set(1, 2)` is `true` on both sides). `a_shorter_set_pattern_is_refused`,
+      -- `a_shorter_map_pattern_is_refused` and their two controls are the ratchets, and the corpus's
+      -- cases 21/22 are the node's half of them. **This is AUDIT C54's reverted change, re-landed**:
+      -- that attempt was withdrawn because a corpus row for it (`@Set(1)` against `Set(1, 1)`) was
+      -- answered `true` by the node — the node evaluates a set through `par_set`, so its datum is
+      -- `Set(1)`, and the row compared the model's literal against a different value. The guard was
+      -- not what was wrong; the row was, and the conclusion drawn from it ("there was no defect") is
+      -- corrected by these measurements. AUDIT C59 is the entry.
       | .eset ps r => match target with
-        | [.eset ts _] => matchListPar f ps ts r.isSome
+        | [.eset ts _] =>
+          if r.isSome || ps.length == ts.length then matchListPar f ps ts r.isSome else false
         | _ => false
       | .emap kvs r => match target with
-        | [.emap tks _] => matchMap f kvs tks r.isSome
+        | [.emap tks _] =>
+          if r.isSome || kvs.length == tks.length then matchMap f kvs tks r.isSome else false
         | _ => false
       | _ => false
 
@@ -287,12 +305,25 @@ mutual
         | [] => false
         | t :: ts => spatialMatchCore f t p && matchListPos f ps ts absorb
 
-  /-- `matchListPar fuel patterns targets absorb` — **sets and maps**: every pattern element has a
-  *distinct* counterpart anywhere among the targets (`matchListPar`'s second branch drops a target to
-  look further), and when `absorb` is false no target may be left over. This is the port's
-  `list_match_single` → `find_matches` (`spatial_matcher.rs:729-815`), which is a bipartite assignment
-  — it searches, because a `ParSet`'s elements are unordered. Applying it to lists as well is AUDIT
-  C48: the `ESet` and `EMap` arms are the only two callers. -/
+  /-- `matchListPar fuel patterns targets absorb` — **sets and maps**: a pattern element matches a
+  counterpart found by *dropping leading targets to look further*, and when `absorb` is false no target
+  may be left over. This is the port's `list_match_single` → `list_match` → `find_matches`
+  (`spatial_matcher.rs:729-815`) — with one measured difference, and it is a *residue* rather than a
+  modelling choice: **the port's assignment backtracks and this walk does not.** The port is a
+  maximum-bipartite-matching search, so a pattern element may take a counterpart that is *not* the
+  first one it could match, and the elements it skips stay available to the patterns after it; the walk
+  here drops a target and moves on, so it can neither reorder a pattern nor hand a skipped target back.
+  Measured 2026-09-24 on the node against the committed model: `@Set(x, 1)` and `@Set(2, 1)` against
+  `Set(1, 2)` and `@{"b": 2, "a": a}` against `{"a": 1, "b": 2}` are **true** on the node and `false`
+  here. The two agree on **canonical** inputs — sorted, duplicate-free — which is the domain the tie's
+  statement names, and that is why the law is stated there rather than over every value the model
+  admits. Widening the walk to a backtracking search is *not* a matter of another clause: the matcher
+  is a fuel-bounded function and a backtracking search needs a fuel at least quadratic in the nodes
+  where `matchFuel` is linear (the port needs no fuel at all), so it would move the measure's
+  arithmetic — the piece AUDIT C47/C50 recorded two defects in. `a_permuted_pattern_is_refused` pins
+  this half of the residue, and its docstring carries the measurement (AUDIT C59).
+  Applying the walk to lists as well is AUDIT C48: the `ESet` and `EMap` arms are the only two
+  callers. -/
   def matchListPar (fuel : Nat) (patterns : List Par) (targets : List Par) (absorb : Bool) : Bool :=
     match fuel with
     | 0 => false
@@ -546,6 +577,95 @@ lists, a map's pairs, the tuples, and the fuel. Its content is checked behaviour
 `spec/conformance/match.tsv` (every verdict `decide`d against the clauses, with the Rust held to the
 same cases). -/
 
+/-! ## The set/map guard: measured on the node first, then here
+
+Every verdict below was **observed on the node** through the receive path (`chan!(target) | for (bind
+<- chan)`, the corpus's own shape), on the same source text the model is given, and only then `decide`d
+here — C54's lesson, which is that reading the port is not measuring it:
+
+| pattern | target | node | model before the guard | model now |
+|---|---|---|---|---|
+| `@Set(2)` | `Set(1, 2)` | **false** | true | false |
+| `@{"b": 2}` | `{"a": 1, "b": 2}` | **false** | true | false |
+| `@Set(1, 2)` | `Set(1, 2)` | true | true | true |
+| `@Set(1, ..._)` | `Set(1, 2)` | true | true | true |
+| `@Set(1)` | `Set(1, 1)` | true | true | false |
+| `@Set(2, 1)` | `Set(1, 2)` | **true** | false | false |
+| `@Set(x, 1)` | `Set(1, 2)` | **true** | false | false |
+
+The first two are the model **over-claiming**: a canonical shorter pattern against a canonical longer
+target, which the port refuses before it searches at all. The guard above fixes them. The last two are
+the model **under-claiming**, in the other direction: the port's assignment backtracks, so a pattern
+that is permuted relative to the target still matches, and the walk that models it cannot reorder. That
+half is *pinned* rather than silenced (`a_permuted_pattern_is_refused`), and `matchListPar`'s docstring
+carries why widening it is a measure change rather than another clause.
+
+The fifth row is C54's own case, and it is why that attempt was withdrawn: the node's datum is
+`Set(1)`, because `par_set` deduplicates what `eval_expr` stores (`models/src/sorter.rs:834`), so the
+node answers `true` about the *value* while the model answers about the *literal*. That is a hypothesis
+the tie needs — canonical contents — and not a clause the model lacks; the model has no deduplicating
+constructor to widen it with.
+
+**Without the controls below, a "refused" theorem is satisfied by a member that matches nothing** —
+the failure mode the collection-pattern fixture rule exists for. Each refusal here has its same-length
+twin, and a mutation (dropping the guard) must flip the refusals to `true`. -/
+
+/-- Shorthand: the integer `n` as a `Par`. -/
+private def iPar (n : Int) : Par := oneExpr (.ground (.int n))
+
+/-- Shorthand: a set literal with no remainder. -/
+private def setPar (ps : List Par) : Par := oneExpr (.eset ps none)
+
+/-- Shorthand: a free variable as a `Par`. -/
+private def xPar (n : Nat) : Par := oneExpr (.evar (.free n))
+
+/-- **The over-claim, refused**: `@Set(2)` against `Set(1, 2)`. Both values are canonical — sorted and
+    duplicate-free — so this is not C54's shape: the model matched a *shorter* canonical pattern to a
+    longer canonical target by dropping the leading target, and the node refuses it
+    (`exact_match && plen != tlen`, `spatial_matcher.rs:684-693`). `decide` at `matchFuel` is the
+    saturated answer by `fuel_saturation`, so this `false` is the clauses' verdict and not a shortfall
+    (AUDIT C47/C50 are what that distinction cost). Reverting the guard makes this theorem fail. -/
+theorem a_shorter_set_pattern_is_refused :
+    spatialMatch (setPar [iPar 1, iPar 2]) (setPar [iPar 2]) = false := by decide
+
+/-- **The control the theorem above cannot fail without**: the same member on a pattern of the *same*
+    length still matches. Without it, "a shorter pattern is refused" is satisfied by a `matchListPar`
+    that refuses everything. -/
+theorem a_set_pattern_of_the_same_length_still_matches :
+    spatialMatch (setPar [iPar 1, iPar 2]) (setPar [iPar 1, iPar 2]) = true := by decide
+
+/-- **The remainder is the whole of the condition**: with a wildcard remainder the guard is off
+    (`exact_match` is false), so the shorter pattern matches — which is what the node answers for
+    `@Set(1, ..._)` against `Set(1, 2)`. A guard applied on length alone would break this case, and
+    case 9 of the corpus is the node's half of it. -/
+theorem a_set_pattern_with_a_remainder_is_not_guarded :
+    spatialMatch (setPar [iPar 1, iPar 2]) (oneExpr (.eset [iPar 1] (some .wildcard))) = true := by
+  decide
+
+/-- **The map twin of the over-claim**: `@{"b": 2}` against `{"a": 1, "b": 2}`. The port's map arm is
+    the same `list_match_single`, and the node answers `false` for the same reason. -/
+theorem a_shorter_map_pattern_is_refused :
+    spatialMatch (oneExpr (.emap [(iPar 1, iPar 1), (iPar 2, iPar 2)] none))
+        (oneExpr (.emap [(iPar 2, iPar 2)] none)) = false := by decide
+
+/-- The map control, as above. -/
+theorem a_map_pattern_of_the_same_length_still_matches :
+    spatialMatch (oneExpr (.emap [(iPar 1, iPar 1), (iPar 2, iPar 2)] none))
+        (oneExpr (.emap [(iPar 1, iPar 1), (iPar 2, iPar 2)] none)) = true := by decide
+
+/-- **The residue, pinned rather than silenced**: a pattern permuted relative to the target. The node
+    matches it (`true` — measured) and the walk here refuses it, because `matchListPar` drops targets
+    and never hands one back. This theorem is deliberately a statement of what the model does *not* do:
+    if a later pass widens the walk to the port's backtracking assignment, this fails and the record
+    has to move with it. -/
+theorem a_permuted_pattern_is_refused :
+    spatialMatch (setPar [iPar 1, iPar 2]) (setPar [iPar 2, iPar 1]) = false := by decide
+
+/-- The same residue where it costs a binding: `@Set(x, 1)` against `Set(1, 2)` is `true` on the node
+    (`x` takes `2` and the literal `1` takes `1` — the assignment backtracks) and `false` here. -/
+theorem an_unaligned_variable_pattern_is_refused :
+    spatialMatch (setPar [iPar 1, iPar 2]) (setPar [xPar 0, iPar 1]) = false := by decide
+
 /-! ## Two ratchets: the fuel's measure, and the form that decides whether a walk is needed
 
 Both theorems below are the *model* half of cases in `spec/conformance/match.tsv`, which is where the
@@ -723,13 +843,17 @@ mutual
               parNodesExpr_etuple, parNodesExpr_eset] at hm ⊢; omega
           · rfl
         · split
-          · refine listParSat ?_ ?_ ?_ ?_ ?_
-            simp only [bExpr, bList, parNodesExprs_cons, parNodesExprs_nil, parNodesExpr_elist,
-              parNodesExpr_etuple, parNodesExpr_eset] at hm ⊢; omega
+          · split
+            · refine listParSat ?_ ?_ ?_ ?_ ?_
+              simp only [bExpr, bList, parNodesExprs_cons, parNodesExprs_nil, parNodesExpr_elist,
+                parNodesExpr_etuple, parNodesExpr_eset] at hm ⊢; omega
+            · rfl
           · rfl
         · split
-          · refine mapSat ?_ ?_ ?_ ?_ ?_
-            simp only [bExpr, bMap, parNodesExprs_cons, parNodesExprs_nil, parNodesExpr_emap] at hm ⊢; omega
+          · split
+            · refine mapSat ?_ ?_ ?_ ?_ ?_
+              simp only [bExpr, bMap, parNodesExprs_cons, parNodesExprs_nil, parNodesExpr_emap] at hm ⊢; omega
+            · rfl
           · rfl
         · rfl
 

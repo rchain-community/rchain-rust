@@ -137,7 +137,7 @@ partial map whose only non-concreteness is the remainder (C22 item 3), each with
 *not* match beside it. -/
 
 /-- The number of cases the matching layer carries. -/
-def matchCaseCount : Nat := 20
+def matchCaseCount : Nat := 22
 
 /-- One matching case: the bind's source, the target's source, the model's view of both, and the
 verdict. The verdict is `decide`d against `spatialMatch` (`matchCases_decide`), which is what makes
@@ -255,6 +255,27 @@ def matchCases : List MatchCase :=
       patternPar := tuplePat [tuplePat [intPar 1, intPar 2], tuplePat [intPar 3, intPar 4]],
       targetPar := tuplePat [tuplePat [intPar 1, intPar 2], tuplePat [intPar 3, intPar 4]],
       expected := true }
+    -- 21. **the no-remainder length guard** — a clause, not a measure. A canonical shorter set pattern
+    -- against a canonical longer target: the port refuses an unequal length *before* it searches
+    -- (`exact_match = !wildcard && remainder.is_none()`, then `if exact_match && plen != tlen`,
+    -- `spatial_matcher.rs:684-693`) and the model's walk did not — it drops *leading* targets, so
+    -- `@Set(2)` matched `Set(1, 2)` here while the node answers `false`. Both values are canonical
+    -- (sorted, duplicate-free), so this is **not** C54's duplicate-element shape: that row was
+    -- withdrawn because the node's datum is `Set(1)` after `par_set`, and nothing here depends on
+    -- evaluation changing a value. Measured on the node first (`false`), then `decide`d. `Match.lean`'s
+    -- `a_shorter_set_pattern_is_refused` is the model-side ratchet, and
+    -- `a_set_pattern_of_the_same_length_still_matches` is its control — without it the refusal would be
+    -- satisfied by a member that matches nothing.
+  , { bind := "@Set(2)", target := "Set(1, 2)",
+      patternPar := setPat [intPar 2] none,
+      targetPar := setPat [intPar 1, intPar 2] none, expected := false }
+    -- 22. the same guard on the **map** arm, which is the same `list_match_single` on the port:
+    -- `@{"b": 2}` against `{"a": 1, "b": 2}` — `false` on the node, and `true` in the model until the
+    -- guard, because the walk dropped the leading `"a"` pair. `Match.lean`'s
+    -- `a_shorter_map_pattern_is_refused`.
+  , { bind := "@{\"b\": 2}", target := "{\"a\": 1, \"b\": 2}",
+      patternPar := mapOf [("b", intPar 2)] none,
+      targetPar := mapOf [("a", intPar 1), ("b", intPar 2)] none, expected := false }
   ]
 
 /-- Every matching case's verdict holds of the model. `decide`, because the clauses are structurally

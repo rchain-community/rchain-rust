@@ -18,3 +18,5 @@ match	@(1, 2)	(1, 2, 3)	false
 match	@Set(1, ..._)	Set(Nil, Nil, Nil, Nil, Nil, Nil, 1)	true
 match	@[1, ..._]	[Nil, 1]	false
 match	@((1, 2), (3, 4))	((1, 2), (3, 4))	true
+match	@Set(2)	Set(1, 2)	false
+match	@{"b": 2}	{"a": 1, "b": 2}	false

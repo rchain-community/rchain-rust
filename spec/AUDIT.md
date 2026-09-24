@@ -2834,6 +2834,56 @@ port against the **reference document** rather than against itself.
   shape the model cannot *hold* cannot be a row. The gap is therefore a register fact and has to be
   findable in the register — which is what this entry is for, and why law 1a's row now cites it.
 
+- **C59 — the set/map matcher over-claimed, and C54's reverted guard was the fix: what the reversion's
+  corpus row could not see** (found, fixed and measured 2026-09-24, Programme F/the Lean pass;
+  **the model changed, the port did not**). C54 reverted a length guard on the searching members because
+  a corpus row it added (`@Set(1)` against `Set(1, 1)`, expected `false`) was answered `true` by the
+  node, and concluded from that "there was no defect; the difference is a hypothesis the tie needs".
+  **The first half of that conclusion is wrong, and the second half is incomplete.** Re-measured on the
+  node through the receive path (`chan!(target) | for (bind <- chan)`) — the same shape the corpus's
+  consumer runs, with the model's verdict `#eval`d against the committed `spatialMatch` beside it:
+
+  | pattern | target | node | model, before | model, after |
+  |---|---|---|---|---|
+  | `@Set(2)` | `Set(1, 2)` | **false** | true | false |
+  | `@{"b": 2}` | `{"a": 1, "b": 2}` | **false** | true | false |
+  | `@Set(1, 2)` | `Set(1, 2)` | true | true | true |
+  | `@Set(1, ..._)` | `Set(1, 2)` | true | true | true |
+  | `@Set(1)` | `Set(1, 1)` | true | true | false |
+  | `@Set(2, 1)` | `Set(1, 2)` | **true** | false | false |
+  | `@Set(x, 1)` | `Set(1, 2)` | **true** | false | false |
+
+  The first two rows are the defect, and **both sides are canonical** — sorted and duplicate-free — so
+  C54's duplicate-element shape is not what they are about: the model's `matchListPar` drops *leading*
+  targets, so a shorter canonical pattern matched a longer canonical target, while the port refuses an
+  unequal length *before* it searches (`exact_match = !wildcard && remainder.is_none()`, then
+  `if exact_match && plen != tlen`, `spatial_matcher.rs:684-693`). The guard is restored
+  (`Match.lean`'s `eset`/`emap` arms), and C54's row is replaced by two whose targets the node evaluates
+  to themselves — rows 21/22 of `match.tsv` — which the consumer accepts. **Why C54's row was not
+  evidence either way**: its target `Set(1, 1)` is not a value the node can hold, because `par_set`
+  deduplicates what `eval_expr` stores, so the node's `true` is set idempotence about the value `Set(1)`
+  while the model was answering about the literal. A corpus row whose two sides are different values
+  cannot test a clause.
+
+  **The second finding is the direction C54 did not look**: the port's set/map assignment *backtracks*
+  (`find_matches`' bipartite matching), so a pattern permuted relative to the target matches — rows six
+  and seven above, both `true` on the node and `false` in the model, whose walk drops targets and never
+  hands one back. That residue is **registered rather than fixed**: the matcher is a fuel-bounded
+  function and a backtracking search needs a fuel at least quadratic in the nodes where `matchFuel` is
+  linear (the port needs no fuel at all), so widening it moves the measure's arithmetic — the piece C47
+  and C50 each recorded a defect in. The model is right on **canonical** inputs, which is the domain
+  law 37's tie is stated over, and wrong on non-canonical *patterns*, which are reachable — so it is a
+  divergence with a named boundary, not a modelling choice. Pinned by
+  `a_permuted_pattern_is_refused`/`an_unaligned_variable_pattern_is_refused`; the register rows 5/37
+  carry it.
+
+  **The method note, which is C54's own lesson applied to C54.** That entry's error was comparing the
+  model against a *reading of the port*; this one re-ran the node first, and the two divergences it
+  found are in opposite directions — one the model over-claiming, one under-claiming. A clause-level
+  fix cannot be validated by the corpus alone: the `decide`d rows are the model agreeing with itself,
+  and the guard changes **no existing row** (all 20 were re-emitted byte-identical), so the only
+  evidence for it is a new row whose verdict was measured on the node before the clause moved.
+
 
 ## 20. The back-sweep: every incident to its law and its case
 
