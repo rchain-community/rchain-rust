@@ -46,25 +46,29 @@ abbrev Dag := List Message
 /-- A message by id — the port's `Finalizer::msg`. -/
 def Dag.msg (d : Dag) (id : Nat) : Option Message := d.find? (·.id = id)
 
+/-- `mv`'s direct parents, of the same sender, not already finalized. -/
+def sameSenderParents (d : Dag) (sender : Nat) (mv : Message) (finalized : List Nat) : List Message :=
+  (mv.parents.filterMap (Dag.msg d)).filter
+    (fun x => x.sender = sender && decide (x.id ∉ finalized))
+
+/-- The walk, on its fuel: pop a message, fold in its same-sender unfinalized parents. Top-level rather
+    than a `where` clause, because a `where`-bound helper is invisible to every theorem outside its
+    declaration and the boundary property below is about this recursion. -/
+def walkSameSender (d : Dag) (finalized : List Nat) :
+    Nat → List Message → List Message → List Message
+  | 0, _, acc => acc
+  | _, [], acc => acc
+  | fuel + 1, m :: rest, acc =>
+    walkSameSender d finalized fuel (sameSenderParents d m.sender m finalized ++ rest) (m :: acc)
+
 /-- **Step 1 — `self_parents`** (`finalizer.rs:74-95`): the same-sender, not-yet-finalized ancestors
-    reachable from `mv`, in walk order (newest first, since the port pops a worklist seeded with `mv`'s
-    direct parents).
+    reachable from `mv`, in walk order.
 
     The fuel is the DAG's own size: every step pops one message and folds in its parents, so `d.length`
     steps cannot be exceeded — a bound justified by the walk rather than chosen, which is what keeps
     this a definition and not a partiality. -/
 def selfParents (d : Dag) (mv : Message) (finalized : List Nat) : List Message :=
-  go d.length (sameSenderParents d mv.sender mv finalized) []
-where
-  /-- `mv`'s direct parents, of the same sender, not already finalized. -/
-  sameSenderParents (d : Dag) (sender : Nat) (mv : Message) (finalized : List Nat) : List Message :=
-    (mv.parents.filterMap (Dag.msg d)).filter
-      (fun x => x.sender = sender && decide (x.id ∉ finalized))
-  go : Nat → List Message → List Message → List Message
-    | 0, _, acc => acc
-    | _, [], acc => acc
-    | fuel + 1, m :: rest, acc =>
-      go fuel (sameSenderParents d m.sender m finalized ++ rest) (m :: acc)
+  walkSameSender d finalized d.length (sameSenderParents d mv.sender mv finalized) []
 
 /-- **Step 2 — the min messages** (`next_fringe`, `:186-211`): per justification, the *oldest*
     non-finalized same-sender ancestor, with the justification itself when there is none (the port's
@@ -190,5 +194,157 @@ theorem a_derivation_publishes_a_layer :
 theorem a_derivation_is_an_antichain :
     ((nextLayer dag3 (minMsgs dag3 [⟨11, 1, 0, 1, [10], [10]⟩, ⟨12, 1, 1, 0, [11], [10, 11]⟩] []))
       |>.map (·.sender)).Nodup = true := by decide
+
+/-! ### The walk stops at the finalized boundary, and law 15's two readings -/
+
+/-- Everything the filter keeps is unfinalized — the predicate's second conjunct, unpacked once here
+    rather than at each use. -/
+theorem sameSenderParents_unfinalized (d : Dag) (sender : Nat) (mv : Message)
+    (finalized : List Nat) : ∀ m ∈ sameSenderParents d sender mv finalized, m.id ∉ finalized := by
+  intro m hm
+  simp only [sameSenderParents, List.mem_filter, Bool.and_eq_true] at hm
+  exact of_decide_eq_true hm.2.2
+
+/-- **The walk never returns a finalized message.** Each step filters by "not finalized" *and* never
+    traverses through an excluded message (the worklist is rebuilt from the survivors), so everything
+    pushed — and therefore everything returned — is unfinalized. This is the fact that makes the
+    **per-sender** reading of law 15 provable: a min message is the previous sentinel's direct
+    successor rather than a descendant of something older. -/
+theorem walkSameSender_skips_finalized (d : Dag) (finalized : List Nat) (fuel : Nat) :
+    ∀ work acc, (∀ m ∈ work, m.id ∉ finalized) → (∀ m ∈ acc, m.id ∉ finalized) →
+      ∀ m ∈ walkSameSender d finalized fuel work acc, m.id ∉ finalized := by
+  induction fuel with
+  | zero =>
+    intro work acc _ hacc m hm
+    simp only [walkSameSender] at hm
+    exact hacc m hm
+  | succ f ih =>
+    intro work acc hwork hacc m hm
+    cases work with
+    | nil =>
+      simp only [walkSameSender] at hm
+      exact hacc m hm
+    | cons w rest =>
+      simp only [walkSameSender] at hm
+      refine ih (sameSenderParents d w.sender w finalized ++ rest) (w :: acc) ?_ ?_ m hm
+      · intro x hx
+        rw [List.mem_append] at hx
+        rcases hx with hx | hx
+        · exact sameSenderParents_unfinalized d w.sender w finalized x hx
+        · exact hwork x (List.mem_cons.mpr (Or.inr hx))
+      · intro x hx
+        rcases List.mem_cons.mp hx with hwx | hx
+        · rw [hwx]
+          exact hwork w (List.mem_cons.mpr (Or.inl rfl))
+        · exact hacc x hx
+
+/-- The walk's boundary, at `selfParents`. -/
+theorem selfParents_skips_finalized (d : Dag) (mv : Message) (finalized : List Nat) :
+    ∀ m ∈ selfParents d mv finalized, m.id ∉ finalized := by
+  unfold selfParents
+  refine walkSameSender_skips_finalized d finalized d.length
+    (sameSenderParents d mv.sender mv finalized) [] ?_ ?_
+  · exact sameSenderParents_unfinalized d mv.sender mv finalized
+  · intro x hx; simp at hx
+
+/-- **The cross-sender reading of law 15 is false**, and this is the sharp witness: one previous
+    fringe with a **high** message and a published fringe with a **low** one on a different sender —
+    `prev = {m3 (sender 0, height 3)}`, `f = {q2 (sender 1, height 2)}`. The port's gate cannot see
+    it, because what `calculate_fringe` reads is the **support map**, not the heights, and the
+    oracle's loop has no fringe comparison either (AUDIT C69, §6). Kept as a refutation rather than
+    dropped, so the next reader sees which reading was false and on what. -/
+theorem cross_sender_height_monotone_is_false :
+    ¬ ∀ prev f : Fringe, ∀ p ∈ prev.messages, ∀ m ∈ f.messages, p.height ≤ m.height := by
+  intro h
+  let prev : Fringe := ⟨[⟨3, 3, 0, 0, [], []⟩]⟩
+  let f : Fringe := ⟨[⟨2, 2, 1, 0, [], []⟩]⟩
+  exact absurd (h prev f ⟨3, 3, 0, 0, [], []⟩ (by simp [prev]) ⟨2, 2, 1, 0, [], []⟩ (by simp [f]))
+    (by decide)
+
+/-! ### Law 15's literal form, over the id→message lookup
+
+The closure is proved along `Reaches` (`Rchain/Casper/Fringe.lean`) — a relation between *values*. What
+law 15 states literally is the id-based form, `a ∈ b.seen → a.seen ⊆ b.seen`, and row 15's note names
+what it was waiting for: "an id→message map (so the *id* can be turned back into the *value*) **that the
+DAG model would bring**". `Dag.msg` is that lookup.
+
+The hypotheses are the port's own construction and the two facts a DAG carries, **stated rather than
+assumed** — the shape the tie's domain and law 14b's `checkMinMessages` boundary already use. They are
+hypotheses and not axioms: resolving an id back to a value needs uniqueness, and the descent needs a
+finite measure. -/
+
+/-- **The port's construction** (`block-storage/src/dag/message_state.rs:54-59`): a message's seen set is
+    `seenOf` of the messages its parents name — `new_seen`, stated rather than assumed. -/
+def Constructed (d : Dag) (m : Message) : Prop :=
+  m.seen = seenOf (m.parents.filterMap (Dag.msg d)) m.id
+
+/-- **The DAG's closure and its order**, in one hypothesis: whatever a message's parent id resolves to
+    is *in* the DAG and *lower* than the message that names it. -/
+def Descends (d : Dag) : Prop :=
+  ∀ m ∈ d, ∀ p ∈ m.parents, ∀ pm, Dag.msg d p = some pm → pm ∈ d ∧ pm.height < m.height
+
+/-- A message found in a `filterMap` of `Dag.msg` comes from a parent id that resolves to it — proved
+    here rather than named, since `List.mem_filterMap` is used nowhere in this tree. -/
+theorem mem_filterMap_msg (d : Dag) (ps : List Nat) (x : Message)
+    (h : x ∈ ps.filterMap (Dag.msg d)) : ∃ p ∈ ps, Dag.msg d p = some x := by
+  induction ps with
+  | nil => simp at h
+  | cons p rest ih =>
+    cases hmsg : Dag.msg d p with
+    | none =>
+      simp only [List.filterMap_cons, hmsg] at h
+      rcases ih h with ⟨q, hq, hq'⟩
+      exact ⟨q, List.mem_cons.mpr (Or.inr hq), hq'⟩
+    | some m =>
+      simp only [List.filterMap_cons, hmsg, List.mem_cons] at h
+      rcases h with hx | hx
+      · exact ⟨p, List.mem_cons.mpr (Or.inl rfl), by rw [hx, hmsg]⟩
+      · rcases ih hx with ⟨q, hq, hq'⟩
+        exact ⟨q, List.mem_cons.mpr (Or.inr hq), hq'⟩
+
+/-- **Law 15's literal form.** Over a DAG whose messages are constructed, which descends, and whose ids
+    are unique, every id in `b`'s seen set is the id of a message whose entire seen set is `b`'s:
+    `a.seen ⊆ b.seen`. The induction is on `b`'s height, because each step of the walk resolves a parent
+    and `Descends` makes that strictly decreasing — a bound justified by the walk rather than chosen. -/
+theorem seen_subset_of_mem_seen (d : Dag) (a b : Message)
+    (ha : a ∈ d) (hb : b ∈ d)
+    (hcon : ∀ m ∈ d, Constructed d m)
+    (hdes : Descends d)
+    (hid : ∀ m ∈ d, ∀ m' ∈ d, m.id = m'.id → m = m')
+    (h : a.id ∈ b.seen) : a.seen ⊆ b.seen := by
+  have main : ∀ n, ∀ b ∈ d, b.height = n → ∀ a ∈ d, a.id ∈ b.seen → a.seen ⊆ b.seen := by
+    intro n
+    induction n using Nat.strong_induction_on with
+    | _ n ih =>
+      intro b hb hbn
+      intro a ha
+      intro hmem
+      show ∀ x, x ∈ a.seen → x ∈ b.seen
+      intro x hx
+      have hseen : a.id ∈ seenOf (b.parents.filterMap (Dag.msg d)) b.id := by
+        rw [hcon b hb] at hmem
+        exact hmem
+      rcases List.mem_append.mp hseen with hjust | hself
+      · -- seen by one of the justification *messages*: resolve the join through the seen sets, then
+        -- the map back to the message, and induct on it
+        rcases List.mem_join.mp hjust with ⟨s, hs, has⟩
+        rcases List.mem_map.mp hs with ⟨j, hj, rfl⟩
+        rcases mem_filterMap_msg d b.parents j hj with ⟨p, hp, hpj⟩
+        have hjd : j ∈ d := (hdes b hb p hp j hpj).1
+        have hlt : j.height < n := by
+          have : j.height < b.height := (hdes b hb p hp j hpj).2
+          rwa [hbn] at this
+        have hsub : a.seen ⊆ j.seen := ih j.height hlt j hjd rfl a ha has
+        have hxjoin : x ∈ List.join (List.map (fun m => m.seen)
+            (b.parents.filterMap (Dag.msg d))) :=
+          List.mem_join.mpr ⟨j.seen, List.mem_map.mpr ⟨j, hj, rfl⟩, hsub hx⟩
+        have hxseen : x ∈ seenOf (b.parents.filterMap (Dag.msg d)) b.id :=
+          List.mem_append_left _ hxjoin
+        rw [hcon b hb]
+        exact hxseen
+      · have hid_eq : a.id = b.id := by simpa using hself
+        have hab : a = b := hid a ha b hb hid_eq
+        simpa [hab] using hx
+  exact main b.height b hb rfl a ha h
 
 end Rchain

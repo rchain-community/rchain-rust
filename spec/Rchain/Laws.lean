@@ -820,16 +820,21 @@ def laws : List Law := [
       validator rests on `checkMinMessages`' count comparison — the epoch TODO whose body law 14a's row \
       records as fidelity rather than oversight — so the theorem is named for what it proves" },
   { number := 15, layer := "Casper",
-    statement := "The fringe is monotone by height and the seen set is monotone (no regression) — the \
-      **derived** fringe and the **constructed** seen set; over bare values both claims are false and \
-      their refutations are proved",
+    statement := "The fringe is monotone by height **per sender** and the seen set is monotone (no \
+      regression) — the **derived** fringe and the **constructed** seen set; over bare values both \
+      claims are false and their refutations are proved, and the **cross-sender** reading of the height \
+      claim is false too, of this tree *and* of the oracle \
+      (`cross_sender_height_monotone_is_false`)",
     status := .owed,
     declarations := [`Rchain.Message, `Rchain.seenOf, `Rchain.Reaches,
       `Rchain.seen_monotone_of_reaches, `Rchain.seen_monotone_is_false,
-      `Rchain.fringe_monotone_is_false, `Rchain.seenOf_contains_justifications, `Rchain.mem_seenOf_self],
+      `Rchain.fringe_monotone_is_false, `Rchain.seenOf_contains_justifications, `Rchain.mem_seenOf_self,
+      `Rchain.seen_subset_of_mem_seen, `Rchain.selfParents_skips_finalized,
+      `Rchain.cross_sender_height_monotone_is_false],
     axioms := [],
     rust := ["block-storage/src/dag/message_state.rs", "block-storage/src/dag/finalizer.rs"],
-    witness := [`Rchain.fringe_monotone_is_false, `Rchain.seen_monotone_is_false],
+    witness := [`Rchain.fringe_monotone_is_false, `Rchain.seen_monotone_is_false,
+      `Rchain.cross_sender_height_monotone_is_false],
     falsifiable := some "`fringe_monotone_is_false` exhibits two overlapping fringes (one at 5 and 1, one \
       at 3) where both arms of the disjunction fail — so the axiom was false as written; \
       `seen_monotone_is_false` exhibits two unrelated messages where `b` sees `a` and `a` sees `2` but \
@@ -846,10 +851,28 @@ def laws : List Law := [
       `a.seen ⊆ b.seen` by induction (`seen_monotone_of_reaches`), and the hypothesis it needs — that a \
       message's seen set *is* `seenOf` of its justifications — is the port's own construction \
       (`message_state.rs:54-59`), stated rather than assumed. Falsified by mutation: a `seenOf` that \
-      drops the union breaks both the one-step lemma and this proof's two steps. **What remains owed** is \
-      the two things that form does not cover: the row's literal `a ∈ b.seen → a.seen ⊆ b.seen`, which \
-      needs an id→message map (so the *id* can be turned back into the *value*) that the DAG model would \
-      bring, and height monotonicity between successive advances The old row's claim that the seen set is monotone \"(no \
+      drops the union breaks both the one-step lemma and this proof's two steps. **And both things this \
+      form did not cover arrived with the DAG model** (2026-09-24, `Rchain/Casper/Dag.lean`): the \
+      literal id-based form is `seen_subset_of_mem_seen`, over `Dag.msg` — the id→message map this note \
+      said the model would have to bring — with the port's construction (`Constructed`) and the DAG's \
+      ordering facts (`Descends`: a parent resolves in the DAG and is strictly lower) as **hypotheses \
+      rather than axioms**, because resolving an id back to a value needs uniqueness and a finite \
+      descent. The per-sender reading of the height claim rests on `selfParents_skips_finalized`: the \
+      walk filters by `!finalized.contains(x)` **and never traverses through an excluded message** (the \
+      worklist is rebuilt from the survivors), so a min message is the previous sentinel's direct \
+      successor rather than a descendant of something older. **And that settled which reading of the \
+      height claim is true**: the cross-sender one is **false**, of this tree and of the oracle — \
+      `prev = {m3 (sender 0, height 3)}` against a published `{q2 (sender 1, height 2)}`, because the \
+      layer is built from the *justifications* and need not cover the senders `prev` covers, and the \
+      gate cannot see it: what `calculate_fringe` reads is the **support map**, while \
+      `Finalizer.scala:144-178` compares fringes *never* \
+      (`LazyList.unfold(parentFringe)(nextFringe(_).map(nf => (nf, nf))).lastOption`). It is kept as \
+      `cross_sender_height_monotone_is_false` rather than dropped, so the next reader sees which \
+      reading was false and on what; AUDIT C69 carries the measurements, and §6 the port's own \
+      termination guard — which the oracle does not have, and which is weaker than a cycle guard. \
+      **What remains owed** is the last conjunct: the per-sender height *comparison* itself, the \
+      mechanism proved and the arithmetic across a chain not — a small named remainder rather than the \
+      two-sided gap this row used to carry. The old row's claim that the seen set is monotone \"(no \
       regression)\" was true of the port and false of the value the axiom quantified over" },
   { number := 16, clause := "a", layer := "Casper",
     statement := "Block number = max(parent) + 1 — as the port's check, which **rejects** a block whose \
@@ -978,14 +1001,20 @@ def laws : List Law := [
     statement := "The bonds cache equals the PoS state",
     status := .open,
     falsifiable := none,
-    note := "**no model, and the gap is now stated rather than implied** (the register sweep found \
-      this row and 26c saying nothing, 2026-09-24). The cache is `Finalizer`'s `bonds_map` \
-      (`block-storage/src/dag/finalizer.rs:29`), a `BTreeMap<S, NonNegI64>` filled from the PoS state \
-      at finalization: the PoS side exists in the model as `PosState`'s bonds (laws 44–47) and the \
-      cache does not, so the equality has no right-hand side to be stated against. Closing it means a \
-      cache type plus the sync sites as its hypothesis, and what that buys is a *fidelity* claim about \
-      the node's bookkeeping rather than a property of the calculus — the honest shape is law 48's: \
-      open, with the reason, until a sync site is modelled for another law's sake" },
+    note := "**it is not optional, and that is a finding rather than an argument** (2026-09-24). The \
+      finalizer's gates run on this map — `calculate_fringe`'s stake and `check_min_messages`' count \
+      both take `bonds_map` (`block-storage/src/dag/finalizer.rs:29,102,168,189,217`) — so the equality \
+      is the hypothesis law 14a's and 14b's rows take as given when they model `bonds : Bonds` as an \
+      argument to the gate. **And the port does not assume it, it establishes it**: \
+      `runtime.compute_bonds(&state_hash)` reads the bonds from the newest justification's \
+      **post-state** (`casper/src/multi_parent_casper.rs:150-172`), falling back to the maps the blocks \
+      carry only when the state is unreadable — a fallback whose own comment records why the naive \
+      version was wrong: requiring the carried maps to agree \"wedged a chain permanently on the first \
+      bond or withdrawal before its first finalisation, with no way back (#73)\". So the sync exists, \
+      is locatable and has a shipped defect behind it; closing this row means modelling that sync (the \
+      PoS state → the block's `bonds` → the justifications' maps → the gate), which is a Phase 1 unit \
+      rather than a research question. The row is `open` because the model has no sync site, not \
+      because the claim is doubtful" },
   { number := 17, clause := "a", layer := "Casper",
     statement := "Merge determinism: a rejection resolves to a unique minimum-cost candidate — the \
       rejection option is the minimum of `(total cost, size, the sorted set)`, and a minimum of a set \
@@ -1270,17 +1299,21 @@ def laws : List Law := [
     statement := "The RNG seed and unforgeable names are shard-scoped",
     status := .open,
     falsifiable := none,
-    note := "**this row's note was empty until 2026-09-24, which is a defect of its own**: an `open` \
-      row with nothing in it reads as safe because nobody recomputes a negative, and the register's \
-      sweep is what found it. What it lacks, stated: the model has no shard in either object — the \
-      seed is a `Blake2b512Random` over the block's randomness and the deploy index, and an \
-      unforgeable name derives from the deploy (`GPrivate`'s id, `GDeployId`'s sig; both printed at \
-      `rholang/src/pretty_printer.rs:518-520`) rather than from a shard, while `ShardId` appears in \
-      the model only at the ingress (26a's `admitLeg`) and at the merge (26's legs). What would close \
-      it is a decision this row does not currently make: if the node does scope them, the model needs \
-      a shard in the seed derivation plus a theorem that one deploy in two shards yields different \
-      names; if it does not, the row is a **design claim** (law 48's shape) and should say so. Either \
-      way the question is written down now, which is what the empty note prevented" },
+    note := "**determined by reading the port, not by judgement** (2026-09-24), and the answer is that \
+      the node scopes **neither** to a shard — so this is a **design claim** (law 48's shape), not a \
+      port gap. The unforgeable names *are* the deploy's RNG stream: the `GPrivate` constructor over a draw: \
+      `GUnforgeable::GPrivate(GPrivate { id: bytes })` with `bytes = rand.next()` (`rholang/src/reduce.rs:1973`, \
+      in `alloc`); and \
+      every seed site is shard-free — `unforgeable_name_rng` over the deployer and the timestamp \
+      (`casper/src/tools.rs:11`), `Blake2b512Random::from_init(&deploy.to_bytes())` (`:26`), \
+      `rng` over the signature (`:31`) — with no `shard` in any rand or seed site anywhere in `casper/src/`. \
+      **The oracle matches**, which settles the disposition: `ProtoUtil.scala:36,49` carries `shardId` \
+      only as the *deploy record's own field*, and nothing under `legacy/casper/…/runtime/` mentions a \
+      shard at all — so the shard id is a deploy-level field, checked at the ingress (26a's `admitLeg`) \
+      and binding the effect to one shard, not an input to the derivation. **Its uniqueness across \
+      shards is a consequence of a deploy executing once, not of the derivation: the same deploy bytes \
+      in a second shard would draw the same names.** Closing the row would need the shard in the seed \
+      derivation *plus* a two-shard non-collision theorem — a design decision shared with the Scala" },
   { number := 27, layer := "Cross-shard",
     statement := "Cross-shard atomicity (2PC): every leg that *prepared* reaches the one decision the \
       coordinator made — commit on all of them or abort on all of them",
@@ -1409,7 +1442,7 @@ def laws : List Law := [
       needs no deviation at all (`[X] ::= X | X \",\" [X]` puts a separator only *between* elements, \
       and `ProcRemainder` follows the list carrying no terminal), which corrected AUDIT C24's reading \
       (the comma form is law 31's deviation, recorded below) — and the gate's reserved consumer is now \
-      a real one (`tools/check-lean-conformance.sh:207`, `lean_parse_corpus`)" },
+      a real one (`tools/check-lean-conformance.sh:lean_parse_corpus`)" },
   { number := 31, layer := "Rholang",
     statement := "Every production of the grammar (`rholang_mercury.cf`) is accepted, modulo a data \
       list of documented deviations",
