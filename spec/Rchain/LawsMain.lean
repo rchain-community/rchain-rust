@@ -252,15 +252,18 @@ open Lean Elab Command
 than the transitive ones: this is the trust surface as the tree states it, which is what a register row
 must account for. The transitive dependency of an individual theorem is a different (also useful)
 question — that is `#print axioms`, one level down. -/
+
+-- Whether `n` is a declaration under the `Rchain` namespace, by the name's own components and not
+-- `Name.isPrefixOf`: that takes the receiver as the prefix, so `n.isPrefixOf `Rchain` asks whether the
+-- *declaration* is a prefix of `Rchain` — false for every one of them, which is how the axiom check first
+-- reported an empty tree (61 axioms "missing").
+def underRchain (n : Name) : Bool :=
+  match n.components with
+  | `Rchain :: _ => true
+  | _ => false
+
 def rchainAxioms : CommandElabM (List Name) := do
   let env ← getEnv
-  -- By the name's own components, not `Name.isPrefixOf`: that takes the receiver as the prefix, so
-  -- `n.isPrefixOf `Rchain` asks whether the *declaration* is a prefix of `Rchain` — false for every
-  -- one of them, which is how this check first reported an empty tree (61 axioms "missing").
-  let underRchain (n : Name) : Bool :=
-    match n.components with
-    | `Rchain :: _ => true
-    | _ => false
   return env.constants.fold (init := ([] : List Name)) fun acc n ci =>
     -- `isInternalDetail` skips the compiler's own auxiliaries: local lambdas (`_elambda`, `_lambda`)
     -- and hygiene names are stored as axioms in the environment, and they are not assumptions about the
@@ -269,6 +272,17 @@ def rchainAxioms : CommandElabM (List Name) := do
     if underRchain n && !n.isInternalDetail then
       match ci with
       | .axiomInfo _ => n :: acc
+      | _ => acc
+    else acc
+
+/-- The tree's `theorem`/`lemma` declarations. Check 4c uses it: a falsifiability `witness` has to be one
+of these, because a *definition* cannot fail. -/
+def rchainTheorems : CommandElabM (List Name) := do
+  let env ← getEnv
+  return env.constants.fold (init := ([] : List Name)) fun acc n ci =>
+    if underRchain n && !n.isInternalDetail then
+      match ci with
+      | .thmInfo _ => n :: acc
       | _ => acc
     else acc
 
@@ -331,6 +345,19 @@ run_cmd do
   if !axiomDeco.isEmpty then
     failures := failures.push s!"non-vacuity: {axiomDeco.eraseDups.length} `witness` name(s) are axioms \
       — a falsifier that cannot fail is not one: {axiomDeco.eraseDups.map (·.toString)}"
+
+  -- 4c. A falsifiability witness must be a **theorem**. 4b refuses an axiom — a falsifier that cannot fail
+  -- is not one — and its sibling is the *definition*: row 44's `falsifiable` cell named
+  -- `PosState`/`isBoundary`/`epochStep` before the witness ratchet landed, a structure and two functions,
+  -- none of which can fail either. Existence is check 3's job (`missing`); this is the *shape*, which a
+  -- machine can see and a reader has to remember. The measured state when this was added: all 107 witness
+  -- names are theorems, so it is a ratchet that starts green.
+  let theorems ← rchainTheorems
+  for l in register do
+    for w in l.witness do
+      if env.contains w && !theorems.contains w then
+        failures := failures.push s!"non-vacuity: law {l.number}{l.clause}'s `witness` {w} is declared \
+          but is not a theorem — a definition cannot fail, so naming one is decoration"
 
   -- 5. A proved law must be falsifiable — the non-vacuity ratchet. `numeric_channels_nonneg`
   -- (`0 ≤ b.number` on a `Nat`) and `finality_iff_supermajority` (which restates its own definition)

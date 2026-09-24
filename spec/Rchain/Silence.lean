@@ -25,11 +25,11 @@ contract rule require a match, so silence is a consequence of the rule:
   flat, so a redex is a pair of entries, not a subtree), which is what lets the corpus `decide` against
   it.
 
-`takesStep_iff_reduces` is the tie between the two, and it is **owed** — named here rather than
-assumed, and checked behaviourally meanwhile by `spec/conformance/silence.tsv`'s consumer, which runs
-each case through the node. Its first statement was **false** and is now scoped to the computation's
-domain (`allStringChans`), with the unrestricted direction stated separately as `takesStep_sound`;
-AUDIT C40 records both that and the missing arity clause.
+`takesStep_iff_reduces` is the tie between the two — a theorem since 2026-09-24, and stated for *every*
+`Par`. Its first statement was **false** and was then narrowed to the computation's domain by a
+hypothesis (`allStringChans`, AUDIT C40); widening the rule's receive for C45 made that hypothesis a
+consequence of the rule rather than a side condition on the statement, so both the hypothesis and the
+predicate that carried it are gone. AUDIT C40 records the false statement and the missing arity clause.
 **Law 40 lives one clause of this rule.** `stepsInBinds` reads the *arity*: a receive accepts a send
 only when it has as many patterns as the send has data (`receiveParPs` is that receive, and law 40's
 cases in the corpus vary the arity). That is where C22 item 2 lived — `MCAwrite!("Chat", *C_Chat)`
@@ -143,28 +143,6 @@ mutual
       || stepsInBinds s bs
 end
 
-/-- Every channel the search will compare is a **string** channel: each send's channel and each bind's
-source. This is the computation's domain, and it has to be stated because the two sides of
-`takesStep_iff_reduces` are not defined on the same terms: `ReduceP.comm` fires on *any* channel, while
-`stepsInBinds` compares channels with `stringChan` — a decidable `String` identity, which is what makes
-the corpus's verdicts `decide`-able at all, since the model's `Par` has no `DecidableEq` and its
-canonical comparator is a well-founded recursion that `decide` cannot unfold. -/
-def allStringChans (p : Par) : Bool :=
-  p.sends.all (fun s => (stringChan s.chan).isSome)
-    && p.receives.all (fun r => r.binds.all (fun b => (stringChan b.source).isSome))
-
-/-- The tie between the relation and the computation, **on the computation's domain**: for a `Par`
-whose channels are all string channels, the search reports a step exactly when the relation has one.
-
-**This replaced an axiom that was false** (AUDIT C40): it read `takesStep p = true ↔ ∃ q', ReduceP p q'`
-for *every* `p`, and `chan = nilPar` refutes it — `ReduceP.comm` fires with `data = pattern = nilPar`
-(`spatialMatches` accepts them, and the rule never looks at the channel), while `stepsInBinds` answers
-`false` because `stringChan nilPar = none`. A false axiom is not an owed proof; it is the state C26
-found law 5 in, where anything follows from it, so the statement is corrected here and the proof is
-still owed — with the *sound* direction separated out below, which is the one the corpus leans on. -/
-axiom takesStep_iff_reduces (p : Par) (h : allStringChans p = true) :
-    takesStep p = true ↔ ∃ q', ReduceP p q'
-
 /-! ## The extraction lemmas, and the embedding
 
 Three of them, one per level of the search, each turning a `true` into the send, the receive and the
@@ -252,8 +230,8 @@ theorem exists_redex_split (p : Par) {s : Send} {r : Receive} (hs : s ∈ p.send
 
 /-- **Law 38's sound direction**: when the search reports a step, a step exists. The search is the
 computation the corpus decides against; this says it never claims one the rule cannot derive, which is
-what makes the corpus's `true` verdicts statements about the *rule* — and, together with the domain
-restriction in `takesStep_iff_reduces`, what makes silence a law rather than a remark. -/
+what makes the corpus's `true` verdicts statements about the *rule* — and so, with the complete
+direction below, what makes silence a law rather than a remark. -/
 theorem takesStep_sound (p : Par) : takesStep p = true → ∃ q', ReduceP p q' := by
   intro h
   obtain ⟨s, hs, h₁⟩ := stepsInSends_sound p.sends p.receives h
@@ -275,5 +253,150 @@ theorem takesStep_sound (p : Par) : takesStep p = true → ∃ q', ReduceP p q' 
       using ReduceP.commPs (sendChan := Send.mk chan data persistent |>.chan) (srcChan := source)
         hchan hsrc harity hmatch
   exact ReduceP.parLeft (ReduceP.parRight hredex)
+
+/-! ## Completeness — the converse, and the tie
+
+`takesStep_sound` turns the search's `true` into a step of the relation. This is the other direction, and
+with it the tie is a theorem rather than an axiom.
+
+**No domain hypothesis is needed.** The rules carry their own channel hypotheses — `hsend` and `hsrc`,
+`stringChan … = some name` — which were added when the receive shape was widened for AUDIT C45, *after*
+the counterexample that put `allStringChans` into the statement was written. So the search's `stringChan`
+comparisons are discharged from the rule, and `takesStep p = true ↔ ∃ q', ReduceP p q'` holds for every
+`p`. The hypothesis was true when it was added and became unnecessary when the thing it excluded was
+fixed; a domain hypothesis has to be re-checked then, or the statement under-claims forever. -/
+
+/-- The receive-side search, a step found against the **first** part of a split receive list: a step
+against a prefix is a step against the whole. -/
+theorem stepsInReceives_append (s : Send) (rs rs' : List Receive)
+    (h : stepsInReceives s rs = true) : stepsInReceives s (rs ++ rs') = true := by
+  induction rs with
+  | nil => simp [stepsInReceives] at h
+  | cons r rs ih =>
+    simp only [List.cons_append, stepsInReceives, Bool.or_eq_true] at h ⊢
+    rcases h with h | h
+    · exact Or.inl h
+    · exact Or.inr (ih h)
+
+/-- And against the **second** part. The search reads only a receive's own fields, so the head's test is
+the same term on both sides of the split and the induction runs on the part being prepended — which is
+why this is not the previous lemma read backwards: `parRight` puts a whole `Par`'s receives *before* the
+sub-`Par`'s, and a step found in the suffix has to survive them. -/
+theorem stepsInReceives_prepend (s : Send) (rs rs' : List Receive)
+    (h : stepsInReceives s rs' = true) : stepsInReceives s (rs ++ rs') = true := by
+  induction rs with
+  | nil => simpa using h
+  | cons r rs ih =>
+    simp only [List.cons_append, stepsInReceives, Bool.or_eq_true]
+    exact Or.inr ih
+
+/-- The outer search with a receive list prepended — the half of `parRight` that this file's own search
+order does not give for free. -/
+theorem stepsInSends_prepend_recv : ∀ (ss : List Send) (rs rs' : List Receive),
+    stepsInSends ss rs' = true → stepsInSends ss (rs ++ rs') = true
+  | [], _, _, h => by simp [stepsInSends] at h
+  | s :: ss, rs, rs', h => by
+      simp only [stepsInSends, Bool.or_eq_true] at h ⊢
+      rcases h with h | h
+      · exact Or.inl (stepsInReceives_prepend s rs rs' h)
+      · exact Or.inr (stepsInSends_prepend_recv ss rs rs' h)
+
+/-- The outer search, a step found in the **first** `Par`'s part — `parLeft`: both lists grow. -/
+theorem stepsInSends_append (ss ss' : List Send) (rs rs' : List Receive)
+    (h : stepsInSends ss rs = true) : stepsInSends (ss ++ ss') (rs ++ rs') = true := by
+  induction ss generalizing rs with
+  | nil => simp [stepsInSends] at h
+  | cons s ss ih =>
+    simp only [List.cons_append, stepsInSends, Bool.or_eq_true] at h ⊢
+    rcases h with h | h
+    · exact Or.inl (stepsInReceives_append s rs rs' h)
+    · exact Or.inr (ih rs h)
+
+/-- The outer search, a step found in the **second** `Par`'s part — `parRight`. -/
+theorem stepsInSends_prepend (ss ss' : List Send) (rs rs' : List Receive)
+    (h : stepsInSends ss' rs' = true) : stepsInSends (ss ++ ss') (rs ++ rs') = true := by
+  induction ss with
+  | nil => exact stepsInSends_prepend_recv ss' rs rs' h
+  | cons s ss ih =>
+    simp only [List.cons_append, stepsInSends, Bool.or_eq_true]
+    exact Or.inr ih
+
+/-- The search accepts the redex `commPs` builds: the arity clause and the pairwise match, which is what
+makes law 40's question ("at which arities does a call have an accepting receive?") a question about the
+rule. The projections are named in the `simp only` because `Send.chan` and its siblings are plain `def`s
+over an inductive, not structure projections: a `simp only` that does not name them leaves
+`(Receive.mk …).binds` and the `.chan`/`.source` inside the `match` unreduced, and the goal is then
+unrecognisable. -/
+theorem takesStep_commPs_redex {sendChan srcChan : Par} {name : String} {patterns data : List Par}
+    {body : Par} {sendPersistent recvPersistent : Bool} {freeCount bindCount : Nat}
+    (hsend : stringChan sendChan = some name) (hsrc : stringChan srcChan = some name)
+    (harity : patterns.length = data.length)
+    (hmatch : (patterns.zip data).all (fun pd => spatialMatch pd.2 pd.1) = true) :
+    takesStep (parMerge (sendParP sendChan data sendPersistent)
+      (Par.mk [] [Receive.mk [ReceiveBind.mk patterns srcChan freeCount] body recvPersistent
+        bindCount] [] [] [] [] [] [])) = true := by
+  simp only [takesStep, sendParP, parMerge, List.nil_append, List.append_nil, stepsInSends,
+    stepsInReceives, stepsInBinds, Send.chan, Send.data, Receive.binds, ReceiveBind.source,
+    ReceiveBind.patterns]
+  simp [hsend, hsrc, harity, hmatch]
+
+/-- The single-datum case of the same, derived rather than repeated: `comm`'s one pattern against one
+datum is `commPs`'s at length one, and its hypothesis (`spatialMatches`) is the pairwise match on that
+one pair. Deriving it keeps one statement of the arity clause instead of two free to drift apart. -/
+theorem takesStep_comm_redex {sendChan srcChan pattern datum body : Par} {name : String}
+    {sendPersistent recvPersistent : Bool} {freeCount bindCount : Nat}
+    (hsend : stringChan sendChan = some name) (hsrc : stringChan srcChan = some name)
+    (h : spatialMatches datum pattern) :
+    takesStep (parMerge (sendParP sendChan [datum] sendPersistent)
+      (Par.mk [] [Receive.mk [ReceiveBind.mk [pattern] srcChan freeCount] body recvPersistent
+        bindCount] [] [] [] [] [] [])) = true := by
+  refine takesStep_commPs_redex (patterns := [pattern]) (data := [datum]) hsend hsrc rfl ?_
+  simpa [spatialMatches] using h
+
+/-- The search is monotone under `|` on the left: `parLeft`, read as a fact about `takesStep`. -/
+theorem takesStep_parMerge_left (p q : Par) (h : takesStep p = true) :
+    takesStep (parMerge p q) = true := by
+  simp only [takesStep, parMerge] at h ⊢
+  exact stepsInSends_append p.sends q.sends p.receives q.receives h
+
+/-- And on the right, which is `parRight`. -/
+theorem takesStep_parMerge_right (p q : Par) (h : takesStep q = true) :
+    takesStep (parMerge p q) = true := by
+  simp only [takesStep, parMerge] at h ⊢
+  exact stepsInSends_prepend p.sends q.sends p.receives q.receives h
+
+/-- **Law 38's complete direction**: every step the relation has, the search reports. Together with
+`takesStep_sound` this is the tie, and the *congruence* rules are where it is not free: the search walks
+one flat list of sends against one flat list of receives, while the rule builds its redex by `parMerge`,
+so the monotonicity facts above are the whole of what the extra structure costs. -/
+theorem takesStep_complete (p : Par) : (∃ q', ReduceP p q') → takesStep p = true := by
+  rintro ⟨q, hq⟩
+  induction hq with
+  | comm hsend hsrc h => exact takesStep_comm_redex hsend hsrc h
+  | commPs hsend hsrc harity hmatch => exact takesStep_commPs_redex hsend hsrc harity hmatch
+  | parLeft _ ih => exact takesStep_parMerge_left _ _ ih
+  | parRight _ ih => exact takesStep_parMerge_right _ _ ih
+
+/-- **The tie between the relation and the computation, and it is a theorem.**
+
+**This replaced an axiom that was false** (AUDIT C40). As first written it read exactly this, for *every*
+`p`, and `chan = nilPar` refuted it: `ReduceP.comm` fired with `data = pattern = nilPar` — the rule never
+looked at the channel — while `stepsInBinds` answered `false`, because `stringChan nilPar = none`. A false
+axiom is not an owed proof; it is the state C26 found law 5 in, where anything follows from it. The next
+statement narrowed it with a domain hypothesis (`allStringChans`, "every channel the search compares is a
+string channel"), and that hypothesis is now gone too: widening the rule's receive for AUDIT C45 made the
+channel a *hypothesis of the rule* (`hsend`/`hsrc`, which is where the node's own condition lives), so the
+domain is a consequence of the rule rather than a side condition on the statement. The predicate that
+carried it is deleted with it — a domain hypothesis has to be re-checked when the thing it excluded is
+fixed, or the statement under-claims forever.
+
+**What is *not* claimed here, and is the residual to read with it:** the model has no join rule. A receive
+with two or more binds is a join, and the node fires one when every bound channel holds a matching datum;
+this model's rule fires only on a single-bind receive, and the search agrees with the model
+(`stepsInReceives` requires `binds.length == 1`), so a join is not a step *here* although a fully matched
+join is one in the node. The tie is between the rule and the search, both of which are silent on joins —
+AUDIT C40's boundary, unchanged by this proof. -/
+theorem takesStep_iff_reduces (p : Par) : takesStep p = true ↔ ∃ q', ReduceP p q' :=
+  ⟨takesStep_sound p, takesStep_complete p⟩
 
 end Rchain

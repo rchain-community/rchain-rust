@@ -1388,28 +1388,44 @@ def laws : List Law := [
   { number := 38, layer := "Rholang",
     statement := "Silence is specified: an unmatched receive or `match` yields no reduction **and no \
       error**",
-    status := .owed,
+    status := .provedTied,
     declarations := [`Rchain.ReduceP, `Rchain.takesStep, `Rchain.receiveParP,
-      `Rchain.takesStep_sound, `Rchain.stepsInSends_sound, `Rchain.stepsInReceives_sound,
-      `Rchain.stepsInBinds_sound, `Rchain.exists_redex_split],
-    axioms := [`Rchain.takesStep_iff_reduces],
+      `Rchain.takesStep_sound, `Rchain.takesStep_complete, `Rchain.takesStep_iff_reduces,
+      `Rchain.takesStep_commPs_redex, `Rchain.takesStep_comm_redex, `Rchain.takesStep_parMerge_left,
+      `Rchain.takesStep_parMerge_right, `Rchain.stepsInSends_sound, `Rchain.stepsInReceives_sound,
+      `Rchain.stepsInBinds_sound, `Rchain.exists_redex_split, `Rchain.stepsInSends_append,
+      `Rchain.stepsInSends_prepend, `Rchain.stepsInReceives_append, `Rchain.stepsInReceives_prepend,
+      `Rchain.stepsInSends_prepend_recv],
+    rust := ["rholang/src/reduce.rs:1994", "rholang/src/reduce.rs:1868"],
     corpus := some "silence",
-    falsifiable := some "`ReduceP`'s datum-consuming rules carry the match *and* the channel name as \
-      hypotheses, so silence is a consequence of the rule; the corpus's 13 cases each run on their own \
-      runtime with a control datum, and a case that stepped when it should not would fail — case 13 is \
-      what found that the *search* claimed a step for a join, which the node does not (AUDIT C45)",
-    note := "**the sound direction is proved** (`takesStep_sound`): when the search reports a step, a \
-      derivation exists. It was not provable as written, and the obstacle was a modelling gap rather \
-      than an induction: the rule's constructors built their receive through \
-      `receiveParP`/`receiveParPs`, which *fix* `freeCount := patterns.length` and `bindCount := 1`, so \
-      the rule could not derive what the search accepted — the port's `free_count` is `count_no_wildcards` \
-      (`normalizer.rs:1295-1300`), so an ordinary `for (@a, @b <- c)` has `freeCount = 0` against \
-      `patterns.length = 2` and the node contracts it (AUDIT C45). Both constructors now take those two \
-      fields as parameters, and take the channel as *two* parameters with a shared-name hypothesis — the \
-      node's own condition. **What is still owed** is the complete direction: the rule fires only on a \
-      single-bind receive, so a *join* with one channel filled is silent here and in the node, while a \
-      join with both channels filled is a step in the node and has no derivation here — the model has no \
-      join rule, and the domain-restricted `takesStep_iff_reduces` is stated over exactly that boundary" },
+    falsifiable := some "the corpus's cases each run on their own runtime with a control datum, and six \
+      of the thirteen are *negative* — an unmatched map pattern, a receive on another channel, a \
+      mismatched literal, and three calls at the wrong arity — so a receive that stepped when it should \
+      not fails a case, and so does one that refused a step it should take; the corpus is this row's \
+      witness (the row declares no separate `witness` because the falsifier *is* the corpus here, and \
+      `silenceCases_decide` is the theorem that checks all thirteen). The statement's own history is the \
+      rest of the evidence that it can fail: its first version was **false**, refuted by `chan = nilPar` \
+      (AUDIT C40), and case 13 found that the *search* claimed a step for a join the node does not \
+      perform (AUDIT C45)",
+    note := "**both directions are proved, so `takesStep_iff_reduces` is a theorem and not an axiom** — \
+      every step the rule has, the search reports (`takesStep_complete`), and everything the search \
+      reports, the rule derives (`takesStep_sound`). The sound direction was not provable as written, and \
+      the obstacle was a modelling gap rather than an induction: the rule's constructors built their \
+      receive through `receiveParP`/`receiveParPs`, which *fix* `freeCount := patterns.length` and \
+      `bindCount := 1`, so the rule could not derive what the search accepted — the port's `free_count` is \
+      `count_no_wildcards` (`normalizer.rs:1295-1300`), so an ordinary `for (@a, @b <- c)` has \
+      `freeCount = 0` against `patterns.length = 2` and the node contracts it (AUDIT C45). Both \
+      constructors now take those two fields as parameters, and take the channel as *two* parameters with \
+      a shared-name hypothesis — the node's own condition. That last change is also what let the *domain \
+      hypothesis go*: the statement was briefly `(h : allStringChans p = true)`, added when the rule \
+      fired on any channel at all, and once the rule carries `stringChan … = some name` itself the \
+      hypothesis is a consequence of the rule rather than a side condition on the statement — so the \
+      predicate that carried it is deleted, and the tie holds for every `Par`. **What remains is the \
+      model's boundary, not a proof: there is no join rule.** A receive with two or more binds is a join, \
+      the node fires one when every bound channel holds a matching datum, and this model's rule fires only \
+      on a single-bind receive — the search agrees with the model, so a fully matched join is a step in \
+      the node and none here (AUDIT C40, unchanged by this proof), which is a modelling gap to close \
+      rather than an obligation to discharge" },
   { number := 39, layer := "Protocol",
     statement := "Every `rho:*` urn's reply arity and shape equals its `spec/API-SCHEMA.md` row",
     status := .provedTied,

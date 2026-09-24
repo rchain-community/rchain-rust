@@ -1956,10 +1956,16 @@ port against the **reference document** rather than against itself.
      restriction is not arbitrary slack: `stringChan` is a *decidable* `String` identity, and the
      model's `Par` has no `DecidableEq`, while its canonical comparator is a well-founded recursion
      that `decide` cannot unfold — so the computation can only see string channels, and the corpus's
-     verdicts depend on exactly that. The statement now carries the domain as data
-     (`allStringChans`), plus `takesStep_sound` on its own — the direction the corpus leans on ("the
-     search reported a step, so a step exists"), which needs no restriction, since a `true` from the
-     search already implies both channels were string channels.
+     verdicts depend on exactly that. The repair went two steps, and the second is the one worth
+     recording: the statement first carried the domain as data (`allStringChans`), and then that
+     hypothesis turned out to be **unnecessary** — C45's widening below put the string-channel
+     condition into the rule itself (`hsend`/`hsrc`, the node's own condition), so the domain became a
+     consequence of the rule rather than a side condition on the statement, the predicate was deleted
+     with it, and the tie holds for every `p`. A domain hypothesis has to be re-checked when the thing
+     it excluded is fixed, or the statement under-claims forever; this one had been true when it was
+     written and had been false for a day by the time it was removed. `takesStep_sound` was always
+     unrestricted (a `true` from the search already implies both channels were string channels), and
+     `takesStep_complete` — the direction this entry left owed — is proved, so the tie is a theorem.
 
   2. **The relation could not express the arity clause.** The module's own docstring says law 40 lives
      in one clause of the rule, and `stepsInBinds` reads the arity — but `ReduceP` could contract only
@@ -2133,10 +2139,13 @@ port against the **reference document** rather than against itself.
   of the search, and `exists_redex_split`, which presents a par around any send/receive pair as
   contexts plus redex.
 
-  **What is still owed, and why it is stated where it is**: the complete direction
-  (`takesStep_iff_reduces`, scoped to `allStringChans` by C40). The model has **no join rule**, so a join
-  with both channels filled is a step in the node and has no derivation here; the axiom is a statement
-  about the boundary the model actually has, and the row says so.
+  **And the complete direction is proved too** (2026-09-24), so `takesStep_iff_reduces` is a theorem in
+  both directions and C40's domain hypothesis is gone with the predicate that carried it — the rule now
+  carries that domain itself. What stays is the **model's boundary rather than a debt**: the model has
+  **no join rule**, so a join whose every channel is filled is a step in the node and has none here. The
+  tie is between the rule and the search, both of which are silent on joins, so it is true of the model
+  as the model is — and the gap to the node is the join rule, which is a modelling unit rather than a
+  proof obligation, and which the row now states in those words.
 
 - **C46 — a validator cannot index the genesis, because the sidecar-regeneration path replays it without
   its vaults** (found 2026-09-23, on the devnet while checking laws 44–47; **pre-existing**, from
@@ -2811,7 +2820,7 @@ finding that no law covers, and it says why rather than leaving the gap to infer
 | C37 `rho_examples` measured the stack | — **harness** | no law: the finding is that a 2 MiB default is not a parse result. `casper/tests/genesis_registry.rs`'s pattern (`with_big_stack`) is the convention, and C37 records why two diagnoses went wrong |
 | C38 every rho value wrapped wrongly | 42 | `rho_expr.rs`'s `the_wire_shape_is_the_reference_documents` (one literal per arm), `json.tsv`/`lex.tsv` re-emitted, the served document's `RhoExpr` schema, and `node/tests/node_api.rs` over HTTP |
 | C39 the reply was read from one channel | 39, 43 | `casper/tests/exploratory_reply.rs` (three outcomes) + `replySource` in `envelope.tsv` and the served document |
-| C40 law 38's tie was false, and the relation lacked its arity clause | 38, 40 | `allStringChans` scoping the statement, `commPs` as the rule's arity clause |
+| C40 law 38's tie was false, and the relation lacked its arity clause | 38, 40 | `commPs` as the rule's arity clause, the false `iff` corrected — and its domain hypothesis later *removed* rather than kept (C45), `allStringChans` deleted with it |
 | C41 the diff accumulator could overflow where the merge refuses | 17 | **fixed**: `combining_refuses_a_diff_that_leaves_i64` (`event_log_index.rs`) fails on a `wrapping_add`, and the error reaches the merge through the now-fallible `EventLogIndex::combine`/`branches_are_conflicting`; `Merging.lean`'s `checkedAdd_refuses_overflow`/`mergeRandoms_perm` state the checked half and the call-site canonicalization |
 | C42 law 5's linearity is the normalizer's, not the matcher's | 5 | `Match.lean`'s `aggregateUpdates_rejects_double_bind`/`freeMapMerge_overwrites` state the matcher's halves; the enforcing checks are `normalizer.rs:289` (a duplicate inside a *process* pattern) and `:1325` (a duplicate across a *join*'s binds), **measured by breaking each in turn** and now pinned by tests — four refusal shapes and three negative ones in `normalizer.rs`'s test module, which did not exist before 2026-09-24, when the invariant's only evidence was a devnet probe. `:111`/`:590` are listed in the finding but exercised by no reachable shape; `spec/conformance/match.tsv` documents the matcher in isolation |
 | C43 the merge's associativity was untested, under a name that says otherwise | 9 | `Merge.lean`'s `mergeChanges_assoc` (proved) **and** `property_tests.rs`'s `law9_state_change_combine_is_associative`, over arbitrary state changes including the join map; the misnamed `state_change.rs` test now says what it asserts |
