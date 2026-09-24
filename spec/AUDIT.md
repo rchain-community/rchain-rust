@@ -2732,6 +2732,47 @@ port against the **reference document** rather than against itself.
   wrong, order and skipping; **(c)** leave it prose, which is where it stands. Law 16c's row now cites
   this entry rather than saying only that the layer is owed.
 
+- **C58 — law 1a's remaining gap is a *re-tagging of `cmpExpr`*, not eight more arms: the model cannot
+  hold eight of the node's constructors, and the node's tags interleave** (counted 2026-09-24,
+  Programme F, while sizing the sort-algebra extension; **a boundary finding, no defect, nothing changed
+  — the value is that the gap and its cost are measured instead of described**). The register's law 1a
+  row said the model's algebra is narrower than the node's ("21 against 33"). Counted exactly:
+
+  - the node's **Expr-level tags are 33** (`models/src/sorter.rs:18-58`): 5 scalars (`BOOL` 1 … `URI` 4,
+    `BIG_INT` 13), 4 collections (6–9), `EVAR` 100, 15 operators (101–114, `EMOD` 122), `EMETHOD` 115,
+    `EBYTEARR` 116, `EMATCHES` 118, `EPERCENT` 119, `EPLUSPLUS` 120, `EMINUSMINUS` 121, `ESHORTAND` 123,
+    `ESHORTOR` 124;
+  - the model's `Expr` has **21** arms (`Rchain/Par.lean:49-70`) and its single `ground` arm covers five
+    of the node's scalar tags plus `EBYTEARR` → 25 node tags covered, **8 uncovered**: `BIG_INT`,
+    `EMETHOD`, `EMATCHES`, `EPERCENT`, `EPLUSPLUS`, `EMINUSMINUS`, `ESHORTAND`, `ESHORTOR`. The model's
+    `Ground` has five arms and no `bigInt` (`Rchain/Syntax.lean:23-29`).
+
+  **Five of the eight are terms the node can hold and the model cannot**, which is the opposite of the
+  `bytes` case law 1a's row names as *unspellable*: `BigInt(42)` is a ground the grammar has a production
+  for (`GroundBigInt`; C34's fix is what made it reachable), the parser accepts the `matches` operator,
+  and `EMatches`/`EPercentPercent`/`EPlusPlus`/`EMinusMinus` are all in the port's own AST
+  (`models/src/ast.rs:333-336`). So law 1a is not merely unpinned for them — it is unstatable, because
+  the model has no value to state it about.
+
+  **Why this is not "add eight arms".** The node's tags *interleave*: scalars 1–4, collections 6–9,
+  `BIG_INT` **13**, vars 50–52, operators 100–124, `EBYTEARR` **116**. The model's `cmpExpr` classifies
+  by constructor *kind* — one `ground` class that sorts before the collections, one class per operator —
+  so a faithful order needs `ground (bigInt _)` to compare *after* `eset`/`emap`, and a byte array after
+  every operator: a case split finer than one-class-per-constructor. Changing that split changes
+  `cmpExpr` itself, and `cmpExpr` is compiled as `WellFounded.fix` (its block is one strongly connected
+  component, so **nothing unfolds it**: `rfl` does not reduce it on constructors and `cmpExpr.eq_def`
+  times out at `whnf`), which is exactly why its laws could only be proved by the 21 `@[simp]` arm
+  lemmas over an `exprTag` numbering plus the two cross-case tag lemmas. A re-tagging has to be
+  re-derived inside that structure. **That is the finding: the remaining gap is structural, and its
+  cost is the comparator block, not the constructor list.**
+
+  **Two things recorded beside it, both pre-existing.** (1) The model's `int` is Lean's `Int`
+  (unbounded), so a model value `int (2^70)` corresponds to no node `GInt` (an `i64`) — a widening the
+  `bigInt` work would sit next to rather than fix, and the reason the two cannot simply be merged.
+  (2) **The corpus cannot pin any of this**: a `sort.tsv` verdict is `decide`d against the model, so a
+  shape the model cannot *hold* cannot be a row. The gap is therefore a register fact and has to be
+  findable in the register — which is what this entry is for, and why law 1a's row now cites it.
+
 
 ## 20. The back-sweep: every incident to its law and its case
 

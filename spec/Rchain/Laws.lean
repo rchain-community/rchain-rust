@@ -212,7 +212,17 @@ def laws : List Law := [
       algebra** — 21 `Expr` constructors against the node's 33 — so it is a recorded boundary rather \
       than a fixed defect: `Receive`/`ReceiveBind`/`New`/`Bundle`/`EList`/`ESet`/`EMap`/`Var`/\
       `GUnforgeable` (where `gDeployerId`(10) sorts *before* `gDeployId`(11), the reverse of the port's \
-      enum) / `Connective`, plus the twelve constructors the model lacks. `Ground.bytes` is the one \
+      enum) / `Connective`; and the model lacks **eight** `Expr`-level constructors, *counted* against \
+      the node's tag table rather than summarised (AUDIT C58): `BIG_INT`(13), `EMETHOD`(115), \
+      `EMATCHES`(118), `EPERCENT`(119), `EPLUSPLUS`(120), `EMINUSMINUS`(121), `ESHORTAND`(123), \
+      `ESHORTOR`(124). Line them up and the reason they are not \"eight more arms\" is structural: the \
+      node's tags *interleave* (scalars 1–4, collections 6–9, `BIG_INT` 13, vars 50–52, operators \
+      100–124, `EBYTEARR` 116) while `cmpExpr` classifies by constructor *kind*, so a faithful order \
+      needs a case split finer than one class per constructor — inside a block that `WellFounded.fix` \
+      leaves unfoldable, which is why its laws took the arm-lemma route. C58 carries the measurement, \
+      and five of the eight are terms the node can hold and the model cannot (`BigInt(42)`, `matches`, \
+      `%%`, `++`, `--`), so law 1a is unstatable for them rather than merely unpinned. \
+      `Ground.bytes` is the one \
       unpinnable divergence: the model has it at the wrong tag and the node's front end has no \
       byte-array literal, so the term is unspellable rather than merely mis-scored. `Rchain/Sort.lean`'s \
       note carries the table and the boundary. So the model's `sortPar` is now the node's `sort_par` over \
