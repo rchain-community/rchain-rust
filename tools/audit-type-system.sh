@@ -84,6 +84,33 @@ TEST_ONLY_FILE_RE='(_tests?|test_)\.rs$|/property_tests\.rs$'
 # (`FreeCount::from_nonneg`'s `debug_assert!(n >= 0)`, deleted 2026-09-24) is **not** whitelisted —
 # it silently accepted an invalid value in release. A `debug_assert!` on a *relation between two
 # internally-produced structures* is whitelisted. Neither is invisible any more.
+# The two entries added 2026-09-24 with R2a's C61 fix (`64ea1350f`) are **invariant assertions on
+# already-proven values** — the same category as the fixed-size-array length checks above, and the
+# category this list exists for ("a deliberate decision where the expression is the right one"):
+#
+#   `rspace/src/history/key_segment.rs:38` — `from_slice_of_valid` calls
+#   `KeySegment::try_from(value).expect("a slice of a valid segment is at most 127 bytes")`. The
+#   function is private and its name is its precondition: the argument is only ever a *slice of a
+#   valid segment*, and a slice is never longer than its source, so `len <= 127` holds by
+#   monotonicity and the `Err` arm is unreachable. The proof is the function's own doc comment; what
+#   the `expect` buys is that a future caller who breaks the precondition gets a panic at the
+#   construction rather than a segment past the wire invariant.
+#
+#   `rspace/src/history/history_repository.rs:48` — `key_segment(prefix, hash)` builds
+#   `vec![prefix] ++ hash.as_bytes()` and converts it. 1 + 32 = 33 <= 127 arithmetically, and
+#   `Blake2b256Hash::as_bytes` returns `&[u8; 32]` *by type*, so the length is fixed at the call site
+#   rather than measured. The comment above the call states the same measurement.
+#
+# Neither assertion is removed to satisfy this class: an invariant check that cannot fire is worth
+# keeping, and deleting it would trade a check for a quieter log.
+#
+# **What the file granularity costs, stated plainly.** This list is suffix-matched per *file*, so
+# these two entries suppress the panic class over `key_segment.rs` and `history_repository.rs`
+# *entirely*: a new `unwrap` anywhere in either file would be silent. Measured today, each file
+# carries exactly one flagged expression — the one quoted above — and nothing else, so the entry
+# hides nothing now; but a reader must not take an entry as evidence that the file was swept. The
+# escape class's `ESCAPE_CTOR_ALLOW` is the per-site shape this list should eventually take: keyed by
+# text with an evidence regex, so an entry states what it covers and fails when that thing moves.
 WHITELIST_PANIC=(
   '/sdk/src/primitive.rs'
   '/models/src/block_hash.rs'
@@ -100,6 +127,9 @@ WHITELIST_PANIC=(
   '/rspace/src/rspace.rs'
   '/rspace/src/replay_rspace.rs'
   '/casper/src/block_random_seed.rs'
+  # R2a (C61): the two invariant assertions whose proofs are named above.
+  '/rspace/src/history/key_segment.rs'
+  '/rspace/src/history/history_repository.rs'
 )
 
 hard_failures=0
