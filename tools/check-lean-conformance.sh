@@ -9,11 +9,11 @@
 #
 # What it checks, in order:
 #   1. **The library builds** — `lake build` in `spec/`.
-#   2. **Nothing is admitted** — no `sorry` anywhere under `spec/Rchain/`. The tree is `sorry`-free
-#      today, so this is a ratchet: it can only stay that way.
-#   3. **The library is complete** — every `spec/Rchain/**/*.lean` file is imported by
-#      `spec/Rchain.lean`. Two modules (`Concurrent`, `Tree`) had been compiled but left outside the
-#      library, which is exactly the kind of quiet omission this file exists to make loud.
+#   2. **Nothing is admitted, and nothing is assumed by another name** — no `sorry`/`admit` and no
+#      `opaque`/`unsafe`/`partial`/`extern`/`implemented_by`, anywhere under `spec/` outside the build
+#      tree. The tree holds zero today, so this is a ratchet: it can only stay that way.
+#   3. **The library is complete** — every `.lean` under `spec/` is the library root, imported by
+#      `Rchain.lean`, or a declared `lean_exe` root; there is no third kind (AUDIT C75, C76).
 #   4. **The Coq builds** — `make` in `spec/coq/` (the second formalization of laws 2, 3, 5, 6).
 #   5. **The conformance corpora are current** — `lake exe rchain-corpus` re-emits them and
 #      `git diff --exit-code` proves the committed corpora are exactly what the Lean definitions
@@ -36,17 +36,7 @@ failures=0
 fail() { printf 'FAIL  %s\n' "$*"; failures=$((failures + 1)); }
 ok() { printf 'ok    %s\n' "$*"; }
 
-# --- the stack the elaborator needs, measured ----------------------------------
-# `Rchain/Sort.lean`'s comparator blocks are elaborated with tactic cascades over a 24-constructor
-# match, and the elaborator's recursion over them is **deeper than the default process stack**. The
-# measurement (2026-09-24): with the default 8 MB the module aborts — `Stack overflow detected.
-# Aborting.`, exit 134, and `lake build` reports it as a plain build failure with no line number — and
-# with 64 MB the *same* file elaborates cleanly (no errors, 16 minutes under a concurrent build).
-#
-# So this is a budget with a measurement, not a workaround for a broken proof (which is what the abort
-# looks like): raising the *soft* limit is the fix, `|| true` because a restricted environment may
-# refuse it, and the limit is inherited by every `lake`/`lean` this script spawns. `lean` has the knob
-# directly (`-s/--tstack`, in Kb) if a caller would rather pass it than raise the process limit.
+# the stack the elaborator needs (measured): see the note below the corpus-to-test mapping (AUDIT C76).
 ulimit -s 65536 2>/dev/null || true
 
 # --- 1. the library builds -----------------------------------------------------
@@ -263,6 +253,29 @@ fi
 #
 # This note sits BELOW the corpus-to-test mapping on purpose: `Laws.lean` cites a *line* of this
 # script for law 30, and a line-anchored citation into a script moves whenever a step above it grows.
+#
+# **That is not a stylistic preference — it was paid for twice** (AUDIT C70, C76). C70's first version
+# grew the region above the mapping by 40 lines and the register audit failed on the stale window; C75
+# added a 13-line `ulimit` comment at line 36 for the very measurement below, and moved law 30's
+# citation `208 → 222`, past the audit's ±8 window — while C75's own commit message and AUDIT row
+# claimed the audit was green. **Nothing in the tree could tell**: the gate does not run the audit, and
+# the audit's own record of the citation was prose. The durable fix is the symbol form
+# (`tools/check-lean-conformance.sh:lean_parse_corpus`, which the register is landing); until it lands,
+# **any line added above the mapping re-stales law 30's citation**, so keep the header block at its
+# current length (the mapping must stay within ±8 lines of the cited line 207).
+
+# --- the stack the elaborator needs, measured ----------------------------------
+# `Rchain/Sort.lean`'s comparator blocks are elaborated with tactic cascades over a 24-constructor
+# match, and the elaborator's recursion over them is **deeper than the default process stack**. The
+# measurement (2026-09-24): with the default 8 MB the module aborts — `Stack overflow detected.
+# Aborting.`, exit 134, and `lake build` reports it as a plain build failure with no line number — and
+# with 64 MB the *same* file elaborates cleanly (no errors, 16 minutes under a concurrent build).
+#
+# So this is a budget with a measurement, not a workaround for a broken proof (which is what the abort
+# looks like): raising the *soft* limit is the fix, `|| true` because a restricted environment may
+# refuse it, and the limit is inherited by every `lake`/`lean` this script spawns. `lean` has the knob
+# directly (`-s/--tstack`, in Kb) if a caller would rather pass it than raise the process limit. The
+# `ulimit` line itself stays above the mapping with step 1; only this prose could move down.
 
 # --- 5b. the law register is current -------------------------------------------
 # `spec/laws.tsv` and `spec/LAWS.md` are generated from `Rchain/Laws.lean`, and the documents' law counts
