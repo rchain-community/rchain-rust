@@ -1404,7 +1404,11 @@ def laws : List Law := [
       parameter list and `ReceiveSendSource`'s `Name \"?!\"` — were found by the layer's Rust \
       consumer, not by reading. A process-position connective is **not** a row: the parser accepts it \
       and the refusal is the normalizer's (`normalizer.rs:1762`, \
-      `TopLevelLogicalConnectivesNotAllowedError`), which belongs to law 34/35's layer" },
+      `TopLevelLogicalConnectivesNotAllowedError`), which belongs to law 34/35's layer. **The fragment \
+      is 48 rows and covers every production** (U9, 2026-09-24); what it does *not* model is named in \
+      `parseBoundaries` — an element's interior (the atom row is the element slot itself, so a \
+      single-element list derives by construction), the group `PExprs ::= \"(\" Proc4 \")\"`, comments, \
+      the literal forms, and the `select`/`match` lists as *nested* sites" },
   { number := 32, layer := "Rholang",
     statement := "Lexical determinism: comments, the `_`/`_ident` rule, `bundle0`, number forms and \
       the operator spellings each lex one way",
@@ -1425,20 +1429,20 @@ def laws : List Law := [
       and the identity itself, which runs on the node in the Rust consumer, **modulo the three named \
       warts**",
     status := .provedTied,
-    declarations := [`Rchain.printToks, `Rchain.printSurf, `Rchain.renderTokens, `Rchain.printWarts,
-      `Rchain.warts_are_not_derivable],
+    declarations := [`Rchain.printToks, `Rchain.printSurf, `Rchain.renderTokens, `Rchain.printWarts],
     corpus := some "parse",
     rust := ["rholang/src/pretty_printer.rs", "rholang/tests/lean_parse_corpus.rs"],
     witness := [`Rchain.warts_are_not_derivable],
-    falsifiable := some "the round trip is the corpus's `printer` rows: each production's witness is \
-      printed, the printed tokens must be derivable (`derives (printToks w.term)`, which is what \
-      filters `printerCases`), and the node must accept them — so a printer that emitted an \
-      underivable spelling drops out of the corpus and a parser that refused a printed term fails the \
-      consumer. **The three warts are exemptions, and they are pinned rather than tolerated**: \
-      `warts_are_not_derivable` decides that the `singleton-tuple` (`(1,)` prints as `(1)`) and \
-      `not-spelling` (`~(x)`) spellings are *not* in the grammar, and the consumer asserts the \
-      `urn-in-new` wart happened (`new x(`rho:id:y`) in Nil` prints as `new x0 in { Nil }`), so a wart \
-      cannot rot into a no-op by being silently fixed or silently dropped",
+    falsifiable := some "the consumer's round trip asserts each of the port's three printer warts with \
+      its **own detector**, and each detector requires the loss it names: the urn one requires the term \
+      to *have* a urn before it clears `New.uri`/`injections` (so it cannot fire on another wart's row), \
+      the tuple one requires the reprint to be the element the tuple wrapped, and the `not` one requires \
+      the reprint to be **unreadable** — the port's `~(x)` does not parse at all (`parser.rs`'s group \
+      fallback answers \"a tuple needs a comma\", which C13's own test asserts of the printed form). A \
+      wart whose detector does not fire fails, and a wart section exercises each detector on a term of \
+      its own. The model's half is the completeness direction: each production's witness is printed and \
+      the printed tokens must be derivable (`derives (printToks w.term)`, which is what filters \
+      `printerCases`), so a printer that emitted an underivable spelling drops out of the corpus",
     note := "**the printer's half is a model claim now** (2026-09-24): `printToks`/`printSurf` mirror \
       `pretty_printer.rs` and `renderTokens` is the surface, so `derives (printToks t)` is a statement \
       about a *definition* rather than about the port's behaviour. The two other tables are data for \
@@ -1447,7 +1451,15 @@ def laws : List Law := [
       consumer finding) and the layout / bundle-padding / core-vs-surface rows, each a spelling the \
       port emits by design. The C13 regression this row was opened for is the consumer: it prints each \
       witness through the node's own printer and parses the result back, which is the half the model \
-      cannot state about the port" },
+      cannot state about the port. **And what U9 added** (2026-09-24): the identity half runs on the \
+      node rather than here because the port's printer renders the core `Par` and this one the surface \
+      (`Print.lean`'s `printBoundaries` names the difference), while the model's half is \
+      completeness-shaped — the printer's output *is* a grammar term (`derives` on `printToks`, the 81 \
+      `printer` rows). The three warts are the **port's**, not this printer's: this one emits `(1,)`, \
+      `not x` and the urn, since a corpus row has to be a grammar term before it can witness anything. \
+      `warts_are_not_derivable` kept its **name** across U9 so this row's citation never broke; its \
+      content is now \"the port's two spelling warts are outside this fragment\", with the docstring \
+      saying why the port's spelling is a grammar term all right but a *different* term" },
   { number := 34, layer := "Rholang",
     statement := "A *value* position (a condition, target, datum, element, pattern, name) is normalized \
       against an **empty** `par`; only a statement continuation inherits what precedes it. The \
@@ -1511,14 +1523,15 @@ def laws : List Law := [
     statement := "The normalizer's output is well-scoped and closed (Law 6 through every path)",
     status := .open,
     falsifiable := none,
-    note := "**the pieces exist and the statement has no subject yet**: `TotalOn`/`Refined` \
-      (`Rchain/Ty.lean`) are the checker-level vocabulary the row names and Law 6's `Closed` is what \
-      the claim would be written in, but the *normalizer* is only partly modelled — \
-      `Surface.lean`'s `normalizeAt` threads the binder stack and not an accumulated `par`, which is \
-      law 34's row's own gap — so \"through every path\" has no definition of the paths to range over. \
-      Closing it is **G6's** accumulator plus a well-scopedness checker on the result: a modelling \
-      unit rather than a proof of what is here, and one that should land *after* G6, because the \
-      statement is about the function G6 changes" },
+    note := "**half of this row's gap closed with G6, and the other half is now the whole of it** \
+      (2026-09-24): `normalizeAt` threads the accumulator (the port's `ProcVisitInputs.par`) and its \
+      domain is named in `surfaceBoundaries`, so \"through every path\" now *has* paths to range over \
+      — the arms of `Surf`, with the value-position rule checked by law 34's layer. What is still \
+      missing is the **checker**: `TotalOn`/`Refined` (`Rchain/Ty.lean`) and Law 6's `Closed` are the \
+      vocabulary the statement would be written in, but nothing computes a well-scopedness or \
+      closedness predicate over the desugared output, so the claim still has no subject. Closing it is \
+      a checker on `normalizeAt`'s result plus the theorem that every arm preserves it — a modelling \
+      unit of its own, and the natural next step now that the function it is about exists" },
   { number := 37, layer := "Rholang",
     statement := "Match soundness and completeness (Law 5 strengthened: partial collections, \
       wildcards, remainders) — **over the shapes the clauses cover, which `pathPar` names, the clauses decide exactly equality**: `spatialMatches t p ↔ t = p` (`spatialMatches_iff_eq`)",
