@@ -80,6 +80,11 @@ FILES=(
   "$SPEC/INVENTORY.md"
   "$SPEC/coq/README.md"
   "$ROOT/docs/src/ai-entrypoint.md"
+  # The authoritative intent document, and the one most likely to be read first. It drifted precisely
+  # because it was *outside* this list: its Status section carried a stale comparator-axiom total
+  # (and, worse, cited Lean declarations the tree no longer has — a class this scan cannot see, found
+  # by hand on 2026-09-24). It is in the list now, so its totals are the register's.
+  "$ROOT/AGENTS.md"
 )
 for f in "$ROOT"/docs/src/formal/*.md; do FILES+=("$f"); done
 

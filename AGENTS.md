@@ -241,17 +241,24 @@ must be a literal IP (`SocketAddr::from_str` rejects hostnames like `localhost`)
   + `rholang/src/reduce.rs`), the scheduled produce phase-one/two split
   (`rspace/src/scheduled_space.rs`), the `--effect-scheduler {dfs,gate,relaxed}` node flag, and the
   casper block-path hard-reject for `relaxed` (off-chain only — explore-deploy is its outlet). The
-  Lean formalization (`spec/Rchain/Scheduler.lean`: `queue_commit_path_ordered`,
-  `gate_exec_refines_apply`, `next_step_closure_computable`, `one_hop_depth2_diverges`) was
-  committed in the Phase 0 spec work; the reader-facing spec is
-  [`docs/src/formal/channel-scheduler.md`](docs/src/formal/channel-scheduler.md).
+  Lean formalization is in `spec/Rchain/Scheduler.lean` — `queue_commit_path_ordered` and
+  `pathSorted_head_minimal` (law 20), `gate_await_closure_orders` and `one_hop_depth2_diverges`
+  (law 21). **This bullet used to cite `gate_exec_refines_apply` and `next_step_closure_computable`,
+  and neither exists**: the first proved the fold was the fold, and the second was `by rfl` — both were
+  deleted as saying nothing, which is law 22's `vacuous` status and the register's own finding. The
+  reader-facing spec is [`docs/src/formal/channel-scheduler.md`](docs/src/formal/channel-scheduler.md).
 - **On-chain scheduling (Laws 23–25) — implemented and proven**: the Lean formalization
-  (`spec/Rchain/SchedulerOnchain.lean`) closes the Law 24/25 argument with no axioms remaining —
-  the writer chain (`serializable_writer_chain`, path-nodup + initial-record hypotheses), the
-  pinned publication theorem (`dfs_serializable_implies_log_equal`), the coordinator refinement
-  (`validated_speculation_refines_apply`), and the boundary witnesses
-  (`dispatched_serializable_log_inequality`, `certificate_blind_late_writer_diverges`,
-  `writer_chain_needs_nodup`) that settle the statement shapes. The Rust realization is the
+  (`spec/Rchain/SchedulerOnchain.lean`) closes the Law 23–25 argument with no axioms remaining —
+  `read_state_determines_outcome` (law 23); the writer chain `serializable_writer_chain` (path-nodup +
+  initial-record hypotheses); the pinned publication theorem `pinned_run_publication`; the boundary
+  witnesses `s3_pair_fails_validation`, `dispatched_serializable_log_inequality`,
+  `writer_chain_needs_nodup` and `certificate_blind_late_writer_diverges` (the certificate's
+  published blind spot, which is why the oracle backstop stays load-bearing); and law 25's
+  `published_state_is_the_oracles` with `fallback_rerun_published`. **Two names this bullet used to
+  cite do not exist**: `dfs_serializable_implies_log_equal` (the publication theorem, since renamed
+  `pinned_run_publication` to state what it proves) and `validated_speculation_refines_apply` (a
+  disjunction whose second arm held for every run, deleted because it said nothing about the
+  certificate, the fallback or the code). The Rust realization is the
   `relaxed-validated` block-path mode: relaxed speculation under the claim queue with
   dispatch-time pre-claiming, the per-commit certificate in `try_acquire` (the write-record
   layer's prefix-visibility check, fail-fast into the per-deploy sequential fallback with a
@@ -268,9 +275,12 @@ must be a literal IP (`SocketAddr::from_str` rejects hostnames like `localhost`)
   (genesis block created) and serves the API — Deploy **40401**, Propose/Repl **40402** (loopback),
   HTTP **40403**, admin **40405**, protocol **40400**, discovery **40404**. Run instructions:
   [`docs/src/node/operating.md`](docs/src/node/operating.md).
-- **Formalization — residual**: Law 1's idempotence/commutativity is proven, conditional on the 30
-  element-comparator `axiom`s in `Rchain/Sort.lean` (the remaining "total order" obligation). Law 2's
-  core (≡) and Law 4's core (COMM) are proven in `Rchain/Rho.lean`, Law 6 is proven in `Rchain/Ty.lean`;
-  the rest are stated (see `spec/INVENTORY.md`), Laws 12–13 are orphaned (Rosette VM out of scope). The
-  type-system fundamentals F1–F6 are proven in `Rchain/Ty.lean`. The adversarial audit findings are in
-  `spec/AUDIT.md`.
+- **Formalization — residual, and smaller than this list used to say**: the per-law status is the
+  register's (`spec/Rchain/Laws.lean`, emitted to [`spec/LAWS.md`](spec/LAWS.md) and
+  [`spec/laws.tsv`](spec/laws.tsv)), which is the only place that answers "is this proved?" — this
+  bullet deliberately does not restate it, because a status repeated by hand is one nothing checks
+  (`spec/STYLE.md`). What is worth saying here: the trust surface is a handful of `axiom`s, all of them
+  either the deliberate cryptography boundary (Law 19) or named proof debt, and the register's own
+  checks refuse a row that cites an axiom the tree does not declare. Laws 12–13 are orphaned (the
+  Rosette VM is out of scope). The type-system fundamentals F1–F6 are proven in `Rchain/Ty.lean`. The
+  adversarial audit findings are in `spec/AUDIT.md`.
