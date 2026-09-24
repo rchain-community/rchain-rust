@@ -27,9 +27,10 @@ This module replaces all three with a definition and the theorems that hold of i
   (`if !pattern.connective_used { pattern == target }`) is sound. **Proof owed** — stated here, with its
   content checked by the corpus, and recorded as owed in `spec/INVENTORY.md` row 37.
 
-Two things are owed rather than proven, and are named rather than left implicit: that proof, and
-`fuel_saturation`. A fuel shortfall makes the matcher answer `false`, which the corpus reports as a
-disagreement with the node — so both are checked behaviourally in the meantime.
+One thing is owed rather than proven, and is named rather than left implicit: that proof. `fuel_saturation`
+— the statement that the fuel is *enough* — is a **theorem** now (the family of depth-indexed bounds
+below), so a fuel shortfall is ruled out rather than merely unobserved; the tie's proof is the residue,
+and its content is checked by the corpus meanwhile.
 
 **The boundary, stated rather than implied — and now named by a predicate.** The clauses cover:
 variables, wildcards, ground values, and `[…]`/`Set(…)`/`{…}`/`(…)` with remainders and nesting — which
@@ -578,14 +579,214 @@ theorem a_tuple_pays_for_its_own_contents :
       = 2 + parNodes (oneExpr (.ground (.int 1))) + parNodes (oneExpr (.ground (.int 2))) := by
   decide
 
-/-- The fuel is enough — stated as **saturation**: past `matchFuel`, more fuel changes nothing.
+/-! ## Saturation — the fuel is enough
 
-Owed, and checked behaviourally meanwhile: a shortfall makes the matcher answer `false`, and the
-corpus reports that as a disagreement rather than passing silently (it did, three times now: `refutable`
-was false for `@[]`/`[]` and `@Set(1, ..._)`/`Set(1, 2)` until the constant in `matchFuel` was fixed,
-and row 18 of `match.tsv` is the padded target the measure could not pay for). -/
-axiom fuel_saturation (target pattern : Par) :
+**The fuel is enough — and that is a theorem now rather than an assumption.** What has to be proved is
+not "the walk terminates" but **saturation**: at `matchFuel` and past it, more fuel changes no answer.
+A shortfall makes the matcher answer `false`, so a shortfall is a *silent wrong answer* — it was one
+three times, and each is a case in `match.tsv` or an AUDIT entry (`@[]`/`[]` and `@Set(1, ..._)`/
+`Set(1, 2)` until `matchFuel`'s constant was fixed; the padded target of row 18, C47; the nested tuple
+of row 20, C50).
+
+The proof is a `mutual` family with **one member per clause group and a depth-indexed bound each**,
+because a member is entered one fuel step deeper than its caller: `spatialMatchCore (m+1) t p` reduces to
+`spatialMatchExprs m pexprs texprs`, so the statement the core owes *is the next member's statement at a
+one-shifted bound*. The bounds are the measure's arithmetic — `bCore` is `matchFuel` itself, and the
+list bound is `2 * (parNodesListPar patterns + parNodesListPar targets) + 5`, which the element call uses
+up exactly when the enclosing collection holds one element. The induction is over the *terms*, with the
+fuel universally quantified above each member's bound, and the two side conditions are where the measure
+earns its keep: the element call needs the element's own `parNodes` to dominate its `matchFuel`, and the
+searcher's "same patterns, fewer targets" branch needs one target's `parNodes` to pay for the step. That
+is *why* a `Par` counting as zero nodes, or a tuple's contents counting as nothing, breaks the invariant
+rather than merely the arithmetic — both defects were found while designing this bound.
+
+The `parNodes` equations below are stated by `rfl`, because the equation lemmas the compiler generates
+for that `mutual` block are **not realizable** (`invalid projection ⟨head_ih, tail_ih⟩…`): a nested-mutual
+measure is still definitionally reducible — which is what lets `decide` check the corpus against the
+clauses — but its auto-generated equations are not usable as rewrite rules. Stating the shapes by `rfl`
+is the workaround, and it doubles as documentation: these are the cases the arithmetic unfolds. -/
+
+private theorem parNodes_mk (s r n e m u b c) :
+    parNodes (Par.mk s r n e m u b c) = 1 + parNodesExprs e := rfl
+
+private theorem parNodesExprs_nil : parNodesExprs ([] : List Expr) = 0 := rfl
+
+private theorem parNodesExprs_cons (e rest) :
+    parNodesExprs (e :: rest) = parNodesExpr e + parNodesExprs rest := rfl
+
+private theorem parNodesExpr_elist (ps r) : parNodesExpr (.elist ps r) = 1 + parNodesListPar ps := rfl
+
+private theorem parNodesExpr_eset (ps r) : parNodesExpr (.eset ps r) = 1 + parNodesListPar ps := rfl
+
+private theorem parNodesExpr_etuple (ps) : parNodesExpr (.etuple ps) = 1 + parNodesListPar ps := rfl
+
+private theorem parNodesExpr_emap (kvs r) : parNodesExpr (.emap kvs r) = 1 + parNodesPairs kvs := rfl
+
+private theorem parNodesListPar_nil : parNodesListPar ([] : List Par) = 0 := rfl
+
+private theorem parNodesListPar_cons (p rest) :
+    parNodesListPar (p :: rest) = parNodes p + parNodesListPar rest := rfl
+
+private theorem parNodes_pos (p : Par) : 1 ≤ parNodes p := by
+  cases p with | mk s r n e m u b c => rw [parNodes_mk]; omega
+
+private theorem parNodesPairs_cons (a b rest) :
+    parNodesPairs ((a, b) :: rest) = parNodes a + parNodes b + parNodesPairs rest := rfl
+
+private def bCore (t p : Par) : Nat := 2 * (parNodes t + parNodes p) + 4
+
+private def bExprs (ps ts : List Expr) : Nat := 2 * (parNodesExprs ps + parNodesExprs ts) + 5
+
+private def bExpr (e : Expr) (ts : List Expr) : Nat := 2 * (parNodesExpr e + parNodesExprs ts) + 4
+
+private def bList (ps ts : List Par) : Nat := 2 * (parNodesListPar ps + parNodesListPar ts) + 5
+
+private def bMap (kvs tks : List (Par × Par)) : Nat := 2 * (parNodesPairs kvs + parNodesPairs tks) + 5
+
+set_option maxHeartbeats 1000000 in
+mutual
+  theorem coreSat (t p : Par)  (m : Nat) (hm : bCore t p ≤ m) :
+      spatialMatchCore (m + 1) t p = spatialMatchCore m t p := by
+      cases m with
+      | zero => simp only [bCore] at hm; omega
+      | succ k =>
+        cases t with | mk ts tr tn te tm tu tb tc =>
+        cases p with | mk ps pr pn pe pm pu pb pc =>
+        simp only [spatialMatchCore]
+        exact exprsSat pe te k (by simp only [bCore, parNodes_mk] at hm; simp only [bExprs]; omega)
+
+  termination_by sizeOf t + sizeOf p
+  theorem exprsSat (ps ts : List Expr)  (m : Nat) (hm : bExprs ps ts ≤ m) :
+      spatialMatchExprs (m + 1) ps ts = spatialMatchExprs m ps ts := by
+      cases m with
+      | zero => simp only [bExprs] at hm; omega
+      | succ k =>
+        cases ps with
+        | nil => simp only [spatialMatchExprs]
+        | cons p rest =>
+          cases rest with
+          | cons q qs => simp only [spatialMatchExprs]
+          | nil =>
+            simp only [spatialMatchExprs]
+            split
+            · rfl
+            · rfl
+            · rename_i pats' p' h1 h2 heq
+              injection heq with hp _
+              rw [hp] at hm
+              exact exprSat p' ts k (by simp only [bExprs, bExpr, parNodesExprs_cons, parNodesExprs_nil] at hm ⊢; omega)
+            · rfl
+
+  termination_by sizeOf ps + sizeOf ts
+  theorem exprSat (e : Expr) (ts : List Expr)  (m : Nat) (hm : bExpr e ts ≤ m) :
+      spatialMatchExpr (m + 1) e ts = spatialMatchExpr m e ts := by
+      cases m with
+      | zero => simp only [bExpr] at hm; omega
+      | succ k =>
+        simp only [spatialMatchExpr]
+        split
+        · rfl
+        · rfl
+        · rfl
+        · split <;> rfl
+        · split
+          · refine listPosSat ?_ ?_ ?_ ?_ ?_
+            simp only [bExpr, bList, parNodesExprs_cons, parNodesExprs_nil, parNodesExpr_elist,
+              parNodesExpr_etuple, parNodesExpr_eset] at hm ⊢; omega
+          · rfl
+        · split
+          · refine listPosSat ?_ ?_ ?_ ?_ ?_
+            simp only [bExpr, bList, parNodesExprs_cons, parNodesExprs_nil, parNodesExpr_elist,
+              parNodesExpr_etuple, parNodesExpr_eset] at hm ⊢; omega
+          · rfl
+        · split
+          · refine listParSat ?_ ?_ ?_ ?_ ?_
+            simp only [bExpr, bList, parNodesExprs_cons, parNodesExprs_nil, parNodesExpr_elist,
+              parNodesExpr_etuple, parNodesExpr_eset] at hm ⊢; omega
+          · rfl
+        · split
+          · refine mapSat ?_ ?_ ?_ ?_ ?_
+            simp only [bExpr, bMap, parNodesExprs_cons, parNodesExprs_nil, parNodesExpr_emap] at hm ⊢; omega
+          · rfl
+        · rfl
+
+  termination_by sizeOf e + sizeOf ts
+  theorem listPosSat (ps ts : List Par) (absorb : Bool)  (m : Nat) (hm : bList ps ts ≤ m) :
+      matchListPos (m + 1) ps ts absorb = matchListPos m ps ts absorb := by
+      cases m with
+      | zero => simp only [bList] at hm; omega
+      | succ k =>
+        cases ps with
+        | nil => simp only [matchListPos]
+        | cons p rest =>
+          cases ts with
+          | nil => simp only [matchListPos]
+          | cons t tl =>
+            change (spatialMatchCore (k + 1) t p && matchListPos (k + 1) rest tl absorb)
+              = (spatialMatchCore k t p && matchListPos k rest tl absorb)
+            have hpt : 1 ≤ parNodes t := parNodes_pos t
+            have hpp : 1 ≤ parNodes p := parNodes_pos p
+            rw [coreSat t p k (by simp only [bCore, bList, parNodesListPar_cons, parNodesListPar_nil, parNodes_mk] at hm ⊢; omega),
+                listPosSat rest tl absorb k (by simp only [bList, parNodesListPar_cons, parNodesListPar_nil, parNodes_mk] at hm ⊢; omega)]
+
+  termination_by sizeOf ps + sizeOf ts
+  theorem listParSat (ps ts : List Par) (absorb : Bool)  (m : Nat) (hm : bList ps ts ≤ m) :
+      matchListPar (m + 1) ps ts absorb = matchListPar m ps ts absorb := by
+      cases m with
+      | zero => simp only [bList] at hm; omega
+      | succ k =>
+        cases ps with
+        | nil => simp only [matchListPar]
+        | cons p rest =>
+          cases ts with
+          | nil => simp only [matchListPar]
+          | cons t tl =>
+            change ((spatialMatchCore (k + 1) t p && matchListPar (k + 1) rest tl absorb)
+                || matchListPar (k + 1) (p :: rest) tl absorb)
+              = ((spatialMatchCore k t p && matchListPar k rest tl absorb)
+                || matchListPar k (p :: rest) tl absorb)
+            have hpt : 1 ≤ parNodes t := parNodes_pos t
+            have hpp : 1 ≤ parNodes p := parNodes_pos p
+            rw [coreSat t p k (by simp only [bCore, bList, parNodesListPar_cons, parNodesListPar_nil, parNodes_mk] at hm ⊢; omega),
+                listParSat rest tl absorb k (by simp only [bList, parNodesListPar_cons, parNodesListPar_nil, parNodes_mk] at hm ⊢; omega),
+                listParSat (p :: rest) tl absorb k (by simp only [bList, parNodesListPar_cons, parNodesListPar_nil, parNodes_mk] at hm ⊢; omega)]
+
+  termination_by sizeOf ps + sizeOf ts
+  theorem mapSat (kvs tks : List (Par × Par)) (absorb : Bool)  (m : Nat) (hm : bMap kvs tks ≤ m) :
+      matchMap (m + 1) kvs tks absorb = matchMap m kvs tks absorb := by
+      cases m with
+      | zero => simp only [bMap] at hm; omega
+      | succ k =>
+        cases kvs with
+        | nil => simp only [matchMap]
+        | cons kv rest =>
+          cases kv with | mk k1 k2 =>
+          cases tks with
+          | nil => simp only [matchMap]
+          | cons tk tl =>
+            cases tk with | mk t1 t2 =>
+            change ((spatialMatchCore (k + 1) t1 k1 && spatialMatchCore (k + 1) t2 k2
+                && matchMap (k + 1) rest tl absorb)
+                || matchMap (k + 1) ((k1, k2) :: rest) tl absorb)
+              = ((spatialMatchCore k t1 k1 && spatialMatchCore k t2 k2 && matchMap k rest tl absorb)
+                || matchMap k ((k1, k2) :: rest) tl absorb)
+            have ht1 : 1 ≤ parNodes t1 := parNodes_pos t1
+            have ht2 : 1 ≤ parNodes t2 := parNodes_pos t2
+            have hk1 : 1 ≤ parNodes k1 := parNodes_pos k1
+            have hk2 : 1 ≤ parNodes k2 := parNodes_pos k2
+            rw [coreSat t1 k1 k (by simp only [bCore, bMap, parNodesPairs_cons, parNodes_mk] at hm ⊢; omega),
+                coreSat t2 k2 k (by simp only [bCore, bMap, parNodesPairs_cons, parNodes_mk] at hm ⊢; omega),
+                mapSat rest tl absorb k (by simp only [bMap, parNodesPairs_cons, parNodes_mk] at hm ⊢; omega),
+                mapSat ((k1, k2) :: rest) tl absorb k (by simp only [bMap, parNodesPairs_cons, parNodes_mk] at hm ⊢; omega)]
+  termination_by sizeOf kvs + sizeOf tks
+end
+
+/-- **The fuel is enough** — saturation: past `matchFuel`, one more unit changes no answer. This is
+    `coreSat` at the measure's own bound, and it is the statement the matcher's fuel exists for: it makes
+    a shortfall impossible rather than merely absent from the cases anyone tried. -/
+theorem fuel_saturation (target pattern : Par) :
     spatialMatchCore (matchFuel target pattern + 1) target pattern
-      = spatialMatchCore (matchFuel target pattern) target pattern
+      = spatialMatchCore (matchFuel target pattern) target pattern :=
+  coreSat target pattern (matchFuel target pattern) le_rfl
 
 end Rchain

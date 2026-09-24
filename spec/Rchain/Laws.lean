@@ -386,8 +386,9 @@ def laws : List Law := [
     status := .owed,
     declarations := [`Rchain.spatialMatch, `Rchain.spatialMatches, `Rchain.spatialMatchCore,
       `Rchain.aggregateUpdates, `Rchain.aggregateUpdates_rejects_double_bind,
-      `Rchain.freeMapMerge_overwrites],
-    axioms := [`Rchain.concrete_matches_iff_eq, `Rchain.fuel_saturation],
+      `Rchain.freeMapMerge_overwrites, `Rchain.fuel_saturation,
+      `Rchain.a_nested_tuple_is_paid_for, `Rchain.a_tuple_pays_for_its_own_contents],
+    axioms := [`Rchain.concrete_matches_iff_eq],
     corpus := some "match",
     rust := ["rholang/src/matcher/spatial_matcher.rs"],
     coq := ["spec/coq/Laws.v:spatial_matches", "spec/coq/Laws.v:linear"],
@@ -1263,8 +1264,9 @@ def laws : List Law := [
       `Rchain.matchListPar, `Rchain.matchListPos, `Rchain.matchMap, `Rchain.modelledPar,
       `Rchain.modelledExpr, `Rchain.arithmetic_pattern_refutes_the_unrestricted_tie,
       `Rchain.the_walk_past_empty_pars_is_paid_for,
-      `Rchain.a_list_pattern_cannot_skip_a_target_element],
-    axioms := [`Rchain.concrete_matches_iff_eq, `Rchain.fuel_saturation],
+      `Rchain.a_list_pattern_cannot_skip_a_target_element, `Rchain.fuel_saturation,
+      `Rchain.a_nested_tuple_is_paid_for],
+    axioms := [`Rchain.concrete_matches_iff_eq],
     corpus := some "match",
     witness := [`Rchain.arithmetic_pattern_refutes_the_unrestricted_tie, `Rchain.a_list_pattern_cannot_skip_a_target_element, `Rchain.the_walk_past_empty_pars_is_paid_for],
     falsifiable := some "19 cases with three-valued verdicts; the once-false law-5 axiom was replaced \
@@ -1279,7 +1281,10 @@ def laws : List Law := [
       the boundary note says the corpus exists to catch. The tie still carries `modelledPar` on both \
       sides, and `arithmetic_pattern_refutes_the_unrestricted_tie` is the term that says why it must: a \
       concrete arithmetic pattern equals itself and no clause matches it",
-    note := "shares its two axioms with Law 5. **The tie's domain was too wide, not merely unproved**: \
+    note := "shares the tie axiom with Law 5; its `fuel_saturation` is **discharged** now (2026-09-24) — \
+      worth saying here because the tie is only as true as the fuel beneath it, and under the short \
+      measure the tie was *false* (a tuple three deep is `modelledPar` and unmatchable when the fuel \
+      ran out — AUDIT C50). **The tie's domain was too wide, not merely unproved**: \
       `connectiveUsed pattern = false` admits an arithmetic pattern, which is concrete and unmatchable, \
       so the statement was false of the model — the same class as C26 and C40, found by asking what the \
       statement says on a term the model has. **The clauses are form-specific** and that is load-bearing \
