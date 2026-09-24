@@ -96,7 +96,7 @@ overstate coverage.
 | 2 | Rholang | `law2_canonical_equality_agrees_with_canonical_hashing`, `law2_sorting_a_sequence_depends_only_on_its_elements` | `Rho.lean` (≡ core) |
 | 3 | Rholang | `rholang/src/property_tests.rs` `law3_substituting_a_closed_value_keeps_the_term_closed`, `law3_substitution_and_sorting_commute`, `an_open_value_at_the_variable_leaves_a_free_variable` | Lean `Subst.lean` |
 | 4 | Rholang | `law4_the_same_program_reduces_to_the_same_state` | `casper/tests/determinism.rs`; Lean `Reduce.lean` |
-| 5 | Rholang | `law5_a_pattern_that_binds_a_variable_twice_never_matches`, `law5_a_variable_bind_pattern_matches_any_datum`, `law5_a_ground_pattern_matches_only_itself` | Lean `Match.lean` |
+| 5 | Rholang | `law5_a_pattern_that_binds_a_variable_twice_never_matches`, `law5_a_pattern_that_binds_distinct_variables_matches` (the control the first cannot fail without), `law5_a_variable_bind_pattern_matches_any_datum`, `law5_a_ground_pattern_matches_only_itself` | Lean `Match.lean` |
 | 6 | Rholang | `law6_a_closed_term_is_accepted_and_the_predicate_agrees` | Lean `Ty.lean` |
 | 7 | RSpace | `rspace/src/property_tests.rs` `law7_join_hash_commutes` | Lean `Join.lean` |
 | 8 | RSpace | `law8_comm_sorts_produces` | Lean `Comm.lean` |
@@ -253,6 +253,9 @@ not found in that file. Coverage claims live here rather than in prose so they c
 | C20 | `rholang/src/matcher/spatial_matcher.rs` | `a_set_pattern_may_name_fewer_members_than_the_set_has` |
 | C20 | `rholang/src/matcher/spatial_matcher.rs` | `list_remainders_stay_positional` |
 | C20 | `rholang/tests/system_process_conformance.rs` | `collection_patterns_match_a_subset_of_their_collection` |
+| C42 | `rholang/src/property_tests.rs` | `law5_a_pattern_that_binds_a_variable_twice_never_matches` |
+| C42 | `rholang/src/property_tests.rs` | `law5_a_pattern_that_binds_distinct_variables_matches` |
+
 | genesis | `casper/tests/genesis_registry.rs` | `a_fresh_chain_resolves_and_can_call_every_seeded_shorthand` |
 | genesis | `casper/tests/genesis_registry.rs` | `the_seeded_registry_is_identical_across_fresh_genesis_ceremonies` |
 | genesis | `casper/src/genesis/standard_deploys.rs` | `aliased_contract_uris_are_pinned` |

@@ -12,6 +12,7 @@ use rchain_models::ast::{
 };
 use rchain_models::par_ops::{connective_used_of_expr, locally_free_of_expr, single_expr};
 use rchain_models::sorter::{par_map, par_set};
+use rchain_models::types::linear;
 
 use crate::errors::RholangError;
 use crate::matcher::maximum_bipartite_match::find_matches;
@@ -190,7 +191,47 @@ pub fn spatial_match_result<S: Sort>(
         .next())
 }
 
+/// The matcher, with law 5's linearity as the entry condition — the model's `spatialMatch`
+/// (`spec/Rchain/Match.lean:369`) is `spatialMatchCore … && linear pattern`, and this is the same
+/// split with the same names: the clauses live in [`spatial_match_core`], which recurses into itself,
+/// and the guard is applied once, here, to the pattern as a whole.
+///
+/// **Why it belongs at the entry rather than at each binding.** The port enforced linearity in exactly
+/// one place, `aggregate_updates` on the collection path (`:675-696`), while the element-pair path
+/// (`fold_match`) and the conjunction path (`ConnAnd`) bound with a plain insert and *overwrote*
+/// silently — the two halves the model states (`aggregateUpdates_rejects_double_bind`,
+/// `freeMapMerge_overwrites`). Refusing each insert instead would break the *accumulator*: the
+/// top-level free variable of a pattern (`for (x <- c)`) is bound once per field — sends, receives,
+/// news, exprs, matches, bundles, unforgeables — with the bindings merged by `handle_remainder`, so a
+/// repeated level is normal there and legitimate. Linear patterns are what the accumulator relies on,
+/// and a pattern that is not linear is refused before any of it runs. Measured 2026-09-24 (AUDIT C42):
+/// `@[v0, v0]` against `[1, 1]` matched before this guard and is refused by it; the model answers
+/// `false` for the same shape.
+///
+/// **Checking the pattern once is enough for the clauses below, and that is not an assumption.** Every
+/// sub-pattern the clauses descend into — a send's channel and data, a receive's body, a `new`'s body,
+/// a `match`'s target and cases, a bundle's body, a connective's members, a collection's elements — is
+/// reached by the same walk `linear` is built on (`collect_free_vars_par`, `models/src/types.rs:99`),
+/// so a sub-pattern's free levels are a sub-multiset of the whole pattern's, and a linear pattern has
+/// only linear sub-patterns. Guarding each recursive call would re-walk the pattern at every level and
+/// buy nothing; the model does not do it either. What *is* guarded twice is the matcher's two entries
+/// — this one (with `spatial_match_result`, which calls it) and the store's own, `RhoMatch::get`
+/// (`storage.rs:75` passes `&spatial_match` to `fold_match`), which is a top-level match in its own
+/// right rather than a clause below one.
+///
+/// A non-linear pattern is **no match**, not an error: that is what the model says (`spatialMatch`
+/// is `false`), and it is law 5's own wording — a pattern binding a level twice never matches. The
+/// aggregation path's `BugFoundError` stays where it is, as defence-in-depth for the shapes this guard
+/// covers by construction; no reachable term produces one, because the normalizer refuses a
+/// twice-bound binder first (`normalizer.rs:111,289,590,1325`).
 pub fn spatial_match<S: Sort>(target: &Par<S>, pattern: &Par<S>, fm: &FreeMap) -> MResult {
+    if !linear(pattern) {
+        return Ok(Vec::new());
+    }
+    spatial_match_core(target, pattern, fm)
+}
+
+fn spatial_match_core<S: Sort>(target: &Par<S>, pattern: &Par<S>, fm: &FreeMap) -> MResult {
     if !pattern.connective_used {
         return guard(fm, pattern == target);
     }
@@ -327,7 +368,7 @@ pub fn spatial_match_connective<S: Sort>(
             for p in ps {
                 let mut next = Vec::new();
                 for fm_state in states {
-                    next.extend(spatial_match(target, &p.clone().re_sort(), &fm_state)?);
+                    next.extend(spatial_match_core(target, &p.clone().re_sort(), &fm_state)?);
                 }
                 states = next;
             }
@@ -336,12 +377,12 @@ pub fn spatial_match_connective<S: Sort>(
         Connective::ConnOr(ConnectiveBody { ps }) => {
             let mut all = Vec::new();
             for p in ps {
-                all.extend(spatial_match(target, &p.clone().re_sort(), fm)?);
+                all.extend(spatial_match_core(target, &p.clone().re_sort(), fm)?);
             }
             Ok(all.into_iter().take(1).collect())
         }
         Connective::ConnNot(p) => {
-            let matches = spatial_match(target, &p.clone().re_sort(), fm)?;
+            let matches = spatial_match_core(target, &p.clone().re_sort(), fm)?;
             guard(fm, matches.is_empty())
         }
         Connective::Empty | Connective::VarRef(_) => Ok(Vec::new()),
@@ -377,8 +418,8 @@ pub fn spatial_match_send(target: &Send, pattern: &Send, fm: &FreeMap) -> MResul
         return Ok(Vec::new());
     }
     let mut out = Vec::new();
-    for fm1 in spatial_match(target.chan.as_ref(), pattern.chan.as_ref(), fm)? {
-        for (_, fm2) in fold_match(&target.data, &pattern.data, None, &fm1, &spatial_match)? {
+    for fm1 in spatial_match_core(target.chan.as_ref(), pattern.chan.as_ref(), fm)? {
+        for (_, fm2) in fold_match(&target.data, &pattern.data, None, &fm1, &spatial_match_core)? {
             out.push(fm2);
         }
     }
@@ -400,7 +441,7 @@ pub fn spatial_match_receive(target: &Receive, pattern: &Receive, fm: &FreeMap) 
         fm,
         &spatial_match_receive_bind,
     )? {
-        for fm2 in spatial_match(&target.body, &pattern.body, &fm1)? {
+        for fm2 in spatial_match_core(&target.body, &pattern.body, &fm1)? {
             out.push(fm2);
         }
     }
@@ -411,12 +452,12 @@ pub fn spatial_match_new(target: &New, pattern: &New, fm: &FreeMap) -> MResult {
     if target.bind_count != pattern.bind_count {
         return Ok(Vec::new());
     }
-    spatial_match(&target.p, &pattern.p, fm)
+    spatial_match_core(&target.p, &pattern.p, fm)
 }
 
 pub fn spatial_match_match(target: &Match, pattern: &Match, fm: &FreeMap) -> MResult {
     let mut out = Vec::new();
-    for fm1 in spatial_match(target.target.as_ref(), pattern.target.as_ref(), fm)? {
+    for fm1 in spatial_match_core(target.target.as_ref(), pattern.target.as_ref(), fm)? {
         for (_, fm2) in fold_match(
             &target.cases,
             &pattern.cases,
@@ -450,14 +491,14 @@ pub fn spatial_match_receive_bind(
     if target.patterns != pattern.patterns {
         return Ok(Vec::new());
     }
-    spatial_match(&target.source, &pattern.source, fm)
+    spatial_match_core(&target.source, &pattern.source, fm)
 }
 
 pub fn spatial_match_match_case(target: &MatchCase, pattern: &MatchCase, fm: &FreeMap) -> MResult {
     if target.pattern != pattern.pattern {
         return Ok(Vec::new());
     }
-    spatial_match(&target.source, &pattern.source, fm)
+    spatial_match_core(&target.source, &pattern.source, fm)
 }
 
 pub fn spatial_match_expr(target: &Expr, pattern: &Expr, fm: &FreeMap) -> MResult {
@@ -471,7 +512,8 @@ pub fn spatial_match_expr(target: &Expr, pattern: &Expr, fm: &FreeMap) -> MResul
             }),
         ) => {
             let mut out = Vec::new();
-            for (matched_rem, fm1) in fold_match(tlist, plist, rem.as_deref(), fm, &spatial_match)?
+            for (matched_rem, fm1) in
+                fold_match(tlist, plist, rem.as_deref(), fm, &spatial_match_core)?
             {
                 match rem.as_deref() {
                     Some(Var::FreeVar(level)) => {
@@ -495,7 +537,7 @@ pub fn spatial_match_expr(target: &Expr, pattern: &Expr, fm: &FreeMap) -> MResul
         }
         (Expr::ETuple(ETuple { ps: tlist, .. }), Expr::ETuple(ETuple { ps: plist, .. })) => {
             let mut out = Vec::new();
-            for (_, fm1) in fold_match(tlist, plist, None, fm, &spatial_match)? {
+            for (_, fm1) in fold_match(tlist, plist, None, fm, &spatial_match_core)? {
                 out.push(fm1);
             }
             Ok(out)
@@ -528,7 +570,7 @@ pub fn spatial_match_expr(target: &Expr, pattern: &Expr, fm: &FreeMap) -> MResul
                 remainder_var,
                 is_wildcard,
                 fm,
-                &spatial_match,
+                &spatial_match_core,
             )
         }
         // As for `ESet` above: the pattern's remainder, not the target's (SpatialMatcher.scala:501).
@@ -560,8 +602,8 @@ pub fn spatial_match_expr(target: &Expr, pattern: &Expr, fm: &FreeMap) -> MResul
             )
         }
         (Expr::EVar(vp), Expr::EVar(vt)) => guard(fm, vp == vt),
-        (Expr::ENot(t), Expr::ENot(p)) => spatial_match(t, p, fm),
-        (Expr::ENeg(t), Expr::ENeg(p)) => spatial_match(t, p, fm),
+        (Expr::ENot(t), Expr::ENot(p)) => spatial_match_core(t, p, fm),
+        (Expr::ENeg(t), Expr::ENeg(p)) => spatial_match_core(t, p, fm),
         (Expr::EMult(t1, t2), Expr::EMult(p1, p2)) => binary(t1, t2, p1, p2, fm),
         (Expr::EDiv(t1, t2), Expr::EDiv(p1, p2)) => binary(t1, t2, p1, p2, fm),
         (Expr::EMod(t1, t2), Expr::EMod(p1, p2)) => binary(t1, t2, p1, p2, fm),
@@ -577,16 +619,16 @@ pub fn spatial_match_expr(target: &Expr, pattern: &Expr, fm: &FreeMap) -> MResul
 
 fn binary(t1: &Par, t2: &Par, p1: &Par, p2: &Par, fm: &FreeMap) -> MResult {
     let mut out = Vec::new();
-    for fm1 in spatial_match(t1, p1, fm)? {
-        out.extend(spatial_match(t2, p2, &fm1)?);
+    for fm1 in spatial_match_core(t1, p1, fm)? {
+        out.extend(spatial_match_core(t2, p2, &fm1)?);
     }
     Ok(out)
 }
 
 fn spatial_match_pair(pair1: &(Par, Par), pair2: &(Par, Par), fm: &FreeMap) -> MResult {
     let mut out = Vec::new();
-    for fm1 in spatial_match(&pair1.0, &pair2.0, fm)? {
-        out.extend(spatial_match(&pair1.1, &pair2.1, &fm1)?);
+    for fm1 in spatial_match_core(&pair1.0, &pair2.0, fm)? {
+        out.extend(spatial_match_core(&pair1.1, &pair2.1, &fm1)?);
     }
     Ok(out)
 }

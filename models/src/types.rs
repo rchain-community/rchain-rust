@@ -60,11 +60,44 @@ pub fn classify(p: &Par) -> PSort {
 /// with a `remainder` must add 1. `New.injections` is not walked (mirrors `well_scoped_par`).
 pub fn count_free_vars<S: Sort>(p: &Par<S>) -> i32 {
     let mut levels = BTreeSet::new();
-    collect_free_vars_par(p, &mut levels);
+    collect_free_vars_par(p, &mut |l| {
+        levels.insert(l);
+    });
     levels.len() as i32
 }
 
-fn collect_free_vars_par<S: Sort>(p: &Par<S>, out: &mut BTreeSet<i32>) {
+/// **Law 5's predicate**: no free level occurs twice in `p`, so matching `p` binds each level at most
+/// once. The port's counterpart of the model's `linear` (`spec/Rchain/Match.lean:364`), which the
+/// matcher's entry conjoins exactly as `spatialMatch` does
+/// (`spatialMatchCore … && linear pattern`, `Match.lean:369`).
+///
+/// Two deliberate agreements with the model, and one deliberate difference:
+///
+/// - **The same walk as [`count_free_vars`]**, so both count the same occurrences — the levels a
+///   `FreeVar` names, wildcards and bound variables contributing none.
+/// - **A `remainder` binder is not counted** (`EList`/`ParSet`/`ParMap`), which is `count_free_vars`'s
+///   convention and the model's too (`freeLevelsOfPar`'s `| .elist ps _ => …` ignores the field). It
+///   is *not* a widening of the law: a binder and a remainder sharing a spelling is refused by the
+///   normalizer (`normalizer.rs`'s reuse checks) before a matcher runs, and the model has no clause
+///   for a remainder at all.
+/// - **The walk is total over the port's `Par`** — sends, receives, news, matches, bundles,
+///   connectives — where the model's `freeLevelsOfPar` walks only `exprs`, because the model's clauses
+///   cover only expression-shaped pars and a level inside a send "cannot be accepted, so the linearity
+///   check never has to see inside it". The port's clauses *do* match sends and receives, so its check
+///   has to; on the model's own domain (`modelledPar`, the tie's) the two walks see the same levels.
+///
+/// This exists because the port's matcher enforced linearity in exactly one place — the aggregation
+/// path (`aggregate_updates`) — while its element-pair (`fold_match`) and conjunction (`ConnAnd`)
+/// paths bound with a plain insert and overwrote silently. Measured 2026-09-24: `@[v0, v0]` against
+/// `[1, 1]`, both connective, **matched** in the port and is `false` in the model (AUDIT C42).
+pub fn linear<S: Sort>(p: &Par<S>) -> bool {
+    let mut levels: Vec<i32> = Vec::new();
+    collect_free_vars_par(p, &mut |l| levels.push(l));
+    levels.sort_unstable();
+    levels.windows(2).all(|w| w[0] != w[1])
+}
+
+fn collect_free_vars_par<S: Sort>(p: &Par<S>, out: &mut impl FnMut(i32)) {
     for s in &p.sends {
         collect_free_vars_par(&s.chan, out);
         for d in &s.data {
@@ -102,13 +135,13 @@ fn collect_free_vars_par<S: Sort>(p: &Par<S>, out: &mut BTreeSet<i32>) {
     }
 }
 
-fn collect_free_vars_var(v: &Var, out: &mut BTreeSet<i32>) {
+fn collect_free_vars_var(v: &Var, out: &mut impl FnMut(i32)) {
     if let Var::FreeVar(l) = v {
-        out.insert(*l);
+        out(*l);
     }
 }
 
-fn collect_free_vars_expr(e: &Expr, out: &mut BTreeSet<i32>) {
+fn collect_free_vars_expr(e: &Expr, out: &mut impl FnMut(i32)) {
     match e {
         Expr::GBool(_)
         | Expr::GInt(_)
@@ -170,7 +203,7 @@ fn collect_free_vars_expr(e: &Expr, out: &mut BTreeSet<i32>) {
     }
 }
 
-fn collect_free_vars_connective(c: &Connective, out: &mut BTreeSet<i32>) {
+fn collect_free_vars_connective(c: &Connective, out: &mut impl FnMut(i32)) {
     match c {
         Connective::ConnAnd(cb) | Connective::ConnOr(cb) => {
             for p in &cb.ps {

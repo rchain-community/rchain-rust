@@ -258,6 +258,8 @@ Every place the Rust port deliberately departs from the Scala oracle, with the r
 | Storage is **refunded** when a produce/consume matches (the gas a matched op costs) | `ChargingRSpace.scala:105-127` — `refundForConsume` and `refundForRemovingProduces`, charged as negative `Cost`s *before* the event and COMM costs | the port charged the storage and never refunded it, recording the gap as a "safe over-charge"; the refunds are restored (law 49, `spec/Rchain/Charging.lean`). **Hard fork:** the recorded `PCost` of a deploy that matches changes, and cost is part of the block's state — on a chain that accepted such a block the old node recorded a *higher* cost than the Scala's, so the old value was already wrong, which is why this is a fix and not a behaviour that was ever correct. The order matters as much as the amounts: a refund credited after the exhaustion check cannot save a deploy that has already run out (`peak_refunds_first`), which is why the Scala charges them immediately |
 | The Coop **multisig public keys** are read as the port's initial **trusted stakeholder** set | `Pos.rhox:122-128` creates the Coop multisig vault from those keys (and `$$posMultiSigQuorum$$`), and `:470-482` sends slashed stake to it; the Scala has no trusted-stakeholder concept at all — that is this port's extension for observer admission (`spec/RUST-FIRST.md`) | a mapping, not an accident (`06bf01a7f`, and the doc comment on `build_pos_genesis` says it): the Coop multisig is the network's governance body in the contract, and admission is the port's governance-shaped hook, so the closest analogue of "who may govern validators" is the keys the contract gives governance to. The alternative reading — that they are only slashing-vault owners, leaving the genesis `trusted` set as the validators alone — is equally supportable, and nothing in either tree says which was intended. Recorded because the consequence is silent: an operator setting these keys for vault control is also granting admission rights. The `--pos-multi-sig-quorum` option has no counterpart at all (no multisig vault), so it stays "Reserved" in its help text |
 
+| A pattern that binds one free level **twice is refused by the matcher** (`spatial_match`'s entry, `linear`), where the Scala silently merges the repeated binding | `SpatialMatcher.scala:144,209-211` — `handleRemainder` does a plain `insert`, so `@[v, v]` against `[1, 1]` matches with one binding winning right-biased | law 5 says a pattern binds each free level **at most once**, and the model states it as the matcher's entry condition (`spatialMatch` = `spatialMatchCore … && linear pattern`, `Match.lean:369`); the port now does too (AUDIT C42). The Scala's merge is why the finding was latent rather than visible: the repeated binding is *consistent* here, so the overwrite was silent. Not reachable from source either way — the normalizer refuses a twice-bound binder first (`normalizer.rs:111,289,590,1325`) — so this closes a silent-overwrite path rather than changing what any deploy does, and it is **not** a hard fork. Falsified: with the guard bypassed, `@[v0, v0]` against `[1, 1]` matches and `law5_a_pattern_that_binds_a_variable_twice_never_matches` fails |
+
 ---
 
 ## 7. Verification
@@ -2074,6 +2076,46 @@ port against the **reference document** rather than against itself.
   - the name-context arm (`:111`) and `handle_proc_var`'s remainder check (`:590`) are **not exercised
     by any test in the suite** — this row listed all four as "the enforcing check" without saying which
     shape reaches which, and no reachable shape isolates the last two.
+
+  **Fixed (2026-09-24, Programme F): the matcher enforces it too.** The finding concluded that the
+  matcher's silent paths are defence-in-depth on a state the front end cannot produce — true of source
+  terms, and the reason it was filed as an observation rather than a defect. Programme F's rule (the
+  maths wins) makes that the wrong resting place anyway: the model states the rule **at the matcher's
+  entry** — `spatialMatch` *is* `spatialMatchCore … && linear pattern` (`Match.lean:369`) — and the
+  port did not. `spatial_match` is now the same split with the same names
+  (`spatial_matcher.rs:194-230`): the clauses moved to `spatial_match_core`, which recurses into
+  itself, and the pattern is checked once, at the entry, against `linear`
+  (`models/src/types.rs:93`, the port's counterpart of `freeLevelsOfPar`). A non-linear pattern is a
+  **no match**, not an error — the model's own answer — and the guard sits at both of the matcher's
+  entries, `spatial_match` (with `spatial_match_result`) and the store's `RhoMatch::get`
+  (`storage.rs:75` feeds `&spatial_match` to `fold_match`). Checking the whole pattern once is
+  sufficient for the clauses and that is argued rather than assumed: every sub-pattern they descend
+  into is reached by the same walk `linear` is built on, so a linear pattern has only linear
+  sub-patterns (the note is at the guard). `aggregate_updates`' `BugFoundError` stays as the inner
+  check for a clash the entry guard cannot see, and `handle_remainder`'s merge stays untouched — a
+  pattern's top-level free variable is legitimately bound once per field, so refusing per insert would
+  break the accumulator. The Scala *merges* that binding, so the new refusal is a registered
+  deviation, §6.
+
+  **The test that pins it could not fail before this pass, which is the second finding here.** The
+  law-5 property's fixture (`rholang/src/property_tests.rs`) set `connective_used` on the outer par and
+  on the elements but not on the **collection**: `from_expr` takes the flag from the expression
+  (`par_ops.rs:87`), and `EList`'s defaults to `false`, so the pattern was concrete, took the matcher's
+  equality fast path, and "no match" was true of every pattern — including a doubly-bound one that
+  never reached a binding path. Both halves are fixed and both are falsified: with the flag set the
+  doubly-bound pattern **matched** before the guard landed (binding level 0 to `GInt(1)` for `@[v0, v0]`
+  against `[1, 1]`, the silent overwrite this finding is about), and with the guard bypassed the
+  property fails in 0.08 s. `law5_a_pattern_that_binds_distinct_variables_matches` is the control —
+  without it, "the matches are empty" is equally satisfied by a matcher that matches nothing. This is
+  the same class as the two cost tripwires the 2026-09-24 performance pass had to rebuild: an
+  instrument that passes on the defect it names is not evidence, and only the falsifier distinguishes
+  them.
+
+  **One cell is owed, and it is named here so it cannot go quiet.** Law 5's register row and
+  `spec/INVENTORY.md`'s row 5 both still say the matcher enforces this *only* on the aggregation path,
+  "while its element-pair and conjunction paths overwrite silently" — the sentence this change makes
+  false. Both rows are being re-landed with the tie work in the same cells, so the correction rides
+  with that change rather than being written twice.
 
   Two of the suite's own mistakes are kept in the test's doc comment because the falsification is what
   found them: three of the four refusal tests asserted only "it errored", so they passed on a *parse*

@@ -111,11 +111,20 @@ fn var_pattern(level: i32) -> Par<ProcSort> {
     p
 }
 
-/// A pattern `[x, y]` over the two given levels, with both the outer par and the elements marked
-/// connective.
+/// A pattern `[x, y]` over the two given levels, with the outer par, the **collection** and the
+/// elements all marked connective.
+///
+/// The collection's own flag is the one the trap above bites at: `from_expr` derives the par's flag
+/// from the expression's, `Expr::EList`'s is its own `connective_used` field (`par_ops.rs:87`), and
+/// that field is `false` by default — so a fixture that sets only the outer par and the elements
+/// leaves the *collection* concrete, and the matcher compares `[x, y]` against the datum for
+/// equality instead of matching it. `var_pattern`'s comment records exactly this failure one level
+/// down; this is the same failure one level up, and it made the law-5 property below unable to fail
+/// (2026-09-24).
 fn list_pattern(levels: (i32, i32)) -> Par<ProcSort> {
     let mut p = from_expr(Expr::EList(EList {
         ps: vec![var_pattern(levels.0), var_pattern(levels.1)],
+        connective_used: true,
         ..Default::default()
     }));
     p.connective_used = true;
@@ -171,6 +180,24 @@ proptest! {
         let matches = spatial_match(&sort_par_term(&data), &sort_par_term(&pattern), &FreeMap::new())
             .expect("no error");
         prop_assert!(matches.is_empty(), "a doubly-bound pattern must not match: {matches:?}");
+    }
+
+    /// **The control the test above cannot fail without.** A pattern binds each name at most once
+    /// *and* a pattern of distinct names does match: without this half, an assertion that a match is
+    /// empty is satisfied equally well by a matcher that never matches anything — which is what the
+    /// unfixed `list_pattern` fixture was, one flag away from the equality fast path.
+    #[test]
+    fn law5_a_pattern_that_binds_distinct_variables_matches(pattern in distinct_var_pattern(0)) {
+        let data = from_expr(Expr::EList(EList {
+            ps: vec![from_expr(Expr::GInt(1)), from_expr(Expr::GInt(2))],
+            ..Default::default()
+        }));
+        let matches = spatial_match(&sort_par_term(&data), &sort_par_term(&pattern), &FreeMap::new())
+            .expect("no error");
+        prop_assert_eq!(matches.len(), 1, "a pattern of distinct variables must match once");
+        let fm = &matches[0];
+        prop_assert_eq!(fm.get(&0), Some(&from_expr(Expr::GInt(1))));
+        prop_assert_eq!(fm.get(&1), Some(&from_expr(Expr::GInt(2))));
     }
 
     /// The other side of the same rule, through the **receiver's own entry point**: a `BindPattern`
