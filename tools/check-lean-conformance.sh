@@ -36,6 +36,19 @@ failures=0
 fail() { printf 'FAIL  %s\n' "$*"; failures=$((failures + 1)); }
 ok() { printf 'ok    %s\n' "$*"; }
 
+# --- the stack the elaborator needs, measured ----------------------------------
+# `Rchain/Sort.lean`'s comparator blocks are elaborated with tactic cascades over a 24-constructor
+# match, and the elaborator's recursion over them is **deeper than the default process stack**. The
+# measurement (2026-09-24): with the default 8 MB the module aborts — `Stack overflow detected.
+# Aborting.`, exit 134, and `lake build` reports it as a plain build failure with no line number — and
+# with 64 MB the *same* file elaborates cleanly (no errors, 16 minutes under a concurrent build).
+#
+# So this is a budget with a measurement, not a workaround for a broken proof (which is what the abort
+# looks like): raising the *soft* limit is the fix, `|| true` because a restricted environment may
+# refuse it, and the limit is inherited by every `lake`/`lean` this script spawns. `lean` has the knob
+# directly (`-s/--tstack`, in Kb) if a caller would rather pass it than raise the process limit.
+ulimit -s 65536 2>/dev/null || true
+
 # --- 1. the library builds -----------------------------------------------------
 # The executable targets are built too, and that is load-bearing: a module that is an `lean_exe` root
 # (the corpus emitter) is *not* pulled in by the library target, so `lake build` alone would compile

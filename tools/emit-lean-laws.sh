@@ -14,6 +14,11 @@
 # Usage: tools/emit-lean-laws.sh [--check]
 set -euo pipefail
 
+# `Rchain/Sort.lean`'s comparator blocks need more than the default 8 MB process stack (measured
+# 2026-09-24: 8 MB aborts with "Stack overflow detected", 64 MB elaborates the same file cleanly), and
+# `lake exe` builds before it runs. Same fix, same comment, as `tools/check-lean-conformance.sh`.
+ulimit -s 65536 2>/dev/null || true
+
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SPEC="$ROOT/spec"
 
