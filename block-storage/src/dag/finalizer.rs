@@ -419,4 +419,80 @@ mod tests {
         let (_parent, new_fringe) = finalizer.calculate_finalization(&justifications, &bonds);
         assert!(new_fringe.is_none(), "lockstep chain must not finalize");
     }
+    /// **C69's second half, settled: the fringe walk is bounded by the non-finalized chain length.**
+    ///
+    /// The progress guard (`if nf == current { break }`, `calculate_finalization` above) catches an
+    /// *immediate* repeat only, which the §6 row recorded as "weaker than a cycle guard: a longer cycle is
+    /// unimpeded — nothing has measured one". The measure is what makes that vacuous rather than
+    /// unmeasured: each iteration passes the *previous fringe* as the cutoff, and `self_parents` stops at
+    /// it, so for every sender the minimum message can only move along that sender's own chain in one
+    /// direction. A sender's unfinalized chain is finite and acyclic, and a step that is not the fixed
+    /// point moves strictly, so the walk terminates in at most (messages on the longest unfinalized chain)
+    /// steps — a cycle of any length would have to move strictly forever on a finite chain.
+    ///
+    /// This drives the loop the way `calculate_finalization` does (reproduced here so the *count* is
+    /// observable; `next_fringe` is private to this module) over a **generated `L`-layer fork**, so the
+    /// walk is long rather than trivially short: `L` layers of three bonded senders, each layer
+    /// justifying the one below. The measured steps grow with `L` and stay within the non-finalized
+    /// length; the assertion sits *inside* the loop, so a hypothetical cycle fails the test rather than
+    /// hanging it.
+    #[test]
+    fn the_fringe_walk_is_bounded_by_the_non_finalized_chain_length() {
+        const LAYERS: i64 = 8;
+
+        // Layer 0 is a genesis by a non-bonded sender; layers 1..=L are a three-way fork that converges
+        // to the full previous layer at each step (the shape `calculate_finalization_advances_fringe_on_fork`
+        // uses, extended so the walk has somewhere to go).
+        let genesis = msg(99, 99, 0, &[], &[99]);
+        let mut map: BTreeMap<i32, Message<i32, i32>> = [(genesis.id, genesis.clone())].into();
+        let mut seen: Vec<i32> = vec![99];
+        let mut layer_ids: Vec<i32> = vec![99];
+        let mut messages = 1usize;
+        for layer in 1..=LAYERS {
+            let mut next_ids = Vec::new();
+            for sender in 0..3i32 {
+                let id = i32::try_from(layer * 10).expect("small ids") + sender;
+                let m = msg(id, sender, layer, &layer_ids, &seen);
+                seen.push(id);
+                next_ids.push(id);
+                map.insert(id, m);
+                messages += 1;
+            }
+            layer_ids = next_ids;
+        }
+        let bonds: BTreeMap<i32, NonNegI64> = [(0, 10), (1, 10), (2, 10)]
+            .into_iter()
+            .map(|(k, v)| (k, NonNegI64::try_from(v).unwrap()))
+            .collect();
+        let justifications: BTreeSet<Message<i32, i32>> =
+            layer_ids.iter().map(|id| map[id].clone()).collect();
+
+        let finalizer: Finalizer<i32, i32> = Finalizer::new(&map);
+        let mut current = message_map::latest_fringe(finalizer.msg_map, &justifications);
+        let mut steps = 0usize;
+        loop {
+            let Some(nf) = finalizer.next_fringe(&justifications, &bonds, &current) else {
+                break;
+            };
+            if nf == current {
+                break;
+            }
+            steps += 1;
+            assert!(
+                steps <= messages,
+                "the fringe walk took more than {messages} steps ({steps}) over a {LAYERS}-layer \
+                 fixture without reaching a fixed point — the walk is not bounded by the \
+                 non-finalized chain"
+            );
+            current = nf;
+        }
+        println!(
+            "a {LAYERS}-layer fork: the fringe walk took {steps} step(s), bounded by {messages} \
+             messages of non-finalized chain"
+        );
+        assert!(
+            steps > 1,
+            "the fixture must make the walk advance more than once, or it is not exercising the bound"
+        );
+    }
 }

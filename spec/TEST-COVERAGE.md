@@ -219,6 +219,7 @@ not found in that file. Coverage claims live here rather than in prose so they c
 | G2 | `comm/src/transport/chunker.rs` | `chunking_a_page_does_not_copy_it_whole` |
 | G2 | `casper/src/engine/node_running.rs` | `a_store_items_page_costs_the_dispatch_loop_this_long` |
 | G2 | `casper/src/engine/node_running.rs` | `a_page_over_the_byte_cap_is_dropped_not_truncated` |
+| G2 | `block-storage/src/dag/finalizer.rs` | `the_fringe_walk_is_bounded_by_the_non_finalized_chain_length` |
 | G2 | `casper/src/engine/lfs_block_requester.rs` | `the_walk_advances_on_responses_not_on_the_idle_timeout` |
 | G2 | `casper/src/engine/lfs_block_requester.rs` | `a_failed_block_write_fails_the_walk_instead_of_marking_the_block_done` |
 | G2 | `casper/src/engine/lfs_block_requester.rs` | `a_failed_store_read_fails_the_walk_instead_of_requesting_nothing` |
