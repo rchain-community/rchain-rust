@@ -2499,6 +2499,39 @@ port against the **reference document** rather than against itself.
   the sibling structs already have: `BindPattern.free_count` should be a `FreeCount`, not an `i32`, so
   the invariant travels in the type instead of being re-checked at each use.
 
+- **C53 — a store error read as an absent radix node** (found 2026-09-24, Programme F; **fixed at the
+  read boundary, with the flattening above it recorded as owed**). `RadixTreeImpl::load_node_from_store`
+  read its bytes with
+
+  ```rust
+  // `BytesCodec` cannot fail to decode, so the store error is unreachable.
+  let bytes = self.store.get(&[node_ptr]).await.ok().and_then(|v| v.into_iter().next().flatten());
+  ```
+
+  The comment conflates the *codec* with the *store*: a codec cannot fail to decode, and an LMDB read
+  can fail. `.ok()` flattened an I/O error into `None`, which is the same value as "no such node", and
+  the two are different facts. The Scala keeps them apart — `store.get1(nodePtr).map(_.map(Codecs.decode))`
+  (`RadixTree.scala:569`) leaves a store failure in `F`, where the `<-` in `RadixHistory.scala:27,49`
+  short-circuits.
+
+  **What was observable, and what is not.** The downstream `assert!(no_assert, "Missing node in
+  database. ptr=…")` (`radix_tree.rs`) reported an I/O failure as a *missing* node, which is a wrong
+  diagnosis; and under `no_assert = true` an I/O failure *became an empty node*. **That arm is not a
+  defect**: `no_assert` is the oracle's own flag for the root load (`loadNode(root, noAssert = true)`,
+  `RadixHistory.scala:27,49`), where a genuinely absent root is the normal fresh-history case. So the
+  fix here makes the two facts distinguishable at the boundary — the checked arm's assert now names the
+  store — and **does not** stop an I/O failure from becoming an empty node, because `load_node` returns
+  `Node`. Saying which of those it is, is the point: a fix reported as closing the hole would be wrong.
+
+  **Owed, and it is the real fix**: an error channel. The Scala's `F[Node]` carries a store failure out
+  of `loadNode` and into `RadixHistory.new`/`reset`, whose callers can then refuse; the port's
+  `load_node -> Node` and its `History` trait have none, so the only available flattening is a panic or
+  an empty node. Closing it means making both fallible — a trait change that reaches `rspace`'s
+  consumers — which is why it is named here rather than half-done. Falsified first: restoring the
+  `.ok()` fails `history::radix_tree::tests::a_store_error_is_not_a_missing_node`, which asserts both
+  halves together (an error surfaces *and* a genuinely absent node is still `None`), so a fix that made
+  missing nodes an error would be caught as the opposite bug.
+
 - **The class, recorded once, because it is the consolidation pass's whole justification: an axiom that
   is false is worse than one that is owed, because anything follows from it.** Nine axioms the pass
   removed were not merely unproved — they were false of the code or of the model that carried them, and
@@ -2562,6 +2595,7 @@ finding that no law covers, and it says why rather than leaving the gap to infer
 | C46 a joining validator could not index the genesis: its sidecar regeneration replayed block #0 without the genesis vaults | 11 | **fixed (2026-09-24)**: `is_genesis_pre_state` conditions the vault re-install at both genesis-replay call sites, `genesis_descriptors_from_config` reads the network's genesis files on any node (`node_runtime.rs`), `tools/devnet.sh` gives validators 1..n−1 the files — and `interpreter_util.rs`'s `is_genesis_pre_state_is_true_only_for_the_empty_state` pins the condition that keeps an unconditional re-install from clobbering post-genesis balances. The row was missing from this table until then, which is its own small finding: law 11 is the law that covers it — a replay that does not reproduce the record — and the table's promise is that every incident names one |
 | C47 the matcher's fuel was short: the measure counted an empty `Par` as zero nodes | 5, 37 | `match.tsv` case 18 (`@Set(1, ..._)` against `Set(Nil × 6, 1)`) + `lean_match_corpus.rs`; `the_walk_past_empty_pars_is_paid_for`, and `parNodes`'s doc comment carrying the counterexample |
 | C52 a peer's `BindPattern` could carry a negative `free_count`, which silently changed what the receive bound | 5, 37 | **fixed (2026-09-24)**: `bind_pattern_from_proto` validates the count like its two siblings already did, so a message that would have applied the continuation with a wrong number of bindings is refused where it arrives. Falsified first — restoring the pass-through fails the new assertion in `models/src/wire.rs`'s `the_runtime_payloads_round_trip`. The same three lines' `unwrap_or_default()` (a count the pattern cannot satisfy becomes `Nil`) and `FreeCount::from_nonneg`'s `debug_assert!` are recorded as owed, with the durable fix named: `BindPattern.free_count` should be a `FreeCount` |
+| C53 a store error read as an absent radix node | 10 | **fixed at the read boundary (2026-09-24)**: `load_node_from_store` propagates the store error instead of `.ok()`-ing it into the same `None` a missing node produces — the Scala keeps it in `F` (`RadixTree.scala:569`). Falsified first: restoring `.ok()` fails `radix_tree`'s `a_store_error_is_not_a_missing_node`, which pins both halves (the error surfaces; an absent node is still `None`). The *flattening above it* is owed and named — `load_node -> Node` and the `History` trait have no error channel where the Scala's `F[Node]` does, so an I/O failure can still become an empty node under the oracle's own `no_assert` root load |
 | C49 the replay property test fails on its own recording (~3 runs in 10) | 11 | **closed, and it was not the code**: the fixture rigged the replay with the play's *post-play* root, so the "replay" began from a half-finished tuple space — `rspace/src/property_tests.rs`'s `law11_a_replayed_script_matches_its_recording`, now taking the checkpoint before the script, passes over 4000 cases where it failed deterministically at `PROPTEST_CASES=1`. The seed stays as the pinned input; `check_replay_data` was never at fault |
 | C50 the matcher's fuel was short again: the measure had no `etuple` case, so a tuple's contents were charged to nothing | 5, 37 | `match.tsv` case 20 (`@((1, 2), (3, 4))` against itself) + `lean_match_corpus.rs`; `a_nested_tuple_is_paid_for`, `a_tuple_pays_for_its_own_contents`, and `parNodesExpr`'s doc comment carrying the counterexample. While the defect stood it also **refuted** the axiom `concrete_matches_iff_eq` |
 | C51 the tie's domain admitted a two-expression `Par`, which no clause accepts — so the tie was false | 5, 37 | the axiom `concrete_matches_iff_eq` is **deleted**; `a_two_expression_pattern_refutes_the_modelled_tie` is the counterexample, and rows 5/37 owe the tie for a **singleton** pattern instead |

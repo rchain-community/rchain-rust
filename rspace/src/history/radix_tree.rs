@@ -158,13 +158,28 @@ impl RadixTreeImpl {
     }
 
     async fn load_node_from_store(&self, node_ptr: Blake2b256Hash) -> Result<Option<Node>, String> {
-        // `BytesCodec` cannot fail to decode, so the store error is unreachable.
+        // A store error is **kept separate from a missing node**. The comment that stood here —
+        // "`BytesCodec` cannot fail to decode, so the store error is unreachable" — is true of the
+        // *codec* and false of the store: an LMDB read can fail. `.ok()` flattened that into `None`,
+        // so `load_node` reported an I/O failure as "Missing node in database", or — under the
+        // `no_assert = true` its two root-load callers pass (`RadixHistory::new`/`reset`, and the
+        // Scala's `loadNode(root, noAssert = true)` at `RadixHistory.scala:27,49`) — as an empty node.
+        // The Scala keeps the error in `F` (`store.get1(nodePtr).map(...)`, `RadixTree.scala:569`), so
+        // propagating it here is the faithful reading.
+        //
+        // **What this does and does not change.** `load_node`'s signature is `Node`, not a `Result`,
+        // so it still flattens: the checked arm's assert now names the *store* rather than claiming
+        // the node is missing, and the `no_assert` arm still returns an empty node. Closing *that* is
+        // the signature change, which the port's `History` trait has no error channel for where the
+        // Scala's `F` does — registered as owed in AUDIT C53 rather than half-done here.
         let bytes = self
             .store
             .get(&[node_ptr])
             .await
-            .ok()
-            .and_then(|v| v.into_iter().next().flatten());
+            .map_err(|e| format!("store error reading node {}: {e}", node_ptr.to_hex()))?
+            .into_iter()
+            .next()
+            .flatten();
         match bytes {
             None => Ok(None),
             Some(bytes) => {
@@ -645,6 +660,57 @@ mod tests {
             Arc::new(BytesCodec),
         ));
         RadixTreeImpl::new(typed)
+    }
+
+    /// A store whose every operation fails, for the case a real LMDB read fails — which
+    /// `load_node_from_store` used to flatten into "no bytes" with `.ok()`.
+    struct FailingStore;
+
+    #[async_trait::async_trait]
+    impl rchain_shared::typed_store::KeyValueTypedStore<Blake2b256Hash, Vec<u8>> for FailingStore {
+        async fn get(&self, _keys: &[Blake2b256Hash]) -> Result<Vec<Option<Vec<u8>>>, String> {
+            Err("the store is down".to_string())
+        }
+        async fn put(&self, _pairs: &[(Blake2b256Hash, Vec<u8>)]) -> Result<(), String> {
+            Err("the store is down".to_string())
+        }
+        async fn delete(&self, _keys: &[Blake2b256Hash]) -> Result<usize, String> {
+            Err("the store is down".to_string())
+        }
+        async fn contains(&self, _keys: &[Blake2b256Hash]) -> Result<Vec<bool>, String> {
+            Err("the store is down".to_string())
+        }
+        async fn to_map(&self) -> Result<std::collections::BTreeMap<Blake2b256Hash, Vec<u8>>, String> {
+            Err("the store is down".to_string())
+        }
+    }
+
+    /// **A store error is not a missing node.** Both used to be `None` here, so the caller asserted
+    /// "Missing node in database" for an I/O failure — or, under `no_assert`, returned an empty node
+    /// for it — and read a `PREFIX_*` leaf as absent when it could not be read at all. The two cases
+    /// are asserted together, because a fix that made *missing* nodes an error would be the opposite
+    /// bug and this test would catch it.
+    #[tokio::test]
+    async fn a_store_error_is_not_a_missing_node() {
+        let failing = RadixTreeImpl::new(Arc::new(FailingStore));
+        let err = failing
+            .load_node_from_store(Blake2b256Hash::from_bytes([0x11; 32]))
+            .await
+            .expect_err("a store error must surface, not read as an absent node");
+        assert!(
+            err.contains("store error reading node"),
+            "and it must say which failure it was, got: {err}"
+        );
+
+        let empty = in_memory_tree();
+        assert_eq!(
+            empty
+                .load_node_from_store(Blake2b256Hash::from_bytes([0x11; 32]))
+                .await
+                .expect("an empty store is not an error"),
+            None,
+            "a genuinely absent node is still `None` — the two are different facts"
+        );
     }
 
     #[tokio::test]
