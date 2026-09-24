@@ -14,7 +14,7 @@ parse	new x in Nil	accept	derivable
 parse	for(x <- c) {Nil}	accept	derivable
 parse	x | y	accept	derivable
 parse	[1, 2, 3]	accept	derivable
-parse	contract f(x ...@rest) = {Nil}	reject	derivable
+parse	contract f(x ...@rest) ={Nil}	reject	derivable
 parse	[1 2]	reject	refused
 parse	(1 2)	reject	refused
 parse	[1, 2 3]	reject	refused
@@ -30,7 +30,7 @@ parse	[1,]	accept	deviation
 parse	Set(1,)	accept	deviation
 parse	{a : 1,}	accept	deviation
 parse	c!(1,)	accept	deviation
-parse	contract c(@x,) = {Nil}	accept	deviation
+parse	contract c(@x,) ={Nil}	accept	deviation
 parse	new x, in Nil	accept	deviation
 parse	(1, 2,)	accept	deviation
 parse	a.b(1,)	accept	deviation
@@ -38,26 +38,81 @@ parse	for(x <- @"c";) {Nil}	accept	deviation
 parse	[a, ...rest]	accept	deviation
 parse	{name : *voter, ...tail}	accept	deviation
 parse	Set(a, ...rest)	accept	deviation
-parse	contract f(x ...@rest) = {Nil}	reject	deviation
+parse	contract f(x ...@rest) ={Nil}	reject	deviation
 parse	for(x <- c ?!) {Nil}	reject	deviation
+parse	42	accept	printer
+parse	true	accept	printer
+parse	false	accept	printer
+parse	BigInt(1234)	accept	printer
+parse	"s"	accept	printer
+parse	`rho:id:x`	accept	printer
 parse	[1]	accept	printer
 parse	Set(1)	accept	printer
 parse	{1 : 2}	accept	printer
 parse	(1, 2)	accept	printer
+parse	x	accept	printer
+parse	_	accept	printer
+parse	=x	accept	printer
+parse	=*x	accept	printer
+parse	Nil	accept	printer
+parse	Bool	accept	printer
+parse	Int	accept	printer
+parse	BigInt	accept	printer
+parse	String	accept	printer
+parse	Uri	accept	printer
+parse	ByteArray	accept	printer
+parse	~x	accept	printer
 parse	x /\ y	accept	printer
 parse	x \/ y	accept	printer
+parse	*c	accept	printer
+parse	*@1	accept	printer
+parse	*_	accept	printer
 parse	x.get(1)	accept	printer
+parse	1 + 2	accept	printer
+parse	-1	accept	printer
+parse	2 *3	accept	printer
+parse	6 / 2	accept	printer
+parse	5 % 2	accept	printer
+parse	5 %% 2	accept	printer
+parse	1 + 2	accept	printer
+parse	1 -2	accept	printer
+parse	[] ++ []	accept	printer
+parse	Set() -- Set()	accept	printer
+parse	1 < 2	accept	printer
+parse	1 <= 2	accept	printer
+parse	1 > 2	accept	printer
+parse	1 >= 2	accept	printer
+parse	x matches Bool	accept	printer
+parse	1 == 2	accept	printer
+parse	1 != 2	accept	printer
+parse	x and y	accept	printer
+parse	x && y	accept	printer
+parse	x or y	accept	printer
+parse	x || y	accept	printer
 parse	c!!(1)	accept	printer
 parse	c!(1)	accept	printer
-parse	contract f(x) = {Nil}	accept	printer
-parse	contract f(x ...@rest) = {Nil}	reject	printer
+parse	contract f(x) ={Nil}	accept	printer
+parse	contract f(x ...@rest) ={Nil}	reject	printer
 parse	for(x <- c) {Nil}	accept	printer
 parse	for(x <= c) {Nil}	accept	printer
 parse	for(x <<- c) {Nil}	accept	printer
 parse	for(x <- c ?!) {Nil}	reject	printer
 parse	for(x <- c!?(1)) {Nil}	accept	printer
+parse	select {x <- c => Nil}	accept	printer
+parse	match x {1 => Nil}	accept	printer
+parse	bundle+ {Nil}	accept	printer
+parse	bundle- {Nil}	accept	printer
+parse	bundle0 {Nil}	accept	printer
+parse	bundle {Nil}	accept	printer
+parse	let x <- c in {Nil}	accept	printer
+parse	let x <- c; y <- c in {Nil}	accept	printer
+parse	let x <- c & y <- c in {Nil}	accept	printer
+parse	if(true) Nil	accept	printer
+parse	if(true) Nil else Nil	accept	printer
 parse	new x in Nil	accept	printer
 parse	new x(`rho:id:y`) in Nil	accept	printer
+parse	c!?(1).	accept	printer
+parse	c!?(1); Nil	accept	printer
 parse	x | y	accept	printer
 parse	[...rest]	accept	printer
 parse	Set(...rest)	accept	printer

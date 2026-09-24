@@ -97,7 +97,7 @@ follows with its parenthesis), and the operators that bind to their operand. -/
 def tightAfter : Tok → Bool
   | .term s =>
     s == "[" || s == "(" || s == "{" || s == "Set" || s == "." || s == "@" || s == "!"
-      || s == "!!" || s == "!?" || s == "*" || s == "~" || s == "-"
+      || s == "!!" || s == "!?" || s == "*" || s == "~" || s == "-" || s == "=" || s == "=*"
   | _ => false
 
 /-- **Is there a space between two adjacent tokens?** Rholang is whitespace-insensitive, so this is not
@@ -220,7 +220,7 @@ def printToksAt : Surf → Nat → List Tok
   | .collect c, _ => collectToks c
   | .var x, _ => [.elem x]
   | .varWild, _ => [.elem "_"]
-  | .varRef k x, _ => [.elem ((if k == SVarRefKind.proc then "=" else "=*") ++ x)]
+  | .varRef k x, _ => [.term (if k == SVarRefKind.proc then "=" else "=*"), .elem x]
   | .nil, _ => [.elem "Nil"]
   | .simpleType ty, _ => [.elem (typeSpelling ty)]
   | .neg p, _ => [.term "~", elemOf p 16 (renderTokens (printToksAt p 0))]
@@ -230,7 +230,7 @@ def printToksAt : Surf → Nat → List Tok
   -- wart 2: the port prints `PNot` as `~(x)`, the *negation* spelling (`pretty_printer.rs`'s ENot,
   -- `PrettyPrinter.scala:75`), which the grammar reads as `PNegation` of a group.
   | .not p, _ => [.term "~", .term "(", elemOf p 0 (renderTokens (printToksAt p 0)), .term ")"]
-  | .negNum p, _ => [.term "-", elemOf p 11 (renderTokens (printToksAt p 0))]
+  | .negNum p, _ => [.term "-", elemOf p 10 (renderTokens (printToksAt p 0))]
   | .mult a b, _ => [elemOf a 10 (renderTokens (printToksAt a 0)), .term "*", elemOf b 11 (renderTokens (printToksAt b 0))]
   | .div a b, _ => [elemOf a 10 (renderTokens (printToksAt a 0)), .term "/", elemOf b 11 (renderTokens (printToksAt b 0))]
   | .mod a b, _ => [elemOf a 10 (renderTokens (printToksAt a 0)), .term "%", elemOf b 11 (renderTokens (printToksAt b 0))]
@@ -276,7 +276,7 @@ def printToksAt : Surf → Nat → List Tok
       [.elem (nameSpelling n), .term "!?", .term "("] ++ elemsToks args ++ [.term ")"]
         ++ (match cont with
             | .empty => [.term "."]
-            | .nonEmpty body => [.term ";"] ++ printToksAt body 3)
+            | .nonEmpty body => [.term ";", elemOf body 2 (renderTokens (printToksAt body 0))])
   | .par a b, _ => [elemOf a 1 (renderTokens (printToksAt a 0)), .term "|", elemOf b 2 (renderTokens (printToksAt b 0))]
 
 /-- A `,`-separated element list (a collection's elements, a send's data, a declaration's values): each
@@ -379,11 +379,15 @@ def declsToks : SDecls → List Tok
   | .linear ds => [.term ";"] ++ declListToks ds ";"
   | .conc ds => [.term "&"] ++ declListToks ds "&"
 
-/-- A declaration list, whose separator the `Decls` production names. -/
+/-- A declaration list, whose separator the `Decls` production names. Each element is one opaque
+element — the way a receipt is its list's — and the *caller* renders it, because a helper taking the
+`Decl` would call the printer on its own argument and the mutual block would lose its structural
+descent. -/
 def declListToks : List SDecl → String → List Tok
   | [], _ => []
-  | [d], _ => declToks d
-  | d :: e :: ds, sep => declToks d ++ [.term sep] ++ declListToks (e :: ds) sep
+  | [d], _ => [.elem (renderTokens (declToks d))]
+  | d :: e :: ds, sep =>
+      .elem (renderTokens (declToks d)) :: .term sep :: declListToks (e :: ds) sep
 
 /-- A `new`'s name declarations (`separator nonempty NameDecl ","`), including the `urn` form
 (`NameDeclUrn ::= Var "(" UriLiteral ")"`). -/

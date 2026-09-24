@@ -100,12 +100,23 @@ def elemsFrom (sep : String) : List Tok → Option (Nat × List Tok)
     | _ => some (1, ts)
   | ts => some (0, ts)
 
+/-- A list whose separator is **empty** (`separator nonempty Branch ""`: a `select`'s branches, a
+`match`'s cases) is its elements juxtaposed, so every adjacent element is another element. Structural,
+like `elemsFrom`. -/
+def elemsJuxt : List Tok → Nat × List Tok
+  | [] => (0, [])
+  | .elem _ :: ts =>
+    match elemsJuxt ts with
+    | (n, ts') => (n + 1, ts')
+  | ts => (0, ts)
+
 /-- One list slot: the elements, with the slot's minimum enforced — fewer than `minElems` is not the
 grammar's `[X]`. -/
 def matchList (sep : String) (minElems : Nat) (ts : List Tok) : Option (List Tok) :=
-  match elemsFrom sep ts with
-  | some (n, ts') => if n < minElems then none else some ts'
-  | none => none
+  match sep.isEmpty, elemsFrom sep ts, elemsJuxt ts with
+  | true, _, (n, ts') => if n < minElems then none else some ts'
+  | false, some (n, ts'), _ => if n < minElems then none else some ts'
+  | false, none, _ => none
 
 /-- A remainder, or (for the caller) nothing: `ProcRemainder` is `...x` and `NameRemainder` is
 `...@x`. -/
@@ -168,6 +179,72 @@ def grammarFragment : List FragProduction :=
   , ⟨["PPar"], [.list "Proc" "|" 2]⟩
   , ⟨["PConjunction"], [.list "Proc" "/\\" 2]⟩
   , ⟨["PDisjunction"], [.list "Proc" "\\/" 2]⟩
+    -- `Proc16`: the **atom** forms — `PGround ::= Ground`, `PVar ::= ProcVar`, `PNil ::= "Nil"`,
+    -- `PSimpleType ::= SimpleType`. Each is one opaque element (they have no terminals of their own),
+    -- so their row is the element slot itself: a single-element token list derives *by construction*,
+    -- which is the fragment's stated abstraction (`parseBoundaries`' `element-interior` row) and not a
+    -- claim about the element.
+  , ⟨["PGround", "PVar", "PNil", "PSimpleType"], [.elem]⟩
+    -- `PVarRef ::= VarRefKind Var` and `VarRefKind ::= "=" | "=*"`: two tokens, which is why the
+    -- printer emits the kind's spelling separately from the variable.
+  , ⟨["PVarRef"], [.anyOf ["=", "=*"], .elem]⟩
+    -- `PNegation ::= "~" Proc15`, `PEval ::= "*" Name`, `PNot ::= "not" Proc10`,
+    -- `PNeg ::= "-" Proc10`: a terminal and an element.
+  , ⟨["PNegation"], [.term "~", .elem]⟩
+  , ⟨["PEval"], [.term "*", .elem]⟩
+  , ⟨["PNot"], [.term "not", .elem]⟩
+  , ⟨["PNeg"], [.term "-", .elem]⟩
+    -- `Proc9`…`Proc4`: the binary operators. Each production is `X op X` (`PMult ::= Proc9 "*" Proc10`
+    -- …), i.e. a list of **two or more** under its separator — a one-element `op`-list would be one of
+    -- the coercions and no operator at all, which is why the minimum is 2 rather than 1.
+  , ⟨["PMult"], [.list "Proc" "*" 2]⟩
+  , ⟨["PDiv"], [.list "Proc" "/" 2]⟩
+  , ⟨["PMod"], [.list "Proc" "%" 2]⟩
+  , ⟨["PPercentPercent"], [.list "Proc" "%%" 2]⟩
+  , ⟨["PAdd"], [.list "Proc" "+" 2]⟩
+  , ⟨["PMinus"], [.list "Proc" "-" 2]⟩
+  , ⟨["PPlusPlus"], [.list "Proc" "++" 2]⟩
+  , ⟨["PMinusMinus"], [.list "Proc" "--" 2]⟩
+  , ⟨["PLt"], [.list "Proc" "<" 2]⟩
+  , ⟨["PLte"], [.list "Proc" "<=" 2]⟩
+  , ⟨["PGt"], [.list "Proc" ">" 2]⟩
+  , ⟨["PGte"], [.list "Proc" ">=" 2]⟩
+  , ⟨["PMatches"], [.list "Proc" "matches" 2]⟩
+  , ⟨["PEq"], [.list "Proc" "==" 2]⟩
+  , ⟨["PNeq"], [.list "Proc" "!=" 2]⟩
+  , ⟨["PAnd"], [.list "Proc" "and" 2]⟩
+  , ⟨["PShortAnd"], [.list "Proc" "&&" 2]⟩
+  , ⟨["POr"], [.list "Proc" "or" 2]⟩
+  , ⟨["PShortOr"], [.list "Proc" "||" 2]⟩
+    -- `PBundle ::= Bundle "{" Proc "}"` with the four `Bundle` spellings.
+  , ⟨["PBundle"], [.anyOf ["bundle+", "bundle-", "bundle0", "bundle"], .term "{", .elem,
+      .term "}"]⟩
+    -- `PIf` / `PIfElse`, and `PSendSynch ::= Name "!?" "(" [Proc] ")" SynchSendCont` with
+    -- `EmptyCont ::= "."` and `NonEmptyCont ::= ";" Proc1` — one row each, because the continuation
+    -- decides which production the spelling is.
+  , ⟨["PIf"], [.term "if", .term "(", .elem, .term ")", .elem]⟩
+  , ⟨["PIfElse"], [.term "if", .term "(", .elem, .term ")", .elem, .term "else", .elem]⟩
+  , ⟨["PSendSynch", "EmptyCont"],
+      [.elem, .term "!?", .term "(", .list "Proc" "," 0, .term ")", .term "."]⟩
+  , ⟨["PSendSynch", "NonEmptyCont"],
+      [.elem, .term "!?", .term "(", .list "Proc" "," 0, .term ")", .term ";", .elem]⟩
+    -- `PChoice ::= "select" "{" [Branch] "}"` and `PMatch ::= "match" Proc4 "{" [Case] "}"`: their
+    -- lists are `separator nonempty Branch ""` / `Case ""`, so the elements are **juxtaposed** — the
+    -- engine's empty-separator case.
+  , ⟨["PChoice"], [.term "select", .term "{", .list "Branch" "" 1, .term "}"]⟩
+  , ⟨["PMatch"], [.term "match", .elem, .term "{", .list "Case" "" 1, .term "}"]⟩
+    -- `PLet ::= "let" Decl Decls "in" "{" Proc "}"`, **one row per `Decls` production**:
+    -- `EmptyDeclImpl` is no separator at all, and `LinearDeclsImpl`/`ConcDeclsImpl` put their separator
+    -- *before* their list (`Decls ::= ";" [LinearDecl]`). That is why the label repeats.
+  , ⟨["PLet", "EmptyDeclImpl"],
+      [.term "let", .list "Name" "," 0, .remainder .name, .term "<-", .list "Proc" "," 0,
+        .term "in", .term "{", .elem, .term "}"]⟩
+  , ⟨["PLet", "LinearDeclsImpl"],
+      [.term "let", .list "Name" "," 0, .remainder .name, .term "<-", .list "Proc" "," 0,
+        .term ";", .list "Decl" ";" 1, .term "in", .term "{", .elem, .term "}"]⟩
+  , ⟨["PLet", "ConcDeclsImpl"],
+      [.term "let", .list "Name" "," 0, .remainder .name, .term "<-", .list "Proc" "," 0,
+        .term "&", .list "Decl" "&" 1, .term "in", .term "{", .elem, .term "}"]⟩
   ]
 
 /-- **Law 30's soundness direction, decidable**: a token list is derivable when some fragment
@@ -187,7 +264,10 @@ nobody wrote, or an empty row, is a table that has stopped describing the gramma
 theorem fragment_rows_decide :
     (grammarFragment.all (fun p =>
         !p.labels.isEmpty && !p.parts.isEmpty && p.labels.all grammarProductions.contains)
-      && (grammarFragment.map (fun p => p.labels.headD "")).eraseDups.length
+      -- A label may repeat (`PLet` has one row per `Decls` production), so the uniqueness the table
+      -- owes is over the *rows*: two rows that agree on their labels and their parts are one row
+      -- written twice.
+      && (grammarFragment.map (fun p => (p.labels, p.parts))).eraseDups.length
           == grammarFragment.length) = true := by
   decide
 
@@ -199,7 +279,7 @@ theorem fragment_has_a_remainder :
   decide
 
 /-- How many productions the fragment carries. -/
-def fragmentCount : Nat := 13
+def fragmentCount : Nat := 48
 
 /-- The table carries exactly `fragmentCount` rows. -/
 theorem fragment_length : grammarFragment.length = fragmentCount := by decide
@@ -220,7 +300,7 @@ has no ellipsis arm. The direction was empty before that run, and the constructo
 this case — a spelling the grammar derives that `parse` refuses.
 
 One candidate that is **not** a row here, deliberately: a process-position connective (`x /\ y`) is
-refused by the **normalizer** (`rholang/src/normalizer.rs:1727`,
+refused by the **normalizer** (`rholang/src/normalizer.rs:1762`,
 `RholangError::TopLevelLogicalConnectivesNotAllowedError`), and the *parser* accepts it — that is a
 fact about law 34/35's layer, not laws 30/31's. -/
 
@@ -538,10 +618,11 @@ def refusedCaseCount : Nat := 11
 /-- How many cases the deviation half carries (law 31's list). -/
 def deviationCaseCount : Nat := 14
 
-/-- How many cases the printer half carries (law 31's completeness direction): one per witness whose
-printed tokens the fragment reads — `[1]` twice, because `Surface.lean`'s table witnesses
-`CollectList`/`ProcRemainderEmpty` with the same term as `CollectList`'s own row. -/
-def printerCaseCount : Nat := 24
+/-- How many cases the printer half carries (law 31's completeness direction): one per production
+witness whose printed tokens the fragment reads — which is now every witness but two, the ones this
+printer spells as the port's warts (`(1,)` ⇒ `(1)` and `not x` ⇒ `~(x)`), plus `[1]` twice because
+`Surface.lean`'s table witnesses `CollectList`/`ProcRemainderEmpty` with the same term. -/
+def printerCaseCount : Nat := 79
 
 /-- How many cases the layer carries, as the sum of its four halves. -/
 def parseCaseCount : Nat :=
@@ -556,9 +637,6 @@ theorem parseCases_by_kind :
       && printerCases.length == printerCaseCount) = true := by
   decide
 
-/-- The layer carries exactly `parseCaseCount` cases. -/
-theorem parseCases_length : parseCases.length = parseCaseCount := by decide
-
 /-- **The two printer warts, decided**: the printer's output for a one-element tuple and for `not x`
 are not terms of the grammar at all, which is what makes them unreadable rather than merely
 mis-spelled — the model's half of the port's own
@@ -567,4 +645,8 @@ theorem warts_are_not_derivable :
     (derives (printToks (Surf.collect (.tuple (.ground (.int "1")) []))) == false
       && derives (printToks (Surf.not (.var "x"))) == false) = true := by
   decide
+
+/-- The layer carries exactly `parseCaseCount` cases. -/
+theorem parseCases_length : parseCases.length = parseCaseCount := by decide
+
 

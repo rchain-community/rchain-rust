@@ -29,7 +29,7 @@ use rchain_rholang::pretty_printer::PrettyPrinter;
 
 /// The corpus's declared size (`Rchain/Parse.lean`'s `parseCaseCount`). A corpus that shrinks silently
 /// is a check that stopped checking, so the count is pinned on both sides.
-const PARSE_CASES: usize = 66;
+const PARSE_CASES: usize = 121;
 
 /// The corpus's four halves, each pinned (`parseCases_by_kind` in `Rchain/Parse.lean`). Pinning them
 /// separately is what makes a *specific* list's shrinkage visible: `refused` is law 30's soundness
@@ -37,14 +37,14 @@ const PARSE_CASES: usize = 66;
 const DERIVABLE_CASES: usize = 17;
 const REFUSED_CASES: usize = 11;
 const DEVIATION_CASES: usize = 14;
-const PRINTER_CASES: usize = 24;
+const PRINTER_CASES: usize = 79;
 
 /// How the `printer`+`accept` rows are accounted for. Most of the witness table spells its variables as
 /// bare names (`x`, `c`, `x /\ y`) and the normalizer rejects a globally free variable, so those rows
 /// never reach the printer — and one row (`new x(`rho:id:y`) in Nil`) loses its urn to the printer's
 /// wart. All three counts are pinned, and they must *sum* to the `printer`+`accept` rows, so a row that
 /// stops normalizing moves the arithmetic instead of disappearing.
-const PRINTER_ROUND_TRIPPED: usize = 7;
+const PRINTER_ROUND_TRIPPED: usize = 43;
 const PRINTER_URN_WARTED: usize = 1;
 
 /// The corpus path, with the emitter named in the failure — a missing corpus is a missing
