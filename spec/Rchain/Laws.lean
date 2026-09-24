@@ -340,9 +340,11 @@ def laws : List Law := [
       mirroring `substitute_par_no_sort` and the arms it calls (`rholang/src/substitute.rs:116-306`) — \
       sends, receives and their binds, `new`, match cases, bundles, connectives and expressions, with \
       the list walks the port writes as loops, the splice a substituted occurrence performs \
-      (`par_concat`, `:58`), the depth gate (`0` substitutes, `d ≥ 1` is a pattern position, \
-      `maybe_substitute_var` `:21-40`), and the set/map children sorted inside the recursion \
-      (`:437`, `:454`). Three differences from the port are *representational* and are written up in the \
+      (`par_concat`, imported at `substitute.rs:13` and defined in `models/src/par_ops.rs:143`, \
+      called in-file at `substitute.rs:56` and `:73`, `:160`, `:161`), the depth gate (`0` \
+      substitutes, `d ≥ 1` is a pattern position, \
+      `maybe_substitute_var` `substitute.rs:24-40`), and the set/map children sorted inside the recursion \
+      (`sort_pars` `substitute.rs:437`, `sort_pairs` `:454`). Three differences from the port are *representational* and are written up in the \
       file: the model's `Var` is level-based so there is no environment `shift` to do under binders \
       (`env.rs:36-41`), `σ` is total where the port's `Env` is partial and errors on a \
       `FreeVar`/`Wildcard` at depth 0, and the port's bundle-of-bundle merge has no model counterpart. \
@@ -459,7 +461,7 @@ def laws : List Law := [
       (`spatial_matcher.rs:227`) is `if !linear(pattern) { no match }` followed by the clauses, which \
       moved to `spatial_match_core` — the same split, with the same names, that the model makes \
       (`spatialMatch … && linear pattern`) — and the store's own entry reaches the clauses the same \
-      way, `RhoMatch::get` handing `&spatial_match` to `fold_match` (`storage.rs:75`). `linear` \
+      way, `RhoMatch::get` handing `&spatial_match` to `fold_match` (`rholang/src/storage.rs:75`). `linear` \
       (`models/src/types.rs:93`) is the walk `freeLevelsOfPar` mirrors, levels and all. **One guard is \
       enough, and that is an argument rather than a hope**: the clauses descend only into sub-terms \
       `linear`'s own walk reaches — a send's channel and data, a receive's body, a `new`'s body, a \
@@ -593,8 +595,8 @@ def laws : List Law := [
     falsifiable := some "`comm_content_addressed` is proved from `sortList_perm`: two comms whose \
       produces are permutations of one another have the same identity. Dropping the sort from \
       `produceRefs` — which is what `Comm::apply` would be without `produce_refs.sort_by_key` — would \
-      falsify it, and the Rust pins the ordering directly (`event.rs:165`, `space_matcher.rs:98-102`, \
-      `rspace.rs:154-157`)",
+      falsify it, and the Rust pins the ordering directly (`event.rs:165`'s `produce_refs.sort_by_key`, \
+      and the `sort_by` on the candidate source at `space_matcher.rs:101` and `rspace.rs:156`)",
     note := "**both axioms are gone.** `produceRefs : Comm → List Nat` was opaque and \
       `comm_content_addressed` a claim about it; the refs are a *definition* now, mirroring \
       `Comm::apply`'s sort, and the content-addressing is Law 1's canonicalization applied to the event \
@@ -622,11 +624,13 @@ def laws : List Law := [
     note := "**all four axioms are gone.** `mergeChanges` and `NonConflicting` were axioms over \
       `StateChange = { id : Nat }` — and a claim about an undefined relation is a claim about nothing, \
       so the two laws could have been true of any relation one cared to imagine. The Rust gives the \
-      definition: the added/removed lists concatenate (`state_change.rs:18-38`) and the join map is a \
+      definition: the added/removed lists concatenate (`ChannelChange::combine`, \
+      `channel_change.rs:22-27`, reached from `state_change.rs:30`) and the join map is a \
       **right-biased overwrite** (`joins.insert(k, v)` in a loop over the right operand, \
-      `:186-189` — the Scala's `x.map ++ y.map`, right-biased too, `StateChange.scala:152`), so the model \
+      `state_change.rs:186-189` — the Scala's `x.map ++ y.map`, right-biased too, \
+      `StateChange.scala:152`), so the model \
       overwrites and `join_last_wins` states which side wins — which the code's own \
-      `combine_has_an_identity_and_a_right_biased_join_map` (`:502-544`, \"the later change's join body \
+      `combine_has_an_identity_and_a_right_biased_join_map` (`state_change.rs:508-546`, \"the later change's join body \
       wins\") pins. **Two findings are recorded here, one now fixed.** \
       (1) `NonConflicting` is *not* `are_conflicting` read negatively, and saying so was wrong: \
       `are_conflicting` is over two `EventLogIndex`es with three checks, one of which (a potential COMM) \
@@ -661,7 +665,7 @@ def laws : List Law := [
       `encodeNode_injective`; `nodeHash_eq_emptyRoot` pins the empty root as a fixed point with nothing \
       else hashing to it. A serializer that dropped a field would falsify the first, and a second node \
       hashing to the empty root the second — which is why the store *refuses* a colliding write \
-      (`radix_tree.rs:208-223,226-258`) rather than tolerating one. **And the canonicity axiom was \
+      (`save_node`, `radix_tree.rs:220-229` — its collision assert is the refusal) rather than tolerating one. **And the canonicity axiom was \
       itself falsified**: `the_encoder_is_not_canonical_over_the_models_types` exhibits two distinct \
       nodes with one encoding (a 35-byte value re-reads as a second item), which is why the axiom and \
       both theorems now carry `WellFormed` — the invariant the code carries in its types and the model \
@@ -678,7 +682,7 @@ def laws : List Law := [
       vulnerable: the type `[Item; 256]`, the 32-byte `Hash32`, and prefixes that are suffixes of a \
       32-byte key (so under 128, inside the 7-bit length field) make the second reading \
       unrepresentable. So the statement was narrowed to the invariant rather than the model widened: \
-      `encodeNode` is now a **definition** mirroring `radix_tree.rs:48-77` (index truncation and all), \
+      `encodeNode` is now a **definition** mirroring `radix_tree.rs:48-77` (the port's `encode`; index truncation and all), \
       `WellFormed` names the invariant, `encodeNode_injective` carries it, and \
       `root_collision_free`/`nodeHash_eq_emptyRoot` inherit it — stronger where it matters, because the \
       hypothesis is exactly what the trie's operations maintain. **And the narrowed statement is now \
@@ -709,7 +713,7 @@ def laws : List Law := [
       recomputed — the reverse half passes, the check fails). In the port, each half has its own error \
       that the Rust's tests assert fires: `ReplayCommNotInTrace` (`replay_rspace.rs:330-332`, \
       `a_rigged_replay_matches_its_recorded_trace` `:635-651`) and `Unused COMM event` \
-      (`:576-586`, `a_rig_whose_comm_never_happens_is_reported` `:663-696`)",
+      (`check_replay_data`, `replay_rspace.rs:580-586`, `a_rig_whose_comm_never_happens_is_reported` `:663-696`)",
     note := "**The modelling step the row previously owed, landed** (2026-09-23, Programme D unit 9). \
       The row was `vacuous` because \"recompute\" and \"record\" were the *same function* in the model, \
       so the claim was `rfl`. The record is now an **input** — `Replays recomputed recorded` — and the \
@@ -759,19 +763,24 @@ def laws : List Law := [
       case the port's `i128` exists for (`:50`); and `stakeOf_eq_none` is false for a gate that \
       indexed the bonds map by every support sender — the panic the port's `calculate_fringe` skips \
       instead, pinned by `calculate_fringe_ignores_non_bonded_sender` \
-      (`block-storage/src/dag/finalizer.rs:282`, and `law14_fringe_requires_supermajority`       at `:268`)",
+      (`block-storage/src/dag/finalizer.rs:294`, and `law14_fringe_requires_supermajority` at `:280`)",
     note := "**the axiom that stood here was `Nat.mul_comm` twice** — `isSuperMajority s t ↔ s * 3 > \
       t * 2` restated the definition's own body, which is why the row was `vacuous` and why it tied \
       finality to nothing. It is a **theorem** now, and the law is the **gate**: `calculateFringe` is \
       the port's `calculate_fringe` (the full-partition filter, the skip for a non-bonded sender, the \
-      exact integer comparison — `finalizer.rs:153-171`) and `nextFringe` is `next_fringe`'s decision \
-      with `calculate_finalization`'s progress guard (`:174-197`, `:202-215`). **Where the content is, stated \
+      exact integer comparison — `finalizer.rs:165-184`) and `nextFringe` is `next_fringe`'s decision \
+      with `calculate_finalization`'s progress guard (`finalizer.rs:186-211`, `:214`). **Where the content is, stated \
       plainly**: the `↔`'s shape is the gate's own `if`, so the weight sits in *what the gate computes*, \
       and that is what the boundary theorems falsify — the strict `>`, the exact `3·stake > 2·total` at \
       the 2⁵³ boundary, and the non-bonded skip. Each is pinned by a named Rust test, which is what \
       makes the row a claim about code rather than arithmetic. Not modelled: `check_min_messages`' \
-      arity check ahead of the gate (`finalizer.rs:87`, called at `:188`), which rejects a layer before the stake \
-      question is asked" },
+      arity check ahead of the gate (`finalizer.rs:99`, called at `finalizer.rs:200`), which rejects a \
+      layer before the stake question is asked — and that is **fidelity rather than an oversight**: the \
+      Scala oracle carries the identical body and the identical TODO \
+      (`legacy/block-storage/src/main/scala/coop/rchain/blockstorage/dag/Finalizer.scala:64-66`, \
+      \"add support for epoch changes, simple comparison for senders count is not enough\"), so the \
+      sender-count comparison is a design decision upstream has not made either — the law-48 shape, \
+      recorded open *with its reason* rather than invented here" },
   { number := 14, clause := "b", layer := "Casper",
     statement := "A fringe holds one message per bonded validator (an antichain) — **of the fringe the \
       finalizer derives**; over a bare `Fringe` the claim is false and its refutation is proved",
@@ -787,7 +796,7 @@ def laws : List Law := [
       `Fringe` is freely constructed, so the refutation is three lines. What it is missing is not a \
       hypothesis on the value but the **derivation** — the fringe the port publishes comes from \
       `calculate_finalization`, which advances only on the support gate and only to a strictly new layer \
-      (`finalizer.rs:174-197`, `:202-215`) — and the model has no DAG from which to derive it. Owed: the derivation, \
+      (`finalizer.rs:186-211`, `:214`) — and the model has no DAG from which to derive it. Owed: the derivation, \
       at which point the statement becomes provable rather than falsified" },
   { number := 15, layer := "Casper",
     statement := "The fringe is monotone by height and the seen set is monotone (no regression) — the \
@@ -810,7 +819,7 @@ def laws : List Law := [
       (`message_state.rs:54-59`), which the model now has (`seenOf`, with both halves proved: \
       `seenOf_contains_justifications` and `mem_seenOf_self`); and height monotonicity relates \
       *successive* fringes of one validator, which the finalizer's advance gate produces \
-      (`finalizer.rs:174-197`, `:202-215`). What remains owed is the **transitive** closure the finalizer leans on — \
+      (`finalizer.rs:186-211`, `:214`). What remains owed is the **transitive** closure the finalizer leans on — \
       `a ∈ b.seen → a.seen ⊆ b.seen` — which follows from the construction by induction over the DAG, \
       and the DAG is not modelled here. The old row's claim that the seen set is monotone \"(no \
       regression)\" was true of the port and false of the value the axiom quantified over" },
@@ -972,8 +981,8 @@ def laws : List Law := [
       rather than decorative, and it is exactly the property the model proves: the key is linear, so \
       no two distinct options compare equal, so the minimum is unique, so `min_by` over a `BTreeSet` \
       cannot be observed to depend on iteration order. The model is of the *selection*; the conflict \
-      predicate and the branch sets it runs over are Law 9's (`rspace/src/merger/\
-      event_log_merging_logic.rs:100-158`), which is modelled there" },
+      predicate and the branch sets it runs over are Law 9's (`are_conflicting`, \
+      `rspace/src/merger/event_log_merging_logic.rs:100-158`), which is modelled there" },
   { number := 17, clause := "b", layer := "Casper",
     statement := "The merge's arithmetic is the checked 64-bit one — a value that would leave `i64` is \
       **refused, not wrapped** — and the merged RNG is a function of the *set* of branch generators",
@@ -990,11 +999,14 @@ def laws : List Law := [
       the order branches arrived in, false the moment the caller's sort is removed",
     note := "**the law that stood here was false**: `numeric_channels_nonneg` claimed numeric channels \
       are non-negative, and they are signed `i64` with ordinary negative diffs \
-      (`rholang/src/merging.rs:161-166`, tests at `:349,370` with `diff: -5`). The non-negativity that \
+      (`rholang/src/merging.rs:161-166`, the `NumberChannel` struct; the tests are \
+      `mergeable_data_round_trips` (`:332`, whose `diff: -5` literal is at `:344`) and \
+      `calculate_diff_handles_negative_and_absent_keys` (`:389`)). The non-negativity that \
       *is* true belongs to Law 14's bonds and to `NonNegI64` (`shared/src/refined.rs:64`), which types \
       bonds and heights, never numeric channels. **And the arithmetic is only half checked**: the merge \
-      result uses `checked_add` (`merging.rs:102`) while the diff accumulator uses a plain `i64 +=` \
-      (`rspace/src/merger/event_log_index.rs:151`, `casper/src/merging.rs:758`) — a debug panic, a \
+      result uses `checked_add` (`rholang/src/merging.rs:102`) while the diff accumulator *was* a plain \
+      `i64 +=` (`EventLogIndex::combine`, `rspace/src/merger/event_log_index.rs:156`, and the merge's \
+      own fold at `casper/src/merging.rs:789` — both `checked_add` now) — a debug panic, a \
       release wrap. That half was a code finding (AUDIT §17 C41) and is **fixed**: the accumulation is
       checked now and its error reaches the merge, with `combining_refuses_a_diff_that_leaves_i64`
       (`rspace/src/merger/event_log_index.rs`) failing on a `wrapping_add`" },
@@ -1093,7 +1105,7 @@ def laws : List Law := [
       `j + 2 = i` would leave odd-indexed tasks unordered)",
     note := "`gate_exec_refines_apply` is **gone**: it defined `gateApply` as the sequential fold and \
       then proved the fold is the fold. The Rust's own comment above the gate says the same — 'Not a \
-      speedup — the sound, sequential-equivalent carrier' (`reduce.rs:2324-2327`) — so the content was \
+      speedup — the sound, sequential-equivalent carrier' (`reduce.rs:2344`, in the gate's own comment) — so the content was \
       never in the identification. It is in the **dependency structure**, and that is what \
       `gate_await_closure_orders` proves: the immediate-predecessor await chain is transitively \
       complete, which is exactly the Rust's 'a linear chain of awaits, not the quadratic \
@@ -1109,9 +1121,12 @@ def laws : List Law := [
       asserted",
     note := "the positive half is a fact about a **signature**, not a theorem, which is why this row is \
       `vacuous` rather than a proof claim: `resolve_children` takes no store \
-      (`reduce.rs:2228-2234`, and its comment names the purity), so stating it in Lean would prove that \
+      (`reduce.rs:2242-2250`, with the doc comment naming the purity at `:2238`), so stating it in Lean \
+      would prove that \
       a function ignores a parameter nobody passes. The theorem that stood here \
-      (`next_step_closure_computable`) was `by rfl` and is **deleted**. **And the tempting positive law \
+      (`next_step_closure_computable`) was `by rfl` and is **deleted** — and **that is the reason not to \
+      close this row**: a future proof of the positive half would be `rfl`-shaped again, re-introducing \
+      exactly the vacuity the deletion removed. **And the tempting positive law \
       is false**: resolving `p | q` term-wise does *not* give `resolve p ++ resolve q`, because the Rust \
       flattens all sends before all receives — one send and one receive in each half resolves as \
       `[sp,sq,rp,rq]` merged but `[sp,rp,sq,rq]` concatenated. Found by trying to prove it, which is \
@@ -1154,7 +1169,9 @@ def laws : List Law := [
       `Rchain.fallback_rerun_published, `Rchain.Published],
     rust := ["casper/src/runtime_manager.rs", "rspace/src/concurrent/channel_queue.rs"],
     witness := [`Rchain.published_state_is_the_oracles, `Rchain.fallback_rerun_published],
-    falsifiable := some "the rule is the Rust's own (`casper/src/runtime_manager.rs:1013,1044`): accept \
+    falsifiable := some "the rule is the Rust's own (`validate_relaxed_block`, \
+      `casper/src/runtime_manager.rs:1003`; its acceptance is `comm_multisets_match` over both logs \
+      with `oracle_hash == relaxed_hash`, `:1021-1039`): accept \
       the speculative run only when it agrees with the oracle, and otherwise ship the oracle's result. \
       A publication rule that shipped the speculative state unconditionally would falsify \
       `published_state_is_the_oracles`, which is why the theorem is stated over the *rule* rather than \
@@ -1236,7 +1253,7 @@ def laws : List Law := [
       statement is the port's own: `run_2pc` decides once (`all_ready`), and phase two applies that \
       decision to every leg that voted ready — a leg that did not prepare never locked, so it has no \
       outcome to be uniform about (`casper/src/txn_coordinator.rs:152-192`). The Rust's comment on \
-      `vote_from_reply` (`:196-215`) is the differential reference for the retry path: a re-run \
+      `vote_from_reply` (`:209-217`) is the differential reference for the retry path: a re-run \
       answering `committed` must count as ready, or the other legs abort and the run stops being \
       uniform on exactly the path recovery makes reachable. **The run is modelled now** (2026-09-23, \
       Programme D unit 6): `runPhaseTwo` is the port's phase two, `decisionOf` its two decision lines \
@@ -1256,21 +1273,25 @@ def laws : List Law := [
     witness := [`Rchain.commit_after_abort_is_an_error, `Rchain.abort_after_commit_is_an_error, `Rchain.prepare_refuses_overdraft, `Rchain.txnPrepare_idempotent],
     falsifiable := some "the negatives are the witnesses: a second `prepare` that re-escrowed would fail \
       `txnPrepare_idempotent`, and the port's own test pins the balance after a repeated \
-      `txn_prepare`/`txn_commit` (`native_state.rs:1442-1479`, and \
-      `law28_txn_prepare_rejects_overdraw_and_is_idempotent` at `:1512`); dropping the early return \
+      `txn_prepare`/`txn_commit` (`native_state.rs:1333-1397`, `txn_prepare` at `:1333` and \
+      `txn_commit` at `:1366`; the test is \
+      `law28_txn_prepare_rejects_overdraw_and_is_idempotent` at `native_state.rs:2397`); dropping the \
+      early return \
       would let a retry fail on insufficient balance *after* the first call had already succeeded, which \
-      the port's ordering (`:881-883`, before the balance check) forbids. `commit_after_abort_is_an_error` \
+      the port's ordering (`native_state.rs:1341-1343`, before the balance check) forbids. \
+      `commit_after_abort_is_an_error` \
       fails for a verb that allowed the transition — the port returns \
-      `Err(\"txn commit: already aborted\")` (`:912`), and `abort_after_commit_is_an_error` the mirror \
-      (`:944`). `prepare_refuses_overdraft` is the refusal with the port's own message (`:886`)",
+      `Err(\"txn commit: already aborted\")` (`native_state.rs:1372`), and `abort_after_commit_is_an_error` the mirror \
+      (`native_state.rs:1404`). `prepare_refuses_overdraft` is the refusal with the port's own message (`native_state.rs:1346`)",
     note := "`leg_idempotent` is **proved now** — `funext` on a pointwise update, which is all it ever \
       needed — but it is the per-*shard-state* view, and the port's verbs are not pointwise updates: \
       they read a record, decide, and write a vault balance *and* a record. So the law is re-modelled on \
       the ledger the port keeps, where idempotence is the **early return on an existing record** \
-      (`native_state.rs:881-883`) rather than a coincidence of the arithmetic, and where the **fences** \
-      are stated too — commit after abort is an error and abort after commit is an error (`:912`, \
-      `:944`), which idempotence alone would permit. A fidelity note: the model's `TxnState` carried a \
-      fourth constructor (`proposed`) that the code does not have (`:106-111`); a transaction with no \
+      (`native_state.rs:1341-1343`) rather than a coincidence of the arithmetic, and where the **fences** \
+      are stated too — commit after abort is an error and abort after commit is an error \
+      (`native_state.rs:1372`, `:1404`), which idempotence alone would permit. A fidelity note: the \
+      model's `TxnState` carried a \
+      fourth constructor (`proposed`) that the code does not have (`native_state.rs:140`); a transaction with no \
       record is `none`, which is how the verbs spell it" },
   { number := 29, layer := "Cross-shard",
     statement := "The coordinator's decision is a *function* of its votes — `committed` iff every \
@@ -1294,7 +1315,7 @@ def laws : List Law := [
       `allReady`/`coordinatorDecision` are the Rust's `all_ready`/`decision` lines, and \
       `coordinator_decision_committed_iff` says `committed` iff every vote is ready — while the \
       **durability half is now modelled too** (2026-09-23, Programme D unit 6): `CoordRecord.recordVote` \
-      is the port's `record_vote` (`gateway/ledger.rs:158-178`), whose first line — a terminal record \
+      is the port's `record_vote` (`casper/src/gateway/ledger.rs:158-178`), whose first line — a terminal record \
       ignores later votes — is the fix for AUDIT §15 C1, and the four theorems are the port's own \
       `an_abort_is_absorbing` / `a_commit_is_absorbing` plus the contrast that shows the guard is a \
       choice rather than a fact about votes (`an_abort_vote_aborts_a_prepared_record`). On the \
@@ -1307,8 +1328,8 @@ def laws : List Law := [
     status := .open,
     falsifiable := none,
     note := "`parser.rs` is more permissive in places (AUDIT C24's residual); needs `Rchain/Parse.lean` \
-      and the grammar as data. The gate already reserves a `parse` corpus consumer \
-      (`tools/check-lean-conformance.sh:132`) with nothing behind it yet" },
+      and the grammar as data. The gate already reserves the `parse` corpus's consumer \
+      (`tools/check-lean-conformance.sh:207`, `lean_parse_corpus`) with nothing behind it yet" },
   { number := 31, layer := "Rholang",
     statement := "Every BNFC term is accepted, modulo a data list of documented deviations",
     status := .open,
@@ -1467,7 +1488,7 @@ def laws : List Law := [
       the obstacle was a modelling gap rather than an induction: the rule's constructors built their \
       receive through `receiveParP`/`receiveParPs`, which *fix* `freeCount := patterns.length` and \
       `bindCount := 1`, so the rule could not derive what the search accepted — the port's `free_count` is \
-      `count_no_wildcards` (`normalizer.rs:1295-1300`), so an ordinary `for (@a, @b <- c)` has \
+      `count_no_wildcards` (`normalizer.rs:1326-1329`, the `ReceiveBind`'s `free_count`), so an ordinary `for (@a, @b <- c)` has \
       `freeCount = 0` against `patterns.length = 2` and the node contracts it (AUDIT C45). Both \
       constructors now take those two fields as parameters, and take the channel as *two* parameters with \
       a shared-name hypothesis — the node's own condition. That last change is also what let the *domain \
@@ -1588,8 +1609,9 @@ def laws : List Law := [
       (`epochStep_conserves`, from `payDue_conserves` plus the observation that the other three steps \
       are ledger steps). **The refusal is structural, not a hypothesis**: `payDue` is partial \
       (`Option`) and returns `none` when the vault cannot cover the payout, because the port's \
-      `debit_pos_vault` *fails* the transfer (`native_state.rs:1139`) and `close_block` writes nothing \
-      on that path (`:1151-1157`) — an unguarded `Nat` subtraction would truncate the debit and mint the \
+      `debit_pos_vault` *fails* the transfer (`native_state.rs:904`, its refusal at `:909`) and \
+      `close_block` (`native_state.rs:1083`) writes nothing on that path — the debit's `?` at `:1139` \
+      returns before any of its state writes — an unguarded `Nat` subtraction would truncate the debit and mint the \
       difference, which is the quiet-wrong-answer shape this project refuses everywhere else. Two \
       falsifications, both run: deleting the payout's vault debit makes `payDue_conserves` unprovable, \
       and weakening the guard (`≤` to always-pay) does the same — the second is the one that shows the \
@@ -1614,7 +1636,7 @@ def laws : List Law := [
       Rust side `an_epoch_splits_the_pot_and_keeps_the_dust` builds exactly that state (bonds 4 and 5, \
       `minimum_bond` 3, a pot of 10 paid in as phlo) and reads the split back, so the implementation is \
       checked against the arithmetic rather than against a remembered number",
-    note := "the formula is the Scala's `getCurrentEpochRewards` (`Pos.rhox:241-256`), and the port's \
+    note := "the formula is the Scala's `getCurrentEpochRewards` (`casper/src/genesis/resources/Pos.rhox:241-256`), and the port's \
       `epoch_reward` agrees with it wherever the contract is *defined*; where it is not — \
       `minimumBond = 0`, or a normaliser of zero — the contract divides by zero and faults the deploy, \
       and the port pays zero instead (registered in `AUDIT.md` §6). The model's `reward` is total, so \
@@ -1664,7 +1686,9 @@ def laws : List Law := [
     note := "the contract's ordering is the law's substance, and **it is now modelled** (2026-09-23): \
       the reward is committed *before* the move, so a validator earns in the epoch it leaves and is paid \
       that reward later, when it is no longer in the pool — which is why the claim stores the bond and \
-      reads the reward from the committed map at payment time (`Pos.rhox:582` and `:604`; the contract's \
+      reads the reward from the committed map at payment time \
+      (`casper/src/genesis/resources/Pos.rhox:582`, the `withdrawers` write, and `:604`, the \
+      `payWithdrawer` send; the contract's \
       header comment describing the stored pair as `bond + reward` is the *payee's* sum, not the \
       record's). The three stages are three theorems over `Rchain/Pos.lean`'s state machine: staged \
       (`a_staged_withdrawal_moves_no_coins` — the deadline is `quarantineLength + epochLength * (1 + n / \

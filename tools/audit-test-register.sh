@@ -33,6 +33,12 @@
 #      words (`open`, `boundary`, `orphaned`, `axiomatic`, `deviation`). This is check 2's rule
 #      applied to the law catalogue, and it is the check that would have caught C30-C40's gaps: each
 #      was a row whose status read better than its evidence.
+#   9. **The register's prose anchors still resolve** — for every `path:line` citation in a row of
+#      `spec/laws.tsv`, the path must resolve, the line must be inside the file, and the cited window
+#      must contain an identifier the row itself names. The register's Lean checks verify that an
+#      anchor's *file* exists (a file does not rot); nothing read the lines, so five rows had drifted
+#      by 2026-09-24 while every other check stayed green. The convention this enforces — and the
+#      reason for it — is in `spec/STYLE.md`.
 #
 # The class vocabulary is **closed** because a row that can invent its own reason is not a reason:
 # a `peer-bound` or `harness-bound` row must name its covering test as `path::test`, and the linter
@@ -362,6 +368,106 @@ while IFS= read -r row; do
 done < <(grep -E '^\| *[0-9]+ \|' "$ROOT/spec/INVENTORY.md")
 if (( law_bad == 0 )); then
   ok "$law_rows law row(s) 30+ name real files or state their status"
+fi
+
+# --- 9. the register's prose line-citations resolve --------------------------
+#
+# The register's own checks (`Rchain/LawsMain.lean`) verify that an anchor's *file* exists
+# (`rustAnchorFailures`) — a file does not rot — but the line numbers a row's prose carries are written
+# by hand and nothing read them, so five rows had drifted silently by 2026-09-24 (law 28 whole, law
+# 14a's finalizer cites, law 44's `debit_pos_vault`, law 9's concatenation, law 3's `par_concat`)
+# while every other check stayed green. This is that reader: for every `path:line` / `path:line-line`
+# citation in a row's prose — and every bare `:NNN` continuation, which inherits the most recent path
+# in the same cell the way a reader reads it — the path must resolve, the line must be inside the file,
+# and the cited window (±8 lines) must contain an identifier the row itself names in backticks. The
+# last clause is the one that catches rot: a line that moved now points at unrelated code, so the
+# symbol the row is talking about is not there.
+#
+# **What it measures, stated because it is the trap this file's own inventory check warns about**: the
+# *emitted* `spec/laws.tsv`, not `spec/Rchain/Laws.lean` and not the working tree. A row you have just
+# edited in the Lean will not be read here until `tools/emit-lean-laws.sh` has run, so a citation that
+# this check still calls stale after an edit means the edit is not emitted (or the register did not
+# build) — not that the check is wrong. Why a shell check and not a register check: this needs only the
+# TSV, so it runs in the fast audit rather than behind a `lake build`. Why the window is ±8 rather than
+# exact: a citation usually names the function whose *body* holds the claim ("the early return is at
+# `:1341-1343`"), so the symbol sits a few lines above it. The convention the rows follow is in
+# `spec/STYLE.md`.
+printf '\n== register anchors (every cited line still holds what the row says) ==\n'
+ANCHOR_CITE='([A-Za-z0-9_][A-Za-z0-9_./-]*\.(rs|v|lean|md|scala|toml|sh|tsv|json|rhox|rho)):([0-9]+)(-([0-9]+))?|:([0-9]+)(-([0-9]+))?'
+ANCHOR_INDEX="$(cd "$ROOT" && git ls-files | awk -F/ '{print $NF"\t"$0}' | sort)"
+anchor_total=0
+anchor_bad_before=$failures
+# The delimiter is `\034`, not tab, and that is load-bearing: `read` treats tab as IFS *whitespace*,
+# so it collapses an **empty field** — and every single-clause law has an empty `clause` column, which
+# shifted every later variable by one and left `falsifiable` unscanned entirely. (The first draft used
+# tab; the falsifier — a past-EOF line injected into `falsifiable` — reported green, which is how the
+# shift was found. A check that scans the wrong column is not evidence, so `\034` it is.)
+while IFS=$'\034' read -r num clause layer status decls axioms corpus rust coq witness falsifiable statement note; do
+  [[ "$num" == "number" ]] && continue
+  # the row's own vocabulary: the backticked, identifier-shaped tokens it names anywhere in its prose
+  # `|| true` on every pipeline whose last `grep` may find nothing: under this script's
+  # `set -euo pipefail` a no-match grep inside a command substitution aborts the run, which is the trap
+  # the inventory counts' own comment names — and which the first draft of this check fell into.
+  row_anchors="$(printf '%s\n' "$rust" "$coq" | tr ',' '\n' | sed -e 's/^ *//' -e 's/ *$//' -e 's/:.*$//' | grep -v '^-$' || true)"
+  # The token shape admits dotted and `::`-qualified *method and field paths* — a row that names
+  # `produce_refs.sort_by_key` or `EventLogIndex::combine` is naming the code as precisely as one that
+  # names a bare function, and a filter that dropped them reported a correct citation stale.
+  row_idents="$(printf '%s\n' "$statement" "$falsifiable" "$note" "$decls" "$witness" \
+    | grep -oE '`[^`]+`' | tr -d '`' | grep -E '^[A-Za-z_][A-Za-z0-9_]*([.:]{1,2}[A-Za-z_][A-Za-z0-9_]*)*(\(\))?$' | sort -u || true)"
+  for cell in "$statement" "$falsifiable" "$note"; do
+    text="$cell"; cite_path=""
+    while [[ "$text" =~ $ANCHOR_CITE ]]; do
+      cite="${BASH_REMATCH[0]}"
+      if [[ -n "${BASH_REMATCH[1]:-}" ]]; then
+        cite_path="${BASH_REMATCH[1]}"; from="${BASH_REMATCH[3]}"; to="${BASH_REMATCH[5]:-${BASH_REMATCH[3]}}"
+      else
+        from="${BASH_REMATCH[6]}"; to="${BASH_REMATCH[8]:-${BASH_REMATCH[6]}}"
+      fi
+      text="${text#*"$cite"}"
+      [[ -z "$cite_path" ]] && continue
+      anchor_total=$((anchor_total + 1))
+      # A path with an ellipsis is a pointer for a reader, not a citation this can resolve.
+      [[ "$cite_path" == *...* ]] && continue
+      # resolve: as written, then the row's own anchors by basename, then a unique basename in the tree
+      file=""
+      if [[ "$cite_path" == */* ]]; then
+        for cand in "$ROOT/$cite_path" "$ROOT/spec/$cite_path"; do [[ -f "$cand" ]] && { file="$cand"; break; }; done
+      else
+        pref="$(printf '%s\n' "$row_anchors" | grep -E "/$cite_path\$" | head -1 || true)"
+        [[ -n "$pref" && -f "$ROOT/$pref" ]] && file="$ROOT/$pref"
+        if [[ -z "$file" ]]; then
+          matches="$(printf '%s\n' "$ANCHOR_INDEX" | awk -F'\t' -v b="$cite_path" '$1 == b {print $2}')"
+          [[ "$(printf '%s\n' "$matches" | grep -c . || true)" == "1" ]] && file="$ROOT/$matches"
+        fi
+      fi
+      if [[ -z "$file" ]]; then
+        fail "law ${num}${clause}: \`$cite_path:$from\` does not resolve — write the path in full (its basename is ambiguous or absent)"
+        continue
+      fi
+      if (( from > $(wc -l < "$file") )); then
+        fail "law ${num}${clause}: \`$cite_path:$from\` is past the file's end ($(wc -l < "$file") lines)"
+        continue
+      fi
+      window="$(sed -n "$(( from > 8 ? from - 8 : 1 )),$(( to + 8 ))p" "$file")"
+      hit=""
+      while IFS= read -r id; do
+        [[ -z "$id" ]] && continue
+        [[ "$window" == *"$id"* ]] && { hit="$id"; break; }
+        # the model's names are snake_case and the oracle's camelCase: compare both spellings
+        camel="$(printf '%s' "$id" | awk -F_ '{s=$1; for(i=2;i<=NF;i++) s=s toupper(substr($i,1,1)) substr($i,2); print s}')"
+        [[ "$camel" != "$id" && "$window" == *"$camel"* ]] && { hit="$id"; break; }
+      done <<< "$row_idents"
+      if [[ -z "$hit" ]]; then
+        fail "law ${num}${clause}: \`$cite_path:$from-$to\` holds no identifier the row names — $(sed -n "${from}p" "$file" | cut -c1-60)"
+      fi
+    done
+  done
+done < <(awk -F'\t' 'BEGIN { OFS="\034" } { $1 = $1; print }' "$ROOT/spec/laws.tsv")
+# A check that scanned nothing is not evidence: if the TSV's columns move, this must fail loudly rather
+# than report success over zero citations — the trap check 8's own comment records finding.
+(( anchor_total > 0 )) || fail "no register citations found — the TSV's columns moved and this check is vacuous"
+if (( failures == anchor_bad_before )); then
+  ok "$anchor_total register citation(s) resolve, and each cited window holds what the row names"
 fi
 
 # --- summary -----------------------------------------------------------------

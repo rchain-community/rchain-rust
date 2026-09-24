@@ -21,6 +21,26 @@ infer from 15,000 lines.
   on a hand-written total too. Historical figures are spelled out in words, because a historical total is
   still a total a reader may believe.
 
+## Anchors name a symbol, not just a line
+
+A row's prose cites the code it is a claim about, and a citation that carries a line number must also
+name the symbol it points at — `native_state.rs:1341-1343` (`txn_prepare`'s early return), not a bare
+range. Where a symbol alone suffices, prefer the symbol form (`path.rs:symbol`, the shape the `coq`
+field already uses), because a name does not rot and a line does. Write paths in full whenever the
+basename is not unique in the tree: `rholang/src/storage.rs`, not `storage.rs` (which `rspace/` also
+has); `casper/src/genesis/resources/Pos.rhox`, not `Pos.rhox` (the legacy copy shares every cited
+line).
+
+The reason it is a rule rather than a preference: **the register's own checks verify that an anchor's
+file exists, and nothing read the lines**, so five rows had drifted silently by 2026-09-24 — law 28
+whole (its section moved ~450 lines), law 14a's finalizer cites, law 44's `debit_pos_vault` (cited at
+a *call site*), law 9's concatenation (moved to another file), law 3's `par_concat` (imported, not
+defined in the cited file). `tools/audit-test-register.sh`'s check 9 now enforces this: every
+`path:line` a row carries must resolve, be inside the file, and — the clause that catches the rot —
+its ±8-line window must contain an identifier the row itself names. The model's names are snake_case
+and the oracle's are camelCase, so the check compares both spellings (`check_min_messages` against
+`checkMinMessages`).
+
 ## Names that are load-bearing
 
 | shape | means | examples |
