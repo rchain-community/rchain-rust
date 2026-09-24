@@ -3462,9 +3462,24 @@ port against the **reference document** rather than against itself.
   read zero). That is the pass's rule exactly: an instrument that cannot see the defect it names is not
   evidence, and a scan that has gone blind looks identical to a clean tree.
 
+  **The plant, in the tree** (the falsifier as the unit asked for it): `spec/Rchain/HygieneProbe.lean`
+  carrying `opaque def probeRatchet : Nat := 0` makes the scan report it and therefore trips the gate's
+  `[[ -s log ]]` fail branch; deleting the file restores a clean scan. The plant lived for one command
+  and the file is gone.
+
+  **The citation, and the fix that ends the fragility.** Law 30 cites a line of this script for
+  `lean_parse_corpus`; the first version of this change moved it `207 → 247` and
+  `tools/audit-test-register.sh` failed on the stale window (correctly — it is check 9's job). The
+  landed version restores it (`208` against `207`, inside the check's ±8 window, audit green) by keeping
+  the region line-neutral and putting the explanation below the mapping. `register-lean` is re-anchoring
+  that citation in the **symbol** form (`tools/check-lean-conformance.sh:lean_parse_corpus`), which is the
+  deeper fix this finding recommends: a citation into a script should name a token, not a line — the line
+  moves every time a step above it is edited, and nothing in the register can tell.
+
   **What was not run: the whole gate.** Its first step is `lake build`, and the Lean slot belongs to the
   lead — so the end-to-end run of the modified gate is owed and named in this unit's handover rather than
-  assumed here. The scan step is the one that changed, and it is the step that was exercised.
+  assumed here. The scan step is the one that changed, and it is the step that was exercised, in both
+  directions.
 
 
 ## 20. The back-sweep: every incident to its law and its case
