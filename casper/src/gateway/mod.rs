@@ -102,13 +102,26 @@ impl LocalShardDeployService {
     /// The shard's current height, which a phase deploy is anchored at: with a hardcoded
     /// `valid_after = 0` the deploy is *born expired* once the chain is more than `DEPLOY_LIFESPAN`
     /// blocks past genesis, and the participant never sees it.
-    async fn current_height(&self, shard_id: &ShardId) -> i64 {
+    ///
+    /// **A head that cannot be read is an `Err`, not `0`** (AUDIT C64). `0` anchors the deploy at
+    /// genesis, so a failed read did not fail the phase — it submitted a deploy that expires on
+    /// arrival, invisibly: nothing downstream reports an error, the participant simply never sees the
+    /// leg. The gateway is Rust-first (`docs/src/node/shard-invoke.md`), so there is no Scala `F` to
+    /// conform to; its own submit path is the oracle, and that path already refuses a phase it cannot
+    /// build (`signed_invoke`'s `Err` → `ShardOutcome::Error` in [`Self::phase_with_term`]), which is
+    /// the same answer this read gets now.
+    ///
+    /// An **unknown** shard is still `Ok(0)`: that is a routing fact rather than a read failure, and
+    /// refusing a phase for it would be a different decision.
+    async fn current_height(&self, shard_id: &ShardId) -> Result<i64, String> {
         match self.shards.get(shard_id) {
             Some(shard) => match shard.block_api.get_latest_message().await {
-                Ok(metadata) => i64::from(metadata.block_num),
-                Err(_) => 0,
+                Ok(metadata) => Ok(i64::from(metadata.block_num)),
+                Err(e) => Err(format!(
+                    "cannot anchor a phase deploy: the head of shard {shard_id} could not be read: {e}"
+                )),
             },
-            None => 0,
+            None => Ok(0),
         }
     }
 }
@@ -376,7 +389,12 @@ impl GatewayTxn {
 
     async fn phase_with_term(&self, leg: &LegRecord, term: &str) -> ShardOutcome {
         let shard_id = leg.shard_id.to_string();
-        let valid_after = self.local.current_height(&leg.shard_id).await;
+        let valid_after = match self.local.current_height(&leg.shard_id).await {
+            Ok(height) => height,
+            // Same shape as the signed-invoke failure below: a phase we cannot anchor is a phase we
+            // refuse, rather than one submitted to expire (AUDIT C64).
+            Err(err) => return ShardOutcome::Error(err),
+        };
         // `Signed<DeployData>` borrows a `&dyn SignaturesAlg`, which is not `Sync`, so it must not be
         // held across an `.await` — the future would stop being `Send` and could not be spawned.
         let (deploy, sig) = {
@@ -769,14 +787,27 @@ mod tests {
     #[tokio::test]
     async fn current_height_reads_the_shards_head() {
         let (_, _, _, local) = gateway_with_counters().await;
-        assert_eq!(local.current_height(&shard("/root")).await, 7);
-        assert_eq!(local.current_height(&shard("/root/child")).await, 3);
+        assert_eq!(
+            local
+                .current_height(&shard("/root"))
+                .await
+                .expect("a readable head"),
+            7
+        );
+        assert_eq!(
+            local
+                .current_height(&shard("/root/child"))
+                .await
+                .expect("a readable head"),
+            3
+        );
     }
 
-    /// An unknown shard and a shard whose head cannot be read both fall back to 0 (the most
-    /// permissive anchor) rather than failing the phase before it is submitted.
+    /// An **unknown** shard still falls back to 0 — a routing fact, not a read failure: the shard may
+    /// simply be one this node does not validate, and refusing the phase for that is a different
+    /// decision from refusing it for an unreadable store.
     #[tokio::test]
-    async fn current_height_is_zero_when_the_shard_is_unknown_or_errors() {
+    async fn current_height_is_zero_when_the_shard_is_unknown() {
         let api = Arc::new(CountingShard::new(Err("no head".to_string())));
         let mut shards = BTreeMap::new();
         shards.insert(
@@ -788,8 +819,47 @@ mod tests {
             },
         );
         let local = LocalShardDeployService::new(shards);
-        assert_eq!(local.current_height(&shard("/root")).await, 0);
-        assert_eq!(local.current_height(&shard("/elsewhere")).await, 0);
+        assert_eq!(
+            local
+                .current_height(&shard("/elsewhere"))
+                .await
+                .expect("an unknown shard has no head to read"),
+            0
+        );
+    }
+
+    /// **A head that cannot be read is not `valid_after = 0`** (AUDIT C64).
+    ///
+    /// `0` anchors the deploy at genesis, and once the chain is more than `DEPLOY_LIFESPAN` past it
+    /// the phase deploy is *born expired*: the participant never sees the leg and nothing reports an
+    /// error. The gateway has no Scala oracle (it is this port's own coordinator), but its submit
+    /// path is its own oracle here and already refuses a phase it cannot build, one line below the
+    /// anchor read.
+    ///
+    /// Falsifier in its pre-fix (witnessing) form: the failed read *was* answered with `0`, and the
+    /// assertion below passed on exactly that (run 2026-09-24 as part of
+    /// `current_height_is_zero_when_the_shard_is_unknown_or_errors`, which this test replaces).
+    #[tokio::test]
+    async fn current_height_refuses_a_head_it_cannot_read() {
+        let api = Arc::new(CountingShard::new(Err("no head".to_string())));
+        let mut shards = BTreeMap::new();
+        shards.insert(
+            shard("/root"),
+            LocalShard {
+                shard_id: shard("/root"),
+                block_api: api,
+                max_listen_depth: 50,
+            },
+        );
+        let local = LocalShardDeployService::new(shards);
+        let err = local
+            .current_height(&shard("/root"))
+            .await
+            .expect_err("a head that cannot be read must not anchor the deploy at genesis");
+        assert!(
+            err.contains("no head"),
+            "and the refusal must name the failure, got: {err}"
+        );
     }
 
     /// The reply channel must be a deploy id: anything else is a caller mistake, reported rather
