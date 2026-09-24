@@ -6,14 +6,22 @@
 //! equivalent; the raw benches use the real `Par`/`BindPattern`/`ListParWithRandom`/
 //! `TaggedContinuation` types instead.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-use criterion::{criterion_group, criterion_main, Criterion};
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 
+use rchain_block_storage::dag::finalizer::Message;
+use rchain_block_storage::dag::message_state::DagMessageState;
+use rchain_block_storage::dag::metadata_store::{
+    add_block_to_dag_state_mut, BlockInfo, DagState,
+};
+use rchain_block_storage::dag::representation::DagRepresentation;
 use rchain_crypto::hash::blake2b256_hash::Blake2b256Hash;
 use rchain_crypto::hash::blake2b512_random::Blake2b512Random;
 use rchain_models::ast::{Expr, Par, Var};
+use rchain_models::block_hash::BlockHash;
+use rchain_models::validator::Validator;
 use rchain_models::runtime::{BindPattern, ListParWithRandom, TaggedContinuation};
 use rchain_models::sorted::SortedProc;
 use rchain_rholang::runtime::{ReplayRhoRuntime, RhoRuntime};
@@ -23,6 +31,7 @@ use rchain_rspace::factory::create_history_repository;
 use rchain_rspace::hot_store::InMemHotStore;
 use rchain_rspace::rspace::RSpace;
 use rchain_rspace::tuple_space::Tuplespace;
+use rchain_shared::refined::{BlockHeight, SeqNum};
 use rchain_shared::store_manager::InMemoryStoreManager;
 
 const MVCEPP: &str = include_str!("resources/mvcepp.rho");
@@ -392,10 +401,95 @@ fn sched_bench(c: &mut Criterion) {
     store_contention(c);
 }
 
+
+/// A chain of `n` messages — block `i` justifies block `i - 1` — built the way the storage's
+/// restore folds a stored chain: `create_message` (which runs the finalizer) then the in-place
+/// insert. Built as a `DagRepresentation` so the pass's own accounting can be read off it.
+fn chain_representation(n: usize) -> DagRepresentation {
+    let mut messages = DagMessageState::<BlockHash, Validator>::empty();
+    let mut dag_state = DagState::empty();
+    let mut previous: Option<Message<BlockHash, Validator>> = None;
+    for i in 0..n {
+        let mut bytes = [0u8; 32];
+        bytes[..8].copy_from_slice(&(i as u64).to_le_bytes());
+        let id = BlockHash::new(bytes);
+        let justifications: BTreeSet<Message<BlockHash, Validator>> =
+            previous.iter().cloned().collect();
+        let height = BlockHeight::try_from(i as i64).expect("a bench chain's height");
+        let msg = messages.create_message(
+            id,
+            height,
+            Validator::new([0u8; 65]),
+            SeqNum::try_from(i as i64).expect("a bench chain's seq"),
+            BTreeMap::new(),
+            &justifications,
+        );
+        add_block_to_dag_state_mut(
+            &BlockInfo {
+                hash: id,
+                parents: msg.parents.clone(),
+                block_num: height,
+                validation_failed: false,
+            },
+            &mut dag_state,
+        );
+        messages.insert_msg_mut(&msg);
+        previous = Some(msg);
+    }
+    DagRepresentation {
+        dag_set: dag_state.dag_set,
+        child_map: dag_state.child_map,
+        height_map: dag_state.height_map,
+        dag_message_state: messages,
+        fringe_states: BTreeMap::new(),
+    }
+}
+
+/// The `dag` group: the two curves the pass's constants question needs — N against time, and N
+/// against the accounting the DAG publishes.
+///
+/// - `fold_chain/N` is the restore shape of AUDIT C55 (`create` folds every stored block through
+///   `insert_msg_mut`), at sizes small enough to read as a curve.
+/// - `accounting/N` is the cost of the gauges Stage 6 publishes per insert: the sums are of `len()`s,
+///   so this is the Θ(N) pass over the message map, not over the sets.
+/// - The `logical_bytes`/`seen_entries` values are printed once per N: they are the numbers H6's
+///   resident floor is stated in (Σ|seen| × 32 B is the Θ(N²) term), and the reason the bench exists
+///   is to settle those constants if a later pass reopens the floor.
+fn dag_bench(c: &mut Criterion) {
+    let mut group = c.benchmark_group("dag");
+    group.sample_size(10);
+    for n in [250usize, 500, 1000] {
+        group.bench_with_input(BenchmarkId::new("fold_chain", n), &n, |b, &n| {
+            b.iter(|| chain_representation(n).dag_message_state.msg_map.len());
+        });
+        let representation = chain_representation(n);
+        println!(
+            "dag curve: N={n} messages={} seen_entries={} index_entries={} logical_bytes={}",
+            representation.message_count(),
+            representation.seen_entries(),
+            representation.index_entries(),
+            representation.logical_bytes()
+        );
+        group.bench_with_input(BenchmarkId::new("accounting", n), &n, |b, &n| {
+            let representation = chain_representation(n);
+            b.iter(|| {
+                (
+                    representation.message_count(),
+                    representation.seen_entries(),
+                    representation.index_entries(),
+                    representation.logical_bytes(),
+                )
+            });
+        });
+    }
+    group.finish();
+}
+
 criterion_group!(eval, eval_bench);
 criterion_group!(wide, wide_bench);
 criterion_group!(key, key_bench);
 criterion_group!(rspace, rspace_bench);
 criterion_group!(replay, replay_rspace_bench);
 criterion_group!(sched, sched_bench);
-criterion_main!(eval, wide, key, rspace, replay, sched);
+criterion_group!(dag, dag_bench);
+criterion_main!(eval, wide, key, rspace, replay, sched, dag);

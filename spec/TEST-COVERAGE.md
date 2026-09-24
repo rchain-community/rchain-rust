@@ -210,6 +210,14 @@ not found in that file. Coverage claims live here rather than in prose so they c
 | G2 | `casper/src/dag.rs` | `restoring_a_stored_chain_is_not_cubic_in_the_message_state` |
 | G2 | `block-storage/src/dag/message_map.rs` | `between_is_the_id_set_difference_restricted_to_the_map` |
 | G2 | `comm/src/transport/chunker.rs` | `chunk_it_rejects_too_small_max_message_size` |
+| G2 | `comm/src/transport/chunker.rs` | `chunking_a_page_does_not_copy_it_whole` |
+| G2 | `casper/src/engine/node_running.rs` | `a_store_items_page_costs_the_dispatch_loop_this_long` |
+| G2 | `casper/src/dag.rs` | `fringe_states_are_keyed_by_the_stores_own_key` |
+| G2 | `casper/src/dag.rs` | `the_representation_digest_pins_the_value_and_moves_with_it` |
+| G2 | `casper/src/dag.rs` | `the_index_is_shared_with_the_representation_not_copied` |
+| G2 | `casper/src/dag.rs` | `the_dag_publishes_its_own_gauges` |
+| G2 | `casper/src/merging.rs` | `rejections_are_indexed_for_the_final_scope_only` |
+| G2 | `node/src/web/http.rs` | `the_metrics_route_serves_the_registrys_own_numbers` |
 | G2 | `comm/src/transport/stream_handler.rs` | `restore_rejects_oversized_decompressed_content` |
 | G2 | `shared/src/rate_limiter.rs` | `admits_exactly_max_per_window_then_refuses` |
 | G2 | `node/src/web/http.rs` | `api_deploy_returns_429_when_the_limiter_is_exhausted` |
@@ -339,6 +347,22 @@ hard mode would fail on, so that a half-finished sweep is legible instead of inv
   slower joint regression; the insert test asserts the same allocation survives an insert into an
   unread DAG, and its doc comment says plainly that the transient copy's cost is *not* measured,
   because no instrument available here can see it (a `#[global_allocator]` needs `unsafe`).
+
+  **The performance tail added five more, and the shape that worked is worth naming** (`AUDIT.md`
+  C56 §20 / C62): where no allocation counter is available, the falsifiable claim is the *mechanism* —
+  pointer identity (`the_index_is_shared_with_the_representation_not_copied`: the store's index and the
+  representation's are the same allocation, and a snapshot taken before an insert keeps the one it
+  read), or the count an over-wide loop would produce (`rejections_are_indexed_for_the_final_scope_only`:
+  3 entries for the final scope, not 500 for the whole DAG), or the identity the map is keyed by
+  (`fringe_states_are_keyed_by_the_stores_own_key`). Where a *time* bound is the only instrument
+  (`comm/src/transport/chunker.rs`'s `chunking_a_page_does_not_copy_it_whole`), it is expressed
+  **relative to one explicit `Vec::clone` of the same payload measured in the same process**, so a
+  slower machine scales both sides and the bound does not have to be re-calibrated per runner: 1.30–1.33×
+  for the borrow against 3.84–3.96× with the copies restored, bound 2.0. And the negative control for a
+  representation-only change is a *value* fingerprint, not a cost: `the_representation_digest_pins_the_value_and_moves_with_it`
+  digests the messages and the fringe data (sorted on the fringe hash, so re-keying cannot move it) and
+  then asserts it moves when a block is added, so a constant digest is evidence rather than a
+  tautology; `logical_bytes` (Stage 6) is the same control in the units the residency claims use.
 
 - **G3 — PoS lifecycle mutations** (`rholang/src/native_state.rs`). ✅ `bond` trust admission +
   min/max + funds, deferred activation at the boundary, `withdraw` staging + quarantine payout via

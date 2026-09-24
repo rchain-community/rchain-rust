@@ -103,7 +103,9 @@ invariants.
 - **Accepted-faithful residuals** (by design, not defects — see `AUDIT.md` §5/§11): plaintext
   external-IP discovery (M7), the DAG `seen`-cache Θ(N²) *residency* (H6 — its per-clone cost is no
   longer paid: `seen` is shared behind `Arc`, and neither reading nor extending the DAG copies it,
-  per the 2026-09-24 pass), and the rate-limited-but-plaintext
+  per the 2026-09-24 pass; the residual *size* is now reported rather than estimated, by the DAG's own
+  `logical_bytes` gauge — the bench's `dag` curve reads 16.2 MB at N=1,000, which extrapolates to
+  ≈553 MB at the 5,881-block devnet chain), and the rate-limited-but-plaintext
   Kademlia discovery bind.
 
 The earlier "deferred/unwired" surface (Kademlia, the HTTP transaction API, block reporting, the

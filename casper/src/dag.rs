@@ -16,6 +16,7 @@ use rchain_models::block_metadata::BlockMetadata;
 use rchain_models::casper::protocol::casper_message::{BlockMessage, SignedDeployData};
 use rchain_models::fringe_data::FringeData;
 use rchain_models::validator::Validator;
+use rchain_shared::metrics::{Metrics, MetricsNop, Source};
 use rchain_shared::typed_store::KeyValueTypedStore;
 
 use crate::block_metadata_store::BlockMetadataStore;
@@ -59,6 +60,10 @@ pub struct BlockDagKeyValueStorage {
     fringe_data_store: Arc<dyn KeyValueTypedStore<Blake2b256Hash, FringeData>>,
     deploy_index: Arc<dyn KeyValueTypedStore<DeployId, BlockHash>>,
     deploy_store: Arc<dyn KeyValueTypedStore<DeployId, SignedDeployData>>,
+    /// Where the DAG's own gauges go (defaults to the no-op sink; the node wires its
+    /// `MetricsRegistry` in). This is the attribution instrument for the structure's cost, in place
+    /// of the profiler this environment cannot run (AUDIT C56's owed paragraph).
+    metrics: Arc<dyn Metrics + Send + Sync>,
 }
 
 impl BlockDagKeyValueStorage {
@@ -124,7 +129,53 @@ impl BlockDagKeyValueStorage {
             fringe_data_store,
             deploy_index,
             deploy_store,
+            metrics: Arc::new(MetricsNop),
         })
+    }
+
+    /// Point the DAG's gauges at a sink (the node's `MetricsRegistry`) and publish what the
+    /// structure already holds. Defaults to `MetricsNop`, so a test or a tool that never attaches a
+    /// sink pays nothing.
+    ///
+    /// The publish is on attach as well as per insert: a restart has a whole chain to report before
+    /// it accepts its first block, and `/metrics` should say so.
+    pub fn with_metrics(mut self, metrics: Arc<dyn Metrics + Send + Sync>) -> Self {
+        self.metrics = metrics;
+        // Synchronous, and no guard is held here — `try_read` rather than an await, because this is
+        // the constructor path. A caller that attached the sink while a writer held the lock would
+        // simply publish nothing until its next insert.
+        if let Ok(representation) = self.representation.try_read() {
+            self.set_gauges(
+                representation.message_count(),
+                representation.seen_entries(),
+                representation.fringe_states.len(),
+                representation.index_entries(),
+                representation.logical_bytes(),
+            );
+        }
+        self
+    }
+
+    /// Push the five gauges (no lock: the caller has the values).
+    fn set_gauges(
+        &self,
+        messages: usize,
+        seen_entries: usize,
+        fringe_states: usize,
+        index_entries: usize,
+        logical_bytes: usize,
+    ) {
+        let source = Source::base().sub("dag");
+        let count = |n: usize| i64::try_from(n).unwrap_or(i64::MAX);
+        self.metrics.set_gauge(&source, "messages", count(messages));
+        self.metrics
+            .set_gauge(&source, "seen_entries", count(seen_entries));
+        self.metrics
+            .set_gauge(&source, "fringe_states", count(fringe_states));
+        self.metrics
+            .set_gauge(&source, "index_entries", count(index_entries));
+        self.metrics
+            .set_gauge(&source, "logical_bytes", count(logical_bytes));
     }
 
     /// Expire deploys from the pool whose `valid_after_block_number` is older than the deploy
@@ -309,6 +360,15 @@ impl BlockDagStorage for BlockDagKeyValueStorage {
                 prune_cache_ids = prunable.iter().map(|m| m.id).collect();
             }
             latest_block_number = repr.latest_block_number();
+            // Published here, from the representation the write guard already holds — a second read
+            // lock would deadlock against the guard this block is inside of.
+            self.set_gauges(
+                repr.message_count(),
+                repr.seen_entries(),
+                repr.fringe_states.len(),
+                repr.index_entries(),
+                repr.logical_bytes(),
+            );
         }
 
         BlockIndex::prune_cache(&prune_cache_ids);
@@ -742,6 +802,38 @@ mod tests {
         );
     }
 
+    /// A metrics sink that records what the DAG publishes, so the gauges can be asserted rather than
+    /// eyeballed on a live `/metrics`.
+    #[derive(Default)]
+    struct RecordingMetrics {
+        gauges: std::sync::Mutex<BTreeMap<(String, String), i64>>,
+    }
+
+    impl RecordingMetrics {
+        fn gauge(&self, source: &str, name: &str) -> Option<i64> {
+            self.gauges
+                .lock()
+                .unwrap()
+                .get(&(source.to_string(), name.to_string()))
+                .copied()
+        }
+    }
+
+    impl rchain_shared::metrics::Metrics for RecordingMetrics {
+        fn increment_counter(&self, _s: &rchain_shared::metrics::Source, _n: &str, _d: i64) {}
+        fn increment_sampler(&self, _s: &rchain_shared::metrics::Source, _n: &str, _d: i64) {}
+        fn sample(&self, _s: &rchain_shared::metrics::Source, _n: &str) {}
+        fn set_gauge(&self, source: &rchain_shared::metrics::Source, name: &str, value: i64) {
+            self.gauges
+                .lock()
+                .unwrap()
+                .insert((source.0.clone(), name.to_string()), value);
+        }
+        fn increment_gauge(&self, _s: &rchain_shared::metrics::Source, _n: &str, _d: i64) {}
+        fn decrement_gauge(&self, _s: &rchain_shared::metrics::Source, _n: &str, _d: i64) {}
+        fn record(&self, _s: &rchain_shared::metrics::Source, _n: &str, _v: i64, _c: i64) {}
+    }
+
     /// AUDIT C56's owed paragraph, third part — the DAG index is held **once**: the representation's
     /// `dag_set`/`child_map`/`height_map` are the store's own allocations.
     ///
@@ -796,6 +888,148 @@ mod tests {
             8,
             "the snapshot taken before the insert keeps the index it read"
         );
+    }
+
+    /// Stage 6's observability claim — the DAG publishes its own gauges, and `logical_bytes` is the
+    /// number the residency claims are stated in.
+    ///
+    /// The assertion is the published gauge *equals* the representation's own accounting (so the
+    /// instrument cannot report a number the structure does not have) and that it moves when the DAG
+    /// does (so a frozen gauge is not mistaken for a flat cost). Falsified against this tree: with the
+    /// `set_gauges` call removed — the shape before this stage, where nothing published anything and
+    /// `/metrics` served the reporter's placeholder — every `gauge(..)` below is `None`.
+    #[tokio::test]
+    async fn the_dag_publishes_its_own_gauges() {
+        let metrics = Arc::new(RecordingMetrics::default());
+        let metadata_store = empty_metadata_store().await;
+        store_chain(&metadata_store, 4).await;
+        let storage = Arc::new(
+            build_storage_over_unshared(metadata_store)
+                .await
+                .with_metrics(metrics.clone()),
+        );
+
+        // Attaching the sink published what `create` rebuilt — a restart reports its whole chain
+        // before it accepts its first block.
+        assert_eq!(metrics.gauge("rchain.dag", "messages"), Some(4));
+
+        for (seq, i) in [(1i64, 4usize), (2, 5)] {
+            let mut m = meta(chain_hash(i), &[chain_hash(i - 1)], i as i64);
+            m.seq_num = seq.try_into().unwrap();
+            storage.insert(m, block(chain_hash(i))).await.unwrap();
+        }
+
+        let repr = storage.get_representation().await;
+        let expected = i64::try_from(repr.logical_bytes()).expect("fits i64");
+        assert_eq!(metrics.gauge("rchain.dag", "messages"), Some(6));
+        assert_eq!(
+            metrics.gauge("rchain.dag", "seen_entries"),
+            Some(i64::try_from(repr.seen_entries()).expect("fits i64")),
+            "the published seen-entry count is the representation's own"
+        );
+        assert_eq!(
+            metrics.gauge("rchain.dag", "logical_bytes"),
+            Some(expected),
+            "the published accounting is the representation's own"
+        );
+        assert_eq!(
+            metrics.gauge("rchain.dag", "index_entries"),
+            Some(i64::try_from(repr.index_entries()).expect("fits i64"))
+        );
+        // Every block in this chain declares the empty fringe, so the DAG caches exactly one
+        // fringe state — the gauge counts entries, not fringes ever seen.
+        assert_eq!(metrics.gauge("rchain.dag", "fringe_states"), Some(1));
+        assert!(
+            expected > 0 && repr.seen_entries() > 0,
+            "a non-empty DAG has a non-zero account"
+        );
+
+        // It moves: one more block, and `logical_bytes` and `seen_entries` grow (a chain's `seen` is
+        // its whole ancestry).
+        let mut m = meta(chain_hash(6), &[chain_hash(5)], 6);
+        m.seq_num = 3.try_into().unwrap();
+        storage.insert(m, block(chain_hash(6))).await.unwrap();
+        assert!(
+            metrics
+                .gauge("rchain.dag", "logical_bytes")
+                .expect("published")
+                > expected,
+            "the account grows with the DAG"
+        );
+        assert_eq!(metrics.gauge("rchain.dag", "messages"), Some(7));
+    }
+
+    /// A canonical digest of the representation's **value**: every message and every fringe datum,
+    /// independent of how the maps are keyed or whether they are shared. The fringe data is digested
+    /// *sorted on `fringe_hash`*, so re-keying `fringe_states` (5a) or `Arc`-ing the index (5c)
+    /// cannot move the digest — only a change to the data can.
+    ///
+    /// This is the negative control the pass's own rule asks for on a representation-only change, and
+    /// it is falsifiable in both directions: it *moves* when the value moves (below), so a constant
+    /// digest is evidence rather than a tautology.
+    fn representation_digest(repr: &Arc<DagRepresentation>) -> String {
+        let mut parts: Vec<String> = Vec::new();
+        for (id, m) in &repr.dag_message_state.msg_map {
+            parts.push(format!(
+                "m {} h{} s{} p{} f{} seen{}",
+                id.to_hex(),
+                i64::from(m.height),
+                i64::from(m.sender_seq),
+                m.parents.len(),
+                m.fringe.len(),
+                m.seen.len()
+            ));
+        }
+        parts.push(format!(
+            "index {} {} {}",
+            repr.dag_set.len(),
+            repr.child_map.len(),
+            repr.height_map.len()
+        ));
+        let mut fringes: Vec<&rchain_models::fringe_data::FringeData> =
+            repr.fringe_states.values().collect();
+        fringes.sort_by_key(|fd| fd.fringe_hash);
+        for fd in fringes {
+            parts.push(format!(
+                "f {} n{} d{} r{}",
+                fd.fringe_hash.to_hex(),
+                fd.fringe.len(),
+                fd.fringe_diff.len(),
+                fd.rejected_deploys.len()
+            ));
+        }
+        let refs: Vec<&[u8]> = parts.iter().map(|p| p.as_bytes()).collect();
+        Blake2b256Hash::create_many(&refs).to_hex()
+    }
+
+    /// The digest of a stored chain is a fixed value, and it moves when the DAG does — the negative
+    /// control for a representation-only change (AUDIT C56's owed paragraph).
+    ///
+    /// `the_representation_digest` is computed from a two-block chain; the assert on the second half
+    /// is what makes the first half evidence: inserting a block changes the digest, so a digest that
+    /// did not move between two trees would mean the DAG's value really is unchanged.
+    #[tokio::test]
+    async fn the_representation_digest_pins_the_value_and_moves_with_it() {
+        let metadata_store = empty_metadata_store().await;
+        store_chain(&metadata_store, 2).await;
+        let storage = build_storage_over(metadata_store).await;
+        for (seq, h) in [(1i64, chain_hash(2)), (2, chain_hash(3))] {
+            let mut m = meta(h, &[chain_hash(usize::try_from(seq - 1).unwrap())], 1 + seq);
+            m.seq_num = seq.try_into().unwrap();
+            storage.insert(m, block(h)).await.unwrap();
+        }
+
+        let before = representation_digest(&storage.get_representation().await);
+        assert_eq!(
+            before, "a6632357a3f20d6c4e938d17357be2dff0c1b7171f7e899f6b499837bd497255",
+            "the representation's value for a 4-block chain"
+        );
+
+        let mut m = meta(chain_hash(4), &[chain_hash(3)], 4);
+        m.seq_num = 5.try_into().unwrap();
+        storage.insert(m, block(chain_hash(4))).await.unwrap();
+        let after = representation_digest(&storage.get_representation().await);
+        assert_ne!(before, after, "the digest moves when the DAG does");
     }
 
     /// AUDIT C56's owed paragraph, first part — `fringe_states` is keyed by the **fringe store's own

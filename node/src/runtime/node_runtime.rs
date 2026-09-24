@@ -97,6 +97,7 @@ use crate::api::shard_routing::ShardRoutingBlockApi;
 use crate::api::web_api::WebApi;
 use crate::api::web_api_impl::WebApiImpl;
 use crate::configuration::model::NodeConf;
+use crate::diagnostics::effects::MetricsRegistry;
 use crate::diagnostics::NewPrometheusReporter;
 use crate::instances::proposer_instance;
 use crate::web::http::{
@@ -341,6 +342,7 @@ pub struct NodeProgram {
     gateway: Option<Arc<GatewayTxn>>,
     block_report_api: Arc<BlockReportApi>,
     reporter: Arc<NewPrometheusReporter>,
+    metrics: Arc<MetricsRegistry>,
     host: String,
     port_http: Port,
     port_admin_http: Port,
@@ -365,6 +367,7 @@ impl NodeProgram {
             shards,
             block_report_api,
             reporter,
+            metrics,
             host,
             port_http,
             port_admin_http,
@@ -417,6 +420,7 @@ impl NodeProgram {
                     &host,
                     port_http,
                     reporter,
+                    metrics,
                     web_api,
                     block_report_api,
                     shards,
@@ -778,6 +782,10 @@ pub async fn setup_node_program(
 ) -> Result<NodeProgram, String> {
     let comm_state = create_comm_state(conf, id, log.clone()).await?;
 
+    // The node's metric registry: one instance, shared by every shard's DAG (which publishes its
+    // gauges) and by the HTTP server (whose `/metrics` publishes a snapshot of it).
+    let metrics = Arc::new(MetricsRegistry::new());
+
     // Node-level resources, built once: the validator identity, and the REPL eval runtime (an
     // isolated `eval-*` store set, deliberately chain-independent — port of Scala's `evalStores`).
     let validator_opt: Option<ValidatorIdentity> = conf
@@ -791,8 +799,17 @@ pub async fn setup_node_program(
     // and `NodeLaunch`.
     let mut shards: BTreeMap<ShardId, ShardRuntime> = BTreeMap::new();
     for (index, spec) in conf.casper.shards.iter().enumerate() {
-        let runtime =
-            setup_shard_runtime(conf, spec, index, id, &comm_state, &validator_opt, &log).await?;
+        let runtime = setup_shard_runtime(
+            conf,
+            spec,
+            index,
+            id,
+            &comm_state,
+            &validator_opt,
+            &log,
+            metrics.clone(),
+        )
+        .await?;
         shards.insert(spec.shard_id.clone(), runtime);
     }
 
@@ -878,6 +895,7 @@ pub async fn setup_node_program(
         reporter: Arc::new(NewPrometheusReporter::new(
             crate::diagnostics::scrape_data_builder::Configuration::default(),
         )),
+        metrics,
         host: conf.api_server.host.clone(),
         port_http: Port::try_from(conf.api_server.port_http).map_err(|e| e.to_string())?,
         port_admin_http: Port::try_from(conf.api_server.port_admin_http)
@@ -995,6 +1013,12 @@ struct ShardRuntime {
     peer_tx: mpsc::Sender<PeerMessage>,
 }
 
+/// A registry for the test call sites of [`setup_shard`].
+#[cfg(test)]
+fn metrics_for_test() -> Arc<MetricsRegistry> {
+    Arc::new(MetricsRegistry::new())
+}
+
 /// Build the node-level REPL eval runtime (an isolated `eval-*` store set over `data_dir`).
 async fn build_eval_runtime(data_dir: &std::path::Path) -> Result<Arc<RhoRuntime>, String> {
     let store_manager = rnode_key_value_store_manager(data_dir);
@@ -1027,6 +1051,7 @@ async fn setup_shard_runtime(
     comm_state: &CommState,
     validator_opt: &Option<ValidatorIdentity>,
     log: &Arc<dyn Log>,
+    metrics: Arc<MetricsRegistry>,
 ) -> Result<ShardRuntime, String> {
     let mut parts = setup_shard(
         conf,
@@ -1036,6 +1061,7 @@ async fn setup_shard_runtime(
         comm_state.connections.clone(),
         comm_state.discovery.clone(),
         validator_opt.clone(),
+        metrics,
     )
     .await?;
     // LFS sync is shard-blind: the fringe exchange carries no shard id, so a multi-shard node could
@@ -1264,6 +1290,7 @@ pub async fn setup_shard(
     connections: ConnectionsCell,
     discovery: Arc<dyn NodeDiscovery>,
     validator_opt: Option<ValidatorIdentity>,
+    metrics: Arc<MetricsRegistry>,
 ) -> Result<ShardParts, String> {
     let data_dir = shard_data_dir(&conf.storage.data_dir, index, &spec.shard_id);
     let store_manager = rnode_key_value_store_manager(&data_dir);
@@ -1320,7 +1347,9 @@ pub async fn setup_shard(
             deploy_store,
         )
         .await
-        .map_err(|e| e.to_string())?,
+        .map_err(|e| e.to_string())?
+        // The shard's DAG publishes its gauges into the node's registry (`/metrics`).
+        .with_metrics(metrics),
     );
 
     // Runtime manager (play + replay runtimes + mergeable store). The configured effect-scheduler
@@ -1625,9 +1654,18 @@ mod tests {
         let (connections, discovery) = noop_comm();
 
         let spec = conf.casper.shards.primary().clone();
-        let parts = setup_shard(&conf, &spec, 0, &id, connections, discovery, None)
-            .await
-            .expect("setup_shard should assemble");
+        let parts = setup_shard(
+            &conf,
+            &spec,
+            0,
+            &id,
+            connections,
+            discovery,
+            None,
+            metrics_for_test(),
+        )
+        .await
+        .expect("setup_shard should assemble");
 
         // The primary shard keeps the data-directory root, and the directory is claimed by marker.
         assert_eq!(parts.spec.shard_id, spec.shard_id);
@@ -1666,10 +1704,10 @@ mod tests {
         let (c2, d2) = noop_comm();
         let child = conf.casper.shards.iter().nth(1).unwrap().clone();
 
-        let _primary_parts = setup_shard(&conf, &primary, 0, &id, c1, d1, None)
+        let _primary_parts = setup_shard(&conf, &primary, 0, &id, c1, d1, None, metrics_for_test())
             .await
             .expect("primary shard");
-        let child_parts = setup_shard(&conf, &child, 1, &id, c2, d2, None)
+        let child_parts = setup_shard(&conf, &child, 1, &id, c2, d2, None, metrics_for_test())
             .await
             .expect("child shard");
 
@@ -1700,7 +1738,18 @@ mod tests {
         let id = NodeIdentifier::new(vec![1u8]);
         let (connections, discovery) = noop_comm();
         let spec = conf.casper.shards.primary().clone();
-        let err = match setup_shard(&conf, &spec, 0, &id, connections, discovery, None).await {
+        let err = match setup_shard(
+            &conf,
+            &spec,
+            0,
+            &id,
+            connections,
+            discovery,
+            None,
+            metrics_for_test(),
+        )
+        .await
+        {
             Ok(_) => panic!("a foreign data directory must be refused"),
             Err(err) => err,
         };
@@ -1860,9 +1909,18 @@ mod tests {
 
         // Assemble the shard once, then plant a block belonging to a different shard.
         let (connections, discovery) = noop_comm();
-        let parts = setup_shard(&conf, &spec, 0, &id, connections, discovery, None)
-            .await
-            .expect("first assembly");
+        let parts = setup_shard(
+            &conf,
+            &spec,
+            0,
+            &id,
+            connections,
+            discovery,
+            None,
+            metrics_for_test(),
+        )
+        .await
+        .expect("first assembly");
         let foreign = block_for("/someone-elses-shard");
         rchain_block_storage::syntax::put_block(&parts.block_store, foreign.clone())
             .await
@@ -1890,7 +1948,18 @@ mod tests {
         std::fs::remove_file(dir.join(SHARD_ID_MARKER)).expect("remove the marker");
 
         let (connections, discovery) = noop_comm();
-        let err = match setup_shard(&conf, &spec, 0, &id, connections, discovery, None).await {
+        let err = match setup_shard(
+            &conf,
+            &spec,
+            0,
+            &id,
+            connections,
+            discovery,
+            None,
+            metrics_for_test(),
+        )
+        .await
+        {
             Ok(_) => panic!("a directory holding a foreign chain must be refused"),
             Err(err) => err,
         };

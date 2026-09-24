@@ -121,6 +121,48 @@ impl DagRepresentation {
             })
     }
 
+    /// The number of messages in the DAG's message state — one per block (`msg_map`).
+    pub fn message_count(&self) -> usize {
+        self.dag_message_state.msg_map.len()
+    }
+
+    /// Σ over messages of `seen.len()`: the entries of H6's Θ(N²) residency.
+    ///
+    /// Θ(N) to *sum* — each `len()` is O(1), so this is a pass over the map, not over the sets —
+    /// which is why it can be published per block rather than cached and left to drift.
+    pub fn seen_entries(&self) -> usize {
+        self.dag_message_state
+            .msg_map
+            .values()
+            .map(|m| m.seen.len())
+            .sum()
+    }
+
+    /// The DAG index's entries: known blocks, parent→child links, and height groups.
+    pub fn index_entries(&self) -> usize {
+        self.dag_set.len() + self.child_map.len() + self.height_map.len()
+    }
+
+    /// The logical bytes the message state holds, as the pass's own accounting defines it: for each
+    /// message the struct itself, the three sets of 32-byte hashes it carries (`seen`, `parents`,
+    /// `fringe`), and its bond weights.
+    ///
+    /// This is the number that makes H6's residency measurable rather than argued: Σ|seen| × 32 B is
+    /// the Θ(N²) floor, and every other term is a copy of it. It is a *value* accounting, so nothing
+    /// about how the maps are keyed or shared (AUDIT C56's owed paragraph: `fringe_states`, the
+    /// index's `Arc`s) can move it — `logical_bytes_is_a_value_not_a_representation` pins that.
+    pub fn logical_bytes(&self) -> usize {
+        self.dag_message_state
+            .msg_map
+            .values()
+            .map(|m| {
+                std::mem::size_of::<Message<BlockHash, Validator>>()
+                    + (m.seen.len() + m.parents.len() + m.fringe.len()) * 32
+                    + m.bonds_map.len() * 73
+            })
+            .sum()
+    }
+
     /// Find a block hash by (possibly truncated) hex prefix.
     pub fn find(&self, truncated_hash: &str) -> Option<BlockHash> {
         // Validate-on-ingress: reject non-hex input (`decode` returns `None`) rather than silently

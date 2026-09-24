@@ -202,6 +202,19 @@ red-team items remain.
   size.** A future pass that wants the size gone has a known, value-preserving design (a dense bitset
   with a hash→index table, ρ ≈ N²/8 bytes) recorded in C56's §20 row.
 
+  **The tail (2026-09-24, Stage 5/6) finishes the "every copy" half and makes the residue measurable.**
+  The last three per-block rebuilds are gone — `fringe_states` keyed by the store's own fringe hash,
+  the merge's rejection map built for the final scope only, and the DAG index `Arc`-shared between the
+  store and the representation instead of cloned per insert (C56's §20 row has each falsifier) — and
+  the DAG now publishes its own gauges (`messages`, `seen_entries`, `fringe_states`, `index_entries`,
+  `logical_bytes`) into the node's `MetricsRegistry`, whose snapshot `/metrics` renders: the wire that
+  was missing, so every scrape had returned the reporter's placeholder. **The instrument reproduces
+  this row's own figure**: the bench's `dag` curve measures `seen_entries` = 500,500 at N=1,000
+  (a chain's `seen` is its ancestry, so Σ|seen| = N(N+1)/2) and `logical_bytes` = 16.2 MB, which
+  extrapolates at N=5,881 to 17,296,021 × 32 B ≈ **553 MB** — the number this row states, now read off
+  the running node rather than estimated. The floor itself is still not fixed, and that remains the
+  decision this row records.
+
 ### Medium
 
 - **M2 — `assert!`/`assert_eq!` in the block-receiver state machine.** **Fixed.**
@@ -2834,15 +2847,57 @@ port against the **reference document** rather than against itself.
   against a tree that no longer exists** — re-run the falsifier against the tree it lives in, or the
   bound is prose.
 
+  **The tail of this finding landed (2026-09-24, Stage 5): the structures `insert` rebuilt per block
+  stop being rebuilt, and the page being served stops being copied.** Each is representation-only —
+  `logical_bytes` (Stage 6) and the representation digest are the negative controls, and they do not
+  move — so each falsifier is the *mechanism* failing rather than a value changing:
+
+  - `fringe_states` is keyed by `FringeData::fringe_hash_of(fringe)` — the **store's own key** — so the
+    in-memory map is a faithful cache of the persisted one instead of a second, set-keyed index whose
+    lookups compared whole fringe sets. Pinned by `fringe_states_are_keyed_by_the_stores_own_key`
+    (map key, the datum's own `fringe_hash`, the persisted datum and the recorded `member_of_fringe`
+    are one identity); the pre-Stage-5 shape cannot even express the comparison, which is why the pin
+    is the identity assertion rather than a bound.
+  - The merge builds its rejection map **from the final scope's own hashes**, holding a *borrow* of
+    each fringe's `rejected_deploys`: the old shape walked every fringe and cloned every set — 500
+    clones per merge on a 50-fringe DAG — to answer three lookups (`rejections_map.get` always treated
+    absence as "not rejected"). Falsified against the tree it lives in: with the whole-DAG shape
+    restored the map holds **500 entries against the final scope's 3**, and
+    `rejections_are_indexed_for_the_final_scope_only` fails; its second assertion (the right fringes'
+    rejections) keeps the bound from being met by indexing the wrong blocks.
+  - The DAG index is held **once**: `DagState`'s three maps are `Arc`-shared with the representation, so
+    the store's accessors hand back their own allocations and an insert moves three pointers instead of
+    cloning the index again per block. `Arc::make_mut` keeps `add_block_to_dag_state` pure (the law
+    15/18 property tests still pin it and `recreate_in_memory_state` by name) with the new
+    `add_block_to_dag_state_mut` as the live path's form. Pinned by
+    `the_index_is_shared_with_the_representation_not_copied` (`Arc::ptr_eq`, plus the copy-on-write
+    half: a snapshot taken before an insert keeps the index it read). Falsified against this tree: an
+    accessor returning `Arc::new((*map).clone())` — the copying behaviour, same type — fails it.
+  - **The syncing page is no longer copied whole.** `comm/src/transport/chunker.rs` took two full copies
+    of the packet content before any chunk existed (`blob.packet.content.clone()`, then a second clone
+    of the same bytes in the uncompressed arm) and a third into the chunk proto's own `Vec<u8>`
+    (`contentData` has no borrowed form), so a store-items page lived 3× at peak. It now borrows the
+    packet and owns a buffer only when LZ4 compresses, leaving the chunk proto's copy as the only one.
+    Pinned by `chunking_a_page_does_not_copy_it_whole`, whose instrument is **time relative to one
+    explicit `Vec::clone` of the same payload in the same process**, so the bound is machine-speed
+    invariant: measured here at a 128,000-byte page, 5,000 calls, min of three runs, **3.39–3.51
+    µs/call borrowed against a 2.60–2.68 µs copy (ratio 1.30–1.33); with the two clones put back,
+    10.15–10.28 µs/call (ratio 3.84–3.96)**, bound at 2.0. An honest limit: in the end-to-end page
+    measurement below the removed copies are *within the noise* — first-touching the page's own fresh
+    allocation dominates the extra memcpys — so the win this pins is peak copies (RSS), not loop time.
+
   **Still owed, and now stated with a number rather than a mystery.** The steady *floor* is the
   Θ(N²) `seen` residency itself — H6 below, unchanged as a decision: at a 5,881-block chain that is
-  Σ|seen| × 32 B ≈ 553 MB plus set overhead, and the DAG also carries `fringe_states` (Θ(N) entries,
-  keyed by the fringe *set* rather than the hash the store already uses). A devnet whose chain reaches
-  the thousands of blocks is still heavy; what changed is that neither reading *nor* extending it
-  copies the DAG any more. Also unfixed and named: a store-items page is materialised and copied 3-4×
-  (decode → `to_vec` → serialise → the chunker's payload clone) with only a node-count cap
-  (`MAX_STORE_ITEMS_TAKE`), and `handle_store_items_request` is awaited inline in the dispatch loop,
-  so one large page stalls every other message for that peer.
+  Σ|seen| × 32 B ≈ 553 MB plus set overhead, and the DAG's `fringe_states` is Θ(N) entries (now keyed
+  by the store's hash, Stage 5 above). A devnet whose chain reaches the thousands of blocks is still
+  heavy; what changed is that neither reading *nor* extending it copies the DAG any more. Still
+  unfixed and named: a store-items page has only a node-count cap (`MAX_STORE_ITEMS_TAKE`) and no byte
+  cap, and `handle_store_items_request` is **awaited inline in the dispatch loop** — measured on a page
+  the handler produced (debug build, mock transport): an LFS page (750 nodes × 4 KiB, 3.1 MB) holds the
+  loop **~50 ms** (18 ms serve + 32 ms chunk) and the largest page the cap admits (10,000 nodes, 41 MB)
+  **~580 ms** (144 ms + 437 ms), during which no other message for that shard is handled
+  (`node_launch.rs`'s single `recv`/`handle` loop) and the routing loop above backpressures on the same
+  stall. Moving it off the loop is a behaviour change and its own unit; see C62.
 
 - **The class, recorded once, because it is the consolidation pass's whole justification: an axiom that
   is false is worse than one that is owed, because anything follows from it.** Nine axioms the pass
@@ -3086,6 +3141,54 @@ port against the **reference document** rather than against itself.
   measured, the remaining work is a modelling decision, and the row's note now says so.
 
 
+- **C62 — the sync path multiplied the page it served, and the node's own metrics surface had no
+  wire** (found and fixed 2026-09-24, Programme F's performance tail; the *inline* store-items handler
+  is measured and deliberately **not** fixed). Three findings on one path, and the instrument that
+  makes the first two checkable rather than asserted:
+
+  1. **A store-items page lived 3× in memory.** `comm/src/transport/chunker.rs::chunk_it` took two
+     whole copies of the packet content before any chunk existed — `blob.packet.content.clone()`, then
+     a second clone of the same bytes in the uncompressed arm — and a third into the chunk proto's own
+     `Vec<u8>` (`ChunkData.contentData` has no borrowed form), so the page a syncing peer pulls most of
+     existed three times at peak. It now borrows the packet and owns a buffer only when LZ4 actually
+     compresses; the chunk proto's copy is the only one left, and it is the one ownership transfer the
+     wire requires. **Falsified against the tree it lives in** — the rule this pass paid for twice:
+     `chunking_a_page_does_not_copy_it_whole` times the work *relative to one explicit `Vec::clone` of
+     the same payload in the same process*, so the bound is machine-speed invariant, and with the two
+     clones put back it reads **3.84–3.96×** one copy against **1.30–1.33×** for the borrow (bound
+     2.0; 10.15–10.28 µs/call against 3.39–3.51 µs/call, at a 128,000-byte page, 5,000 calls, min of
+     three runs). Its honest limit is recorded with it: in the end-to-end page measurement below the
+     removed copies are within the noise, because first-touching the page's own fresh allocation
+     dominates the extra memcpys — the win pinned is peak copies (RSS), not loop time.
+  2. **`/metrics` had no wire, so the node could not report any of this.** The route was mounted and
+     `NewPrometheusReporter` could render, but nothing in production called `report_period_snapshot`,
+     so every scrape returned the reporter's initial placeholder string. The handler now publishes a
+     snapshot of the node's `MetricsRegistry` before rendering, and the DAG publishes into that
+     registry — `messages`, `seen_entries`, `fringe_states`, `index_entries`, `logical_bytes` — from
+     `create`, from `with_metrics` and from every `insert`, so `/metrics` reports the structure the
+     cost claims are about. Pinned by `the_metrics_route_serves_the_registrys_own_numbers` (the
+     falsifier — removing the single call — restores exactly the placeholder string) and by
+     `the_dag_publishes_its_own_gauges` (the published number *equals* the representation's own
+     accounting, and grows with the DAG). **No law covers this half, and none should**: it is the
+     difference between a measurement that exists and one that is assumed — which is also why the
+     gauges' own cost is stated rather than hidden: the sums are over `len()`s, Θ(N) per insert, not
+     over the sets.
+  3. **`handle_store_items_request` is awaited inline in the shard's dispatch loop — measured, not
+     fixed.** `node_launch.rs` serves a shard's messages from one `recv`/`handle().await` loop, and
+     this handler walks the exporter, materialises the page, serialises it and hands it to the
+     transport before returning; the routing loop above it backpressures on the same stall. Measured
+     with the handler's own response (debug build, mock transport, so the number is the shard-side
+     part that holds the loop): an LFS page (750 nodes × 4 KiB, 3.1 MB) holds it **~50 ms** (18 ms
+     serve + 32 ms chunk) and the largest page the cap admits (10,000 nodes, 41 MB) **~580 ms**. Moving
+     the handler off the loop is a behaviour change, and a byte cap on a page is the other half of the
+     same decision (the requester's `PAGE_SIZE` is self-consistent, so a *responder* that truncates
+     breaks the requester — the deferred item this row deliberately leaves open, with its number).
+
+  The law is **10**, whose Merkle determinism is what the page is a wire form of: a page is the trie's
+  own nodes, and how a node materialises and copies them is the difference between serving a peer and
+  OOMing while doing it.
+
+
 ## 20. The back-sweep: every incident to its law and its case
 
 The programme began with ten defects of one class — "nothing errors" — found on a running node,
@@ -3133,13 +3236,14 @@ finding that no law covers, and it says why rather than leaving the gap to infer
 | C47 the matcher's fuel was short: the measure counted an empty `Par` as zero nodes | 5, 37 | `match.tsv` case 18 (`@Set(1, ..._)` against `Set(Nil × 6, 1)`) + `lean_match_corpus.rs`; `the_walk_past_empty_pars_is_paid_for`, and `parNodes`'s doc comment carrying the counterexample |
 | C52 a peer's `BindPattern` could carry a negative `free_count`, which silently changed what the receive bound | 5, 37 | **fixed (2026-09-24)**: `bind_pattern_from_proto` validates the count like its two siblings already did, so a message that would have applied the continuation with a wrong number of bindings is refused where it arrives. Falsified first — restoring the pass-through fails the new assertion in `models/src/wire.rs`'s `the_runtime_payloads_round_trip`. The same three lines' `unwrap_or_default()` — a free level the case's `free_count` declares but the matcher's free map does not carry — is **closed for the half that can refuse** (U1 site 1, 2026-09-24): `resolve_match` (`reduce.rs:2009`) raises `BugFoundError` where the Scala defaults (`Reduce.scala:352`, `freeMap.getOrElse(e, Par())`), so the continuation is never handed a variable bound to nothing. Falsified first: `resolve_match_refuses_a_free_count_the_pattern_does_not_bind` failed against the old `unwrap_or_default()`. The port now **deviates from the Scala** here, deliberately and unreachably (the normalizer computes the count from the same pattern), so the row is registered in §6. Its sibling `RhoMatch::get` (`storage.rs:92`) **keeps** the Scala's default: `Match::get` (`rspace/src/match_.rs:6`) returns `Option`, where the only refusal available is `None` — "this datum does not match" — a *worse* lie and one the Scala does not tell; the durable fix is an error channel on that trait, unit-large like C53's `History`. The appendix's *other* candidate site, the matcher's `handle_remainder`, was measured and is **not** a partiality spot: the absent level there is the accumulator's zero (`SpatialMatcher.scala:258`), and refusing it fails five of that module's remainder tests — `handle_remainder_starts_an_absent_level_from_the_merge_identity` pins the reading (U1 site 2). **`FreeCount::from_nonneg`'s `debug_assert!` is closed** (2026-09-24, U1 sites 4 and 5), and the closure has two halves. *(a) The carrier.* `New.bind_count`/`Receive.bind_count` are `FreeCount`s and a negative count is refused at both proto ingress points — §6's row; the two counts the normalizer derives go through `checked_level_count`, which refuses rather than clamps, so the `.max(0)` pair in `well_scoped_*` has nothing left to defend against and is gone. `from_nonneg` itself is *deleted*: the carrier's total entry is `from_len(usize)`, so the sign is not writable, and the sum of validated counts uses the carrier's own `Add`. *(b) Both directions of that claim, run.* With the carrier, a probe that builds a count from a negative **does not compile** — `FreeCount::from_len(-1)` is `error[E0600]: cannot apply unary operator - to type usize` and `FreeCount(-1)` is `error[E0603]: tuple struct constructor is private` (captured 2026-09-24). With the old shape restored inside the module (a total `i32` constructor with the `debug_assert!`), the same probe compiles and: in a **debug** test the assert fires (`free-count must be non-negative`, FAILED), and in a **release** test the assertion passes — `i32::from(probe_old_shape(-1)) == -1` — i.e. the invalid count was carried silently in exactly the builds that matter. That is the hole; (a) is what closes it. *(c) What is deliberately left.* `storage_printer`'s two sites read a *stored* `i32` field: `to_receive` now returns `Option<Par>` and a negative field **refuses the row** through the module's own fixed diagnostic message (`MALFORMED_PATTERN`), rather than clamping it to zero (a `for` binding nothing is a different term) or recovering a derivation — the port's own count convention cannot reproduce the value exactly, and the measurement is pinned: for `for (@[x, ...rest] <- c)` the normalizer writes 2 and the walk sees 1 (`the_walk_ignores_a_collection_remainder_where_the_normalizer_counts_it`). `BindPattern.free_count` therefore **stays an `i32`**, and stays the named durable fix — casper, node and the bench construct that struct with literals, so the carrier cannot move onto the field from this crate; both casper patterns are single free variables (`runtime_manager.rs:742`, `runtime_replay.rs:552`), so the convention gap above is latent there rather than live |
 | C61 a peer-supplied resume prefix of 128 bytes entered the segment invariant by one byte | 10 | **fixed (2026-09-24)**: `create_last_prefix` routes the prefix through the checked constructor (`KeySegment::try_from`) instead of a hand-written `> 128` bound, so a size of 128 is refused rather than built and then silently truncated to zero by the radix encoder's 7-bit size field. Falsified first: `a_128_byte_resume_prefix_is_refused` fails against the old bound. The three other decode sites the appendix named are measured in range by construction and carry comments saying why; `head()`/`tail()`'s empty-segment panic keeps its existing pin and its reachability argument (`trimming_an_empty_key_panics`) |
+| C62 the sync path copied the page it served 3×, and `/metrics` had no wire | 10 | **fixed (2026-09-24)**: `chunk_it` borrows the packet instead of cloning it twice and owns a buffer only when LZ4 compresses — the chunk proto's `Vec<u8>` is the one copy the wire requires — pinned by `comm/src/transport/chunker.rs`'s `chunking_a_page_does_not_copy_it_whole`, whose instrument is time *relative to one explicit copy of the same payload in the same process* (machine-speed invariant) and which was falsified in this tree at 3.84–3.96× against a 2.0 bound (1.30–1.33× for the borrow); and the DAG now publishes `messages`/`seen_entries`/`fringe_states`/`index_entries`/`logical_bytes` into the node's `MetricsRegistry`, whose snapshot `/metrics` renders before scraping (`node/src/web/http.rs`), where nothing in production had ever called `report_period_snapshot` — the route served `EMPTY_SCRAPE_DATA` forever. Pinned by `the_metrics_route_serves_the_registrys_own_numbers` and `the_dag_publishes_its_own_gauges`, both falsified here (removing the publish restores the placeholder / leaves the gauges unset). **Measured, deliberately not fixed**: `handle_store_items_request` is awaited inline in the shard's dispatch loop — an LFS page (750 × 4 KiB) holds it ~50 ms (18 + 32 ms of chunking) and the cap's largest page (10,000 nodes) ~580 ms — and a page still has only a node-count cap, no byte cap |
 | C53 a store error read as an absent radix node | 10 | **fixed at the read boundary (2026-09-24)**: `load_node_from_store` propagates the store error instead of `.ok()`-ing it into the same `None` a missing node produces — the Scala keeps it in `F` (`RadixTree.scala:569`). Falsified first: restoring `.ok()` fails `radix_tree`'s `a_store_error_is_not_a_missing_node`, which pins both halves (the error surfaces; an absent node is still `None`). The *flattening above it* is owed and named — `load_node -> Node` and the `History` trait have no error channel where the Scala's `F[Node]` does, so an I/O failure can still become an empty node under the oracle's own `no_assert` root load |
 | C49 the replay property test fails on its own recording (~3 runs in 10) | 11 | **closed, and it was not the code**: the fixture rigged the replay with the play's *post-play* root, so the "replay" began from a half-finished tuple space — `rspace/src/property_tests.rs`'s `law11_a_replayed_script_matches_its_recording`, now taking the checkpoint before the script, passes over 4000 cases where it failed deterministically at `PROPTEST_CASES=1`. The seed stays as the pinned input; `check_replay_data` was never at fault |
 | C50 the matcher's fuel was short again: the measure had no `etuple` case, so a tuple's contents were charged to nothing | 5, 37 | `match.tsv` case 20 (`@((1, 2), (3, 4))` against itself) + `lean_match_corpus.rs`; `a_nested_tuple_is_paid_for`, `a_tuple_pays_for_its_own_contents`, and `parNodesExpr`'s doc comment carrying the counterexample. While the defect stood it also **refuted** the axiom `concrete_matches_iff_eq` |
 | C51 the tie's domain admitted a two-expression `Par`, which no clause accepts — so the tie was false | 5, 37 | the axiom `concrete_matches_iff_eq` is **deleted**; `a_two_expression_pattern_refutes_the_modelled_tie` is the counterexample, and rows 5/37 owe the tie for a **singleton** pattern instead |
 | C48 the spec over-claimed a match: the searcher was wired into the list and tuple arms | 5, 37 | `match.tsv` case 19 (`@[1, ..._]` against `[Nil, 1]`) + `lean_match_corpus.rs`; `a_list_pattern_cannot_skip_a_target_element`, and the split into `matchListPos` (lists, tuples) / `matchListPar` (sets, maps) |
 | C55 the devnet bootstrap never starts: restoring a stored chain folded the message state per block, at Θ(N³) | 15 | **fixed (2026-09-24)**: `DagMessageState::insert_msg_mut` / `insert_msg_without_latest_mut` extend the state in place (the persistent forms are now one clone plus that same insert, so the monotonicity and subset rules still live in one place), and `BlockDagKeyValueStorage::create` uses the in-place form. Falsified first — `restoring_a_stored_chain_is_not_cubic_in_the_message_state` bounds the fold over a synthetic 1,200-block chain; measured 5.1 s in place against 108.6 s copying at N=1500. End to end, a 5,881-block restart serves in 23 s where it previously never served at all. The named-volume path in `tools/devnet.sh` is what hid it (first run fresh, every later run a rebuild) and is now the reason `up` must not leave a state whose second run differs from its first |
-| C56 the per-block merge scope copied every message it looked at — Θ(N²) in copies per block | 15 | **fixed (2026-09-24)**: `message_map::between` takes ids and returns ids (`&BTreeSet<M> -> BTreeSet<M>`), so nothing clones a `Message` (and its `seen` set) to answer `upper.seen \ lower.seen`; the call site keeps its three "not in dag" errors by checking membership. Measured, isolated, on a 5,855-block chain: **0.78 GiB per block → ~4 MB per block, plateauing**, CPU a pinned 100% → 40%. Pinned by `between_is_the_id_set_difference_restricted_to_the_map`. **Owed**: the steady floor the live structure sits on (~9.8 GiB of process RSS on that chain) is the Θ(N²) `seen` *residency* — H6's accepted-faithful residual, ≈553 MB at 5,881 blocks plus set overhead — together with `fringe_states`, keyed by the fringe *set* rather than the hash the store already uses; §20 below states both with numbers. The **~0.86 GiB/block this cell called *unattributed* was the DAG being copied** on the per-block and per-request paths, attributed and fixed in `494336e70` (§20 below: `get_representation` by value, `insert`'s per-block clone, `Message.seen`) |
+| C56 the per-block merge scope copied every message it looked at — Θ(N²) in copies per block | 15 | **fixed (2026-09-24)**: `message_map::between` takes ids and returns ids (`&BTreeSet<M> -> BTreeSet<M>`), so nothing clones a `Message` (and its `seen` set) to answer `upper.seen \ lower.seen`; the call site keeps its three "not in dag" errors by checking membership. Measured, isolated, on a 5,855-block chain: **0.78 GiB per block → ~4 MB per block, plateauing**, CPU a pinned 100% → 40%. Pinned by `between_is_the_id_set_difference_restricted_to_the_map`. **Owed**: the steady floor the live structure sits on (~9.8 GiB of process RSS on that chain) is the Θ(N²) `seen` *residency* — H6's accepted-faithful residual, ≈553 MB at 5,881 blocks plus set overhead, which Stage 6's `logical_bytes` gauge reports; §20 below states it with numbers. The *copies* the tail still had are gone (Stage 5, §20): `fringe_states` is keyed by the store's own hash, the merge indexes rejections for the final scope only, the index is `Arc`-shared with the representation, and the sync-path chunker borrows the page instead of copying it 3× The **~0.86 GiB/block this cell called *unattributed* was the DAG being copied** on the per-block and per-request paths, attributed and fixed in `494336e70` (§20 below: `get_representation` by value, `insert`'s per-block clone, `Message.seen`) |
 
 **The two rows that are not laws are the two worth keeping visible.** C37 is a *harness* finding —
 a measurement that was not a measurement — and no law would have caught it, because the thing that

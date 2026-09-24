@@ -38,6 +38,7 @@ use crate::api::dto::{
 };
 use crate::api::grpc::DEFAULT_API_RATE_LIMIT_PER_SEC;
 use crate::api::web_api::WebApi;
+use crate::diagnostics::effects::MetricsRegistry;
 use crate::diagnostics::NewPrometheusReporter;
 use crate::web::reporting::transform_result;
 use crate::web::status_info;
@@ -70,6 +71,10 @@ pub struct ShardRegistry {
 #[derive(Clone)]
 pub struct HttpState {
     pub reporter: Arc<NewPrometheusReporter>,
+    /// The node's metric registry, so `/metrics` can publish what the node has accumulated. Nothing
+    /// else in production called `report_period_snapshot`, so `/metrics` served the placeholder
+    /// `EMPTY_SCRAPE_DATA` forever (`prometheus_reporter.rs`): the surface existed, the wire did not.
+    pub metrics: Arc<MetricsRegistry>,
     pub web_api: Arc<dyn WebApi>,
     pub block_report_api: Arc<BlockReportApi>,
     pub shards: Arc<ShardRegistry>,
@@ -101,7 +106,15 @@ pub async fn version() -> String {
 }
 
 /// `GET /metrics` (port of `NewPrometheusReporter.service`): the Prometheus scrape data.
+///
+/// The snapshot is published *before* the render, so a scrape reflects the registry's current
+/// values. This is the wire that was missing: without it `/metrics` returned the reporter's initial
+/// placeholder string, because the reporter only renders inside `report_period_snapshot` and no
+/// production path called it.
 pub async fn metrics(State(state): State<HttpState>) -> String {
+    state
+        .reporter
+        .report_period_snapshot(&state.metrics.snapshot());
     state.reporter.scrape_data()
 }
 
@@ -968,6 +981,7 @@ pub async fn acquire_http_server(
     host: &str,
     port: Port,
     reporter: Arc<NewPrometheusReporter>,
+    metrics: Arc<MetricsRegistry>,
     web_api: Arc<dyn WebApi>,
     block_report_api: Arc<BlockReportApi>,
     shards: Arc<ShardRegistry>,
@@ -986,6 +1000,7 @@ pub async fn acquire_http_server(
         .map_err(|e| e.to_string())?;
     let app = router(HttpState {
         reporter,
+        metrics,
         web_api,
         block_report_api,
         shards,
@@ -1041,6 +1056,7 @@ mod tests {
     use rchain_comm::rp::rp_conf::ClearConnectionsConf;
     use rchain_models::casper::protocol::deploy_service::{BlockInfo, LightBlockInfo};
     use rchain_models::casper::protocol::report::BlockEventInfo;
+    use rchain_shared::metrics::Metrics as _;
     use rchain_shared::store::InMemoryKeyValueStore;
     use rchain_shared::typed_store::{Codec, KeyValueTypedStoreCodec, SharedStore};
     use std::marker::PhantomData;
@@ -1199,6 +1215,7 @@ mod tests {
     fn state() -> HttpState {
         HttpState {
             reporter: Arc::new(NewPrometheusReporter::new(Configuration::default())),
+            metrics: Arc::new(MetricsRegistry::new()),
             web_api: Arc::new(MockWebApi {
                 status: test_status(),
                 pooled_deploys: PooledDeploys {
@@ -1221,6 +1238,43 @@ mod tests {
         }
     }
 
+    /// Stage 6 / AUDIT C61 — the `/metrics` wire exists.
+    ///
+    /// The Prometheus surface was mounted and the reporter could render, but nothing in production
+    /// called `report_period_snapshot`, so every scrape returned the reporter's initial placeholder
+    /// (`prometheus_reporter.rs`'s `EMPTY_SCRAPE_DATA`). The handler now publishes a snapshot of the
+    /// node's `MetricsRegistry` before rendering, so the surface reports the node's own numbers.
+    ///
+    /// Falsified against this tree (2026-09-24): with that one call removed — the shape before this
+    /// stage — the body is exactly the placeholder string and both assertions below fail.
+    #[tokio::test]
+    async fn the_metrics_route_serves_the_registrys_own_numbers() {
+        let state = state();
+        state.metrics.set_gauge(
+            &rchain_shared::metrics::Source::base().sub("dag"),
+            "messages",
+            42,
+        );
+        state.metrics.set_gauge(
+            &rchain_shared::metrics::Source::base().sub("dag"),
+            "logical_bytes",
+            7,
+        );
+
+        let body = metrics(State(state)).await;
+        assert!(
+            body.contains("rchain_dag_messages 42"),
+            "the scrape reports the registry's gauge, not the placeholder: {body}"
+        );
+        // The unit-bearing name is normalized on the way out (`_bytes`), which is the surface's own
+        // rule rather than this stage's.
+        assert!(body.contains("rchain_dag_logical_bytes 7"), "{body}");
+        assert!(
+            !body.contains("didn't receive any data just yet"),
+            "the placeholder must be gone once a snapshot has been published"
+        );
+    }
+
     #[tokio::test]
     async fn version_returns_node_version() {
         assert!(version().await.starts_with("RChain Node "));
@@ -1228,10 +1282,18 @@ mod tests {
 
     #[tokio::test]
     async fn metrics_returns_scrape_data() {
+        // The route renders the registry's snapshot, so the reporter's "no snapshot has been
+        // reported yet" placeholder can no longer be a served node's body: an empty registry
+        // renders no series at all (AUDIT C61). That the *content* is the registry's is pinned by
+        // `the_metrics_route_serves_the_registrys_own_numbers`.
         let out = metrics(State(state())).await;
-        assert_eq!(
-            out,
-            "# The kamon-prometheus module didn't receive any data just yet.\n"
+        assert_ne!(
+            out, "# The kamon-prometheus module didn't receive any data just yet.\n",
+            "a scrape publishes a snapshot, so the placeholder is never the body"
+        );
+        assert!(
+            out.is_empty(),
+            "an empty registry renders no series: {out:?}"
         );
     }
 

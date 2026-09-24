@@ -2694,6 +2694,7 @@ name = "rspace-bench"
 version = "0.1.0"
 dependencies = [
  "criterion",
+ "rchain-block-storage",
  "rchain-crypto",
  "rchain-models",
  "rchain-rholang",
