@@ -9,10 +9,10 @@ infer from 15,000 lines.
 `spec/Rchain/Laws.lean` is the single source of truth for what each law's proof is worth, and
 `spec/LAWS.md` / `spec/laws.tsv` are emitted from it. Two consequences:
 
-- **Do not restate a status in prose.** `docs/src/formal/laws-44-47.md` called laws 44/47 "open" for as
-  long as it took someone to read it; `ai-entrypoint.md`'s table carried a paragraph of per-law statuses
-  that had drifted in a dozen places. Both now point at `spec/LAWS.md`. A status repeated by hand is a
-  status nothing checks.
+- **Do not restate a status in prose.** The page that then carried the Proof-of-Stake rows (since folded
+  into `docs/src/formal/laws.md`) called laws 44/47 "open" for as long as it took someone to read it;
+  `ai-entrypoint.md`'s table carried a paragraph of per-law statuses that had drifted in a dozen places.
+  Both now point at `spec/LAWS.md`. A status repeated by hand is a status nothing checks.
 - **Do not restate a count in digits** in the reader-facing documents (`spec/README.md`,
   `spec/TYPE-SYSTEM.md`, `spec/INVENTORY.md`, `spec/coq/README.md`, `docs/src/formal/*.md`,
   `docs/src/ai-entrypoint.md`). Use a generated span —

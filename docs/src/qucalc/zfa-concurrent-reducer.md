@@ -15,9 +15,9 @@ deploy's independent work concurrently.
 
 That question is constrained by two existing formal results:
 
-- [`docs/src/formal/concurrent-reduction.md`](../formal/concurrent-reduction.md) C.1 proves
+- [`docs/src/formal/concurrency.md`](../formal/concurrency.md) C.1 proves
   independent redexes commute.
-- [`docs/src/formal/effect-scheduling.md`](../formal/effect-scheduling.md) S.3/S.4 proves that
+- [`docs/src/formal/scheduling.md`](../formal/scheduling.md) S.3/S.4 proves that
   **static channel-footprint partitioning is unsound**: the sound criterion is disjoint
   *closure*, which is not statically decidable.
 
@@ -249,7 +249,7 @@ wins; Law 8's sorted-first candidate selection and DFS order choose that.
 1. Differential test: for the existing Scala/oracle-derived rholang test corpus, the
    sharded scheduler's final state hash equals the sequential scheduler's final state hash.
 2. Replay test: `ReplayRSpace` accepts the sharded scheduler's trace exactly (Law 11).
-3. Adversarial test: the S.3 counterexample from `effect-scheduling.md` produces the same
+3. Adversarial test: the S.3 counterexample from `scheduling.md` produces the same
    state as sequential DFS (i.e. the scheduler does **not** exploit footprint-disjoint
    closure-overlap).
 4. Microbenchmark: a synthetic corpus of independent contracts on disjoint channels shows
@@ -271,10 +271,10 @@ wins; Law 8's sorted-first candidate selection and DFS order choose that.
 
 ## 5. Relationship to existing formal documents
 
-- [Concurrent reduction](../formal/concurrent-reduction.md) — the process-level permission
+- [Concurrent reduction](../formal/concurrency.md) — the process-level permission
   (`parLeft`/`parRight`) and the linearization obligation.
-- [Effect scheduling](../formal/effect-scheduling.md) — S.3/S.4, the soundness boundary
+- [Effect scheduling](../formal/scheduling.md) — S.3/S.4, the soundness boundary
   this branch must respect.
-- [The 29 laws](../formal/the-29-laws.md) — Laws 1, 4, 7, 8, 9, 11 are the invariants each
+- [The laws](../formal/laws.md) — Laws 1, 4, 7, 8, 9, 11 are the invariants each
   phase tests.
 - [`spec/INVENTORY.md`](../../../spec/INVENTORY.md) — canonical per-law source of truth.

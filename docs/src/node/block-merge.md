@@ -122,5 +122,5 @@ was honest. Both are required, and both are deterministic.
 
 > **Formal.** Merge monoid and commuting logs are **Law 9**; Merkle determinism is **Law 10**; replay
 > determinism is **Law 11**; merge determinism (unique min-cost rejection) is **Law 17**. See
-> [The 29 laws](../formal/the-29-laws.md), [Determinism](../formal/determinism.md) and
+> [The laws](../formal/laws.md), [Determinism](../formal/determinism.md) and
 > [`spec/INVENTORY.md`](../../../spec/INVENTORY.md).

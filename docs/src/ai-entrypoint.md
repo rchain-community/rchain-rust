@@ -23,11 +23,10 @@ deploy, and one for what a matched deploy is charged), the ρ-calculus core
 | Build a secure contract (facets, revocation, sealer/unsealer, multisig) | [Object capabilities](rholang/object-capabilities.md), [Smart contracts](rholang/smart-contracts.md) |
 | **Port an existing app** (or debug a parser that worked elsewhere) | [Porting an app from rnode](developer/porting-a-client.md) — reply shapes, refused terms, the traps |
 | See the exact grammar and sorts | [Grammar and sorts](formal/grammar-sorts.md) |
-| Map a language feature to its **law** and its proof | [The 29 laws](formal/the-29-laws.md) |
-| Map a **syntax, matching, reply-shape or JSON** feature to its law | [Laws 30–43: the surface](formal/laws-30-43.md) |
-| Understand how concurrent effects are linearized (claim queues, the DFS gate, the relaxed mode) | [The channel scheduler](formal/channel-scheduler.md) |
-| Understand how effect concurrency becomes sound on-chain (validated speculation, the Law 24 certificate) | [On-chain scheduling: validated speculation](formal/onchain-scheduling.md) |
-| Understand `≡` and `⟶` precisely | [Structural congruence and reduction](formal/congruence-reduction.md) |
+| Map a language feature, or a **syntax, matching, reply-shape or JSON** feature, to its **law** and its proof | [The laws](formal/laws.md) |
+| Understand how concurrent effects are linearized (claim queues, the DFS gate, the relaxed mode) | [The channel scheduler](formal/scheduling.md) |
+| Understand how effect concurrency becomes sound on-chain (validated speculation, the Law 24 certificate) | [On-chain scheduling: validated speculation](formal/scheduling.md) |
+| Understand `≡` and `⟶` precisely | [Structural congruence and reduction](formal/concurrency.md) |
 | Understand the "no silent partiality" / totality guarantee | [Closedness and the Calculus of Constructions](formal/closedness-coc.md) |
 | Understand consensus / finality | [Consensus (Casper)](node/consensus.md) |
 | Understand the tuple space / storage | [The tuple space (RSpace)](node/rspace.md), [Storage](node/storage.md) |
@@ -38,12 +37,12 @@ deploy, and one for what a matched deploy is charged), the ρ-calculus core
 
 ## The invariant catalog, in one screen
 
-RChain's behavior is pinned by **<!-- counts:laws -->49 laws<!-- counts:end -->** ([`spec/INVENTORY.md`](../../spec/INVENTORY.md)): the 29
-below, about the calculus, rows 30–43 about the surface a client writes and a matcher reads
-([Laws 30–43](formal/laws-30-43.md)), rows 44–47 about the native Proof-of-Stake epoch
-([Laws 44–47](formal/laws-44-47.md)), row 48 about the fee consequence of a denied deploy (a rule
-neither tree implements, recorded as an open design question), and row 49 about what a matched deploy
-is charged — the first law about gas rather than state. The first 29 group as:
+RChain's behavior is pinned by **<!-- counts:laws -->49 laws<!-- counts:end -->** ([`spec/INVENTORY.md`](../../spec/INVENTORY.md)),
+and [The laws](formal/laws.md) is the full set, grouped by layer. They divide into: the calculus rows
+(below), the surface a client writes and a matcher reads (30–43), the native Proof-of-Stake epoch
+(44–47), the fee consequence of a denied deploy (48 — a rule neither tree implements, recorded as an open
+design question), and what a matched deploy is charged (49, the first law about gas rather than state).
+The calculus rows group as:
 
 - **Rholang (Laws 1–6)** — canonicalization, α-equivalence, substitution, reduction, spatial matching,
   closedness.
@@ -55,9 +54,9 @@ is charged — the first law about gas rather than state. The first 29 group as:
 - **Storage (Law 18)** — contiguous height map, order-independent fringe identity.
 - **Crypto (Law 19)** — Blake2b256, splittable `Blake2b512Random`, signatures, Curve25519 (axiomatized).
 - **Scheduler (Laws 20–22)** — per-channel claim queues in DFS path order, the gate scheduler, the
-  dispatch-time next-step closure (see [The channel scheduler](formal/channel-scheduler.md)).
+  dispatch-time next-step closure (see [The channel scheduler](formal/scheduling.md)).
 - **Scheduler, on-chain (Laws 23–25)** — read-determinism, DFS-order serializability, validated
-  speculation (see [On-chain scheduling](formal/onchain-scheduling.md)).
+  speculation (see [On-chain scheduling](formal/scheduling.md)).
 
 And the 14 surface rows, which exist because every defect that started the formalisation programme
 lived there and **nothing errored**:
@@ -76,7 +75,7 @@ lived there and **nothing errored**:
 
 | Artifact | What it proves/states | Build |
 |---|---|---|
-| `spec/Rchain/*.lean` (Lean 4) | the model half of the register: each law's Lean declarations, its status (`proved-tied`/`proved-model`/`owed`/…), the axioms it rests on and the declarations that would falsify it. **Per-law status lives in one place** — [`spec/LAWS.md`](../../spec/LAWS.md), emitted from `Rchain/Laws.lean` and refused stale by the gate; this table no longer restates it, because a status repeated here is a status nothing checks (see `laws-44-47.md` for what that cost) | `cd spec && lake build` |
+| `spec/Rchain/*.lean` (Lean 4) | the model half of the register: each law's Lean declarations, its status (`proved-tied`/`proved-model`/`owed`/…), the axioms it rests on and the declarations that would falsify it. **Per-law status lives in one place** — [`spec/LAWS.md`](../../spec/LAWS.md), emitted from `Rchain/Laws.lean` and refused stale by the gate; this table no longer restates it, because a status repeated here is a status nothing checks (see `laws.md` for what that cost) | `cd spec && lake build` |
 | `spec/coq/*.v` (Coq) | Laws 2–6 (substitution / α-equivalence metatheory) **stated** | `make -C spec/coq` |
 | `spec/conformance/*.tsv` | the conformance corpora: *emitted* from the Lean definitions, committed, and read by a Rust consumer that runs the same cases through the node | `tools/emit-lean-corpus.sh` |
 | `spec/INVENTORY.md` | the law catalog (<!-- counts:laws-entries -->49 laws and 58 entries<!-- counts:end -->) with source-of-truth + status | — |

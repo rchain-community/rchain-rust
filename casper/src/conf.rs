@@ -138,7 +138,7 @@ pub struct CasperConf {
     /// `relaxed-validated`. Parsed via `FromStr` at consumption (`EffectMode`); the block paths
     /// hard-reject `relaxed` (off-chain only) and accept `relaxed-validated` with
     /// sequential-reference validation (Laws 23–25,
-    /// `docs/src/formal/onchain-scheduling.md`).
+    /// `docs/src/formal/scheduling.md`).
     pub effect_mode: String,
 }
 

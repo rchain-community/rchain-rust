@@ -37,7 +37,7 @@ The consequence is structural: **validator operation genuinely decentralizes.** 
 within consumer-grade hardware, not a datacenter, so the barrier to running a validating node is a
 commodity machine. The same native code buys throughput too — no GC pauses and no JVM startup leave
 the CPU free for reduction itself, even while full ρ-calculus thread-level concurrency remains work in
-progress (see [the concurrency model](../formal/concurrency-model.md)).
+progress (see [the concurrency model](../formal/concurrency.md)).
 
 That decentralization is not an abstract ideal; it is the lesson of the original network's failure.
 Running a validator meant an always-on, co-op-operated AWS instance. Operators who self-hosted —

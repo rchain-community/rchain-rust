@@ -19,20 +19,15 @@
 
 # Part II — The ρ-calculus, formally
 
+- [The formal layer: how to read this set](formal/README.md)
+- [The laws](formal/laws.md)
 - [Grammar and sorts](formal/grammar-sorts.md)
-- [The 29 laws](formal/the-29-laws.md)
-- [Laws 30–43: the surface](formal/laws-30-43.md)
-- [Laws 44–47: the Proof-of-Stake epoch](formal/laws-44-47.md)
-- [The concurrency model](formal/concurrency-model.md)
-- [Determinism of the block state transition](formal/determinism.md)
-- [Structural congruence and reduction](formal/congruence-reduction.md)
-- [Concurrent reduction](formal/concurrent-reduction.md)
-- [Effect scheduling](formal/effect-scheduling.md)
-- [The channel scheduler (Laws 20–22)](formal/channel-scheduler.md)
-- [On-chain scheduling: validated speculation (Laws 23–25)](formal/onchain-scheduling.md)
-- [Cross-shard transactions: two-phase commit (Laws 26–29)](formal/cross-shard-transactions.md)
 - [Substitution and matching](formal/substitution-matching.md)
 - [Closedness and the Calculus of Constructions](formal/closedness-coc.md)
+- [Concurrency: the model, the calculus, and the soundness theorems](formal/concurrency.md)
+- [Effect scheduling](formal/scheduling.md)
+- [Determinism of the block state transition](formal/determinism.md)
+- [Cross-shard transactions](formal/cross-shard-transactions.md)
 
 # Part III — The node
 

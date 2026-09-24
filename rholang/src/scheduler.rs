@@ -1,5 +1,5 @@
 //! The effect scheduler: DFS-path addressing and the scheduler modes of Laws 20–22
-//! (`docs/src/formal/channel-scheduler.md`, `spec/Rchain/Scheduler.lean`).
+//! (`docs/src/formal/scheduling.md`, `spec/Rchain/Scheduler.lean`).
 //!
 //! Every effect in a reduction carries a [`DfsPath`] — the sequence of child indices from the root
 //! of the reduction tree (`[4]` is the 4th sibling of a `Par`; `[4, 0]` its first child). The
@@ -58,7 +58,7 @@ pub enum EffectMode {
     /// Laws 23–25 (on-chain validated speculation): the relaxed scheduler on the block path,
     /// where every block-path run is checked against the sequential DFS reference (state hash +
     /// per-channel COMM subsequences) and falls back to the sequential trace on divergence.
-    /// `docs/src/formal/onchain-scheduling.md`.
+    /// `docs/src/formal/scheduling.md`.
     RelaxedValidated,
 }
 

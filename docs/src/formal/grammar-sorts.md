@@ -1,5 +1,7 @@
 # Grammar and sorts
 
+**Laws this document carries:** 2, 3 and 6 — name equivalence, substitution, and closedness: what the calculus's sorts make well-formed.
+
 This is the precise statement of the **calculus**: the reflective higher-order ρ-calculus of Meredith
 & Radestock (2005), with its two sorts made explicit. The authoritative source is
 [`spec/RHO-CALCULUS.md`](../../../spec/RHO-CALCULUS.md); this page reproduces the grammar so the rest of
@@ -8,7 +10,7 @@ Part II can refer to it.
 **This is not the surface grammar a client writes.** The language a deploy is written in is the BNFC
 grammar [`legacy/rholang/src/main/bnfc/rholang_mercury.cf`](https://github.com/rchain-community/rchain-rust/blob/dev/legacy/rholang/src/main/bnfc/rholang_mercury.cf)
 — `contract`, `if`/`else`, `let`, `select`, collections with remainders, method calls, `bundle+/-/0`,
-the lot. The parser's relation to it is laws **30–43** ([Laws 30–43](laws-30-43.md)): every term the
+the lot. The parser's relation to it is the surface rows ([The laws](laws.md)): every term the
 parser accepts is in that grammar, and the surface AST it produces is `Rchain/Surface.lean`. The two
 grammars meet at the flat `Par`: a surface term *desugars* into it (`Surface.lean`'s `normalize`), and
 the calculus below is what the result means.

@@ -4,7 +4,7 @@
 //! executing on any of them.
 //!
 //! Path-ordered insertion is what closes the S.3 enqueue race
-//! (`docs/src/formal/effect-scheduling.md`): a continuation enqueued with a DFS-earlier path
+//! (`docs/src/formal/scheduling.md`): a continuation enqueued with a DFS-earlier path
 //! overtakes later-path siblings that are already pending — or even running — on the same channel,
 //! while the "at most one op executes per channel at any instant" exclusion of Law 20 still holds:
 //! the running claim finishes, then the overtaking claim runs. Dropping a guard removes the claim
@@ -13,7 +13,7 @@
 //! Generic over the path type `P` so rspace stays independent of rholang's `DfsPath`.
 //!
 //! The queue also carries the Laws 23–25 versioned write-record layer
-//! (`docs/src/formal/onchain-scheduling.md`, `spec/Rchain/SchedulerOnchain.lean`'s `SpecState`):
+//! (`docs/src/formal/scheduling.md`, `spec/Rchain/SchedulerOnchain.lean`'s `SpecState`):
 //! per channel, the newest committed write (writer path + version + polarity). With validation
 //! enabled (`set_validation_enabled`), `try_acquire` enforces Law 24's per-commit
 //! prefix-visibility certificate at the linearization point — a commit may read only the state
@@ -224,7 +224,7 @@ where
         );
         // The S.3 enqueue window: a DFS-earlier claim arriving while a later-path claim is
         // executing (the phase-two re-wait inserts under its own `active` id and is excluded)
-        // is the divergence signal of Law 24 (`docs/src/formal/onchain-scheduling.md`).
+        // is the divergence signal of Law 24 (`docs/src/formal/scheduling.md`).
         if at == 0 && queue.active.is_some() && queue.active != Some(id) {
             self.skewed.store(true, Ordering::Relaxed);
         }

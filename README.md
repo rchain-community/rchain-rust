@@ -22,8 +22,9 @@ The documentation is served as a book (`mdbook serve docs`). It is organized sof
   what it is, why it fits a blockchain, and from processes and names through object-capability smart
   contracts.
 - **Part II — The ρ-calculus, formally** ([`docs/src/formal/`](docs/src/formal/)) — the grammar, the
-  sorts, and the 29 laws — including the channel scheduler (Laws 20–22) and on-chain validated
-  speculation (Laws 23–25) — mapped to their machine-checked proofs.
+  sorts, and all <!-- counts:laws -->49 laws<!-- counts:end --> — the calculus (1–29), the surface a
+  client writes and a matcher reads (30–43), the Proof-of-Stake epoch (44–47) and the fee and charging
+  rows (48–49) — mapped to their machine-checked proofs.
 - **Part III — The node** ([`docs/src/node/`](docs/src/node/)) — consensus, the tuple space, storage,
   and operation.
 - **Part IV — Building applications** ([`docs/src/developer/`](docs/src/developer/)) — building
@@ -63,10 +64,11 @@ documentation is also served as a book: `mdbook serve docs`.
 ## Governance
 
 The rewrite is governed by [`AGENTS.md`](AGENTS.md) — the binding intent + formal specification —
-and the machine-checked formalizations in [`spec/`](spec/) (the 29-law invariant inventory in
-[`spec/INVENTORY.md`](spec/INVENTORY.md), plus the Lean/Coq tracks). The prime directive is a
-**faithful implementation of the ρ-calculus**: the 29 laws are the oracle; the Scala node was the
-port reference.
+and the machine-checked formalizations in [`spec/`](spec/) (the law register
+[`spec/INVENTORY.md`](spec/INVENTORY.md) — <!-- counts:laws -->49 laws<!-- counts:end -->, counted and
+emitted by `Rchain/Laws.lean` so the number cannot drift — plus the Lean/Coq tracks). The prime
+directive is a **faithful implementation of the ρ-calculus**: the laws are the oracle; the Scala node
+was the port reference.
 
 ## Funding
 

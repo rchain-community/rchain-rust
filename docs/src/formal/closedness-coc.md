@@ -1,5 +1,7 @@
 # Closedness and the Calculus of Constructions
 
+**Laws this document carries:** 6 — closedness, and the embedding of the ρ-calculus as the base sort of the Calculus of Constructions.
+
 The last piece of the formal picture is the guarantee that the interpreter **cannot go wrong** — the
 "no silent partiality" invariant. It is built on Law 6 (**closedness**) and on embedding the ρ-calculus
 as the base sort of a **Calculus of Constructions** (CoC).

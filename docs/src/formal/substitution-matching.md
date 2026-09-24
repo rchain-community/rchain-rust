@@ -1,5 +1,7 @@
 # Substitution and matching
 
+**Laws this document carries:** 2, 3, 4 and 5 — the two operations COMM is made of, and what silence means when a pattern matches nothing.
+
 Two operations make COMM actually *do* something: **substitution** (Law 3) moves the sent data into
 the receive body, and **spatial matching** (Law 5) decides whether a message fits a pattern.
 
@@ -92,7 +94,7 @@ same audit found the `ETuple` clause missing from a matcher the port has one for
 
 `concrete_matches_iff_eq` is the half that justifies the port's fast path
 (`if !pattern.connective_used { pattern == target }`), which is why the two are one row. Law 38 is what
-happens when nothing matches: **no step and no error** ([Laws 30–43](laws-30-43.md)).
+happens when nothing matches: **no step and no error** ([Laws 30–43](laws.md)).
 
 The K executable form splits matching into several rules: `matching-function.k` (the general arity
 matcher), `specific-matching-rules.k` (variable binding and substitution), `exact-matching-function.k`

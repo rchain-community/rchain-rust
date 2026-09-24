@@ -40,7 +40,7 @@ for (x <- a; y <- b) { body }
 
 When a send and a receive meet on the same name, they **comm** (communicate): the message is delivered
 to the receiver, and both are consumed. This single event — called **COMM** — is the whole engine of
-computation (Law 4, [Structural congruence and reduction](../formal/congruence-reduction.md)).
+computation (Law 4, [Structural congruence and reduction](../formal/concurrency.md)).
 
 ```rho
 new chan in {
@@ -100,4 +100,4 @@ language.
 > **Formal.** Send/receive are the `Send`/`Receive` fields of the flat `Par`; `!!`/`<=` are the
 > `persistent`/`peek` flags. COMM is the `Reduce` relation in `spec/Rchain/Rho.lean`, and the
 > tuplespace pairing is `sending-receiving.k` + `persistent-sending-receiving.k`. See
-> [The 29 laws](../formal/the-29-laws.md) (Law 4).
+> [The laws](../formal/laws.md) (Law 4).

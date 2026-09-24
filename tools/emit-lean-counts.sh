@@ -3,7 +3,7 @@
 # emit-lean-counts.sh — keep the prose's law/axiom counts equal to the register's.
 #
 # The drift this closes is old and repeated: two documents said "29 laws" while the tree held 43; the
-# register's own header said "all 43 laws" after 49 existed; `laws-30-43.md` carried both "49 laws, 58
+# register's own header said "all 43 laws" after 49 existed; `laws.md` carried both "49 laws, 58
 # entries today" and, three paragraphs later, "48 laws and 57 entries"; `TYPE-SYSTEM.md` said "30
 # element-comparator axioms" in three places two programmes after that number became 4. Every one of
 # those was a *live* claim about a machine-emitted total, restated by hand, and nothing read them.
@@ -24,11 +24,14 @@
 # register's own totals (current or known-past) and the line carries no marker.
 #
 # The limit of that scan, stated rather than implied: it catches the class that actually rots — a writer
-# copying a total out of the register — and not every possible count. "the 29 laws" is the *name of a
-# section* (laws 1–29) and is left alone; "four (30, 31, 33, 36) are open" is spelled out and therefore
-# outside it; and a sentence about history ("the tree grew to 43 laws while both said 29") is a record,
-# not a claim, which is why the scan is scoped to the reader-facing documents and not to `spec/Rchain/`'s
-# module docs, where those records live. A count that a reader is meant to believe gets a marker.
+# copying a total out of the register — and not every possible count. "the 29 laws" *was* the name of a
+# section (laws 1–29) while that section existed; the folder's pages are now one per layer with the whole
+# set in `laws.md`, so 29 is on the stale list like the rest, and a page that wants to name a *range*
+# uses an en dash (`30–43`), which the number step does not consume. "four (30, 31, 33, 36) are open" is
+# spelled out and therefore outside it; and a sentence about history ("the tree grew to 43 laws while
+# both said 29") is a record, not a claim, which is why the scan is scoped to the reader-facing documents
+# and not to `spec/Rchain/`'s module docs, where those records live. A count a reader is meant to believe
+# gets a marker.
 #
 # Usage: tools/emit-lean-counts.sh [--check]
 set -euo pipefail
@@ -89,6 +92,12 @@ FILES=(
   # bullet restating per-law statuses that had moved on. That bullet now points at the register; this
   # entry is what keeps it pointing.
   "$ROOT/docs/src/contributor/architecture.md"
+  # The two documents a reader meets first, and the reason this list has grown by exactly this rule:
+  # a count stated outside it drifts, because nothing recomputes it. `README.md` said "the 29 laws"
+  # and `introduction.md` said "29 laws … plus laws 30–43" while the register held 49 — found by hand,
+  # like `AGENTS.md`'s four stale declarations before them.
+  "$ROOT/README.md"
+  "$ROOT/docs/src/introduction.md"
 )
 for f in "$ROOT"/docs/src/formal/*.md; do FILES+=("$f"); done
 
@@ -101,7 +110,7 @@ map="$(for k in laws entries laws-entries axioms summary proved-laws proved-tied
 # --- the scan for hand-written totals --------------------------------------------------------------
 # Current totals plus the ones that have already gone stale at least once, so a document that states one
 # of them by hand is caught on the next run rather than after the next programme.
-stale_numbers="$(printf '%s\n' "$n_laws" "$entries" "$n_axioms" "$n_proved" 43 48 57 30 34 49 58 21 \
+stale_numbers="$(printf '%s\n' "$n_laws" "$entries" "$n_axioms" "$n_proved" 29 43 48 57 30 34 49 58 21 \
   | sort -u | paste -sd'|' -)"
 # The scan reads **paragraphs**, not lines, and that is load-bearing: the first version was line-based
 # and matched only `N axioms`, so it missed two of `TYPE-SYSTEM.md`'s three stale claims (one wrapped as

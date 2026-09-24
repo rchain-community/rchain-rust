@@ -7,7 +7,7 @@ import Mathlib.Data.Finset.Basic
 `send | receive → body`). The reducer, however, schedules **effects** — `produce`/`consume` operations
 against the tuple space — where a produce *stores* a datum, a *later* consume matches it, and a
 consume's continuation emits its own effects only **after** the trigger matches. This is the level at
-which the channel-sharded scheduler (`docs/src/formal/effect-scheduling.md`) wants to run disjoint
+which the channel-sharded scheduler (`docs/src/formal/scheduling.md`) wants to run disjoint
 effects concurrently.
 
 The natural reading of **Law 9** (`mergeChanges_comm` in `Rchain.RSpace.Merge`: "merging non-conflicting

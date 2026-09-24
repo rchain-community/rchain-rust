@@ -258,7 +258,7 @@ if [[ -x "$ROOT/tools/emit-lean-laws.sh" ]]; then
   # `tools/emit-lean-counts.sh` rewrites the totals inside `<!-- counts:KEY -->…<!-- counts:end -->`
   # spans in the reader-facing documents from `spec/laws.tsv`, and fails on a register total written by
   # hand outside one. It is the same emit-and-diff discipline as above, one layer out: the *numbers* in
-  # `TYPE-SYSTEM.md`'s and `laws-30-43.md`'s prose now come off the register, which is what stops the
+  # `TYPE-SYSTEM.md`'s and `laws.md`'s prose now come off the register, which is what stops the
   # class of defect this pass found there (three "30 element-comparator axioms" claims, a page saying
   # "48 laws and 57 entries" beside its own "49 laws, 58 entries", a gate comment reading "1..43").
   if [[ -x "$ROOT/tools/emit-lean-counts.sh" ]]; then

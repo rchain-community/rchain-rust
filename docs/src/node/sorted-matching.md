@@ -39,7 +39,7 @@ The order sensitivity has two independent consequences:
 Together these force same-channel effects to be applied in a single fixed order (the reducer's DFS
 order). That, plus the **continuation-footprint** problem — a produce/consume's continuation channel
 footprint is only discovered *after* its own effect runs — is what rules out the channel-sharded effect
-scheduler (see [Effect scheduling](../formal/effect-scheduling.md) S.3/S.4): a sibling effect cannot be
+scheduler (see [Effect scheduling](../formal/scheduling.md) S.3/S.4): a sibling effect cannot be
 safely reordered or run concurrently.
 
 The current docs already gesture at the intended behavior but state it inaccurately:
@@ -70,7 +70,7 @@ effects are discovered only after its trigger runs, so an effect's *closure* can
 `MultiLock` in `rspace/src/concurrent/`), but it serializes conflicts — it does not make reordering sound.
 
 Consequently the channel-sharded effect scheduler (run disjoint-channel effects concurrently) is
-**unsound**, not merely "blocked" — see [Effect scheduling](../formal/effect-scheduling.md) S.3/S.4 and
+**unsound**, not merely "blocked" — see [Effect scheduling](../formal/scheduling.md) S.3/S.4 and
 the proved counterexample `Rchain.Effect.effect_reorder_diverges`.
 
 > This document establishes only the content-addressed matching/storage precondition. It does **not**
@@ -130,5 +130,5 @@ vectors have no multi-candidate comms).
 5. Activation: dev-only for now — the change alters post-state hashes for multi-candidate deploys and
    must be versioned if the node is ever on a live chain.
 
-> **Formal.** See [The 29 laws](../formal/the-29-laws.md) (Laws 4, 7, 8, 10) and the [RSpace
+> **Formal.** See [The laws](../formal/laws.md) (Laws 4, 7, 8, 10) and the [RSpace
 > overview](rspace.md).

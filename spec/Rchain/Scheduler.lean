@@ -8,7 +8,7 @@ import Rchain.Par
 (`effect_reorder_diverges`): disjoint **footprints** do not commute, only disjoint **closures** do
 (`effect_commute_of_disjoint_closure`), and closures are not statically decidable. This module
 formalizes the scheduler that *is* sound, and the one that is *usefully parallel*, at the effect
-level (`docs/src/formal/channel-scheduler.md`):
+level (`docs/src/formal/scheduling.md`):
 
 * **Law 20 — channel-task linearization** ("1 channel = 1 logical task"). Every channel owns a
   *claim queue*; an effect claims its channels at its DFS path, and commits only when it is the

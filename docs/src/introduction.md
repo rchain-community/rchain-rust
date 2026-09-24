@@ -30,9 +30,10 @@ decade.
   builds up to object-capability smart contracts. Each chapter leads with intuition and ends with a
   pointer into the formal treatment.
 - **Part II — The ρ-calculus, formally** is the precise semantics: the grammar, the sorts, and the
-  **29 laws** that govern the calculus — plus [laws 30–43](formal/laws-30-43.md), which cover the
-  surface a client writes and a matcher reads (parsing, normalization, matching, reply shapes, JSON).
-  Each law is mapped to its machine-checked formalization.
+  **[<!-- counts:laws -->49 laws<!-- counts:end -->](formal/laws.md)** that govern the node — the
+  calculus (1–29), the surface a client writes and a matcher reads (30–43), the Proof-of-Stake epoch
+  (44–47), and the fee and charging rows (48–49). Each law is mapped to its machine-checked
+  formalization, and the [folder's index](formal/README.md) says which document carries which set.
 - **Part III — The node** describes the software that executes rholang: the tuple space, the Merkle
   state, and the Casper consensus protocol.
 - **Part IV — Building applications** is the developer guide: stand up the local Docker devnet and
@@ -47,5 +48,5 @@ decade.
 If you are an AI agent (or want the shortest path to a specific fact), start at
 [Navigation for AI agents](ai-entrypoint.md) — a goal-indexed map of this book and the machine-checked
 specification it links to. The authoritative formal specification lives outside this book, in the
-[`spec/`](../../spec/) tree (the 49-row law catalog, the Lean/Coq proofs, and the conformance corpora
+[`spec/`](../../spec/) tree (the law register — <!-- counts:laws -->49 laws<!-- counts:end -->, the Lean/Coq proofs, and the conformance corpora
 that bind the two to the node); this book explains it, it does not duplicate it.

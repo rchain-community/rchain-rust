@@ -1,5 +1,7 @@
 # Cross-shard transactions: two-phase commit (Laws 26–29)
 
+**Laws this document carries:** 26–29 — shard scope, cross-shard atomicity, leg idempotency, and the durable decision record.
+
 [Cross-shard invoke](shard-invoke.md) specifies the *primitive*: a remote deploy is an ordinary
 caller-signed deploy submitted to a **different shard**'s deploy service, and `deployerId` is
 shard-independent, so the same key is the same account on every shard. That primitive can *reach*

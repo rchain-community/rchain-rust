@@ -2628,7 +2628,7 @@ impl<T: Tuplespace + 'static, D: Dispatch + 'static> DebruijnInterpreter<T, D> {
     /// head, and commits with re-validation — see `rchain_rspace::scheduled_space`.
     ///
     /// The claim is made **at dispatch time**, before the task future is even built
-    /// (dispatch-time pre-claiming, `docs/src/formal/channel-scheduler.md`): every claim of a
+    /// (dispatch-time pre-claiming, `docs/src/formal/scheduling.md`): every claim of a
     /// dispatch list therefore lands in the queue in dispatch order, so a later-path task can
     /// never commit before an earlier-path claim has landed — the persistent-produce COMM-order
     /// inversion cannot occur. Continuation claims land at their parent's match time and are

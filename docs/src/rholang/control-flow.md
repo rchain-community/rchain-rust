@@ -102,5 +102,5 @@ of a `fold`.
 
 > **Formal.** `match` and the first-match-wins ordering are Law 4's determinism; the "value in a
 > channel" cell is a degenerate tuplespace (a single-slot produce/consume). See
-> [Structural congruence and reduction](../formal/congruence-reduction.md) and
+> [Structural congruence and reduction](../formal/concurrency.md) and
 > [The tuple space (RSpace)](../node/rspace.md).

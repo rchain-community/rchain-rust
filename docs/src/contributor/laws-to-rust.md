@@ -102,18 +102,18 @@ the ρ-calculus's concurrency at three levels, each grounded in the laws:
 
 - **Reducer** (within a deploy): a `Par`'s terms are concurrent (`|`, Law 2), so `expand_par` fork-joins
   their *pure* resolution (substitution / spatial matching / `new`-allocation, Law 19) while applying the
-  *effects* in DFS order (Law 4). — [`Concurrent reduction`](../formal/concurrent-reduction.md).
+  *effects* in DFS order (Law 4). — [`Concurrent reduction`](../formal/concurrency.md).
 - **Effect** (matching + scheduling): candidate selection is sorted-first (Law 8), and disjoint-channel
   effects commute (Law 9) while same-channel effects keep DFS order (Law 4/8/11). Static partitioning
   is unsound (S.3/S.4), so the sound schedulers are dynamic: the **gate** (Law 21) runs effects
   strictly in path order, and the **claim queue** (Law 20) enforces per-channel DFS order while
   cross-channel commits interleave — the **relaxed** mode, off-chain only. —
-  [`Effect scheduling`](../formal/effect-scheduling.md), [`The channel scheduler`](../formal/channel-scheduler.md).
+  [`Effect scheduling`](../formal/scheduling.md), [`The channel scheduler`](../formal/scheduling.md).
 - **Block** (validation): replay is verify-only (Law 11), so dependency-free blocks re-validate
   concurrently and insert serially. — the fork + batch processor above.
 
 The whole model — and the soundness theorems it must satisfy — is specified in
-[`The concurrency model`](../formal/concurrency-model.md), which is the target of the Lean formalization
+[`The concurrency model`](../formal/concurrency.md), which is the target of the Lean formalization
 (`spec/Rchain/`).
 
 ## Verifying a law yourself

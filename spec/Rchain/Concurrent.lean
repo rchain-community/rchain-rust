@@ -4,7 +4,7 @@ import Rchain.Rho
 # The concurrency model (parallel reduction)
 
 Specifies the *parallel* reduction `⟹` and the soundness theorems of the concurrency model
-(`docs/src/formal/concurrency-model.md`). The sequential `Reduce` and structural congruence `StrCong`
+(`docs/src/formal/concurrency.md`). The sequential `Reduce` and structural congruence `StrCong`
 are in `Rchain.Rho`.
 
 **Proven here:**

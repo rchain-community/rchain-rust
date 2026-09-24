@@ -8,7 +8,7 @@ order) and the gate (the sequential fold). The **relaxed** mode runs the claim q
 cross-channel interleaving, and may diverge from the sequential reducer's final state and event
 log — which is why the casper block paths hard-reject it. This module formalizes the extension
 that makes effect-level concurrency *sound on-chain*
-(`docs/src/formal/onchain-scheduling.md`):
+(`docs/src/formal/scheduling.md`):
 
 * **Law 23 — read-determinism.** An effect's chosen candidate, commit outcome and event trace
   are a deterministic function of the state it reads. `read_state_determines_outcome` proves the

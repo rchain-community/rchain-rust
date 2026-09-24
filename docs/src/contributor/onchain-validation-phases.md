@@ -2,7 +2,7 @@
 
 This page is the condensed account of how the on-chain validated-speculation realization
 (`EffectMode::RelaxedValidated` on the casper block path) was built, phase by phase. The full
-specification is [On-chain scheduling: validated speculation](../formal/onchain-scheduling.md);
+specification is [On-chain scheduling: validated speculation](../formal/scheduling.md);
 the formalization lives in `spec/Rchain/SchedulerOnchain.lean`. Each phase landed green — workspace
 build, the rspace/rholang/casper suites, and a clean `lake build`.
 
@@ -54,7 +54,7 @@ accept the speculative run only on agreement with the oracle, else ship the orac
 ## Phase F — docs and verification
 
 This page, the realization map of
-[onchain-scheduling.md](../formal/onchain-scheduling.md), the relaxed-contract bullets of
-[channel-scheduler.md](../formal/channel-scheduler.md), the Laws 23–25 rows of
+[scheduling.md](../formal/scheduling.md), the relaxed-contract bullets of
+[scheduling.md](../formal/scheduling.md), the Laws 23–25 rows of
 [laws-to-rust.md](laws-to-rust.md), and the final sweep: `cargo build`, the
 rspace+rholang+casper suites, and `lake build`.

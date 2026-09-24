@@ -1,8 +1,8 @@
 /-!
 # The law register — every law, in one place, with what each one rests on
 
-`spec/INVENTORY.md` is the prose catalog, and `docs/src/formal/the-29-laws.md`,
-`docs/src/formal/laws-30-43.md` and `docs/src/formal/laws-44-47.md` are its reader-facing rendering, but
+`spec/INVENTORY.md` is the prose catalog, and `docs/src/formal/laws.md`
+— the folder's one-page rendering of the whole set — is its reader-facing counterpart, but
 none of the three is *checkable*:
 nothing noticed that the tree grew to 43 laws while both still
 said 29, that the two tables contradicted each other on Laws 5 and 24, or that Law 1's "30 residual
