@@ -1100,18 +1100,37 @@ def laws : List Law := [
   { number := 26, clause := "a", layer := "Cross-shard",
     statement := "A deploy/block's effects bind to exactly one shard, and the leg a gateway admits \
       carries a validated shard id",
-    status := .owed,
-    declarations := [`Rchain.shard_scope_deterministic_is_false, `Rchain.ValidShardId, `Rchain.Leg],
+    status := .provedModel,
+    declarations := [`Rchain.shard_scope_deterministic_is_false, `Rchain.ValidShardId, `Rchain.Leg,
+      `Rchain.isAscii, `Rchain.isBlank, `Rchain.validShardId, `Rchain.IncomingLeg, `Rchain.AdmittedLeg,
+      `Rchain.admitLeg, `Rchain.validShardId_empty, `Rchain.validShardId_implies_ne,
+      `Rchain.the_admitted_leg_carries_a_validated_shard_id, `Rchain.admitLeg_rejects_an_empty_shard_id,
+      `Rchain.admitLeg_rejects_a_non_ascii_shard_id, `Rchain.admitLeg_rejects_a_blank_recipient,
+      `Rchain.admitLeg_admits_a_negative_amount],
     rust := ["node/src/web/http.rs", "shared/src/refined.rs"],
-    witness := [`Rchain.shard_scope_deterministic_is_false],
-    falsifiable := none,
+    witness := [`Rchain.admitLeg_rejects_a_non_ascii_shard_id,
+      `Rchain.admitLeg_rejects_a_blank_recipient, `Rchain.shard_scope_deterministic_is_false],
+    falsifiable := "`admitLeg_rejects_an_empty_shard_id` / `..._a_non_ascii_shard_id` / \
+      `..._a_blank_recipient` are the three refusals the boundary performs, each `decide`d, so dropping \
+      a check from `admitLeg` fails them (measured: dropping the ASCII and blank checks makes the build \
+      fail on both witnesses *and* on `the_admitted_leg_carries_a_validated_shard_id`, whose three \
+      conjuncts are the two `ShardId::try_from` checks plus the recipient one)",
     note := "**the axiom this row used to cite was FALSE** — `∀ l : Leg, ValidShardId l.shard` over a \
       freely constructible record, refuted by `Leg.mk \"\" 0 0` (`shard_scope_deterministic_is_false`, \
       2026-09-23). The axiom is deleted rather than kept beside its own refutation (a false axiom makes \
       everything provable). What the law is about is the *ingress*: the port rejects an invalid shard id \
       at the boundary (`ShardId::try_from` on `TxnLegDto.shard_id`, `node/src/web/http.rs:203-218`, with \
       the boundary test that pins the 400), so the narrowed statement is about the function that admits \
-      a leg — which needs that function modelled before it can be proved" },
+      a leg — which needed that function modelled. **That function is modelled now (2026-09-24, \
+      Programme F) and the row is proved**: `admitLeg` mirrors the boundary's decision exactly — \
+      `validShardId` (non-empty, ASCII) and a non-blank recipient — and \
+      `the_admitted_leg_carries_a_validated_shard_id` states the law's content, with the three refusals \
+      as `decide`d witnesses. Two things are named rather than implied. (1) **The amount is not checked \
+      at the ingress** — the port's own comment records it is left to the ledger's `NonNegI64` \
+      refinement in `GatewayTxn::run`, and `admitLeg_admits_a_negative_amount` is a *theorem* so a model \
+      that added the check would fail it. (2) **The recipient check is modelled over code points**: \
+      `String.trim` does not reduce in Lean, so `isBlank` (all characters `Char.isWhitespace`) is the \
+      computable counterpart of `l.to.trim().is_empty()`, which is what keeps the witnesses `decide`d" },
   { number := 26, clause := "b", layer := "Cross-shard",
     statement := "The shard id is a validated, ordered value",
     status := .open,

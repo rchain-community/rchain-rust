@@ -690,7 +690,11 @@ mod tests {
         let d = genesis_descriptors_from_config(&spec, false)
             .expect("the files are present and well formed")
             .expect("a node with a bonds file has descriptors");
-        assert_eq!(d.pos_genesis.bonds.len(), 1, "the pool the genesis installed");
+        assert_eq!(
+            d.pos_genesis.bonds.len(),
+            1,
+            "the pool the genesis installed"
+        );
         assert!(d.vaults.is_empty(), "no wallets, no balances");
 
         std::fs::remove_dir_all(&dir).ok();

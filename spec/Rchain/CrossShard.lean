@@ -90,7 +90,116 @@ structure CoordRecord where
 /-- A run's terminal configuration: the outcome of every participant. -/
 abbrev Run := List Outcome
 
-/-! ## Law 26 — shard scope determinism -/
+/-! ## Law 26 — shard scope determinism, and the ingress the law is really about
+
+The law this row owes is about the function that **admits** a leg (`node/src/web/http.rs:203-218`), so
+that function is written down here: `ShardId::try_from`'s two checks (non-empty, ASCII —
+`shared/src/refined.rs:423-436`) and the boundary's blank-recipient check. -/
+
+/-- Whether every character of `s` is ASCII — the port's `String::is_ascii`
+    (`shared/src/refined.rs:429`), over code points so `decide` can reduce it. -/
+def isAscii (s : String) : Bool := s.toList.all (fun c => c.toNat ≤ 127)
+
+/-- Whether `s` is blank — the port's `l.to.trim().is_empty()`.
+
+    **Modelled over code points rather than written as `s.trim.isEmpty`** because `String.trim` does
+    not reduce: `decide` gets stuck on it (`match "   ".trim.isEmpty, true with …`), and a `decide`d
+    witness is how this row's refusals are checked. `Char.isWhitespace` is Rust's notion, so the
+    predicate means the same thing while remaining computable. -/
+def isBlank (s : String) : Bool := s.toList.all Char.isWhitespace
+
+/-- **The validated shard id, as a decision**: non-empty and ASCII, the two checks in
+    `ShardId::try_from`. `ValidShardId` above is the same property as a `Prop`, kept for statements;
+    this is the form a computable admission needs.
+
+    The emptiness test is `s.toList.isEmpty` and not `s.isEmpty`: `String.isEmpty` **does not reduce**
+    on a literal, so `decide` cannot check a witness that mentions it, while `String.toList` does (the
+    same reason `isBlank` is written over code points). -/
+def validShardId (s : ShardId) : Bool := !s.toList.isEmpty && isAscii s
+
+/-- One leg as a client sends it to the gateway's request boundary. -/
+structure IncomingLeg where
+  shard : ShardId
+  amount : Int
+  to : String
+  deriving DecidableEq, Repr
+
+/-- The leg the gateway admits (`casper::gateway::GatewayLeg`) — a *different* shape from the 2PC's
+    [`Leg`], which carries opaque term handles: this is what the request boundary produces. -/
+structure AdmittedLeg where
+  shard : ShardId
+  amount : Int
+  to : String
+  deriving DecidableEq, Repr
+
+/-- **The gateway's admission decision**, mirroring `node/src/web/http.rs:203-218`: a leg is admitted
+    exactly when its shard id passes `ShardId::try_from` **and** its recipient is not blank.
+
+    **The amount is deliberately not checked here**, because the port does not check it here: the
+    boundary's own comment records that the amount is left to the ledger's `NonNegI64` refinement in
+    `GatewayTxn::run` ("the amount is caught by the ledger's `NonNegI64` refinement … everything else
+    *is* stopped, just later than the boundary"). `admitLeg_admits_a_negative_amount` below states that
+    as a theorem, so a model that added the check would have to face the register rather than quietly
+    claim more than the code does. -/
+def admitLeg (l : IncomingLeg) : Option AdmittedLeg :=
+  if validShardId l.shard && !isBlank l.to then
+    some ⟨l.shard, l.amount, l.to⟩
+  else
+    none
+
+/-- The decision refuses the empty id, checked by computation. -/
+theorem validShardId_empty : validShardId ("" : ShardId) = false := by decide
+
+/-- `validShardId`'s decision implies the property it stands for. -/
+theorem validShardId_implies_ne (s : ShardId) (h : validShardId s = true) : ValidShardId s := by
+  intro hnil
+  rw [hnil, validShardId_empty] at h
+  exact Bool.false_ne_true h
+
+/-- **Law 26's real content, proved**: the leg a gateway admits carries a fully validated shard id and
+    a non-blank recipient — which is what the boundary actually enforces, in contrast to the axiom this
+    row used to carry (`∀ l : Leg, ValidShardId l.shard`, refuted below).
+
+    **Both halves of the validation are named**, because they are two checks in the code: `ValidShardId`
+    (non-empty) and the ASCII rule, which lives only in `validShardId`. Stating just the first would be
+    a theorem weaker than the guarantee `ShardId::try_from` gives, and the ASCII half is what a dropped
+    check would break first. The recipient half is the `Bool` equation the guard computes. -/
+theorem the_admitted_leg_carries_a_validated_shard_id (l : IncomingLeg) (a : AdmittedLeg)
+    (h : admitLeg l = some a) :
+    ValidShardId a.shard ∧ isAscii a.shard = true ∧ isBlank a.to = false := by
+  unfold admitLeg at h
+  split at h
+  · next hguard =>
+    rw [Option.some.injEq] at h
+    subst h
+    simp only [Bool.and_eq_true, Bool.not_eq_true'] at hguard
+    have hunfolded := hguard.1
+    unfold validShardId at hunfolded
+    simp only [Bool.and_eq_true] at hunfolded
+    exact ⟨validShardId_implies_ne l.shard hguard.1, hunfolded.2, hguard.2⟩
+  · next => exact absurd h (by simp)
+
+/-- An empty shard id is refused (the first check of `ShardId::try_from`). -/
+theorem admitLeg_rejects_an_empty_shard_id :
+    admitLeg ⟨"", 1, "addr"⟩ = none := by decide
+
+/-- A non-ASCII shard id is refused (the second check; `Café` here is well-formed UTF-8, so only the
+    ASCII rule can catch it). -/
+theorem admitLeg_rejects_a_non_ascii_shard_id :
+    admitLeg ⟨"Café", 1, "addr"⟩ = none := by decide
+
+/-- A blank recipient is refused — the one field the boundary checks that has no refinement behind it
+    (the port's comment says so in as many words). -/
+theorem admitLeg_rejects_a_blank_recipient :
+    admitLeg ⟨"root", 1, "   "⟩ = none := by decide
+
+/-- **The boundary, stated rather than implied**: the ingress does **not** check the amount, so a
+    negative one is admitted here and refused later by the ledger's refinement. A model that checked it
+    at the boundary would be wrong about the code, and this theorem is what would fail first. -/
+theorem admitLeg_admits_a_negative_amount :
+    admitLeg ⟨"root", -5, "addr"⟩ = some ⟨"root", -5, "addr"⟩ := by decide
+
+/-! ## Law 26's old statement, refuted -/
 
 /-- **Law 26 was stated as `∀ l : Leg, ValidShardId l.shard`, and that statement is FALSE** — `Leg` is
     a freely constructible record (`:58`), so an empty shard id is an inhabitant the statement cannot
