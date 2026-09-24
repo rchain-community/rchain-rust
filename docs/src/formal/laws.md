@@ -121,11 +121,11 @@ stops holding is noticed by a machine rather than by a user.
 
 | # | Law | Where it lives |
 |---|---|---|
-| 30 | every term the parser accepts is in the grammar | `Rchain/Surface.lean`'s production table — the *grammar* is modelled and its productions are witnessed both ways; the **parser** is not modelled |
-| 31 | every grammar term is accepted, modulo a data list of deviations | the same, plus `parser.rs`'s deviation rows |
+| 30 | every term the parser accepts is in the grammar | `Rchain/Parse.lean` — the grammar as **data** (`grammarFragment`, `derives`), the deviations as a list of named claims (`parseDeviations`), and a `decide`d corpus row per production |
+| 31 | every grammar term is accepted, modulo a data list of deviations | the same: the fragment reads every production, and each deviation is a row with its own detector |
 | 32 | each spelling lexes one way | `Rchain/Lex.lean` (`lexemes`, maximal munch) — the operator surface is checked |
-| 33 | `parse (print p) ≡ p` | *(pending)* a printer — `Rchain/Surface.lean`'s `Surf` is the type it would print |
-| 34 | a value position is normalized against an empty par; only a statement continuation inherits | `Surface.lean`'s `normalizeAt` + the `c21` corpus layer (`Corpus.lean`'s `c21Cases`) — checked on the shapes C21 broke; the universal form needs the accumulator modelled, which the model deliberately does not have |
+| 33 | `parse (print p) ≡ p` | `Rchain/Print.lean` (`printToks`, `printSurf`, `renderTokens`) — checked in **two halves**: the model's, that the printer's output is a grammar term, and the identity itself, which runs on the node in the Rust consumer, modulo the named warts (`printWarts`) |
+| 34 | a value position is normalized against an empty par; only a statement continuation inherits | `Surface.lean`'s `normalizeAt` + the `c21` corpus layer (`Corpus.lean`'s `c21Cases`) — both halves checked on the shapes C21 broke, the accumulator itself now **modelled** (`normalizeAt` threads the port's `ProcVisitInputs.par`, and only the sequencing arm hands it on) |
 | 35 | concreteness is sound (connective, free var, wildcard **or remainder**) | `Rchain/Par.lean`'s `connectiveUsed` + the `flags` corpus |
 | 36 | the normalizer's output is well-scoped and closed | `Surface.lean`'s `normalize` — modelled; the corpus that would hold it to the node does not exist |
 | 37 | matching is sound and complete, over the shapes the clauses cover | `Rchain/Match.lean` — `pathPar` is that domain and `spatialMatches_iff_eq` is the tie; `match.tsv` ties the model to the node |

@@ -30,6 +30,6 @@ its Rust realization. These pages point at those rather than restating them.
   the **gate** ([`tools/check-lean-conformance.sh`](https://github.com/rchain-community/rchain-rust/blob/dev/tools/check-lean-conformance.sh))
   is what refuses a `sorry`, a stale corpus, an unimported module or a corpus with no consumer.
 - **Some rows are deliberately not modelled**, and each says so where it is: the Rosette actor VM is
-  orphaned; the parser and the printer are modelled only as a grammar (rows 30, 31, 33); and the
+  orphaned; the grammar, the parser and the printer are modelled as data with a corpus of their own (rows 30, 31, 33), while the normalizer's output has no corpus to be held to (row 36); and the
   denied-deploy row is an open decision shared with the Scala rather than a port divergence. What is not
   formalized is named here, and the register is where that is counted.

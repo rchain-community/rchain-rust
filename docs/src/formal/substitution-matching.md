@@ -81,9 +81,9 @@ Three things follow, and each is the point of a row:
 - **Linearity is a theorem** (`spatialMatch_implies_linear`), stated of a matcher that exists. The
   invariant itself — a pattern binds each free level at most once — is `addedVars.distinct` in the
   Scala oracle and the `freeCount` fields of `BindPattern`/`ReceiveBind`/`MatchCase` in Rust.
-- **The matcher carries fuel**, which is what makes the corpus's verdicts `decide`-able, and it is why
-  the two axioms above are owed rather than proved: saturation past `matchFuel` is a real induction
-  over the matcher's five mutually recursive functions.
+- **The matcher carries fuel**, which is what makes the corpus's verdicts `decide`-able — and the fuel
+  is *proved* sufficient: `fuel_saturation` is a six-member family of depth-indexed bounds over the
+  matcher's mutually recursive clauses, so a shortfall is ruled out rather than merely unobserved.
 
 Law 37 is *soundness and completeness* — the result set equals the relation's, with partial collections,
 wildcards and remainders included (`spec/conformance/match.tsv`, `rholang/tests/lean_match_corpus.rs`);
