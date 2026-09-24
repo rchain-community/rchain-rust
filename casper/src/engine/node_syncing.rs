@@ -257,7 +257,7 @@ impl<I: RSpaceImporter + Send + 'static> NodeSyncing<I> {
     }
 }
 
-/// Signal the syncing-finished handle **only when the state was actually restored** (AUDIT C66).
+/// Signal the syncing-finished handle **only when the state was actually restored** (AUDIT C68).
 ///
 /// The oracle sequences `finished.complete(())` *after* the sync's drain, so a failed attempt leaves
 /// the node in `NodeSyncing` — and its own comment says why the approved block is stored only after
@@ -561,7 +561,7 @@ mod tests {
         // The whole chain is in the DAG, so the latest block number equals the chain length.
         assert_eq!(dag.get_representation().await.latest_block_number(), n);
     }
-    /// **AUDIT C66**: a failed LFS sync must not signal the node out of `NodeSyncing`.
+    /// **AUDIT C68**: a failed LFS sync must not signal the node out of `NodeSyncing`.
     ///
     /// Both directions in one test, because the fix is a decision and the decision has two outcomes:
     /// `Err` must leave the waiter untouched (the oracle's `complete` is sequenced after the drain), and
