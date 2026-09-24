@@ -524,4 +524,75 @@ theorem fringe_identity_order_independent_is_false :
   let m1 : Message := ⟨1, 0, 0, 0, [], []⟩
   exact absurd (h ⟨[m0, m1]⟩ ⟨[m1, m0]⟩ (List.Perm.swap m1 m0 [])) (by decide)
 
+/-! ## Law 16c's `body` layer — `prost` over the modelled subset (C57 option (b))
+
+**What this ties, and what it deliberately does not.** The port has no `BodyProto`: a block is one
+`BlockMessageProto` with tags 1–17 (`models/proto/casper.proto:45-66`), and `hash_block`
+(`casper/src/proto_util.rs:58-64`) clones the whole `BlockMessage`, clears exactly two fields
+(`blockHash` → 32 zero bytes, `sig` → empty) and encodes the rest with **`prost`**. The `encodeBody`
+above is therefore a *narrowing* of one message rather than a sub-message's encoding, which is why the
+byte tie can only cover the subset where the two structures genuinely correspond.
+
+The encoder below mirrors `prost` over that subset, and it differs from `encodeBody` in exactly the two
+ways a hand-written encoder gets wrong — which is what the `body` corpus layer exists to pin:
+
+| rule | `encodeBody` | `encodeProstBody` |
+|---|---|---|
+| field order | tags 32, 48, 40, 136, 74, 114 → proto fields **4, 6, 5, 17, 9, 14**, not ascending | ascending: **4, 5, 6, 9, 14, 17** |
+| default-valued fields | written unconditionally | omitted where the value is the default — a genesis `timestamp = 0` is the smallest instance |
+| the justification list | one key (74) covering every `Parent`'s encoding | the proto's own `repeated bytes`: one key per entry |
+
+**The layer's edge has two kinds of member, and they are not the same kind of omission.** *Fields
+omitted*: `version`, `shardId`, `blockHash`, `preStateHash`, `postStateHash`, `bonds`, the three
+`rejected*` sets and `sigAlgorithm` are in the proto and are not modelled here at all; modelling them is
+C57's option (a), a larger unit. *A field deliberately taken in the proto's shape*: `justifications` is
+`repeated bytes` in the proto and a list of `Parent`s in this model, and those are **different data
+rather than two spellings of one thing** — `Parent` carries the sender, number, `seqNum` and
+validation-failed flag the number checks fold over, and a justification here is an opaque byte string. So
+the encoder takes the proto's shape for that field, and the model's `Parent` representation stays outside
+the layer. A reader who "fixes" the second member back to `encodeParent` would be inventing a
+correspondence the node does not have.
+
+**This is the repository's first byte-level corpus layer.** Every other layer pins an *identity* — which
+element sorts first, which token a spelling lexes to, which verdict a comparator gives — and a round trip
+pins even less. A byte-level layer pins an *encoding*: it fails when a field's order or a default is
+wrong, and a round trip cannot see either (`from_bytes (to_bytes b) = b` holds under both orders and
+under every skipping rule). The next person adding one should know it is new rather than follow a pattern
+that is not here.
+
+The corpus's expected bytes are **observed from the node first** — `node/tests/lean_body_corpus.rs`'s
+diagnostic prints them — and then recorded in `Corpus.lean`'s rows, where a `native_decide` theorem
+checks that this encoder reproduces them and the Rust consumer checks that `prost` does too. -/
+
+/-- A block body as `prost` shapes it: the modelled subset of `BlockMessageProto`, with each field's
+    proto number and wire type fixed by the `.proto` rather than stored here. -/
+structure ProstBody where
+  /-- proto field 4, `varint`; omitted when `0`. -/
+  blockNumber : Nat
+  /-- proto field 5, length-delimited; omitted when empty. -/
+  sender : Msg
+  /-- proto field 6, `varint`; omitted when `0`. -/
+  seqNum : Nat
+  /-- proto field 9, `repeated bytes` — one key per entry, in list order. -/
+  justifications : List Msg
+  /-- proto field 14, a length-delimited sub-message (the model's `header` bytes). `prost` writes a
+      present sub-message even when it serialises to nothing, so this field is *not* skipped. -/
+  state : Msg
+  /-- proto field 17, `varint`; omitted when `0`. -/
+  timestamp : Nat
+deriving DecidableEq
+
+/-- The proto's key for a field: `field <<< 3 ||| wireType`, varint-encoded. -/
+def protoKey (field wireType : Nat) : Msg := varint ((field <<< 3) ||| wireType)
+
+/-- **`prost`'s encoder over the modelled subset**: ascending by field number, each scalar or byte field
+    omitted when it equals its default, each justification written with its own key. -/
+def encodeProstBody (b : ProstBody) : Msg :=
+  (if b.blockNumber = 0 then [] else protoKey 4 0 ++ varint b.blockNumber)
+    ++ (if b.sender = [] then [] else protoKey 5 2 ++ varint b.sender.length ++ b.sender)
+    ++ (if b.seqNum = 0 then [] else protoKey 6 0 ++ varint b.seqNum)
+    ++ (b.justifications.map (fun h => protoKey 9 2 ++ varint h.length ++ h)).join
+    ++ (protoKey 14 2 ++ varint b.state.length ++ b.state)
+    ++ (if b.timestamp = 0 then [] else protoKey 17 0 ++ varint b.timestamp)
+
 end Rchain

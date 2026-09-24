@@ -9,6 +9,7 @@ import Rchain.Json
 import Rchain.Envelope
 import Rchain.Lex
 import Rchain.Parse
+import Rchain.Casper.Validate
 
 /-!
 # The conformance corpus, generated from the specification
@@ -1053,13 +1054,155 @@ end Rchain
 
 open Rchain
 
+/-! ## Law 16c — the `body` layer (AUDIT C57's option (b))
+
+**What it ties.** The port has no `BodyProto`: a block is one `BlockMessageProto` with tags 1–17, and
+`hash_block` clears exactly `blockHash` and `sig` and encodes the rest with `prost`. The model's
+`encodeBody` narrows that to six fields, and this layer holds the model's `prost`-mirroring encoder
+(`Rchain.Casper.Validate`'s `encodeProstBody`) and the node's `prost` to the **same bytes** — the two
+rules a hand-written encoder gets wrong being **field order** (the model writes 4, 6, 5, 17, 9, 14;
+`prost` writes ascending) and **default-skipping** (`prost` omits a field equal to its default; the
+model writes unconditionally).
+
+**The rows carry the node's bytes, observed first.** `node/tests/lean_body_corpus.rs`'s
+`the_bytes_the_node_produces` printed `prost`'s encoding of these cases before any row was written; the
+`bytesHex` below is that output, and `bodyCases_decide` then checks that the model's encoder reproduces
+it. So the expectation is the node's answer, not the model's — the difference between this layer and a
+corpus that only agrees with itself, and the reason the falsifier for it is a *Rust* mutation (the Lean
+theorem alone would only show the model is self-consistent).
+
+**The boundary, in two kinds, and they are not the same kind of omission.** *Fields omitted*:
+`version`, `shardId`, `blockHash`, `preStateHash`, `postStateHash`, `bonds`, the three `rejected*` sets
+and `sigAlgorithm` are in the proto and are not modelled here at all — that is C57's option (a).
+*A field deliberately taken in the proto's shape*: `justifications` is `repeated bytes` in the proto and
+a list of `Parent`s in the model, two representations of **different data** rather than two spellings of
+one thing, so the encoder takes the proto's shape and the model's `Parent` stays outside. A reader who
+"fixes" the second member back to `encodeParent` would be inventing a correspondence the node lacks.
+
+**`state` is written unconditionally, and the observation is what decided that.** `prost`'s derive
+writes a *present* sub-message even when it serialises to nothing ("present but empty" is not "absent");
+the first row of the table below is the case where that is all that is written (`7200`), and the
+observation confirmed it against the alternative reading, which would have skipped the field.
+
+**This is the repository's first byte-level corpus layer.** Every other layer pins an identity (which
+element sorts first, which token a spelling lexes to); a byte-level layer pins an *encoding*, and a
+round trip cannot see either failure above (`from_bytes (to_bytes b) = b` holds under both orders and
+every skipping rule). -/
+
+/-- One hex digit, as a value below 16. The bounds are stated on `c.toNat` rather than with `Char`'s
+    order, because `omega` cannot see through the latter. -/
+def hexDigit? (c : Char) : Option (Fin 16) :=
+  if h : 48 ≤ c.toNat ∧ c.toNat ≤ 57 then some ⟨c.toNat - 48, by omega⟩
+  else if h : 97 ≤ c.toNat ∧ c.toNat ≤ 102 then some ⟨c.toNat - 87, by omega⟩
+  else if h : 65 ≤ c.toNat ∧ c.toNat ≤ 70 then some ⟨c.toNat - 55, by omega⟩
+  else none
+
+/-- Lower-case or upper-case hex back to bytes. Corpus-local because this file is its only caller;
+    `none` on a malformed string, so a mistyped row *fails* the layer's theorem rather than silently
+    comparing against a truncated one. -/
+def hexDecode? (s : String) : Option Msg :=
+  let rec go : List Char → Msg → Option Msg
+    | [], acc => some acc.reverse
+    | a :: b :: rest, acc =>
+      match hexDigit? a, hexDigit? b with
+      | some x, some y => go rest (⟨x.val * 16 + y.val, by omega⟩ :: acc)
+      | _, _ => none
+    | [_], _ => none
+  go s.toList []
+
+/-- One `body` corpus line's case: the modelled subset as text, plus the bytes the node produced for it
+    — observed from the node *before* the row was written. -/
+structure BodyCase where
+  /-- proto field 4. -/
+  blockNumber : Nat
+  /-- proto field 5, hex. -/
+  senderHex : String
+  /-- proto field 6. -/
+  seqNum : Nat
+  /-- proto field 9, `repeated bytes`, one hex string per entry. -/
+  justificationsHex : List String
+  /-- proto field 14, hex. Empty is the *present* empty sub-message, not an absent field. -/
+  stateHex : String
+  /-- proto field 17. `0` is the genesis value, which `prost` omits. -/
+  timestamp : Nat
+  /-- The node's bytes for this case, hex — the observation, not the model's output. -/
+  bytesHex : String
+
+/-- The case as the modelled subset, once every hex field has decoded. -/
+def BodyCase.toProstBody (c : BodyCase) : Option ProstBody :=
+  match hexDecode? c.senderHex, hexDecode? c.stateHex, c.justificationsHex.mapM hexDecode? with
+  | some sender, some state, some js =>
+    some { blockNumber := c.blockNumber, sender := sender, seqNum := c.seqNum,
+           justifications := js, state := state, timestamp := c.timestamp }
+  | _, _, _ => none
+
+/-- The layer's check: the model's `prost`-mirroring encoder reproduces the node's observed bytes. A
+    malformed hex field fails rather than passing vacuously. -/
+def bodyHolds (c : BodyCase) : Bool :=
+  match c.toProstBody, hexDecode? c.bytesHex with
+  | some b, some bytes => encodeProstBody b == bytes
+  | _, _ => false
+
+def bodyCases : List BodyCase := [
+  -- Order: four non-default fields, so the field order is observable from the second field onwards.
+  -- The two justifications are distinct, so each one's own key+length is pinned rather than one length
+  -- covering the pair.
+  { blockNumber := 7,
+    senderHex := "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20",
+    seqNum := 3,
+    justificationsHex := ["02030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f2021",
+                          "030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122"],
+    stateHex := "", timestamp := 1000,
+    bytesHex := "20072a200102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f2030034a2002030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20214a20030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20212272008801e807" },
+  -- Skipping at its extreme: everything default, so the present-but-empty `state` is the *only* field
+  -- written. This is the row that decides the `state` reading named in the section comment.
+  { blockNumber := 0, senderHex := "", seqNum := 0, justificationsHex := [], stateHex := "",
+    timestamp := 0, bytesHex := "7200" },
+  -- A genesis block with a sender: `timestamp = 0` is C57's smallest instance of the difference,
+  -- alongside `blockNumber` and `seqNum`.
+  { blockNumber := 0,
+    senderHex := "0405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20212223",
+    seqNum := 0,
+    justificationsHex := ["05060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f2021222324"],
+    stateHex := "", timestamp := 0,
+    bytesHex := "2a200405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122234a2005060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20212223247200" },
+  -- Short values: a one-byte sender and a one-byte justification pin the length prefixes at their
+  -- smallest non-zero, which is where an off-by-one in a length shows up.
+  { blockNumber := 1, senderHex := "2a", seqNum := 2, justificationsHex := ["7f"], stateHex := "",
+    timestamp := 0, bytesHex := "20012a012a30024a017f7200" },
+  -- No justifications at all, and a timestamp that is not the last field written: pins that an empty
+  -- repeated field contributes nothing, and that a large varint is written whole.
+  { blockNumber := 42,
+    senderHex := "060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425",
+    seqNum := 1, justificationsHex := [], stateHex := "", timestamp := 9999999,
+    bytesHex := "202a2a20060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425300172008801fface204" } ]
+
+/-- The layer carries exactly `bodyCaseCount` cases. -/
+def bodyCaseCount : Nat := 5
+
+theorem bodyCases_length : bodyCases.length = bodyCaseCount := by decide
+
+/-- **The model reproduces the node's bytes** on every row. `native_decide`, for the reason the other
+    layers use it: the reduction is deep for the kernel and fast for the compiler. -/
+theorem bodyCases_decide : bodyCases.all bodyHolds = true := by native_decide
+
+/-- A byte string as lower-case hex, for the emitted row. -/
+def bodyHexOf (b : Msg) : String := hexEncode (b.map (fun x => x.val))
+
+/-- One `body` corpus line: layer, the modelled subset, and the bytes the node produces for it. The
+    Rust consumer parses the same columns, so a row is the two encoders' shared expectation. -/
+def bodyLine (c : BodyCase) : String :=
+  String.intercalate "\t"
+    ["body", toString c.blockNumber, c.senderHex, toString c.seqNum, toString c.timestamp,
+     String.intercalate ";" c.justificationsHex, c.stateHex, c.bytesHex]
+
 /-- `rchain-corpus --layer {flags|match|silence|store|protocol} [--out FILE]` — print the corpus
 (stdout by default). -/
 def main (args : List String) : IO UInt32 := do
   let want :=
     (args.find? (fun a => a == "flags" || a == "match" || a == "silence" || a == "store"
       || a == "c21" || a == "protocol" || a == "json" || a == "envelope"
-      || a == "lex" || a == "sort" || a == "parse")).getD "flags"
+      || a == "lex" || a == "sort" || a == "parse" || a == "body")).getD "flags"
   let (lines, count) :=
     if want == "c21" then (Corpus.c21Cases.map Corpus.c21Line, Corpus.c21CaseCount)
     else if want == "match" then (Corpus.matchCases.map Corpus.matchLine, Corpus.matchCaseCount)
@@ -1079,6 +1222,8 @@ def main (args : List String) : IO UInt32 := do
       (lexemes.map Corpus.lexLine, lexemeCount)
     else if want == "parse" then
       (parseCases.map Corpus.parseLine, parseCaseCount)
+    else if want == "body" then
+      (bodyCases.map bodyLine, bodyCaseCount)
     else (Corpus.flagCases.map Corpus.flagLine, Corpus.flagCaseCount)
   if lines.length != count then
     IO.eprintln s!"rchain-corpus: {want}: the case list and the declared count disagree"
