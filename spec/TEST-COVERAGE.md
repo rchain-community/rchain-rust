@@ -26,7 +26,7 @@ and **no file is left without one or the other** — the linter's check 7 passes
 
 ## Inventory
 
-**1471 `#[test]`/`#[tokio::test]` unit functions + 128 integration tests** across 13 crates, with **26
+**1472 `#[test]`/`#[tokio::test]` unit functions + 128 integration tests** across 13 crates, with **26
 laws** carrying a randomized property test and **12 benchmark functions** in 7 Criterion groups. Only
 **3 of 13 crates have integration tests** (`rholang`, `casper`, `node`).
 
@@ -39,7 +39,7 @@ laws** carrying a randomized property test and **12 benchmark functions** in 7 C
 | `models` | 157 | — | 5 | — |
 | `block-storage` | 42 | — | 3 | — |
 | `comm` | 125 | — | — | — |
-| `rspace` | 180 | — | 8 | — |
+| `rspace` | 181 | — | 8 | — |
 | `rholang` | 238 | 57 | 7 | — |
 | `casper` | 277 | 54 | 3 | — |
 | `node` | 193 | 17 | — | — |
@@ -332,6 +332,7 @@ not found in that file. Coverage claims live here rather than in prose so they c
 | item 11 | `rspace/src/merger/state_change_merger.rs` | `the_merge_entry_point_reports_what_it_cannot_merge` |
 | item 11 | `node/src/api/grpc/deploy_grpc_service_v1.rs` | `the_handlers_forward_each_requests_fields_and_its_refusal` |
 | item 11 | `node/src/api/grpc/tonic.rs` | `propose_result_reports_the_result_and_a_refusal` |
+| item 11 | `rspace/src/history/export.rs` | `export_walks_into_a_pointer_node` |
 
 ## Gap analysis (severity-ordered)
 
@@ -779,7 +780,8 @@ the rows that changed, plus what the moves exposed):
 | `node/src/api/grpc/tonic.rs` | | the `DeployService` trait's wire conversions (473–552, 618–837) | `pin` | the sibling file's new test is the template: they convert wire ↔ domain and call the inner handlers, so a *direct* call plus a recording double pins them without a socket — but they need a `BlockReportApi` fixture this module does not have |
 | `node/src/api/grpc/tonic.rs` | | `Repl::run`/`Repl::eval` (96–121) | `harness-bound` | `ReplGrpcService` holds an `Arc<RhoRuntime>`, and a unit-test module cannot reach `node/tests/common`'s `rho_runtime()` |
 | `node/src/api/grpc/tonic.rs` | | the test double's nineteen `unimplemented!()` bodies (870–950) | `fixture` | a double that refuses everything; those lines are uncoverable by construction and are the boundary they exist to be |
-| `models/src/wire.rs`, `rspace/src/history/export.rs`, `casper/src/reporting.rs`, `comm/src/upnp/mod.rs` | 84–123 each | — | — | not yet read |
+| `rspace/src/history/export.rs` | 123 | the traversal's second level (`init_node_path`, `add_node_ptr`, `add_element`) | `pin` | **pinned by the second level** — `export_walks_into_a_pointer_node`; the fixture is a two-node `HashMap` and a closure, so the only reason it took a pointer node is that the two existing tests stop at one |
+| `models/src/wire.rs`, `casper/src/reporting.rs`, `comm/src/upnp/mod.rs` | 84–123 each | — | — | not yet read |
 
 **The first `defect`-bucket finding, and it was two lines no test could ever reach.** The coverage build's
 own warnings pointed at them: `casper/src/genesis/rgov.rs`'s `deploy_public_key` (a pairing helper in the

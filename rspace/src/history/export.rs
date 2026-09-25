@@ -455,6 +455,72 @@ mod tests {
         assert_eq!(last_prefix, None);
     }
 
+    /// **The traversal's second level.** The two tests below export an empty root and a root holding
+    /// one leaf, so the arms that walk *into* a pointer node — `add_node_ptr`, `add_element` and the
+    /// path bookkeeping in `init_node_path` — had never run. A radix export that stopped at the root
+    /// would hand a state-sync peer a store with nothing under it, and the peer would then rebuild a
+    /// different tree from the same chunk.
+    ///
+    /// The store is two nodes: a root pointing at an inner node that holds a leaf. Both halves are
+    /// asserted — the node keys include the *pointer's* node (so the walk descended), and the leaf's
+    /// value and path come back (so it descended with the right path).
+    #[test]
+    fn export_walks_into_a_pointer_node() {
+        let leaf_hash = Blake2b256Hash::from_bytes([0x42; 32]);
+        let mut inner = empty_node();
+        inner[0] = Item::Leaf {
+            prefix: KeySegment::try_from(vec![2]).expect("one byte"),
+            value: leaf_hash,
+        };
+        let (inner_hash, inner_bytes) = hash_node(&inner);
+
+        let mut root = empty_node();
+        root[0] = Item::NodePtr {
+            prefix: KeySegment::try_from(vec![1]).expect("one byte"),
+            ptr: inner_hash,
+        };
+        let (root_hash, root_bytes) = hash_node(&root);
+
+        let store: HashMap<Blake2b256Hash, Vec<u8>> =
+            HashMap::from([(root_hash, root_bytes), (inner_hash, inner_bytes)]);
+        let (data, last_prefix) = sequential_export(
+            root_hash,
+            None,
+            0,
+            10,
+            &|h| Ok(store.get(h).cloned()),
+            &all_settings(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            data.node_keys.first(),
+            Some(&root_hash),
+            "the export starts at the root"
+        );
+        assert!(
+            data.node_keys.contains(&inner_hash),
+            "and descends into the pointer's node: {:?}",
+            data.node_keys
+        );
+        assert_eq!(
+            data.leaf_values,
+            vec![leaf_hash],
+            "the leaf below it is collected"
+        );
+        assert_eq!(last_prefix, None, "and the walk completed");
+        // The *full* DFS path, not the leaf's own prefix: slot then prefix at each level, so `[0, 1]`
+        // is "root slot 0, prefix 1" and `[0, 1, 0, 2]` continues "inner slot 0, prefix 2". That is
+        // what lets a reader place the leaf in the tree from the chunk alone — and it is the single
+        // level's `[0, 1]` extended by exactly the level below it, which is why this assertion is the
+        // one the single-leaf test cannot make.
+        assert_eq!(
+            data.leaf_prefixes,
+            vec![KeySegment::try_from(vec![0, 1, 0, 2]).expect("four bytes")],
+            "the path the walk took, with the slot index recorded at each level"
+        );
+    }
+
     #[test]
     fn export_single_leaf() {
         let mut root = empty_node();
