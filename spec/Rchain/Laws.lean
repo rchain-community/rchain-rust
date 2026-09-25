@@ -904,11 +904,12 @@ def laws : List Law := [
       `Rchain.seen_monotone_of_reaches, `Rchain.seen_monotone_is_false,
       `Rchain.fringe_monotone_is_false, `Rchain.seenOf_contains_justifications, `Rchain.mem_seenOf_self,
       `Rchain.seen_subset_of_mem_seen, `Rchain.selfParents_skips_finalized,
-      `Rchain.cross_sender_height_monotone_is_false],
+      `Rchain.cross_sender_height_monotone_is_false, `Rchain.chain3,
+      `Rchain.the_walk_is_oldest_first, `Rchain.a_chain_of_three_picks_the_oldest],
     axioms := [],
     rust := ["block-storage/src/dag/message_state.rs", "block-storage/src/dag/finalizer.rs"],
     witness := [`Rchain.fringe_monotone_is_false, `Rchain.seen_monotone_is_false,
-      `Rchain.cross_sender_height_monotone_is_false],
+      `Rchain.cross_sender_height_monotone_is_false, `Rchain.a_chain_of_three_picks_the_oldest],
     falsifiable := some "`fringe_monotone_is_false` exhibits two overlapping fringes (one at 5 and 1, one \
       at 3) where both arms of the disjunction fail — so the axiom was false as written; \
       `seen_monotone_is_false` exhibits two unrelated messages where `b` sees `a` and `a` sees `2` but \
@@ -974,7 +975,24 @@ def laws : List Law := [
       rather than observed of the data — and with it the comparison \
       follows from the boundary plus the descent. That is the shape of the last conjunct, named so \
       the next pass proves a true statement rather than a forked counterexample. The old row's claim that the seen set is monotone \"(no \
-      regression)\" was true of the port and false of the value the axiom quantified over" },
+      regression)\" was true of the port and false of the value the axiom quantified over. **And the \
+      owed conjunct's *step* was wrong until 2026-09-25** (AUDIT C93): `minMsgs` takes the *oldest* \
+      non-finalized same-sender ancestor — the port's `chain.into_iter().last()` over \
+      `[p] ++ self_parents p` — and the model read `getLast?` of `selfParents`, whose list is \
+      **oldest-first** (the model prepends into its accumulator where the port `push`es its visit order, \
+      so the port's chain is newest-first and its `.last()` is the oldest). Measured on a chain \
+      `10 (h 0) ← 11 (h 1) ← 12 (h 2)`: the model's `selfParents` is `[10, 11]`, the port's chain is \
+      `[11, 10]`, and the model answered `11` where the port answers `10` — the *newest* for the oldest. \
+      **No test could see it**: every `decide`d instance in the file gave a sender at most one \
+      same-sender ancestor, and with one element both ends agree, so a step of the derivation read the \
+      opposite end of the chain while every check stayed green. The fix is `.head?`, pinned by \
+      `chain3`'s two theorems (`the_walk_is_oldest_first` and `a_chain_of_three_picks_the_oldest`, the \
+      instance that fails under `getLast?` — verified by reverting it), and the antichain above is \
+      unaffected: which of two same-sender messages the layer fold keeps does not change its keys. \
+      **What remains owed is still the comparison itself**: the mechanism \
+      (`selfParents_skips_finalized`, and now a faithful min message) is proved and the arithmetic \
+      across a chain is not — the per-sender sentinel comparison, under the hypothesis named above, \
+      which is guaranteed at ingress rather than observed of the data" },
   { number := 16, clause := "a", layer := "Casper",
     rustWitness := ["casper/src/validate.rs:block_number_must_be_parent_max_plus_one"],
     statement := "Block number = max(parent) + 1 — as the port's check, which **rejects** a block whose \

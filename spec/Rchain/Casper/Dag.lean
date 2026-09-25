@@ -72,12 +72,44 @@ def selfParents (d : Dag) (mv : Message) (finalized : List Nat) : List Message :
 
 /-- **Step 2 — the min messages** (`next_fringe`, `:186-211`): per justification, the *oldest*
     non-finalized same-sender ancestor, with the justification itself when there is none (the port's
-    `chain.into_iter().last()` over `[p] ++ self_parents p`). -/
+    `chain.into_iter().last()` over `[p] ++ self_parents p`).
+
+    **This took the wrong end until 2026-09-25, and the fix is `.head?`.** `selfParents` returns its list
+    **oldest-first** — the model prepends into its accumulator, so the deepest message lands last — while
+    the port's `self_parents` builds its chain by `push`ing the visit order, which is **newest-first**
+    (`block-storage/src/dag/finalizer.rs:78-95`), and `next_fringe` seeds it with `chain = vec![p]` before
+    extending (`:194-199`). So the port's `.last()` is the oldest, and the model's `getLast?` on an
+    oldest-first list was the *newest*. Measured on a chain `10 (h 0) ← 11 (h 1) ← 12 (h 2)`: the model's
+    `selfParents` is `[10, 11]` and the port's chain is `[11, 10]`, so the model answered `11` where the
+    port answers `10`.
+
+    **Why nothing failed**: every other `decide`d instance in this file gives a sender at most **one**
+    same-sender ancestor, and with one element both ends agree. `chain3` and the two theorems beside it
+    are the instance that can see the difference — a test that could not fail is what let a step of the
+    derivation read the opposite end of the chain. -/
 def minMsgs (d : Dag) (js : List Message) (finalized : List Nat) : List Message :=
   js.map fun p =>
-    match (selfParents d p finalized).getLast? with
+    match (selfParents d p finalized).head? with
     | some m => m
     | none => p
+
+/-- A three-message **same-sender chain**: `10 (h 0) ← 11 (h 1) ← 12 (h 2)`, with one other sender so
+    the DAG is not degenerate. Deep enough for the walk to have two ancestors and so for the two ends of
+    its output — oldest-first in the model, newest-first in the port — to be *different* messages. -/
+def chain3 : Dag :=
+  [ ⟨10, 0, 0, 0, [], []⟩,
+    ⟨11, 1, 0, 1, [10], []⟩,
+    ⟨12, 2, 0, 2, [11], []⟩,
+    ⟨20, 2, 1, 0, [12], []⟩ ]
+
+/-- **The walk's order, pinned**: oldest-first, which is what makes `head?` the oldest. -/
+theorem the_walk_is_oldest_first :
+    (selfParents chain3 ⟨12, 2, 0, 2, [11], []⟩ []).map (·.id) = [10, 11] := by decide
+
+/-- **And the min message is the oldest of them** — `10`, not `11`: the instance the previous form of
+    `minMsgs` failed, kept so the end cannot be reversed again by a reader who assumes the port's order. -/
+theorem a_chain_of_three_picks_the_oldest :
+    (minMsgs chain3 [⟨12, 2, 0, 2, [11], []⟩] []).map (·.id) = [10] := by decide
 
 /-- **Step 3 — `check_min_messages`** (`:99`): the count gate. Its body is a count comparison, which is
     the upstream epoch TODO that law 14a's row records as fidelity rather than oversight. -/
