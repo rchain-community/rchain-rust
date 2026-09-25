@@ -306,30 +306,6 @@ mod transformer_tests {
     use rchain_models::sorter::sort_par_term;
     use rchain_rspace::reporting_rspace::{ReportingComm, ReportingConsume, ReportingProduce};
 
-    /// A block fixture (the module's other test module has its own; test modules do not share
-    /// items).
-    fn block() -> BlockMessage {
-        BlockMessage {
-            version: 1,
-            shard_id: "root".to_string(),
-            block_hash: rchain_models::block_hash::BlockHash::new([0u8; 32]),
-            block_number: 0.try_into().expect("height 0"),
-            sender: rchain_models::validator::Validator::new([1u8; 65]),
-            seq_num: 0.try_into().expect("seq 0"),
-            pre_state_hash: rchain_models::block::state_hash::StateHash::new([0u8; 32]),
-            post_state_hash: rchain_models::block::state_hash::StateHash::new([0u8; 32]),
-            justifications: Vec::new(),
-            bonds: std::collections::BTreeMap::new(),
-            rejected_deploys: std::collections::BTreeSet::new(),
-            rejected_blocks: std::collections::BTreeSet::new(),
-            rejected_senders: std::collections::BTreeSet::new(),
-            state: rchain_models::casper::protocol::casper_message::RholangState::default(),
-            sig_algorithm: "secp256k1".to_string(),
-            sig: Vec::new(),
-            timestamp: 0,
-        }
-    }
-
     fn channel(name: &str) -> SortedProc {
         SortedProc::new(rchain_models::par_ops::from_expr(
             rchain_models::ast::Expr::GString(name.to_string()),

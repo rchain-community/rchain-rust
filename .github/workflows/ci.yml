@@ -26,8 +26,13 @@ jobs:
     env:
       # Existing port debt is explicit so every other rustc or Clippy warning is fatal.
       # Remove an allowance as soon as its last occurrence is fixed.
+      #
+      # `-A dead-code` was the list's first entry and is **gone** (2026-09-25): its last two
+      # occurrences were a pairing helper in `casper/src/genesis/rgov.rs`'s test module and a block
+      # fixture in `casper/src/reporting.rs`'s, neither called by any test — so they were also the
+      # only two lines in the tree that no test could ever cover, and deleting them removed them from
+      # the coverage denominator as well. Verified with the command below minus this flag.
       CLIPPY_DEBT: >-
-        -A dead-code
         -A clippy::await-holding-lock
         -A clippy::bad-bit-mask
         -A clippy::bool-comparison

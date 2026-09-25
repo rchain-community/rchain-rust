@@ -544,16 +544,6 @@ in {{
 mod tests {
     use super::*;
 
-    /// The public key (the `deployerId`) a term's deploy carries.
-    fn deploy_public_key(name: &str) -> Vec<u8> {
-        let sk = PrivateKey::new(base16::unsafe_decode(&contract_key(name)));
-        Secp256k1
-            .to_public(&sk)
-            .unwrap_or_else(|e| panic!("a derived key must be valid: {e}"))
-            .bytes()
-            .to_vec()
-    }
-
     /// A fixed ceremony identity for the tests: the genesis ceremony's key, in-process.
     fn ceremony_identity() -> ValidatorIdentity {
         let sk = PrivateKey::new(vec![7u8; 32]);

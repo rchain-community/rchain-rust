@@ -339,7 +339,8 @@ mod tests {
     }
 
     fn no_hook(
-    ) -> impl Fn(&Blake2b256Hash, &ChannelChange<Vec<u8>>, &NumberChannelsDiff) -> Option<Action> {
+    ) -> impl Fn(&Blake2b256Hash, &ChannelChange<Vec<u8>>, &NumberChannelsDiff) -> Option<Action>
+    {
         |_, _, _| None
     }
 
@@ -360,14 +361,16 @@ mod tests {
         let add = StateChange {
             datums_changes: BTreeMap::new(),
             kont_changes: BTreeMap::from([(channels.clone(), change(vec![raw(7)], vec![]))]),
-            consume_channels_to_join_serialized_map: BTreeMap::from([(
-                channels.clone(),
-                raw(9),
-            )]),
+            consume_channels_to_join_serialized_map: BTreeMap::from([(channels.clone(), raw(9))]),
         };
-        let actions = compute_trie_actions(&add, &MockReader::default(), NumberChannelsDiff::new(), no_hook())
-            .await
-            .expect("an inserted continuation");
+        let actions = compute_trie_actions(
+            &add,
+            &MockReader::default(),
+            NumberChannelsDiff::new(),
+            no_hook(),
+        )
+        .await
+        .expect("an inserted continuation");
         assert!(
             actions
                 .iter()
@@ -389,34 +392,31 @@ mod tests {
         let remove = StateChange {
             datums_changes: BTreeMap::new(),
             kont_changes: BTreeMap::from([(channels.clone(), change(vec![], vec![raw(7)]))]),
-            consume_channels_to_join_serialized_map: BTreeMap::from([(
-                channels.clone(),
-                raw(9),
-            )]),
+            consume_channels_to_join_serialized_map: BTreeMap::from([(channels.clone(), raw(9))]),
         };
-        let mut reader = MockReader::default();
-        reader.konts.insert(pointer, vec![continuation(raw(7))]);
         // The join trie is keyed by *each* channel the join names (the merger reads `get_joins` at the
         // channel's own hash), so a removal must find the join under both channels. An empty join map
         // here is not a smaller fixture but a different claim — the merger reports it as an
         // inconsistency, which is what the refusals test pins.
-        for c in &channels {
-            reader.joins.insert(
-                *c,
-                vec![JoinsB {
-                    decoded: Vec::new(),
-                    raw: raw(9),
-                }],
-            );
-        }
-        let actions = compute_trie_actions(
-            &remove,
-            &reader,
-            NumberChannelsDiff::new(),
-            no_hook(),
-        )
-        .await
-        .expect("a removed continuation");
+        let reader = MockReader {
+            konts: BTreeMap::from([(pointer, vec![continuation(raw(7))])]),
+            joins: channels
+                .iter()
+                .map(|c| {
+                    (
+                        *c,
+                        vec![JoinsB {
+                            decoded: Vec::new(),
+                            raw: raw(9),
+                        }],
+                    )
+                })
+                .collect(),
+            ..Default::default()
+        };
+        let actions = compute_trie_actions(&remove, &reader, NumberChannelsDiff::new(), no_hook())
+            .await
+            .expect("a removed continuation");
         assert!(
             actions
                 .iter()
@@ -449,10 +449,7 @@ mod tests {
         let no_change = StateChange {
             datums_changes: BTreeMap::new(),
             kont_changes: BTreeMap::from([(channels.clone(), change(vec![], vec![]))]),
-            consume_channels_to_join_serialized_map: BTreeMap::from([(
-                channels.clone(),
-                raw(9),
-            )]),
+            consume_channels_to_join_serialized_map: BTreeMap::from([(channels.clone(), raw(9))]),
         };
         let err = compute_trie_actions(
             &no_change,
@@ -484,16 +481,13 @@ mod tests {
         assert!(err.contains("No ByteVector value for join"), "{err}");
 
         // (c) the reader fails: the error is propagated, in both the consume and the produce paths.
-        let mut down = MockReader::default();
-        down.fail = true;
-        let err = compute_trie_actions(
-            &missing_join,
-            &down,
-            NumberChannelsDiff::new(),
-            no_hook(),
-        )
-        .await
-        .expect_err("a base-state read that fails is not an empty channel");
+        let down = MockReader {
+            fail: true,
+            ..Default::default()
+        };
+        let err = compute_trie_actions(&missing_join, &down, NumberChannelsDiff::new(), no_hook())
+            .await
+            .expect_err("a base-state read that fails is not an empty channel");
         assert!(err.contains("test reader failure"), "{err}");
     }
 

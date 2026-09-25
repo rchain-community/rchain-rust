@@ -774,6 +774,17 @@ the rows that changed, plus what the moves exposed):
 | `rspace/src/merger/state_change_merger.rs` | 131 | `compute_trie_actions` (66–200) | `pin` | **pinned** — the file's three tests all drove `mk_trie_action`, its reader-free helper, so the *public* entry point the merge calls had never run; a reader double (three methods, one failure arm) was all it needed |
 | `models/src/wire.rs`, `rspace/src/history/export.rs`, `casper/src/reporting.rs`, `comm/src/upnp/mod.rs`, `node/src/api/grpc/{tonic,deploy_grpc_service_v1}.rs` | 84–153 each | — | — | not yet read; `tonic.rs` is expected to split `stub` (its nineteen `unimplemented!()`) from `pin` (the live handlers, reachable over loopback gRPC as `serves_and_answers_propose` already does) |
 
+**The first `defect`-bucket finding, and it was two lines no test could ever reach.** The coverage build's
+own warnings pointed at them: `casper/src/genesis/rgov.rs`'s `deploy_public_key` (a pairing helper in the
+test module) and `casper/src/reporting.rs`'s `block()` (a block fixture in `transformer_tests`) are each
+defined once and called by nothing — they were also the only two dead-code occurrences in the workspace
+(`cargo clippy --workspace --all-targets --all-features`), and they were lines in the coverage
+denominator that *no* test could cover, since no test can call a function that does not exist. Deleted.
+That in turn let `-A dead-code` come out of `CLIPPY_DEBT` in `.github/workflows/ci.yml` — the list's own
+comment asks for exactly that ("Remove an allowance as soon as its last occurrence is fixed"), and the
+clippy command was re-run without it to confirm. The lesson generalises: a dead-code warning in a
+coverage build is a line that is *uncoverable*, and the honest fix is deletion rather than a test.
+
 **What this table is not.** It is not a deferred-gap list: the census sweep closed check 7's file-level
 census, and these are *regions inside tested files*, which is exactly what item 11 is about. It is also
 not the plan for the remaining work — the batches are chosen by cost, not by this table's order, and the
