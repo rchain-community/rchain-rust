@@ -982,7 +982,7 @@ def laws : List Law := [
     rust := ["casper/src/validate.rs"],
     witness := [`Rchain.seq_num_universal_is_false, `Rchain.seq_num_strictly_increases],
     falsifiable := some "a block whose `seqNum` skips or repeats the sender's latest justification is \
-      rejected (`InvalidSequenceNumber`, `validate.rs:158-162`), and the `-1` seed is a case of its own: \
+      rejected (`InvalidSequenceNumber`, `validate.rs:178-182`), and the `-1` seed is a case of its own: \
       a sender's first block must be `0`. `seq_num_universal_is_false` is the published refutation of \
       the axiom this replaces — and it refutes it **for a single sender**, which is why the re-scoping \
       is the justification relation and not the sender relation",
@@ -990,7 +990,7 @@ def laws : List Law := [
       the diagnosis in the row it replaces — \"the sender relation is missing\" — was wrong: a same-sender \
       pair with a non-consecutive `seqNum` refutes it just as well \
       (`seq_num_universal_is_false`). What the check folds over is the block's justifications **whose \
-      sender matches**, against their maximum (`validate.rs:146-161`); the law is re-scoped to that, and \
+      sender matches**, against their maximum (`validate.rs:164-183`); the law is re-scoped to that, and \
       the proof is the predicate's elimination. The old model also carried a `seqNum`-ordering axiom over \
       any two blocks, which no port rule states" },
   { number := 16, clause := "c", layer := "Casper",
