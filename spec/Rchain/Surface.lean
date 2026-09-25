@@ -854,6 +854,113 @@ theorem an_unscoped_name_occurrence_is_open :
 theorem a_scoped_name_occurrence_is_closed :
     closed (parOf (.evar (nameVar ["x"] "x"))) = true := by rfl
 
+/-! ## The induction's leaves
+
+Law 36's owed induction (`∀ e acc Γ, Closed acc → ScopedIn Γ e → ∀ p, normalizeAt e acc Γ = some p →
+Closed p`) reduces every arm to two things: `Closed_parMerge` (`Ty.lean:277`) and the closedness of the
+`Par` that arm *builds*. These are the second things — one lemma per shape `normalizeAt` constructs.
+
+They are stated in the **`Bool` form** (`closed … = true`), which is what makes them usable: an arm
+`unfold Closed` and hands one of these over, and the companion functions' own statements (`procsPar`'s,
+`bindsPar`'s, …) conclude in the same form — `closedListPar qs = true` rather than "every element is
+closed" — so nothing has to convert between the two. That is a deliberate shape, not a convenience: the
+first draft stated the leaves in the `Closed` form and needed four bridging lemmas between the `&&`-style
+list checkers and `∀ x ∈ l` (`closedListPar` is a `&&`-fold, not a `List.all`), each of which then fought
+the `Closed`-unfolding simp lemmas. With the `Bool` form the leaves are one `simp` each.
+
+The shapes, read off the arms: a **send**, a **receive**, a **new**, a **match** and a **bundle** (each a
+`Par.mk` with exactly one field populated); a **value in expression position** (`parOf`, and the four
+collection expressions, whose children are a list and an optional remainder); and — the one that makes
+the hypothesis do its work — `nameVar Γ x` for `x ∈ Γ`. -/
+
+/-- A **send**: one `Send` in the sends field, nothing else. -/
+theorem closed_sendPar (c : Par) (d : List Par) (b : Bool) (hc : closed c = true)
+    (hd : closedListPar d = true) :
+    closed (Par.mk [Send.mk c d b] [] [] [] [] [] [] []) = true := by
+  simp [closed, closedListSend, closedListPar, closedSend, hc, hd]
+
+/-- A **receive**: binds and body, in the receives field. -/
+theorem closed_receivePar (bs : List ReceiveBind) (body : Par) (p : Bool) (n : Nat)
+    (hbs : closedListReceiveBind bs = true) (hbody : closed body = true) :
+    closed (Par.mk [] [Receive.mk bs body p n] [] [] [] [] [] []) = true := by
+  simp [closed, closedListReceive, closedReceive, hbs, hbody]
+
+/-- A **new**: the identifier count and its body. -/
+theorem closed_newPar (n : Nat) (body : Par) (h : closed body = true) :
+    closed (Par.mk [] [] [New.mk n body] [] [] [] [] []) = true := by
+  simp [closed, closedListNew, closedNew, h]
+
+/-- A **match**: the target and the cases, in the matches field. (The `if` arms build one of these, with
+    a `MatchCase` per branch, which is why `MatchCase` itself needs no arm — its closedness comes from
+    the cases' checker, which `casesPar`'s statement produces.) -/
+theorem closed_matchPar (t : Par) (cs : List MatchCase) (ht : closed t = true)
+    (hcs : closedListMatchCase cs = true) :
+    closed (Par.mk [] [] [] [] [Match.mk t cs] [] [] []) = true := by
+  simp [closed, closedListMatch, closedMatch, hcs, ht]
+
+/-- A **bundle**: the body, with its two capability flags. -/
+theorem closed_bundlePar (q : Par) (w r : Bool) (h : closed q = true) :
+    closed (Par.mk [] [] [] [] [] [] [Bundle.mk q w r] []) = true := by
+  simp [closed, closedListBundle, closedBundle, h]
+
+/-- A **value in expression position**: `parOf` of any closed expression. -/
+theorem closed_parOf (e : Expr) (h : closedExpr e = true) : closed (parOf e) = true := by
+  simp [closed, parOf, closedListExpr, h]
+
+/-- **The one that makes the hypothesis do its work**: a name the binder stack holds is a *bound*
+    variable, and a bound variable is closed. An occurrence outside `Γ` is `nameVar`'s `free 0` arm,
+    which is open — which is why `ScopedIn` is the statement's hypothesis and not decoration, and why
+    `an_unscoped_name_occurrence_is_open` above is its counterpart.
+
+    The lookup half first: `findIdx?` finds a member. (This toolchain carries no
+    `List.findIdx?_eq_none`-style lemma to do it in one step.) -/
+theorem findIdx?_some_of_mem : ∀ (Γ : List SVar) {x : SVar}, x ∈ Γ →
+    ∃ i, Γ.findIdx? (fun y => y == x) = some i
+  | [], _, h => absurd h (List.not_mem_nil _)
+  | y :: ys, x, h => by
+    rw [List.findIdx?]
+    by_cases hyx : y == x
+    · exact ⟨0, by simp [hyx]⟩
+    · obtain ⟨i, hi⟩ := findIdx?_some_of_mem ys (by
+        rcases List.mem_cons.mp h with heq | hmem
+        · exact absurd (by rw [heq]; exact beq_self_eq_true y) hyx
+        · exact hmem)
+      exact ⟨i + 1, by simp [hyx, hi]⟩
+
+/-- And the closedness: a found index makes `nameVar` answer `.bound i`, which `closedVar` counts as
+    closed. -/
+theorem closedVar_nameVar {Γ : List SVar} {x : SVar} (h : x ∈ Γ) :
+    closedVar (nameVar Γ x) = true := by
+  obtain ⟨i, hi⟩ := findIdx?_some_of_mem Γ h
+  unfold nameVar
+  rw [hi]
+  rfl
+
+/-- A **list collection** — `[a, b, ...rest]`. The remainder is `Option Var`, and its closedness is
+    `closedRemainder`: the *scoped* hypothesis is what makes it a bound variable rather than a free
+    one (`closedVar_nameVar`). -/
+theorem closed_parOf_elist (ps : List Par) (rem : Option Var) (hps : closedListPar ps = true)
+    (hrem : closedRemainder rem = true) : closed (parOf (.elist ps rem)) = true := by
+  simp [closed, parOf, closedListExpr, closedExpr, hps, hrem]
+
+/-- A **set collection** — the same shape with `eset`'s checker. -/
+theorem closed_parOf_eset (ps : List Par) (rem : Option Var) (hps : closedListPar ps = true)
+    (hrem : closedRemainder rem = true) : closed (parOf (.eset ps rem)) = true := by
+  simp [closed, parOf, closedListExpr, closedExpr, hps, hrem]
+
+/-- A **map collection** — whose children are pairs, checked by `closedListParPair`. -/
+theorem closed_parOf_emap (kvs : List (Par × Par)) (rem : Option Var)
+    (hkvs : closedListParPair kvs = true) (hrem : closedRemainder rem = true) :
+    closed (parOf (.emap kvs rem)) = true := by
+  simp [closed, parOf, closedListExpr, closedExpr, hkvs, hrem]
+
+/-- A **tuple**: `TupleSingle` and `TupleMultiple` are one constructor here, and the checker is the list
+    with the first element consed on. -/
+theorem closed_parOf_etuple (first : Par) (rest : List Par) (h1 : closed first = true)
+    (hr : closedListPar rest = true) : closed (parOf (.etuple (first :: rest))) = true := by
+  simp [closed, parOf, closedListExpr, closedExpr, closedListPar, h1, hr]
+
+
 /-- The constructs `normalize` does not model, each with the reason — so "outside the domain" is a
 row to read rather than a `none` to wonder about. -/
 structure SurfaceBoundary where
