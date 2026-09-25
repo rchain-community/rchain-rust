@@ -1048,6 +1048,92 @@ mod differential {
     use super::*;
     use rchain_shared::base16;
 
+    /// **The three codecs' *decode* halves.** `par_serialize_round_trips` covers `Par`; the
+    /// `Serialize` impls for `BindPattern`, `ListParWithRandom` and `TaggedContinuation` were exercised
+    /// only in their encoding direction, so every `decode` arm was unexecuted. A codec whose decode is
+    /// untested is the one place a wire change stays silent: the encoder is what the tests check and
+    /// the decoder is what the node *runs*.
+    ///
+    /// `TaggedContinuation` is asserted tag by tag, because the tag is the whole point of the type —
+    /// the store's dispatch sends a `ParBody` to the matcher and a `ScalaBodyRef` to the native
+    /// executor, so a decoder that collapsed the arms would answer the wrong one. Its value carries a
+    /// random generator, which is not `PartialEq`, so each arm's fields are compared rather than the
+    /// values (and the comparison is what shows the tag survived).
+    #[test]
+    fn the_codec_round_trips_are_checked_in_both_directions() {
+        use crate::ast::Expr;
+        use crate::par_ops::from_expr;
+        use crate::runtime::{ParWithRandom, TaggedContinuation};
+        use rchain_crypto::hash::blake2b512_random::Blake2b512Random;
+
+        let sorted = || SortedProc::new(from_expr(Expr::GInt(1)));
+
+        let pattern = BindPattern {
+            patterns: vec![sorted(), sorted()],
+            remainder: None,
+            free_count: 2,
+        };
+        let back = <BindPattern as Serialize<BindPattern>>::decode(&<BindPattern as Serialize<
+            BindPattern,
+        >>::encode(&pattern))
+        .expect("decode");
+        assert_eq!(back, pattern, "a bind pattern survives its own codec");
+
+        let list = ListParWithRandom {
+            pars: vec![sorted()],
+            random_state: Blake2b512Random::from_init(&[3u8; 32]),
+        };
+        let back = <ListParWithRandom as Serialize<ListParWithRandom>>::decode(
+            &<ListParWithRandom as Serialize<ListParWithRandom>>::encode(&list),
+        )
+        .expect("decode");
+        assert_eq!(back.pars.len(), 1, "the pars come back");
+        assert_eq!(
+            back.random_state.to_bytes(),
+            list.random_state.to_bytes(),
+            "and so does the random state, byte for byte"
+        );
+
+        for case in [
+            TaggedContinuation::ParBody(ParWithRandom {
+                body: sorted(),
+                random_state: Blake2b512Random::from_init(&[4u8; 32]),
+            }),
+            TaggedContinuation::ScalaBodyRef(7),
+            TaggedContinuation::Empty,
+        ] {
+            let back = <TaggedContinuation as Serialize<TaggedContinuation>>::decode(
+                &<TaggedContinuation as Serialize<TaggedContinuation>>::encode(&case),
+            )
+            .expect("decode");
+            match (&case, &back) {
+                (TaggedContinuation::ParBody(a), TaggedContinuation::ParBody(b)) => {
+                    assert_eq!(a.body, b.body, "the body comes back");
+                    assert_eq!(
+                        a.random_state.to_bytes(),
+                        b.random_state.to_bytes(),
+                        "with its random state"
+                    );
+                }
+                (TaggedContinuation::ScalaBodyRef(a), TaggedContinuation::ScalaBodyRef(b)) => {
+                    assert_eq!(a, b, "the body reference comes back");
+                }
+                (TaggedContinuation::Empty, TaggedContinuation::Empty) => {}
+                other => panic!("the tag did not survive the codec: {other:?}"),
+            }
+        }
+
+        // Bytes that are not a message are refused rather than decoded into a default.
+        assert!(
+            <BindPattern as Serialize<BindPattern>>::decode(&[0xff; 8]).is_err(),
+            "a malformed bind pattern is an error"
+        );
+        assert!(
+            <TaggedContinuation as Serialize<TaggedContinuation>>::decode(&[0xff; 8]).is_err(),
+            "and so is a malformed continuation"
+        );
+    }
+
     /// The golden file's rows are `id<TAB>value<TAB>provenance`; `#` lines are its legend. The
     /// *value* column is read by position, so adding the provenance column (and any later one)
     /// cannot corrupt a vector.

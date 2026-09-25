@@ -1880,15 +1880,18 @@ def laws : List Law := [
       is where C19/C20/C22 item 3 all lived" },
   { number := 36, layer := "Rholang",
     statement := "The normalizer's output is well-scoped and closed (Law 6 through every path)",
-    status := .owed,
+    status := .provedModel,
     declarations := [`Rchain.ScopedIn, `Rchain.an_unscoped_name_occurrence_is_open,
-      `Rchain.a_scoped_name_occurrence_is_closed, `Rchain.bindResult,
-      -- the induction's leaves: the closedness of every `Par` an arm builds, and the one lemma that
-      -- turns a scoped name into a bound (hence closed) variable
-      `Rchain.closed_sendPar, `Rchain.closed_receivePar, `Rchain.closed_newPar,
-      `Rchain.closed_matchPar, `Rchain.closed_bundlePar, `Rchain.closed_parOf,
-      `Rchain.closed_parOf_elist, `Rchain.closed_parOf_eset, `Rchain.closed_parOf_emap,
-      `Rchain.closed_parOf_etuple, `Rchain.closedVar_nameVar, `Rchain.findIdx?_some_of_mem],
+      `Rchain.a_scoped_name_occurrence_is_closed, `Rchain.bindResult, `Rchain.closed_normalizeAt,
+      `Rchain.closed_procsPar, `Rchain.closed_namesPar, `Rchain.closed_namePar,
+      `Rchain.closed_collectPar, `Rchain.closed_kvsPar, `Rchain.closed_casesPar,
+      `Rchain.closed_receiptsPar, `Rchain.closed_receiptPar, `Rchain.closed_bindsPar,
+      `Rchain.closed_bindResult, `Rchain.closed_groundPar, `Rchain.closed_iff_Closed,
+      `Rchain.closed_parMerge, `Rchain.closed_sendPar, `Rchain.closed_receivePar,
+      `Rchain.closed_newPar, `Rchain.closed_matchPar, `Rchain.closed_bundlePar,
+      `Rchain.closed_parOf, `Rchain.closed_parOf_elist, `Rchain.closed_parOf_eset,
+      `Rchain.closed_parOf_emap, `Rchain.closed_parOf_etuple, `Rchain.closedVar_nameVar,
+      `Rchain.findIdx?_some_of_mem],
     witness := [`Rchain.an_unscoped_name_occurrence_is_open],
     falsifiable := some "the statement is **false** of an un-scoped source, and that is the shape of its \
       hypothesis rather than a gap: `nameVar` answers `.free 0` for a name the binder stack does not \
@@ -1896,52 +1899,29 @@ def laws : List Law := [
       to `closed = false` (measured, `#eval`) while the same term under `new c, x in { … }` desugars to \
       `closed = true`. Both directions of the mechanism are theorems \
       (`an_unscoped_name_occurrence_is_open`, `a_scoped_name_occurrence_is_closed`), so a reader can \
-      falsify the claim's shape without trusting this sentence",
-    note := "**the subject arrived 2026-09-25, and the row moved from `open` to `owed`**: it had no \
-      checker at all (\"nothing computes a well-scopedness or closedness predicate over the desugared \
-      output\", the previous note), and it now has one — the `Scoped*` family in `Rchain/Surface.lean`, \
-      one predicate per arity of the desugaring, so that `ScopedIn Γ e` says *every name the desugaring \
-      reads out of `e` is in `Γ`*. Three things that block were measured rather than assumed: the \
-      hypothesis is `Γ` and is **necessary** (above); the predicate mirrors the *function*, not the \
-      grammar, because the arms normalize a receive's patterns, a `match`'s patterns and a bind's names \
-      against `Γ` instead of pushing them (a grammar-shaped predicate would demand variables the \
-      desugaring never looks up); and `Γ` grows in exactly one place — a `new`'s declarations, \
-      `declNames decls ++ Γ`. **What is owed is the induction**: \
-      `∀ e acc Γ, Closed acc → ScopedIn Γ e → ∀ p, normalizeAt e acc Γ = some p → Closed p`, and the \
-      same statement for each of the ten companion functions of the mutual block (`procsPar`, `namesPar`, \
-      `collectPar`, `kvsPar`, `casesPar`, `receiptsPar`, `receiptPar`, `bindsPar`, `namePar`, \
-      `groundPar`), whose list-valued ones need the `List` form of the conclusion. The measure is \
-      `sizeOf`, the arms reduce each goal to `Closed_parMerge` (`Ty.lean:277`, already proved) plus the \
-      leaf's own closedness. **The obstacle was the elaborator, and it is now cleared — the route is \
-      measured and the remaining work is the cases** (2026-09-25):
+      falsify the claim's shape without trusting this sentence. The induction is falsifiable the same \
+      way: `closed_parMerge` is what carries the accumulator, so a `parMerge` that dropped a field would \
+      break every arm that builds one",
+    note := "**proved 2026-09-25 — the induction landed, and what it says is exactly the statement**: \
+      `closed_normalizeAt` is `∀ e acc Γ, Closed acc → ScopedIn Γ e → ∀ p, normalizeAt e acc Γ = some p → \
+      closed p = true`, with ten companion theorems for the functions its arms call (`procsPar`, \
+      `namesPar`, `namePar`, `collectPar`, `kvsPar`, `casesPar`, `receiptsPar`, `receiptPar`, \
+      `bindsPar`, `bindResult`). **Every path, not a fragment**: the arms are the 45 constructors of \
+      `Surf`, the 12 outside the domain return `none` and close by contradiction, and the 33 that \
+      desugar reduce to `Closed_parMerge` plus the closedness of the `Par` they build — which is what the \
+      leaf lemmas are, one per shape. **The two proof-engineering obstacles this row's earlier notes \
+      named are both recorded where a next reader will meet them**: `bindsPar` had no equation lemma \
+      until its nested `match` was lifted into `bindResult` (`failed to generate equational theorem`, \
+      reproduced), and the list-valued arms had to be written as **equations** rather than by \
+      `induction`/`cases` — with the latter the measure generalizes and the obligation becomes false \
+      (`sizeOf pat < sizeOf cs` instead of `… < sizeOf (⟨pat, body⟩ :: cs)`), which is what the first \
+      draft's termination failure was. **And the shape of the statement is measured, not chosen**: the \
+      hypothesis is `ScopedIn Γ e` because the un-scoped reading is *false* \
+      (`an_unscoped_name_occurrence_is_open`), and `closedVar_nameVar` is the step that makes a scoped \
+      name a bound — hence closed — variable. **The tie is prose, and the row says so**: what is pinned \
+      is the model; the node's normalizer is anchored by `rust` (`rholang/src/normalizer.rs`) and no \
+      corpus replays *this* property, so the row is `provedModel` rather than `provedTied`" },
 
-      1. **`bindsPar` had no equation lemma**, so the receive arm could not be unfolded at all \
-      (\"failed to generate equational theorem for `Rchain.bindsPar`\", reproduced). The cause was its \
-      arm shape — a `match` on `src`, a pattern-bound *field* of the bind, nested inside a `match` on \
-      two `Option`s. Lifting it into `bindResult` fixed it; the emitted corpora are byte-identical \
-      after the change, which is what says the refactor is not a rewording of the semantics.
-      2. **`normalizeAt.induct` exists**, and that is the route rather than a manual measure: the \
-      structural block generated an induction principle with **eleven motives** — one per function, in \
-      the order `Surf`, `List SCase`, `List SReceipt`, `SReceipt`, `List SBind`, `SNameSource`, \
-      `SName`, `List SName`, `List Surf`, `SCollect`, `List SKeyValuePair` — and each case carries the \
-      *recursive calls' motives* as hypotheses, so the eleven statements can be supplied as the motives \
-      and every arm gets its induction hypotheses for free. No `sizeOf` plumbing is needed (the \
-      `groundPar` statement is a separate, recursion-free lemma).
-      3. **The arm idiom is calibrated, and the leaves are now *proved*** (2026-09-25): \
-      `simp only [normalizeAt] at hp` unfolds the arm, `split at hp` separates the `some`/`none` \
-      branches, `Closed_parMerge` (`Ty.lean:277`) closes the `parMerge` step, and the closedness of the \
-      `Par` each arm builds is a theorem in this row's `declarations` — `closed_sendPar`, \
-      `closed_receivePar`, `closed_newPar`, `closed_matchPar`, `closed_bundlePar`, `closed_parOf` and \
-      the four collection shapes — with `closedVar_nameVar` for the one step that makes a *scoped* name \
-      a bound one. They are stated in the `Bool` form (`closed … = true`) because that is what the arms \
-      and the companion statements both produce; the first draft's `Closed` form needed four bridging \
-      lemmas between the `&&`-style list checkers and `∀ x ∈ l`, and each then fought the \
-      `Closed`-unfolding simp lemmas. That sizing is what the leaves were for, and it is done.
-
-      So what is owed is the *cases* — eleven motives, ~45 constructor arms plus the list helpers' — \
-      each a few lines of the idiom above. `Rchain/Sort.lean`'s arm lemmas are this tree's precedent \
-      for a proof of that shape, and the size is what a next pass should budget for rather than \
-      rediscover" },
   { number := 37, layer := "Rholang",
     rustWitness := ["rholang/src/property_tests.rs:law5_a_ground_pattern_matches_only_itself"],
     statement := "Match soundness and completeness (Law 5 strengthened: partial collections, \
