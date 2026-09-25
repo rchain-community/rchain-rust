@@ -1035,11 +1035,15 @@ def laws : List Law := [
       justification wins the sender's slot over the min message \
       (`the_fold_can_publish_below_the_previous_fringe`, `the_sequence_rule_is_not_enough`, with \
       `fold4_is_fork_free`, `fold5_is_fork_free` and `fold5_satisfies_the_sequence_rule` proving each \
-      instance *has* the hypothesis it tests). **So the row names no hypothesis for the lift, because two \
-      candidates are refuted and the third is not proved.** What both instances point at is the \
-      **regression** rule — a block's justification of a sender must be that sender's *latest*, which is \
-      what makes a min message's parents its chain predecessors — and whether the lift holds under it is \
-      the open question, stated as a question" },
+      instance *has* the hypothesis it tests). **So the row names no hypothesis for the lift, and the third \
+      candidate did not survive reading the port's own code either.** `check_justification_regression` \
+      (`casper/src/validate.rs:205-241`) is a *seen-set* condition — each of a block's justifications of \
+      another sender must have seen at least what that sender's previous message saw — and it returns \
+      `Ok(None)`, **no verdict at all**, when the block has no same-sender justification, which is exactly \
+      `fold5`'s `p`. So whether the port admits that shape is the open question: if it does, the per-sender \
+      reading is false of the *published* layer rather than unproved, and if some other ingress rule \
+      excludes it, that rule is the lift's hypothesis. Stated as a question because three candidates have \
+      now been refuted — two by counterexample and one by reading the code" },
   { number := 16, clause := "a", layer := "Casper",
     rustWitness := ["casper/src/validate.rs:block_number_must_be_parent_max_plus_one"],
     statement := "Block number = max(parent) + 1 — as the port's check, which **rejects** a block whose \
