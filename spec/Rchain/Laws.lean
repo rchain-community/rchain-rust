@@ -1827,7 +1827,7 @@ def laws : List Law := [
     statement := "The normalizer's output is well-scoped and closed (Law 6 through every path)",
     status := .owed,
     declarations := [`Rchain.ScopedIn, `Rchain.an_unscoped_name_occurrence_is_open,
-      `Rchain.a_scoped_name_occurrence_is_closed],
+      `Rchain.a_scoped_name_occurrence_is_closed, `Rchain.bindResult],
     witness := [`Rchain.an_unscoped_name_occurrence_is_open],
     falsifiable := some "the statement is **false** of an un-scoped source, and that is the shape of its \
       hypothesis rather than a gap: `nameVar` answers `.free 0` for a name the binder stack does not \
@@ -1851,13 +1851,31 @@ def laws : List Law := [
       `collectPar`, `kvsPar`, `casesPar`, `receiptsPar`, `receiptPar`, `bindsPar`, `namePar`, \
       `groundPar`), whose list-valued ones need the `List` form of the conclusion. The measure is \
       `sizeOf`, the arms reduce each goal to `Closed_parMerge` (`Ty.lean:277`, already proved) plus the \
-      leaf's own closedness. **The obstacle is the elaborator, not the mathematics, and it is measured**: \
-      `unfold normalizeAt` reduces one step, but `bindsPar` — one of the ten — has no generatable \
-      equation lemma (\"failed to generate equational theorem for `Rchain.bindsPar`\", reproduced \
-      2026-09-25), so the arm that reads a bind cannot be unfolded and the induction's hypotheses cannot \
-      be applied there without a `split`-based route first. That is the next pass's first task, and it is \
-      a proof-engineering one; `Rchain/Sort.lean`'s arm lemmas are the precedent for how this tree has \
-      solved that shape before" },
+      leaf's own closedness. **The obstacle was the elaborator, and it is now cleared — the route is \
+      measured and the remaining work is the cases** (2026-09-25):
+
+      1. **`bindsPar` had no equation lemma**, so the receive arm could not be unfolded at all \
+      (\"failed to generate equational theorem for `Rchain.bindsPar`\", reproduced). The cause was its \
+      arm shape — a `match` on `src`, a pattern-bound *field* of the bind, nested inside a `match` on \
+      two `Option`s. Lifting it into `bindResult` fixed it; the emitted corpora are byte-identical \
+      after the change, which is what says the refactor is not a rewording of the semantics.
+      2. **`normalizeAt.induct` exists**, and that is the route rather than a manual measure: the \
+      structural block generated an induction principle with **eleven motives** — one per function, in \
+      the order `Surf`, `List SCase`, `List SReceipt`, `SReceipt`, `List SBind`, `SNameSource`, \
+      `SName`, `List SName`, `List Surf`, `SCollect`, `List SKeyValuePair` — and each case carries the \
+      *recursive calls' motives* as hypotheses, so the eleven statements can be supplied as the motives \
+      and every arm gets its induction hypotheses for free. No `sizeOf` plumbing is needed (the \
+      `groundPar` statement is a separate, recursion-free lemma).
+      3. **The arm idiom is calibrated**: `simp only [normalizeAt] at hp` unfolds the arm, `split at hp` \
+      separates the `some`/`none` branches, `Closed_parMerge` (`Ty.lean:277`) closes the `parMerge` \
+      step, and the leaf's own closedness is `simp [Closed, parOf, closedExpr, closedListExpr]` \
+      (checked per constructor: a bound variable, a wildcard and a ground are the three the arms need, \
+      and the binary operators are one `closedExpr` unfolding each).
+
+      So what is owed is the *cases* — eleven motives, ~45 constructor arms plus the list helpers' — \
+      each a few lines of the idiom above. `Rchain/Sort.lean`'s arm lemmas are this tree's precedent \
+      for a proof of that shape, and the size is what a next pass should budget for rather than \
+      rediscover" },
   { number := 37, layer := "Rholang",
     rustWitness := ["rholang/src/property_tests.rs:law5_a_ground_pattern_matches_only_itself"],
     statement := "Match soundness and completeness (Law 5 strengthened: partial collections, \
