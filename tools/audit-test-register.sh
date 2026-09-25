@@ -57,6 +57,16 @@
 #      The examples belong to the emitted register (`spec/laws.tsv`, `spec/LAWS.md`), and this check is
 #      what keeps them there: a law number in a status bullet fails, and the paragraph that *quotes* the
 #      two old lists does so outside a bullet, which is why the scan follows the bullets and not the file.
+#  13. **A law row's claim agrees with the register's status** — `spec/INVENTORY.md`'s rows 30+ say in a
+#      cell whether the law is covered, and those cells had drifted: row 47's read "**open** —
+#      **proved-model**" (both words, contradicting each other and the register) and row 36's still read
+#      "open" as though no model existed. The register is the oracle for a status, and the catalogue's
+#      vocabulary is coarser than the register's, so what is checked is the **polarity**: the cell's
+#      *first* bold word must claim coverage exactly when the register says the law is proved. The first
+#      draft tested whether the cell contained *any* covering word — and passed the very drift it was
+#      written for, because row 47's cell contained `proved-model` after its `open` (found by re-planting
+#      the defect and reading `audit rc=0`). Later qualifiers stay allowed: a proved row's tie *is* a
+#      `boundary`, and one of its forms *is* `owed`, and both are true sentences about part of a law.
 #
 # The class vocabulary is **closed** because a row that can invent its own reason is not a reason:
 # a `peer-bound` or `harness-bound` row must name its covering test as `path::test`, and the linter
@@ -699,6 +709,18 @@ else
     elif (( ci_floor != want_floor )); then
       fail "CI's floor is $ci_floor; the committed measurement ($l_pct%) implies $want_floor"
     fi
+    # (b2) and the *raise history* the ledger states is the one its site records. The template used to
+    # say "the four times it has been raised" while `coverage.yml` held six — a hand-written count among
+    # machine-checked numbers, which is why the emitter now derives the sentence from the site and this
+    # compares the two. Without it, a ledger that was not re-emitted after a raising would read as
+    # current: the pairs are the record of the rule being applied, and a stale list is a stale ledger.
+    ledger_raises="$(grep -oE '[0-9]+\.[0-9]+⇒[0-9]+' "$LEDGER" 2>/dev/null | tr '\n' ' ' | sed 's/ $//' || true)"
+    site_raises="$(grep -oE '[0-9]+\.[0-9]+ *=> *[0-9]+' "$FLOOR_SITE" 2>/dev/null | sed 's/ *=* *> */⇒/' | tr '\n' ' ' | sed 's/ $//' || true)"
+    if [[ -z "$site_raises" ]]; then
+      fail "no raise history in .github/workflows/coverage.yml — the ledger's own history sentence has no site to be checked against"
+    elif [[ "$ledger_raises" != "$site_raises" ]]; then
+      fail "the ledger's raise history is '$ledger_raises'; the floor's site records '$site_raises' — the ledger is stale, or the site moved without it"
+    fi
     # (c) and, when the lcov is present (locally, or in the coverage job), the ledger is the emission.
     # Absent, this is skipped **with a note** rather than silently — the difference between "checked and
     # agreed" and "not checked here" is the whole reason this register exists.
@@ -725,6 +747,53 @@ if (( failures == ledger_bad_before )); then
   ok "the register points at the measurement and states no coverage figure of its own"
 fi
 
+# --- 13. a law row's claim agrees with the register's status --------------------
+#
+# The register (`spec/laws.tsv`, emitted from `Rchain/Laws.lean`) is the oracle for a law's status, and
+# `spec/INVENTORY.md`'s rows 30+ say in a *cell* whether the law is covered. Those two drifted: measured
+# 2026-09-25, row 47's cell read "**open** — **proved-model**" — both words, in one cell, contradicting
+# each other and the register — and row 36's still read "open" as though the model did not exist, four
+# hours after the subject for its proof landed. A cell is prose a reader trusts, so the *polarity* has to
+# be checked even where the vocabulary cannot: `INVENTORY.md`'s closed word set (`open`, `boundary`,
+# `orphaned`, `axiomatic`, `deviation`) is coarser than the register's (`owed`, `vacuous`, `retired`,
+# `axiomByDesign`), so this checks one direction only — a row whose status claims *coverage* may not be
+# one the register calls unproved, and a row the register calls proved may not read as a gap.
+printf '\n== law rows vs the register (a claim agrees with the status) ==\n'
+polarity_bad_before=$failures
+polarity_checked=0
+while IFS= read -r row; do
+  num="$(printf '%s' "$row" | sed -E 's/^\| *([0-9]+) .*/\1/')"
+  [[ "$num" =~ ^[0-9]+$ ]] && (( num >= 30 )) || continue
+  status_cell="$(printf '%s' "$row" | awk -F'|' '{print $7}')"
+  # The register's statuses for this law, as the comma-separated set its clauses carry.
+  reg="$(awk -F'\t' -v n="$num" 'NR>1 && $1==n {printf "%s ", $4}' "$ROOT/spec/laws.tsv")"
+  [[ -n "$reg" ]] || continue
+  polarity_checked=$((polarity_checked + 1))
+  # **The cell's *first* bold word is its status**, and that is the whole rule. A first draft tested
+  # whether the cell contained *any* covering word, and it passed the very drift it was written for —
+  # row 47's "**open** — **proved-model**", whose second half satisfied it (measured 2026-09-25 by
+  # re-planting the defect: `audit rc=0`). Later qualifiers are legitimate and must stay allowed: a
+  # proved row's tie *is* a `boundary` (rows 45/49), and row 47's general `foldl` form is `owed` while
+  # the row is proved — both are true sentences about part of a law, and neither is a status.
+  # `proved` *and* `proven`: the catalogue uses both spellings, and a pattern that knows only one of
+  # them reports a covering row as a gap — a false positive this check must not have either.
+  first_bold="$(printf '%s' "$status_cell" | grep -oE '\*\*[^*]+\*\*' | head -1 | tr -d '*')"
+  [[ -n "$first_bold" ]] || { fail "INVENTORY row $num has no status word in its cell — a reader cannot tell whether the law is covered"; continue; }
+  claims="$(printf '%s' "$first_bold" | grep -ciE '^(checked|proved|proven|proved-model|proved-tied)' || true)"
+  proved="$(printf '%s' "$reg" | grep -coE 'proved-tied|proved-model' || true)"
+  if (( claims > 0 )) && (( proved == 0 )); then
+    fail "INVENTORY row $num claims coverage — its cell opens '**$first_bold**' — while the register's status is '$reg' (nothing proved). The register is the oracle: fix the cell, or fix the row it disagrees with"
+  fi
+  if (( claims == 0 )) && (( proved > 0 )); then
+    fail "INVENTORY row $num reads as a gap — its cell opens '**$first_bold**' — while the register says '$reg'. Either the cell or the register is wrong, and the register is the emitted one"
+  fi
+done < "$ROOT/spec/INVENTORY.md"
+# A check that matched nothing is not evidence.
+(( polarity_checked > 0 )) || fail "no law rows were compared against the register — this check is vacuous (the row shape moved?)"
+if (( failures == polarity_bad_before )); then
+  ok "$polarity_checked law row(s) claim coverage exactly when the register says they have it"
+fi
+
 # --- 12. the status vocabulary names no law ------------------------------------
 #
 # `spec/Rchain/Laws.lean`'s module doc defines each status in one bullet, and the bullets used to carry
@@ -748,6 +817,266 @@ done < <(awk '
 ' "$SPEC/Rchain/Laws.lean" || true)
 if (( failures == vocab_bad_before )); then
   ok "the status vocabulary names no law (the emitted register carries the examples)"
+fi
+
+# --- 14. the register's pointers resolve ---------------------------------------
+#
+# Check 9 resolves the citations a row carries in `path:line` form, and checks 1–13 bind every other
+# number in the register to the tree. What none of them reads is the **pointer**: a `Cnn` mentioned in
+# prose, a `§N` section reference, a `§NNN-MMM` line range, or a `.lean:NNN` citation written inside a
+# Rust doc comment. Those are how the record refers to *itself*, and they rot silently — three live
+# instances, all measured 2026-09-25:
+#
+#   * `spec/Rchain/Laws.lean`'s law 16d note says "AUDIT **C90** records it", and the row that records
+#     the `PosState.active` gap is **C92**. The note was written when C90 was the next free number and
+#     the allocation moved under it — the same shape as law 30's line citation moving twice in one day
+#     (AUDIT C70, C76), one level up: not a line that moved but a *number* that did.
+#   * `spec/API-SCHEMA.md:92` sends the reader to "AUDIT **§337-343**" for the z-base-32/CRC14 divergence.
+#     Those lines are the §7/§8 boundary; the divergence is at `AUDIT.md:455-457`.
+#   * `spec/AUDIT.md`'s C56 row says "**§20 below** states it with numbers" — a self-reference: the
+#     numbers are in §19, and the design the §5 H6 row promises is "recorded in C56's §20 row" is
+#     recorded nowhere at all.
+#
+# The oracle for "is this number allocated" is the allocator itself (`tools/next-audit-number.sh`), so
+# there is one implementation of that question and not two that can disagree — and the numbers that tool
+# calls **gaps** (C66) are exactly the ones prose may name without a row to point at, because a gap is
+# what a coined-but-unlanded number looks like. That is why the rule is derived rather than exempting
+# C66 by hand.
+#
+# **What this check cannot decide, measured rather than left for the next reader to assume**: a pointer
+# whose sentence *describes* the row ("the shape C45 records", "AUDIT C40 records the false statement")
+# would need the description read against the row, and a rule loose enough to do that guesses — the six
+# correct ones in the tree today share tokens with their rows by coincidence of vocabulary, not by
+# construction, and a token rule that "passed" them would pass a wrong number too. So the subject tier
+# fires only on the **reflexive** form — "`Cnn` records it/this", where the pointer claims the row
+# records the enclosing claim — which is the shape that was wrong, and the wider forms are counted and
+# reported as undecided rather than decided badly. The line-range tier is the same discipline in the
+# other direction: `§337-343` has no identifier to hold, so its rule is a *distinctive token* of the
+# citing sentence, which is what makes the correct window (`CRC14`, `ZBase32`) pass and the §7/§8
+# boundary fail.
+#
+# The emitted files are excluded on purpose: `spec/laws.tsv` and `spec/LAWS.md` are `Rchain/Laws.lean`
+# rendered, so scanning them would report every defect three times and make the *source* look optional.
+# That is the opposite of check 9's choice (which reads the emitted TSV because a citation is only
+# checked once it is emitted), and the reason differs: a citation lives in the row, a pointer lives in
+# the source.
+printf '\n== pointers (every C-number and section reference resolves) ==\n'
+pointer_bad_before=$failures
+pointer_checked=0       # every C-number and section reference examined
+pointer_subject=0       # references the reflexive (subject) tier decided
+pointer_gap_refs=0      # references to a number the allocator calls a gap
+pointer_undecided=0     # references this check reads but cannot decide (stated, never skipped silently)
+pointer_doc=0           # `.lean` citations inside Rust doc comments
+
+# --- the oracle: what the allocator says is allocated, and what it calls a gap --------------------
+alloc_out="$("$ROOT/tools/next-audit-number.sh" 2>/dev/null || true)"
+in_use=" $(printf '%s\n' "$alloc_out" | sed -n 's/^in use: //p') "
+gap_list=" $(printf '%s\n' "$alloc_out" | sed -n 's/^unused below the maximum.*: //p') "
+if [[ -z "${in_use// /}" ]]; then
+  fail "tools/next-audit-number.sh listed no allocated C-numbers — every reference below would read as dangling, so this check is vacuous until that tool works"
+fi
+
+# A finding's text: its `- **Cnn — …` entry if it has one (the long form), else its `| Cnn … |` §20 row.
+# The entry is preferred because it is where the subject words are; the row is the fallback for a number
+# that only ever landed in the table, which `tools/next-audit-number.sh`'s own header says happens.
+pointer_row_text() {
+  local t
+  t="$(awk -v n="C$1" '
+    /^- \*\*C[0-9]+ / { if (grab) exit; if ($0 ~ ("^- \\*\\*" n " ")) grab = 1 }
+    grab { print }
+  ' "$ROOT/spec/AUDIT.md")"
+  [[ -n "$t" ]] || t="$(grep -m1 -E "^\| C$1 " "$ROOT/spec/AUDIT.md" || true)"
+  printf '%s' "$t"
+}
+
+# The distinctive vocabulary of a passage: words long enough to be a subject rather than glue. The
+# stoplist is not tidiness — `audit`, `records`, `entry`, `register` and `finding` appear in a pointer
+# *and* in every row it might point at, so leaving them in would make the reflexive tier pass the very
+# defect it exists to catch (measured against C90's row, which contains "audit" twice).
+pointer_tokens() {
+  tr 'A-Z' 'a-z' | grep -oE '[a-z][a-z0-9]{4,}' \
+    | grep -vEx 'audit|record|records|entry|entries|finding|findings|register|noted|notes|about|which|there|where|their|these|those|other|first|second|since|after|before|every|never|still|would|could|should|makes|made|make|must|does|done|from|with|that|this|then|than|when|have|been|also|into|over|only|both|them|they|because' \
+    | sort -u
+}
+
+# Does the row a pointer names share a distinctive token with the pointer's own sentence? One shared
+# token is enough; zero means the row is about something else.
+pointer_subject_ok() {
+  local n="$1" line="$2" rowtext shared
+  rowtext="$(pointer_row_text "$n")"
+  [[ -n "$rowtext" ]] || return 1
+  shared="$(comm -12 <(printf '%s\n' "$line" | pointer_tokens) <(printf '%s\n' "$rowtext" | pointer_tokens) | head -1)"
+  [[ -n "$shared" ]]
+}
+
+# The sources: `spec/`'s prose and the Lean modules — not the two emitted renderings.
+pointer_sources=()
+while IFS= read -r f; do pointer_sources+=("$f"); done < <(
+  { ls "$ROOT"/spec/*.md 2>/dev/null; find "$ROOT/spec/Rchain" -name '*.lean' 2>/dev/null; } \
+    | grep -vE '/(LAWS\.md|COVERAGE-LEDGER\.md)$' | sort -u
+)
+
+# --- family A, tiers 1 and 2: C-number references in prose ------------------------
+while IFS=: read -r pfile pline ptext; do
+  [[ -z "$pfile" ]] && continue
+  # **A word boundary, and it is not decoration**: `C[0-9]+` alone matches inside `RFC1918` and
+  # `RFC2253`, which are protocol numbers in two §6 rows — the first run of this check reported both as
+  # unallocated findings, which is the same defect the `§337-343` misparse was: an instrument that
+  # misreads its subject reports findings about a text nobody wrote.
+  for num in $(printf '%s' "$ptext" | grep -oE '(^|[^A-Za-z0-9_])C[0-9]+' | sed 's/^[^C]*//' | sort -u); do
+    n="${num#C}"
+    pointer_checked=$((pointer_checked + 1))
+    if [[ "$in_use" != *" $n "* ]]; then
+      if [[ "$gap_list" == *" $n "* ]]; then
+        pointer_gap_refs=$((pointer_gap_refs + 1))
+        continue
+      fi
+      fail "${pfile#"$ROOT"/}:$pline names \`$num\`, which no finding claims — the allocator's in-use set (tools/next-audit-number.sh) is the oracle, and a number it does not list has no row to resolve to"
+      continue
+    fi
+    # the reflexive form only: the pointer claims the row records the enclosing claim
+    if printf '%s' "$ptext" | grep -qE "(^|[^A-Za-z0-9_])C$n[^.]{0,40}records (it|this)([^a-z]|\$)"; then
+      pointer_subject=$((pointer_subject + 1))
+      if ! pointer_subject_ok "$n" "$ptext"; then
+        fail "${pfile#"$ROOT"/}:$pline says \`$num\` records it, and C$n's own text shares nothing distinctive with that sentence — the pointer names a row about something else"
+      fi
+    fi
+  done
+done < <(grep -nHE 'C[0-9]+' "${pointer_sources[@]}" 2>/dev/null || true)
+
+# --- family A, tier 3: section references and line ranges -------------------------
+# A `§N` of one or two digits is a section of `spec/AUDIT.md` (it has twenty), and it must name a
+# heading. A `§NNN(-NNN)` of three or more cannot be a section, so it is a *line range* into that file —
+# and the window must contain a distinctive token of the citing sentence. The split is measured rather
+# than assumed: the first draft of this check read `§337-343` as "section 33" and reported a section
+# that does not exist, which is a false positive of the check's own making.
+while IFS=: read -r pfile pline ptext; do
+  [[ -z "$pfile" ]] && continue
+  for ref in $(printf '%s' "$ptext" | grep -oE '§[0-9]+(-[0-9]+)?' | sort -u); do
+    body="${ref#§}"
+    pointer_checked=$((pointer_checked + 1))
+    if [[ "$body" =~ ^[0-9]{1,2}$ ]]; then
+      if [[ "$pfile" == "$ROOT/spec/AUDIT.md" ]]; then
+        # inside AUDIT.md itself a `§N` is the enclosing document's own structure
+        grep -qE "^## $body\. " "$ROOT/spec/AUDIT.md" \
+          || fail "AUDIT.md:$pline cites §$body, which is not a section of this file (it has 20, and the numbers are checked)"
+      else
+        grep -qE "^## $body\. " "$ROOT/spec/AUDIT.md" \
+          || fail "${pfile#"$ROOT"/}:$pline cites AUDIT §$body, which is not a section of that file"
+      fi
+    elif [[ "$body" =~ ^([0-9]{3,4})(-([0-9]{3,4}))?$ ]]; then
+      pfrom="${BASH_REMATCH[1]}"; pto="${BASH_REMATCH[3]:-$pfrom}"
+      if (( pfrom > $(wc -l < "$ROOT/spec/AUDIT.md") )); then
+        fail "${pfile#"$ROOT"/}:$pline cites AUDIT §$body, which is past that file's end ($(wc -l < "$ROOT/spec/AUDIT.md") lines)"
+        continue
+      fi
+      pwindow="$(sed -n "$(( pfrom > 3 ? pfrom - 3 : 1 )),$(( pto + 3 ))p" "$ROOT/spec/AUDIT.md")"
+      if ! printf '%s\n' "$ptext" | pointer_tokens | while IFS= read -r tok; do
+             [[ -n "$tok" ]] || continue
+             printf '%s' "$pwindow" | grep -qiF "$tok" && { echo "$tok"; break; }
+           done | grep -q .; then
+        fail "${pfile#"$ROOT"/}:$pline cites AUDIT §$body and the lines there hold nothing that sentence names — $(sed -n "${pfrom}p" "$ROOT/spec/AUDIT.md" | cut -c1-50)"
+      fi
+    fi
+  done
+done < <(grep -nHE '§[0-9]' "${pointer_sources[@]}" 2>/dev/null || true)
+
+# --- family B: the `.lean` line-citations inside Rust doc comments ----------------
+# Invisible to every other gate: check 9 reads the register's rows and the type-system audit reads Rust
+# *expressions*, so a citation in a `///` comment is checked by nothing. The population is seven
+# (re-derived 2026-09-25), and the rule is check 9's window rule with the arrow reversed: the *sentence*
+# names an identifier in backticks and the cited range must contain it. A doc comment naming no
+# identifier is counted as undecided — the check says how many it could not decide rather than reading
+# them as clean.
+# `-not -path '*/.lake/*'` is load-bearing: `.lake` holds the vendored Mathlib packages, whose
+# `Match.lean`/`Array/Match.lean` make a bare basename ambiguous — and a basename that resolves to two
+# files is how this family reported a *correct* citation (`models/src/types.rs:80`'s `Match.lean:402`)
+# as one that does not resolve. Third false positive of the first run, and the same shape as the other
+# two: the check measured the wrong subject.
+lean_index="$(cd "$ROOT" && find spec -name '*.lean' -not -path '*/.lake/*' | awk -F/ '{print $NF"\t"$0}' | sort)"
+while IFS= read -r hit; do
+  [[ -z "$hit" ]] && continue
+  rfile="${hit%%:*}"; rest="${hit#*:}"; rline="${rest%%:*}"; rtext="${rest#*:}"; stext="${rest#*:}"
+  while [[ "$rtext" =~ ([A-Za-z0-9_/]*\.lean):([0-9]+)(-([0-9]+))? ]]; do
+    cite_path="${BASH_REMATCH[1]}"; from="${BASH_REMATCH[2]}"; to="${BASH_REMATCH[4]:-$from}"
+    rtext="${rtext#*"${BASH_REMATCH[0]}"}"
+    pointer_doc=$((pointer_doc + 1))
+    lfile=""
+    if [[ "$cite_path" == */* ]]; then
+      for cand in "$ROOT/$cite_path" "$ROOT/spec/$cite_path"; do [[ -f "$cand" ]] && { lfile="$cand"; break; }; done
+    else
+      matches="$(printf '%s\n' "$lean_index" | awk -F'\t' -v b="$cite_path" '$1 == b {print $2}')"
+      [[ "$(printf '%s\n' "$matches" | grep -c . || true)" == "1" ]] && lfile="$ROOT/$matches"
+    fi
+    if [[ -z "$lfile" ]]; then
+      fail "$rfile:$rline cites \`$cite_path:$from\`, which does not resolve — write the path in full (its basename is ambiguous or absent)"
+      continue
+    fi
+    # **Resolvability first, and the order is load-bearing.** A citation past the end of its file is
+    # decidable whether or not the sentence names an identifier, and the first draft put the "names
+    # nothing, so this check cannot decide it" branch above this test — which made a citation to line
+    # 99999 of a 40-line file report as *undecided* rather than as broken. Found by probing it
+    # (`Fringe.lean:99999`: `ok … 1 outside what this check reads`), which is the falsifier that keeps
+    # "undecided" from becoming a place a defect can hide.
+    if (( from > $(wc -l < "$lfile") )); then
+      fail "$rfile:$rline cites \`$cite_path:$from\`, which is past that file's end ($(wc -l < "$lfile") lines)"
+      continue
+    fi
+    # the identifiers the sentence names: the citation line and its doc-comment neighbours (a citation
+    # often closes a sentence whose symbol was named the line before — property_tests.rs:66's
+    # `validShardId` is on `:65`)
+    idents="$(sed -n "$(( rline > 2 ? rline - 2 : 1 )),$(( rline + 2 ))p" "$ROOT/$rfile" \
+      | grep -oE '`[A-Za-z_][A-Za-z0-9_]*`' | tr -d '`' | sort -u || true)"
+    if [[ -z "$idents" ]]; then
+      pointer_undecided=$((pointer_undecided + 1))
+      continue
+    fi
+    lwindow="$(sed -n "$(( from > 8 ? from - 8 : 1 )),$(( to + 8 ))p" "$lfile")"
+    lhit=""
+    while IFS= read -r id; do
+      [[ -z "$id" ]] && continue
+      [[ "$lwindow" == *"$id"* ]] && { lhit="$id"; break; }
+      lcamel="$(printf '%s' "$id" | awk -F_ '{s=$1; for(i=2;i<=NF;i++) s=s toupper(substr($i,1,1)) substr($i,2); print s}')"
+      [[ "$lcamel" != "$id" && "$lwindow" == *"$lcamel"* ]] && { lhit="$id"; break; }
+      lsnake="$(printf '%s' "$id" | awk '{s=""; for(i=1;i<=length($0);i++){c=substr($0,i,1); if (c ~ /[A-Z]/) s=s "_" tolower(c); else s=s c} print s}')"
+      [[ "$lsnake" != "$id" && "$lwindow" == *"$lsnake"* ]] && { lhit="$id"; break; }
+    done <<< "$idents"
+    if [[ -z "$lhit" ]]; then
+      fail "$rfile:$rline cites \`$cite_path:$from-$to\`, whose window holds no identifier that comment names — $(sed -n "${from}p" "$lfile" | cut -c1-50)"
+    fi
+  done
+  # The **symbol form** — `Dag.lean:Descends` — is the durable one (a line moves, a name does not), and
+  # it is the form the register's own convention prefers (check 9's `ANCHOR_SYM`, added for exactly this
+  # reason). It is checked here too, and the reason is the one this whole family exists for: a citation
+  # form the scanner does not know is a citation form nobody reads. Measured while writing it — the two
+  # `Dag.lean:296-297` citations the line tier had just found stale were re-anchored to
+  # `Dag.lean:Descends` by the lane that owns those files, and that symbol citation is now subject to
+  # `sym_present` like any other.
+  while [[ "$stext" =~ ([A-Za-z0-9_/]*\.lean):([A-Za-z_][A-Za-z0-9_]*) ]]; do
+    cite_path="${BASH_REMATCH[1]}"; sym="${BASH_REMATCH[2]}"
+    stext="${stext#*"${BASH_REMATCH[0]}"}"
+    pointer_doc=$((pointer_doc + 1))
+    lfile=""
+    if [[ "$cite_path" == */* ]]; then
+      for cand in "$ROOT/$cite_path" "$ROOT/spec/$cite_path"; do [[ -f "$cand" ]] && { lfile="$cand"; break; }; done
+    else
+      matches="$(printf '%s\n' "$lean_index" | awk -F'\t' -v b="$cite_path" '$1 == b {print $2}')"
+      [[ "$(printf '%s\n' "$matches" | grep -c . || true)" == "1" ]] && lfile="$ROOT/$matches"
+    fi
+    if [[ -z "$lfile" ]]; then
+      fail "$rfile:$rline cites \`$cite_path:$sym\`, which does not resolve — write the path in full (its basename is ambiguous or absent)"
+      continue
+    fi
+    sym_present "$lfile" "$sym" \
+      || fail "$rfile:$rline cites \`$cite_path:$sym\`, and that file names no \`$sym\` — the symbol form is *checked*, so a rename must land with its citation"
+  done
+done < <(cd "$ROOT" && grep -rnE '///.*[A-Za-z0-9_/]*\.lean:[0-9A-Za-z_]' --include='*.rs' . 2>/dev/null | sed 's|^\./||' || true)
+
+# A check that scanned nothing is not evidence (the trap check 9's own comment records).
+(( pointer_checked > 0 )) || fail "no C-number or section references found in spec/ — this check is vacuous (the sources list moved?)"
+(( pointer_doc > 0 )) || fail "no \`.lean\` citations found in Rust doc comments — this family is vacuous (the doc-comment shape moved?)"
+if (( failures == pointer_bad_before )); then
+  ok "$pointer_checked pointer(s) resolve, $pointer_doc of them doc-comment citations; $pointer_subject decided by subject, $pointer_gap_refs naming a gap the allocator lists, $pointer_undecided outside what this check reads"
 fi
 
 # --- summary -----------------------------------------------------------------
