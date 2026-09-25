@@ -53,8 +53,9 @@ jobs:
         # Measurement history, written without the sign as a record: 73.68 => 71 (Stages 0-2),
         # 79.69 => 77 (Stages 3-4), 81.30 => 79 (the low-coverage sweep), 84.07 => 82 (the census
         # sweep), 86.77 => 84 (the coverage pass: the emitted ledger, and the node's read surface
-        # pinned route by route).
-        run: cargo llvm-cov --workspace --all-features --lcov --output-path lcov.info --fail-under-lines 84
+        # pinned route by route), 87.22 => 85 (the same pass, after its first batches: the
+        # `eval_method` arms and refusal tables, the http system process, the gateway carrier).
+        run: cargo llvm-cov --workspace --all-features --lcov --output-path lcov.info --fail-under-lines 85
 
       - name: Upload coverage
         uses: codecov/codecov-action@v7
