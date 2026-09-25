@@ -1206,6 +1206,11 @@ def laws : List Law := [
       invariance the type supplies. **Clause split removed**: 18a and 18b now share a status, an empty \
       axiom set and a file" },
   { number := 19, layer := "Crypto",
+    rustWitness := [
+      "crypto/src/hash/blake2b512_random.rs:empty_gives_a_predictable_result",
+      "crypto/src/signatures/secp256k1.rs:creates_known_ecdsa_signature",
+      "crypto/src/signatures/secp256k1.rs:verifies_known_signature",
+      "crypto/src/encryption/curve25519.rs:decrypts"],
     statement := "Blake2b256 is canonical and collision-free; the `Blake2b512Random` merge is n-ary \
       and **order-sensitive**; signatures verify what they sign; Curve25519 round-trips",
     status := .axiomByDesign,
@@ -1229,7 +1234,20 @@ def laws : List Law := [
       17's RNG clause duplicated this one and is merged into it. **The types were retyped to mirror the \
       code's**: `Msg`/`Hash` are byte strings rather than opaque `Nat` wrappers, and the 32-byte width \
       is `blake2b256_output_is_32_bytes` (`Hash32`, `shared/src/refined.rs:287-296`) — which is what \
-      lets Law 7's and Law 10's models be built out of hashes instead of guessed numbers" },
+      lets Law 7's and Law 10's models be built out of hashes instead of guessed numbers. **And the \
+      nine are not all load-bearing — measured 2026-09-25** with `Lean.collectAxioms` over every \
+      declaration the register names: `blake2b256` is used by 7 of them (the block hash, the Merkle \
+      node hash, content addressing), `blake2b256_collision_free` by 4, `mergeRandom` by 2, and Law 7's \
+      `hashHashes` by 1 — while `blake2b256_output_is_32_bytes`, `sign`, `verify`, \
+      `sign_verify_roundtrip`, `sharedSecret` and `curve25519_roundtrip` are used by **none**. Those \
+      six are the crypto API stated as the model's boundary, so that laws about it are statable, not \
+      assumptions any proof leaned on; the register now says which is which instead of leaving nine \
+      axioms looking equally exercised. **The tie is a witness the gate runs** (`rustWitness`): the \
+      known-answer vectors — X25519's RFC 7748 vector, a known ECDSA signature and its verification, \
+      and the RNG's fixed empty-input stream — because they are what catches a wrong primitive. No test \
+      can witness the idealization itself: `blake2b256_collision_free` states collision-*resistance* as \
+      injectivity, which the pigeonhole refutes as a fact about the real function \
+      (`spec/Rchain/Crypto/Spec.lean:41-49`)" },
 
   -- ── Scheduler: the effect scheduler (Laws 20–25) ─────────────────────────────────────────────────
   { number := 20, layer := "Scheduler",

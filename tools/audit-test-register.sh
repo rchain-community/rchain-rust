@@ -415,6 +415,16 @@ ANCHOR_INDEX="$(cd "$ROOT" && git ls-files | awk -F/ '{print $NF"\t"$0}' | sort)
 # resolve a citation's path to a file: as written, then by the row's own anchors (basename), then by a
 # unique basename in the tree. Sets the global `file` ("" when it does not resolve) — shared by both
 # citation forms, so the two cannot drift apart in how they resolve a path.
+#
+# **`return 0` is load-bearing, and it is C89.** A function ends with the status of its last command, and
+# every branch here ends on a *test*: the `for` loop's last command is the `[[ -f "$cand" ]]` that failed,
+# and the `if`/`else` propagates it. So when a citation does not resolve — exactly the case this function
+# exists to report — `anchor_resolve` returned 1, and under this script's `set -euo pipefail` that aborted
+# the run *before* the caller's `if [[ -z "$file" ]]` could print `does not resolve — write the path in
+# full`. Measured 2026-09-25: an unresolvable `Crypto/Spec.lean:41-49` in row 19's note made the audit
+# exit 1 with the log ending at `== register anchors …` and **zero** FAIL lines — a check that reported
+# nothing rather than reporting the defect, which is the failure mode this whole pass is about. The
+# function's contract is "set `file`, say nothing": it must return success in every case.
 anchor_resolve() {
   file=""
   if [[ "$1" == */* ]]; then
@@ -428,6 +438,7 @@ anchor_resolve() {
       [[ "$(printf '%s\n' "$matches" | grep -c . || true)" == "1" ]] && file="$ROOT/$matches"
     fi
   fi
+  return 0
 }
 
 # Is `$2` present in file `$1`? A citation may name the model's snake_case spelling or the port's
