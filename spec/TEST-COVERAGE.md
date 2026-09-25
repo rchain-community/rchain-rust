@@ -26,7 +26,7 @@ and **no file is left without one or the other** — the linter's check 7 passes
 
 ## Inventory
 
-**1476 `#[test]`/`#[tokio::test]` unit functions + 129 integration tests** across 13 crates, with **26
+**1477 `#[test]`/`#[tokio::test]` unit functions + 129 integration tests** across 13 crates, with **26
 laws** carrying a randomized property test and **12 benchmark functions** in 7 Criterion groups. Only
 **3 of 13 crates have integration tests** (`rholang`, `casper`, `node`).
 
@@ -42,7 +42,7 @@ laws** carrying a randomized property test and **12 benchmark functions** in 7 C
 | `rspace` | 181 | — | 8 | — |
 | `rholang` | 239 | 57 | 7 | — |
 | `casper` | 278 | 55 | 3 | — |
-| `node` | 195 | 17 | — | — |
+| `node` | 196 | 17 | — | — |
 | `qucalc` | 20 | — | — | — |
 | `rspace-bench` | — | — | — | 12 |
 
@@ -335,6 +335,7 @@ not found in that file. Coverage claims live here rather than in prose so they c
 | item 11 | `casper/src/engine/node_running.rs` | `handle_routes_each_message_and_hands_off_to_the_right_queue` |
 | item 11 | `node/src/api/grpc/tonic.rs` | `the_deploy_service_converts_requests_and_reports_refusals` |
 | item 11 | `node/src/api/grpc/tonic.rs` | `the_block_conversions_wrap_a_block_and_a_stream_reports_its_error` |
+| item 11 | `node/src/api/grpc/tonic.rs` | `get_event_hash_is_gated_and_converts_its_hash` |
 
 ## Gap analysis (severity-ordered)
 
@@ -781,7 +782,7 @@ the rows that changed, plus what the moves exposed):
 | `rspace/src/merger/state_change_merger.rs` | 131 | `compute_trie_actions` (66–200) | `pin` | **pinned** — the file's three tests all drove `mk_trie_action`, its reader-free helper, so the *public* entry point the merge calls had never run; a reader double (three methods, one failure arm) was all it needed |
 | `node/src/api/grpc/deploy_grpc_service_v1.rs` | 153 | the delegation handlers (44–177) | `pin` | **partly pinned** — `the_handlers_forward_each_requests_fields_and_its_refusal` covers the six whose stub returns are trivially constructible and pins the *unpacking* (`visualize_dag` forwards three fields, two of them integers) plus the `ServiceError` mapping; `get_block`/`last_finalized_block`/`get_data_at_name` need a `BlockInfo` fixture and stay `pin` |
 | `node/src/api/grpc/tonic.rs` | 121 | `propose_result` (85–91) and the two response helpers' error arms | `pin` | **partly pinned** — `propose_result_reports_the_result_and_a_refusal`, with the double able to refuse (the only way to reach the `Error` message arm) |
-| `node/src/api/grpc/tonic.rs` | 118 | the `DeployService` trait's wire conversions | `pin` | **mostly pinned**: six conversions across two tests — `getDataAtName` (conversion, its `missing par` refusal and the `Error` arm), `findDeploy`, `isFinalized`, `getBlock`, `lastFinalizedBlock`, `bondStatus`, and `getBlocks` in both directions (a stream that answers, and a refused one that emits **one Error item rather than ending silently**). What remains is `listenForContinuationAtName` and `getEventByHash`, same shape, fixtures in place |
+| `node/src/api/grpc/tonic.rs` | 118 | the `DeployService` trait's wire conversions | `pin` | **mostly pinned**: six conversions across two tests — `getDataAtName` (conversion, its `missing par` refusal and the `Error` arm), `findDeploy`, `isFinalized`, `getBlock`, `lastFinalizedBlock`, `bondStatus`, and `getBlocks` in both directions (a stream that answers, and a refused one that emits **one Error item rather than ending silently**). What remains is `listenForContinuationAtName`, same shape, fixtures in place |
 | `node/src/api/grpc/tonic.rs` | | `Repl::run`/`Repl::eval` (96–121) | `harness-bound` | `ReplGrpcService` holds an `Arc<RhoRuntime>`, and a unit-test module cannot reach `node/tests/common`'s `rho_runtime()` |
 | `node/src/api/grpc/tonic.rs` | | the test double's nineteen `unimplemented!()` bodies (870–950) | `fixture` | a double that refuses everything; those lines are uncoverable by construction and are the boundary they exist to be |
 | `rspace/src/history/export.rs` | 123 | the traversal's second level (`init_node_path`, `add_node_ptr`, `add_element`) | `pin` | **pinned by the second level** — `export_walks_into_a_pointer_node`; the fixture is a two-node `HashMap` and a closure, so the only reason it took a pointer node is that the two existing tests stop at one |

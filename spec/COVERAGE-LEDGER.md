@@ -8,7 +8,7 @@ ranking that `spec/TEST-COVERAGE.md`'s Definition-of-done item 11 is worked from
 `tools/audit-test-register.sh` refuses a ledger that disagrees with the lcov it names, and refuses a CI
 floor that is not the one this measurement implies.
 
-**Measurement**: 2026-09-25 (the lcov's own date); emitted from a tree at 00ad8d2ce.
+**Measurement**: 2026-09-25 (the lcov's own date); emitted from a tree at 0f74a0a42.
 
 | lines found | hit | missed | line coverage | CI floor (implied) |
 |---:|---:|---:|---:|---:|

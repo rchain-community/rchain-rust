@@ -1080,11 +1080,20 @@ mod tests {
     fn deploy_service(
         configure: impl FnOnce(&mut StubBlockApi),
     ) -> (DeployGrpcServiceV1, Arc<StubBlockApi>) {
+        deploy_service_with_reporting(false, configure)
+    }
+
+    /// The same, with the reporting switch under the caller's control — `enable_reporting` gates one
+    /// RPC (M6), so a test has to be able to build both sides of that gate.
+    fn deploy_service_with_reporting(
+        enable_reporting: bool,
+        configure: impl FnOnce(&mut StubBlockApi),
+    ) -> (DeployGrpcServiceV1, Arc<StubBlockApi>) {
         let mut stub = StubBlockApi::default();
         configure(&mut stub);
         let api = Arc::new(stub);
         (
-            DeployGrpcServiceV1::new(api.clone(), report_api(), false),
+            DeployGrpcServiceV1::new(api.clone(), report_api(), enable_reporting),
             api,
         )
     }
@@ -1322,6 +1331,83 @@ mod tests {
             "and that item carries the reason: {:?}",
             items[0]
         );
+    }
+
+    /// **`getEventHash`'s gate, its conversion, and its two outcomes.** The RPC is behind
+    /// `enable_reporting` (M6: the flag was read but not enforced before), so the *first* thing to pin
+    /// is that a node with reporting off answers `NotFound` rather than the report — a disabled
+    /// surface that answers is a surface. Then, with it on: a hash that is not hex is refused by the
+    /// inner handler and reaches the client as an `Error` message, and a well-formed one is answered
+    /// (from an empty report store, which is a `Result` with no events rather than nothing at all).
+    #[tokio::test]
+    async fn get_event_hash_is_gated_and_converts_its_hash() {
+        use rchain_models::proto::casper::ReportQuery;
+
+        // Reporting off: `NotFound`, and the inner handler is never reached.
+        let (svc, api) = deploy_service(|_| {});
+        let err = DeployService::get_event_by_hash(
+            &svc,
+            Request::new(ReportQuery {
+                hash: "ab".repeat(32),
+                force_replay: false,
+            }),
+        )
+        .await
+        .expect_err("the report RPC is disabled by default");
+        assert_eq!(err.code(), tonic::Code::NotFound, "{err:?}");
+        assert!(err.message().contains("reporting is disabled"), "{err:?}");
+        assert!(
+            api.calls.lock().unwrap().is_empty(),
+            "a disabled RPC does not reach the block API: {:?}",
+            api.calls.lock().unwrap()
+        );
+
+        // Reporting on, a hash that is not hex: refused by name, and it arrives as an Error message.
+        let (svc, _) = deploy_service_with_reporting(true, |_| {});
+        let resp = DeployService::get_event_by_hash(
+            &svc,
+            Request::new(ReportQuery {
+                hash: "not-hex".to_string(),
+                force_replay: false,
+            }),
+        )
+        .await
+        .expect("a bad hash is answered rather than failing the RPC");
+        match resp.into_inner().message.expect("a message") {
+            wire::event_info_response::Message::Error(e) => assert!(
+                e.messages.join(" ").contains("not valid hex"),
+                "the refusal says what was wrong with the hash: {e:?}"
+            ),
+            other => panic!("a refused query must be an Error message, got {other:?}"),
+        }
+
+        // Reporting on, a well-formed hash the store does not hold: an **error naming the absence**,
+        // not an empty result. That distinction is the one this whole register keeps returning to —
+        // "this block had no events" and "I have no report for this block" are different claims, and
+        // only one of them is a reason for a client to stop asking.
+        let resp = DeployService::get_event_by_hash(
+            &svc,
+            Request::new(ReportQuery {
+                hash: "ab".repeat(32),
+                force_replay: false,
+            }),
+        )
+        .await
+        .expect("get_event_by_hash");
+        match resp.into_inner().message.expect("a message") {
+            wire::event_info_response::Message::Error(e) => {
+                let text = e.messages.join(" ");
+                assert!(
+                    text.contains("not found") && text.contains(&"ab".repeat(32)),
+                    "the absence names the block it could not answer for: {text}"
+                );
+            }
+            wire::event_info_response::Message::Result(_) => panic!(
+                "an unknown hash must not answer an empty result — a client would read that as \
+                 \"this block had no events\""
+            ),
+            other => panic!("unexpected message {other:?}"),
+        }
     }
 
     #[tokio::test]
