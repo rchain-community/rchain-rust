@@ -17,6 +17,9 @@ pub enum CryptoError {
     EncryptionFailed,
     /// A hex string was malformed or not the expected length.
     InvalidHex,
+    /// A signature's encoding was malformed: DER framing the decoder refuses, or an integer that does
+    /// not fit its 32-byte field. Carries the decoder's own reason.
+    InvalidSignatureFormat(String),
 }
 
 impl fmt::Display for CryptoError {
@@ -28,6 +31,9 @@ impl fmt::Display for CryptoError {
             }
             CryptoError::EncryptionFailed => write!(f, "box encryption failed"),
             CryptoError::InvalidHex => write!(f, "invalid hex string"),
+            CryptoError::InvalidSignatureFormat(reason) => {
+                write!(f, "invalid signature format: {reason}")
+            }
         }
     }
 }
