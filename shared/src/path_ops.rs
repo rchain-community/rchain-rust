@@ -177,6 +177,13 @@ mod tests {
 
         let missing = temp_dir("delete_directory_missing");
         delete_directory(&missing, &NopLog, LogSource::new("test"));
+        // "A no-op" is the claim, so assert it: the call must not conjure the directory it was asked
+        // to remove. Without this the test could only fail by panicking, which is a weaker claim than
+        // its name makes (found 2026-09-25 by the coverage pass's scan for tests that cannot fail).
+        assert!(
+            !missing.exists(),
+            "deleting a missing directory must not create it"
+        );
     }
 
     #[cfg(feature = "tokio")]

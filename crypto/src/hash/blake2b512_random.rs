@@ -551,7 +551,9 @@ mod tests {
         let rnd2 = rnd.split_byte(2);
         let merged12 = Blake2b512Random::merge(&[rnd1.clone(), rnd2.clone()]);
         let merged21 = Blake2b512Random::merge(&[rnd2, rnd1]);
-        assert_eq!(merged12, merged12);
+        // The order-sensitivity claim is the `assert_ne!` below. A tautological `assert_eq!(merged12,
+        // merged12)` sat on this line — it cannot fail for any implementation, so it was a line that
+        // read as coverage and asserted nothing (found 2026-09-25 by the coverage pass's own scan).
         assert_ne!(merged12, merged21);
     }
 

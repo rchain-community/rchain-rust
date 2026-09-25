@@ -66,6 +66,11 @@ mod tests {
         assert_eq!(base.sub("store").0, "rchain.store");
     }
 
+    /// A **no-panic pin**, not a value assertion: `MetricsNop` is the metrics-off implementation, so
+    /// every trait method must accept a call and do nothing. It fails if a method panics — the one way
+    /// a no-op can break — and cannot assert a result, because a no-op has none. Named here so the next
+    /// reader does not mistake the missing assertion for an oversight (found by the 2026-09-25 coverage
+    /// pass's scan for tests that cannot fail).
     #[test]
     fn metrics_nop_accepts_any_call() {
         let m = MetricsNop;

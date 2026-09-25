@@ -107,6 +107,12 @@ mod tests {
         );
     }
 
+    /// A **compile-time pin**, and it says so rather than pretending otherwise: the claim is that
+    /// `void()` consumes a value of any type and yields `()`, which the two ascriptions check when the
+    /// test is built. There is no runtime assertion because there is no runtime behaviour to observe —
+    /// this test cannot fail once it compiles. Recorded by the 2026-09-25 coverage pass, whose scan for
+    /// tests that cannot fail found it; the register's standard is that such a test is a *claim*, and a
+    /// claim should be legible as one.
     #[test]
     fn void_discards_value() {
         let _: () = 42.void();
