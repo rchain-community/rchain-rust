@@ -8,17 +8,21 @@ ranking that `spec/TEST-COVERAGE.md`'s Definition-of-done item 11 is worked from
 `tools/audit-test-register.sh` refuses a ledger that disagrees with the lcov it names, and refuses a CI
 floor that is not the one this measurement implies.
 
-**Measurement**: 2026-09-25 (the lcov's own date); emitted from a tree at 60fec24e0.
+**Measurement**: 2026-09-25 (the lcov's own date); emitted from a tree at d68b04fe4.
 
 | lines found | hit | missed | line coverage | CI floor (implied) |
 |---:|---:|---:|---:|---:|
 | 69147 | 60815 | 8332 | 87.95% | 85 |
 
 The floor's rule, machine-checked above rather than remembered: **`floor = floor(measured) − 2`** — two
-points below the measurement, never a number a plan hopes to reach. The register records the four times it
-has been raised (73.68⇒71, 79.69⇒77, 81.30⇒79, 84.07⇒82); all four satisfy the rule, which is why it is a
-rule and not a convention. A floor the measurement does not support fails check 11 in either direction: too
-high is a tripwire nothing justifies, too low is a raise that was owed.
+points below the measurement, never a number a plan hopes to reach. The raisings are read off the floor's
+own site, not restated here: (73.68⇒71, 79.69⇒77, 81.30⇒79, 84.07⇒82, 86.77⇒84, 87.22⇒85). **No count of them is written in this
+sentence**, because the count is what rotted — this template once said "the four times it has been raised"
+while the site already held more — and the list carries its own length. Every raising satisfies the rule,
+which is why it is a rule and not a convention, and check 11 compares this list against the site, so a
+ledger not re-emitted after a raising reads as stale rather than as current. A floor the measurement does
+not support fails check 11 in either direction: too high is a tripwire nothing justifies, too low is a
+raise that was owed.
 
 Rows are the workspace members' own code under `src/`, `tests/` and `benches/`. Of the 281 file
 records in the lcov, **0 are excluded** here — `legacy/` (the unported Scala tree), `spec/`,

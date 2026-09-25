@@ -134,6 +134,19 @@ fi
 measured_on="$(date -r "$LCOV" -u +%Y-%m-%d 2>/dev/null || echo unknown)"
 head_short="$(git -C "$ROOT" rev-parse --short=9 HEAD 2>/dev/null || echo '-')"
 
+# The raise history is **derived from its own site**, not restated. The pairs live in the comment above
+# the floor in `.github/workflows/coverage.yml` — which is where a raising is made — so the sentence below
+# cannot disagree with the record. It did: this template said "the four times it has been raised" while
+# the site held **six** (found 2026-09-25 by counting one against the other, which nothing was doing).
+# That is a hand-written count sitting among machine-checked numbers, the shape check 10 exists for in the
+# register's corpus counts.
+raise_list="$(grep -oE '[0-9]+\.[0-9]+ *=> *[0-9]+' "$ROOT/.github/workflows/coverage.yml" | sed 's/ *=* *> */⇒/')"
+raise_pairs="$(printf '%s\n' "$raise_list" | paste -sd, - | sed 's/,/, /g')"
+if [[ -z "$raise_list" ]]; then
+  echo "FAIL  no raise history in .github/workflows/coverage.yml — the ledger's history sentence would be vacuous" >&2
+  exit 1
+fi
+
 # --- emit ------------------------------------------------------------------------------------------
 emit() {
   cat <<EOF
@@ -154,10 +167,14 @@ floor that is not the one this measurement implies.
 | $found | $hit | $missed | $(( pct100 / 100 )).$(printf '%02d' $(( pct100 % 100 )))% | $max_floor |
 
 The floor's rule, machine-checked above rather than remembered: **\`floor = floor(measured) − 2\`** — two
-points below the measurement, never a number a plan hopes to reach. The register records the four times it
-has been raised (73.68⇒71, 79.69⇒77, 81.30⇒79, 84.07⇒82); all four satisfy the rule, which is why it is a
-rule and not a convention. A floor the measurement does not support fails check 11 in either direction: too
-high is a tripwire nothing justifies, too low is a raise that was owed.
+points below the measurement, never a number a plan hopes to reach. The raisings are read off the floor's
+own site, not restated here: ($raise_pairs). **No count of them is written in this
+sentence**, because the count is what rotted — this template once said "the four times it has been raised"
+while the site already held more — and the list carries its own length. Every raising satisfies the rule,
+which is why it is a rule and not a convention, and check 11 compares this list against the site, so a
+ledger not re-emitted after a raising reads as stale rather than as current. A floor the measurement does
+not support fails check 11 in either direction: too high is a tripwire nothing justifies, too low is a
+raise that was owed.
 
 Rows are the workspace members' own code under \`src/\`, \`tests/\` and \`benches/\`. Of the $n_total file
 records in the lcov, **$n_skipped are excluded** here — \`legacy/\` (the unported Scala tree), \`spec/\`,
