@@ -19,7 +19,7 @@ use crate::internal::{
     ConsumeCandidate, Datum, Install, ProduceCandidate, Row, WaitingContinuation,
 };
 use crate::match_::Match;
-use crate::native_store::{InMemNativeStore, NativeStoreState};
+use crate::native_store::{InMemNativeStore, NativeStoreAction, NativeStoreState};
 use crate::replay_rspace::ReplayRSpace;
 use crate::scheduled_space::{PendingProduce, ScheduledConsume, ScheduledProduce};
 use crate::space_matcher::{extract_data_candidates, extract_first_match};
@@ -44,6 +44,13 @@ pub struct RSpace<C, P, A, K> {
     pub(crate) lock_f: Arc<TwoStepLock<Blake2b256Hash>>,
     matcher: Arc<dyn Match<P, A>>,
     native_store: Arc<InMemNativeStore>,
+    /// The native state mutations folded into the most recent [`RSpace::create_checkpoint`].
+    ///
+    /// The checkpoint drains the native overlay into the trie, so the overlay no longer holds them
+    /// afterwards; the block's post-state hash does, but a *merge* reconstructs tuple-space state
+    /// from branch effects and has no way to recover a native leaf from the state alone. This is the
+    /// per-checkpoint record a caller reads to carry native effects into the merge (issue #74).
+    last_native_changes: RwLock<Vec<NativeStoreAction>>,
 }
 
 impl<C, P, A, K> RSpace<C, P, A, K>
@@ -67,6 +74,7 @@ where
             lock_f: Arc::new(TwoStepLock::new()),
             matcher,
             native_store: Arc::new(InMemNativeStore::empty()),
+            last_native_changes: RwLock::new(Vec::new()),
         }
     }
 
@@ -109,6 +117,11 @@ where
     /// The native system-contract store (shared with the reducer's system processes).
     pub fn native_store(&self) -> Arc<InMemNativeStore> {
         self.native_store.clone()
+    }
+
+    /// The native mutations folded into the most recent [`RSpace::create_checkpoint`].
+    pub fn last_native_changes(&self) -> Vec<NativeStoreAction> {
+        crate::lock::rlock(&self.last_native_changes).clone()
     }
 
     pub(crate) fn current_store(&self) -> Arc<dyn HotStore<C, P, A, K>> {
@@ -569,6 +582,10 @@ where
     async fn create_checkpoint(&self) -> std::result::Result<Checkpoint, String> {
         let changes = self.current_store().changes().await;
         let native_changes = self.native_store.drain_changes();
+        // Keep the drained mutations for the caller (the block path folds them into the block index so
+        // the merge can re-apply them; issue #74). Replacement, not accumulation: a caller that needs a
+        // whole block accumulates across this and the block's system-deploy checkpoints.
+        *crate::lock::wlock(&self.last_native_changes) = native_changes.clone();
         let next_history = {
             let history = self.current_history();
             history

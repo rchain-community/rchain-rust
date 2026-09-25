@@ -655,7 +655,7 @@ def laws : List Law := [
       produces are permutations of one another have the same identity. Dropping the sort from \
       `produceRefs` — which is what `Comm::apply` would be without `produce_refs.sort_by_key` — would \
       falsify it, and the Rust pins the ordering directly (`event.rs:165`'s `produce_refs.sort_by_key`, \
-      and the `sort_by` on the candidate source at `space_matcher.rs:101` and `rspace.rs:156`)",
+      and the `sort_by` on the candidate source at `space_matcher.rs:101` and `rspace.rs:169`)",
     note := "**both axioms are gone.** `produceRefs : Comm → List Nat` was opaque and \
       `comm_content_addressed` a claim about it; the refs are a *definition* now, mirroring \
       `Comm::apply`'s sort, and the content-addressing is Law 1's canonicalization applied to the event \
@@ -681,7 +681,7 @@ def laws : List Law := [
       (which is why the Rust's own test compares sorted multisets rather than lists, \
       `state_change.rs:224-238`), and a contested **join** is won by whichever side the fold reaches last \
       (`state_change.rs:186-189`, pinned by `:502-544` and stated as `join_last_wins`; the fold is \
-      `casper/src/merging.rs:752-755`). `nonConflicting_not_necessary` proves the relation is sufficient \
+      `casper/src/merging.rs:804-808`). `nonConflicting_not_necessary` proves the relation is sufficient \
       and not necessary, and `effect_reorder_diverges` remains the disproof of the weaker footprint \
       reading",
     note := "**all four axioms are gone.** `mergeChanges` and `NonConflicting` were axioms over \
@@ -703,7 +703,7 @@ def laws : List Law := [
       commutation, and it is named for that. (2) The Rust test named `combine_is_associative` \
       (`state_change.rs:203-238`) did **not** test associativity — its own comment said the law it pinned \
       was empty-is-identity — so the associativity the merge fold relies on \
-      (`casper/src/merging.rs:752-755`) was **untested on the Rust side** (AUDIT C43). It is fixed: the \
+      (`casper/src/merging.rs:804-808`) was **untested on the Rust side** (AUDIT C43). It is fixed: the \
       misnamed test is renamed to what it asserts, and \
       `property_tests.rs`'s `law9_state_change_combine_is_associative` is the test — over arbitrary state \
       changes including the join map, and falsified before it was believed (a left-side-dropping \
@@ -1269,7 +1269,7 @@ def laws : List Law := [
       removed nobody, and carrying the stakes makes the conclusion the filter itself, so that \
       hypothesis became *inert* rather than the claim becoming weaker. **What this row still does not \
       say**, stated rather than implied: nothing here proves the *port* reads `pos:active` — that is \
-      the Rust's own shape (`runtime_manager.rs:1276-1281`) — so this is a `proved-model` tie, and the \
+      the Rust's own shape (`runtime_manager.rs:1360-1366`) — so this is a `proved-model` tie, and the \
       model change carried laws 44-47 with it" },
   { number := 17, clause := "a", layer := "Casper",
     rustWitness := [
@@ -1326,7 +1326,7 @@ def laws : List Law := [
     note := "**the law that stood here was false**: `numeric_channels_nonneg` claimed numeric channels \
       are non-negative, and they are signed `i64` with ordinary negative diffs \
       (`rholang/src/merging.rs:161-166`, the `NumberChannel` struct; the tests are \
-      `mergeable_data_round_trips` (`:332`, whose `diff: -5` literal is at `:344`) and \
+      `mergeable_data_round_trips` (`:414`, whose `diff: -5` literal is at `:426`) and \
       `calculate_diff_handles_negative_and_absent_keys` (`:389`)). The non-negativity that \
       *is* true belongs to Law 14's bonds and to `NonNegI64` (`shared/src/refined.rs:64`), which types \
       bonds and heights, never numeric channels. **And the arithmetic is only half checked**: the merge \
@@ -1529,8 +1529,8 @@ def laws : List Law := [
     rust := ["casper/src/runtime_manager.rs", "rspace/src/concurrent/channel_queue.rs"],
     witness := [`Rchain.published_state_is_the_oracles, `Rchain.fallback_rerun_published],
     falsifiable := some "the rule is the Rust's own (`validate_relaxed_block`, \
-      `casper/src/runtime_manager.rs:1024`; its acceptance is `comm_multisets_match` over both logs \
-      with `oracle_hash == relaxed_hash`, `:1042-1060`): accept \
+      `casper/src/runtime_manager.rs:1095`; its acceptance is `comm_multisets_match` over both logs \
+      with `oracle_hash == relaxed_hash`, `:1113-1132`): accept \
       the speculative run only when it agrees with the oracle, and otherwise ship the oracle's result. \
       A publication rule that shipped the speculative state unconditionally would falsify \
       `published_state_is_the_oracles`, which is why the theorem is stated over the *rule* rather than \

@@ -33,7 +33,7 @@ use rchain_rholang::storage::{RhoHistoryRepository, RhoMatch};
 use rchain_rholang::system_processes::BlockData;
 use rchain_rspace::hot_store::InMemHotStore;
 use rchain_rspace::merger::event_log_index::NumberChannelsDiff;
-use rchain_rspace::native_store::PREFIX_POS;
+use rchain_rspace::native_store::{NativeStoreAction, PREFIX_POS};
 use rchain_rspace::rspace::RSpace;
 use rchain_shared::refined::NonNegI64;
 use rchain_shared::typed_store::KeyValueTypedStore;
@@ -53,6 +53,16 @@ use crate::system_deploy::{
 /// The mergeable-channel store (port of `RuntimeManager.MergeableStore`).
 pub type MergeableStore = Arc<dyn KeyValueTypedStore<Vec<u8>, Vec<DeployMergeableData>>>;
 
+/// The per-block native-changes store: the native state mutations a block's deploys and system
+/// deploys folded into its post-state, keyed exactly like [`MergeableStore`]
+/// (`(post_state_hash, sender, seq_num)`).
+///
+/// The tuple-space merge reconstructs branch state from deploy effects; native state has no such
+/// effect log, so a merge that re-applies tuple space alone silently reverts every native write in the
+/// merged branches (issue #74). This sidecar is that missing effect log, written wherever a block is
+/// played or replayed and carried into `BlockIndex` for `MergeScope::merge` to apply.
+pub type NativeChangesStore = Arc<dyn KeyValueTypedStore<Vec<u8>, Vec<NativeStoreAction>>>;
+
 /// The phlo (gas) limit for a single exploratory deploy (documented Scala deviation: Scala runs
 /// exploratory deploys with no limit). Mirrors the Repl bound in
 /// `node/src/api/grpc/repl_grpc_service.rs`.
@@ -70,6 +80,8 @@ pub struct RuntimeManager {
     replay_runtime: ReplayRhoRuntime,
     history_repo: RhoHistoryRepository,
     mergeable_store: MergeableStore,
+    /// The per-block native-changes sidecar (see [`NativeChangesStore`]).
+    native_changes_store: NativeChangesStore,
     /// The effect-scheduler mode the manager was created with (Laws 20–22). The block paths
     /// hard-reject `Relaxed` — a relaxed schedule never reaches consensus, so relaxed deploys run
     /// off-chain only (explore-deploy).
@@ -149,6 +161,7 @@ impl RuntimeManager {
         replay_runtime: ReplayRhoRuntime,
         history_repo: RhoHistoryRepository,
         mergeable_store: MergeableStore,
+        native_changes_store: NativeChangesStore,
         effect_mode: EffectMode,
     ) -> Self {
         RuntimeManager {
@@ -156,6 +169,7 @@ impl RuntimeManager {
             replay_runtime,
             history_repo,
             mergeable_store,
+            native_changes_store,
             effect_mode,
             genesis_pos: PosGenesis::default(),
             genesis_vaults: Vec::new(),
@@ -190,6 +204,10 @@ impl RuntimeManager {
 
     pub fn get_mergeable_store(&self) -> &MergeableStore {
         &self.mergeable_store
+    }
+
+    pub fn get_native_changes_store(&self) -> &NativeChangesStore {
+        &self.native_changes_store
     }
 
     pub fn runtime(&self) -> &RhoRuntime {
@@ -295,6 +313,37 @@ impl RuntimeManager {
             .collect();
         let key = encode_mergeable_key(&post_state_hash, creator, seq_num);
         self.mergeable_store.put(&[(key, deploy_channels)]).await?;
+        Ok(())
+    }
+
+    /// Load a block's native state mutations from the sidecar, or `None` when the block has no record
+    /// (never played or replayed by this node, or written before this sidecar existed). A recorded
+    /// *empty* block answers `Some(vec![])`, which is why the absent case is `None` and not an empty vec.
+    pub async fn load_native_changes(
+        &self,
+        state_hash: &[u8],
+        creator: &[u8],
+        seq_num: i64,
+    ) -> Result<Option<Vec<NativeStoreAction>>, String> {
+        let state_hash = Blake2b256Hash::from_byte_array(state_hash);
+        let key = encode_mergeable_key(&state_hash, creator, seq_num);
+        let vals = self.native_changes_store.get(&[key]).await?;
+        Ok(vals.into_iter().next().flatten())
+    }
+
+    /// Persist a block's native state mutations beside its mergeable channels (same key). Called
+    /// wherever the block is played or replayed, so the merge never has to reconstruct them.
+    pub async fn save_native_changes(
+        &self,
+        post_state_hash: Blake2b256Hash,
+        creator: &[u8],
+        seq_num: i64,
+        native_changes: &[NativeStoreAction],
+    ) -> Result<(), String> {
+        let key = encode_mergeable_key(&post_state_hash, creator, seq_num);
+        self.native_changes_store
+            .put(&[(key, native_changes.to_vec())])
+            .await?;
         Ok(())
     }
 
@@ -927,41 +976,45 @@ impl RuntimeManager {
         // from start_hash — the fork reset is the inverse-replay, the sequential fold the gate
         // re-run — and the shipped result is the sequential reference's by construction.
         let mut fell_back = false;
-        let (mut state_hash, mut processed_deploys, mut processed_system_deploys) =
-            match Self::block_on(
-                &self.runtime,
-                start_hash,
-                terms,
-                system_deploys,
-                rand,
-                &block_data,
-            )
-            .await
-            {
-                Ok(v) => v,
-                Err(RuntimeRunError::SpeculationInvalidated) => {
-                    let oracle = self.fork_play_runtime(*start_hash).await?;
-                    let v = Self::block_on(
-                        &oracle,
-                        start_hash,
-                        terms,
-                        system_deploys,
-                        rand,
-                        &block_data,
-                    )
-                    .await
-                    .map_err(String::from)?;
-                    fell_back = true;
-                    v
-                }
-                Err(RuntimeRunError::Other(e)) => return Err(e),
-            };
+        let (
+            mut state_hash,
+            mut processed_deploys,
+            mut processed_system_deploys,
+            mut native_changes,
+        ) = match Self::block_on(
+            &self.runtime,
+            start_hash,
+            terms,
+            system_deploys,
+            rand,
+            &block_data,
+        )
+        .await
+        {
+            Ok(v) => v,
+            Err(RuntimeRunError::SpeculationInvalidated) => {
+                let oracle = self.fork_play_runtime(*start_hash).await?;
+                let v = Self::block_on(
+                    &oracle,
+                    start_hash,
+                    terms,
+                    system_deploys,
+                    rand,
+                    &block_data,
+                )
+                .await
+                .map_err(String::from)?;
+                fell_back = true;
+                v
+            }
+            Err(RuntimeRunError::Other(e)) => return Err(e),
+        };
         if self.effect_mode == EffectMode::RelaxedValidated && !fell_back {
             // Laws 23–25 (on-chain validated speculation): validate the speculative run against
             // the sequential DFS reference — post-state hash, per-channel COMM multisets, and
             // Law 11 rig-replay of the shipped trace — and fall back to the reference's results
             // on any divergence (the block then carries the sequential trace).
-            let (hash, user, sys) = self
+            let (hash, user, sys, native) = self
                 .validate_relaxed_block(
                     start_hash,
                     terms,
@@ -971,16 +1024,22 @@ impl RuntimeManager {
                     &processed_deploys,
                     &processed_system_deploys,
                     state_hash,
+                    native_changes,
                 )
                 .await?;
             state_hash = hash;
             processed_deploys = user;
             processed_system_deploys = sys;
+            native_changes = native;
         }
         let mut mergeable_chs: Vec<NumberChannelsDiff> = Vec::new();
         mergeable_chs.extend(processed_deploys.iter().map(|r| r.mergeable.clone()));
         mergeable_chs.extend(processed_system_deploys.iter().map(|r| r.mergeable.clone()));
         self.save_mergeable_channels(state_hash, &creator, seq_num, &mergeable_chs, *start_hash)
+            .await?;
+        // The block's native mutations, beside its mergeable channels, so a merge can re-apply them
+        // instead of silently reverting every native write in the merged branches (issue #74).
+        self.save_native_changes(state_hash, &creator, seq_num, &native_changes)
             .await?;
         Ok((state_hash, processed_deploys, processed_system_deploys))
     }
@@ -1000,20 +1059,32 @@ impl RuntimeManager {
             Blake2b256Hash,
             Vec<UserDeployRuntimeResult>,
             Vec<SystemDeployRuntimeResult>,
+            Vec<NativeStoreAction>,
         ),
         RuntimeRunError,
     > {
         runtime.set_block_data(block_data.clone());
         let (mut state_hash, processed_deploys) =
             Self::play_deploys_with_cost_accounting_with(runtime, start_hash, terms, rand).await?;
+        // The user deploys' native mutations, drained into the checkpoint that call just made.
+        let mut native_changes = runtime.last_native_changes();
         let mut processed_system_deploys = Vec::new();
         for sd in system_deploys {
             let (new_hash, processed) =
                 Self::play_system_deploy_with(runtime, &state_hash, sd).await?;
             state_hash = new_hash;
+            // Each block-level system deploy resets and checkpoints its own state, so its native
+            // mutations (activation, rewards, withdrawal processing, slashing) are read here and
+            // accumulated — one `last_native_changes` per checkpoint, and reset does not clear it.
+            native_changes.extend(runtime.last_native_changes());
             processed_system_deploys.push(processed);
         }
-        Ok((state_hash, processed_deploys, processed_system_deploys))
+        Ok((
+            state_hash,
+            processed_deploys,
+            processed_system_deploys,
+            native_changes,
+        ))
     }
 
     /// Validate a relaxed-validated block run against the sequential reference (Laws 23–25):
@@ -1031,16 +1102,18 @@ impl RuntimeManager {
         relaxed_user: &[UserDeployRuntimeResult],
         relaxed_sys: &[SystemDeployRuntimeResult],
         relaxed_hash: Blake2b256Hash,
+        relaxed_native: Vec<NativeStoreAction>,
     ) -> Result<
         (
             Blake2b256Hash,
             Vec<UserDeployRuntimeResult>,
             Vec<SystemDeployRuntimeResult>,
+            Vec<NativeStoreAction>,
         ),
         String,
     > {
         let oracle = self.fork_play_runtime(*start_hash).await?;
-        let (oracle_hash, oracle_user, oracle_sys) =
+        let (oracle_hash, oracle_user, oracle_sys, oracle_native) =
             Self::block_on(&oracle, start_hash, terms, system_deploys, rand, block_data).await?;
         let logs_match = relaxed_user
             .iter()
@@ -1097,9 +1170,14 @@ impl RuntimeManager {
             };
         }
         if accepted {
-            Ok((relaxed_hash, relaxed_user.to_vec(), relaxed_sys.to_vec()))
+            Ok((
+                relaxed_hash,
+                relaxed_user.to_vec(),
+                relaxed_sys.to_vec(),
+                relaxed_native,
+            ))
         } else {
-            Ok((oracle_hash, oracle_user, oracle_sys))
+            Ok((oracle_hash, oracle_user, oracle_sys, oracle_native))
         }
     }
 
@@ -1160,6 +1238,13 @@ impl RuntimeManager {
             )
             .await?;
         self.save_mergeable_channels(state_hash, &creator, seq_num, &mergeable_chs, *start_hash)
+            .await
+            .map_err(ReplayFailure::internal_error)?;
+        // The replayed block's native mutations, from the single checkpoint `replay_deploys` made at
+        // the end of the run. Recorded here so the validator that replayed the block does not have to
+        // replay it again to index it, and so the merge can re-apply them (issue #74).
+        let native_changes = replay_runtime.last_native_changes();
+        self.save_native_changes(state_hash, &creator, seq_num, &native_changes)
             .await
             .map_err(ReplayFailure::internal_error)?;
         Ok((state_hash, mergeable_chs))
@@ -1290,7 +1375,7 @@ fn to_blake(hash: &StateHash) -> Blake2b256Hash {
 mod tests {
     use super::*;
     use rchain_models::runtime::{BindPattern, ListParWithRandom, TaggedContinuation};
-    use rchain_rholang::merging::DeployMergeableDataCodec;
+    use rchain_rholang::merging::{DeployMergeableDataCodec, NativeStoreActionsCodec};
     use rchain_rspace::factory::create_history_repository;
     use rchain_shared::store_manager::{database, InMemoryStoreManager};
     use rchain_shared::typed_store::BytesCodec;
@@ -1329,11 +1414,22 @@ mod tests {
             .await
             .unwrap(),
         );
+        let native_changes_store = Arc::new(
+            database(
+                &manager,
+                "native-changes",
+                Arc::new(BytesCodec),
+                Arc::new(NativeStoreActionsCodec),
+            )
+            .await
+            .unwrap(),
+        );
         let runtime = RuntimeManager::new(
             rho,
             replay,
             history,
             mergeable_store,
+            native_changes_store,
             EffectMode::Sequential,
         );
 

@@ -20,7 +20,7 @@ use std::sync::Arc;
 use rchain_casper::block_random_seed::BlockRandomSeed;
 use rchain_casper::genesis::contracts::Vault;
 use rchain_casper::reporting::{rho_reporter, ReportingCasper};
-use rchain_casper::runtime_manager::{MergeableStore, RuntimeManager};
+use rchain_casper::runtime_manager::{MergeableStore, NativeChangesStore, RuntimeManager};
 use rchain_casper::system_deploy::SystemDeploy;
 use rchain_crypto::hash::blake2b512_random::Blake2b512Random;
 use rchain_crypto::public_key::PublicKey;
@@ -32,7 +32,7 @@ use rchain_models::casper::protocol::casper_message::{
 use rchain_models::runtime::{BindPattern, ListParWithRandom, TaggedContinuation};
 use rchain_models::sorted::SortedProc;
 use rchain_models::validator::Validator;
-use rchain_rholang::merging::DeployMergeableDataCodec;
+use rchain_rholang::merging::{DeployMergeableDataCodec, NativeStoreActionsCodec};
 use rchain_rholang::native_state::PosGenesis;
 use rchain_rholang::reporting_runtime::create_reporting_rspace;
 use rchain_rholang::runtime::{ReplayRhoRuntime, RhoRuntime};
@@ -86,8 +86,25 @@ async fn build_runtime_and_manager() -> (RuntimeManager, Arc<InMemoryStoreManage
         .await
         .expect("mergeable store"),
     );
+    let native_changes: NativeChangesStore = Arc::new(
+        database(
+            &*manager,
+            "native-changes",
+            Arc::new(BytesCodec),
+            Arc::new(NativeStoreActionsCodec),
+        )
+        .await
+        .expect("native changes store"),
+    );
     (
-        RuntimeManager::new(rho, replay, history, mergeable, EffectMode::Sequential),
+        RuntimeManager::new(
+            rho,
+            replay,
+            history,
+            mergeable,
+            native_changes,
+            EffectMode::Sequential,
+        ),
         manager,
     )
 }

@@ -22,7 +22,7 @@ use std::sync::Arc;
 use rchain_block_storage::block_store::BlockStore;
 use rchain_block_storage::dag::codecs::{BlockHashCodec, BlockMessageCodec};
 use rchain_casper::block_random_seed::BlockRandomSeed;
-use rchain_casper::merging::BlockIndex;
+use rchain_casper::merging::{BlockIndex, MergeScope};
 use rchain_crypto::hash::blake2b256_hash::Blake2b256Hash;
 use rchain_crypto::hash::blake2b512_random::Blake2b512Random;
 use rchain_crypto::public_key::PublicKey;
@@ -31,6 +31,7 @@ use rchain_models::block_hash::BlockHash;
 use rchain_models::casper::protocol::casper_message::{
     BlockMessage, DeployData, RholangState, SignedDeployData,
 };
+use rchain_models::fringe_data::FringeData;
 use rchain_models::validator::Validator;
 use rchain_rholang::native_state::PosGenesis;
 use rchain_rholang::system_processes::BlockData;
@@ -211,5 +212,127 @@ async fn the_block_index_regenerates_a_missing_sidecar_and_indexes_the_block() {
     assert_ne!(
         Blake2b256Hash::from_byte_array(genesis_pre.as_bytes()),
         chain.pre_state_hash
+    );
+}
+
+/// **A merge of one branch reproduces that branch's post-state — native writes included.**
+///
+/// The end-to-end falsifier for #74. The block carries a cost-accounted deploy, whose pre-charge and
+/// refund move REV (`PREFIX_VAULT`) and whose fee moves the PoS vault (`PREFIX_POS`) — native writes
+/// with no tuple-space event to carry them. Merging the branch over the genesis must reconstruct the
+/// block's own post-state; if the merge applies only the tuple-space `StateChange`s it reconstructs
+/// that state **minus** the native leaves, and the hash differs. Before the fix this test fails with
+/// a hash mismatch, which *is* the silent state loss #74 reported.
+///
+/// It exercises the whole path: the play path's native capture, the sidecar, `get_block_index`'s load
+/// of it, and `MergeScope::merge`'s application of it.
+#[tokio::test]
+async fn a_merge_reproduces_a_branchs_post_state_including_its_native_writes() {
+    let rm = common::build_runtime_manager().await;
+    let rand = Blake2b512Random::from_init(&[0u8; 32]);
+    let (_genesis_pre, genesis_post, _) = rm
+        .compute_genesis(
+            &[],
+            &rand,
+            BlockData::empty(),
+            &PosGenesis::default(),
+            &[seeded_vault()],
+        )
+        .await
+        .expect("compute_genesis");
+
+    // The shell first, so the block's own seed, sender and seq_num drive both the play and the
+    // sidecar key the index will look it up under.
+    let mut block = block_shell();
+    block.pre_state_hash = StateHash::new(*genesis_post.as_bytes());
+    let block_rand = BlockRandomSeed::random_generator_from_block(&block);
+    let (post_state, user_results, sys_results) = rm
+        .compute_state(
+            &genesis_post,
+            &[deploy(r#"@"marker"!(1)"#)],
+            &[],
+            &block_rand,
+            BlockData::from_block(&block),
+        )
+        .await
+        .expect("compute_state");
+    block.post_state_hash = StateHash::new(*post_state.as_bytes());
+    block.state = RholangState {
+        deploys: user_results.into_iter().map(|r| r.deploy).collect(),
+        system_deploys: sys_results.into_iter().map(|r| r.deploy).collect(),
+    };
+
+    // The play path recorded native writes for this block, under the key the index looks up.
+    let recorded = rm
+        .load_native_changes(
+            post_state.as_bytes(),
+            block.sender.as_bytes(),
+            i64::from(block.seq_num),
+        )
+        .await
+        .expect("a readable native sidecar");
+    assert!(
+        recorded.as_ref().is_some_and(|a| !a.is_empty()),
+        "a cost-accounted deploy writes native state; the play path must record it (#74)"
+    );
+
+    let store: BlockStore = Arc::new(KeyValueTypedStoreCodec::new(
+        {
+            let shared: SharedStore = Arc::new(tokio::sync::Mutex::new(Box::new(
+                InMemoryKeyValueStore::default(),
+            )));
+            shared
+        },
+        Arc::new(BlockHashCodec),
+        Arc::new(BlockMessageCodec),
+    ));
+    store
+        .put(&[(block.block_hash, block.clone())])
+        .await
+        .expect("put the block");
+
+    let index = BlockIndex::get_block_index(&rm, &store, block.block_hash)
+        .await
+        .expect("the block index");
+    assert!(
+        !index.native_changes.is_empty(),
+        "the index must carry the block's native writes for the merge (#74)"
+    );
+
+    // Merge the single branch over the genesis: nothing has finalised, so the branch is the whole
+    // conflict scope and the base is the genesis.
+    let scope = MergeScope {
+        final_scope: BTreeSet::new(),
+        conflict_scope: BTreeSet::from([block.block_hash]),
+    };
+    let block_index = {
+        let index = index.clone();
+        move |h: BlockHash| {
+            let index = index.clone();
+            async move {
+                if h == index.block_hash {
+                    Ok(index)
+                } else {
+                    Err(format!("no index for {h:?}"))
+                }
+            }
+        }
+    };
+    let (merged, _rejected) = MergeScope::merge(
+        &scope,
+        Blake2b256Hash::from_byte_array(genesis_post.as_bytes()),
+        &BTreeMap::<Blake2b256Hash, FringeData>::new(),
+        rm.get_history_repo(),
+        &block_index,
+        |_| 0,
+    )
+    .await
+    .expect("the merge");
+
+    assert_eq!(
+        merged,
+        Blake2b256Hash::from_byte_array(post_state.as_bytes()),
+        "the merge must reproduce the branch's post-state, its native writes included: a match is the \
+         fix for #74, and a mismatch is the state loss it reported"
     );
 }

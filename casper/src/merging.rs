@@ -30,6 +30,7 @@ use rchain_rspace::merger::event_log_index::{EventLogIndex, NumberChannelsDiff};
 use rchain_rspace::merger::event_log_merging_logic::{are_conflicting, depends};
 use rchain_rspace::merger::state_change::StateChange;
 use rchain_rspace::merger::state_change_merger::compute_trie_actions;
+use rchain_rspace::native_store::NativeStoreAction;
 use rchain_rspace::trace::event::{Event as REvent, Produce};
 use rchain_sdk::dag::merging::{
     compute_dependency_map, compute_greedy_non_intersecting_branches,
@@ -238,6 +239,13 @@ impl DeployChainIndex {
 pub struct BlockIndex {
     pub block_hash: BlockHash,
     pub deploy_chains: Vec<DeployChainIndex>,
+    /// The native state mutations this block folded into its post-state (PoS pool/active/trusted/
+    /// params, vault balances, registry, the HTTP oracle). Block-level because a hard checkpoint drains
+    /// them per deploy-set, not per deploy. Carried so [`MergeScope::merge`] can re-apply them: the
+    /// tuple-space `StateChange`s below reconstruct branch state from deploy effects, and native state
+    /// has no such effect log, so without this a merge silently reverts every native write in the
+    /// merged branches (issue #74).
+    pub native_changes: Vec<NativeStoreAction>,
 }
 
 impl BlockIndex {
@@ -313,6 +321,7 @@ impl BlockIndex {
         post_state_hash: Blake2b256Hash,
         history_repository: &HistoryRepository<C, P, A, K>,
         mergeable_chan_data: &[NumberChannelsDiff],
+        native_changes: Vec<NativeStoreAction>,
     ) -> Result<BlockIndex, String>
     where
         C: Serialize<C> + Send + Sync + 'static,
@@ -408,6 +417,7 @@ impl BlockIndex {
         Ok(BlockIndex {
             block_hash,
             deploy_chains: chains,
+            native_changes,
         })
     }
 }
@@ -452,84 +462,36 @@ impl BlockIndex {
         let sender = block.sender.as_bytes().to_vec();
         let pre_state_hash = Blake2b256Hash::from_byte_array(block.pre_state_hash.as_bytes());
         let post_state_hash = Blake2b256Hash::from_byte_array(block.post_state_hash.as_bytes());
-        let mergeable_chs = match runtime
+        let mergeable_result = runtime
             .load_mergeable_channels(
                 post_state_hash.as_bytes(),
                 &sender,
                 i64::from(block.seq_num),
             )
-            .await
-        {
-            Ok(channels) => channels,
-            // LFS-restored/deep-replayed blocks may never have had their mergeable-channel
-            // sidecar persisted for this (post_state_hash, sender, seq_num) key, even though
-            // the block itself is otherwise valid - the sidecar is written at proposal time,
-            // not derivable from the block alone. Regenerate it by replaying the block from its
-            // own pre-state rather than failing block indexing outright.
-            Err(err) if err.starts_with("Mergeable store invalid state hash") => {
-                if block.justifications.is_empty()
-                    && block.state.deploys.is_empty()
-                    && block.state.system_deploys.is_empty()
-                {
-                    // Genesis (or an equivalent empty block): nothing to replay, so the sidecar
-                    // is trivially empty. Persist it so subsequent lookups hit the fast path.
-                    runtime
-                        .save_mergeable_channels(
-                            post_state_hash,
-                            &sender,
-                            i64::from(block.seq_num),
-                            &[],
-                            pre_state_hash,
-                        )
-                        .await?;
-                    Vec::new()
-                } else {
-                    let forked = runtime.fork_replay_runtime(pre_state_hash).await?;
-                    let rand = BlockRandomSeed::random_generator_from_block(&block);
-                    let with_cost_accounting = !block.justifications.is_empty();
-                    let (computed, channels) = runtime
-                        .replay_compute_state_with(
-                            &forked,
-                            &pre_state_hash,
-                            &block.state.deploys,
-                            &block.state.system_deploys,
-                            &rand,
-                            BlockData::from_block(&block),
-                            with_cost_accounting,
-                            // Genesis PoS descriptors; consumed only on the genesis replay path
-                            // (`is_genesis_pre_state`). See `interpreter_util.rs`.
-                            runtime.genesis_pos(),
-                            // The genesis vault balances, and only for the genesis. The claim that
-                            // stood here — "this is always non-genesis block replay" — is what
-                            // AUDIT C46 falsified on a 3-validator devnet: the genesis is what the
-                            // finalized fringe points at when a validator joins, and that validator
-                            // is the one whose indexing takes this branch. Its replay computes a
-                            // different post-state without the balances (they are installed
-                            // natively, outside the block's deploys) and then refuses block #0
-                            // forever.
-                            if is_genesis_pre_state(&pre_state_hash) {
-                                runtime.genesis_vaults()
-                            } else {
-                                &[]
-                            },
-                        )
-                        .await
-                        .map_err(|e| {
-                            format!(
-                                "failed to regenerate mergeable channels for block {}: {e:?}",
-                                block.block_hash.to_hex()
-                            )
-                        })?;
-                    if computed != post_state_hash {
-                        return Err(format!(
-                            "regenerated mergeable channels for block {} but replay computed {} instead of {}",
-                            block.block_hash.to_hex(),
-                            computed.to_hex(),
-                            post_state_hash.to_hex()
-                        ));
-                    }
-                    channels
+            .await;
+        let native_recorded = runtime
+            .load_native_changes(
+                post_state_hash.as_bytes(),
+                &sender,
+                i64::from(block.seq_num),
+            )
+            .await?;
+        // Both sidecars are needed: mergeable channels to rebuild the tuple-space effects, native
+        // changes to re-apply the effects the merge cannot see (issue #74). If either is missing -
+        // an LFS-restored or deep-replayed block, or a block indexed before the native sidecar
+        // existed - replay the block once to reproduce both, and persist them so the next lookup is
+        // a read. A store error on the mergeable read is still a store error.
+        let (mergeable_chs, native_changes) = match mergeable_result {
+            Ok(channels) => match native_recorded {
+                Some(native) => (channels, native),
+                None => {
+                    regenerate_sidecars(runtime, &block, &sender, pre_state_hash, post_state_hash)
+                        .await?
                 }
+            },
+            Err(err) if err.starts_with("Mergeable store invalid state hash") => {
+                regenerate_sidecars(runtime, &block, &sender, pre_state_hash, post_state_hash)
+                    .await?
             }
             Err(err) => return Err(err),
         };
@@ -542,6 +504,7 @@ impl BlockIndex {
             post_state_hash,
             runtime.get_history_repo(),
             &mergeable_chs,
+            native_changes,
         )
         .await?;
 
@@ -566,6 +529,83 @@ impl BlockIndex {
             guard.remove(h);
         }
     }
+}
+
+/// Reproduce and persist a block's mergeable-channel **and** native-changes sidecars by replaying the
+/// block from its own pre-state.
+///
+/// Called when either sidecar is missing: an LFS-restored or deep-replayed block, or one indexed
+/// before the native sidecar existed. The replay is the same one validation runs, so it reproduces
+/// both effects exactly; `replay_compute_state_with` persists them, and the native changes are read
+/// back here for the index. The genesis (an empty block) has no deploys to replay, so both sidecars
+/// are recorded empty - its native state is installed by `compute_genesis` outside the block, and the
+/// genesis is never a merge parent.
+async fn regenerate_sidecars(
+    runtime: &RuntimeManager,
+    block: &BlockMessage,
+    sender: &[u8],
+    pre_state_hash: Blake2b256Hash,
+    post_state_hash: Blake2b256Hash,
+) -> Result<(Vec<NumberChannelsDiff>, Vec<NativeStoreAction>), String> {
+    let seq_num = i64::from(block.seq_num);
+    if block.justifications.is_empty()
+        && block.state.deploys.is_empty()
+        && block.state.system_deploys.is_empty()
+    {
+        runtime
+            .save_mergeable_channels(post_state_hash, sender, seq_num, &[], pre_state_hash)
+            .await?;
+        runtime
+            .save_native_changes(post_state_hash, sender, seq_num, &[])
+            .await?;
+        return Ok((Vec::new(), Vec::new()));
+    }
+    let forked = runtime.fork_replay_runtime(pre_state_hash).await?;
+    let rand = BlockRandomSeed::random_generator_from_block(block);
+    let with_cost_accounting = !block.justifications.is_empty();
+    let (computed, channels) = runtime
+        .replay_compute_state_with(
+            &forked,
+            &pre_state_hash,
+            &block.state.deploys,
+            &block.state.system_deploys,
+            &rand,
+            BlockData::from_block(block),
+            with_cost_accounting,
+            // Genesis PoS descriptors; consumed only on the genesis replay path
+            // (`is_genesis_pre_state`). See `interpreter_util.rs`.
+            runtime.genesis_pos(),
+            // The genesis vault balances, and only for the genesis. The claim that stood here —
+            // "this is always non-genesis block replay" — is what AUDIT C46 falsified on a
+            // 3-validator devnet: the genesis is what the finalized fringe points at when a validator
+            // joins, and that validator is the one whose indexing takes this branch. Its replay
+            // computes a different post-state without the balances (they are installed natively,
+            // outside the block's deploys) and then refuses block #0 forever.
+            if is_genesis_pre_state(&pre_state_hash) {
+                runtime.genesis_vaults()
+            } else {
+                &[]
+            },
+        )
+        .await
+        .map_err(|e| {
+            format!(
+                "failed to regenerate mergeable channels for block {}: {e:?}",
+                block.block_hash.to_hex()
+            )
+        })?;
+    if computed != post_state_hash {
+        return Err(format!(
+            "regenerated mergeable channels for block {} but replay computed {} instead of {}",
+            block.block_hash.to_hex(),
+            computed.to_hex(),
+            post_state_hash.to_hex()
+        ));
+    }
+    // `replay_compute_state_with` already persisted both sidecars; read the native changes back for
+    // the index the caller is building.
+    let native_changes = forked.last_native_changes();
+    Ok((channels, native_changes))
 }
 
 /// The finalization decisions the final scope's blocks carry, by block. A block belongs to exactly
@@ -690,6 +730,19 @@ impl MergeScope {
             v
         };
 
+        // Native effects are block-level, so index them by host block here. The final scope's blocks
+        // are ancestors of the base state (their effects are already in it); the conflict scope's are
+        // what this merge applies, and the map below keeps only the ones with an accepted chain.
+        let native_by_block: BTreeMap<Blake2b256Hash, Vec<NativeStoreAction>> = conflict_indices
+            .iter()
+            .map(|b| {
+                (
+                    Blake2b256Hash::from_bytes(*b.block_hash.as_bytes()),
+                    b.native_changes.clone(),
+                )
+            })
+            .collect();
+
         let conflict_set: BTreeSet<DeployChainIndex> = conflict_indices
             .iter()
             .flat_map(|b| b.deploy_chains.iter().cloned())
@@ -759,8 +812,30 @@ impl MergeScope {
             &init_mergeable_values,
         );
 
-        let new_state =
-            MergeScope::compute_merged_state(&to_merge, base_state, history_repository).await?;
+        // The native effects of the blocks whose chains survive conflict resolution, in ascending
+        // host-block order (a `BTreeSet` of `Blake2b256Hash`), and so deterministically across nodes.
+        // A block contributes its native changes iff at least one of its chains is accepted - native
+        // effects are per block, not per chain, so "some chain accepted" is the closest available
+        // attribution, and rejecting a branch drops its native writes with its tuple-space ones. When
+        // two accepted blocks write the same native key, the later one wins; in an honest DAG they do
+        // not (a PoS membership change is applied by one branch), and making that a conflict is the
+        // refinement recorded on the issue.
+        let accepted_hosts: BTreeSet<Blake2b256Hash> =
+            to_merge.iter().map(|c| c.host_block).collect();
+        let mut native_changes: Vec<NativeStoreAction> = Vec::new();
+        for host in &accepted_hosts {
+            if let Some(actions) = native_by_block.get(host) {
+                native_changes.extend(actions.iter().cloned());
+            }
+        }
+
+        let new_state = MergeScope::compute_merged_state(
+            &to_merge,
+            base_state,
+            history_repository,
+            &native_changes,
+        )
+        .await?;
         let rejected_ids: BTreeSet<Vec<u8>> = rejected
             .iter()
             .flat_map(|d| d.deploys_with_cost.iter().map(|x| x.id.clone()))
@@ -770,10 +845,16 @@ impl MergeScope {
 
     /// Merge a set of deploy chains into the base state and produce the new state hash (port of
     /// `MergeScope.computeMergedState`).
+    ///
+    /// `native_changes` are the native state mutations of the blocks contributing to `to_merge`.
+    /// They are folded into the same checkpoint as the tuple-space changes: the `StateChange`s
+    /// reconstruct only tuple space, so without them a merge would revert every native write the
+    /// merged branches made (issue #74).
     pub async fn compute_merged_state(
         to_merge: &BTreeSet<DeployChainIndex>,
         base_state: Blake2b256Hash,
         history_repository: &RhoHistoryRepository,
+        native_changes: &[NativeStoreAction],
     ) -> Result<Blake2b256Hash, String> {
         let history_reader = history_repository.get_history_reader(base_state).await;
         let base_reader = history_reader.reader_binary();
@@ -825,7 +906,7 @@ impl MergeScope {
             .await
             .map_err(|e| e.to_string())?;
         let new_repo = reset_repo
-            .do_checkpoint(&trie_actions)
+            .do_checkpoint_with_native(&trie_actions, native_changes)
             .await
             .map_err(|e| e.to_string())?;
         Ok(new_repo.root())
@@ -1312,5 +1393,120 @@ mod merge_relation_tests {
         let mut set = std::collections::HashSet::new();
         set.insert(a.clone());
         assert!(set.contains(&a));
+    }
+}
+
+/// The falsifier for issue #74: a multi-parent merge must carry the **native** writes of the branches
+/// it merges.
+///
+/// `DeployChainIndex::state_changes` is a `StateChange` - datums, continuations and joins only. Native
+/// system-contract state (PoS pool/active/trusted/params, vault balances, registry) lives under
+/// dedicated trie prefixes and produces no Rholang event, so it has no representation there. Before
+/// this change `compute_merged_state` checkpointed a branch's tuple-space effects without its native
+/// ones, and every PoS write in a merged branch - a `trust`, a `bond`, an epoch's activation, a
+/// slashed stake - silently reverted. That is the state loss #74 reported (`getBonds` 3 -> 1 with no
+/// slashing and no error), and it is why a one-validator chain (single parent, no merge) grew its
+/// validator set while a multi-validator chain could not.
+#[cfg(test)]
+mod native_merge_tests {
+    use super::*;
+
+    use rchain_rspace::factory::create_history_repository;
+    use rchain_rspace::native_store::PREFIX_POS;
+    use rchain_shared::store_manager::InMemoryStoreManager;
+
+    fn key(byte: u8) -> Blake2b256Hash {
+        Blake2b256Hash::from_bytes([byte; 32])
+    }
+
+    async fn empty_repo() -> RhoHistoryRepository {
+        let manager = InMemoryStoreManager::default();
+        create_history_repository::<SortedProc, BindPattern, ListParWithRandom, TaggedContinuation>(
+            &manager, "rspace",
+        )
+        .await
+        .expect("an in-memory history repository")
+    }
+
+    #[tokio::test]
+    async fn a_merge_carries_the_native_writes_of_the_branches_it_merges() {
+        // A base state that already holds a native leaf, so the test also shows the merge keeps the
+        // base's own native state.
+        let base_key = key(1);
+        let base_repo = empty_repo()
+            .await
+            .do_checkpoint_with_native(
+                &[],
+                &[NativeStoreAction::Put {
+                    prefix: PREFIX_POS,
+                    key: base_key,
+                    value: vec![9],
+                }],
+            )
+            .await
+            .expect("the base checkpoint");
+        let base_state = base_repo.root();
+
+        // One branch block whose only effect is a native write: a PoS call produces no tuple-space
+        // chain, which is exactly the shape that was dropped.
+        let branch_key = key(2);
+        let child = BlockHash::new([3u8; 32]);
+        let branch_index = BlockIndex {
+            block_hash: child,
+            deploy_chains: vec![DeployChainIndex {
+                host_block: key(3),
+                deploys_with_cost: BTreeSet::from([DeployIdWithCost {
+                    id: vec![42],
+                    cost: 0,
+                }]),
+                pre_state_hash: base_state,
+                post_state_hash: base_state,
+                event_log_index: EventLogIndex::empty(),
+                state_changes: StateChange::empty(),
+            }],
+            native_changes: vec![NativeStoreAction::Put {
+                prefix: PREFIX_POS,
+                key: branch_key,
+                value: vec![7],
+            }],
+        };
+        let block_index = move |_h: BlockHash| {
+            let index = branch_index.clone();
+            async move { Ok::<BlockIndex, String>(index) }
+        };
+
+        // The branch is the conflict scope; nothing has finalised.
+        let scope = MergeScope {
+            final_scope: BTreeSet::new(),
+            conflict_scope: BTreeSet::from([child]),
+        };
+        let (merged, _rejected) = MergeScope::merge(
+            &scope,
+            base_state,
+            &BTreeMap::<Blake2b256Hash, FringeData>::new(),
+            &base_repo,
+            &block_index,
+            |_| 0,
+        )
+        .await
+        .expect("the merge");
+
+        let reader = base_repo.get_history_reader(merged).await;
+        assert!(
+            reader
+                .get_native(PREFIX_POS, branch_key)
+                .await
+                .expect("a readable native leaf")
+                .is_some(),
+            "the branch's native write must survive the merge (#74)"
+        );
+        assert!(
+            reader
+                .get_native(PREFIX_POS, base_key)
+                .await
+                .expect("a readable native leaf")
+                .is_some(),
+            "and the base's native state must still be there"
+        );
     }
 }

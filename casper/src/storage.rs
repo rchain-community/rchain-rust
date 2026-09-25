@@ -66,6 +66,12 @@ pub fn rnode_db_mapping() -> Vec<(Db, LmdbEnvConfig)> {
             Db::new("mergeable-channel-cache"),
             LmdbEnvConfig::new("dagstorage", 100 * GB),
         ),
+        // Runtime native-changes store (cache of each block's native system-contract writes, so a
+        // multi-parent merge can re-apply them instead of reverting them; issue #74)
+        (
+            Db::new("native-changes-cache"),
+            LmdbEnvConfig::new("dagstorage", 100 * GB),
+        ),
         // Deploys waiting to be added
         (
             Db::new("deploy-pool"),

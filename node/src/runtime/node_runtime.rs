@@ -74,7 +74,7 @@ use rchain_models::comm::protocol::Protocol;
 use rchain_models::fringe_data::FringeData;
 use rchain_models::runtime::{BindPattern, ListParWithRandom, TaggedContinuation};
 use rchain_models::sorted::SortedProc;
-use rchain_rholang::merging::DeployMergeableDataCodec;
+use rchain_rholang::merging::{DeployMergeableDataCodec, NativeStoreActionsCodec};
 use rchain_rholang::reporting_runtime::create_reporting_rspace;
 use rchain_rholang::runtime::{ReplayRhoRuntime, RhoRuntime};
 use rchain_rholang::scheduler::EffectMode;
@@ -1466,6 +1466,18 @@ pub async fn setup_shard(
         )
         .await?,
     );
+    // The per-block native-changes sidecar (issue #74): the native state mutations each block's
+    // deploys and system deploys folded into its post-state, so a multi-parent merge can re-apply them
+    // instead of silently reverting them.
+    let native_changes_store = Arc::new(
+        database(
+            &store_manager,
+            "native-changes-cache",
+            Arc::new(BytesCodec),
+            Arc::new(NativeStoreActionsCodec),
+        )
+        .await?,
+    );
     // The network's genesis descriptors, read from the configured genesis files on **any** node that
     // has them, not only a bootstrap. A joining validator replays the genesis when it first indexes
     // it — that is where AUDIT C46 bit, because the genesis's PoS state and REV vault balances are
@@ -1491,6 +1503,7 @@ pub async fn setup_shard(
             replay_runtime,
             history,
             mergeable_store,
+            native_changes_store,
             effect_mode,
         )
         .with_genesis_pos(genesis_pos)

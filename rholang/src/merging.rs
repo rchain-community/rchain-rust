@@ -16,6 +16,7 @@ use rchain_rspace::history::history_reader::HistoryReader;
 use rchain_rspace::hot_store_trie_action::HotStoreTrieAction;
 use rchain_rspace::internal::Datum;
 use rchain_rspace::merger::channel_change::ChannelChange;
+use rchain_rspace::native_store::NativeStoreAction;
 use rchain_rspace::serializers::scodec_serialize::{decode_datum, encode_datum_bytes};
 use rchain_rspace::trace::event::Produce;
 use rchain_shared::typed_store::Codec;
@@ -289,6 +290,87 @@ impl Codec<Vec<DeployMergeableData>> for DeployMergeableDataCodec {
     }
 }
 
+/// Encode a block's drained native mutations (`NativeStoreAction`s) for the native-changes sidecar.
+///
+/// Layout: `uint32` count, then per action `tag: u8` (`0` = put, `1` = delete), `prefix: u8`,
+/// `key: 32 bytes`, and for a put `uint32 length` + the value bytes. Big-endian, like the mergeable
+/// codec beside it. A `Vec`, in the order drained: the overlay is a map keyed by `(prefix, key)`, so
+/// within a block each key appears once and the order does not change the resulting state.
+pub fn encode_native_store_actions(actions: &[NativeStoreAction]) -> Vec<u8> {
+    let mut out = (actions.len() as u32).to_be_bytes().to_vec();
+    for action in actions {
+        match action {
+            NativeStoreAction::Put { prefix, key, value } => {
+                out.push(0);
+                out.push(*prefix);
+                out.extend_from_slice(key.as_bytes());
+                out.extend_from_slice(&(value.len() as u32).to_be_bytes());
+                out.extend_from_slice(value);
+            }
+            NativeStoreAction::Delete { prefix, key } => {
+                out.push(1);
+                out.push(*prefix);
+                out.extend_from_slice(key.as_bytes());
+            }
+        }
+    }
+    out
+}
+
+/// Decode a block's native mutations (inverse of [`encode_native_store_actions`]).
+pub fn decode_native_store_actions(bytes: &[u8]) -> Result<Vec<NativeStoreAction>, String> {
+    let mut idx = 0usize;
+    let read_u32 = |bytes: &[u8], idx: &mut usize| -> Result<u32, String> {
+        if *idx + 4 > bytes.len() {
+            return Err("native store actions: unexpected end of input".to_string());
+        }
+        let mut arr = [0u8; 4];
+        arr.copy_from_slice(&bytes[*idx..*idx + 4]);
+        *idx += 4;
+        Ok(u32::from_be_bytes(arr))
+    };
+    let count = read_u32(bytes, &mut idx)? as usize;
+    let mut actions = Vec::with_capacity(count);
+    for _ in 0..count {
+        if idx + 34 > bytes.len() {
+            return Err("native store actions: unexpected end of input".to_string());
+        }
+        let tag = bytes[idx];
+        let prefix = bytes[idx + 1];
+        let key = Blake2b256Hash::from_byte_array(&bytes[idx + 2..idx + 34]);
+        idx += 34;
+        match tag {
+            0 => {
+                let len = read_u32(bytes, &mut idx)? as usize;
+                if idx + len > bytes.len() {
+                    return Err("native store actions: unexpected end of input".to_string());
+                }
+                let value = bytes[idx..idx + len].to_vec();
+                idx += len;
+                actions.push(NativeStoreAction::Put { prefix, key, value });
+            }
+            1 => actions.push(NativeStoreAction::Delete { prefix, key }),
+            other => {
+                return Err(format!("native store actions: unknown tag {other}"));
+            }
+        }
+    }
+    Ok(actions)
+}
+
+/// A codec for the native-changes store value `Vec<NativeStoreAction>`.
+pub struct NativeStoreActionsCodec;
+
+impl Codec<Vec<NativeStoreAction>> for NativeStoreActionsCodec {
+    fn encode(&self, value: &Vec<NativeStoreAction>) -> Vec<u8> {
+        encode_native_store_actions(value)
+    }
+
+    fn decode(&self, bytes: &[u8]) -> Result<Vec<NativeStoreAction>, String> {
+        decode_native_store_actions(bytes)
+    }
+}
+
 /// Convert final number-channel values to per-deploy diffs (port of `calculateNumChannelDiff`).
 ///
 /// `init_values` are the pre-state values for every channel key (default `0` when absent).
@@ -352,6 +434,48 @@ mod tests {
         ];
         let bytes = encode_deploy_mergeable_data_seq(&seq);
         assert_eq!(decode_deploy_mergeable_data_seq(&bytes).unwrap(), seq);
+    }
+
+    /// The native-changes sidecar round-trips both action shapes, including an empty value and an
+    /// empty list (a block with no native writes is a recorded empty list, which is why the store
+    /// distinguishes that from a missing entry).
+    #[test]
+    fn native_store_actions_round_trip() {
+        let actions = vec![
+            NativeStoreAction::Put {
+                prefix: 4,
+                key: h(1),
+                value: vec![9, 8, 7],
+            },
+            NativeStoreAction::Delete {
+                prefix: 4,
+                key: h(2),
+            },
+            NativeStoreAction::Put {
+                prefix: 5,
+                key: h(3),
+                value: Vec::new(),
+            },
+        ];
+        let bytes = encode_native_store_actions(&actions);
+        assert_eq!(decode_native_store_actions(&bytes).unwrap(), actions);
+        assert_eq!(
+            decode_native_store_actions(&encode_native_store_actions(&[])).unwrap(),
+            Vec::<NativeStoreAction>::new()
+        );
+    }
+
+    /// A truncated blob is an error, not a panic: unlike the scodec mergeable reader, this one is
+    /// length-checked, so a corrupt native sidecar fails the block index instead of unwinding.
+    #[test]
+    fn a_truncated_native_store_blob_is_an_error() {
+        let bytes = encode_native_store_actions(&[NativeStoreAction::Put {
+            prefix: 4,
+            key: h(1),
+            value: vec![1, 2, 3],
+        }]);
+        assert!(decode_native_store_actions(&bytes[..bytes.len() - 1]).is_err());
+        assert!(decode_native_store_actions(&[0, 0, 0, 2, 0]).is_err());
     }
 
     #[test]
