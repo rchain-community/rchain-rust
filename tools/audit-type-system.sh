@@ -16,9 +16,13 @@
 #   silent  — silent defaulting of a fallible numeric conversion: `try_into().unwrap()`,
 #             `try_into().expect(`, `try_into().unwrap_or(`, `try_from(..).unwrap_or(`,
 #             `..parse(..).unwrap_or(`. A fallible conversion must not be flattened to 0/Default.
-#   escape  — a refinement newtype surrendering its invariant: `impl … Deref … for`, or a public
-#             tuple field. Scoped to the files holding the refinements (see `REFINEMENT_FILES`);
-#             `spec/TYPE-SYSTEM.md` §1.7 is the rule.
+#   escape  — a refinement newtype surrendering its invariant. Four forms, all scoped to the files
+#             that hold the refinements (`REFINEMENT_FILES`): an `impl … Deref … for`, a public tuple
+#             field, a public `.get()`, and — since 2026-09-24 — a **construction** of a narrow
+#             refinement that does not run its validator (`ShardId(format!(…))` in `ShardId::child`
+#             before C78, `KeySegment::new` before C61). `spec/TYPE-SYSTEM.md` §1.7 is the rule; the
+#             construction sites are reviewed one by one in `ESCAPE_CTOR_ALLOW`, whose entries are
+#             keyed by text and each carry the guard their soundness rests on.
 #
 # Soft reports (exit 0, informational — refined by `cargo clippy` + manual review):
 #   cast    — narrowing / signedness-changing numeric casts (`as i8/i32/i64/u8/u32/..`).
@@ -250,6 +254,251 @@ BEGIN { n = split(TYPES, t, ","); in_impl = 0; depth = 0 }
 }
 '
 
+# --- the fourth form: a refinement rebuilt without its validator --------------------------------
+#
+# The three forms above are *accesses* (a `Deref`, a `.get()`, a public field). The fourth is a
+# **construction**: `ShardId(format!(…))` inside `ShardId::child` before C78, `KeySegment::new`
+# before C61 — a public method or constructor that mints a value of a refinement type without
+# running the validator, so the invariant holds only if the author of that method got the argument
+# right. The class could not see it at all until 2026-09-24: it printed green for C78 and for C61.
+#
+# **The rule is complete over its scope, and that is why the scope is a roster.** A refinement's
+# invariant is carried by its **private field**, so a direct construction can only be written in the
+# defining module — the 11 files in `REFINEMENT_FILES` (plus their child modules, which do not exist
+# today: see the blind spots). Over those files, every construction of a narrow type is found, not
+# sampled.
+#
+# **Narrow vs total is what keeps it quiet.** The inner type of a *total* refinement *is* its domain
+# (`Port(u16)`, `Hash32([u8;32])`, `Validator([u8;65])`), so any inner-typed argument satisfies
+# `spec/TYPE-SYSTEM.md`'s "total constructor on already-valid input" and a construction is not a
+# claim. For a *narrow* refinement (`ShardId(String)`, `FreeCount(i32)`, `KeySegment(Vec<u8>)`) the
+# inner type is strictly wider than the domain, so every construction is a judgement that needs a
+# written reason. Measured with the split: 23 sites in 5 files; without it, the total-inner homes add
+# `Self(Hash32::new(…))`-shaped false positives.
+REFINEMENT_NARROW=(ShardId BlockHeight SeqNum NonNegI64 FreeCount KeySegment Sorted Closed WellScoped \
+  SerializedRandom SerializedNode Address)
+REFINEMENT_TOTAL=(Port Hash32 WireLen BlockHash StateHash Blake2b256Hash Validator RevAddress)
+
+# The forms: `T(…)` (C78's), `Self(…)` (the same thing one token later — a legal rewrite that must
+# not evade), `T { … }` on one line (KeySegment's), `T {` with the first field on the next line
+# (every construction in `rholang/src/util/rev_address.rs`), and `.map(T)` (construction by
+# fn-item reference). The exclusions are each a verified false positive: a `TryFrom` impl — whose
+# *body* is the validator, where the invariant is established by definition, and which is also where
+# the macro-generated `NonNegI64`/`WireLen` construct — a line containing `struct|enum|trait` (a
+# definition), a line containing `->` (a return type: `fn tail(&self) -> KeySegment {`), and `//`
+# lines (these files' doc comments quote constructors). `Self(…)` is scoped to the impl of a narrow
+# type, so a `Self(…)` inside a service struct's impl is not this class's business.
+#
+# Evidence is checked **at the site**, not in the file: `CTOR_EVIDENCE_WINDOW` lines above the
+# construction through the construction itself. An entry's evidence regex must match there — so
+# deleting the guard the entry's reason names makes the entry fail, rather than passing on a guard
+# that still exists elsewhere in the file (`is_closed` is called at more than one site).
+#
+# **What this rule cannot see, measured rather than imagined.** Each shape below is real; the ones
+# marked *absent* were searched for in the roster and are listed so that a reader knows the boundary
+# of the claim instead of assuming it:
+#
+#  1. **A caller of a growth path.** The rule reads constructions, not call sites. `KeySegment::concat`
+#     and `append` *can* exceed 127 bytes (`a.len() + b.len()`), but measured 2026-09-25 they are
+#     fallible and route through `KeySegment::try_from`, and every production call site propagates
+#     with `?` (`radix_tree.rs:396`, `export.rs:119-125,187,219`) — so nothing mints an out-of-domain
+#     segment silently. C61 was this shape with a *total* `new`; that constructor is gone.
+#  2. **A construction inside a macro.** The macro body is scanned only if it is written in one of
+#     these files (`non_neg_signed!` is, so its `Ok(Self(v))` is inside a `TryFrom` and suppressed as
+#     the validator). A macro defined elsewhere that expands to a construction is invisible here.
+#  3. **A derive-generated construction.** `#[derive(Default)]` on `ShardId` would mint `""` without
+#     one line of construction text. Nothing checks derives; `KeySegment` derives `Default`, which is
+#     why its `Default` is hand-written (the allowlist entry at `key_segment.rs:44`).
+#  4. **A `TryFrom` that does not actually validate.** The validator's body is suppressed by
+#     definition, so a `TryFrom` that returns `Ok` unconditionally is invisible — the class trusts the
+#     name the way the type system does.
+#  5. **`Name::from(x)` as a fn item, or a builder delegating to a validating `TryFrom`.** The `.map(T)`
+#     form catches fn-item construction; a `From` impl that wraps an unchecked `Self(..)` would be
+#     caught as that construction *if* the impl is in a roster file. A builder's chain is not followed.
+#  6. **A brace-form refinement in a new file nobody added to the roster.** This is why the
+#     completeness guard (a follow-up unit: G1/G2/G3 per the design) exists; until it lands, a new
+#     refinement home is outside every form of this class.
+#  7. **A non-`pub` newtype.** The roster is public refinements; a crate-private one is not named.
+#  8. **Child modules of a defining file.** A private field is visible to descendants, so a
+#     `mod inner` inside a roster file could construct without being seen. Measured: none exist today
+#     (`mod tests` only, and test blocks are stripped).
+#  9. **A construction sharing a line with `->`.** The `->` exclusion drops the whole line, so
+#     `fn tail(&self) -> KeySegment { KeySegment { value: v } }` written on one line is invisible.
+#     Measured: every `->`-carrying match in the roster is a *signature* today (rustfmt's rule puts
+#     bodies on their own lines), so the exclusion costs nothing now — but it is a real hole, not a
+#     hypothetical one, and narrowing it means parsing the item rather than the line.
+# 10. **Evidence further than the window.** A guard more than `CTOR_EVIDENCE_WINDOW` lines above its
+#     construction cannot satisfy its entry; spell the guard locally or raise the window.
+CTOR_EVIDENCE_WINDOW=25
+
+ESCAPE_CTOR_AWK='
+BEGIN {
+  # A blank element must not become a name: the empty regex matches any line carrying a `(`, and an
+  # empty *last* name silently swallowed the site it had just found (measured 2026-09-25 while
+  # falsifying this class — the empty string was the last element, so `hit` was reset to "" and the
+  # construction was dropped). Roster entries are names; anything else is a defect in the roster.
+  k = split(TYPES, raw, ","); n = 0
+  for (i = 1; i <= k; i++) if (raw[i] != "") { n++; t[n] = raw[i] }
+  ne = 0
+  while ((getline e < ENTRIES) > 0) {
+    if (e == "" || e ~ /^#/) continue
+    ne++
+    efile[ne] = e; sub(/\|.*/,       "", efile[ne])
+    ector[ne] = e; sub(/^[^|]*\|/,   "", ector[ne]); sub(/\|.*/, "", ector[ne])
+    eev[ne]   = e; sub(/^[^|]*\|[^|]*\|/, "", eev[ne]);  sub(/\|.*/, "", eev[ne])
+  }
+  close(ENTRIES)
+  sites = 0; in_test = 0; tdepth = 0; cur = ""; mode = ""; idepth = 0
+}
+function is_narrow(name,   i) { for (i = 1; i <= n; i++) if (t[i] == name) return 1; return 0 }
+function braces(s,   o, c, i, ch) { o = 0; c = 0; for (i = 1; i <= length(s); i++) { ch = substr(s, i, 1); if (ch == "{") o++; else if (ch == "}") c++ } return o - c }
+function strip_generics(s) { sub(/<.*/, "", s); return s }
+function last_token(s,   a, k) { gsub(/[[:space:]]+$/, "", s); k = split(s, a, /[.:[:space:]]+/); return a[k] }
+function report(kind, file, line, text, extra) {
+  gsub(/\t/, " ", text)
+  printf "%s\t%s\t%s\t%s\t%s\n", kind, file, line, text, extra
+}
+FNR == 1 { in_test = 0; tdepth = 0; cur = ""; mode = ""; idepth = 0 }
+{
+  line = $0
+  # Every line is kept, including the ones the rules below skip: the evidence window reads them.
+  held[FNR] = line
+  if (in_test == 0 && line ~ /^[[:space:]]*#\[cfg\(test\)\]/) { in_test = 1; tdepth = 0; next }
+  if (in_test) { tdepth += braces(line); if (tdepth <= 0) in_test = 0; next }
+
+  if (match(line, /^[[:space:]]*impl[^{]*/)) {
+    hdr = substr(line, RSTART, RLENGTH)
+    mode = (hdr ~ /TryFrom/) ? "validator" : "impl"
+    if (hdr ~ / for /) { sub(/.* for /, "", hdr); cur = strip_generics(last_token(hdr)) }
+    else { sub(/^[[:space:]]*impl([[:space:]]*<[^>]*>)?[[:space:]]*/, "", hdr); cur = strip_generics(last_token(hdr)) }
+    idepth = braces(line)
+    next
+  }
+  if (idepth > 0) idepth += braces(line)
+  if (idepth <= 0) { cur = ""; mode = "" }
+
+  if (line ~ /^[[:space:]]*\/\//) next
+  if (line ~ /(struct|enum|trait)/) next
+  if (line ~ /->/) next
+  if (mode == "validator") next
+
+  hit = ""
+  for (i = 1; i <= n; i++) if (line ~ ("(^|[^[:alnum:]_])" t[i] "[[:space:]]*[({]")) hit = t[i]
+  if (hit == "" && is_narrow(cur) && line ~ /(^|[^[:alnum:]_])Self[[:space:]]*[({]/) hit = "Self:" cur
+  if (hit == "") for (i = 1; i <= n; i++) if (line ~ ("\\.map[[:space:]]*\\([[:space:]]*" t[i] "[[:space:]]*\\)")) hit = "map:" t[i]
+  if (hit == "") next
+
+  sites++
+  # Which allowlist entry claims this site? File suffix and construction regex, both text.
+  claims = 0; who = ""
+  for (j = 1; j <= ne; j++) {
+    if (FILENAME !~ (efile[j] "$")) continue
+    if (line ~ ector[j]) { claims++; who = j; eclaims[j]++ }
+  }
+  if (claims == 0) { report("UNCLAIMED", FILENAME, FNR, line); next }
+  if (claims > 1)  { report("MULTI", FILENAME, FNR, line, claims); next }
+  # The evidence must be present at the site (see CTOR_EVIDENCE_WINDOW).
+  ev = 0
+  for (k = (FNR - WINDOW > 0 ? FNR - WINDOW : 1); k <= FNR; k++) if (held[k] ~ eev[who]) ev = 1
+  if (!ev) { report("NOEVIDENCE", FILENAME, FNR, line, eev[who]); next }
+  report("ALLOWED", FILENAME, FNR, line, who)
+}
+END {
+  for (j = 1; j <= ne; j++) {
+    if (eclaims[j] == 0) report("STALE", "-", "-", efile[j] "|" ector[j])
+  }
+  printf "SITES\t%d\n", sites
+}
+'
+
+# Every site above is a judgement, and its *reason* is the artefact — so the reasons live here, one
+# entry per site, keyed by **text, never by line number**: the files move under this pass (every line
+# in `models/src/types.rs` moved while the design was being measured), and a line-keyed entry fails
+# *open* — insert a line above it and it silently points at its neighbour. The four fields are
+#   <file-suffix>|<construction-regex>|<evidence-regex>|<reason>
+# and an entry matching no site, two sites, or whose evidence has gone is a hard failure.
+ESCAPE_CTOR_ALLOW=(
+  # --- shared/src/refined.rs -------------------------------------------------------------------
+  'shared/src/refined.rs|NonNegI64\(1\)|total: .1. is non-negative|the literal 1 is in the domain; the doc states the totality argument'
+  'shared/src/refined.rs|NonNegI64\(0\)|total: .0. is non-negative|the literal 0 is in the domain'
+  'shared/src/refined.rs|BlockHeight\(0\)|total: .0. is non-negative|genesis height: the literal 0 is in the domain'
+  'shared/src/refined.rs|BlockHeight\(self\.0\.saturating_add\(i64::from\(rhs\)\)\)|Add<NonNegI64> for BlockHeight|sum of a non-negative height and a NonNegI64; saturating, so a hypothetical overflow stays in the domain rather than wrapping negative'
+  'shared/src/refined.rs|SeqNum\(0\)|total: .0. is non-negative|the literal 0 is in the domain'
+  'shared/src/refined.rs|SeqNum\(self\.0\.saturating_add\(i64::from\(rhs\)\)\)|Add<NonNegI64> for SeqNum|sum of a non-negative sequence number and a NonNegI64; saturating, same argument as BlockHeight'
+  'shared/src/refined.rs|ShardId\("/"\.to_string\(\)\)|non-empty ASCII|the root id: "/" is the literal its own doc calls non-empty ASCII'
+  'shared/src/refined.rs|ShardId\(format!\("/\{name\}"\)\)|name\.is_ascii\(\)|C78: the appended name is validated by the same predicates TryFrom applies, so the join is ASCII and non-empty'
+  'shared/src/refined.rs|ShardId\(format!\("\{\}/\{name\}", self\.0\)\)|name\.is_ascii\(\)|C78: same, on the non-root arm'
+  'shared/src/refined.rs|Some\(ShardId\(self\.0\[\.\.cut\]\.to_string\(\)\)\)|rfind\(.\/.\)|a strict prefix of a valid id, cut at a `/` byte: ASCII by the invariant, non-empty because the `Some(0)` arm took the root case'
+  # --- models/src/sorted.rs --------------------------------------------------------------------
+  'models/src/sorted.rs|Sorted\(sort_par_term\(&par\)\)|Invariant: .self\.0 == sort_par_term|the canonicalizer runs on the way in — the construction *is* the sort'
+  'models/src/sorted.rs|Sorted\(Par::default\(\)\)|The empty process is already canonical|the empty `Par` is a fixed point of the canonicalizer'
+  # --- models/src/types.rs ---------------------------------------------------------------------
+  'models/src/types.rs|Some\(Closed\(par\)\)|is_closed\(&par\)|the `Closed::new` guard: the construction is inside the branch that proved closure'
+  'models/src/types.rs|Some\(WellScoped \{ ctx, par \}\)|well_scoped\(&ctx, &par\)|the `WellScoped::new` guard, same shape as `Closed`'
+  'models/src/types.rs|FreeCount\(0\)|The empty-pattern count|zero binds, so the free-variable count is 0 — in the domain'
+  'models/src/types.rs|FreeCount\(1\)|The single-binding count|one binding, so the count is 1 — in the domain'
+  'models/src/types.rs|Some\(FreeCount\(n\)\)|if n >= 0|the `FreeCount::new` guard: the construction is inside the `n >= 0` branch'
+  'models/src/types.rs|FreeCount\(i32::try_from\(n\)\.unwrap_or\(i32::MAX\)\)|cannot be negative|`from_len`: the argument is a collection length, so the sign is impossible rather than checked, and saturation keeps width out of the domain'
+  'models/src/types.rs|FreeCount\(self\.0\.saturating_add\(rhs\.0\)\)|impl std::ops::Add for FreeCount|sum of two non-negative counts; saturating, like the `BlockHeight`/`SeqNum` additions'
+  # --- rspace/src/history/key_segment.rs -------------------------------------------------------
+  'rspace/src/history/key_segment.rs|KeySegment \{ value: Vec::new\(\) \}|Total: .0. bytes|the empty segment: 0 <= 127, and the doc states it'
+  # --- rholang/src/util/rev_address.rs ---------------------------------------------------------
+  'rholang/src/util/rev_address.rs|Some\(Address \{|stripped\.len\(\) == ETH_ADDRESS_LENGTH|`from_eth_address`: the length guard on the branch the construction is in'
+  'rholang/src/util/rev_address.rs|^[[:space:]]*Address \{|pub fn from_unforgeable|`from_unforgeable`: every field is derived from `gprivate.id` and `self.prefix` by a hash of fixed width, so the record is total on its input'
+  'rholang/src/util/rev_address.rs|Ok\(Address \{|decoded\.len\(\) != address_length|`parse`: length, checksum and prefix are checked on the lines above the construction'
+)
+
+scan_ctor_escapes() {
+  local narrow out kind a b c d
+  narrow="$(IFS=,; echo "${REFINEMENT_NARROW[*]}")"
+  # The roster must be non-empty *and* every file in it must exist, before awk is invoked: awk reads
+  # **stdin** when it is given no file argument, so an empty roster would block on the terminal (or
+  # consume whatever is on stdin) instead of reporting its own emptiness — measured 2026-09-25, the
+  # falsifier hung here. The `[ -f ] || continue` the older loops use is the other half of the same
+  # hazard: a renamed file would drop silently out of the scan and the class would stay green over a
+  # home it never read.
+  local roster=() rel
+  for rel in "${REFINEMENT_FILES[@]}"; do
+    if [ -f "$ROOT/$rel" ]; then
+      roster+=("$ROOT/$rel")
+    else
+      note escape "$ROOT/tools/audit-type-system.sh" "-" "REFINEMENT_FILES names $rel and no such file exists — the scan would be green over a home it never read"
+    fi
+  done
+  if (( ${#REFINEMENT_NARROW[@]} == 0 )); then
+    note escape "$ROOT/tools/audit-type-system.sh" "-" "REFINEMENT_NARROW names no type — the construction scan would match nothing and report silence as safety"
+    return
+  fi
+  if (( ${#roster[@]} == 0 )); then
+    note escape "$ROOT/tools/audit-type-system.sh" "-" "the roster names no file that exists — the construction scan has nothing to read (a scan that reviewed nothing is not evidence)"
+    return
+  fi
+  local entries_file
+  entries_file="$(mktemp)"
+  printf '%s\n' "${ESCAPE_CTOR_ALLOW[@]}" > "$entries_file"
+  # `held[]` is the file's lines, needed for the evidence window; `window` in awk needs the value.
+  out="$(awk -v TYPES="$narrow" -v ENTRIES="$entries_file" -v WINDOW="$CTOR_EVIDENCE_WINDOW" "$ESCAPE_CTOR_AWK" \
+           "${roster[@]}" 2>&1)"
+  rm -f "$entries_file"
+  while IFS=$'\t' read -r kind a b c d; do
+    case "$kind" in
+      UNCLAIMED)  note escape "$a" "$b" "construction of a narrow refinement with no allowlist entry: $c" ;;
+      MULTI)      note escape "$a" "$b" "construction claimed by $d allowlist entries (an entry must name one site): $c" ;;
+      NOEVIDENCE) note escape "$a" "$b" "allowlist entry's evidence ($d) is not at the site: $c" ;;
+      STALE)      note escape "$ROOT/tools/audit-type-system.sh" "-" "allowlist entry claims no site (stale): $c" ;;
+      ALLOWED)    printf '  (allowed) %s:%s — %s\n' "${a#"$ROOT/"}" "$b" "${ESCAPE_CTOR_ALLOW[$((d - 1))]##*|}" ;;
+      SITES)      ctor_sites="$a" ;;
+      *)          [ -n "$kind" ] && printf '  (ctor scan) %s\n' "$kind" ;;
+    esac
+  done <<<"$out"
+  # The clause that keeps this class honest about itself: a scan that reviewed nothing is not
+  # evidence, and neither is one that reviewed nothing *because* it failed to run.
+  printf '  (reviewed) %s narrow-refinement construction(s) in %s file(s)\n' "${ctor_sites:-0}" "${#REFINEMENT_FILES[@]}"
+  if (( ${ctor_sites:-0} == 0 )); then
+    note escape "$ROOT/tools/audit-type-system.sh" "-" "the construction scan reviewed no sites at all — the awk found nothing to look at (bad roster, bad extraction, or a regex that cannot match)"
+  fi
+}
+
 scan_escapes() {
   local rel f name pattern line text
   # Any `Deref` impl in a refinement home, whatever it is on.
@@ -274,6 +523,7 @@ scan_escapes() {
       note escape "$f" "$line" "$text"
     done < <(awk -v TYPES="$types" "$ESCAPE_GET_AWK" "$f")
   done
+  scan_ctor_escapes
 }
 
 run_class() {
