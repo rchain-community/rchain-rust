@@ -192,7 +192,7 @@ pub fn spatial_match_result<S: Sort>(
 }
 
 /// The matcher, with law 5's linearity as the entry condition — the model's `spatialMatch`
-/// (`spec/Rchain/Match.lean:369`) is `spatialMatchCore … && linear pattern`, and this is the same
+/// (`spec/Rchain/Match.lean:401-402`) is `spatialMatchCore … && linear pattern`, and this is the same
 /// split with the same names: the clauses live in [`spatial_match_core`], which recurses into itself,
 /// and the guard is applied once, here, to the pattern as a whole.
 ///
