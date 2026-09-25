@@ -26,7 +26,7 @@ and **no file is left without one or the other** — the linter's check 7 passes
 
 ## Inventory
 
-**1467 `#[test]`/`#[tokio::test]` unit functions + 128 integration tests** across 13 crates, with **26
+**1469 `#[test]`/`#[tokio::test]` unit functions + 128 integration tests** across 13 crates, with **26
 laws** carrying a randomized property test and **12 benchmark functions** in 7 Criterion groups. Only
 **3 of 13 crates have integration tests** (`rholang`, `casper`, `node`).
 
@@ -39,7 +39,7 @@ laws** carrying a randomized property test and **12 benchmark functions** in 7 C
 | `models` | 157 | — | 5 | — |
 | `block-storage` | 42 | — | 3 | — |
 | `comm` | 125 | — | — | — |
-| `rspace` | 178 | — | 8 | — |
+| `rspace` | 180 | — | 8 | — |
 | `rholang` | 238 | 57 | 7 | — |
 | `casper` | 277 | 54 | 3 | — |
 | `node` | 191 | 17 | — | — |
@@ -328,6 +328,8 @@ not found in that file. Coverage claims live here rather than in prose so they c
 | item 11 | `models/src/casper/protocol/casper_message.rs` | `every_message_variant_round_trips_through_its_codec` |
 | item 11 | `node/tests/deploy_block.rs` | `autopropose_grows_the_chain_without_a_deploy` |
 | item 11 | `rholang/src/merging.rs` | `get_number_with_rnd_reads_one_int_and_refuses_the_rest` |
+| item 11 | `rspace/src/merger/state_change_merger.rs` | `the_merge_entry_point_builds_actions_from_the_base_state` |
+| item 11 | `rspace/src/merger/state_change_merger.rs` | `the_merge_entry_point_reports_what_it_cannot_merge` |
 
 ## Gap analysis (severity-ordered)
 
@@ -769,7 +771,8 @@ the rows that changed, plus what the moves exposed):
 | `casper/src/runtime_replay.rs` | 161 | `impl ReplayRuntime for ReportingRuntime` (722–793) | `fixture` | pure one-line forwarding, uncovered because nothing calls the trait methods on that type — the same class as `MockSpace`'s unused methods, and not debt |
 | `casper/src/runtime_replay.rs` | | the system-deploy replay trio (462–563) | `harness-bound` | needs a live `ReportingRuntime` + replay log; the covering fixture is `casper/tests/system_process_replies_and_restart.rs` |
 | `rholang/src/matcher/spatial_matcher.rs` | 112 | — | `pin` | pure matching; the register already pins five of its tests, so the remainder is the same idiom |
-| `models/src/wire.rs`, `rspace/src/history/export.rs`, `casper/src/reporting.rs`, `comm/src/upnp/mod.rs`, `rspace/src/merger/state_change_merger.rs`, `node/src/api/grpc/{tonic,deploy_grpc_service_v1}.rs` | 84–153 each | — | — | not yet read; `tonic.rs` is expected to split `stub` (its nineteen `unimplemented!()`) from `pin` (the live handlers, reachable over loopback gRPC as `serves_and_answers_propose` already does) |
+| `rspace/src/merger/state_change_merger.rs` | 131 | `compute_trie_actions` (66–200) | `pin` | **pinned** — the file's three tests all drove `mk_trie_action`, its reader-free helper, so the *public* entry point the merge calls had never run; a reader double (three methods, one failure arm) was all it needed |
+| `models/src/wire.rs`, `rspace/src/history/export.rs`, `casper/src/reporting.rs`, `comm/src/upnp/mod.rs`, `node/src/api/grpc/{tonic,deploy_grpc_service_v1}.rs` | 84–153 each | — | — | not yet read; `tonic.rs` is expected to split `stub` (its nineteen `unimplemented!()`) from `pin` (the live handlers, reachable over loopback gRPC as `serves_and_answers_propose` already does) |
 
 **What this table is not.** It is not a deferred-gap list: the census sweep closed check 7's file-level
 census, and these are *regions inside tested files*, which is exactly what item 11 is about. It is also

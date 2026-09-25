@@ -203,6 +203,10 @@ where
 mod tests {
     use super::*;
 
+    use crate::internal::WaitingContinuation;
+    use crate::serializers::scodec_serialize::{DatumB, JoinsB, WaitingContinuationB};
+    use crate::trace::event::Consume;
+
     fn hash(n: u8) -> Blake2b256Hash {
         Blake2b256Hash::from_bytes([n; 32])
     }
@@ -262,6 +266,235 @@ mod tests {
             }
             other => panic!("expected an update, got {other:?}"),
         }
+    }
+
+    /// A reader over three maps, with a switch to make every read fail — the same double
+    /// `merger/state_change.rs`'s tests use, copied here because a `#[cfg(test)]` item in a sibling
+    /// module is not reachable from this one and widening it for a test would be a production change.
+    ///
+    /// The failure arm is the point of having it: `compute_trie_actions` reads the base state through
+    /// this trait, and a read error that were flattened into "empty" would build a *wrong* trie action
+    /// (an insert where nothing was there, a delete where something was) rather than refusing.
+    #[derive(Default)]
+    struct MockReader {
+        data: BTreeMap<Blake2b256Hash, Vec<DatumB<String>>>,
+        konts: BTreeMap<Blake2b256Hash, Vec<WaitingContinuationB<String, String>>>,
+        joins: BTreeMap<Blake2b256Hash, Vec<JoinsB<String>>>,
+        fail: bool,
+    }
+
+    #[async_trait::async_trait]
+    impl HistoryReaderBinary<String, String, String, String> for MockReader {
+        async fn get_data(
+            &self,
+            key: Blake2b256Hash,
+        ) -> Result<Vec<DatumB<String>>, crate::errors::RSpaceError> {
+            if self.fail {
+                return Err(crate::errors::RSpaceError::Codec("test reader failure"));
+            }
+            Ok(self.data.get(&key).cloned().unwrap_or_default())
+        }
+        async fn get_continuations(
+            &self,
+            key: Blake2b256Hash,
+        ) -> Result<Vec<WaitingContinuationB<String, String>>, crate::errors::RSpaceError> {
+            if self.fail {
+                return Err(crate::errors::RSpaceError::Codec("test reader failure"));
+            }
+            Ok(self.konts.get(&key).cloned().unwrap_or_default())
+        }
+        async fn get_joins(
+            &self,
+            key: Blake2b256Hash,
+        ) -> Result<Vec<JoinsB<String>>, crate::errors::RSpaceError> {
+            if self.fail {
+                return Err(crate::errors::RSpaceError::Codec("test reader failure"));
+            }
+            Ok(self.joins.get(&key).cloned().unwrap_or_default())
+        }
+    }
+
+    fn raw(byte: u8) -> Vec<u8> {
+        vec![byte]
+    }
+
+    /// A byte-view continuation. The merger reads only `.raw`; the `decoded` half must still be a
+    /// real value, so it is built the way the sibling module's tests build theirs.
+    fn continuation(raw: Vec<u8>) -> WaitingContinuationB<String, String> {
+        WaitingContinuationB {
+            decoded: WaitingContinuation {
+                patterns: Vec::new(),
+                continuation: String::new(),
+                persist: false,
+                peeks: std::collections::BTreeSet::new(),
+                source: Consume::apply(
+                    &["c".to_string()],
+                    &["p".to_string()],
+                    &"k".to_string(),
+                    false,
+                ),
+            },
+            raw,
+        }
+    }
+
+    fn no_hook(
+    ) -> impl Fn(&Blake2b256Hash, &ChannelChange<Vec<u8>>, &NumberChannelsDiff) -> Option<Action> {
+        |_, _, _| None
+    }
+
+    type Action = HotStoreTrieAction<String, String, String, String>;
+
+    /// **`compute_trie_actions` is the merge's entry point, and only its per-channel helper had been
+    /// tested.** The file's three tests all drive `mk_trie_action`, which takes the base value as an
+    /// argument — so the *public* function, the one `casper/src/merging.rs` actually calls, had never
+    /// run: the read of the base state, the three outcomes of a consume change (insert / delete /
+    /// update), the join spread over the action's member channels, and the action ordering were all
+    /// unexercised. Its refusals matter most: the trie actions it returns are applied to the store.
+    #[tokio::test]
+    async fn the_merge_entry_point_builds_actions_from_the_base_state() {
+        let channels = vec![hash(1), hash(2)];
+
+        // A consume change against an empty base: the continuation is inserted, and its join is
+        // *added* — spread over the channels the join names, which is what the join trie is keyed by.
+        let add = StateChange {
+            datums_changes: BTreeMap::new(),
+            kont_changes: BTreeMap::from([(channels.clone(), change(vec![raw(7)], vec![]))]),
+            consume_channels_to_join_serialized_map: BTreeMap::from([(
+                channels.clone(),
+                raw(9),
+            )]),
+        };
+        let actions = compute_trie_actions(&add, &MockReader::default(), NumberChannelsDiff::new(), no_hook())
+            .await
+            .expect("an inserted continuation");
+        assert!(
+            actions
+                .iter()
+                .any(|a| matches!(a, Action::TrieInsertBinaryConsume(..))),
+            "the continuation is inserted: {actions:?}"
+        );
+        let join_inserts = actions
+            .iter()
+            .filter(|a| matches!(a, Action::TrieInsertBinaryJoins(..)))
+            .count();
+        assert_eq!(
+            join_inserts, 2,
+            "the join is added to each of the two channels it names: {actions:?}"
+        );
+
+        // The reverse: the base holds the continuation and the change removes it — the actions are the
+        // delete pair, and the join is *removed* from both channels.
+        let pointer = hash_hashes(&channels);
+        let remove = StateChange {
+            datums_changes: BTreeMap::new(),
+            kont_changes: BTreeMap::from([(channels.clone(), change(vec![], vec![raw(7)]))]),
+            consume_channels_to_join_serialized_map: BTreeMap::from([(
+                channels.clone(),
+                raw(9),
+            )]),
+        };
+        let mut reader = MockReader::default();
+        reader.konts.insert(pointer, vec![continuation(raw(7))]);
+        // The join trie is keyed by *each* channel the join names (the merger reads `get_joins` at the
+        // channel's own hash), so a removal must find the join under both channels. An empty join map
+        // here is not a smaller fixture but a different claim — the merger reports it as an
+        // inconsistency, which is what the refusals test pins.
+        for c in &channels {
+            reader.joins.insert(
+                *c,
+                vec![JoinsB {
+                    decoded: Vec::new(),
+                    raw: raw(9),
+                }],
+            );
+        }
+        let actions = compute_trie_actions(
+            &remove,
+            &reader,
+            NumberChannelsDiff::new(),
+            no_hook(),
+        )
+        .await
+        .expect("a removed continuation");
+        assert!(
+            actions
+                .iter()
+                .any(|a| matches!(a, Action::TrieDeleteConsume(..))),
+            "the continuation is deleted: {actions:?}"
+        );
+        assert_eq!(
+            actions
+                .iter()
+                .filter(|a| matches!(a, Action::TrieDeleteJoins(..)))
+                .count(),
+            2,
+            "and the join is removed from both channels: {actions:?}"
+        );
+    }
+
+    /// **The three refusals of the entry point.** Each is a state the merge must not paper over:
+    ///
+    ///   * a consume change that changes nothing means the caller and the merger disagree about the
+    ///     channel — the same error `mk_trie_action` raises, but reached through the *public* function;
+    ///   * a join action whose channels have no serialized join is a caller bug, and the message says
+    ///     which lookup failed;
+    ///   * a base-state read that **fails** must be reported, not read as an empty channel — an empty
+    ///     base turns a delete into an insert, which is a wrong action applied to the store.
+    #[tokio::test]
+    async fn the_merge_entry_point_reports_what_it_cannot_merge() {
+        let channels = vec![hash(1), hash(2)];
+
+        // (a) `added` empty and `removed` empty against an empty base: nothing changed.
+        let no_change = StateChange {
+            datums_changes: BTreeMap::new(),
+            kont_changes: BTreeMap::from([(channels.clone(), change(vec![], vec![]))]),
+            consume_channels_to_join_serialized_map: BTreeMap::from([(
+                channels.clone(),
+                raw(9),
+            )]),
+        };
+        let err = compute_trie_actions(
+            &no_change,
+            &MockReader::default(),
+            NumberChannelsDiff::new(),
+            no_hook(),
+        )
+        .await
+        .expect_err("a consume change that changes nothing is a disagreement");
+        assert!(
+            err.contains("Merging logic error") && err.contains("empty consume change"),
+            "{err}"
+        );
+
+        // (b) a join action with no serialized join for its channels.
+        let missing_join = StateChange {
+            datums_changes: BTreeMap::new(),
+            kont_changes: BTreeMap::from([(channels.clone(), change(vec![raw(7)], vec![]))]),
+            consume_channels_to_join_serialized_map: BTreeMap::new(),
+        };
+        let err = compute_trie_actions(
+            &missing_join,
+            &MockReader::default(),
+            NumberChannelsDiff::new(),
+            no_hook(),
+        )
+        .await
+        .expect_err("a join with no serialized value is a caller bug");
+        assert!(err.contains("No ByteVector value for join"), "{err}");
+
+        // (c) the reader fails: the error is propagated, in both the consume and the produce paths.
+        let mut down = MockReader::default();
+        down.fail = true;
+        let err = compute_trie_actions(
+            &missing_join,
+            &down,
+            NumberChannelsDiff::new(),
+            no_hook(),
+        )
+        .await
+        .expect_err("a base-state read that fails is not an empty channel");
+        assert!(err.contains("test reader failure"), "{err}");
     }
 
     /// **A change that changes nothing is an error, not a no-op.** The merger is called only when
