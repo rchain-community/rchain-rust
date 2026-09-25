@@ -44,6 +44,55 @@ async fn wait_for_genesis(base: &str) {
     }
 }
 
+/// **`--autopropose`: the chain grows with nothing sent to it.** The autopropose tap (which enqueues a
+/// propose on every validated block) and the interval timer beside it (which covers the case where
+/// nothing happens at all — a lone validator has no peers to send it blocks) are what a devnet runs
+/// on. **No test set `autopropose`**, so both were unexecuted: `setup_shard_runtime`'s taps in
+/// `node/src/runtime/node_runtime.rs` never ran their bodies.
+///
+/// This boots a standalone validator with it on, sends *nothing*, and waits for a second block. The
+/// dev-mode dummy deploy is enabled because that is what the timer's own comment names as the source
+/// of a block with no client deploy — without it a propose has nothing to propose.
+#[test]
+fn autopropose_grows_the_chain_without_a_deploy() {
+    test_runtime().block_on(async {
+        let dir = temp_dir("autopropose");
+        let ports = free_ports(5);
+        let mut conf = deploy_conf(&dir, &ports);
+        conf.autopropose = true;
+        conf.dev_mode = true;
+        let node = common::start(&conf, ports[2] as u16, ports[0] as u16).await;
+        let base = format!("http://127.0.0.1:{}", ports[0]);
+
+        wait_for_genesis(&base).await;
+
+        // `/api/blocks/:start/:end` is the height range (the depth form answers only the head), so it
+        // is the read that can show growth. The timer's interval is 2s; 45s is slack for a loaded
+        // machine, and the assertion names the count so a slow run is legible.
+        let client = reqwest::Client::new();
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(45);
+        let mut blocks = 0usize;
+        loop {
+            if let Ok(resp) = client.get(format!("{base}/api/blocks/0/16")).send().await {
+                if let Ok(serde_json::Value::Array(a)) = resp.json::<serde_json::Value>().await {
+                    blocks = blocks.max(a.len());
+                    if blocks >= 2 {
+                        break;
+                    }
+                }
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "autopropose produced no second block in 45s ({blocks} block(s))"
+            );
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+
+        node.shutdown();
+        let _ = std::fs::remove_dir_all(&dir);
+    });
+}
+
 #[test]
 fn deploy_is_processed_into_a_block() {
     test_runtime().block_on(async {
