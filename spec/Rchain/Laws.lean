@@ -245,19 +245,23 @@ def laws : List Law := [
       enum) / `Connective`; and the model lacks **eight** `Expr`-level constructors, *counted* against \
       the node's tag table rather than summarised (AUDIT C58): `BIG_INT`(13), `EMETHOD`(115), \
       `EMATCHES`(118), `EPERCENT`(119), `EPLUSPLUS`(120), `EMINUSMINUS`(121), `ESHORTAND`(123), \
-      `ESHORTOR`(124). **Three of those eight are conflations, not missing arms**, which is the \
-      sharper defect: `EMATCHES`, `ESHORTAND` and `ESHORTOR` *have* constructors (`ematches`, \
-      `eshortand`, `eshortor`, `Par.lean:67-69`), but `Surface.lean:484,492,496` normalises \
-      `.matches`/`.shortAnd`/`.shortOr` onto `eeq`/`eand`/`eor` — so the model answers **`eq`** \
-      where the node's tag table says **`gt`**, a *wrong verdict on a statable pair* rather than a \
-      coarser algebra. The genuinely missing five are `BIG_INT`(13), `EMETHOD`(115), \
-      `EPERCENT`(119), `EPLUSPLUS`(120) and `EMINUSMINUS`(121). Line them up and the reason they are not \"eight more arms\" is structural: the \
+      `ESHORTOR`(124). **Three of those eight were *conflations* rather than missing arms, and all \
+      three are closed** (re-measured 2026-09-25, and this sentence is the correction): `EMATCHES`, \
+      `ESHORTAND` and `ESHORTOR` have constructors (`ematches`, `eshortand`, `eshortor`, \
+      `Par.lean:67-69`), `Surface.lean`'s arms now **emit** them (`.eshortand`, `.eshortor`, \
+      `.ematches` — they used to normalise `.matches`/`.shortAnd`/`.shortOr` onto `eeq`/`eand`/`eor`, \
+      which made the model answer **`eq`** where the node's tag table says **`gt`**, a wrong verdict \
+      on a statable pair), and `Rchain/Sort.lean`'s `exprTag` gives them the node's own tags — 118, \
+      123 and 124. So the defect this paragraph described is *gone*, and what it left behind is the \
+      boundary below. The genuinely missing five are `BIG_INT`(13), `EMETHOD`(115), \
+      `EPERCENT`(119), `EPLUSPLUS`(120) and `EMINUSMINUS`(121). Line them up and the reason they are not \"five more arms\" is structural: the \
       node's tags *interleave* (scalars 1–4, collections 6–9, `BIG_INT` 13, vars 50–52, operators \
       100–124, `EBYTEARR` 116) while `cmpExpr` classifies by constructor *kind*, so a faithful order \
       needs a case split finer than one class per constructor — inside a block that `WellFounded.fix` \
       leaves unfoldable, which is why its laws took the arm-lemma route. C58 carries the measurement, \
-      and five of the eight are terms the node can hold and the model cannot (`BigInt(42)`, `matches`, \
-      `%%`, `++`, `--`), so law 1a is unstatable for them rather than merely unpinned. \
+      and all five are terms the node can hold and the model cannot (`BigInt(42)`, `%%`, `++`, `--`, and \
+      a method call), so law 1a is unstatable for them rather than merely unpinned. (`matches` was the \
+      sixth of that list and is no longer on it: `ematches` has a constructor, a tag and an arm.) \
       `Ground.bytes` is the one \
       unpinnable divergence: the model has it at the wrong tag and the node's front end has no \
       byte-array literal, so the term is unspellable rather than merely mis-scored. `Rchain/Sort.lean`'s \
@@ -1128,40 +1132,49 @@ def laws : List Law := [
       swelling past 5 GB until it aborted. One `taggedVarint` per field compiles in 224 ms" },
   { number := 16, clause := "d", layer := "Casper",
     statement := "The bonds cache equals the PoS state",
-    status := .owed,
+    status := .provedModel,
     declarations := [`Rchain.ActiveBonds, `Rchain.bondsOfState, `Rchain.Justification,
       `Rchain.newestJustification, `Rchain.bondsFromNewestState, `Rchain.bondsFromCarried,
       `Rchain.the_sources_agree, `Rchain.a_disagreeing_set_is_refused,
-      `Rchain.a_bond_change_between_justifications_is_refused],
-    witness := [`Rchain.a_bond_change_between_justifications_is_refused],
+      `Rchain.a_bond_change_between_justifications_is_refused,
+      `Rchain.a_bond_does_not_move_the_map_the_gates_read,
+      `Rchain.the_pool_derived_map_moves_where_the_states_does_not],
+    rust := ["casper/src/multi_parent_casper.rs", "casper/src/runtime_manager.rs",
+      "rholang/src/native_state.rs"],
+    witness := [`Rchain.a_bond_change_between_justifications_is_refused,
+      `Rchain.a_bond_does_not_move_the_map_the_gates_read],
     falsifiable := some "the two sources of the bonds map disagree exactly when the bond set moves across \
       the justifications, and there the fallback **refuses** rather than picking one \
       (`a_bond_change_between_justifications_is_refused`: validator 7 at stake 1 in the older state, 2 \
       in the newer — what law 44's gate lets happen between boundaries — gives `none` from the carried \
       maps and `some [(7, 2)]` from the newest state's). So the equality is a claim about an **honest, \
       unmoved** set of justifications, not a tautology: drop either hypothesis and the statement is \
-      false, which is why the port reads the state wherever it can",
-    note := "**the sync site is modelled now, and the row's remaining gap is on the *state* side** \
-      (2026-09-25). `Rchain/Casper/Bonds.lean` mirrors the port's three sources — the fringe's state, \
-      the newest justification's post-state (`multi_parent_casper.rs:161-165`), and the carried maps \
-      with their agreement rule (`:170-178`) — and proves what the port's code does with them: \
-      `the_sources_agree` (both paths return the same map when the carried maps are honest *and* the \
-      bond set has not moved across them) and `a_disagreeing_set_is_refused` (the port's \
-      `\"justifications disagree on the bonds map\"` as a theorem, with #73's shape as the concrete \
-      witness above). **What is still owed is the state's own side, and it is a finding**: the port's \
-      bonds map *is* the `pos:active` leaf — `compute_bonds` reads `get_native(PREFIX_POS, \
-      pos_active_key())` (`runtime_manager.rs:1276-1281`), a `BTreeMap<Validator, NonNegI64>` **with \
-      stakes**, written by `select_active(&pool, …)` at a boundary (`native_state.rs:1152-1157`), by \
-      genesis (`:937`) and by `slash` (`:1229`) and **not** by `bond`. Between boundaries the pool's \
-      stakes move and the active map's do not, so the map the gates read is a boundary snapshot — law \
-      44's own gate seen from the finalizer's side. `Rchain/Pos.lean`'s `PosState.active` is a \
-      `List Validator` — ids, no stakes (`Pos.lean:184`) — with the stakes in `pool`, so deriving the \
-      map from the model's state would answer with the *current pool stakes*: the wrong map, precisely \
-      where law 44 says the difference is real. Closing this row therefore needs `PosState` to carry \
-      the stakes it selected (a change to laws 44-47's model, its own unit — AUDIT C92 records it), and \
-      then the equality for an honest production. The row moved from `open` to `owed` because the \
-      definitions now exist and part of the claim is proved; what it does *not* say is that the cache \
-      equals the state for every block, which is what making the state faithful would let it say" },
+      false, which is why the port reads the state wherever it can. The **state's** side is falsifiable \
+      the same way, and it was measured: make `a_bond_does_not_move_the_map_the_gates_read` read `pool` \
+      instead of `active` and it stops being `rfl` — the build fails, which is what the theorem's \
+      partner asserts",
+    note := "**the state's side is closed: the model now carries the map it was missing, and the map \
+      the gates read is derived from it** (2026-09-25, closing AUDIT C92). The row was `owed` because \
+      the model could not *hold* the map — `active` was a `List Validator`, ids with no stakes, so the \
+      only stake-carrying field was `pool`, and a derivation from `pool` answers with the *current* \
+      stakes, which for a validator that bonded after the last boundary is a different map from the \
+      port's. `Rchain/Pos.lean`'s `active` is now `List (Validator × Nat)`, the pairs `select_active` \
+      returns, and `reselect` keeps them instead of dropping them (`.map (·.1)` was the loss). With \
+      that, the state's side is statable, and it is stated as **a pair, because either half alone is a \
+      spelling**: `a_bond_does_not_move_the_map_the_gates_read` — a bond writes `pool` and leaves the \
+      map the gates read exactly as it was, which is law 44's gate seen from the finalizer's side — and \
+      `the_pool_derived_map_moves_where_the_states_does_not`, where the same bond moves a pool-derived \
+      reading by one entry and no hypothesis is needed, because `bond` prepends unconditionally. \
+      Together they say the port's reading of `pos:active` rather than `pos:bonds` is load-bearing \
+      rather than cosmetic. **The sync site is unchanged**: `the_sources_agree` and \
+      `a_disagreeing_set_is_refused` still mirror the port's three sources. **Law 44's \
+      `a_boundary_activates_the_pool` is strictly stronger for the same reason** — it assumed \
+      `s'.claims = []` only because an id-only active set could equal step 4's output when the filter \
+      removed nobody, and carrying the stakes makes the conclusion the filter itself, so that \
+      hypothesis became *inert* rather than the claim becoming weaker. **What this row still does not \
+      say**, stated rather than implied: nothing here proves the *port* reads `pos:active` — that is \
+      the Rust's own shape (`runtime_manager.rs:1276-1281`) — so this is a `proved-model` tie, and the \
+      model change carried laws 44-47 with it" },
   { number := 17, clause := "a", layer := "Casper",
     rustWitness := [
       "sdk/src/property_tests.rs:law17_deploys_without_conflicts_need_no_rejection",
@@ -1827,7 +1840,13 @@ def laws : List Law := [
     statement := "The normalizer's output is well-scoped and closed (Law 6 through every path)",
     status := .owed,
     declarations := [`Rchain.ScopedIn, `Rchain.an_unscoped_name_occurrence_is_open,
-      `Rchain.a_scoped_name_occurrence_is_closed, `Rchain.bindResult],
+      `Rchain.a_scoped_name_occurrence_is_closed, `Rchain.bindResult,
+      -- the induction's leaves: the closedness of every `Par` an arm builds, and the one lemma that
+      -- turns a scoped name into a bound (hence closed) variable
+      `Rchain.closed_sendPar, `Rchain.closed_receivePar, `Rchain.closed_newPar,
+      `Rchain.closed_matchPar, `Rchain.closed_bundlePar, `Rchain.closed_parOf,
+      `Rchain.closed_parOf_elist, `Rchain.closed_parOf_eset, `Rchain.closed_parOf_emap,
+      `Rchain.closed_parOf_etuple, `Rchain.closedVar_nameVar, `Rchain.findIdx?_some_of_mem],
     witness := [`Rchain.an_unscoped_name_occurrence_is_open],
     falsifiable := some "the statement is **false** of an un-scoped source, and that is the shape of its \
       hypothesis rather than a gap: `nameVar` answers `.free 0` for a name the binder stack does not \
@@ -1866,11 +1885,16 @@ def laws : List Law := [
       *recursive calls' motives* as hypotheses, so the eleven statements can be supplied as the motives \
       and every arm gets its induction hypotheses for free. No `sizeOf` plumbing is needed (the \
       `groundPar` statement is a separate, recursion-free lemma).
-      3. **The arm idiom is calibrated**: `simp only [normalizeAt] at hp` unfolds the arm, `split at hp` \
-      separates the `some`/`none` branches, `Closed_parMerge` (`Ty.lean:277`) closes the `parMerge` \
-      step, and the leaf's own closedness is `simp [Closed, parOf, closedExpr, closedListExpr]` \
-      (checked per constructor: a bound variable, a wildcard and a ground are the three the arms need, \
-      and the binary operators are one `closedExpr` unfolding each).
+      3. **The arm idiom is calibrated, and the leaves are now *proved*** (2026-09-25): \
+      `simp only [normalizeAt] at hp` unfolds the arm, `split at hp` separates the `some`/`none` \
+      branches, `Closed_parMerge` (`Ty.lean:277`) closes the `parMerge` step, and the closedness of the \
+      `Par` each arm builds is a theorem in this row's `declarations` — `closed_sendPar`, \
+      `closed_receivePar`, `closed_newPar`, `closed_matchPar`, `closed_bundlePar`, `closed_parOf` and \
+      the four collection shapes — with `closedVar_nameVar` for the one step that makes a *scoped* name \
+      a bound one. They are stated in the `Bool` form (`closed … = true`) because that is what the arms \
+      and the companion statements both produce; the first draft's `Closed` form needed four bridging \
+      lemmas between the `&&`-style list checkers and `∀ x ∈ l`, and each then fought the \
+      `Closed`-unfolding simp lemmas. That sizing is what the leaves were for, and it is done.
 
       So what is owed is the *cases* — eleven motives, ~45 constructor arms plus the list helpers' — \
       each a few lines of the idiom above. `Rchain/Sort.lean`'s arm lemmas are this tree's precedent \
@@ -2099,13 +2123,15 @@ def laws : List Law := [
       `bond_escrows_the_stake_and_activates_at_the_boundary`, \
       `withdraw_stages_the_validator_until_the_next_boundary`",
     note := "**the state machine now exists, so the row is a model claim rather than a Rust claim** \
-      (2026-09-23). `Rchain/Pos.lean` grew `PosState` (the three coin fields, the pool, the active set, \
+      (2026-09-23). `Rchain/Pos.lean` grew `PosState` (the three coin fields, the pool, the active map, \
       the three ledgers, the two parameters), the gate (`isBoundary`, `divisor = max(epochLength, 1)`), \
       and the four steps in `close_block`'s order (`epochStep` = commit → move → pay → reselect), with \
       the gate *outside* the transition so `closeBlock_off_a_boundary` is a fact about the gate rather \
       than a restatement of a branch. What the row's statement names is now proved: a bond pools the \
-      stake and leaves the active set alone (`a_bond_pools_but_does_not_activate`), the boundary is what \
-      activates it (`a_boundary_activates_the_pool`), and **an epoch conserves** — every transfer is a \
+      stake and leaves the active map alone (`a_bond_pools_but_does_not_activate`), the boundary is what \
+      activates it **with the stakes it selects** (`a_boundary_activates_the_pool`, a statement about \
+      the selected pairs rather than a set of ids since AUDIT C92's model change), and **an epoch \
+      conserves** — every transfer is a \
       vault-to-vault move, so user vaults + staking vault + Coop vault are invariant \
       (`epochStep_conserves`, from `payDue_conserves` plus the observation that the other three steps \
       are ledger steps). **The refusal is structural, not a hypothesis**: `payDue` is partial \

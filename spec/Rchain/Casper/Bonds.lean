@@ -32,15 +32,15 @@ by `select_active(&pool, …)` at a boundary (`:1152-1157`), by genesis installa
 map's do not: the map the finalizer's gates read is the *boundary snapshot*, which is law 44's own
 "a bond pools but does not activate", seen from the finalizer's side.
 
-**`Rchain/Pos.lean`'s `PosState` cannot supply that map**: its `active` is a `List Validator` — ids, no
-stakes (`Pos.lean:184`) — with the stakes living in `pool`. Deriving the bonds map from the model's
-state would therefore answer with the *current pool stakes*, which for a validator that bonded after the
-last boundary is a **different map from the port's** (the stale-snapshot semantics above), so the
-derivation would be wrong exactly where law 44 says the difference is real. This module therefore takes
-the active map as the port's field — an explicit `ActiveBonds` input — and says so, rather than deriving
-a map the model's state does not hold. Giving `PosState` the stakes it needs is a change to laws 44-47's
-model and is its own unit; until then law 16d is `open` with this note, and the sync site below is what
-*is* modelled. -/
+**`Rchain/Pos.lean`'s `PosState` can supply that map now**, and the sentence that used to stand here is
+worth keeping as the record of what it cost: its `active` was a `List Validator` — ids, no stakes
+(`Pos.lean:184`) — with the stakes living in `pool`, so deriving the bonds map from the model's state
+would have answered with the *current pool stakes*, which for a validator that bonded after the last
+boundary is a **different map from the port's**. That is why this module began by taking the active map
+as an explicit `ActiveBonds` input. `PosState.active` now carries the stakes it selected (AUDIT C92's
+fix), and with it the state's side is statable: `bondsOfState s.active` is the map the gates read, a
+bond between boundaries does **not** move it, and a `pool`-derived reading **would** — that pair below
+is the content, because either half alone is a spelling. -/
 
 namespace Rchain
 
@@ -75,6 +75,28 @@ def newestJustification : List Justification → Option Justification
     match newestJustification js with
     | none => some j
     | some k => some (if j.seqNum < k.seqNum then k else j)
+
+/-- **Law 16d, the state's side — the map the gates read is the state's *selected* map, and a bond does
+    not move it.** `bond` writes `pool` and leaves `active` alone (law 44), and the gates read
+    `bondsOfState s.active`, so a validator that bonds between boundaries does **not** enter the map the
+    fringe's stake and `checkMinMessages`' count are computed from until a boundary selects it. This is
+    C92's finding stated: the coarser model, whose only stake-carrying field was `pool`, could not state
+    it at all — and the second theorem is what makes this one a claim rather than a spelling. -/
+theorem a_bond_does_not_move_the_map_the_gates_read (s : PosState) (v : Validator) (stake : Nat) :
+    bondsOfState (bond s v stake).active = bondsOfState s.active := rfl
+
+/-- **…and the reading is load-bearing, not cosmetic**: the map a *pool*-derived answer would give moves
+    on the very same bond — by exactly one entry — so the port's choice to read `pos:active` rather than
+    `pos:bonds` is doing work. Stated without hypotheses (a bond prepends unconditionally, so the lengths
+    differ whatever the pool held), and it is the falsifier of the theorem above: make that one read
+    `pool` instead of `active` and the two together are a contradiction. -/
+theorem the_pool_derived_map_moves_where_the_states_does_not (s : PosState) (v : Validator) (stake : Nat) :
+    bondsOfState (bond s v stake).pool ≠ bondsOfState s.pool := by
+  intro h
+  have hlen := congrArg List.length h
+  -- enough on its own: `bond` prepends, so the two lengths differ by one — the arithmetic is in `simp`'s
+  -- own contradiction step, which is why the `omega` a first draft carried had no goal left to close.
+  simp [bond, bondsOfState] at hlen
 
 /-- **Source two**: the newest justification's state — what the port reads while nothing has finalised. -/
 def bondsFromNewestState (js : List Justification) : Option Bonds :=

@@ -180,8 +180,13 @@ structure PosState where
   user : Nat
   /-- The bond pool (`pos:bonds`): every pooled validator and its stake. -/
   pool : List (Validator × Nat)
-  /-- The active set (`pos:active`) — recomputed by step 4, never by `bond`. -/
-  active : List Validator
+  /-- The active set (`pos:active`) — recomputed by step 4, never by `bond` — **carrying the stakes it
+      selected**, because that is what the port's leaf holds: a `BTreeMap<Validator, NonNegI64>` with
+      stakes (`native_state.rs:739-747`), written by `select_active` at a boundary (`:1152-1157`), by
+      genesis (`:937`) and by `slash` (`:1229`). It is deliberately **not** a view of `pool`: between
+      boundaries the pool's stakes move and this one does not, which is law 44's own gate seen from the
+      side the finalizer's bonds map is read on (AUDIT C92). -/
+  active : List (Validator × Nat)
   /-- Staged withdrawal requests (`pos:pending_withdrawers`). -/
   requests : List PosRequest
   /-- Escrowed withdrawal claims (`pos:withdrawers`). -/
@@ -290,11 +295,13 @@ def payDue (s : PosState) (n : Nat) : Option PosState :=
       committed := s.committed.filter (fun p => !((dueClaims s n).any (fun c => c.who = p.1))) }
   else none
 
-/-- Step 4: the active set for the epoch that starts now — the pool's members, minus anyone whose bond is
-    escrowed in a claim (`select_active`, `native_state.rs:542-561`). -/
+/-- Step 4: the active set for the epoch that starts now — the pool's members **with their stakes**,
+    minus anyone whose bond is escrowed in a claim (`select_active`, `native_state.rs:542-561`). The
+    stakes are kept rather than dropped: this is the `pos:active` map the finalizer's gates read, and a
+    bond that arrives between boundaries must not move it (law 44, and AUDIT C92's finding). -/
 def reselect (s : PosState) : PosState :=
   { s with
-    active := (s.pool.filter (fun wb => !(s.claims.any (fun c => c.who = wb.1)))).map (·.1) }
+    active := s.pool.filter (fun wb => !(s.claims.any (fun c => c.who = wb.1))) }
 
 /-- **The epoch transition**, in `close_block`'s order (`native_state.rs:1083-1158`): commit the rewards,
     move the staged withdrawals into claims, pay the claims whose quarantine elapsed, re-select the active
@@ -419,14 +426,22 @@ theorem a_bond_pools_but_does_not_activate (s : PosState) (v : Validator) (stake
     (bond s v stake).user = s.user - stake :=
   ⟨rfl, rfl, rfl, rfl⟩
 
-/-- **Law 44 — and the boundary is what activates it.** With no claim escrowed, step 4 makes the pool —
-    the newly bonded validator included — the active set, so a bond and a boundary in the same block do
-    activate it. This is the port's `bond_escrows_the_stake_and_activates_at_the_boundary` in the model. -/
+/-- **Law 44 — and the boundary is what activates it.** Step 4 makes the pool — the newly bonded
+    validator included, **with the stakes it holds at this boundary** — the active set, minus anyone
+    whose bond is escrowed in a claim; so a bond and a boundary in the same block do activate it. This is
+    the port's `bond_escrows_the_stake_and_activates_at_the_boundary` in the model.
+
+    **The statement is unconditional now, and that is the stakes' doing.** It used to assume
+    `s'.claims = []` because the active set was a list of *ids*: `s'.pool.map (·.1)` could only equal
+    step 4's output when the filter removed nobody. Carrying the stakes makes the conclusion *the
+    filter itself*, so the hypothesis has nothing left to do — the escrowed-claim case is the same
+    theorem with a non-empty claim list, which is strictly more than the no-claim instance the port's
+    test exercises. The old hypothesis is not weaker, it is inert. -/
 theorem a_boundary_activates_the_pool (r : Validator → Nat) (s : PosState) (n : Nat)
-    {s' : PosState} (hp : payDue (movePending (commitRewards r s)) n = some s')
-    (h : s'.claims = []) :
-    ∃ s'', epochStep r s n = some s'' ∧ s''.active = s'.pool.map (·.1) :=
-  ⟨reselect s', by simp [epochStep, hp], by simp [reselect, h]⟩
+    {s' : PosState} (hp : payDue (movePending (commitRewards r s)) n = some s') :
+    ∃ s'', epochStep r s n = some s'' ∧
+      s''.active = s'.pool.filter (fun wb => !(s'.claims.any (fun c => c.who = wb.1))) :=
+  ⟨reselect s', by simp [epochStep, hp], by simp [reselect]⟩
 
 /-- **The ordering the release rule depends on**: the move of step 2 leaves the committed ledger
     exactly as step 1 wrote it, so a validator that leaves the pool at this boundary is still paid
@@ -445,7 +460,7 @@ theorem the_move_does_not_disturb_the_ledger (r : Validator → Nat) (s : PosSta
     this is the instance the port's test exercises, decided rather than described.) -/
 theorem the_reward_is_committed_before_the_leave :
     lookup (movePending (commitRewards (fun _ => 5)
-      { vault := 40, coop := 0, user := 0, pool := [(⟨0⟩, 40)], active := [⟨0⟩],
+      { vault := 40, coop := 0, user := 0, pool := [(⟨0⟩, 40)], active := [(⟨0⟩, 40)],
         requests := [⟨⟨0⟩, 9⟩], claims := [], committed := [(⟨0⟩, 0)],
         epochLength := 1, quarantineLength := 0 })).committed ⟨0⟩ = 5 := by
   decide
