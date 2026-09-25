@@ -8,11 +8,11 @@ ranking that `spec/TEST-COVERAGE.md`'s Definition-of-done item 11 is worked from
 `tools/audit-test-register.sh` refuses a ledger that disagrees with the lcov it names, and refuses a CI
 floor that is not the one this measurement implies.
 
-**Measurement**: 2026-09-25 (the lcov's own date); emitted from a tree at 0f74a0a42.
+**Measurement**: 2026-09-25 (the lcov's own date); emitted from a tree at de66fbd29.
 
 | lines found | hit | missed | line coverage | CI floor (implied) |
 |---:|---:|---:|---:|---:|
-| 69457 | 61559 | 7898 | 88.62% | 86 |
+| 69882 | 62110 | 7772 | 88.87% | 86 |
 
 The floor's rule, machine-checked above rather than remembered: **`floor = floor(measured) − 2`** — two
 points below the measurement, never a number a plan hopes to reach. The raisings are read off the floor's
@@ -31,7 +31,7 @@ attributes them to. The remaining **281** are below.
 
 Each row's line counts are its record's own `LF:`/`LH:` summary — the line model
 `--fail-under-lines` scores — **not** a re-count of its `DA:` records: the two disagree here by a
-little under 5% (65608 `DA:` records against 69457 `LF`), which is llvm-cov mapping lines it
+little under 5% (66001 `DA:` records against 69882 `LF`), which is llvm-cov mapping lines it
 emits no per-line record for. A ledger built on `DA:` would state a percentage CI's own gate does not
 agree with, so the summary wins and the gap is printed rather than hidden.
 
@@ -39,7 +39,7 @@ agree with, so the summary wins and the gap is printed rather than hidden.
 
 | missed | hit | found | % covered | file |
 |---:|---:|---:|---:|---|
-| 446 | 2409 | 2855 | 84.4 | `rholang/src/reduce.rs` |
+| 443 | 2412 | 2855 | 84.5 | `rholang/src/reduce.rs` |
 | 387 | 2324 | 2711 | 85.7 | `rholang/src/system_processes.rs` |
 | 325 | 893 | 1218 | 73.3 | `casper/src/engine/node_running.rs` |
 | 256 | 1326 | 1582 | 83.8 | `node/src/runtime/node_runtime.rs` |
@@ -51,29 +51,28 @@ agree with, so the summary wins and the gap is printed rather than hidden.
 | 168 | 323 | 491 | 65.8 | `comm/src/upnp/gateway.rs` |
 | 161 | 360 | 521 | 69.1 | `casper/src/runtime_replay.rs` |
 | 159 | 414 | 573 | 72.3 | `casper/src/engine/node_syncing.rs` |
-| 130 | 1503 | 1633 | 92.0 | `rholang/src/normalizer.rs` |
+| 126 | 1531 | 1657 | 92.4 | `rholang/src/normalizer.rs` |
 | 124 | 181 | 305 | 59.3 | `node/src/runtime/node_main.rs` |
-| 123 | 258 | 381 | 67.7 | `casper/src/multi_parent_casper.rs` |
-| 118 | 651 | 769 | 84.7 | `node/src/api/grpc/tonic.rs` |
+| 122 | 259 | 381 | 68.0 | `casper/src/multi_parent_casper.rs` |
 | 104 | 264 | 368 | 71.7 | `casper/src/blocks/block_retriever.rs` |
-| 104 | 341 | 445 | 76.6 | `node/src/api/grpc/deploy_grpc_service_v1.rs` |
-| 103 | 478 | 581 | 82.3 | `casper/src/blocks/proposer/proposer.rs` |
+| 101 | 1019 | 1120 | 91.0 | `node/src/api/grpc/tonic.rs` |
 | 99 | 374 | 473 | 79.1 | `comm/src/upnp/mod.rs` |
 | 91 | 32 | 123 | 26.0 | `casper/src/blocks/block_processor.rs` |
 | 88 | 267 | 355 | 75.2 | `casper/src/api/block_api_impl.rs` |
-| 87 | 1202 | 1289 | 93.3 | `models/src/wire.rs` |
+| 86 | 495 | 581 | 85.2 | `casper/src/blocks/proposer/proposer.rs` |
 | 83 | 884 | 967 | 91.4 | `models/src/casper/protocol/casper_message.rs` |
 | 83 | 338 | 421 | 80.3 | `rholang/src/merging.rs` |
 | 83 | 1744 | 1827 | 95.5 | `rholang/src/native_state.rs` |
 | 79 | 1158 | 1237 | 93.6 | `rholang/src/parser.rs` |
 | 79 | 485 | 564 | 86.0 | `rholang/src/runtime.rs` |
 | 79 | 112 | 191 | 58.6 | `rspace/src/state/exporters.rs` |
+| 75 | 1264 | 1339 | 94.4 | `models/src/wire.rs` |
 | 75 | 438 | 513 | 85.4 | `qucalc/src/lib.rs` |
 | 74 | 281 | 355 | 79.2 | `comm/src/transport/grpc_transport_receiver.rs` |
 | 74 | 367 | 441 | 83.2 | `node/src/diagnostics/influxdb.rs` |
 | 72 | 577 | 649 | 88.9 | `rholang/src/pretty_printer.rs` |
-| 72 | 259 | 331 | 78.2 | `rspace/src/history/history_repository.rs` |
 | 71 | 112 | 183 | 61.2 | `casper/src/api/block_report_api.rs` |
+| 71 | 260 | 331 | 78.5 | `rspace/src/history/history_repository.rs` |
 | 70 | 223 | 293 | 76.1 | `rspace/src/state/mod.rs` |
 | 66 | 827 | 893 | 92.6 | `rholang/src/matcher/spatial_matcher.rs` |
 | 65 | 314 | 379 | 82.8 | `rspace/src/history/export.rs` |
@@ -81,10 +80,11 @@ agree with, so the summary wins and the gap is printed rather than hidden.
 | 63 | 153 | 216 | 70.8 | `casper/src/reporting.rs` |
 | 61 | 391 | 452 | 86.5 | `casper/src/engine/lfs_tuple_space_requester.rs` |
 | 61 | 507 | 568 | 89.3 | `rspace/src/history/radix_tree.rs` |
+| 56 | 389 | 445 | 87.4 | `node/src/api/grpc/deploy_grpc_service_v1.rs` |
 | 54 | 0 | 54 | 0.0 | `qucalc/src/main.rs` |
 | 53 | 16 | 69 | 23.2 | `node/src/main.rs` |
 | 52 | 205 | 257 | 79.8 | `casper/src/api/graph_generator.rs` |
-| 51 | 403 | 454 | 88.8 | `casper/src/genesis/mod.rs` |
+| 50 | 404 | 454 | 89.0 | `casper/src/genesis/mod.rs` |
 | 49 | 114 | 163 | 69.9 | `comm/src/who_am_i.rs` |
 | 48 | 83 | 131 | 63.4 | `comm/src/rp/handle_messages.rs` |
 | 48 | 282 | 330 | 85.5 | `node/src/api/web_api_impl.rs` |
@@ -119,7 +119,6 @@ agree with, so the summary wins and the gap is printed rather than hidden.
 | 24 | 758 | 782 | 96.9 | `casper/src/dag.rs` |
 | 23 | 156 | 179 | 87.2 | `models/src/rholang.rs` |
 | 23 | 269 | 292 | 92.1 | `node/src/api/rho_expr.rs` |
-| 22 | 58 | 80 | 72.5 | `node/src/instances/proposer_instance.rs` |
 | 21 | 171 | 192 | 89.1 | `comm/src/transport/stream_handler.rs` |
 | 21 | 581 | 602 | 96.5 | `graphz/src/lib.rs` |
 | 21 | 119 | 140 | 85.0 | `models/src/ast.rs` |
@@ -153,11 +152,11 @@ agree with, so the summary wins and the gap is printed rather than hidden.
 | 11 | 263 | 274 | 96.0 | `rspace/src/merger/event_log_merging_logic.rs` |
 | 10 | 120 | 130 | 92.3 | `comm/src/peer_node.rs` |
 | 10 | 299 | 309 | 96.8 | `node/src/diagnostics/scrape_data_builder.rs` |
-| 10 | 415 | 425 | 97.6 | `rspace/src/history/instances/rspace_history_reader_impl.rs` |
 | 9 | 344 | 353 | 97.5 | `block-storage/src/dag/finalizer.rs` |
 | 9 | 13 | 22 | 59.1 | `casper/src/state/mod.rs` |
 | 9 | 64 | 73 | 87.7 | `models/src/block_hash.rs` |
 | 9 | 299 | 308 | 97.1 | `models/src/par_ops.rs` |
+| 9 | 71 | 80 | 88.8 | `node/src/instances/proposer_instance.rs` |
 | 9 | 223 | 232 | 96.1 | `rholang/src/storage_printer.rs` |
 | 9 | 433 | 442 | 98.0 | `rspace/src/replay_rspace.rs` |
 | 9 | 130 | 139 | 93.5 | `rspace/src/trace/event.rs` |
@@ -234,6 +233,7 @@ agree with, so the summary wins and the gap is printed rather than hidden.
 | 1 | 153 | 154 | 99.4 | `node/src/runtime/node_environment.rs` |
 | 1 | 57 | 58 | 98.3 | `rspace/src/errors.rs` |
 | 1 | 41 | 42 | 97.6 | `rspace/src/history/cold_store.rs` |
+| 1 | 424 | 425 | 99.8 | `rspace/src/history/instances/rspace_history_reader_impl.rs` |
 | 1 | 244 | 245 | 99.6 | `rspace/src/trace/tuplespace_event.rs` |
 | 1 | 46 | 47 | 97.9 | `shared/src/debug.rs` |
 | 1 | 35 | 36 | 97.2 | `shared/src/maybe_cell.rs` |
@@ -334,7 +334,7 @@ where a third or more of the behaviour is unpinned.
 | 40.0 | 216 | 540 | `casper/src/blocks/block_receiver.rs` |
 | 38.8 | 71 | 183 | `casper/src/api/block_report_api.rs` |
 | 34.2 | 168 | 491 | `comm/src/upnp/gateway.rs` |
-| 32.3 | 123 | 381 | `casper/src/multi_parent_casper.rs` |
+| 32.0 | 122 | 381 | `casper/src/multi_parent_casper.rs` |
 | 31.5 | 193 | 613 | `casper/src/protocol/client.rs` |
 | 30.9 | 161 | 521 | `casper/src/runtime_replay.rs` |
 | 30.1 | 49 | 163 | `comm/src/who_am_i.rs` |
@@ -346,8 +346,7 @@ where a third or more of the behaviour is unpinned.
 | 24.8 | 88 | 355 | `casper/src/api/block_api_impl.rs` |
 | 24.7 | 248 | 1005 | `casper/src/runtime_manager.rs` |
 | 23.9 | 70 | 293 | `rspace/src/state/mod.rs` |
-| 23.4 | 104 | 445 | `node/src/api/grpc/deploy_grpc_service_v1.rs` |
-| 21.8 | 72 | 331 | `rspace/src/history/history_repository.rs` |
+| 21.5 | 71 | 331 | `rspace/src/history/history_repository.rs` |
 | 21.3 | 36 | 169 | `node/src/diagnostics/effects.rs` |
 | 20.9 | 99 | 473 | `comm/src/upnp/mod.rs` |
 | 20.8 | 74 | 355 | `comm/src/transport/grpc_transport_receiver.rs` |
@@ -355,14 +354,13 @@ where a third or more of the behaviour is unpinned.
 | 20.2 | 52 | 257 | `casper/src/api/graph_generator.rs` |
 | 19.7 | 83 | 421 | `rholang/src/merging.rs` |
 | 18.7 | 39 | 209 | `comm/src/transport/hostname_trust_manager.rs` |
-| 17.7 | 103 | 581 | `casper/src/blocks/proposer/proposer.rs` |
 | 17.2 | 65 | 379 | `rspace/src/history/export.rs` |
 | 16.8 | 74 | 441 | `node/src/diagnostics/influxdb.rs` |
 | 16.2 | 256 | 1582 | `node/src/runtime/node_runtime.rs` |
 | 15.7 | 40 | 255 | `crypto/src/util/certificate_helper.rs` |
 | 15.7 | 40 | 255 | `rholang/src/reporting_runtime.rs` |
-| 15.6 | 446 | 2855 | `rholang/src/reduce.rs` |
-| 15.3 | 118 | 769 | `node/src/api/grpc/tonic.rs` |
+| 15.5 | 443 | 2855 | `rholang/src/reduce.rs` |
+| 14.8 | 86 | 581 | `casper/src/blocks/proposer/proposer.rs` |
 | 14.7 | 25 | 170 | `rholang/src/tree_proc.rs` |
 | 14.6 | 75 | 513 | `qucalc/src/lib.rs` |
 | 14.5 | 48 | 330 | `node/src/api/web_api_impl.rs` |
@@ -373,10 +371,11 @@ where a third or more of the behaviour is unpinned.
 | 13.0 | 20 | 154 | `casper/src/interpreter_util.rs` |
 | 12.8 | 23 | 179 | `models/src/rholang.rs` |
 | 12.7 | 21 | 165 | `node/src/web/transaction.rs` |
+| 12.6 | 56 | 445 | `node/src/api/grpc/deploy_grpc_service_v1.rs` |
 | 11.8 | 34 | 288 | `rspace/src/state/instances.rs` |
 | 11.7 | 25 | 213 | `rspace/src/reporting_rspace.rs` |
-| 11.2 | 51 | 454 | `casper/src/genesis/mod.rs` |
 | 11.1 | 72 | 649 | `rholang/src/pretty_printer.rs` |
+| 11.0 | 50 | 454 | `casper/src/genesis/mod.rs` |
 | 10.9 | 21 | 192 | `comm/src/transport/stream_handler.rs` |
 | 10.8 | 25 | 232 | `shared/src/lmdb.rs` |
 | 10.8 | 65 | 600 | `sdk/src/dag/merging.rs` |
@@ -385,23 +384,24 @@ where a third or more of the behaviour is unpinned.
 | 9.6 | 26 | 272 | `comm/src/transport/grpc_transport.rs` |
 | 9.6 | 39 | 407 | `casper/src/genesis/rgov.rs` |
 | 9.5 | 26 | 275 | `casper/src/txn_coordinator.rs` |
+| 9.0 | 101 | 1120 | `node/src/api/grpc/tonic.rs` |
 | 8.6 | 83 | 967 | `models/src/casper/protocol/casper_message.rs` |
 | 8.3 | 15 | 181 | `rholang/src/matcher/par_spatial_matcher_utils.rs` |
 | 8.1 | 17 | 209 | `crypto/src/util/key_util.rs` |
-| 8.0 | 130 | 1633 | `rholang/src/normalizer.rs` |
 | 7.9 | 23 | 292 | `node/src/api/rho_expr.rs` |
 | 7.9 | 31 | 393 | `crypto/src/hash/blake2b512_random.rs` |
 | 7.8 | 46 | 586 | `casper/src/gateway/mod.rs` |
 | 7.8 | 46 | 591 | `models/src/types.rs` |
+| 7.6 | 126 | 1657 | `rholang/src/normalizer.rs` |
 | 7.6 | 37 | 485 | `casper/src/engine/lfs_block_requester.rs` |
 | 7.4 | 66 | 893 | `rholang/src/matcher/spatial_matcher.rs` |
 | 7.0 | 15 | 214 | `sdk/src/casper_syntax.rs` |
 | 6.8 | 11 | 162 | `block-storage/src/syntax.rs` |
 | 6.7 | 14 | 208 | `comm/src/discovery/peer_table.rs` |
-| 6.7 | 87 | 1289 | `models/src/wire.rs` |
 | 6.4 | 79 | 1237 | `rholang/src/parser.rs` |
 | 6.1 | 17 | 280 | `shared/src/refined.rs` |
 | 6.1 | 33 | 540 | `casper/src/validate.rs` |
+| 5.6 | 75 | 1339 | `models/src/wire.rs` |
 | 5.3 | 8 | 152 | `models/src/block_metadata.rs` |
 | 5.2 | 12 | 230 | `node/src/api/conversion.rs` |
 | 4.8 | 8 | 166 | `rspace/src/merger/event_log_index.rs` |
@@ -430,7 +430,6 @@ where a third or more of the behaviour is unpinned.
 | 2.6 | 4 | 151 | `crypto/src/signatures/secp256k1.rs` |
 | 2.6 | 6 | 232 | `node/src/diagnostics/prometheus_reporter.rs` |
 | 2.5 | 9 | 353 | `block-storage/src/dag/finalizer.rs` |
-| 2.4 | 10 | 425 | `rspace/src/history/instances/rspace_history_reader_impl.rs` |
 | 2.4 | 4 | 169 | `rholang/src/contract_call.rs` |
 | 2.3 | 8 | 351 | `node/src/configuration/commandline/config_mapper.rs` |
 | 2.1 | 4 | 193 | `comm/src/discovery/kademlia_node_discovery.rs` |
@@ -451,6 +450,7 @@ where a third or more of the behaviour is unpinned.
 | 0.6 | 1 | 157 | `block-storage/src/dag/message_map.rs` |
 | 0.5 | 1 | 198 | `comm/src/discovery/grpc_kademlia_rpc_server.rs` |
 | 0.4 | 1 | 245 | `rspace/src/trace/tuplespace_event.rs` |
+| 0.2 | 1 | 425 | `rspace/src/history/instances/rspace_history_reader_impl.rs` |
 | 0.0 | 0 | 166 | `rspace/src/history/instances/radix_history.rs` |
 | 0.0 | 0 | 237 | `rholang/src/errors.rs` |
 | 0.0 | 0 | 278 | `models/src/casper/protocol/deploy_service.rs` |
