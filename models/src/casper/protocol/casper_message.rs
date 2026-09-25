@@ -1183,6 +1183,52 @@ mod tests {
         }
     }
 
+    /// **Every `CasperMessage` variant survives its own wire codec.** The tests here round-trip
+    /// `BlockMessage` only, so `to_proto`/`from_proto`'s other eight arms — and the
+    /// `to_bytes`/`from_bytes` pairs of the standalone request types — had never run. A variant that
+    /// dropped a field on the way out, or decoded another variant's field, would compile, send, and
+    /// arrive subtly wrong; each row is built, encoded, decoded and compared **whole**, so a dropped
+    /// or transposed field fails here rather than surviving as a default. (The `body` corpus is the
+    /// same idea one layer down for `BlockMessage`'s bytes; this is the message layer.)
+    #[test]
+    fn every_message_variant_round_trips_through_its_codec() {
+        let cases: Vec<CasperMessage> = vec![
+            CasperMessage::BlockRequest(BlockRequest { hash: vec![1, 2, 3] }),
+            CasperMessage::BlockHashMessage(BlockHashMessage {
+                block_hash: block_hash(7),
+                block_creator: vec![9, 8, 7],
+            }),
+            CasperMessage::HasBlock(HasBlock { hash: vec![4, 5] }),
+            CasperMessage::HasBlockRequest(HasBlockRequest { hash: vec![6] }),
+            CasperMessage::ForkChoiceTipRequest(ForkChoiceTipRequest),
+            CasperMessage::FinalizedFringe(FinalizedFringe {
+                hashes: vec![block_hash(1), block_hash(2)],
+                state_hash: StateHash::new([3u8; 32]),
+            }),
+            CasperMessage::FinalizedFringeRequest(FinalizedFringeRequest {
+                identifier: "peer-1".to_string(),
+                trim_state: true,
+            }),
+            CasperMessage::StoreItemsMessageRequest(StoreItemsMessageRequest {
+                start_path: vec![(Blake2b256Hash::from_bytes([4u8; 32]), Some(2))],
+                skip: 3,
+                take: 4,
+            }),
+            CasperMessage::StoreItemsMessage(StoreItemsMessage {
+                start_path: vec![(Blake2b256Hash::from_bytes([5u8; 32]), None)],
+                last_path: vec![(Blake2b256Hash::from_bytes([6u8; 32]), Some(1))],
+                history_items: vec![(Blake2b256Hash::from_bytes([7u8; 32]), vec![1, 2])],
+                data_items: vec![(Blake2b256Hash::from_bytes([8u8; 32]), vec![3, 4])],
+            }),
+        ];
+        for case in cases {
+            let proto = case.to_proto();
+            let back = CasperMessage::from_proto(&proto)
+                .unwrap_or_else(|e| panic!("{case:?} did not decode: {e:?}"));
+            assert_eq!(back, case, "a variant round trips whole");
+        }
+    }
+
     #[test]
     fn block_message_round_trip_preserves_timestamp() {
         // The informational timestamp is carried in the header proto, so every node (and replay)

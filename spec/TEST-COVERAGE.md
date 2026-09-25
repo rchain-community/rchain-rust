@@ -26,7 +26,7 @@ and **no file is left without one or the other** — the linter's check 7 passes
 
 ## Inventory
 
-**1465 `#[test]`/`#[tokio::test]` unit functions + 127 integration tests** across 13 crates, with **26
+**1466 `#[test]`/`#[tokio::test]` unit functions + 127 integration tests** across 13 crates, with **26
 laws** carrying a randomized property test and **12 benchmark functions** in 7 Criterion groups. Only
 **3 of 13 crates have integration tests** (`rholang`, `casper`, `node`).
 
@@ -36,7 +36,7 @@ laws** carrying a randomized property test and **12 benchmark functions** in 7 C
 | `shared` | 84 | — | — | — |
 | `crypto` | 91 | — | — | — |
 | `graphz` | 18 | — | — | — |
-| `models` | 156 | — | 5 | — |
+| `models` | 157 | — | 5 | — |
 | `block-storage` | 42 | — | 3 | — |
 | `comm` | 125 | — | — | — |
 | `rspace` | 178 | — | 8 | — |
@@ -325,6 +325,7 @@ not found in that file. Coverage claims live here rather than in prose so they c
 | item 11 | `rholang/src/system_processes.rs` | `the_registry_ops_build_a_uri_and_refuse_what_they_cannot` |
 | item 11 | `rholang/src/system_processes.rs` | `the_sys_auth_token_contract_recognizes_the_token_and_nothing_else` |
 | item 11 | `rholang/tests/execution.rs` | `the_runtime_reads_data_joins_and_waiting_continuations` |
+| item 11 | `models/src/casper/protocol/casper_message.rs` | `every_message_variant_round_trips_through_its_codec` |
 
 ## Gap analysis (severity-ordered)
 
