@@ -913,13 +913,16 @@ def laws : List Law := [
       `Rchain.ReachesF, `Rchain.NoFork, `Rchain.ReachesF.step, `Rchain.ReachesF.trans,
       `Rchain.selfParents_reaches, `Rchain.selfParents_height_lt, `Rchain.nofork_of_unfiltered,
       `Rchain.nofork_ancestors_go_through_the_parent, `Rchain.selfParents_above_a_finalized_ancestor,
-      `Rchain.fork4, `Rchain.the_comparison_is_false_without_fork_freedom],
+      `Rchain.fork4, `Rchain.the_comparison_is_false_without_fork_freedom, `Rchain.fold4,
+      `Rchain.minMsgs_fold4, `Rchain.fold4_is_fork_free,
+      `Rchain.the_fold_can_publish_below_the_previous_fringe],
     axioms := [],
     rust := ["block-storage/src/dag/message_state.rs", "block-storage/src/dag/finalizer.rs"],
     witness := [`Rchain.fringe_monotone_is_false, `Rchain.seen_monotone_is_false,
       `Rchain.cross_sender_height_monotone_is_false, `Rchain.a_chain_of_three_picks_the_oldest,
       `Rchain.selfParents_above_a_finalized_ancestor,
-      `Rchain.the_comparison_is_false_without_fork_freedom],
+      `Rchain.the_comparison_is_false_without_fork_freedom, `Rchain.fold4_is_fork_free,
+      `Rchain.the_fold_can_publish_below_the_previous_fringe],
     falsifiable := some "`fringe_monotone_is_false` exhibits two overlapping fringes (one at 5 and 1, one \
       at 3) where both arms of the disjunction fail — so the axiom was false as written; \
       `seen_monotone_is_false` exhibits two unrelated messages where `b` sees `a` and `a` sees `2` but \

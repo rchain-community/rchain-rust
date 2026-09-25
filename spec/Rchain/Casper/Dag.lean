@@ -684,4 +684,43 @@ theorem the_comparison_is_false_without_fork_freedom :
     ¬ (∀ m ∈ selfParents fork4 ⟨23, 6, 0, 4, [21, 22], []⟩ [22],
         (⟨22, 5, 0, 3, [20], []⟩ : Message).height < m.height) := by decide
 
+/-! ### And fork-freedom is *not enough*: the fold can still publish below the previous fringe
+
+The sentinel theorem is about `selfParents`, and the derivation does not stop there: `nextLayer` folds the
+min messages and then adds their **candidate parents** (`:129-135`). The DAG below shows that step can
+publish a message *below* the previous fringe's message for the same sender — and it is fork-free, so the
+hypothesis the sentinel theorem needs does not exclude it.
+
+Three messages: two sender-0 blocks, `99` (height 2) and `100` (height 5), **neither with a parent** — a
+forest rather than a fork, which `NoFork` allows — and `101` (height 6) justifying `99`. With `100`
+finalized (it is the previous fringe's sender-0 message), the walk from `101` stops at `99`, `nextLayer`
+publishes `99`, and the previous fringe held `100`. **What excludes this is the sequence rule, not the
+fork rule**: `101`'s `seqNum` is 6 while its same-sender justification `99` is at `seqNum` 2, and the
+port's `sequence_number`/`check_justification_regression` require a block to justify its sender's
+**latest** block — so this DAG is refused at ingress for a different reason than a fork is. -/
+def fold4 : Dag :=
+  [ ⟨99, 2, 0, 2, [], []⟩,
+    ⟨100, 5, 0, 5, [], []⟩,
+    ⟨101, 6, 0, 6, [99], []⟩ ]
+
+/-- The walk from `101` with `100` finalized, `decide`d: it takes the unfinalized `99` and stops (no
+    parents). -/
+theorem minMsgs_fold4 :
+    (minMsgs fold4 [⟨101, 6, 0, 6, [99], []⟩] [100]).map (·.id) = [99] := by decide
+
+/-- **`fold4` is fork-free** — every message has at most one same-sender parent in the DAG (each has none,
+    or one) — so `NoFork` cannot be the hypothesis that excludes the case below. -/
+theorem fold4_is_fork_free :
+    ∀ m ∈ fold4, ∀ a ∈ sameSenderParents fold4 m.sender m [],
+      ∀ b ∈ sameSenderParents fold4 m.sender m [], a = b := by decide
+
+/-- **…and the published layer lies below the previous fringe**: the fold publishes `99` (height 2) where
+    the previous fringe held `100` (height 5), both sender 0. So a *fringe-level* monotonicity claim is
+    false of this model even with fork-freedom, and the hypothesis it needs is the sequence rule — the
+    finding that narrows law 15's remainder from "prove the lift" to "the lift needs the ingress rule that
+    makes a justification the sender's latest". -/
+theorem the_fold_can_publish_below_the_previous_fringe :
+    ¬ (∀ m ∈ nextLayer fold4 (minMsgs fold4 [⟨101, 6, 0, 6, [99], []⟩] [100]),
+        (⟨100, 5, 0, 5, [], []⟩ : Message).height ≤ m.height) := by decide
+
 end Rchain
