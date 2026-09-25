@@ -26,7 +26,7 @@ and **no file is left without one or the other** — the linter's check 7 passes
 
 ## Inventory
 
-**1457 `#[test]`/`#[tokio::test]` unit functions + 126 integration tests** across 13 crates, with **26
+**1460 `#[test]`/`#[tokio::test]` unit functions + 126 integration tests** across 13 crates, with **26
 laws** carrying a randomized property test and **12 benchmark functions** in 7 Criterion groups. Only
 **3 of 13 crates have integration tests** (`rholang`, `casper`, `node`).
 
@@ -40,7 +40,7 @@ laws** carrying a randomized property test and **12 benchmark functions** in 7 C
 | `block-storage` | 42 | — | 3 | — |
 | `comm` | 124 | — | — | — |
 | `rspace` | 178 | — | 8 | — |
-| `rholang` | 230 | 56 | 7 | — |
+| `rholang` | 233 | 56 | 7 | — |
 | `casper` | 277 | 54 | 3 | — |
 | `node` | 191 | 16 | — | — |
 | `qucalc` | 20 | — | — | — |
@@ -315,6 +315,9 @@ not found in that file. Coverage claims live here rather than in prose so they c
 | item 11 | `rholang/src/reduce.rs` | `the_int_conversions_report_what_they_cannot_convert` |
 | item 11 | `rholang/src/reduce.rs` | `take_slices_a_list_and_refuses_what_it_is_not_defined_on` |
 | item 11 | `node/tests/api_surface.rs` | `the_read_routes_answer_and_their_refusals_are_defined` |
+| item 11 | `rholang/src/reduce.rs` | `every_method_refuses_a_receiver_it_is_not_defined_on` |
+| item 11 | `rholang/src/reduce.rs` | `the_collection_conversions_convert_and_refuse_non_pairs` |
+| item 11 | `rholang/src/reduce.rs` | `nth_reports_an_out_of_bound_index_and_a_wrong_receiver` |
 
 ## Gap analysis (severity-ordered)
 

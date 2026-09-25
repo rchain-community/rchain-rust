@@ -3466,6 +3466,207 @@ mod tests {
         );
     }
 
+    /// **Every arm's wrong-receiver refusal, and the name it refuses by.** That a call on the wrong
+    /// kind of thing is *reported* — with the method's name and the receiver's type — rather than
+    /// answered with something plausible is the port's convention, and it was never asserted: the
+    /// existing tests pin the values the arms produce, and the uncovered lines in `eval_method` are
+    /// exactly these refusals. Two shapes produce them, and the table covers both without caring
+    /// which: an arm may end in its own `other => Err(method_not_defined(<name>, &other))`
+    /// (`toList`, `toMap`, `take`, `nth`-style collection arms), or it may route through a shared
+    /// helper (`string_arg` → `expect_string` → `method_not_defined`, which is how the thirteen
+    /// string methods refuse). What is asserted is therefore the *contract* — `MethodNotDefined`
+    /// carrying this method's name and the receiver's type — and a refusal that named the wrong
+    /// method, dropped the type, or stopped refusing fails here. (One row per arm, so an arm that
+    /// gains no refusal is one row's worth of visible absence rather than a number.)
+    #[test]
+    fn every_method_refuses_a_receiver_it_is_not_defined_on() {
+        let cost = CostAccounting::from_initial(Costs::unsafe_max());
+        let e = Env::new();
+        let boolean = from_expr(Expr::GBool(true));
+        let int = |v: i64| from_expr(Expr::GInt(v));
+        let s = |v: &str| from_expr(Expr::GString(v.to_string()));
+        let one_set = || from_expr(Expr::ESet(par_set(vec![from_expr(Expr::GInt(1))])));
+
+        let cases: Vec<(&str, Vec<Par>)> = vec![
+            ("toList", vec![]),
+            ("toSet", vec![]),
+            ("toMap", vec![]),
+            ("length", vec![]),
+            ("size", vec![]),
+            ("keys", vec![]),
+            ("get", vec![int(0)]),
+            ("getOrElse", vec![int(0), int(1)]),
+            ("set", vec![s("k"), int(1)]),
+            ("add", vec![int(1)]),
+            ("diff", vec![one_set()]),
+            ("union", vec![one_set()]),
+            ("contains", vec![int(1)]),
+            ("take", vec![int(1)]),
+            ("slice", vec![int(0), int(1)]),
+            ("toLowerCase", vec![]),
+            ("toUpperCase", vec![]),
+            ("capitalize", vec![]),
+            ("reverse", vec![]),
+            ("trim", vec![]),
+            ("startsWith", vec![s("a")]),
+            ("endsWith", vec![s("a")]),
+            ("indexOf", vec![s("a")]),
+            ("split", vec![s("a")]),
+            ("replace", vec![s("a"), s("b")]),
+            ("hexToBytes", vec![]),
+            ("toUtf8Bytes", vec![]),
+            ("bytesToHex", vec![]),
+        ];
+
+        for (method, args) in cases {
+            match eval_method(method, &boolean, &args, &e, &cost) {
+                Err(RholangError::MethodNotDefined { method: got, other_type }) => {
+                    assert_eq!(got, method, "the refusal names the method that was called");
+                    assert_eq!(
+                        other_type, "Bool",
+                        "and the type it is not defined on (`{method}`)"
+                    );
+                }
+                other => panic!("`{method}` on a Bool is refused by name, never answered: {other:?}"),
+            }
+        }
+    }
+
+    /// **`toSet`/`toMap`: the conversions and the non-pair refusal.** `toSet` takes a set as itself, a
+    /// map's `(k, v)` pairs, or a list's elements; `toMap` takes a map as itself and a collection *of
+    /// pairs* — and its failure arm is the one worth having: a member that is not a two-element tuple
+    /// is refused (`unapply_tuple2` returning `None`), rather than a map being built from half-pairs.
+    #[test]
+    fn the_collection_conversions_convert_and_refuse_non_pairs() {
+        let cost = CostAccounting::from_initial(Costs::unsafe_max());
+        let e = Env::new();
+        let int = |v: i64| from_expr(Expr::GInt(v));
+        let pair = |a: i64, b: i64| make_tuple(int(a), int(b));
+        let set_of = |ps: Vec<Par>| from_expr(Expr::ESet(par_set(ps)));
+        let list_of = |ps: Vec<Par>| {
+            from_expr(Expr::EList(EList {
+                ps,
+                ..Default::default()
+            }))
+        };
+
+        // toSet: a list's elements, and a map's pairs.
+        match single_expr(&eval_method("toSet", &list_of(vec![int(1), int(2)]), &[], &e, &cost).unwrap())
+            .unwrap()
+        {
+            Expr::ESet(s) => assert_eq!(s.ps.len(), 2, "a two-element list becomes a two-element set"),
+            other => panic!("expected a set, got {other:?}"),
+        }
+        match single_expr(
+            &eval_method(
+                "toSet",
+                &from_expr(Expr::EMap(par_map(vec![(int(1), int(2))]))),
+                &[],
+                &e,
+                &cost,
+            )
+            .unwrap(),
+        )
+        .unwrap()
+        {
+            Expr::ESet(s) => assert_eq!(s.ps.len(), 1, "a map becomes a set of its pairs"),
+            other => panic!("expected a set, got {other:?}"),
+        }
+
+        // toMap: a set of pairs, and a list of pairs.
+        match single_expr(
+            &eval_method(
+                "toMap",
+                &set_of(vec![pair(1, 2), pair(3, 4)]),
+                &[],
+                &e,
+                &cost,
+            )
+            .unwrap(),
+        )
+        .unwrap()
+        {
+            Expr::EMap(m) => assert_eq!(m.kvs.len(), 2, "two pairs become a two-entry map"),
+            other => panic!("expected a map, got {other:?}"),
+        }
+        assert!(
+            eval_method(
+                "toMap",
+                &list_of(vec![pair(1, 2), pair(3, 4)]),
+                &[],
+                &e,
+                &cost
+            )
+            .is_ok(),
+            "a list of pairs converts too"
+        );
+
+        // The failure arms: a member that is not a pair, from a set and from a list.
+        match eval_method("toMap", &set_of(vec![int(1), int(2)]), &[], &e, &cost) {
+            Err(RholangError::MethodNotDefined { method, other_type }) => {
+                assert_eq!(method, "toMap");
+                assert_eq!(other_type, "Set", "the refusal names what it could not convert");
+            }
+            other => panic!("a set of non-pairs is refused, not half-converted: {other:?}"),
+        }
+        assert!(
+            eval_method("toMap", &list_of(vec![int(1), int(2)]), &[], &e, &cost).is_err(),
+            "and so is a list of non-pairs"
+        );
+    }
+
+    /// **`nth`: the value, both out-of-bound refusals, and the wrong-receiver message.** `nth` is the
+    /// one arm whose refusal is *not* `MethodNotDefined` — it answers `ReduceError("Error: index out of
+    /// bound: {n}")` or the "wasn't a list or tuple" message — so its three arms are pinned here
+    /// rather than in the refusal table above. The byte-array arm is reached through `toUtf8Bytes`,
+    /// which is the only way to build one from a test without guessing the constructor.
+    #[test]
+    fn nth_reports_an_out_of_bound_index_and_a_wrong_receiver() {
+        let cost = CostAccounting::from_initial(Costs::unsafe_max());
+        let e = Env::new();
+        let int = |v: i64| from_expr(Expr::GInt(v));
+        let list = from_expr(Expr::EList(EList {
+            ps: vec![int(1), int(2), int(3)],
+            ..Default::default()
+        }));
+
+        assert_eq!(
+            eval_method("nth", &list, &[int(1)], &e, &cost).unwrap(),
+            int(2),
+            "nth(1) is the second element"
+        );
+        let out_of_bound = eval_method("nth", &list, &[int(9)], &e, &cost)
+            .expect_err("index 9 of a three-element list");
+        assert!(
+            format!("{out_of_bound:?}").contains("index out of bound: 9"),
+            "the refusal names the index: {out_of_bound:?}"
+        );
+
+        // The byte-array arm, both directions.
+        let bytes = eval_method(
+            "toUtf8Bytes",
+            &from_expr(Expr::GString("ab".to_string())),
+            &[],
+            &e,
+            &cost,
+        )
+        .unwrap();
+        assert_eq!(eval_method("nth", &bytes, &[int(0)], &e, &cost).unwrap(), int(97));
+        assert!(
+            eval_method("nth", &bytes, &[int(9)], &e, &cost).is_err(),
+            "past the end of a byte array"
+        );
+
+        // The wrong receiver, whose message says what it *was*: this is the message a rholang
+        // programmer sees when they index a boolean.
+        let wrong = eval_method("nth", &from_expr(Expr::GBool(true)), &[int(0)], &e, &cost)
+            .expect_err("nth on a Bool");
+        assert!(
+            format!("{wrong:?}").contains("wasn't a list or tuple"),
+            "the refusal says `nth` needs a list or tuple: {wrong:?}"
+        );
+    }
+
     #[test]
     fn set_union() {
         let cost = CostAccounting::from_initial(Costs::unsafe_max());
