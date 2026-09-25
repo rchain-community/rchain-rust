@@ -511,6 +511,40 @@ mod tests {
         assert_eq!(info.control_url, "/upnp/control/WANIPConn1");
     }
 
+    /// **The device carrier and its eight accessors.** `WeupnpGatewayDevice::new` and the
+    /// `GatewayDevice` getters that read it had never run: a device is built only on the real gateway
+    /// path (`discover`), and the tests here all stop at `parse_device`. They are pure — a field in,
+    /// the same field out — which makes this the cheapest region in the ranked file: one fixture, and
+    /// each accessor asserted against what the *parser* produced rather than against itself.
+    ///
+    /// The failure this can catch is a constructor that crossed two fields of the same type — every
+    /// one of these is a `String`, so a `model_name`/`manufacturer` swap compiles and would otherwise
+    /// be invisible until a router's model name appeared in the wrong log line.
+    ///
+    /// What it cannot cover: the four SOAP-backed accessors (`external_ip_address`,
+    /// `add_port_mapping`, `delete_port_mapping`, `status_info`) POST to a real router's control URL.
+    /// They are this file's `peer-bound` half, named in the register's classification table.
+    #[test]
+    fn the_gateway_device_carries_what_the_parser_found() {
+        let info = parse_device(DEVICE_XML).unwrap();
+        let location = "http://192.168.1.1:5000/rootDesc.xml".to_string();
+        let device = WeupnpGatewayDevice::new(
+            info.clone(),
+            IGD_DEVICE_TYPE.to_string(),
+            location.clone(),
+            "http://192.168.1.1:5000/upnp/control/WANIPConn1".to_string(),
+        );
+
+        assert_eq!(device.friendly_name(), "Test Router");
+        assert_eq!(device.manufacturer(), "ACME");
+        assert_eq!(device.model_name(), "RT-1000");
+        assert_eq!(device.model_description(), "ACME Router");
+        assert_eq!(device.device_type(), IGD_DEVICE_TYPE);
+        assert_eq!(device.service_type(), info.service_type);
+        assert_eq!(device.search_type(), IGD_DEVICE_TYPE);
+        assert_eq!(device.location(), location);
+    }
+
     #[test]
     fn parse_device_rejects_non_gateway() {
         let xml = DEVICE_XML.replace(

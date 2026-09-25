@@ -2083,6 +2083,134 @@ mod tests {
         );
     }
 
+    /// **`rho:io:http`: the four operations and both refusals.** The whole dispatch — `record`, `get`,
+    /// `check`, `height` and the unknown-method arm — was unexecuted: nothing in the tree calls this
+    /// urn (law 39's catalog pins its *schema*, not its behaviour), so a port bug in it would have
+    /// been invisible. The operations are what a contract uses to write and read a value at a block
+    /// height, and the refusals are what a contract gets for a typo or a malformed call.
+    #[tokio::test]
+    async fn the_http_contract_records_gets_checks_and_reports_its_height() {
+        let mock = Arc::new(MockSpace {
+            produced: Mutex::new(Vec::new()),
+        });
+        let (_sp, defs) = mock_system_processes(&mock);
+        let handler = defs
+            .iter()
+            .find(|d| d.body_ref == BodyRefs::HTTP)
+            .expect("http definition");
+
+        let s = |v: &str| RhoString::apply(v.to_string());
+        // `http!("record", ["url", "value", ret])` — the handler's arity-1 shape is
+        // `[method, [args…]]`, so one injected par carries the op and one the argument list.
+        let call = |op: &str, rest: Vec<Par>| -> Vec<ListParWithRandom> {
+            vec![lpw(vec![s(op), RhoList::apply(rest)])]
+        };
+        let reply = || -> Par {
+            let produced = mock.produced.lock().unwrap_or_else(|p| p.into_inner());
+            assert_eq!(produced.len(), 1, "each call answers exactly once");
+            produced[0].1.pars[0].as_par().clone()
+        };
+        let clear = || {
+            mock.produced
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .clear();
+        };
+
+        // `record` writes a value at the current block; it answers whether it was newly recorded.
+        let ret = FixedChannels::stdout();
+        (handler.handler)(
+            call("record", vec![s("u"), s("v"), ret.clone()]),
+            DfsPath::root(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(reply(), RhoBoolean::apply(true), "a fresh record is recorded");
+        clear();
+
+        // `get` reads it back, and answers Nil (not an error) for a url that was never recorded.
+        (handler.handler)(
+            call("get", vec![s("u"), ret.clone()]),
+            DfsPath::root(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            RhoString::unapply(&reply()),
+            Some("v"),
+            "the value recorded comes back"
+        );
+        clear();
+        (handler.handler)(
+            call("get", vec![s("never-recorded"), ret.clone()]),
+            DfsPath::root(),
+        )
+        .await
+        .unwrap();
+        assert!(
+            RhoNil::unapply(&reply()),
+            "an unknown url is Nil, the same answer an unmatched `for` gives"
+        );
+        clear();
+
+        // `check` compares the stored value, in both directions.
+        (handler.handler)(
+            call("check", vec![s("u"), s("v"), ret.clone()]),
+            DfsPath::root(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(reply(), RhoBoolean::apply(true));
+        clear();
+        (handler.handler)(
+            call("check", vec![s("u"), s("other"), ret.clone()]),
+            DfsPath::root(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            reply(),
+            RhoBoolean::apply(false),
+            "a mismatch is false, not an error"
+        );
+        clear();
+
+        // `height` reports the block the record was written at.
+        (handler.handler)(
+            call("height", vec![s("u"), ret.clone()]),
+            DfsPath::root(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(reply(), RhoNumber::apply(0), "BlockData::empty() is height 0");
+        clear();
+
+        // Both refusals: an operation that does not exist, and a call that is not shaped like one.
+        let unknown = (handler.handler)(call("nope", vec![]), DfsPath::root()).await;
+        assert!(
+            format!("{unknown:?}").contains("unknown method nope"),
+            "an unknown operation is refused by name: {unknown:?}"
+        );
+        let wrong_arity = (handler.handler)(
+            call("record", vec![s("url-only")]),
+            DfsPath::root(),
+        )
+        .await;
+        assert!(
+            format!("{wrong_arity:?}").contains("expects url, value and a return channel"),
+            "and a record missing its value says what it wanted: {wrong_arity:?}"
+        );
+        let not_a_list = (handler.handler)(
+            vec![lpw(vec![s("get"), s("not-a-list")])],
+            DfsPath::root(),
+        )
+        .await;
+        assert!(
+            format!("{not_a_list:?}").contains("arguments must be a list"),
+            "the argument list is demanded too: {not_a_list:?}"
+        );
+    }
+
     #[tokio::test]
     async fn registry_insert_arbitrary_then_lookup_round_trips() {
         let mock = Arc::new(MockSpace {
