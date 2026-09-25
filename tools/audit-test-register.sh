@@ -49,6 +49,14 @@
 #      measurement — a hand-written current percentage in `spec/TEST-COVERAGE.md` fails, because that
 #      is precisely the shape that rots. Item 11's hand-written order ("uncovered lines") named the
 #      file ranked 15th first, while the measurement's actual leaders had no register row at all.
+#  12. **The status vocabulary names no law** — `spec/Rchain/Laws.lean`'s module doc defines each status
+#      in one bullet, and those bullets used to carry their examples as law numbers. Measured
+#      2026-09-25: `open`'s list was wrong in four of its five entries (the rows had all moved on) and
+#      `orphaned`'s was right by luck. A reader goes to the bullet to *learn* the word, so a wrong list
+#      there teaches the wrong word — `spec/STYLE.md`'s own rule against restating a status in prose.
+#      The examples belong to the emitted register (`spec/laws.tsv`, `spec/LAWS.md`), and this check is
+#      what keeps them there: a law number in a status bullet fails, and the paragraph that *quotes* the
+#      two old lists does so outside a bullet, which is why the scan follows the bullets and not the file.
 #
 # The class vocabulary is **closed** because a row that can invent its own reason is not a reason:
 # a `peer-bound` or `harness-bound` row must name its covering test as `path::test`, and the linter
@@ -63,6 +71,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+SPEC="$ROOT/spec"
 REGISTER="$ROOT/spec/TEST-COVERAGE.md"
 DEFERRED_OK=0
 [[ "${1:-}" == "--deferred-ok" ]] && DEFERRED_OK=1
@@ -571,6 +580,24 @@ fi
 # check is not claiming them): a **Lean** count (`parseDeviations`, 14 rows — the deviation table, not a
 # corpus, and `INVENTORY.md` says so in the cell), and a **range** (`cases 7–12`, where the word comes
 # before the number). Both are counted by nothing, and neither is silently skipped.
+#
+# **And a third shape is a *boundary*, not a check: a count written in words.** The rule above matches
+# digits, so "twenty-three pairwise verdicts" — law 1a's `falsifiable` cell, describing the `sort`
+# layer — was read by no check at all, and it had drifted: the layer holds **25** verdicts, which
+# `INVENTORY.md`'s row for the same law already said. (Two errors, in fact: the phrase was stale, and an
+# earlier reading of it called the drift "off by one" by subtracting a header the corpora do not have —
+# `wc -l < spec/conformance/sort.tsv` is 25 and there is no header line to remove.) The phrase is fixed
+# (it now names `conformance/sort.tsv` and carries the digit, so this check judges it).
+#
+# **A check for the word form was written and then withdrawn, and the measurement is why.** Firing on
+# `\b(one|two|…|fifty)(-[a-z]+)? (rows|cases|verdicts|lines)\b` beside a layer token reported four
+# hits in `INVENTORY.md`, and three of them were *history*: "The layer's first consumer run found three
+# rows the model did not know", "a three-valued verdict" — prose recounting a run, not a claim about a
+# corpus. A check that fires on prose is a check people learn to work around (the gate's own `sorry`
+# scan says the same at its step 2), and the class it would catch is already covered by the rule the
+# repo states: **a count is written in digits or as a generated span** (`spec/STYLE.md`, "the register is
+# the oracle"). What a word-form count lacks is not a check but a *reason to exist*: the digit form is
+# the one that is read.
 printf '\n== register counts (a count beside a corpus file is that file'"'"'s count) ==\n'
 count_total=0
 count_bad_before=$failures
@@ -696,6 +723,31 @@ done < <(grep -nE '([0-9]+\.[0-9]+%|floor to [*]{0,2}[0-9]+)' "$REGISTER" || tru
 
 if (( failures == ledger_bad_before )); then
   ok "the register points at the measurement and states no coverage figure of its own"
+fi
+
+# --- 12. the status vocabulary names no law ------------------------------------
+#
+# `spec/Rchain/Laws.lean`'s module doc defines each status in one bullet, and the bullets used to carry
+# their examples as law numbers — "(laws 30, 31, 33, 34, 36)" for `open`, "(laws 12, 13)" for
+# `orphaned`. Measured 2026-09-25: the first was wrong in four of its five entries (every one of those
+# rows had moved on) and the second was right by luck; the bullet is where a reader goes to *learn* the
+# vocabulary, so a wrong list there teaches the wrong word. That is `spec/STYLE.md`'s own rule — do not
+# restate a status in prose — and the ruled fix is that the examples live in the emitted register
+# (`spec/laws.tsv`, `spec/LAWS.md`), where they cannot drift. This check is what keeps them out: a law
+# number in a status bullet is a failure, and the paragraph that quotes the two old lists quotes them
+# *outside* a bullet, which is why the scan follows the bullets rather than the file.
+printf '\n== status vocabulary (no status bullet names a law number) ==\n'
+vocab_bad_before=$failures
+while IFS=: read -r line_no rest; do
+  [[ -z "$line_no" ]] && continue
+  fail "Rchain/Laws.lean:$line_no names a law number in a status bullet ('$(printf '%s' "$rest" | sed 's/^[[:space:]]*//' | cut -c1-48)…') — the examples are the emitted register's, not the vocabulary's"
+done < <(awk '
+  /^- `[a-zA-Z-]+` —/ { inb = 1; if ($0 ~ /laws? [0-9]/) print FNR":"$0; next }
+  inb && /^  [^ ]/ { if ($0 ~ /laws? [0-9]/) print FNR":"$0; next }
+  { inb = 0 }
+' "$SPEC/Rchain/Laws.lean" || true)
+if (( failures == vocab_bad_before )); then
+  ok "the status vocabulary names no law (the emitted register carries the examples)"
 fi
 
 # --- summary -----------------------------------------------------------------

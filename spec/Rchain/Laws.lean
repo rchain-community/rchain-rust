@@ -26,24 +26,34 @@ proved *about the Lean model* and a law proved *and checked against the running 
 
 - `provedTied` — proved, **and** tied to the node by a conformance corpus whose Rust consumer runs the
   same source text through the real thing (`spec/conformance/*.tsv`). The corpus is the only mechanical
-  Lean↔Rust link this repo has, so only laws 32, 34, 35, 37–43 can carry this status today.
+  Lean↔Rust link this repo has. Check 5c requires one (a status that names a tie nothing checks is the
+  word `proved-tied` with no tie behind it) and `corpusLayerFailures` requires the layer the row names to
+  exist, so the two halves are enforced at the two levels they can be.
 - `provedModel` — proved over the model; the tie to the Rust is prose in a mapping table. Honest, and
-  weaker than it sounds: a `provedModel` law is a claim about a model that a human keeps in sync. Most of
-  laws 1–29 are here, and the consolidation pass moved rows *into* it by modelling the Rust's own
-  definitions; the rows it could not are `owed`, and their notes say what is missing.
-- `axiomByDesign` — postulated because the primitive is cryptographic (Law 19). The only status that
-  should survive the work this register begins.
-- `owed` — the definition exists and the proof does not. `takesStep_iff_reduces` is the last one in
-  the language layer (`TakesStep_sound` left it when the rule's receive shape was widened, AUDIT C45).
+  weaker than it sounds: a `provedModel` law is a claim about a model that a human keeps in sync. A row
+  may carry a corpus here too and still be `provedModel` — when the layer is *partial*, the model's
+  algebra coarser than the node's — and then its note says why the corpus is not the tie the stronger
+  word would claim.
+- `axiomByDesign` — postulated because the primitive is cryptographic (the crypto law). The only status
+  that should survive the work this register begins.
+- `owed` — the definition exists and the proof does not.
 - `deferred` — the `axiom` *is* the definition, so there is nothing yet to prove anything about.
-  **Empty now**: `substPar` was the last example and is a `mutual` definition since 2026-09-23;
-  `joinKey`, `trieRoot` and `mergeChanges` left this status in the consolidation pass, when the Rust's
-  own definitions were modelled.
-- `open` — in the catalog, no formalization (laws 30, 31, 33, 34, 36).
-- `orphaned` — out of scope because the VM it describes was not ported (laws 12, 13).
+  **Empty now**: the last examples (`substPar`, `joinKey`, `trieRoot`, `mergeChanges`) are definitions
+  since the consolidation pass modelled the Rust's own.
+- `open` — in the catalog, and its formalization is **not yet statable**: unlike `owed`, a definition is
+  missing rather than a proof.
+- `orphaned` — out of scope because the VM it describes was not ported.
 - `retired` — the port has **no rule of this shape**, with the evidence in the row's note and its `rust`
   anchor (the code that was read). A decision recorded, not an omission: the alternative is an `open` row
   that will never close, which makes the count dishonest in the direction that matters least visibly.
+
+**No bullet names law numbers, and that is a rule with a check behind it.** The lists that stood here
+("(laws 30, 31, 33, 34, 36)" for `open`, "(laws 12, 13)" for `orphaned`) were wrong in four of five
+entries by 2026-09-25 — every one of those rows had moved on — which is `spec/STYLE.md`'s own rule ("do
+not restate a status in prose") broken in the one place a reader looks to learn the vocabulary.
+`tools/audit-test-register.sh`'s check 12 now fails on a law number in a status bullet: the counts and the
+per-row statuses live in `spec/laws.tsv`/`spec/LAWS.md`, which are emitted, and a reader who wants the
+examples should read those.
 
 `falsifiable` records what would have to be true for the law to be *false* — a witness, a negative case,
 or the reason it cannot fail. A law that cannot fail constrains nothing: `numeric_channels_nonneg` was
@@ -208,9 +218,9 @@ def laws : List Law := [
     coq := ["spec/coq/Sort.v:sortPar_idempotent", "spec/coq/Sort.v:sortPar_comm"],
     falsifiable := some "`sortPar_idempotent`/`sortPar_comm` are theorems; `spec/INVENTORY.md`'s Law 1 \
       claim of idempotence is falsified by any leaf type whose comparator is not a total order — see \
-      clause b, where exactly that is assumed rather than proved. The `sort` corpus is the tie: twenty-three \
-      pairwise verdicts, each `decide`d against the model's `cmpPar`, read back from the node by which \
-      element `sort_par` puts first (`rholang/tests/lean_sort_corpus.rs`)",
+      clause b, where exactly that is assumed rather than proved. The `sort` corpus is the tie: \
+      `conformance/sort.tsv`'s 25 verdicts, each `decide`d against the model's `cmpPar`, read back from \
+      the node by which element `sort_par` puts first (`rholang/tests/lean_sort_corpus.rs`)",
     note := "`sortPar_idempotent` is proved only *for* a comparator whose element laws hold; the \
       element-law half is clause b, and it is axioms. **The `sort` corpus found a divergence on its \
       first run, and it is now aligned and pinned** (2026-09-23): the model's comparators ordered by \
@@ -787,7 +797,17 @@ def laws : List Law := [
   { number := 13, layer := "Rosette",
     statement := "Reflection: everything is an `Ob`; meta/parent chain; fork-join barrier",
     status := .orphaned,
-    falsifiable := none },
+    falsifiable := none,
+    note := "**the same decision as row 12, and it needed saying here too** (2026-09-25): this is the \
+      Rosette actor VM's reflection layer — `Ob` as the universal object, the meta/parent chain, and \
+      the fork-join barrier whose fork is `OpFork` \
+      (`legacy/roscala/src/main/scala/coop/rchain/roscala/Vm.scala:195`), with the `Ob`/`Meta`/`Ctxt` \
+      triple under `legacy/roscala/src/main/scala/coop/rchain/roscala/ob/` — and \
+      `legacy/rosette`/`legacy/roscala` are not wired into the build: the Rust reducer replaces the VM. \
+      So there is nothing in this tree for the law to be a claim about, which is what `orphaned` says. \
+      Stated rather than left to the status word because the register's own rule for `vacuous` applies \
+      here too — a status with no note is an admission with no plan, and row 12's note is the same \
+      sentence about a different part of the same VM" },
 
   -- ── Casper / Storage / Crypto (Laws 14–19) ──────────────────────────────────────────────────────
   { number := 14, clause := "a", layer := "Casper",
@@ -1485,9 +1505,17 @@ def laws : List Law := [
       why the row is `provedModel` on what is proved rather than `owed` on what the toolchain lacks" },
   { number := 26, clause := "c", layer := "Cross-shard",
     statement := "The RNG seed and unforgeable names are shard-scoped",
-    status := .open,
-    falsifiable := none,
-    note := "**determined by reading the port, not by judgement** (2026-09-24), and the answer is that \
+    status := .retired,
+    rust := ["rholang/src/reduce.rs", "casper/src/tools.rs"],
+    falsifiable := some "the law could have been true in exactly one way, and the reading below shows \
+      the port does not take it: put a shard in the seed derivation — the unforgeable draw \
+      (`rholang/src/reduce.rs`'s `alloc`), `unforgeable_name_rng` and the deploy's \
+      `Blake2b512Random::from_init` (`casper/src/tools.rs`) — and the same deploy bytes in a second \
+      shard would draw *different* names. Nothing in either tree does, so the claim has no instance to \
+      be false of, which is why the row is retired rather than open",
+    note := "**retired 2026-09-25, on the reading below — the port has no rule of this shape** \
+      (`retired`'s words), and the evidence is the measurement that was already here: \
+      **determined by reading the port, not by judgement** (2026-09-24), and the answer is that \
       the node scopes **neither** to a shard — so this is a **design claim** (law 48's shape), not a \
       port gap. The unforgeable names *are* the deploy's RNG stream: the `GPrivate` constructor over a draw: \
       `GUnforgeable::GPrivate(GPrivate { id: bytes })` with `bytes = rand.next()` (`rholang/src/reduce.rs:1973`, \
