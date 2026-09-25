@@ -901,11 +901,13 @@ def laws : List Law := [
   { number := 15, layer := "Casper",
     rustWitness := ["block-storage/src/property_tests.rs:law15_adding_blocks_only_grows_the_state"],
     statement := "The fringe is monotone by height **per sender** and the seen set is monotone (no \
-      regression) — the **derived** fringe and the **constructed** seen set; over bare values both \
-      claims are false and their refutations are proved, and the **cross-sender** reading of the height \
-      claim is false too, of this tree *and* of the oracle \
-      (`cross_sender_height_monotone_is_false`)",
-    status := .owed,
+      regression) — the **derived** fringe and the **constructed** seen set, the height claim **under the \
+      ingress rules the port enforces at admission** (fork-freedom and the sequence rule, both refused \
+      rather than observed: H-1's equivocation gate, `sequence_number`, \
+      `check_justification_regression`); over bare values both claims are false and their refutations are \
+      proved, and the **cross-sender** reading of the height claim is false too, of this tree *and* of the \
+      oracle (`cross_sender_height_monotone_is_false`)",
+    status := .provedModel,
     declarations := [`Rchain.Message, `Rchain.seenOf, `Rchain.Reaches,
       `Rchain.seen_monotone_of_reaches, `Rchain.seen_monotone_is_false,
       `Rchain.fringe_monotone_is_false, `Rchain.seenOf_contains_justifications, `Rchain.mem_seenOf_self,
@@ -922,7 +924,17 @@ def laws : List Law := [
       `Rchain.insertCandidate, `Rchain.seedLayer_nodup, `Rchain.insertCandidate_nodup,
       `Rchain.the_guard_keeps_the_newer_message, `Rchain.the_comparison_holds_on_fold5, `Rchain.SeqUnique,
       `Rchain.SeqStep, `Rchain.seqNum_lt_height_lt, `Rchain.entryFor, `Rchain.find?_sender_eq,
-      `Rchain.insertCandidate_height_le],
+      `Rchain.insertCandidate_height_le, `Rchain.find?_filter_ne, `Rchain.entryFor_layerInsert_ne,
+      `Rchain.entryFor_insertCandidate_ne, `Rchain.entryFor_insertCandidate_self,
+      `Rchain.entryFor_insertCandidate_refused, `Rchain.entryFor_insertCandidate_some,
+      `Rchain.entryFor_insertCandidate_none, `Rchain.entryFor_insertCandidate_le,
+      `Rchain.mem_layerInsert, `Rchain.mem_insertCandidate, `Rchain.seedLayer_mem, `Rchain.parents_mem,
+      `Rchain.foldl_insertCandidate_height_le, `Rchain.nextLayer_height_le_seed,
+      `Rchain.mem_of_head?, `Rchain.reachesF_sender, `Rchain.selfParents_sender, `Rchain.minMsg_sender,
+      `Rchain.minMsgs_mem_d, `Rchain.minMsgs_above, `Rchain.find?_sender_eq_nat,
+      `Rchain.foldl_layerInsert_mem, `Rchain.seedLayer_entryFor_mem, `Rchain.seedLayer_entryFor_sender,
+      `Rchain.foldl_insertCandidate_entryFor_none, `Rchain.nextLayer_above_the_previous_fringe,
+      `Rchain.derivedFringe_above_the_previous_fringe, `Rchain.descendsB, `Rchain.descendsB_iff],
     axioms := [],
     rust := ["block-storage/src/dag/message_state.rs", "block-storage/src/dag/finalizer.rs"],
     witness := [`Rchain.fringe_monotone_is_false, `Rchain.seen_monotone_is_false,
@@ -932,7 +944,11 @@ def laws : List Law := [
       `Rchain.the_fold_can_publish_below_the_previous_fringe, `Rchain.fold5_is_fork_free,
       `Rchain.fold5_satisfies_the_sequence_rule, `Rchain.the_guard_keeps_the_newer_message,
       `Rchain.the_comparison_holds_on_fold5, `Rchain.seqNum_lt_height_lt,
-      `Rchain.insertCandidate_height_le],
+      `Rchain.insertCandidate_height_le, `Rchain.minMsgs_above, `Rchain.nextLayer_height_le_seed,
+      `Rchain.nextLayer_above_the_previous_fringe, `Rchain.derivedFringe_above_the_previous_fringe,
+      `Rchain.d15_the_layer, `Rchain.d15_the_published_entry, `Rchain.d15_descends,
+      `Rchain.d15_is_fork_free, `Rchain.d15_is_sequence_unique, `Rchain.d15_satisfies_the_sequence_rule,
+      `Rchain.d15_the_comparison_holds],
     falsifiable := some "`fringe_monotone_is_false` exhibits two overlapping fringes (one at 5 and 1, one \
       at 3) where both arms of the disjunction fail — so the axiom was false as written; \
       `seen_monotone_is_false` exhibits two unrelated messages where `b` sees `a` and `a` sees `2` but \
@@ -942,7 +958,13 @@ def laws : List Law := [
       `the_comparison_is_false_without_fork_freedom` (`fork4`: `p` with a finalized parent at height 5 \
       and a second same-sender branch that reaches height 1 without passing through it) makes the \
       statement **false** of a DAG with a fork, so the theorem is about fork-free DAGs and `NoFork` is \
-      what the ingress refusal (H-1, AUDIT C82/C84) supplies",
+      what the ingress refusal (H-1, AUDIT C82/C84) supplies. **And the lift's own hypotheses are \
+      falsified where they are dropped**: `the_fold_can_publish_below_the_previous_fringe` states the \
+      conclusion's negation on `fold4`, a **fork-free** DAG whose `101` justifies the older `99` — so \
+      fork-freedom alone does not carry the comparison, and the sequence rule is what refuses that shape; \
+      and the fold's guard is load-bearing by a **one-word mutation** — `insertCandidate`'s \
+      `if cur.seqNum < m.seqNum` replaced by `true` — under which `fold5` publishes the stale `c` where \
+      the port publishes `z` (`the_guard_keeps_the_newer_message`)",
     note := "**two more false axioms, both refuted in the tree.** The content is the *derivation*: a \
       message's seen set is **constructed** as the union of its justifications' seen sets plus its own id \
       (`message_state.rs:54-59`), which the model now has (`seenOf`, with both halves proved: \
@@ -1043,7 +1065,32 @@ def laws : List Law := [
       (`the_fold_can_publish_below_the_previous_fringe`, with \
       `fold4_is_fork_free`, `fold5_is_fork_free` and `fold5_satisfies_the_sequence_rule` proving each \
       instance *has* the hypothesis it tests — the two refutation instances, and the two checks on the \
-      fold that now mirrors the port). **And the fold itself was the thing in the way, which is now fixed rather than argued about.** The port's `calculate_next_layer` gives a candidate its sender's slot **only when its `sender_seq` is strictly greater** (`block-storage/src/dag/finalizer.rs:119-125`), and the port's own comment calls that guard *\"the Law 15 monotonicity invariant\"* (`message_state.rs:77`). `layerInsert` did not: it is the *seeding* rule (the port's `BTreeMap::collect`, last wins) and the model used it for the candidates too, justified by *\"the antichain does not depend on that choice\"* — true of law 14b's **keys**, false of the **message** law 15 is about. `seedLayer` and `insertCandidate` now carry both rules, and the difference shows on this file's own instance: `dag3`'s published layer was [10, 12] and is now [11, 12] — the model was publishing a **stale** same-sender message, which no law-14b check could see because the *keys* were right either way. **With the faithful fold the counterexample is `fold4` and nothing else**, stated per sender as law 15 states it: `the_fold_can_publish_below_the_previous_fringe` holds of a fork-free DAG whose `101` justifies the older `99` while `100` is finalized — a shape the **sequence rule** refuses, since `101`'s same-sender justification is not its sender's latest. `fold5` refutes nothing now: with the guard it publishes `z` (height 6) for sender 0 and the comparison holds (`the_guard_keeps_the_newer_message`, `the_comparison_holds_on_fold5`). **So the lift's hypothesis is the sequence rule, on a fold that mirrors the port** — which is what this row said before two of its own corrections, and it is now what the machine says rather than what a guess said. **And the lift's first two ingredients are proved**, so what is left is bookkeeping rather than a hypothesis hunt: `seqNum_lt_height_lt` (on a sender, a higher `seqNum` is a higher height — from `SeqStep`, the port's `sequence_number`, with `SeqUnique`, H-1's one-message-per-`seq_num`) and `insertCandidate_height_le` (**the guarded insertion never lowers a sender's entry** — the port's *\"Law 15 monotonicity invariant\"* as a theorem about this model's own fold). What remains is the `foldl` of that over the whole candidate list, and then the comparison against `prev`, which needs the relation between the new block's justifications and the previous fringe" },
+      fold that now mirrors the port). **And the fold itself was the thing in the way, which is now fixed rather than argued about.** The port's `calculate_next_layer` gives a candidate its sender's slot **only when its `sender_seq` is strictly greater** (`block-storage/src/dag/finalizer.rs:119-125`), and the port's own comment calls that guard *\"the Law 15 monotonicity invariant\"* (`message_state.rs:77`). `layerInsert` did not: it is the *seeding* rule (the port's `BTreeMap::collect`, last wins) and the model used it for the candidates too, justified by *\"the antichain does not depend on that choice\"* — true of law 14b's **keys**, false of the **message** law 15 is about. `seedLayer` and `insertCandidate` now carry both rules, and the difference shows on this file's own instance: `dag3`'s published layer was [10, 12] and is now [11, 12] — the model was publishing a **stale** same-sender message, which no law-14b check could see because the *keys* were right either way. **With the faithful fold the counterexample is `fold4` and nothing else**, stated per sender as law 15 states it: `the_fold_can_publish_below_the_previous_fringe` holds of a fork-free DAG whose `101` justifies the older `99` while `100` is finalized — a shape the **sequence rule** refuses, since `101`'s same-sender justification is not its sender's latest. `fold5` refutes nothing now: with the guard it publishes `z` (height 6) for sender 0 and the comparison holds (`the_guard_keeps_the_newer_message`, `the_comparison_holds_on_fold5`). **So the lift's hypothesis is the sequence rule, on a fold that mirrors the port** — which is what this row said before two of its own corrections, and it is now what the machine says rather than what a guess said. **And the lift is proved** (2026-09-25), so the row is no longer owed anything: the last two ingredients \
+      are `seqNum_lt_height_lt` (on a sender, a higher `seqNum` is a higher height — from `SeqStep`, the \
+      port's `sequence_number`, with `SeqUnique`, H-1's one-message-per-`seq_num`) and \
+      `insertCandidate_height_le` (**the guarded insertion never lowers a sender's entry** — the port's \
+      *\"Law 15 monotonicity invariant\"* as a theorem about this model's own fold). The composition is \
+      `foldl_insertCandidate_height_le`: the step over the **whole** candidate list, whose accumulator is \
+      generalized because the entry between two insertions is neither the seed's nor the layer's and it is \
+      the one the next step's guard is about — and `nextLayer_height_le_seed` reads it where the row \
+      needs it: a sender's entry in the layer `nextLayer` **publishes** is at a height no lower than the \
+      **seeded** one. The comparison against `prev` is `minMsgs_above`, and the relation it needs is \
+      exactly the one this row had named: every justification of a sender descends from the previous \
+      fringe's message for that sender — the port's `sequence_number` plus \
+      `check_justification_regression`, stated as the **hypothesis** it is rather than assumed, because \
+      it is a fact about what a block may justify and not about the DAG value. \
+      `nextLayer_above_the_previous_fringe` composes the two halves (per sender, the published layer lies \
+      **strictly above** the previous fringe's message), and \
+      `derivedFringe_above_the_previous_fringe` reads it at the `Fringe` `derivedFringe` returns — law \
+      15's sentence with its hypothesis named. **What makes the hypotheses more than spelling**: `d15` \
+      carries all four and a derivation that publishes (`d15_descends`, through a `Bool` mirror because \
+      `Descends` quantifies over every message; `d15_is_fork_free`, `d15_is_sequence_unique`, \
+      `d15_satisfies_the_sequence_rule`, each `decide`d), `d15_the_published_entry` pins the entry the \
+      layer holds for the sender, and `d15_the_comparison_holds` is the theorem **applied** to it — \
+      height 1 against height 2 — so no hypothesis is idle. The `rustWitness` is unchanged and stays a \
+      **property test** (`block-storage/src/property_tests.rs:law15_adding_blocks_only_grows_the_state`): \
+      this row's statement is the derivation-level fact, and the tie to the state it is tested against is \
+      the port's own guard, which the fold above is now the model of rather than an approximation to" },
   { number := 16, clause := "a", layer := "Casper",
     rustWitness := ["casper/src/validate.rs:block_number_must_be_parent_max_plus_one"],
     statement := "Block number = max(parent) + 1 — as the port's check, which **rejects** a block whose \

@@ -900,4 +900,495 @@ theorem insertCandidate_height_le (d : Dag) (hdes : Descends d) (huniq : SeqUniq
       rw [hxe]
   exact key he'
 
+/-! ### The fold, not just one insertion: the layer never lowers a sender's entry
+
+`insertCandidate_height_le` is the step. Law 15's comparison is about the layer the fold **publishes**, so
+what the row needs is the step composed over the whole candidate list — which is what the port's comment
+means by calling the guard *"the Law 15 monotonicity invariant"* (`message_state.rs:77`): one insertion at
+a time, a sender's entry never goes down, so neither does the fold's. The two lemmas that carry it are
+about `entryFor`, the fold's own key: a lookup for a sender survives the insertion, and when it is the
+inserted candidate that answers, `seqNum_lt_height_lt` turns the guard's `seqNum` comparison into the
+height comparison the row states. -/
+
+/-- A `find?` for a sender is untouched by a filter that removes a **different** sender. The filter and
+    the lookup are near-complements, which is why the induction is on the list rather than on the
+    complementary pair: at each element either it is dropped (and it is not the one looked for) or it is
+    kept (and then the lookup stops there iff it is). -/
+theorem find?_filter_ne (l : List Message) {s t : Nat} (hst : ¬ t = s) :
+    (l.filter (fun m' => !(m'.sender = t))).find? (fun m' => m'.sender = s) =
+      l.find? (fun m' => m'.sender = s) := by
+  induction l with
+  | nil => rfl
+  | cons m rest ih =>
+    by_cases hmt : m.sender = t
+    · have hms : ¬ (m.sender = s) := fun h => hst (hmt ▸ h)
+      have hf : (m :: rest).filter (fun m' => !(m'.sender = t)) =
+          rest.filter (fun m' => !(m'.sender = t)) := by simp [hmt]
+      rw [hf, ih, List.find?_cons]
+      simp [hms]
+    · have hf : (m :: rest).filter (fun m' => !(m'.sender = t)) =
+          m :: rest.filter (fun m' => !(m'.sender = t)) := by simp [hmt]
+      rw [hf, List.find?_cons, List.find?_cons]
+      by_cases hms : m.sender = s
+      · simp [hms]
+      · simp [hms, ih]
+
+/-- **The seeded entry for another sender survives an insertion** — `layerInsert` drops only the inserted
+    message's own sender, and the guarded insertion's other branch is the identity. -/
+theorem entryFor_layerInsert_ne (c : Message) (l : List Message) {s : Nat} (hs : ¬ c.sender = s) :
+    entryFor (layerInsert c l) s = entryFor l s := by
+  unfold layerInsert entryFor
+  rw [List.find?_cons, find?_filter_ne l hs]
+  simp [hs]
+
+/-- The guarded insertion's key for **another** sender: the entry the list already held. -/
+theorem entryFor_insertCandidate_ne (c : Message) (l : List Message) {s : Nat}
+    (hs : ¬ c.sender = s) : entryFor (insertCandidate c l) s = entryFor l s := by
+  unfold insertCandidate
+  split
+  · split
+    · exact entryFor_layerInsert_ne c l hs
+    · rfl
+  · rfl
+
+/-- Membership through the layer insertion: what it holds is the message it inserted or what the list
+    held. -/
+theorem mem_layerInsert {m c : Message} {l : List Message} (h : m ∈ layerInsert c l) :
+    m = c ∨ m ∈ l := by
+  unfold layerInsert at h
+  rcases List.mem_cons.mp h with h | h
+  · exact Or.inl h
+  · exact Or.inr (List.mem_filter.mp h).1
+
+/-- …and through the guarded one, the same. -/
+theorem mem_insertCandidate {m c : Message} {l : List Message} (h : m ∈ insertCandidate c l) :
+    m = c ∨ m ∈ l := by
+  unfold insertCandidate at h
+  split at h
+  · split at h
+    · exact mem_layerInsert h
+    · exact Or.inr h
+  · exact Or.inr h
+
+/-- **What the guarded insertion's key becomes when the guard admits it**: the candidate itself, because
+    `layerInsert` puts it at the front. The guard is the port's `curr.sender_seq < m.sender_seq`. -/
+theorem entryFor_insertCandidate_self (c : Message) (l : List Message) {cur : Message}
+    (hcur : l.find? (fun m' => m'.sender = c.sender) = some cur) (hlt : cur.seqNum < c.seqNum) :
+    entryFor (insertCandidate c l) c.sender = some c := by
+  unfold insertCandidate
+  rw [hcur]
+  dsimp only
+  rw [if_pos hlt]
+  exact entryFor_layerInsert c l
+
+/-- …and when it refuses it, the entry the list held. -/
+theorem entryFor_insertCandidate_refused (c : Message) (l : List Message) {cur : Message}
+    (hcur : l.find? (fun m' => m'.sender = c.sender) = some cur) (hlt : ¬ cur.seqNum < c.seqNum) :
+    entryFor (insertCandidate c l) c.sender = entryFor l c.sender := by
+  unfold insertCandidate
+  rw [hcur]
+  dsimp only
+  rw [if_neg hlt]
+
+/-- **The insertion leaves a sender's key *set* alone** — never adds one, never drops one: a sender with
+    no entry in the list has none after the insertion, and a sender with one still has one. The first half
+    is what makes the published layer's senders a subset of the seeded layer's. -/
+theorem entryFor_insertCandidate_some (c : Message) (l : List Message) {s : Nat} {e : Message}
+    (he : entryFor l s = some e) : ∃ e', entryFor (insertCandidate c l) s = some e' := by
+  by_cases hs : c.sender = s
+  · subst hs
+    obtain ⟨cur, hcur⟩ : ∃ cur, l.find? (fun m' => m'.sender = c.sender) = some cur :=
+      ⟨e, he⟩
+    by_cases hlt : cur.seqNum < c.seqNum
+    · exact ⟨c, entryFor_insertCandidate_self c l hcur hlt⟩
+    · exact ⟨e, by rw [entryFor_insertCandidate_refused c l hcur hlt]; exact he⟩
+  · exact ⟨e, by rw [entryFor_insertCandidate_ne c l hs]; exact he⟩
+
+theorem entryFor_insertCandidate_none (c : Message) (l : List Message) {s : Nat}
+    (h : entryFor l s = none) : entryFor (insertCandidate c l) s = none := by
+  by_cases hs : c.sender = s
+  · subst hs
+    have hfind : l.find? (fun m' => m'.sender = c.sender) = none := by
+      exact h
+    unfold insertCandidate
+    rw [hfind]
+    exact h
+  · rw [entryFor_insertCandidate_ne c l hs]
+    exact h
+
+/-- **The step, for any sender**: after one guarded insertion, a sender's entry is either unchanged or the
+    candidate — and if it is the candidate, `insertCandidate_height_le` has already turned the guard into
+    the first half of `seqNum_lt_height_lt`. -/
+theorem entryFor_insertCandidate_le (d : Dag) (hdes : Descends d) (huniq : SeqUnique d)
+    (hstep : SeqStep d) (c : Message) (hc : c ∈ d) (l : List Message) (hl : ∀ m ∈ l, m ∈ d)
+    {s : Nat} {e : Message} (he : entryFor l s = some e) :
+    ∃ e', entryFor (insertCandidate c l) s = some e' ∧ e.height ≤ e'.height := by
+  by_cases hs : c.sender = s
+  · subst hs
+    obtain ⟨cur, hcur⟩ : ∃ cur, l.find? (fun m' => m'.sender = c.sender) = some cur :=
+      ⟨e, by simpa only [entryFor] using he⟩
+    by_cases hlt : cur.seqNum < c.seqNum
+    · have hc' : entryFor (insertCandidate c l) c.sender = some c :=
+        entryFor_insertCandidate_self c l hcur hlt
+      exact ⟨c, hc', insertCandidate_height_le d hdes huniq hstep c hc l hl he hc'⟩
+    · exact ⟨e, by rw [entryFor_insertCandidate_refused c l hcur hlt]; exact he, le_refl _⟩
+  · exact ⟨e, by rw [entryFor_insertCandidate_ne c l hs]; exact he, le_refl _⟩
+
+/-- **The fold never lowers a sender's entry** — the step above, composed over the candidate list. The
+    accumulator is generalized because that is what the induction consumes, and `e`/`e'`/`s` are bound
+    explicitly because they are *different* at each step: the entry between two insertions is neither the
+    seed's nor the layer's, and it is the one the next step's guard is about. -/
+theorem foldl_insertCandidate_height_le (d : Dag) (hdes : Descends d) (huniq : SeqUnique d)
+    (hstep : SeqStep d) (cands : List Message) (hcands : ∀ m ∈ cands, m ∈ d) :
+    ∀ (acc : List Message), (∀ m ∈ acc, m ∈ d) → ∀ {s : Nat} {e e' : Message},
+      entryFor acc s = some e →
+      entryFor (cands.foldl (fun a m => insertCandidate m a) acc) s = some e' →
+      e.height ≤ e'.height := by
+  induction cands with
+  | nil =>
+    intro acc _ s e e' he he'
+    rw [List.foldl_nil] at he'
+    rw [he] at he'
+    simp only [Option.some.injEq] at he'
+    subst he'
+    exact le_refl _
+  | cons c rest ih =>
+    intro acc hacc s e e' he he'
+    have hc : c ∈ d := hcands c (List.mem_cons.mpr (Or.inl rfl))
+    have hrest : ∀ m ∈ rest, m ∈ d := fun m hm => hcands m (List.mem_cons.mpr (Or.inr hm))
+    obtain ⟨x, hx, hle⟩ := entryFor_insertCandidate_le d hdes huniq hstep c hc acc hacc he
+    have hacc' : ∀ m ∈ insertCandidate c acc, m ∈ d := by
+      intro m hm
+      rcases mem_insertCandidate hm with rfl | hm'
+      · exact hc
+      · exact hacc m hm'
+    rw [List.foldl_cons] at he'
+    exact le_trans hle (ih hrest (insertCandidate c acc) hacc' hx he')
+
+/-- The seed layer's messages are in the DAG whenever the min messages are — what the fold's membership
+    side needs. Stated with the accumulator quantified *inside* the statement rather than generalized out
+    of the goal, so the induction hypothesis has the same shape at every step. -/
+theorem seedLayer_mem (d : Dag) (ms : List Message) (hms : ∀ m ∈ ms, m ∈ d) :
+    ∀ m ∈ seedLayer ms, m ∈ d := by
+  have h : ∀ (acc : List Message), (∀ m ∈ acc, m ∈ d) →
+      ∀ m ∈ ms.foldl (fun acc m => layerInsert m acc) acc, m ∈ d := by
+    induction ms with
+    | nil => intro acc hacc m hm; exact hacc m (by simpa using hm)
+    | cons x rest ih =>
+      intro acc hacc m hm
+      rw [List.foldl_cons] at hm
+      refine ih (fun m hm => hms m (List.mem_cons.mpr (Or.inr hm))) (layerInsert x acc) ?_ m hm
+      intro y hy
+      rcases mem_layerInsert hy with hyx | hy'
+      · rw [hyx]
+        exact hms x (List.mem_cons.mpr (Or.inl rfl))
+      · exact hacc y hy'
+  exact h [] (by simp)
+
+/-- The candidate parents are DAG messages: each comes from a lookup, so `mem_of_msg` applies. -/
+theorem parents_mem (d : Dag) (ms : List Message) :
+    ∀ m ∈ (ms.map (fun x => x.parents.filterMap (Dag.msg d))).join, m ∈ d := by
+  intro m hm
+  rcases List.mem_join.mp hm with ⟨l, hl, hml⟩
+  rcases List.mem_map.mp hl with ⟨x, _hx, rfl⟩
+  obtain ⟨p, _hp, hpx⟩ := mem_filterMap_msg d x.parents m hml
+  exact mem_of_msg d hpx
+
+/-- **The guarded fold never lowers a sender's entry**: whatever the seeded layer held for a sender, the
+    layer `nextLayer` publishes holds for it at a height no lower. One step is `insertCandidate_height_le`
+    and the composition is `foldl_insertCandidate_height_le`; what is added here is that the seed and the
+    candidates are DAG messages, which is what the step's `Descends` needs to speak about heights. -/
+theorem nextLayer_height_le_seed (d : Dag) (hdes : Descends d) (huniq : SeqUnique d)
+    (hstep : SeqStep d) (ms : List Message) (hms : ∀ m ∈ ms, m ∈ d) {s : Nat} {e e' : Message}
+    (he : entryFor (seedLayer ms) s = some e)
+    (he' : entryFor (nextLayer d ms) s = some e') : e.height ≤ e'.height := by
+  unfold nextLayer at he'
+  dsimp only at he'
+  refine foldl_insertCandidate_height_le d hdes huniq hstep _ (fun m hm => ?_)
+    (seedLayer ms) (seedLayer_mem d ms hms) he he'
+  exact parents_mem d ms m (List.mem_filter.mp hm).1
+
+/-! ### The sentinel half at the seed, and law 15 closed
+
+The fold theorem above says the layer is at or above the **seed**. What law 15's comparison is about is
+the previous **fringe**, and the seed reaches it through the walk: `minMsgs` hands each justification to
+the sentinel theorem, which puts the message it keeps strictly above the finalized ancestor the walk
+stopped at — the previous fringe's message for that sender, when the ingress rules make the new block
+descend from it. The lemmas below are that step, and `nextLayer_above_the_previous_fringe` is the
+composition: **per sender, the published layer lies strictly above the previous fringe's message**, which
+is what the row states. -/
+
+/-- A message a `head?` answers with is in the list — the one step the min message's sender needs. -/
+theorem mem_of_head? {l : List Message} {x : Message} (h : l.head? = some x) : x ∈ l := by
+  cases l with
+  | nil => simp at h
+  | cons m rest =>
+    rw [List.head?_cons] at h
+    exact List.mem_cons.mpr (Or.inl (Option.some.inj h).symm)
+
+/-- **The walk's relation preserves the sender** — `ReachesF.step` is a *same-sender* edge, so the
+    property is the relation's own. This is why a justification's min message is a message of the
+    justification's sender, which is what lets the comparison be read per sender at all. -/
+theorem reachesF_sender (d : Dag) : ∀ {q m : Message}, ReachesF d q m → q.sender = m.sender := by
+  intro q m h
+  induction h with
+  | step _ _ _ _ _ hs => exact hs
+  | trans _ _ _ _ _ ih1 ih2 => exact ih2.trans ih1
+
+/-- …and therefore so does everything the walk returns. -/
+theorem selfParents_sender (d : Dag) (p : Message) (fin : List Nat) :
+    ∀ m ∈ selfParents d p fin, m.sender = p.sender := by
+  intro m hm
+  exact reachesF_sender d (selfParents_reaches d p fin m hm).2
+
+/-- The sender of the **min message** of a justification: the walk's answer where it has one, the
+    justification itself where it does not. -/
+theorem minMsg_sender (d : Dag) (p : Message) (fin : List Nat) :
+    (match (selfParents d p fin).head? with | some x => x | none => p).sender = p.sender := by
+  split
+  · rename_i x hx
+    exact selfParents_sender d p fin x (mem_of_head? hx)
+  · rfl
+
+/-- The min messages are DAG messages — the walk returns messages and the fallback is the justification
+    itself. -/
+theorem minMsgs_mem_d (d : Dag) (js : List Message) (hjs : ∀ p ∈ js, p ∈ d) (fin : List Nat) :
+    ∀ m ∈ minMsgs d js fin, m ∈ d := by
+  intro m hm
+  unfold minMsgs at hm
+  rcases List.mem_map.mp hm with ⟨p, hp, hfe⟩
+  rw [← hfe]
+  split
+  · rename_i x hx
+    exact (selfParents_reaches d p fin x (mem_of_head? hx)).1
+  · exact hjs p hp
+
+/-- **The sentinel at the seed**: every min message of a justification that descends from a finalized `q`
+    is **strictly above** `q`. The hypothesis `hjust` is the port's ingress rule stated rather than
+    assumed — a block justifies its sender's *latest* block, which is what the previous fringe holds
+    (`sequence_number` and `check_justification_regression`, `validate.rs:169-188`, `:205-241`) — and it
+    is the *whole* of the sender's side of the argument: the min message of a justification whose sender
+    is `q.sender` is above `q`, so whatever the seed keeps for that sender is too. -/
+theorem minMsgs_above (d : Dag) (hdes : Descends d) (hnofork : NoFork d)
+    (js : List Message) (hjs : ∀ p ∈ js, p ∈ d) (fin : List Nat) (q : Message)
+    (hqfin : q.id ∈ fin) (hjust : ∀ p ∈ js, p.sender = q.sender → ReachesF d q p) :
+    ∀ e ∈ minMsgs d js fin, e.sender = q.sender → q.height < e.height := by
+  intro e he hs
+  unfold minMsgs at he
+  rcases List.mem_map.mp he with ⟨p, hp, hfe⟩
+  have hps : p.sender = q.sender := by
+    rw [← hfe] at hs
+    have h2 : (match (selfParents d p fin).head? with | some x => x | none => p).sender = q.sender :=
+      hs
+    split at h2
+    · rename_i x hx
+      rw [← selfParents_sender d p fin x (mem_of_head? hx)]
+      exact h2
+    · exact h2
+  have hre : ReachesF d q p := hjust p hp hps
+  rw [← hfe]
+  split
+  · rename_i x hx
+    exact selfParents_above_a_finalized_ancestor d hdes hnofork p (hjs p hp) fin q hqfin hre x
+      (mem_of_head? hx)
+  · exact (reachesF_height_lt d hdes hre (hjs p hp)).2
+
+/-- The sender a lookup answers with is the one asked for — `find?_sender_eq` with the sender as the
+    parameter rather than as a message's field, which is the form the layer's key list needs. -/
+theorem find?_sender_eq_nat {l : List Message} {s : Nat} {e : Message}
+    (h : l.find? (fun m' => m'.sender = s) = some e) : e.sender = s := by
+  induction l with
+  | nil => simp at h
+  | cons m rest ih =>
+    by_cases hm : m.sender = s
+    · simp [hm] at h
+      have hm_eq : e = m := h.symm
+      rw [hm_eq]; exact hm
+    · simp [hm] at h
+      exact ih h
+
+/-- **A seeded layer's entry is one of the min messages** — the fold keeps one entry per sender and drops
+    nothing else, so an entry is a message that was folded in. -/
+theorem foldl_layerInsert_mem (ms : List Message) :
+    ∀ (orig : List Message), (∀ m ∈ ms, m ∈ orig) → ∀ (acc : List Message),
+      (∀ m ∈ acc, m ∈ orig) →
+      ∀ {s : Nat} {e : Message},
+        entryFor (ms.foldl (fun a m => layerInsert m a) acc) s = some e → e ∈ orig := by
+  induction ms with
+  | nil => intro orig _ acc hacc s e he; exact hacc e (List.mem_of_find?_eq_some he)
+  | cons c rest ih =>
+    intro orig hsub acc hacc s e he
+    rw [List.foldl_cons] at he
+    refine ih orig (fun m hm => hsub m (List.mem_cons.mpr (Or.inr hm))) (layerInsert c acc) ?_ he
+    intro y hy
+    rcases mem_layerInsert hy with hyc | hy'
+    · rw [hyc]; exact hsub c (List.mem_cons.mpr (Or.inl rfl))
+    · exact hacc y hy'
+
+theorem seedLayer_entryFor_mem {ms : List Message} {s : Nat} {e : Message}
+    (he : entryFor (seedLayer ms) s = some e) : e ∈ ms := by
+  unfold seedLayer at he
+  exact foldl_layerInsert_mem ms ms (fun _ h => h) [] (by simp) he
+
+theorem seedLayer_entryFor_sender {ms : List Message} {s : Nat} {e : Message}
+    (he : entryFor (seedLayer ms) s = some e) : e.sender = s := by
+  have h := he
+  unfold entryFor at h
+  exact find?_sender_eq_nat h
+
+/-- The insertion never *removes* a sender's key, so a layer whose seed had none has none either — which
+    is how the row's own sender is known to have a seeded entry at all. -/
+theorem foldl_insertCandidate_entryFor_none (cands : List Message) :
+    ∀ (acc : List Message) {s : Nat}, entryFor acc s = none →
+      entryFor (cands.foldl (fun a m => insertCandidate m a) acc) s = none := by
+  induction cands with
+  | nil => intro acc s h; simpa using h
+  | cons c rest ih =>
+    intro acc s h
+    rw [List.foldl_cons]
+    exact ih (insertCandidate c acc) (entryFor_insertCandidate_none c acc h)
+
+/-- **Law 15, per sender, at the layer it publishes.** Let `q` be the previous fringe's message for a
+    sender — `fin` is that fringe's message ids, which is the shape `derivedFringe` passes — and let every
+    justification of that sender in the new block descend from `q`. Then the layer `nextLayer` publishes
+    holds, for that sender, a message **strictly above** `q`.
+
+    The two halves are the two theorems above: `minMsgs_above` puts the *seed* above `q` (the sentinel,
+    through the walk), and `nextLayer_height_le_seed` says the guarded fold never lowers it (the port's own
+    *"Law 15 monotonicity invariant"*, `message_state.rs:77`). Both are load-bearing:
+    `the_fold_can_publish_below_the_previous_fringe` shows the guard is what the second half needs, and
+    `the_comparison_is_false_without_fork_freedom` shows `NoFork` is not decoration. -/
+theorem nextLayer_above_the_previous_fringe (d : Dag) (hdes : Descends d) (hnofork : NoFork d)
+    (huniq : SeqUnique d) (hstep : SeqStep d) (js : List Message) (hjs : ∀ p ∈ js, p ∈ d)
+    (fin : List Nat) (q : Message) (hqfin : q.id ∈ fin)
+    (hjust : ∀ p ∈ js, p.sender = q.sender → ReachesF d q p)
+    {e' : Message} (he' : entryFor (nextLayer d (minMsgs d js fin)) q.sender = some e') :
+    q.height < e'.height := by
+  have hms : ∀ m ∈ minMsgs d js fin, m ∈ d := minMsgs_mem_d d js hjs fin
+  have habove := minMsgs_above d hdes hnofork js hjs fin q hqfin hjust
+  have hseeded : entryFor (seedLayer (minMsgs d js fin)) q.sender ≠ none := by
+    intro hnone
+    have h' : entryFor (nextLayer d (minMsgs d js fin)) q.sender = none := by
+      unfold nextLayer
+      dsimp only
+      exact foldl_insertCandidate_entryFor_none _ (seedLayer (minMsgs d js fin)) hnone
+    rw [h'] at he'
+    exact absurd he' (by simp)
+  obtain ⟨e, he⟩ : ∃ e, entryFor (seedLayer (minMsgs d js fin)) q.sender = some e := by
+    cases h : entryFor (seedLayer (minMsgs d js fin)) q.sender with
+    | none => exact absurd h hseeded
+    | some e => exact ⟨e, rfl⟩
+  have hq_e : q.height < e.height :=
+    habove e (seedLayer_entryFor_mem he) (seedLayer_entryFor_sender he)
+  exact Nat.lt_of_lt_of_le hq_e
+    (nextLayer_height_le_seed d hdes huniq hstep (minMsgs d js fin) hms he he')
+
+/-- **And at the fringe**: the same statement read at the value `derivedFringe` returns, with the previous
+    fringe entering as the `Fringe` it is. This is law 15's sentence — the derived fringe is monotone by
+    height per sender — with its hypothesis named. -/
+theorem derivedFringe_above_the_previous_fringe (d : Dag) (hdes : Descends d) (hnofork : NoFork d)
+    (huniq : SeqUnique d) (hstep : SeqStep d) (js : List Message) (hjs : ∀ p ∈ js, p ∈ d)
+    (prev : Fringe) (supp : SupportMap) (bonds : Bonds) (f : Fringe)
+    (hf : derivedFringe d js prev supp bonds = some f) (q : Message) (hq : q ∈ prev.messages)
+    (hjust : ∀ p ∈ js, p.sender = q.sender → ReachesF d q p)
+    {e' : Message} (he' : entryFor f.messages q.sender = some e') :
+    q.height < e'.height := by
+  have hqfin : q.id ∈ prev.messages.map (·.id) := List.mem_map.mpr ⟨q, hq, rfl⟩
+  have heq : f.messages = nextLayer d (minMsgs d js (prev.messages.map (·.id))) := by
+    unfold derivedFringe at hf
+    split at hf
+    · split at hf
+      · simp only [Option.some.injEq] at hf
+        rw [← hf]
+      · exact absurd hf (by simp)
+    · exact absurd hf (by simp)
+  rw [heq] at he'
+  exact nextLayer_above_the_previous_fringe d hdes hnofork huniq hstep js hjs
+    (prev.messages.map (·.id)) q hqfin hjust he'
+
+/-! ### Non-vacuity: a derivation the comparison holds on, with every hypothesis in place
+
+The theorem above has four hypotheses, and a theorem whose hypotheses cannot all hold at once is the shape
+the register refuses — a rule nothing can falsify. This DAG carries all four **and** a derivation that
+publishes: sender 0's chain `10 ← 11 ← 12`, each message justifying its sender's latest (which is what
+`SeqStep` and `SeqUnique` say), and sender 1's `20` justifying `12`. The previous fringe is `{11, 20}` and
+the new justification is `12`, whose same-sender parent `11` is finalized — so the walk finds nothing, the
+min message is `12` itself, and the candidate the fold then sees is `11`, **refused** because its `seqNum`
+is lower. The instance is the port's own: a block whose justification for its sender is the previous
+fringe's message for that sender, which is the ingress rule the row names. -/
+
+def d15 : Dag :=
+  [ ⟨10, 0, 0, 0, [], []⟩,
+    ⟨11, 1, 0, 1, [10], []⟩,
+    ⟨12, 2, 0, 2, [11], []⟩,
+    ⟨20, 3, 1, 0, [12], []⟩ ]
+
+/-- `Descends` as a `Bool`, so it can be `decide`d: the predicate quantifies over **every** message, and
+    the only ones that matter are the ids the DAG resolves (`Dag.msg`, a `find?` over the list) — the same
+    `Bool`-mirror device the `block` corpus uses for predicates a checker cannot enumerate. -/
+def descendsB (d : Dag) : Bool :=
+  d.all fun m => m.parents.all fun p =>
+    match Dag.msg d p with
+    | none => true
+    | some pm => decide (pm.height < m.height)
+
+theorem descendsB_iff (d : Dag) : descendsB d = true ↔ Descends d := by
+  unfold descendsB Descends
+  rw [List.all_eq_true]
+  constructor
+  · intro h m hm p hp pm hpm
+    have h2 : (match Dag.msg d p with
+        | none => true
+        | some pm => decide (pm.height < m.height)) = true :=
+      List.all_eq_true.mp (h m hm) p hp
+    rw [hpm] at h2
+    exact ⟨mem_of_msg d hpm, of_decide_eq_true h2⟩
+  · intro h
+    intro m hm
+    rw [List.all_eq_true]
+    intro p hp
+    cases hpm : Dag.msg d p with
+    | none => rfl
+    | some pm => exact decide_eq_true (h m hm p hp pm hpm).2
+
+theorem d15_descends : Descends d15 := by
+  rw [← descendsB_iff]
+  decide
+
+theorem d15_is_fork_free : NoFork d15 :=
+  nofork_of_unfiltered d15 (by decide)
+
+theorem d15_is_sequence_unique : SeqUnique d15 := by unfold SeqUnique; decide
+
+theorem d15_satisfies_the_sequence_rule : SeqStep d15 := by unfold SeqStep; decide
+
+/-- The layer the derivation publishes on `d15`, `decide`d: one message, the justification `12` itself —
+    the walk had nothing to keep and the guard refused the candidate `11`. -/
+theorem d15_the_layer :
+    (nextLayer d15 (minMsgs d15 [⟨12, 2, 0, 2, [11], []⟩] [11, 20])).map (·.id) = [12] := by decide
+
+/-- …so the entry the layer holds for sender 0 **is** `12`, which is what makes the comparison below a
+    statement about the two messages rather than about a lookup that could have answered `none`. -/
+theorem d15_the_published_entry :
+    entryFor (nextLayer d15 (minMsgs d15 [⟨12, 2, 0, 2, [11], []⟩] [11, 20])) 0 =
+      some ⟨12, 2, 0, 2, [11], []⟩ := by decide
+
+/-- **And the theorem's conclusion on that instance, by the theorem**: the entry the layer publishes for
+    sender 0 is above the previous fringe's message `11` (height 1 against height 2). Every hypothesis is
+    discharged — four structural rules, the justification's membership, `q`'s finalization, and the
+    ingress rule that `12` descends from `11` — so the four are consistent and the comparison is not
+    vacuous. -/
+theorem d15_the_comparison_holds :
+    (⟨11, 1, 0, 1, [10], []⟩ : Message).height <
+      (⟨12, 2, 0, 2, [11], []⟩ : Message).height :=
+  nextLayer_above_the_previous_fringe d15 d15_descends d15_is_fork_free d15_is_sequence_unique
+    d15_satisfies_the_sequence_rule [⟨12, 2, 0, 2, [11], []⟩] (by decide) [11, 20]
+    ⟨11, 1, 0, 1, [10], []⟩ (by decide)
+    (fun p hp _ => by
+      simp only [List.mem_cons, List.not_mem_nil, or_false] at hp
+      subst hp
+      exact ReachesF.step ⟨12, 2, 0, 2, [11], []⟩ ⟨11, 1, 0, 1, [10], []⟩ 11 (by decide) (by decide)
+        (by decide))
+    d15_the_published_entry
+
 end Rchain

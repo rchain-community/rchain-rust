@@ -17,7 +17,7 @@ determinism question is [Determinism of the block state transition](determinism.
 > The per-law **status** is the register's (`spec/LAWS.md`, emitted from `Rchain/Laws.lean` and refused
 > stale by the gate); the totals are
 > <!-- counts:laws-entries -->49 laws and 58 entries<!-- counts:end -->, of which
-> <!-- counts:proved-laws -->43<!-- counts:end --> are proved at all. Nothing on this page restates a status.
+> <!-- counts:proved-laws -->44<!-- counts:end --> are proved at all. Nothing on this page restates a status.
 
 ---
 
