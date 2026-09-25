@@ -1965,9 +1965,9 @@ fn txn_state_string(state: TxnState) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rchain_models::ast::{GPrivate, GUnforgeable};
     use async_trait::async_trait;
     use rchain_crypto::hash::blake2b512_random::Blake2b512Random;
+    use rchain_models::ast::{GPrivate, GUnforgeable};
     use rchain_models::runtime::{BindPattern, ListParWithRandom, TaggedContinuation};
     use rchain_models::sorted::SortedProc;
     use rchain_rspace::errors::RSpaceError;
@@ -2126,16 +2126,17 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(reply(), RhoBoolean::apply(true), "a fresh record is recorded");
+        assert_eq!(
+            reply(),
+            RhoBoolean::apply(true),
+            "a fresh record is recorded"
+        );
         clear();
 
         // `get` reads it back, and answers Nil (not an error) for a url that was never recorded.
-        (handler.handler)(
-            call("get", vec![s("u"), ret.clone()]),
-            DfsPath::root(),
-        )
-        .await
-        .unwrap();
+        (handler.handler)(call("get", vec![s("u"), ret.clone()]), DfsPath::root())
+            .await
+            .unwrap();
         assert_eq!(
             RhoString::unapply(&reply()),
             Some("v"),
@@ -2177,13 +2178,14 @@ mod tests {
         clear();
 
         // `height` reports the block the record was written at.
-        (handler.handler)(
-            call("height", vec![s("u"), ret.clone()]),
-            DfsPath::root(),
-        )
-        .await
-        .unwrap();
-        assert_eq!(reply(), RhoNumber::apply(0), "BlockData::empty() is height 0");
+        (handler.handler)(call("height", vec![s("u"), ret.clone()]), DfsPath::root())
+            .await
+            .unwrap();
+        assert_eq!(
+            reply(),
+            RhoNumber::apply(0),
+            "BlockData::empty() is height 0"
+        );
         clear();
 
         // Both refusals: an operation that does not exist, and a call that is not shaped like one.
@@ -2192,20 +2194,14 @@ mod tests {
             format!("{unknown:?}").contains("unknown method nope"),
             "an unknown operation is refused by name: {unknown:?}"
         );
-        let wrong_arity = (handler.handler)(
-            call("record", vec![s("url-only")]),
-            DfsPath::root(),
-        )
-        .await;
+        let wrong_arity =
+            (handler.handler)(call("record", vec![s("url-only")]), DfsPath::root()).await;
         assert!(
             format!("{wrong_arity:?}").contains("expects url, value and a return channel"),
             "and a record missing its value says what it wanted: {wrong_arity:?}"
         );
-        let not_a_list = (handler.handler)(
-            vec![lpw(vec![s("get"), s("not-a-list")])],
-            DfsPath::root(),
-        )
-        .await;
+        let not_a_list =
+            (handler.handler)(vec![lpw(vec![s("get"), s("not-a-list")])], DfsPath::root()).await;
         assert!(
             format!("{not_a_list:?}").contains("arguments must be a list"),
             "the argument list is demanded too: {not_a_list:?}"

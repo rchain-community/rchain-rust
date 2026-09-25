@@ -617,11 +617,8 @@ mod codec_tests {
             "the refusal names what it wanted: {not_an_int}"
         );
 
-        let two_pars = get_number_with_rnd(&with(vec![
-            RhoNumber::apply(1),
-            RhoNumber::apply(2),
-        ]))
-        .expect_err("two pars is not a number channel");
+        let two_pars = get_number_with_rnd(&with(vec![RhoNumber::apply(1), RhoNumber::apply(2)]))
+            .expect_err("two pars is not a number channel");
         assert!(
             two_pars.contains("found 2 pars"),
             "and counts what it found: {two_pars}"

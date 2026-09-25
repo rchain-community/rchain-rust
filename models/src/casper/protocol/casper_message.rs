@@ -1193,7 +1193,9 @@ mod tests {
     #[test]
     fn every_message_variant_round_trips_through_its_codec() {
         let cases: Vec<CasperMessage> = vec![
-            CasperMessage::BlockRequest(BlockRequest { hash: vec![1, 2, 3] }),
+            CasperMessage::BlockRequest(BlockRequest {
+                hash: vec![1, 2, 3],
+            }),
             CasperMessage::BlockHashMessage(BlockHashMessage {
                 block_hash: block_hash(7),
                 block_creator: vec![9, 8, 7],
