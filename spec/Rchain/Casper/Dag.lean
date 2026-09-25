@@ -801,4 +801,103 @@ theorem the_comparison_holds_on_fold5 :
     ∀ m ∈ nextLayer fold5 (minMsgs fold5 [⟨102, 3, 1, 0, [101], []⟩, ⟨103, 6, 0, 6, [100], []⟩] [100]),
       m.sender = 0 → (⟨100, 5, 0, 5, [], []⟩ : Message).height ≤ m.height := by decide
 
+/-! ### The ingress rules the lift rests on, and the first lemma they give
+
+Law 15's comparison is about the **published** layer, and the fold that builds it compares `seqNum`s where
+the claim is about **heights**. These are the rules that tie the two together, all of them the port's
+ingress rules and stated as hypotheses rather than assumed: `SeqUnique` is H-1's equivocation refusal (a
+second block by one sender at one `seq_num`), and `SeqStep` is `sequence_number` (a block justifies its
+sender's block one `seq_num` lower, which is what makes `0` the first block's number). -/
+
+/-- **H-1's refusal**: one sender, one message per `seqNum`. -/
+def SeqUnique (d : Dag) : Prop :=
+  ∀ m ∈ d, ∀ m' ∈ d, m.sender = m'.sender → m.seqNum = m'.seqNum → m = m'
+
+/-- **`sequence_number`**: a sender's message with a positive `seqNum` justifies that sender's message one
+    `seqNum` lower. -/
+def SeqStep (d : Dag) : Prop :=
+  ∀ m ∈ d, 0 < m.seqNum → ∃ x ∈ sameSenderParents d m.sender m [], x.seqNum + 1 = m.seqNum
+
+/-- **`seqNum` and height agree on a sender** — the link the fold's `seqNum` comparison needs, because what
+    law 15 claims is about heights. Proved by strong induction on the newer `seqNum`: a message with a
+    positive `seqNum` has its predecessor as a same-sender parent (`SeqStep`), a same-sender message at
+    that `seqNum` *is* that parent (`SeqUnique`), and `Descends` makes a parent strictly lower. -/
+theorem seqNum_lt_height_lt (d : Dag) (hdes : Descends d) (huniq : SeqUnique d) (hstep : SeqStep d) :
+    ∀ m ∈ d, ∀ m' ∈ d, m.sender = m'.sender → m.seqNum < m'.seqNum → m.height < m'.height := by
+  intro m hm m' hm' hs hlt
+  have main : ∀ n, ∀ m' ∈ d, m'.seqNum = n → ∀ m ∈ d,
+      m.sender = m'.sender → m.seqNum < n → m.height < m'.height := by
+    intro n
+    induction n using Nat.strong_induction_on with
+    | _ n ih =>
+      intro m' hm' hseq m hm hs hlt
+      obtain ⟨x, hxmem, hxseq⟩ := hstep m' hm' (by omega)
+      obtain ⟨hxd, hxs, p, hp, hpx⟩ := sameSenderParents_reaches d m'.sender m' [] hxmem
+      have hxlt : x.height < m'.height :=
+        (reachesF_height_lt d hdes (ReachesF.step m' x p hp hpx hxs) hm').2
+      by_cases hmx : m.seqNum = x.seqNum
+      · have hmx' : m = x := huniq m hm x hxd (by rw [hs, hxs]) hmx
+        rw [hmx']; exact hxlt
+      · have hltx : m.seqNum < x.seqNum := by omega
+        exact Nat.lt_trans
+          (ih x.seqNum (by omega) x hxd rfl m hm (by rw [hs, hxs]) hltx) hxlt
+  exact main m'.seqNum m' hm' rfl m hm hs hlt
+
+/-- The message a layer holds for a sender — the fold's own key, as a lookup. -/
+def entryFor (l : List Message) (s : Nat) : Option Message := l.find? (fun m => m.sender = s)
+
+/-- The seeding's key survives it: the inserted message is the one found for its own sender. -/
+theorem entryFor_layerInsert (c : Message) (l : List Message) :
+    entryFor (layerInsert c l) c.sender = some c := by
+  unfold entryFor layerInsert
+  simp
+
+/-- What a lookup for a sender answers with **belongs to that sender** — the predicate's own content,
+    unpacked once because the toolchain's `List.find?` lemmas are not part of the checked corpus. -/
+theorem find?_sender_eq {l : List Message} {c e : Message}
+    (h : l.find? (fun m => m.sender = c.sender) = some e) : e.sender = c.sender := by
+  induction l with
+  | nil => simp at h
+  | cons m rest ih =>
+    by_cases hm : m.sender = c.sender
+    · simp [hm] at h
+      have hm_eq : e = m := h.symm
+      rw [hm_eq]; exact hm
+    · simp [hm] at h
+      exact ih h
+
+/-- **The guarded insertion never lowers a sender's entry** — which is what the guard is for, and what the
+    port's comment means by calling it the monotonicity invariant. Either the insertion is refused (the
+    entry stays `l`'s, so the height is equal), or it is admitted because its `seqNum` is strictly greater —
+    and by `seqNum_lt_height_lt` a higher `seqNum` on a sender is a higher height, so the entry can only go
+    up. -/
+theorem insertCandidate_height_le (d : Dag) (hdes : Descends d) (huniq : SeqUnique d) (hstep : SeqStep d)
+    (c : Message) (hc : c ∈ d) (l : List Message) (hl : ∀ m ∈ l, m ∈ d)
+    {e e' : Message} (he : entryFor l c.sender = some e)
+    (he' : entryFor (insertCandidate c l) c.sender = some e') : e.height ≤ e'.height := by
+  unfold entryFor at he
+  have he_mem : e ∈ l := List.mem_of_find?_eq_some he
+  have he_s : e.sender = c.sender := find?_sender_eq he
+  have key : ∀ {x : Message}, entryFor (insertCandidate c l) c.sender = some x → e.height ≤ x.height := by
+    intro x hx
+    unfold entryFor at hx
+    unfold insertCandidate at hx
+    split at hx
+    · rename_i cur hcur
+      have hce : cur = e := by rw [he] at hcur; exact (Option.some.inj hcur).symm
+      rw [hce] at hx
+      split at hx
+      · have hxc : x = c := by
+          have h := entryFor_layerInsert c l
+          unfold entryFor at h
+          rw [hx] at h
+          exact Option.some.inj h
+        rw [hxc]
+        exact Nat.le_of_lt (seqNum_lt_height_lt d hdes huniq hstep e (hl e he_mem) c hc he_s ‹_›)
+      · have hxe : x = e := by rw [hx] at he; exact Option.some.inj he
+        rw [hxe]
+    · have hxe : x = e := by rw [hx] at he; exact Option.some.inj he
+      rw [hxe]
+  exact key he'
+
 end Rchain
