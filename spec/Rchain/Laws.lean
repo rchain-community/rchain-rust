@@ -937,7 +937,10 @@ def laws : List Law := [
       `sequence_number` requires a block to justify a same-sender block exactly one `seq_num` lower \
       (`casper/src/validate.rs:144-163`, test `sequence_number_must_be_creator_latest_plus_one` at \
       `:604`); and `check_justification_regression` admits at most one justification per sender and \
-      demands that it be the latest (`casper/src/validate.rs:180-216`). H-1 landed **2026-08-20** \
+      demands that it be the latest (`casper/src/validate.rs:180-216`). **Why the port refuses it, and \
+      why that refusal is a deviation the oracle does not share, is AUDIT C84** — the Scala has no \
+      equivocation gate anywhere and its `validateDagState` checks only height contiguity, so the \
+      premise this proof needs is **guaranteed here and only observed there**. H-1 landed **2026-08-20** \
       (`76415d6c6`), a month *before* the sentence it corrects was written — so the premise was carried \
       in good faith rather than checked, which is this programme's recurring class. The hypothesis is \
       therefore \"at most one same-sender parent per message\" — **guaranteed by an ingress refusal** \
