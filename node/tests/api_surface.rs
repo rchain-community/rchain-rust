@@ -238,6 +238,57 @@ fn the_read_routes_answer_and_their_refusals_are_defined() {
             "with reporting disabled the transaction route does not exist"
         );
 
+        // `POST /api/v1/explore-deploy-by-block-hash` runs a term against a **named** block's state,
+        // and its one piece of logic is the empty-hash arm: an empty string means "the latest state"
+        // rather than "a block whose hash is `""`". Both directions are asserted, because the arm that
+        // converts one to the other is the handler's whole content.
+        for (label, hash) in [
+            ("against the genesis block", genesis_hash.clone()),
+            ("with an empty hash meaning the latest state", String::new()),
+        ] {
+            let resp = client
+                .post(format!("{base}/api/v1/explore-deploy-by-block-hash"))
+                .json(&serde_json::json!({
+                    "term": "@\"out\"!(7)",
+                    "blockHash": hash,
+                    "usePreStateHash": false
+                }))
+                .send()
+                .await
+                .expect("POST /api/v1/explore-deploy-by-block-hash");
+            assert_eq!(resp.status(), 200, "{label}: {}", resp.status());
+            let body: Value = resp.json().await.expect("explore json");
+            assert_eq!(
+                body["expr"][0]["ExprInt"]["data"], 7,
+                "{label}: the term ran and its value came back: {body}"
+            );
+        }
+
+        // `GET /api/v1/openapi.json` serves the route document. It is generated from the same route
+        // table the handlers are attached to, so the assertion is that it parses and names the surface
+        // a client would call — a document that drifted from the table would be a client's only
+        // description of the node.
+        let openapi = get(format!("{base}/api/v1/openapi.json")).await;
+        assert_eq!(openapi.status(), 200, "the OpenAPI document is served");
+        let doc: Value = openapi.json().await.expect("openapi json");
+        // The document's keys are **relative to the version prefix** and the parameter is camelCase —
+        // measured, not assumed: the first version of this assertion looked for `/api/v1/…` and
+        // `{deploy_signature}` and failed, which is how the two conventions were found.
+        for path in [
+            "/explore-deploy",
+            "/explore-deploy-by-block-hash",
+            "/blocks",
+            "/deploy-status/{deploySignature}",
+        ] {
+            assert!(
+                doc["paths"].get(path).is_some(),
+                "the document names `{path}`: {:?}",
+                doc["paths"]
+                    .as_object()
+                    .map(|p| p.keys().collect::<Vec<_>>())
+            );
+        }
+
         // A malformed `data-at-name` body is rejected by the extractor before any handler runs: a
         // 4xx, and (the clause that matters) not a panic in a handler that assumed a well-formed
         // request.
