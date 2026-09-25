@@ -823,7 +823,8 @@ def laws : List Law := [
     statement := "Finality is the fringe's advance gate: the fringe advances iff the supporting stake is \
       a strict supermajority of the bonded stake, as the exact integer comparison `3·stake > 2·total` \
       (no float rounding)",
-    status := .provedModel,
+    status := .provedTied,
+    corpus := some "stake",
     declarations := [`Rchain.isSuperMajority, `Rchain.bondedSenders, `Rchain.stakeOf,
       `Rchain.stakeOf_eq_none, `Rchain.allBonded, `Rchain.bondedSupport,
       `Rchain.fullPartitionStake, `Rchain.totalStake, `Rchain.calculateFringe,

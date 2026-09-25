@@ -1124,6 +1124,78 @@ theorem closedCases_verdicts :
 def closedLine (c : ClosedCase) : String :=
   "closed\t" ++ c.source ++ "\t" ++ (if c.expected then "true" else "false")
 
+/-! ## The `stake` layer — law 14a's gate, read off the node
+
+Law 14a's row is `proved-model` with the node side anchored (`sdk/src/consensus.rs`). This layer is the
+replay: each row is a `(stake, total)` pair and the verdict `isSuperMajority` must return, `decide`d in
+the tree, while the consumer calls the node's own `is_super_majority` on the same pair.
+
+**The comparison is exact integer arithmetic, and the cases say so.** `3·stake > 2·total` — no division,
+no rounding, no floating point anywhere: the boundary is *exactly* `3·stake = 2·total`, which is not a
+supermajority, and one unit over it, which is. So the cases are the boundary family rather than samples:
+`2·k` against `3·k` at two scales, one over at each, the degenerate pairs, and two pairs wide enough that
+a narrower accumulator would have decided them wrongly — `3·stake` past the `i64` range in one case and
+`stake` itself past it in the other, which is why the port's signature takes `i128` and the model's takes
+`Nat`. A layer of small pairs would pass under an arithmetic that is neither exact nor wide; these do not.
+-/
+
+/-- One `stake` case: the two sums and the verdict. -/
+structure StakeCase where
+  /-- The supporting stake. -/
+  stake : Nat
+  /-- The total bonded stake. -/
+  total : Nat
+  /-- What `isSuperMajority` must say. -/
+  expected : Bool
+
+/-- `total * 2 / 3`, as the port's own property test computes the two-thirds mark. -/
+def twoThirds (total : Nat) : Nat := total * 2 / 3
+
+/-- The cases: the boundary, then its width. -/
+def stakeCases : List StakeCase :=
+  [ ⟨2, 3, false⟩                                   -- exactly two thirds …
+  , ⟨2 * 2, 3 * 2, false⟩                           -- … at a second scale …
+  , ⟨2 * 2 + 1, 3 * 2, true⟩                        -- … and one over it
+  , ⟨twoThirds (2 ^ 32), 2 ^ 32, false⟩             -- the same boundary, computed the port's way
+  , ⟨twoThirds (2 ^ 32) + 1, 2 ^ 32, true⟩
+  , ⟨1, 1, true⟩
+  , ⟨0, 0, false⟩
+  , ⟨0, 1, false⟩
+  , ⟨3, 4, true⟩                                    -- 75%
+  , ⟨5, 8, false⟩                                   -- 62.5%: a majority, not a supermajority
+  , ⟨2 ^ 62, 2 ^ 63 - 1, false⟩                     -- `3 * stake` is past the `i64` range …
+  , ⟨2 ^ 63, 2 ^ 63 - 1, true⟩                      -- … and so is `stake` itself
+  ]
+
+/-- The layer's checker. -/
+def stakeHolds (c : StakeCase) : Bool := decide (isSuperMajority c.stake c.total) == c.expected
+
+/-- Every case holds of the model. `decide`: the predicate is `3·stake > 2·total` on `Nat`, so the kernel
+    computes it — which is the point of the layer, since the node's spelling of the same comparison is
+    what is being tied. -/
+theorem stakeCases_decide : stakeCases.all stakeHolds = true := by decide
+
+/-- The layer carries exactly `stakeCaseCount` cases. -/
+def stakeCaseCount : Nat := 12
+
+theorem stakeCases_length : stakeCases.length = stakeCaseCount := by decide
+
+/-- **The layer is not degenerate**: both verdicts appear. -/
+theorem stakeCases_verdicts :
+    (stakeCases.map (fun c => c.expected)).eraseDups.length = 2 := by decide
+
+/-- **And the width is exercised**: one case's `3 * stake` is past the `i64` range and another's `stake`
+    is, so a comparison done in a 64-bit accumulator would decide at least one of them wrongly. That is
+    the property the layer pins beyond the boundary itself — exactness *and* width. -/
+theorem stakeCases_width :
+    (stakeCases.any (fun c => 3 * c.stake > 2 ^ 63 - 1)) = true ∧
+    (stakeCases.any (fun c => c.stake > 2 ^ 62)) = true := by decide
+
+/-- One `stake` corpus line: layer, the two sums, the verdict. -/
+def stakeLine (c : StakeCase) : String :=
+  "stake\t" ++ toString c.stake ++ "\t" ++ toString c.total ++ "\t" ++
+    (if c.expected then "true" else "false")
+
 end Corpus
 end Rchain
 
@@ -1278,7 +1350,9 @@ def main (args : List String) : IO UInt32 := do
   let want :=
     (args.find? (fun a => a == "flags" || a == "match" || a == "silence" || a == "store"
       || a == "c21" || a == "protocol" || a == "json" || a == "envelope"
-      || a == "lex" || a == "sort" || a == "parse" || a == "body" || a == "closed")).getD "flags"
+      || a == "lex" || a == "sort" || a == "parse" || a == "body" || a == "closed"
+      || a == "stake"
+      || a == "stake")).getD "flags"
   let (lines, count) :=
     if want == "c21" then (Corpus.c21Cases.map Corpus.c21Line, Corpus.c21CaseCount)
     else if want == "match" then (Corpus.matchCases.map Corpus.matchLine, Corpus.matchCaseCount)
@@ -1302,6 +1376,8 @@ def main (args : List String) : IO UInt32 := do
       (bodyCases.map bodyLine, bodyCaseCount)
     else if want == "closed" then
       (Corpus.closedCases.map Corpus.closedLine, Corpus.closedCaseCount)
+    else if want == "stake" then
+      (Corpus.stakeCases.map Corpus.stakeLine, Corpus.stakeCaseCount)
     else (Corpus.flagCases.map Corpus.flagLine, Corpus.flagCaseCount)
   if lines.length != count then
     IO.eprintln s!"rchain-corpus: {want}: the case list and the declared count disagree"

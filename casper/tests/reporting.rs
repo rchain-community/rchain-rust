@@ -21,6 +21,7 @@ use rchain_casper::block_random_seed::BlockRandomSeed;
 use rchain_casper::genesis::contracts::Vault;
 use rchain_casper::reporting::{rho_reporter, ReportingCasper};
 use rchain_casper::runtime_manager::{MergeableStore, RuntimeManager};
+use rchain_casper::system_deploy::SystemDeploy;
 use rchain_crypto::hash::blake2b512_random::Blake2b512Random;
 use rchain_crypto::public_key::PublicKey;
 use rchain_models::block::state_hash::StateHash;
@@ -143,7 +144,16 @@ fn block_shell() -> BlockMessage {
 }
 
 /// **A block replayed for its events.** The term both produces and consumes, so the report has
-/// something to collect in more than one shape. The three assertions are the subsystem's claims:
+/// something to collect in more than one shape.
+///
+/// **What this can and cannot see.** The system deploy is replayed and reported, and that is the claim
+/// here — its *effect* is not: `CloseBlock` writes to the runtime's native store, which is a sidecar
+/// beside the trie (like the mergeable store), so a replayed close-block at the wrong height leaves the
+/// post-state hash unchanged. Measured, not assumed: planting `block_number + 1` in the replay's
+/// `close_block` passes this test, which is why this says *path* rather than *effect*. The op's own
+/// behaviour is pinned by `native_state`'s tests, where the write is observable.
+///
+/// The three assertions are the subsystem's claims:
 ///
 ///   * the replay reaches the **block's own post-state hash** — if the reporting replay diverged from
 ///     the block path, the tool would report events for a state the chain is not in, which is worse
@@ -175,7 +185,10 @@ async fn the_reporter_replays_a_block_and_collects_its_events() {
         .compute_state(
             &genesis_post,
             &[deploy(r#"new c in { c!(1) | for (x <- c) { Nil } }"#)],
-            &[],
+            // A **system** deploy as well as a user one: the replay of a system deploy is a different
+            // path (`RuntimeReplayOps::replay_block_system_deploy`, and the `eval_system_deploy`/
+            // `consume_system_result` pair under it), and a block with none leaves it unreachable.
+            &[SystemDeploy::close_block(1, block_rand.clone())],
             &block_rand,
             BlockData::empty(),
         )
@@ -230,8 +243,9 @@ async fn the_reporter_replays_a_block_and_collects_its_events() {
         "the reporting space collected the deploy's events: {:?}",
         reported.events
     );
-    assert!(
-        result.system_deploy_report_result.is_empty(),
-        "the fixture block carries no system deploys"
+    assert_eq!(
+        result.system_deploy_report_result.len(),
+        1,
+        "the block's system deploy is replayed and reported too"
     );
 }
