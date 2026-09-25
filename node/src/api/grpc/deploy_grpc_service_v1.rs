@@ -270,6 +270,25 @@ mod tests {
     struct StubBlockApi {
         /// Records `exploratory_deploy`'s arguments, which is what distinguishes the empty-hash arm.
         exploratory: Mutex<Vec<(String, Option<String>, bool)>>,
+        /// `visualize_dag`'s three arguments, in the order the handler forwards them. Two are
+        /// integers, so a transposition compiles — recording them is the only way the assertion can
+        /// be about the *unpacking* rather than about the return value.
+        dag_calls: Mutex<Vec<(i32, i32, bool)>>,
+        /// `(depth, listening name)` for `get_listening_name_data_response`.
+        name_calls: Mutex<Vec<(i32, String)>>,
+        /// The depth each depth-only method was handed, as `(method, depth)`.
+        depth_calls: Mutex<Vec<(String, i32)>>,
+        /// The hash `is_finalized` was handed, and the key `bond_status` was.
+        hash_calls: Mutex<Vec<String>>,
+        /// When set, every driven method answers `Err("stub refusal")` — the mapping a handler must
+        /// not swallow into an empty success.
+        refuse: bool,
+    }
+
+    impl StubBlockApi {
+        fn refusal<T>(&self, what: &str) -> ApiErr<T> {
+            Err(format!("stub refusal: {what}"))
+        }
     }
 
     #[async_trait::async_trait]
@@ -309,10 +328,17 @@ mod tests {
         }
         async fn get_listening_name_data_response(
             &self,
-            _depth: i32,
-            _listening_name: &Par,
+            depth: i32,
+            listening_name: &Par,
         ) -> ApiErr<(Vec<DataWithBlockInfo>, i32)> {
-            unimplemented!("not driven by these tests")
+            if self.refuse {
+                return self.refusal("get_listening_name_data_response");
+            }
+            self.name_calls
+                .lock()
+                .unwrap()
+                .push((depth, format!("{listening_name:?}")));
+            Ok((Vec::new(), depth))
         }
         async fn get_listening_name_continuation_response(
             &self,
@@ -330,17 +356,39 @@ mod tests {
         }
         async fn visualize_dag(
             &self,
-            _depth: i32,
-            _start_block_number: i32,
-            _show_justification_lines: bool,
+            depth: i32,
+            start_block_number: i32,
+            show_justification_lines: bool,
         ) -> ApiErr<Vec<String>> {
-            unimplemented!("not driven by these tests")
+            if self.refuse {
+                return self.refusal("visualize_dag");
+            }
+            self.dag_calls.lock().unwrap().push((
+                depth,
+                start_block_number,
+                show_justification_lines,
+            ));
+            Ok(vec![format!("digraph {{ {depth}/{start_block_number} }}")])
         }
-        async fn machine_verifiable_dag(&self, _depth: i32) -> ApiErr<String> {
-            unimplemented!("not driven by these tests")
+        async fn machine_verifiable_dag(&self, depth: i32) -> ApiErr<String> {
+            if self.refuse {
+                return self.refusal("machine_verifiable_dag");
+            }
+            self.depth_calls
+                .lock()
+                .unwrap()
+                .push(("machine_verifiable_dag".to_string(), depth));
+            Ok(format!("edges at depth {depth}"))
         }
-        async fn get_blocks(&self, _depth: i32) -> ApiErr<Vec<LightBlockInfo>> {
-            unimplemented!("not driven by these tests")
+        async fn get_blocks(&self, depth: i32) -> ApiErr<Vec<LightBlockInfo>> {
+            if self.refuse {
+                return self.refusal("get_blocks");
+            }
+            self.depth_calls
+                .lock()
+                .unwrap()
+                .push(("get_blocks".to_string(), depth));
+            Ok(vec![light_block()])
         }
         async fn find_deploy(&self, _id: &DeployId) -> ApiErr<LightBlockInfo> {
             unimplemented!("not driven by these tests")
@@ -348,8 +396,15 @@ mod tests {
         async fn get_block(&self, _hash: &str) -> ApiErr<BlockInfo> {
             unimplemented!("not driven by these tests")
         }
-        async fn bond_status(&self, _public_key: &[u8]) -> ApiErr<bool> {
-            unimplemented!("not driven by these tests")
+        async fn bond_status(&self, public_key: &[u8]) -> ApiErr<bool> {
+            if self.refuse {
+                return self.refusal("bond_status");
+            }
+            self.hash_calls.lock().unwrap().push(format!(
+                "bond:{}",
+                rchain_shared::base16::encode(public_key)
+            ));
+            Ok(true)
         }
         async fn exploratory_deploy(
             &self,
@@ -381,8 +436,15 @@ mod tests {
         async fn last_finalized_block(&self) -> ApiErr<BlockInfo> {
             unimplemented!("not driven by these tests")
         }
-        async fn is_finalized(&self, _hash: &str) -> ApiErr<bool> {
-            unimplemented!("not driven by these tests")
+        async fn is_finalized(&self, hash: &str) -> ApiErr<bool> {
+            if self.refuse {
+                return self.refusal("is_finalized");
+            }
+            self.hash_calls
+                .lock()
+                .unwrap()
+                .push(format!("final: {hash}"));
+            Ok(hash.starts_with("ab"))
         }
         async fn get_latest_message(&self) -> ApiErr<BlockMetadata> {
             unimplemented!("not driven by these tests")
@@ -439,6 +501,132 @@ mod tests {
             DeployGrpcServiceV1::new(api.clone(), report_api(), false),
             api,
         )
+    }
+
+    /// The same service over a stub the caller has configured first — the refusal switch needs it,
+    /// since a double that always answers cannot show that a refusal is passed through.
+    fn service_with(
+        configure: impl FnOnce(&mut StubBlockApi),
+    ) -> (DeployGrpcServiceV1, Arc<StubBlockApi>) {
+        let mut stub = StubBlockApi::default();
+        configure(&mut stub);
+        let api = Arc::new(stub);
+        (
+            DeployGrpcServiceV1::new(api.clone(), report_api(), false),
+            api,
+        )
+    }
+
+    /// **The delegation handlers forward the request's fields, in the right order, and pass a refusal
+    /// through.** From `visualize_dag` to `bond_status` these methods are
+    /// `self.block_api.<method>(<fields of the request>)` — and the risk is not the call but the
+    /// *unpacking*: `visualize_dag` forwards three fields, two of them integers, so a transposition
+    /// compiles and reaches the node as a plausible query about the wrong part of the DAG. The stub
+    /// records what it was handed, so each handler is asserted on the arguments it forwarded rather
+    /// than only on its return value.
+    ///
+    /// The refusal half is the other reason to have a double that can fail: an `ApiErr` must reach the
+    /// caller as a `ServiceError` carrying the reason. A handler that dropped it would answer an empty
+    /// success, which a client cannot tell from "no data".
+    #[tokio::test]
+    async fn the_handlers_forward_each_requests_fields_and_its_refusal() {
+        let (svc, api) = service();
+
+        // `visualize_dag`: three fields, in the handler's declared order.
+        let dags = svc
+            .visualize_dag(&VisualizeDagQuery {
+                depth: 3,
+                start_block_number: 7,
+                show_justification_lines: true,
+            })
+            .await
+            .expect("visualize_dag");
+        assert_eq!(dags.len(), 1, "the stub's rendering passes through");
+        assert_eq!(
+            api.dag_calls.lock().unwrap().as_slice(),
+            &[(3, 7, true)],
+            "depth, start height and the flag arrive in that order — a transposition here is silent"
+        );
+
+        // The depth-only pair.
+        svc.machine_verifiable_dag(&MachineVerifyQuery { depth: 4 })
+            .await
+            .expect("machine_verifiable_dag");
+        let blocks = svc
+            .get_blocks(&BlocksQuery { depth: 5 })
+            .await
+            .expect("get_blocks");
+        assert_eq!(blocks.len(), 1, "the block list passes through");
+        assert_eq!(
+            api.depth_calls.lock().unwrap().as_slice(),
+            &[
+                ("machine_verifiable_dag".to_string(), 4),
+                ("get_blocks".to_string(), 5)
+            ],
+            "each depth reaches its own method"
+        );
+
+        // `listen_for_data_at_name`: the depth *and* the name — a swap would query the right depth for
+        // the wrong channel.
+        let name = rchain_models::par_ops::from_expr(rchain_models::ast::Expr::GString(
+            "chan".to_string(),
+        ));
+        svc.listen_for_data_at_name(&DataAtNameQuery {
+            depth: 2,
+            name: name.clone(),
+        })
+        .await
+        .expect("listen_for_data_at_name");
+        let recorded = api.name_calls.lock().unwrap();
+        assert_eq!(recorded.len(), 1);
+        assert_eq!(recorded[0].0, 2, "the depth");
+        assert!(
+            recorded[0].1.contains("chan"),
+            "and the name the request carried: {}",
+            recorded[0].1
+        );
+        drop(recorded);
+
+        // `is_finalized` and `bond_status` forward their subject, and answer what the API answered.
+        assert!(
+            svc.is_finalized(&IsFinalizedQuery {
+                hash: "abcd".to_string()
+            })
+            .await
+            .expect("is_finalized"),
+            "the stub's verdict passes through"
+        );
+        assert!(svc
+            .bond_status(&BondStatusQuery {
+                public_key: vec![1, 2, 3]
+            })
+            .await
+            .expect("bond_status"));
+        let calls = api.hash_calls.lock().unwrap().clone();
+        assert_eq!(calls.len(), 2, "one hash and one key: {calls:?}");
+        assert!(calls[0].contains("abcd"), "the hash: {calls:?}");
+        assert!(
+            calls[1].contains("010203"),
+            "the key, hex-encoded: {calls:?}"
+        );
+
+        // The refusal: an `ApiErr` is a `ServiceError` with the reason, not an empty success.
+        let (svc, _refusing) = service_with(|s| s.refuse = true);
+        let err = svc
+            .get_blocks(&BlocksQuery { depth: 1 })
+            .await
+            .expect_err("a refused read must not succeed with no blocks");
+        assert!(
+            format!("{err:?}").contains("stub refusal"),
+            "the reason reaches the caller: {err:?}"
+        );
+        let err = svc
+            .is_finalized(&IsFinalizedQuery {
+                hash: "x".to_string(),
+            })
+            .await
+            .expect_err("and so does the refusal of a verdict");
+        assert!(format!("{err:?}").contains("stub refusal"), "{err:?}");
     }
 
     /// **`getEventByHash`'s validation, arm one:** a hash that is not hex is refused *by name*,

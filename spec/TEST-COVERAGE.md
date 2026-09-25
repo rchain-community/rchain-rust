@@ -26,7 +26,7 @@ and **no file is left without one or the other** — the linter's check 7 passes
 
 ## Inventory
 
-**1469 `#[test]`/`#[tokio::test]` unit functions + 128 integration tests** across 13 crates, with **26
+**1470 `#[test]`/`#[tokio::test]` unit functions + 128 integration tests** across 13 crates, with **26
 laws** carrying a randomized property test and **12 benchmark functions** in 7 Criterion groups. Only
 **3 of 13 crates have integration tests** (`rholang`, `casper`, `node`).
 
@@ -42,7 +42,7 @@ laws** carrying a randomized property test and **12 benchmark functions** in 7 C
 | `rspace` | 180 | — | 8 | — |
 | `rholang` | 238 | 57 | 7 | — |
 | `casper` | 277 | 54 | 3 | — |
-| `node` | 191 | 17 | — | — |
+| `node` | 192 | 17 | — | — |
 | `qucalc` | 20 | — | — | — |
 | `rspace-bench` | — | — | — | 12 |
 
@@ -330,6 +330,7 @@ not found in that file. Coverage claims live here rather than in prose so they c
 | item 11 | `rholang/src/merging.rs` | `get_number_with_rnd_reads_one_int_and_refuses_the_rest` |
 | item 11 | `rspace/src/merger/state_change_merger.rs` | `the_merge_entry_point_builds_actions_from_the_base_state` |
 | item 11 | `rspace/src/merger/state_change_merger.rs` | `the_merge_entry_point_reports_what_it_cannot_merge` |
+| item 11 | `node/src/api/grpc/deploy_grpc_service_v1.rs` | `the_handlers_forward_each_requests_fields_and_its_refusal` |
 
 ## Gap analysis (severity-ordered)
 
@@ -772,7 +773,8 @@ the rows that changed, plus what the moves exposed):
 | `casper/src/runtime_replay.rs` | | the system-deploy replay trio (462–563) | `harness-bound` | needs a live `ReportingRuntime` + replay log; the covering fixture is `casper/tests/system_process_replies_and_restart.rs` |
 | `rholang/src/matcher/spatial_matcher.rs` | 112 | — | `pin` | pure matching; the register already pins five of its tests, so the remainder is the same idiom |
 | `rspace/src/merger/state_change_merger.rs` | 131 | `compute_trie_actions` (66–200) | `pin` | **pinned** — the file's three tests all drove `mk_trie_action`, its reader-free helper, so the *public* entry point the merge calls had never run; a reader double (three methods, one failure arm) was all it needed |
-| `models/src/wire.rs`, `rspace/src/history/export.rs`, `casper/src/reporting.rs`, `comm/src/upnp/mod.rs`, `node/src/api/grpc/{tonic,deploy_grpc_service_v1}.rs` | 84–153 each | — | — | not yet read; `tonic.rs` is expected to split `stub` (its nineteen `unimplemented!()`) from `pin` (the live handlers, reachable over loopback gRPC as `serves_and_answers_propose` already does) |
+| `node/src/api/grpc/deploy_grpc_service_v1.rs` | 153 | the delegation handlers (44–177) | `pin` | **partly pinned** — `the_handlers_forward_each_requests_fields_and_its_refusal` covers the six whose stub returns are trivially constructible and pins the *unpacking* (`visualize_dag` forwards three fields, two of them integers) plus the `ServiceError` mapping; `get_block`/`last_finalized_block`/`get_data_at_name` need a `BlockInfo` fixture and stay `pin` |
+| `models/src/wire.rs`, `rspace/src/history/export.rs`, `casper/src/reporting.rs`, `comm/src/upnp/mod.rs`, `node/src/api/grpc/tonic.rs` | 84–153 each | — | — | not yet read; `tonic.rs` is expected to split `stub` (its nineteen `unimplemented!()`) from `pin` (the live handlers, reachable over loopback gRPC as `serves_and_answers_propose` already does) |
 
 **The first `defect`-bucket finding, and it was two lines no test could ever reach.** The coverage build's
 own warnings pointed at them: `casper/src/genesis/rgov.rs`'s `deploy_public_key` (a pairing helper in the
