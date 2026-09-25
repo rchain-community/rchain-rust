@@ -634,15 +634,38 @@ def receiptPar : SReceipt → Par → List SVar → Option Receive
   | .repeated binds, body, Γ => (bindsPar binds Γ).map (fun bs => Receive.mk bs body true bs.length)
   | .peek _, _, _ => none
 
+/-- **One bind's result**, given its already-desugared patterns and tail: a `SimpleSource` becomes a
+    `ReceiveBind` whose free count is the pattern count, every other source shape is outside the domain.
+
+    It is a `def` of its own rather than the arm's inline `match`, and the reason is mechanical:
+    **Lean cannot generate an equation lemma for `bindsPar` with that `match` inline** — "failed to
+    generate equational theorem for `Rchain.bindsPar`", measured 2026-09-25 — because the matched value
+    is a *pattern-bound field* of the bind and the match is nested inside another match on two
+    `Option`s. Nothing can unfold such a function: `simp only [bindsPar]` fails, `rw [bindsPar]` fails,
+    and `exact`-style unfolding has nothing to use. That is a definitional obstruction to the
+    closedness induction law 36 owes (`ScopedIn Γ e → normalizeAt e acc Γ = some p → Closed p`), which
+    has to *unfold the arms* to apply its induction hypotheses, so the shape is part of the proof's
+    cost rather than a stylistic choice. Lifted out, `bindsPar`'s own equation is a plain match on its
+    arguments and generates.
+
+    Behaviour is unchanged, and in the direction that matters: the arm answers `none` exactly when the
+    source is not `SimpleSource` or either sub-result is `none`, which is what both forms compute (the
+    sub-computations are total, so evaluating them in either order is the same value). The
+    source-side boundary is `surfaceBoundaries`' `name-source` row. -/
+def bindResult (src : SNameSource) (pats : List Par) (bs : List ReceiveBind)
+    (Γ : List SVar) : Option (List ReceiveBind) :=
+  match src with
+  | .simple n => (namePar n Γ).map (fun c => ReceiveBind.mk pats c pats.length :: bs)
+  | _ => none
+
 /-- A receipt's binds. Only a `SimpleSource` name is modelled: `Name ?!` and `Name !?( data )` are the
 send-receive forms whose flat shape the port builds in the normalizer, not in the parser. -/
 def bindsPar : List SBind → List SVar → Option (List ReceiveBind)
   | [], _ => some []
   | ⟨ns, rest, src⟩ :: tl, Γ =>
-    match src, namesPar ns rest Γ, bindsPar tl Γ with
-    | .simple n, some pats, some bs =>
-      (namePar n Γ).map (fun c => ReceiveBind.mk pats c pats.length :: bs)
-    | _, _, _ => none
+    match namesPar ns rest Γ, bindsPar tl Γ with
+    | some pats, some bs => bindResult src pats bs Γ
+    | _, _ => none
 
 /-- A name in a *value* position: a quoted process (`@p`) desugars, a bare name is a channel. -/
 def namePar : SName → List SVar → Option Par
