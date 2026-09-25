@@ -252,7 +252,24 @@ where
                     .post_state_hash
                     .as_bytes(),
             ),
-            None => fringe_state,
+            None => {
+                // No base *message*, so the merge is based on the state of the fringe that has just been
+                // finalised. Nothing compares the merged result with what the parents carried, so if that
+                // base is behind writes the branches have already applied, the state reverts to it and the
+                // only trace is a later reader seeing a validator, bond or balance that has gone missing.
+                // That is the shape of #74 (`getBonds` back to one, `bond-status` refusing a key that the
+                // chain had admitted, with nothing in any log to say why). Log the fallback so the next
+                // occurrence says which block the base came from and which parents were merged over it.
+                eprintln!(
+                    "[merge] no base message for {} parent(s); merging over the fringe state {}",
+                    parent_hashes.len(),
+                    rchain_shared::base16::encode(fringe_state.as_bytes())
+                        .chars()
+                        .take(12)
+                        .collect::<String>()
+                );
+                fringe_state
+            }
         };
         MergeScope::merge(
             &m_scope,
