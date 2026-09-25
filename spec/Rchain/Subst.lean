@@ -801,7 +801,7 @@ theorem the_identity_satisfies_subst_closed (σ : Var → Par) (t : Par)
 theorem bound_is_closed_free_is_not :
     Closed (Par.mk [] [] [] [Expr.evar (.bound 0)] [] [] [] []) ∧
     ¬ Closed (Par.mk [] [] [] [Expr.evar (.free 0)] [] [] [] []) := by
-  refine ⟨?_, ?_⟩ <;> native_decide
+  refine ⟨?_, ?_⟩ <;> decide
 
 
 /-! ### The two laws, both proved

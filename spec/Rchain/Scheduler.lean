@@ -284,18 +284,18 @@ def state1 : State := fun x => x = 0 ∨ x = 1 ∨ x = 2
 /-- The triggers' footprints are disjoint (the naive Law 9 reading holds). -/
 theorem depth2_footprint_disjoint :
     Effect.footprint depth2A ∩ Effect.footprint depth2B = ∅ := by
-  native_decide
+  decide
 
 /-- The next-step footprint of `depth2A` after its trigger (`receive d`) has run — the receive on
     `x` — is disjoint from `depth2B`'s footprint. A one-hop lookahead therefore lets `depth2B` run
     concurrently, exactly the divergence below. -/
 theorem depth2_next_step_disjoint :
     Effect.footprint (Effect.consume 2 (Effect.produce 0)) ∩ Effect.footprint depth2B = ∅ := by
-  native_decide
+  decide
 
 /-- The closures do overlap — `depth2A` transitively reaches `c`. -/
 theorem depth2_closure_overlap : depth2A.closure ∩ depth2B.closure ≠ ∅ := by
-  native_decide
+  decide
 
 /-- **Law 21 (counterexample)** — the one-hop scheduler is unsound: applying the two orders
     diverges (at channel `c = 0`), even though every next-step footprint pair is disjoint
@@ -305,8 +305,8 @@ theorem depth2_closure_overlap : depth2A.closure ∩ depth2B.closure ≠ ∅ := 
 theorem one_hop_depth2_diverges :
     depth2A.apply (depth2B.apply state1) 0 ≠ depth2B.apply (depth2A.apply state1) 0 := by
   intro h
-  have hab : depth2A.apply (depth2B.apply state1) 0 = true := by native_decide
-  have hba : depth2B.apply (depth2A.apply state1) 0 = false := by native_decide
+  have hab : depth2A.apply (depth2B.apply state1) 0 = true := by decide
+  have hba : depth2B.apply (depth2A.apply state1) 0 = false := by decide
   rw [hab, hba] at h
   cases h
 

@@ -105,5 +105,26 @@ should read the name, not expect a check to have done it.
 ## Things that are deliberately absent
 
 - **No `sorry`, no `admit`** anywhere under `spec/Rchain/` — a hard gate step, and the tree holds zero.
-- **No `opaque`, `unsafe`, `partial`, `extern`, `@[implemented_by]`** — verified absent, and the register's
-  axiom-accounting check is what would notice an assumption arriving by another route.
+- **No `opaque`, `unsafe`, `partial`, `extern`, `@[implemented_by]`** — verified absent.
+
+**And what notices an assumption arriving by another route — corrected 2026-09-25.** The sentence that
+stood here said the register's axiom-accounting check was that thing. It was not, on either of the two
+routes the tree actually uses:
+
+- **`native_decide`**, which proves by evaluation in compiled code and admits the result through the axiom
+  `Lean.ofReduceBool`: "the Lean compiler and interpreter become part of your trusted code base"
+  (`Init/Core.lean`). The word is legal, so the gate's scan did not refuse it, and the accounting folds the
+  environment for axioms named `Rchain`, so it could not see it either. **Measured 2026-09-25**: 34 sites in
+  six modules, of which **30 became `decide`** (the kernel reduces those goals; the emitted corpora did not
+  move a byte, so the conversions are verdict-preserving). `Rchain/LawsMain.lean`'s **check 6b** now
+  computes each register-named declaration's transitive axiom set with `Lean.collectAxioms` and holds the
+  compiler-resting set at *zero* — six were found, all six converted, and the list is empty and exact in
+  both directions — and the gate's **step 2b** counts `native_decide` across `spec/` against a ceiling of
+  **4**: the four corpus verdicts in `Rchain/Corpus.lean`, where the kernel does not reduce the goal at all.
+- **Lean's own logic** — `propext`, `Quot.sound`, `Classical.choice`, which **225** of the 456
+  declarations the register names rest on transitively, carried in by Mathlib's lemmas. The tree
+  references none of them in source; the transitive set says otherwise, and check 6b reports the count on
+  every build rather than failing on it (a Mathlib development uses them).
+
+The general lesson is the register's own: an assumption is worth what the check that counts it is worth,
+and "no `opaque`/`unsafe`/`partial`" is a list of *spellings*, not of routes.

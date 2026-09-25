@@ -77,11 +77,11 @@ def state0 : State := fun x => x = 0 ∨ x = 1
 /-- The two effects have **disjoint footprints** — the footprint analogue of Law 9's `NonConflicting`,
     which the merge model states as channel-disjointness on a state change. -/
 theorem footprint_disjoint : effectA.footprint ∩ effectB.footprint = ∅ := by
-  native_decide
+  decide
 
 /-- ... but **overlapping closures** — so Law 9's footprint reading is too weak. -/
 theorem closure_overlap : effectA.closure ∩ effectB.closure ≠ ∅ := by
-  native_decide
+  decide
 
 /-- The counterexample: applying the two effects in opposite orders reaches different states. Hence
     they do not commute, and a static footprint partition that runs them concurrently is unsound. -/
@@ -90,8 +90,8 @@ theorem effect_reorder_diverges :
   intro h
   have h2 : effectA.apply (effectB.apply state0) 2 = effectB.apply (effectA.apply state0) 2 :=
     congrFun h 2
-  have hab : effectA.apply (effectB.apply state0) 2 = false := by native_decide
-  have hba : effectB.apply (effectA.apply state0) 2 = true := by native_decide
+  have hab : effectA.apply (effectB.apply state0) 2 = false := by decide
+  have hba : effectB.apply (effectA.apply state0) 2 = true := by decide
   rw [hab, hba] at h2
   cases h2
 

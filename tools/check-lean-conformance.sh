@@ -11,7 +11,11 @@
 #   1. **The library builds** — `lake build` in `spec/`.
 #   2. **Nothing is admitted, and nothing is assumed by another name** — no `sorry`/`admit` and no
 #      `opaque`/`unsafe`/`partial`/`extern`/`implemented_by`, anywhere under `spec/` outside the build
-#      tree. The tree holds zero today, so this is a ratchet: it can only stay that way.
+#      tree. The tree holds zero today, so this is a ratchet: it can only stay that way. Its sibling
+#      (step 2b) counts `native_decide`, the one legal route by which an assumption still arrives: it
+#      proves by evaluation in compiled code, admitting the result through `Lean.ofReduceBool`, so the
+#      compiler joins the trusted base. Four sites remain, all in `Rchain/Corpus.lean`'s corpus
+#      verdicts where the kernel does not reduce the goal at all, and the count may only go down.
 #   3. **The library is complete** — every `.lean` under `spec/` is the library root, imported by
 #      `Rchain.lean`, or a declared `lean_exe` root; there is no third kind (AUDIT C75, C76).
 #   4. **The Coq builds** — `make` in `spec/coq/` (the second formalization of laws 2, 3, 5, 6).
@@ -82,6 +86,43 @@ if awk ' BEGIN { SQ = sprintf("%c", 39) }
   fi
 else
   fail "the assurance scan could not run"
+fi
+
+# --- 2b. the compiler-trust census --------------------------------------------
+# `native_decide` proves a goal by evaluating it in compiled code and admitting the result through the
+# axiom `Lean.ofReduceBool` — the toolchain's words: "the Lean compiler and interpreter become part of
+# your trusted code base. This is extra 30k lines of code" (`Init/Core.lean`). It is *legal*, so the scan
+# above does not refuse it, and the register's axiom accounting cannot see it (that folds the environment
+# for axioms named `Rchain`). It is therefore an assumption arriving by a route nothing counted — AUDIT
+# C70's class, which is why that entry widened the token set.
+#
+# Measured 2026-09-25: 36 occurrences in six modules. 30 became ordinary `decide` reductions in the same
+# change (the kernel reduces those goals), and the four that remain are `Rchain/Corpus.lean`'s corpus
+# verdicts — where `decide` does not reduce the goal at all (`tactic 'decide' failed for proposition`,
+# the measurement each of the four docstrings now carries), so the compiler is genuinely part of what the
+# *tie* rests on. Those four are invisible to `Rchain/LawsMain.lean`'s check 6b, because `Corpus.lean` is
+# an executable root rather than part of the `Rchain` library; this census is the net under both.
+#
+# A ceiling in `COQ_AXIOM_CEILING`'s style: it may only go down, and lowering it belongs to the change
+# that converts a site. Comments are stripped first, for step 2's reason.
+NATIVE_DECIDE_CEILING=4
+n_native_decide="$(awk ' BEGIN { SQ = sprintf("%c", 39) }
+  { out = ""; i = 1
+    while (i <= length($0)) { c = substr($0, i, 1)
+      if (depth > 0) { if (substr($0,i,2)=="/-") { depth++; i+=2 } else if (substr($0,i,2)=="-/") { depth--; i+=2 } else i++ }
+      else if (instring) { if (c=="\\") i+=2; else { if (c=="\"") instring=0; i++ } }
+      else {
+        if (substr($0,i,2)=="--") break
+        if (substr($0,i,2)=="/-") { depth++; i+=2 } else if (c=="\"") { if (substr($0,i-1,1)==SQ) { i++ } else { instring=1; i++ } } else { out=out c; i++ }
+      } }
+    if (out ~ /(^|[^A-Za-z_])native_decide([^A-Za-z_]|$)/) n++
+  } END { print n+0 }' $(find "$SPEC" -name '*.lean' -not -path '*/.lake/*') 2>/dev/null || echo 0)"
+if (( n_native_decide > NATIVE_DECIDE_CEILING )); then
+  fail "the compiler trust surface grew: $n_native_decide \`native_decide\` site(s), ceiling $NATIVE_DECIDE_CEILING — replace it with \`decide\` where the kernel reduces the goal, or name the site and its measurement"
+elif (( n_native_decide < NATIVE_DECIDE_CEILING )); then
+  ok "compiler trust surface: $n_native_decide \`native_decide\` site(s), below the ceiling $NATIVE_DECIDE_CEILING — lower the ceiling in this change (a discharge recorded is a ratchet kept)"
+else
+  ok "compiler trust surface: $n_native_decide \`native_decide\` site(s), ceiling $NATIVE_DECIDE_CEILING"
 fi
 
 # --- 3. the library is complete ------------------------------------------------

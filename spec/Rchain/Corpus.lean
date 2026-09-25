@@ -646,7 +646,12 @@ def c21Cases : List C21Case :=
 `native_decide` rather than `decide`, for the reason `Rchain/Effect.lean` uses it: the checker reduces
 the canonical comparator (`cmpPar`, whose `eq_iff` is proved) over a desugared term, and the kernel's
 reduction is too deep for it — the computation itself is fast (`#eval` agrees with the theorem) and the
-same trust in the compiler the rest of the tree places elsewhere. -/
+same trust in the compiler the rest of the tree places elsewhere.
+
+**Measured 2026-09-25**, when 30 of the tree's 36 `native_decide` sites were converted: `decide` here
+fails (`tactic 'decide' failed for proposition`) on all four corpus verdicts below, so these four are the
+tree's remaining compiler-trust sites and the reason `Rchain/LawsMain.lean`'s `compilerTrust` list is not
+empty. The conversion is not a matter of budget — `decide` does not reduce the goal at all. -/
 theorem c21Cases_decide :
     c21Cases.all (fun c => c21Holds c && c21IsProbe c) = true := by native_decide
 
@@ -1034,7 +1039,7 @@ def sortCases : List SortCase :=
 
 /-- Every case holds of the model — `cmpPar` gives the verdict the row states. `native_decide`, for the
     reason the `c21` checker uses it: the comparator's reduction over a term is too deep for the kernel
-    and fast for the compiler. -/
+    and fast for the compiler — `decide` fails here too, measured 2026-09-25 with the other three. -/
 theorem sortCases_decide : sortCases.all sortHolds = true := by native_decide
 
 /-- **The layer is not degenerate**: all three verdicts appear, so a table that answered `lt` (or any
@@ -1183,7 +1188,8 @@ def bodyCaseCount : Nat := 5
 theorem bodyCases_length : bodyCases.length = bodyCaseCount := by decide
 
 /-- **The model reproduces the node's bytes** on every row. `native_decide`, for the reason the other
-    layers use it: the reduction is deep for the kernel and fast for the compiler. -/
+    layers use it: the reduction is deep for the kernel and fast for the compiler — `decide` fails here,
+    measured 2026-09-25 with the other three. -/
 theorem bodyCases_decide : bodyCases.all bodyHolds = true := by native_decide
 
 /-- A byte string as lower-case hex, for the emitted row. -/

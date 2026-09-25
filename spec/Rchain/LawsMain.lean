@@ -80,6 +80,50 @@ register to itself and a dropped row would take its own evidence along. **Adding
 this** — the same tax `lawCeiling` already carries. -/
 def entryCeiling : Nat := 58
 
+/-- **The declarations the register names whose proofs rest on the *compiler* — empty as of 2026-09-25,
+and checked in both directions by check 6b.**
+
+`native_decide` proves a decidable proposition by evaluating it in compiled code and admitting the result
+through the axiom `Lean.ofReduceBool` — the toolchain's own words: "by using this feature, the Lean
+compiler and interpreter become part of your trusted code base. This is extra 30k lines of code"
+(`Init/Core.lean`). The axiom is tracked (`axiom trustCompiler : True`, reached through `opaque
+reduceBool`), so `Lean.collectAxioms` can see it — but the register's axiom accounting folds the
+environment for axioms named `underRchain`, and the gate's word scan lists
+`sorry|admit|opaque|unsafe|partial|extern|implemented_by`. Neither could see this: a real assumption,
+arriving by a route that is legal and counted by nothing (AUDIT C70's class).
+
+**Measured 2026-09-25.** The first pass — `Lean.collectAxioms` over every declaration the rows name —
+found **six**, in five rows (3, 9, 21, 22, 24): `bound_is_closed_free_is_not`, `effect_reorder_diverges`,
+`one_hop_depth2_diverges`, `depth2_next_step_disjoint`, `s3_pair_fails_validation`,
+`certificate_blind_late_writer_diverges`. **All six converted to `decide` in the same unit** (30 of the
+tree's 34 `native_decide` sites became ordinary kernel-checked reductions — `Subst.lean` 1,
+`Effect.lean` 4, `Scheduler.lean` 5, `SchedulerOnchain.lean` 20 — and the corpora did not move a byte, so
+the conversions are verdict-preserving), so this list is empty — which is the
+stronger statement, and the reason it is a list rather than a count: the check fails if the set here is
+not *exactly* the measured one, in either direction, so a conversion has to be recorded here and a new
+`native_decide` in a register-named declaration cannot pass. The list is a ratchet at zero.
+
+**What this check cannot see, and what does.** `Rchain/Corpus.lean` is an executable root, not part of the
+`Rchain` library this module imports, so the four corpus verdicts it proves with `native_decide`
+(`c21Cases_decide`, `c21Cases_carry_the_preceding`, `sortCases_decide`, `bodyCases_decide`) are not in
+this environment — and they are the tree's remaining compiler-trust sites. `decide` does not reduce their
+goals at all (`tactic 'decide' failed for proposition`, measured on all four): they evaluate the
+canonical comparator over a desugared term, so the compiler is genuinely part of what the *tie* rests on.
+They are covered from the other side: `tools/check-lean-conformance.sh` counts `native_decide`
+occurrences across `spec/` and refuses a count above the ceiling the four are named at, so a new site
+anywhere — corpus or library — fails there. The measurement is also in each of those four docstrings.
+
+Not in this list, and reported separately by the same check: `propext`, `Quot.sound` and
+`Classical.choice`, which **225** of the population rest on transitively — Lean's own logic, carried in by
+Mathlib's lemmas. That is expected of any Mathlib development and is not a defect; it is recorded because
+the tree's own prose claimed otherwise, and a claim about the trust surface that is not measured is the
+thing this file exists to replace. -/
+def compilerTrust : List Name := []
+
+/-- The axioms of Lean's own logic, reported by check 6b rather than failed on: a development that uses
+Mathlib uses these, and the register's job is to *say* so. -/
+def logicAxioms : List Name := [``propext, ``Quot.sound, ``Classical.choice]
+
 /-- How many laws carry a given status, for the summary line. -/
 def statusCount (s : Status) : Nat := (laws.filter (·.status == s)).length
 
@@ -475,6 +519,45 @@ run_cmd do
       failures := failures.push s!"law {l.number}{l.clause} is `{l.status.wire}` and rests on \
         {l.axioms.length} axiom(s) with no `note` saying so"
 
+  -- 6b. **The transitive trust surface.** Check 6 asks a row to disclose the axioms it *cites*; this asks
+  -- what its declarations actually rest on, which is the question that sees `native_decide`. A row can
+  -- cite no axiom and still fail to be kernel-checked, because `native_decide` admits its result through
+  -- `Lean.ofReduceBool`, which the axiom accounting cannot see (it folds for axioms named `underRchain`)
+  -- and the gate's word scan does not list. Three clauses: the *set* is exact in both directions (a new
+  -- `native_decide` in the population fails until it is named), each row that names one says so in its
+  -- own note, and Lean's own logic axioms are reported rather than failed on.
+  --
+  -- The population is what the rows name. `Rchain/Corpus.lean` is *not* in this environment — it is an
+  -- executable root, not part of the `Rchain` library — so its four compiler-trusted verdicts are counted
+  -- by the gate's `native_decide` census instead; `compilerTrust`'s docstring carries the arithmetic.
+  let population := ((register.map (·.declarations)).join ++ (register.map (·.witness)).join).eraseDups
+  let mut onCompiler : List Name := []
+  let mut onLogic : Nat := 0
+  for n in population do
+    if env.contains n then
+      let axs ← Lean.collectAxioms n
+      if axs.contains `Lean.trustCompiler || axs.contains ``Lean.ofReduceBool then
+        onCompiler := n :: onCompiler
+      if axs.any (fun a => logicAxioms.contains a) then
+        onLogic := onLogic + 1
+  let measured := onCompiler.eraseDups
+  let undeclared := measured.filter (fun n => !compilerTrust.contains n)
+  let unmeasured := compilerTrust.filter (fun n => !measured.contains n)
+  if !undeclared.isEmpty then
+    failures := failures.push s!"trust surface: {undeclared.length} declaration(s) the register names \
+      rest on the compiler (`Lean.ofReduceBool`, i.e. `native_decide`) and are not in `compilerTrust`: \
+      {undeclared.map (·.toString)} — name it there with its row, or replace the tactic with `decide`"
+  if !unmeasured.isEmpty then
+    failures := failures.push s!"trust surface: `compilerTrust` names {unmeasured.length} declaration(s) \
+      that no longer rest on the compiler (converted to `decide`, or renamed? then delete the entry): \
+      {unmeasured.map (·.toString)}"
+  for l in register do
+    if (l.declarations ++ l.witness).any (fun n => compilerTrust.contains n) then
+      if (l.note.splitOn "native_decide").length < 2 then
+        failures := failures.push s!"trust surface: law {l.number}{l.clause} names a declaration proved \
+          by `native_decide` and its `note` does not say so — the compiler is part of that proof's \
+          trusted base, and the row is where a reader looks"
+
   -- 7. An axiom may not be attributed to a law with no formalization.
   for l in register do
     if !l.axioms.isEmpty && (l.status == .open || l.status == .orphaned || l.status == .retired) then
@@ -494,7 +577,8 @@ run_cmd do
 
   if failures.isEmpty then
     logInfo m!"rchain-laws: the register is consistent — {lawCount} laws, {entryCount} entries, \
-      {tree.length} axioms in the tree, all cited"
+      {tree.length} axioms in the tree, all cited; of the {population.length} declarations the rows \
+      name, {measured.length} rest on the compiler (`native_decide`) and {onLogic} on Lean's logic"
   else
     for f in failures do
       logError m!"rchain-laws: {f}"

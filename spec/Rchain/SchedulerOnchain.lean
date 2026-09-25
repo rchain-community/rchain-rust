@@ -214,7 +214,7 @@ theorem s3_pair_fails_validation : ¬ DFSSerializable (state1, emptySpec) s3BFir
   intro h
   have h5 : ValidCommit s3BSt4.2 [0, 0, 0] ({0} : Finset Chan) := h.2.2.2.2.1
   have h0 : prefixVisible s3BSt4.2 [0, 0, 0] 0 := h5 0 (by simp)
-  have hred : s3BSt4.2 0 = some ([1], 1, false) := by native_decide
+  have hred : s3BSt4.2 0 = some ([1], 1, false) := by decide
   rw [prefixVisible, hred] at h0
   have hlt : PathLt [1] [0, 0, 0] := by simpa using h0
   cases hlt with
@@ -235,7 +235,7 @@ theorem s3_sequential_order_valid : DFSSerializable (state1, emptySpec) s3AFirst
     have hc2 : c = 2 := by simpa [Effect.footprint] using hc
     subst c
     change prefixVisible s3ASt1.2 [0, 0] 2
-    have hred : s3ASt1.2 2 = none := by native_decide
+    have hred : s3ASt1.2 2 = none := by decide
     rw [prefixVisible, hred]
     trivial
   constructor
@@ -243,7 +243,7 @@ theorem s3_sequential_order_valid : DFSSerializable (state1, emptySpec) s3AFirst
     have hc0 : c = 0 := by simpa [Effect.footprint] using hc
     subst c
     change prefixVisible s3ASt2.2 [0, 0, 0] 0
-    have hred : s3ASt2.2 0 = none := by native_decide
+    have hred : s3ASt2.2 0 = none := by decide
     rw [prefixVisible, hred]
     trivial
   constructor
@@ -251,7 +251,7 @@ theorem s3_sequential_order_valid : DFSSerializable (state1, emptySpec) s3AFirst
     have hc0 : c = 0 := by simpa [Effect.footprint] using hc
     subst c
     change prefixVisible s3ASt3.2 [1] 0
-    have hred : s3ASt3.2 0 = some ([0, 0, 0], 1, true) := by native_decide
+    have hred : s3ASt3.2 0 = some ([0, 0, 0], 1, true) := by decide
     rw [prefixVisible, hred]
     simpa using (PathLt.cons (by decide))
   constructor
@@ -259,7 +259,7 @@ theorem s3_sequential_order_valid : DFSSerializable (state1, emptySpec) s3AFirst
     have hc3 : c = 3 := by simpa [Effect.footprint] using hc
     subst c
     change prefixVisible s3ASt4.2 [1, 0] 3
-    have hred : s3ASt4.2 3 = none := by native_decide
+    have hred : s3ASt4.2 3 = none := by decide
     rw [prefixVisible, hred]
     trivial
   · simp [DFSSerializable]
@@ -302,11 +302,11 @@ theorem later_write_pollution_unsound :
   · intro c hc
     have hc0 : c = 0 := by simpa [Effect.footprint] using hc
     subst c
-    have hred : sCD.2 0 = some ([2], 1, true) := by native_decide
+    have hred : sCD.2 0 = some ([2], 1, true) := by decide
     simp [EarlierWritesReflected, hred]
   · intro h
     have h0 : prefixVisible sCD.2 [1, 0] 0 := h 0 (by simp)
-    have hred : sCD.2 0 = some ([2], 1, true) := by native_decide
+    have hred : sCD.2 0 = some ([2], 1, true) := by decide
     rw [prefixVisible, hred] at h0
     have hlt : PathLt [2] [1, 0] := by simpa using h0
     cases hlt with
@@ -337,7 +337,7 @@ theorem cd_pair_fails_validation : ¬ DFSSerializable (stateCD, emptySpec) cdRun
   intro h
   have h3 : ValidCommit cdSt2.2 [1, 0] ({0} : Finset Chan) := h.2.2.1
   have h0 : prefixVisible cdSt2.2 [1, 0] 0 := h3 0 (by simp)
-  have hred : cdSt2.2 0 = some ([2], 1, true) := by native_decide
+  have hred : cdSt2.2 0 = some ([2], 1, true) := by decide
   rw [prefixVisible, hred] at h0
   have hlt : PathLt [2] [1, 0] := by simpa using h0
   cases hlt with
@@ -357,7 +357,7 @@ theorem cd_sequential_order_valid : DFSSerializable (stateCD, emptySpec) cdSeque
     have hc0 : c = 0 := by simpa [Effect.footprint] using hc
     subst c
     change prefixVisible cdSeqSt1.2 [1, 0] 0
-    have hred : cdSeqSt1.2 0 = none := by native_decide
+    have hred : cdSeqSt1.2 0 = none := by decide
     rw [prefixVisible, hred]
     trivial
   constructor
@@ -365,7 +365,7 @@ theorem cd_sequential_order_valid : DFSSerializable (stateCD, emptySpec) cdSeque
     have hc0 : c = 0 := by simpa [Effect.footprint] using hc
     subst c
     change prefixVisible cdSeqSt2.2 [2] 0
-    have hred : cdSeqSt2.2 0 = none := by native_decide
+    have hred : cdSeqSt2.2 0 = none := by decide
     rw [prefixVisible, hred]
     trivial
   · simp [DFSSerializable]
@@ -588,15 +588,15 @@ theorem dispatched_serializable_log_inequality :
       subst c
       change prefixVisible (applyAt [1] (Effect.produce 1) (stateCD, emptySpec)).2 [0] 0
       have hred : (applyAt [1] (Effect.produce 1) (stateCD, emptySpec)).2 0 = none := by
-        native_decide
+        decide
       rw [prefixVisible, hred]
       trivial
     · simp [DFSSerializable]
   · intro h
     have hl : publishedTrace [([1], Effect.produce 1), ([0], Effect.produce 0)] stateCD =
-        [Event.produce 0, Event.produce 1] := by native_decide
+        [Event.produce 0, Event.produce 1] := by decide
     have hr : gateTrace [([1], Effect.produce 1), ([0], Effect.produce 0)] stateCD =
-        [Event.produce 1, Event.produce 0] := by native_decide
+        [Event.produce 1, Event.produce 0] := by decide
     rw [hl, hr] at h
     cases h
 
@@ -626,16 +626,16 @@ theorem certificate_blind_late_writer_diverges :
       subst c
       change prefixVisible (applyAt [1] (Effect.consume 0 Effect.stop) (stateCD, emptySpec)).2 [0] 0
       have hred : (applyAt [1] (Effect.consume 0 Effect.stop) (stateCD, emptySpec)).2 0 = none := by
-        native_decide
+        decide
       rw [prefixVisible, hred]
       trivial
     · simp [DFSSerializable]
   · intro h
     have h0 : (runFold [([1], Effect.consume 0 Effect.stop), ([0], Effect.produce 0)]
-        (stateCD, emptySpec)).1 0 = true := by native_decide
+        (stateCD, emptySpec)).1 0 = true := by decide
     have hg : (gateFold (stateCD, emptySpec)
         [([1], Effect.consume 0 Effect.stop), ([0], Effect.produce 0)]).1 0 = false := by
-      native_decide
+      decide
     have h' : (runFold [([1], Effect.consume 0 Effect.stop), ([0], Effect.produce 0)]
         (stateCD, emptySpec)).1 0 =
         (gateFold (stateCD, emptySpec)
@@ -667,14 +667,14 @@ theorem writer_chain_needs_nodup :
       subst c
       change prefixVisible (applyAt [1] (Effect.produce 0) (stateCD, emptySpec)).2 [1] 1
       have hred : (applyAt [1] (Effect.produce 0) (stateCD, emptySpec)).2 1 = none := by
-        native_decide
+        decide
       rw [prefixVisible, hred]
       trivial
     · simp [DFSSerializable]
   · intro h
     have hw : writerPaths (stateCD, emptySpec)
         [([1], Effect.produce 0), ([1], Effect.produce 1)] 0 = [[1], [1]] := by
-      native_decide
+      decide
     rw [hw] at h
     have hlt : PathLt [1] [1] := by
       change List.Chain (fun p q => PathLt p q) [1] [[1]] at h
@@ -1308,14 +1308,14 @@ theorem trace_equality_without_serializability :
     publishedTrace produceOnlyRun stateCD = gateTrace produceOnlyRun stateCD ∧
     ¬ DFSSerializable (stateCD, emptySpec) produceOnlyRun := by
   constructor
-  · native_decide
+  · decide
   · intro h
     have h2 : ValidCommit
         (applyAt [2] (Effect.produce 0) (stateCD, emptySpec)).2 [1] ({0} : Finset Chan) := h.2.1
     have h0 : prefixVisible (applyAt [2] (Effect.produce 0) (stateCD, emptySpec)).2 [1] 0 :=
       h2 0 (by simp)
     have hred : (applyAt [2] (Effect.produce 0) (stateCD, emptySpec)).2 0 = some ([2], 1, true) :=
-      by native_decide
+      by decide
     rw [prefixVisible, hred] at h0
     have hlt : PathLt [2] [1] := by simpa using h0
     cases hlt with
