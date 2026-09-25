@@ -260,12 +260,17 @@ pub fn publish_channel() -> rchain_models::sorted::SortedProc {
 }
 
 /// Parse a published `["<name>", <uri>]` datum into its two parts.
+///
+/// The list's **length** is not guaranteed: `RhoList::unapply` returns the items at any arity, so a
+/// published `["name"]` or `[]` used to reach `items[1]`/`items[0]` and panic the genesis seeding
+/// (H2b). Both reads are `Option` reads now; the caller (`genesis/mod.rs`'s `seed_rgov_aliases_from`)
+/// skips a datum it cannot parse, so a short list is skipped rather than fatal.
 pub fn published_uri(par: &rchain_models::ast::Par) -> Option<(String, String)> {
     use rchain_models::rholang::RhoType::{RhoList, RhoString, RhoUri};
     let items = RhoList::unapply(par)?;
-    let name = RhoString::unapply(&items[0])?.to_string();
-    let uri = RhoUri::unapply(&items[1])
-        .or_else(|| RhoString::unapply(&items[1]))?
+    let name = RhoString::unapply(items.first()?)?.to_string();
+    let uri = RhoUri::unapply(items.get(1)?)
+        .or_else(|| RhoString::unapply(items.get(1)?))?
         .to_string();
     Some((name, uri))
 }
@@ -757,5 +762,31 @@ mod tests {
                 "every slot write must pass the reply channel the directory's `write` takes"
             );
         }
+    }
+
+    /// **H2b.** A published datum is `["<name>", <uri>]`, and nothing bounds the list's *length*:
+    /// `RhoList::unapply` returns the items at any arity, so a published `["name"]` — or `[]` —
+    /// reached `items[1]`/`items[0]` and panicked the genesis seeding. The caller
+    /// (`genesis/mod.rs`'s `seed_rgov_aliases_from`) skips a datum it cannot parse, so both must be
+    /// `None`; the well-formed two-element form is the control, so this test can fail.
+    #[test]
+    fn published_uri_refuses_a_list_shorter_than_two() {
+        use rchain_models::rholang::RhoType::{RhoList, RhoString, RhoUri};
+
+        let one = RhoList::apply(vec![RhoString::apply("readcap".to_string())]);
+        assert_eq!(published_uri(&one), None, "a one-element datum has no uri");
+
+        let empty = RhoList::apply(vec![]);
+        assert_eq!(published_uri(&empty), None, "and neither has an empty one");
+
+        let two = RhoList::apply(vec![
+            RhoString::apply("readcap".to_string()),
+            RhoUri::apply("rholang://readcap".to_string()),
+        ]);
+        assert_eq!(
+            published_uri(&two),
+            Some(("readcap".to_string(), "rholang://readcap".to_string())),
+            "the well-formed datum still parses"
+        );
     }
 }
