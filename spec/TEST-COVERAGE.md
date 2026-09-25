@@ -341,7 +341,7 @@ not found in that file. Coverage claims live here rather than in prose so they c
 | item 11 | `models/src/wire.rs` | `the_codec_round_trips_are_checked_in_both_directions` |
 | item 11 | `comm/src/upnp/mod.rs` | `the_device_report_pairs_every_label_with_its_own_value` |
 | item 11 | `casper/tests/reporting.rs` | `the_reporter_replays_a_block_and_collects_its_events` |
-| item 11 | `node/tests/api_surface.rs` | `the_read_routes_answer_and_their_refusals_are_defined` (`http.rs`'s by-block-hash route and the OpenAPI document) |
+| item 11 | `node/tests/api_surface.rs` | `the_read_routes_answer_and_their_refusals_are_defined` |
 
 ## Gap analysis (severity-ordered)
 

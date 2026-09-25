@@ -57,8 +57,11 @@ jobs:
         # `eval_method` arms and refusal tables, the http system process, the gateway carrier),
         # 87.60 => 85 (autopropose, the message variants, the number-channel refusals),
         # 87.95 => 85 (the merge's entry point, the deploy service's delegations),
-        # 88.02 => 86 (the export traversal's second level, proposeResult's arms).
-        run: cargo llvm-cov --workspace --all-features --lcov --output-path lcov.info --fail-under-lines 86
+        # 88.02 => 86 (the export traversal's second level, proposeResult's arms),
+        # 88.62 => 86 (the merge's block index, NodeRunning's dispatch),
+        # 88.87 => 86 (the codecs' decode halves, the UPnP device report, the normalizer refusals),
+        # 89.14 => 87 (the reporting replay and its system deploy, the OpenAPI document).
+        run: cargo llvm-cov --workspace --all-features --lcov --output-path lcov.info --fail-under-lines 87
 
       - name: Upload coverage
         uses: codecov/codecov-action@v7
