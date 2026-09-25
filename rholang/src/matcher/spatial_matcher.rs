@@ -901,6 +901,132 @@ mod tests {
         assert_eq!(spatial_match_result(&t, &p).unwrap(), None);
     }
 
+    /// **The composite terms: a `match`, a bundle, an unforgeable, and a receive bind.** Everything
+    /// else in this module drives the par/collection/expression paths, so the five public entry points
+    /// for the *other* term shapes — and their non-match arms — had never run. A pattern over a `match`
+    /// term, a `bundle+{…}`, an unforgeable name or a `for`'s bind list goes through them, and their
+    /// failure arm is the one this whole module is about: a non-match must be an **empty result**,
+    /// never an error and never a bind (an unmatched `for` is silent, which is why the matcher cannot
+    /// report one).
+    ///
+    /// The two shapes of arm are asserted separately because they differ: `bundle` and `unforgeable`
+    /// are *structural* — nothing matches unless the two sides are equal, flags included — while
+    /// `match`, `receive_bind` and `match_case` *recurse*, comparing their parts and descending into
+    /// the source, so a differing bind pattern is a non-match while a differing source is reported by
+    /// the recursion underneath.
+    #[test]
+    fn the_composite_terms_match_structurally_or_recurse() {
+        let fm = FreeMap::new();
+        let int = || par(vec![Expr::GInt(1)]);
+        let name = |p: Par| -> rchain_models::ast::Name {
+            Par {
+                sends: p.sends,
+                receives: p.receives,
+                news: p.news,
+                exprs: p.exprs,
+                matches: p.matches,
+                unforgeables: p.unforgeables,
+                bundles: p.bundles,
+                connectives: p.connectives,
+                locally_free: p.locally_free,
+                connective_used: p.connective_used,
+                _sort: std::marker::PhantomData,
+            }
+        };
+
+        // A bundle matches a bundle that is equal — flags included, since the flag *is* the term's
+        // meaning (`bundle+{…}` and `bundle-{…}` are different patterns).
+        let bundle = |write: bool| Bundle {
+            body: Box::new(int()),
+            write_flag: write,
+            read_flag: true,
+        };
+        assert_eq!(
+            spatial_match_bundle(&bundle(true), &bundle(true), &fm)
+                .unwrap()
+                .len(),
+            1,
+            "an equal bundle matches, passing the free map through"
+        );
+        assert!(
+            spatial_match_bundle(&bundle(true), &bundle(false), &fm)
+                .unwrap()
+                .is_empty(),
+            "a differing flag is a non-match"
+        );
+
+        // An unforgeable matches only its own value.
+        let unforgeable =
+            |id: u8| GUnforgeable::GPrivate(rchain_models::ast::GPrivate { id: vec![id] });
+        assert_eq!(
+            spatial_match_unforgeable(&unforgeable(1), &unforgeable(1), &fm)
+                .unwrap()
+                .len(),
+            1
+        );
+        assert!(
+            spatial_match_unforgeable(&unforgeable(1), &unforgeable(2), &fm)
+                .unwrap()
+                .is_empty(),
+            "and a different private name is not the same name"
+        );
+
+        // A `match` recurses into its target and into each case's pattern and source.
+        let case = |pattern: i64, source: i64| MatchCase {
+            pattern: Box::new(name(par(vec![Expr::GInt(pattern)]))),
+            source: Box::new(par(vec![Expr::GInt(source)])),
+            free_count: Default::default(),
+        };
+        let m = |pattern: i64, source: i64| Match {
+            target: Box::new(name(par(vec![Expr::GInt(7)]))),
+            cases: vec![case(pattern, source)],
+            locally_free: Default::default(),
+            connective_used: false,
+        };
+        assert_eq!(
+            spatial_match_match(&m(7, 9), &m(7, 9), &fm).unwrap().len(),
+            1,
+            "the same match term matches"
+        );
+        assert!(
+            spatial_match_match(&m(7, 9), &m(8, 9), &fm)
+                .unwrap()
+                .is_empty(),
+            "a case whose pattern differs is a non-match"
+        );
+        assert!(
+            spatial_match_match(&m(7, 9), &m(7, 10), &fm)
+                .unwrap()
+                .is_empty(),
+            "and so is a differing case source"
+        );
+
+        // The receive bind's own arm, and the `match_case` one it is a sibling of.
+        let bind = |pattern: i64| ReceiveBind {
+            patterns: vec![name(par(vec![Expr::GInt(pattern)]))],
+            source: Box::new(name(par(vec![Expr::GInt(3)]))),
+            remainder: None,
+            free_count: Default::default(),
+        };
+        assert_eq!(
+            spatial_match_receive_bind(&bind(1), &bind(1), &fm)
+                .unwrap()
+                .len(),
+            1
+        );
+        assert!(
+            spatial_match_receive_bind(&bind(1), &bind(2), &fm)
+                .unwrap()
+                .is_empty(),
+            "a differing pattern list is a non-match, not a bind to the wrong thing"
+        );
+
+        // And the `MatchableTerm` claim the collection folds read: a bind and a case are **binders**,
+        // so their free levels are not empty even when their pars hold nothing free.
+        assert!(!MatchableTerm::locally_free_empty(&bind(1)));
+        assert!(!MatchableTerm::locally_free_empty(&case(1, 2)));
+    }
+
     #[test]
     fn binds_free_var() {
         let target = par(vec![Expr::GInt(42)]);

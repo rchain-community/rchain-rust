@@ -26,7 +26,7 @@ and **no file is left without one or the other** — the linter's check 7 passes
 
 ## Inventory
 
-**1472 `#[test]`/`#[tokio::test]` unit functions + 128 integration tests** across 13 crates, with **26
+**1473 `#[test]`/`#[tokio::test]` unit functions + 128 integration tests** across 13 crates, with **26
 laws** carrying a randomized property test and **12 benchmark functions** in 7 Criterion groups. Only
 **3 of 13 crates have integration tests** (`rholang`, `casper`, `node`).
 
@@ -40,7 +40,7 @@ laws** carrying a randomized property test and **12 benchmark functions** in 7 C
 | `block-storage` | 42 | — | 3 | — |
 | `comm` | 125 | — | — | — |
 | `rspace` | 181 | — | 8 | — |
-| `rholang` | 238 | 57 | 7 | — |
+| `rholang` | 239 | 57 | 7 | — |
 | `casper` | 277 | 54 | 3 | — |
 | `node` | 193 | 17 | — | — |
 | `qucalc` | 20 | — | — | — |
@@ -330,6 +330,7 @@ not found in that file. Coverage claims live here rather than in prose so they c
 | item 11 | `node/src/api/grpc/deploy_grpc_service_v1.rs` | `the_handlers_forward_each_requests_fields_and_its_refusal` |
 | item 11 | `node/src/api/grpc/tonic.rs` | `propose_result_reports_the_result_and_a_refusal` |
 | item 11 | `rspace/src/history/export.rs` | `export_walks_into_a_pointer_node` |
+| item 11 | `rholang/src/matcher/spatial_matcher.rs` | `the_composite_terms_match_structurally_or_recurse` |
 
 ## Gap analysis (severity-ordered)
 
