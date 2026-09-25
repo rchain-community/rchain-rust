@@ -295,7 +295,7 @@ def laws : List Law := [
       counterexample would have to be a counterexample to those proofs too. **And the residual is \
       gone**: `cmpExpr`'s three are *theorems* now (2026-09-24), which is what the second half of this \
       cell used to be blocked on — the size of \
-      its equation lemmas, and the route is the 21 `rfl`-proved `@[simp]` arm lemmas",
+      its equation lemmas, and the route is the 24 `@[simp]` arm lemmas (`simp only [cmpExpr.eq_def]`, one arm at a time)",
     note := "**no axioms, from twelve — the residual is empty** (2026-09-24). The list comparators' laws \
       were discharged by induction on the list; the eight element laws above are theorems, in dependency \
       order (an element law needs the list lemma of the types *below* it and a list lemma needs the \
@@ -307,7 +307,7 @@ def laws : List Law := [
       2026-09-24**: `cmpPar_lt_trans` is a theorem — an eight-component `lex` chain, a member of \
       `Rchain.Sort`'s `mutual` block because the family is one strongly connected component, which is \
       what that file's note is about — and `cmpExpr`'s three are theorems by the route that note \
-      predicted (the 21 `rfl`-proved `@[simp]` arm lemmas over `exprTag`, since `cmpExpr` is compiled as \
+      predicted (the 24 `@[simp]` arm lemmas (`simp only [cmpExpr.eq_def]`, one arm at a time) over `exprTag`, since `cmpExpr` is compiled as \
       `WellFounded.fix` and nothing unfolds it). This row's falsifier is therefore the **`sort` corpus**, \
       as it is law 1a's: its pairwise verdicts are read back from the node by which element `sort_par` \
       puts first, so a comparator whose order drifted from the node's score tree fails a row rather than \
@@ -1049,7 +1049,8 @@ def laws : List Law := [
     statement := "Block number = max(parent) + 1 — as the port's check, which **rejects** a block whose \
       number is not one more than the maximum of its non-failed justifications (`0` when there is none \
       live)",
-    status := .provedModel,
+    status := .provedTied,
+    corpus := some "block",
     declarations := [`Rchain.Parent, `Rchain.maxParentNumber, `Rchain.BlockNumberValid,
       `Rchain.block_number_max_parent_plus_one, `Rchain.block_number_rejects,
       `Rchain.block_number_universal_is_false],
@@ -1074,7 +1075,8 @@ def laws : List Law := [
     statement := "`seqNum` strictly increases **under the sender's justification**: the port requires the \
       block's `seqNum` to be one more than the maximum `seqNum` among the justifications whose sender is \
       this block's sender (`0` when there are none)",
-    status := .provedModel,
+    status := .provedTied,
+    corpus := some "block",
     declarations := [`Rchain.senderLatestSeq, `Rchain.SeqNumValid, `Rchain.seq_num_strictly_increases,
       `Rchain.seq_num_universal_is_false],
     axioms := [],
@@ -2273,7 +2275,7 @@ def laws : List Law := [
     statement := "A **denied** deploy's effects are excluded from the merged state, and the merge's \
       objective counts its cost exactly as an included deploy's — so the fee consequence RCHIP-02 \
       proposes (the deployer is not charged, the validator is not rewarded) holds in neither tree",
-    status := .open,
+    status := .retired,
     rust := ["casper/src/merging.rs", "rholang/src/native_state.rs", "docs/src/node/block-merge.md"],
     falsifiable := some "the statement is a claim about what the port *does not* do, so its falsifier \
       is an implementation: a test that refunds a denied deploy's phlo, or one that drops its cost \
@@ -2281,7 +2283,19 @@ def laws : List Law := [
       appears in `BlockMessage::rejected_deploys` while its `deploy_chain_cost` still counts toward \
       `deployChainCost`'s sum, and its phlo was taken by the pre-charge and now funds the epoch pot \
       (laws 45/46) rather than being returned",
-    note := "**an open design question shared with the Scala, not a port divergence.** RCHIP-02 is a \
+    note := "**retired 2026-09-25: the port has no rule of this shape** — the first half of this row's \
+      statement is true *by construction*, the second is a proposal, and so there is nothing here to \
+      prove. That is a decision recorded, not an omission. **The construction, first**: the port's merge \
+      builds its event-log index from the deploys it is handed and from nothing else — \
+      `DeployChainIndex::apply`'s `for d in deploys { EventLogIndex::combine(&event_log_index, \
+      &d.event_log_index) }` (`casper/src/merging.rs:192-215`) — and its caller hands it the **accepted** \
+      set, with the denied deploys carried beside it in `rejected_deploys` (`:98-100`). A denied \
+      deploy's effects are therefore absent from the merged state because they are never read: a fact \
+      about a `for` loop, whose theorem would be one that cannot fail — and the rule this register \
+      applies to its own models (G6's, and C95's) is that a statement holding by construction is a \
+      statement nothing can falsify. So the first half is recorded rather than modelled, and what is \
+      left is the second, which is a **design decision and not a gap. And it is a question shared with \
+      the Scala, not a port divergence.** RCHIP-02 is a \
       proposal: `MergeScope.scala:87` defaults `rejectionCost` to `DeployChainIndex.deployChainCost`, \
       and `DeployChainIndex.scala:73` defines that as `deploysWithCost.map(_.cost).sum` — the same \
       objective this port's `merging.rs` computes over the same set. Nothing in either tree refunds a \

@@ -1775,14 +1775,24 @@ unlike `Ground.bool`, whose polarity the node reverses (`cmpBool`).
 
 **What remains is volume, not novelty — with one exception.** `cmpPar`'s chain is eight deep, so its tail
 packages as a right-nested product and the proof nests seven `lex_lt_trans` applications; the small
-structures are the same shape in fewer steps. The exception is `cmpExpr`: 21 groups mean a 21×21×21 case
-analysis whose `simp` must **not** unfold the 21-arm match (the recorded reason its two laws are axioms),
-so it needs the `cmpExpr` arm lemmas — `rfl`-proved, as `Json.lean`'s are — *before* the nesting for its
-five shapes (grounds / the four collections / a var / monadic / binary). That is the first piece to do
-next time, and it pays twice: the same arm lemmas are what `cmpExpr`'s `eq_iff` and `swap` need.
+structures are the same shape in fewer steps. The exception is `cmpExpr`: 24 groups mean a 24×24×24 case
+analysis whose `simp` must **not** unfold the 24-arm match, so it needs the `cmpExpr` arm lemmas —
+`simp only [cmpExpr.eq_def]`, one arm at a time, as `Json.lean`'s `rfl` lemmas are for its own function —
+*before* the nesting for its five shapes (grounds / the four collections / a var / monadic / binary).
+That was the first piece to do, and it paid twice: the same arm lemmas are what `cmpExpr`'s `eq_iff` and
+`swap` needed.
+
+**Corrected 2026-09-25, because the paragraph above was a plan and the plan was executed.** The numbers
+in it were written when the algebra had 21 constructors; it has had 24 since `ematches`, `eshortand` and
+`eshortor` landed (the three the node distinguishes and this model did not). Today the family is: 24
+`@[simp] cmpExpr_*` pair lemmas, 24 `private exprTag_eq_*` extraction lemmas, 24 + 24 tag cross lemmas,
+and **`cmpExpr`'s three laws are theorems** (2026-09-24) — so "the recorded reason its two laws are
+axioms" is history, not state, and the "21 `rfl`-proved arm lemmas" the register's law-1b cells quote is
+stale in both the count and the description (there is no literal `:= by rfl` here; the proofs are
+`cases`/`simp only`).
 
 **The recorded blocker, measured (2026-09-23).** The note above says `simp`/`rw` "hit recursion depth" on
-the 21-constructor function. Probed, it is worse than that: the straight attempt at `cmpExpr`'s `eq_iff`
+the 24-constructor function. Probed, it is worse than that: the straight attempt at `cmpExpr`'s `eq_iff`
 
     cases s <;> cases t <;> simp [cmpExpr, cmpGround_eq_iff, cmpVar_eq_iff, cmpPar_eq_iff,
       cmpListPar_eq_iff, cmpOptionVar, cmpListParPair_eq_iff]
@@ -1790,7 +1800,7 @@ the 21-constructor function. Probed, it is worse than that: the straight attempt
 with `set_option maxRecDepth 100000` ends in **`Stack overflow detected. Aborting.`** — not a limit the
 tactic's option can raise, because the blow-up is in the native stack. So the arm lemmas are not a
 convenience here, they are the only route: with `cmpExpr` never unfolded, `simp` cannot recurse. The
-volume that follows is the 21×20 cross-constructor cases, which no single `rfl` lemma covers (the
+volume that follows is the 24×23 cross-constructor cases, which no single `rfl` lemma covers (the
 fallback arms make each pair a *different* reduction), and that is why this stays time-boxed rather than
 being the pass's objective — the `sort` corpus already pins the order against the node, so the residue is
 "axioms that are tied", not "an order nothing checks").

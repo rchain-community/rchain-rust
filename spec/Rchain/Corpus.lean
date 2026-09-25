@@ -1196,6 +1196,116 @@ def stakeLine (c : StakeCase) : String :=
   "stake\t" ++ toString c.stake ++ "\t" ++ toString c.total ++ "\t" ++
     (if c.expected then "true" else "false")
 
+/-! ## The `block` layer — laws 16a and 16b, read off the node
+
+The two number checks are one function each (`casper/src/validate.rs:141`, `:169`), and each answers
+*valid* or a `BlockStatus` refusal. Each row here is a block as the checks read it — its number, its
+sequence number, its sender, and its justifications as `(sender, number, seqNum, failed)` — with **two**
+verdicts, one per law, and the consumer calls both node functions on the same data.
+
+**One asymmetry is the layer's whole point.** The *model's* `BlockNumberValid` (`Casper/Validate.lean:70`)
+is the max-non-failed-plus-one rule; the node's `block_number` enforces that rule **and** that every
+resolved parent is *lower* than the block (H1b, `casper/src/validate.rs:152-154` — the port refuses a
+parent at or above the child, failed or not; the Scala does not, which is §6's deviation). So the model
+side of a case is the **conjunction** of the two, and the cases include one where they come apart: a
+block whose only justification has failed. Its number must be `0` by the max rule and must exceed the
+parent by the descent rule — so **no such block is valid**, which is a fact about the port that neither
+check states alone. -/
+
+/-- One `block` case: the validating block's three numbers, its justifications, and the two verdicts. -/
+structure BlockCase where
+  /-- The block's number. -/
+  number : Nat
+  /-- The block's sequence number. -/
+  seqNum : Nat
+  /-- The block's sender. -/
+  sender : Nat
+  /-- Its justifications as `(sender, number, seqNum, validationFailed)`. -/
+  parents : List (Nat × Nat × Nat × Bool)
+  /-- What the node's `block_number` must say (law 16a, with the descent rule). -/
+  numberValid : Bool
+  /-- What the node's `sequence_number` must say (law 16b). -/
+  seqNumValid : Bool
+
+/-- The model's `Block` for a case — the two inert fields (`timestamp`, `header`) are `0` and `[]`, which
+    is what the existing falsifier witnesses use. -/
+def blockOf (c : BlockCase) : Block :=
+  ⟨c.number, c.seqNum, c.sender,
+   c.parents.map (fun kv => ⟨kv.1, kv.2.1, kv.2.2.1, kv.2.2.2⟩), 0, []⟩
+
+/-- The descent half of the node's `block_number`: every justification's recorded number is below the
+    block's. A *failed* justification's recorded height is its claimed `block_num` (the port's
+    `message_from_block_metadata`), so it is bounded too — which is what H1b added. -/
+def parentsBelow (c : BlockCase) : Bool := c.parents.all (fun kv => decide (kv.2.1 < c.number))
+
+/-- The model's `BlockNumberValid` as a `Bool`, so a case can be `decide`d against it: the predicate is a
+    `match` on a computed `maxParentNumber`, and `Decidable` does not synthesize through that (measured —
+    `failed to synthesize Decidable (BlockNumberValid (blockOf c))`). This is the register's own shape for
+    such a mirror — a checker **proved** to be the predicate, not a second opinion. -/
+def numberValidOf (b : Block) : Bool :=
+  match maxParentNumber b.justifications with
+  | none => b.number == 0
+  | some n => b.number == n + 1
+
+theorem numberValidOf_iff (b : Block) : numberValidOf b = true ↔ BlockNumberValid b := by
+  unfold numberValidOf BlockNumberValid
+  split <;> simp_all
+
+/-- Law 16b's predicate as a `Bool`, for the same reason and with the same proof obligation. -/
+def seqNumValidOf (b : Block) : Bool :=
+  match senderLatestSeq b.sender b.justifications with
+  | none => b.seqNum == 0
+  | some n => b.seqNum == n + 1
+
+theorem seqNumValidOf_iff (b : Block) : seqNumValidOf b = true ↔ SeqNumValid b := by
+  unfold seqNumValidOf SeqNumValid
+  split <;> simp_all
+
+/-- A case holds when the node's two functions' verdicts are the case's. -/
+def blockHolds (c : BlockCase) : Bool :=
+  (numberValidOf (blockOf c) && parentsBelow c) == c.numberValid &&
+  (seqNumValidOf (blockOf c)) == c.seqNumValid
+
+/-- The cases: the base rule, the max rule, the skipped-failure rule, the two independence facts, and the
+    failure-plus-descent case no valid block can satisfy. -/
+def blockCases : List BlockCase :=
+  [ ⟨0, 0, 0, [], true, true⟩                                       -- nothing to justify
+  , ⟨2, 0, 0, [(1, 1, 0, false)], true, true⟩                       -- another sender's block: 16a only
+  , ⟨2, 0, 2, [(1, 1, 0, false)], true, true⟩
+  , ⟨4, 0, 0, [(1, 1, 0, false), (1, 3, 0, false)], true, true⟩     -- the max is the later parent
+  , ⟨2, 0, 0, [(1, 1, 0, false), (1, 3, 0, false)], false, true⟩    -- … and one below it is refused
+  , ⟨1, 5, 0, [(0, 0, 4, false)], true, true⟩                       -- the sender's latest decides 16b
+  , ⟨1, 4, 0, [(0, 0, 4, false)], true, false⟩                      -- … and one below it is refused
+  , ⟨2, 5, 0, [(0, 0, 1, false), (0, 1, 4, false)], true, true⟩     -- the latest is the max, not the last
+  , ⟨1, 0, 1, [(0, 0, 9, false)], true, true⟩                       -- another sender's seqNum is ignored
+  , ⟨0, 0, 0, [(1, 0, 0, true)], false, true⟩                       -- a failed justification: the rules part
+  ]
+
+/-- Every case holds of the model. `decide`: the two predicates are Nat comparisons over finite lists —
+    the kernel reduces them — and `parentsBelow` is a list fold of the same shape. -/
+theorem blockCases_decide : blockCases.all blockHolds = true := by decide
+
+/-- The layer carries exactly `blockCaseCount` cases. -/
+def blockCaseCount : Nat := 10
+
+theorem blockCases_length : blockCases.length = blockCaseCount := by decide
+
+/-- **The layer is not degenerate**: both verdicts appear *for each law*, so a checker answering one value
+    everywhere cannot pass — and the two laws are exercised independently (the mixed cases). -/
+theorem blockCases_verdicts :
+    (blockCases.map (fun c => c.numberValid)).eraseDups.length = 2 ∧
+    (blockCases.map (fun c => c.seqNumValid)).eraseDups.length = 2 ∧
+    (blockCases.any (fun c => c.numberValid != c.seqNumValid)) = true := by decide
+
+/-- One `block` corpus line: layer, the three numbers, the justifications, the two verdicts. Each
+    justification is `sender:number:seqNum:failed`, so the column needs no quoting. -/
+def blockLine (c : BlockCase) : String :=
+  "block\t" ++ toString c.number ++ "\t" ++ toString c.seqNum ++ "\t" ++ toString c.sender ++ "\t" ++
+    String.intercalate "," (c.parents.map fun kv =>
+      s!"{kv.1}:{kv.2.1}:{kv.2.2.1}:{if kv.2.2.2 then "1" else "0"}") ++ "\t" ++
+    (if c.numberValid then "true" else "false") ++ "\t" ++
+    (if c.seqNumValid then "true" else "false")
+
 end Corpus
 end Rchain
 
@@ -1351,8 +1461,7 @@ def main (args : List String) : IO UInt32 := do
     (args.find? (fun a => a == "flags" || a == "match" || a == "silence" || a == "store"
       || a == "c21" || a == "protocol" || a == "json" || a == "envelope"
       || a == "lex" || a == "sort" || a == "parse" || a == "body" || a == "closed"
-      || a == "stake"
-      || a == "stake")).getD "flags"
+      || a == "stake" || a == "block")).getD "flags"
   let (lines, count) :=
     if want == "c21" then (Corpus.c21Cases.map Corpus.c21Line, Corpus.c21CaseCount)
     else if want == "match" then (Corpus.matchCases.map Corpus.matchLine, Corpus.matchCaseCount)
@@ -1378,6 +1487,8 @@ def main (args : List String) : IO UInt32 := do
       (Corpus.closedCases.map Corpus.closedLine, Corpus.closedCaseCount)
     else if want == "stake" then
       (Corpus.stakeCases.map Corpus.stakeLine, Corpus.stakeCaseCount)
+    else if want == "block" then
+      (Corpus.blockCases.map Corpus.blockLine, Corpus.blockCaseCount)
     else (Corpus.flagCases.map Corpus.flagLine, Corpus.flagCaseCount)
   if lines.length != count then
     IO.eprintln s!"rchain-corpus: {want}: the case list and the declared count disagree"
