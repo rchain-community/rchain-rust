@@ -39,6 +39,16 @@
 #      anchor's *file* exists (a file does not rot); nothing read the lines, so five rows had drifted
 #      by 2026-09-24 while every other check stayed green. The convention this enforces — and the
 #      reason for it — is in `spec/STYLE.md`.
+#  10. **A layer count is that layer's count** — an `N rows|cases|verdicts|lines` phrase beside a
+#      `conformance/<layer>.tsv` must equal that corpus's committed line count, so a register cell
+#      cannot go on describing a corpus that has grown past it.
+#  11. **The coverage measurement is emitted, and the floor is its own** — `spec/COVERAGE-LEDGER.md`
+#      must be what `tools/emit-coverage-ledger.sh` emits from `lcov.info`, and CI's
+#      `--fail-under-lines` must be `floor(measured) − 2`: the rule the register states, and the one
+#      all four of its recorded raisings satisfy. The register itself may only *point at* the
+#      measurement — a hand-written current percentage in `spec/TEST-COVERAGE.md` fails, because that
+#      is precisely the shape that rots. Item 11's hand-written order ("uncovered lines") named the
+#      file ranked 15th first, while the measurement's actual leaders had no register row at all.
 #
 # The class vocabulary is **closed** because a row that can invent its own reason is not a reason:
 # a `peer-bound` or `harness-bound` row must name its covering test as `path::test`, and the linter
@@ -588,6 +598,104 @@ done
 (( count_total > 0 )) || fail "no register counts found — this check is vacuous (the count phrasing moved?)"
 if (( failures == count_bad_before )); then
   ok "$count_total layer count(s) agree with their committed corpus"
+fi
+
+# --- 11. the coverage measurement is emitted, and the floor is its own ------------------------
+#
+# Checks 1–10 bind every *other* number in this register to the tree: test counts are recounted, law
+# citations are resolved, corpus counts are read off the committed `.tsv`. Coverage was the exception —
+# a number in the register that nothing could recompute, and it showed. Definition-of-done item 11 says
+# its work is "ordered by uncovered lines"; the order it carried was written by hand from an
+# `lcov.info` dated 2026-09-22 and named `node/src/api/grpc/tonic.rs` (121 missed lines) first, while
+# the measurement ranked `rholang/src/reduce.rs` (648) and `rholang/src/system_processes.rs` (510) above
+# it and the two largest files in the top ten had no register row at all. So the ranking, the totals and
+# the implied floor are emitted by `tools/emit-coverage-ledger.sh`, and this check is what keeps the
+# emission honest in the two directions that matter:
+#
+#   * **the ledger is the emission** — its rows must be what the emitter produces from the committed
+#     `lcov.info` right now, refused with a diff otherwise (the same discipline `emit-lean-laws.sh` and
+#     `emit-lean-counts.sh` use for their emissions); and
+#   * **the floor is derived, not remembered** — `.github/workflows/coverage.yml`'s
+#     `--fail-under-lines` must equal `floor(measured) − 2`. Too high is a tripwire the measurement does
+#     not support; too low is a raise that was owed. The emitter owns that comparison, so there is one
+#     implementation of the rule and not two that can disagree.
+#
+# **And the register may not restate it.** A live percentage or floor written by hand in
+# `spec/TEST-COVERAGE.md` is the rot this closes, so the scan is a shape rule rather than a value rule:
+# a decimal percentage, or a `floor to <n>`, anywhere in the register fails. History is written without
+# the sign — `73.68 ⇒ 71` is a record of four raisings and reads the same — and the boundary is the
+# register alone: `spec/COVERAGE-LEDGER.md` is where the numbers live, and the laws' and audit
+# documents are not scanned (a percentage there is about something else).
+printf '\n== coverage ledger (the ranking and the floor are emitted, not remembered) ==\n'
+ledger_bad_before=$failures
+LEDGER="$ROOT/spec/COVERAGE-LEDGER.md"
+EMITTER="$ROOT/tools/emit-coverage-ledger.sh"
+FLOOR_SITE="$ROOT/.github/workflows/coverage.yml"
+
+if [[ ! -f "$EMITTER" ]]; then
+  fail "tools/emit-coverage-ledger.sh is missing — nothing owns the measurement, so this register's coverage claims are unbacked"
+elif [[ ! -f "$LEDGER" ]]; then
+  fail "spec/COVERAGE-LEDGER.md is missing — emit it: tools/emit-coverage-ledger.sh"
+else
+  # **The check does not need the lcov, and that is deliberate.** `lcov.info` is gitignored (a build
+  # artifact the size of the workspace), and CI's register gate runs *before* the coverage step that
+  # would produce it — so a check that demanded the lcov would fail in CI for want of a file the
+  # register deliberately does not keep. What is durable is the ledger: it holds the measured totals,
+  # and everything below is recomputed from them.
+  #
+  # Read the totals row: `| <found> | <hit> | <missed> | <pct>% | <implied floor> |`.
+  totals="$(awk -F'|' '/^\| [0-9]+ \| [0-9]+ \| [0-9]+ \| [0-9]+\.[0-9]+% \|/ {
+      for (i = 2; i <= 6; i++) gsub(/ /, "", $i)
+      print $2, $3, $4, $5, $6; exit }' "$LEDGER")"
+  if [[ -z "$totals" ]]; then
+    fail "spec/COVERAGE-LEDGER.md has no totals row — this check would be vacuous (the table shape moved?)"
+  else
+    read -r l_found l_hit l_missed l_pct l_floor <<<"$totals"
+    l_pct="${l_pct%\%}"   # the cell carries the sign; the messages below add their own
+    l_pct100="$(printf '%s' "$l_pct" | tr -d '%' | awk -F. '{ printf "%d%02d\n", $1, $2 }')"
+    # (a) the ledger's own arithmetic.
+    if (( l_found - l_hit != l_missed )); then
+      fail "the ledger's totals disagree with themselves: $l_found found − $l_hit hit ≠ $l_missed missed"
+    fi
+    want_pct100=$(( l_hit * 10000 / l_found ))
+    if (( l_pct100 != want_pct100 )); then
+      fail "the ledger says $l_pct% ($l_found/$l_hit) — the ratio its own totals give is $(( want_pct100 / 100 )).$(printf '%02d' $(( want_pct100 % 100 )))%"
+    fi
+    want_floor=$(( (want_pct100 - 200) / 100 ))
+    if (( l_floor != want_floor )); then
+      fail "the ledger's implied floor is $l_floor but its measurement implies $want_floor (floor = floor(measured) − 2)"
+    fi
+    # (b) CI's floor is that floor.
+    ci_floor="$(grep -oE 'fail-under-lines [0-9]+' "$FLOOR_SITE" 2>/dev/null | grep -oE '[0-9]+' || true)"
+    if [[ -z "$ci_floor" ]]; then
+      fail "no --fail-under-lines in .github/workflows/coverage.yml — the floor this ledger implies has no site"
+    elif (( ci_floor != want_floor )); then
+      fail "CI's floor is $ci_floor; the committed measurement ($l_pct%) implies $want_floor"
+    fi
+    # (c) and, when the lcov is present (locally, or in the coverage job), the ledger is the emission.
+    # Absent, this is skipped **with a note** rather than silently — the difference between "checked and
+    # agreed" and "not checked here" is the whole reason this register exists.
+    if [[ -f "$ROOT/lcov.info" ]]; then
+      if ledger_out="$("$EMITTER" --check 2>&1)"; then
+        ok "coverage ledger matches lcov.info ($l_found lines, $l_missed missed) and the CI floor is $ci_floor"
+      else
+        printf '%s\n' "$ledger_out" | sed 's/^/      /'
+        fail "the coverage ledger is not what lcov.info emits, or CI's floor is not floor(measured) − 2"
+      fi
+    else
+      info "no lcov.info here: the ledger's rows were not compared against a measurement (CI's coverage job has no copy either — the file is not committed)"
+      ok "coverage ledger is self-consistent ($l_found lines, $l_missed missed) and CI's floor $ci_floor is the one it implies"
+    fi
+  fi
+fi
+
+while IFS=: read -r line_no rest; do
+  [[ -z "$line_no" ]] && continue
+  fail "spec/TEST-COVERAGE.md:$line_no states a coverage figure by hand ('$(printf '%s' "$rest" | sed 's/^[[:space:]]*//' | cut -c1-56)…') — the measurement lives in spec/COVERAGE-LEDGER.md; point at it, and write history without the sign"
+done < <(grep -nE '([0-9]+\.[0-9]+%|floor to [*]{0,2}[0-9]+)' "$REGISTER" || true)
+
+if (( failures == ledger_bad_before )); then
+  ok "the register points at the measurement and states no coverage figure of its own"
 fi
 
 # --- summary -----------------------------------------------------------------

@@ -45,14 +45,16 @@ jobs:
         # is both the test gate and the coverage gate. Keep one test execution path to avoid
         # spending CI time running the same suite twice.
         # The floor is a regression tripwire, not a target: it is raised only *after* measuring, to
-        # two points below the measured value, so it can never become a schedule.
-        # Measured 84.07% lines (15530/97490 missed) after the census sweep -- every source file
-        # either tested or an exemption row with a reason class, plus the node gRPC wire
-        # conversions, the faucet budget, the history readers and the transport server's config
-        # path. The measurement history is 73.68% (floor 71), 79.69% (floor 77), 81.30% (floor 79),
-        # 84.07% (floor 82) -- always two points below, so ordinary churn does not trip the
-        # tripwire.
-        run: cargo llvm-cov --workspace --all-features --lcov --output-path lcov.info --fail-under-lines 82
+        # two points below the measured value, so it can never become a schedule. The number below
+        # is no longer remembered here -- the measurement, the per-file ranking and this floor are
+        # emitted to `spec/COVERAGE-LEDGER.md` by `tools/emit-coverage-ledger.sh`, and check 11 of
+        # `tools/audit-test-register.sh` recomputes `floor = floor(measured) - 2` from the committed
+        # lcov, so this line and the ledger cannot drift apart.
+        # Measurement history, written without the sign as a record: 73.68 => 71 (Stages 0-2),
+        # 79.69 => 77 (Stages 3-4), 81.30 => 79 (the low-coverage sweep), 84.07 => 82 (the census
+        # sweep), 86.77 => 84 (the coverage pass: the emitted ledger, and the node's read surface
+        # pinned route by route).
+        run: cargo llvm-cov --workspace --all-features --lcov --output-path lcov.info --fail-under-lines 84
 
       - name: Upload coverage
         uses: codecov/codecov-action@v7

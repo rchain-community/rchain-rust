@@ -13,7 +13,7 @@
 # `shared/src/lmdb.rs` and `rspace/src/state/exporters.rs` are silently skipped without it, which is
 # how they escaped local runs while CI (`--all-features`) still exercised them.
 
-.PHONY: test test-unit test-integration test-multinode test-all check-register check-lean coverage bench-scheduler bench-smoke spec
+.PHONY: test test-unit test-integration test-multinode test-all check-register check-lean coverage coverage-ledger bench-scheduler bench-smoke spec
 
 test: test-all
 
@@ -54,7 +54,14 @@ check-lean:
 # plan hopes to reach. `cargo install cargo-llvm-cov` + `rustup component add llvm-tools-preview`
 # are the prerequisites locally.
 coverage:
-	cargo llvm-cov --workspace --all-features
+	cargo llvm-cov --workspace --all-features --lcov --output-path lcov.info
+	tools/emit-coverage-ledger.sh
+
+# Re-emit `spec/COVERAGE-LEDGER.md` from the committed `lcov.info` without re-running the suite —
+# for the case where only the emitter changed. `make coverage` does both, because a measurement that
+# is not emitted is a number nobody checks (check 11 of the register linter compares the two).
+coverage-ledger:
+	tools/emit-coverage-ledger.sh
 
 # The channel-scheduler benchmarks (Laws 20–22): pingpong/fanout workloads, the dfs/gate/relaxed
 # mode sweep, and the striped-vs-unstriped hot-store comparison. Run with cargo and lake strictly
