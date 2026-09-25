@@ -279,7 +279,20 @@ def Constructed (d : Dag) (m : Message) : Prop :=
   m.seen = seenOf (m.parents.filterMap (Dag.msg d)) m.id
 
 /-- **The DAG's closure and its order**, in one hypothesis: whatever a message's parent id resolves to
-    is *in* the DAG and *lower* than the message that names it. -/
+    is *in* the DAG and *lower* than the message that names it.
+
+    **And it is enforced, not merely assumed** (H1b, `46c35b545`): `block_number` refuses a block that
+    names a resolved parent at or above its own number, the **failed** ones included
+    (`casper/src/validate.rs:152-154`), and refuses one whose justification does not resolve at all
+    (`:150`) — so every state the port *admits* satisfies this as stated. The reference validator does
+    not: it filters failed parents out of `blockNumber` (`legacy/casper/.../Validate.scala`) and so
+    admits the violating block. That is the §6 deviation AUDIT C83 carries, kept because this is the
+    premise law 15's proof consumes.
+
+    The plan to **weaken** this to *unfailed* parents is therefore superseded, and the measurement that
+    prompted the enforcement is why: a weakened `Descends` forces `unfailed` into the proof's descent
+    step, while the strong form is what the ingress check guarantees — a premise that is enforced needs
+    no narrower statement. -/
 def Descends (d : Dag) : Prop :=
   ∀ m ∈ d, ∀ p ∈ m.parents, ∀ pm, Dag.msg d p = some pm → pm ∈ d ∧ pm.height < m.height
 

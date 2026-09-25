@@ -911,7 +911,14 @@ def laws : List Law := [
       said the model would have to bring — with the port's construction (`Constructed`) and the DAG's \
       ordering facts (`Descends`: a parent resolves in the DAG and is strictly lower) as **hypotheses \
       rather than axioms**, because resolving an id back to a value needs uniqueness and a finite \
-      descent. The per-sender reading of the height claim rests on `selfParents_skips_finalized`: the \
+      descent. **And the descent is *enforced* rather than assumed** (H1b, `46c35b545`): `blockNumber` \
+      refuses a block that names a resolved parent at or above its own number, the **failed** ones \
+      included (`casper/src/validate.rs:152-154`), so `Descends` holds of **every state the port \
+      admits** — where the reference validator, which filters failed parents out of its own \
+      `blockNumber`, admits the violating block, the §6 deviation AUDIT C83 carries. The earlier plan \
+      to weaken this to *unfailed* parents is therefore **superseded**: a weakened `Descends` forces \
+      `unfailed` into `seen_subset_of_mem_seen`'s descent step, while the strong form is what the \
+      ingress check guarantees. The per-sender reading of the height claim rests on `selfParents_skips_finalized`: the \
       walk filters by `!finalized.contains(x)` **and never traverses through an excluded message** (the \
       worklist is rebuilt from the survivors), so a min message is the previous sentinel's direct \
       successor rather than a descendant of something older. **And that settled which reading of the \
