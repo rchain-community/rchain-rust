@@ -314,12 +314,31 @@ if [[ -x "$ROOT/tools/emit-lean-laws.sh" ]]; then
   # `TYPE-SYSTEM.md`'s and `laws.md`'s prose now come off the register, which is what stops the
   # class of defect this pass found there (three "30 element-comparator axioms" claims, a page saying
   # "48 laws and 57 entries" beside its own "49 laws, 58 entries", a gate comment reading "1..43").
+  # Same two defects as the witness step below, found by running the gate: the log was a fixed
+  # `/tmp/lean-counts.log` and the verdict was `tail -1` of it. Two artefacts, both measured
+  # 2026-09-25 — the double prefix the gate printed until now, `ok    ok    every marked count matches
+  # the register (49 laws and 58 entries)` (the child's own line already carries `ok    `, and this
+  # step added a second), and, falsified with two scratch children, a **foreign verdict**: the short
+  # run printed the other run's line, a different count, as its own. Per-run log; the summary matched
+  # as a summary and printed once (the child's own prefix *is* the verdict); a stable path on failure.
   if [[ -x "$ROOT/tools/emit-lean-counts.sh" ]]; then
-    if "$ROOT/tools/emit-lean-counts.sh" --check >/tmp/lean-counts.log 2>&1; then
-      tail -1 /tmp/lean-counts.log | sed 's/^/ok    /'
+    counts_log="$(mktemp)"
+    counts_rc=0
+    "$ROOT/tools/emit-lean-counts.sh" --check >"$counts_log" 2>&1 || counts_rc=$?
+    counts_summary="$(grep -E '^ok    every marked count matches the register \(.*\)$' "$counts_log" \
+                       | tail -1 || true)"
+    if (( counts_rc == 0 )) && [[ -n "$counts_summary" ]]; then
+      printf '%s\n' "$counts_summary"
+      rm -f "$counts_log"
     else
-      fail "the documents' law counts are not the register's — see /tmp/lean-counts.log:"
-      sed 's/^/      /' /tmp/lean-counts.log
+      kept_counts="/tmp/lean-counts.log"
+      cp "$counts_log" "$kept_counts" 2>/dev/null || kept_counts="$counts_log"
+      fail "the documents' law counts are not the register's — see $kept_counts:"
+      sed 's/^/      /' "$counts_log"
+      if (( counts_rc == 0 )); then
+        fail "the counts check exited 0 but printed no summary line — the log holds no verdict of its own"
+      fi
+      rm -f "$counts_log"
     fi
   fi
 fi
