@@ -415,7 +415,7 @@ mod tests {
         SignedDeployDataCodec,
     };
     use rchain_models::block::state_hash::StateHash;
-    use rchain_shared::refined::BlockHeight;
+    use rchain_shared::refined::{BlockHeight, NonNegI64, SeqNum};
     use rchain_shared::store::{InMemoryKeyValueStore, KeyValueStore};
     use rchain_shared::typed_store::{BytesCodec, KeyValueTypedStoreCodec};
 
@@ -1172,6 +1172,146 @@ mod tests {
             elapsed < BOUND,
             "restoring a {N}-block chain took {elapsed:?} (bound {BOUND:?}): the message state is \
              being rebuilt per block instead of extended in place"
+        );
+    }
+
+    /// `meta`, with the sender and sequence number chosen by the caller: H1b needs a failed block by
+    /// one validator and a child by another.
+    fn meta_by(
+        sender_byte: u8,
+        seq: i64,
+        hash: BlockHash,
+        parents: &[BlockHash],
+        block_num: i64,
+    ) -> BlockMetadata {
+        BlockMetadata {
+            sender: Validator::new([sender_byte; 65]),
+            seq_num: SeqNum::try_from(seq).unwrap(),
+            ..meta(hash, parents, block_num)
+        }
+    }
+
+    /// `block`, with the fields a validator reads.
+    fn block_with(
+        hash: BlockHash,
+        block_number: i64,
+        sender_byte: u8,
+        seq: i64,
+        justifications: &[BlockHash],
+        bonds: &[(u8, i64)],
+    ) -> BlockMessage {
+        BlockMessage {
+            block_number: BlockHeight::try_from(block_number).unwrap(),
+            sender: Validator::new([sender_byte; 65]),
+            seq_num: SeqNum::try_from(seq).unwrap(),
+            justifications: justifications.to_vec(),
+            bonds: bonds
+                .iter()
+                .map(|(b, s)| (Validator::new([*b; 65]), NonNegI64::try_from(*s).unwrap()))
+                .collect(),
+            ..block(hash)
+        }
+    }
+
+    /// **H1b, measured: the descent order the model requires is violated by a state the port's own
+    /// validators admit.**
+    ///
+    /// `Descends` (`spec/Rchain/Casper/Dag.lean:278-284`) says every parent a message names resolves
+    /// to a message *lower* than it. The port enforces that only for **unfailed** parents:
+    /// `validate::block_number` skips failed justifications (`validate.rs:131`), while a failed
+    /// block's recorded height is its **claimed** `block_num` (`message_from_block_metadata`:
+    /// `height: block.block_num`) with nothing bounding it. So a block that fails validation claiming
+    /// height 999 enters the DAG at 999, and a later block whose number is computed from its unfailed
+    /// justifications sits *below* that parent.
+    ///
+    /// Reachability is this test's route, which is the block processor's own call
+    /// (`blocks/block_processor.rs:55,:132` → `insert`): the failed block is already in the DAG, and a
+    /// peer then sends a block naming it. `neglected_invalid_block` is what makes the *bonded* case
+    /// unreachable and this one reachable — see the test below.
+    #[tokio::test]
+    async fn h1b_a_failed_parent_above_the_childs_height_breaks_the_descent_order() {
+        let storage = build_storage().await;
+        let genesis = hash(0);
+        storage
+            .insert(meta(genesis, &[], 0), block(genesis))
+            .await
+            .unwrap();
+
+        // A block that fails validation while claiming height 999. H-2 records it in the message map
+        // with that claimed number, and keeps it out of `latest_msgs`.
+        let failed = hash(1);
+        let mut failed_meta = meta_by(1, 0, failed, &[genesis], 999);
+        failed_meta.validation_failed = true;
+        storage.insert(failed_meta, block(failed)).await.unwrap();
+
+        // The child: proposer `2`, height 1 (genesis 0 + 1) per `block_number`, justifying the failed
+        // block. Validator `1` is not in the child's bond map, so the neglect rule lets it through.
+        let child = hash(2);
+        let child_block = block_with(child, 1, 2, 0, &[genesis, failed], &[]);
+        assert!(
+            matches!(
+                crate::validate::block_number(&*storage, &child_block)
+                    .await
+                    .unwrap(),
+                Ok(())
+            ),
+            "the port computes this child's height from its unfailed justifications"
+        );
+        assert!(
+            matches!(
+                crate::validate::neglected_invalid_block(&*storage, &child_block)
+                    .await
+                    .unwrap(),
+                Ok(())
+            ),
+            "an unbonded failed justification is not neglected"
+        );
+
+        storage
+            .insert(meta_by(2, 0, child, &[genesis, failed], 1), child_block)
+            .await
+            .unwrap();
+
+        // The model's order does not hold of the DAG the port just built: the failed parent's height
+        // (999) is not lower than the child's (1), so `Descends` is false of this state.
+        let repr = storage.get_representation().await;
+        let parent = repr.dag_message_state.msg_map.get(&failed).unwrap();
+        let me = repr.dag_message_state.msg_map.get(&child).unwrap();
+        assert_eq!(i64::from(parent.height), 999);
+        assert_eq!(i64::from(me.height), 1);
+        assert!(
+            parent.height > me.height,
+            "the parent is higher than the message naming it: Descends (278-284) is violated"
+        );
+    }
+
+    /// The route the H1b brief named — a child *forced* to justify a bonded failed block — is not
+    /// how the port behaves: `neglected_invalid_block` is faithful to the oracle
+    /// (`legacy/casper/.../Validate.scala:340-360`) and **refuses** a child that justifies a failed
+    /// block whose sender is still bonded. Nothing here forces such a justification; the rule above
+    /// is what a child is refused for. Reachability of the `Descends` violation therefore runs through
+    /// the unbonded case, and the bonded one is closed.
+    #[tokio::test]
+    async fn h1b_a_justified_bonded_failed_block_is_refused_rather_than_forced() {
+        let storage = build_storage().await;
+        let genesis = hash(0);
+        storage
+            .insert(meta(genesis, &[], 0), block(genesis))
+            .await
+            .unwrap();
+        let failed = hash(1);
+        let mut failed_meta = meta_by(1, 0, failed, &[genesis], 999);
+        failed_meta.validation_failed = true;
+        storage.insert(failed_meta, block(failed)).await.unwrap();
+
+        // Same child, but validator `1` now holds stake in the child's bond map.
+        let child_block = block_with(hash(2), 1, 2, 0, &[genesis, failed], &[(1, 100)]);
+        let verdict = crate::validate::neglected_invalid_block(&*storage, &child_block)
+            .await
+            .unwrap();
+        assert!(
+            !matches!(verdict, Ok(())),
+            "justifying a bonded failed block is refused, not forced: {verdict:?}"
         );
     }
 }

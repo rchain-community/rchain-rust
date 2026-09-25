@@ -118,6 +118,26 @@ pub type ValidBlockProcessing = Result<(), BlockStatus>;
 
 /// Validate the block number is one more than the maximum non-failed parent number (port of
 /// `blockNumber`).
+///
+/// **Only unfailed parents are bounded here, and that is the entire bound** (H1b, measured). A failed
+/// justification is *skipped* rather than required to be lower, and a failed block's recorded height
+/// is its **claimed** `block_num` (`message_from_block_metadata`'s `height: block.block_num`), so a
+/// block that fails validation while claiming a height above the chain enters the DAG at that height —
+/// and a later block, whose number this function computes from the *unfailed* justifications, sits
+/// below it. That state falsifies the model's `Descends` (`spec/Rchain/Casper/Dag.lean:278-284`:
+/// every resolved parent lower than the message naming it).
+///
+/// The witness is in `dag.rs`:
+/// `h1b_a_failed_parent_above_the_childs_height_breaks_the_descent_order` builds it through the same
+/// `insert` the block processor calls, and
+/// `h1b_a_justified_bonded_failed_block_is_refused_rather_than_forced` shows the *bonded* case is
+/// closed by `neglected_invalid_block` rather than forced — which is why the reachable route is the
+/// unbonded one.
+///
+/// The disposition is that the **model's hypothesis is stated over unfailed parents**, which is what
+/// this function enforces, rather than that the port grows a bound the oracle does not have: the
+/// Scala's `blockNumber` carries the same `if (!m.validationFailed)` skip, so an added bound here
+/// would refuse a block the reference validator admits.
 pub async fn block_number(
     dag: &dyn BlockDagStorage,
     b: &BlockMessage,
