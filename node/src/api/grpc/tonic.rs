@@ -946,11 +946,25 @@ mod tests {
             ));
             Ok(light_block())
         }
-        async fn get_block(&self, _: &str) -> ApiErr<BlockInfo> {
-            unimplemented!()
+        async fn get_block(&self, hash: &str) -> ApiErr<BlockInfo> {
+            if self.refuse {
+                return Err("stub refusal: no such block".to_string());
+            }
+            self.calls
+                .lock()
+                .unwrap()
+                .push(format!("get_block hash={hash}"));
+            Ok(block_info())
         }
-        async fn bond_status(&self, _: &[u8]) -> ApiErr<bool> {
-            unimplemented!()
+        async fn bond_status(&self, key: &[u8]) -> ApiErr<bool> {
+            if self.refuse {
+                return Err("stub refusal: cannot answer".to_string());
+            }
+            self.calls.lock().unwrap().push(format!(
+                "bond_status key={}",
+                rchain_shared::base16::encode(key)
+            ));
+            Ok(true)
         }
         async fn exploratory_deploy(
             &self,
@@ -975,7 +989,10 @@ mod tests {
             Ok((vec![par.clone()], light_block()))
         }
         async fn last_finalized_block(&self) -> ApiErr<BlockInfo> {
-            unimplemented!()
+            if self.refuse {
+                return Err("stub refusal: no finalized block".to_string());
+            }
+            Ok(block_info())
         }
         async fn is_finalized(&self, hash: &str) -> ApiErr<bool> {
             if self.refuse {
@@ -1189,6 +1206,122 @@ mod tests {
             ),
             other => panic!("a refusal must arrive as an Error message, got {other:?}"),
         }
+    }
+
+    /// The `BlockInfo` fixture: one light block and no deploys, which is what the block-shaped
+    /// conversions wrap.
+    fn block_info() -> BlockInfo {
+        BlockInfo {
+            block_info: light_block(),
+            deploys: Vec::new(),
+        }
+    }
+
+    /// **The block-shaped conversions, and what a stream does with an error.** `getBlock` and
+    /// `lastFinalizedBlock` wrap a `BlockInfo`; `getBlocks` is a *stream* and, on failure, emits
+    /// **one item carrying the error** rather than an empty stream — which is the arm worth pinning,
+    /// because an empty stream is indistinguishable at a client from "the node has no blocks", and a
+    /// stream that stopped early is indistinguishable from one that finished.
+    #[tokio::test]
+    async fn the_block_conversions_wrap_a_block_and_a_stream_reports_its_error() {
+        use rchain_models::proto::casper::{BlockQuery, BlocksQuery, BondStatusQuery};
+        use tokio_stream::StreamExt;
+
+        let (svc, api) = deploy_service(|_| {});
+
+        // `getBlock`: the hash reaches the handler, the block comes back wrapped.
+        let resp = DeployService::get_block(
+            &svc,
+            Request::new(BlockQuery {
+                hash: "beef".to_string(),
+            }),
+        )
+        .await
+        .expect("get_block");
+        match resp.into_inner().message.expect("a message") {
+            wire::block_response::Message::BlockInfo(b) => {
+                assert_eq!(b.block_info.expect("a block").shard_id, "root");
+            }
+            other => panic!("an answered query must be a BlockInfo, got {other:?}"),
+        }
+        assert!(
+            api.calls
+                .lock()
+                .unwrap()
+                .contains(&"get_block hash=beef".to_string()),
+            "the hash the request carried: {:?}",
+            api.calls.lock().unwrap()
+        );
+
+        // `lastFinalizedBlock` has no request to convert — the assertion is that it answers.
+        let resp = DeployService::last_finalized_block(
+            &svc,
+            Request::new(rchain_models::proto::casper::LastFinalizedBlockQuery {}),
+        )
+        .await
+        .expect("last_finalized_block");
+        assert!(matches!(
+            resp.into_inner().message.expect("a message"),
+            wire::last_finalized_block_response::Message::BlockInfo(_)
+        ));
+
+        // `bondStatus`: the key is forwarded as the bytes it was given.
+        let resp = DeployService::bond_status(
+            &svc,
+            Request::new(BondStatusQuery {
+                public_key: vec![0x01, 0x02],
+            }),
+        )
+        .await
+        .expect("bond_status");
+        assert!(resp.into_inner().message.is_some());
+        assert!(
+            api.calls
+                .lock()
+                .unwrap()
+                .contains(&"bond_status key=0102".to_string()),
+            "the key: {:?}",
+            api.calls.lock().unwrap()
+        );
+
+        // `getBlocks` in the answering direction: one item for the one block the stub holds.
+        let resp = DeployService::get_blocks(&svc, Request::new(BlocksQuery { depth: 3 }))
+            .await
+            .expect("get_blocks");
+        let items: Vec<_> = resp.into_inner().collect().await;
+        assert_eq!(items.len(), 1, "one block, one item");
+        assert!(matches!(
+            items[0].as_ref().expect("an item").message,
+            Some(wire::block_info_response::Message::BlockInfo(_))
+        ));
+        assert!(
+            api.calls
+                .lock()
+                .unwrap()
+                .contains(&"get_blocks depth=3".to_string()),
+            "the depth: {:?}",
+            api.calls.lock().unwrap()
+        );
+
+        // …and in the refusing direction: one item carrying the error, not an empty stream.
+        let (refusing, _) = deploy_service(|s| s.refuse = true);
+        let resp = DeployService::get_blocks(&refusing, Request::new(BlocksQuery { depth: 1 }))
+            .await
+            .expect("a refused read is still a stream");
+        let items: Vec<_> = resp.into_inner().collect().await;
+        assert_eq!(
+            items.len(),
+            1,
+            "a refused read emits one item — an empty stream would read as \"no blocks\""
+        );
+        assert!(
+            matches!(
+                items[0].as_ref().expect("an item").message,
+                Some(wire::block_info_response::Message::Error(_))
+            ),
+            "and that item carries the reason: {:?}",
+            items[0]
+        );
     }
 
     #[tokio::test]
