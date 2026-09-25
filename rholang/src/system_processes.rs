@@ -1965,6 +1965,7 @@ fn txn_state_string(state: TxnState) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rchain_models::ast::{GPrivate, GUnforgeable};
     use async_trait::async_trait;
     use rchain_crypto::hash::blake2b512_random::Blake2b512Random;
     use rchain_models::runtime::{BindPattern, ListParWithRandom, TaggedContinuation};
@@ -2208,6 +2209,239 @@ mod tests {
         assert!(
             format!("{not_a_list:?}").contains("arguments must be a list"),
             "the argument list is demanded too: {not_a_list:?}"
+        );
+    }
+
+    /// **The crypto contracts: a verdict, and the shape they demand.** `verify_signature_contract`
+    /// builds both `secp256k1Verify` and `ed25519Verify`, and its body had not run — so neither the
+    /// verdict `false` nor either refusal had ever been produced. A signature check that answered
+    /// `true` for garbage would be the worst bug in the tree; the point of pinning the *false* case
+    /// (with data, a bogus signature and a well-formed key) is that "false" is a real verdict and not
+    /// a shape the code cannot reach.
+    #[tokio::test]
+    async fn the_signature_contracts_answer_a_verdict_and_refuse_a_malformed_call() {
+        let mock = Arc::new(MockSpace {
+            produced: Mutex::new(Vec::new()),
+        });
+        let (_sp, defs) = mock_system_processes(&mock);
+        let verify = defs
+            .iter()
+            .find(|d| d.body_ref == BodyRefs::SECP256K1_VERIFY)
+            .expect("secp256k1Verify definition");
+        let reply = || -> Par {
+            let produced = mock.produced.lock().unwrap_or_else(|p| p.into_inner());
+            produced[0].1.pars[0].as_par().clone()
+        };
+        let clear = || {
+            mock.produced
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .clear();
+        };
+        let bytes = |bs: Vec<u8>| RhoByteArray::apply(bs);
+        let ack = FixedChannels::stdout();
+
+        // Data, a signature that cannot be one, and a public key of the right length: `false`.
+        (verify.handler)(
+            vec![lpw(vec![
+                bytes(vec![1, 2, 3]),
+                bytes(vec![0u8; 65]),
+                bytes(vec![2u8; 65]),
+                ack.clone(),
+            ])],
+            DfsPath::root(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            reply(),
+            RhoBoolean::apply(false),
+            "a bogus signature verifies as false — and that is a reachable verdict"
+        );
+        clear();
+
+        // Two refusals: the wrong number of arguments, and arguments that are not byte arrays.
+        let arity = (verify.handler)(
+            vec![lpw(vec![bytes(vec![1, 2, 3]), ack.clone()])],
+            DfsPath::root(),
+        )
+        .await;
+        assert!(
+            format!("{arity:?}").contains("secp256k1Verify expects data, signature, public key"),
+            "the refusal names the contract and what it wants: {arity:?}"
+        );
+        let types = (verify.handler)(
+            vec![lpw(vec![
+                RhoString::apply("not bytes".to_string()),
+                bytes(vec![0u8; 65]),
+                bytes(vec![2u8; 65]),
+                ack.clone(),
+            ])],
+            DfsPath::root(),
+        )
+        .await;
+        assert!(
+            format!("{types:?}").contains("(all as byte arrays)"),
+            "and refuses a non-byte-array argument: {types:?}"
+        );
+    }
+
+    /// **`rho:registry:ops` `buildUri`, and its three ways of not answering.** The op derives a
+    /// registry URI from a hash of the argument; an argument that is not a byte array answers the
+    /// empty par, and an unknown operation is refused. Both halves matter: the empty-par arm is the
+    /// port's convention for "this is not a URI" (a client's `for` simply does not match), and the
+    /// refusal is what stops a typo from looking like that convention.
+    #[tokio::test]
+    async fn the_registry_ops_build_a_uri_and_refuse_what_they_cannot() {
+        let mock = Arc::new(MockSpace {
+            produced: Mutex::new(Vec::new()),
+        });
+        let (_sp, defs) = mock_system_processes(&mock);
+        let ops = defs
+            .iter()
+            .find(|d| d.body_ref == BodyRefs::REG_OPS)
+            .expect("registry ops definition");
+        let reply = || -> Par {
+            let produced = mock.produced.lock().unwrap_or_else(|p| p.into_inner());
+            produced[0].1.pars[0].as_par().clone()
+        };
+        let ack = FixedChannels::stdout();
+
+        let uri = {
+            (ops.handler)(
+                vec![lpw(vec![
+                    RhoString::apply("buildUri".to_string()),
+                    RhoByteArray::apply(vec![1, 2, 3]),
+                    ack.clone(),
+                ])],
+                DfsPath::root(),
+            )
+            .await
+            .unwrap();
+            reply()
+        };
+        assert_eq!(
+            RhoUri::unapply(&uri),
+            Some(registry::build_uri(&blake2b256::hash(&[1, 2, 3])).as_str()),
+            "the URI is the hash of the argument, by the registry's own builder"
+        );
+        mock.produced
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clear();
+
+        // A non-byte-array argument: the empty par, which no `for` matches.
+        (ops.handler)(
+            vec![lpw(vec![
+                RhoString::apply("buildUri".to_string()),
+                RhoString::apply("not bytes".to_string()),
+                ack.clone(),
+            ])],
+            DfsPath::root(),
+        )
+        .await
+        .unwrap();
+        assert!(
+            RhoNil::unapply(&reply()),
+            "an argument that cannot be a hash answers Nil, not an error"
+        );
+        mock.produced
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clear();
+
+        for (label, args) in [
+            (
+                "an unknown operation",
+                vec![
+                    RhoString::apply("nope".to_string()),
+                    RhoByteArray::apply(vec![1]),
+                    ack.clone(),
+                ],
+            ),
+            (
+                "the wrong arity",
+                vec![RhoString::apply("buildUri".to_string())],
+            ),
+        ] {
+            let err = (ops.handler)(vec![lpw(args)], DfsPath::root()).await;
+            assert!(
+                format!("{err:?}").contains("registryOps"),
+                "{label} is refused by name: {err:?}"
+            );
+        }
+    }
+
+    /// **`sys:authToken:ops` `check`.** The system-auth token is an unforgeable name, and this is the
+    /// predicate that recognises it — the answer a contract's capability check branches on. Both
+    /// directions in one test, so neither can pass vacuously: the token itself is `true`, and a
+    /// *different* unforgeable — and a plain value — are `false` rather than an error.
+    #[tokio::test]
+    async fn the_sys_auth_token_contract_recognizes_the_token_and_nothing_else() {
+        let mock = Arc::new(MockSpace {
+            produced: Mutex::new(Vec::new()),
+        });
+        let (_sp, defs) = mock_system_processes(&mock);
+        let ops = defs
+            .iter()
+            .find(|d| d.body_ref == BodyRefs::SYS_AUTHTOKEN_OPS)
+            .expect("sys auth token ops definition");
+        let ack = FixedChannels::stdout();
+        let call = |arg: Par| {
+            vec![lpw(vec![
+                RhoString::apply("check".to_string()),
+                arg,
+                ack.clone(),
+            ])]
+        };
+        let reply = || -> Par {
+            let produced = mock.produced.lock().unwrap_or_else(|p| p.into_inner());
+            produced[0].1.pars[0].as_par().clone()
+        };
+        let clear = || {
+            mock.produced
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .clear();
+        };
+
+        (ops.handler)(call(RhoSysAuthToken::apply()), DfsPath::root())
+            .await
+            .unwrap();
+        assert_eq!(reply(), RhoBoolean::apply(true), "the token is recognised");
+        clear();
+
+        // Another unforgeable is not the token — the case a capability check must not confuse — and
+        // neither is an ordinary value.
+        (ops.handler)(
+            call(Par {
+                unforgeables: vec![GUnforgeable::GPrivate(GPrivate { id: vec![7u8; 32] })],
+                ..Default::default()
+            }),
+            DfsPath::root(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            reply(),
+            RhoBoolean::apply(false),
+            "a private name is not the token"
+        );
+        clear();
+        (ops.handler)(call(RhoNumber::apply(1)), DfsPath::root())
+            .await
+            .unwrap();
+        assert_eq!(reply(), RhoBoolean::apply(false), "nor is an integer");
+        clear();
+
+        let err = (ops.handler)(
+            vec![lpw(vec![RhoString::apply("nope".to_string())])],
+            DfsPath::root(),
+        )
+        .await;
+        assert!(
+            format!("{err:?}").contains("sysAuthTokenOps"),
+            "an unknown operation is refused by name: {err:?}"
         );
     }
 

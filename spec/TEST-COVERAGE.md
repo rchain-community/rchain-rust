@@ -26,7 +26,7 @@ and **no file is left without one or the other** — the linter's check 7 passes
 
 ## Inventory
 
-**1462 `#[test]`/`#[tokio::test]` unit functions + 126 integration tests** across 13 crates, with **26
+**1465 `#[test]`/`#[tokio::test]` unit functions + 126 integration tests** across 13 crates, with **26
 laws** carrying a randomized property test and **12 benchmark functions** in 7 Criterion groups. Only
 **3 of 13 crates have integration tests** (`rholang`, `casper`, `node`).
 
@@ -40,7 +40,7 @@ laws** carrying a randomized property test and **12 benchmark functions** in 7 C
 | `block-storage` | 42 | — | 3 | — |
 | `comm` | 125 | — | — | — |
 | `rspace` | 178 | — | 8 | — |
-| `rholang` | 234 | 56 | 7 | — |
+| `rholang` | 237 | 56 | 7 | — |
 | `casper` | 277 | 54 | 3 | — |
 | `node` | 191 | 16 | — | — |
 | `qucalc` | 20 | — | — | — |
@@ -321,6 +321,9 @@ not found in that file. Coverage claims live here rather than in prose so they c
 | item 11 | `rholang/src/reduce.rs` | `nth_reports_an_out_of_bound_index_and_a_wrong_receiver` |
 | item 11 | `rholang/src/system_processes.rs` | `the_http_contract_records_gets_checks_and_reports_its_height` |
 | item 11 | `comm/src/upnp/gateway.rs` | `the_gateway_device_carries_what_the_parser_found` |
+| item 11 | `rholang/src/system_processes.rs` | `the_signature_contracts_answer_a_verdict_and_refuse_a_malformed_call` |
+| item 11 | `rholang/src/system_processes.rs` | `the_registry_ops_build_a_uri_and_refuse_what_they_cannot` |
+| item 11 | `rholang/src/system_processes.rs` | `the_sys_auth_token_contract_recognizes_the_token_and_nothing_else` |
 
 ## Gap analysis (severity-ordered)
 
