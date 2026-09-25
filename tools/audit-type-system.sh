@@ -148,6 +148,7 @@ WHITELIST_PANIC=(
   'rspace/src/rspace.rs;;assert!\(!channels\.is_empty\(\), "channels can'\''t be empty"\);;;channels can'\''t be empty;;the same consume boundary as `replay_rspace.rs`'\''s `consume_result`'
   'rspace/src/rspace.rs;;assert_eq!\( channels\.len\(\), patterns\.len\(\), "channels\.length must equal patterns\.length" \);;;channels.length must equal patterns.length;;the channels/patterns pairing at `consume` **and** at `install` (the same text occurs twice in this file): they are zipped, so their lengths must agree'
   'rspace/src/history/key_segment.rs;;KeySegment::try_from\(value\)\.expect\("a slice of a valid segment is at most 127 bytes"\);;provably a .slice of a valid segment;;`from_slice_of_valid`: private, and its name is its precondition — the argument is only ever a slice of a valid segment, so `len <= 127` holds by monotonicity and the `Err` arm is unreachable (C61'\''s fix; the proof is the doc above)'
+  'rspace/src/history/key_segment.rs;;\.expect\("a segment'\''s head is read only where the segment is known non-empty"\);;;;head reads through head_option and refuses by name; every caller argues its segment is non-empty, and the doc above names each enforcer (H2e, 7ec9e16d5)'
   'rspace/src/history/export.rs;;assert!\( ptr_prefix_rest\.is_empty\(\), "Export error: node with prefix \{expected_prefix\} not found\." \);;;ptr_prefix_rest\.is_empty\(\);;`export`: a node whose prefix is not a prefix of the searched one is a corrupt tree, and the diagnostic is rendered fallibly just above so the panic cannot fire while formatting'
   'rspace/src/history/history_repository.rs;;KeySegment::try_from\(bytes\)\.expect\("1 \+ 32 = 33 bytes is at most 127 bytes"\);;well inside the 127-byte invariant;;`key_segment`: one prefix byte plus a 32-byte hash is 33 bytes by type (`as_bytes()` is `&[u8; 32]`), so the constructor cannot refuse — the comment above states the measurement'
   'rspace/src/history/radix_tree.rs;;\.expect\("a 7-bit size field is at most 127"\);;;a 7-bit size field is at most 127;;C61'\''s decode site: the length prefix is 7 bits, so the slice re-wrapped here is at most 127 bytes; the comment above names the measurement'
@@ -159,7 +160,7 @@ WHITELIST_PANIC=(
   'rspace/src/history/radix_tree.rs;;assert_eq!\( leaf_prefix\.len\(\), ins_prefix\.len\(\), "The length of all prefixes in the subtree must be the same\." \);;;The length of all prefixes in the subtree must be the same;;the subtree prefix invariant of the radix tree, stated in the message'
   'rspace/src/history/radix_tree.rs;;assert!\( ptr_prefix\.len\(\) < ins_prefix\.len\(\), "Radix key should be longer than NodePtr key\." \);;;Radix key should be longer than NodePtr key;;an insert key must be strictly longer than a node ptr key — the tree'\''s structural invariant, stated in the message'
   'rspace/src/history/instances/radix_history.rs;;assert!\( has_no_duplicates\(actions\), "Cannot process duplicate actions on one key\." \);;;Cannot process duplicate actions on one key;;one action per key per commit; duplicates are rejected upstream, and the assert is the boundary'
-  'casper/src/block_random_seed.rs;;debug_assert!\( shard_id\.is_ascii\(\), "Shard name should contain only ASCII characters" \);;;Shard name should contain only ASCII characters;;`ShardId` is ASCII by invariant (the refinement), so the debug assert restates a fact the type carries'
+  'casper/src/block_random_seed.rs;;assert!\( shard_id\.is_ascii\(\), "Shard name should contain only ASCII characters" \);;;Shard name should contain only ASCII characters;;`ShardId` is ASCII by invariant (the refinement), and H2d changed this from a `debug_assert!` to a plain `assert!` so the port'\''s check is live in every profile, as the Scala'\''s `Predef.assert` is — the rename is what staled the previous key, which is this staleness check earning its keep on a real commit rather than on a planted probe'
   'casper/src/block_random_seed.rs;;\.expect\("block random seed components always fit a 1-byte length prefix"\);;;the length prefix cannot overflow;;`random_generator`: `var_size`'\''s inputs are far below 256 bytes — the comment above states the measurement the `expect` documents'
 )
 
@@ -194,6 +195,12 @@ BEGIN { skip = 0; depth = 0 }
     if (depth <= 0) skip = 0
     next
   }
+  # A comment line is not a site — `///` and `//!` included, which is why the test is `//` and not
+  # `// `: the doc comments in this tree quote `assert!`/`expect`/`panic!` constantly (the file-level
+  # whitelist hid that surface until the per-site conversion exposed `key_segment.rs:59`, a doc line
+  # naming a caller'\''s `assert!`), and a class that fires on prose is one people learn to work around.
+  # The earlier `sorry`/`opaque` ratchet strips comments for the same reason.
+  if ($0 ~ /^[[:space:]]*\/\//) next
   if ($0 !~ RE) next
   if ($0 ~ /self\.expect\(|\.expect\(Tok::/) next
   start = FNR
