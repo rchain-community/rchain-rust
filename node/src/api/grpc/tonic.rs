@@ -864,7 +864,14 @@ mod tests {
     use rchain_models::proto::casper::propose_service_client::ProposeServiceClient;
     use rchain_models::proto::casper::propose_service_server::ProposeServiceServer;
 
-    struct StubBlockApi;
+    /// The block API double: it answers `status` and the propose reads, and refuses everything else —
+    /// a double that answered everything would let a delegation bug pass. `refuse` turns those
+    /// answers into refusals, which is the only way to reach a gRPC error arm: the point of the arm is
+    /// that a *refused* call reaches the client as a message rather than as an empty success.
+    #[derive(Default)]
+    struct StubBlockApi {
+        refuse: bool,
+    }
     #[async_trait]
     impl BlockApi for StubBlockApi {
         async fn status(&self) -> CasperStatus {
@@ -886,6 +893,9 @@ mod tests {
             Ok("Success! Block created.".to_string())
         }
         async fn get_propose_result(&self) -> ApiErr<String> {
+            if self.refuse {
+                return Err("stub refusal: no result to report".to_string());
+            }
             Ok("Success! Block created.".to_string())
         }
         async fn get_listening_name_data_response(
@@ -952,7 +962,7 @@ mod tests {
 
     #[tokio::test]
     async fn serves_and_answers_propose() {
-        let svc = ProposeGrpcServiceV1::new(Arc::new(StubBlockApi));
+        let svc = ProposeGrpcServiceV1::new(Arc::new(StubBlockApi::default()));
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let server = ::tonic::transport::Server::builder()
@@ -969,6 +979,48 @@ mod tests {
             .unwrap()
             .into_inner();
         assert!(resp.message.is_some());
+    }
+
+    /// **`proposeResult` in both directions, without a socket.** The other propose test goes over
+    /// loopback — which is the right way to pin the *transport* — but the transport is not what this
+    /// handler can get wrong: it calls the inner read and wraps the outcome, so its two arms are the
+    /// `Result` message and the `Error` message. Both are asserted by calling the trait method
+    /// directly, and the error arm needs the double to be able to refuse: a service whose refusal
+    /// arrived as an empty success is indistinguishable, at a client, from "no result yet".
+    #[tokio::test]
+    async fn propose_result_reports_the_result_and_a_refusal() {
+        let svc = ProposeGrpcServiceV1::new(Arc::new(StubBlockApi::default()));
+        let resp = ProposeService::propose_result(
+            &svc,
+            Request::new(rchain_models::proto::casper::ProposeResultQuery {}),
+        )
+        .await
+        .expect("propose_result");
+        let message = resp.into_inner().message.expect("a message");
+        assert!(
+            matches!(
+                message,
+                wire::propose_result_response::Message::Result(ref s)
+                    if s == "Success! Block created."
+            ),
+            "the inner read's answer is wrapped as a Result: {message:?}"
+        );
+
+        let svc = ProposeGrpcServiceV1::new(Arc::new(StubBlockApi { refuse: true }));
+        let resp = ProposeService::propose_result(
+            &svc,
+            Request::new(rchain_models::proto::casper::ProposeResultQuery {}),
+        )
+        .await
+        .expect("propose_result answers rather than failing the RPC");
+        let message = resp.into_inner().message.expect("a message");
+        match message {
+            wire::propose_result_response::Message::Error(e) => assert!(
+                e.messages.join(" ").contains("stub refusal"),
+                "the refusal carries its reason to the client: {e:?}"
+            ),
+            other => panic!("a refusal must arrive as an Error message, got {other:?}"),
+        }
     }
 
     /// The wire conversions: 26 functions that no test named. They are pure, they sit on the
