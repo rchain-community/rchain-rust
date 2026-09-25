@@ -60,6 +60,15 @@ Every `provedTied`/`provedModel` row must name at least one such declaration in 
 carry a `corpus` — the register's check 5b. The names must exist (check 3) and must not themselves be
 axioms (check 4b): a falsifier that cannot fail is not one.
 
+**The status word is bound to the `corpus` cell — check 5c.** `provedTied` *means* "proved and tied to
+the node by a conformance corpus", and until 2026-09-25 nothing related the word to the field: 5b accepts
+either a witness or a corpus, and the anchor check asks every proved row for a `rust` anchor, so a row
+could call itself tied with no corpus and the build stayed green. That distinction is the register's whole
+subject (it is the difference that let C21 ship while its model was fine), so it is the one word that must
+not be authorial. A `provedModel` row may still carry a corpus — laws 1a/1b do, because the model's
+algebra is coarser than the node's — but then its `note` has to say why the corpus is not the tie the
+stronger word would claim.
+
 **What is checked, and what is convention — measured 2026-09-24 (AUDIT C74).** The *rule* above is
 machine-checked and holds everywhere: no `proved*` row is without a witness **and** a corpus (0 of 49).
 The *vocabulary* is not a predicate over the register and cannot be one: of the 126 entries in the

@@ -448,6 +448,26 @@ run_cmd do
         neither a `witness` declaration nor a `corpus` — the falsifiability claim is prose nothing \
         checks; name the declaration it rests on"
 
+  -- 5c. The status word is bound to the `corpus` cell — the one place the vocabulary could still be
+  -- authorial. `provedTied` *means* "proved and tied to the node by a conformance corpus" (this module's
+  -- doc, and the `Status` constructors below), and nothing related the two: `claimsModel` requires a
+  -- `rust` anchor of every proved row and 5b accepts *either* a witness *or* a corpus, so a row could call
+  -- itself tied with no corpus and the build stayed green. That distinction — proved against the *running
+  -- node* versus proved about a model a human keeps in sync — is the register's whole subject (it is the
+  -- difference that let C21 ship while its model was fine), so it is the one word that must not be a
+  -- promise. The converse is the same discipline in the other direction: a `proved-model` row may carry a
+  -- corpus (laws 1a/1b do — the model's algebra is coarser than the node's), but then its `note` has to
+  -- say why the corpus is not the tie the stronger word would claim.
+  for l in register do
+    if l.status == .provedTied && l.corpus.isNone then
+      failures := failures.push s!"tie vocabulary: law {l.number}{l.clause} is `proved-tied` with no \
+        `corpus` — that status means tied to the node by a conformance corpus, so either name the layer \
+        that pins it or write `proved-model`, which is the word for a prose tie"
+    if l.status == .provedModel && l.corpus.isSome && l.note.isEmpty then
+      failures := failures.push s!"tie vocabulary: law {l.number}{l.clause} is `proved-model` while \
+        carrying a `corpus` — say in its `note` why the corpus is not the tie that word means (the layer \
+        may be partial, as law 1a's is: the model's algebra is coarser than the node's)"
+
   -- 6. A proved law that rests on an axiom must say so in its own row. Law 1a is the case this exists
   -- for: "proven, residually 30 axioms" in a document, with the qualification nowhere near the claim.
   for l in register do
