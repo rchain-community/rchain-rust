@@ -357,16 +357,65 @@ fi
 # exits 0 on an empty match, so a registry of renamed, deleted or `#[ignore]`d tests would otherwise
 # run green while checking nothing — the clause checks 9 and 10 also carry.
 #
-# The list comes from the register's own `rustWitness` column (14) — one source of truth, so a
+# The list comes from the register's own `rustWitness` column — one source of truth, so a
 # witness list kept anywhere else could not become a second copy of the register's judgement. That
 # was the shape this step first landed in (`tools/rust-witnesses.txt`, on a red tree where `laws.tsv`
 # could not be emitted) and the file is deleted now that the column exists.
-if awk -F'\t' 'NR > 1 && $14 != "-" { n = split($14, a, ", "); for (i = 1; i <= n; i++) print a[i] }' \
-     "$ROOT/spec/laws.tsv" | "$ROOT/tools/check-rust-witnesses.sh" >/tmp/rust-witnesses.log 2>&1; then
-  tail -1 /tmp/rust-witnesses.log | sed 's/^/ok    /'
+#
+# **The column is found by name, not by index.** `$14` was the column's position in a schema emitted
+# from `Rchain/Laws.lean`, and a position is a fact about the *emitter* that this reader cannot check:
+# `audit-test-register.sh` reads the same register through named fields for the same reason (and its
+# `IFS=$'\034'` note is the neighbouring trap — a tab-separated consumer that lets `read` collapse an
+# empty field shifts every later column silently). A column that cannot be found now names itself
+# instead of running over an empty list.
+#
+# **The log is per-run, and the verdict reported is the checker's own summary.** `>/tmp/rust-witnesses.log`
+# was shared state of exactly the kind `tools/check-rust-witnesses.sh` itself carried until 2026-09-24:
+# two gate runs in this checkout at the same time (routine) opened the same path, and the line *this
+# step reports as the gate's verdict* was `tail -1` of a file another process could write. Measured
+# 2026-09-25 with a stub `cargo` over two scratch registers (3 and 40 witnesses, the short run started
+# second): the short run's `tail -1` read the *long* run's most recently written line and this step
+# printed, verbatim, `ok    ` + that line — a witness that is not in its own register, offered as its
+# result:
+#
+#   ok    <stale-offset padding>ok    rholang/src/property_tests.rs:law5_a_pattern_that_binds_a_variable_twice_never_matches (rchain-rholang, 1 test(s))
+#
+# while its own checker had printed `all 3 Rust witness(es) ran and passed`. Both runs exited 0: the
+# gate counted the step green and printed someone else's line. (The padding before the foreign line is
+# the hole left when the second run truncated a file the first run's checker still held open at a
+# higher offset — the same truncate-under-a-live-writer shape, visible in the artefact.) Now each run
+# writes its own `mktemp` file, the success line is a line *matched as the checker's summary* rather
+# than whatever sits last in the file, and the failure path still copies the log to the stable
+# `/tmp/rust-witnesses.log` a reader has always been pointed at.
+witness_col="$(awk -F'\t' 'NR == 1 { for (i = 1; i <= NF; i++) if ($i == "rustWitness") { print i; exit } }' \
+                 "$ROOT/spec/laws.tsv")"
+if [[ -z "$witness_col" ]]; then
+  fail "spec/laws.tsv has no \`rustWitness\` column — the register's Rust half cannot be run (the column is emitted from Rchain/Laws.lean)"
 else
-  fail "the register's Rust witnesses do not run — see /tmp/rust-witnesses.log"
-  grep '^FAIL' /tmp/rust-witnesses.log | sed 's/^/      /' | head -5
+  witness_log="$(mktemp)"
+  witness_rc=0
+  awk -F'\t' -v c="$witness_col" \
+    'NR > 1 && $c != "-" { n = split($c, a, ", "); for (i = 1; i <= n; i++) print a[i] }' \
+    "$ROOT/spec/laws.tsv" | "$ROOT/tools/check-rust-witnesses.sh" >"$witness_log" 2>&1 || witness_rc=$?
+  # `|| true` on a grep that legitimately matches nothing: under this script's `set -euo pipefail` a
+  # no-match would abort the gate *before* it reported why.
+  witness_summary="$(grep -E '^(all [0-9]+ Rust witness\(es\) ran and passed|===== [0-9]+ of [0-9]+ Rust witness\(es\) FAILED =====)$' \
+                       "$witness_log" | tail -1 || true)"
+  if (( witness_rc == 0 )) && [[ -n "$witness_summary" ]]; then
+    ok "$witness_summary"
+    rm -f "$witness_log"
+  else
+    kept="/tmp/rust-witnesses.log"
+    cp "$witness_log" "$kept" 2>/dev/null || kept="$witness_log"
+    fail "the register's Rust witnesses do not run — see $kept"
+    grep '^FAIL' "$witness_log" | sed 's/^/      /' | head -5 || true
+    # A green exit with no summary is not a verdict: it is what the checker's output looks like when
+    # something *else* wrote the file it was read from. Say which of the two it was.
+    if (( witness_rc == 0 )); then
+      fail "the witness checker exited 0 but printed no summary line — the log holds no verdict of its own"
+    fi
+    rm -f "$witness_log"
+  fi
 fi
 
 # (`tools/audit-protocols.sh` was to be a *static* audit of the vendored protocol content — a
