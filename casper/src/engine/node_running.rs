@@ -1324,6 +1324,155 @@ mod tests {
         assert!(transport.sends.lock().unwrap().is_empty());
     }
 
+    /// An empty DAG over in-memory stores — the argument `NodeRunning::new` requires and what the
+    /// `HasBlock`/`HasBlockRequest` arms read (`repr.contains(hash)`). `casper/src/dag.rs`'s tests build
+    /// the same storage for themselves; a `#[cfg(test)]` helper in another module is not reachable
+    /// here, so it is duplicated rather than widened into a production constructor.
+    async fn build_dag() -> Arc<dyn BlockDagStorage> {
+        use crate::block_metadata_store::BlockMetadataStore;
+        use rchain_block_storage::dag::codecs::{
+            Blake2b256HashCodec, BlockMetadataCodec, FringeDataCodec, SignedDeployDataCodec,
+        };
+        use rchain_models::casper::protocol::casper_message::SignedDeployData;
+        use rchain_models::fringe_data::FringeData;
+        use rchain_shared::typed_store::{BytesCodec, KeyValueTypedStore, SharedStore};
+
+        let fresh = || -> SharedStore {
+            Arc::new(tokio::sync::Mutex::new(Box::new(
+                InMemoryKeyValueStore::default(),
+            )))
+        };
+        let metadata = Arc::new(
+            BlockMetadataStore::create(Arc::new(KeyValueTypedStoreCodec::new(
+                fresh(),
+                Arc::new(BlockHashCodec),
+                Arc::new(BlockMetadataCodec),
+            )))
+            .await
+            .expect("metadata store"),
+        );
+        let fringe: Arc<dyn KeyValueTypedStore<Blake2b256Hash, FringeData>> =
+            Arc::new(KeyValueTypedStoreCodec::new(
+                fresh(),
+                Arc::new(Blake2b256HashCodec),
+                Arc::new(FringeDataCodec),
+            ));
+        type DeployId = rchain_block_storage::dag::dag_storage::DeployId;
+        let deploy_index: Arc<dyn KeyValueTypedStore<DeployId, BlockHash>> = Arc::new(
+            KeyValueTypedStoreCodec::new(fresh(), Arc::new(BytesCodec), Arc::new(BlockHashCodec)),
+        );
+        let deploy_store: Arc<dyn KeyValueTypedStore<DeployId, SignedDeployData>> =
+            Arc::new(KeyValueTypedStoreCodec::new(
+                fresh(),
+                Arc::new(BytesCodec),
+                Arc::new(SignedDeployDataCodec),
+            ));
+        Arc::new(
+            crate::dag::BlockDagKeyValueStorage::create(
+                metadata,
+                fringe,
+                deploy_index,
+                deploy_store,
+            )
+            .await
+            .expect("dag storage"),
+        )
+    }
+
+    /// **`NodeRunning::handle`'s dispatch, and the hand-offs it owns.** Every arm calls a free handler
+    /// that has its own test, so what is uncovered is the *routing* — which arm a message takes — and
+    /// the two hand-offs into the node's own machinery: an unseen block goes into `incoming_blocks`,
+    /// and an unseen hash goes to the retriever. A mis-routed message is a consensus-level bug, and
+    /// the store guards this pins are the ones AUDIT C67 added (a read that cannot answer must drop
+    /// the message *with a reason*, not act on a false negative).
+    #[tokio::test]
+    async fn handle_routes_each_message_and_hands_off_to_the_right_queue() {
+        let local = peer("src", 40400);
+        let remote = peer("peer", 40400);
+        let transport = Arc::new(MockTransport::default());
+        let connections: ConnectionsCell = Arc::new(tokio::sync::RwLock::new(Vec::new()));
+        let comm_util = Arc::new(CommUtil::new(
+            transport.clone(),
+            conf(&local),
+            connections,
+            Arc::new(NopLog),
+        ));
+        let retriever = Arc::new(BlockRetriever::new(comm_util, Arc::new(NopLog)));
+
+        let known = block(hash(1));
+        let unseen = block(hash(2));
+        let store = block_store(vec![known.clone()]).await;
+        let (incoming_tx, mut incoming_rx) = tokio::sync::mpsc::channel(4);
+
+        let running = NodeRunning::new(
+            transport.clone(),
+            conf(&local),
+            store.clone(),
+            build_dag().await,
+            retriever,
+            Arc::new(NopLog),
+            None,
+            incoming_tx,
+            MockExporter,
+            false,
+        );
+
+        // An unseen block is handed to the block-processing queue — this is the node's ingress.
+        running
+            .handle(&remote, &CasperMessage::BlockMessage(unseen.clone()))
+            .await;
+        let taken = incoming_rx.try_recv().expect("the unseen block is queued");
+        assert_eq!(
+            taken.block_hash, unseen.block_hash,
+            "and it is the block that arrived"
+        );
+
+        // A block we already have is *not* queued: the same message twice must not process twice.
+        running
+            .handle(&remote, &CasperMessage::BlockMessage(known.clone()))
+            .await;
+        assert!(
+            incoming_rx.try_recv().is_err(),
+            "a known block is dropped rather than queued again"
+        );
+
+        // An unseen *hash* goes to the retriever, which asks the peer for it (the free handler's own
+        // behaviour, asserted here to show the arm is routed to it).
+        running
+            .handle(
+                &remote,
+                &CasperMessage::BlockHashMessage(
+                    rchain_models::casper::protocol::casper_message::BlockHashMessage {
+                        block_hash: hash(3),
+                        block_creator: Vec::new(),
+                    },
+                ),
+            )
+            .await;
+        {
+            let sends = transport.sends.lock().unwrap();
+            assert_eq!(sends.len(), 1, "the retriever asked for the block");
+            assert_eq!(sends[0].0, remote);
+        }
+
+        // `HasBlockRequest` reads the **dag**, not the block store: an empty DAG answers nothing.
+        running
+            .handle(
+                &remote,
+                &CasperMessage::HasBlockRequest(
+                    rchain_models::casper::protocol::casper_message::HasBlockRequest {
+                        hash: hash(4).as_bytes().to_vec(),
+                    },
+                ),
+            )
+            .await;
+        assert_eq!(
+            transport.sends.lock().unwrap().len(),
+            1,
+            "no HasBlock answer for a hash the dag does not hold (the store has it, the dag does not)"
+        );
+    }
+
     #[tokio::test]
     async fn handle_has_block_message_requests_unknown_block_from_peer() {
         let local = peer("src", 40400);

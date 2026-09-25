@@ -26,7 +26,7 @@ and **no file is left without one or the other** — the linter's check 7 passes
 
 ## Inventory
 
-**1473 `#[test]`/`#[tokio::test]` unit functions + 129 integration tests** across 13 crates, with **26
+**1474 `#[test]`/`#[tokio::test]` unit functions + 129 integration tests** across 13 crates, with **26
 laws** carrying a randomized property test and **12 benchmark functions** in 7 Criterion groups. Only
 **3 of 13 crates have integration tests** (`rholang`, `casper`, `node`).
 
@@ -41,7 +41,7 @@ laws** carrying a randomized property test and **12 benchmark functions** in 7 C
 | `comm` | 125 | — | — | — |
 | `rspace` | 181 | — | 8 | — |
 | `rholang` | 239 | 57 | 7 | — |
-| `casper` | 277 | 55 | 3 | — |
+| `casper` | 278 | 55 | 3 | — |
 | `node` | 193 | 17 | — | — |
 | `qucalc` | 20 | — | — | — |
 | `rspace-bench` | — | — | — | 12 |
@@ -332,6 +332,7 @@ not found in that file. Coverage claims live here rather than in prose so they c
 | item 11 | `rspace/src/history/export.rs` | `export_walks_into_a_pointer_node` |
 | item 11 | `rholang/src/matcher/spatial_matcher.rs` | `the_composite_terms_match_structurally_or_recurse` |
 | item 11 | `casper/tests/block_index.rs` | `the_block_index_regenerates_a_missing_sidecar_and_indexes_the_block` |
+| item 11 | `casper/src/engine/node_running.rs` | `handle_routes_each_message_and_hands_off_to_the_right_queue` |
 
 ## Gap analysis (severity-ordered)
 
@@ -752,7 +753,7 @@ zero-test file.
 | `rholang/src/system_processes.rs` | | `verify_signature_contract` (761–787) and the PoS/vault arms | — | not yet read |
 | `casper/src/merging.rs` | 419 | the merge's index path: `DeployChainIndex::apply`, `BlockIndex::{create_event_log_index, apply, get_block_index}` (192–420, 437–552) | `pin` after all | **pinned** — `casper/tests/block_index.rs`, which is the fixture the earlier row said it would need (`common::build_runtime_manager()`), plus a block whose seed is derived from the block itself. The regenerate arm ran, so the test also pins that a block whose **sidecar was never persisted** — an LFS-restored one — is indexed rather than refused. `MergeScope::merge` (666+) stays `harness-bound` |
 | `casper/src/merging.rs` | | `MergeScope::merge` (666–832) | `harness-bound` | it needs a `RhoHistoryRepository` **and** a block-index closure; the new test's fixture is a step towards it, but the merge itself also needs a final scope to merge |
-| `casper/src/engine/node_running.rs` | 393 | `NodeRunning::handle`'s peer-message dispatch (549–803) | `pin` | `handle(&PeerNode, &CasperMessage)` is callable in-process; the store-error arms are already pinned (`a_store_that_cannot_be_read_is_not_an_unknown_block`), so what is left is the same-key warning, the full-ingress-queue warning, and the known/unknown block arms |
+| `casper/src/engine/node_running.rs` | 393 | `NodeRunning::handle`'s peer-message dispatch | `pin` | **pinned** — `handle_routes_each_message_and_hands_off_to_the_right_queue`, which builds a `NodeRunning` from the module's own doubles plus a DAG fixture (the one thing missing): an unseen block is queued for processing, a known one is *not*, an unseen hash goes to the retriever, and `HasBlockRequest` reads the DAG rather than the store. The same-key and full-queue warnings stay unpinned — they need a log that records |
 | `node/src/web/http.rs` | 245 | the read routes | `pin` | **batch 1 landed** — `node/tests/api_surface.rs`; what remains is the admin and gateway-only routes (`/api/v1/txn`, the metrics reporting path) |
 | `comm/src/upnp/gateway.rs` | 205 | `WeupnpGatewayDevice::new` + the `GatewayDevice` accessors (299–352) | `pin` | a plain constructor and eight getters — the cheapest region in the tree |
 | `comm/src/upnp/gateway.rs` | | `ssdp_discover`, `http_get`, `soap_post` (37–63, 188–207) | `peer-bound` | these need a real UPnP router; what *is* pinned is the SSRF guard over the same parsing (`the_url_guard_allows_private_gateways_and_refuses_ssrf_targets`) |
