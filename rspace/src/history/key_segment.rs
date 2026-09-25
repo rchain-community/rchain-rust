@@ -52,8 +52,17 @@ impl KeySegment {
         self.value.is_empty()
     }
 
+    /// The first byte, **refusing by name** on an empty segment rather than indexing it (H2e): the old
+    /// `value[0]` panicked with an index error, which says nothing about whose domain was violated.
+    ///
+    /// Every caller already argues its segment is non-empty — `export::init_node_path`'s
+    /// `rest_prefix.is_empty()` early return, `create_node_from_item`'s `assert!(!prefix.is_empty())`,
+    /// `update`/`delete`'s remainders (non-empty because the prefixes differ, or because the branch
+    /// condition says so), and `make_actions`' action keys (built 33 bytes wide, never trimmed past a
+    /// leaf) — so this `expect` is unreachable, and this is the one place that domain is stated.
     pub fn head(&self) -> u8 {
-        self.value[0]
+        self.head_option()
+            .expect("a segment's head is read only where the segment is known non-empty")
     }
 
     /// Drop the first byte. Total by monotonicity: the result is a suffix of a valid segment, hence
@@ -169,6 +178,29 @@ mod tests {
 
         // And an empty segment is still the total zero case.
         assert!(KeySegment::empty().is_empty());
+    }
+
+    /// **H2e.** `head()` must *refuse by name* on an empty segment rather than index it: `value[0]`
+    /// panicked with "index out of bounds", which states nothing about whose domain was violated. This
+    /// pins the name, and it failed against the unmodified `head()` for exactly that reason.
+    #[test]
+    #[should_panic(expected = "known non-empty")]
+    fn head_on_an_empty_segment_refuses_by_name() {
+        let _ = KeySegment::empty().head();
+    }
+
+    /// `head()` reads through `head_option()` — which had no callers at all before H2e — so the two
+    /// agree by construction, and the empty case is the `None` arm rather than a panic.
+    #[test]
+    fn head_option_and_head_agree() {
+        assert_eq!(KeySegment::empty().head_option(), None);
+        let two = KeySegment::try_from(vec![7u8, 8]).expect("2 bytes is at most 127");
+        assert_eq!(two.head_option(), Some(7));
+        assert_eq!(
+            two.head(),
+            7,
+            "and `head()` is the checked read of the same byte"
+        );
     }
 
     #[test]
