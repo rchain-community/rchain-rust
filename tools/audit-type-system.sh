@@ -7,11 +7,11 @@
 #
 # Hard violations (exit 1):
 #   panic   — `.unwrap()`, `.expect(`, `panic!`, `unreachable!`, `todo!`, `unimplemented!` in
-#             production code. Whitelisted: `sdk/src/primitive.rs` (the Scala `getUnsafe` escape
-#             hatch) and `regex/src/regex_pattern.rs` (the Scala `NotImplementedError("TODO")` stubs).
-#             The rholang parser's `expect(Tok::…)` method is
-#             excluded (a method, not `Result::expect`; the receiver may be `self` or the parser
-#             parameter `p` inside `with_depth`).
+#             production code. Every site is reviewed **one by one** in `WHITELIST_PANIC`, each entry
+#             keyed on the site's own text with the guard or invariant it rests on; an entry that
+#             matches no site, or whose evidence has gone, is a hard failure. The rholang parser's
+#             `expect(Tok::…)` method is excluded (a method, not `Result::expect`; the receiver may be
+#             `self` or the parser parameter `p` inside `with_depth`).
 #   unsafe  — `unsafe {` (must be zero: the crate graph is entirely safe Rust).
 #   silent  — silent defaulting of a fallible numeric conversion: `try_into().unwrap()`,
 #             `try_into().expect(`, `try_into().unwrap_or(`, `try_from(..).unwrap_or(`,
@@ -108,46 +108,62 @@ TEST_ONLY_FILE_RE='(_tests?|test_)\.rs$|/property_tests\.rs$'
 # Neither assertion is removed to satisfy this class: an invariant check that cannot fire is worth
 # keeping, and deleting it would trade a check for a quieter log.
 #
-# **What the file granularity costs, stated plainly.** This list is suffix-matched per *file*, so
-# these two entries suppress the panic class over `key_segment.rs` and `history_repository.rs`
-# *entirely*: a new `unwrap` anywhere in either file would be silent. Measured today, each file
-# carries exactly one flagged expression — the one quoted above — and nothing else, so the entry
-# hides nothing now; but a reader must not take an entry as evidence that the file was swept. The
-# escape class's `ESCAPE_CTOR_ALLOW` is the per-site shape this list should eventually take: keyed by
-# text with an evidence regex, so an entry states what it covers and fails when that thing moves.
+# **This list was file-suffix-matched until 2026-09-25, and that was a hole in the instrument.** A
+# file-level entry suppresses the class over the *whole* file: a new `unwrap` in
+# `rspace/src/history/key_segment.rs` or `history_repository.rs` was invisible to the gate, and
+# `history_repository.rs` is where C61's repair put a fresh `expect` (R2a) — the worst place for a
+# blind spot, since a file under active repair is the one whose next line most needs watching. Two
+# other defects came out of the same survey: `block-storage/src/dag/metadata_store.rs` was listed with
+# **no production panic site at all** (its `unwrap`s are inside `mod tests`), an entry that suppresses
+# nothing while reading as "this file was reviewed"; and the header above named
+# `regex/src/regex_pattern.rs`, which is not in the array and not in the tree (`regex/` does not
+# exist). The **comment** was corrected rather than the array, because an entry for a directory that
+# is not there is exactly what the staleness check below now fails on.
+#
+# The shape is the escape class's: `<file-suffix>|<site-regex>|<evidence-regex>|<reason>`, keyed on
+# **text, never line numbers** (a line-keyed entry fails *open* — insert a line above and it points at
+# its neighbour). The site key is the site's *whole* expression with a multi-line assertion joined
+# into one string, which is what makes it unique: `assert!(` occurs three times in `radix_tree.rs` and
+# `assert_eq!(channels.len(), patterns.len(), …)` three times across two files. For an `assert!` the
+# guard *is* the assertion, so its evidence names the condition checked; for an `expect` whose
+# unreachability rests on a proof written nearby (a comment, a type fact, a caller-side measurement),
+# the evidence names that proof — and deleting it stales the entry and fails the gate, which is the
+# property that makes the entry a judgement rather than a silencer.
+#
+# The panic class **scans one awk pass itself** now (`PANIC_SITES_AWK`) instead of `grep -n` over a
+# stripped stream: the joined site needs both, and the reported line is the file's own rather than the
+# stripped stream's (the two differ once a `#[cfg(test)]` block precedes a site).
 WHITELIST_PANIC=(
-  '/sdk/src/primitive.rs'
-  '/models/src/block_hash.rs'
-  '/models/src/block/state_hash.rs'
-  '/models/src/validator.rs'
-  '/crypto/src/hash/blake2b256_hash.rs'
-  '/crypto/src/hash/blake2b512_random.rs'
-  '/block-storage/src/dag/metadata_store.rs'
-  '/block-storage/src/dag/message_state.rs'
-  '/comm/src/transport/buffer/limited_buffer.rs'
-  '/rspace/src/history/radix_tree.rs'
-  '/rspace/src/history/export.rs'
-  '/rspace/src/history/instances/radix_history.rs'
-  '/rspace/src/rspace.rs'
-  '/rspace/src/replay_rspace.rs'
-  '/casper/src/block_random_seed.rs'
-  # R2a (C61): the two invariant assertions whose proofs are named above.
-  '/rspace/src/history/key_segment.rs'
-  '/rspace/src/history/history_repository.rs'
+  'sdk/src/primitive.rs;;\.unwrap_or_else\(\|\| panic!\("No key \{key:\?\} in a map\."\)\);;fn get_unsafe;;port of the Scala `getUnsafe` escape hatch: the panic *is* the API (the Scala throws), which is why the whole file is a declared escape'
+  'sdk/src/primitive.rs;;self\.unwrap\(\);;fn get_unsafe;;`TryOps::get_unsafe`, the same declared escape hatch on the Result side'
+  'crypto/src/hash/blake2b256_hash.rs;;assert_eq!\( bytes\.len\(\), LENGTH, "Expected \{\} but got \{\}", LENGTH, bytes\.len\(\) \);;;requiring it to be exactly 32 bytes;;`from_byte_array`: a length assert on a fixed-size-array construction, and the doc says so'
+  'crypto/src/hash/blake2b512_random.rs;;assert!\( children\.len\(\) >= 2, "Blake2b512Random should have at least 2 inputs to merge, received \{\}\.", children\.len\(\) \);;;Merge two or more states;;`merge`: the state merge is defined for two or more inputs; the doc states it and the assert is the boundary'
+  'models/src/validator.rs;;assert_eq!\(bytes\.len\(\), LENGTH, "expected \{LENGTH\} bytes"\);;;pub fn from_slice\(bytes;;`Validator::from_slice` asserts the 32-byte length; untrusted bytes use the checked `TryFrom<&[u8]>` (validate-on-ingress, AUDIT R12)'
+  'models/src/block_hash.rs;;assert_eq!\(bytes\.len\(\), LENGTH, "expected \{LENGTH\} bytes"\);;;panics if not exactly;;`BlockHash::from_slice`: an internal length assert, with the doc naming the panic'
+  'models/src/block/state_hash.rs;;assert_eq!\(bytes\.len\(\), LENGTH, "expected \{LENGTH\} bytes"\);;;pub fn from_slice\(bytes;;`StateHash::from_slice`: the same internal length assert as `BlockHash`/`Validator`'
+  'block-storage/src/dag/message_state.rs;;debug_assert!\( self\.latest_msgs \.values\(\) \.all\(\|m\| self\.msg_map\.contains_key\(&m\.id\)\), "latest_msgs must be a subset of msg_map" \);;;latest_msgs must be a subset of msg_map;;a development-time self-consistency check between two fields of one struct, maintained together by `insert_msg_mut`; the invariant is the message'
+  'comm/src/transport/buffer/limited_buffer.rs;;assert!\( buffer_size > 0, "bufferSize must be a strictly positive number" \);;;bufferSize must be a strictly positive number;;a buffer of size 0 cannot exist; the Scala `require` this ports is in the message'
+  'rspace/src/replay_rspace.rs;;assert!\(!channels\.is_empty\(\), "channels can'\''t be empty"\);;;channels can'\''t be empty;;a consume with no channels is unconstructible at every call site; the assert is the boundary, ported from the Scala `require`'
+  'rspace/src/replay_rspace.rs;;assert_eq!\( channels\.len\(\), patterns\.len\(\), "channels\.length must equal patterns\.length" \);;;channels.length must equal patterns.length;;channels and patterns are zipped, so their lengths must agree; the assert states the pairing invariant'
+  'rspace/src/rspace.rs;;assert!\(!channels\.is_empty\(\), "channels can'\''t be empty"\);;;channels can'\''t be empty;;the same consume boundary as `replay_rspace.rs`'\''s `consume_result`'
+  'rspace/src/rspace.rs;;assert_eq!\( channels\.len\(\), patterns\.len\(\), "channels\.length must equal patterns\.length" \);;;channels.length must equal patterns.length;;the channels/patterns pairing at `consume` **and** at `install` (the same text occurs twice in this file): they are zipped, so their lengths must agree'
+  'rspace/src/history/key_segment.rs;;KeySegment::try_from\(value\)\.expect\("a slice of a valid segment is at most 127 bytes"\);;provably a .slice of a valid segment;;`from_slice_of_valid`: private, and its name is its precondition — the argument is only ever a slice of a valid segment, so `len <= 127` holds by monotonicity and the `Err` arm is unreachable (C61'\''s fix; the proof is the doc above)'
+  'rspace/src/history/export.rs;;assert!\( ptr_prefix_rest\.is_empty\(\), "Export error: node with prefix \{expected_prefix\} not found\." \);;;ptr_prefix_rest\.is_empty\(\);;`export`: a node whose prefix is not a prefix of the searched one is a corrupt tree, and the diagnostic is rendered fallibly just above so the panic cannot fire while formatting'
+  'rspace/src/history/history_repository.rs;;KeySegment::try_from\(bytes\)\.expect\("1 \+ 32 = 33 bytes is at most 127 bytes"\);;well inside the 127-byte invariant;;`key_segment`: one prefix byte plus a 32-byte hash is 33 bytes by type (`as_bytes()` is `&[u8; 32]`), so the constructor cannot refuse — the comment above states the measurement'
+  'rspace/src/history/radix_tree.rs;;\.expect\("a 7-bit size field is at most 127"\);;;a 7-bit size field is at most 127;;C61'\''s decode site: the length prefix is 7 bits, so the slice re-wrapped here is at most 127 bytes; the comment above names the measurement'
+  'rspace/src/history/radix_tree.rs;;assert!\( no_assert, "Missing node in database\. ptr=\{\}", node_ptr\.to_hex\(\) \);;;Missing node in database;;a node referenced by a node ptr must be in the store: a corrupt tree, not a reachable statespace condition'
+  'rspace/src/history/radix_tree.rs;;assert!\( existing == node, "Collision in cache: record with key = \{\} has already existed\.", hash\.to_hex\(\) \);;;Collision in cache;;a hash collision between a cached record and a new one: a corrupt-cache check, not a data condition'
+  'rspace/src/history/radix_tree.rs;;assert!\(!prefix\.is_empty\(\), "LeafPrefix should be non empty\."\);;;LeafPrefix should be non empty;;`create_node_from_item` is defined on a non-empty prefix (the Scala `require`); the leaf is stored under its head byte, so an empty prefix has no place to go'
+  'rspace/src/history/radix_tree.rs;;assert!\(!prefix\.is_empty\(\), "NodePtrPrefix should be non empty\."\);;;NodePtrPrefix should be non empty;;the NodePtr arm of the same constructor, same invariant'
+  'rspace/src/history/radix_tree.rs;;\.expect\("a single byte is at most 127 bytes"\);;;a single byte is at most 127 bytes;;a re-wrap of a one-byte segment: 1 <= 127 arithmetically, stated in the message'
+  'rspace/src/history/radix_tree.rs;;assert_eq!\( leaf_prefix\.len\(\), ins_prefix\.len\(\), "The length of all prefixes in the subtree must be the same\." \);;;The length of all prefixes in the subtree must be the same;;the subtree prefix invariant of the radix tree, stated in the message'
+  'rspace/src/history/radix_tree.rs;;assert!\( ptr_prefix\.len\(\) < ins_prefix\.len\(\), "Radix key should be longer than NodePtr key\." \);;;Radix key should be longer than NodePtr key;;an insert key must be strictly longer than a node ptr key — the tree'\''s structural invariant, stated in the message'
+  'rspace/src/history/instances/radix_history.rs;;assert!\( has_no_duplicates\(actions\), "Cannot process duplicate actions on one key\." \);;;Cannot process duplicate actions on one key;;one action per key per commit; duplicates are rejected upstream, and the assert is the boundary'
+  'casper/src/block_random_seed.rs;;debug_assert!\( shard_id\.is_ascii\(\), "Shard name should contain only ASCII characters" \);;;Shard name should contain only ASCII characters;;`ShardId` is ASCII by invariant (the refinement), so the debug assert restates a fact the type carries'
+  'casper/src/block_random_seed.rs;;\.expect\("block random seed components always fit a 1-byte length prefix"\);;;the length prefix cannot overflow;;`random_generator`: `var_size`'\''s inputs are far below 256 bytes — the comment above states the measurement the `expect` documents'
 )
 
 hard_failures=0
-
-is_whitelisted() {
-  # $1 = file path; true if it matches any panic whitelist suffix.
-  local f="$1" w
-  for w in "${WHITELIST_PANIC[@]}"; do
-    case "$f" in
-      *"$w") return 0 ;;
-    esac
-  done
-  return 1
-}
 
 note() {
   local kind="$1" file="$2" line="$3" text="$4"
@@ -157,17 +173,166 @@ note() {
   esac
 }
 
+# --- the panic class: one awk pass, then the per-site allowlist -------------------------------
+#
+# The awk emits each site's *whole* expression — a multi-line assertion joined into one string — with
+# the file's own line number, which is what lets an entry key on it (`assert!(` alone occurs three
+# times in `radix_tree.rs`). Doing test-stripping, matching and joining in one pass also keeps the
+# reported line the file's own; the older `grep -n` over a stripped stream renumbered once a
+# `#[cfg(test)]` block preceded a site.
+PANIC_SITES_AWK='
+function braces(s,   o, c, i, ch) { o = 0; c = 0; for (i = 1; i <= length(s); i++) { ch = substr(s, i, 1); if (ch == "{") o++; else if (ch == "}") c++ } return o - c }
+function balance(s,   o, c, i, ch) { o = 0; c = 0; for (i = 1; i <= length(s); i++) { ch = substr(s, i, 1); if (ch == "(" || ch == "[") o++; else if (ch == ")" || ch == "]") c++ } return o - c }
+function norm(s) { gsub(/[[:space:]]+/, " ", s); sub(/^ /, "", s); sub(/ $/, "", s); return s }
+BEGIN { skip = 0; depth = 0 }
+{
+  if (skip == 0) {
+    if ($0 ~ /^[[:space:]]*#\[cfg\(test\)\]/) { skip = 1; depth = 0; next }
+    if ($0 ~ /^[[:space:]]*#\[(tokio::)?test\]/) { skip = 1; depth = braces($0); if (depth <= 0) skip = 0; next }
+  } else {
+    depth += braces($0)
+    if (depth <= 0) skip = 0
+    next
+  }
+  if ($0 !~ RE) next
+  if ($0 ~ /self\.expect\(|\.expect\(Tok::/) next
+  start = FNR
+  text = norm($0)
+  bal = balance($0)
+  while (bal > 0) { if ((getline nxt) <= 0) break; text = text " " norm(nxt); bal += balance(nxt) }
+  print start "\t" text
+}
+'
+
+# How far the evidence may sit from the site: a doc comment, a signature or a guard *above* it, and
+# the assertion's own argument list *below* it (a joined site's text is on the site's line for the
+# first fragment only).
+PANIC_EVIDENCE_ABOVE=25
+PANIC_EVIDENCE_BELOW=8
+
+PANIC_CLAIMS=()
+PANIC_EVIDENCE_OK=()
+
+scan_panic() {
+  local pattern="$1" c dir f line text sites=0 i n=${#WHITELIST_PANIC[@]}
+  PANIC_CLAIMS=(); PANIC_EVIDENCE_OK=()
+  for ((i = 0; i < n; i++)); do PANIC_CLAIMS[i]=0; PANIC_EVIDENCE_OK[i]=0; done
+  for c in "${CRATES[@]}"; do
+    dir="$ROOT/$c/src"
+    [ -d "$dir" ] || continue
+    while IFS= read -r f; do
+      while IFS=$'\t' read -r line text; do
+        [ -n "$line" ] || continue
+        sites=$((sites + 1))
+        panic_site "$f" "$line" "$text"
+      done < <(awk -v RE="$pattern" "$PANIC_SITES_AWK" "$f")
+    done < <(find "$dir" -name '*.rs' | grep -vE "$TEST_ONLY_FILE_RE")
+  done
+  panic_guard "$sites"
+}
+
+# The fields are separated by `;;` and parsed **from both ends**: `file;;<site>;;<evidence>;;<reason>`.
+# Left-anchored parsing is wrong here twice over — a site is a Rust *statement*, so it can contain the
+# separator itself (`assert_eq!(bytes.len(), LENGTH, "expected {LENGTH} bytes");` ends in `;`, and the
+# site text `...");` followed by `;;` is three semicolons), and the sdk's escape hatch contains `|`
+# (`unwrap_or_else(\|\| panic!`), which is why `|` cannot be the separator either. So: the file is the
+# first field, the reason and then the evidence are taken from the right, and the site is what is
+# left. Measured 2026-09-25: both left-anchored spellings reported three sites unclaimed while their
+# entries were reported stale — the entries were never wrong, the parser was.
+
+parse_entry() {
+  # $1 = entry, $2..$5 = names to assign file, site, evidence, reason to.
+  #
+  # Right-anchored, and every field but the first is **cut by length, never by a pattern**: a
+  # `%pattern` removal treats the pattern as a glob, and an evidence regex like `TryFrom<&[u8]>`
+  # contains `[u8]` — a character class — so `"${rest%";;"$reason}"` matched a *shorter* suffix and
+  # left half the reason inside the site (measured 2026-09-25: four entries parsed into nonsense
+  # while their text was correct). The only patterns used here are `*;;`, which carry no user data.
+  local e="$1" rest reason front ev site
+  local f="${e%%;;*}"
+  rest="${e#*;;}"
+  reason="${rest##*;;}"
+  front="${rest:0:$(( ${#rest} - ${#reason} - 2 ))}"
+  ev="${front##*;;}"
+  site="${front:0:$(( ${#front} - ${#ev} - 2 ))}"
+  printf -v "$2" '%s' "$f"
+  printf -v "$3" '%s' "$site"
+  printf -v "$4" '%s' "$ev"
+  printf -v "$5" '%s' "$reason"
+}
+
+panic_site() {
+  # $1 = file, $2 = line, $3 = the site's whole (joined) text.
+  local f="$1" line="$2" text="$3"
+  local i entry wfile wsite wevid wreason rest mid claims=0 claim=-1
+  for ((i = 0; i < ${#WHITELIST_PANIC[@]}; i++)); do
+    entry="${WHITELIST_PANIC[i]}"
+    parse_entry "$entry" wfile wsite wevid wreason
+    case "$f" in *"$wfile") ;; *) continue ;; esac
+    [[ "$text" =~ $wsite ]] || continue
+    claims=$((claims + 1)); claim=$i
+  done
+  if (( claims == 0 )); then
+    note panic "$f" "$line" "$text"
+    return
+  fi
+  if (( claims > 1 )); then
+    note panic "$f" "$line" "$text — claimed by $claims allowlist entries; a site must be named by one"
+    return
+  fi
+  # The loop above ends on the last entry, not the claiming one: re-read the winner's fields.
+  parse_entry "${WHITELIST_PANIC[claim]}" wfile wsite wevid wreason
+  # The evidence must be *at the site*: the guard the entry names, not a guard that still exists
+  # somewhere else in the file.
+  local from=$(( line > PANIC_EVIDENCE_ABOVE ? line - PANIC_EVIDENCE_ABOVE : 1 ))
+  local win
+  win="$(sed -n "${from},$((line + PANIC_EVIDENCE_BELOW))p" "$f")"
+  if [[ "$win" =~ $wevid ]]; then
+    PANIC_CLAIMS[claim]=$(( ${PANIC_CLAIMS[claim]:-0} + 1 ))
+    PANIC_EVIDENCE_OK[claim]=1
+    printf '  (allowed) %s:%s%s — %s\n' "${f#"$ROOT/"}" "$line" \
+      "$( (( ${PANIC_CLAIMS[claim]} > 1 )) && printf ' (+%s more site(s) of the same text)' "$(( ${PANIC_CLAIMS[claim]} - 1 ))" )" \
+      "$(wreason_of "$claim")"
+  else
+    note panic "$f" "$line" "$text — allowlist evidence ($wevid) is not at the site"
+  fi
+}
+
+wreason_of() {
+  local e="${WHITELIST_PANIC[$1]}"
+  printf '%s' "${e##*;;}"
+}
+
+panic_guard() {
+  # The clause that keeps this table honest about itself: every entry must name a site the scan
+  # found, and the scan must have found something. A whitelist that has stopped matching suppresses
+  # nothing while reading as a review, and a scan that found nothing is not evidence either way.
+  local sites="$1" i entry allowed=0 named=0
+  for ((i = 0; i < ${#WHITELIST_PANIC[@]}; i++)); do
+    if (( ${PANIC_CLAIMS[i]:-0} > 0 )); then
+      allowed=$((allowed + 1)); named=$((named + ${PANIC_CLAIMS[i]}))
+    else
+      local ef es ee er
+      parse_entry "${WHITELIST_PANIC[i]}" ef es ee er
+      note panic "$ROOT/tools/audit-type-system.sh" "-" \
+        "allowlist entry claims no site (stale): $ef — $(printf '%s' "$es" | cut -c1-70)"
+    fi
+  done
+  printf '  (reviewed) %s panic-class site(s) in production code; %s allowlisted by %s entr(y|ies)\n' "$sites" "$named" "$allowed"
+  if (( sites == 0 )); then
+    note panic "$ROOT/tools/audit-type-system.sh" "-" \
+      "the panic class found no site at all — an allowlist that suppresses nothing is not evidence, and neither is a scan that found nothing"
+  fi
+}
+
 scan() {
-  # $1 = kind; $2 = grep -E pattern; $3 = "panic" to apply the panic whitelist, else "".
-  local kind="$1" pattern="$2" whitelist="$3"
+  # $1 = kind; $2 = grep -E pattern.
+  local kind="$1" pattern="$2"
   local c f line text
   for c in "${CRATES[@]}"; do
     local dir="$ROOT/$c/src"
     [ -d "$dir" ] || continue
     while IFS= read -r f; do
-      if [ "$whitelist" = "panic" ] && is_whitelisted "$f"; then
-        continue
-      fi
       while IFS=: read -r line text; do
         [ -n "$line" ] || continue
         note "$kind" "$f" "$line" "$text"
@@ -416,7 +581,12 @@ END {
 # in `models/src/types.rs` moved while the design was being measured), and a line-keyed entry fails
 # *open* — insert a line above it and it silently points at its neighbour. The four fields are
 #   <file-suffix>|<construction-regex>|<evidence-regex>|<reason>
-# and an entry matching no site, two sites, or whose evidence has gone is a hard failure.
+# and an entry matching no site, or whose evidence has gone, is a hard failure — as is a site named
+# by two entries. An entry *may* name several sites of the same text (the key is a text, and
+# `assert_eq!(…, …)` is written twice in one file); "one entry, one site" there would be a rule about
+# line numbers dressed up as a rule about text. Note the field separator is `|` and a *construction*
+# pattern must therefore not contain one: today none does (measured), but that is a latent trap this
+# class shares with the panic list's history — see the panic entries' note on separators.
 ESCAPE_CTOR_ALLOW=(
   # --- shared/src/refined.rs -------------------------------------------------------------------
   'shared/src/refined.rs|NonNegI64\(1\)|total: .1. is non-negative|the literal 1 is in the domain; the doc states the totality argument'
@@ -534,12 +704,15 @@ run_class() {
     # non-word character, and `_` *is* a word character, so `\bassert` never matched `debug_assert!` —
     # the four production `debug_assert!`s were invisible to the class that exists for them until
     # 2026-09-24 (see the header). The preceding-character class keeps `xassert!` out.
-    panic)   scan panic '\.unwrap\(\)|\.expect\(|panic!|unreachable!|todo!|unimplemented!|(^|[^[:alnum:]_])(debug_)?assert(_eq|_ne)?!\(|unwrap_or_else\(\s*\|\|\s*panic!' panic ;;
-    unsafe)  scan unsafe 'unsafe[[:space:]]*\{' '' ;;
-    silent)  scan silent 'try_into\(\)\.(unwrap|expect)\(|try_(into\(\)|from\(.*\))\.unwrap_or(\(0\)|_default\(\))|\.parse(::<[^>]+>)?\(\)\.unwrap_or(\(0\)|_default\(\))' '' ;;
-    cast)    scan cast '\bas (i8|i16|i32|i64|u8|u16|u32|u64|usize|isize|f32|f64)\b' '' ;;
-    lax)     scan lax 'from_str_radix\([^)]*\)\.(unwrap_or|unwrap|expect)\(|unsafe_decode\(' '' ;;
-    get)     scan get '\.get\([^)]*\)\.(unwrap|expect)\(|\.(next|last|first|pop)\(\)\.(unwrap|expect)\(|\b[a-zA-Z_]+\[[0-9]+\]' '' ;;
+    # `[[:space:]]` and not `\s`: the pattern is a *dynamic* regex to awk, and `\s` is a GNU
+    # extension to it (grep accepts it, mawk does not) — a site matched by grep and missed by awk
+    # would be a check that went quiet on one implementation.
+    panic)   scan_panic '\.unwrap\(\)|\.expect\(|panic!|unreachable!|todo!|unimplemented!|(^|[^[:alnum:]_])(debug_)?assert(_eq|_ne)?!\(|unwrap_or_else\([[:space:]]*\|\|[[:space:]]*panic!' ;;
+    unsafe)  scan unsafe 'unsafe[[:space:]]*\{' ;;
+    silent)  scan silent 'try_into\(\)\.(unwrap|expect)\(|try_(into\(\)|from\(.*\))\.unwrap_or(\(0\)|_default\(\))|\.parse(::<[^>]+>)?\(\)\.unwrap_or(\(0\)|_default\(\))' ;;
+    cast)    scan cast '\bas (i8|i16|i32|i64|u8|u16|u32|u64|usize|isize|f32|f64)\b' ;;
+    lax)     scan lax 'from_str_radix\([^)]*\)\.(unwrap_or|unwrap|expect)\(|unsafe_decode\(' ;;
+    get)     scan get '\.get\([^)]*\)\.(unwrap|expect)\(|\.(next|last|first|pop)\(\)\.(unwrap|expect)\(|\b[a-zA-Z_]+\[[0-9]+\]' ;;
     escape)  scan_escapes ;;
     *)
       echo "unknown class: $cls (expected panic|unsafe|silent|escape|cast|lax|get)" >&2
