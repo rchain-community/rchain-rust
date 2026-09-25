@@ -723,4 +723,33 @@ theorem the_fold_can_publish_below_the_previous_fringe :
     ¬ (∀ m ∈ nextLayer fold4 (minMsgs fold4 [⟨101, 6, 0, 6, [99], []⟩] [100]),
         (⟨100, 5, 0, 5, [], []⟩ : Message).height ≤ m.height) := by decide
 
+/-- **A second DAG, for a sharper question: is the *sequence* rule the lift's hypothesis?** Four messages —
+    `q` (100, sender 0, seq 5) as the previous fringe's message, `c` (101, sender 0, seq 2) a *lower*
+    sender-0 block in another root, `p` (102, sender 1) justifying `c`, and `z` (103, sender 0, seq 6)
+    justifying `q`. Every same-sender parent edge has consecutive sequence numbers. -/
+def fold5 : Dag :=
+  [ ⟨100, 5, 0, 5, [], []⟩,
+    ⟨101, 2, 0, 2, [], []⟩,
+    ⟨102, 3, 1, 0, [101], []⟩,
+    ⟨103, 6, 0, 6, [100], []⟩ ]
+
+/-- `fold5` satisfies **the sequence rule** — each same-sender parent is exactly one `seqNum` below its
+    child, which is the port's `sequence_number`. -/
+theorem fold5_satisfies_the_sequence_rule :
+    ∀ m ∈ fold5, ∀ x ∈ sameSenderParents fold5 m.sender m [], x.seqNum + 1 = m.seqNum := by decide
+
+/-- …and it is fork-free, like `fold4`. -/
+theorem fold5_is_fork_free :
+    ∀ m ∈ fold5, ∀ a ∈ sameSenderParents fold5 m.sender m [],
+      ∀ b ∈ sameSenderParents fold5 m.sender m [], a = b := by decide
+
+/-- **…and it still publishes below the previous fringe**: the fold's *last* insertion for sender 0 is the
+    candidate `c` (height 2) rather than the min message `z` (height 6), because `cands` is folded
+    right-to-left and `c` comes from the earlier justification. So the sequence rule alone is not the
+    lift's hypothesis either. -/
+theorem the_sequence_rule_is_not_enough :
+    ¬ (∀ m ∈ nextLayer fold5
+          (minMsgs fold5 [⟨102, 3, 1, 0, [101], []⟩, ⟨103, 6, 0, 6, [100], []⟩] [100]),
+        (⟨100, 5, 0, 5, [], []⟩ : Message).height ≤ m.height) := by decide
+
 end Rchain

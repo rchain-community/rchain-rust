@@ -915,14 +915,16 @@ def laws : List Law := [
       `Rchain.nofork_ancestors_go_through_the_parent, `Rchain.selfParents_above_a_finalized_ancestor,
       `Rchain.fork4, `Rchain.the_comparison_is_false_without_fork_freedom, `Rchain.fold4,
       `Rchain.minMsgs_fold4, `Rchain.fold4_is_fork_free,
-      `Rchain.the_fold_can_publish_below_the_previous_fringe],
+      `Rchain.fold5, `Rchain.fold5_is_fork_free, `Rchain.fold5_satisfies_the_sequence_rule,
+      `Rchain.the_fold_can_publish_below_the_previous_fringe, `Rchain.the_sequence_rule_is_not_enough],
     axioms := [],
     rust := ["block-storage/src/dag/message_state.rs", "block-storage/src/dag/finalizer.rs"],
     witness := [`Rchain.fringe_monotone_is_false, `Rchain.seen_monotone_is_false,
       `Rchain.cross_sender_height_monotone_is_false, `Rchain.a_chain_of_three_picks_the_oldest,
       `Rchain.selfParents_above_a_finalized_ancestor,
       `Rchain.the_comparison_is_false_without_fork_freedom, `Rchain.fold4_is_fork_free,
-      `Rchain.the_fold_can_publish_below_the_previous_fringe],
+      `Rchain.the_fold_can_publish_below_the_previous_fringe, `Rchain.fold5_is_fork_free,
+      `Rchain.fold5_satisfies_the_sequence_rule, `Rchain.the_sequence_rule_is_not_enough],
     falsifiable := some "`fringe_monotone_is_false` exhibits two overlapping fringes (one at 5 and 1, one \
       at 3) where both arms of the disjunction fail — so the axiom was false as written; \
       `seen_monotone_is_false` exhibits two unrelated messages where `b` sees `a` and `a` sees `2` but \
@@ -1020,11 +1022,23 @@ def laws : List Law := [
       from the seed along same-sender parent edges, so `Descends` makes it strictly lower), and the \
       hypothesis is **falsified where it is dropped** — `the_comparison_is_false_without_fork_freedom` \
       exhibits a four-message fork where the walk steps *around* the finalized ancestor and returns a \
-      height-1 message beneath a height-5 one. **What is still owed is the lift through the fold**: \
-      `nextLayer` then adds the min messages' *candidate parents* whose sender is already a key \
-      (`:129-135`), and whether one of those can lower a sender's published height is not answered by the \
-      sentinel theorem — so the row's claim about the *published* fringe is one step further out than the \
-      sentinel it now rests on, which is the whole of what is left" },
+      height-1 message beneath a height-5 one. **What is still owed is the lift through the fold, and \
+      *which* ingress rule it needs is a question two refutations narrowed without settling** — both \
+      machine-checked rather than argued. `nextLayer` adds the min messages' *candidate parents* whose \
+      sender is already a key (`:129-135`), and **neither fork-freedom nor the sequence rule excludes a \
+      published message below the previous fringe**: `fold4` (two sender-0 blocks, `99` at height 2 and \
+      `100` at height 5, neither with a parent, and `101` justifying `99`) is **fork-free** and still \
+      publishes `99`, and `fold5` answers the next guess by adding `z` (seq 6) justifying `q` (seq 5) — so \
+      every same-sender edge has consecutive `seqNum`s and the sequence rule holds — and it *still* \
+      publishes the lower `c`, because `cands` is folded right-to-left and a candidate from an earlier \
+      justification wins the sender's slot over the min message \
+      (`the_fold_can_publish_below_the_previous_fringe`, `the_sequence_rule_is_not_enough`, with \
+      `fold4_is_fork_free`, `fold5_is_fork_free` and `fold5_satisfies_the_sequence_rule` proving each \
+      instance *has* the hypothesis it tests). **So the row names no hypothesis for the lift, because two \
+      candidates are refuted and the third is not proved.** What both instances point at is the \
+      **regression** rule — a block's justification of a sender must be that sender's *latest*, which is \
+      what makes a min message's parents its chain predecessors — and whether the lift holds under it is \
+      the open question, stated as a question" },
   { number := 16, clause := "a", layer := "Casper",
     rustWitness := ["casper/src/validate.rs:block_number_must_be_parent_max_plus_one"],
     statement := "Block number = max(parent) + 1 — as the port's check, which **rejects** a block whose \
