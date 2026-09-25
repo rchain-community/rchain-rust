@@ -91,6 +91,28 @@ works even on a chain that has produced no new blocks since genesis. Note that s
 
 ## 4. Admitting a validator to a running chain
 
+**The node joins and syncs first - step 3, not this one.** A bond is only a change to the chain's state: the
+deploy needs the newcomer's *public* key and nothing else, so a key whose node is not running can be trusted
+and bonded successfully. But the validator set is consensus weight from the moment it lands, and two things
+then work against you:
+
+* **The node decides whether it may propose from the newest block in its *own* DAG.** One that has not
+  restored the chain has a newest block that predates its bond, and is told `Proposal failed: ReadOnlyMode`
+  (`ProposeStatus::NotBonded`) however bonded the chain says it is. Sync, then the bond is in its view.
+* **A bonded validator that is not speaking is silent stake.** It counts in the >2/3 denominator finality
+  needs, and the finalised fringe cannot advance without its latest message. Bonding a node that is down or
+  still syncing therefore dilutes the quorum and can stall finality for everyone - which is what happened on
+  this testnet: the two newcomers activated at a block boundary while their nodes were stopped, and the
+  fringe stopped until they were up and had produced a block.
+
+An admission tool that applies this order - preflight the newcomer's node, trust, bond, wait for the boundary,
+then require the newcomer's node to propose - is
+[`scripts/qos-cli/admit.mjs`](https://github.com/rchain-community/quantum-os/blob/main/scripts/qos-cli/admit.mjs).
+
+So: start it, wait for its `LFS state is successfully restored`, confirm it is following the chain, and only
+then `trust` and `bond` - and let it stay up, because an active validator that is not proposing is the case
+the network cannot make progress without.
+
 The lifecycle is native (`rholang/src/native_state.rs`): **observer** (any unbonded key) → **trusted**
 (admitted to the validator stakeholder group) → **bonded** (a stake within `[minimum, maximum]`, deducted
 from the caller's own vault) → **active** (the consensus set) → **withdrawing** → **removed**.

@@ -68,11 +68,21 @@ pub(crate) async fn is_active_validator(
     sender: &Validator,
 ) -> Result<bool, String> {
     let dag_repr = dag.get_representation().await;
-    let fringe = dag_repr.dag_message_state.latest_fringe();
-    let bonds_map = if let Some(m) = fringe.iter().next() {
-        m.bonds_map.clone()
-    } else if let Some((height, hashes)) = dag_repr.height_map.iter().next() {
-        match hashes.iter().next() {
+    // The *newest* block's view of the active set - not the fringe's bond map, and not the lowest height's,
+    // which is what this read before.
+    //
+    // Both of those are historical. The fringe's is the set as of the last finalised block, and the lowest
+    // height's is the genesis's. A validator that bonds after either was fixed is in the chain's active set
+    // but absent from them, and this check then refused to let it propose - forever, because nothing
+    // refreshes those maps except a fringe that cannot advance without the very validators it expects to
+    // speak. That is the whole of the "only the genesis validator ever proposes" symptom: the pool grows,
+    // the active set grows, and everyone who joined afterwards is stuck read-only (#70).
+    //
+    // A block-carried map is safe *here* where it is not safe in the finaliser: this decides only whether
+    // this node proposes, which changes nobody's state. The finaliser, which decides what finalises, reads
+    // the bond map from the state.
+    let bonds_map = match dag_repr.height_map.iter().next_back() {
+        Some((height, hashes)) => match hashes.iter().next() {
             Some(h) => {
                 dag.lookup(h)
                     .await?
@@ -86,11 +96,14 @@ pub(crate) async fn is_active_validator(
                     .bonds_map
             }
             None => Default::default(),
-        }
-    } else {
-        Default::default()
+        },
+        None => Default::default(),
     };
-    Ok(bonds_map.contains_key(sender))
+    // A zero-stake entry is not a validator with a say; `select_active` never produces one.
+    Ok(bonds_map
+        .get(sender)
+        .map(|stake| i64::from(*stake) > 0)
+        .unwrap_or(false))
 }
 
 /// The block proposer (port of `Proposer`).
@@ -875,6 +888,122 @@ mod slashable_offenders_tests {
                 &[bonded]
             ),
             BTreeSet::from([bonded])
+        );
+    }
+}
+
+#[cfg(test)]
+mod active_validator_tests {
+    use super::*;
+    use rchain_block_storage::dag::dag_storage::BlockDagStorage;
+    use rchain_block_storage::dag::representation::DagRepresentation;
+    use rchain_models::block_metadata::BlockMetadata;
+    use rchain_models::validator::Validator;
+    use rchain_shared::refined::{BlockHeight, NonNegI64, SeqNum};
+    use std::collections::{BTreeMap, BTreeSet};
+
+    /// A DAG with two blocks: the genesis at height 1, whose `bonds_map` is the validator set the chain
+    /// started with, and a newer block at height 9, whose map includes a validator that has bonded since.
+    /// An empty fringe, which is the state a chain is in while its fringe is stalled.
+    struct TwoHeightDag {
+        genesis: BlockHash,
+        newest: BlockHash,
+        newcomer: Validator,
+    }
+
+    fn meta(block_hash: BlockHash, bonds: BTreeMap<Validator, NonNegI64>) -> BlockMetadata {
+        BlockMetadata {
+            block_hash,
+            block_num: BlockHeight::try_from(1).unwrap(),
+            sender: Validator::new([9u8; 65]),
+            seq_num: SeqNum::zero(),
+            justifications: BTreeSet::new(),
+            bonds_map: bonds,
+            validated: true,
+            validation_failed: false,
+            slashable: false,
+            fringe: BTreeSet::new(),
+            fringe_state_hash: rchain_models::block::state_hash::StateHash::new([0u8; 32]),
+            member_of_fringe: None,
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl BlockDagStorage for TwoHeightDag {
+        async fn get_representation(&self) -> Arc<DagRepresentation> {
+            Arc::new(DagRepresentation {
+                dag_set: Arc::new(BTreeSet::new()),
+                child_map: Arc::new(BTreeMap::new()),
+                height_map: Arc::new(BTreeMap::from([
+                    (
+                        BlockHeight::try_from(1).unwrap(),
+                        BTreeSet::from([self.genesis]),
+                    ),
+                    (
+                        BlockHeight::try_from(9).unwrap(),
+                        BTreeSet::from([self.newest]),
+                    ),
+                ])),
+                dag_message_state: rchain_block_storage::dag::message_state::DagMessageState::empty(
+                ),
+                fringe_states: BTreeMap::new(),
+            })
+        }
+
+        async fn lookup(&self, block_hash: &BlockHash) -> Result<Option<BlockMetadata>, String> {
+            if *block_hash == self.genesis {
+                // The set the chain started with: the newcomer is not in it.
+                Ok(Some(meta(self.genesis, BTreeMap::new())))
+            } else if *block_hash == self.newest {
+                Ok(Some(meta(
+                    self.newest,
+                    BTreeMap::from([(self.newcomer, NonNegI64::try_from(100).unwrap())]),
+                )))
+            } else {
+                Ok(None)
+            }
+        }
+
+        async fn insert(&self, _m: BlockMetadata, _b: BlockMessage) -> Result<(), String> {
+            todo!("not on the is_active_validator path")
+        }
+        async fn lookup_by_deploy_id(&self, _d: &DeployId) -> Result<Option<BlockHash>, String> {
+            todo!("not on the is_active_validator path")
+        }
+        async fn add_deploy(&self, _d: SignedDeployData) -> Result<(), String> {
+            todo!("not on the is_active_validator path")
+        }
+        async fn pooled_deploys(&self) -> Result<BTreeMap<DeployId, SignedDeployData>, String> {
+            todo!("not on the is_active_validator path")
+        }
+        async fn contains_deploy_in_pool(&self, _d: &DeployId) -> Result<bool, String> {
+            todo!("not on the is_active_validator path")
+        }
+    }
+
+    /// **A validator that bonded after the chain started is active, and may propose.**
+    ///
+    /// This is the whole of the "only the first validator ever proposes" symptom (#70). The check used to
+    /// read the bond map of the *lowest* height in the DAG - the genesis's - so a validator admitted later
+    /// was never active here, no matter what the chain's own active set said. Since the fringe cannot
+    /// advance without the validators it expects to speak, the node stayed read-only forever, and the
+    /// network could not actually grow its validator set even though every admission step succeeded.
+    #[tokio::test]
+    async fn a_validator_bonded_after_the_genesis_is_active() {
+        let newcomer = Validator::new([1u8; 65]);
+        let dag: Arc<dyn BlockDagStorage> = Arc::new(TwoHeightDag {
+            genesis: BlockHash::new([0u8; 32]),
+            newest: BlockHash::new([7u8; 32]),
+            newcomer,
+        });
+        assert!(
+            is_active_validator(&dag, &newcomer).await.unwrap(),
+            "the newest block's view of the active set is what counts, not the genesis's"
+        );
+        let stranger = Validator::new([2u8; 65]);
+        assert!(
+            !is_active_validator(&dag, &stranger).await.unwrap(),
+            "and a validator in no block's set is still not active"
         );
     }
 }
