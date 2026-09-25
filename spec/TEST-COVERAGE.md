@@ -737,6 +737,7 @@ zero-test file.
 | `peer-bound` | needs a live peer or a real device |
 | `stub` | `unimplemented!()`/`todo!()` — a named feature boundary, not coverage debt |
 | `fixture` | a test double's trait methods, uncovered because the double is only used for some of them |
+| `legacy` | unreachable **by decision**, kept as the port's parity surface — not debt, and not a candidate for a test |
 | `defect` | unreachable because the production code is wrong or dead → an AUDIT row, then a test |
 
 ### Classified so far (2026-09-25 — the top of the ranking, read)
@@ -794,6 +795,8 @@ That in turn let `-A dead-code` come out of `CLIPPY_DEBT` in `.github/workflows/
 comment asks for exactly that ("Remove an allowance as soon as its last occurrence is fixed"), and the
 clippy command was re-run without it to confirm. The lesson generalises: a dead-code warning in a
 coverage build is a line that is *uncoverable*, and the honest fix is deletion rather than a test.
+
+| `casper/src/runtime_manager.rs` | 265 | `evaluate_system_source_with`, `consume_system_result_with`, and `eval_system_deploy_with`'s `op: None` branch (740–784, 795–818) | `legacy` | **unreachable by decision**: `casper/src/system_deploy.rs`'s own doc says the pre-charge/refund/close-block/slash deploys are native now and the rholang `source` path "is no longer constructed", and `spec/RUST-FIRST.md` registers that as the rust-first replacement ("carry a `NativeSystemDeployOp` rather than routing through `rho:registry:lookup` + `Pos.rhox`"). The three constructors (`pre_charge`/`refund`/`close_block`/`slash`) all set `op: Some(…)`. So these ~69 lines are the parity surface: a test would be a test of dead code, and the honest entry is a bucket, not a batch |
 
 **What this table is not.** It is not a deferred-gap list: the census sweep closed check 7's file-level
 census, and these are *regions inside tested files*, which is exactly what item 11 is about. It is also
