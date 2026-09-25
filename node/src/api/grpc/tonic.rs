@@ -850,8 +850,9 @@ impl DeployService for DeployGrpcServiceV1 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rchain_casper::api::block_report_api::BlockReportApi;
     use rchain_casper::runtime_manager::CapturedReply;
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex};
 
     use async_trait::async_trait;
     use rchain_casper::api::block_api::{ApiErr, BlockApi, Capabilities};
@@ -871,6 +872,10 @@ mod tests {
     #[derive(Default)]
     struct StubBlockApi {
         refuse: bool,
+        /// What each conversion forwarded, as text. The `DeployService` trait's methods exist to
+        /// *convert* a wire request into a domain one, so what can go wrong is a field that arrives
+        /// swapped or dropped — which the response alone cannot show.
+        calls: Mutex<Vec<String>>,
     }
     #[async_trait]
     impl BlockApi for StubBlockApi {
@@ -921,11 +926,25 @@ mod tests {
         async fn machine_verifiable_dag(&self, _: i32) -> ApiErr<String> {
             unimplemented!()
         }
-        async fn get_blocks(&self, _: i32) -> ApiErr<Vec<LightBlockInfo>> {
-            unimplemented!()
+        async fn get_blocks(&self, depth: i32) -> ApiErr<Vec<LightBlockInfo>> {
+            if self.refuse {
+                return Err("stub refusal: no blocks".to_string());
+            }
+            self.calls
+                .lock()
+                .unwrap()
+                .push(format!("get_blocks depth={depth}"));
+            Ok(vec![light_block()])
         }
-        async fn find_deploy(&self, _: &Vec<u8>) -> ApiErr<LightBlockInfo> {
-            unimplemented!()
+        async fn find_deploy(&self, id: &Vec<u8>) -> ApiErr<LightBlockInfo> {
+            if self.refuse {
+                return Err("stub refusal: no such deploy".to_string());
+            }
+            self.calls.lock().unwrap().push(format!(
+                "find_deploy id={}",
+                rchain_shared::base16::encode(id)
+            ));
+            Ok(light_block())
         }
         async fn get_block(&self, _: &str) -> ApiErr<BlockInfo> {
             unimplemented!()
@@ -943,20 +962,232 @@ mod tests {
         }
         async fn get_data_at_par(
             &self,
-            _: &Par,
-            _: &str,
-            _: bool,
+            par: &Par,
+            block_hash: &str,
+            use_pre_state_hash: bool,
         ) -> ApiErr<(Vec<Par>, LightBlockInfo)> {
-            unimplemented!()
+            if self.refuse {
+                return Err("stub refusal: no data at that name".to_string());
+            }
+            self.calls.lock().unwrap().push(format!(
+                "get_data_at_par block={block_hash} pre={use_pre_state_hash} par={par:?}"
+            ));
+            Ok((vec![par.clone()], light_block()))
         }
         async fn last_finalized_block(&self) -> ApiErr<BlockInfo> {
             unimplemented!()
         }
-        async fn is_finalized(&self, _: &str) -> ApiErr<bool> {
-            unimplemented!()
+        async fn is_finalized(&self, hash: &str) -> ApiErr<bool> {
+            if self.refuse {
+                return Err("stub refusal: cannot answer".to_string());
+            }
+            self.calls
+                .lock()
+                .unwrap()
+                .push(format!("is_finalized hash={hash}"));
+            Ok(hash.starts_with("ab"))
         }
         async fn get_latest_message(&self) -> ApiErr<BlockMetadata> {
             unimplemented!()
+        }
+    }
+
+    /// A `LightBlockInfo` with every field at a default — the shape the conversions under test read.
+    /// Copied from `deploy_grpc_service_v1.rs`'s module rather than shared: a `#[cfg(test)] pub`
+    /// helper across modules is a production seam dressed as a test seam, which this repo's plan
+    /// already decided against.
+    fn light_block() -> LightBlockInfo {
+        LightBlockInfo {
+            version: 1,
+            shard_id: "root".to_string(),
+            block_hash: String::new(),
+            block_number: 0,
+            sender: String::new(),
+            seq_num: 0,
+            pre_state_hash: String::new(),
+            post_state_hash: String::new(),
+            justifications: vec![],
+            bonds: vec![],
+            sig_algorithm: String::new(),
+            sig: String::new(),
+            block_size: String::new(),
+            deploy_count: 0,
+            rejected_deploys: vec![],
+            timestamp: 0,
+        }
+    }
+
+    /// A `BlockReportApi` over in-memory stores — required by `DeployGrpcServiceV1::new`, and the
+    /// same shape (and the same deliberate duplication) as the sibling module's.
+    fn report_api() -> Arc<BlockReportApi> {
+        use rchain_block_storage::block_store::BlockStore;
+        use rchain_block_storage::dag::codecs::{BlockHashCodec, BlockMessageCodec};
+        use rchain_casper::api::block_report_api::ReportStore;
+        use rchain_casper::reporting::noop;
+        use rchain_models::casper::protocol::report::BlockEventInfo;
+        use rchain_shared::store::InMemoryKeyValueStore;
+        use rchain_shared::typed_store::{Codec, KeyValueTypedStoreCodec, SharedStore};
+        use std::marker::PhantomData;
+
+        struct JsonCodec<T>(PhantomData<T>);
+        impl<T: serde::Serialize + serde::de::DeserializeOwned + Send + Sync> Codec<T> for JsonCodec<T> {
+            fn encode(&self, value: &T) -> Vec<u8> {
+                serde_json::to_vec(value).expect("json encode")
+            }
+            fn decode(&self, bytes: &[u8]) -> Result<T, String> {
+                serde_json::from_slice(bytes).map_err(|e| e.to_string())
+            }
+        }
+
+        let store: SharedStore = Arc::new(tokio::sync::Mutex::new(Box::new(
+            InMemoryKeyValueStore::default(),
+        )));
+        let block_store: BlockStore = Arc::new(KeyValueTypedStoreCodec::new(
+            store.clone(),
+            Arc::new(BlockHashCodec),
+            Arc::new(BlockMessageCodec),
+        ));
+        let report_store: ReportStore = Arc::new(KeyValueTypedStoreCodec::new(
+            store,
+            Arc::new(BlockHashCodec),
+            Arc::new(JsonCodec::<BlockEventInfo>(PhantomData)),
+        ));
+        Arc::new(BlockReportApi::new(
+            block_store,
+            Arc::new(noop()),
+            report_store,
+            None,
+        ))
+    }
+
+    fn deploy_service(
+        configure: impl FnOnce(&mut StubBlockApi),
+    ) -> (DeployGrpcServiceV1, Arc<StubBlockApi>) {
+        let mut stub = StubBlockApi::default();
+        configure(&mut stub);
+        let api = Arc::new(stub);
+        (
+            DeployGrpcServiceV1::new(api.clone(), report_api(), false),
+            api,
+        )
+    }
+
+    /// **The `DeployService` trait's conversions, and their two refusals.** Every method here is a
+    /// wire ↔ domain translation wrapped around an inner handler: the request's fields are converted
+    /// (a `par` from its proto, a hex id, a depth), the handler is called, and the outcome is wrapped
+    /// as a `Payload` or an `Error` message. Wire conversions are where a *transposition* hides — the
+    /// fields are all strings and integers at this layer — and the missing-`par` refusal is what a
+    /// client gets for a malformed query, which is why both are asserted rather than the happy path
+    /// alone.
+    #[tokio::test]
+    async fn the_deploy_service_converts_requests_and_reports_refusals() {
+        use rchain_models::proto::casper::{
+            DataAtNameByBlockQuery, FindDeployQuery, IsFinalizedQuery,
+        };
+
+        let (svc, api) = deploy_service(|_| {});
+
+        // `getDataAtName`: the par is converted and forwarded with the block hash and the flag.
+        let par = rchain_models::par_ops::from_expr(rchain_models::ast::Expr::GString(
+            "chan".to_string(),
+        ));
+        let resp = DeployService::get_data_at_name(
+            &svc,
+            Request::new(DataAtNameByBlockQuery {
+                par: Some(rchain_models::wire::par_to_proto(&par)),
+                block_hash: "abcd".to_string(),
+                use_pre_state_hash: true,
+            }),
+        )
+        .await
+        .expect("get_data_at_name answers rather than failing the RPC");
+        let message = resp.into_inner().message.expect("a message");
+        match message {
+            wire::rho_data_response::Message::Payload(p) => {
+                assert_eq!(p.par.len(), 1, "the data the stub held comes back");
+                assert!(p.block.is_some(), "and the block it was found in");
+            }
+            other => panic!("an answered query must be a Payload, got {other:?}"),
+        }
+        let calls = api.calls.lock().unwrap().clone();
+        assert_eq!(calls.len(), 1, "{calls:?}");
+        assert!(
+            calls[0].contains("block=abcd") && calls[0].contains("pre=true"),
+            "the block hash and the pre-state flag arrive unswapped: {calls:?}"
+        );
+        assert!(
+            calls[0].contains("chan"),
+            "and the par is the one the request carried: {calls:?}"
+        );
+
+        // A query with no par is refused **before** the handler: the request is remote input, and the
+        // message has to say what was missing.
+        let err = DeployService::get_data_at_name(
+            &svc,
+            Request::new(DataAtNameByBlockQuery {
+                par: None,
+                block_hash: String::new(),
+                use_pre_state_hash: false,
+            }),
+        )
+        .await
+        .expect_err("a query with no par is refused");
+        assert_eq!(err.code(), tonic::Code::InvalidArgument, "{err:?}");
+        assert!(err.message().contains("missing par"), "{err:?}");
+
+        // `findDeploy`: the id is hex-encoded on the way in, and the found block comes back.
+        let resp = DeployService::find_deploy(
+            &svc,
+            Request::new(FindDeployQuery {
+                deploy_id: vec![0xde, 0xad],
+            }),
+        )
+        .await
+        .expect("find_deploy");
+        assert!(resp.into_inner().message.is_some());
+        assert_eq!(
+            api.calls.lock().unwrap().last().map(String::as_str),
+            Some("find_deploy id=dead"),
+            "the id is forwarded as the bytes it was given"
+        );
+
+        // `isFinalized`: the verdict passes through, and so does the hash it was asked about.
+        let resp = DeployService::is_finalized(
+            &svc,
+            Request::new(IsFinalizedQuery {
+                hash: "ab12".to_string(),
+            }),
+        )
+        .await
+        .expect("is_finalized");
+        assert!(resp.into_inner().message.is_some());
+        assert!(
+            api.calls
+                .lock()
+                .unwrap()
+                .contains(&"is_finalized hash=ab12".to_string()),
+            "the hash reaches the handler"
+        );
+
+        // The refusal arm, on the same method: a refused inner call arrives as an `Error` message
+        // carrying the reason, never as an empty Payload.
+        let (refusing, _) = deploy_service(|s| s.refuse = true);
+        let resp = DeployService::get_data_at_name(
+            &refusing,
+            Request::new(DataAtNameByBlockQuery {
+                par: Some(rchain_models::wire::par_to_proto(&par)),
+                block_hash: "abcd".to_string(),
+                use_pre_state_hash: false,
+            }),
+        )
+        .await
+        .expect("a refused call is still answered");
+        match resp.into_inner().message.expect("a message") {
+            wire::rho_data_response::Message::Error(e) => assert!(
+                e.messages.join(" ").contains("stub refusal"),
+                "the reason reaches the client: {e:?}"
+            ),
+            other => panic!("a refusal must arrive as an Error message, got {other:?}"),
         }
     }
 
@@ -1006,7 +1237,10 @@ mod tests {
             "the inner read's answer is wrapped as a Result: {message:?}"
         );
 
-        let svc = ProposeGrpcServiceV1::new(Arc::new(StubBlockApi { refuse: true }));
+        let svc = ProposeGrpcServiceV1::new(Arc::new(StubBlockApi {
+            refuse: true,
+            ..Default::default()
+        }));
         let resp = ProposeService::propose_result(
             &svc,
             Request::new(rchain_models::proto::casper::ProposeResultQuery {}),
