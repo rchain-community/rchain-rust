@@ -909,17 +909,27 @@ def laws : List Law := [
       `Rchain.fringe_monotone_is_false, `Rchain.seenOf_contains_justifications, `Rchain.mem_seenOf_self,
       `Rchain.seen_subset_of_mem_seen, `Rchain.selfParents_skips_finalized,
       `Rchain.cross_sender_height_monotone_is_false, `Rchain.chain3,
-      `Rchain.the_walk_is_oldest_first, `Rchain.a_chain_of_three_picks_the_oldest],
+      `Rchain.the_walk_is_oldest_first, `Rchain.a_chain_of_three_picks_the_oldest,
+      `Rchain.ReachesF, `Rchain.NoFork, `Rchain.ReachesF.step, `Rchain.ReachesF.trans,
+      `Rchain.selfParents_reaches, `Rchain.selfParents_height_lt, `Rchain.nofork_of_unfiltered,
+      `Rchain.nofork_ancestors_go_through_the_parent, `Rchain.selfParents_above_a_finalized_ancestor,
+      `Rchain.fork4, `Rchain.the_comparison_is_false_without_fork_freedom],
     axioms := [],
     rust := ["block-storage/src/dag/message_state.rs", "block-storage/src/dag/finalizer.rs"],
     witness := [`Rchain.fringe_monotone_is_false, `Rchain.seen_monotone_is_false,
-      `Rchain.cross_sender_height_monotone_is_false, `Rchain.a_chain_of_three_picks_the_oldest],
+      `Rchain.cross_sender_height_monotone_is_false, `Rchain.a_chain_of_three_picks_the_oldest,
+      `Rchain.selfParents_above_a_finalized_ancestor,
+      `Rchain.the_comparison_is_false_without_fork_freedom],
     falsifiable := some "`fringe_monotone_is_false` exhibits two overlapping fringes (one at 5 and 1, one \
       at 3) where both arms of the disjunction fail — so the axiom was false as written; \
       `seen_monotone_is_false` exhibits two unrelated messages where `b` sees `a` and `a` sees `2` but \
       `b` does not. The constructive half is falsifiable too: `seenOf_contains_justifications` fails for \
       a `seenOf` that dropped the justifications' sets, which is the port's `new_seen` \
-      (`message_state.rs:54-59`)",
+      (`message_state.rs:54-59`). **The comparison's own hypothesis is falsified rather than assumed**: \
+      `the_comparison_is_false_without_fork_freedom` (`fork4`: `p` with a finalized parent at height 5 \
+      and a second same-sender branch that reaches height 1 without passing through it) makes the \
+      statement **false** of a DAG with a fork, so the theorem is about fork-free DAGs and `NoFork` is \
+      what the ingress refusal (H-1, AUDIT C82/C84) supplies",
     note := "**two more false axioms, both refuted in the tree.** The content is the *derivation*: a \
       message's seen set is **constructed** as the union of its justifications' seen sets plus its own id \
       (`message_state.rs:54-59`), which the model now has (`seenOf`, with both halves proved: \
@@ -993,18 +1003,25 @@ def laws : List Law := [
       `chain3`'s two theorems (`the_walk_is_oldest_first` and `a_chain_of_three_picks_the_oldest`, the \
       instance that fails under `getLast?` — verified by reverting it), and the antichain above is \
       unaffected: which of two same-sender messages the layer fold keeps does not change its keys. \
-      **What remains owed is still the comparison itself**: the mechanism \
-      (`selfParents_skips_finalized`, and now a faithful min message) is proved and the arithmetic \
-      across a chain is not — the per-sender sentinel comparison, under the hypothesis named above, \
-      which is guaranteed at ingress rather than observed of the data. **And the obstacle is a \
-      *modelling* one, stated here so the next attempt sizes it correctly rather than starting at the \
-      proof** (2026-09-25): the model's `nextFringe` takes the next layer as an **argument** \
-      (`Rchain/Casper/Fringe.lean:110`), so there is no relation between two *successive* fringes for a \
-      comparison to be about — the port's `next_fringe` *derives* the layer from the DAG \
-      (`minMsgs`/`selfParents`), and the missing piece is that derivation as a function plus the \
-      relation between its two seeds (the new block's justifications reaching the previous sentinel). \
-      So this is one more model before it is a proof, which is why it is still owed rather than \
-      half-done" },
+      **What remains owed is still the comparison itself**, and it is now **one step narrower, with the \
+      step named** (2026-09-25). A sentence here briefly said the obstacle was a *missing model* — that \
+      `nextFringe` takes the next layer as an argument (`Fringe.lean:110`) so no two successive fringes \
+      are related; **that was wrong**, a reading of `Fringe.lean` alone: `Rchain/Casper/Dag.lean`'s \
+      `derivedFringe` derives the layer from the DAG *and* takes `prev` (`:140`), so the successive-fringe \
+      relation exists. What is now **proved**, about the walk that derivation rests on, is the **sentinel \
+      half**: `selfParents_above_a_finalized_ancestor` — for a justification, `minMsgs` returns a message \
+      **strictly above every finalized same-sender ancestor of it** — under `NoFork`, the fork-freedom \
+      ingress *refuses* rather than assumes (H-1 at the DAG insert, `sequence_number`, \
+      `check_justification_regression`; AUDIT C82 and C84). Two things make it more than a spelling: the \
+      walk's descent is proved first (`selfParents_height_lt`: everything the walk returns is reached \
+      from the seed along same-sender parent edges, so `Descends` makes it strictly lower), and the \
+      hypothesis is **falsified where it is dropped** — `the_comparison_is_false_without_fork_freedom` \
+      exhibits a four-message fork where the walk steps *around* the finalized ancestor and returns a \
+      height-1 message beneath a height-5 one. **What is still owed is the lift through the fold**: \
+      `nextLayer` then adds the min messages' *candidate parents* whose sender is already a key \
+      (`:129-135`), and whether one of those can lower a sender's published height is not answered by the \
+      sentinel theorem — so the row's claim about the *published* fringe is one step further out than the \
+      sentinel it now rests on, which is the whole of what is left" },
   { number := 16, clause := "a", layer := "Casper",
     rustWitness := ["casper/src/validate.rs:block_number_must_be_parent_max_plus_one"],
     statement := "Block number = max(parent) + 1 — as the port's check, which **rejects** a block whose \

@@ -392,4 +392,296 @@ theorem seen_subset_of_mem_seen (d : Dag) (a b : Message)
         simpa [hab] using hx
   exact main b.height b hb rfl a ha h
 
+/-! ### The walk's descent — the half of law 15's comparison that is about the DAG
+
+Law 15's last conjunct is the per-sender height comparison between successive fringes, and its first
+ingredient is that the walk **strictly descends**: everything `selfParents` returns is reached from its
+seed along parent edges, so `Descends` makes it strictly lower. The relation below follows **parents**,
+where `Rchain.Reaches` (`Fringe.lean:143`) follows *justifications* through the seen set — different
+edges, and the walk takes these.
+
+This is stated and proved here rather than left inside the comparison because it is what any form of the
+comparison consumes, and because the sentence that asserted it until now was a doc comment on
+`walkSameSender_skips_finalized` ("a min message is the previous sentinel's direct successor rather than
+a descendant of something older") — a claim nothing checked. What is *still* owed after it is the
+chain half: with a single same-sender parent per message the ancestors of a message are linearly
+ordered, and that is what puts a finalized ancestor strictly below every message the walk keeps. -/
+
+/-- A message a lookup answers with is in the DAG — the closure that `Descends` asserts of *parents*,
+    here for the lookup itself. -/
+theorem mem_of_msg (d : Dag) {p : Nat} {q : Message} (h : Dag.msg d p = some q) : q ∈ d := by
+  simpa only [Dag.msg] using List.mem_of_find?_eq_some h
+
+/-- **Parent reachability** — the walk's own relation: `q` resolves one of `m`'s parents, transitively.
+    It is deliberately *not* `Rchain.Reaches`: that one is about the seen set (justifications), and the
+    walk follows `parents`. -/
+inductive ReachesF (d : Dag) : Message → Message → Prop where
+  /-- One edge: `q` is the message one of `m`'s **same-sender** parent ids resolves to. The sender
+      condition is the walk's own (`sameSenderParents`), and it is what makes a sender's ancestry a chain
+      rather than a tree — the property the sentinel comparison turns on. -/
+  | step (m : Message) (q : Message) (p : Nat) (hp : p ∈ m.parents) (hq : Dag.msg d p = some q)
+      (hs : q.sender = m.sender) : ReachesF d q m
+  /-- …and its transitive closure. -/
+  | trans (m : Message) (n : Message) (q : Message) (h1 : ReachesF d n m)
+      (h2 : ReachesF d q n) : ReachesF d q m
+
+/-- **The descent is strict** — `Descends` gives one strict step, and height is a `Nat` — so the walk's
+    relation is well-founded, which is why `selfParents`' fuel can be the DAG's own length. -/
+theorem reachesF_height_lt (d : Dag) (hdes : Descends d) :
+    ∀ {q m : Message}, ReachesF d q m → m ∈ d → q ∈ d ∧ q.height < m.height := by
+  intro q m h
+  induction h with
+  | step m q p hp hq _hs =>
+    intro hm
+    exact hdes m hm p hp q hq
+  | trans m n q _h1 _h2 ih1 ih2 =>
+    intro hm
+    obtain ⟨hnd, hnm⟩ := ih1 hm
+    obtain ⟨hqd, hqn⟩ := ih2 hnd
+    exact ⟨hqd, Nat.lt_trans hqn hnm⟩
+
+/-- Membership travels along the walk's relation: whatever a DAG message is reached from is in the DAG
+    too. -/
+theorem reachesF_mem (d : Dag) :
+    ∀ {q m : Message}, ReachesF d q m → m ∈ d → q ∈ d := by
+  intro q m h
+  induction h with
+  | step _m q _p _hp hq _hs =>
+    intro _hm
+    exact mem_of_msg d hq
+  | trans _m _n _q _h1 _h2 ih1 ih2 =>
+    intro hm
+    exact ih2 (ih1 hm)
+
+/-- A seed element is a **direct** parent-edge predecessor: the filter's two halves, unpacked. -/
+theorem sameSenderParents_reaches (d : Dag) (sender : Nat) (mv : Message) (fin : List Nat)
+    {x : Message} (h : x ∈ sameSenderParents d sender mv fin) :
+    x ∈ d ∧ x.sender = sender ∧ ∃ p ∈ mv.parents, Dag.msg d p = some x := by
+  simp only [sameSenderParents, List.mem_filter, List.mem_filterMap, Bool.and_eq_true] at h
+  obtain ⟨⟨p, hp, hpx⟩, hs, _⟩ := h
+  exact ⟨mem_of_msg d hpx, of_decide_eq_true hs, p, hp, hpx⟩
+
+/-- **The invariant the walk carries**: every message in the worklist and in the accumulator is reached
+    from the seed `mv` along parent edges. A step replaces the popped message's same-sender parents — each
+    of which reaches the popped one — so the property composes by transitivity rather than by induction on
+    the DAG. -/
+theorem walkSameSender_reaches (d : Dag) (fin : List Nat) (mv : Message) (fuel : Nat) :
+    ∀ work acc,
+      (∀ x ∈ work, x ∈ d ∧ ReachesF d x mv) →
+      (∀ x ∈ acc, x ∈ d ∧ ReachesF d x mv) →
+      ∀ m ∈ walkSameSender d fin fuel work acc, m ∈ d ∧ ReachesF d m mv := by
+  induction fuel with
+  | zero =>
+    intro work acc _ hacc m hm
+    simp only [walkSameSender] at hm
+    exact hacc m hm
+  | succ f ih =>
+    intro work acc hwork hacc m hm
+    cases work with
+    | nil =>
+      simp only [walkSameSender] at hm
+      exact hacc m hm
+    | cons w rest =>
+      simp only [walkSameSender] at hm
+      refine ih (sameSenderParents d w.sender w fin ++ rest) (w :: acc) ?_ ?_ m hm
+      · intro x hx
+        rw [List.mem_append] at hx
+        rcases hx with hx | hx
+        · obtain ⟨hxd, hsx, p, hp, hpx⟩ := sameSenderParents_reaches d w.sender w fin hx
+          have hw := hwork w (List.mem_cons.mpr (Or.inl rfl))
+          exact ⟨hxd, ReachesF.trans mv w x hw.2 (ReachesF.step w x p hp hpx hsx)⟩
+        · exact hwork x (List.mem_cons.mpr (Or.inr hx))
+      · intro x hx
+        rcases List.mem_cons.mp hx with hwx | hx
+        · rw [hwx]
+          exact hwork w (List.mem_cons.mpr (Or.inl rfl))
+        · exact hacc x hx
+
+/-- **Everything `selfParents` returns is reached from the seed** — the walk's descent, at the definition
+    the port's `.last()` reads. -/
+theorem selfParents_reaches (d : Dag) (mv : Message) (fin : List Nat) :
+    ∀ m ∈ selfParents d mv fin, m ∈ d ∧ ReachesF d m mv := by
+  unfold selfParents
+  refine walkSameSender_reaches d fin mv d.length (sameSenderParents d mv.sender mv fin) [] ?_ ?_
+  · intro x hx
+    obtain ⟨hxd, hsx, p, hp, hpx⟩ := sameSenderParents_reaches d mv.sender mv fin hx
+    exact ⟨hxd, ReachesF.step mv x p hp hpx hsx⟩
+  · intro x hx
+    simp at hx
+
+/-- **…so every one of them is strictly lower than the seed**: the walk cannot return a message at or
+    above the message it walked from. This is the fact the per-sender comparison rests on, and the one
+    that makes the min message a *descent* rather than a search. -/
+theorem selfParents_height_lt (d : Dag) (hdes : Descends d) (mv : Message) (fin : List Nat)
+    (hmv : mv ∈ d) : ∀ m ∈ selfParents d mv fin, m.height < mv.height := by
+  intro m hm
+  obtain ⟨_hmd, hre⟩ := selfParents_reaches d mv fin m hm
+  -- the relation's *second* index is the seed, so the two are named rather than left to inference
+  exact (reachesF_height_lt d hdes (q := m) (m := mv) hre hmv).2
+
+/-! ### The chain half — one same-sender parent, and the sentinel above a finalized ancestor
+
+`selfParents_height_lt` says the walk descends. What it does not yet say is that the walk's *output* is
+above a **finalized** message that the walk must not return. That needs the second ingredient, and it is
+the hypothesis the port *enforces* rather than observes: at most one same-sender parent per message, so a
+sender's ancestry is a chain rather than a tree, so there is exactly one way down and a finalized ancestor
+is on it. -/
+
+/-- **The fork-freedom the ingress refusal gives.** A message has **at most one** same-sender parent in
+    the DAG. The port does not merely happen to be fork-free: H-1's equivocation detection refuses a
+    second distinct block by one sender reusing a `seq_num`, `sequence_number` requires a block to justify
+    a same-sender block one lower, and `check_justification_regression` admits at most one justification
+    per sender and demands it be the latest (`casper/src/dag.rs:244-252`, `validate.rs:169-188`,
+    `:205-241`; AUDIT C82 and C84). Stated over an arbitrary `fin` because that is the shape the walk
+    uses, and `sameSenderParents_subset` below is what makes it the *same* fact as the unfiltered one. -/
+def NoFork (d : Dag) : Prop :=
+  ∀ m ∈ d, ∀ fin, ∀ a ∈ sameSenderParents d m.sender m fin,
+    ∀ b ∈ sameSenderParents d m.sender m fin, a = b
+
+/-- The `fin`-filtered parent set is a subset of the unfiltered one: the predicate's second conjunct is
+    weaker. This is what makes `NoFork`'s statement at any `fin` the fact ingress gives at `[]`. -/
+theorem sameSenderParents_subset (d : Dag) (s : Nat) (mv : Message) (fin : List Nat) :
+    ∀ x ∈ sameSenderParents d s mv fin, x ∈ sameSenderParents d s mv [] := by
+  intro x hx
+  simp only [sameSenderParents, List.mem_filter, List.mem_filterMap, Bool.and_eq_true] at hx ⊢
+  obtain ⟨⟨p, hp, hpx⟩, hs, _⟩ := hx
+  exact ⟨⟨p, hp, hpx⟩, hs, by simp⟩
+
+/-- …so the ingress fact — uniqueness among the **unfinalized** parents — is `NoFork` as the walk uses
+    it. -/
+theorem nofork_of_unfiltered (d : Dag)
+    (h : ∀ m ∈ d, ∀ a ∈ sameSenderParents d m.sender m [],
+      ∀ b ∈ sameSenderParents d m.sender m [], a = b) : NoFork d := by
+  intro m hm fin a ha b hb
+  exact h m hm a (sameSenderParents_subset d m.sender m fin a ha)
+    b (sameSenderParents_subset d m.sender m fin b hb)
+
+/-- **The first step is the only step.** With one same-sender parent per message, the descent from `m` has
+    a single edge out of it: every proper same-sender ancestor of `m` is reached from *that* parent — or
+    *is* that parent. This is the lemma that turns fork-freedom into "the walk cannot step around a
+    finalized ancestor", and it is where the chain argument lives. -/
+theorem nofork_ancestors_go_through_the_parent (d : Dag) (hnofork : NoFork d) :
+    ∀ {q m x : Message}, ReachesF d q m → m ∈ d →
+      x ∈ sameSenderParents d m.sender m [] → q = x ∨ ReachesF d q x := by
+  -- `q`/`m` are *indices* of the relation, so each arm re-binds them; the intro'd names are therefore
+  -- deliberately distinct (`q₀`/`m₀`), or the arm's own binders become inaccessible and the goals stop
+  -- naming the messages they are about. `x` is fixed and keeps its name.
+  intro q₀ m₀ x h
+  induction h with
+  | step m q p hp hq hs =>
+    intro hm hx
+    have hqmem : q ∈ sameSenderParents d m.sender m [] := by
+      simp only [sameSenderParents, List.mem_filter, List.mem_filterMap, Bool.and_eq_true]
+      exact ⟨⟨p, hp, hq⟩, decide_eq_true hs, by simp⟩
+    exact Or.inl (hnofork m hm [] q hqmem x hx)
+  | trans m n q _h1 h2 ih1 _ih2 =>
+    intro hm hx
+    rcases ih1 hm hx with hqx | hqx
+    · exact Or.inr (hqx ▸ h2)
+    · exact Or.inr (ReachesF.trans x n q hqx h2)
+
+/-- **Law 15's last owed conjunct, the sentinel half.** For a justification `p`, every message the walk
+    keeps for it is **strictly above** any finalized same-sender ancestor of `p` — so the min message is
+    the previous sentinel's successor and not a descendant of something older, which is what the doc
+    comment on `walkSameSender_skips_finalized` asserted and nothing checked.
+
+    The invariant the proof carries is not about heights but about **reachability**: `q` reaches every
+    message in the worklist and the accumulator. A step adds a same-sender parent of the popped message,
+    and `nofork_ancestors_go_through_the_parent` puts every proper ancestor of the popped message below
+    it — so the property is maintained by the same lemma at each step, with no comparison of heights
+    anywhere in the induction. Heights enter once, at the end. -/
+theorem walkSameSender_above_finalized (d : Dag) (hnofork : NoFork d)
+    (fin : List Nat) (q : Message) (hqfin : q.id ∈ fin) (fuel : Nat) :
+    ∀ work acc,
+      (∀ x ∈ work, x ∈ d) → (∀ x ∈ acc, x ∈ d) →
+      (∀ x ∈ work, ReachesF d q x) → (∀ x ∈ acc, ReachesF d q x) →
+      ∀ m ∈ walkSameSender d fin fuel work acc, ReachesF d q m := by
+  induction fuel with
+  | zero =>
+    intro work acc _ _ _ hacc m hm
+    simp only [walkSameSender] at hm
+    exact hacc m hm
+  | succ f ih =>
+    intro work acc hworkd haccd hworkq haccq m hm
+    cases work with
+    | nil =>
+      simp only [walkSameSender] at hm
+      exact haccq m hm
+    | cons w rest =>
+      simp only [walkSameSender] at hm
+      have hwd : w ∈ d := hworkd w (List.mem_cons.mpr (Or.inl rfl))
+      have hwq : ReachesF d q w := hworkq w (List.mem_cons.mpr (Or.inl rfl))
+      refine ih (sameSenderParents d w.sender w fin ++ rest) (w :: acc) ?_ ?_ ?_ ?_ m hm
+      · intro y hy
+        rw [List.mem_append] at hy
+        rcases hy with hy | hy
+        · exact (sameSenderParents_reaches d w.sender w fin hy).1
+        · exact hworkd y (List.mem_cons.mpr (Or.inr hy))
+      · intro y hy
+        rcases List.mem_cons.mp hy with hyw | hy
+        · rw [hyw]; exact hwd
+        · exact haccd y hy
+      · intro y hy
+        rw [List.mem_append] at hy
+        rcases hy with hy | hy
+        · have hyunf : y.id ∉ fin := sameSenderParents_unfinalized d w.sender w fin y hy
+          have hysub := sameSenderParents_subset d w.sender w fin y hy
+          rcases nofork_ancestors_go_through_the_parent d hnofork hwq hwd hysub with hey | hqy
+          · exact absurd (hey ▸ hqfin) hyunf
+          · exact hqy
+        · exact hworkq y (List.mem_cons.mpr (Or.inr hy))
+      · intro y hy
+        rcases List.mem_cons.mp hy with hyw | hy
+        · rw [hyw]; exact hwq
+        · exact haccq y hy
+
+/-- **The theorem law 15 was owed**: for a justification `p`, the message the derivation keeps for it lies
+    **strictly above every finalized same-sender ancestor of `p`**. The previous fringe *is* the finalized
+    set (`derivedFringe` passes `prev.messages.map (·.id)`), so this is the per-sender comparison at the
+    sentinel: the walk cannot return a message at or below the one it has already finalized. -/
+theorem selfParents_above_a_finalized_ancestor (d : Dag) (hdes : Descends d) (hnofork : NoFork d)
+    (p : Message) (hp : p ∈ d) (fin : List Nat) (q : Message) (hqfin : q.id ∈ fin)
+    (hre : ReachesF d q p) : ∀ m ∈ selfParents d p fin, q.height < m.height := by
+  intro m hm
+  have hseed : ∀ x ∈ sameSenderParents d p.sender p fin, ReachesF d q x := by
+    intro x hx
+    have hxsub := sameSenderParents_subset d p.sender p fin x hx
+    have hxunf : x.id ∉ fin := sameSenderParents_unfinalized d p.sender p fin x hx
+    rcases nofork_ancestors_go_through_the_parent d hnofork hre hp hxsub with hqx | hqx
+    · exact absurd (hqx ▸ hqfin) hxunf
+    · exact hqx
+  have hqm : ReachesF d q m := by
+    unfold selfParents at hm
+    exact walkSameSender_above_finalized d hnofork fin q hqfin d.length
+      (sameSenderParents d p.sender p fin) []
+      (fun x hx => (sameSenderParents_reaches d p.sender p fin hx).1)
+      (fun x hx => by simp at hx) hseed (fun x hx => by simp at hx) m hm
+  obtain ⟨hmd, _⟩ := selfParents_reaches d p fin m hm
+  exact (reachesF_height_lt d hdes hqm hmd).2
+
+/-! ### The hypothesis is load-bearing: the fork that refutes the comparison without it -/
+
+/-- **The DAG that shows `NoFork` is not decoration.** Four messages: a common ancestor `w` (20, height
+    1), a low branch `y` (21, height 2) and a high branch `q` (22, height 5), and a top `p` (23, height
+    6) whose parents are **both** `y` and `q` — a same-sender fork, which is exactly what H-1's
+    equivocation detection refuses at ingress (`casper/src/dag.rs:244-252`). -/
+def fork4 : Dag :=
+  [ ⟨20, 1, 0, 1, [], []⟩,
+    ⟨21, 2, 0, 2, [20], []⟩,
+    ⟨22, 5, 0, 3, [20], []⟩,
+    ⟨23, 6, 0, 4, [21, 22], []⟩ ]
+
+/-- The walk from `p` with `q` finalized, `decide`d: it takes the unfinalized branch and steps *around*
+    the finalized ancestor — `y` then `w`, so the output is newest-last as always. -/
+theorem selfParents_fork4 :
+    (selfParents fork4 ⟨23, 6, 0, 4, [21, 22], []⟩ [22]).map (·.id) = [20, 21] := by decide
+
+/-- **…and there the comparison is false**: the walk's oldest message is `w` at height 1 while the
+    finalized ancestor `q` is at height 5, so `q.height < m.height` fails for every message the walk
+    kept. The theorem above is therefore a claim about *fork-free* DAGs and not about any DAG, and this
+    refutation is what says so — the same shape as `fringe_monotone_is_false` one layer up. -/
+theorem the_comparison_is_false_without_fork_freedom :
+    ¬ (∀ m ∈ selfParents fork4 ⟨23, 6, 0, 4, [21, 22], []⟩ [22],
+        (⟨22, 5, 0, 3, [20], []⟩ : Message).height < m.height) := by decide
+
 end Rchain
