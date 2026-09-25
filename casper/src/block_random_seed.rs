@@ -28,13 +28,25 @@ pub struct BlockRandomSeed {
 }
 
 impl BlockRandomSeed {
+    /// The seed for a shard's block. **Asserts** the shard id is ASCII, in every profile.
+    ///
+    /// The oracle's own constructor asserts this (`BlockRandomSeed.scala:39`'s
+    /// `assert(shardId.onlyAscii, …)`), so the port's `debug_assert!` was a *weaker* port: in a release
+    /// build the check vanished and a non-ASCII shard id flowed into the seed that Law 11's determinism
+    /// rests on. A domain check that is debug-only is not whitelistable (the audit's asymmetry rule).
+    ///
+    /// It is unreachable from the block path: `validate::format_of_fields` refuses an empty or
+    /// non-ASCII shard id at ingress through `ShardId::try_from` (Law 26), with
+    /// `format_of_fields_rejects_non_ascii_shard_id` as its witness in release. The direct callers pass
+    /// config-derived ids, which `ShardSpec`/`ShardId` have already validated (C78). So this is the
+    /// internal restatement the Scala also keeps, not a boundary check.
     pub fn new(
         shard_id: String,
         block_number: i64,
         sender: PublicKey,
         pre_state_hash: Blake2b256Hash,
     ) -> Self {
-        debug_assert!(
+        assert!(
             shard_id.is_ascii(),
             "Shard name should contain only ASCII characters"
         );
@@ -201,6 +213,31 @@ mod tests {
             .encode()
             .unwrap()
         );
+    }
+
+    /// **H2d.** The ASCII check on the shard id must exist in **release**, not only in a debug build:
+    /// the oracle's own constructor *asserts* it (`legacy/.../BlockRandomSeed.scala:39`), and a check
+    /// that vanishes at `--release` refuses nothing there. A domain check that is `debug_assert!`-only
+    /// is not whitelistable (the audit's asymmetry rule), so this pins it in **both** profiles by
+    /// catching the panic: under a `debug_assert!` it fails with `--release`.
+    #[test]
+    fn a_non_ascii_shard_id_is_refused_in_any_profile() {
+        let refused = std::panic::catch_unwind(|| {
+            BlockRandomSeed::new(
+                "røøt".to_string(),
+                1,
+                PublicKey::new(vec![]),
+                Blake2b256Hash::create(&[]),
+            )
+        });
+        assert!(
+            refused.is_err(),
+            "a non-ASCII shard id must be refused in release too"
+        );
+
+        // The control: an ASCII shard id is not refused, so the test can fail.
+        let accepted = std::panic::catch_unwind(|| BlockRandomSeed::from_shard_id("root"));
+        assert!(accepted.is_ok(), "an ASCII shard id is accepted");
     }
 
     #[test]
