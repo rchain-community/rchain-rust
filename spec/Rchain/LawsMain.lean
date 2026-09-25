@@ -167,6 +167,23 @@ def rustAnchorFailures : IO (List String) := do
         failures := failures ++ [s!"law {l.number}{l.clause} cites `{a}`, which does not exist"]
   return failures
 
+/-- **The `Rchain.`-prefixed names a prose cell mentions.** A row's `statement`, `falsifiable` and
+`note` name declarations in prose, and nothing read them: law 15's note cited
+`the_sequence_rule_is_not_enough`, which no declaration in this tree ever had (found 2026-09-25 — and
+*not* by a check, which is the point of this one). The scope is deliberately narrow, so that the check
+below cannot fire on the two other kinds of name the same prose carries:
+
+- a **file path** — `Rchain/Laws.lean` — whose next character is `/`, not an identifier character;
+- a **bare name** — `fold4`, `merge_is_order_sensitive` — which a Rust test and a Lean theorem spell
+  identically, and which AUDIT C74 established cannot be a predicate over this register ("the vocabulary
+  is not a predicate over the register and cannot be one"). Those stay prose; the fix for a bare name
+  that has rotted is a reader's, and the register's `witness`/`RustWitness` fields are where a name
+  becomes checked. -/
+def proseNames (s : String) : List String :=
+  ((s.splitOn "Rchain.").drop 1).filterMap fun chunk =>
+    let name := String.mk (chunk.toList.takeWhile (fun c => c.isAlphanum || c = '_' || c = '\'' || c = '.'))
+    if name.isEmpty then none else some s!"Rchain.{name}"
+
 /-- Read a file, trying the path as given and then relative to the repo root (the parent of `spec/`). -/
 def readAnchorFile (p : String) : IO (Option String) := do
   try
@@ -462,6 +479,34 @@ run_cmd do
   if !gone.isEmpty then
     failures := failures.push s!"reference integrity: {gone.length} cited declaration(s) do not exist \
       in `Rchain`: {gone.map (·.toString)}"
+
+  -- 3b. **The prose's `Rchain.`-prefixed names too.** Check 3 covers the `declarations` and `witness`
+  -- fields; the note is where this register's running narratives live, and a name that rots there is
+  -- read by a human and checked by nothing — law 15's note cited a theorem that never existed. The
+  -- scope is what `proseNames` documents: a prefixed name, not a path and not a bare name.
+  let prose := String.intercalate " "
+    (register.map fun l => l.statement ++ " " ++ l.note ++ " " ++ l.falsifiable.getD "")
+  let proseCited := (proseNames prose).eraseDups.map fun n =>
+    (n.splitOn ".").foldl (fun acc part => Name.str acc part) Name.anonymous
+  -- A name a note writes may be a *module* (`Rchain.Sort`'s `mutual` block) rather than a declaration
+  -- — and a module is a namespace, which the environment holds only as the prefix of its members, not
+  -- as a constant. So a name resolves if it is declared **or** if some declaration extends it.
+  let hasExtension (n : Name) : Bool :=
+    env.constants.fold (init := false) fun acc m _ => acc || n.isPrefixOf m
+  -- And one module is *outside* this environment entirely: `Rchain/Corpus.lean` is an executable root
+  -- rather than part of the `Rchain` library this module imports (the fact `compilerTrust`'s docstring
+  -- records from the other side), so a note naming `Rchain.Corpus`'s parts names something real that
+  -- this environment cannot hold. Accepted by name, with that reason.
+  let outsideLibrary (n : Name) : Bool :=
+    match n.components with
+    | `Rchain :: `Corpus :: _ => true
+    | _ => false
+  let proseGone := (proseCited.filter fun n => !env.contains n).filter fun n =>
+    !hasExtension n && !outsideLibrary n
+  if !proseGone.isEmpty then
+    failures := failures.push s!"prose reference integrity: {proseGone.length} `Rchain.`-prefixed name(s) \
+      in a row's prose do not exist: {proseGone.map (·.toString)} — a note naming a declaration that was \
+      never written (or was renamed) reads exactly like one naming a real proof"
 
   -- 4. Axiom accounting: the axioms the rows cite are exactly the tree's axioms. Two failures in one —
   -- an axiom in the tree that no row cites (a law assumed silently), and a row citing an axiom that is
