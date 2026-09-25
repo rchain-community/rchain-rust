@@ -330,13 +330,22 @@ the active set (the top-N is chosen by stake) and counts in the >2/3 denominator
 protocol is asymmetric: going offline is free, while a block that *fails validation on another node* costs
 the sender its stake.
 
-**A state divergence becomes mutual slashing.** `validation_failed` is recorded against the *sender* of the
-block that could not be validated, whatever the cause. When two nodes disagree about the state - a
-configuration difference, or a replay that cannot regenerate a mergeable channel - each records the other as
-an offender and proposes to slash it; the other rejects that block as invalid and becomes an offender in
-turn. On this build that happened between the second and third validators, whose genesis parameters differed
-from the master's: both were slashed, and the only trace was the pool shrinking (`getBonds` went 3 -> 1).
-The validation failure itself is logged; the slashing that follows it was not, until now.
+**A stake can leave the pool without anyone being slashed, and that is what happened here.** An earlier draft
+of this section said the second and third validators had been slashed, inferring it from the pool shrinking
+from three to one. The measurements do not support it, and the distinction matters, because it is the
+difference between an operational mistake and a state bug:
+
+* the master recorded **zero** blocks as failing validation, so it had no offender to build a slash for
+  (`to_slash` comes from justifications whose metadata carries `validation_failed`);
+* the stake never reached the Coop vault, where a slash transfers it;
+* the **trusted** set shrank as well - and `slash` does not touch `trusted`. It removes the validator from the
+  pool, the active set, the withdrawers and the pending withdrawers, and moves the stake; `trust` writes its
+  own leaf and does persist it.
+
+Pool and trusted shrinking together fits one explanation: native PoS state not surviving into later blocks. On
+that chain the active set read three at a block boundary and one a few blocks later, with no failure, no slash
+and no error anywhere - issue #74. This page therefore treats a shrunken pool as a symptom of that, not as
+evidence of misbehaviour.
 
 
 ### Attesting on every remote block is a block storm with three validators
