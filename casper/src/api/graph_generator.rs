@@ -48,7 +48,16 @@ pub fn dag_as_cluster<S: GraphSerializer>(blocks: &[ValidatorBlock], ser: &mut S
     }
     let block_color_map = generate_fringe_color_mapping(blocks);
     let timeseries: Vec<i64> = acc.timeseries.iter().copied().collect();
-    let lowest_height = timeseries[0];
+    // An empty view is a legitimate request, not an error: `visualize_dag` renders whatever is at or
+    // above `start_block_number - depth`, so a DAG with no blocks yet — or a `start_block_number`
+    // above the top of the chain — arrives here as an empty slice, and there is no lowest height to
+    // anchor the clusters to. Render the empty graph. (This was `timeseries[0]`, an index into a
+    // slice the caller may legitimately hand over empty: a panic on a public endpoint, H2a.)
+    let Some(&lowest_height) = timeseries.first() else {
+        let g = init_graph("dag", ser);
+        g.close(ser);
+        return;
+    };
     let validators_list: Vec<(String, ValidatorsBlocks)> = acc.validators.into_iter().collect();
 
     let g = init_graph("dag", ser);
@@ -331,5 +340,20 @@ mod tests {
         assert!(out.contains("cluster_val1"));
         assert!(out.contains("doubleoctagon"));
         assert!(out.contains("\"bbbb2\" -> \"aaaa1\""));
+    }
+
+    /// **H2a.** An empty view is a legitimate request, and the renderer must render it rather than
+    /// index it. `visualize_dag` renders whatever is at or above `start_block_number - depth`, so a
+    /// DAG with no blocks yet — or a `start_block_number` above the top of the chain, where every
+    /// block is below `lowest_height` — hands this function an empty slice. The old
+    /// `let lowest_height = timeseries[0]` panicked on it (index out of bounds), from a public
+    /// endpoint.
+    #[test]
+    fn an_empty_view_renders_an_empty_graph() {
+        let mut ser = StringSerializer::new();
+        dag_as_cluster(&[], &mut ser);
+        let out = ser.into_string();
+        assert!(out.contains("digraph \"dag\""), "{out}");
+        assert!(!out.contains("cluster_"), "{out}");
     }
 }

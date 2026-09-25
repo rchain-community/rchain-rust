@@ -12,6 +12,7 @@ use async_trait::async_trait;
 
 use rchain_block_storage::block_store::BlockStore;
 use rchain_block_storage::dag::dag_storage::{BlockDagStorage, DeployId};
+use rchain_block_storage::dag::representation::DagRepresentation;
 use rchain_graphz::ListSerializer;
 use rchain_models::ast::Par;
 use rchain_models::block_hash::BlockHash;
@@ -79,6 +80,32 @@ pub struct BlockApiImpl {
     propose_on_deploy: bool,
     admin_http: bool,
     system_public_keys: BTreeSet<Vec<u8>>,
+}
+
+/// The messages at or above `lowest_height`, in the shape the DAG view renders.
+///
+/// Extracted from `visualize_dag` so the *empty view* is testable on its own, because it is a
+/// legitimate request rather than an error: a DAG with no blocks yet, and a `start_block_number`
+/// above the top of the chain, both filter to nothing here — and the renderer must render that empty
+/// slice rather than index it (H2a, `graph_generator::dag_as_cluster`).
+fn view_blocks_above(dag: &DagRepresentation, lowest_height: i64) -> Vec<ValidatorBlock> {
+    let to_hash_str = |bytes: &[u8]| base16::encode(bytes).chars().take(5).collect::<String>();
+    dag.dag_message_state
+        .msg_map
+        .values()
+        .filter(|m| i64::from(m.height) >= lowest_height)
+        .map(|m| ValidatorBlock {
+            id: to_hash_str(m.id.as_bytes()),
+            sender: to_hash_str(m.sender.as_bytes()),
+            height: i64::from(m.height),
+            justifications: m
+                .parents
+                .iter()
+                .map(|h| to_hash_str(h.as_bytes()))
+                .collect(),
+            fringe: m.fringe.iter().map(|h| to_hash_str(h.as_bytes())).collect(),
+        })
+        .collect()
 }
 
 impl BlockApiImpl {
@@ -550,25 +577,7 @@ impl BlockApi for BlockApiImpl {
             depth
         };
         let lowest_height = start_block_num - depth_limited as i64;
-        let to_hash_str = |bytes: &[u8]| base16::encode(bytes).chars().take(5).collect::<String>();
-
-        let blocks: Vec<ValidatorBlock> = dag
-            .dag_message_state
-            .msg_map
-            .values()
-            .filter(|m| i64::from(m.height) >= lowest_height)
-            .map(|m| ValidatorBlock {
-                id: to_hash_str(m.id.as_bytes()),
-                sender: to_hash_str(m.sender.as_bytes()),
-                height: i64::from(m.height),
-                justifications: m
-                    .parents
-                    .iter()
-                    .map(|h| to_hash_str(h.as_bytes()))
-                    .collect(),
-                fringe: m.fringe.iter().map(|h| to_hash_str(h.as_bytes())).collect(),
-            })
-            .collect();
+        let blocks = view_blocks_above(&dag, lowest_height);
 
         let mut ser = ListSerializer::default();
         dag_as_cluster(&blocks, &mut ser);
@@ -911,5 +920,60 @@ mod tests {
             None,
         ));
         assert_eq!(err, "Proposal failed: NoNewDeploys");
+    }
+
+    /// A representation holding one message per `(height, id byte)` pair.
+    fn repr_with(blocks: &[(i64, u8)]) -> DagRepresentation {
+        use rchain_block_storage::dag::finalizer::Message;
+        use rchain_block_storage::dag::message_state::DagMessageState;
+        use rchain_shared::refined::{BlockHeight, SeqNum};
+        use std::collections::BTreeMap;
+
+        let mut state = DagMessageState::<BlockHash, Validator>::empty();
+        for (height, byte) in blocks {
+            let id = BlockHash::new([*byte; 32]);
+            state.insert_msg_mut(&Message {
+                id,
+                height: BlockHeight::try_from(*height).unwrap(),
+                sender: Validator::new([0u8; 65]),
+                sender_seq: SeqNum::try_from(0).unwrap(),
+                bonds_map: BTreeMap::new(),
+                parents: BTreeSet::new(),
+                fringe: BTreeSet::new(),
+                seen: Arc::new([id].into_iter().collect::<BTreeSet<_>>()),
+            });
+        }
+        DagRepresentation {
+            dag_set: Arc::new(BTreeSet::new()),
+            child_map: Arc::new(BTreeMap::new()),
+            height_map: Arc::new(BTreeMap::new()),
+            dag_message_state: state,
+            fringe_states: BTreeMap::new(),
+        }
+    }
+
+    /// **H2a's reachable inputs, and the filter that produces them.** `visualize_dag` renders what is
+    /// at or above `start_block_number - depth`, so both an empty DAG and a `start_block_number` above
+    /// the top of the chain filter to nothing — the second being the case a caller reaches with an
+    /// ordinary request for a window above the chain. The renderer handles the empty slice
+    /// (`graph_generator::tests::an_empty_view_renders_an_empty_graph`); this pins that the filter
+    /// really produces it, with a control showing the filter does keep what is at the bound.
+    #[test]
+    fn a_view_of_nothing_is_reachable_from_the_filter() {
+        assert!(
+            view_blocks_above(&repr_with(&[]), 0).is_empty(),
+            "a DAG with no blocks renders nothing"
+        );
+
+        let one_at_five = repr_with(&[(5, 7)]);
+        assert!(
+            view_blocks_above(&one_at_five, 999).is_empty(),
+            "every block below the window's lowest height renders nothing"
+        );
+        assert_eq!(
+            view_blocks_above(&one_at_five, 5).len(),
+            1,
+            "the control: the block at the bound is kept, so this test can fail"
+        );
     }
 }
