@@ -26,7 +26,7 @@ and **no file is left without one or the other** — the linter's check 7 passes
 
 ## Inventory
 
-**1478 `#[test]`/`#[tokio::test]` unit functions + 129 integration tests** across 13 crates, with **26
+**1479 `#[test]`/`#[tokio::test]` unit functions + 129 integration tests** across 13 crates, with **26
 laws** carrying a randomized property test and **12 benchmark functions** in 7 Criterion groups. Only
 **3 of 13 crates have integration tests** (`rholang`, `casper`, `node`).
 
@@ -40,7 +40,7 @@ laws** carrying a randomized property test and **12 benchmark functions** in 7 C
 | `block-storage` | 42 | — | 3 | — |
 | `comm` | 125 | — | — | — |
 | `rspace` | 181 | — | 8 | — |
-| `rholang` | 239 | 57 | 7 | — |
+| `rholang` | 240 | 57 | 7 | — |
 | `casper` | 278 | 55 | 3 | — |
 | `node` | 197 | 17 | — | — |
 | `qucalc` | 20 | — | — | — |
@@ -337,6 +337,7 @@ not found in that file. Coverage claims live here rather than in prose so they c
 | item 11 | `node/src/api/grpc/tonic.rs` | `the_block_conversions_wrap_a_block_and_a_stream_reports_its_error` |
 | item 11 | `node/src/api/grpc/tonic.rs` | `get_event_hash_is_gated_and_converts_its_hash` |
 | item 11 | `node/src/api/grpc/tonic.rs` | `listen_for_continuation_at_name_converts_every_name` |
+| item 11 | `rholang/src/normalizer.rs` | `the_context_and_connective_refusals_are_specific` |
 
 ## Gap analysis (severity-ordered)
 

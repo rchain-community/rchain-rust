@@ -1991,6 +1991,58 @@ mod tests {
         }
     }
 
+    /// The **context** refusals and the connectives a bind pattern may not carry — the rest of the
+    /// family `reuse_error` above pins one of. These are the errors a rholang programmer actually
+    /// meets, so they are worth their own assertions rather than a shared "it errored":
+    ///
+    ///   * `UnexpectedProcContext` — a **name** used where a process belongs, i.e. the `*` that is
+    ///     missing (`for (x <- c) { c!(x) }` instead of `c!(*x)`);
+    ///   * `UnexpectedNameContext` — the mirror: an `@`-bound *process* variable used as a channel;
+    ///   * `PatternReceiveError` for `\/` and `~` **in a bind pattern** — the position before `<-`.
+    ///     These are real terms, so the source parses and the sort checks are happy; only the pattern
+    ///     normalizer can refuse them, and it names which connective it saw. (Put in the *source*
+    ///     position they trip an earlier guard instead — "Top level logical connectives are not
+    ///     allowed" — which is how this test found the difference.)
+    ///
+    /// Each is asserted by variant with the module's own rule — a test that asserts merely "it
+    /// errored" passes on a typo, which is how three of the sibling tests read before they were
+    /// falsified.
+    fn refused_as(source: &str, expected: impl Fn(&RholangError) -> bool) -> RholangError {
+        match source_to_adt(source) {
+            Ok(_) => panic!("`{source}` must be refused by the normalizer"),
+            Err(e) if expected(&e) => e,
+            Err(other) => panic!("`{source}` was refused, but not as expected: {other}"),
+        }
+    }
+
+    #[test]
+    fn the_context_and_connective_refusals_are_specific() {
+        // A name where a process belongs: `x` is bound by `new`, so it is a *name* and needs `*x`.
+        let e = refused_as(r#"new x in { @"out"!(x) }"#, |e| {
+            matches!(e, RholangError::UnexpectedProcContext { .. })
+        });
+        assert!(
+            format!("{e}").contains('x'),
+            "the refusal names the variable it was about: {e}"
+        );
+
+        // A process variable where a name belongs: `@x` binds a *process*, so `x!(1)` uses it as a
+        // channel and the sort check refuses it.
+        refused_as(r#"new z in { for (@x <- z) { x!(1) } }"#, |e| {
+            matches!(e, RholangError::UnexpectedNameContext { .. })
+        });
+
+        // The two connectives a bind pattern may not carry, each naming itself.
+        refused_as(
+            r#"for (@{1 \/ 2} <- @"c") { Nil }"#,
+            |e| matches!(e, RholangError::PatternReceiveError(m) if m.contains("disjunction")),
+        );
+        refused_as(
+            r#"for (@{~1} <- @"c") { Nil }"#,
+            |e| matches!(e, RholangError::PatternReceiveError(m) if m.contains("negation")),
+        );
+    }
+
     /// A name bound twice inside a single collection pattern — C42's first shape. Refused in
     /// *process* context (the `@` makes the list a process expression).
     #[test]
