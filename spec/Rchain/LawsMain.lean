@@ -215,12 +215,24 @@ much of the register's Rust half is *run* rather than described. It is not a sta
 proof, and the corpus rung still outranks it (`spec/LAWS.md`'s header says so beside the count). -/
 def rustWitnessCount : Nat := (laws.filter (·.rustWitness != [])).length
 
+/-- The Rust witnesses as **entries**: every `rustWitness` every row carries, across all rows. A
+test may witness two laws — law 45 and law 46 both cite
+`rholang/src/native_state.rs:an_epoch_splits_the_pot_and_keeps_the_dust` — so the entry count
+exceeds the distinct-test count, and the summary states both rather than one number a reader would
+take as 68 distinct tests. Derived, so it cannot rot: the prose version of this number is exactly
+what the counts emitter exists to prevent. -/
+def rustWitnessEntries : List String := (laws.map (·.rustWitness)).join
+
+/-- How many **distinct** tests those entries name. -/
+def rustWitnessDistinct : Nat := rustWitnessEntries.eraseDups.length
+
 /-- The summary sentence both documents open with — the one number that replaces the three competing
 counts (19 in a stale note, 29 in two documents, 43 in the tree). -/
 def summary : String :=
   s!"{lawCount} laws, {entryCount} entries: {statusCount .provedTied} proved and tied to the node by a \
 conformance corpus, {statusCount .provedModel} proved over the model — of which {rustWitnessCount} carry \
-a Rust witness the gate runs — \
+a Rust witness the gate runs ({rustWitnessEntries.length} witness entries, {rustWitnessDistinct} \
+distinct tests, a test being able to witness two laws) — \
 {statusCount .vacuous} proved but vacuous (the statement restates its own definition), \
 {statusCount .axiomByDesign} axiomatized by design (the cryptographic primitives), \
 {statusCount .owed} owed, {statusCount .deferred} deferred, {statusCount .open} open, \
