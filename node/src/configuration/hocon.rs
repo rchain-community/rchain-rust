@@ -462,6 +462,7 @@ pub fn node_conf_from_hocon(h: &Hocon) -> Result<NodeConf, String> {
         autopropose: to_bool(get(h, "autopropose")?)?,
         propose_on_deploy: to_bool(get(h, "propose-on-deploy")?)?,
         attest_on_new_blocks: to_bool(get(h, "attest-on-new-blocks")?)?,
+        no_attest_on_new_blocks: to_bool(get(h, "no-attest-on-new-blocks")?)?,
         protocol_server: protocol_server_from_hocon(get(h, "protocol-server")?)?,
         protocol_client: protocol_client_from_hocon(get(h, "protocol-client")?)?,
         peers_discovery: peers_discovery_from_hocon(get(h, "peers-discovery")?)?,

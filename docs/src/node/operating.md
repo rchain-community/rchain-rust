@@ -236,6 +236,14 @@ Deploys reach a node through the **external gRPC** port (40401 by default) or `P
 | continuous | `--autopropose` | proposes on a fixed cadence. The devnet adds `--dev-mode --deployer-private-key` so an injected dummy `Nil` deploy keeps the pool non-empty |
 | on demand | `--propose-on-deploy` | proposes when a deploy arrives |
 | idle | neither | nothing is proposed; the DAG advances only via the admin API's `POST /api/v1/propose` or another node |
+| attesting | *(default)* | a validator proposes an **empty attestation** when a remote block arrives, even with nothing of its own to include |
+
+The last row is the one that matters for a *network*: a validator that holds no deploys still has to move
+its latest message, or its stake never reaches the 2/3 finality threshold. Attestation is therefore **on
+by default** (`--no-attest-on-new-blocks` turns it off) and a validator needs **no `--autopropose`** to be
+live — including a validator on a host too small to run the continuous timer (#70). `--autopropose`
+remains a dev/CI tool for continuous block production; its dummy-`Nil` injector is not a liveness
+mechanism.
 
 There is **no `--no-autopropose` flag** on the node — you omit `--autopropose`. (`tools/devnet.sh`
 accepts `--no-autopropose` because that is *its* CLI, and it simply omits the node flag. Passing it to
@@ -259,7 +267,8 @@ consequences operators run into:
   boundary is `blockNumber % epochLength == 0`).
 
 A net that must keep finalising while otherwise idle should either give its founding validator more than
-2/3 of the pool as a genesis stake, or run a second validator with `--autopropose`. [Running a public
+2/3 of the pool as a genesis stake, or run a second validator — attestation is on by default, so it adds
+its attestations without `--autopropose` (and without a deployer key). [Running a public
 testnet](running-a-public-testnet.md) works both through.
 
 ---
