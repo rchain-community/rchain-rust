@@ -165,6 +165,12 @@ WHITELIST_PANIC=(
 )
 
 hard_failures=0
+# Every class appends its own name as its last act, and the summary refuses to print OK unless the set
+# of finished classes equals the set that was asked for. Without this the gate's OK is a claim about
+# the classes that *finished*, not about the classes that were *asked for* — and a class that exits
+# early takes its findings with it while the summary line still prints (AUDIT C91: a malformed entry
+# made this script print OK in 0.035 s while scanning nothing).
+CLASSES_DONE=()
 
 note() {
   local kind="$1" file="$2" line="$3" text="$4"
@@ -881,6 +887,8 @@ run_class() {
       exit 2
       ;;
   esac
+  # The marker, and it is the last statement so that only a class which ran to the end records it.
+  CLASSES_DONE+=("$cls")
 }
 
 if [ "$#" -eq 0 ]; then
@@ -891,6 +899,18 @@ fi
 for cls in "${classes[@]}"; do
   run_class "$cls"
 done
+
+# The framework holds itself to the rule the completeness guard applies to its own derivations (a
+# derivation that finds nothing is a hard failure): a class that did not finish is a failure here,
+# whether or not it managed to increment the counter on its way out.
+missing=()
+for cls in "${classes[@]}"; do
+  [[ " ${CLASSES_DONE[*]-} " == *" $cls "* ]] || missing+=("$cls")
+done
+if (( ${#missing[@]} > 0 )); then
+  echo "FAIL: class(es) did not finish: ${missing[*]} — their findings are missing from the summary below, which would otherwise report OK."
+  exit 1
+fi
 
 echo
 echo "===== summary ====="
