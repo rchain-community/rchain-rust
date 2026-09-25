@@ -54,8 +54,11 @@ jobs:
         # 79.69 => 77 (Stages 3-4), 81.30 => 79 (the low-coverage sweep), 84.07 => 82 (the census
         # sweep), 86.77 => 84 (the coverage pass: the emitted ledger, and the node's read surface
         # pinned route by route), 87.22 => 85 (the same pass, after its first batches: the
-        # `eval_method` arms and refusal tables, the http system process, the gateway carrier).
-        run: cargo llvm-cov --workspace --all-features --lcov --output-path lcov.info --fail-under-lines 85
+        # `eval_method` arms and refusal tables, the http system process, the gateway carrier),
+        # 87.60 => 85 (autopropose, the message variants, the number-channel refusals),
+        # 87.95 => 85 (the merge's entry point, the deploy service's delegations),
+        # 88.02 => 86 (the export traversal's second level, proposeResult's arms).
+        run: cargo llvm-cov --workspace --all-features --lcov --output-path lcov.info --fail-under-lines 86
 
       - name: Upload coverage
         uses: codecov/codecov-action@v7

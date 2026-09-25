@@ -53,16 +53,13 @@ from the committed `lcov.info`. This register **points at** that file rather tha
 that had already rotted: item 11's ordering below was written by hand from an old measurement and named
 the file ranked fifteenth first.
 
-Raised six times: 73.68 ⇒ 71 (Stages 0–2), 79.69 ⇒ 77 (Stages 3–4: the legacy corpus, the tier sweep,
-the property sweep), 81.30 ⇒ 79 (the low-coverage sweep, which found the printer and UPnP defects in
-AUDIT §16 C13/C14), 84.07 ⇒ 82 (the census sweep: every source file tested or exempt, plus the node gRPC
-wire conversions, the faucet budget, the history readers and the transport server's configuration path),
-86.77 ⇒ 84 (the coverage pass: the ledger itself and check 11, the node's read surface pinned route by
-route in `node/tests/api_surface.rs`, and the first batches of item 11's ranking), 87.22 ⇒ 85 (the same
-pass, after the `eval_method` arms, the refusal tables, the http system process and the gateway carrier).
-Those are records of what was raised when, written without the sign so they cannot be mistaken for the
-current measurement; the ledger's own totals are the claim, and the floor it derives is checked against
-CI's by the same script that emits it.
+The **raise history is not restated here.** It lives in one place — the comment above
+`--fail-under-lines` in `.github/workflows/coverage.yml` — and the ledger derives its own sentence from
+that site, so the two cannot disagree. This paragraph used to carry the list *and a count of it* ("raised
+six times"), and both had rotted: the count was already three raises out of date when it was read, which
+is the same failure this register exists to close, one line above the sentence that closes it. The floor
+it derives is checked against CI's by the same script that emits the ledger, and by check 11 of the
+register linter.
 
 The **per-file ranking — and therefore the next tier's work — is the ledger's first table, not this
 table**. Regenerating it is the same run the floor is measured from:
@@ -706,7 +703,7 @@ so the reason is recorded here rather than only in the commit that did it.
 | 2. The register linter recomputes counts, verifies named tests, fails on a bare tier module | **done** — `tools/audit-test-register.sh` (seven checks; hard mode green) |
 | 3. Every law has a property test or a recorded exemption | **done** — the matrix in Inventory; exempt: 12/13 (orphaned), 19 (axiom, KAT-pinned), 22/23 (stated reason), 28 (unit idempotency) |
 | 4. `make test-unit` runs `--all-features` | **done** (with `test-integration`) |
-| 5. The coverage floor raised after measuring (six times) | **done** — 73.68 ⇒ 71, 79.69 ⇒ 77, 81.30 ⇒ 79, 84.07 ⇒ 82, 86.77 ⇒ 84, 87.22 ⇒ 85. The floor is now *derived* rather than remembered: `tools/emit-coverage-ledger.sh` computes it from the measurement and check 11 refuses a CI floor that is not `floor(measured) − 2`. |
+| 5. The coverage floor raised after measuring | **done, and now derived rather than remembered** — `tools/emit-coverage-ledger.sh` computes the floor from the measurement, check 11 refuses a CI floor that is not `floor(measured) − 2`, and the *history* of raises lives in one place (the comment above `--fail-under-lines`), from which the ledger derives its own sentence. The list that used to sit here, with a count of it, had rotted. |
 | 6. `rspace-bench`'s Criterion groups are smoke-run | **done** — `make bench-smoke` |
 | 7. `parsed + skipped == 165` for the legacy corpus, closed-enum skip reasons | **done** — `rholang/tests/legacy_contracts.rs` |
 | 8. `gen-differential-goldens.sh` completes or fails loudly; every committed TSV row is consumed | **done** — provenance columns + a per-file drift guard; the script exits 2 without sbt |
