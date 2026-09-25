@@ -26,7 +26,7 @@ and **no file is left without one or the other** — the linter's check 7 passes
 
 ## Inventory
 
-**1466 `#[test]`/`#[tokio::test]` unit functions + 128 integration tests** across 13 crates, with **26
+**1467 `#[test]`/`#[tokio::test]` unit functions + 128 integration tests** across 13 crates, with **26
 laws** carrying a randomized property test and **12 benchmark functions** in 7 Criterion groups. Only
 **3 of 13 crates have integration tests** (`rholang`, `casper`, `node`).
 
@@ -40,7 +40,7 @@ laws** carrying a randomized property test and **12 benchmark functions** in 7 C
 | `block-storage` | 42 | — | 3 | — |
 | `comm` | 125 | — | — | — |
 | `rspace` | 178 | — | 8 | — |
-| `rholang` | 237 | 57 | 7 | — |
+| `rholang` | 238 | 57 | 7 | — |
 | `casper` | 277 | 54 | 3 | — |
 | `node` | 191 | 17 | — | — |
 | `qucalc` | 20 | — | — | — |
@@ -327,6 +327,7 @@ not found in that file. Coverage claims live here rather than in prose so they c
 | item 11 | `rholang/tests/execution.rs` | `the_runtime_reads_data_joins_and_waiting_continuations` |
 | item 11 | `models/src/casper/protocol/casper_message.rs` | `every_message_variant_round_trips_through_its_codec` |
 | item 11 | `node/tests/deploy_block.rs` | `autopropose_grows_the_chain_without_a_deploy` |
+| item 11 | `rholang/src/merging.rs` | `get_number_with_rnd_reads_one_int_and_refuses_the_rest` |
 
 ## Gap analysis (severity-ordered)
 
@@ -753,6 +754,22 @@ zero-test file.
 | `casper/src/protocol/client.rs` | 193 | the gRPC client's wire calls (419–494, 689–733) | `peer-bound` | a client needs a server; the `DeployService` trait layer with its in-file stub impls is `pin` |
 | `casper/src/blocks/block_receiver.rs` | 216 | the receive loop (293–351, 369–493, 579–636) | `harness-bound` + `stub` | 7 `todo!()`s live in this file; the loop needs a block store and a message stream |
 | `casper/src/{runtime_manager,runtime_replay}.rs`, `casper/src/engine/node_syncing.rs`, `node/src/runtime/{node_runtime,node_main}.rs`, `rholang/src/{runtime,normalizer}.rs`, `models/src/casper/protocol/casper_message.rs` | 124–286 each | — | — | not yet read; the ranking is the ledger's, so the order is not lost by stopping here |
+
+**Classified in the second and third batches** (the ranking moved as the first batches landed; these are
+the rows that changed, plus what the moves exposed):
+
+| file | missed | region | bucket | the seam, or why not |
+|---|---:|---|---|---|
+| `node/src/runtime/node_runtime.rs` | 286 | the autopropose tap + its interval timer (1128–1186) | `pin` | **pinned** — `autopropose_grows_the_chain_without_a_deploy`; no test had ever set `conf.autopropose`, so the devnet's own block-production path was unexecuted |
+| `node/src/runtime/node_runtime.rs` | | the attest tap (1204–1224) | `harness-bound` | it fires only when a *second* validator attests to a block we did not propose — a two-validator devnet, which no PR gate runs |
+| `rholang/src/runtime.rs` | 132 | `get_data`, `get_joins`, `get_continuation`, `get_continuation_par`, `consume_result` | `pin` | **pinned** — `the_runtime_reads_data_joins_and_waiting_continuations`; it also pinned two semantics the empty case would not (see that test's docstring) |
+| `models/src/casper/protocol/casper_message.rs` | 125 | `CasperMessage::to_proto`/`from_proto`'s eight non-`BlockMessage` arms | `pin` | **pinned** — `every_message_variant_round_trips_through_its_codec`, nine variants compared whole |
+| `rholang/src/merging.rs` | 96 | `get_number_with_rnd` (34–48) | `pin` | **pinned** — both refusals; they are what stops a malformed number channel being read as **zero** by the `None => 0` in both callers |
+| `rholang/src/merging.rs` | | `calculate_number_channel_merge`, `read_mergeable_values` (80–159) | `harness-bound` | both take a `HistoryReader`/`RhoHistoryRepository`; the seam is the fixture `casper/tests/determinism.rs` builds |
+| `casper/src/runtime_replay.rs` | 161 | `impl ReplayRuntime for ReportingRuntime` (722–793) | `fixture` | pure one-line forwarding, uncovered because nothing calls the trait methods on that type — the same class as `MockSpace`'s unused methods, and not debt |
+| `casper/src/runtime_replay.rs` | | the system-deploy replay trio (462–563) | `harness-bound` | needs a live `ReportingRuntime` + replay log; the covering fixture is `casper/tests/system_process_replies_and_restart.rs` |
+| `rholang/src/matcher/spatial_matcher.rs` | 112 | — | `pin` | pure matching; the register already pins five of its tests, so the remainder is the same idiom |
+| `models/src/wire.rs`, `rspace/src/history/export.rs`, `casper/src/reporting.rs`, `comm/src/upnp/mod.rs`, `rspace/src/merger/state_change_merger.rs`, `node/src/api/grpc/{tonic,deploy_grpc_service_v1}.rs` | 84–153 each | — | — | not yet read; `tonic.rs` is expected to split `stub` (its nineteen `unimplemented!()`) from `pin` (the live handlers, reachable over loopback gRPC as `serves_and_answers_propose` already does) |
 
 **What this table is not.** It is not a deferred-gap list: the census sweep closed check 7's file-level
 census, and these are *regions inside tested files*, which is exactly what item 11 is about. It is also

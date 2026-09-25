@@ -587,4 +587,44 @@ mod codec_tests {
     fn a_truncated_mergeable_datum_panics() {
         let _ = decode_rnd(b"");
     }
+    /// **The number-channel datum's shape, and both of its refusals.** `get_number_with_rnd` is the
+    /// decoder every mergeable-channel read goes through — `read_mergeable_values`, and the merge
+    /// itself — and its refusals are what stop a malformed number channel from being read as **zero**
+    /// (which is what `None => 0` in both callers would otherwise do silently). A datum that is not a
+    /// single `Int` is refused, and the message says *how many* pars it found: "this is not a number
+    /// channel" and "this channel carries two pars" are different diagnoses, and the second is the one
+    /// an operator can act on.
+    #[test]
+    fn get_number_with_rnd_reads_one_int_and_refuses_the_rest() {
+        let with = |pars: Vec<rchain_models::ast::Par>| ListParWithRandom {
+            pars: pars.into_iter().map(SortedProc::new).collect(),
+            random_state: Blake2b512Random::from_init(&[7u8; 32]),
+        };
+
+        let (num, rnd) =
+            get_number_with_rnd(&with(vec![RhoNumber::apply(42)])).expect("a single Int par");
+        assert_eq!(num, 42, "the number is the datum's Int");
+        assert_eq!(
+            rnd.to_bytes(),
+            Blake2b512Random::from_init(&[7u8; 32]).to_bytes(),
+            "and the random state travels with it — the merge needs both"
+        );
+
+        let not_an_int = get_number_with_rnd(&with(vec![Default::default()]))
+            .expect_err("an empty par is not an Int");
+        assert!(
+            not_an_int.contains("single Int term"),
+            "the refusal names what it wanted: {not_an_int}"
+        );
+
+        let two_pars = get_number_with_rnd(&with(vec![
+            RhoNumber::apply(1),
+            RhoNumber::apply(2),
+        ]))
+        .expect_err("two pars is not a number channel");
+        assert!(
+            two_pars.contains("found 2 pars"),
+            "and counts what it found: {two_pars}"
+        );
+    }
 }
