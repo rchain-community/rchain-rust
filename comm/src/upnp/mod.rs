@@ -511,6 +511,53 @@ mod port_forwarding_tests {
         }
     }
 
+    /// **The operator-facing device report.** `show_device` renders one gateway's fields under fixed
+    /// labels, and `print_devices` logs that block for every device; both were unexecuted. They are
+    /// pure — the second takes its log as a closure, which is the only reason it is testable at all —
+    /// and the thing that can go wrong is a **transposition**: every field here is a `String`, so a
+    /// swap renders the model name as the manufacturer and nothing else notices. The assertions pair
+    /// each label with its own value rather than checking the labels' padding, which is cosmetic.
+    #[test]
+    fn the_device_report_pairs_every_label_with_its_own_value() {
+        let device = FakeGateway {
+            name: "Test Router".to_string(),
+            external_ip: "203.0.113.7".to_string(),
+            existing: Vec::new(),
+            failing: Vec::new(),
+            added: std::sync::Mutex::new(Vec::new()),
+            removed: std::sync::Mutex::new(Vec::new()),
+        };
+
+        let text = show_device("192.168.1.1", &device);
+        let line_with = |label: &str| {
+            text.lines()
+                .find(|l| l.starts_with(label))
+                .unwrap_or_else(|| panic!("no `{label}` line in the report: {text}"))
+        };
+        assert!(line_with("Interface:").contains("192.168.1.1"), "{text}");
+        assert!(line_with("Name:").contains("Test Router"), "{text}");
+        assert!(line_with("Model:").contains("model"), "{text}");
+        assert!(line_with("Manufacturer:").contains("maker"), "{text}");
+        assert!(line_with("Description:").contains("description"), "{text}");
+        assert!(line_with("External IP:").contains("203.0.113.7"), "{text}");
+        assert!(line_with("Connected:").is_empty() == false, "{text}");
+
+        // `print_devices` logs one block for the set, in the caller's section shape (`\n…\n`).
+        let mut logged: Vec<String> = Vec::new();
+        print_devices(&devices(Arc::new(device), true), &mut |s| logged.push(s));
+        assert_eq!(logged.len(), 1, "one block for one device");
+        assert!(
+            logged[0].contains("Test Router"),
+            "carrying the device's own report: {:?}",
+            logged[0]
+        );
+        assert!(
+            logged[0].starts_with('\n') && logged[0].ends_with('\n'),
+            "in the section shape the caller writes: {:?}",
+            logged[0]
+        );
+    }
+
     fn devices(gateway: Arc<FakeGateway>, valid: bool) -> UPnPDevices {
         let any: Arc<dyn GatewayDevice> = gateway.clone();
         UPnPDevices {

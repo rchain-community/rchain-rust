@@ -26,7 +26,7 @@ and **no file is left without one or the other** — the linter's check 7 passes
 
 ## Inventory
 
-**1480 `#[test]`/`#[tokio::test]` unit functions + 129 integration tests** across 13 crates, with **26
+**1481 `#[test]`/`#[tokio::test]` unit functions + 129 integration tests** across 13 crates, with **26
 laws** carrying a randomized property test and **12 benchmark functions** in 7 Criterion groups. Only
 **3 of 13 crates have integration tests** (`rholang`, `casper`, `node`).
 
@@ -38,7 +38,7 @@ laws** carrying a randomized property test and **12 benchmark functions** in 7 C
 | `graphz` | 18 | — | — | — |
 | `models` | 158 | — | 5 | — |
 | `block-storage` | 42 | — | 3 | — |
-| `comm` | 125 | — | — | — |
+| `comm` | 126 | — | — | — |
 | `rspace` | 181 | — | 8 | — |
 | `rholang` | 240 | 57 | 7 | — |
 | `casper` | 278 | 55 | 3 | — |
@@ -339,6 +339,7 @@ not found in that file. Coverage claims live here rather than in prose so they c
 | item 11 | `node/src/api/grpc/tonic.rs` | `listen_for_continuation_at_name_converts_every_name` |
 | item 11 | `rholang/src/normalizer.rs` | `the_context_and_connective_refusals_are_specific` |
 | item 11 | `models/src/wire.rs` | `the_codec_round_trips_are_checked_in_both_directions` |
+| item 11 | `comm/src/upnp/mod.rs` | `the_device_report_pairs_every_label_with_its_own_value` |
 
 ## Gap analysis (severity-ordered)
 
@@ -790,7 +791,8 @@ the rows that changed, plus what the moves exposed):
 | `node/src/api/grpc/tonic.rs` | | the test double's nineteen `unimplemented!()` bodies (870–950) | `fixture` | a double that refuses everything; those lines are uncoverable by construction and are the boundary they exist to be |
 | `rspace/src/history/export.rs` | 123 | the traversal's second level (`init_node_path`, `add_node_ptr`, `add_element`) | `pin` | **pinned by the second level** — `export_walks_into_a_pointer_node`; the fixture is a two-node `HashMap` and a closure, so the only reason it took a pointer node is that the two existing tests stop at one |
 | `models/src/wire.rs` | 87 | the three `Serialize` impls' `decode` halves | `pin` | **pinned** — `the_codec_round_trips_are_checked_in_both_directions`; the encoder was what the tests checked and the decoder is what the node runs, so each codec now round-trips and refuses garbage |
-| `casper/src/reporting.rs`, `comm/src/upnp/mod.rs` | 84–99 each | — | — | not yet read |
+| `comm/src/upnp/mod.rs` | 99 | `show_device`, `print_devices` | `pin` | **pinned** — `the_device_report_pairs_every_label_with_its_own_value`; both are pure (the second takes its log as a closure), and the remaining lines are the two test doubles' unused `GatewayDevice` methods — `fixture` |
+| `casper/src/reporting.rs` | 84 | `RhoReporter::trace` (177–257) | `harness-bound` | it needs an `Arc<RhoReportingRspace>`, i.e. the reporting space the LFS state-sync path builds |
 
 **The first `defect`-bucket finding, and it was two lines no test could ever reach.** The coverage build's
 own warnings pointed at them: `casper/src/genesis/rgov.rs`'s `deploy_public_key` (a pairing helper in the
