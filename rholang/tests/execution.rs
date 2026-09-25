@@ -10,6 +10,7 @@ use rchain_crypto::hash::blake2b256_hash::Blake2b256Hash;
 use rchain_crypto::hash::blake2b512_random::Blake2b512Random;
 use rchain_models::ast::{Expr, GPrivate, GUnforgeable};
 use rchain_models::par_ops::from_expr;
+use rchain_models::runtime::BindPattern;
 use rchain_models::sorted::SortedProc;
 use rchain_models::types::{is_closed, Closed};
 use rchain_rholang::accounting::Cost;
@@ -55,6 +56,117 @@ async fn execute_deploy_produces_datum() {
     assert!(res.succeeded(), "unexpected errors: {:?}", res.errors);
     let data = rt.get_data_par(&chan("chan")).await.expect("get_data_par");
     assert_eq!(data, vec![from_expr(Expr::GInt(42))]);
+}
+
+/// **The runtime's reads beyond `get_data_par`.** `RhoRuntime` exposes five reads over its tuplespace,
+/// and four of them had never run: every test that reads uses `get_data_par`. They are the surface the
+/// deploy-result and reporting paths read through (`get_data`, `get_joins`, `get_continuation`,
+/// `get_continuation_par`, `consume_result`), so a port bug in one is a silently missing answer rather
+/// than a visible failure — the same shape as the API routes pinned in `node/tests/api_surface.rs`.
+///
+/// The empty case is asserted for each: a channel with nothing on it must answer an empty list and not
+/// an error, which is the convention the whole port uses for "not there" (and the reason a missing
+/// sidecar, not a missing datum, is the dangerous case).
+#[tokio::test]
+async fn the_runtime_reads_data_joins_and_waiting_continuations() {
+    let (rt, _replay) = build_runtime_pair().await;
+    // A datum on `chan`, and a `for` left *waiting* on `cont` (nothing is ever sent there).
+    rt.evaluate(
+        // `*x`: a receive pattern binds `x` as a *name*, so using it as a process needs the
+        // dereference — without it the runtime reports `UnexpectedProcContext`, which is how this
+        // term was written the first time.
+        // A two-channel `for` on `x`/`y` leaves a *join* waiting (only `x` ever receives), which is
+        // the only way `get_joins` has something to answer beyond the empty list.
+        r#"@"chan"!(42) | for (x <- @"cont") { @"out"!(*x) } | @"x"!(1) | for (a <- @"x"; b <- @"y") { @"out"!(0) }"#,
+        &fixed_rand(),
+    )
+    .await
+    .expect("evaluate");
+
+    // The raw datum, and its shape.
+    let data = rt.get_data(&chan("chan")).await.expect("get_data");
+    assert_eq!(data.len(), 1, "one datum on the channel");
+    assert_eq!(data[0].a.pars.len(), 1, "carrying one par");
+
+    // Nothing there: empty lists, not errors. (The two reads answer different element types, so
+    // they are asserted rather than tabulated — a table would need the type erased.)
+    assert!(
+        rt.get_data(&chan("nothing-here"))
+            .await
+            .expect("get_data")
+            .is_empty(),
+        "get_data on an untouched channel is empty"
+    );
+    assert!(
+        rt.get_joins(&chan("nothing-here"))
+            .await
+            .expect("get_joins")
+            .is_empty(),
+        "get_joins on an untouched channel is empty"
+    );
+
+    // The join index, and the semantics it records. A single-channel `for` waiting on `cont` is one
+    // join naming that channel; the two-channel `for` on `x`/`y` has already **consumed `x`'s datum**,
+    // so it waits on its *remaining* channel `y` — which is why `x` reports nothing and `y` reports
+    // the join. (Measured, not assumed: the first version of this assertion expected the join to name
+    // both channels and returned nothing for `x`.) That partial match is the detail worth pinning: a
+    // multi-channel receive is not waiting on all of its channels, it is waiting on the ones still
+    // unsatisfied, and a caller recovering stranded continuations reads the index accordingly.
+    let joins = rt.get_joins(&chan("cont")).await.expect("get_joins");
+    assert_eq!(joins.len(), 1, "the `for` on cont is registered as a join");
+    assert_eq!(joins[0].len(), 1, "naming its one channel: {joins:?}");
+    assert_eq!(
+        rt.get_joins(&chan("y")).await.expect("get_joins").len(),
+        1,
+        "the partially-matched two-channel `for` waits on its remaining channel"
+    );
+    assert!(
+        rt.get_joins(&chan("x"))
+            .await
+            .expect("get_joins")
+            .is_empty(),
+        "and no longer on `x`, whose datum the join attempt consumed"
+    );
+
+    // The waiting continuation, raw and as a `Par`.
+    let conts = rt
+        .get_continuation(&[chan("cont")])
+        .await
+        .expect("get_continuation");
+    assert_eq!(conts.len(), 1, "the `for` is waiting on `cont`");
+    let as_pars = rt
+        .get_continuation_par(&[chan("cont")])
+        .await
+        .expect("get_continuation_par");
+    assert_eq!(as_pars.len(), 1, "and it is readable as a `Par` too");
+    let (patterns, body) = &as_pars[0];
+    assert_eq!(patterns.len(), 1, "the pattern is a single bind");
+    assert_eq!(
+        body.sends.len(),
+        1,
+        "the body is the `for`'s par — one send, not the empty par: {body:?}"
+    );
+
+    // `consume_result` needs one pattern per channel (the space asserts the arity), and with nothing
+    // on the channel it is `None` — the reported "no result yet". The waiting continuation on `cont`
+    // is *also* `None`, and that is the semantic worth pinning: a consume matches **data**, so a
+    // `for` with nothing to receive from is not a result. A caller that read `Some` here would be
+    // taking a continuation for an answer.
+    let wildcard = BindPattern {
+        patterns: vec![],
+        remainder: None,
+        free_count: 0,
+    };
+    for channel in ["nothing-here", "cont"] {
+        let none = rt
+            .consume_result(&[chan(channel)], std::slice::from_ref(&wildcard))
+            .await
+            .expect("consume_result");
+        assert!(
+            none.is_none(),
+            "consume_result on `{channel}` has no datum to match, so there is no result"
+        );
+    }
 }
 
 #[tokio::test]
