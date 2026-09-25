@@ -201,7 +201,7 @@ BEGIN { skip = 0; depth = 0 }
   # naming a caller'\''s `assert!`), and a class that fires on prose is one people learn to work around.
   # The earlier `sorry`/`opaque` ratchet strips comments for the same reason.
   if ($0 ~ /^[[:space:]]*\/\//) next
-  if ($0 !~ RE) next
+  if ($0 !~ ENVIRON["RE"]) next
   if ($0 ~ /self\.expect\(|\.expect\(Tok::/) next
   start = FNR
   text = norm($0)
@@ -232,7 +232,7 @@ scan_panic() {
         [ -n "$line" ] || continue
         sites=$((sites + 1))
         panic_site "$f" "$line" "$text"
-      done < <(awk -v RE="$pattern" "$PANIC_SITES_AWK" "$f")
+      done < <(RE="$pattern" awk "$PANIC_SITES_AWK" "$f")
     done < <(find "$dir" -name '*.rs' | grep -vE "$TEST_ONLY_FILE_RE")
   done
   panic_guard "$sites"
