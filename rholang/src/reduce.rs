@@ -3315,6 +3315,157 @@ mod tests {
         assert_eq!(hex, from_expr(Expr::GString("6162".to_string())));
     }
 
+    /// **The four logical-connective bodies, and both short-circuits.** `EShortAnd`/`EShortOr` were
+    /// never *evaluated* by any test: the sort corpus (law 1a's rows 23 and the boundary list) uses
+    /// them as terms to order, and nothing ran `1 && 2`. The failure arm is the short-circuit itself,
+    /// and it is asserted the only way it is observable — the side that must be skipped is a division
+    /// by zero, so an implementation that evaluated both operands eagerly answers `Err` where this
+    /// expects a boolean. That is the defect the arm's `if b1 { … } else { false }` exists to prevent,
+    /// and the reason `&&`/`||` cannot be desugared to `EAnd`/`EOr`.
+    #[test]
+    fn the_logical_connectives_short_circuit() {
+        let cost = CostAccounting::from_initial(Costs::unsafe_max());
+        let e = Env::new();
+        let b = |v: bool| from_expr(Expr::GBool(v));
+        let int = |v: i64| from_expr(Expr::GInt(v));
+        let div_by_zero = || Box::new(from_expr(Expr::EDiv(Box::new(int(1)), Box::new(int(0)))));
+        let eval = |ex: Expr| eval_expr_to_expr(&ex, &e, &cost);
+
+        // `&&`: `true && x` is `x`; `false && x` is `false` without touching `x`.
+        assert_eq!(
+            eval(Expr::EShortAnd(Box::new(b(true)), Box::new(b(false)))).unwrap(),
+            Expr::GBool(false)
+        );
+        assert_eq!(
+            eval(Expr::EShortAnd(Box::new(b(true)), Box::new(b(true)))).unwrap(),
+            Expr::GBool(true)
+        );
+        assert_eq!(
+            eval(Expr::EShortAnd(Box::new(b(false)), div_by_zero())).unwrap(),
+            Expr::GBool(false),
+            "a false left operand must skip the right one — reaching the division by zero is an error"
+        );
+
+        // `||`: `false || x` is `x`; `true || x` is `true` without touching `x`.
+        assert_eq!(
+            eval(Expr::EShortOr(Box::new(b(false)), Box::new(b(true)))).unwrap(),
+            Expr::GBool(true)
+        );
+        assert_eq!(
+            eval(Expr::EShortOr(Box::new(b(false)), Box::new(b(false)))).unwrap(),
+            Expr::GBool(false)
+        );
+        assert_eq!(
+            eval(Expr::EShortOr(Box::new(b(true)), div_by_zero())).unwrap(),
+            Expr::GBool(true),
+            "a true left operand must skip the right one"
+        );
+    }
+
+    /// **`toInt` and `toBigInt`, every arm including both refusals.** The refusals are the point: a
+    /// string that is not a number and a `BigInt` outside `i64` must be *reported*, not truncated or
+    /// wrapped, and the message names the input it could not convert — the difference between a
+    /// diagnostic and a shrug. `toInt` is also not defined on a boolean, which is a third refusal.
+    #[test]
+    fn the_int_conversions_report_what_they_cannot_convert() {
+        let cost = CostAccounting::from_initial(Costs::unsafe_max());
+        let e = Env::new();
+        let s = |v: &str| from_expr(Expr::GString(v.to_string()));
+
+        // The identity and promoting arms.
+        assert_eq!(
+            eval_method("toInt", &from_expr(Expr::GInt(3)), &[], &e, &cost).unwrap(),
+            from_expr(Expr::GInt(3))
+        );
+        assert_eq!(
+            eval_method(
+                "toBigInt",
+                &from_expr(Expr::GBigInt(BigInt::from(3))),
+                &[],
+                &e,
+                &cost
+            )
+            .unwrap(),
+            from_expr(Expr::GBigInt(BigInt::from(3)))
+        );
+        assert_eq!(
+            eval_method("toInt", &s("42"), &[], &e, &cost).unwrap(),
+            from_expr(Expr::GInt(42))
+        );
+        assert_eq!(
+            eval_method("toBigInt", &from_expr(Expr::GInt(7)), &[], &e, &cost).unwrap(),
+            from_expr(Expr::GBigInt(BigInt::from(7)))
+        );
+        assert_eq!(
+            eval_method("toBigInt", &s("42"), &[], &e, &cost).unwrap(),
+            from_expr(Expr::GBigInt(BigInt::from(42)))
+        );
+
+        // The refusals.
+        let err = eval_method("toInt", &s("nope"), &[], &e, &cost)
+            .expect_err("a non-numeric string is not an Int");
+        assert!(
+            format!("{err:?}").contains("nope"),
+            "the refusal names the input it could not convert: {err:?}"
+        );
+        let too_big = BigInt::from(i64::MAX) + BigInt::from(1);
+        assert!(
+            eval_method("toInt", &from_expr(Expr::GBigInt(too_big)), &[], &e, &cost).is_err(),
+            "a BigInt outside i64 is refused, not truncated"
+        );
+        assert!(eval_method("toBigInt", &s("nope"), &[], &e, &cost).is_err());
+        assert!(
+            eval_method("toInt", &from_expr(Expr::GBool(true)), &[], &e, &cost).is_err(),
+            "`toInt` is not defined on a boolean"
+        );
+    }
+
+    /// **`take`, the list arm and its two refusals.** The zero/negative case is the one the arm's own
+    /// comment calls out: `restrict_to_int` wraps a negative index to a huge `usize`, so `take(-1)`
+    /// would return the *whole* list — and mint a negative cost for the privilege — without the
+    /// explicit `if n_i <= 0 { 0 }` guard. The refusals are a receiver that is not a list and a
+    /// non-integer argument.
+    #[test]
+    fn take_slices_a_list_and_refuses_what_it_is_not_defined_on() {
+        let cost = CostAccounting::from_initial(Costs::unsafe_max());
+        let e = Env::new();
+        let list = || {
+            from_expr(Expr::EList(EList {
+                ps: vec![
+                    from_expr(Expr::GInt(1)),
+                    from_expr(Expr::GInt(2)),
+                    from_expr(Expr::GInt(3)),
+                ],
+                ..Default::default()
+            }))
+        };
+        let take = |n: i64| eval_method("take", &list(), &[from_expr(Expr::GInt(n))], &e, &cost);
+        let len = |p: &Par| match single_expr(p).unwrap() {
+            Expr::EList(l) => l.ps.len(),
+            other => panic!("expected a list, got {other:?}"),
+        };
+
+        assert_eq!(len(&take(2).unwrap()), 2, "the first two elements");
+        assert_eq!(len(&take(0).unwrap()), 0, "take(0) is empty");
+        assert_eq!(
+            len(&take(-1).unwrap()),
+            0,
+            "a negative count is empty, not the whole list"
+        );
+        assert_eq!(len(&take(5).unwrap()), 3, "taking more than there is takes all");
+
+        let set = from_expr(Expr::ESet(par_set(vec![from_expr(Expr::GInt(1))])));
+        assert!(
+            eval_method("take", &set, &[from_expr(Expr::GInt(1))], &e, &cost).is_err(),
+            "`take` is a list method; a set is refused by name"
+        );
+        assert!(
+            eval_method("take", &list(), &[from_expr(Expr::GString("x".into()))], &e, &cost)
+                .is_err(),
+            "the count must be an integer"
+        );
+    }
+
     #[test]
     fn set_union() {
         let cost = CostAccounting::from_initial(Costs::unsafe_max());

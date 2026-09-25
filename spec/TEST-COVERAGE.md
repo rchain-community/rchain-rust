@@ -26,7 +26,7 @@ and **no file is left without one or the other** — the linter's check 7 passes
 
 ## Inventory
 
-**1454 `#[test]`/`#[tokio::test]` unit functions + 126 integration tests** across 13 crates, with **26
+**1457 `#[test]`/`#[tokio::test]` unit functions + 126 integration tests** across 13 crates, with **26
 laws** carrying a randomized property test and **12 benchmark functions** in 7 Criterion groups. Only
 **3 of 13 crates have integration tests** (`rholang`, `casper`, `node`).
 
@@ -40,7 +40,7 @@ laws** carrying a randomized property test and **12 benchmark functions** in 7 C
 | `block-storage` | 42 | — | 3 | — |
 | `comm` | 124 | — | — | — |
 | `rspace` | 178 | — | 8 | — |
-| `rholang` | 227 | 56 | 7 | — |
+| `rholang` | 230 | 56 | 7 | — |
 | `casper` | 277 | 54 | 3 | — |
 | `node` | 191 | 16 | — | — |
 | `qucalc` | 20 | — | — | — |
@@ -311,6 +311,10 @@ not found in that file. Coverage claims live here rather than in prose so they c
 | genesis | `casper/tests/genesis_registry.rs` | `installing_make_mint_before_its_dependency_is_caught_by_the_genesis_check` |
 | genesis | `casper/src/genesis/mod.rs` | `blessed_terms_are_ordered_by_dependency` |
 | syntax | `rholang/src/reduce.rs` | `plus_and_minus_also_insert_into_and_delete_from_collections` |
+| item 11 | `rholang/src/reduce.rs` | `the_logical_connectives_short_circuit` |
+| item 11 | `rholang/src/reduce.rs` | `the_int_conversions_report_what_they_cannot_convert` |
+| item 11 | `rholang/src/reduce.rs` | `take_slices_a_list_and_refuses_what_it_is_not_defined_on` |
+| item 11 | `node/tests/api_surface.rs` | `the_read_routes_answer_and_their_refusals_are_defined` |
 
 ## Gap analysis (severity-ordered)
 
@@ -690,7 +694,59 @@ so the reason is recorded here rather than only in the commit that did it.
 | 8. `gen-differential-goldens.sh` completes or fails loudly; every committed TSV row is consumed | **done** — provenance columns + a per-file drift guard; the script exits 2 without sbt |
 | 9. The Stage 1 audit list appears verbatim in the register, each entry mapped to a test | **done** — the machine-checked claims table |
 | 10. Every `*/src/**/*.rs` is tested or exempt with a reason class (linter check 7) | **done** — the census of all 354 source files closes: **282 tested, 72 exempt, 0 unaccounted**. Hard mode is the gate (`make check-register`, CI's coverage job) and `--deferred-ok` is gone, so a new source file with no test fails the build rather than joining a list nobody reads. The earlier tier table could not have caught this: it was checked against itself, not against the tree. |
-| 11. The thin-coverage files' unreached failure arms are pinned | **not started** — the second track, ordered by uncovered lines. First `node/src/api/grpc/tonic.rs` (972 lines, 1 test, 26 `*_to_wire`/`*_from_wire` conversions with no test), then `casper/src/runtime_manager.rs` (1219 lines, 1 test) and the rest. Check 7 does not cover these files — they already have a test — which is why they are a separate item rather than part of 10. |
+| 11. The thin-coverage files' unreached failure arms are pinned | **in progress** — ordered by the *emitted* ranking, not by this row's prose: [`COVERAGE-LEDGER.md`](COVERAGE-LEDGER.md)'s first table is the work list, and check 11 refuses a coverage figure written here by hand. The hand-written order this row used to carry named `node/src/api/grpc/tonic.rs` first; the measurement ranks it fifteenth, and the two files that led (`rholang/src/reduce.rs`, `rholang/src/system_processes.rs`) had no register row at all. Check 7 does not cover these files — they already have a test — which is why this is a separate item from 10. The bucket classification and what is pinned so far are in §"The thin-coverage pass" below. |
+
+## The thin-coverage pass (definition-of-done item 11)
+
+Item 11 is the register's one open item, and its work is now ordered by the **emitted ranking** rather
+than by this file's prose: [`COVERAGE-LEDGER.md`](COVERAGE-LEDGER.md) holds the per-file table sorted by
+missed lines, and check 11 refuses a coverage figure written here by hand — which is how the old order
+(it named `node/src/api/grpc/tonic.rs`, ranked fifteenth, first, while `rholang/src/reduce.rs` led with
+640 missed lines) is prevented from coming back.
+
+**Classification before tests, and read rather than grepped.** Every region below was read and put in one
+of six buckets; the bucket decides what the region can become, and a region with no bucket is not yet
+understood. Two traps the first attempt fell into, recorded because both silently produce a wrong table:
+attributing a region by the *nearest preceding `fn`* (a grep put a 229-line region under a four-line
+function), and enumerating tests with a pattern that stops at `test]` — `#[tokio::test(flavor =
+"multi_thread")]` made `rspace/src/concurrent/channel_queue.rs`, 790 lines and 18 tests, read as a
+zero-test file.
+
+| bucket | meaning |
+|---|---|
+| `pin` | reachable through an existing public seam — name it, and pin the *failure* arm |
+| `harness-bound` | needs the whole node, or a live history/RSpace fixture — name the covering test |
+| `peer-bound` | needs a live peer or a real device |
+| `stub` | `unimplemented!()`/`todo!()` — a named feature boundary, not coverage debt |
+| `fixture` | a test double's trait methods, uncovered because the double is only used for some of them |
+| `defect` | unreachable because the production code is wrong or dead → an AUDIT row, then a test |
+
+### Classified so far (2026-09-25 — the top of the ranking, read)
+
+| file | missed | region | bucket | the seam, or why not |
+|---|---:|---|---|---|
+| `rholang/src/reduce.rs` | 640 | `EShortAnd`/`EShortOr` bodies (584–602) | `pin` | **pinned** — `the_logical_connectives_short_circuit`, both short-circuits asserted by putting a division by zero on the side that must be skipped |
+| `rholang/src/reduce.rs` | | `toInt`/`toBigInt` (982–1026) | `pin` | **pinned** — `the_int_conversions_report_what_they_cannot_convert`, all three refusals (non-numeric string, out-of-range `BigInt`, a boolean receiver) |
+| `rholang/src/reduce.rs` | | `take` (1304–1326) | `pin` | **pinned** — `take_slices_a_list_and_refuses_what_it_is_not_defined_on`, including the negative count the arm's own comment calls out |
+| `rholang/src/reduce.rs` | | the remaining `eval_method` arms | `pin` | the same idiom reaches them: `eval_method(<name>, …)` is already the module's method-test form |
+| `rholang/src/reduce.rs` | | `DefaultTupleSpace::{produce_at, consume_at, commit_produce}` (1721–1757) | `pin` + `harness-bound` | `commit_produce`'s body is a documented refusal ("non-scheduling tuplespace") — a direct call asserts it; the two `_at` delegations need a default space driven through the scheduler entry point |
+| `rholang/src/reduce.rs` | | `MockSpace`/`MockDispatch` trait methods (3153–3167) | `fixture` | **not** dead code — both doubles are used (3180/3229/3273); these are the methods those tests do not call. Named so the next ranking does not read them as debt |
+| `rholang/src/system_processes.rs` | 499 | the `rho:io:http` process (1596–1681) | `pin` | the four ops (`record`/`get`/`check`/`height`) and the unknown-method refusal; the urn is registered (`system_processes.rs:656`), and law 39's catalog pins the *schema*, not the behaviour |
+| `rholang/src/system_processes.rs` | | `verify_signature_contract` (761–787) and the PoS/vault arms | — | not yet read |
+| `casper/src/merging.rs` | 419 | `DeployChainIndex::apply`, `BlockIndex::{create_event_log_index, apply}`, `from_fringes` (192–420, 452–552, 666–832) | `harness-bound` | **no test file references `BlockIndex` or `DeployChainIndex` at all** (measured); the fixture is a live history + RSpace, which `rspace`'s history tests and `casper`'s `build_storage()` already stand up |
+| `casper/src/engine/node_running.rs` | 393 | `NodeRunning::handle`'s peer-message dispatch (549–803) | `pin` | `handle(&PeerNode, &CasperMessage)` is callable in-process; the store-error arms are already pinned (`a_store_that_cannot_be_read_is_not_an_unknown_block`), so what is left is the same-key warning, the full-ingress-queue warning, and the known/unknown block arms |
+| `node/src/web/http.rs` | 245 | the read routes | `pin` | **batch 1 landed** — `node/tests/api_surface.rs`; what remains is the admin and gateway-only routes (`/api/v1/txn`, the metrics reporting path) |
+| `comm/src/upnp/gateway.rs` | 205 | `WeupnpGatewayDevice::new` + the `GatewayDevice` accessors (299–352) | `pin` | a plain constructor and eight getters — the cheapest region in the tree |
+| `comm/src/upnp/gateway.rs` | | `ssdp_discover`, `http_get`, `soap_post` (37–63, 188–207) | `peer-bound` | these need a real UPnP router; what *is* pinned is the SSRF guard over the same parsing (`the_url_guard_allows_private_gateways_and_refuses_ssrf_targets`) |
+| `casper/src/protocol/client.rs` | 193 | the gRPC client's wire calls (419–494, 689–733) | `peer-bound` | a client needs a server; the `DeployService` trait layer with its in-file stub impls is `pin` |
+| `casper/src/blocks/block_receiver.rs` | 216 | the receive loop (293–351, 369–493, 579–636) | `harness-bound` + `stub` | 7 `todo!()`s live in this file; the loop needs a block store and a message stream |
+| `casper/src/{runtime_manager,runtime_replay}.rs`, `casper/src/engine/node_syncing.rs`, `node/src/runtime/{node_runtime,node_main}.rs`, `rholang/src/{runtime,normalizer}.rs`, `models/src/casper/protocol/casper_message.rs` | 124–286 each | — | — | not yet read; the ranking is the ledger's, so the order is not lost by stopping here |
+
+**What this table is not.** It is not a deferred-gap list: the census sweep closed check 7's file-level
+census, and these are *regions inside tested files*, which is exactly what item 11 is about. It is also
+not the plan for the remaining work — the batches are chosen by cost, not by this table's order, and the
+pass is complete when the floor has moved on a measurement that includes the pins, not when every
+region is closed.
 
 ## Production changes made under this plan
 
