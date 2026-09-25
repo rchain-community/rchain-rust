@@ -157,13 +157,15 @@ async fn the_node_agrees_with_the_model_on_every_block_number_and_sequence_numbe
         let seq_says = matches!(sequence_number(&dag, &b).await, Ok(Ok(())));
 
         assert_eq!(
-            number_says, expected_number,
+            number_says,
+            expected_number,
             "corpus line {}: block_number says {number_says}, the model says {expected_number} \
              (spec/conformance/block.tsv, law 16a)",
             i + 1
         );
         assert_eq!(
-            seq_says, expected_seq,
+            seq_says,
+            expected_seq,
             "corpus line {}: sequence_number says {seq_says}, the model says {expected_seq} \
              (spec/conformance/block.tsv, law 16b)",
             i + 1
