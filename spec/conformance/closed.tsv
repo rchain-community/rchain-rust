@@ -1,0 +1,10 @@
+closed	1	true
+closed	"a"	true
+closed	x	false
+closed	0	true
+closed	new x in { Nil }	true
+closed	x!(1)	false
+closed	@1!(1)	true
+closed	[1, x]	false
+closed	[1, 2]	true
+closed	1 + 2	true

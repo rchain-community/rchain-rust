@@ -255,6 +255,7 @@ if [[ -d "$ROOT/spec/conformance" ]]; then
       c21)      test_name="lean_c21_corpus";       crate="rchain-rholang" ;;
       sort)     test_name="lean_sort_corpus";      crate="rchain-rholang" ;;
       body)     test_name="lean_body_corpus";      crate="rchain-node" ;;
+      closed)   test_name="lean_closed_corpus";    crate="rchain-rholang" ;;
       protocol) test_name="lean_protocol_corpus";  crate="rchain-rholang" ;;
       envelope) test_name="lean_envelope_corpus";  crate="rchain-node" ;;
       lex)      test_name="lean_lex_corpus";       crate="rchain-node" ;;

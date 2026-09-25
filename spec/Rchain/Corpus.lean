@@ -1054,6 +1054,76 @@ theorem sortCases_length : sortCases.length = sortCaseCount := by decide
 def sortLine (c : SortCase) : String :=
   "sort\t" ++ c.left ++ "\t" ++ c.right ++ "\t" ++ c.verdict
 
+/-! ## The `closed` layer — law 6's verdict, read off the node
+
+Law 6 says a process is closed exactly when it has no free variable, and the node decides that with
+`models::types::is_closed` (`models/src/types.rs:371`) — the same predicate `Closed::new` refuses on
+rather than panicking. The register's row for law 6 was `proved-model` with the node side *anchored* but
+not *replayed*; this layer is the replay: each row is a term as rholang spells it, the model's `Par` for
+the same term, and the value `closed` must return. The consumer parses and normalizes the source with the
+node's own parser and asserts the node's `is_closed` agrees — the two sides compare terms they built
+themselves, which is what makes the source text the tie.
+
+The cases are chosen to separate the predicate's parts rather than to be many: a ground (closed), a free
+variable (open, and the reason the predicate exists), a bound variable (closed), a `new` whose body is
+closed (closed — the binder is what makes it so), a send on a free channel (open) against one on a ground
+channel (closed), a collection with a free element (open) against one without (closed), and an arithmetic
+expression (closed). A receive is deliberately **not** here: the model's pattern variables resolve through
+the binder stack (`nameVar`), and whether that matches the node's `is_closed` on a receive's pattern is a
+question this layer would have to answer before it could pin it — the honest move is a case list that
+pins what is agreed, with the question named here. -/
+
+/-- One `closed` case: the term as rholang spells it, the model's `Par` for it, and the verdict. -/
+structure ClosedCase where
+  /-- The term as rholang spells it — what the consumer's parser reads. -/
+  source : String
+  /-- The same term, as the model sees it. -/
+  par : Par
+  /-- What `closed` must return. -/
+  expected : Bool
+
+/-- A variable occurrence, free. -/
+def freeVarPar (k : Nat) : Par := one (.evar (.free k))
+
+/-- A variable occurrence, bound. -/
+def boundVarPar (k : Nat) : Par := one (.evar (.bound k))
+
+/-- The cases. -/
+def closedCases : List ClosedCase :=
+  [ ⟨"1", intPar 1, true⟩
+  , ⟨"\"a\"", one (.ground (.str [97])), true⟩
+  , ⟨"x", freeVarPar 0, false⟩
+  , ⟨"0", boundVarPar 0, true⟩
+  , ⟨"new x in { Nil }", Par.mk [] [] [New.mk 1 nilPar] [] [] [] [] [], true⟩
+  , ⟨"x!(1)", Par.mk [Send.mk (freeVarPar 0) [intPar 1] false] [] [] [] [] [] [] [], false⟩
+  , ⟨"@1!(1)", Par.mk [Send.mk (intPar 1) [intPar 1] false] [] [] [] [] [] [] [], true⟩
+  , ⟨"[1, x]", one (.elist [intPar 1, freeVarPar 0] none), false⟩
+  , ⟨"[1, 2]", one (.elist [intPar 1, intPar 2] none), true⟩
+  , ⟨"1 + 2", one (.eplus (intPar 1) (intPar 2)), true⟩
+  ]
+
+/-- The layer's checker: every case's verdict is what `closed` returns. -/
+def closedHolds (c : ClosedCase) : Bool := closed c.par == c.expected
+
+/-- Every case holds of the model. `decide` rather than `native_decide`: the terms are shallow enough
+    for the kernel, and law 6's predicate is a structural checker rather than a comparator reduction. -/
+theorem closedCases_decide : closedCases.all closedHolds = true := by decide
+
+/-- The layer carries exactly `closedCaseCount` cases. -/
+def closedCaseCount : Nat := 10
+
+theorem closedCases_length : closedCases.length = closedCaseCount := by decide
+
+/-- **The layer is not degenerate**: both verdicts appear, so a checker that answered `false` (or `true`)
+    everywhere could not pass. Law 6's predicate is the interesting kind — the non-vacuity ratchet
+    applied to this layer, as `sortCases_verdicts` is to the sorter's. -/
+theorem closedCases_verdicts :
+    (closedCases.map (fun c => c.expected)).eraseDups.length = 2 := by decide
+
+/-- One `closed` corpus line: layer, the term, the verdict. -/
+def closedLine (c : ClosedCase) : String :=
+  "closed\t" ++ c.source ++ "\t" ++ (if c.expected then "true" else "false")
+
 end Corpus
 end Rchain
 
@@ -1208,7 +1278,7 @@ def main (args : List String) : IO UInt32 := do
   let want :=
     (args.find? (fun a => a == "flags" || a == "match" || a == "silence" || a == "store"
       || a == "c21" || a == "protocol" || a == "json" || a == "envelope"
-      || a == "lex" || a == "sort" || a == "parse" || a == "body")).getD "flags"
+      || a == "lex" || a == "sort" || a == "parse" || a == "body" || a == "closed")).getD "flags"
   let (lines, count) :=
     if want == "c21" then (Corpus.c21Cases.map Corpus.c21Line, Corpus.c21CaseCount)
     else if want == "match" then (Corpus.matchCases.map Corpus.matchLine, Corpus.matchCaseCount)
@@ -1230,6 +1300,8 @@ def main (args : List String) : IO UInt32 := do
       (parseCases.map Corpus.parseLine, parseCaseCount)
     else if want == "body" then
       (bodyCases.map bodyLine, bodyCaseCount)
+    else if want == "closed" then
+      (Corpus.closedCases.map Corpus.closedLine, Corpus.closedCaseCount)
     else (Corpus.flagCases.map Corpus.flagLine, Corpus.flagCaseCount)
   if lines.length != count then
     IO.eprintln s!"rchain-corpus: {want}: the case list and the declared count disagree"
