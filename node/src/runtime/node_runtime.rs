@@ -2097,6 +2097,7 @@ mod tests {
                     bonds_map: std::collections::BTreeMap::new(),
                     validated: true,
                     validation_failed: false,
+                    slashable: false,
                     member_of_fringe: None,
                     fringe: std::collections::BTreeSet::new(),
                     fringe_state_hash: foreign.post_state_hash,

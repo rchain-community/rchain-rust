@@ -443,6 +443,7 @@ mod tests {
             bonds_map: BTreeMap::new(),
             validated: true,
             validation_failed: false,
+            slashable: false,
             fringe: BTreeSet::new(),
             fringe_state_hash: StateHash::new([0u8; 32]),
             member_of_fringe: None,

@@ -401,6 +401,8 @@ fn mark_failed(meta: &BlockMetadata) -> BlockMetadata {
     BlockMetadata {
         validated: true,
         validation_failed: true,
+        // The validation could not be run, so nothing here is the block's fault.
+        slashable: false,
         ..meta.clone()
     }
 }
@@ -451,6 +453,7 @@ mod tests {
             bonds_map: std::collections::BTreeMap::new(),
             validated: false,
             validation_failed: true,
+            slashable: false,
             member_of_fringe: None,
             fringe: std::collections::BTreeSet::new(),
             fringe_state_hash: rchain_crypto::hash::blake2b256_hash::Blake2b256Hash::from_bytes(
@@ -511,6 +514,7 @@ mod newest_justification_tests {
             bonds_map: BTreeMap::new(),
             validated: true,
             validation_failed: false,
+            slashable: false,
             fringe: BTreeSet::new(),
             fringe_state_hash: rchain_models::block::state_hash::StateHash::new([0u8; 32]),
             member_of_fringe: None,
@@ -550,5 +554,46 @@ mod newest_justification_tests {
     #[test]
     fn no_justifications_answers_for_nothing() {
         assert!(newest_justification(&[]).is_none());
+    }
+}
+
+#[cfg(test)]
+mod mark_failed_tests {
+    use super::mark_failed;
+    use rchain_models::block_hash::BlockHash;
+    use rchain_models::block_metadata::BlockMetadata;
+    use rchain_models::validator::Validator;
+    use rchain_shared::refined::{BlockHeight, SeqNum};
+    use std::collections::{BTreeMap, BTreeSet};
+
+    fn meta(slashable: bool) -> BlockMetadata {
+        BlockMetadata {
+            block_hash: BlockHash::new([0u8; 32]),
+            block_num: BlockHeight::try_from(1).unwrap(),
+            sender: Validator::new([1u8; 65]),
+            seq_num: SeqNum::zero(),
+            justifications: BTreeSet::new(),
+            bonds_map: BTreeMap::new(),
+            validated: false,
+            validation_failed: false,
+            slashable,
+            fringe: BTreeSet::new(),
+            fringe_state_hash: rchain_models::block::state_hash::StateHash::new([0u8; 32]),
+            member_of_fringe: None,
+        }
+    }
+
+    /// This is the safety property of the narrowing. `mark_failed` is reached when the validation could not
+    /// be run at all - the path tonight's failure took ("processing error: validateBlockCheckpoint failed:
+    /// regenerated mergeable channels ... instead"). Such a block is still unusable here, but it must not
+    /// carry an attributable failure with it, or a local replay problem costs an honest validator its stake.
+    #[test]
+    fn a_validation_that_could_not_run_clears_the_attributable_failure() {
+        let marked = mark_failed(&meta(true));
+        assert!(marked.validation_failed, "still unusable here");
+        assert!(
+            !marked.slashable,
+            "and not the sender's fault, whatever the block was marked with before"
+        );
     }
 }
