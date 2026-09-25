@@ -29,6 +29,18 @@ pub struct BlockMetadata {
     pub bonds_map: BTreeMap<Validator, NonNegI64>,
     pub validated: bool,
     pub validation_failed: bool,
+
+    /// Whether this failure is a property of the *block* rather than of this node's ability to replay it.
+    ///
+    /// Deliberately separate from [`Self::validation_failed`], which means "unusable here" and is set for
+    /// both cases. A replay that cannot run at all - an unreadable pre-state, a store error, a sidecar that
+    /// cannot be regenerated - says nothing about the sender, and treating it as the sender's fault costs an
+    /// honest validator its stake for a local problem (#70). Only a *completed* validation that disagrees
+    /// (a state mismatch, or a rejectable status) is attributable to the block.
+    ///
+    /// In memory only, as `validation_failed` is: neither is carried in the protobuf, so a restart forgets
+    /// both. That is a pre-existing property of the metadata store, not something this flag introduces.
+    pub slashable: bool,
     pub fringe: BTreeSet<BlockHash>,
     pub fringe_state_hash: StateHash,
     pub member_of_fringe: Option<Blake2b256Hash>,
@@ -67,6 +79,7 @@ impl BlockMetadata {
                 .collect::<Result<_, crate::errors::ModelsError>>()?,
             validated: b.validated,
             validation_failed: b.validation_failed,
+            slashable: false,
             fringe: b
                 .fringe
                 .iter()
@@ -140,6 +153,7 @@ impl BlockMetadata {
             bonds_map: b.bonds.clone(),
             validated: false,
             validation_failed: false,
+            slashable: false,
             fringe: BTreeSet::new(),
             fringe_state_hash: StateHash::new([0u8; 32]),
             member_of_fringe: None,
@@ -169,6 +183,7 @@ mod tests {
             bonds_map: BTreeMap::from([(validator(2), 100.try_into().unwrap())]),
             validated: true,
             validation_failed: false,
+            slashable: false,
             fringe: [block_hash(5)].into_iter().collect(),
             fringe_state_hash: StateHash::new([9u8; 32]),
             member_of_fringe: Some(Blake2b256Hash::from_bytes([8u8; 32])),

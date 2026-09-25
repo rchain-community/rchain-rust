@@ -435,12 +435,6 @@ where
         .iter()
         .map(|m| m.block_hash)
         .collect();
-    let offenders: BTreeSet<Validator> = pre_state
-        .justifications
-        .iter()
-        .filter(|m| m.validation_failed)
-        .map(|m| m.sender)
-        .collect();
 
     let pre_state_bonds = runtime
         .compute_bonds(&StateHash::from_slice(pre_state_hash.as_bytes()))
@@ -450,7 +444,7 @@ where
         .filter(|(_, b)| i64::from(**b) > 0)
         .map(|(v, _)| *v)
         .collect();
-    let to_slash: BTreeSet<Validator> = offenders.intersection(&bonded).copied().collect();
+    let to_slash: BTreeSet<Validator> = slashable_offenders(&pre_state.justifications, &bonded);
 
     // An epoch boundary is a block whose height is a positive multiple of `epoch_length` (matching
     // the PoS contract's `blockNumber % epochLength == 0`). A non-positive `epoch_length` disables
@@ -803,5 +797,84 @@ mod attestation_guard_tests {
         // A lone 10% validator on a net where nobody has moved still waits.
         assert!(!attestation_reaches_supermajority(0, 10, 100));
         assert!(!attestation_reaches_supermajority(10, 10, 100));
+    }
+}
+
+/// The validators a proposer may slash: bonded, and the sender of a justification whose failure is
+/// attributable to the block rather than to this node's inability to replay it.
+///
+/// `validation_failed` alone is too broad - it is also set when this node cannot run the replay at all,
+/// which says nothing about the sender (#70). `BlockMetadata::slashable` is the narrower, attributable
+/// signal, and this is the only place that decides who pays.
+fn slashable_offenders(
+    justifications: &[rchain_models::block_metadata::BlockMetadata],
+    bonded: &BTreeSet<Validator>,
+) -> BTreeSet<Validator> {
+    justifications
+        .iter()
+        .filter(|m| m.slashable)
+        .map(|m| m.sender)
+        .filter(|sender| bonded.contains(sender))
+        .collect()
+}
+
+#[cfg(test)]
+mod slashable_offenders_tests {
+    use super::slashable_offenders;
+    use rchain_models::block_hash::BlockHash;
+    use rchain_models::block_metadata::BlockMetadata;
+    use rchain_models::validator::Validator;
+    use rchain_shared::refined::{BlockHeight, SeqNum};
+    use std::collections::{BTreeMap, BTreeSet};
+
+    fn meta(sender: Validator, validation_failed: bool, slashable: bool) -> BlockMetadata {
+        BlockMetadata {
+            block_hash: BlockHash::new([0u8; 32]),
+            block_num: BlockHeight::try_from(1).unwrap(),
+            sender,
+            seq_num: SeqNum::zero(),
+            justifications: BTreeSet::new(),
+            bonds_map: BTreeMap::new(),
+            validated: true,
+            validation_failed,
+            slashable,
+            fringe: BTreeSet::new(),
+            fringe_state_hash: rchain_models::block::state_hash::StateHash::new([0u8; 32]),
+            member_of_fringe: None,
+        }
+    }
+
+    fn rule(justifications: &[BlockMetadata], bonded: &[Validator]) -> BTreeSet<Validator> {
+        slashable_offenders(justifications, &bonded.iter().copied().collect())
+    }
+
+    #[test]
+    fn a_bonded_sender_of_a_disagreeing_block_is_slashable() {
+        let v = Validator::new([1u8; 65]);
+        assert_eq!(rule(&[meta(v, true, true)], &[v]), BTreeSet::from([v]));
+    }
+
+    /// The point of the narrowing: a block this node could not replay says nothing about its sender, so a
+    /// local problem must not cost an honest validator its stake.
+    #[test]
+    fn a_replay_that_could_not_run_is_not_slashable() {
+        let v = Validator::new([1u8; 65]);
+        assert!(
+            rule(&[meta(v, true, false)], &[v]).is_empty(),
+            "an unattributable failure must not cost the sender its stake"
+        );
+    }
+
+    #[test]
+    fn only_bonded_senders_are_slashable() {
+        let bonded = Validator::new([1u8; 65]);
+        let observer = Validator::new([2u8; 65]);
+        assert_eq!(
+            rule(
+                &[meta(bonded, true, true), meta(observer, true, true)],
+                &[bonded]
+            ),
+            BTreeSet::from([bonded])
+        );
     }
 }
