@@ -1008,7 +1008,8 @@ def laws : List Law := [
     statement := "Content addressing: `hash_block` clears `block_hash` and `sig` and hashes every other \
       proto field canonically, so equal hashes determine equal bodies **that the serializer can \
       represent** (`Canonical`: numbers inside `int64`, justifications in the port's sorted order)",
-    status := .provedModel,
+    status := .provedTied,
+    corpus := some "body",
     declarations := [`Rchain.Block, `Rchain.BlockBody, `Rchain.Block.body, `Rchain.Parent.key,
       `Rchain.Canonical, `Rchain.sortParents, `Rchain.sortParents_of_pairwise, `Rchain.encodeParent,
       `Rchain.decodeParent, `Rchain.decodeParent_encodeParent, `Rchain.decodeParents,
@@ -1066,16 +1067,22 @@ def laws : List Law := [
       hypothesis's whole content) and injectivity (`encodeBody_injective`) as theorems about it, so this \
       row's axiom citation is empty. **What is still prose, and is named rather than implied**: `prost`'s \
       `encode_to_vec` is an external crate (0.13.5, `Cargo.lock`), so \"these bytes are the node's \
-      bytes\" is a tie no Lean theorem can make until a `body` conformance layer exists (`Corpus.lean`, \
-      `emit-lean-corpus.sh`'s `LAYERS`, `spec/conformance/body.tsv`, a Rust consumer, the gate's \
-      layer-to-consumer map). No axiom was added for `prost` — the layer is the follow-up, and **what it \
-      has to overcome is measured now rather than assumed** (AUDIT C57): the model's `encodeBody` and \
-      `prost` disagree in three ways that a byte comparison would hit on its first case — the model \
-      writes tags 4, 6, 5, 17, 9, 14 where `prost` writes the `.proto`'s ascending order; `prost` omits \
-      default-valued fields and the model writes unconditionally; and the model collapses nine fields \
-      into one opaque `header` blob at tag 14, which `prost` reads as `state`. So the layer is a \
-      *modelling* change (mirroring `prost` over the full field list) and not a plumbing one, and it \
-      puts `decodeBody_encodeBody`/`encodeBody_injective` back in play. C57 records the three \
+      bytes\" is a tie no Lean theorem can make — and it is now a tie the row **carries**: `corpus := \
+      some \"body\"`, the layer that was the follow-up when this sentence was written (`Corpus.lean`'s \
+      `bodyCases`, `emit-lean-corpus.sh`'s `LAYERS`, `spec/conformance/body.tsv`, the consumer \
+      `node/tests/lean_body_corpus.rs`, the gate's layer-to-consumer map). The row is `proved-tied` on \
+      it. **What the layer had to overcome was measured before it was built rather than after** (AUDIT \
+      C57): the model's `encodeBody` and `prost` disagree in three ways that a byte comparison hits on \
+      its first case — the model writes tags 4, 6, 5, 17, 9, 14 where `prost` writes the `.proto`'s \
+      ascending order; `prost` omits default-valued fields and the model writes unconditionally; and the \
+      model collapses nine fields \
+      into one opaque `header` blob at tag 14, which `prost` reads as `state`. **What the layer covers is \
+      the subset where the two structures correspond** — six fields, with the fields it does not model \
+      and `justifications`' shape named as its boundary in the consumer's own doc — so what remains is \
+      C57's \
+      *option (a)*: mirroring `prost` over the full field list is a modelling change and not a plumbing \
+      one, and it would put `decodeBody_encodeBody`/`encodeBody_injective` in play for those fields too. \
+      C57 records the three \
       divergences, the compile-time hazard below, and the bounded alternative. **A \
       measurement worth keeping**: the first spelling of `decodeBody` was a `guard`-per-tag do-block, \
       and it did not slow the *elaborator* down — it slowed the **compiler** down: `lean --profile` \

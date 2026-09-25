@@ -177,6 +177,29 @@ def readAnchorFile (p : String) : IO (Option String) := do
     catch _ =>
       return none
 
+/-- **A row's `corpus` value must be a layer that exists.** Check 5c (compile time) ties `proved-tied` to
+*carrying* a `corpus`, and nothing tied the **value** to anything: `corpus := some "bdy"` — one keystroke
+away from `body` — satisfies 5c while pointing at no corpus, no consumer, no tie. That is the hole 5c
+closed one level further down, and it became reachable the day 5c landed, because a status that requires
+a value is only as strong as the value's own check.
+
+What the layers are: `spec/conformance/<layer>.tsv`, written by `lake exe rchain-corpus --layer …`
+(`tools/emit-lean-corpus.sh`'s `LAYERS`), re-emitted and diffed by the gate, and **refused by the gate
+when no Rust consumer reads them** — so existence here plus the gate's layer-to-consumer map is the whole
+chain the word `proved-tied` rests on: the row names a layer, the layer has a consumer, the consumer runs
+the node's own function on the corpus's text. -/
+def corpusLayerFailures : IO (List String) := do
+  let mut failures : List String := []
+  for l in Laws.laws do
+    match l.corpus with
+    | none => pure ()
+    | some layer =>
+      if (← readAnchorFile s!"conformance/{layer}.tsv").isNone
+          && (← readAnchorFile s!"spec/conformance/{layer}.tsv").isNone then
+        failures := failures ++ [s!"law {l.number}{l.clause} cites corpus `{layer}`, whose layer file \
+          `spec/conformance/{layer}.tsv` does not exist"]
+  return failures
+
 /-- **The Coq anchors, checked against the files themselves.** `spec/coq/Laws.v:substPar` must be a file
 that exists *and* a file that mentions `substPar`. That is a weaker claim than the `rust` field makes of
 a Rust file — it resolves a symbol, not a line — and weaker than a proof: whether that symbol is a
@@ -322,12 +345,13 @@ def main (args : List String) : IO UInt32 := do
   let anchorFailures ← Rchain.Laws.rustAnchorFailures
   let coqFailures ← Rchain.Laws.coqAnchorFailures
   let witnessFailures ← Rchain.Laws.rustWitnessFailures
-  let anchorFailures := anchorFailures ++ coqFailures ++ witnessFailures
+  let corpusFailures ← Rchain.Laws.corpusLayerFailures
+  let anchorFailures := anchorFailures ++ coqFailures ++ witnessFailures ++ corpusFailures
   unless anchorFailures.isEmpty do
     for f in anchorFailures do
       IO.eprintln s!"rchain-laws: {f}"
     IO.eprintln s!"rchain-laws: {anchorFailures.length} anchor(s) do not resolve — the register \
-      claims to model code, or to be stated in Coq, that is not there"
+      claims to model code, to be stated in Coq, or to be tied by a corpus, that is not there"
     return 1
   let format :=
     match args.findIdx? (fun a => a == "--format") with
