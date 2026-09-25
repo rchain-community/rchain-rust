@@ -956,11 +956,654 @@ theorem closed_parOf_emap (kvs : List (Par × Par)) (rem : Option Var)
 
 /-- A **tuple**: `TupleSingle` and `TupleMultiple` are one constructor here, and the checker is the list
     with the first element consed on. -/
+theorem closed_matchCasePar (pat body : Par) (n : Nat) (hp : closed pat = true)
+    (hb : closed body = true) : closedMatchCase (MatchCase.mk pat body n) = true := by
+  simp [closedMatchCase, hp, hb]
+
 theorem closed_parOf_etuple (first : Par) (rest : List Par) (h1 : closed first = true)
     (hr : closedListPar rest = true) : closed (parOf (.etuple (first :: rest))) = true := by
   simp [closed, parOf, closedListExpr, closedExpr, closedListPar, h1, hr]
 
 
+
+/-! ## Law 36's induction
+
+The theorem the row owes, and the ten companions that its arms call. They are proved by the block's own
+induction — `termination_by` on each, with the calls into a list's *head fields* (a bind's `src`, a
+case's `pat`/`body`) written as **equations**, because that is what exposes the subterm relation to the
+termination checker: with `induction`/`cases` inside the proof the measure generalizes and the obligation
+becomes false (`sizeOf pat < sizeOf cs` rather than `… < sizeOf (⟨pat, body⟩ :: cs)`), which is how the
+first draft of these two failed. The statement is law 36's: a source term whose every name occurrence the
+binder stack holds normalizes to a closed `Par`. -/
+
+theorem closed_iff_Closed (p : Par) : closed p = true ↔ Closed p := by
+  simp [Closed, closed, Bool.and_eq_true]
+
+theorem closed_parMerge (p q : Par) :
+    closed (parMerge p q) = true ↔ closed p = true ∧ closed q = true := by
+  rw [closed_iff_Closed, Closed_parMerge_iff, closed_iff_Closed, closed_iff_Closed]
+
+theorem closed_parOf_ground_b (g : Ground) : closed (parOf (.ground g)) = true := by
+  cases g <;> simp [closed, parOf, closedListExpr, closedExpr]
+
+theorem closed_groundPar (g : SGround) : ∀ p, groundPar g = some p → closed p = true := by
+  intro p hp
+  cases g with
+  | bool b => simp only [groundPar, Option.some.injEq] at hp; rw [← hp]; exact closed_parOf_ground_b _
+  | int d => simp only [groundPar] at hp
+             rw [Option.map_eq_some'] at hp
+             obtain ⟨n, -, hp'⟩ := hp
+             rw [← hp']
+             exact closed_parOf_ground_b _
+  | str raw => simp only [groundPar, Option.some.injEq] at hp; rw [← hp]; exact closed_parOf_ground_b _
+  | uri raw => simp only [groundPar, Option.some.injEq] at hp; rw [← hp]; exact closed_parOf_ground_b _
+  | bigint d => simp only [groundPar] at hp; exact absurd hp (by simp)
+
+theorem closed_receiveBindPar (pats : List Par) (c : Par) (n : Nat)
+    (hp : closedListPar pats = true) (hc : closed c = true) :
+    closedReceiveBind (ReceiveBind.mk pats c n) = true := by
+  simp [closedReceiveBind, hp, hc]
+
+theorem closed_receiveOneList (rb : ReceiveBind) (h : closedReceiveBind rb = true) :
+    closedListReceiveBind [rb] = true := by
+  simp [closedListReceiveBind, h]
+
+theorem closed_matchOneList (mc : MatchCase) (h : closedMatchCase mc = true) :
+    closedListMatchCase [mc] = true := by
+  simp [closedListMatchCase, h]
+
+theorem closed_matchTwoList (mc1 mc2 : MatchCase) (h1 : closedMatchCase mc1 = true)
+    (h2 : closedMatchCase mc2 = true) : closedListMatchCase [mc1, mc2] = true := by
+  simp [closedListMatchCase, h1, h2]
+
+theorem closed_receiveListPar (rs : List Receive) (hrs : closedListReceive rs = true) :
+    closed (Par.mk [] rs [] [] [] [] [] []) = true := by
+  simp [closed, closedListReceive, hrs]
+
+theorem closed_receiveOnePar (rb : ReceiveBind) (body : Par) (p : Bool) (n : Nat)
+    (hbs : closedReceiveBind rb = true) (hbody : closed body = true) :
+    closed (Par.mk [] [Receive.mk [rb] body p n] [] [] [] [] [] []) = true := by
+  simp [closed, closedListReceive, closedReceive, closedListReceiveBind, hbs, hbody]
+
+theorem closed_matchOnePar (cond : Par) (mc : MatchCase) (ht : closed cond = true)
+    (hmc : closedMatchCase mc = true) :
+    closed (Par.mk [] [] [] [] [Match.mk cond [mc]] [] [] []) = true := by
+  simp [closed, closedListMatch, closedMatch, closedListMatchCase, ht, hmc]
+
+theorem closed_matchTwoPar (cond : Par) (mc1 mc2 : MatchCase) (ht : closed cond = true)
+    (h1 : closedMatchCase mc1 = true) (h2 : closedMatchCase mc2 = true) :
+    closed (Par.mk [] [] [] [] [Match.mk cond [mc1, mc2]] [] [] []) = true := by
+  simp [closed, closedListMatch, closedMatch, closedListMatchCase, ht, h1, h2]
+
+mutual
+  theorem closed_normalizeAt : ∀ (e : Surf) (acc : Par) (Γ : List SVar), Closed acc → ScopedIn Γ e →
+      ∀ p, normalizeAt e acc Γ = some p → closed p = true := by
+    intro e
+    cases e with
+    | ground g =>
+      intro acc Γ hacc hs p hp
+      simp only [normalizeAt] at hp
+      rw [Option.map_eq_some'] at hp
+      obtain ⟨q, hq, hp'⟩ := hp
+      rw [← hp']
+      exact (closed_parMerge acc q).mpr ⟨(closed_iff_Closed acc).mpr hacc, closed_groundPar g q hq⟩
+    | collect c =>
+      intro acc Γ hacc hs p hp
+      simp only [normalizeAt] at hp
+      rw [Option.map_eq_some'] at hp
+      obtain ⟨q, hq, hp'⟩ := hp
+      rw [← hp']
+      exact (closed_parMerge acc q).mpr ⟨(closed_iff_Closed acc).mpr hacc, closed_collectPar c Γ hs q hq⟩
+    | var x =>
+      intro acc Γ hacc hs p hp
+      simp only [normalizeAt] at hp
+      rw [Option.some.injEq] at hp
+      rw [← hp]
+      exact (closed_parMerge acc _).mpr ⟨(closed_iff_Closed acc).mpr hacc,
+        closed_parOf _ (by simp [closedExpr, closedVar_nameVar hs])⟩
+    | varWild =>
+      intro acc Γ hacc hs p hp
+      simp only [normalizeAt] at hp
+      rw [Option.some.injEq] at hp
+      rw [← hp]
+      exact (closed_parMerge acc _).mpr ⟨(closed_iff_Closed acc).mpr hacc,
+        closed_parOf _ (by simp [closedExpr, closedVar])⟩
+    | nil =>
+      intro acc Γ hacc hs p hp
+      simp only [normalizeAt] at hp
+      rw [Option.some.injEq] at hp
+      rw [← hp]
+      exact (closed_iff_Closed acc).mpr hacc
+    | neg p' =>
+      intro acc Γ hacc hs p hp
+      simp only [normalizeAt] at hp
+      rw [Option.map_eq_some'] at hp
+      obtain ⟨q, hq, hp'⟩ := hp
+      rw [← hp']
+      exact (closed_parMerge acc _).mpr ⟨(closed_iff_Closed acc).mpr hacc,
+        closed_parOf _ (by simp [closedExpr, (closed_iff_Closed q).mp (closed_normalizeAt p' nilPar Γ Closed_nil (by simpa using hs) q hq)])⟩
+    | not p' =>
+      intro acc Γ hacc hs p hp
+      simp only [normalizeAt] at hp
+      rw [Option.map_eq_some'] at hp
+      obtain ⟨q, hq, hp'⟩ := hp
+      rw [← hp']
+      exact (closed_parMerge acc _).mpr ⟨(closed_iff_Closed acc).mpr hacc,
+        closed_parOf _ (by simp [closedExpr, (closed_iff_Closed q).mp (closed_normalizeAt p' nilPar Γ Closed_nil (by simpa using hs) q hq)])⟩
+    | negNum p' =>
+      intro acc Γ hacc hs p hp
+      simp only [normalizeAt] at hp
+      rw [Option.map_eq_some'] at hp
+      obtain ⟨q, hq, hp'⟩ := hp
+      rw [← hp']
+      exact (closed_parMerge acc _).mpr ⟨(closed_iff_Closed acc).mpr hacc,
+        closed_parOf _ (by simp [closedExpr, (closed_iff_Closed q).mp (closed_normalizeAt p' nilPar Γ Closed_nil (by simpa using hs) q hq)])⟩
+    | par a b =>
+      intro acc Γ hacc hs p hp
+      simp only [normalizeAt] at hp
+      split at hp
+      · rename_i q hq
+        exact closed_normalizeAt b q Γ ((closed_iff_Closed q).mp (closed_normalizeAt a acc Γ hacc hs.1 q hq)) hs.2 p hp
+      · exact absurd hp (by simp)
+    | send n persistent data =>
+      intro acc Γ hacc hs p hp
+      simp only [normalizeAt] at hp
+      split at hp
+      · rename_i c d h1 h2
+        rw [Option.some.injEq] at hp
+        rw [← hp]
+        exact (closed_parMerge acc _).mpr ⟨(closed_iff_Closed acc).mpr hacc,
+          closed_sendPar c d persistent (closed_namePar n Γ hs.1 c h1) (closed_procsPar data Γ hs.2 d h2)⟩
+      · exact absurd hp (by simp)
+    | contr n params rest body =>
+      intro acc Γ hacc hs p hp
+      simp only [normalizeAt] at hp
+      split at hp
+      · rename_i c pats b h1 h2 h3
+        rw [Option.some.injEq] at hp
+        rw [← hp]
+        exact (closed_parMerge acc _).mpr ⟨(closed_iff_Closed acc).mpr hacc,
+          closed_receiveOnePar (ReceiveBind.mk pats c pats.length) b true 1
+            (closed_receiveBindPar pats c pats.length (closed_namesPar params rest Γ hs.2.1 pats h2) (closed_namePar n Γ hs.1 c h1))
+            (closed_normalizeAt body nilPar Γ Closed_nil hs.2.2.2 b h3)⟩
+      · exact absurd hp (by simp)
+    | input receipts body =>
+      intro acc Γ hacc hs p hp
+      simp only [normalizeAt] at hp
+      split at hp
+      · rename_i b hb
+        split at hp
+        · rename_i rs hrs
+          rw [Option.some.injEq] at hp
+          rw [← hp]
+          exact (closed_parMerge acc _).mpr ⟨(closed_iff_Closed acc).mpr hacc,
+            closed_receiveListPar rs (closed_receiptsPar receipts b Γ
+              (closed_normalizeAt body nilPar Γ Closed_nil hs.2 b hb) hs.1 rs hrs)⟩
+        · exact absurd hp (by simp)
+      · exact absurd hp (by simp)
+    | «match» target cases =>
+      intro acc Γ hacc hs p hp
+      simp only [normalizeAt] at hp
+      split at hp
+      · rename_i t cs h1 h2
+        rw [Option.some.injEq] at hp
+        rw [← hp]
+        exact (closed_parMerge acc _).mpr ⟨(closed_iff_Closed acc).mpr hacc,
+          closed_matchPar t cs (closed_normalizeAt target nilPar Γ Closed_nil hs.1 t h1) (closed_casesPar cases Γ hs.2 cs h2)⟩
+      · exact absurd hp (by simp)
+    | bundle b body =>
+      intro acc Γ hacc hs p hp
+      simp only [normalizeAt] at hp
+      split at hp
+      · rename_i q hq
+        rw [Option.some.injEq] at hp
+        rw [← hp]
+        exact (closed_parMerge acc _).mpr ⟨(closed_iff_Closed acc).mpr hacc,
+          closed_bundlePar q (bundleFlags b).1 (bundleFlags b).2
+            (closed_normalizeAt body nilPar Γ Closed_nil (by simpa using hs) q hq)⟩
+      · exact absurd hp (by simp)
+    | ifThen c t =>
+      intro acc Γ hacc hs p hp
+      simp only [normalizeAt] at hp
+      split at hp
+      · rename_i cond thenB h1 h2
+        rw [Option.some.injEq] at hp
+        rw [← hp]
+        exact (closed_parMerge acc _).mpr ⟨(closed_iff_Closed acc).mpr hacc,
+          closed_matchOnePar cond (MatchCase.mk (parOf (.ground (.bool true))) thenB 0)
+            (closed_normalizeAt c nilPar Γ Closed_nil hs.1 cond h1)
+            (closed_matchCasePar (parOf (.ground (.bool true))) thenB 0
+              (closed_groundPar (.bool true) _ rfl)
+              (closed_normalizeAt t nilPar Γ Closed_nil hs.2 thenB h2))⟩
+      · exact absurd hp (by simp)
+    | ifElse c t e' =>
+      intro acc Γ hacc hs p hp
+      simp only [normalizeAt] at hp
+      split at hp
+      · rename_i cond thenB elseB h1 h2 h3
+        rw [Option.some.injEq] at hp
+        rw [← hp]
+        exact (closed_parMerge acc _).mpr ⟨(closed_iff_Closed acc).mpr hacc,
+          closed_matchTwoPar cond
+            (MatchCase.mk (parOf (.ground (.bool true))) thenB 0)
+            (MatchCase.mk (parOf (.ground (.bool false))) elseB 0)
+            (closed_normalizeAt c nilPar Γ Closed_nil hs.1 cond h1)
+            (closed_matchCasePar (parOf (.ground (.bool true))) thenB 0
+              (closed_groundPar (.bool true) _ rfl)
+              (closed_normalizeAt t nilPar Γ Closed_nil hs.2.1 thenB h2))
+            (closed_matchCasePar (parOf (.ground (.bool false))) elseB 0
+              (closed_groundPar (.bool false) _ rfl)
+              (closed_normalizeAt e' nilPar Γ Closed_nil hs.2.2 elseB h3))⟩
+      · exact absurd hp (by simp)
+    | newIn decls body =>
+      intro acc Γ hacc hs p hp
+      simp only [normalizeAt] at hp
+      split at hp
+      · rename_i d b hd hb
+        rw [Option.some.injEq] at hp
+        rw [← hp]
+        exact (closed_parMerge acc _).mpr ⟨(closed_iff_Closed acc).mpr hacc,
+          closed_newPar d b (closed_normalizeAt body nilPar (declNames decls ++ Γ) Closed_nil (by simpa using hs) b hb)⟩
+      · exact absurd hp (by simp)
+    | simpleType ty => intro acc Γ hacc hs p hp; simp only [normalizeAt] at hp; exact absurd hp (by simp)
+    | method t x ds => intro acc Γ hacc hs p hp; simp only [normalizeAt] at hp; exact absurd hp (by simp)
+    | eval n => intro acc Γ hacc hs p hp; simp only [normalizeAt] at hp; exact absurd hp (by simp)
+    | choice bs => intro acc Γ hacc hs p hp; simp only [normalizeAt] at hp; exact absurd hp (by simp)
+    | letIn d ds body => intro acc Γ hacc hs p hp; simp only [normalizeAt] at hp; exact absurd hp (by simp)
+    | sendSynch n ds c => intro acc Γ hacc hs p hp; simp only [normalizeAt] at hp; exact absurd hp (by simp)
+    | varRef k x => intro acc Γ hacc hs p hp; simp only [normalizeAt] at hp; exact absurd hp (by simp)
+    | conj a b => intro acc Γ hacc hs p hp; simp only [normalizeAt] at hp; exact absurd hp (by simp)
+    | disj a b => intro acc Γ hacc hs p hp; simp only [normalizeAt] at hp; exact absurd hp (by simp)
+    | plusPlus a b => intro acc Γ hacc hs p hp; simp only [normalizeAt] at hp; exact absurd hp (by simp)
+    | minusMinus a b => intro acc Γ hacc hs p hp; simp only [normalizeAt] at hp; exact absurd hp (by simp)
+    | pctPct a b => intro acc Γ hacc hs p hp; simp only [normalizeAt] at hp; exact absurd hp (by simp)
+    | mult a b =>
+      intro acc Γ hacc hs p hp
+      simp only [normalizeAt] at hp
+      split at hp
+      · rename_i r1 r2 h1 h2
+        rw [Option.some.injEq] at hp
+        rw [← hp]
+        exact (closed_parMerge acc _).mpr ⟨(closed_iff_Closed acc).mpr hacc,
+          closed_parOf _ (by simp [closedExpr,
+            (closed_iff_Closed r1).mp (closed_normalizeAt a nilPar Γ Closed_nil (by simpa using hs.1) r1 h1),
+            (closed_iff_Closed r2).mp (closed_normalizeAt b nilPar Γ Closed_nil (by simpa using hs.2) r2 h2)])⟩
+      · exact absurd hp (by simp)
+    | div a b =>
+      intro acc Γ hacc hs p hp
+      simp only [normalizeAt] at hp
+      split at hp
+      · rename_i r1 r2 h1 h2
+        rw [Option.some.injEq] at hp
+        rw [← hp]
+        exact (closed_parMerge acc _).mpr ⟨(closed_iff_Closed acc).mpr hacc,
+          closed_parOf _ (by simp [closedExpr,
+            (closed_iff_Closed r1).mp (closed_normalizeAt a nilPar Γ Closed_nil (by simpa using hs.1) r1 h1),
+            (closed_iff_Closed r2).mp (closed_normalizeAt b nilPar Γ Closed_nil (by simpa using hs.2) r2 h2)])⟩
+      · exact absurd hp (by simp)
+    | mod a b =>
+      intro acc Γ hacc hs p hp
+      simp only [normalizeAt] at hp
+      split at hp
+      · rename_i r1 r2 h1 h2
+        rw [Option.some.injEq] at hp
+        rw [← hp]
+        exact (closed_parMerge acc _).mpr ⟨(closed_iff_Closed acc).mpr hacc,
+          closed_parOf _ (by simp [closedExpr,
+            (closed_iff_Closed r1).mp (closed_normalizeAt a nilPar Γ Closed_nil (by simpa using hs.1) r1 h1),
+            (closed_iff_Closed r2).mp (closed_normalizeAt b nilPar Γ Closed_nil (by simpa using hs.2) r2 h2)])⟩
+      · exact absurd hp (by simp)
+    | add a b =>
+      intro acc Γ hacc hs p hp
+      simp only [normalizeAt] at hp
+      split at hp
+      · rename_i r1 r2 h1 h2
+        rw [Option.some.injEq] at hp
+        rw [← hp]
+        exact (closed_parMerge acc _).mpr ⟨(closed_iff_Closed acc).mpr hacc,
+          closed_parOf _ (by simp [closedExpr,
+            (closed_iff_Closed r1).mp (closed_normalizeAt a nilPar Γ Closed_nil (by simpa using hs.1) r1 h1),
+            (closed_iff_Closed r2).mp (closed_normalizeAt b nilPar Γ Closed_nil (by simpa using hs.2) r2 h2)])⟩
+      · exact absurd hp (by simp)
+    | sub a b =>
+      intro acc Γ hacc hs p hp
+      simp only [normalizeAt] at hp
+      split at hp
+      · rename_i r1 r2 h1 h2
+        rw [Option.some.injEq] at hp
+        rw [← hp]
+        exact (closed_parMerge acc _).mpr ⟨(closed_iff_Closed acc).mpr hacc,
+          closed_parOf _ (by simp [closedExpr,
+            (closed_iff_Closed r1).mp (closed_normalizeAt a nilPar Γ Closed_nil (by simpa using hs.1) r1 h1),
+            (closed_iff_Closed r2).mp (closed_normalizeAt b nilPar Γ Closed_nil (by simpa using hs.2) r2 h2)])⟩
+      · exact absurd hp (by simp)
+    | lt a b =>
+      intro acc Γ hacc hs p hp
+      simp only [normalizeAt] at hp
+      split at hp
+      · rename_i r1 r2 h1 h2
+        rw [Option.some.injEq] at hp
+        rw [← hp]
+        exact (closed_parMerge acc _).mpr ⟨(closed_iff_Closed acc).mpr hacc,
+          closed_parOf _ (by simp [closedExpr,
+            (closed_iff_Closed r1).mp (closed_normalizeAt a nilPar Γ Closed_nil (by simpa using hs.1) r1 h1),
+            (closed_iff_Closed r2).mp (closed_normalizeAt b nilPar Γ Closed_nil (by simpa using hs.2) r2 h2)])⟩
+      · exact absurd hp (by simp)
+    | lte a b =>
+      intro acc Γ hacc hs p hp
+      simp only [normalizeAt] at hp
+      split at hp
+      · rename_i r1 r2 h1 h2
+        rw [Option.some.injEq] at hp
+        rw [← hp]
+        exact (closed_parMerge acc _).mpr ⟨(closed_iff_Closed acc).mpr hacc,
+          closed_parOf _ (by simp [closedExpr,
+            (closed_iff_Closed r1).mp (closed_normalizeAt a nilPar Γ Closed_nil (by simpa using hs.1) r1 h1),
+            (closed_iff_Closed r2).mp (closed_normalizeAt b nilPar Γ Closed_nil (by simpa using hs.2) r2 h2)])⟩
+      · exact absurd hp (by simp)
+    | gt a b =>
+      intro acc Γ hacc hs p hp
+      simp only [normalizeAt] at hp
+      split at hp
+      · rename_i r1 r2 h1 h2
+        rw [Option.some.injEq] at hp
+        rw [← hp]
+        exact (closed_parMerge acc _).mpr ⟨(closed_iff_Closed acc).mpr hacc,
+          closed_parOf _ (by simp [closedExpr,
+            (closed_iff_Closed r1).mp (closed_normalizeAt a nilPar Γ Closed_nil (by simpa using hs.1) r1 h1),
+            (closed_iff_Closed r2).mp (closed_normalizeAt b nilPar Γ Closed_nil (by simpa using hs.2) r2 h2)])⟩
+      · exact absurd hp (by simp)
+    | gte a b =>
+      intro acc Γ hacc hs p hp
+      simp only [normalizeAt] at hp
+      split at hp
+      · rename_i r1 r2 h1 h2
+        rw [Option.some.injEq] at hp
+        rw [← hp]
+        exact (closed_parMerge acc _).mpr ⟨(closed_iff_Closed acc).mpr hacc,
+          closed_parOf _ (by simp [closedExpr,
+            (closed_iff_Closed r1).mp (closed_normalizeAt a nilPar Γ Closed_nil (by simpa using hs.1) r1 h1),
+            (closed_iff_Closed r2).mp (closed_normalizeAt b nilPar Γ Closed_nil (by simpa using hs.2) r2 h2)])⟩
+      · exact absurd hp (by simp)
+    | eq a b =>
+      intro acc Γ hacc hs p hp
+      simp only [normalizeAt] at hp
+      split at hp
+      · rename_i r1 r2 h1 h2
+        rw [Option.some.injEq] at hp
+        rw [← hp]
+        exact (closed_parMerge acc _).mpr ⟨(closed_iff_Closed acc).mpr hacc,
+          closed_parOf _ (by simp [closedExpr,
+            (closed_iff_Closed r1).mp (closed_normalizeAt a nilPar Γ Closed_nil (by simpa using hs.1) r1 h1),
+            (closed_iff_Closed r2).mp (closed_normalizeAt b nilPar Γ Closed_nil (by simpa using hs.2) r2 h2)])⟩
+      · exact absurd hp (by simp)
+    | neq a b =>
+      intro acc Γ hacc hs p hp
+      simp only [normalizeAt] at hp
+      split at hp
+      · rename_i r1 r2 h1 h2
+        rw [Option.some.injEq] at hp
+        rw [← hp]
+        exact (closed_parMerge acc _).mpr ⟨(closed_iff_Closed acc).mpr hacc,
+          closed_parOf _ (by simp [closedExpr,
+            (closed_iff_Closed r1).mp (closed_normalizeAt a nilPar Γ Closed_nil (by simpa using hs.1) r1 h1),
+            (closed_iff_Closed r2).mp (closed_normalizeAt b nilPar Γ Closed_nil (by simpa using hs.2) r2 h2)])⟩
+      · exact absurd hp (by simp)
+    | and a b =>
+      intro acc Γ hacc hs p hp
+      simp only [normalizeAt] at hp
+      split at hp
+      · rename_i r1 r2 h1 h2
+        rw [Option.some.injEq] at hp
+        rw [← hp]
+        exact (closed_parMerge acc _).mpr ⟨(closed_iff_Closed acc).mpr hacc,
+          closed_parOf _ (by simp [closedExpr,
+            (closed_iff_Closed r1).mp (closed_normalizeAt a nilPar Γ Closed_nil (by simpa using hs.1) r1 h1),
+            (closed_iff_Closed r2).mp (closed_normalizeAt b nilPar Γ Closed_nil (by simpa using hs.2) r2 h2)])⟩
+      · exact absurd hp (by simp)
+    | shortAnd a b =>
+      intro acc Γ hacc hs p hp
+      simp only [normalizeAt] at hp
+      split at hp
+      · rename_i r1 r2 h1 h2
+        rw [Option.some.injEq] at hp
+        rw [← hp]
+        exact (closed_parMerge acc _).mpr ⟨(closed_iff_Closed acc).mpr hacc,
+          closed_parOf _ (by simp [closedExpr,
+            (closed_iff_Closed r1).mp (closed_normalizeAt a nilPar Γ Closed_nil (by simpa using hs.1) r1 h1),
+            (closed_iff_Closed r2).mp (closed_normalizeAt b nilPar Γ Closed_nil (by simpa using hs.2) r2 h2)])⟩
+      · exact absurd hp (by simp)
+    | or a b =>
+      intro acc Γ hacc hs p hp
+      simp only [normalizeAt] at hp
+      split at hp
+      · rename_i r1 r2 h1 h2
+        rw [Option.some.injEq] at hp
+        rw [← hp]
+        exact (closed_parMerge acc _).mpr ⟨(closed_iff_Closed acc).mpr hacc,
+          closed_parOf _ (by simp [closedExpr,
+            (closed_iff_Closed r1).mp (closed_normalizeAt a nilPar Γ Closed_nil (by simpa using hs.1) r1 h1),
+            (closed_iff_Closed r2).mp (closed_normalizeAt b nilPar Γ Closed_nil (by simpa using hs.2) r2 h2)])⟩
+      · exact absurd hp (by simp)
+    | shortOr a b =>
+      intro acc Γ hacc hs p hp
+      simp only [normalizeAt] at hp
+      split at hp
+      · rename_i r1 r2 h1 h2
+        rw [Option.some.injEq] at hp
+        rw [← hp]
+        exact (closed_parMerge acc _).mpr ⟨(closed_iff_Closed acc).mpr hacc,
+          closed_parOf _ (by simp [closedExpr,
+            (closed_iff_Closed r1).mp (closed_normalizeAt a nilPar Γ Closed_nil (by simpa using hs.1) r1 h1),
+            (closed_iff_Closed r2).mp (closed_normalizeAt b nilPar Γ Closed_nil (by simpa using hs.2) r2 h2)])⟩
+      · exact absurd hp (by simp)
+    | «matches» a b =>
+      intro acc Γ hacc hs p hp
+      simp only [normalizeAt] at hp
+      split at hp
+      · rename_i r1 r2 h1 h2
+        rw [Option.some.injEq] at hp
+        rw [← hp]
+        exact (closed_parMerge acc _).mpr ⟨(closed_iff_Closed acc).mpr hacc,
+          closed_parOf _ (by simp [closedExpr,
+            (closed_iff_Closed r1).mp (closed_normalizeAt a nilPar Γ Closed_nil (by simpa using hs.1) r1 h1),
+            (closed_iff_Closed r2).mp (closed_normalizeAt b nilPar Γ Closed_nil (by simpa using hs.2) r2 h2)])⟩
+      · exact absurd hp (by simp)
+  termination_by e => sizeOf e
+  theorem closed_procsPar : ∀ (ps : List Surf) (Γ : List SVar), ScopedProcs Γ ps →
+      ∀ qs, procsPar ps Γ = some qs → closedListPar qs = true
+    | [], Γ, hs, qs, hq => by
+      simp only [procsPar] at hq; injection hq with h; subst h; rfl
+    | p :: ps, Γ, hs, qs, hq => by
+      simp only [procsPar] at hq
+      split at hq
+      · rename_i q qs' h1 h2
+        rw [Option.some.injEq] at hq
+        rw [← hq]
+        simp only [closedListPar, closed_procsPar ps Γ hs.2 qs' h2,
+          closed_normalizeAt p nilPar Γ Closed_nil hs.1 q h1, Bool.and_self, Bool.true_and]
+      · exact absurd hq (by simp)
+  termination_by ps => sizeOf ps
+  theorem closed_namesPar : ∀ (ns : List SName) (rest : Option SVar) (Γ : List SVar),
+      ScopedNames Γ ns → ∀ ps, namesPar ns rest Γ = some ps → closedListPar ps = true
+    | [], none, Γ, hs, ps, hp => by
+      simp only [namesPar] at hp; injection hp with h; subst h; rfl
+    | [], some r, Γ, hs, ps, hp => by
+      simp only [namesPar] at hp; exact absurd hp (by simp)
+    | n :: ns, some r, Γ, hs, ps, hp => by
+      simp only [namesPar] at hp; exact absurd hp (by simp)
+    | n :: ns, none, Γ, hs, ps, hp => by
+      simp only [namesPar] at hp
+      split at hp
+      · rename_i q qs h1 h2
+        rw [Option.some.injEq] at hp
+        rw [← hp]
+        simp only [closedListPar, closed_namesPar ns none Γ hs.2 qs h2,
+          closed_namePar n Γ hs.1 q h1, Bool.and_self, Bool.true_and]
+      · exact absurd hp (by simp)
+  termination_by ns => sizeOf ns
+  theorem closed_namePar : ∀ (n : SName) (Γ : List SVar), ScopedName Γ n →
+      ∀ p, namePar n Γ = some p → closed p = true := by
+    intro n
+    cases n with
+    | wild => intro Γ hs p hp; simp only [namePar] at hp; injection hp with h; subst h
+              exact closed_parOf _ (by simp [closedExpr, closedVar])
+    | var x => intro Γ hs p hp; simp only [namePar] at hp; injection hp with h; subst h
+               exact closed_parOf _ (by simp [closedExpr, closedVar_nameVar hs])
+    | quote p' => intro Γ hs p hp; simp only [namePar] at hp
+                  exact closed_normalizeAt p' nilPar Γ Closed_nil hs p hp
+
+  termination_by n => sizeOf n
+  theorem closed_collectPar : ∀ (c : SCollect) (Γ : List SVar), ScopedCollect Γ c →
+      ∀ p, collectPar c Γ = some p → closed p = true := by
+    intro c
+    cases c with
+    | list ps rem =>
+      intro Γ hs p hp
+      simp only [collectPar] at hp
+      rw [Option.map_eq_some'] at hp
+      obtain ⟨qs, hqs, hp'⟩ := hp
+      rw [← hp']
+      exact closed_parOf_elist qs (rem.map (fun r => nameVar Γ r))
+        (closed_procsPar ps Γ hs.1 qs hqs)
+        (by cases rem with
+            | none => rfl
+            | some r => simp [closedRemainder, closedVar_nameVar hs.2])
+    | set ps rem =>
+      intro Γ hs p hp
+      simp only [collectPar] at hp
+      rw [Option.map_eq_some'] at hp
+      obtain ⟨qs, hqs, hp'⟩ := hp
+      rw [← hp']
+      exact closed_parOf_eset qs (rem.map (fun r => nameVar Γ r))
+        (closed_procsPar ps Γ hs.1 qs hqs)
+        (by cases rem with
+            | none => rfl
+            | some r => simp [closedRemainder, closedVar_nameVar hs.2])
+    | tuple first rest =>
+      intro Γ hs p hp
+      simp only [collectPar] at hp
+      split at hp
+      · rename_i f rs h1 h2
+        rw [Option.some.injEq] at hp
+        rw [← hp]
+        exact closed_parOf_etuple f rs (closed_normalizeAt first nilPar Γ Closed_nil hs.1 f h1)
+          (closed_procsPar rest Γ hs.2 rs h2)
+      · exact absurd hp (by simp)
+    | map kvs rem =>
+      intro Γ hs p hp
+      simp only [collectPar] at hp
+      split at hp
+      · rename_i ps hps
+        rw [Option.some.injEq] at hp
+        rw [← hp]
+        exact closed_parOf_emap ps (rem.map (fun r => nameVar Γ r))
+          (closed_kvsPar kvs Γ hs.1 ps hps)
+          (by cases rem with
+              | none => rfl
+              | some r => simp [closedRemainder, closedVar_nameVar hs.2])
+      · exact absurd hp (by simp)
+
+  termination_by c => sizeOf c
+  theorem closed_kvsPar : ∀ (kvs : List SKeyValuePair) (Γ : List SVar), ScopedKvs Γ kvs →
+      ∀ r, kvsPar kvs Γ = some r → closedListParPair r = true
+    | [], Γ, hs, r, hr => by
+      simp only [kvsPar] at hr; injection hr with h; subst h; rfl
+    | SKeyValuePair.mk k v :: kvs, Γ, hs, r, hr => by
+      simp only [kvsPar] at hr
+      split at hr
+      · rename_i kp vp rp h1 h2 h3
+        rw [Option.some.injEq] at hr
+        rw [← hr]
+        simp [closedListParPair, closed_kvsPar kvs Γ hs.2.2 rp h3,
+          (closed_iff_Closed kp).mp (closed_normalizeAt k nilPar Γ Closed_nil hs.1 kp h1),
+          (closed_iff_Closed vp).mp (closed_normalizeAt v nilPar Γ Closed_nil hs.2.1 vp h2)]
+      · exact absurd hr (by simp)
+  termination_by kvs => sizeOf kvs
+  theorem closed_casesPar : ∀ (cs : List SCase) (Γ : List SVar), ScopedCases Γ cs →
+      ∀ r, casesPar cs Γ = some r → closedListMatchCase r = true
+    | [], Γ, hs, r, hr => by
+      simp only [casesPar] at hr; injection hr with h; subst h; rfl
+    | SCase.mk pat body :: cs, Γ, hs, r, hr => by
+      simp only [casesPar] at hr
+      split at hr
+      · rename_i ppar bpar rp h1 h2 h3
+        rw [Option.some.injEq] at hr
+        rw [← hr]
+        simp only [closedListMatchCase, closed_casesPar cs Γ hs.2.2 rp h3,
+          closed_matchCasePar ppar bpar 0
+            (closed_normalizeAt pat nilPar Γ Closed_nil hs.1 ppar h1)
+            (closed_normalizeAt body nilPar Γ Closed_nil hs.2.1 bpar h2), Bool.and_self, Bool.true_and]
+      · exact absurd hr (by simp)
+  termination_by cs => sizeOf cs
+  theorem closed_receiptsPar : ∀ (rs : List SReceipt) (body : Par) (Γ : List SVar),
+      closed body = true → ScopedReceipts Γ rs →
+      ∀ r, receiptsPar rs body Γ = some r → closedListReceive r = true
+    | [], body, Γ, hb, hs, r, hr => by
+      simp only [receiptsPar] at hr; injection hr with h; subst h; rfl
+    | rec :: rs, body, Γ, hb, hs, r, hr => by
+      simp only [receiptsPar] at hr
+      split at hr
+      · rename_i f fs h1 h2
+        rw [Option.some.injEq] at hr
+        rw [← hr]
+        simp only [closedListReceive, closed_receiptsPar rs body Γ hb hs.2 fs h2,
+          closed_receiptPar rec body Γ hb hs.1 f h1, Bool.and_self, Bool.true_and]
+      · exact absurd hr (by simp)
+  termination_by rs => sizeOf rs
+  theorem closed_receiptPar : ∀ (rec : SReceipt) (body : Par) (Γ : List SVar),
+      closed body = true → ScopedReceipt Γ rec →
+      ∀ r, receiptPar rec body Γ = some r → closedReceive r = true := by
+    intro rec
+    cases rec with
+    | linear binds =>
+      intro body Γ hb hs r hr
+      simp only [receiptPar] at hr
+      rw [Option.map_eq_some'] at hr
+      obtain ⟨bs, hbs, hr'⟩ := hr
+      rw [← hr']
+      simp only [closedReceive, hb, closed_bindsPar binds Γ hs bs hbs, Bool.and_self, Bool.true_and]
+    | repeated binds =>
+      intro body Γ hb hs r hr
+      simp only [receiptPar] at hr
+      rw [Option.map_eq_some'] at hr
+      obtain ⟨bs, hbs, hr'⟩ := hr
+      rw [← hr']
+      simp only [closedReceive, hb, closed_bindsPar binds Γ hs bs hbs, Bool.and_self, Bool.true_and]
+    | peek binds => intro body Γ hb hs r hr; simp only [receiptPar] at hr; exact absurd hr (by simp)
+
+  termination_by rec => sizeOf rec
+  theorem closed_bindsPar : ∀ (bs : List SBind) (Γ : List SVar), ScopedBinds Γ bs →
+      ∀ r, bindsPar bs Γ = some r → closedListReceiveBind r = true
+    | [], Γ, hs, r, hr => by
+      simp only [bindsPar] at hr; injection hr with h; subst h; rfl
+    | SBind.mk ns rest src :: bs, Γ, hs, r, hr => by
+      simp only [bindsPar] at hr
+      split at hr
+      · rename_i pats bs' h1 h2
+        exact closed_bindResult src pats bs' Γ hs.2.2.1
+          (closed_namesPar ns rest Γ hs.1 pats h1) (closed_bindsPar bs Γ hs.2.2.2 bs' h2) r hr
+      · exact absurd hr (by simp)
+  termination_by bs => sizeOf bs
+  decreasing_by all_goals (simp_wf <;> omega)
+  theorem closed_bindResult : ∀ (src : SNameSource) (pats : List Par) (bs : List ReceiveBind)
+      (Γ : List SVar), ScopedSource Γ src → closedListPar pats = true →
+      closedListReceiveBind bs = true →
+      ∀ r, bindResult src pats bs Γ = some r → closedListReceiveBind r = true := by
+    intro src
+    cases src with
+    | simple n =>
+      intro pats bs Γ hs hp hbs r hr
+      simp only [bindResult] at hr
+      rw [Option.map_eq_some'] at hr
+      obtain ⟨c, hc, hr'⟩ := hr
+      rw [← hr']
+      simp only [closedListReceiveBind, hbs, closed_receiveBindPar pats c pats.length hp (closed_namePar n Γ hs c hc),
+        Bool.and_self, Bool.true_and]
+    | receiveSend n => intro pats bs Γ hs hp hbs r hr; simp only [bindResult] at hr; exact absurd hr (by simp)
+    | sendReceive n ds => intro pats bs Γ hs hp hbs r hr; simp only [bindResult] at hr; exact absurd hr (by simp)
+  termination_by src => sizeOf src
+end
 /-- The constructs `normalize` does not model, each with the reason — so "outside the domain" is a
 row to read rather than a `none` to wonder about. -/
 structure SurfaceBoundary where

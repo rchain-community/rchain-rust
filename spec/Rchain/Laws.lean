@@ -1881,6 +1881,7 @@ def laws : List Law := [
   { number := 36, layer := "Rholang",
     statement := "The normalizer's output is well-scoped and closed (Law 6 through every path)",
     status := .provedModel,
+    rust := ["rholang/src/normalizer.rs"],
     declarations := [`Rchain.ScopedIn, `Rchain.an_unscoped_name_occurrence_is_open,
       `Rchain.a_scoped_name_occurrence_is_closed, `Rchain.bindResult, `Rchain.closed_normalizeAt,
       `Rchain.closed_procsPar, `Rchain.closed_namesPar, `Rchain.closed_namePar,
