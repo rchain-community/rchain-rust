@@ -929,9 +929,19 @@ def laws : List Law := [
       two-sided gap this row used to carry. **And the statement it needs is sharper than it looks**: as \
       written the comparison is *false*, because the walk takes **every** same-sender parent, so a \
       same-sender fork on `mv`'s frontier puts a message from the other branch in its output, and that \
-      branch is not below any given sentinel. The port's data does not fork (a validator produces one \
-      block per height, so its messages form a chain — `self_parents` walks as if they do), so the \
-      hypothesis is \"at most one same-sender parent per message\", and with it the comparison \
+      branch is not below any given sentinel. **And the port does not merely happen to be fork-free — it \
+      *refuses* a same-sender fork at ingress**, which is stronger than the datum this sentence used to \
+      assert and is what the proof's hypothesis can lean on: H-1's equivocation detection rejects a \
+      second distinct block by one sender reusing a `seq_num`, **before any partial write** \
+      (`casper/src/dag.rs:223-231`, test `insert_rejects_equivocation_same_seq_num` at `:547`); \
+      `sequence_number` requires a block to justify a same-sender block exactly one `seq_num` lower \
+      (`casper/src/validate.rs:144-163`, test `sequence_number_must_be_creator_latest_plus_one` at \
+      `:604`); and `check_justification_regression` admits at most one justification per sender and \
+      demands that it be the latest (`casper/src/validate.rs:180-216`). H-1 landed **2026-08-20** \
+      (`76415d6c6`), a month *before* the sentence it corrects was written — so the premise was carried \
+      in good faith rather than checked, which is this programme's recurring class. The hypothesis is \
+      therefore \"at most one same-sender parent per message\" — **guaranteed by an ingress refusal** \
+      rather than observed of the data — and with it the comparison \
       follows from the boundary plus the descent. That is the shape of the last conjunct, named so \
       the next pass proves a true statement rather than a forked counterexample. The old row's claim that the seen set is monotone \"(no \
       regression)\" was true of the port and false of the value the axiom quantified over" },
