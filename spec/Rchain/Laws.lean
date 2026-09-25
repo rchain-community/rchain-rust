@@ -933,11 +933,11 @@ def laws : List Law := [
       *refuses* a same-sender fork at ingress**, which is stronger than the datum this sentence used to \
       assert and is what the proof's hypothesis can lean on: H-1's equivocation detection rejects a \
       second distinct block by one sender reusing a `seq_num`, **before any partial write** \
-      (`casper/src/dag.rs:223-231`, test `insert_rejects_equivocation_same_seq_num` at `:547`); \
+      (`casper/src/dag.rs:244-252`, test `insert_rejects_equivocation_same_seq_num` at `:568`); \
       `sequence_number` requires a block to justify a same-sender block exactly one `seq_num` lower \
-      (`casper/src/validate.rs:144-163`, test `sequence_number_must_be_creator_latest_plus_one` at \
-      `:604`); and `check_justification_regression` admits at most one justification per sender and \
-      demands that it be the latest (`casper/src/validate.rs:180-216`). **Why the port refuses it, and \
+      (`casper/src/validate.rs:169-188`, test `sequence_number_must_be_creator_latest_plus_one` at \
+      `:629`); and `check_justification_regression` admits at most one justification per sender and \
+      demands that it be the latest (`casper/src/validate.rs:205-241`). **Why the port refuses it, and \
       why that refusal is a deviation the oracle does not share, is AUDIT C84** — the Scala has no \
       equivocation gate anywhere and its `validateDagState` checks only height contiguity, so the \
       premise this proof needs is **guaranteed here and only observed there**. H-1 landed **2026-08-20** \
@@ -961,7 +961,7 @@ def laws : List Law := [
     rust := ["casper/src/validate.rs"],
     witness := [`Rchain.block_number_rejects, `Rchain.block_number_universal_is_false],
     falsifiable := some "`block_number_rejects` is the case the port returns `InvalidBlockNumber` for \
-      (`validate.rs:135-140`): an off-by-one — `max + 2`, or `max` itself — fails it. The `-1` seed is \
+      (`validate.rs:160-164`): an off-by-one — `max + 2`, or `max` itself — fails it. The `-1` seed is \
       falsifiable on its own: a block with no live justification must be numbered `0`, so a model that \
       folded a maximum from `0` would demand `1` and reject the genesis-shaped case. And \
       `block_number_universal_is_false` exhibits the refutation of the axiom that stood here — which \
@@ -969,7 +969,7 @@ def laws : List Law := [
     note := "**the axiom was false, not merely unproven**: it quantified over every `Block`, and a \
       `Block` is freely constructed, so one line refutes it (`block_number_universal_is_false`). The law \
       is re-scoped to the check the code has — a fold over the block's justifications, skipping the \
-      failed ones and seeded `-1` (`validate.rs:123-140`) — and the proof is that predicate's \
+      failed ones and seeded `-1` (`validate.rs:145-159`) — and the proof is that predicate's \
       elimination, which is the honest shape: the port enforces this by *refusing blocks*, not by \
       maintaining an invariant it states. The model's `Block` carries `justifications` because the check \
       reads them; the `parents : List Nat` field this row's model used does not exist in the port" },
@@ -985,7 +985,7 @@ def laws : List Law := [
     rust := ["casper/src/validate.rs"],
     witness := [`Rchain.seq_num_universal_is_false, `Rchain.seq_num_strictly_increases],
     falsifiable := some "a block whose `seqNum` skips or repeats the sender's latest justification is \
-      rejected (`InvalidSequenceNumber`, `validate.rs:178-182`), and the `-1` seed is a case of its own: \
+      rejected (`InvalidSequenceNumber`, `validate.rs:183-187`), and the `-1` seed is a case of its own: \
       a sender's first block must be `0`. `seq_num_universal_is_false` is the published refutation of \
       the axiom this replaces — and it refutes it **for a single sender**, which is why the re-scoping \
       is the justification relation and not the sender relation",
@@ -993,7 +993,7 @@ def laws : List Law := [
       the diagnosis in the row it replaces — \"the sender relation is missing\" — was wrong: a same-sender \
       pair with a non-consecutive `seqNum` refutes it just as well \
       (`seq_num_universal_is_false`). What the check folds over is the block's justifications **whose \
-      sender matches**, against their maximum (`validate.rs:164-183`); the law is re-scoped to that, and \
+      sender matches**, against their maximum (`validate.rs:169-188`); the law is re-scoped to that, and \
       the proof is the predicate's elimination. The old model also carried a `seqNum`-ordering axiom over \
       any two blocks, which no port rule states" },
   { number := 16, clause := "c", layer := "Casper",
