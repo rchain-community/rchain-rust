@@ -676,6 +676,160 @@ scan_ctor_escapes() {
   fi
 }
 
+# --- the completeness guard: the two rosters check themselves ------------------------------------
+#
+# Everything above is complete *over its scope*, and the scope is two hand-maintained lists — so their
+# completeness is the one thing they cannot check about themselves. A new refinement in a file nobody
+# added to `REFINEMENT_FILES` is outside every form of this class, silently. This guard derives the
+# refinement-shaped newtypes of the workspace and fails when one appears in neither
+# `REFINEMENT_TYPES` nor the exemptions table below.
+#
+# What "refinement-shaped" means here, and what it cannot mean:
+#   G1   `pub struct Name(<generics>)?(` with no `pub` inside the parens — a tuple newtype whose field
+#        is private, which is the shape every refinement in the roster has. A public field is excluded
+#        because the class flags that form directly (it is an escape, not a refinement).
+#   G1b  an invocation of a macro **defined in the same file** whose first argument is CamelCase:
+#        this is how `non_neg_signed!(NonNegI64, i64)` and `len_newtype!(WireLen, u32)` are found. The
+#        same-file clause is what keeps `assert_eq!(LENGTH, 32)` out, and it is deliberately coarse —
+#        a same-file macro that expands to a *unit* struct is a false positive, and the net only sees
+#        an argument written on the invocation'\''s first line. Both limits are measured in the
+#        exemptions below rather than hidden.
+#   G2   `pub struct Name { … }` whose fields are all private, **restricted to the roster'\''s files**:
+#        workspace-wide that shape is ~125 structs, nearly all service types with private fields for
+#        encapsulation, and a check that fired on all of them would be switched off within a week. In
+#        the 11 homes it is 6 names, and this is the half that would catch a brace-form refinement in
+#        a file already in the roster.
+#
+# A non-`pub` newtype is *not* derived (the roster is public refinements), and neither is a refinement
+# behind a macro defined in another file: both remain blind spots, recorded in the construction rule'\''s
+# list above.
+#
+# The exemptions are the same kind of artefact as the entries above — one line per name, with the
+# reason it is not a refinement — and an exemption that matches nothing derived is a hard failure.
+REFINEMENT_EXEMPT=(
+  'crypto/src/public_key.rs;;PublicKey;;G1;;a wrapper, not a refinement: `PublicKey::new(bytes: Vec<u8>)` accepts any bytes, so there is no domain a validator could establish. Recorded as a finding rather than fixed — `crypto/` is another writer'"'"'s lane, and a 65-byte key would make this a refinement with a validator'
+  'rspace/src/scheduled_space.rs;;ReleaseToken;;G1;;a marker: the field is `()`, so there is no wider domain for a validator to reject anything from'
+  'casper/src/protocol/casper_message_protocol.rs;;BlockMessageSerde;;G1b:impl_serde;;`impl_serde!` expands to `pub struct $serde;` — a unit struct, not a newtype; a false positive of the macro net'
+  'casper/src/protocol/casper_message_protocol.rs;;BlockRequestSerde;;G1b:impl_serde;;as `BlockMessageSerde`: a unit struct from the same macro'
+  'casper/src/protocol/casper_message_protocol.rs;;HasBlockSerde;;G1b:impl_serde;;as `BlockMessageSerde`: a unit struct from the same macro'
+  'crypto/src/hash/blake2b512_random.rs;;Blake2b512Random;;G2;;an RNG state machine: every field is private and internally maintained, and there is no wider input type a validator could reject. Its *serialized* form does carry that invariant, and that one is `SerializedRandom`, in the roster'
+  'rspace/src/history/radix_tree.rs;;RadixTreeImpl;;G2;;a service struct: a store handle and its locks, private because the fields are the implementation, not because an invariant is carried'
+  'rholang/src/util/rev_address.rs;;AddressTools;;G2;;a parser/tool holding `prefix`/`key_length`/`checksum_length`: private for encapsulation, with no invariant beyond "these are the parameters it was built with"'
+)
+
+ESCAPE_ROSTER_AWK='
+function braces(s,   o, c, i, ch) { o = 0; c = 0; for (i = 1; i <= length(s); i++) { ch = substr(s, i, 1); if (ch == "{") o++; else if (ch == "}") c++ } return o - c }
+FNR == 1 { delete macros }
+/^[[:space:]]*macro_rules![[:space:]]*[a-z_][A-Za-z0-9_]*/ {
+  m = $0; sub(/^[[:space:]]*macro_rules![[:space:]]*/, "", m); sub(/[^A-Za-z0-9_].*$/, "", m); macros[m] = 1
+}
+match($0, /^[[:space:]]*pub struct[[:space:]]+[A-Z][A-Za-z0-9_]*/) {
+  name = $0; sub(/^[[:space:]]*pub struct[[:space:]]+/, "", name); sub(/[^A-Za-z0-9_].*$/, "", name)
+  if ($0 ~ /^[[:space:]]*pub struct[[:space:]]+[A-Z][A-Za-z0-9_]*([[:space:]]*<[^>]*>)?[[:space:]]*\(/) {
+    inner = $0; sub(/^[^()]*\(/, "", inner)
+    if (inner !~ /(^|[^A-Za-z0-9_])pub([^A-Za-z0-9_]|$)/) print FILENAME "\t" name "\tG1"
+  }
+}
+match($0, /^[[:space:]]*[a-z_][A-Za-z0-9_]*!/) {
+  mac = $0; sub(/^[[:space:]]*/, "", mac); sub(/!.*$/, "", mac)
+  if (mac in macros) {
+    rest = $0; sub(/^[^(]*\(/, "", rest)
+    if (rest ~ /^[[:space:]]*[A-Z][A-Za-z0-9_]*[[:space:]]*,/) {
+      nm = rest; sub(/^[[:space:]]*/, "", nm); sub(/[^A-Za-z0-9_].*$/, "", nm)
+      print FILENAME "\t" nm "\tG1b:" mac
+    }
+  }
+}
+match($0, /^[[:space:]]*pub struct[[:space:]]+[A-Z][A-Za-z0-9_]*[[:space:]]*\{/) {
+  name = $0; sub(/^[[:space:]]*pub struct[[:space:]]+/, "", name); sub(/[^A-Za-z0-9_].*$/, "", name)
+  body = $0; sub(/^[^{]*\{/, "", body); depth = braces($0)
+  while (depth > 0 && body !~ /pub/) { if ((getline nxt) <= 0) break; body = body " " nxt; depth += braces(nxt) }
+  if (body !~ /(^|[^A-Za-z0-9_])pub([^A-Za-z0-9_]|$)/) print FILENAME "\t" name "\tG2"
+}
+'
+
+REFINEMENT_EXEMPT_CLAIMS=()
+
+is_rostered_type() {
+  local n="$1" t
+  for t in "${REFINEMENT_TYPES[@]}"; do
+    [[ "$t" == "$n" ]] && return 0
+  done
+  return 1
+}
+
+scan_ctor_guard() {
+  local c dir f line name form i exempt_claims=() rostered=0 derived=0
+  local n_exempt=${#REFINEMENT_EXEMPT[@]}
+  for ((i = 0; i < n_exempt; i++)); do exempt_claims[i]=0; done
+  # The brace form is derived only for the roster'\''s files (see G2 above); the other two forms are
+  # workspace-wide.
+  local roster_files=() rel
+  for rel in "${REFINEMENT_FILES[@]}"; do roster_files+=("$ROOT/$rel"); done
+  local all_files=()
+  for c in "${CRATES[@]}"; do
+    dir="$ROOT/$c/src"
+    [ -d "$dir" ] || continue
+    while IFS= read -r f; do all_files+=("$f"); done < <(find "$dir" -name '*.rs' | grep -vE "$TEST_ONLY_FILE_RE")
+  done
+  # ONE awk pass over every non-test `.rs` in the workspace (the design'\''s measure: 0.14 s), not one
+  # per file — a fork per file cost 1.4 s, measured, for the same answer.
+  # **And the pass must be given files.** `awk` with no file argument reads **stdin**, so an empty
+  # workspace does not make this check fail — it makes it *block forever*: measured 2026-09-25 on a
+  # scratch copy with `CRATES=(nosuchcrate)`, which sat at 0 % CPU for an hour and a half before it was
+  # killed. A completeness check that cannot terminate is a defect in the check, so the empty case is
+  # named here and never reaches awk.
+  if (( ${#all_files[@]} == 0 )); then
+    note escape "$ROOT/tools/audit-type-system.sh" "-" \
+      "the completeness guard found no source file to derive from — a derivation that has nothing to read is not evidence (and must not be handed to awk, which would read stdin)"
+    return
+  fi
+  while IFS=$'\t' read -r f name form; do
+      [ -n "$name" ] || continue
+      if [[ "$form" == "G2" ]]; then
+        local in_roster=0 rf
+        for rf in ${roster_files[@]+"${roster_files[@]}"}; do [[ "$rf" == "$f" ]] && in_roster=1; done
+        (( in_roster )) || continue
+      fi
+      derived=$((derived + 1))
+      if is_rostered_type "$name"; then
+        rostered=$((rostered + 1))
+        continue
+      fi
+      local claimed=0
+      for ((i = 0; i < n_exempt; i++)); do
+        local ef en efo er
+        parse_entry "${REFINEMENT_EXEMPT[i]}" ef en efo er
+        [[ "$ef" == "$name" || -z "$ef" ]] && { :; }
+        # the entry names the file and the type; the form is recorded so a changed shape is visible
+        case "$f" in *"$ef") ;; *) continue ;; esac
+        [[ "$en" == "$name" ]] || continue
+        [[ "$efo" == "$form" ]] || continue
+        claimed=1; exempt_claims[i]=$(( ${exempt_claims[i]} + 1 ))
+      done
+      if (( claimed == 0 )); then
+        note escape "$f" "-" "a refinement-shaped newtype is in neither REFINEMENT_TYPES nor REFINEMENT_EXEMPT ($form: $name) — add it to the roster (and to the construction allowlist) or exempt it with a reason"
+      fi
+  done < <(awk "$ESCAPE_ROSTER_AWK" ${all_files[@]+"${all_files[@]}"})
+  for ((i = 0; i < n_exempt; i++)); do
+    if (( ${exempt_claims[i]:-0} == 0 )); then
+      local ef2 en2 efo2 er2
+      parse_entry "${REFINEMENT_EXEMPT[i]}" ef2 en2 efo2 er2
+      note escape "$ROOT/tools/audit-type-system.sh" "-" "exemption matches nothing derived (stale): $ef2 / $en2 ($efo2)"
+    fi
+  done
+  # The counts must be honest about themselves: `exempt` is the number of entries that actually
+  # claimed a derived name, not `derived - rostered` (which would swallow the names this guard is
+  # about to fail on).
+  local exempt_named=0
+  for ((i = 0; i < n_exempt; i++)); do exempt_named=$(( exempt_named + ${exempt_claims[i]:-0} )); done
+  printf '  (reviewed) %s refinement-shaped newtype(s) derived; %s in REFINEMENT_TYPES, %s exempt, %s named above\n' \
+    "$derived" "$rostered" "$exempt_named" "$(( derived - rostered - exempt_named ))"
+  if (( derived == 0 )); then
+    note escape "$ROOT/tools/audit-type-system.sh" "-" "the completeness guard derived no newtype at all — a derivation that silently finds nothing passes silently, which is the failure this guard exists to prevent"
+  fi
+}
+
 scan_escapes() {
   local rel f name pattern line text
   # Any `Deref` impl in a refinement home, whatever it is on.
@@ -701,6 +855,7 @@ scan_escapes() {
     done < <(awk -v TYPES="$types" "$ESCAPE_GET_AWK" "$f")
   done
   scan_ctor_escapes
+  scan_ctor_guard
 }
 
 run_class() {
