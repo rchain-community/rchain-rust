@@ -996,7 +996,15 @@ def laws : List Law := [
       **What remains owed is still the comparison itself**: the mechanism \
       (`selfParents_skips_finalized`, and now a faithful min message) is proved and the arithmetic \
       across a chain is not — the per-sender sentinel comparison, under the hypothesis named above, \
-      which is guaranteed at ingress rather than observed of the data" },
+      which is guaranteed at ingress rather than observed of the data. **And the obstacle is a \
+      *modelling* one, stated here so the next attempt sizes it correctly rather than starting at the \
+      proof** (2026-09-25): the model's `nextFringe` takes the next layer as an **argument** \
+      (`Rchain/Casper/Fringe.lean:110`), so there is no relation between two *successive* fringes for a \
+      comparison to be about — the port's `next_fringe` *derives* the layer from the DAG \
+      (`minMsgs`/`selfParents`), and the missing piece is that derivation as a function plus the \
+      relation between its two seeds (the new block's justifications reaching the previous sentinel). \
+      So this is one more model before it is a proof, which is why it is still owed rather than \
+      half-done" },
   { number := 16, clause := "a", layer := "Casper",
     rustWitness := ["casper/src/validate.rs:block_number_must_be_parent_max_plus_one"],
     statement := "Block number = max(parent) + 1 — as the port's check, which **rejects** a block whose \
