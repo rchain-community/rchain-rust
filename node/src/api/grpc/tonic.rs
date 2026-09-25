@@ -912,10 +912,26 @@ mod tests {
         }
         async fn get_listening_name_continuation_response(
             &self,
-            _: i32,
-            _: &[Par],
+            depth: i32,
+            names: &[Par],
         ) -> ApiErr<(Vec<ContinuationsWithBlockInfo>, i32)> {
-            unimplemented!()
+            if self.refuse {
+                return Err("stub refusal: no continuations".to_string());
+            }
+            self.calls.lock().unwrap().push(format!(
+                "get_listening_name_continuation_response depth={depth} names={}",
+                names.len()
+            ));
+            Ok((
+                vec![ContinuationsWithBlockInfo {
+                    post_block_continuations: vec![WaitingContinuationInfo {
+                        post_block_patterns: Vec::new(),
+                        post_block_continuation: Par::default(),
+                    }],
+                    block: light_block(),
+                }],
+                depth,
+            ))
         }
         async fn get_blocks_by_heights(&self, _: i64, _: i64) -> ApiErr<Vec<LightBlockInfo>> {
             unimplemented!()
@@ -1406,7 +1422,66 @@ mod tests {
                 "an unknown hash must not answer an empty result — a client would read that as \
                  \"this block had no events\""
             ),
-            other => panic!("unexpected message {other:?}"),
+        }
+    }
+
+    /// **`listenForContinuationAtName`: the names are *converted*, and the payload says how many.** The
+    /// handler takes a list of wire names, converts each to a domain par, and forwards them with the
+    /// depth — so the count reaching the handler is the assertion that matters (a list that lost an
+    /// entry, or forwarded one default par for the whole list, answers the same shape and a different
+    /// question). The response's `length` is the depth the handler returned, and the payload carries
+    /// the continuations it found.
+    #[tokio::test]
+    async fn listen_for_continuation_at_name_converts_every_name() {
+        use rchain_models::proto::casper::ContinuationAtNameQuery;
+
+        let (svc, api) = deploy_service(|_| {});
+        let name = |s: &str| {
+            rchain_models::wire::par_to_proto(&rchain_models::par_ops::from_expr(
+                rchain_models::ast::Expr::GString(s.to_string()),
+            ))
+        };
+
+        let resp = DeployService::listen_for_continuation_at_name(
+            &svc,
+            Request::new(ContinuationAtNameQuery {
+                depth: 4,
+                names: vec![name("a"), name("b")],
+            }),
+        )
+        .await
+        .expect("listen_for_continuation_at_name");
+        match resp.into_inner().message.expect("a message") {
+            wire::continuation_at_name_response::Message::Payload(p) => {
+                assert_eq!(p.block_results.len(), 1, "the stub's one continuation");
+                assert_eq!(p.length, 4, "and the depth the handler returned");
+            }
+            other => panic!("an answered query must be a Payload, got {other:?}"),
+        }
+        let calls = api.calls.lock().unwrap().clone();
+        assert_eq!(
+            calls,
+            vec!["get_listening_name_continuation_response depth=4 names=2".to_string()],
+            "both names reach the handler, with the depth: {calls:?}"
+        );
+
+        // A refused read arrives as an `Error` message rather than an empty payload.
+        let (refusing, _) = deploy_service(|s| s.refuse = true);
+        let resp = DeployService::listen_for_continuation_at_name(
+            &refusing,
+            Request::new(ContinuationAtNameQuery {
+                depth: 1,
+                names: vec![name("a")],
+            }),
+        )
+        .await
+        .expect("a refused read is still answered");
+        match resp.into_inner().message.expect("a message") {
+            wire::continuation_at_name_response::Message::Error(e) => assert!(
+                e.messages.join(" ").contains("stub refusal"),
+                "the reason reaches the client: {e:?}"
+            ),
+            other => panic!("a refusal must arrive as an Error message, got {other:?}"),
         }
     }
 
