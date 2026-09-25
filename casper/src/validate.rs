@@ -121,7 +121,7 @@ pub type ValidBlockProcessing = Result<(), BlockStatus>;
 /// Two roles, deliberately separated (H1b, now enforced):
 ///
 /// - **Every resolved parent must be *lower* than this block** — `Descends`
-///   (`spec/Rchain/Casper/Dag.lean:296-297`) — failed or not. A failed block's recorded height is its
+///   (`spec/Rchain/Casper/Dag.lean:Descends`) — failed or not. A failed block's recorded height is its
 ///   **claimed** `block_num` (`message_from_block_metadata`'s `height: block.block_num`), so without
 ///   this a block could name a failed parent far above itself, and the model's premise was false of a
 ///   state the port admitted. The witness is `dag.rs`'s

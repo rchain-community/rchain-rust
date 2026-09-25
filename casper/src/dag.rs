@@ -1251,7 +1251,7 @@ mod tests {
     }
 
     /// **H1b, enforced — and it was the reproduction before.** The model requires every resolved
-    /// parent to be lower than the message naming it (`Descends`, `spec/Rchain/Casper/Dag.lean:296-297`).
+    /// parent to be lower than the message naming it (`Descends`, `spec/Rchain/Casper/Dag.lean:Descends`).
     /// `validate::block_number` now *requires* that of every resolved parent while still skipping
     /// failed ones for the maximum; before that enforcement this test asserted the opposite — that the
     /// violation was **admitted** — because a failed block's recorded height is its **claimed**

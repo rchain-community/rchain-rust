@@ -77,7 +77,7 @@ pub fn count_free_vars_refined<S: Sort>(p: &Par<S>) -> FreeCount {
 /// **Law 5's predicate**: no free level occurs twice in `p`, so matching `p` binds each level at most
 /// once. The port's counterpart of the model's `linear` (`spec/Rchain/Match.lean:396-397`), which the
 /// matcher's entry conjoins exactly as `spatialMatch` does
-/// (`spatialMatchCore … && linear pattern`, `Match.lean:402`).
+/// (`spatialMatchCore … && linear pattern`, `spec/Rchain/Match.lean:402`).
 ///
 /// Two deliberate agreements with the model, and one deliberate difference:
 ///

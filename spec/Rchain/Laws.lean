@@ -1158,7 +1158,7 @@ def laws : List Law := [
       `List Validator` — ids, no stakes (`Pos.lean:184`) — with the stakes in `pool`, so deriving the \
       map from the model's state would answer with the *current pool stakes*: the wrong map, precisely \
       where law 44 says the difference is real. Closing this row therefore needs `PosState` to carry \
-      the stakes it selected (a change to laws 44-47's model, its own unit — AUDIT C90 records it), and \
+      the stakes it selected (a change to laws 44-47's model, its own unit — AUDIT C92 records it), and \
       then the equality for an honest production. The row moved from `open` to `owed` because the \
       definitions now exist and part of the claim is proved; what it does *not* say is that the cache \
       equals the state for every block, which is what making the state faithful would let it say" },

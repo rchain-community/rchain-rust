@@ -228,7 +228,7 @@ is suppressed workspace-wide.** `-A dead-code` is the first item in CI's `CLIPPY
 library target as well — so **a config surface, a field, an enum variant or a helper that nothing
 consumes is invisible to the compiler here, by construction**. That is not hypothetical: the
 `metrics { prometheus, influxdb, influxdb-udp, zipkin, sigar }` block was parsed and never consulted, and
-no lint could have said so — it took the §6 sweep, not CI, to find it (AUDIT C315, since refused at
+no lint could have said so — it took the §6 sweep, not CI, to find it (AUDIT §6, since refused at
 startup). **So a green CI says nothing about whether a knob is wired**: the coverage for this class is
 the §6 register and its sweep, and a new configuration surface should be read as unverified by the gate
 until something consumes it. (The same discipline as this file's own rule for the partiality catalogue —

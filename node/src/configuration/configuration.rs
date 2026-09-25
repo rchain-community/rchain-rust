@@ -47,7 +47,7 @@ pub struct Configuration;
 impl Configuration {
     /// Build a `NodeConf` from CLI options (port of `Configuration.build`). The kamon config (the
     /// 4th return value in Scala) is not carried: the reporter switches are checked here instead —
-    /// refused or noted, never left as settings nothing reads (`check_metrics_config`, AUDIT C315).
+    /// refused or noted, never left as settings nothing reads (`check_metrics_config`, AUDIT §6).
     pub fn build(options: &Options) -> Result<(NodeConf, Profile, Option<PathBuf>), String> {
         let profile = match &options.profile {
             Some(name) => profiles()
@@ -106,7 +106,7 @@ impl Configuration {
             }
         }
 
-        // AUDIT C315: the Kamon reporter switches. Checked here, where the operator-facing
+        // AUDIT §6: the Kamon reporter switches. Checked here, where the operator-facing
         // configuration errors already live (`check_shard_config_exclusivity`, the shard quorum
         // check), so a `run` asking for a reporter this port does not have fails at startup instead
         // of running with a setting that reports nothing.
@@ -143,7 +143,7 @@ fn resolve_validator_private_key(node_conf: &mut NodeConf) -> Result<(), String>
     Ok(())
 }
 
-/// What this port does about the Kamon reporter switches (`metrics.*`, AUDIT C315).
+/// What this port does about the Kamon reporter switches (`metrics.*`, AUDIT §6).
 ///
 /// The oracle's `kamon.conf` gates a Prometheus scrape endpoint (`prometheus { enabled = false }`)
 /// and configures InfluxDB, Zipkin and Sigar reporters that *push*. This port carries no Kamon: it
@@ -466,7 +466,7 @@ mod tests {
         );
     }
 
-    /// AUDIT C315: the four reporter switches have no counterpart in this port, so asking for one is
+    /// AUDIT §6: the four reporter switches have no counterpart in this port, so asking for one is
     /// an error at startup naming it — rather than a setting that is accepted and reports nothing.
     #[test]
     fn metrics_reporters_absent_from_this_port_are_refused() {
