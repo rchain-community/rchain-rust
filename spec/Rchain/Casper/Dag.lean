@@ -126,13 +126,29 @@ def checkMinMessages (ms : List Message) (bonds : Bonds) : Bool := ms.length == 
 def layerInsert (m : Message) (l : List Message) : List Message :=
   m :: l.filter (fun m' => !(m'.sender = m.sender))
 
+/-- **The seeding**: the port builds its map by `collect`, so a sender repeated in the min messages keeps
+    the **last** one — an *unguarded* overwrite, which is what `layerInsert` above is for. -/
+def seedLayer (l : List Message) : List Message :=
+  l.foldl (fun acc m => layerInsert m acc) []
+
+/-- **The candidate insertion, guarded as the port guards it**: a candidate takes its sender's slot **only
+    when its `seqNum` is strictly greater** than the entry it would replace
+    (`block-storage/src/dag/finalizer.rs:119-125`). This is the difference the model used to elide — and
+    the port's own comment calls it *"the Law 15 monotonicity invariant"* (`message_state.rs:77`), so
+    eliding it elides the invariant: the antichain (law 14b) is indifferent to which same-sender message
+    wins, and law 15's comparison is *about* which one wins. -/
+def insertCandidate (m : Message) (l : List Message) : List Message :=
+  match l.find? (fun m' => m'.sender = m.sender) with
+  | some cur => if cur.seqNum < m.seqNum then layerInsert m l else l
+  | none => l
+
 /-- The layer: the min messages folded in, then the candidate parents whose sender is already a key
     (`calculate_next_layer`'s second half). -/
 def nextLayer (d : Dag) (ms : List Message) : List Message :=
-  let seeded := ms.foldr (fun m acc => layerInsert m acc) []
+  let seeded := seedLayer ms
   let cands := ((ms.map (fun x => x.parents.filterMap (Dag.msg d))).join).filter
     (fun c => decide (c.sender ∈ seeded.map (·.sender)))
-  cands.foldr (fun m acc => layerInsert m acc) seeded
+  cands.foldl (fun acc m => insertCandidate m acc) seeded
 
 /-- **The derivation** — the port's `next_fringe` (`:186-211`) in its own decision order: the walk, the
     count gate, the layer, the stake gate. The support map is an argument (its content is law 14a's,
@@ -176,10 +192,37 @@ theorem foldr_layerInsert_nodup : ∀ (l init : List Message), (init.map (·.sen
     exact layerInsert_nodup m _ (foldr_layerInsert_nodup rest init h)
 
 /-- **The layer's senders are pairwise distinct** — the antichain, from the fold that builds it. -/
+theorem seedLayer_nodup (l : List Message) : ((seedLayer l).map (·.sender)).Nodup := by
+  suffices h : ∀ acc, (acc.map (·.sender)).Nodup →
+      ((l.foldl (fun acc m => layerInsert m acc) acc).map (·.sender)).Nodup by
+    simpa [seedLayer] using h [] (by simp)
+  intro acc hacc
+  induction l generalizing acc with
+  | nil => simpa using hacc
+  | cons m _rest ih => exact ih _ (layerInsert_nodup m acc hacc)
+
+/-- The guarded insertion preserves the keys' distinctness whichever branch it takes: the guarded branch is
+    `layerInsert`, and the other is the identity. -/
+theorem insertCandidate_nodup (m : Message) (l : List Message)
+    (h : (l.map (·.sender)).Nodup) : ((insertCandidate m l).map (·.sender)).Nodup := by
+  unfold insertCandidate
+  split
+  · split
+    · exact layerInsert_nodup m l h
+    · exact h
+  · exact h
+
+theorem foldl_insertCandidate_nodup (l : List Message) :
+    ∀ acc, (acc.map (·.sender)).Nodup →
+      ((l.foldl (fun acc m => insertCandidate m acc) acc).map (·.sender)).Nodup := by
+  induction l with
+  | nil => intro acc h; simpa using h
+  | cons m _rest ih => intro acc h; exact ih _ (insertCandidate_nodup m acc h)
+
 theorem nextLayer_nodup (d : Dag) (ms : List Message) :
     ((nextLayer d ms).map (·.sender)).Nodup := by
   unfold nextLayer
-  exact foldr_layerInsert_nodup _ _ (foldr_layerInsert_nodup _ _ (by simp))
+  exact foldl_insertCandidate_nodup _ _ (seedLayer_nodup ms)
 
 /-- **Law 14b — the derived fringe is an antichain.** A fringe the derivation *publishes* holds at most
     one message per sender: `(f.messages.map (·.sender)).Nodup`. That is what the walk and the layer
@@ -721,7 +764,7 @@ theorem fold4_is_fork_free :
     makes a justification the sender's latest". -/
 theorem the_fold_can_publish_below_the_previous_fringe :
     ¬ (∀ m ∈ nextLayer fold4 (minMsgs fold4 [⟨101, 6, 0, 6, [99], []⟩] [100]),
-        (⟨100, 5, 0, 5, [], []⟩ : Message).height ≤ m.height) := by decide
+        m.sender = 0 → (⟨100, 5, 0, 5, [], []⟩ : Message).height ≤ m.height) := by decide
 
 /-- **A second DAG, for a sharper question: is the *sequence* rule the lift's hypothesis?** Four messages —
     `q` (100, sender 0, seq 5) as the previous fringe's message, `c` (101, sender 0, seq 2) a *lower*
@@ -743,13 +786,19 @@ theorem fold5_is_fork_free :
     ∀ m ∈ fold5, ∀ a ∈ sameSenderParents fold5 m.sender m [],
       ∀ b ∈ sameSenderParents fold5 m.sender m [], a = b := by decide
 
-/-- **…and it still publishes below the previous fringe**: the fold's *last* insertion for sender 0 is the
-    candidate `c` (height 2) rather than the min message `z` (height 6), because `cands` is folded
-    right-to-left and `c` comes from the earlier justification. So the sequence rule alone is not the
-    lift's hypothesis either. -/
-theorem the_sequence_rule_is_not_enough :
-    ¬ (∀ m ∈ nextLayer fold5
-          (minMsgs fold5 [⟨102, 3, 1, 0, [101], []⟩, ⟨103, 6, 0, 6, [100], []⟩] [100]),
-        (⟨100, 5, 0, 5, [], []⟩ : Message).height ≤ m.height) := by decide
+/-- **…and with the port's guard the per-sender comparison holds on it**: `fold5` publishes the min
+    message `z` (103, height 6) for sender 0, not the lower candidate `101` (height 2), because the guarded
+    insertion refuses a candidate whose `seqNum` is not strictly greater. This is the smallest instance
+    that can see the difference between the port's fold and the unguarded one the model used to have —
+    and on it the model published a **stale** message. -/
+theorem the_guard_keeps_the_newer_message :
+    (nextLayer fold5 (minMsgs fold5 [⟨102, 3, 1, 0, [101], []⟩, ⟨103, 6, 0, 6, [100], []⟩] [100])).map
+      (·.id) = [103, 102] := by decide
+
+/-- …so the comparison law 15 states — **per sender** — holds here, and the counterexample is `fold4`'s
+    sequence-rule-violating shape rather than this one. -/
+theorem the_comparison_holds_on_fold5 :
+    ∀ m ∈ nextLayer fold5 (minMsgs fold5 [⟨102, 3, 1, 0, [101], []⟩, ⟨103, 6, 0, 6, [100], []⟩] [100]),
+      m.sender = 0 → (⟨100, 5, 0, 5, [], []⟩ : Message).height ≤ m.height := by decide
 
 end Rchain

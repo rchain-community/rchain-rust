@@ -918,7 +918,9 @@ def laws : List Law := [
       `Rchain.fork4, `Rchain.the_comparison_is_false_without_fork_freedom, `Rchain.fold4,
       `Rchain.minMsgs_fold4, `Rchain.fold4_is_fork_free,
       `Rchain.fold5, `Rchain.fold5_is_fork_free, `Rchain.fold5_satisfies_the_sequence_rule,
-      `Rchain.the_fold_can_publish_below_the_previous_fringe, `Rchain.the_sequence_rule_is_not_enough],
+      `Rchain.the_fold_can_publish_below_the_previous_fringe, `Rchain.seedLayer,
+      `Rchain.insertCandidate, `Rchain.seedLayer_nodup, `Rchain.insertCandidate_nodup,
+      `Rchain.the_guard_keeps_the_newer_message, `Rchain.the_comparison_holds_on_fold5],
     axioms := [],
     rust := ["block-storage/src/dag/message_state.rs", "block-storage/src/dag/finalizer.rs"],
     witness := [`Rchain.fringe_monotone_is_false, `Rchain.seen_monotone_is_false,
@@ -926,7 +928,8 @@ def laws : List Law := [
       `Rchain.selfParents_above_a_finalized_ancestor,
       `Rchain.the_comparison_is_false_without_fork_freedom, `Rchain.fold4_is_fork_free,
       `Rchain.the_fold_can_publish_below_the_previous_fringe, `Rchain.fold5_is_fork_free,
-      `Rchain.fold5_satisfies_the_sequence_rule, `Rchain.the_sequence_rule_is_not_enough],
+      `Rchain.fold5_satisfies_the_sequence_rule, `Rchain.the_guard_keeps_the_newer_message,
+      `Rchain.the_comparison_holds_on_fold5],
     falsifiable := some "`fringe_monotone_is_false` exhibits two overlapping fringes (one at 5 and 1, one \
       at 3) where both arms of the disjunction fail — so the axiom was false as written; \
       `seen_monotone_is_false` exhibits two unrelated messages where `b` sees `a` and `a` sees `2` but \
@@ -1036,19 +1039,7 @@ def laws : List Law := [
       justification wins the sender's slot over the min message \
       (`the_fold_can_publish_below_the_previous_fringe`, `the_sequence_rule_is_not_enough`, with \
       `fold4_is_fork_free`, `fold5_is_fork_free` and `fold5_satisfies_the_sequence_rule` proving each \
-      instance *has* the hypothesis it tests). **But both refutations are about the *model*, not the port, \
-      and that is the correction this note now carries.** The port's `calculate_next_layer` replaces a \
-      sender's entry **only when the candidate's `sender_seq` is strictly greater** \
-      (`block-storage/src/dag/finalizer.rs:119-125`), and the port's own comment names that guard as *\"the \
-      Law 15 monotonicity invariant\"* (`message_state.rs:77`). `layerInsert` drops it, justified by \
-      *\"the antichain does not depend on that choice\"* — true of law 14b's **keys**, false of the \
-      **identity and height of the published message**, which is what this row's comparison is about. \
-      Under the port's guard `fold5` publishes the min message `z` (height 6) and not the lower candidate \
-      `c` (height 2), so there is no violation to explain. **What is owed is therefore concrete rather than \
-      open**: the fold must carry the port's guard — including how the *seeding* collapses two \
-      same-sender min messages, which the port does by `BTreeMap::collect` and the model by prepending — \
-      and then the published-layer comparison is statable at all. That is a modelling step before it is a \
-      proof, and the two counterexamples are what say so" },
+      instance *has* the hypothesis it tests). **And the fold itself was the thing in the way, which is now fixed rather than argued about.** The port's `calculate_next_layer` gives a candidate its sender's slot **only when its `sender_seq` is strictly greater** (`block-storage/src/dag/finalizer.rs:119-125`), and the port's own comment calls that guard *\"the Law 15 monotonicity invariant\"* (`message_state.rs:77`). `layerInsert` did not: it is the *seeding* rule (the port's `BTreeMap::collect`, last wins) and the model used it for the candidates too, justified by *\"the antichain does not depend on that choice\"* — true of law 14b's **keys**, false of the **message** law 15 is about. `seedLayer` and `insertCandidate` now carry both rules, and the difference shows on this file's own instance: `dag3`'s published layer was [10, 12] and is now [11, 12] — the model was publishing a **stale** same-sender message, which no law-14b check could see because the *keys* were right either way. **With the faithful fold the counterexample is `fold4` and nothing else**, stated per sender as law 15 states it: `the_fold_can_publish_below_the_previous_fringe` holds of a fork-free DAG whose `101` justifies the older `99` while `100` is finalized — a shape the **sequence rule** refuses, since `101`'s same-sender justification is not its sender's latest. `fold5` refutes nothing now: with the guard it publishes `z` (height 6) for sender 0 and the comparison holds (`the_guard_keeps_the_newer_message`, `the_comparison_holds_on_fold5`). **So the lift's hypothesis is the sequence rule, on a fold that mirrors the port** — which is what this row said before two of its own corrections, and it is now what the machine says rather than what a guess said" },
   { number := 16, clause := "a", layer := "Casper",
     rustWitness := ["casper/src/validate.rs:block_number_must_be_parent_max_plus_one"],
     statement := "Block number = max(parent) + 1 — as the port's check, which **rejects** a block whose \
