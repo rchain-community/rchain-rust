@@ -1035,15 +1035,19 @@ def laws : List Law := [
       justification wins the sender's slot over the min message \
       (`the_fold_can_publish_below_the_previous_fringe`, `the_sequence_rule_is_not_enough`, with \
       `fold4_is_fork_free`, `fold5_is_fork_free` and `fold5_satisfies_the_sequence_rule` proving each \
-      instance *has* the hypothesis it tests). **So the row names no hypothesis for the lift, and the third \
-      candidate did not survive reading the port's own code either.** `check_justification_regression` \
-      (`casper/src/validate.rs:205-241`) is a *seen-set* condition — each of a block's justifications of \
-      another sender must have seen at least what that sender's previous message saw — and it returns \
-      `Ok(None)`, **no verdict at all**, when the block has no same-sender justification, which is exactly \
-      `fold5`'s `p`. So whether the port admits that shape is the open question: if it does, the per-sender \
-      reading is false of the *published* layer rather than unproved, and if some other ingress rule \
-      excludes it, that rule is the lift's hypothesis. Stated as a question because three candidates have \
-      now been refuted — two by counterexample and one by reading the code" },
+      instance *has* the hypothesis it tests). **But both refutations are about the *model*, not the port, \
+      and that is the correction this note now carries.** The port's `calculate_next_layer` replaces a \
+      sender's entry **only when the candidate's `sender_seq` is strictly greater** \
+      (`block-storage/src/dag/finalizer.rs:119-125`), and the port's own comment names that guard as *\"the \
+      Law 15 monotonicity invariant\"* (`message_state.rs:77`). `layerInsert` drops it, justified by \
+      *\"the antichain does not depend on that choice\"* — true of law 14b's **keys**, false of the \
+      **identity and height of the published message**, which is what this row's comparison is about. \
+      Under the port's guard `fold5` publishes the min message `z` (height 6) and not the lower candidate \
+      `c` (height 2), so there is no violation to explain. **What is owed is therefore concrete rather than \
+      open**: the fold must carry the port's guard — including how the *seeding* collapses two \
+      same-sender min messages, which the port does by `BTreeMap::collect` and the model by prepending — \
+      and then the published-layer comparison is statable at all. That is a modelling step before it is a \
+      proof, and the two counterexamples are what say so" },
   { number := 16, clause := "a", layer := "Casper",
     rustWitness := ["casper/src/validate.rs:block_number_must_be_parent_max_plus_one"],
     statement := "Block number = max(parent) + 1 — as the port's check, which **rejects** a block whose \
