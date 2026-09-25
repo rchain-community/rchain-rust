@@ -215,7 +215,11 @@ fn the_read_routes_answer_and_their_refusals_are_defined() {
         // C53/C63/C67) and is the opposite of it: the value carries its own uncertainty, so a client
         // can tell it apart from "processed and failed".
         let dep_status = get(format!("{base}/api/v1/deploy-status/{unknown_hash}")).await;
-        assert_eq!(dep_status.status(), 200, "an unknown deploy is a state, not an error");
+        assert_eq!(
+            dep_status.status(),
+            200,
+            "an unknown deploy is a state, not an error"
+        );
         let dep_json: Value = dep_status.json().await.expect("deploy status json");
         assert_eq!(
             dep_json,

@@ -3452,7 +3452,11 @@ mod tests {
             0,
             "a negative count is empty, not the whole list"
         );
-        assert_eq!(len(&take(5).unwrap()), 3, "taking more than there is takes all");
+        assert_eq!(
+            len(&take(5).unwrap()),
+            3,
+            "taking more than there is takes all"
+        );
 
         let set = from_expr(Expr::ESet(par_set(vec![from_expr(Expr::GInt(1))])));
         assert!(
@@ -3460,8 +3464,14 @@ mod tests {
             "`take` is a list method; a set is refused by name"
         );
         assert!(
-            eval_method("take", &list(), &[from_expr(Expr::GString("x".into()))], &e, &cost)
-                .is_err(),
+            eval_method(
+                "take",
+                &list(),
+                &[from_expr(Expr::GString("x".into()))],
+                &e,
+                &cost
+            )
+            .is_err(),
             "the count must be an integer"
         );
     }
@@ -3520,14 +3530,19 @@ mod tests {
 
         for (method, args) in cases {
             match eval_method(method, &boolean, &args, &e, &cost) {
-                Err(RholangError::MethodNotDefined { method: got, other_type }) => {
+                Err(RholangError::MethodNotDefined {
+                    method: got,
+                    other_type,
+                }) => {
                     assert_eq!(got, method, "the refusal names the method that was called");
                     assert_eq!(
                         other_type, "Bool",
                         "and the type it is not defined on (`{method}`)"
                     );
                 }
-                other => panic!("`{method}` on a Bool is refused by name, never answered: {other:?}"),
+                other => {
+                    panic!("`{method}` on a Bool is refused by name, never answered: {other:?}")
+                }
             }
         }
     }
@@ -3551,10 +3566,16 @@ mod tests {
         };
 
         // toSet: a list's elements, and a map's pairs.
-        match single_expr(&eval_method("toSet", &list_of(vec![int(1), int(2)]), &[], &e, &cost).unwrap())
-            .unwrap()
+        match single_expr(
+            &eval_method("toSet", &list_of(vec![int(1), int(2)]), &[], &e, &cost).unwrap(),
+        )
+        .unwrap()
         {
-            Expr::ESet(s) => assert_eq!(s.ps.len(), 2, "a two-element list becomes a two-element set"),
+            Expr::ESet(s) => assert_eq!(
+                s.ps.len(),
+                2,
+                "a two-element list becomes a two-element set"
+            ),
             other => panic!("expected a set, got {other:?}"),
         }
         match single_expr(
@@ -3605,7 +3626,10 @@ mod tests {
         match eval_method("toMap", &set_of(vec![int(1), int(2)]), &[], &e, &cost) {
             Err(RholangError::MethodNotDefined { method, other_type }) => {
                 assert_eq!(method, "toMap");
-                assert_eq!(other_type, "Set", "the refusal names what it could not convert");
+                assert_eq!(
+                    other_type, "Set",
+                    "the refusal names what it could not convert"
+                );
             }
             other => panic!("a set of non-pairs is refused, not half-converted: {other:?}"),
         }
@@ -3651,7 +3675,10 @@ mod tests {
             &cost,
         )
         .unwrap();
-        assert_eq!(eval_method("nth", &bytes, &[int(0)], &e, &cost).unwrap(), int(97));
+        assert_eq!(
+            eval_method("nth", &bytes, &[int(0)], &e, &cost).unwrap(),
+            int(97)
+        );
         assert!(
             eval_method("nth", &bytes, &[int(9)], &e, &cost).is_err(),
             "past the end of a byte array"
