@@ -33,6 +33,7 @@ import Rchain.Proto
 import Rchain.Casper.Dag
 import Rchain.Casper.Fringe
 import Rchain.Casper.Validate
+import Rchain.Casper.Bonds
 import Rchain.Pos
 import Rchain.Charging
 import Rchain.Crypto.Random

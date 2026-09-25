@@ -1083,22 +1083,40 @@ def laws : List Law := [
       swelling past 5 GB until it aborted. One `taggedVarint` per field compiles in 224 ms" },
   { number := 16, clause := "d", layer := "Casper",
     statement := "The bonds cache equals the PoS state",
-    status := .open,
-    falsifiable := none,
-    note := "**it is not optional, and that is a finding rather than an argument** (2026-09-24). The \
-      finalizer's gates run on this map — `calculate_fringe`'s stake and `check_min_messages`' count \
-      both take `bonds_map` (`block-storage/src/dag/finalizer.rs:29,102,168,189,217`) — so the equality \
-      is the hypothesis law 14a's and 14b's rows take as given when they model `bonds : Bonds` as an \
-      argument to the gate. **And the port does not assume it, it establishes it**: \
-      `runtime.compute_bonds(&state_hash)` reads the bonds from the newest justification's \
-      **post-state** (`casper/src/multi_parent_casper.rs:150-172`), falling back to the maps the blocks \
-      carry only when the state is unreadable — a fallback whose own comment records why the naive \
-      version was wrong: requiring the carried maps to agree \"wedged a chain permanently on the first \
-      bond or withdrawal before its first finalisation, with no way back (#73)\". So the sync exists, \
-      is locatable and has a shipped defect behind it; closing this row means modelling that sync (the \
-      PoS state → the block's `bonds` → the justifications' maps → the gate), which is a Phase 1 unit \
-      rather than a research question. The row is `open` because the model has no sync site, not \
-      because the claim is doubtful" },
+    status := .owed,
+    declarations := [`Rchain.ActiveBonds, `Rchain.bondsOfState, `Rchain.Justification,
+      `Rchain.newestJustification, `Rchain.bondsFromNewestState, `Rchain.bondsFromCarried,
+      `Rchain.the_sources_agree, `Rchain.a_disagreeing_set_is_refused,
+      `Rchain.a_bond_change_between_justifications_is_refused],
+    witness := [`Rchain.a_bond_change_between_justifications_is_refused],
+    falsifiable := some "the two sources of the bonds map disagree exactly when the bond set moves across \
+      the justifications, and there the fallback **refuses** rather than picking one \
+      (`a_bond_change_between_justifications_is_refused`: validator 7 at stake 1 in the older state, 2 \
+      in the newer — what law 44's gate lets happen between boundaries — gives `none` from the carried \
+      maps and `some [(7, 2)]` from the newest state's). So the equality is a claim about an **honest, \
+      unmoved** set of justifications, not a tautology: drop either hypothesis and the statement is \
+      false, which is why the port reads the state wherever it can",
+    note := "**the sync site is modelled now, and the row's remaining gap is on the *state* side** \
+      (2026-09-25). `Rchain/Casper/Bonds.lean` mirrors the port's three sources — the fringe's state, \
+      the newest justification's post-state (`multi_parent_casper.rs:161-165`), and the carried maps \
+      with their agreement rule (`:170-178`) — and proves what the port's code does with them: \
+      `the_sources_agree` (both paths return the same map when the carried maps are honest *and* the \
+      bond set has not moved across them) and `a_disagreeing_set_is_refused` (the port's \
+      `\"justifications disagree on the bonds map\"` as a theorem, with #73's shape as the concrete \
+      witness above). **What is still owed is the state's own side, and it is a finding**: the port's \
+      bonds map *is* the `pos:active` leaf — `compute_bonds` reads `get_native(PREFIX_POS, \
+      pos_active_key())` (`runtime_manager.rs:1276-1281`), a `BTreeMap<Validator, NonNegI64>` **with \
+      stakes**, written by `select_active(&pool, …)` at a boundary (`native_state.rs:1152-1157`), by \
+      genesis (`:937`) and by `slash` (`:1229`) and **not** by `bond`. Between boundaries the pool's \
+      stakes move and the active map's do not, so the map the gates read is a boundary snapshot — law \
+      44's own gate seen from the finalizer's side. `Rchain/Pos.lean`'s `PosState.active` is a \
+      `List Validator` — ids, no stakes (`Pos.lean:184`) — with the stakes in `pool`, so deriving the \
+      map from the model's state would answer with the *current pool stakes*: the wrong map, precisely \
+      where law 44 says the difference is real. Closing this row therefore needs `PosState` to carry \
+      the stakes it selected (a change to laws 44-47's model, its own unit — AUDIT C90 records it), and \
+      then the equality for an honest production. The row moved from `open` to `owed` because the \
+      definitions now exist and part of the claim is proved; what it does *not* say is that the cache \
+      equals the state for every block, which is what making the state faithful would let it say" },
   { number := 17, clause := "a", layer := "Casper",
     rustWitness := [
       "sdk/src/property_tests.rs:law17_deploys_without_conflicts_need_no_rejection",
