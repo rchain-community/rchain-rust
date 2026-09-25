@@ -1754,17 +1754,39 @@ def laws : List Law := [
       is where C19/C20/C22 item 3 all lived" },
   { number := 36, layer := "Rholang",
     statement := "The normalizer's output is well-scoped and closed (Law 6 through every path)",
-    status := .open,
-    falsifiable := none,
-    note := "**half of this row's gap closed with G6, and the other half is now the whole of it** \
-      (2026-09-24): `normalizeAt` threads the accumulator (the port's `ProcVisitInputs.par`) and its \
-      domain is named in `surfaceBoundaries`, so \"through every path\" now *has* paths to range over \
-      — the arms of `Surf`, with the value-position rule checked by law 34's layer. What is still \
-      missing is the **checker**: `TotalOn`/`Refined` (`Rchain/Ty.lean`) and Law 6's `Closed` are the \
-      vocabulary the statement would be written in, but nothing computes a well-scopedness or \
-      closedness predicate over the desugared output, so the claim still has no subject. Closing it is \
-      a checker on `normalizeAt`'s result plus the theorem that every arm preserves it — a modelling \
-      unit of its own, and the natural next step now that the function it is about exists" },
+    status := .owed,
+    declarations := [`Rchain.ScopedIn, `Rchain.an_unscoped_name_occurrence_is_open,
+      `Rchain.a_scoped_name_occurrence_is_closed],
+    witness := [`Rchain.an_unscoped_name_occurrence_is_open],
+    falsifiable := some "the statement is **false** of an un-scoped source, and that is the shape of its \
+      hypothesis rather than a gap: `nameVar` answers `.free 0` for a name the binder stack does not \
+      hold, and `Ty.Closed` counts a free variable as open — so `for (x <- c) { x!(1) }` alone desugars \
+      to `closed = false` (measured, `#eval`) while the same term under `new c, x in { … }` desugars to \
+      `closed = true`. Both directions of the mechanism are theorems \
+      (`an_unscoped_name_occurrence_is_open`, `a_scoped_name_occurrence_is_closed`), so a reader can \
+      falsify the claim's shape without trusting this sentence",
+    note := "**the subject arrived 2026-09-25, and the row moved from `open` to `owed`**: it had no \
+      checker at all (\"nothing computes a well-scopedness or closedness predicate over the desugared \
+      output\", the previous note), and it now has one — the `Scoped*` family in `Rchain/Surface.lean`, \
+      one predicate per arity of the desugaring, so that `ScopedIn Γ e` says *every name the desugaring \
+      reads out of `e` is in `Γ`*. Three things that block were measured rather than assumed: the \
+      hypothesis is `Γ` and is **necessary** (above); the predicate mirrors the *function*, not the \
+      grammar, because the arms normalize a receive's patterns, a `match`'s patterns and a bind's names \
+      against `Γ` instead of pushing them (a grammar-shaped predicate would demand variables the \
+      desugaring never looks up); and `Γ` grows in exactly one place — a `new`'s declarations, \
+      `declNames decls ++ Γ`. **What is owed is the induction**: \
+      `∀ e acc Γ, Closed acc → ScopedIn Γ e → ∀ p, normalizeAt e acc Γ = some p → Closed p`, and the \
+      same statement for each of the ten companion functions of the mutual block (`procsPar`, `namesPar`, \
+      `collectPar`, `kvsPar`, `casesPar`, `receiptsPar`, `receiptPar`, `bindsPar`, `namePar`, \
+      `groundPar`), whose list-valued ones need the `List` form of the conclusion. The measure is \
+      `sizeOf`, the arms reduce each goal to `Closed_parMerge` (`Ty.lean:277`, already proved) plus the \
+      leaf's own closedness. **The obstacle is the elaborator, not the mathematics, and it is measured**: \
+      `unfold normalizeAt` reduces one step, but `bindsPar` — one of the ten — has no generatable \
+      equation lemma (\"failed to generate equational theorem for `Rchain.bindsPar`\", reproduced \
+      2026-09-25), so the arm that reads a bind cannot be unfolded and the induction's hypotheses cannot \
+      be applied there without a `split`-based route first. That is the next pass's first task, and it is \
+      a proof-engineering one; `Rchain/Sort.lean`'s arm lemmas are the precedent for how this tree has \
+      solved that shape before" },
   { number := 37, layer := "Rholang",
     rustWitness := ["rholang/src/property_tests.rs:law5_a_ground_pattern_matches_only_itself"],
     statement := "Match soundness and completeness (Law 5 strengthened: partial collections, \

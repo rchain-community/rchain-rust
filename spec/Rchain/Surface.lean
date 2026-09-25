@@ -1,4 +1,5 @@
 import Rchain.Par
+import Rchain.Ty
 
 /-!
 # Laws 30, 31 and 34 — the surface language, as data
@@ -650,6 +651,185 @@ def namePar : SName → List SVar → Option Par
   | .quote p, Γ => normalizeAt p nilPar Γ
 
 end
+
+/-! ## Law 36's subject: the source term is *in scope for its binder stack*
+
+The desugaring above is closedness-*preserving* — a term whose every name occurrence is bound normalizes
+to a term with no free variable — and until this block existed nothing said what "bound" means for a
+*surface* term, so law 36's row had no subject ("nothing computes a well-scopedness or closedness
+predicate over the desugared output"). `Scoped*` are that predicate: one per arity of the desugaring,
+mirroring its binder discipline exactly, so that the induction over `normalizeAt` (whose statement is
+owed, in law 36's row) has something to induct on.
+
+Three decisions, each measured rather than chosen (2026-09-25):
+
+1. **The hypothesis is `Γ`, and it has to be.** `nameVar` resolves an occurrence against the binder stack
+   and answers `.free 0` when it is absent, and `Ty.Closed` counts a `free` variable as open — so
+   `for (x <- c) { x!(1) }` normalizes to an **open** term (`closed = false`, `#eval`d) while the same
+   term under `new c, x in { … }` normalizes to a **closed** one (`closed = true`). The un-scoped case is
+   not a smaller theorem, it is a false statement, and the mechanism is checked in both directions below
+   (`an_unscoped_name_occurrence_is_open` / `a_scoped_name_occurrence_is_closed`).
+2. **A name occurrence is whatever the desugaring *reads* through `nameVar`**, which includes positions
+   the *grammar* treats as binders: a receive's patterns, a `match`'s patterns and a bind's names are all
+   normalized against `Γ` by the arms above rather than pushed onto it. So `Scoped*` mirrors the
+   function, not the grammar — a predicate mirroring the grammar would demand variables the desugaring
+   never looks up, and would make the theorem false wherever a pattern's name is not in `Γ`.
+3. **`Γ` grows in exactly one place**: a `new`'s declarations (`declNames decls ++ Γ`), because that is
+   the only arm that changes the stack. Every other arm passes `Γ` through unchanged.
+
+The un-modelled connectives and collection operators are scoped as the constructs they are (their names
+are checked) even though their arms return `none`: the statement is vacuous for them either way, and
+stating the real thing means the predicate does not have to be revisited if one is ever brought into the
+domain. -/
+mutual
+  /-- Every name the desugaring reads out of a process is in `Γ`. -/
+  def ScopedIn (Γ : List SVar) : Surf → Prop
+    | .ground _ => True
+    | .collect c => ScopedCollect Γ c
+    | .var x => x ∈ Γ
+    | .varWild => True
+    | .varRef _ x => x ∈ Γ
+    | .nil => True
+    | .simpleType _ => True
+    | .neg p => ScopedIn Γ p
+    | .conj a b => ScopedIn Γ a ∧ ScopedIn Γ b
+    | .disj a b => ScopedIn Γ a ∧ ScopedIn Γ b
+    | .eval n => ScopedName Γ n
+    | .method t x ds => ScopedIn Γ t ∧ x ∈ Γ ∧ ScopedProcs Γ ds
+    | .not p => ScopedIn Γ p
+    | .negNum p => ScopedIn Γ p
+    | .mult a b => ScopedIn Γ a ∧ ScopedIn Γ b
+    | .div a b => ScopedIn Γ a ∧ ScopedIn Γ b
+    | .mod a b => ScopedIn Γ a ∧ ScopedIn Γ b
+    | .pctPct a b => ScopedIn Γ a ∧ ScopedIn Γ b
+    | .add a b => ScopedIn Γ a ∧ ScopedIn Γ b
+    | .sub a b => ScopedIn Γ a ∧ ScopedIn Γ b
+    | .plusPlus a b => ScopedIn Γ a ∧ ScopedIn Γ b
+    | .minusMinus a b => ScopedIn Γ a ∧ ScopedIn Γ b
+    | .lt a b => ScopedIn Γ a ∧ ScopedIn Γ b
+    | .lte a b => ScopedIn Γ a ∧ ScopedIn Γ b
+    | .gt a b => ScopedIn Γ a ∧ ScopedIn Γ b
+    | .gte a b => ScopedIn Γ a ∧ ScopedIn Γ b
+    | .matches a b => ScopedIn Γ a ∧ ScopedIn Γ b
+    | .eq a b => ScopedIn Γ a ∧ ScopedIn Γ b
+    | .neq a b => ScopedIn Γ a ∧ ScopedIn Γ b
+    | .and a b => ScopedIn Γ a ∧ ScopedIn Γ b
+    | .shortAnd a b => ScopedIn Γ a ∧ ScopedIn Γ b
+    | .or a b => ScopedIn Γ a ∧ ScopedIn Γ b
+    | .shortOr a b => ScopedIn Γ a ∧ ScopedIn Γ b
+    | .send n _ ds => ScopedName Γ n ∧ ScopedProcs Γ ds
+    | .contr n ps rest body => ScopedName Γ n ∧ ScopedNames Γ ps ∧ ScopedRemainder Γ rest
+        ∧ ScopedIn Γ body
+    | .input rs body => ScopedReceipts Γ rs ∧ ScopedIn Γ body
+    | .choice bs => ScopedBranches Γ bs
+    | .match t cs => ScopedIn Γ t ∧ ScopedCases Γ cs
+    | .bundle _ body => ScopedIn Γ body
+    | .letIn d ds body => ScopedDecl Γ d ∧ ScopedDecls Γ ds ∧ ScopedIn Γ body
+    | .ifThen c t => ScopedIn Γ c ∧ ScopedIn Γ t
+    | .ifElse c t e => ScopedIn Γ c ∧ ScopedIn Γ t ∧ ScopedIn Γ e
+    | .newIn decls body => ScopedIn (declNames decls ++ Γ) body
+    | .sendSynch n ds _ => ScopedName Γ n ∧ ScopedProcs Γ ds
+    | .par a b => ScopedIn Γ a ∧ ScopedIn Γ b
+
+  /-- Every process of the list is in scope. -/
+  def ScopedProcs (Γ : List SVar) : List Surf → Prop
+    | [] => True
+    | p :: ps => ScopedIn Γ p ∧ ScopedProcs Γ ps
+
+  /-- Every name of the list is in scope. -/
+  def ScopedNames (Γ : List SVar) : List SName → Prop
+    | [] => True
+    | n :: ns => ScopedName Γ n ∧ ScopedNames Γ ns
+
+  /-- A name occurrence: a bare name is read through `nameVar`, a quoted process is desugared. -/
+  def ScopedName (Γ : List SVar) : SName → Prop
+    | .wild => True
+    | .var x => x ∈ Γ
+    | .quote p => ScopedIn Γ p
+
+  /-- A collection's `...rest`, which the desugaring reads through `nameVar` too. -/
+  def ScopedRemainder (Γ : List SVar) : Option SVar → Prop
+    | none => True
+    | some r => r ∈ Γ
+
+  /-- A bind's source. -/
+  def ScopedSource (Γ : List SVar) : SNameSource → Prop
+    | .simple n => ScopedName Γ n
+    | .receiveSend n => ScopedName Γ n
+    | .sendReceive n ds => ScopedName Γ n ∧ ScopedProcs Γ ds
+
+  /-- A receipt's binds. -/
+  def ScopedBinds (Γ : List SVar) : List SBind → Prop
+    | [] => True
+    | ⟨ns, rest, src⟩ :: tl => ScopedNames Γ ns ∧ ScopedRemainder Γ rest ∧ ScopedSource Γ src
+        ∧ ScopedBinds Γ tl
+
+  /-- One receipt. A `peek` is out of the desugaring's domain; it is scoped all the same. -/
+  def ScopedReceipt (Γ : List SVar) : SReceipt → Prop
+    | .linear bs => ScopedBinds Γ bs
+    | .repeated bs => ScopedBinds Γ bs
+    | .peek bs => ScopedBinds Γ bs
+
+  /-- A receipt list, in order. -/
+  def ScopedReceipts (Γ : List SVar) : List SReceipt → Prop
+    | [] => True
+    | r :: rs => ScopedReceipt Γ r ∧ ScopedReceipts Γ rs
+
+  /-- A `match`'s cases: both the pattern and the body are desugared against `Γ`. -/
+  def ScopedCases (Γ : List SVar) : List SCase → Prop
+    | [] => True
+    | ⟨pat, body⟩ :: cs => ScopedIn Γ pat ∧ ScopedIn Γ body ∧ ScopedCases Γ cs
+
+  /-- A map's pairs: both sides are desugared against `Γ`. -/
+  def ScopedKvs (Γ : List SVar) : List SKeyValuePair → Prop
+    | [] => True
+    | ⟨k, v⟩ :: rest => ScopedIn Γ k ∧ ScopedIn Γ v ∧ ScopedKvs Γ rest
+
+  /-- A collection. -/
+  def ScopedCollect (Γ : List SVar) : SCollect → Prop
+    | .list ps rem => ScopedProcs Γ ps ∧ ScopedRemainder Γ rem
+    | .set ps rem => ScopedProcs Γ ps ∧ ScopedRemainder Γ rem
+    | .tuple first rest => ScopedIn Γ first ∧ ScopedProcs Γ rest
+    | .map kvs rem => ScopedKvs Γ kvs ∧ ScopedRemainder Γ rem
+
+  /-- A `let` declaration: names, remainder and the values. (`let` is outside the domain.) -/
+  def ScopedDecl (Γ : List SVar) : SDecl → Prop
+    | ⟨ns, rest, vals⟩ => ScopedNames Γ ns ∧ ScopedRemainder Γ rest ∧ ScopedProcs Γ vals
+
+  /-- A list of declarations. -/
+  def ScopedDeclList (Γ : List SVar) : List SDecl → Prop
+    | [] => True
+    | d :: ds => ScopedDecl Γ d ∧ ScopedDeclList Γ ds
+
+  /-- A `let`'s declaration block, in either of its two shapes. -/
+  def ScopedDecls (Γ : List SVar) : SDecls → Prop
+    | .empty => True
+    | .linear ds => ScopedDeclList Γ ds
+    | .conc ds => ScopedDeclList Γ ds
+
+  /-- A `select`'s branches. (`select` is outside the domain.) -/
+  def ScopedBranches (Γ : List SVar) : List SBranch → Prop
+    | [] => True
+    | ⟨bs, body⟩ :: rest => ScopedBinds Γ bs ∧ ScopedIn Γ body ∧ ScopedBranches Γ rest
+end
+
+/-- **The hypothesis is not decoration: the statement is false without it.** `for (x <- c) { x!(1) }`
+    with nothing in scope desugars to a term with a free occurrence — `nameVar` answers `.free 0` for
+    the pattern's `x`, its body's `x`, and the channel `c` — so the output is *open*. This is the
+    counterexample law 36's row cites for the un-scoped reading, and it is what makes `ScopedIn` the
+    statement's shape rather than a convenience. -/
+theorem an_unscoped_name_occurrence_is_open :
+    closed (parOf (.evar (nameVar [] "x"))) = false := by rfl
+
+/-- **And with the name in scope the same occurrence is closed** — the positive half, one line: `nameVar`
+    answers `.bound i` for a name in `Γ`, and `closedVar` counts a bound variable as closed. The pair
+    fixes law 36's shape: the hypothesis is exactly "the names the desugaring reads are in `Γ`", and both
+    directions of it are kernel-checked here. Measured on whole terms as well (`#eval`, 2026-09-25):
+    `for (x <- c) { x!(1) }` alone desugars to `closed = false`, the same term under
+    `new c, x in { … }` to `closed = true` — the statement the owed induction generalizes from one path
+    to every path. -/
+theorem a_scoped_name_occurrence_is_closed :
+    closed (parOf (.evar (nameVar ["x"] "x"))) = true := by rfl
 
 /-- The constructs `normalize` does not model, each with the reason — so "outside the domain" is a
 row to read rather than a `none` to wonder about. -/
