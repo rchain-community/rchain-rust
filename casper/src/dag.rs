@@ -17,6 +17,7 @@ use rchain_models::casper::protocol::casper_message::{BlockMessage, SignedDeploy
 use rchain_models::fringe_data::FringeData;
 use rchain_models::validator::Validator;
 use rchain_shared::metrics::{Metrics, MetricsNop, Source};
+use rchain_shared::refined::SeqNum;
 use rchain_shared::typed_store::KeyValueTypedStore;
 
 use crate::block_metadata_store::BlockMetadataStore;
@@ -80,6 +81,16 @@ impl BlockDagKeyValueStorage {
 
         let mut dag_msg_state = DagMessageState::<BlockHash, Validator>::empty();
         let mut fringe_states: BTreeMap<Blake2b256Hash, FringeData> = BTreeMap::new();
+        // H-1's gate, re-applied to a *restored* store. `insert` refuses a second message by the same
+        // sender reusing a `seq_num`, but this fold rebuilds the message map from persisted metadata
+        // without that check, and the persisted layer never looks at `(sender, seq_num)` at all
+        // (`validate_dag_state` reads the height map's contiguity). So a store that already holds a
+        // fork — written by a build that predates the gate, or by any path that writes metadata
+        // directly — used to restore straight into the equivocation the gate exists to keep out, and
+        // the H-1 stall it prevents was live again with nothing saying so. Tracked as a map from
+        // `(sender, seq_num)` to the block that claimed it rather than `insert`'s scan over
+        // `msg_map`, so the restore stays O(N) (AUDIT C55).
+        let mut claimed_by: BTreeMap<(Validator, SeqNum), BlockHash> = BTreeMap::new();
 
         for hash in height_map.values().flatten() {
             if dag_msg_state.msg_map.contains_key(hash) {
@@ -88,6 +99,16 @@ impl BlockDagKeyValueStorage {
             let block = block_metadata_store.get_unchecked(hash).await?;
             let msg = message_from_block_metadata(&block, &dag_msg_state.msg_map)
                 .ok_or_else(|| "justification not present in message map".to_string())?;
+            if let Some(previous) = claimed_by.insert((msg.sender, msg.sender_seq), msg.id) {
+                return Err(format!(
+                    "equivocation detected in the stored DAG: sender {} reuses sequence number {} \
+                     for blocks {} and {}",
+                    rchain_shared::base16::encode(msg.sender.as_bytes()),
+                    i64::from(msg.sender_seq),
+                    previous.to_hex(),
+                    msg.id.to_hex()
+                ));
+            }
             // In place: this loop folds the whole stored chain through the state, and the
             // persistent-shaped `insert_msg` clones the map (and every message's `seen` set) on
             // each step — Θ(N³) over a stored chain, which is what made a 5,844-block restart take
@@ -671,7 +692,16 @@ mod tests {
             } else {
                 vec![hashes[i - 1]]
             };
-            store.add(meta(h, &parents, i as i64)).await.unwrap();
+            // One sender, a strictly increasing `seq_num` — the shape H-1 and `sequence_number`
+            // require of a chain a validator actually produced. The plain `meta` helper reuses
+            // `seq_num 0` for every block, which is a *fork* by those rules: legal to store (the
+            // persisted layer checks only that the height map is contiguous) and exactly what
+            // `create`'s H-1 re-check refuses on restore — which is the point of that re-check, so
+            // this fixture had to become a state the port admits.
+            store
+                .add(meta_by(0, i as i64, h, &parents, i as i64))
+                .await
+                .unwrap();
             hashes.push(h);
         }
     }
@@ -773,14 +803,15 @@ mod tests {
         // (which would force `make_mut` to copy, legitimately).
         let before = Arc::as_ptr(&storage.get_representation().await);
 
-        // A distinct `seq_num` per block: every stored block carries sender `[0; 65]` and seq 0, and
-        // a second block from the same sender at the same seq is refused as an equivocation (H-1).
+        // A distinct `seq_num` per block, continuing the stored chain's sequence: `store_chain` now
+        // gives its blocks sender `[0; 65]` with seq `0..N`, and a second block from the same sender
+        // at the same seq is an equivocation (H-1) — refused at ingress and on restore alike.
         let mut tip = chain_hash(N - 1);
         let started = std::time::Instant::now();
         for k in 0..K {
             let next = chain_hash(N + k);
             let mut m = meta(next, &[tip], (N + k) as i64);
-            m.seq_num = (k as i64 + 1).try_into().unwrap();
+            m.seq_num = ((N + k) as i64).try_into().unwrap();
             storage.insert(m, block(next)).await.unwrap();
             tip = next;
         }
@@ -913,7 +944,8 @@ mod tests {
         // before it accepts its first block.
         assert_eq!(metrics.gauge("rchain.dag", "messages"), Some(4));
 
-        for (seq, i) in [(1i64, 4usize), (2, 5)] {
+        // `seq` continues the stored chain's sender sequence (see `store_chain`), and `i` the height.
+        for (seq, i) in [(4i64, 4usize), (5, 5)] {
             let mut m = meta(chain_hash(i), &[chain_hash(i - 1)], i as i64);
             m.seq_num = seq.try_into().unwrap();
             storage.insert(m, block(chain_hash(i))).await.unwrap();
@@ -959,9 +991,10 @@ mod tests {
         );
 
         // It moves: one more block, and `logical_bytes` and `seen_entries` grow (a chain's `seen` is
-        // its whole ancestry).
+        // its whole ancestry). `seq 6` continues the same sender's sequence (stored `0..4`, inserted
+        // `4`, `5`), rather than reusing a number the chain already spent.
         let mut m = meta(chain_hash(6), &[chain_hash(5)], 6);
-        m.seq_num = 3.try_into().unwrap();
+        m.seq_num = 6.try_into().unwrap();
         storage.insert(m, block(chain_hash(6))).await.unwrap();
         assert!(
             metrics
@@ -1027,20 +1060,24 @@ mod tests {
         let metadata_store = empty_metadata_store().await;
         store_chain(&metadata_store, 2).await;
         let storage = build_storage_over(metadata_store).await;
-        for (seq, h) in [(1i64, chain_hash(2)), (2, chain_hash(3))] {
-            let mut m = meta(h, &[chain_hash(usize::try_from(seq - 1).unwrap())], 1 + seq);
+        // Continuing the stored chain's one sender: `store_chain` gives each of its blocks a strictly
+        // increasing `seq_num`, so the continuation continues *that* sequence and takes the next
+        // height (`seq`, i.e. parent + 1), rather than restarting at `seq 1` on top of a fixture that
+        // used to reuse `seq 0` throughout.
+        for (seq, h) in [(2i64, chain_hash(2)), (3, chain_hash(3))] {
+            let mut m = meta(h, &[chain_hash(usize::try_from(seq - 1).unwrap())], seq);
             m.seq_num = seq.try_into().unwrap();
             storage.insert(m, block(h)).await.unwrap();
         }
 
         let before = representation_digest(&storage.get_representation().await);
         assert_eq!(
-            before, "a6632357a3f20d6c4e938d17357be2dff0c1b7171f7e899f6b499837bd497255",
+            before, "be621d6c14454e0e4f69c81205ef0fe21457f8aea08db843dba63cbdb725c0c0",
             "the representation's value for a 4-block chain"
         );
 
         let mut m = meta(chain_hash(4), &[chain_hash(3)], 4);
-        m.seq_num = 5.try_into().unwrap();
+        m.seq_num = 4.try_into().unwrap();
         storage.insert(m, block(chain_hash(4))).await.unwrap();
         let after = representation_digest(&storage.get_representation().await);
         assert_ne!(before, after, "the digest moves when the DAG does");
@@ -1313,5 +1350,65 @@ mod tests {
             !matches!(verdict, Ok(())),
             "justifying a bonded failed block is refused, not forced: {verdict:?}"
         );
+    }
+
+    /// **H1c.** A store that already contains a fork is refused on restore, exactly as `insert`
+    /// refuses it at ingress.
+    ///
+    /// `create` rebuilds the message map from persisted metadata, and the persisted layer checks only
+    /// that the height numbers are contiguous (`validate_dag_state`) — it never looks at
+    /// `(sender, seq_num)`. So a store holding two distinct blocks by one sender reusing a sequence
+    /// number — written by a build that predates H-1's gate, or by any path that writes metadata
+    /// directly — restores into a DAG holding the equivocation that gate exists to keep out, and the
+    /// H-1 stall it prevents is live again with nothing saying so. This test writes such a store and
+    /// asserts the refusal names both blocks; a `create` without the re-check returns `Ok` here and
+    /// this assertion fails.
+    #[tokio::test]
+    async fn h1c_a_store_holding_an_equivocation_is_refused_on_restore() {
+        let metadata_store = empty_metadata_store().await;
+        let genesis = hash(0);
+        metadata_store.add(meta(genesis, &[], 0)).await.unwrap();
+        // Two distinct blocks, one sender, one `seq_num`: the fork `insert` refuses (H-1).
+        metadata_store
+            .add(meta_by(1, 0, hash(1), &[genesis], 1))
+            .await
+            .unwrap();
+        metadata_store
+            .add(meta_by(1, 0, hash(2), &[genesis], 1))
+            .await
+            .unwrap();
+
+        let fringe_store: Arc<dyn KeyValueTypedStore<Blake2b256Hash, FringeData>> =
+            Arc::new(KeyValueTypedStoreCodec::new(
+                in_memory(),
+                Arc::new(Blake2b256HashCodec),
+                Arc::new(FringeDataCodec),
+            ));
+        let deploy_index: Arc<dyn KeyValueTypedStore<DeployId, BlockHash>> =
+            Arc::new(KeyValueTypedStoreCodec::new(
+                in_memory(),
+                Arc::new(BytesCodec),
+                Arc::new(BlockHashCodec),
+            ));
+        let deploy_store: Arc<dyn KeyValueTypedStore<DeployId, SignedDeployData>> =
+            Arc::new(KeyValueTypedStoreCodec::new(
+                in_memory(),
+                Arc::new(BytesCodec),
+                Arc::new(SignedDeployDataCodec),
+            ));
+
+        let err = match BlockDagKeyValueStorage::create(
+            metadata_store,
+            fringe_store,
+            deploy_index,
+            deploy_store,
+        )
+        .await
+        {
+            Ok(_) => panic!("a store that already contains a fork must not restore silently"),
+            Err(e) => e,
+        };
+        assert!(err.contains("equivocation"), "{err}");
+        assert!(err.contains("sequence number"), "{err}");
     }
 }
