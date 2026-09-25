@@ -1250,23 +1250,22 @@ mod tests {
         }
     }
 
-    /// **H1b, measured: the descent order the model requires is violated by a state the port's own
-    /// validators admit.**
+    /// **H1b, enforced — and it was the reproduction before.** The model requires every resolved
+    /// parent to be lower than the message naming it (`Descends`, `spec/Rchain/Casper/Dag.lean:278-284`).
+    /// `validate::block_number` now *requires* that of every resolved parent while still skipping
+    /// failed ones for the maximum; before that enforcement this test asserted the opposite — that the
+    /// violation was **admitted** — because a failed block's recorded height is its **claimed**
+    /// `block_num` (`message_from_block_metadata`: `height: block.block_num`) and nothing bounded it.
+    /// The child below used to be accepted and inserted, putting a parent claiming 999 above a child
+    /// at 1; it is now refused.
     ///
-    /// `Descends` (`spec/Rchain/Casper/Dag.lean:278-284`) says every parent a message names resolves
-    /// to a message *lower* than it. The port enforces that only for **unfailed** parents:
-    /// `validate::block_number` skips failed justifications (`validate.rs:131`), while a failed
-    /// block's recorded height is its **claimed** `block_num` (`message_from_block_metadata`:
-    /// `height: block.block_num`) with nothing bounding it. So a block that fails validation claiming
-    /// height 999 enters the DAG at 999, and a later block whose number is computed from its unfailed
-    /// justifications sits *below* that parent.
-    ///
-    /// Reachability is this test's route, which is the block processor's own call
+    /// Reachability is unchanged, and it is the block processor's own call
     /// (`blocks/block_processor.rs:55,:132` → `insert`): the failed block is already in the DAG, and a
     /// peer then sends a block naming it. `neglected_invalid_block` is what makes the *bonded* case
-    /// unreachable and this one reachable — see the test below.
+    /// closed and this one open — the failed sender here is unbonded (see the test below), so the
+    /// refusal below is the descent bound's and nothing else's.
     #[tokio::test]
-    async fn h1b_a_failed_parent_above_the_childs_height_breaks_the_descent_order() {
+    async fn h1b_a_failed_parent_above_the_childs_height_is_refused() {
         let storage = build_storage().await;
         let genesis = hash(0);
         storage
@@ -1281,19 +1280,11 @@ mod tests {
         failed_meta.validation_failed = true;
         storage.insert(failed_meta, block(failed)).await.unwrap();
 
-        // The child: proposer `2`, height 1 (genesis 0 + 1) per `block_number`, justifying the failed
-        // block. Validator `1` is not in the child's bond map, so the neglect rule lets it through.
+        // The child: proposer `2`, height 1 (genesis 0 + 1 from the unfailed maximum), justifying the
+        // failed block. Validator `1` is not in the child's bond map, so the neglect rule does not
+        // refuse it — the refusal must come from the descent bound alone.
         let child = hash(2);
         let child_block = block_with(child, 1, 2, 0, &[genesis, failed], &[]);
-        assert!(
-            matches!(
-                crate::validate::block_number(&*storage, &child_block)
-                    .await
-                    .unwrap(),
-                Ok(())
-            ),
-            "the port computes this child's height from its unfailed justifications"
-        );
         assert!(
             matches!(
                 crate::validate::neglected_invalid_block(&*storage, &child_block)
@@ -1301,24 +1292,29 @@ mod tests {
                     .unwrap(),
                 Ok(())
             ),
-            "an unbonded failed justification is not neglected"
+            "an unbonded failed justification is not neglected, so this refusal is the bound's"
         );
-
-        storage
-            .insert(meta_by(2, 0, child, &[genesis, failed], 1), child_block)
+        let verdict = crate::validate::block_number(&*storage, &child_block)
             .await
             .unwrap();
+        assert!(
+            !matches!(verdict, Ok(())),
+            "a resolved parent above the block's number must be refused: {verdict:?}"
+        );
 
-        // The model's order does not hold of the DAG the port just built: the failed parent's height
-        // (999) is not lower than the child's (1), so `Descends` is false of this state.
+        // The control, so the test cannot pass for the wrong reason: the failed parent really is above
+        // the child's number — and the refused child is therefore not in the DAG, which is the state
+        // the model's premise excludes.
         let repr = storage.get_representation().await;
         let parent = repr.dag_message_state.msg_map.get(&failed).unwrap();
-        let me = repr.dag_message_state.msg_map.get(&child).unwrap();
-        assert_eq!(i64::from(parent.height), 999);
-        assert_eq!(i64::from(me.height), 1);
         assert!(
-            parent.height > me.height,
-            "the parent is higher than the message naming it: Descends (278-284) is violated"
+            i64::from(parent.height) > 1,
+            "the parent is above the child's number ({})",
+            i64::from(parent.height)
+        );
+        assert!(
+            !repr.dag_message_state.msg_map.contains_key(&child),
+            "the refused child never enters the DAG"
         );
     }
 

@@ -116,28 +116,28 @@ use crate::runtime_manager::RuntimeManager;
 /// `ValidBlockProcessing`).
 pub type ValidBlockProcessing = Result<(), BlockStatus>;
 
-/// Validate the block number is one more than the maximum non-failed parent number (port of
-/// `blockNumber`).
+/// Validate the block number against its justifications (port of `blockNumber`).
 ///
-/// **Only unfailed parents are bounded here, and that is the entire bound** (H1b, measured). A failed
-/// justification is *skipped* rather than required to be lower, and a failed block's recorded height
-/// is its **claimed** `block_num` (`message_from_block_metadata`'s `height: block.block_num`), so a
-/// block that fails validation while claiming a height above the chain enters the DAG at that height —
-/// and a later block, whose number this function computes from the *unfailed* justifications, sits
-/// below it. That state falsifies the model's `Descends` (`spec/Rchain/Casper/Dag.lean:278-284`:
-/// every resolved parent lower than the message naming it).
+/// Two roles, deliberately separated (H1b, now enforced):
 ///
-/// The witness is in `dag.rs`:
-/// `h1b_a_failed_parent_above_the_childs_height_breaks_the_descent_order` builds it through the same
-/// `insert` the block processor calls, and
-/// `h1b_a_justified_bonded_failed_block_is_refused_rather_than_forced` shows the *bonded* case is
-/// closed by `neglected_invalid_block` rather than forced — which is why the reachable route is the
-/// unbonded one.
+/// - **Every resolved parent must be *lower* than this block** — `Descends`
+///   (`spec/Rchain/Casper/Dag.lean:278-284`) — failed or not. A failed block's recorded height is its
+///   **claimed** `block_num` (`message_from_block_metadata`'s `height: block.block_num`), so without
+///   this a block could name a failed parent far above itself, and the model's premise was false of a
+///   state the port admitted. The witness is `dag.rs`'s
+///   `h1b_a_failed_parent_above_the_childs_height_is_refused`, which was the *reproduction* of that
+///   admitted violation before this check existed.
+/// - **The maximum, by contrast, still skips failed justifications**: a failed block must not raise the
+///   height its child claims. That is the oracle's own `if (!m.validationFailed)` and it stays.
 ///
-/// The disposition is that the **model's hypothesis is stated over unfailed parents**, which is what
-/// this function enforces, rather than that the port grows a bound the oracle does not have: the
-/// Scala's `blockNumber` carries the same `if (!m.validationFailed)` skip, so an added bound here
-/// would refuse a block the reference validator admits.
+/// The bound on failed parents is a **deliberate divergence from the Scala**, which skips them for the
+/// height check too and so admits a block this refuses. The laws are the port's oracle, so the premise
+/// the model needs is *guaranteed* here rather than assumed; the divergence is registered in §6 (a
+/// peer sending such a block is refused — see the audit entry for the operator consequence).
+///
+/// Related, and unchanged: `neglected_invalid_block` refuses a block that justifies a failed **bonded**
+/// validator's block (`h1b_a_justified_bonded_failed_block_is_refused_rather_than_forced`), so the
+/// reachable route to a failed parent is the unbonded one.
 pub async fn block_number(
     dag: &dyn BlockDagStorage,
     b: &BlockMessage,
@@ -148,6 +148,11 @@ pub async fn block_number(
             .lookup(j)
             .await?
             .ok_or_else(|| format!("missing justification {}", j.to_hex()))?;
+        // The descent bound, for *every* resolved parent (H1b).
+        if i64::from(meta.block_num) >= i64::from(b.block_number) {
+            return Ok(Err(BlockStatus::InvalidBlockNumber));
+        }
+        // The maximum, which skips failed justifications: they cannot raise the claimed height.
         if !meta.validation_failed {
             max_block_number = max_block_number.max(i64::from(meta.block_num));
         }
