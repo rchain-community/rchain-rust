@@ -906,7 +906,7 @@ pub fn router(state: HttpState) -> Router {
         .route("/api/capabilities", get(api_capabilities))
         .route("/api/shards", get(api_shards))
         .route("/api/txn", get(api_txn_list).post(api_txn_run))
-        .route("/api/txn/:txn_id", get(api_txn_status))
+        .route("/api/txn/{txn_id}", get(api_txn_status))
         .route("/api/deploys", get(api_deploys))
         .route("/api/deploy", post(api_deploy))
         .route("/api/faucet", post(api_faucet))
@@ -921,23 +921,23 @@ pub fn router(state: HttpState) -> Router {
             post(api_data_at_name_by_block_hash),
         )
         .route("/api/last-finalized-block", get(api_last_finalized_block))
-        .route("/api/block/:hash", get(api_get_block))
+        .route("/api/block/{hash}", get(api_get_block))
         .route("/api/blocks", get(api_get_blocks))
-        .route("/api/blocks/:start/:end", get(api_get_blocks_by_heights))
-        .route("/api/blocks/:depth", get(api_get_blocks_by_depth))
-        .route("/api/deploy/:deploy_id", get(api_find_deploy))
-        .route("/api/is-finalized/:hash", get(api_is_finalized))
-        .route("/api/transactions/:hash", get(api_get_transaction))
+        .route("/api/blocks/{start}/{end}", get(api_get_blocks_by_heights))
+        .route("/api/blocks/{depth}", get(api_get_blocks_by_depth))
+        .route("/api/deploy/{deploy_id}", get(api_find_deploy))
+        .route("/api/is-finalized/{hash}", get(api_is_finalized))
+        .route("/api/transactions/{hash}", get(api_get_transaction))
         .route("/api/v1/status", get(api_status))
         .route("/api/v1/capabilities", get(api_capabilities))
         .route("/api/v1/shards", get(api_shards))
         .route("/api/v1/txn", get(api_txn_list).post(api_txn_run))
-        .route("/api/v1/txn/:txn_id", get(api_txn_status))
+        .route("/api/v1/txn/{txn_id}", get(api_txn_status))
         .route("/api/v1/deploys", get(api_deploys))
         .route("/api/v1/deploy", post(api_deploy))
         .route("/api/v1/faucet", post(api_faucet))
         .route(
-            "/api/v1/deploy-status/:deploy_signature",
+            "/api/v1/deploy-status/{deploy_signature}",
             get(api_v1_deploy_status),
         )
         .route("/api/v1/explore-deploy", post(api_explore_deploy))
@@ -950,7 +950,7 @@ pub fn router(state: HttpState) -> Router {
             post(api_data_at_name_by_block_hash),
         )
         .route("/api/v1/blocks", get(api_get_blocks))
-        .route("/api/v1/block/:hash", get(api_get_block))
+        .route("/api/v1/block/{hash}", get(api_get_block))
         .route("/api/v1/openapi.json", get(api_v1_openapi))
         .layer(CorsLayer::permissive())
         .with_state(state)
@@ -1011,7 +1011,10 @@ pub async fn acquire_http_server(
         deploy_rate_limiter: Arc::new(RateLimiter::new(DEFAULT_API_RATE_LIMIT_PER_SEC)),
         faucet_rate_limiter: Arc::new(RateLimiter::new(FAUCET_RATE_LIMIT_PER_SEC)),
     })
-    .layer(TimeoutLayer::new(max_connection_idle));
+    .layer(TimeoutLayer::with_status_code(
+        StatusCode::REQUEST_TIMEOUT,
+        max_connection_idle,
+    ));
     axum::serve(listener, app).await.map_err(|e| e.to_string())
 }
 
@@ -1034,7 +1037,10 @@ pub async fn acquire_admin_http_server(
         admin_web_api,
         enable_devnet_cors,
     })
-    .layer(TimeoutLayer::new(max_connection_idle));
+    .layer(TimeoutLayer::with_status_code(
+        StatusCode::REQUEST_TIMEOUT,
+        max_connection_idle,
+    ));
     axum::serve(listener, app).await.map_err(|e| e.to_string())
 }
 
@@ -1236,6 +1242,25 @@ mod tests {
             deploy_rate_limiter: Arc::new(RateLimiter::new(DEFAULT_API_RATE_LIMIT_PER_SEC)),
             faucet_rate_limiter: Arc::new(RateLimiter::new(FAUCET_RATE_LIMIT_PER_SEC)),
         }
+    }
+
+    /// **The public router builds under axum 0.8's path syntax.**
+    ///
+    /// axum 0.8 replaced `:param` segments with `{param}`, and `Router::route` **panics while the
+    /// router is constructed** when it meets the old form. That panic fires inside the spawned HTTP
+    /// task, so the node is otherwise healthy: it reaches `Running`, creates its genesis, and serves
+    /// nothing — port 40403 never binds, so `/health`, `/api/*` and the deploy endpoint are all
+    /// absent, and the only trace is one `tokio-rt-worker panicked ... Path segments must not start
+    /// with :` line in the journal.
+    ///
+    /// The 2026-09-26 dependency bump compiled with every parameterised route still spelled
+    /// `:param`; a CI *artifact build* cannot see this, and the first thing that could was a running
+    /// node (found on the testnet, node A, 15:01 UTC — the node reached `Running` and never opened
+    /// the API). `node/tests/api_surface.rs` boots a real node and would also fail on it, but it
+    /// costs a boot; constructing the router here pins the route table for the price of a call.
+    #[test]
+    fn the_router_builds_under_axum08_path_syntax() {
+        let _ = router(state());
     }
 
     /// Stage 6 / AUDIT C61 — the `/metrics` wire exists.

@@ -6,13 +6,19 @@
 
 use crypto_box::aead::{Aead, Nonce};
 use crypto_box::{PublicKey as BoxPublicKey, SalsaBox, SecretKey as BoxSecretKey};
-use rand::RngCore;
+use rand::Rng;
 
 use crate::errors::CryptoError;
 
 /// Generate a fresh (public, secret) key pair.
 pub fn new_key_pair() -> (Vec<u8>, Vec<u8>) {
-    let sk = BoxSecretKey::generate(&mut rand::rngs::OsRng);
+    // rand 0.10 dropped the infallible `OsRng`, and `crypto_box` 0.9 still speaks `rand_core` 0.6,
+    // so a rand 0.10 RNG cannot be handed to its `generate`. A box secret key is a raw 32-byte
+    // X25519 scalar, so draw the bytes from the OS CSPRNG and use the `From<[u8; 32]>` constructor
+    // the port already relies on in `to_public`.
+    let mut sk_bytes = [0u8; 32];
+    rand::rng().fill_bytes(&mut sk_bytes);
+    let sk = BoxSecretKey::from(sk_bytes);
     let pk = sk.public_key();
     (pk.as_bytes().to_vec(), sk.to_bytes().to_vec())
 }
@@ -20,7 +26,7 @@ pub fn new_key_pair() -> (Vec<u8>, Vec<u8>) {
 /// Generate a 24-byte nonce.
 pub fn new_nonce() -> Vec<u8> {
     let mut nonce = [0u8; 24];
-    rand::rngs::OsRng.fill_bytes(&mut nonce);
+    rand::rng().fill_bytes(&mut nonce);
     nonce.to_vec()
 }
 
