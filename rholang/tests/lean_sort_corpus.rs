@@ -33,7 +33,7 @@ use rchain_models::ast::{Par, Proc};
 use rchain_rholang::normalizer::source_to_adt;
 
 /// The corpus's declared size (`Rchain/Corpus.lean`'s `sortCaseCount`).
-const SORT_CASES: usize = 25;
+const SORT_CASES: usize = 42;
 
 /// Parse and normalize a closed term, as the node does on the deploy path.
 fn normalized(source: &str) -> Proc {
@@ -154,13 +154,17 @@ fn the_canonical_order_is_the_lean_models_pairwise() {
     );
 }
 
-/// **The boundary, kept visible rather than implied.** The model's comparator family is an order on a
-/// *coarser* algebra than the node's score tree: 21 `Expr` constructors against the node's 33, so a
-/// term containing `EMethod`/`EMatches`/`EShortAnd`/`GBigInt`/… cannot be built here at all, and
-/// `Ground.bytes` — which does exist — is scored by the node as `EBYTEARR`(116), *after* every var and
-/// operator, rather than with the grounds where this model puts it. Those are the terms the alignment
-/// cannot reach; this test prints what the node answers for them so the gap is a measurement rather
-/// than a claim, and asserts nothing, because a corpus row needs a verdict the model can `decide`.
+/// **The boundary, kept visible rather than implied.** The model's comparator family was an order on a
+/// *coarser* algebra than the node's score tree — the note here read "21 `Expr` constructors against
+/// the node's 33, so a term containing `EMethod`/`EMatches`/`EShortAnd`/`GBigInt`/… cannot be built
+/// here at all" — and **the five that were missing are in the model since 2026-09-25**, so its 29
+/// classes now cover all 33 of the node's variants (five protobuf grounds share one `ground` class)
+/// and every pair that used to be listed for them is a corpus row. What remains unreachable is
+/// `Ground.bytes`: the node scores it as `EBYTEARR`(116), *after* every var and operator, rather than
+/// with the grounds where this model puts it — and no corpus row can carry it either, because the
+/// node's front end has no byte-array literal. This test prints what the node answers for the terms
+/// left, so the gap is a measurement rather than a claim, and asserts nothing, because a corpus row
+/// needs a verdict the model can `decide`.
 ///
 /// A byte array is the sharper case: the model *has* `Ground.bytes`, but the node's front end has no
 /// byte-array literal (`@"c"!(b"a")` is a `SyntaxError: expected RParen`), so no corpus row can carry
@@ -172,36 +176,22 @@ fn the_canonical_order_is_the_lean_models_pairwise() {
 #[test]
 fn the_boundary_the_model_cannot_pin() {
     let pairs: &[(&str, &str)] = &[
-        // The pairs whose **model constructor does not exist yet**: `EPERCENTPERCENT`(119),
-        // `BIG_INT`(13), `EPLUSPLUS`(120) and `EMINUSMINUS`(121) are real node tags
-        // (`models/src/sorter.rs:31,53,54,55`) with no `Expr` in `spec/Rchain/Par.lean`, so a row
-        // could only pin their *relative* position.
+        // **What is left here, and why.** The pairs whose model constructor does not exist are gone:
+        // `BIG_INT`(13), `EPERCENTPERCENT`(119), `EPLUSPLUS`(120), `EMINUSMINUS`(121) and `EMETHOD`(115)
+        // all have constructors since 2026-09-25, so every pair that used to be listed for them is a
+        // corpus row now (rows 26–42) — each verdict read off *this* print before the row was written,
+        // per the file's convention. `1 %% 2` vs `%`, the `BigInt` pairs and `++`/`--` left with them,
+        // which is what the note here predicted for `%%`/`%` when `EPercentPercent` arrived.
         //
-        // **The spelling is not the obstacle, and this note used to say it was.** The operator forms
-        // are lexed as operators (`rholang/src/parser.rs:216-222`), not method calls, which is why
-        // `&&`/`||` left this list for corpus row 23 the moment both its constructors existed, and
-        // why `%%`/`%` will leave it when `EPercentPercent` arrives — that claim was measured false
-        // on 2026-09-24 and is recorded here rather than quietly dropped.
-        ("@\"c\"!(1 %% 2)", "@\"c\"!(1 % 2)"),
-        // The terms the model has no value for at all, measured the same way: the node sorts a
-        // `BigInt` *after* the collections (`BIG_INT` 13 against `ELIST` 6) and `++`/`--` after every
-        // arithmetic operator (120/121 against 104), which is the interleaving the re-tagging needs.
-        ("BigInt(42)", "42"),
-        ("BigInt(42)", "Set(1)"),
-        ("[1] ++ [2]", "[1] + [2]"),
-        ("Set(1) -- Set(1)", "Set(1)"),
-        // **The `%` interleaving, observed here before any row is written.** Every constructor now
-        // exists, so these are rows in waiting rather than boundary cases: they are the *only*
-        // spellable pairs that separate the node's interleaved operator block (`EMATCHES` 118 before
-        // `EMOD` 122 before `ESHORTAND` 123) from a trailing placement of the three new constructors —
-        // a placement the model's arm order could have had and that no existing row would catch,
-        // because `and`/`or`/`==` sit well below all three. Read off this print, not off the tag
-        // constants, per this file's convention.
-        ("1 matches 2", "1 % 2"),
-        ("1 && 2", "1 % 2"),
-        ("1 matches 2", "1 && 2"),
-        // the remaining argument positions *within* the model's algebra, for contrast: grounds first,
-        // then collections in tag order, then the operators.
+        // (`EMETHOD`'s spellings are worth recording: a name target needs the dereference —
+        // `new x in { (*x).foo(1) }` — and the row spellings are the bare ones, `1.foo(2)`, whose
+        // target is a ground.)
+        //
+        // The pairs below are the ones **no** corpus row can carry:
+        // the receive and the bundle, where the node's `sort_receive` puts `persistent`/`peek` *before*
+        // the binds and adds a `bind_count` child, neither of which the model's `cmpReceive` has;
+        // and the argument positions *within* the model's algebra, for contrast: grounds first, then
+        // collections in tag order, then the operators.
         ("@\"c\"!(1 + 2)", "@\"c\"!(1 == 2)"),
         ("@\"c\"!(1 / 2)", "@\"c\"!(1 + 2)"),
         ("@\"c\"!(1 < 2)", "@\"c\"!(1 == 2)"),
@@ -211,8 +201,6 @@ fn the_boundary_the_model_cannot_pin() {
         ("@\"c\"!(1)", "@\"c\"!(1 + 2)"),
         ("@\"c\"!(-1)", "@\"c\"!(1 * 2)"),
         ("@\"c\"!(false)", "@\"c\"!(true)"),
-        // the receive and the bundle: the node's `sort_receive` puts `persistent`/`peek` *before* the
-        // binds and adds a `bind_count` child, neither of which the model's `cmpReceive` has.
         ("for (x <- @\"c\") { 0 }", "@\"c\"!(1)"),
         ("bundle+{ 1 }", "1"),
     ];

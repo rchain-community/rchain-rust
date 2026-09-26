@@ -23,3 +23,20 @@ sort	1 matches 2	1 == 2	gt
 sort	1 && 2	1 || 2	lt
 sort	1 matches 2	1 % 2	lt
 sort	1 && 2	1 % 2	gt
+sort	BigInt(1)	BigInt(2)	lt
+sort	BigInt(42)	42	gt
+sort	BigInt(0)	[1]	gt
+sort	BigInt(42)	1 + 2	lt
+sort	Set(1) -- Set(1)	Set(1)	gt
+sort	[1] ++ [2]	[1] + [2]	gt
+sort	1 %% 2	1 % 2	lt
+sort	1 %% 2	1 matches 2	gt
+sort	1 && 2	1 ++ 2	gt
+sort	1 ++ 2	1 -- 2	lt
+sort	1 -- 2	1 % 2	lt
+sort	1.foo(2)	1 + 2	gt
+sort	1.foo(2)	1 matches 2	lt
+sort	1.foo(2)	1 %% 2	lt
+sort	1.foo(2)	2.foo(2)	lt
+sort	1.foo(2)	1.bar(2)	gt
+sort	1.foo(2)	1.foo(3)	lt

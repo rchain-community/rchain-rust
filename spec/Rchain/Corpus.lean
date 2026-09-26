@@ -851,7 +851,7 @@ the model was aligned to the node rather than to a guess. What could **not** be 
 no earlier row could see). -/
 
 /-- The number of cases the `sort` layer carries. -/
-def sortCaseCount : Nat := 25
+def sortCaseCount : Nat := 42
 
 /-- A law-1 case: two terms (as rholang spells them, so the Rust consumer reads the same text) and the
     verdict the model's `cmpPar` must give the pair. -/
@@ -885,6 +885,17 @@ def intExpr (n : Int) : Par := one (.ground (.int n))
 
 /-- A boolean, as a `Par`. -/
 def boolExpr (b : Bool) : Par := one (.ground (.bool b))
+
+/-- A bigint literal, as a `Par`. `BIG_INT`(13) is an `Expr` leaf rather than a `Ground` one — the
+    protobuf's `g_big_int` is an `Expr` variant and the port's normalizer converts the parse-level
+    ground into it (`normalizer.rs:74-77`). -/
+def bigintExpr (n : Int) : Par := one (.ebigint n)
+
+/-- A method call, as a `Par`. The name is a **code-point list**, the model's convention for strings
+    (`charsOf`, as `Ground.str` does) — the node carries a `String` and compares it byte-wise, and
+    UTF-8 preserves code-point order. -/
+def methodExpr (name : String) (target : Par) (args : List Par) : Par :=
+  one (.emethod (charsOf name) target args)
 
 /-- `a + b`, as a `Par`. -/
 def plusExpr (a b : Par) : Par := one (.eplus a b)
@@ -1011,9 +1022,9 @@ def sortCases : List SortCase :=
     -- boundary note in `rholang/tests/lean_sort_corpus.rs` claimed until 2026-09-24 and was wrong
     -- about. Both constructors exist here now, so the pair is statable: the node's verdict is `lt`
     -- (`ESHORTAND` 123 < `ESHORTOR` 124), observed from it before the row was written, and `cmpPar`
-    -- says `lt` too. `%%`/`%`, the `BigInt` pairs and `++`/`--` stay boundary pairs — the model still
-    -- has no constructor for `EPERCENTPERCENT`(119), `BIG_INT`(13), `EPLUSPLUS`(120) or
-    -- `EMINUSMINUS`(121).
+    -- says `lt` too. **`%%`/`%`, the `BigInt` pairs and `++`/`--` left the boundary list on
+    -- 2026-09-25** — rows 26-42, once the five constructs had constructors, and `EMETHOD` left
+    -- it with them.
     { left := "1 && 2", right := "1 || 2",
       leftPar := one (.eshortand (one (.ground (.int 1))) (one (.ground (.int 2)))),
       rightPar := one (.eshortor (one (.ground (.int 1))) (one (.ground (.int 2)))),
@@ -1035,7 +1046,62 @@ def sortCases : List SortCase :=
     { left := "1 && 2", right := "1 % 2",
       leftPar := one (.eshortand (one (.ground (.int 1))) (one (.ground (.int 2)))),
       rightPar := one (.emod (one (.ground (.int 1))) (one (.ground (.int 2)))),
-      verdict := "gt" } ]
+      verdict := "gt" },
+    -- 26-42. **The five constructs that were unstatable until 2026-09-25**, each verdict read off the
+    -- node before the row was written (the boundary test's print, `rholang/tests/lean_sort_corpus.rs`).
+    -- `BIG_INT` 13 sorts *after* the collections and *before* the operators, `EMETHOD` 115 between
+    -- `EOR` 114 and `EMATCHES` 118, and the three operators 119-121 between `EMATCHES` 118 and
+    -- `EMOD` 122 — the interleaving no declaration-order comparator can express, which is why each is
+    -- its own class. Rows 26-29 are `BIG_INT` on both of its sides; 30-35 the block the three
+    -- operators sit in; 36-42 `EMETHOD`, whose score children are the node's own
+    -- (`[tag, name, target, args…]`, `sorter.rs:677-698`).
+    { left := "BigInt(1)", right := "BigInt(2)",
+      leftPar := bigintExpr 1, rightPar := bigintExpr 2, verdict := "lt" },
+    { left := "BigInt(42)", right := "42",
+      leftPar := bigintExpr 42, rightPar := intExpr 42, verdict := "gt" },
+    { left := "BigInt(0)", right := "[1]",
+      leftPar := bigintExpr 0, rightPar := listExpr [intExpr 1], verdict := "gt" },
+    { left := "BigInt(42)", right := "1 + 2",
+      leftPar := bigintExpr 42, rightPar := plusExpr (intExpr 1) (intExpr 2), verdict := "lt" },
+    { left := "Set(1) -- Set(1)", right := "Set(1)",
+      leftPar := one (.eminusMinus (setExpr [intExpr 1]) (setExpr [intExpr 1])),
+      rightPar := setExpr [intExpr 1], verdict := "gt" },
+    { left := "[1] ++ [2]", right := "[1] + [2]",
+      leftPar := one (.eplusPlus (listExpr [intExpr 1]) (listExpr [intExpr 2])),
+      rightPar := plusExpr (listExpr [intExpr 1]) (listExpr [intExpr 2]), verdict := "gt" },
+    { left := "1 %% 2", right := "1 % 2",
+      leftPar := one (.epercentPercent (intExpr 1) (intExpr 2)),
+      rightPar := one (.emod (intExpr 1) (intExpr 2)), verdict := "lt" },
+    { left := "1 %% 2", right := "1 matches 2",
+      leftPar := one (.epercentPercent (intExpr 1) (intExpr 2)),
+      rightPar := one (.ematches (intExpr 1) (intExpr 2)), verdict := "gt" },
+    { left := "1 && 2", right := "1 ++ 2",
+      leftPar := one (.eshortand (intExpr 1) (intExpr 2)),
+      rightPar := one (.eplusPlus (intExpr 1) (intExpr 2)), verdict := "gt" },
+    { left := "1 ++ 2", right := "1 -- 2",
+      leftPar := one (.eplusPlus (intExpr 1) (intExpr 2)),
+      rightPar := one (.eminusMinus (intExpr 1) (intExpr 2)), verdict := "lt" },
+    { left := "1 -- 2", right := "1 % 2",
+      leftPar := one (.eminusMinus (intExpr 1) (intExpr 2)),
+      rightPar := one (.emod (intExpr 1) (intExpr 2)), verdict := "lt" },
+    { left := "1.foo(2)", right := "1 + 2",
+      leftPar := methodExpr "foo" (intExpr 1) [intExpr 2],
+      rightPar := plusExpr (intExpr 1) (intExpr 2), verdict := "gt" },
+    { left := "1.foo(2)", right := "1 matches 2",
+      leftPar := methodExpr "foo" (intExpr 1) [intExpr 2],
+      rightPar := one (.ematches (intExpr 1) (intExpr 2)), verdict := "lt" },
+    { left := "1.foo(2)", right := "1 %% 2",
+      leftPar := methodExpr "foo" (intExpr 1) [intExpr 2],
+      rightPar := one (.epercentPercent (intExpr 1) (intExpr 2)), verdict := "lt" },
+    { left := "1.foo(2)", right := "2.foo(2)",
+      leftPar := methodExpr "foo" (intExpr 1) [intExpr 2],
+      rightPar := methodExpr "foo" (intExpr 2) [intExpr 2], verdict := "lt" },
+    { left := "1.foo(2)", right := "1.bar(2)",
+      leftPar := methodExpr "foo" (intExpr 1) [intExpr 2],
+      rightPar := methodExpr "bar" (intExpr 1) [intExpr 2], verdict := "gt" },
+    { left := "1.foo(2)", right := "1.foo(3)",
+      leftPar := methodExpr "foo" (intExpr 1) [intExpr 2],
+      rightPar := methodExpr "foo" (intExpr 1) [intExpr 3], verdict := "lt" } ]
 
 /-- Every case holds of the model — `cmpPar` gives the verdict the row states. `native_decide`, for the
     reason the `c21` checker uses it: the comparator's reduction over a term is too deep for the kernel
