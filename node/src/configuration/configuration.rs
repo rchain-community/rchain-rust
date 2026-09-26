@@ -317,7 +317,8 @@ mod tests {
             standalone: false,
             autopropose: false,
             propose_on_deploy: false,
-            attest_on_new_blocks: false,
+            attest_on_new_blocks: true,
+            no_attest_on_new_blocks: false,
             dev_mode: false,
             protocol_server: ProtocolServer {
                 network_id: "testnet".to_string(),
@@ -710,7 +711,7 @@ mod tests {
             --epoch-length 111111 --quarantine-length 111111 --genesis-block-number 222 \
             --number-of-active-validators 111111 --pos-vault-pub-key 0432946f7f91f8f767d7c3d43674faf83586dffbd1b8f9278a5c72820dc20308836299f47575ff27f4a736b72e63d91c3cd853641861f64e08ee5f9204fc708df6 \
             --system-contract-pub-key 04e2eb6b06058d10b30856043c29076e2d2d7c374d2beedded6ecb8d1df585dfa583bd7949085ac6b0761497b0cfd056eb3d0db97efb3940b14c00fff4e53c85bf \
-            --disable-lfs --prometheus --influxdb --influxdb-udp --zipkin --sigar";
+            --disable-lfs --prometheus --influxdb --influxdb-udp --zipkin --sigar --no-attest-on-new-blocks";
 
         let options = Options::parse_from(std::iter::once("rchain").chain(args.split_whitespace()));
         let options_config = config_mapper::from_options(&options);
@@ -727,7 +728,8 @@ mod tests {
             standalone: true,
             autopropose: false,
             propose_on_deploy: false,
-            attest_on_new_blocks: false,
+            attest_on_new_blocks: true,
+            no_attest_on_new_blocks: true,
             dev_mode: true,
             protocol_server: ProtocolServer {
                 network_id: "testnet".to_string(),

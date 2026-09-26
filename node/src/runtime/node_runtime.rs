@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use prost::Message;
@@ -1192,39 +1192,52 @@ async fn setup_shard_runtime(
     // Attest-on-new-blocks tap: propose when a *remote* block is validated. With nothing of our own to
     // include, that proposal becomes an empty attestation (`block_creator.rs`'s attestation branch) — the
     // way a validator holding no deploys moves its latest message, and therefore the way a finality quorum
-    // forms when every deploy arrives at one node.
+    // forms when every deploy arrives at one node. It is **on by default** (`--no-attest-on-new-blocks`
+    // opts out) so a validator needs no `--autopropose` to be live (#70).
     //
     // It reacts to any remote block, including other validators' attestations, because the fringe rule
     // needs a *full partition*: every justification sender's message seen by every bonded sender. Reacting
     // only to deploy-bearing blocks gave exactly one round of attestations and the fringe never advanced.
-    // What bounds the traffic is the proposer's `suppress_attestation`, not this predicate: an idle chain
-    // attests not at all, and one that cannot reach a supermajority stops after a round (#70).
-    let attest_on_new_blocks: Option<Arc<dyn Fn(&BlockMessage) + Send + Sync>> =
-        match (&proposer_parts, conf.attest_on_new_blocks, validator_opt) {
-            (Some(pp), true, Some(identity)) => {
-                let tap_log = log.clone();
-                let tap_tx = pp.queue_tx.clone();
-                // Our own sender bytes: `Validator` is exactly `Validator::from_slice(public_key.bytes())`
-                // (see `block_creator.rs`), so comparing bytes identifies our own blocks.
-                let me: Vec<u8> = identity.public_key.bytes().to_vec();
-                Some(Arc::new(move |block: &BlockMessage| {
-                    if !attest_warranted(&me, block.sender.as_bytes()) {
+    // The proposer's `suppress_attestation` is the pace rule; this tap only bounds its own queue, answering
+    // each remote height at most once so a burst at one height cannot enqueue a request per block.
+    let attest_on_new_blocks: Option<Arc<dyn Fn(&BlockMessage) + Send + Sync>> = match (
+        &proposer_parts,
+        conf.attest_on_new_blocks && !conf.no_attest_on_new_blocks,
+        validator_opt,
+    ) {
+        (Some(pp), true, Some(identity)) => {
+            let tap_log = log.clone();
+            let tap_tx = pp.queue_tx.clone();
+            // Our own sender bytes: `Validator` is exactly `Validator::from_slice(public_key.bytes())`
+            // (see `block_creator.rs`), so comparing bytes identifies our own blocks.
+            let me: Vec<u8> = identity.public_key.bytes().to_vec();
+            // The highest remote height this tap has already answered (`None` = none yet).
+            let last_attested_height: Arc<Mutex<Option<i64>>> = Arc::new(Mutex::new(None));
+            Some(Arc::new(move |block: &BlockMessage| {
+                let height = i64::from(block.block_number);
+                {
+                    let mut last = last_attested_height
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner());
+                    if !attest_warranted(&me, block.sender.as_bytes(), height, *last) {
                         return;
                     }
-                    let (otx, _orx) = tokio::sync::oneshot::channel();
-                    if let Err(e) = tap_tx.try_send((true, otx)) {
-                        tap_log.warn(
-                            LogSource::new("coop.rchain.node.runtime.Setup"),
-                            &format!(
-                                "attest request not queued ({e}) — this validator will not attest \
-                                 to the new block"
-                            ),
-                        );
-                    }
-                }))
-            }
-            _ => None,
-        };
+                    *last = Some(height);
+                }
+                let (otx, _orx) = tokio::sync::oneshot::channel();
+                if let Err(e) = tap_tx.try_send((true, otx)) {
+                    tap_log.warn(
+                        LogSource::new("coop.rchain.node.runtime.Setup"),
+                        &format!(
+                            "attest request not queued ({e}) — this validator will not attest \
+                             to the new block"
+                        ),
+                    );
+                }
+            }))
+        }
+        _ => None,
+    };
 
     // Block receiver + processor streams (spawned internally).
     let (incoming_blocks_tx, _validated_blocks_tx) = wire_block_processing(
@@ -2188,6 +2201,10 @@ mod tests {
 /// faucet to keep proposing empty blocks — the opposite of what the network wants. With nothing to
 /// include, a proposal is already a no-op (`block_creator.rs`), so a chain should advance on content
 /// rather than on wall-clock time (see #70).
+///
+/// The injector is a **dev/CI tool**, not a liveness mechanism: it is off unless `--autopropose` is
+/// passed, and liveness now comes from attestation, which is on by default (`--no-attest-on-new-blocks`
+/// opts out). A validator therefore needs neither `--autopropose` nor a deployer key (#70).
 fn dummy_deploy_key(autopropose: bool, deployer_private_key: Option<&str>) -> Option<PrivateKey> {
     if !autopropose {
         return None;
@@ -2247,8 +2264,13 @@ fn tap_validated_blocks(
 /// prompt at most one proposal in response.
 ///
 /// [#70]: https://github.com/rchain-community/rchain-rust/issues/70
-fn attest_warranted(me: &[u8], sender: &[u8]) -> bool {
-    sender != me
+fn attest_warranted(
+    me: &[u8],
+    sender: &[u8],
+    height: i64,
+    last_attested_height: Option<i64>,
+) -> bool {
+    sender != me && last_attested_height.map_or(true, |last| height > last)
 }
 
 #[cfg(test)]
@@ -2256,14 +2278,30 @@ mod attest_warranted_tests {
     use super::attest_warranted;
 
     #[test]
-    fn any_remote_block_is_a_reason_to_attest() {
+    fn any_remote_block_at_a_new_height_is_a_reason_to_attest() {
         let me = vec![1u8; 65];
         let other = vec![2u8; 65];
 
         // Another validator's block — whether a state transition or its attestation — is a reason for us
         // to add ours: the fringe needs the attestations to see each other.
-        assert!(attest_warranted(&me, &other));
+        assert!(attest_warranted(&me, &other, 7, None));
+        assert!(attest_warranted(&me, &other, 7, Some(6)));
         // Our own block already attests to itself.
-        assert!(!attest_warranted(&me, &me));
+        assert!(!attest_warranted(&me, &me, 7, None));
+        assert!(!attest_warranted(&me, &me, 7, Some(6)));
+    }
+
+    /// A height this node has already answered is not answered again: the tap bounds itself to one
+    /// request per remote height, so a burst of blocks at one height (the fan-out that made three
+    /// validators produce 276 blocks in a minute, #70) enqueues one proposal, not one per block.
+    #[test]
+    fn a_height_already_answered_is_not_answered_again() {
+        let me = vec![1u8; 65];
+        let other = vec![2u8; 65];
+
+        assert!(!attest_warranted(&me, &other, 7, Some(7)));
+        assert!(!attest_warranted(&me, &other, 6, Some(7)));
+        // A strictly newer height still is.
+        assert!(attest_warranted(&me, &other, 8, Some(7)));
     }
 }

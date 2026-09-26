@@ -386,6 +386,11 @@ pub fn from_options(options: &Options) -> Hocon {
 
         flag(&mut e, "dev-mode", run.dev_mode);
         flag(&mut e, "attest-on-new-blocks", run.attest_on_new_blocks);
+        flag(
+            &mut e,
+            "no-attest-on-new-blocks",
+            run.no_attest_on_new_blocks,
+        );
         opt_str(
             &mut e,
             "dev.deployer-private-key",

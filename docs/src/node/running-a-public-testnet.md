@@ -26,8 +26,9 @@ validator's share is a correctness parameter, not a cosmetic one.
   the next epoch boundary, and the stake stays in the pool until then and **escrowed until the quarantine
   deadline** after that — so it keeps counting against 2/3 throughout (`rholang/src/native_state.rs`,
   `close_block`).
-- If the ratio cannot be guaranteed (or the net must keep finalising while idle), run a second validator
-  with `--autopropose`, and remember the [block production modes](operating.md#block-production-modes).
+- If the ratio cannot be guaranteed (or the net must keep finalising while idle), run a second validator.
+  It needs no `--autopropose`: attestation is on by default, so it adds its attestations as remote blocks
+  arrive. Remember the [block production modes](operating.md#block-production-modes).
 
 ## 2. Genesis ceremony (the master)
 

@@ -16,8 +16,13 @@ pub struct NodeConf {
     pub standalone: bool,
     pub autopropose: bool,
     pub propose_on_deploy: bool,
-    /// Attest to a remote block that carries deploys (see `--attest-on-new-blocks`).
+    /// Attest to a remote block that carries deploys (see `--attest-on-new-blocks`). On by default:
+    /// a validator attests without `--autopropose`.
     pub attest_on_new_blocks: bool,
+    /// Turn attestation off (`--no-attest-on-new-blocks`) — the operator's escape hatch for a validator
+    /// that must not add blocks. Effective attestation is `attest_on_new_blocks && !no_attest_on_new_blocks`
+    /// (issue #70).
+    pub no_attest_on_new_blocks: bool,
     pub protocol_server: ProtocolServer,
     pub protocol_client: ProtocolClient,
     pub peers_discovery: PeersDiscovery,

@@ -254,7 +254,8 @@ pub struct Run {
     ///
     /// With nothing of our own to include, that proposal is an empty attestation (`block_creator.rs`):
     /// the way a validator holding no deploys moves its latest message, and therefore the way a finality
-    /// quorum forms when every deploy arrives at one node.
+    /// quorum forms when every deploy arrives at one node. **On by default** — a validator needs no
+    /// `--autopropose` to be live.
     ///
     /// It fires on **any** remote block, not only deploy-bearing ones. The fringe rule needs a full
     /// partition — every justification sender's message seen by every bonded sender — which takes more
@@ -263,6 +264,14 @@ pub struct Run {
     /// unfinalized carries deploys, or while a supermajority is out of reach.
     #[arg(long = "attest-on-new-blocks")]
     pub attest_on_new_blocks: bool,
+
+    /// Do not attest to remote blocks.
+    ///
+    /// Attestation is on by default; this turns it off for a validator that must not add blocks
+    /// (a host too small to carry the attestation traffic, or a deliberately passive observer with a
+    /// validator key).
+    #[arg(long = "no-attest-on-new-blocks")]
+    pub no_attest_on_new_blocks: bool,
 
     /// Disable UPnP.
     #[arg(long = "no-upnp")]
