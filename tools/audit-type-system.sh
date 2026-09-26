@@ -84,6 +84,26 @@ BEGIN { skip=0; depth=0 }
 }
 '
 
+# The same stripper with the source line number in front. **This is a fix, not a convenience.** `scan`
+# used to run `grep -n` over this program's output, and `grep -n` numbers the *stripped stream*, not
+# the file: every skipped line (a test block, a `#[test]`) shortens the stream, so the reported number
+# drifts below the truth by the number of skipped lines above it. Measured, not theorised:
+# `qucalc/src/lib.rs` is 840 lines and this stripper emits 619, so a cast at source line 626 was
+# printed as `519` — and `casper/src/protocol/client.rs` and `rspace/src/replay_rspace.rs` drifted by
+# 2 and 4. The `cast` listing was 337 lines against a ratchet of 336, and the two sets differed in
+# both directions (9 lines the ratchet does not count, 8 it does that the listing missed) purely
+# because the numbers were off: they were the same sites at different line numbers.
+#
+# A reviewer sent to the wrong line is served worse than one sent nowhere, because the wrong line looks
+# like an answer. Derived from `STRIP_AWK` and asserted below, so the two cannot drift — the same
+# arrangement as `SITE_AWK`/`COUNT_AWK`.
+STRIP_AWK_N="${STRIP_AWK/    print/    printf \"%d\\t%s\\n\", FNR, \$0}"
+if [ "$STRIP_AWK_N" = "$STRIP_AWK" ]; then
+  echo "FAIL: STRIP_AWK_N was not derived from STRIP_AWK — the scan line numbers would be missing." >&2
+  echo "      Fix the substitution above; do not duplicate the stripper." >&2
+  exit 1
+fi
+
 # Files that are entirely test-only (not gated by an inline `mod` in another file).
 TEST_ONLY_FILE_RE='(_tests?|test_)\.rs$|/property_tests\.rs$'
 
@@ -200,6 +220,11 @@ WHITELIST_PANIC=(
 
 hard_failures=0
 ratchet_failures=0
+# `--sites` lists a counted class's sites. The listing is checked against the count it explains, and
+# this counts the disagreements — a listing that has drifted from its own number is a defect in the
+# audit trail, not a cosmetic one (see `counted_scan_sites`).
+site_mismatches=0
+site_totals=()
 # Every class appends its own name as its last act, and the summary refuses to print OK unless the set
 # of finished classes equals the set that was asked for. Without this the gate's OK is a claim about
 # the classes that *finished*, not about the classes that were *asked for* — and a class that exits
@@ -381,11 +406,11 @@ scan() {
     local dir="$ROOT/$c/src"
     [ -d "$dir" ] || continue
     while IFS= read -r f; do
-      while IFS=: read -r line text; do
+      while IFS=$'\t' read -r line text; do
         [ -n "$line" ] || continue
         note "$kind" "$f" "$line" "$text"
-      done < <(awk "$STRIP_AWK" "$f" \
-                 | grep -nE "$pattern" \
+      done < <(awk "$STRIP_AWK_N" "$f" \
+                 | grep -E "$pattern" \
                  | grep -vE 'self\.expect\(|\.expect\(Tok::')
     done < <(find "$dir" -name '*.rs' | grep -vE "$TEST_ONLY_FILE_RE")
   done
@@ -441,6 +466,22 @@ BEGIN { skip=0; depth=0 }
   if (depth <= 0) skip=0
   next
 }'
+
+# The same stripper with the source line number in front, so a reviewer can act on a site rather than
+# on a count. **Derived from `COUNT_AWK`, not written beside it**: two hand-kept copies of a stripper
+# drift, and a site list that disagrees with the count it explains is worse than no list — the reader
+# would be auditing a set the ratchet does not measure.
+#
+# The substitution is asserted below rather than assumed. A `bash` pattern that stopped matching
+# (because the line above was ever reformatted) would leave `SITE_AWK` identical to `COUNT_AWK`, and
+# the `--sites` listing would print the *text* without a line number — which reads as a working
+# feature producing unusable output, the failure mode this file's header calls a scan gone quiet.
+SITE_AWK="${COUNT_AWK/    print/    printf \"%d\\t%s\\n\", FNR, \$0}"
+if [ "$SITE_AWK" = "$COUNT_AWK" ]; then
+  echo "FAIL: SITE_AWK was not derived from COUNT_AWK — the --sites line numbers would be missing." >&2
+  echo "      Fix the substitution above; do not duplicate the stripper." >&2
+  exit 1
+fi
 
 # The pattern table. One place, so the scan and the count cannot disagree about what a class is.
 PAT_CAST='\bas (i8|i16|i32|i64|u8|u16|u32|u64|usize|isize|f32|f64)\b'
@@ -498,6 +539,79 @@ counted_scan_refinements() {
     total=$((total + n))
   done
   printf '%s' "$total"
+}
+
+# `--sites`: list a counted class's production sites, one `path:line:text` per line.
+#
+# Why this exists. `cast`/`lax`/`get` have always printed their sites, but `index`, `div` and
+# `overflow` are counted-only — and the comment above says why (printing 313 indexing sites each run
+# would bury the sites that matter). That is right for a CI gate and wrong for an audit: a reviewer
+# handed the number 313 cannot say *which* 313, so "I reviewed the class" is a claim no one can check.
+# The count is the ratchet's; the listing is the reviewer's, and they must agree.
+#
+# **The agreement is checked, not assumed.** `counted_scan_sites` recounts with `counted_scan` and
+# reports a mismatch as a hard failure. That is the whole point of putting the listing in this file
+# rather than in a script beside it: one definition of each class, two renderings of it.
+counted_match() {
+  # $1 = file; $2 = grep -E pattern. Prints `line<TAB>text` for every matching production line.
+  #
+  # **`grep -E`, not awk's `~`, and the reason is measured rather than stylistic.** `PAT_CAST` is
+  # anchored on `\b`, and `\b` is a *gawk* extension that `mawk` does not implement — the same class of
+  # hazard the header records for `\s`. The first version of this function matched with `t ~ p` and
+  # listed **0** cast sites against a ratchet of 336, while `index`/`div`/`overflow` (no `\b` in their
+  # patterns) corroborated exactly. The corroboration check below is what reported it; without that
+  # check the flag would have printed an empty list and a reviewer would have concluded the class was
+  # empty. One engine, the one the patterns were written for, the one `counted_scan` counts with.
+  #
+  # The line number rides in front as `FNR<TAB>`. No pattern in the `PAT_*` table can match that
+  # prefix — it is digits followed by a tab, and every pattern needs a code character after its first
+  # token — so the match set is exactly `counted_scan`'s. The corroboration check in
+  # `counted_scan_sites` is what enforces that rather than trusting it.
+  awk "$SITE_AWK" "$1" | grep -E "$2"
+}
+
+counted_scan_sites() {
+  # $1 = class; $2 = pattern. Prints `path:line:text`, then checks its own total against the ratchet's.
+  local cls="$1" pattern="$2" c f ln txt n=0 counted
+  for c in "${CRATES[@]}"; do
+    local dir="$ROOT/$c/src"
+    [ -d "$dir" ] || continue
+    while IFS= read -r f; do
+      while IFS=$'\t' read -r ln txt; do
+        [ -n "$ln" ] || continue
+        printf '%s:%s:%s\n' "${f#"$ROOT/"}" "$ln" "$txt"
+        n=$((n + 1))
+      done < <(counted_match "$f" "$pattern")
+    done < <(find "$dir" -name '*.rs' | grep -vE "$TEST_ONLY_FILE_RE")
+  done
+  counted="$(counted_scan "$pattern")"
+  site_totals+=("$cls listed=$n ratchet=$counted")
+  if [ "$n" != "$counted" ]; then
+    echo "  SITES MISMATCH $cls: the listing has $n site(s) and the ratchet counts $counted — they are measuring different sets, so the listing a reviewer works from is not the number the gate moves."
+    site_mismatches=$((site_mismatches + 1))
+  fi
+}
+
+counted_scan_sites_refinements() {
+  # `overflow` is scoped to `REFINEMENT_FILES` and excludes the guarded forms, so it cannot use the
+  # crate walk. Mirrors `counted_scan_refinements` and checks against it the same way.
+  local f ln txt n=0 counted
+  for f in "${REFINEMENT_FILES[@]}"; do
+    while IFS=$'\t' read -r ln txt; do
+      [ -n "$ln" ] || continue
+      printf '%s:%s:%s\n' "$f" "$ln" "$txt"
+      n=$((n + 1))
+    # The same two greps `counted_scan_refinements` runs, in the same order: a line is a site iff it
+    # matches `PAT_OVERFLOW` and does *not* match `PAT_OVERFLOW_GUARDED`. Using the same engine and the
+    # same order here is what makes the listing and the count provably one set (see `counted_match`).
+    done < <(awk "$SITE_AWK" "$ROOT/$f" | grep -E "$PAT_OVERFLOW" | grep -vE "$PAT_OVERFLOW_GUARDED")
+  done
+  counted="$(counted_scan_refinements)"
+  site_totals+=("overflow listed=$n ratchet=$counted")
+  if [ "$n" != "$counted" ]; then
+    echo "  SITES MISMATCH overflow: the listing has $n site(s) and the ratchet counts $counted."
+    site_mismatches=$((site_mismatches + 1))
+  fi
 }
 
 BASELINE_FILE="$ROOT/tools/type-system-baseline.tsv"
@@ -1044,15 +1158,31 @@ run_class() {
     panic)   scan_panic '\.unwrap\(\)|\.expect\(|panic!|unreachable!|todo!|unimplemented!|(^|[^[:alnum:]_])(debug_)?assert(_eq|_ne)?!\(|unwrap_or_else\([[:space:]]*\|\|[[:space:]]*panic!' ;;
     unsafe)  scan unsafe 'unsafe[[:space:]]*\{' ;;
     silent)  scan silent 'try_into\(\)\.(unwrap|expect)\(|try_(into\(\)|from\(.*\))\.unwrap_or(\(0\)|_default\(\))|\.parse(::<[^>]+>)?\(\)\.unwrap_or(\(0\)|_default\(\))' ;;
-    cast)    scan cast "$PAT_CAST" ; ratchet cast "$(counted_scan "$PAT_CAST")" ;;
-    lax)     scan lax "$PAT_LAX" ; ratchet lax "$(counted_scan "$PAT_LAX")" ;;
-    get)     scan get "$PAT_GET" ; ratchet get "$(counted_scan "$PAT_GET")" ;;
+    # The counted classes list through `counted_scan_sites`, so **the listing is exactly the set the
+    # ratchet measures** — always, not only under `--sites`. They used to list through `scan`, which
+    # keeps comments (the count strips them) and reported stripped-stream line numbers (see
+    # `STRIP_AWK_N`): a reviewer auditing "the 336 cast sites" was handed 337 lines, at wrong numbers,
+    # of which 9 were not counted and 8 counted ones were missing. A listing that is not the measured
+    # set is not an audit trail. `unsafe`/`silent` keep `scan` because `note` is what increments
+    # `hard_failures` for them — their listings are still numbered by `STRIP_AWK_N`.
+    cast)    counted_scan_sites cast "$PAT_CAST"
+             ratchet cast "$(counted_scan "$PAT_CAST")" ;;
+    lax)     counted_scan_sites lax "$PAT_LAX"
+             ratchet lax "$(counted_scan "$PAT_LAX")" ;;
+    get)     counted_scan_sites get "$PAT_GET"
+             ratchet get "$(counted_scan "$PAT_GET")" ;;
     # The two classes the 2026-09-26 audit found the gate could not see at all. They are counted
     # rather than listed: printing 313 indexing sites each run would bury the sites that matter, and
     # what makes a class actionable is knowing that the number moved.
-    index)   ratchet index "$(counted_scan "$PAT_INDEX")" ;;
-    div)     ratchet div "$(counted_scan "$PAT_DIV")" ;;
-    overflow) ratchet overflow "$(counted_scan_refinements)" ;;
+    index)
+      if (( SITES_MODE )); then counted_scan_sites index "$PAT_INDEX"; fi
+      ratchet index "$(counted_scan "$PAT_INDEX")" ;;
+    div)
+      if (( SITES_MODE )); then counted_scan_sites div "$PAT_DIV"; fi
+      ratchet div "$(counted_scan "$PAT_DIV")" ;;
+    overflow)
+      if (( SITES_MODE )); then counted_scan_sites_refinements; fi
+      ratchet overflow "$(counted_scan_refinements)" ;;
     escape)  scan_escapes ;;
     *)
       echo "unknown class: $cls (expected panic|unsafe|silent|escape|cast|lax|get|index|div|overflow)" >&2
@@ -1063,10 +1193,22 @@ run_class() {
   CLASSES_DONE+=("$cls")
 }
 
-if [ "$#" -eq 0 ]; then
+# `--sites` is a flag, not a class: it changes what a counted class prints, never what it measures.
+# Filtering it out here (rather than teaching `run_class` about it) keeps the class list — and so the
+# completeness guard below — exactly what it was.
+SITES_MODE=0
+_cls_args=()
+for _a in "$@"; do
+  case "$_a" in
+    --sites) SITES_MODE=1 ;;
+    *) _cls_args+=("$_a") ;;
+  esac
+done
+
+if [ "${#_cls_args[@]}" -eq 0 ]; then
   classes=(panic unsafe silent escape cast lax get index div overflow)
 else
-  classes=("$@")
+  classes=("${_cls_args[@]}")
 fi
 for cls in "${classes[@]}"; do
   run_class "$cls"
@@ -1086,6 +1228,13 @@ fi
 
 echo
 echo "===== summary ====="
+# The listing and the number must agree. Checked before the other two so that a drifted listing is
+# reported as what it is — an audit trail that does not describe what the gate measures — rather than
+# being masked by an unrelated failure above it.
+if [ "$site_mismatches" -gt 0 ]; then
+  echo "FAIL: $site_mismatches counted class(es) list a different set of sites than they ratchet."
+  exit 1
+fi
 if [ "$hard_failures" -gt 0 ]; then
   echo "FAIL: $hard_failures hard violation(s) (panic/unsafe/silent/escape) in production code."
   exit 1
@@ -1094,6 +1243,11 @@ if [ "$ratchet_failures" -gt 0 ]; then
   echo "FAIL: $ratchet_failures counted class(es) moved (index/div/overflow/cast/lax/get) — the number"
   echo "      is a ratchet: update tools/type-system-baseline.tsv in the same commit, deliberately."
   exit 1
+fi
+if (( SITES_MODE )) && [ "${#site_totals[@]}" -gt 0 ]; then
+  echo
+  echo "  site listings corroborated against the ratchet:"
+  for _t in "${site_totals[@]}"; do echo "    $_t"; done
 fi
 echo "OK: no hard production violations (panic/unsafe/silent/escape), and every counted class is at"
 echo "    its recorded baseline."
