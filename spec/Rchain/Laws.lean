@@ -1470,11 +1470,11 @@ def laws : List Law := [
       `j + 2 = i` would leave odd-indexed tasks unordered)",
     note := "`gate_exec_refines_apply` is **gone**: it defined `gateApply` as the sequential fold and \
       then proved the fold is the fold. The Rust's own comment above the gate says the same — 'Not a \
-      speedup — the sound, sequential-equivalent carrier' (`reduce.rs:2344`, in the gate's own comment) — so the content was \
+      speedup — the sound, sequential-equivalent carrier' (`reduce.rs:2526`, in the gate's own comment) — so the content was \
       never in the identification. It is in the **dependency structure**, and that is what \
       `gate_await_closure_orders` proves: the immediate-predecessor await chain is transitively \
       complete, which is exactly the Rust's 'a linear chain of awaits, not the quadratic \
-      all-predecessors join' (`reduce.rs:2341-2345`)" },
+      all-predecessors join' (`reduce.rs:2523-2527`)" },
   { number := 22, layer := "Scheduler",
     rustWitness := ["rholang/src/reduce.rs:law22_the_next_step_closure_is_computable_at_dispatch"],
     statement := "Next-step closure is computable at dispatch (the matched datum is concrete); \
@@ -2437,14 +2437,15 @@ def laws : List Law := [
       **The residual this row used to record is clause b's subject**: a runtime-built deep value never \
       passes the parser, so the parser's bound cannot see that route, and the space enforces the \
       bound instead (AUDIT C100). \
-      **One of the consumers this clause's statement names is not bounded by this constant, and the \
-      measurement says so** (2026-09-26, AUDIT C101): the *evaluator*'s frames are larger than the \
-      normalizer's — a parsed flat chain as send data (inside both parser guards) returns `Ok` at 300 \
-      and 320 links and **aborts the process** at 350 — so 768 is above that abort, and the sentence \
-      that no consumer recurses past the bound holds for the normalizer, the sorter, `well_scoped`, \
-      the matcher and the printer and does **not** hold for the evaluator as the code stands. C101 is \
-      that finding; its fix is an iterative evaluator rather than a second constant, because lowering \
-      this one would refuse every chain of 257..512 links that the chain guard admits" },
+      **One of the consumers this clause's statement names is not bounded by this constant, and is \
+      handled rather than bounded** (2026-09-26, AUDIT C101): the *evaluator*'s frames are larger than \
+      the normalizer's — a parsed flat chain as send data (inside both parser guards) returned `Ok` at \
+      300 and 320 links and **aborted the process** at 350, below this bound — and the fix is that a \
+      left-nested operator chain is now evaluated **iteratively**, so its length costs no stack and no \
+      second constant is needed. So the sentence above holds for the normalizer, the sorter, \
+      `well_scoped`, the matcher and the printer *by this bound*, and for the evaluator *by \
+      construction*; lowering this constant instead would have refused every chain of 257..512 links \
+      the chain guard admits" },
   { number := 50, clause := "b", layer := "Rholang",
     statement := "A **runtime-built value** is depth-bounded on the route the parser cannot see: the \
       space refuses a produced value deeper than `maxValueDepth` (256), so a term a program built by \
