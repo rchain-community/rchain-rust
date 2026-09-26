@@ -492,9 +492,7 @@ mod tests {
             let Ok(request) = BlockRequestSerde.parse(&packet.content) else {
                 return Vec::new();
             };
-            let Ok(hash) = BlockHash::try_from(request.hash.as_slice()) else {
-                return Vec::new();
-            };
+            let hash = request.hash;
             if let Some(block) = self.blocks.get(&hash) {
                 let _ = self.incoming.send(block.clone()).await;
             }

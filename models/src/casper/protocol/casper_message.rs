@@ -236,18 +236,38 @@ pub enum Event {
     Comm(CommEvent),
 }
 
+/// A 32-byte hash field off the wire.
+///
+/// `Event` is the ingress AUDIT R12's follow-up did not enumerate: its hash fields are `Vec<u8>`
+/// and `casper::event_converter`'s `bytes_to_hash` hands them to `Blake2b256Hash::from_byte_array`,
+/// which asserts the length. A peer's `BlockMessage` carrying a short event hash therefore panicked
+/// during replay, on the same 32 MiB worker the block path runs on. The check belongs here, at the
+/// only place peer bytes enter an `Event`; the fields stay `Vec<u8>` (re-typing them would ripple
+/// into the `Vec<u8>`-valued helpers in `casper/src/api/block_api_impl.rs`, so it is recorded as a
+/// boundary rather than done here).
+fn wire_hash(bytes: &[u8]) -> Result<Vec<u8>, crate::errors::ModelsError> {
+    Blake2b256Hash::try_from(bytes)
+        .map(|_| bytes.to_vec())
+        .map_err(|_| crate::errors::ModelsError::Malformed("event hash is not 32 bytes"))
+}
+
+/// Collect a list of wire hashes, refusing the whole list on the first wrong length.
+fn wire_hashes(hashes: &[Vec<u8>]) -> Result<Vec<Vec<u8>>, crate::errors::ModelsError> {
+    hashes.iter().map(|h| wire_hash(h)).collect()
+}
+
 impl Event {
     pub fn from_proto(e: &EventProto) -> Result<Event, crate::errors::ModelsError> {
         match &e.event_instance {
             Some(event_proto::EventInstance::Produce(pe)) => Ok(Event::Produce(ProduceEvent {
-                channels_hash: pe.channels_hash.clone(),
-                hash: pe.hash.clone(),
+                channels_hash: wire_hash(&pe.channels_hash)?,
+                hash: wire_hash(&pe.hash)?,
                 persistent: pe.persistent,
                 times_repeated: pe.times_repeated,
             })),
             Some(event_proto::EventInstance::Consume(ce)) => Ok(Event::Consume(ConsumeEvent {
-                channels_hashes: ce.channels_hashes.clone(),
-                hash: ce.hash.clone(),
+                channels_hashes: wire_hashes(&ce.channels_hashes)?,
+                hash: wire_hash(&ce.hash)?,
                 persistent: ce.persistent,
             })),
             Some(event_proto::EventInstance::Comm(ce)) => {
@@ -259,20 +279,22 @@ impl Event {
                     ))?;
                 Ok(Event::Comm(CommEvent {
                     consume: ConsumeEvent {
-                        channels_hashes: consume.channels_hashes.clone(),
-                        hash: consume.hash.clone(),
+                        channels_hashes: wire_hashes(&consume.channels_hashes)?,
+                        hash: wire_hash(&consume.hash)?,
                         persistent: consume.persistent,
                     },
                     produces: ce
                         .produces
                         .iter()
-                        .map(|p| ProduceEvent {
-                            channels_hash: p.channels_hash.clone(),
-                            hash: p.hash.clone(),
-                            persistent: p.persistent,
-                            times_repeated: p.times_repeated,
+                        .map(|p| {
+                            Ok(ProduceEvent {
+                                channels_hash: wire_hash(&p.channels_hash)?,
+                                hash: wire_hash(&p.hash)?,
+                                persistent: p.persistent,
+                                times_repeated: p.times_repeated,
+                            })
                         })
-                        .collect(),
+                        .collect::<Result<Vec<_>, crate::errors::ModelsError>>()?,
                     peeks: ce
                         .peeks
                         .iter()
@@ -738,21 +760,27 @@ pub struct FinalizedFringeRequest {
 pub struct ForkChoiceTipRequest;
 
 /// A has-block request (port of `HasBlockRequest`).
+///
+/// The hash is the 32-byte [`BlockHash`] refinement, not a `Vec<u8>`: these three variants used to
+/// carry raw bytes, and the handler's first statement (`BlockHash::from_slice`) panicked on a short
+/// one, so any connected peer could kill a shard's node-launch task. AUDIT R12 converted seven
+/// message types and missed these three (and `Event`); the refinement makes the panic
+/// unconstructible rather than guarded.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HasBlockRequest {
-    pub hash: Vec<u8>,
+    pub hash: BlockHash,
 }
 
-/// A has-block response (port of `HasBlock`).
+/// A has-block response (port of `HasBlock`). See [`HasBlockRequest`] on the hash's refinement.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HasBlock {
-    pub hash: Vec<u8>,
+    pub hash: BlockHash,
 }
 
-/// A block request (port of `BlockRequest`).
+/// A block request (port of `BlockRequest`). See [`HasBlockRequest`] on the hash's refinement.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BlockRequest {
-    pub hash: Vec<u8>,
+    pub hash: BlockHash,
 }
 
 /// A block-hash message (port of `BlockHashMessage`).
@@ -803,14 +831,14 @@ impl ForkChoiceTipRequest {
 }
 
 impl HasBlockRequest {
-    pub fn from_proto(m: &HasBlockRequestProto) -> Self {
-        HasBlockRequest {
-            hash: m.hash.clone(),
-        }
+    pub fn from_proto(m: &HasBlockRequestProto) -> Result<Self, crate::errors::ModelsError> {
+        Ok(HasBlockRequest {
+            hash: BlockHash::try_from(m.hash.as_slice())?,
+        })
     }
     pub fn to_proto(&self) -> HasBlockRequestProto {
         HasBlockRequestProto {
-            hash: self.hash.clone(),
+            hash: self.hash.as_bytes().to_vec(),
         }
     }
     pub fn to_bytes(&self) -> Vec<u8> {
@@ -819,19 +847,19 @@ impl HasBlockRequest {
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, crate::errors::ModelsError> {
         let proto = HasBlockRequestProto::decode(bytes)
             .map_err(|e| crate::errors::ModelsError::Decode(e.to_string()))?;
-        Ok(HasBlockRequest::from_proto(&proto))
+        HasBlockRequest::from_proto(&proto)
     }
 }
 
 impl HasBlock {
-    pub fn from_proto(m: &HasBlockProto) -> Self {
-        HasBlock {
-            hash: m.hash.clone(),
-        }
+    pub fn from_proto(m: &HasBlockProto) -> Result<Self, crate::errors::ModelsError> {
+        Ok(HasBlock {
+            hash: BlockHash::try_from(m.hash.as_slice())?,
+        })
     }
     pub fn to_proto(&self) -> HasBlockProto {
         HasBlockProto {
-            hash: self.hash.clone(),
+            hash: self.hash.as_bytes().to_vec(),
         }
     }
     pub fn to_bytes(&self) -> Vec<u8> {
@@ -840,19 +868,19 @@ impl HasBlock {
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, crate::errors::ModelsError> {
         let proto = HasBlockProto::decode(bytes)
             .map_err(|e| crate::errors::ModelsError::Decode(e.to_string()))?;
-        Ok(HasBlock::from_proto(&proto))
+        HasBlock::from_proto(&proto)
     }
 }
 
 impl BlockRequest {
-    pub fn from_proto(m: &BlockRequestProto) -> Self {
-        BlockRequest {
-            hash: m.hash.clone(),
-        }
+    pub fn from_proto(m: &BlockRequestProto) -> Result<Self, crate::errors::ModelsError> {
+        Ok(BlockRequest {
+            hash: BlockHash::try_from(m.hash.as_slice())?,
+        })
     }
     pub fn to_proto(&self) -> BlockRequestProto {
         BlockRequestProto {
-            hash: self.hash.clone(),
+            hash: self.hash.as_bytes().to_vec(),
         }
     }
     pub fn to_bytes(&self) -> Vec<u8> {
@@ -861,7 +889,7 @@ impl BlockRequest {
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, crate::errors::ModelsError> {
         let proto = BlockRequestProto::decode(bytes)
             .map_err(|e| crate::errors::ModelsError::Decode(e.to_string()))?;
-        Ok(BlockRequest::from_proto(&proto))
+        BlockRequest::from_proto(&proto)
     }
 }
 
@@ -1074,20 +1102,18 @@ impl CasperMessage {
             CasperMessageProto::BlockMessage(m) => {
                 Ok(CasperMessage::BlockMessage(BlockMessage::from_proto(m)?))
             }
-            CasperMessageProto::BlockRequest(m) => Ok(CasperMessage::BlockRequest(BlockRequest {
-                hash: m.hash.clone(),
-            })),
+            CasperMessageProto::BlockRequest(m) => {
+                Ok(CasperMessage::BlockRequest(BlockRequest::from_proto(m)?))
+            }
             CasperMessageProto::BlockHashMessage(m) => Ok(CasperMessage::BlockHashMessage(
                 BlockHashMessage::from_proto(m)?,
             )),
-            CasperMessageProto::HasBlock(m) => Ok(CasperMessage::HasBlock(HasBlock {
-                hash: m.hash.clone(),
-            })),
-            CasperMessageProto::HasBlockRequest(m) => {
-                Ok(CasperMessage::HasBlockRequest(HasBlockRequest {
-                    hash: m.hash.clone(),
-                }))
+            CasperMessageProto::HasBlock(m) => {
+                Ok(CasperMessage::HasBlock(HasBlock::from_proto(m)?))
             }
+            CasperMessageProto::HasBlockRequest(m) => Ok(CasperMessage::HasBlockRequest(
+                HasBlockRequest::from_proto(m)?,
+            )),
             CasperMessageProto::ForkChoiceTipRequest(_) => {
                 Ok(CasperMessage::ForkChoiceTipRequest(ForkChoiceTipRequest))
             }
@@ -1112,23 +1138,15 @@ impl CasperMessage {
     pub fn to_proto(&self) -> CasperMessageProto {
         match self {
             CasperMessage::BlockMessage(m) => CasperMessageProto::BlockMessage(m.to_proto()),
-            CasperMessage::BlockRequest(m) => CasperMessageProto::BlockRequest(BlockRequestProto {
-                hash: m.hash.clone(),
-            }),
+            CasperMessage::BlockRequest(m) => CasperMessageProto::BlockRequest(m.to_proto()),
             CasperMessage::BlockHashMessage(m) => {
                 CasperMessageProto::BlockHashMessage(BlockHashMessageProto {
                     hash: m.block_hash.as_bytes().to_vec(),
                     block_creator: m.block_creator.clone(),
                 })
             }
-            CasperMessage::HasBlock(m) => CasperMessageProto::HasBlock(HasBlockProto {
-                hash: m.hash.clone(),
-            }),
-            CasperMessage::HasBlockRequest(m) => {
-                CasperMessageProto::HasBlockRequest(HasBlockRequestProto {
-                    hash: m.hash.clone(),
-                })
-            }
+            CasperMessage::HasBlock(m) => CasperMessageProto::HasBlock(m.to_proto()),
+            CasperMessage::HasBlockRequest(m) => CasperMessageProto::HasBlockRequest(m.to_proto()),
             CasperMessage::ForkChoiceTipRequest(_) => {
                 CasperMessageProto::ForkChoiceTipRequest(ForkChoiceTipRequestProto {})
             }
@@ -1194,14 +1212,18 @@ mod tests {
     fn every_message_variant_round_trips_through_its_codec() {
         let cases: Vec<CasperMessage> = vec![
             CasperMessage::BlockRequest(BlockRequest {
-                hash: vec![1, 2, 3],
+                hash: block_hash(1),
             }),
             CasperMessage::BlockHashMessage(BlockHashMessage {
                 block_hash: block_hash(7),
                 block_creator: vec![9, 8, 7],
             }),
-            CasperMessage::HasBlock(HasBlock { hash: vec![4, 5] }),
-            CasperMessage::HasBlockRequest(HasBlockRequest { hash: vec![6] }),
+            CasperMessage::HasBlock(HasBlock {
+                hash: block_hash(4),
+            }),
+            CasperMessage::HasBlockRequest(HasBlockRequest {
+                hash: block_hash(6),
+            }),
             CasperMessage::ForkChoiceTipRequest(ForkChoiceTipRequest),
             CasperMessage::FinalizedFringe(FinalizedFringe {
                 hashes: vec![block_hash(1), block_hash(2)],
@@ -1229,6 +1251,79 @@ mod tests {
                 .unwrap_or_else(|e| panic!("{case:?} did not decode: {e:?}"));
             assert_eq!(back, case, "a variant round trips whole");
         }
+    }
+
+    /// A peer that sends a hash that is not 32 bytes must be **refused at decode**, not panicked on
+    /// later. `BlockRequest`/`HasBlock`/`HasBlockRequest` carried `Vec<u8>` and were cloned
+    /// unchecked, and the handler's first statement called `BlockHash::from_slice`, whose length
+    /// assert unwinds. AUDIT R12 converted seven message types and missed these three.
+    ///
+    /// Each test below is the falsifier for that fix: it asserts `Err` where the tree returned `Ok`
+    /// (and the panic followed in the handler).
+    #[test]
+    fn block_request_with_a_short_hash_is_refused() {
+        let proto = CasperMessageProto::BlockRequest(BlockRequestProto {
+            hash: vec![1, 2, 3],
+        });
+        assert!(
+            CasperMessage::from_proto(&proto).is_err(),
+            "BlockRequest accepted a 3-byte hash; the handler then panics in BlockHash::from_slice"
+        );
+    }
+
+    #[test]
+    fn has_block_with_a_short_hash_is_refused() {
+        let proto = CasperMessageProto::HasBlock(HasBlockProto { hash: vec![4, 5] });
+        assert!(
+            CasperMessage::from_proto(&proto).is_err(),
+            "HasBlock accepted a 2-byte hash; the handler then panics in BlockHash::from_slice"
+        );
+    }
+
+    #[test]
+    fn has_block_request_with_a_short_hash_is_refused() {
+        let proto = CasperMessageProto::HasBlockRequest(HasBlockRequestProto { hash: vec![6] });
+        assert!(
+            CasperMessage::from_proto(&proto).is_err(),
+            "HasBlockRequest accepted a 1-byte hash; the handler then panics in BlockHash::from_slice"
+        );
+    }
+
+    /// The same refusal one layer down, at the raw-bytes entry a peer's packet content takes:
+    /// `from_bytes` decodes the proto and then runs the checked `from_proto`. This is the closest
+    /// test to the socket, and unlike a hand-built byte literal it cannot pass vacuously — the proto
+    /// is constructed through the generated type, so the only thing that can make it fail is the
+    /// length check under test.
+    #[test]
+    fn block_request_from_bytes_refuses_a_short_hash() {
+        let bytes = BlockRequestProto {
+            hash: vec![1, 2, 3],
+        }
+        .encode_to_vec();
+        assert!(
+            BlockRequest::from_bytes(&bytes).is_err(),
+            "a 3-byte hash decoded from raw bytes; the handler then panics in BlockHash::from_slice"
+        );
+    }
+
+    /// The fourth ingress R12's follow-up missed. A peer's `BlockMessage` carries this trace, and
+    /// the replay path handed the bytes to `Blake2b256Hash::from_byte_array`, whose length assert
+    /// unwinds — so the same three bytes that kill the shard through a `BlockRequest` also killed it
+    /// through block replay.
+    #[test]
+    fn event_with_a_short_hash_is_refused() {
+        let proto = EventProto {
+            event_instance: Some(event_proto::EventInstance::Produce(ProduceEventProto {
+                channels_hash: vec![1u8; 32],
+                hash: vec![2, 3],
+                persistent: false,
+                times_repeated: 0,
+            })),
+        };
+        assert!(
+            Event::from_proto(&proto).is_err(),
+            "a 2-byte event hash decoded; the replay path then panics in Blake2b256Hash::from_byte_array"
+        );
     }
 
     #[test]

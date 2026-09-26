@@ -163,7 +163,7 @@ pub async fn handle_block_request(
     br: &BlockRequest,
     limiter: &PeerRateLimiter,
 ) {
-    let hash = BlockHash::from_slice(&br.hash);
+    let hash = br.hash;
     if !limiter.allow(peer.key()) {
         log.info(
             source,
@@ -243,9 +243,7 @@ pub async fn handle_has_block_request(
             transport,
             conf,
             peer,
-            HasBlockSerde.mk_packet(&HasBlock {
-                hash: hbr.hash.clone(),
-            }),
+            HasBlockSerde.mk_packet(&HasBlock { hash: hbr.hash }),
         )
         .await;
     }
@@ -276,9 +274,7 @@ pub async fn handle_fork_choice_tip_request(
             transport,
             conf,
             peer,
-            HasBlockSerde.mk_packet(&HasBlock {
-                hash: tip.as_bytes().to_vec(),
-            }),
+            HasBlockSerde.mk_packet(&HasBlock { hash: *tip }),
         )
         .await;
     }
@@ -641,13 +637,13 @@ impl<E: RSpaceExporter> NodeRunning<E> {
             }
             CasperMessage::HasBlockRequest(hbr) => {
                 let repr = self.dag.get_representation().await;
-                let hash = BlockHash::from_slice(&hbr.hash);
+                let hash = hbr.hash;
                 let has_block = repr.contains(&hash);
                 handle_has_block_request(self.transport.as_ref(), &self.conf, peer, hbr, has_block)
                     .await;
             }
             CasperMessage::HasBlock(hb) => {
-                let hash = BlockHash::from_slice(&hb.hash);
+                let hash = hb.hash;
                 let known = match block_is_known(&self.block_store, &hash).await {
                     Ok(known) => known,
                     Err(e) => {
@@ -1242,9 +1238,7 @@ mod tests {
             &log,
             LogSource::new("test"),
             &remote,
-            &BlockRequest {
-                hash: h.as_bytes().to_vec(),
-            },
+            &BlockRequest { hash: h },
             &PeerRateLimiter::new(100),
         )
         .await;
@@ -1270,9 +1264,7 @@ mod tests {
             &log,
             LogSource::new("test"),
             &remote,
-            &BlockRequest {
-                hash: hash(1).as_bytes().to_vec(),
-            },
+            &BlockRequest { hash: hash(1) },
             &PeerRateLimiter::new(100),
         )
         .await;
@@ -1290,9 +1282,7 @@ mod tests {
             transport.as_ref(),
             &conf(&local),
             &remote,
-            &HasBlockRequest {
-                hash: hash(1).as_bytes().to_vec(),
-            },
+            &HasBlockRequest { hash: hash(1) },
             true,
         )
         .await;
@@ -1314,9 +1304,7 @@ mod tests {
             transport.as_ref(),
             &conf(&local),
             &remote,
-            &HasBlockRequest {
-                hash: hash(1).as_bytes().to_vec(),
-            },
+            &HasBlockRequest { hash: hash(1) },
             false,
         )
         .await;
@@ -1461,7 +1449,7 @@ mod tests {
                 &remote,
                 &CasperMessage::HasBlockRequest(
                     rchain_models::casper::protocol::casper_message::HasBlockRequest {
-                        hash: hash(4).as_bytes().to_vec(),
+                        hash: hash(4),
                     },
                 ),
             )

@@ -70,9 +70,19 @@ TEST_ONLY_FILE_RE='(_tests?|test_)\.rs$|/property_tests\.rs$'
 # internally-produced data (fixed-size-array constructor length checks, radix-tree corrupt-node
 # detection, empty-channels / channels==patterns, DAG-state contiguity, config buffer-size). The
 # `from_slice` length asserts in block_hash/state_hash/validator (and
-# `Blake2b256Hash::from_byte_array`) are now reachable only from internally-produced data: untrusted
+# `Blake2b256Hash::from_byte_array`) are reachable only from internally-produced data: untrusted
 # wire/API bytes use the checked `TryFrom<&[u8]>`/`try_from_hex` constructors (validate-on-ingress,
 # see spec/AUDIT.md §11 R12).
+#
+# **That paragraph asserted the same thing in 2026-09 and was false for four paths** (AUDIT C97):
+# HasBlockRequest/HasBlock/BlockRequest fed `Vec<u8>` from a peer's packet to `BlockHash::from_slice`,
+# and `Event::from_proto` fed its hashes to `Blake2b256Hash::from_byte_array` during block replay —
+# all four missed by R12's enumeration and green in this gate, because an allowlist entry keyed on the
+# *site* cannot see whether a caller supplies wire bytes. The four are fixed; the residue is the
+# structural point: **a green `OK` here is evidence about the sites this file lists, never about the
+# ingress discipline**, which is why the per-class census below exists and why the wire boundary is
+# also gated by the refusals' own tests. Any future entry added here owes the same question the four
+# answered wrongly.
 #
 # `block-storage/src/dag/message_state.rs` is the one entry added by the `debug_assert!` half of this
 # class becoming visible (2026-09-24, U2 of Programme F): `latest_msgs` is a subset of `msg_map`,
@@ -138,9 +148,9 @@ WHITELIST_PANIC=(
   'sdk/src/primitive.rs;;self\.unwrap\(\);;fn get_unsafe;;`TryOps::get_unsafe`, the same declared escape hatch on the Result side'
   'crypto/src/hash/blake2b256_hash.rs;;assert_eq!\( bytes\.len\(\), LENGTH, "Expected \{\} but got \{\}", LENGTH, bytes\.len\(\) \);;;requiring it to be exactly 32 bytes;;`from_byte_array`: a length assert on a fixed-size-array construction, and the doc says so'
   'crypto/src/hash/blake2b512_random.rs;;assert!\( children\.len\(\) >= 2, "Blake2b512Random should have at least 2 inputs to merge, received \{\}\.", children\.len\(\) \);;;Merge two or more states;;`merge`: the state merge is defined for two or more inputs; the doc states it and the assert is the boundary'
-  'models/src/validator.rs;;assert_eq!\(bytes\.len\(\), LENGTH, "expected \{LENGTH\} bytes"\);;;pub fn from_slice\(bytes;;`Validator::from_slice` asserts the 32-byte length; untrusted bytes use the checked `TryFrom<&[u8]>` (validate-on-ingress, AUDIT R12)'
-  'models/src/block_hash.rs;;assert_eq!\(bytes\.len\(\), LENGTH, "expected \{LENGTH\} bytes"\);;;panics if not exactly;;`BlockHash::from_slice`: an internal length assert, with the doc naming the panic'
-  'models/src/block/state_hash.rs;;assert_eq!\(bytes\.len\(\), LENGTH, "expected \{LENGTH\} bytes"\);;;pub fn from_slice\(bytes;;`StateHash::from_slice`: the same internal length assert as `BlockHash`/`Validator`'
+  'models/src/validator.rs;;assert_eq!\(bytes\.len\(\), LENGTH, "expected \{LENGTH\} bytes"\);;;pub fn from_slice\(bytes;;`Validator::from_slice` asserts the 32-byte length; every caller passes a fixed-width `PublicKey::bytes()`/`as_bytes()`, which the C97 ingress sweep re-walked, and untrusted bytes use the checked `TryFrom<&[u8]>` (validate-on-ingress, AUDIT R12)'
+  'models/src/block_hash.rs;;assert_eq!\(bytes\.len\(\), LENGTH, "expected \{LENGTH\} bytes"\);;;panics if not exactly;;`BlockHash::from_slice`: a length assert on internally-produced data only. This entry'\''s justification said "an internal length assert" while three peer-facing handlers called it on wire bytes — AUDIT C97 is that correction, and the wire paths now use the checked `TryFrom<&[u8]>`, which the doc comment states.'
+  'models/src/block/state_hash.rs;;assert_eq!\(bytes\.len\(\), LENGTH, "expected \{LENGTH\} bytes"\);;;pub fn from_slice\(bytes;;`StateHash::from_slice`: the same internal length assert as `BlockHash`/`Validator`, re-walked by C97 (its callers pass `as_bytes()` of fixed-width values)'
   'block-storage/src/dag/message_state.rs;;debug_assert!\( self\.latest_msgs \.values\(\) \.all\(\|m\| self\.msg_map\.contains_key\(&m\.id\)\), "latest_msgs must be a subset of msg_map" \);;;latest_msgs must be a subset of msg_map;;a development-time self-consistency check between two fields of one struct, maintained together by `insert_msg_mut`; the invariant is the message'
   'comm/src/transport/buffer/limited_buffer.rs;;assert!\( buffer_size > 0, "bufferSize must be a strictly positive number" \);;;bufferSize must be a strictly positive number;;a buffer of size 0 cannot exist; the Scala `require` this ports is in the message'
   'rspace/src/replay_rspace.rs;;assert!\(!channels\.is_empty\(\), "channels can'\''t be empty"\);;;channels can'\''t be empty;;a consume with no channels is unconstructible at every call site; the assert is the boundary, ported from the Scala `require`'

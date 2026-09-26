@@ -23,6 +23,12 @@ impl BlockHash {
     }
 
     /// Wrap a 32-byte slice (panics if not exactly [`LENGTH`] bytes).
+    ///
+    /// **Internal invariants only.** Every byte that originates off the wire or the API goes through
+    /// [`TryFrom<&[u8]>`](BlockHash::try_from) instead (validate-on-ingress, AUDIT §11 R12 and C97,
+    /// which is where four paths that did not are recorded). This constructor is what the fixed-width
+    /// refinement exists to make unnecessary at a boundary; `TYPE-SYSTEM.md` §1.7's Construction rule
+    /// is the general form of the rule.
     pub fn from_slice(bytes: &[u8]) -> Self {
         assert_eq!(bytes.len(), LENGTH, "expected {LENGTH} bytes");
         let mut arr = [0u8; LENGTH];
@@ -45,7 +51,14 @@ impl BlockHash {
     /// The only hex *constructor* since 2026-09-24: the lax `from_hex` — `unsafe_decode` (non-hex
     /// stripped) followed by `from_slice`'s length assert, so an arbitrary string could reach a
     /// panic — was deleted (U1 site 3, AUDIT C52). It had no production caller in the workspace, only
-    /// its own round-trip test; every ingress path already used this checked form (AUDIT §11 R12).
+    /// its own round-trip test.
+    ///
+    /// **This sentence used to end "every ingress path already used this checked form (AUDIT §11
+    /// R12)", and that was false** (corrected 2026-09-26, C97): `HasBlockRequest`/`HasBlock`/
+    /// `BlockRequest` carried raw `Vec<u8>` hashes into `from_slice` from the socket, and `Event`'s
+    /// hashes reached `Blake2b256Hash::from_byte_array` the same way. The claim is worth keeping as a
+    /// correction rather than a deletion because it is the same failure mode the type system exists
+    /// to prevent: a statement about the sweep, written where a statement about the tree was read.
     pub fn try_from_hex(s: &str) -> Result<Self, ModelsError> {
         let bytes = base16::try_decode(s).map_err(ModelsError::Decode)?;
         Self::try_from(bytes.as_slice())

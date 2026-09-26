@@ -165,9 +165,7 @@ impl CommUtil {
             self.log_source,
             &format!("Requesting {} from {}.", hash.to_hex(), peer.endpoint.host),
         );
-        let packet = BlockRequestSerde.mk_packet(&BlockRequest {
-            hash: hash.as_bytes().to_vec(),
-        });
+        let packet = BlockRequestSerde.mk_packet(&BlockRequest { hash: *hash });
         transport_layer_syntax::send_to_peer(self.transport.as_ref(), &self.conf, peer, packet)
             .await;
     }
@@ -190,17 +188,13 @@ impl CommUtil {
 
     /// Broadcast a has-block request to peers (port of `broadcastHasBlockRequest`).
     pub async fn broadcast_has_block_request(&self, hash: &BlockHash) {
-        let packet = HasBlockRequestSerde.mk_packet(&HasBlockRequest {
-            hash: hash.as_bytes().to_vec(),
-        });
+        let packet = HasBlockRequestSerde.mk_packet(&HasBlockRequest { hash: *hash });
         self.send_to_peers(&packet, None).await;
     }
 
     /// Broadcast a request for a block (port of `broadcastRequestForBlock`).
     pub async fn broadcast_request_for_block(&self, hash: &BlockHash, scope_size: Option<usize>) {
-        let packet = BlockRequestSerde.mk_packet(&BlockRequest {
-            hash: hash.as_bytes().to_vec(),
-        });
+        let packet = BlockRequestSerde.mk_packet(&BlockRequest { hash: *hash });
         self.send_to_peers(&packet, scope_size).await;
     }
 

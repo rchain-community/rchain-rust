@@ -74,11 +74,17 @@ impl_serde!(
 mod tests {
     use super::*;
 
+    /// This test used to build the request with `hash: vec![1, 2, 3]` and assert it round-trips,
+    /// which pinned the defect as intended behaviour: the handler's first statement called
+    /// `BlockHash::from_slice`, so any peer could kill the shard's node-launch task with those three
+    /// bytes. The hash is now the 32-byte refinement, so the short fixture is unrepresentable. The
+    /// *refusal* is pinned where the codec lives, in the models crate
+    /// (`block_request_with_a_short_hash_is_refused`, `block_request_from_bytes_refuses_a_short_hash`).
     #[test]
     fn block_request_serde_round_trips() {
         let serde = BlockRequestSerde;
         let req = BlockRequest {
-            hash: vec![1, 2, 3],
+            hash: rchain_models::block_hash::BlockHash::new([1u8; 32]),
         };
         let bytes = serde.content(&req);
         assert_eq!(serde.parse(&bytes).unwrap(), req);
