@@ -53,7 +53,7 @@ spec/
     Concurrent.lean    concurrency-model soundness theorems
     Tree.lean          tree-model confluence up to `StrCongT`
     RSpace/            Laws 7–11: Join/Comm/Merge/Merkle (7–10 proven, 11 vacuous)
-    Casper/            Laws 14–18: Stake/Fringe/Validate (14a/16/18 proven, 14b/15 owed)
+    Casper/            Laws 14–18: Stake/Fringe/Validate (14a/15/16/18 proven, 14b decided)
     Crypto/            Law 19: Random/Spec (axiomatized by design)
   INVENTORY.md         the law catalog (Laws 1–29): source-of-truth → theorem → Rust test
   STYLE.md             conventions of this tree: naming, measured options, what is deliberately absent

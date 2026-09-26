@@ -367,7 +367,7 @@ theorem cmpListGUnforgeable_eq_iff (l l' : List GUnforgeable) : cmpListGUnforgea
 is one strongly connected component spanning `Par`, `Expr`, the collections and the lists, so the compiler
 emits it as `WellFounded.fix`: no `rfl` reduces `cmpExpr (.ground g) (.ground g')`, `simp` cannot use
 `cmpExpr.eq_def` (realizing it *times out* at `whnf`), and a plain `cases s <;> cases t <;> simp [cmpExpr]`
-over one pair per constructor — 441 when that was measured, 576 now that the algebra is 24 constructors —
+over one pair per constructor — 441 when the algebra had 21 constructors, 576 at 24, 841 at today's 29 —
 overflows the stack. What works is asking the equation compiler for one **arm at a time**:
 each `cmpExpr_*` lemma below is one `simp only [cmpExpr.eq_def]` under a stated heartbeat budget. The cross
 cases are the arm *order*, which `exprTag` numbers — and the side condition needs `Nat.reduceLT` in the
@@ -375,7 +375,7 @@ cases are the arm *order*, which `exprTag` numbers — and the side condition ne
 
 With both families `@[simp]`, `cmpExpr`'s law is an ordinary case analysis — and it is written **one arm at
 a time, with the sub-law called on the arm's own pattern variables**, which is not cosmetic: a whole-
-enumeration `simp` (441 goals when that attempt was made, 576 at today's 24 constructors) makes the same
+enumeration `simp` (441 goals when that attempt was made, 576 at 24 constructors, 841 at 29) makes the same
 calls with `simp` choosing the arguments, and the termination checker then sees a
 descent it cannot justify (`sizeOf p < 1 + sizeOf a✝` for a `p` no hypothesis identifies). An earlier
 attempt did exactly that and dead-ended. -/
@@ -393,8 +393,11 @@ attempt did exactly that and dead-ended. -/
     byte-array literal is unspellable in the node's front end (`@"c"!(b"a")` is a `SyntaxError`). So the
     divergence is **named** rather than half-taken. What the numbering does pin — the three
     newly-distinguished constructors' placement among the old ones — is corpus rows 20–25.
-    A `BigInt` ground (`BIG_INT` 13), `EMETHOD` 115, `EPERCENT` 119, `EPLUSPLUS` 120 and `EMINUSMINUS`
-    121 have no constructor here at all, so law 1a is unstatable for them rather than merely unpinned. -/
+    The five that had no constructor here until 2026-09-25 — `BIG_INT` 13, `EMETHOD` 115, `EPERCENT`
+    119, `EPLUSPLUS` 120 and `EMINUSMINUS` 121 — now have one each, and a tag of their own: their
+    classes are the node's *interleaved* positions (13 behind the collections and ahead of the vars;
+    115 between `EOR` 114 and `EMATCHES` 118; 119-121 between `EMATCHES` 118 and `EMOD` 122), which is
+    why each is its own class and not a leaf of `ground` or of a neighbouring operator. -/
 def exprTag : Expr → Nat
   | .ground _ => 0
   | .elist _ _ => 6
@@ -1982,7 +1985,7 @@ unlike `Ground.bool`, whose polarity the node reverses (`cmpBool`).
 
 **What remains is volume, not novelty — with one exception.** `cmpPar`'s chain is eight deep, so its tail
 packages as a right-nested product and the proof nests seven `lex_lt_trans` applications; the small
-structures are the same shape in fewer steps. The exception is `cmpExpr`: 24 groups mean a 24×24×24 case
+structures are the same shape in fewer steps. The exception is `cmpExpr`: 29 groups mean a 29×29×29 case
 analysis whose `simp` must **not** unfold the 24-arm match, so it needs the `cmpExpr` arm lemmas —
 `simp only [cmpExpr.eq_def]`, one arm at a time, as `Json.lean`'s `rfl` lemmas are for its own function —
 *before* the nesting for its five shapes (grounds / the four collections / a var / monadic / binary).
@@ -1990,16 +1993,17 @@ That was the first piece to do, and it paid twice: the same arm lemmas are what 
 `swap` needed.
 
 **Corrected 2026-09-25, because the paragraph above was a plan and the plan was executed.** The numbers
-in it were written when the algebra had 21 constructors; it has had 24 since `ematches`, `eshortand` and
-`eshortor` landed (the three the node distinguishes and this model did not). Today the family is: 24
-`@[simp] cmpExpr_*` pair lemmas, 24 `private exprTag_eq_*` extraction lemmas, 24 + 24 tag cross lemmas,
-and **`cmpExpr`'s three laws are theorems** (2026-09-24) — so "the recorded reason its two laws are
-axioms" is history, not state, and the "21 `rfl`-proved arm lemmas" the register's law-1b cells quote is
-stale in both the count and the description (there is no literal `:= by rfl` here; the proofs are
-`cases`/`simp only`).
+in it were written when the algebra had 21 constructors; it had 24 from the day `ematches`, `eshortand`
+and `eshortor` landed (the three the node distinguishes and this model did not), and **29 since
+`BIG_INT`(13), `EMETHOD`(115), `EPERCENT`(119), `EPLUSPLUS`(120) and `EMINUSMINUS`(121) landed with the
+rest of the node's `Expr`**. Today the family is: 29 `@[simp] cmpExpr_*` pair lemmas, 29 `private
+exprTag_eq_*` extraction lemmas, 29 + 29 tag cross lemmas, and **`cmpExpr`'s three laws are theorems**
+(2026-09-24) — so "the recorded reason its two laws are axioms" is history, not state, and the
+"21 `rfl`-proved arm lemmas" the register's law-1b cells quote is stale in both the count and the
+description (there is no literal `:= by rfl` here; the proofs are `cases`/`simp only`).
 
 **The recorded blocker, measured (2026-09-23).** The note above says `simp`/`rw` "hit recursion depth" on
-the 24-constructor function. Probed, it is worse than that: the straight attempt at `cmpExpr`'s `eq_iff`
+the then-24-constructor function (29 today). Probed, it is worse than that: the straight attempt at `cmpExpr`'s `eq_iff`
 
     cases s <;> cases t <;> simp [cmpExpr, cmpGround_eq_iff, cmpVar_eq_iff, cmpPar_eq_iff,
       cmpListPar_eq_iff, cmpOptionVar, cmpListParPair_eq_iff]
@@ -2007,7 +2011,7 @@ the 24-constructor function. Probed, it is worse than that: the straight attempt
 with `set_option maxRecDepth 100000` ends in **`Stack overflow detected. Aborting.`** — not a limit the
 tactic's option can raise, because the blow-up is in the native stack. So the arm lemmas are not a
 convenience here, they are the only route: with `cmpExpr` never unfolded, `simp` cannot recurse. The
-volume that follows is the 24×23 cross-constructor cases, which no single `rfl` lemma covers (the
+volume that follows is the 29×28 cross-constructor cases, which no single `rfl` lemma covers (the
 fallback arms make each pair a *different* reduction), and that is why this stays time-boxed rather than
 being the pass's objective — the `sort` corpus already pins the order against the node, so the residue is
 "axioms that are tied", not "an order nothing checks").
@@ -2031,23 +2035,22 @@ Each row is a falsifier, checked rather than assumed: restoring the old order (o
 polarity) stops `Rchain.Corpus`'s `sortCases_decide` from compiling and the runtime reporter names the
 row — done for all four before they were believed.
 
-**The model's comparators are still an order on a *coarser* algebra** — 24 `Expr` constructors against
-the node's 33 — so the alignment is partial by construction. The boundary, stated rather than fixed:
+**The `Expr` algebra is now the node's** — 29 classes covering all 33 of its variants (the five
+protobuf grounds share one `ground` class) since 2026-09-25, when `BIG_INT`(13), `EMETHOD`(115),
+`EPERCENT`(119), `EPLUSPLUS`(120) and `EMINUSMINUS`(121) got constructors and tags of their own. Rows
+26-42 of the corpus pin every one of them against the node, so what is left of the boundary is
+**coarser-than-the-node comparator structure, not missing constructors**:
 `Receive`'s `persistent, peek` first and its `bind_count` child; `ReceiveBind`'s `source` first with
 `free_count` **dropped from the score**; `New`'s `uri` (sorted) and `injections` (key-sorted) children;
 `Bundle`'s flags folded into the tag; `EList`/`ESet`/`EMap`'s `remainder` **before** the elements (and a
 list with no remainder scoring `-1`, *before* `ABSENT = 0`); `MatchCase`/`Match`/`EMethod`'s
-`connective_used`; `Var`'s `Empty`(0); `GUnforgeable`'s `gDeployerId`(10) **before** `gDeployId`(11) —
-the reverse of the port's own enum order; `Connective`'s tags (400-409). And twelve of the node's 33
-`Expr` constructors — `EMethod`(115), `EMatches`(118), `EPercentPercent`(119), `EPlusPlus`(120),
-`EMinusMinus`(121), `EShortAnd`(123), `EShortOr`(124), `GBigInt`(13), `GByteArray`(116) and the rest —
-**do not exist in this model at all**, so a term containing one cannot be compared here; nor can the
-corpus carry such a row, since `1 && 2` parses to a method call rather than to `eand` and `1 %% 2` to
-`EPercentPercent`. `GByteArray` is the sharp case: the model *has* the constructor (`Ground.bytes`) but
-at the wrong tag — the node scores it 116, after every operator — and it cannot be pinned either way,
-because the node's front end has no byte-array literal (`@"c"!(b"a")` is a `SyntaxError`), so the term
-is unspellable rather than merely mis-scored. `Ground.bytes`'s position is therefore left as the one
-known, unpinnable divergence, and `cmpGround`'s doc comment says so.
+`connective_used` leaf (derived from the target and the arguments on any parsable term, so it can never
+separate two of them); `Var`'s `Empty`(0); `GUnforgeable`'s `gDeployerId`(10) **before** `gDeployId`(11)
+— the reverse of the port's own enum order; `Connective`'s tags (400-409). The one divergence a row
+cannot reach is `Ground.bytes`: the model *has* the constructor but at the ground block's tag rather
+than 116, after every operator — and it cannot be pinned either way, because the node's front end has no
+byte-array literal (`@"c"!(b"a")` is a `SyntaxError`), so the term is unspellable rather than merely
+mis-scored. `cmpGround`'s doc comment says so, and that is now the only such entry.
 -/
 
 
@@ -2082,7 +2085,7 @@ theorem exprTag_le_of_cmpExpr_lt {s t : Expr} (h : cmpExpr s t = Ordering.lt) :
 
 `cmpExpr`'s element law was law 1's last axiom *blocker*, and the obstacle was never the `lt_trans`
 case analysis: it is that `cmpExpr` is compiled as `WellFounded.fix`, so nothing unfolds it. The fix is
-the arm-lemma machinery above (`exprTag`, 24 `@[simp]` arms, the two tag lemmas) — with it all three of
+the arm-lemma machinery above (`exprTag`, 29 `@[simp]` arms, the two tag lemmas) — with it all three of
 `cmpExpr`'s laws are theorems. `eq_iff` and `swap` are written one arm at a time, each sub-law called on
 the arm's own pattern variables; `lt_trans` is the one that needs the tags, and it no longer enumerates:
 in its equal-tags branch the tags are equal, so `exprTag`'s injectivity on classes identifies all three

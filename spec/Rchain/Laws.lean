@@ -219,7 +219,7 @@ def laws : List Law := [
     falsifiable := some "`sortPar_idempotent`/`sortPar_comm` are theorems; `spec/INVENTORY.md`'s Law 1 \
       claim of idempotence is falsified by any leaf type whose comparator is not a total order — see \
       clause b, where exactly that is assumed rather than proved. The `sort` corpus is the tie: \
-      `conformance/sort.tsv`'s 25 verdicts, each `decide`d against the model's `cmpPar`, read back from \
+      `conformance/sort.tsv`'s 42 verdicts, each `decide`d against the model's `cmpPar`, read back from \
       the node by which element `sort_par` puts first (`rholang/tests/lean_sort_corpus.rs`)",
     note := "`sortPar_idempotent` is proved only *for* a comparator whose element laws hold; the \
       element-law half is clause b, and it is axioms. **The `sort` corpus found a divergence on its \
@@ -237,15 +237,16 @@ def laws : List Law := [
       vs `1 + 2` → `lt`, `1 - 2` vs `1 * 2` → `gt`), and `GBool`'s **polarity** (`true` scores 0 and \
       `false` 1, so `true` sorts first — `false` vs `true` → `gt`). Each row was falsified before it was \
       believed: restoring the old order stops `Rchain.Corpus`'s `sortCases_decide` from compiling, and \
-      a runtime reporter names the row. **The rest cannot be aligned without extending the model's \
-      algebra** — 24 `Expr` constructors against the node's 33, the three the re-tagging added being \
-      `ematches`/`eshortand`/`eshortor` — so it is a recorded boundary rather \
+      a runtime reporter names the row. **The rest could not be aligned without extending the model's \
+      algebra** — 24 `Expr` constructors against the node's 33 when this was written, and the three the \
+      re-tagging added were `ematches`/`eshortand`/`eshortor` — so it was a recorded boundary rather \
       than a fixed defect: `Receive`/`ReceiveBind`/`New`/`Bundle`/`EList`/`ESet`/`EMap`/`Var`/\
       `GUnforgeable` (where `gDeployerId`(10) sorts *before* `gDeployId`(11), the reverse of the port's \
-      enum) / `Connective`; and the model lacks **eight** `Expr`-level constructors, *counted* against \
+      enum) / `Connective`; and the model then lacked **eight** `Expr`-level constructors, *counted* against \
       the node's tag table rather than summarised (AUDIT C58): `BIG_INT`(13), `EMETHOD`(115), \
       `EMATCHES`(118), `EPERCENT`(119), `EPLUSPLUS`(120), `EMINUSMINUS`(121), `ESHORTAND`(123), \
-      `ESHORTOR`(124). **Three of those eight were *conflations* rather than missing arms, and all \
+      `ESHORTOR`(124). **All eight are in the model as of 2026-09-25** — three were conflations \
+      (below) and the other five were constructors (further below) — so the count is closed. **Three of those eight were *conflations* rather than missing arms, and all \
       three are closed** (re-measured 2026-09-25, and this sentence is the correction): `EMATCHES`, \
       `ESHORTAND` and `ESHORTOR` have constructors (`ematches`, `eshortand`, `eshortor`, \
       `Par.lean:67-69`), `Surface.lean`'s arms now **emit** them (`.eshortand`, `.eshortor`, \
@@ -253,14 +254,22 @@ def laws : List Law := [
       which made the model answer **`eq`** where the node's tag table says **`gt`**, a wrong verdict \
       on a statable pair), and `Rchain/Sort.lean`'s `exprTag` gives them the node's own tags — 118, \
       123 and 124. So the defect this paragraph described is *gone*, and what it left behind is the \
-      boundary below. The genuinely missing five are `BIG_INT`(13), `EMETHOD`(115), \
-      `EPERCENT`(119), `EPLUSPLUS`(120) and `EMINUSMINUS`(121). Line them up and the reason they are not \"five more arms\" is structural: the \
-      node's tags *interleave* (scalars 1–4, collections 6–9, `BIG_INT` 13, vars 50–52, operators \
-      100–124, `EBYTEARR` 116) while `cmpExpr` classifies by constructor *kind*, so a faithful order \
-      needs a case split finer than one class per constructor — inside a block that `WellFounded.fix` \
-      leaves unfoldable, which is why its laws took the arm-lemma route. C58 carries the measurement, \
-      and all five are terms the node can hold and the model cannot (`BigInt(42)`, `%%`, `++`, `--`, and \
-      a method call), so law 1a is unstatable for them rather than merely unpinned. (`matches` was the \
+      boundary below. The genuinely missing five were `BIG_INT`(13), `EMETHOD`(115), \
+      `EPERCENT`(119), `EPLUSPLUS`(120) and `EMINUSMINUS`(121), **and they are in the model as of \
+      2026-09-25**: each is its own `Expr` class with the node's own tag, and corpus rows 26–42 pin \
+      every one of them (each verdict read off the node before the row was written). Line them up and \
+      the reason they were not \"five more arms\" is structural, and the fix is that structure rather \
+      than more arms: the node's tags *interleave* (scalars 1–4, collections 6–9, `BIG_INT` 13, vars \
+      50–52, operators 100–124, `EBYTEARR` 116) while a constructor-*kind* classification would put a \
+      bigint with the other grounds (tag 0, ahead of `elist`(6)) and `EMETHOD`/the three operators \
+      after every operator — so each of the five is a class of its own, and `exprTag` gives it the \
+      node's literal. The two consequences the earlier note predicted are the two that landed: \
+      `cmpExpr`'s arm-lemma family grew from 24 classes to 29 (5 pair lemmas, 5 extraction lemmas, \
+      10 cross lemmas, and five arms in each of the three laws), and `emethod`'s score needed \
+      `Rchain.Comparator.lex_lt_trans_at3` because its children are three deep. C58 carries the measurement of \
+      the *gap*; the rows carry the closure. `Ground` is untouched and `ebigint` is an `Expr` leaf \
+      because that is what the node has — the protobuf's `g_big_int` is an `Expr` variant and the \
+      port's normalizer converts the parse-level ground into one (`normalizer.rs:74-77`). (`matches` was the \
       sixth of that list and is no longer on it: `ematches` has a constructor, a tag and an arm.) \
       `Ground.bytes` is the one \
       unpinnable divergence: the model has it at the wrong tag and the node's front end has no \
@@ -279,7 +288,8 @@ def laws : List Law := [
       `Rchain.cmpSend_lt_trans, `Rchain.cmpReceiveBind_lt_trans, `Rchain.cmpReceive_lt_trans,
       `Rchain.cmpMatchCase_lt_trans, `Rchain.cmpMatch_lt_trans, `Rchain.cmpBundle_lt_trans,
       `Rchain.cmpConnective_lt_trans, `Rchain.cmpListPar_lt_trans,
-      `Rchain.Comparator.lex_lt_trans, `Rchain.Comparator.lex_lt_trans_at, `Rchain.Comparator.cmpPairF,
+      `Rchain.Comparator.lex_lt_trans, `Rchain.Comparator.lex_lt_trans_at,
+      `Rchain.Comparator.lex_lt_trans_at3, `Rchain.Comparator.cmpPairF,
       `Rchain.exprTag, `Rchain.cmpExpr_eq_iff, `Rchain.cmpExpr_swap, `Rchain.cmpExpr_lt_trans,
       `Rchain.cmpExpr_tag_lt, `Rchain.cmpExpr_tag_gt, `Rchain.cmpExpr_ground, `Rchain.cmpExpr_elist,
       `Rchain.cmpOptionVar_eq_iff, `Rchain.cmpOptionVar_swap, `Rchain.cmpOptionVar_lt_trans,
@@ -295,7 +305,7 @@ def laws : List Law := [
       counterexample would have to be a counterexample to those proofs too. **And the residual is \
       gone**: `cmpExpr`'s three are *theorems* now (2026-09-24), which is what the second half of this \
       cell used to be blocked on — the size of \
-      its equation lemmas, and the route is the 24 `@[simp]` arm lemmas (`simp only [cmpExpr.eq_def]`, one arm at a time)",
+      its equation lemmas, and the route is the 29 `@[simp]` arm lemmas (`simp only [cmpExpr.eq_def]`, one arm at a time)",
     note := "**no axioms, from twelve — the residual is empty** (2026-09-24). The list comparators' laws \
       were discharged by induction on the list; the eight element laws above are theorems, in dependency \
       order (an element law needs the list lemma of the types *below* it and a list lemma needs the \
@@ -307,7 +317,7 @@ def laws : List Law := [
       2026-09-24**: `cmpPar_lt_trans` is a theorem — an eight-component `lex` chain, a member of \
       `Rchain.Sort`'s `mutual` block because the family is one strongly connected component, which is \
       what that file's note is about — and `cmpExpr`'s three are theorems by the route that note \
-      predicted (the 24 `@[simp]` arm lemmas (`simp only [cmpExpr.eq_def]`, one arm at a time) over `exprTag`, since `cmpExpr` is compiled as \
+      predicted (the 29 `@[simp]` arm lemmas (`simp only [cmpExpr.eq_def]`, one arm at a time) over `exprTag`, since `cmpExpr` is compiled as \
       `WellFounded.fix` and nothing unfolds it). This row's falsifier is therefore the **`sort` corpus**, \
       as it is law 1a's: its pairwise verdicts are read back from the node by which element `sort_par` \
       puts first, so a comparator whose order drifted from the node's score tree fails a row rather than \
