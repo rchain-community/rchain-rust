@@ -22,7 +22,7 @@ state, at the one site the row's note names.
    withdrawal before its first finalisation (#73, the comment's own record).
 
 `compute_bonds` itself is one read — `get_native(PREFIX_POS, pos_active_key())`
-(`casper/src/runtime_manager.rs:1276-1281`), i.e. the **`pos:active`** leaf, decoded as a bonds map.
+(`casper/src/runtime_manager.rs:1360-1366`), i.e. the **`pos:active`** leaf, decoded as a bonds map.
 
 ## What the state's own answer is, and the model finding this module rests on
 

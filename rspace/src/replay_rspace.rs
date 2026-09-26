@@ -106,6 +106,11 @@ where
         self.space.native_store()
     }
 
+    /// The native mutations folded into the most recent `create_checkpoint` on the wrapped space.
+    pub fn last_native_changes(&self) -> Vec<crate::native_store::NativeStoreAction> {
+        self.space.last_native_changes()
+    }
+
     /// Build the replay data table from a log (port of `IReplaySpace.rig`). Only IO events that
     /// appear in the log get bound to their COMMs.
     fn build_replay_data(log: &Log) -> ReplayData {

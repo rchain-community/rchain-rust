@@ -6,10 +6,12 @@
 
 use std::sync::Arc;
 
-use rchain_casper::runtime_manager::{CapturedReply, MergeableStore, RuntimeManager};
+use rchain_casper::runtime_manager::{
+    CapturedReply, MergeableStore, NativeChangesStore, RuntimeManager,
+};
 use rchain_models::runtime::{BindPattern, ListParWithRandom, TaggedContinuation};
 use rchain_models::sorted::SortedProc;
-use rchain_rholang::merging::DeployMergeableDataCodec;
+use rchain_rholang::merging::{DeployMergeableDataCodec, NativeStoreActionsCodec};
 use rchain_rholang::runtime::{ReplayRhoRuntime, RhoRuntime};
 use rchain_rholang::scheduler::EffectMode;
 use rchain_rholang::storage::RhoMatch;
@@ -63,7 +65,17 @@ pub async fn build_runtime_manager_with_mode(mode: EffectMode) -> RuntimeManager
         .await
         .expect("mergeable store"),
     );
-    RuntimeManager::new(rho, replay, history, mergeable, mode)
+    let native_changes: NativeChangesStore = Arc::new(
+        database(
+            &manager,
+            "native-changes",
+            Arc::new(BytesCodec),
+            Arc::new(NativeStoreActionsCodec),
+        )
+        .await
+        .expect("native changes store"),
+    );
+    RuntimeManager::new(rho, replay, history, mergeable, native_changes, mode)
 }
 
 // Imports for the shared gateway harness below.

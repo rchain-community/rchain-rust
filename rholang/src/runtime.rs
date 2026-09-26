@@ -15,7 +15,7 @@ use rchain_rspace::errors::RSpaceError;
 use rchain_rspace::i_replay_space::IReplaySpace;
 use rchain_rspace::i_space::ISpace;
 use rchain_rspace::internal::{Datum, Row, WaitingContinuation};
-use rchain_rspace::native_store::InMemNativeStore;
+use rchain_rspace::native_store::{InMemNativeStore, NativeStoreAction};
 use rchain_rspace::replay_rspace::ReplayRSpace;
 use rchain_rspace::rspace::RSpace;
 use rchain_rspace::trace::Log;
@@ -367,6 +367,13 @@ impl RhoRuntime {
         self.space.native_store()
     }
 
+    /// The native mutations folded into the most recent checkpoint. The block path accumulates these
+    /// across the user-deploy checkpoint and each block-level system-deploy checkpoint, and the
+    /// block index carries the block's total so a merge can re-apply it (issue #74).
+    pub fn last_native_changes(&self) -> Vec<NativeStoreAction> {
+        self.space.last_native_changes()
+    }
+
     pub fn cost(&self) -> &CostAccounting {
         self.cost.as_ref()
     }
@@ -586,6 +593,11 @@ impl ReplayRhoRuntime {
     /// The native system-contract store (shared with the wrapped play space).
     pub fn native_store(&self) -> Arc<InMemNativeStore> {
         self.space.native_store()
+    }
+
+    /// The native mutations folded into the most recent replay checkpoint (one per replayed block).
+    pub fn last_native_changes(&self) -> Vec<NativeStoreAction> {
+        self.space.last_native_changes()
     }
 
     pub fn cost(&self) -> &CostAccounting {
