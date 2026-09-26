@@ -198,6 +198,10 @@ where
     let bmd = BlockMetadata {
         validated: true,
         validation_failed,
+        // A completed validation: the disagreement is between the block and the state, so it is
+        // attributable to the block. Where a replay cannot be run at all, `mark_failed` is used and
+        // sets this false instead.
+        slashable: validation_failed,
         fringe: pre_state.fringe,
         fringe_state_hash: StateHash::from_slice(pre_state.fringe_state.as_bytes()),
         ..BlockMetadata::from_block(block)

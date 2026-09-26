@@ -331,7 +331,7 @@ where
         Ok(Ok(())) => {}
         Ok(Err(status)) => {
             return Err(ValidateError::ValidationFailed(
-                mark_failed(&init_block_meta),
+                mark_failed_attributable(&init_block_meta),
                 status,
             ))
         }
@@ -350,14 +350,14 @@ where
     match validated {
         Err(status) => {
             return Err(ValidateError::ValidationFailed(
-                mark_failed(&block_metadata),
+                mark_failed_attributable(&block_metadata),
                 status,
             ))
         }
         Ok(true) => {}
         Ok(false) => {
             return Err(ValidateError::ValidationFailed(
-                mark_failed(&block_metadata),
+                mark_failed_attributable(&block_metadata),
                 BlockStatus::InvalidStateHash,
             ))
         }
@@ -368,7 +368,7 @@ where
         Ok(Ok(())) => {}
         Ok(Err(status)) => {
             return Err(ValidateError::ValidationFailed(
-                mark_failed(&block_metadata),
+                mark_failed_attributable(&block_metadata),
                 status,
             ))
         }
@@ -380,7 +380,7 @@ where
         Ok(Ok(())) => {}
         Ok(Err(status)) => {
             return Err(ValidateError::ValidationFailed(
-                mark_failed(&block_metadata),
+                mark_failed_attributable(&block_metadata),
                 status,
             ))
         }
@@ -397,11 +397,33 @@ where
     Ok(block_metadata)
 }
 
+/// Mark a block unusable here, **preserving whatever attribution the metadata already carries**.
+///
+/// This helper only says "validation failed"; it does not decide whose fault the failure is. That is
+/// [`BlockMetadata::slashable`], and it is set where the evidence is: the replay path sets it in
+/// `validate_block_checkpoint`, the structural checks set it through [`mark_failed_attributable`].
+///
+/// The distinction matters because `mark_failed` is *not* only the "could not run the replay" path.
+/// In this code it is reached by every `ValidateError::ValidationFailed` - a rejected status, a
+/// state-hash disagreement, a structural fault - all of which a completed validation attributes to the
+/// block. The genuinely unattributable case (an unreadable pre-state, a store error, an unrecoverable
+/// mergeable-channel sidecar) surfaces as `ValidateError::Internal` and inserts **no** metadata at all,
+/// so it cannot become an offender whether or not this helper clears the flag (#70, #76).
 fn mark_failed(meta: &BlockMetadata) -> BlockMetadata {
     BlockMetadata {
         validated: true,
         validation_failed: true,
         ..meta.clone()
+    }
+}
+
+/// Mark a block failed **and** attribute the failure to it: a completed validation that reached a
+/// rejectable status, disagreed on the pre/post state, found the bonds cache wrong, or saw an invalid
+/// block neglected. These are the blocks a proposer may slash for.
+fn mark_failed_attributable(meta: &BlockMetadata) -> BlockMetadata {
+    BlockMetadata {
+        slashable: true,
+        ..mark_failed(meta)
     }
 }
 
@@ -451,6 +473,7 @@ mod tests {
             bonds_map: std::collections::BTreeMap::new(),
             validated: false,
             validation_failed: true,
+            slashable: false,
             member_of_fringe: None,
             fringe: std::collections::BTreeSet::new(),
             fringe_state_hash: rchain_crypto::hash::blake2b256_hash::Blake2b256Hash::from_bytes(
@@ -511,6 +534,7 @@ mod newest_justification_tests {
             bonds_map: BTreeMap::new(),
             validated: true,
             validation_failed: false,
+            slashable: false,
             fringe: BTreeSet::new(),
             fringe_state_hash: rchain_models::block::state_hash::StateHash::new([0u8; 32]),
             member_of_fringe: None,
@@ -550,5 +574,62 @@ mod newest_justification_tests {
     #[test]
     fn no_justifications_answers_for_nothing() {
         assert!(newest_justification(&[]).is_none());
+    }
+}
+
+#[cfg(test)]
+mod mark_failed_tests {
+    use super::{mark_failed, mark_failed_attributable};
+    use rchain_models::block_hash::BlockHash;
+    use rchain_models::block_metadata::BlockMetadata;
+    use rchain_models::validator::Validator;
+    use rchain_shared::refined::{BlockHeight, SeqNum};
+    use std::collections::{BTreeMap, BTreeSet};
+
+    fn meta(slashable: bool) -> BlockMetadata {
+        BlockMetadata {
+            block_hash: BlockHash::new([0u8; 32]),
+            block_num: BlockHeight::try_from(1).unwrap(),
+            sender: Validator::new([1u8; 65]),
+            seq_num: SeqNum::zero(),
+            justifications: BTreeSet::new(),
+            bonds_map: BTreeMap::new(),
+            validated: false,
+            validation_failed: false,
+            slashable,
+            fringe: BTreeSet::new(),
+            fringe_state_hash: rchain_models::block::state_hash::StateHash::new([0u8; 32]),
+            member_of_fringe: None,
+        }
+    }
+
+    /// `mark_failed` marks the block unusable and **does not erase attribution**. That is the bug this
+    /// correction fixes: #76 had it clear `slashable`, and because every `ValidateError::ValidationFailed`
+    /// path goes through it - the state-hash disagreement and the rejectable status included - slashing was
+    /// disabled entirely rather than narrowed.
+    #[test]
+    fn mark_failed_preserves_the_attribution_it_was_given() {
+        let already_attributed = mark_failed(&meta(true));
+        assert!(already_attributed.validation_failed, "still unusable here");
+        assert!(
+            already_attributed.slashable,
+            "a caller that attributed the failure must not lose it"
+        );
+        assert!(
+            !mark_failed(&meta(false)).slashable,
+            "and a caller that did not must not gain one"
+        );
+    }
+
+    /// A completed validation that disagreed is attributable to the block, so it is slashable. This is the
+    /// case the state-hash mismatch (`Ok(false)`) and a rejectable status (`Err(status)`) take.
+    #[test]
+    fn a_completed_disagreement_is_slashable() {
+        let marked = mark_failed_attributable(&meta(false));
+        assert!(marked.validation_failed);
+        assert!(
+            marked.slashable,
+            "a replay that ran and disagreed is the block's fault"
+        );
     }
 }

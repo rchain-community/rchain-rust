@@ -536,6 +536,7 @@ mod effectful_tests {
             bonds_map: BTreeMap::new(),
             validated: true,
             validation_failed: failed,
+            slashable: false,
             fringe: BTreeSet::new(),
             fringe_state_hash: rchain_models::block::state_hash::StateHash::new([0u8; 32]),
             member_of_fringe: None,
