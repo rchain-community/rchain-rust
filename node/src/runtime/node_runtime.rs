@@ -734,12 +734,26 @@ fn spawn_peer_message_router(
                         _ => shards.values().collect(),
                     };
                     for tx in targets {
-                        let _ = tx
+                        // `send().await` already applies backpressure when the shard is busy (this is
+                        // not the drop-on-full site that AUDIT C105 is about) — but the *error* was
+                        // discarded, and the only error left is a **closed** channel: that shard's task
+                        // has exited, so the message cannot be delivered at all. A drop nobody logs is
+                        // how a node "handles" packets it never processes.
+                        if tx
                             .send(PeerMessage {
                                 peer: peer.clone(),
                                 message: message.clone(),
                             })
-                            .await;
+                            .await
+                            .is_err()
+                        {
+                            log.warn(
+                                source,
+                                &format!(
+                                    "Could not deliver a message from {peer}: the shard's task has exited"
+                                ),
+                            );
+                        }
                     }
                 }
                 Err(err) => {

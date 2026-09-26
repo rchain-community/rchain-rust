@@ -95,11 +95,35 @@ pub async fn handle<T: TransportLayer + ?Sized>(
             CommunicationResponse::handled_without_message()
         }
         Some(protocol::Message::Packet(packet)) => {
-            let _ = routing_queue.try_send(RoutingMessage {
-                peer: sender,
-                packet,
-            });
-            CommunicationResponse::handled_without_message()
+            // **Backpressure, not a silent drop** (AUDIT C105). `try_send` returns `Full` when the
+            // routing queue is busy, and the error was *discarded* — so the packet was lost while this
+            // handler answered `HandledWithoutMessage` and the transport acked the peer as though the
+            // packet had been taken. Awaiting is the policy the streamed path already uses
+            // (`node_runtime.rs`'s `handle_streamed`), one hop earlier: a peer's packet is not thrown
+            // away because the node is momentarily busy.
+            //
+            // **The alternative — making the ack mean "processed" rather than "received" — was
+            // rejected on shape, not on principle**: the receiver `tokio::spawn`s the dispatch, so
+            // acting on its result means awaiting it inline, which would put a *peer round-trip* (the
+            // handshake path's outbound send) inside the RPC handler's critical path. What a packet
+            // needs is not to be lost; what an ack means for every other message on this path is
+            // "taken into the pipeline", and that is what it still means.
+            match routing_queue
+                .send(RoutingMessage {
+                    peer: sender,
+                    packet,
+                })
+                .await
+            {
+                Ok(()) => CommunicationResponse::handled_without_message(),
+                // The router task is gone, so this packet cannot be delivered *at all*. Answering
+                // "handled" would be the same lie one layer down, so say so instead.
+                Err(_) => {
+                    CommunicationResponse::not_handled(CommError::InternalCommunicationError(
+                        "the peer-message router is not running".to_string(),
+                    ))
+                }
+            }
         }
         other => {
             CommunicationResponse::not_handled(CommError::UnexpectedMessage(format!("{other:?}")))
@@ -130,6 +154,103 @@ pub async fn handle_protocol_handshake<T: TransportLayer + ?Sized>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A transport that is never called: the packet path enqueues for the router and touches no peer,
+    /// so a mock that refuses everything is the honest shape for these tests.
+    struct NoTransport;
+
+    #[async_trait::async_trait]
+    impl crate::transport::transport_layer::TransportLayer for NoTransport {
+        async fn send(&self, _peer: &PeerNode, _msg: Protocol) -> crate::errors::CommErr<()> {
+            Err(CommError::InternalCommunicationError(
+                "NoTransport: the test does not send".to_string(),
+            ))
+        }
+
+        async fn broadcast(
+            &self,
+            _peers: &[PeerNode],
+            _msg: Protocol,
+        ) -> Vec<crate::errors::CommErr<()>> {
+            Vec::new()
+        }
+
+        async fn stream(&self, _peers: &[PeerNode], _blob: crate::transport::chunker::Blob) {}
+    }
+
+    fn conf_for(local: &PeerNode) -> RPConf {
+        RPConf {
+            local: local.clone(),
+            network_id: "testnet".to_string(),
+            bootstrap: None,
+            default_timeout: std::time::Duration::from_secs(10),
+            max_num_of_connections: 10,
+            clear_connections: crate::rp::rp_conf::ClearConnectionsConf {
+                num_of_connections_pinged: 10,
+            },
+        }
+    }
+
+    /// **A packet is not dropped when the routing queue is full** (AUDIT C105).
+    ///
+    /// `try_send` returned `Full` under load and the error was discarded — the packet was lost while
+    /// this handler answered `HandledWithoutMessage`, so the transport acked the peer for a packet the
+    /// node had thrown away. The tell is that the handler must *wait* for room: with the old code it
+    /// returns immediately (the first `select!` arm below fires), with the fix it delivers what it was
+    /// holding as soon as a slot frees.
+    #[tokio::test]
+    async fn a_packet_is_not_dropped_when_the_routing_queue_is_full() {
+        let local = peer("local", "127.0.0.1");
+        let conf = conf_for(&local);
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<RoutingMessage>(1);
+
+        // Fill the queue, so the handler's send *must* wait.
+        let filler_peer = peer("filler", "10.0.0.9");
+        tx.send(RoutingMessage {
+            peer: filler_peer.clone(),
+            packet: Default::default(),
+        })
+        .await
+        .expect("the filler goes in");
+
+        let conns = tokio::sync::RwLock::new(Vec::new());
+        let proto = protocol_helper::packet(&local, &conf.network_id, Default::default());
+        let mut handler = Box::pin(handle(proto, &conf, &NoTransport, &conns, &tx));
+
+        // With the queue full the handler must still be *waiting*. On the old code it has already
+        // returned — having dropped the packet and answered "handled" — which is the defect.
+        if let Ok(response) =
+            tokio::time::timeout(std::time::Duration::from_millis(150), &mut handler).await
+        {
+            panic!(
+                "the handler answered {response:?} while the queue was full: the packet was dropped \
+                 and the peer was told it was handled (AUDIT C105)"
+            );
+        }
+
+        // Free one slot **while polling the handler** — a future that is not polled makes no progress,
+        // which is what the first draft of this test got wrong. The packet it was holding must arrive,
+        // and it must be the *peer's*, not the filler.
+        let drain = async {
+            let first = rx.recv().await.expect("the filler is in the queue");
+            assert_eq!(first.peer.id, filler_peer.id, "the filler came first");
+            tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+                .await
+                .expect(
+                    "the handler's packet must arrive — with a discarded `try_send` it never does",
+                )
+                .expect("a message")
+        };
+        let (response, delivered) = tokio::join!(&mut handler, drain);
+        assert_eq!(
+            delivered.peer.id, local.id,
+            "the delivered packet is the peer's own, not the filler"
+        );
+        assert!(
+            matches!(response, CommunicationResponse::HandledWithoutMessage),
+            "a packet that was accepted into the pipeline is handled"
+        );
+    }
 
     #[test]
     fn classifies_private_addresses_as_local() {

@@ -1620,7 +1620,7 @@ def laws : List Law := [
       lexicographic order on the id string, which `child`'s prefixing makes *structurally meaningful* (a \
       shard sorts before all of its descendants, and `is_descendant_of` is the separate structural \
       predicate that agrees with it). Where the order is observable is the two `BTreeMap<ShardId, _>` \
-      sites (`casper/src/gateway/mod.rs:65`, `node/src/runtime/node_runtime.rs:832`) — deterministic \
+      sites (`casper/src/gateway/mod.rs:65`, `node/src/runtime/node_runtime.rs:862`) — deterministic \
       iteration, exactly where a silently different order would bite — and the model's `ShardId` *is* a \
       `String`, so `decide` and `omega` see the same order the port derives. **And the witness this row \
       carried needed correcting, which is the part worth keeping**: `validShardId (s.child n) = \
