@@ -30,7 +30,22 @@ used="$(
 max="$(printf '%s\n' "$used" | tail -1)"
 
 # Gaps: numbers below the maximum that no finding claims.
-gaps="$(seq 1 "$max" | comm -13 <(printf '%s\n' "$used") - | tr '\n' ' ')"
+#
+# **Both sides are lexically sorted for `comm`, then restored numerically for display** — and that is a
+# fix, not a style choice (AUDIT C103). `used` is in *numeric* order (`sort -n -u` above), and `comm`
+# requires a *lexical* one, so `comm` exits non-zero the moment the ordering disagrees — which happens
+# exactly when the catalog reaches three digits, because `100` sorts before `99` lexically. Until
+# 2026-09-26 every number in the tree was two digits, so the two orders agreed wherever it looked, the
+# command exited 0, and the gap list was right for the wrong reason. Adding C100 made `comm` print
+# `file 2 is not in sorted order` and exit 1, and with `set -e` that took the whole script down before
+# it printed its set — so every C-number reference in `spec/` read as dangling (745 findings from
+# `tools/audit-test-register.sh`, whose own guard is what said so: "listed no allocated C-numbers —
+# every reference below would read as dangling"). The ordering is now made explicit on both sides
+# rather than inherited from the length of the catalog.
+gaps="$(
+  comm -13 <(printf '%s\n' "$used" | LC_ALL=C sort) <(seq 1 "$max" | LC_ALL=C sort) \
+    | sort -n | tr '\n' ' '
+)"
 
 if [[ "${1:-}" == "--number" ]]; then
   echo $((max + 1))

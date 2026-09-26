@@ -5,7 +5,7 @@ first, then jump to the single page that answers your question. It mirrors the d
 [`AGENTS.md`](../../AGENTS.md) but is organized by *goal* rather than by artifact.
 
 The **authoritative formal specification** is the [`spec/`](../../spec/) tree — the law catalog
-([`spec/INVENTORY.md`](../../spec/INVENTORY.md), **<!-- counts:entries -->59 entries<!-- counts:end -->**: the 29 calculus laws, 14 covering the
+([`spec/INVENTORY.md`](../../spec/INVENTORY.md), **<!-- counts:entries -->60 entries<!-- counts:end -->**: the 29 calculus laws, 14 covering the
 surface a client writes, 4 for the Proof-of-Stake epoch, one for the fee consequence of a denied
 deploy, and one for what a matched deploy is charged), the ρ-calculus core
 ([`spec/RHO-CALCULUS.md`](../../spec/RHO-CALCULUS.md)), and the ρ→CoC type discipline
@@ -78,5 +78,5 @@ lived there and **nothing errored**:
 | `spec/Rchain/*.lean` (Lean 4) | the model half of the register: each law's Lean declarations, its status (`proved-tied`/`proved-model`/`owed`/…), the axioms it rests on and the declarations that would falsify it. **Per-law status lives in one place** — [`spec/LAWS.md`](../../spec/LAWS.md), emitted from `Rchain/Laws.lean` and refused stale by the gate; this table no longer restates it, because a status repeated here is a status nothing checks (see `laws.md` for what that cost) | `cd spec && lake build` |
 | `spec/coq/*.v` (Coq) | Laws 2–6 (substitution / α-equivalence metatheory) **stated** | `make -C spec/coq` |
 | `spec/conformance/*.tsv` | the conformance corpora: *emitted* from the Lean definitions, committed, and read by a Rust consumer that runs the same cases through the node | `tools/emit-lean-corpus.sh` |
-| `spec/INVENTORY.md` | the law catalog (<!-- counts:laws-entries -->50 laws and 59 entries<!-- counts:end -->) with source-of-truth + status | — |
+| `spec/INVENTORY.md` | the law catalog (<!-- counts:laws-entries -->50 laws and 60 entries<!-- counts:end -->) with source-of-truth + status | — |
 | `spec/TYPE-SYSTEM.md` | the ρ→CoC type discipline (totality, refinements) | — |

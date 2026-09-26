@@ -297,9 +297,15 @@ const MAX_CHAIN_LENGTH: usize = 512;
 ///
 /// **It does not protect a 2 MiB stack**, where the consumers abort at a few dozen levels — which is
 /// why the deep tests here build an explicit 8–32 MiB stack (`rho_examples.rs`, `legacy_contracts.rs`,
-/// `node/tests/common/mod.rs`). The residual is the *runtime*-built term: a program can fold its way
-/// to a deep value without the parser seeing it, and that route is bounded by phlo rather than by
-/// this. Closing it needs a depth budget in the consumers; C99 records it.
+/// `node/tests/common/mod.rs`).
+///
+/// **The runtime-built term is no longer a residual**: a program can fold its way to a deep value
+/// without the parser seeing it, and the space refuses one past `storage.rs::MAX_VALUE_DEPTH` (256) at
+/// both produce paths — law 50 clause b, AUDIT C100. Two things this constant therefore does *not*
+/// cover, both live and both registered rather than implied: a **parsed** term is walked by the
+/// evaluator before the space sees the datum, and that walk aborts the process at ~350 links — below
+/// this bound, because this bound was measured against the *normalizer*'s frames (AUDIT C101) — and
+/// nested tuples make the **parser** itself exponential, which no depth bound can reach (AUDIT C102).
 pub const MAX_AST_DEPTH: usize = 768;
 
 struct Parser {

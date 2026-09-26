@@ -210,4 +210,48 @@ reaches `maxAstDepth` exactly and `notsDepth 768` is the first term over it. -/
 def notsDepth (n : Nat) : Par :=
   Par.mk [] [] [] (List.replicate n (.enot (Par.mk [] [] [] [] [] [] [] []))) [] [] [] []
 
+/-! ## Clause 50b — the bound the *space* applies to a **runtime-built value**
+
+`parDepth` above is one quantity, and it is bounded on two routes: the parser refuses a source whose
+tree exceeds `maxAstDepth`, and the space refuses a produced value whose tree exceeds
+`maxValueDepth`. The second route exists because a rholang program builds terms the parser never saw —
+a contract folding its accumulator into a deeper pair each iteration reaches depth `n` in `O(n)`
+reduce steps — and every consumer of a stored value recurses once per level.
+
+**Why two numbers rather than one** (`rholang/src/storage.rs::MAX_VALUE_DEPTH` carries both
+measurements): the walks have different frames. On the node's 32 MiB worker in a debug build the
+parser route's overspill aborts at an AST depth of ~1,000, while the value route aborts at ~401 inside
+`eval_single_expr`'s recursion over the value. A single number at the parser's 768 would be a bound
+that never fires before the crash it exists to prevent — which is what this unit's first draft shipped.
+So 256 it is, and the two constants are kept apart deliberately.
+
+**What the Rust walk's accounting is, and the obligation that follows.** `exceeds_value_depth` is
+field-wise over the flat `Par` like `parDepth`, but it gives an `Expr` node **no level of its own**: a
+`Par`'s expression children are charged the same depth as its other fields. `parDepth` does count the
+`Expr` node, so the two functions are not equal and the owed directions are *not* the trivial ones:
+
+  * `walkExceeds limit p = false → parDepth p ≤ limit + (the expression nesting the walk did not
+    count)` — soundness with that slack, and the slack is what the proof has to bound; and its
+    control, that the walk is not refusing by accident.
+
+The slack is bounded on this route for a reason worth stating rather than assuming: a *value's*
+expression nesting is syntax, and no runtime construction path builds `Expr` nodes — so on any value
+that reached the space through a parsed program the slack is at most the parser's own
+`MAX_PARSE_DEPTH` (128), and the space's values are bounded by `maxValueDepth + 128`. A value injected
+by a hand-built or wire-carried message is where that argument stops, which is why the row is `owed`
+and not tied.
+-/
+
+/-- The bound the **space** applies to a produced value, `rholang/src/storage.rs::MAX_VALUE_DEPTH`.
+Apart from `maxAstDepth` because the two bound different walks (see the section above). -/
+def maxValueDepth : Nat := 256
+
+/-- The witness shape for the **value** route: nested pairs, which is what a folding contract actually
+builds (`([[..], 1], 1)`) and what an attacker builds. `pairsDepth n` has `parDepth` `2 * n + 1` — the
+arithmetic a falsifying mutation has to break, and the shape a `not`-chain *cannot* supply here,
+because the value walk gives an `Expr` node no level of its own while `parDepth` counts it. -/
+def pairsDepth : Nat → Par
+  | 0 => Par.mk [] [] [] [] [] [] [] []
+  | n + 1 => Par.mk [] [] [] [.etuple [pairsDepth n]] [] [] [] []
+
 end Rchain

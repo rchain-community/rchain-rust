@@ -246,7 +246,23 @@ impl ChargingRSpace {
 /// 256 is generous for real programs: depth counts *nesting*, not length, so a flat list of any size is
 /// depth 2, and it is the accumulator-nesting shape — which is what an attacker builds and no contract
 /// needs — that this refuses.
-const MAX_VALUE_DEPTH: usize = 256;
+///
+/// **The relation to the parser's bound is structural, not asserted.** It must never sit *above*
+/// `MAX_AST_DEPTH` — a value the parser admitted and the space then refused would make the parser's
+/// budget meaningless — so it is written as the smaller of the measured number and the parser's. A
+/// parser bound lowered below 256 lowers this with it; the ordering cannot drift. The spellings tried
+/// first, and why this one: a bare `256` with a `#[test]` asserting the relation (a test of two
+/// constants can never fail — the linter refused the shape, correctly); the `const` block the linter
+/// suggests in its place (an `assert!` is a *panic site in production code*, which
+/// `tools/audit-type-system.sh` counts, so it fails the gate); a local `#[allow]` (the tree carries
+/// none, and the debt list is central in CI rather than scattered); and `256.min(..)`, which is not
+/// const-callable on this toolchain. The `if` costs no counted site and no exception, and it says what
+/// the invariant says.
+const MAX_VALUE_DEPTH: usize = if 256 < crate::parser::MAX_AST_DEPTH {
+    256
+} else {
+    crate::parser::MAX_AST_DEPTH
+};
 
 #[async_trait]
 impl Tuplespace for ChargingRSpace {
@@ -994,20 +1010,5 @@ mod tests {
             0,
             "scheduled: a refused value must not be charged for"
         );
-    }
-
-    /// The ordering the two bounds rest on, and the reason `parser::MAX_AST_DEPTH` is public: the value
-    /// bound sits *below* the parser's. It is a claim rather than a measurement, so it is checked —
-    /// prose that no test can fail is the thing this repo keeps deleting.
-    #[test]
-    fn the_value_bound_is_below_the_parser_bound() {
-        // Both sides are constants, so the relation is checked at compile time — a violation is a
-        // build failure, not merely a failing test (clippy::assertions_on_constants).
-        const {
-            assert!(
-                MAX_VALUE_DEPTH < crate::parser::MAX_AST_DEPTH,
-                "MAX_VALUE_DEPTH must sit below parser::MAX_AST_DEPTH"
-            );
-        }
     }
 }

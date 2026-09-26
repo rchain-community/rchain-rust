@@ -78,7 +78,7 @@ check stayed green, while the emitter's summary read "57 entries" against a base
 C80). Pinned by hand rather than derived, because a check that counted the rows would compare the
 register to itself and a dropped row would take its own evidence along. **Adding a row means bumping
 this** — the same tax `lawCeiling` already carries. -/
-def entryCeiling : Nat := 59
+def entryCeiling : Nat := 60
 
 /-- **The declarations the register names whose proofs rest on the *compiler* — empty as of 2026-09-25,
 and checked in both directions by check 6b.**
