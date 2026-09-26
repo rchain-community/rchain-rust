@@ -100,13 +100,8 @@ fn eval_var(v: &Var, env: &Env<Par>, cost: &CostAccounting) -> Result<Par, Rhola
 }
 
 fn eval_to_bool(par: &Par, env: &Env<Par>, cost: &CostAccounting) -> Result<bool, RholangError> {
-    match eval_single_expr(par, env, cost)? {
-        Expr::GBool(b) => Ok(b),
-        other => Err(RholangError::ReduceError(format!(
-            "Error: expected Bool, got {}",
-            typ(&other)
-        ))),
-    }
+    let v = eval_single_expr(par, env, cost)?;
+    expect_bool(&v)
 }
 
 fn eval_to_long(par: &Par, env: &Env<Par>, cost: &CostAccounting) -> Result<i64, RholangError> {
@@ -379,11 +374,207 @@ fn eval_expr_to_par<S: Sort>(
     }
 }
 
+/// The left and right operands of a binary operator node, for the ops whose **chains** are not bounded
+/// by the parser's nesting guard — the ones `split_left_spine` folds.
+///
+/// `None` for everything else: the unary ops (`not`, unary `-`) nest only through parentheses or
+/// repeated keywords, both of which `MAX_PARSE_DEPTH` bounds at 128, and the non-operator shapes
+/// (collections, `EMethod`, `EVar`, `==`, `matches`) are bounded by the parser's guard and by C100's
+/// value bound. **A left-associative chain is the one shape whose depth is not a nesting depth**:
+/// `1 + 1 + … + 1` is a single nesting level with a spine as long as the chain, which is AUDIT C101.
+fn binary_operands(e: &Expr) -> Option<(&Par, &Par)> {
+    match e {
+        Expr::EMult(a, b)
+        | Expr::EDiv(a, b)
+        | Expr::EMod(a, b)
+        | Expr::EPlus(a, b)
+        | Expr::EMinus(a, b)
+        | Expr::ELt(a, b)
+        | Expr::ELte(a, b)
+        | Expr::EGt(a, b)
+        | Expr::EGte(a, b)
+        | Expr::EAnd(a, b)
+        | Expr::EOr(a, b)
+        | Expr::EShortAnd(a, b)
+        | Expr::EShortOr(a, b)
+        | Expr::EPercentPercent(a, b)
+        | Expr::EPlusPlus(a, b)
+        | Expr::EMinusMinus(a, b) => Some((a, b)),
+        _ => None,
+    }
+}
+
+/// The bottom of a left spine: whatever the chain's first operand turned out to be.
+enum SpineBase<'a> {
+    /// A single expression — handed to `eval_arm` directly.
+    Expr(&'a Expr),
+    /// A `Par` that is not one expression — handed to `eval_single_expr`, which produces the very error
+    /// the arm would have ("Expected a single expression"), so the two paths cannot diverge on it.
+    Par(&'a Par),
+}
+
+/// A left-nested chain of binary operators, innermost operator first, with the operand beneath it.
+///
+/// Walks the *syntax* — no evaluation, so no stack — which is the whole point: the chain's length is
+/// not a nesting depth the parser can bound, so it must not become a recursion depth either.
+fn split_left_spine(expr: &Expr) -> Option<(Vec<(&Expr, &Par)>, SpineBase<'_>)> {
+    let mut chain: Vec<(&Expr, &Par)> = Vec::new();
+    let mut cur = expr;
+    loop {
+        let Some((left, right)) = binary_operands(cur) else {
+            break;
+        };
+        chain.push((cur, right));
+        match single_expr(left) {
+            Some(next) => cur = next,
+            None => {
+                // The left operand is not a single expression, so the chain stops *at* this operator
+                // and the operand beneath it is the `Par` itself.
+                chain.reverse();
+                return Some((chain, SpineBase::Par(left)));
+            }
+        }
+    }
+    if chain.is_empty() {
+        return None;
+    }
+    chain.reverse();
+    Some((chain, SpineBase::Expr(cur)))
+}
+
+/// `a && b` / `a || b`, with the right operand as a **thunk**: it must not be evaluated — and so must
+/// not be charged, and must not be able to raise — when the left operand decides the result. One
+/// implementation, called by the arm and by the spine walk, so the two cannot drift.
+fn bool_short_circuit(
+    kind: ShortKind,
+    left: bool,
+    right: impl FnOnce() -> Result<bool, RholangError>,
+    cost: &CostAccounting,
+) -> Result<Expr, RholangError> {
+    let decided = match kind {
+        ShortKind::And => !left,
+        ShortKind::Or => left,
+    };
+    let b2 = match (kind, decided) {
+        (ShortKind::And, true) => false,
+        (ShortKind::Or, true) => true,
+        (_, false) => right()?,
+    };
+    cost.charge(match kind {
+        ShortKind::And => Costs::boolean_and_cost(),
+        ShortKind::Or => Costs::boolean_or_cost(),
+    })?;
+    Ok(Expr::GBool(match kind {
+        ShortKind::And => left && b2,
+        ShortKind::Or => left || b2,
+    }))
+}
+
+#[derive(Clone, Copy)]
+enum ShortKind {
+    And,
+    Or,
+}
+
+/// The `Bool` an already-evaluated value has to be — the tail of `eval_to_bool`, shared with it so the
+/// message cannot differ between the recursive path and the spine's.
+fn expect_bool(v: &Expr) -> Result<bool, RholangError> {
+    match v {
+        Expr::GBool(b) => Ok(*b),
+        other => Err(RholangError::ReduceError(format!(
+            "Error: expected Bool, got {}",
+            typ(other)
+        ))),
+    }
+}
+
+/// One spine level: apply `op` to an already-evaluated left value and the operator's right operand.
+///
+/// For every op but the short-circuiting pair this **rebuilds a one-level node and runs the same arm**
+/// (`eval_arm`) the recursive path would have run. That is deliberate: the operator's cost, its
+/// dispatch (`Set + x`, the `++` unions, `%%` interpolation) and its errors stay in one place instead
+/// of being transcribed. It is also *gas-exact* — an arm's result is a value, and evaluating a value
+/// charges nothing (`eval_expr_to_par`'s fallthrough is the leaf arm, a clone) — so a chain's cost is
+/// the same as before to the charge.
+fn apply_spine_level(
+    op: &Expr,
+    acc: Expr,
+    right: &Par,
+    env: &Env<Par>,
+    cost: &CostAccounting,
+) -> Result<Expr, RholangError> {
+    match op {
+        Expr::EShortAnd(..) => {
+            let b1 = expect_bool(&acc)?;
+            bool_short_circuit(ShortKind::And, b1, || eval_to_bool(right, env, cost), cost)
+        }
+        Expr::EShortOr(..) => {
+            let b1 = expect_bool(&acc)?;
+            bool_short_circuit(ShortKind::Or, b1, || eval_to_bool(right, env, cost), cost)
+        }
+        _ => eval_arm(&rebuild_binary(op, acc, right)?, env, cost),
+    }
+}
+
+/// A one-level copy of `op` with `acc` as its left operand: the shape `eval_arm` expects.
+fn rebuild_binary(op: &Expr, acc: Expr, right: &Par) -> Result<Expr, RholangError> {
+    let l = Box::new(from_expr(acc));
+    let r = Box::new(right.clone());
+    Ok(match op {
+        Expr::EMult(..) => Expr::EMult(l, r),
+        Expr::EDiv(..) => Expr::EDiv(l, r),
+        Expr::EMod(..) => Expr::EMod(l, r),
+        Expr::EPlus(..) => Expr::EPlus(l, r),
+        Expr::EMinus(..) => Expr::EMinus(l, r),
+        Expr::ELt(..) => Expr::ELt(l, r),
+        Expr::ELte(..) => Expr::ELte(l, r),
+        Expr::EGt(..) => Expr::EGt(l, r),
+        Expr::EGte(..) => Expr::EGte(l, r),
+        Expr::EEq(..) => Expr::EEq(l, r),
+        Expr::ENeq(..) => Expr::ENeq(l, r),
+        Expr::EAnd(..) => Expr::EAnd(l, r),
+        Expr::EOr(..) => Expr::EOr(l, r),
+        Expr::EPercentPercent(..) => Expr::EPercentPercent(l, r),
+        Expr::EPlusPlus(..) => Expr::EPlusPlus(l, r),
+        Expr::EMinusMinus(..) => Expr::EMinusMinus(l, r),
+        other => {
+            return Err(RholangError::BugFoundError(format!(
+                "a spine level was rebuilt for a non-binary operator: {other:?}"
+            )))
+        }
+    })
+}
+
+/// Evaluate an expression to its value.
+///
+/// **A left-nested operator chain is evaluated iteratively** (AUDIT C101). `1 + 1 + … + 1` is one
+/// parser nesting level with an arbitrarily long spine, and the recursive reading of it cost one Rust
+/// frame per link: a legal ~350-link chain as a send's datum **aborted the process** on the node's
+/// 32 MiB worker (`thread 'tokio-rt-worker' has overflowed its stack`), inside this function's
+/// recursion, before C100's guard could see the datum. The spine is walked here and its levels are
+/// applied in a loop, so the chain's length costs no stack — and its cost in *gas* is unchanged,
+/// because each level still runs the arm (see `apply_spine_level`).
 fn eval_expr_to_expr(
     expr: &Expr,
     env: &Env<Par>,
     cost: &CostAccounting,
 ) -> Result<Expr, RholangError> {
+    let Some((chain, base)) = split_left_spine(expr) else {
+        return eval_arm(expr, env, cost);
+    };
+    let mut acc = match base {
+        SpineBase::Expr(e) => eval_arm(e, env, cost)?,
+        SpineBase::Par(p) => eval_single_expr(p, env, cost)?,
+    };
+    for (op, right) in chain {
+        acc = apply_spine_level(op, acc, right, env, cost)?;
+    }
+    Ok(acc)
+}
+
+/// One expression, the recursive way — every arm as it was, reached for a shape the spine walk does not
+/// fold (a leaf, a collection, a method call, `==`, `matches`, a unary operator).
+fn eval_arm(expr: &Expr, env: &Env<Par>, cost: &CostAccounting) -> Result<Expr, RholangError> {
     match expr {
         Expr::GBool(_)
         | Expr::GInt(_)
@@ -583,23 +774,14 @@ fn eval_expr_to_expr(
         }
         Expr::EShortAnd(p1, p2) => {
             let b1 = eval_to_bool(p1, env, cost)?;
-            let b2 = if b1 {
-                eval_to_bool(p2, env, cost)?
-            } else {
-                false
-            };
-            cost.charge(Costs::boolean_and_cost())?;
-            Ok(Expr::GBool(b1 && b2))
+            // Shared with the spine walk (`apply_spine_level`), so the short-circuit rule — and the
+            // fact that the right operand is neither charged nor able to raise when the left decides —
+            // lives in exactly one place.
+            bool_short_circuit(ShortKind::And, b1, || eval_to_bool(p2, env, cost), cost)
         }
         Expr::EShortOr(p1, p2) => {
             let b1 = eval_to_bool(p1, env, cost)?;
-            let b2 = if b1 {
-                true
-            } else {
-                eval_to_bool(p2, env, cost)?
-            };
-            cost.charge(Costs::boolean_or_cost())?;
-            Ok(Expr::GBool(b1 || b2))
+            bool_short_circuit(ShortKind::Or, b1, || eval_to_bool(p2, env, cost), cost)
         }
         Expr::EMatches(target, pattern) => {
             let evaled_target = eval_expr(target, env, cost)?;
