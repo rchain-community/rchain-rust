@@ -692,11 +692,7 @@ pub fn exceeds_value_depth<S: Sort>(root: &Par<S>, limit: usize) -> bool {
     false
 }
 
-fn push_value_fields<'a, S: Sort>(
-    p: &'a Par<S>,
-    d: usize,
-    out: &mut Vec<(ValueNode<'a>, usize)>,
-) {
+fn push_value_fields<'a, S: Sort>(p: &'a Par<S>, d: usize, out: &mut Vec<(ValueNode<'a>, usize)>) {
     for s in &p.sends {
         out.push((ValueNode::Name(&s.chan), d));
         for n in &s.data {
@@ -1172,7 +1168,10 @@ mod tests {
             );
         }
         // Degenerate root: no fields, so every limit admits it.
-        assert!(!exceeds_value_depth(&Par::<crate::ast::ProcSort>::default(), 1));
+        assert!(!exceeds_value_depth(
+            &Par::<crate::ast::ProcSort>::default(),
+            1
+        ));
     }
 
     /// **Every construct that carries a `Par` is walked.** Each case parks a depth-10 child in one
@@ -1270,10 +1269,7 @@ mod tests {
             (
                 "exprs[].EPlus",
                 Par {
-                    exprs: vec![Expr::EPlus(
-                        Box::new(nested_proc(10)),
-                        Box::new(Par::default()),
-                    )],
+                    exprs: vec![Expr::EPlus(Box::new(nested_proc(10)), Box::default())],
                     ..Default::default()
                 },
             ),

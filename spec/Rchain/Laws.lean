@@ -2394,7 +2394,7 @@ def laws : List Law := [
       refunds) rather than in general: the general form is the same argument iterated, and the \
       iteration needs a permutation lemma over `List` that carries no further content — `Charging.lean` \
       says so rather than proving a statement no caller uses" },
-  { number := 50, layer := "Rholang",
+  { number := 50, clause := "a", layer := "Rholang",
     statement := "A term's **AST depth** is bounded: `parDepth` is the quantity, `maxAstDepth` (768) \
       is the bound, and the parser refuses a source whose tree exceeds it — so no consumer of a term \
       (the normalizer, the sorter, `well_scoped`, the evaluator, the matcher, the printer) recurses \
@@ -2433,9 +2433,80 @@ def laws : List Law := [
       reducibility note); the two directions are therefore inductions, and `notsDepth` is their \
       witness shape rather than a checked instance. **The half that is not a Lean claim at all**: that \
       the Rust walk descends into every `Proc` constructor. No theorem can say it — the walk is over \
-      the parser's syntax, which has no model — so it is pinned by the three `rustWitness` tests, and \
-      the residual (a *runtime*-built deep value, which never passes the parser and is phlo-bounded) \
-      is recorded rather than claimed closed" }
+      the parser's syntax, which has no model — so it is pinned by the three `rustWitness` tests. \
+      **The residual this row used to record is clause b's subject**: a runtime-built deep value never \
+      passes the parser, so the parser's bound cannot see that route, and the space enforces the \
+      bound instead (AUDIT C100). \
+      **One of the consumers this clause's statement names is not bounded by this constant, and the \
+      measurement says so** (2026-09-26, AUDIT C101): the *evaluator*'s frames are larger than the \
+      normalizer's — a parsed flat chain as send data (inside both parser guards) returns `Ok` at 300 \
+      and 320 links and **aborts the process** at 350 — so 768 is above that abort, and the sentence \
+      that no consumer recurses past the bound holds for the normalizer, the sorter, `well_scoped`, \
+      the matcher and the printer and does **not** hold for the evaluator as the code stands. C101 is \
+      that finding; its fix is an iterative evaluator rather than a second constant, because lowering \
+      this one would refuse every chain of 257..512 links that the chain guard admits" },
+  { number := 50, clause := "b", layer := "Rholang",
+    statement := "A **runtime-built value** is depth-bounded on the route the parser cannot see: the \
+      space refuses a produced value deeper than `maxValueDepth` (256), so a term a program built by \
+      folding cannot reach a consumer deeper than the bound — the same quantity (`parDepth`) as \
+      clause a, enforced at the space instead of at the parser",
+    status := .owed,
+    declarations := [`Rchain.parDepth, `Rchain.maxValueDepth, `Rchain.pairsDepth],
+    rust := ["models/src/types.rs", "rholang/src/storage.rs"],
+    rustWitness := [
+      "models/src/types.rs:the_value_walk_admits_the_limit_and_refuses_past_it",
+      "models/src/types.rs:every_construct_that_carries_a_par_is_walked",
+      "rholang/src/storage.rs:a_value_at_the_bound_is_stored_and_one_past_it_is_refused_on_both_produce_paths"],
+    falsifiable := some "**the falsifier is a dropped arm of the walk's children function, over the \
+      value route's own shape.** `pairsDepth n` (nested pairs — what a folding contract builds, and \
+      what an attacker builds) has `parDepth` `2 * n + 1`, so a mutation that drops one arm must let \
+      a value past the bound and make soundness false there; the Rust half of the same risk (a `Proc` \
+      constructor the walk never descends into) is not a Lean claim at all — the walk is over the \
+      Rust AST, which has no model — and is pinned by \
+      `models/src/types.rs:every_construct_that_carries_a_par_is_walked`, which parks a depth-10 child \
+      in each of the 22 positions the walk must reach and asks for a limit of 5. Verified by mutation \
+      before it was trusted: disabling the `bundles` arm makes exactly that case fail",
+    note := "**`owed`, and the number is a measurement rather than a preference** (2026-09-26, AUDIT \
+      C100). A contract folding its accumulator into a deeper pair reaches depth `n` in `O(n)` reduce \
+      steps, inside `DEFAULT_MAX_REDUCE_STEPS`; on the node's 32 MiB worker in a debug build a fold to \
+      depth 101 costs 7.3 s of CPU and a fold to depth 401 **aborts the process** \
+      (`thread 'tokio-rt-worker' has overflowed its stack`, SIGABRT) inside `eval_single_expr`'s \
+      recursion over the value. So the bound sits below that abort, at 256, and *apart from* clause \
+      a's 768 — the two walks have different frames (the parser route's overspill is ~1,000, the value \
+      route's is ~401), and sharing one number would be a bound that does not fire before the crash it \
+      exists to prevent, which is what this unit's first draft shipped. Depth counts *nesting*, not \
+      length: a flat list of any size is depth 2, and it is the accumulator-nesting shape — which no \
+      contract needs — that this refuses. \
+      **What the guard covers, and the residues it does not.** It sits at \
+      `rholang/src/storage.rs::ChargingRSpace::check_value_depth`, called by **both** produce paths, so \
+      it bounds the values the space holds and therefore every later reader of them. Four routes \
+      remain unguarded and are named rather than implied away: a produce's *channel*, a consume's \
+      channels/patterns, a continuation's body, and state restored from persistence at boot. It also \
+      does not bound the **evaluator's** recursion while building the value, because the guard runs \
+      after that walk — the honest statement of the mechanism is that the deepest value ever built is \
+      capped at the bound + 1 (iteration `i` evaluates depth `i` and produces depth `i + 1`). \
+      **The modelling gap the owed proof has to settle**, and the reason this row is not tied: the \
+      Rust walk gives an `Expr` node **no level of its own** while `parDepth` counts it, so the two \
+      are not equal and soundness must be stated with that slack. The slack is bounded on this route \
+      because a value's expression nesting is *syntax* and no runtime path builds `Expr` nodes, so it \
+      is at most the parser's `MAX_PARSE_DEPTH` (128) — an argument that stops for a hand-built or \
+      wire-carried value, which is the boundary of the claim. \
+      **The gap this unit's own claim hid**: the guard's first draft sat inside `produce`, under a \
+      comment calling it the one place a value enters the space; \
+      `rholang/src/storage.rs::produce_at` — the scheduled path the channel scheduler and the deferred \
+      block paths use — reaches RSpace directly and never passed through it, so one of two produce \
+      entries was open. One shared method now, and the test fails on the old shape: with the scheduled \
+      call disabled, a 257-deep datum is *stored* (`ScheduledProduce { application: None, .. }`, no \
+      error) and \
+      `rholang/src/storage.rs:a_value_at_the_bound_is_stored_and_one_past_it_is_refused_on_both_produce_paths` \
+      reports it. **The ordering between the two bounds is structural rather than asserted**: \
+      `rholang/src/storage.rs` carries `const _: () = assert!(MAX_VALUE_DEPTH < \
+      crate::parser::MAX_AST_DEPTH)`, so a build that inverted them does not compile — the first draft \
+      had a `#[test]` for it instead, and that test could never have failed (the linter refused the \
+      shape, correctly). **Not closed by this clause, and filed separately**: a *parsed* term of depth \
+      257..768 is still an abort route (the evaluator recurses before the guard sees the datum), and \
+      nested tuples make the parser exponential — both are C-row findings of this pass, and neither is \
+      a depth bound's business" }
 ]
 
 /-- Every law number the catalog defines. Laws with clauses repeat. -/

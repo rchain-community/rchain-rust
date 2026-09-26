@@ -248,6 +248,15 @@ impl ChargingRSpace {
 /// needs — that this refuses.
 const MAX_VALUE_DEPTH: usize = 256;
 
+/// The ordering the pair rests on, enforced **at compile time** rather than by a test.
+///
+/// The value bound must sit *below* the parser's: a value the parser admitted but the space then
+/// refused would make the parser's budget meaningless, and the reverse ordering is the one mistake
+/// that would be silent. Expressed as a `const` item because that is what it is — a fact about two
+/// constants, which no runtime test could ever fail (the first draft had one, and it was exactly the
+/// "claim nothing can check" shape this tree keeps deleting; the linter was right to refuse it).
+const _: () = assert!(MAX_VALUE_DEPTH < crate::parser::MAX_AST_DEPTH);
+
 #[async_trait]
 impl Tuplespace for ChargingRSpace {
     async fn produce(
@@ -922,7 +931,10 @@ mod tests {
                 1,
                 "depth {n} was not stored"
             );
-            assert!(cost.total_charged() > 0, "depth {n} must still be charged for");
+            assert!(
+                cost.total_charged() > 0,
+                "depth {n} must still be charged for"
+            );
 
             let (charging, cost, mock) = charging_space(1_000_000);
             charging
@@ -990,18 +1002,6 @@ mod tests {
             cost.total_charged(),
             0,
             "scheduled: a refused value must not be charged for"
-        );
-    }
-
-    /// The ordering the two bounds rest on, and the reason `parser::MAX_AST_DEPTH` is public: the value
-    /// bound sits *below* the parser's. It is a claim rather than a measurement, so it is checked —
-    /// prose that no test can fail is the thing this repo keeps deleting.
-    #[test]
-    fn the_value_bound_is_below_the_parser_bound() {
-        assert!(
-            MAX_VALUE_DEPTH < crate::parser::MAX_AST_DEPTH,
-            "the value bound ({MAX_VALUE_DEPTH}) must sit below the parser's ({})",
-            crate::parser::MAX_AST_DEPTH
         );
     }
 }
