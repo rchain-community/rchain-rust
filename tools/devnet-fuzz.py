@@ -206,6 +206,21 @@ class Malformed:
         return text if len(text) <= 70 else text[:67] + "..."
 
 
+def _nested_chain(depth, chain):
+    """`depth` nested parens, each holding a flat chain of `chain` additions.
+
+    The shape the two parser guards do not bound: a chain is built by a loop, so it costs a bounded
+    number of parser frames and produces an **AST of depth `n`**, and nesting composes it. Written as a
+    helper rather than inlined because the three cases below differ only in which guard they stay
+    inside.
+    """
+    inner = "1"
+    link = " + 1" * chain
+    for _ in range(depth):
+        inner = f"({inner}{link})"
+    return inner
+
+
 def gen_malformed(rng, n):
     """The malformed corpus: one case per input guard, generated rather than hard-coded.
 
@@ -231,12 +246,24 @@ def gen_malformed(rng, n):
     out.append(Malformed("spliced-delimiter", 'new x in { x!(1)'))
     out.append(Malformed("spliced-delimiter", 'for (@v <- x) { }'))
 
-    # Extreme nesting: past the parser's depth guard (MAX_PARSE_DEPTH = 512 in rholang/src/parser.rs).
-    # A guard that did not fire would recurse until the stack blew, so this is the crash-shaped case.
-    for depth in [600, 5000]:
+    # Extreme nesting: past the parser's **recursion** guard — `MAX_PARSE_DEPTH = 128` in
+    # `rholang/src/parser.rs` (this line used to say 512, which is `MAX_CHAIN_LENGTH`: the depth guard
+    # was under-stated by 4x and the chain guard was named as the depth one, so a reader measuring the
+    # fuzzer's coverage from this comment would have had both backwards).
+    for depth in [200, 5000]:
         out.append(Malformed("deep-nesting", "new x in " * depth + "Nil"))
     out.append(Malformed("deep-nesting", "@" * 2000 + "Nil"))
     out.append(Malformed("deep-nesting", "not " * 5000 + "Nil"))
+
+    # The **product** of the two guards, which neither of them bounds (AUDIT C99): `d` levels of `c`
+    # chained operators are an AST of depth `d x c`, and `new x in`/`not` nesting cannot generate the
+    # shape — the chain is what makes it deep, and those cases have no chain at all. Both guards are
+    # satisfied in the case below (`depth < 128`, `chain < 512`) while the AST is ~50,000 deep, which
+    # before the fix was a *process abort* on the node's own 32 MiB worker; the two over-bounds cases
+    # are the controls, so a run says which guard fired.
+    out.append(Malformed("nested-chain", _nested_chain(100, 500)))
+    out.append(Malformed("nested-chain-over-depth", _nested_chain(200, 500)))
+    out.append(Malformed("nested-chain-over-chain", _nested_chain(100, 600)))
 
     # Oversized integers: past i64 and past any plausible bignum budget.
     for digits in [20, 100, 5000]:
