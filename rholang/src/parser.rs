@@ -261,13 +261,46 @@ fn lex(src: &str) -> Result<Vec<Tok>, RholangError> {
 /// Maximum recursive-descent nesting depth. Reached by the depth guard in `with_depth` so a
 /// maliciously deep term (up to the gRPC message-size limit) cannot overflow the task stack
 /// (documented Scala deviation: the BNFC parser has no depth guard). 128 levels is far deeper than
-/// any real rholang term yet well within a 2 MiB async-thread stack.
+/// any real rholang term.
+///
+/// **This does not bound the AST, and the comment here used to imply it did** — see `MAX_AST_DEPTH`.
 const MAX_PARSE_DEPTH: usize = 128;
 
 /// Maximum number of terms folded into a single left-leaning operator chain (`a+b+c+…`). The
 /// recursion-depth guard (`with_depth`) never triggers on such a flat chain, so a separate bound is
-/// needed to keep the resulting AST depth (and the normalizer/sort/eval recursion into it) bounded.
+/// needed.
+///
+/// **It does not bound the resulting AST depth either**, which is what this comment claimed until
+/// 2026-09-26: a chain is charged per level and the counters are per level, so `depth` nesting levels
+/// of `chain` operators compose into an AST of depth `depth × chain`. See `MAX_AST_DEPTH`.
 const MAX_CHAIN_LENGTH: usize = 512;
+
+/// Maximum **AST depth** of a parsed term — the depth of the *value*, not of the parser's recursion,
+/// and therefore the quantity every consumer recurses over: the normalizer (`normalize_proc`), the
+/// sorter (`sort_par`/`sort_expr`), `well_scoped`, the reducer's expression evaluator, the spatial
+/// matcher and the pretty printer. `parse` refuses a tree deeper than this
+/// ([`exceeds_ast_depth`]), so the two guards above compose into a bounded AST instead of bounding two
+/// independent shapes whose *product* is free.
+///
+/// **The constant is measured, not chosen** (2026-09-26, AUDIT C99). On this tree and the node's own
+/// 32 MiB worker stack (`node/src/main.rs`): a debug build aborts between AST depth 732 (normalizes
+/// in 739 ms) and 994 (`fatal runtime error: stack overflow, aborting`, SIGABRT — the **process**,
+/// not the task); a release build survives 3,000 in 3.2 s and aborts between 8,040 (which costs
+/// **64 s** of CPU) and 50,100. The cost is super-linear — 157 ms at 732, 292 at 994, 537 at 1,296,
+/// 927 at 1,638, 3.2 s at 3,000 — so the cheap half of this bound's value is the CPU cap.
+///
+/// 768 is below the *debug* abort with margin, and that is the point: the weakest configuration that
+/// ships is not the node's, it is CI's and a developer's. It is also 1.5× the largest single chain
+/// (`MAX_CHAIN_LENGTH + 1 = 513` is the deepest a legitimate flat chain reaches), so nothing that
+/// parsed before stops parsing — verified by sweeping every `.rho`/`.rhox` in the tree (36 of 37
+/// parse; the 37th is `Pos.rhox`, a `$`-substituted template that is not meant to be parsed raw).
+///
+/// **It does not protect a 2 MiB stack**, where the consumers abort at a few dozen levels — which is
+/// why the deep tests here build an explicit 8–32 MiB stack (`rho_examples.rs`, `legacy_contracts.rs`,
+/// `node/tests/common/mod.rs`). The residual is the *runtime*-built term: a program can fold its way
+/// to a deep value without the parser seeing it, and that route is bounded by phlo rather than by
+/// this. Closing it needs a depth budget in the consumers; C99 records it.
+const MAX_AST_DEPTH: usize = 768;
 
 struct Parser {
     toks: Vec<Tok>,
@@ -358,6 +391,232 @@ impl Parser {
 /// **succeed silently** (AUDIT C30). That matters because `source_to_adt_with_env` runs on
 /// `deploy.data.term`: a deploy whose term is a valid prefix of what the client wrote would have run,
 /// reporting success, having executed something the client did not write.
+/// Whether the tree is deeper than `limit`.
+///
+/// **Iterative on purpose.** The depth of this tree is exactly what the parser does not bound: a flat
+/// operator chain is built by a loop, so it costs a bounded number of parser frames and produces an
+/// AST of depth `n`. A recursive walk here would therefore overflow the very stack it exists to
+/// protect — the failure it is measuring. An explicit worklist has no such mode, and the early return
+/// keeps the cost proportional to `limit` rather than to the term.
+///
+/// The depth counted is the *source* tree's, which is what this module has; the de Bruijn `Par` the
+/// normalizer builds from it adds a small constant per construct, so this is a proxy — and a
+/// deliberate one, because it is a proxy whose measurement is exact rather than an accounting that
+/// must be right about where a chain's depth is charged.
+pub fn exceeds_ast_depth(root: &Proc, limit: usize) -> bool {
+    let mut work: Vec<(&Proc, usize)> = vec![(root, 1)];
+    while let Some((p, d)) = work.pop() {
+        if d > limit {
+            return true;
+        }
+        push_sub_procs(p, d + 1, &mut work);
+    }
+    false
+}
+
+/// Push every `Proc` immediately inside `p` onto `out`, each at the given depth.
+fn push_sub_procs<'a>(p: &'a Proc, d: usize, out: &mut Vec<(&'a Proc, usize)>) {
+    use Proc::*;
+    let push_name = |n: &'a Name, out: &mut Vec<(&'a Proc, usize)>| {
+        if let Name::NameQuote(inner) = n {
+            out.push((inner, d));
+        }
+    };
+    match p {
+        PGround(_) | PVar(_) | PVarRef(_, _) | PNil | PSimpleType(_) => {}
+        PNegation(a) | PNot(a) | PNeg(a) | PExprs(a) => out.push((a, d)),
+        PBundle(_, a) => out.push((a, d)),
+        PConjunction(a, b)
+        | PDisjunction(a, b)
+        | PMult(a, b)
+        | PDiv(a, b)
+        | PMod(a, b)
+        | PPercentPercent(a, b)
+        | PAdd(a, b)
+        | PMinus(a, b)
+        | PPlusPlus(a, b)
+        | PMinusMinus(a, b)
+        | PLt(a, b)
+        | PLte(a, b)
+        | PGt(a, b)
+        | PGte(a, b)
+        | PMatches(a, b)
+        | PEq(a, b)
+        | PNeq(a, b)
+        | PAnd(a, b)
+        | PShortAnd(a, b)
+        | POr(a, b)
+        | PShortOr(a, b)
+        | PPar(a, b) => {
+            out.push((a, d));
+            out.push((b, d));
+        }
+        PMethod(target, _, args) => {
+            out.push((target, d));
+            for a in args {
+                out.push((a, d));
+            }
+        }
+        PEval(n) => push_name(n, out),
+        PCollect(c) => match c {
+            Collection::CollectList(items, _) | Collection::CollectSet(items, _) => {
+                for i in items {
+                    out.push((i, d));
+                }
+            }
+            Collection::CollectTuple(t) => match t {
+                Tuple::TupleSingle(a) => out.push((a, d)),
+                Tuple::TupleMultiple(a, rest) => {
+                    out.push((a, d));
+                    for r in rest {
+                        out.push((r, d));
+                    }
+                }
+            },
+            Collection::CollectMap(kvs, _) => {
+                for KeyValuePair(k, v) in kvs {
+                    out.push((k, d));
+                    out.push((v, d));
+                }
+            }
+        },
+        PSend(n, _, procs) => {
+            push_name(n, out);
+            for x in procs {
+                out.push((x, d));
+            }
+        }
+        PContr(n, names, _, body) => {
+            push_name(n, out);
+            for x in names {
+                push_name(x, out);
+            }
+            out.push((body, d));
+        }
+        PInput(receipts, body) => {
+            for r in receipts {
+                push_receipt(r, d, out);
+            }
+            out.push((body, d));
+        }
+        PChoice(branches) => {
+            for Branch(recv, body) in branches {
+                push_linear(recv, d, out);
+                out.push((body, d));
+            }
+        }
+        PMatch(target, cases) => {
+            out.push((target, d));
+            for Case(pat, body) in cases {
+                out.push((pat, d));
+                out.push((body, d));
+            }
+        }
+        PLet(decl, decls, body) => {
+            push_decl(decl, d, out);
+            if let Decls::LinearDeclsImpl(ds) = decls {
+                for LinearDecl(x) in ds {
+                    push_decl(x, d, out);
+                }
+            }
+            if let Decls::ConcDeclsImpl(ds) = decls {
+                for ConcDecl(x) in ds {
+                    push_decl(x, d, out);
+                }
+            }
+            out.push((body, d));
+        }
+        PIf(c, t) => {
+            out.push((c, d));
+            out.push((t, d));
+        }
+        PIfElse(c, t, e) => {
+            out.push((c, d));
+            out.push((t, d));
+            out.push((e, d));
+        }
+        PNew(_, body) => out.push((body, d)),
+        PSendSynch(n, procs, cont) => {
+            push_name(n, out);
+            for x in procs {
+                out.push((x, d));
+            }
+            if let SynchSendCont::NonEmptyCont(b) = cont {
+                out.push((b, d));
+            }
+        }
+    }
+}
+
+fn push_decl<'a>(decl: &'a Decl, d: usize, out: &mut Vec<(&'a Proc, usize)>) {
+    let Decl(names, _, procs) = decl;
+    for n in names {
+        if let Name::NameQuote(inner) = n {
+            out.push((inner, d));
+        }
+    }
+    for p in procs {
+        out.push((p, d));
+    }
+}
+
+fn push_receipt<'a>(r: &'a Receipt, d: usize, out: &mut Vec<(&'a Proc, usize)>) {
+    let quote = |n: &'a Name, out: &mut Vec<(&'a Proc, usize)>| {
+        if let Name::NameQuote(inner) = n {
+            out.push((inner, d));
+        }
+    };
+    match r {
+        Receipt::ReceiptLinear(l) => push_linear(l, d, out),
+        Receipt::ReceiptRepeated(ReceiptRepeatedImpl::RepeatedSimple(binds)) => {
+            for RepeatedBind(names, _, src) in binds {
+                for n in names {
+                    quote(n, out);
+                }
+                quote(src, out);
+            }
+        }
+        Receipt::ReceiptPeek(ReceiptPeekImpl::PeekSimple(binds)) => {
+            for PeekBind(names, _, src) in binds {
+                for n in names {
+                    quote(n, out);
+                }
+                quote(src, out);
+            }
+        }
+    }
+}
+
+fn push_linear<'a>(l: &'a ReceiptLinearImpl, d: usize, out: &mut Vec<(&'a Proc, usize)>) {
+    let ReceiptLinearImpl::LinearSimple(binds) = l;
+    for LinearBind(names, _, src) in binds {
+        for n in names {
+            if let Name::NameQuote(inner) = n {
+                out.push((inner, d));
+            }
+        }
+        push_receipt_source(src, d, out);
+    }
+}
+
+fn push_receipt_source<'a>(src: &'a NameSource, d: usize, out: &mut Vec<(&'a Proc, usize)>) {
+    let name = |n: &'a Name, out: &mut Vec<(&'a Proc, usize)>| {
+        if let Name::NameQuote(inner) = n {
+            out.push((inner, d));
+        }
+    };
+    match src {
+        NameSource::SimpleSource(n) => name(n, out),
+        NameSource::ReceiveSendSource(n) => name(n, out),
+        NameSource::SendReceiveSource(n, procs) => {
+            name(n, out);
+            for p in procs {
+                out.push((p, d));
+            }
+        }
+    }
+}
+
 pub fn parse(source: &str) -> Result<Proc, RholangError> {
     let toks = lex(source)?;
     let mut p = Parser {
@@ -367,6 +626,11 @@ pub fn parse(source: &str) -> Result<Proc, RholangError> {
     };
     let proc = p.parse_proc()?;
     p.expect(Tok::Eof)?;
+    if exceeds_ast_depth(&proc, MAX_AST_DEPTH) {
+        return Err(RholangError::SyntaxError(
+            "term nesting too deep".to_string(),
+        ));
+    }
     Ok(proc)
 }
 
@@ -1676,6 +1940,53 @@ mod tests {
 
         let deep_not = format!("{}Nil", "not ".repeat(MAX_PARSE_DEPTH + 10));
         assert!(parse(&deep_not).is_err());
+    }
+
+    /// The **product** of the two guards is what `MAX_AST_DEPTH` exists for, and the shape below is
+    /// inside both of them: 4 levels against `MAX_PARSE_DEPTH`'s 128, and 200 operators against
+    /// `MAX_CHAIN_LENGTH`'s 512 — while the AST is ~800 deep. Before the AST budget this parsed and the
+    /// normalizer then recursed 800 levels; the measured cost is in `MAX_AST_DEPTH`'s comment, and the
+    /// abort it prevents is AUDIT C99.
+    #[test]
+    fn rejects_a_deep_ast_that_stays_inside_both_component_guards() {
+        let inner = nested_chain(4, 200);
+        assert!(
+            parse(&inner).is_err(),
+            "4 levels x 200 links is inside both guards and ~800 deep: the AST budget must refuse it"
+        );
+    }
+
+    /// The control for the test above: the same *shape*, just under the budget, still parses. Without
+    /// it the refusal could be a generator that emits nonsense rather than a bound doing its job.
+    #[test]
+    fn accepts_a_deep_ast_under_the_budget() {
+        let inner = nested_chain(3, 100);
+        assert!(
+            parse(&inner).is_ok(),
+            "3 levels x 100 links is ~303 deep, well under the budget"
+        );
+    }
+
+    /// A maximal single chain is still legal: the AST budget must not quietly lower
+    /// `MAX_CHAIN_LENGTH`. `MAX_CHAIN_LENGTH + 1 = 513` is the deepest a legitimate flat chain reaches,
+    /// which is why the budget is above it.
+    #[test]
+    fn a_maximal_chain_still_parses() {
+        let src = format!("1{}", " + 1".repeat(MAX_CHAIN_LENGTH));
+        assert!(parse(&src).is_ok());
+        let over = format!("1{}", " + 1".repeat(MAX_CHAIN_LENGTH + 1));
+        assert!(parse(&over).is_err(), "the chain guard still fires first");
+    }
+
+    /// `depth` nested parens, each holding a flat chain of `chain` additions — the shape that composes
+    /// the two guards into an AST of depth `depth * (chain + 1)`.
+    fn nested_chain(depth: usize, chain: usize) -> String {
+        let mut inner = String::from("1");
+        let link = " + 1".repeat(chain);
+        for _ in 0..depth {
+            inner = format!("({inner}{link})");
+        }
+        inner
     }
 
     /// `(x)` is a **group** (`PExprs ::= "(" Proc4 ")"`), not a tuple: the tuple productions
