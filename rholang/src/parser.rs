@@ -300,7 +300,7 @@ const MAX_CHAIN_LENGTH: usize = 512;
 /// `node/tests/common/mod.rs`). The residual is the *runtime*-built term: a program can fold its way
 /// to a deep value without the parser seeing it, and that route is bounded by phlo rather than by
 /// this. Closing it needs a depth budget in the consumers; C99 records it.
-const MAX_AST_DEPTH: usize = 768;
+pub const MAX_AST_DEPTH: usize = 768;
 
 struct Parser {
     toks: Vec<Tok>,

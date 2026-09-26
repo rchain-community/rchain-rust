@@ -206,7 +206,47 @@ impl ChargingRSpace {
             .charge(Cost::new(-refund, "produces storage refund"))?;
         Ok(())
     }
+
+    /// **The C100 depth check, in one place so that *every* produce path carries it** (AUDIT C100).
+    ///
+    /// A runtime-built value can be deeper than any parsed term — a contract folding its accumulator
+    /// reaches depth `n` in `O(n)` steps — and every consumer of a stored value then recurses once per
+    /// level. This refuses such a value at the boundary, before the storage charge, so a refused value
+    /// is not one the space accepted and then billed for.
+    ///
+    /// It is a method rather than a loop inside `produce` because that was this unit's first draft and
+    /// its first mistake: the *scheduled* produce (`produce_at`) reaches RSpace without passing through
+    /// `produce`, so the guard covered one of the two produce entries. One implementation, two callers.
+    /// The routes this still does **not** cover (a produce's channel, a consume's channels/patterns, a
+    /// continuation body, state restored at boot) are the residues named in AUDIT C100's row.
+    fn check_value_depth(&self, data: &ListParWithRandom) -> Result<(), RholangError> {
+        for p in &data.pars {
+            if rchain_models::types::exceeds_value_depth(p.as_par(), MAX_VALUE_DEPTH) {
+                return Err(RholangError::ReduceError(
+                    "a produced value is nested too deeply".to_string(),
+                ));
+            }
+        }
+        Ok(())
+    }
 }
+
+/// The deepest **runtime-built value** RSpace will accept, and why it is not the parser's number.
+///
+/// `parser::MAX_AST_DEPTH` (768) bounds a *parsed term*, measured against the parser-route walks: a
+/// debug build survives AST depth 732 and aborts at 994. The **value** route has different, larger
+/// frames, and its own measurement says so — a fold to depth 101 evaluates (7.3 s of CPU in debug) and
+/// a fold to 401 **aborts the process** (`thread 'tokio-rt-worker' has overflowed its stack`, SIGABRT)
+/// inside `eval_single_expr`'s recursion over the value. So the value bound is below that abort with
+/// margin, 256 rather than 768, and the two numbers are kept apart because they were *measured*
+/// against different walks: sharing one would have been a bound that does not fire before the crash it
+/// exists to prevent (and did not, in this unit's first draft — the guard sat at 768 while the fold
+/// only reached 401, so it never fired and the test aborted the process).
+///
+/// 256 is generous for real programs: depth counts *nesting*, not length, so a flat list of any size is
+/// depth 2, and it is the accumulator-nesting shape — which is what an attacker builds and no contract
+/// needs — that this refuses.
+const MAX_VALUE_DEPTH: usize = 256;
 
 #[async_trait]
 impl Tuplespace for ChargingRSpace {
@@ -216,6 +256,16 @@ impl Tuplespace for ChargingRSpace {
         data: ListParWithRandom,
         persist: bool,
     ) -> Result<Application, RholangError> {
+        // **The value route into RSpace is depth-checked here (AUDIT C100)** — see
+        // `check_value_depth`, which both produce paths call. What it bounds is the values the *space*
+        // holds, and so every later reader of them (`sort_par` on the way in, the matcher and the
+        // printer on the way out); what it does *not* bound is the evaluator's own recursion while
+        // building the value, because this runs after that walk. The honest statement of the mechanism
+        // is therefore "the deepest value ever built is capped at the bound + 1": iteration `i` of a
+        // folding contract evaluates depth `i` and then produces depth `i + 1`, so the produce at
+        // `i = MAX_VALUE_DEPTH` is what stops it. It is `O(size)` once per store, not `O(depth)` per
+        // evaluation, so the reducer's hot path is untouched.
+        self.check_value_depth(&data)?;
         self.cost
             .charge(Costs::storage_cost_produce(channel, &data))?;
         // The triggering op's id, captured before the datum moves into the space (the Scala's
@@ -287,6 +337,10 @@ impl Tuplespace for ChargingRSpace {
         data: ListParWithRandom,
         persist: bool,
     ) -> Result<ScheduledProduce, RholangError> {
+        // The same depth check as the plain path, and the reason it is a shared method: this entry
+        // reaches RSpace without passing through `produce`, so a guard written there alone left this
+        // one open (AUDIT C100).
+        self.check_value_depth(&data)?;
         self.cost
             .charge(Costs::storage_cost_produce(channel, &data))?;
         let scheduled = self
@@ -826,5 +880,128 @@ mod tests {
         assert!(matches!(app.0, TaggedContinuation::Empty));
         assert!(app.2);
         assert_eq!(app.1.len(), 1);
+    }
+
+    /// A `Par` whose value-depth is exactly `n`: `New` nests one level per step, and the empty `Par` is
+    /// depth 1. Built in memory rather than parsed, so the boundary is testable with no parser, no
+    /// runtime and no big stack.
+    fn nested_par(n: usize) -> Par {
+        let mut p = Par::default();
+        for _ in 1..n {
+            p = Par {
+                news: vec![rchain_models::ast::New {
+                    p: Box::new(p),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            };
+        }
+        p
+    }
+
+    /// **The value bound's boundary, at *both* produce entries** (AUDIT C100). A datum *at* the bound is
+    /// stored and charged for; one past it is refused with a message that names the reason, stored
+    /// nowhere and charged nothing — the check runs before the storage charge, so a refused value never
+    /// entered and costs nothing. Both directions matter: a guard that refused everything, or nothing,
+    /// would pass a one-sided test.
+    ///
+    /// `produce_at` earns its place here because it is **not** a route through `produce` — it reaches
+    /// RSpace directly, and a guard written only inside `produce` left it open (which is the shape this
+    /// unit's first draft shipped; the fake space's `produce_at` defaults to `produce`, so a test that
+    /// only exercised `produce` could not have noticed).
+    #[tokio::test]
+    async fn a_value_at_the_bound_is_stored_and_one_past_it_is_refused_on_both_produce_paths() {
+        for n in [1usize, 2, MAX_VALUE_DEPTH] {
+            let (charging, cost, mock) = charging_space(1_000_000);
+            charging
+                .produce(&sample_channel(), lpw(vec![nested_par(n)]), false)
+                .await
+                .unwrap_or_else(|e| panic!("depth {n} is at the bound and must be stored: {e:?}"));
+            assert_eq!(
+                mock.produced.lock().unwrap().len(),
+                1,
+                "depth {n} was not stored"
+            );
+            assert!(cost.total_charged() > 0, "depth {n} must still be charged for");
+
+            let (charging, cost, mock) = charging_space(1_000_000);
+            charging
+                .produce_at(
+                    Vec::new(),
+                    &sample_channel(),
+                    lpw(vec![nested_par(n)]),
+                    false,
+                )
+                .await
+                .unwrap_or_else(|e| {
+                    panic!("scheduled: depth {n} is at the bound and must be stored: {e:?}")
+                });
+            assert_eq!(
+                mock.produced.lock().unwrap().len(),
+                1,
+                "scheduled: depth {n} was not stored"
+            );
+            assert!(
+                cost.total_charged() > 0,
+                "scheduled: depth {n} must still be charged for"
+            );
+        }
+
+        let over = MAX_VALUE_DEPTH + 1;
+
+        let (charging, cost, mock) = charging_space(1_000_000);
+        let err = charging
+            .produce(&sample_channel(), lpw(vec![nested_par(over)]), false)
+            .await
+            .expect_err("depth MAX_VALUE_DEPTH + 1 is past the bound and must be refused");
+        assert!(
+            err.to_string().contains("nested too deeply"),
+            "the refusal has to say what it refused: {err}"
+        );
+        assert!(
+            mock.produced.lock().unwrap().is_empty(),
+            "a refused value must not be stored"
+        );
+        assert_eq!(
+            cost.total_charged(),
+            0,
+            "a refused value must not be charged for: the check runs before the charge"
+        );
+
+        let (charging, cost, mock) = charging_space(1_000_000);
+        let err = charging
+            .produce_at(
+                Vec::new(),
+                &sample_channel(),
+                lpw(vec![nested_par(over)]),
+                false,
+            )
+            .await
+            .expect_err("scheduled: depth MAX_VALUE_DEPTH + 1 is past the bound");
+        assert!(
+            err.to_string().contains("nested too deeply"),
+            "scheduled: the refusal has to say what it refused: {err}"
+        );
+        assert!(
+            mock.produced.lock().unwrap().is_empty(),
+            "scheduled: a refused value must not be stored"
+        );
+        assert_eq!(
+            cost.total_charged(),
+            0,
+            "scheduled: a refused value must not be charged for"
+        );
+    }
+
+    /// The ordering the two bounds rest on, and the reason `parser::MAX_AST_DEPTH` is public: the value
+    /// bound sits *below* the parser's. It is a claim rather than a measurement, so it is checked —
+    /// prose that no test can fail is the thing this repo keeps deleting.
+    #[test]
+    fn the_value_bound_is_below_the_parser_bound() {
+        assert!(
+            MAX_VALUE_DEPTH < crate::parser::MAX_AST_DEPTH,
+            "the value bound ({MAX_VALUE_DEPTH}) must sit below the parser's ({})",
+            crate::parser::MAX_AST_DEPTH
+        );
     }
 }

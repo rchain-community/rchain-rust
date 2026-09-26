@@ -629,6 +629,206 @@ impl From<FreeCount> for i32 {
     }
 }
 
+// -------------------------------------------------------------------------------------------------
+// The value-depth check (AUDIT C100, law 50's bound applied to values)
+// -------------------------------------------------------------------------------------------------
+
+/// A node in the value-depth walk: `Name` and `Proc` are the same struct with different phantom tags
+/// (`pub type Name = Par<NameSort>`), so the walk needs both arms — and because `Par<S>`'s *fields*
+/// are not generic in `S`, one field-pusher serves them both.
+enum ValueNode<'a> {
+    Name(&'a Par<crate::ast::NameSort>),
+    Proc(&'a Par<crate::ast::ProcSort>),
+}
+
+/// Whether a value's **depth** exceeds `limit`.
+///
+/// **Why a value needs its own check (AUDIT C100).** `rholang/src/parser.rs::MAX_AST_DEPTH` bounds a
+/// *parsed term*, and a rholang program can build a value the parser never saw: a contract that folds
+/// its accumulator into a deeper tuple each iteration reaches depth `n` in `O(n)` reduce steps, and
+/// every consumer of the stored value then recurses once per level. Measured on the node's 32 MiB
+/// worker stack in a debug build: a fold to depth 101 costs 7.3 s of CPU, and a fold to depth 401
+/// **aborts the process** (`thread 'tokio-rt-worker' has overflowed its stack`, SIGABRT) inside
+/// `eval_single_expr`'s recursion over the value — and no deep term is ever parsed, so the parser's
+/// bound cannot see this route at all.
+///
+/// **What it covers, and what it does not.** The guard that calls this sits at the one boundary a
+/// produced datum crosses (`rholang/src/storage.rs`, `ChargingRSpace::produce`), so it bounds the
+/// values the *space* holds, and therefore every later reader of them. It does **not** cover a
+/// produce's channel, a consume's channels/patterns, a continuation body, or state restored at boot;
+/// and it does not bound the recursion the *evaluator* performs while building a value, because the
+/// guard runs after that walk — what it caps is the deepest value ever built, at `limit + 1`. Those
+/// residues are recorded in AUDIT C100 rather than implied away here.
+///
+/// **Iterative on purpose**, for the same reason as its parser-side sibling: the depth is exactly what
+/// a recursive walk cannot survive, so a walk that dies on its own subject is not a check. The early
+/// exit keeps the cost proportional to `limit` rather than to the value.
+///
+/// **The bound is the caller's, and the caller's number is not the parser's.** `rholang` passes
+/// `rholang/src/storage.rs::MAX_VALUE_DEPTH` (256), deliberately below `MAX_AST_DEPTH` (768): the two
+/// constants bound different walks with different frame sizes, and each was measured against its own —
+/// the numbers and both measurements are in `MAX_VALUE_DEPTH`'s comment. The consequence is stated
+/// rather than hidden: a parsed term deeper than `MAX_VALUE_DEPTH` cannot be *sent*.
+///
+/// The root counts as depth 1 and its children start at 2. That accounting is shared with
+/// `rholang/src/parser.rs::exceeds_ast_depth`; the *totals* are not comparable, because that walk
+/// counts each source operator node as a level and this one gives an `Expr` node no level of its own.
+pub fn exceeds_value_depth<S: Sort>(root: &Par<S>, limit: usize) -> bool {
+    let mut work: Vec<(ValueNode<'_>, usize)> = Vec::new();
+    push_value_fields(root, 2, &mut work);
+    while let Some((node, d)) = work.pop() {
+        if d > limit {
+            return true;
+        }
+        // `saturating_add`, not `+`: the depth cannot wrap (it is bounded by the walk's own early
+        // exit long before `usize`), and the guarded spelling is what keeps a new arithmetic site
+        // out of the gate's counted `overflow` class — a ratchet is for sites someone reviewed, and
+        // this one needs no review (AUDIT C100).
+        match node {
+            ValueNode::Name(p) => push_value_fields(p, d.saturating_add(1), &mut work),
+            ValueNode::Proc(p) => push_value_fields(p, d.saturating_add(1), &mut work),
+        }
+    }
+    false
+}
+
+fn push_value_fields<'a, S: Sort>(
+    p: &'a Par<S>,
+    d: usize,
+    out: &mut Vec<(ValueNode<'a>, usize)>,
+) {
+    for s in &p.sends {
+        out.push((ValueNode::Name(&s.chan), d));
+        for n in &s.data {
+            out.push((ValueNode::Name(n), d));
+        }
+    }
+    for r in &p.receives {
+        for b in &r.binds {
+            for pat in &b.patterns {
+                out.push((ValueNode::Name(pat), d));
+            }
+            out.push((ValueNode::Name(&b.source), d));
+        }
+        out.push((ValueNode::Proc(&r.body), d));
+    }
+    for n in &p.news {
+        out.push((ValueNode::Proc(&n.p), d));
+        // `injections` is walked here although `well_scoped_par`/`count_free_vars` skip it: those are
+        // judgments about *bindings*, and this is about the value's size — an injection is a value a
+        // consumer would recurse over.
+        for inj in n.injections.values() {
+            out.push((ValueNode::Proc(inj), d));
+        }
+    }
+    for e in &p.exprs {
+        push_value_expr(e, d, out);
+    }
+    for m in &p.matches {
+        out.push((ValueNode::Name(&m.target), d));
+        for c in &m.cases {
+            out.push((ValueNode::Name(&c.pattern), d));
+            out.push((ValueNode::Proc(&c.source), d));
+        }
+    }
+    for b in &p.bundles {
+        out.push((ValueNode::Proc(&b.body), d));
+    }
+    for c in &p.connectives {
+        push_value_connective(c, d, out);
+    }
+    // `GUnforgeable` is a leaf: its payloads are ids and byte strings, never a `Par`.
+}
+
+fn push_value_expr<'a>(e: &'a Expr, d: usize, out: &mut Vec<(ValueNode<'a>, usize)>) {
+    match e {
+        // Leaves, listed one by one rather than caught by a `_`: a new `Expr` variant must fail to
+        // compile here, or the walk grows a silent hole precisely the way this arm's first draft did
+        // (it omitted `GByteArray`, and the compiler — not a reviewer — is what found it).
+        Expr::GBool(_)
+        | Expr::GInt(_)
+        | Expr::GBigInt(_)
+        | Expr::GString(_)
+        | Expr::GUri(_)
+        | Expr::GByteArray(_)
+        | Expr::EVar(_) => {}
+        Expr::ENot(p) | Expr::ENeg(p) => out.push((ValueNode::Proc(p), d)),
+        Expr::EMult(a, b)
+        | Expr::EDiv(a, b)
+        | Expr::EMod(a, b)
+        | Expr::EPlus(a, b)
+        | Expr::EMinus(a, b)
+        | Expr::ELt(a, b)
+        | Expr::ELte(a, b)
+        | Expr::EGt(a, b)
+        | Expr::EGte(a, b)
+        | Expr::EEq(a, b)
+        | Expr::ENeq(a, b)
+        | Expr::EAnd(a, b)
+        | Expr::EOr(a, b)
+        | Expr::EShortAnd(a, b)
+        | Expr::EShortOr(a, b)
+        | Expr::EMatches(a, b)
+        | Expr::EPercentPercent(a, b)
+        | Expr::EPlusPlus(a, b)
+        | Expr::EMinusMinus(a, b) => {
+            out.push((ValueNode::Proc(a), d));
+            out.push((ValueNode::Proc(b), d));
+        }
+        Expr::EList(l) => {
+            for p in &l.ps {
+                out.push((ValueNode::Proc(p), d));
+            }
+        }
+        Expr::ETuple(t) => {
+            for p in &t.ps {
+                out.push((ValueNode::Proc(p), d));
+            }
+        }
+        Expr::ESet(s) => {
+            for p in &s.ps {
+                out.push((ValueNode::Proc(p), d));
+            }
+        }
+        Expr::EMap(m) => {
+            for (k, v) in &m.kvs {
+                out.push((ValueNode::Proc(k), d));
+                out.push((ValueNode::Proc(v), d));
+            }
+        }
+        Expr::EMethod(em) => {
+            out.push((ValueNode::Proc(&em.target), d));
+            for a in &em.arguments {
+                out.push((ValueNode::Proc(a), d));
+            }
+        }
+    }
+}
+
+fn push_value_connective<'a>(c: &'a Connective, d: usize, out: &mut Vec<(ValueNode<'a>, usize)>) {
+    match c {
+        Connective::ConnAnd(body) | Connective::ConnOr(body) => {
+            for p in &body.ps {
+                out.push((ValueNode::Proc(p), d));
+            }
+        }
+        Connective::ConnNot(p) => out.push((ValueNode::Proc(p), d)),
+        // Leaves, listed one by one rather than caught by a `_` — the same discipline as
+        // `push_value_expr`'s leaf arm and for the same reason: a future `Connective` that carries a
+        // `Par` must fail to compile here rather than be skipped in silence. (The `_` this replaces
+        // was safe only because today's remaining variants are `VarRef` and the typed connectives,
+        // each a leaf — a fact about the current enum, not a property the walk enforced.)
+        Connective::VarRef(_)
+        | Connective::ConnBool(_)
+        | Connective::ConnInt(_)
+        | Connective::ConnBigInt(_)
+        | Connective::ConnString(_)
+        | Connective::ConnUri(_)
+        | Connective::ConnByteArray(_)
+        | Connective::Empty => {}
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -910,5 +1110,311 @@ mod tests {
             ..Default::default()
         };
         assert!(!is_closed(&send));
+    }
+
+    /// A process `Par` whose value-depth is exactly `n`: `New` nests one level per step, and the empty
+    /// `Par` is depth 1.
+    fn nested_proc(n: usize) -> Par {
+        let mut p = Par::default();
+        for _ in 1..n {
+            p = Par {
+                news: vec![New {
+                    p: Box::new(p),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            };
+        }
+        p
+    }
+
+    /// A **name** `Par` of depth `n`. It cannot use `New` (`New.p` is a process `Par`), so it nests
+    /// through `Send.chan`, which is a `Name` — the same recursion at the name sort, and the reason
+    /// the walk needs both of `ValueNode`'s arms.
+    fn nested_name(n: usize) -> crate::ast::Name {
+        let mut p = crate::ast::Name::default();
+        for _ in 1..n {
+            p = Par {
+                sends: vec![Send {
+                    chan: Box::new(p),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            };
+        }
+        p
+    }
+
+    /// The boundary pair, in both directions: a value *at* the limit is admitted, one past it is
+    /// refused. Without both halves a walk that always returned `true` (or always `false`) would pass.
+    #[test]
+    fn the_value_walk_admits_the_limit_and_refuses_past_it() {
+        for n in [2usize, 5, 32, 256] {
+            assert!(
+                !exceeds_value_depth(&nested_proc(n), n),
+                "depth {n} is *at* the limit, not past it"
+            );
+            assert!(
+                exceeds_value_depth(&nested_proc(n + 1), n),
+                "depth {} is one past the limit of {n}",
+                n + 1
+            );
+            // The name sort reaches the same depths and must be bounded identically: a walk that
+            // followed only the process arm would accept a deep *name* at any limit.
+            assert!(
+                !exceeds_value_depth(&nested_name(n), n),
+                "name depth {n} is at the limit"
+            );
+            assert!(
+                exceeds_value_depth(&nested_name(n + 1), n),
+                "name depth {} is past the limit of {n}",
+                n + 1
+            );
+        }
+        // Degenerate root: no fields, so every limit admits it.
+        assert!(!exceeds_value_depth(&Par::<crate::ast::ProcSort>::default(), 1));
+    }
+
+    /// **Every construct that carries a `Par` is walked.** Each case parks a depth-10 child in one
+    /// position and asks for a limit of 5, so a *dropped arm* is the only way a case can pass —
+    /// verified by mutation (comment out `for b in &p.bundles`, or any other arm, and exactly its case
+    /// fails). The leaves have no case because they carry no `Par`: what protects them is not this test
+    /// but the exhaustive `match` in `push_value_expr`/`push_value_connective`, where a new variant
+    /// that carries one fails to compile.
+    #[test]
+    fn every_construct_that_carries_a_par_is_walked() {
+        let cases: Vec<(&str, Par)> = vec![
+            (
+                "sends[].chan",
+                Par {
+                    sends: vec![Send {
+                        chan: Box::new(nested_name(10)),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                },
+            ),
+            (
+                "sends[].data",
+                Par {
+                    sends: vec![Send {
+                        data: vec![nested_name(10)],
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                },
+            ),
+            (
+                "receives[].binds[].patterns",
+                Par {
+                    receives: vec![Receive {
+                        binds: vec![ReceiveBind {
+                            patterns: vec![nested_name(10)],
+                            ..Default::default()
+                        }],
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                },
+            ),
+            (
+                "receives[].binds[].source",
+                Par {
+                    receives: vec![Receive {
+                        binds: vec![ReceiveBind {
+                            source: Box::new(nested_name(10)),
+                            ..Default::default()
+                        }],
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                },
+            ),
+            (
+                "receives[].body",
+                Par {
+                    receives: vec![Receive {
+                        body: Box::new(nested_proc(10)),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                },
+            ),
+            (
+                "news[].p",
+                Par {
+                    news: vec![New {
+                        p: Box::new(nested_proc(10)),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                },
+            ),
+            (
+                "news[].injections",
+                Par {
+                    news: vec![New {
+                        injections: [("x".to_string(), nested_proc(10))].into_iter().collect(),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                },
+            ),
+            (
+                "exprs[].ENot",
+                Par {
+                    exprs: vec![Expr::ENot(Box::new(nested_proc(10)))],
+                    ..Default::default()
+                },
+            ),
+            (
+                "exprs[].EPlus",
+                Par {
+                    exprs: vec![Expr::EPlus(
+                        Box::new(nested_proc(10)),
+                        Box::new(Par::default()),
+                    )],
+                    ..Default::default()
+                },
+            ),
+            (
+                "exprs[].EList",
+                Par {
+                    exprs: vec![Expr::EList(crate::ast::EList {
+                        ps: vec![nested_proc(10)],
+                        ..Default::default()
+                    })],
+                    ..Default::default()
+                },
+            ),
+            (
+                "exprs[].ETuple",
+                Par {
+                    exprs: vec![Expr::ETuple(crate::ast::ETuple {
+                        ps: vec![nested_proc(10)],
+                        ..Default::default()
+                    })],
+                    ..Default::default()
+                },
+            ),
+            (
+                "exprs[].ESet",
+                Par {
+                    exprs: vec![Expr::ESet(crate::ast::ParSet {
+                        ps: vec![nested_proc(10)],
+                        ..Default::default()
+                    })],
+                    ..Default::default()
+                },
+            ),
+            (
+                "exprs[].EMap",
+                Par {
+                    exprs: vec![Expr::EMap(crate::ast::ParMap {
+                        kvs: vec![(nested_proc(10), Par::default())],
+                        ..Default::default()
+                    })],
+                    ..Default::default()
+                },
+            ),
+            (
+                "exprs[].EMethod.target",
+                Par {
+                    exprs: vec![Expr::EMethod(crate::ast::EMethod {
+                        target: Box::new(nested_proc(10)),
+                        ..Default::default()
+                    })],
+                    ..Default::default()
+                },
+            ),
+            (
+                "exprs[].EMethod.arguments",
+                Par {
+                    exprs: vec![Expr::EMethod(crate::ast::EMethod {
+                        arguments: vec![nested_proc(10)],
+                        ..Default::default()
+                    })],
+                    ..Default::default()
+                },
+            ),
+            (
+                "matches[].target",
+                Par {
+                    matches: vec![Match {
+                        target: Box::new(nested_name(10)),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                },
+            ),
+            (
+                "matches[].cases[].pattern",
+                Par {
+                    matches: vec![Match {
+                        cases: vec![MatchCase {
+                            pattern: Box::new(nested_name(10)),
+                            ..Default::default()
+                        }],
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                },
+            ),
+            (
+                "matches[].cases[].source",
+                Par {
+                    matches: vec![Match {
+                        cases: vec![MatchCase {
+                            source: Box::new(nested_proc(10)),
+                            ..Default::default()
+                        }],
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                },
+            ),
+            (
+                "bundles[].body",
+                Par {
+                    bundles: vec![Bundle {
+                        body: Box::new(nested_proc(10)),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                },
+            ),
+            (
+                "connectives[].ConnAnd",
+                Par {
+                    connectives: vec![Connective::ConnAnd(crate::ast::ConnectiveBody {
+                        ps: vec![nested_proc(10)],
+                    })],
+                    ..Default::default()
+                },
+            ),
+            (
+                "connectives[].ConnOr",
+                Par {
+                    connectives: vec![Connective::ConnOr(crate::ast::ConnectiveBody {
+                        ps: vec![nested_proc(10)],
+                    })],
+                    ..Default::default()
+                },
+            ),
+            (
+                "connectives[].ConnNot",
+                Par {
+                    connectives: vec![Connective::ConnNot(Box::new(nested_proc(10)))],
+                    ..Default::default()
+                },
+            ),
+        ];
+        for (label, p) in &cases {
+            assert!(
+                exceeds_value_depth(p, 5),
+                "`{label}` carries a depth-10 child and the limit is 5, so the walk must reach it — \
+                 an arm of `push_value_fields`/`push_value_expr`/`push_value_connective` is missing"
+            );
+        }
     }
 }
