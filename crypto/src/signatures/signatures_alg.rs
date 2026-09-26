@@ -107,9 +107,18 @@ fn normalize_rs_low_s(rs: &[u8]) -> Vec<u8> {
 ///
 /// For `"secp256k1"` (DER) and `"secp256k1:eth"` (raw 64-byte RS) the `s` half is replaced with
 /// `n - s` whenever `s > n/2`, removing the high-S malleability. Any other algorithm — or a
-/// signature that fails to decode — is returned unchanged. This only canonicalizes the
-/// representation; it does not change verification semantics (both the high-S and low-S forms
-/// verify against the same public key).
+/// signature that fails to decode — is returned unchanged.
+///
+/// **This is not a representation-only canonicalization, and the sentence that said it was is
+/// corrected here** (AUDIT C108, 2026-09-26): it used to read "it does not change verification
+/// semantics (both the high-S and low-S forms verify against the same public key)", which is false.
+/// Measured: the signer's own DER verifies and its `n - s` twin does **not** — the verifier requires
+/// low-S, which is libsecp256k1's rule that the k256 port keeps, and the same holds on the
+/// `secp256k1:eth` path. So what this function is, is the map from the spelling verification *refuses*
+/// to the one it *accepts*; that is precisely why it is the right key for deploy dedup (one signature,
+/// one key, and the key's spelling is the one verification would accept), and why a future change to
+/// either side is a consensus-visible change rather than a cleanup. Pinned by
+/// `secp256k1::tests::the_verifier_refuses_the_high_s_spelling_and_the_normalizer_maps_it_back`.
 pub fn normalize_signature_low_s(algorithm: &str, signature: &[u8]) -> Vec<u8> {
     match algorithm.to_ascii_lowercase().as_str() {
         "secp256k1" => {
@@ -143,6 +152,46 @@ mod tests {
 
     fn rs_of(der: &[u8]) -> Vec<u8> {
         decode_signature_der_to_rs(der).expect("a well-formed DER signature")
+    }
+
+    /// **Every enabled algorithm refuses malformed input by returning `false` — never a panic, never an
+    /// accept** (AUDIT C108).
+    ///
+    /// The partiality gate cannot make this claim for us, and that is the point of the test: its hard
+    /// classes are `panic!`, `unsafe`, silent conversions and `escape`, while a bare `.unwrap()` on a
+    /// `Result` is none of them — so "the verify paths are total" is a statement about the code that
+    /// only a test pins. The callers that matter are the ones a peer or a deploy reaches:
+    /// `Signed::from_signed_data` (fail-closed: `None` on a refusal) and the withdrawal and slash
+    /// checks, which read this same trait.
+    #[test]
+    fn every_algorithms_verify_refuses_malformed_input() {
+        let data = b"a 32-byte hash, as the callers pass it".as_slice();
+        let enabled: Vec<&'static dyn SignaturesAlg> = ["secp256k1", "secp256k1:eth"]
+            .iter()
+            .filter_map(|a| from_algorithm(a))
+            .collect();
+        assert_eq!(
+            enabled.len(),
+            2,
+            "both enabled algorithms must resolve, or this test is vacuous"
+        );
+
+        for alg in enabled {
+            for (label, sig, pk) in [
+                ("empty", Vec::new(), Vec::new()),
+                ("one byte", vec![1], vec![1]),
+                ("63 zero bytes", vec![0u8; 63], vec![0u8; 63]),
+                ("65 zero bytes", vec![0u8; 65], vec![0u8; 65]),
+                ("a run of ones", vec![0xFFu8; 64], vec![0xFFu8; 64]),
+                ("oversized", vec![7u8; 4096], vec![7u8; 4096]),
+            ] {
+                assert!(
+                    !alg.verify(data, &sig, &pk),
+                    "{}: the {label} input verified, so a malformed signature is being accepted",
+                    alg.name()
+                );
+            }
+        }
     }
 
     /// The registry: names resolve case-insensitively to the algorithm that reports that name back,

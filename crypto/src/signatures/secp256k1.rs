@@ -203,6 +203,78 @@ mod tests {
         fs::remove_dir_all(&dir).unwrap();
     }
 
+    /// **The verifier refuses the high-S spelling, and the normalizer is what maps it onto the one it
+    /// accepts** (AUDIT C108). Measured, not read — and this test was written to check the opposite
+    /// claim, which `normalize_signature_low_s`'s doc used to make ("both the high-S and low-S forms
+    /// verify against the same public key"). **That sentence was false**: the signer's own DER
+    /// verifies, its `s' = n − s` twin does not, and the doc now carries that instead.
+    ///
+    /// The behaviour is the oracle's — libsecp256k1 requires low-S, and k256's `verify_prehash` keeps
+    /// the rule — so nothing about verification changed here. What the measurement settles is what the
+    /// normalizer *is*: not a representation-only canonicalization, but the map from the refused
+    /// spelling to the accepted one, which is exactly why it is the right key for deploy dedup (one
+    /// signature, one key, and the key's spelling is the one verification would accept).
+    ///
+    /// Both forms and both algorithms are pinned, so a change to the verifier's S rule, to the
+    /// normalizer's direction, or to the eth path's DER round trip is a failure here rather than a
+    /// discovery on a withdrawal.
+    #[test]
+    fn the_verifier_refuses_the_high_s_spelling_and_the_normalizer_maps_it_back() {
+        use crate::util::certificate_helper;
+        let (PrivateKey(ref sec), ref pk) = Secp256k1.new_key_pair();
+        let data = sha256::hash(b"high-s twin");
+        let low_der = Secp256k1::sign_bytes(&data, sec).expect("sign with a valid secret key");
+
+        // The high-S twin: the same `r`, and `s' = n − s` (a `Scalar`'s negation is exactly that).
+        let sig = Signature::from_der(&low_der).expect("the signer emits DER");
+        let high = Signature::from_scalars(*sig.r(), -*sig.s()).expect("a valid high-S scalar");
+        let high_der = high.to_der().as_bytes().to_vec();
+        assert_ne!(
+            high_der, low_der,
+            "the twin must differ, or this test proves nothing"
+        );
+
+        assert!(
+            Secp256k1::verify_bytes(&data, &low_der, pk.bytes()),
+            "the signer's own signature must verify: the control"
+        );
+        assert!(
+            !Secp256k1::verify_bytes(&data, &high_der, pk.bytes()),
+            "the high-S spelling verified: the verifier's low-S rule is what the doc's old claim \
+             denied, and what makes the normalizer load-bearing rather than cosmetic"
+        );
+
+        // The normalizer maps the twin onto exactly the signer's bytes — the direction dedup needs.
+        assert_eq!(
+            normalize_signature_low_s("secp256k1", &high_der),
+            low_der,
+            "normalizing the high-S twin must give exactly the signer's own bytes"
+        );
+
+        // The same two facts on the `secp256k1:eth` path, which is raw 64-byte `r ‖ s` and reaches the
+        // verifier through a DER round trip — the shape a deploy's dedup key normalizes.
+        let low_rs = certificate_helper::decode_signature_der_to_rs(&low_der).expect("der → rs");
+        let mut high_rs = low_rs[..32].to_vec();
+        high_rs.extend_from_slice(&(-*sig.s()).to_bytes());
+        assert_ne!(high_rs, low_rs);
+
+        let eth = crate::signatures::signatures_alg::from_algorithm("secp256k1:eth")
+            .expect("the eth algorithm is registered");
+        assert!(
+            eth.verify(&data, &low_rs, pk.bytes()),
+            "the eth spelling verifies"
+        );
+        assert!(
+            !eth.verify(&data, &high_rs, pk.bytes()),
+            "the eth spelling's high-S twin verified"
+        );
+        assert_eq!(
+            normalize_signature_low_s("secp256k1:eth", &high_rs),
+            low_rs,
+            "the eth normalizer maps the twin onto the accepted spelling"
+        );
+    }
+
     #[test]
     fn normalize_signature_low_s_is_idempotent() {
         // A k256-produced DER signature is already low-S; re-normalizing is a no-op.
