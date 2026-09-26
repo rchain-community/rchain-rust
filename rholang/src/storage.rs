@@ -246,16 +246,23 @@ impl ChargingRSpace {
 /// 256 is generous for real programs: depth counts *nesting*, not length, so a flat list of any size is
 /// depth 2, and it is the accumulator-nesting shape — which is what an attacker builds and no contract
 /// needs — that this refuses.
-const MAX_VALUE_DEPTH: usize = 256;
-
-/// The ordering the pair rests on, enforced **at compile time** rather than by a test.
 ///
-/// The value bound must sit *below* the parser's: a value the parser admitted but the space then
-/// refused would make the parser's budget meaningless, and the reverse ordering is the one mistake
-/// that would be silent. Expressed as a `const` item because that is what it is — a fact about two
-/// constants, which no runtime test could ever fail (the first draft had one, and it was exactly the
-/// "claim nothing can check" shape this tree keeps deleting; the linter was right to refuse it).
-const _: () = assert!(MAX_VALUE_DEPTH < crate::parser::MAX_AST_DEPTH);
+/// **The relation to the parser's bound is structural, not asserted.** It must never sit *above*
+/// `MAX_AST_DEPTH` — a value the parser admitted and the space then refused would make the parser's
+/// budget meaningless — so it is written as the smaller of the measured number and the parser's. A
+/// parser bound lowered below 256 lowers this with it; the ordering cannot drift. The spellings tried
+/// first, and why this one: a bare `256` with a `#[test]` asserting the relation (a test of two
+/// constants can never fail — the linter refused the shape, correctly); the `const` block the linter
+/// suggests in its place (an `assert!` is a *panic site in production code*, which
+/// `tools/audit-type-system.sh` counts, so it fails the gate); a local `#[allow]` (the tree carries
+/// none, and the debt list is central in CI rather than scattered); and `256.min(..)`, which is not
+/// const-callable on this toolchain. The `if` costs no counted site and no exception, and it says what
+/// the invariant says.
+const MAX_VALUE_DEPTH: usize = if 256 < crate::parser::MAX_AST_DEPTH {
+    256
+} else {
+    crate::parser::MAX_AST_DEPTH
+};
 
 #[async_trait]
 impl Tuplespace for ChargingRSpace {

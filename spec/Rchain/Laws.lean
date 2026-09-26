@@ -2500,10 +2500,13 @@ def laws : List Law := [
       error) and \
       `rholang/src/storage.rs:a_value_at_the_bound_is_stored_and_one_past_it_is_refused_on_both_produce_paths` \
       reports it. **The ordering between the two bounds is structural rather than asserted**: \
-      `rholang/src/storage.rs` carries `const _: () = assert!(MAX_VALUE_DEPTH < \
-      crate::parser::MAX_AST_DEPTH)`, so a build that inverted them does not compile — the first draft \
-      had a `#[test]` for it instead, and that test could never have failed (the linter refused the \
-      shape, correctly). **Not closed by this clause, and filed separately**: a *parsed* term of depth \
+      `MAX_VALUE_DEPTH` is written as the smaller of 256 and `crate::parser::MAX_AST_DEPTH`, so a \
+      parser bound \
+      lowered below 256 lowers it too and the ordering cannot drift. (`min` spelled as an `if`, because it is not const-callable here.) Asserting it instead was tried \
+      and refused twice, which is worth recording: a `#[test]` over two constants can never fail, and \
+      the `const`-block the linter suggests in its place is a *panic site in production code*, which \
+      the type-system gate counts — so the invariant is carried by the definition rather than by a \
+      check. **Not closed by this clause, and filed separately**: a *parsed* term of depth \
       257..768 is still an abort route (the evaluator recurses before the guard sees the datum), and \
       nested tuples make the parser exponential — both are C-row findings of this pass, and neither is \
       a depth bound's business" }
