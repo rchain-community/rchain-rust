@@ -684,14 +684,24 @@ else
   # register deliberately does not keep. What is durable is the ledger: it holds the measured totals,
   # and everything below is recomputed from them.
   #
-  # Read the totals row: `| <found> | <hit> | <missed> | <pct>% | <implied floor> |`.
-  totals="$(awk -F'|' '/^\| [0-9]+ \| [0-9]+ \| [0-9]+ \| [0-9]+\.[0-9]+% \|/ {
-      for (i = 2; i <= 6; i++) gsub(/ /, "", $i)
-      print $2, $3, $4, $5, $6; exit }' "$LEDGER")"
-  if [[ -z "$totals" ]]; then
-    fail "spec/COVERAGE-LEDGER.md has no totals row — this check would be vacuous (the table shape moved?)"
+  # Read the rows **by label**: `| lines | <found> | <hit> | <missed> | <pct>% | <implied floor> |`, and
+  # the same row for `functions`. The first version matched the row by *shape* (`^\| [0-9]+ \| …`), which
+  # found nothing at all once a label column was added — a check that goes quietly vacuous, which is
+  # exactly the failure this register exists to refuse, so the labels are named (AUDIT C107).
+  read_coverage_row() { # $1 = label; prints "found hit missed pct floor"
+    awk -F'|' -v label="$1" '
+      $2 ~ "^ *" label " *$" { for (i = 3; i <= 7; i++) gsub(/ /, "", $i); print $3, $4, $5, $6, $7; exit }
+    ' "$LEDGER"
+  }
+  lines_row="$(read_coverage_row lines)"
+  functions_row="$(read_coverage_row functions)"
+  if [[ -z "$lines_row" ]]; then
+    fail "spec/COVERAGE-LEDGER.md has no lines totals row — this check would be vacuous (the table shape moved?)"
+  elif [[ -z "$functions_row" ]]; then
+    fail "spec/COVERAGE-LEDGER.md has no functions totals row — the function floor CI enforces would be checked nowhere"
   else
-    read -r l_found l_hit l_missed l_pct l_floor <<<"$totals"
+    read -r l_found l_hit l_missed l_pct l_floor <<<"$lines_row"
+    read -r f_found f_hit f_missed f_pct f_floor <<<"$functions_row"
     l_pct="${l_pct%\%}"   # the cell carries the sign; the messages below add their own
     l_pct100="$(printf '%s' "$l_pct" | tr -d '%' | awk -F. '{ printf "%d%02d\n", $1, $2 }')"
     # (a) the ledger's own arithmetic.
@@ -713,6 +723,24 @@ else
     elif (( ci_floor != want_floor )); then
       fail "CI's floor is $ci_floor; the committed measurement ($l_pct%) implies $want_floor"
     fi
+    # (b1) the same three claims for the **function** row, and CI's flag for it (AUDIT C107). The
+    # audit's item asked for branch coverage and the pinned toolchain refuses to collect it, so the
+    # second instrument is functions — which makes this the check that keeps the second floor from
+    # being a number nobody recomputes, the thing every other floor here was written to avoid.
+    if (( f_found - f_hit != f_missed )); then
+      fail "the ledger's function totals disagree with themselves: $f_found found − $f_hit hit ≠ $f_missed missed"
+    fi
+    f_want_pct100=$(( f_hit * 10000 / f_found ))
+    f_want_floor=$(( (f_want_pct100 - 200) / 100 ))
+    if (( f_floor != f_want_floor )); then
+      fail "the ledger's implied function floor is $f_floor but its measurement implies $f_want_floor (floor = floor(measured) − 2)"
+    fi
+    fn_ci_floor="$(grep -oE 'fail-under-functions [0-9]+' "$FLOOR_SITE" 2>/dev/null | grep -oE '[0-9]+' || true)"
+    if [[ -z "$fn_ci_floor" ]]; then
+      fail "no --fail-under-functions in .github/workflows/coverage.yml — the function floor this ledger implies has no site"
+    elif (( fn_ci_floor != f_want_floor )); then
+      fail "CI's function floor is $fn_ci_floor; the committed measurement ($f_pct) implies $f_want_floor"
+    fi
     # (b2) and the *raise history* the ledger states is the one its site records. The template used to
     # say "the four times it has been raised" while `coverage.yml` held six — a hand-written count among
     # machine-checked numbers, which is why the emitter now derives the sentence from the site and this
@@ -730,14 +758,14 @@ else
     # agreed" and "not checked here" is the whole reason this register exists.
     if [[ -f "$ROOT/lcov.info" ]]; then
       if ledger_out="$("$EMITTER" --check 2>&1)"; then
-        ok "coverage ledger matches lcov.info ($l_found lines, $l_missed missed) and the CI floor is $ci_floor"
+        ok "coverage ledger matches lcov.info ($l_found lines, $l_missed missed; $f_found functions, $f_missed missed) and the CI floors are $ci_floor / $fn_ci_floor"
       else
         printf '%s\n' "$ledger_out" | sed 's/^/      /'
-        fail "the coverage ledger is not what lcov.info emits, or CI's floor is not floor(measured) − 2"
+        fail "the coverage ledger is not what lcov.info emits, or a CI floor is not floor(measured) − 2"
       fi
     else
       info "no lcov.info here: the ledger's rows were not compared against a measurement (CI's coverage job has no copy either — the file is not committed)"
-      ok "coverage ledger is self-consistent ($l_found lines, $l_missed missed) and CI's floor $ci_floor is the one it implies"
+      ok "coverage ledger is self-consistent ($l_found lines, $l_missed missed; $f_found functions, $f_missed missed) and CI's floors $ci_floor / $fn_ci_floor are the ones it implies"
     fi
   fi
 fi

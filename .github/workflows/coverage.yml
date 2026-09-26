@@ -61,7 +61,15 @@ jobs:
         # 88.62 => 86 (the merge's block index, NodeRunning's dispatch),
         # 88.87 => 86 (the codecs' decode halves, the UPnP device report, the normalizer refusals),
         # 89.14 => 87 (the reporting replay and its system deploy, the OpenAPI document).
-        run: cargo llvm-cov --workspace --all-features --lcov --output-path lcov.info --fail-under-lines 87
+        #
+        # **The function floor, and why it is a function floor** (AUDIT C107). The audit's item asked
+        # for `--branch`; the measurement says the toolchain refuses it (`-Z coverage-options=branch`
+        # on the pinned 1.95.0 stable), so the closest instrument available is function coverage — 7249
+        # of 8809 functions hit, 82.29%, measured from the lcov's own `FNF:`/`FNH:` records and emitted
+        # to `spec/COVERAGE-LEDGER.md` by the same script and the same rule as the line floor. It is
+        # here rather than in the ledger's prose for the same reason the line floor is: check 11
+        # recomputes it from the committed measurement, so this number and the ledger cannot drift.
+        run: cargo llvm-cov --workspace --all-features --lcov --output-path lcov.info --fail-under-lines 87 --fail-under-functions 80
 
       - name: Upload coverage
         uses: codecov/codecov-action@v7

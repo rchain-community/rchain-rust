@@ -75,15 +75,17 @@ CRATES='sdk|shared|crypto|graphz|models|block-storage|comm|rspace|rholang|casper
 rows="$(awk -F'[:,]' -v root="$ROOT/" -v crates="$CRATES" '
   /^SF:/ {
     f = substr($0, 4); sub("^" root, "", f)
-    lf = 0; lh = 0; da = 0
+    lf = 0; lh = 0; da = 0; fnf = 0; fnh = 0
     keep = (f ~ "^(" crates ")/(src|tests|benches)/") && f !~ /\.pb\.rs$/
     next
   }
   /^LF:/ { lf = $2 + 0; next }
   /^LH:/ { lh = $2 + 0; next }
+  /^FNF:/ { fnf = $2 + 0; next }
+  /^FNH:/ { fnh = $2 + 0; next }
   /^DA:/ { da++; next }
   /^end_of_record/ {
-    if (keep && lf > 0) printf "%d\t%d\t%d\t%s\t%d\n", lf - lh, lh, lf, f, da
+    if (keep && lf > 0) printf "%d\t%d\t%d\t%s\t%d\t%d\t%d\t%d\n", lf - lh, lh, lf, f, da, fnf - fnh, fnh, fnf
     keep = 0
   }
 ' "$LCOV" | sort -t$'\t' -k1,1rn -k4,4)"
@@ -125,6 +127,36 @@ if (( floor != max_floor )); then
   floor_verdict="MISMATCH"
 fi
 
+# --- functions, and the floor they imply -----------------------------------------------------------
+#
+# The same model and the same rule, one granularity in. **Why functions and not branches**: the audit
+# that opened this item asked for `--branch`, and the measurement says no — `cargo llvm-cov --branch`
+# passes `-Z coverage-options=branch` to rustc, which the pinned toolchain rejects ("1 nightly option
+# were parsed" on 1.95.0, per `rust-toolchain.toml`), so the workspace would have to leave its pinned
+# stable release to collect it. A function floor is derivable from the artifact this script already
+# reads (`FNF:`/`FNH:`), it is emitted here rather than remembered, and it catches the shape the audit
+# was actually pointing at — behaviour nothing calls at all.
+totfn="$(printf '%s\n' "$rows" | awk -F'\t' '{m+=$6; h+=$7; f+=$8} END {printf "%d\t%d\t%d\n", m+0, h+0, f+0}')"
+fn_missed="${totfn%%$'\t'*}"; rest="${totfn#*$'\t'}"
+fn_hit="${rest%%$'\t'*}"; fn_found="${rest##*$'\t'}"
+if (( fn_found == 0 )); then
+  echo "FAIL  no function records survived the filter — a function floor from an empty count is no floor" >&2
+  exit 1
+fi
+fn_pct100=$(( fn_hit * 10000 / fn_found ))
+fn_max_floor=$(( (fn_pct100 - 200) / 100 ))
+
+fn_floor_line="$(grep -nE '^\s*run: .*--fail-under-functions' "$ROOT/.github/workflows/coverage.yml" || true)"
+fn_floor="$(printf '%s' "$fn_floor_line" | grep -oE 'fail-under-functions [0-9]+' | grep -oE '[0-9]+' || true)"
+if [[ -z "$fn_floor" ]]; then
+  echo "FAIL  no --fail-under-functions in .github/workflows/coverage.yml — the function floor this ledger names has no site" >&2
+  exit 1
+fi
+fn_floor_verdict="ok"
+if (( fn_floor != fn_max_floor )); then
+  fn_floor_verdict="MISMATCH"
+fi
+
 # Provenance. `lcov.info` is **gitignored** — it is a build artifact the size of the workspace, and the
 # measurement is recorded in the ledger rather than by committing the file — so the date comes from the
 # lcov's own mtime (the machine that measured it) and the tree it was measured against is named by the
@@ -162,15 +194,25 @@ floor that is not the one this measurement implies.
 
 **Measurement**: $measured_on (the lcov's own date); emitted from a tree at $head_short.
 
-| lines found | hit | missed | line coverage | CI floor (implied) |
-|---:|---:|---:|---:|---:|
-| $found | $hit | $missed | $(( pct100 / 100 )).$(printf '%02d' $(( pct100 % 100 )))% | $max_floor |
+| measured | found | hit | missed | coverage | CI floor (implied) |
+|---|---:|---:|---:|---:|---:|
+| lines | $found | $hit | $missed | $(( pct100 / 100 )).$(printf '%02d' $(( pct100 % 100 )))% | $max_floor |
+| functions | $fn_found | $fn_hit | $fn_missed | $(( fn_pct100 / 100 )).$(printf '%02d' $(( fn_pct100 % 100 )))% | $fn_max_floor |
+
+**Branch coverage is not collected, and that is measured rather than preferred** (AUDIT C107):
+\`cargo llvm-cov --branch\` passes \`-Z coverage-options=branch\` to rustc, which the pinned toolchain
+rejects — "1 nightly option were parsed" on 1.95.0, the stable release \`rust-toolchain.toml\` pins — so
+collecting it would mean taking the workspace off that pin. The closest instrument the toolchain allows
+is **function** coverage: it is derivable from the same artifact (its \`FNF:\`/\`FNH:\` records), it is
+emitted and floored by the same rule, and it catches the shape the audit's item was pointing at —
+behaviour that nothing calls at all, which a line count cannot see.
 
 The floor's rule, machine-checked above rather than remembered: **\`floor = floor(measured) − 2\`** — two
 points below the measurement, never a number a plan hopes to reach. The raisings are read off the floor's
 own site, not restated here: ($raise_pairs). **No count of them is written in this
 sentence**, because the count is what rotted — this template once said "the four times it has been raised"
-while the site already held more — and the list carries its own length. Every raising satisfies the rule,
+while the site already held more — and the list carries its own length. (Those raisings are the **line**
+floor's: it is the one that has been raised. The function floor is at its first measurement.) Every raising satisfies the rule,
 which is why it is a rule and not a convention, and check 11 compares this list against the site, so a
 ledger not re-emitted after a raising reads as stale rather than as current. A floor the measurement does
 not support fails check 11 in either direction: too high is a tripwire nothing justifies, too low is a
@@ -205,6 +247,19 @@ where a third or more of the behaviour is unpinned.
 |---:|---:|---:|---|
 EOF
   printf '%s\n' "$rows" | awk -F'\t' '$3 >= 150 { printf "| %.1f | %d | %d | `%s` |\n", $1 * 100 / $3, $1, $3, $4 }' \
+    | sort -t'|' -k2,2rn
+  cat <<EOF
+
+## Files by missed functions
+
+The same ranking at function granularity: the files where behaviour that nothing calls has collected.
+A line can be covered by a test that enters and leaves; a function nothing calls has no line covered at
+all — which is the shape a line count reports as "a few missed lines" and this one names.
+
+| missed | hit | found | function coverage | file |
+|---:|---:|---:|---:|---|
+EOF
+  printf '%s\n' "$rows" | awk -F'\t' '$6 > 0 { printf "| %d | %d | %d | %.1f | \`%s\` |\n", $6, $7, $8, $8 ? $7 * 100 / $8 : 100, $4 }' \
     | sort -t'|' -k2,2rn
 }
 

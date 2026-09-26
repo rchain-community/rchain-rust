@@ -94,6 +94,14 @@ jobs:
       - name: Run Clippy
         run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings $CLIPPY_DEBT
 
+      - name: Bench targets compile
+        # `make bench-smoke`: **builds and links** every Criterion target in `rspace-bench` and runs
+        # none of them. The clippy step above already *type-checks* them (`--all-targets` includes
+        # benches), so what this adds is the build and link — the part a type-check cannot see — and it
+        # is here because the benchmarks are otherwise only exercised by `make bench-scheduler`, which
+        # peaks at ~6.5 GiB and is deliberately not a CI job (AUDIT C107).
+        run: cargo bench -p rspace-bench --no-run
+
   dependencies:
     name: Dependency audit
     runs-on: ubuntu-24.04
