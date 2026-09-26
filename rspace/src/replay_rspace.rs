@@ -106,6 +106,13 @@ where
         self.space.native_store()
     }
 
+    /// The keys **this** space's lock map is holding — test-only. The replay space acquires through a
+    /// `lock_f` of its own, so the play space's count cannot stand in for it (AUDIT C104).
+    #[cfg(test)]
+    pub(crate) fn lock_map_len(&self) -> usize {
+        self.lock_f.lock_map_len()
+    }
+
     /// The native mutations folded into the most recent `create_checkpoint` on the wrapped space.
     pub fn last_native_changes(&self) -> Vec<crate::native_store::NativeStoreAction> {
         self.space.last_native_changes()
@@ -520,6 +527,10 @@ where
     }
 
     async fn reset(&self, root: Blake2b256Hash) -> std::result::Result<(), String> {
+        // The replay space owns a lock map of its own, so the inner `reset` cleaning *its* map is not
+        // enough — this is the second call the Scala makes through `TwoStepLock.cleanUp`'s composition
+        // (AUDIT C104).
+        self.lock_f.clean_up();
         self.space.reset(root).await
     }
 
@@ -632,6 +643,37 @@ mod tests {
         let reader = history.get_history_reader(history.root()).await;
         let hot = Arc::new(InMemHotStore::new(reader.base()));
         RSpace::create_with_replay(history, hot, Arc::new(StrMatch))
+    }
+
+    /// **The replay space cleans its *own* lock map.** It acquires through a `lock_f` of its own, so
+    /// the play space's `reset` cleaning *its* map is only half of what the Scala's
+    /// `TwoStepLock.cleanUp` composes — this is the other half (AUDIT C104). Without the call in
+    /// `ReplayRSpace::reset`, the count below stays non-zero after the reset.
+    #[tokio::test]
+    async fn reset_releases_the_replay_spaces_own_channel_locks() {
+        let (play, replay) = play_and_replay().await;
+        play.produce("c".to_string(), "data".to_string(), false)
+            .await
+            .expect("play produce");
+        let recorded = play.create_soft_checkpoint().await.log;
+        let root = play.create_checkpoint().await.expect("checkpoint").root;
+
+        replay.rig_and_reset(root, recorded).await.expect("rig");
+        replay
+            .produce("c".to_string(), "data".to_string(), false)
+            .await
+            .expect("replay produce");
+        assert!(
+            replay.lock_map_len() > 0,
+            "the replay space's own produce is what populates its map"
+        );
+
+        replay.reset(root).await.expect("reset");
+        assert_eq!(
+            replay.lock_map_len(),
+            0,
+            "reset must clean the replay space's own channel locks"
+        );
     }
 
     /// The rig/check pair at its own level: a replay space rigged with the play space's recorded

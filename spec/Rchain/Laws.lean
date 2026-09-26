@@ -786,9 +786,9 @@ def laws : List Law := [
       the forward half passes, the check fails, which is what the RCHAIN-3505 guard lets through on a \
       failed deploy) and `the_reverse_half_alone_admits_a_phantom_recomputation` (one recorded, two \
       recomputed — the reverse half passes, the check fails). In the port, each half has its own error \
-      that the Rust's tests assert fires: `ReplayCommNotInTrace` (`replay_rspace.rs:330-332`, \
-      `a_rigged_replay_matches_its_recorded_trace` `:635-651`) and `Unused COMM event` \
-      (`check_replay_data`, `replay_rspace.rs:580-586`, `a_rig_whose_comm_never_happens_is_reported` `:663-696`)",
+      that the Rust's tests assert fires: `ReplayCommNotInTrace` (`replay_rspace.rs:341-345`, \
+      `a_rigged_replay_matches_its_recorded_trace` `:683-699`) and `Unused COMM event` \
+      (`check_replay_data`, `replay_rspace.rs:594-598`, `a_rig_whose_comm_never_happens_is_reported` `:711-744`)",
     note := "**The modelling step the row previously owed, landed** (2026-09-23, Programme D unit 9). \
       The row was `vacuous` because \"recompute\" and \"record\" were the *same function* in the model, \
       so the claim was `rfl`. The record is now an **input** — `Replays recomputed recorded` — and the \

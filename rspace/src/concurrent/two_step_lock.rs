@@ -55,6 +55,25 @@ where
     }
 }
 
+impl<K> TwoStepLock<K>
+where
+    K: Eq + Hash + Ord + Clone + Send + Sync + 'static,
+{
+    /// Release both phases' mutexes (port of the Scala's `cleanUp`, which composes the two
+    /// `MultiLock`s' own). `RSpace::reset` and `ReplayRSpace::reset` call it, as `RSpaceOps.reset`
+    /// calls the Scala's — AUDIT C104.
+    pub fn clean_up(&self) {
+        self.phase_a.clean_up();
+        self.phase_b.clean_up();
+    }
+
+    /// The keys both phases are holding — test-only, so `reset` leaving nothing behind is asserted.
+    #[cfg(test)]
+    pub(crate) fn lock_map_len(&self) -> usize {
+        self.phase_a.len() + self.phase_b.len()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -63,6 +82,23 @@ mod tests {
 
     fn keys_b(keys: Vec<u8>) -> BoxFuture<'static, std::result::Result<Vec<u8>, RSpaceError>> {
         Box::pin(async move { Ok(keys) })
+    }
+
+    /// `clean_up` reaches **both** phases — the composition the Scala's `TwoStepLock.cleanUp`
+    /// performs, and the port had no such method at all (AUDIT C104).
+    #[tokio::test]
+    async fn clean_up_releases_both_phases() {
+        let lock: TwoStepLock<u8> = TwoStepLock::new();
+        lock.acquire(&[1], keys_b(vec![2]), async {})
+            .await
+            .expect("acquired");
+        assert_eq!(
+            lock.lock_map_len(),
+            2,
+            "one phase-A key and one phase-B key"
+        );
+        lock.clean_up();
+        assert_eq!(lock.lock_map_len(), 0, "both phases are cleared");
     }
 
     /// The thunk runs **once both phases are held**, and its output is the `acquire` result.

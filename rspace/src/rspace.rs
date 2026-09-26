@@ -607,6 +607,9 @@ where
     }
 
     async fn reset(&self, root: Blake2b256Hash) -> std::result::Result<(), String> {
+        // **Clean channel locks** — the Scala's `RSpaceOps.reset` does this, and the port dropped it,
+        // so the lock map kept an entry per channel the process ever touched (AUDIT C104).
+        self.lock_f.clean_up();
         let next_history = {
             let history = self.current_history();
             history.reset(root).await?
@@ -698,6 +701,41 @@ mod tests {
         )
         .await
         .unwrap()
+    }
+
+    /// **`reset` releases the channel locks.** The Scala's `RSpaceOps.reset` calls `lockF.cleanUp`
+    /// with the comment "Clean channel locks"; the port dropped the call, so the map kept one entry
+    /// for every distinct channel the process had ever touched, for the life of the process (AUDIT
+    /// C104). Without the call in `reset` this assertion is non-zero, which is the whole test.
+    #[tokio::test]
+    async fn reset_releases_the_channel_locks() {
+        let s = space().await;
+        // Both paths that acquire: a produce locks its channel, a consume locks its own set.
+        s.produce("a".to_string(), "x".to_string(), false)
+            .await
+            .unwrap();
+        s.consume(
+            &["b".to_string()],
+            &["p".to_string()],
+            "k".to_string(),
+            false,
+            BTreeSet::new(),
+        )
+        .await
+        .unwrap();
+        assert!(
+            s.lock_f.lock_map_len() > 0,
+            "those operations are what populate the lock map"
+        );
+
+        let cp = s.create_checkpoint().await.unwrap();
+        s.reset(cp.root).await.unwrap();
+
+        assert_eq!(
+            s.lock_f.lock_map_len(),
+            0,
+            "reset must clean the channel locks, as RSpaceOps.reset does in the Scala"
+        );
     }
 
     #[tokio::test]
