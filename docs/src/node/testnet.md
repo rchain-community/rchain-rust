@@ -1,16 +1,16 @@
 # The public testnet — `testnet.rhobot.net`
 
 A small public RChain testnet running this codebase, used by the Rholang playground and the quantum-os
-room agents. Two bonded validators on two hosts, funded dev wallets, and an **idle** chain that produces
-a block only when a deploy arrives.
+room agents. Two hosts — a genesis master that holds the bond, and a joining node that can be bonded into
+the pool — funded dev wallets, and an **idle** chain that produces a block only when a deploy arrives.
 
 The **generalised** procedure — standing up a testnet of your own, from the stake split to a rebuild —
 is [Running a public testnet](running-a-public-testnet.md). This page is the concrete instance: the live
 hosts, the genesis, the wallets, and the incident record.
 
-> **Status: reads, writes and validator onboarding all work — re-verified on the current chain on
-> 2026-09-22** (evidence in [Status](#status-of-the-verified-path); the chain was rebuilt that day, so
-> the older transcript there is labelled as such). A brand-new key can be funded by transfer, deploy,
+> **Status: reads, writes, two-validator finality and validator withdrawal all work — re-verified on
+> the current chain on 2026-09-26** (evidence in [Status](#status-of-the-verified-path); the chain was
+> rebuilt that day, so the older transcripts there are labelled as such). A brand-new key can be funded by transfer, deploy,
 > be trusted, and bond into the validator pool. `/api/status`, `/api/explore-deploy`, `getBonds`,
 > `getActiveValidators`, `/health`, and `rnode deploy` with no extra flags all work — note that a CLI
 > deploy does need a **funded** key, or it is accepted and mined and then reports `processedWithError`
@@ -28,11 +28,11 @@ hosts, the genesis, the wallets, and the incident record.
 
 | | |
 |---|---|
-| Chain | `testnet` network id, shard `/root`, genesis `aab081c7…b044` |
-| Validators | node A (`cf360190…`, stake **1000**) + node B (`a1ca9c6e…`, stake 100), plus one admitted live (`alice`, 100 — the K6 proof) |
+| Chain | `testnet` network id, shard `/root`, genesis `6a6db0db…5b43` |
+| Validators | genesis signed for **two** — A (`0410b8c5…`, stake **1000**) and B (`04675f16…`, stake 100). B withdrew at block 20 of the 2026-09-26 rebuild, so the pool and the active set are A alone and B's 100 is escrowed. |
 | Hosts | A `164.90.140.144` (private `10.108.0.3`), B `104.131.176.164` (private `10.108.0.4`) |
 | Cost | 2 × DigitalOcean `s-1vcpu-1gb`, **$12/mo** |
-| Binary | rchain-rust `dev` @ `f6477eba3` (deploy-anchor #58 + `if`-in-a-`Par` C21), static musl `d5d8b650…`, on all three hosts |
+| Binary | rchain-rust `tmp/dep-bump` @ `1b96c91c1` (rust-dependencies bump + axum 0.8 route fix), static musl `2f9cee7d3c92…`, on both hosts |
 | Endpoint | **https://testnet.rhobot.net** (nginx → node A's HTTP API) |
 
 A's stake is 1000 against B's 100 on purpose: with no `--autopropose`, A is the only proposer, so A
@@ -194,9 +194,10 @@ The deploy-anchor fix (K1) reached `dev` as
 ```
 testnet.rhobot.net ──► node A 164.90.140.144 (10.108.0.3)   genesis master, stake 1000
                         └─ nginx + Let's Encrypt (cert to 2026-12-20), /health from a timer
-                        └─ rnode: -s --dev-mode --propose-on-deploy  (NO --autopropose)
-                       node B 104.131.176.164 (10.108.0.4)   joining validator, stake 100
-                        └─ rnode: --dev-mode --propose-on-deploy --bootstrap A  (no -s)
+                        └─ rnode: -s --dev-mode --propose-on-deploy --attest-on-new-blocks
+                       node B 104.131.176.164 (10.108.0.4)   joining node; bonded on the 2026-09-26
+                        └─ rnode: --dev-mode --propose-on-deploy --attest-on-new-blocks
+                           --bootstrap A  (no -s)             chain, withdrawn at block 20
 ```
 
 Both live in the `default-nyc3` VPC, the same one as rhobot-2, so they can also talk over
@@ -223,19 +224,22 @@ Built once with `scripts/localnet/keys.mjs`; the exact files are on each node:
 
 ```
 /var/lib/rnode/genesis/bonds.txt    2 lines: <65-byte pubkey> <stake>  (A 1000, B 100)
-/var/lib/rnode/genesis/wallets.txt  6 funded REV addresses (the dev keys)
+/var/lib/rnode/genesis/wallets.txt  4 funded REV addresses (the dev keys)
 /etc/rnode/validator.key            that node's validator key (0600 rnode:rnode)
 /etc/rnode/deployer.env             DEPLOYER_PRIVATE_KEY=… (kept on disk, now unused: no injector)
 ```
 
-Genesis hash `aab081c7371a66112a5fa6186272862ad56ef387b93a9423a13c1d9210ebb044`; A's node id
-`cf360190cba54f705f0f43d99ecd06cfe81f296c`, B's `a1ca9c6ee6c3d42bbdfbe326ab4c7ab66e132f54`.
+Genesis hash `6a6db0dbf47575d9c8e62935d8782bbd9d27ac6556f2fb0b518ea3d69b835b43`; A's node id
+`83d6d7934002fd0dacde08d81fe6aa8e4d8ea02e`, B's `cbeda9504c2306fb188c9e642072828f898bf3ac`.
+
+The genesis hash depends only on the genesis *inputs* (bonds, wallets, parameters), not on either node's
+identity, so it is stable across rebuilds but changes when the bonds change: the 2026-09-26 rebuilds that
+signed for one validator all produced `e525129d…`, and adding B's bond moved it to `6a6db0db…`.
 
 A node id is **not** derived from the validator key — a rebuilt data directory gets a fresh node
 identity, so any `--bootstrap` URI pointing at the master has to be updated after a rebuild. The
-chain of 2026-09-22 was rebuilt with the current binary for exactly this reason: the previous chain
-predated C21 and the governance fixes (`d9567c3ff`, `b92288f35`), and genesis artefacts are produced
-once, at genesis.
+2026-09-26 rebuild with the dependency-bump binary is the most recent instance: A's id changed, so B's
+`--bootstrap` was retargeted, and genesis artefacts are produced once, at genesis.
 
 Both nodes start with `--pos-multi-sig-public-keys <dave's pubkey> --pos-multi-sig-quorum 1`, which
 puts **dave** — a `wallets.txt`-funded key that can actually pay phlo — into the trusted set at
@@ -299,7 +303,7 @@ anywhere:
 ```bash
 rnode --profile docker run --host <its-ip> --data-dir /var/lib/rnode \
   --pos-multi-sig-public-keys <dave pubkey> --pos-multi-sig-quorum 1 \
-  --bootstrap rnode://cf360190cba54f705f0f43d99ecd06cfe81f296c@164.90.140.144?protocol=40400&discovery=40404
+  --bootstrap rnode://83d6d7934002fd0dacde08d81fe6aa8e4d8ea02e@164.90.140.144?protocol=40400&discovery=40404
 ```
 
 (The multi-sig flags must match the genesis master's, or the joiner's own view of the genesis PoS
@@ -366,8 +370,11 @@ the reasoning, is upstream):
   trusted key on this net (see K6);
 - the **newcomer must hold REV ≥ stake**, because the bond is deducted from its vault.
 
-Funding either one is an ordinary transfer, and a vault balance is readable with `getBalance` — **not**
-`balance`. The terms this net uses are below.
+Funding either one is an ordinary transfer. There is **no `pos` method to read a vault balance**: the
+native dispatcher implements `getBonds`, `getActiveValidators`, `getTrusted`, `bond`, `withdraw`,
+`trust` and `untrust` and nothing else, so `pos!("getBalance", …)` fails with
+`pos: unknown method getBalance` (`rholang/src/system_processes.rs`). A balance read has to go through
+the REV vault contract, or a client macro that wraps it — not `pos`. The terms this net uses are below.
 
 ### The exact terms
 
@@ -400,7 +407,7 @@ new return, pos(`rho:rchain:pos`), deployerId(`rho:rchain:deployerId`), ret in {
   pos!("bond", *deployerId, 100, *ret) | for (@r <- ret) { return!(r) }
 }
 
-// withdraw (deactivates immediately; stake escrowed until the quarantine deadline)
+// withdraw (a request: the bond leaves the pool at the next epoch boundary, then is escrowed)
 new return, pos(`rho:rchain:pos`), deployerId(`rho:rchain:deployerId`), ret in {
   pos!("withdraw", *deployerId, *ret) | for (@r <- ret) { return!(r) }
 }
@@ -423,6 +430,44 @@ Two easy-to-miss details:
   answers `notProcessed / Unknown`, the deploy was swept from the pool as expired.
 
 ### Status of the verified path
+
+#### Re-verified on the current chain — 2026-09-26, genesis `6a6db0db…`, height 0 → 23
+
+The chain was rebuilt on 2026-09-26 with the dependency-bump binary (`2f9cee7d3c92…`), this time with
+**two bonds at genesis** (A 1000, B 100) and `--attest-on-new-blocks` on **both** nodes, and the whole
+validator cycle was run against it. Six deploys produced blocks 1–23.
+
+| step | result |
+|---|---|
+| `getBonds` / `getActiveValidators` after the rebuild | ✅ A 1000 + B 100, both active; `getTrusted` = {A, B, dave} |
+| a deploy submitted to A | ✅ block proposed by A (`0410b8c5…`) |
+| a deploy submitted to B | ✅ block proposed by B (`04675f16…`) — **both validators propose**, alternating |
+| finality | ✅ `GET /api/last-finalized-block` returns a block both nodes agree on (8, 12, 16 during the run) and `/health` reports `finalized_fringe: true` |
+| `pos!("withdraw", …)` signed by B's validator key | ✅ `(true)` |
+| `getActiveValidators` / `getBonds` immediately after the withdraw | **unchanged** — the withdrawal is a request, not a deactivation |
+| the same, after the epoch boundary at block 20 | ✅ pool and active set are A alone; B's 100 sits in `withdrawers` until its deadline |
+| `GET /api/status` on both, after | ✅ same height, peers 1; `/health` `ok: true` |
+
+Two things this pinned down, both of which earlier revisions of this page had wrong:
+
+- **`withdraw` does not deactivate immediately.** It records a *pending* withdrawal
+  (`pos:pending_withdrawers`), and `close_block` moves the bond out of the pool only at an epoch
+  boundary (`block % epoch_length == 0`, here every 10 blocks). On an **idle** chain that means a
+  withdrawal does not take effect until something else produces a block across a boundary — a withdraw
+  on a quiet net looks ignored for as long as the net stays quiet.
+- **A bond-set change is safe once the fringe is non-empty.** [#73](https://github.com/rchain-community/rchain-rust/issues/73)
+  records that a bond-set change while the *finalized fringe is empty* permanently wedges the chain.
+  With two validators attesting, the fringe advanced and the withdrawal at block 20 was absorbed with no
+  proposal failure and no bond-map disagreement — the hazard is the unfinalised case, not bond changes
+  as such.
+
+**A caution that still stands:** with `--attest-on-new-blocks` on both validators, six deploys produced
+23 blocks in about two minutes. Each attestation is itself a remote block for the other node, so the
+chain runs a storm until the deploys are finalised and `suppress_attestation` stops it. That is the
+unbounded-attestation problem of
+[#70](https://github.com/rchain-community/rchain-rust/issues/70) observed again; it is why this net is
+otherwise kept to a single proposer, and why a deploy to an unbonded node is worse than useless — it is
+accepted into that node's pool, and since deploys are not gossiped, nothing ever proposes it.
 
 #### Re-verified on the current chain — 2026-09-22, genesis `aab081c7…`, height 3 → 7
 
@@ -460,7 +505,7 @@ running binary:
 | **the new key deploys `pos!("bond", …, 100)`** | ✅ value **`(true)`** |
 | `getBonds` afterwards | ✅ grew 2 → 3 (A 1000, newcomer 100, B 100) |
 | `getActiveValidators` afterwards | ✅ 3 validators |
-| `pos!("withdraw", …)` | ✅ value `(true)` — deactivates at once, stake escrowed |
+| `pos!("withdraw", …)` | ✅ value `(true)` — a *request*; the bond leaves the pool at the next epoch boundary, then is escrowed (see the 2026-09-26 note below) |
 | `rnode deploy` with no `--valid-after-block-number` | ✅ `processedWithSuccess` |
 
 **A caution learned the hard way.** Bonding a key that has no running node still counts against
@@ -499,8 +544,8 @@ The fix (`fix/deploy-expiry-negative`, commit `756f1727d`) makes a negative anch
 specified" and resolves it from the node's own status, which already carries `latest_block_number` —
 the same thing the faucet, the browser client, `gateway::current_height` and
 `txn_coordinator::run_phase_at` do. The fix is merged to `dev` as
-[#58](https://github.com/rchain-community/rchain-rust/pull/58), and all three nodes run a binary that
-includes it (`d5d8b650…`, which also carries the upstream registry-lookup fix), so `rnode deploy` works
+[#58](https://github.com/rchain-community/rchain-rust/pull/58), and both nodes run a binary that
+includes it (`2f9cee7d3c92…`, which also carries the upstream registry-lookup fix), so `rnode deploy` works
 with no extra flags. Rollbacks are kept in place as `/usr/local/bin/rnode.old-<sha>`.
 **A binary built before that commit still needs `--valid-after-block-number <height>`.**
 
@@ -539,7 +584,7 @@ so that its return value is stored and handed back. That is how the
 An earlier revision warned that this read-back "lags by about one deploy". That was wrong: the lag was
 dev's registry-lookup divergence (C18 — the native handler wrapped its reply in `(uri, value)` while
 the genesis `Registry.rho` forwards it unwrapped, so a client's `for (X <- ch) { X!(…) }` silently did
-nothing, with no error and no result). It is fixed in the binary these nodes run (`d5d8b650…`), and
+nothing, with no error and no result). It is fixed in the binary these nodes run (`2f9cee7d3c92…`), and
 with it deploy result values are readable — which is what unblocked the whole diagnosis.
 
 **K5 — disk and memory growth.** Disk now grows only with real usage (~6.6 KB/block) since the injector
