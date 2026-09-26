@@ -10,7 +10,7 @@ the older docs were wrong or misleading. The canonical, terse table is
 
 Three facts make the mapping intuitive once stated:
 
-1. **The oracle is the spec, not the Scala.** The 29 laws and the ρ→CoC type discipline
+1. **The oracle is the spec, not the Scala.** The laws and the ρ→CoC type discipline
    ([`spec/TYPE-SYSTEM.md`](../../../spec/TYPE-SYSTEM.md)) are what the Rust code must satisfy. The
    `legacy/` Scala tree is *reference material* for behavior, and the Scala tests are *differential*
    reference vectors — never the thing to reproduce bug-for-bug.
@@ -125,7 +125,7 @@ The whole model — and the soundness theorems it must satisfy — is specified 
   compile* (e.g. you can't build a `Closed` term from one with free variables, or a `NonNegI64` from a
   negative number).
 - **Run the machine gate**: `tools/audit-type-system.sh` confirms zero production
-  `panic!`/`unsafe`/silent-conversion — the cross-cutting discipline that underlies all 29 laws.
+  `panic!`/`unsafe`/silent-conversion — the cross-cutting discipline that underlies every law.
 
 The canonical (terse) version of this mapping, with per-law Scala source-of-truth and Lean targets, is
 [`spec/INVENTORY.md`](../../../spec/INVENTORY.md). The formal type discipline is

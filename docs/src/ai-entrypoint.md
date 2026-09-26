@@ -5,7 +5,7 @@ first, then jump to the single page that answers your question. It mirrors the d
 [`AGENTS.md`](../../AGENTS.md) but is organized by *goal* rather than by artifact.
 
 The **authoritative formal specification** is the [`spec/`](../../spec/) tree — the law catalog
-([`spec/INVENTORY.md`](../../spec/INVENTORY.md), **<!-- counts:entries -->60 entries<!-- counts:end -->**: the 29 calculus laws, 14 covering the
+([`spec/INVENTORY.md`](../../spec/INVENTORY.md), **<!-- counts:entries -->60 entries<!-- counts:end -->**: the calculus laws, and the rows covering the
 surface a client writes, 4 for the Proof-of-Stake epoch, one for the fee consequence of a denied
 deploy, and one for what a matched deploy is charged), the ρ-calculus core
 ([`spec/RHO-CALCULUS.md`](../../spec/RHO-CALCULUS.md)), and the ρ→CoC type discipline

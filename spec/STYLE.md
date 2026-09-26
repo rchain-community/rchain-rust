@@ -13,13 +13,15 @@ infer from 15,000 lines.
   into `docs/src/formal/laws.md`) called laws 44/47 "open" for as long as it took someone to read it;
   `ai-entrypoint.md`'s table carried a paragraph of per-law statuses that had drifted in a dozen places.
   Both now point at `spec/LAWS.md`. A status repeated by hand is a status nothing checks.
-- **Do not restate a count in digits** in the reader-facing documents (`spec/README.md`,
-  `spec/TYPE-SYSTEM.md`, `spec/INVENTORY.md`, `spec/coq/README.md`, `docs/src/formal/*.md`,
-  `docs/src/ai-entrypoint.md`). Use a generated span —
-  `<!-- counts:laws-entries -->49 laws and 58 entries<!-- counts:end -->` — and
-  `tools/emit-lean-counts.sh` fills it from `spec/laws.tsv`. `--check` is step 5c of the gate and fails
-  on a hand-written total too. Historical figures are spelled out in words, because a historical total is
-  still a total a reader may believe.
+- **Do not restate a count in digits** in the reader-facing documents. Use a generated span —
+  `<!-- counts:laws-entries --><!-- counts:end -->`, whose content `tools/emit-lean-counts.sh` fills
+  from `spec/laws.tsv`. `--check` is step 5c of the gate and fails on a hand-written total too.
+  **The scope is that script's `FILES` list, not a list written here** — this sentence used to name
+  the files, and the two lists disagreed: the named set was inside the check and the pages outside it
+  drifted unread (eleven hand-written totals across nine files, AUDIT C106). Adding a page is adding it
+  to `FILES`; the script removes generated spans before scanning, so a page that carries a correct span
+  is still checked for a hand-written total *beside* it. Historical figures are spelled out in words,
+  because a historical total is still a total a reader may believe.
 
 ## Anchors name a symbol, not just a line
 

@@ -93,7 +93,7 @@ invariants.
 - **Formalization**: nothing here any more — law 1b's row reads "**no axioms, from twelve — the
   residual is empty**" (the list comparators' laws by induction on the list, the element laws as
   theorems in dependency order), and `Rchain/Sort.lean` declares no `axiom` at all. This bullet used to
-  say "the 30 element-comparator axioms … remain to discharge"; it was stale by the time a reader met it
+  say "the thirty element-comparator axioms … remain to discharge"; it was stale by the time a reader met it
   and is corrected here rather than deleted, so the record shows what was discharged (AUDIT C72).
 - **Native PoS lifecycle**: the dynamic-validator lifecycle is implemented natively — trusted
   stakeholder admission (`trust`/`untrust`), minimum/maximum-bond validation, pool updates with a
@@ -126,4 +126,4 @@ internal invariants; equivocation rejection and finalizer fringe advancement now
 - [`AUDIT.md`](AUDIT.md) — the adversarial findings register and Scala-deviation log.
 - [`TYPE-SYSTEM.md`](TYPE-SYSTEM.md) — the ρ→CoC type discipline and refinement types.
 - [`RHO-CALCULUS.md`](RHO-CALCULUS.md) — the ρ-calculus grammar, sorts, and operations.
-- [`INVENTORY.md`](INVENTORY.md) — the 29-law invariant catalog.
+- [`INVENTORY.md`](INVENTORY.md) — the invariant catalog.

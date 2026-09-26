@@ -96,7 +96,7 @@ overstate coverage.
 - **Property tests** — every law where randomized input is meaningful now has one, in a
   `property_tests.rs` per crate (`proptest` is a dev-dependency of `models`, `rspace`, `rholang`,
   `sdk`, `block-storage` and `casper`; it was already in `Cargo.lock`, so these are dev-dependency
-  additions rather than new external dependencies). The matrix below is the whole 29-law oracle, with
+  additions rather than new external dependencies). The matrix below is the whole law oracle, with
   the evidence for each and the reason for the four laws that have none.
 
 | Law | Layer | Randomized property | Other evidence |
@@ -935,5 +935,5 @@ syntactically checked" since it landed.
 
 - [`AUDIT.md`](AUDIT.md) — the code findings register (the security fixes the tests must pin).
 - [`RUST-FIRST.md`](RUST-FIRST.md) — the native system-contract state model (G3/G5/G6 touch it).
-- [`RHO-CALCULUS.md`](RHO-CALCULUS.md) / [`INVENTORY.md`](INVENTORY.md) — the 29-law oracle the
+- [`RHO-CALCULUS.md`](RHO-CALCULUS.md) / [`INVENTORY.md`](INVENTORY.md) — the law oracle the
   property + replay tests assert.

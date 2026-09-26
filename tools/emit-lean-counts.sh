@@ -98,6 +98,20 @@ FILES=(
   # like `AGENTS.md`'s four stale declarations before them.
   "$ROOT/README.md"
   "$ROOT/docs/src/introduction.md"
+  # **And every other page that states a total by hand, added 2026-09-26 the same way** (AUDIT C106):
+  # each of these carried a stale "29 laws" — `quantum-to-rho.md`, `why-rust.md` (twice),
+  # `laws-to-rust.md` (twice), `rholang/reference.md`, `contributor/spec.md`, `RHO-CALCULUS.md`,
+  # `RUST-VS-SCALA.md` and `TEST-COVERAGE.md` (twice) — and all of them were outside this list, which
+  # is exactly why they drifted. The rule this list grows by is the finding: a count stated outside it
+  # is one nothing recomputes.
+  "$ROOT/docs/src/qucalc/quantum-to-rho.md"
+  "$ROOT/docs/src/contributor/why-rust.md"
+  "$ROOT/docs/src/contributor/laws-to-rust.md"
+  "$ROOT/docs/src/contributor/spec.md"
+  "$ROOT/docs/src/rholang/reference.md"
+  "$SPEC/RHO-CALCULUS.md"
+  "$SPEC/RUST-VS-SCALA.md"
+  "$SPEC/TEST-COVERAGE.md"
 )
 for f in "$ROOT"/docs/src/formal/*.md; do FILES+=("$f"); done
 
@@ -139,11 +153,20 @@ for f in "${FILES[@]}"; do
   file_hits=""
   scan_buf() { # $1 = the paragraph
     [[ -n "$1" ]] || return 0
-    [[ "$1" =~ '<!-- counts:' ]] && return 0
-    [[ "$1" =~ $numpat ]] || return 0
-    local rest="${1#*"${BASH_REMATCH[0]}"}"
+    # **A generated span is removed, not a licence to skip the paragraph it sits in** (AUDIT C106).
+    # This line used to `return 0` on any paragraph carrying a marker, which is how
+    # `docs/src/ai-entrypoint.md` went on saying "the 29 calculus laws" *immediately after* a correct,
+    # generated "59 entries" span: the span's presence hid the hand-written total beside it.
+    local paragraph
+    paragraph="$(printf '%s' "$1" | sed -E 's/<!-- counts:[a-z-]* -->[^<]*<!-- counts:end -->//g')"
+    [[ "$paragraph" =~ $numpat ]] || return 0
+    # The matched number goes in the message: a report that says "this paragraph states a total by
+    # hand" and stops leaves the reader to find *which* number, and a check whose output needs
+    # archaeology is one people learn to ignore.
+    local matched="${BASH_REMATCH[0]}"
+    local rest="${paragraph#*"${matched}"}"
     if [[ "${rest:0:80}" =~ $nounpat ]]; then
-      file_hits+="      ${1:0:150}"$'\n'
+      file_hits+="      '${matched%[- ]}' … ${1:0:140}"$'\n'
     fi
   }
   while IFS= read -r line || [[ -n "$line" ]]; do
