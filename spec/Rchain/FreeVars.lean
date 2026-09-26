@@ -103,6 +103,12 @@ mutual
     | Expr.etuple ps, k => freeVarOfListPar ps k
     | Expr.eset ps r, k => freeVarOfListPar ps k ∨ freeVarInRemainder k r
     | Expr.emap kvs r, k => freeVarOfListParPair kvs k ∨ freeVarInRemainder k r
+    -- The five added 2026-09-25. `emethod`'s name is a code-point list and holds no variable.
+    | Expr.ebigint _, _ => False
+    | Expr.emethod _ t args, k => freeVarOf t k ∨ freeVarOfListPar args k
+    | Expr.epercentPercent p q, k => freeVarOf p k ∨ freeVarOf q k
+    | Expr.eplusPlus p q, k => freeVarOf p k ∨ freeVarOf q k
+    | Expr.eminusMinus p q, k => freeVarOf p k ∨ freeVarOf q k
   termination_by e _ => sizeOf e
 
   def freeVarOfBundle : Bundle → Nat → Prop
@@ -365,6 +371,13 @@ mutual
     | Expr.emap kvs r => by
       simp only [freeVarOfExpr, closedExpr, not_or, forall_and, Bool.and_eq_true,
         freeVarOfListParPair_iff_closed, freeVarInRemainder_iff_closed]
+    | Expr.ebigint _ => by simp [freeVarOfExpr, closedExpr]
+    | Expr.emethod _ t args => by
+      simp only [freeVarOfExpr, closedExpr, not_or, forall_and, Bool.and_eq_true,
+        freeVarOf_iff_closed, freeVarOfListPar_iff_closed]
+    | Expr.epercentPercent p q | Expr.eplusPlus p q | Expr.eminusMinus p q => by
+      simp only [freeVarOfExpr, closedExpr, not_or, forall_and, Bool.and_eq_true,
+        freeVarOf_iff_closed]
 
   theorem freeVarOfBundle_iff_closed :
       (b : Bundle) → ((∀ k, ¬ freeVarOfBundle b k) ↔ closedBundle b = true)

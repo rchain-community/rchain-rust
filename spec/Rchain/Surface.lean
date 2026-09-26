@@ -542,12 +542,29 @@ def normalizeAt : Surf → Par → List SVar → Option Par
     match namesOfDecls decls, normalizeAt body nilPar (declNames decls ++ Γ) with
     | some d, some b => some (parMerge acc (Par.mk [] [] [New.mk d b] [] [] [] [] []))
     | _, _ => none
+  | .pctPct a b, acc, Γ =>
+    match normalizeAt a nilPar Γ, normalizeAt b nilPar Γ with
+    | some p, some q => some (parMerge acc (parOf (.epercentPercent p q)))
+    | _, _ => none
+  | .plusPlus a b, acc, Γ =>
+    match normalizeAt a nilPar Γ, normalizeAt b nilPar Γ with
+    | some p, some q => some (parMerge acc (parOf (.eplusPlus p q)))
+    | _, _ => none
+  | .minusMinus a b, acc, Γ =>
+    match normalizeAt a nilPar Γ, normalizeAt b nilPar Γ with
+    | some p, some q => some (parMerge acc (parOf (.eminusMinus p q)))
+    | _, _ => none
+  -- `PMethod` is `Proc11 "." Var "(" [Proc] ")"` and its name is a *code-point list* in the model
+  -- (`charsOf`, the convention `Ground.str` uses) — mirroring `normalizer.rs:973-979`, which builds
+  -- `Expr::EMethod` with the target normalised and each argument normalised in place.
+  | .method t v args, acc, Γ =>
+    match normalizeAt t nilPar Γ, procsPar args Γ with
+    | some p, some qs => some (parMerge acc (parOf (.emethod (charsOf v) p qs)))
+    | _, _ => none
   -- Outside the modelled fragment, each with a row in `surfaceBoundaries`: a simple type has no flat
-  -- leaf, a method call is a native dispatch, `select` and `let` need the normalizer's own
-  -- machinery, `PSendSynch` and `PVarRef` have no flat constructor, and the pattern connectives in
-  -- *process* position are refused by the port itself.
+  -- leaf, `select` and `let` need the normalizer's own machinery, `PSendSynch` and `PVarRef` have no
+  -- flat constructor, and the pattern connectives in *process* position are refused by the port.
   | .simpleType _, _, _ => none
-  | .method _ _ _, _, _ => none
   | .eval _, _, _ => none
   | .choice _, _, _ => none
   | .letIn _ _ _, _, _ => none
@@ -555,19 +572,19 @@ def normalizeAt : Surf → Par → List SVar → Option Par
   | .varRef _ _, _, _ => none
   | .conj _ _, _, _ => none
   | .disj _ _, _, _ => none
-  | .plusPlus _ _, _, _ => none
-  | .minusMinus _ _, _, _ => none
-  | .pctPct _ _, _, _ => none
 
-/-- A ground as a flat `Par`. **`bigint` is outside the domain**: the model's `Ground` has no bigint
-leaf (`Rchain/Syntax.lean`) while the protobuf's `Expr` has `GBigInt` — the same boundary
-`Rchain/Json.lean` records for the unforgeable. -/
+/-- A ground as a flat `Par`. `bigint` is an **`Expr`** leaf here and not a `Ground` one — the
+protobuf's `g_big_int` is an `Expr` variant (`models/proto/RhoTypes.proto:174`) and the port's
+normalizer *converts* the parse-level ground into it (`normalizer.rs:74-77`,
+`Ground::GroundBigInt -> Expr::GBigInt`), which is exactly this arm. `intOfDigits` is unsigned, and
+that is faithful: the node's `BigInt(…)` production reads a signed `i64` token, so a negative literal
+arrives as `PNeg` over a positive one and never reaches here. -/
 def groundPar : SGround → Option Par
   | .bool b => some (parOf (.ground (.bool b)))
   | .int d => (intOfDigits d).map (fun n => parOf (.ground (.int n)))
   | .str raw => some (parOf (.ground (.str (charsOf (unquote raw)))))
   | .uri raw => some (parOf (.ground (.uri (charsOf (unquote raw)))))
-  | .bigint _ => none
+  | .bigint d => (intOfDigits d).map (fun n => parOf (.ebigint n))
 
 /-- A list of processes, in order. -/
 def procsPar : List Surf → List SVar → Option (List Par)
@@ -997,7 +1014,12 @@ theorem closed_groundPar (g : SGround) : ∀ p, groundPar g = some p → closed 
              exact closed_parOf_ground_b _
   | str raw => simp only [groundPar, Option.some.injEq] at hp; rw [← hp]; exact closed_parOf_ground_b _
   | uri raw => simp only [groundPar, Option.some.injEq] at hp; rw [← hp]; exact closed_parOf_ground_b _
-  | bigint d => simp only [groundPar] at hp; exact absurd hp (by simp)
+  | bigint d =>
+    simp only [groundPar] at hp
+    rw [Option.map_eq_some'] at hp
+    obtain ⟨n, -, hp'⟩ := hp
+    rw [← hp']
+    simp [closed, parOf, closedListExpr, closedExpr]
 
 theorem closed_receiveBindPar (pats : List Par) (c : Par) (n : Nat)
     (hp : closedListPar pats = true) (hc : closed c = true) :
@@ -1206,7 +1228,18 @@ mutual
           closed_newPar d b (closed_normalizeAt body nilPar (declNames decls ++ Γ) Closed_nil (by simpa using hs) b hb)⟩
       · exact absurd hp (by simp)
     | simpleType ty => intro acc Γ hacc hs p hp; simp only [normalizeAt] at hp; exact absurd hp (by simp)
-    | method t x ds => intro acc Γ hacc hs p hp; simp only [normalizeAt] at hp; exact absurd hp (by simp)
+    | method t x ds =>
+      intro acc Γ hacc hs p hp
+      simp only [normalizeAt] at hp
+      split at hp
+      · rename_i r1 qs h1 h2
+        rw [Option.some.injEq] at hp
+        rw [← hp]
+        exact (closed_parMerge acc _).mpr ⟨(closed_iff_Closed acc).mpr hacc,
+          closed_parOf _ (by simp [closedExpr,
+            (closed_iff_Closed r1).mp (closed_normalizeAt t nilPar Γ Closed_nil (by simpa using hs.1) r1 h1),
+            closed_procsPar ds Γ hs.2.2 qs h2])⟩
+      · exact absurd hp (by simp)
     | eval n => intro acc Γ hacc hs p hp; simp only [normalizeAt] at hp; exact absurd hp (by simp)
     | choice bs => intro acc Γ hacc hs p hp; simp only [normalizeAt] at hp; exact absurd hp (by simp)
     | letIn d ds body => intro acc Γ hacc hs p hp; simp only [normalizeAt] at hp; exact absurd hp (by simp)
@@ -1214,9 +1247,42 @@ mutual
     | varRef k x => intro acc Γ hacc hs p hp; simp only [normalizeAt] at hp; exact absurd hp (by simp)
     | conj a b => intro acc Γ hacc hs p hp; simp only [normalizeAt] at hp; exact absurd hp (by simp)
     | disj a b => intro acc Γ hacc hs p hp; simp only [normalizeAt] at hp; exact absurd hp (by simp)
-    | plusPlus a b => intro acc Γ hacc hs p hp; simp only [normalizeAt] at hp; exact absurd hp (by simp)
-    | minusMinus a b => intro acc Γ hacc hs p hp; simp only [normalizeAt] at hp; exact absurd hp (by simp)
-    | pctPct a b => intro acc Γ hacc hs p hp; simp only [normalizeAt] at hp; exact absurd hp (by simp)
+    | plusPlus a b =>
+      intro acc Γ hacc hs p hp
+      simp only [normalizeAt] at hp
+      split at hp
+      · rename_i r1 r2 h1 h2
+        rw [Option.some.injEq] at hp
+        rw [← hp]
+        exact (closed_parMerge acc _).mpr ⟨(closed_iff_Closed acc).mpr hacc,
+          closed_parOf _ (by simp [closedExpr,
+            (closed_iff_Closed r1).mp (closed_normalizeAt a nilPar Γ Closed_nil (by simpa using hs.1) r1 h1),
+            (closed_iff_Closed r2).mp (closed_normalizeAt b nilPar Γ Closed_nil (by simpa using hs.2) r2 h2)])⟩
+      · exact absurd hp (by simp)
+    | minusMinus a b =>
+      intro acc Γ hacc hs p hp
+      simp only [normalizeAt] at hp
+      split at hp
+      · rename_i r1 r2 h1 h2
+        rw [Option.some.injEq] at hp
+        rw [← hp]
+        exact (closed_parMerge acc _).mpr ⟨(closed_iff_Closed acc).mpr hacc,
+          closed_parOf _ (by simp [closedExpr,
+            (closed_iff_Closed r1).mp (closed_normalizeAt a nilPar Γ Closed_nil (by simpa using hs.1) r1 h1),
+            (closed_iff_Closed r2).mp (closed_normalizeAt b nilPar Γ Closed_nil (by simpa using hs.2) r2 h2)])⟩
+      · exact absurd hp (by simp)
+    | pctPct a b =>
+      intro acc Γ hacc hs p hp
+      simp only [normalizeAt] at hp
+      split at hp
+      · rename_i r1 r2 h1 h2
+        rw [Option.some.injEq] at hp
+        rw [← hp]
+        exact (closed_parMerge acc _).mpr ⟨(closed_iff_Closed acc).mpr hacc,
+          closed_parOf _ (by simp [closedExpr,
+            (closed_iff_Closed r1).mp (closed_normalizeAt a nilPar Γ Closed_nil (by simpa using hs.1) r1 h1),
+            (closed_iff_Closed r2).mp (closed_normalizeAt b nilPar Γ Closed_nil (by simpa using hs.2) r2 h2)])⟩
+      · exact absurd hp (by simp)
     | mult a b =>
       intro acc Γ hacc hs p hp
       simp only [normalizeAt] at hp
@@ -1614,18 +1680,13 @@ structure SurfaceBoundary where
 side of the same gaps is recorded. -/
 def surfaceBoundaries : List SurfaceBoundary :=
   [ ⟨"simple-type", "`Proc16 ::= SimpleType` has no flat leaf: the model's `Expr` has no type leaf"⟩
-  , ⟨"method-call", "`PMethod` dispatches to a native method at reduce time; the flat `Par` has no node for it"⟩
   , ⟨"eval", "`PEval` (`*Name`) needs the normalizer's environment, which this function does not model"⟩
   , ⟨"select", "`PChoice`'s branches carry their own receipts; the flat `Receive` has one body each"⟩
   , ⟨"let", "`PLet` desugars through the normalizer's declaration machinery, not in one step"⟩
   , ⟨"send-synch", "`PSendSynch` has no flat constructor (the port's `proc_ast` has one, the model does not)"⟩
   , ⟨"var-ref", "`PVarRef` has no flat constructor"⟩
   , ⟨"connective", "`/\\` and `\\/` in *process* position are refused by the port itself (law 32's table)"⟩
-  , ⟨"plus-plus", "`++` is a collection operation the model's `Expr` does not carry"⟩
-  , ⟨"minus-minus", "`--` is a set operation the model's `Expr` does not carry"⟩
-  , ⟨"pct-pct", "`%%` is the map/dictionary operation; the model's `Expr` does not carry it"⟩
   , ⟨"peek-receipt", "`<<-` has no flat representation: the model's `Receive` has a persistent flag and no peek one"⟩
-  , ⟨"bigint-ground", "the model's `Ground` has no bigint leaf (AUDIT C28's boundary, as in `Rchain/Json.lean`)"⟩
   , ⟨"bind-remainder", "`[Name] NameRemainder` in a bind: the flat `ReceiveBind` carries patterns and no remainder"⟩
   , ⟨"name-source", "`Name ?!` / `Name !?( data )` binds: the flat shape is the normalizer's, not the parser's"⟩
   ]
@@ -1639,7 +1700,7 @@ theorem surfaceBoundaries_nonempty :
   decide
 
 /-- How many boundaries the model names. -/
-def surfaceBoundaryCount : Nat := 15
+def surfaceBoundaryCount : Nat := 10
 
 /-- The boundary table carries exactly `surfaceBoundaryCount` rows. -/
 theorem surfaceBoundaries_length :

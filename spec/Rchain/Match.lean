@@ -105,6 +105,8 @@ mutual
     | .eset ps _ => 1 + parNodesListPar ps
     | .etuple ps => 1 + parNodesListPar ps
     | .emap kvs _ => 1 + parNodesPairs kvs
+    -- The `_` below is a **decision**, not an omission: the five constructors added 2026-09-25 count
+    -- one node each, because a node count is a fuel bound and `matchPar` spends one either way.
     | _ => 1
 
   /-- The nodes a list of `Par`s presents. -/
@@ -286,6 +288,8 @@ mutual
         | [.emap tks _] =>
           if r.isSome || kvs.length == tks.length then matchMap f kvs tks r.isSome else false
         | _ => false
+      -- The `_` below is a **decision**: none of the five constructors added 2026-09-25 is a spatial
+      -- pattern, so a pattern containing one matches nothing and exposes no clause.
       | _ => false
 
   /-- `matchListPos fuel patterns targets absorb` — **lists and tuples**: `patterns`' elements match
@@ -378,6 +382,8 @@ mutual
     | .eset ps _ => freeLevelsOfListPar ps
     | .etuple ps => freeLevelsOfListPar ps
     | .emap kvs _ => freeLevelsOfPairs kvs
+    -- The `_` below is a **decision**: the five constructors added 2026-09-25 are not `modelledExpr`,
+    -- so the matcher never reads inside one and their levels cannot be observed.
     | _ => []
 
   /-- The levels a list of `Par`s mentions. -/
@@ -514,6 +520,8 @@ mutual
     | .eset ps _ => modelledPars ps
     | .etuple ps => modelledPars ps
     | .emap kvs _ => modelledPairs kvs
+    -- The `_` below is a **decision**: the five constructors added 2026-09-25 are not modelled by the
+    -- spatial matcher — no clause of `matchPar` reads a method call, `%%`, `++`, `--` or a bigint.
     | _ => false
   def modelledPars : List Par → Bool
     | [] => true
@@ -721,6 +729,10 @@ mutual
     | .eset ps none => pathPars ps
     | .etuple ps => pathPars ps
     | .emap kvs none => pathPairs kvs
+    -- The five added 2026-09-25 are **not** path nodes, named rather than left to the `_` below: a
+    -- method call, `%%`/`++`/`--` and a bigint literal have no clause in the matcher's path grammar,
+    -- so their presence in a pattern makes it `modelledExpr`-false rather than a path.
+    | .ebigint _ | .emethod _ _ _ | .epercentPercent _ _ | .eplusPlus _ _ | .eminusMinus _ _ => false
     | _ => false
   /-- A collection's elements. -/
   def pathPars : List Par → Bool
@@ -1198,6 +1210,11 @@ mutual
         cases r with
         | none => exact freeLevels_pathPairs kvs (pathExpr_emap' h)
         | some v => rw [pathExpr_emap_some] at h; exact absurd h (by decide)
+      | ebigint n => rfl
+      | emethod name tgt args => rfl
+      | epercentPercent a b => rfl
+      | eplusPlus a b => rfl
+      | eminusMinus a b => rfl
       | evar v => rw [pathExpr_evar] at h; exact absurd h (by decide)
       | eneg q => rfl
       | enot q => rfl
@@ -1381,6 +1398,12 @@ private theorem pathExpr_eneq (a b : Par) : pathExpr (.eneq a b) = false := rfl
 private theorem pathExpr_eand (a b : Par) : pathExpr (.eand a b) = false := rfl
 private theorem pathExpr_eor (a b : Par) : pathExpr (.eor a b) = false := rfl
 private theorem pathExpr_ematches (a b : Par) : pathExpr (.ematches a b) = false := rfl
+private theorem pathExpr_ebigint (n : Int) : pathExpr (.ebigint n) = false := rfl
+private theorem pathExpr_emethod (name : List Nat) (tgt : Par) (args : List Par) :
+    pathExpr (.emethod name tgt args) = false := rfl
+private theorem pathExpr_epercentPercent (a b : Par) : pathExpr (.epercentPercent a b) = false := rfl
+private theorem pathExpr_eplusPlus (a b : Par) : pathExpr (.eplusPlus a b) = false := rfl
+private theorem pathExpr_eminusMinus (a b : Par) : pathExpr (.eminusMinus a b) = false := rfl
 private theorem pathExpr_eshortand (a b : Par) : pathExpr (.eshortand a b) = false := rfl
 private theorem pathExpr_eshortor (a b : Par) : pathExpr (.eshortor a b) = false := rfl
 
@@ -1444,6 +1467,11 @@ private theorem pathExpr_cases {e : Expr} (h : pathExpr e = true) :
   | ematches a b => rw [pathExpr_ematches] at h; exact absurd h (by decide)
   | eshortand a b => rw [pathExpr_eshortand] at h; exact absurd h (by decide)
   | eshortor a b => rw [pathExpr_eshortor] at h; exact absurd h (by decide)
+  | ebigint n => rw [pathExpr_ebigint] at h; exact absurd h (by decide)
+  | emethod name tgt args => rw [pathExpr_emethod] at h; exact absurd h (by decide)
+  | epercentPercent a b => rw [pathExpr_epercentPercent] at h; exact absurd h (by decide)
+  | eplusPlus a b => rw [pathExpr_eplusPlus] at h; exact absurd h (by decide)
+  | eminusMinus a b => rw [pathExpr_eminusMinus] at h; exact absurd h (by decide)
 
 /-! ### The clause reductions: one `rfl` lemma per pattern/target pair
 

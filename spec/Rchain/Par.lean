@@ -71,6 +71,27 @@ mutual
     | etuple : List Par → Expr
     | eset   : List Par → Option Var → Expr
     | emap   : List (Par × Par) → Option Var → Expr
+    -- The five the node has and this model did not (2026-09-25, law 1a's remaining unit). Declared in
+    -- **score-tag** order, and each is its own class rather than a leaf of `ground` or of an existing
+    -- operator, because the node's tags interleave: `BIG_INT` 13 sorts *after* the collections and
+    -- *before* the vars, `EMETHOD` 115 *between* `EOR` 114 and `EMATCHES` 118, and `EPERCENT` 119 /
+    -- `EPLUSPLUS` 120 / `EMINUSMINUS` 121 between `EMATCHES` 118 and `EMOD` 122. `Ground` is untouched
+    -- and that is the design, not an omission: the protobuf's `g_big_int` is an **`Expr`** variant
+    -- (`models/proto/RhoTypes.proto:174`, beside `g_bool`/`g_int`/`g_string`/`g_uri`/`g_byte_array`) and
+    -- the port's normalizer *converts* the parse-level ground into one
+    -- (`normalizer.rs:74-77`, `Ground::GroundBigInt -> Expr::GBigInt`), which is what `ebigint` mirrors.
+    -- A `Ground.bigint` would instead force `exprTag (.ground _)` to inspect its payload, and that stuck
+    -- `match` is the failure `Rchain/Sort.lean`'s boundary note and AUDIT C58 record as measured.
+    | ebigint : Int → Expr
+    -- `EMETHOD`'s name is a **code-point list**, the model's convention for strings (`Ground.str`,
+    -- `Ground.uri`), rather than a `String`: the node compares `leaf_str` byte-wise and Lean's `Ord
+    -- String` would drag its `DecidableRel` instance argument into the comparator's *statements*, which
+    -- no law of this file's shape can be stated over consistently. UTF-8 preserves code-point order, so
+    -- the two orders agree. `Surface.lean`'s ``charsOf`` is the adapter.
+    | emethod : List Nat → Par → List Par → Expr
+    | epercentPercent : Par → Par → Expr
+    | eplusPlus : Par → Par → Expr
+    | eminusMinus : Par → Par → Expr
 
   /-- `Bundle` — body plus the read/write capability flags. -/
   inductive Bundle where
@@ -145,6 +166,12 @@ def Expr.remainder : Expr → Option Var
   | .elist _ r => r
   | .eset _ r => r
   | .emap _ r => r
+  -- The five added 2026-09-25 carry no remainder, named rather than left to the `_` below: a remainder
+  -- is a property of the three collection forms alone (`rholang_mercury.cf:189-193`), so a new
+  -- constructor reaching here is a decision, not an accident of the catch-all.
+  | .ebigint _ => none
+  | .emethod _ _ _ => none
+  | .epercentPercent _ _ | .eplusPlus _ _ | .eminusMinus _ _ => none
   | _ => none
 
 /-- A collection form carrying a remainder. In the grammar only `[…]`, `Set(…)` and `{…}` allow one
@@ -222,12 +249,18 @@ mutual
 
   def connectiveUsedExpr : Expr → Bool
     | .ground _ => false
+    | .ebigint _ => false
     | .evar v => v.isConnective
     | .eneg p | .enot p => connectiveUsed p
     | .eplus p q | .eminus p q | .emult p q | .ediv p q | .emod p q
     | .elt p q | .ele p q | .egt p q | .ege p q | .eeq p q | .eneq p q
-    | .eand p q | .eor p q | .ematches p q | .eshortand p q | .eshortor p q =>
+    | .eand p q | .eor p q | .ematches p q | .eshortand p q | .eshortor p q
+    | .epercentPercent p q | .eplusPlus p q | .eminusMinus p q =>
       connectiveUsed p || connectiveUsed q
+    -- `EMETHOD` is the one the node computes its own way: `target.connective_used || args…`
+    -- (`normalizer.rs:973-979`), copied verbatim here — and it is why the node's score carries a
+    -- trailing `connective_used` leaf that this model does not (`Rchain/Sort.lean`'s note).
+    | .emethod _ t args => connectiveUsed t || connectiveUsedListPar args
     | .elist ps r => connectiveUsedListPar ps || r.isSome
     | .etuple ps => connectiveUsedListPar ps
     | .eset ps r => connectiveUsedListPar ps || r.isSome

@@ -179,6 +179,14 @@ mutual
     | .etuple ps => singleExpr (.etuple (substListPar σ d ps))
     | .eset ps r => singleExpr (.eset (sortListPar (substListPar σ d ps)) r)
     | .emap kvs r => singleExpr (.emap (sortListParPair (substListParPair σ d kvs)) r)
+    -- The five added 2026-09-25. `emethod` carries a code-point name and an ordered argument list (each
+    -- argument substituted in place, as `models/src/substitute.rs` does), so its list is
+    -- `substListPar` and not the `sortList`-wrapped form the collection arms use.
+    | .ebigint n => singleExpr (.ebigint n)
+    | .emethod name t args => singleExpr (.emethod name (substPar σ d t) (substListPar σ d args))
+    | .epercentPercent a b => singleExpr (.epercentPercent (substPar σ d a) (substPar σ d b))
+    | .eplusPlus a b => singleExpr (.eplusPlus (substPar σ d a) (substPar σ d b))
+    | .eminusMinus a b => singleExpr (.eminusMinus (substPar σ d a) (substPar σ d b))
 
   def substListSend (σ : Var → Par) (d : Nat) : List Send → List Send
     | [] => []
@@ -400,6 +408,18 @@ mutual
       simp only [substBundle, sortBundle]; rw [sortPar_subst σ d body]
   termination_by x => sizeOf x
 
+  /-- `sortListPar`'s half of the substitution law, **without** the `sortList` wrapper `sortListPar_subst`
+      carries: `emethod`'s arguments are sorted individually in place (`sorter.rs:677-698`), so its list
+      lemma is this one, proved elementwise from `sortPar_subst`. -/
+  theorem sortListPar_subst_unsorted (σ : Var → Par) (d : Nat) :
+      ∀ l : List Par,
+        sortListPar (substListPar σ d l) = sortListPar (substListPar σ d (sortListPar l))
+    | [] => by simp [substListPar, sortListPar]
+    | x :: xs => by
+      simp only [substListPar, sortListPar, List.map_cons]
+      rw [sortPar_subst σ d x, sortListPar_subst_unsorted σ d xs]
+  termination_by l => sizeOf l
+
   theorem sortExprToPar_subst (σ : Var → Par) (d : Nat) :
       ∀ e : Expr, sortPar (substExprToPar σ d e) = sortPar (substExprToPar σ d (sortExpr e))
     | .ground g => by simp only [substExprToPar.eq_def, sortExpr.eq_def, sortPar_singleExpr]
@@ -485,6 +505,19 @@ mutual
         (substListParPair σ d
           (sortList (Comparator.cmpPair parComparator parComparator) (sortListParPair kvs))))
       exact h1.trans (h2.trans h3.symm)
+    | .ebigint _ => by simp only [substExprToPar.eq_def, sortExpr.eq_def, sortPar_singleExpr]
+    | .emethod name t args => by
+      simp only [substExprToPar.eq_def, sortExpr.eq_def, sortPar_singleExpr]
+      rw [sortPar_subst σ d t, sortListPar_subst_unsorted σ d args]
+    | .epercentPercent a b => by
+      simp only [substExprToPar.eq_def, sortExpr.eq_def, sortPar_singleExpr]
+      rw [sortPar_subst σ d a, sortPar_subst σ d b]
+    | .eplusPlus a b => by
+      simp only [substExprToPar.eq_def, sortExpr.eq_def, sortPar_singleExpr]
+      rw [sortPar_subst σ d a, sortPar_subst σ d b]
+    | .eminusMinus a b => by
+      simp only [substExprToPar.eq_def, sortExpr.eq_def, sortPar_singleExpr]
+      rw [sortPar_subst σ d a, sortPar_subst σ d b]
   termination_by e => sizeOf e
 
   theorem sortConnective_subst (σ : Var → Par) (d : Nat) :
@@ -1240,6 +1273,26 @@ mutual
       refine ⟨?_, h.2⟩
       rw [sortListParPair_eq_map, closedListParPair_map_sortParPair]
       exact substListParPair_closed σ hσ d kvs h.1
+    | .ebigint n, _ => by
+      simp only [substExprToPar]; rw [closed_singleExpr_iff]; simp [closedExpr]
+    | .emethod name t args, h => by
+      simp only [substExprToPar]; rw [closed_singleExpr_iff]
+      simp only [closedExpr, Bool.and_eq_true] at h ⊢
+      exact ⟨(by simpa [closed_eq_Closed] using
+                substPar_closed σ hσ d t (by simpa [closed_eq_Closed] using h.1)),
+             substListPar_closed σ hσ d args h.2⟩
+    | .epercentPercent a b, h => by
+      simp only [substExprToPar]; rw [closed_singleExpr_iff]
+      simp only [closedExpr, Bool.and_eq_true] at h ⊢
+      exact ⟨(by simpa [closed_eq_Closed] using substPar_closed σ hσ d a (by simpa [closed_eq_Closed] using h.1)), (by simpa [closed_eq_Closed] using substPar_closed σ hσ d b (by simpa [closed_eq_Closed] using h.2))⟩
+    | .eplusPlus a b, h => by
+      simp only [substExprToPar]; rw [closed_singleExpr_iff]
+      simp only [closedExpr, Bool.and_eq_true] at h ⊢
+      exact ⟨(by simpa [closed_eq_Closed] using substPar_closed σ hσ d a (by simpa [closed_eq_Closed] using h.1)), (by simpa [closed_eq_Closed] using substPar_closed σ hσ d b (by simpa [closed_eq_Closed] using h.2))⟩
+    | .eminusMinus a b, h => by
+      simp only [substExprToPar]; rw [closed_singleExpr_iff]
+      simp only [closedExpr, Bool.and_eq_true] at h ⊢
+      exact ⟨(by simpa [closed_eq_Closed] using substPar_closed σ hσ d a (by simpa [closed_eq_Closed] using h.1)), (by simpa [closed_eq_Closed] using substPar_closed σ hσ d b (by simpa [closed_eq_Closed] using h.2))⟩
   termination_by e _ => sizeOf e
 end
 

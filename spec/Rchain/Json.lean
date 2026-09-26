@@ -146,6 +146,11 @@ mutual
     | .elist ps _ => some (.list (parsToJE ps))
     | .eset ps _ => some (.set (parsToJE ps))
     | .emap kvs _ => some (.map (mapKvsToJE kvs))
+    -- The five added 2026-09-25 are **outside this fragment**, and named rather than left to the `_`
+    -- below: `exprToJE` encodes the reply/envelope shapes the node's JSON layer carries, and a method
+    -- call, `%%`, `++`, `--` or a bigint literal is not one of them. Adding them would be a new
+    -- corpus (`json.tsv` rows read off the node), not an arm — so the boundary is stated, not widened.
+    | .ebigint _ | .emethod _ _ _ | .epercentPercent _ _ | .eplusPlus _ _ | .eminusMinus _ _ => none
     | _ => none
 
   def parsToJE : List Par → List JE

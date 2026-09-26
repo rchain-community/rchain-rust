@@ -213,6 +213,12 @@ mutual
     | Expr.eset _ _, _ => .lt | _, Expr.eset _ _ => .gt
     | Expr.emap kvs r, Expr.emap kvs' r' => lex (cmpListParPair kvs kvs') (cmpOptionVar r r')
     | Expr.emap _ _, _ => .lt | _, Expr.emap _ _ => .gt
+    -- `BIG_INT` 13 — the node's own placement, *after* the collections and *before* the vars. The leaf
+    -- is numeric (`sorter.rs:540-543`'s `node_score(BIG_INT, [leaf_bigint v])`, a `BigInt` atom), which
+    -- is why this is its own class and not a leaf of `Expr.ground`: the ground class sorts at tag 0,
+    -- ahead of `elist`(6), and `BigInt` must sort behind it.
+    | Expr.ebigint n, Expr.ebigint n' => _root_.cmp n n'
+    | Expr.ebigint _, _ => .lt | _, Expr.ebigint _ => .gt
     -- `EVAR` 100, then the operators 101–114 in tag order.
     | Expr.evar v, Expr.evar v' => cmpVar v v'
     | Expr.evar _, _ => .lt | _, Expr.evar _ => .gt
@@ -244,10 +250,26 @@ mutual
     | Expr.eand _ _, _ => .lt | _, Expr.eand _ _ => .gt
     | Expr.eor p q, Expr.eor p' q' => lex (cmpPar p p') (cmpPar q q')
     | Expr.eor _ _, _ => .lt | _, Expr.eor _ _ => .gt
-    -- `EMATCHES` 118, `EMOD` 122, `ESHORTAND` 123, `ESHORTOR` 124 — note `emod` is *not* last in the
-    -- node, which is why its pair arm is followed by its own fallbacks and then three more groups.
+    -- `EMETHOD` 115 — interior, so it carries its fallback pair. Its children are the node's, in the
+    -- node's order (`sorter.rs:677-698`): the tag, then `method_name` as a **string leaf**, the target's
+    -- score, then each argument's. The node appends a `connective_used` leaf last and this model does
+    -- not; that leaf is *derived* from the target and the arguments (`normalizer.rs:968-979`), so it can
+    -- never separate two terms the parser can produce — see the note above the family.
+    | Expr.emethod name t args, Expr.emethod name' t' args' =>
+        lex (cmpListF (fun a b => _root_.cmp a b) name name')
+            (lex (cmpPar t t') (cmpListPar args args'))
+    | Expr.emethod _ _ _, _ => .lt | _, Expr.emethod _ _ _ => .gt
+    -- `EMATCHES` 118, `EPERCENT` 119, `EPLUSPLUS` 120, `EMINUSMINUS` 121, `EMOD` 122, `ESHORTAND` 123,
+    -- `ESHORTOR` 124 — note `emod` is *not* last in the node, which is why its pair arm is followed by
+    -- its own fallbacks and then three more groups.
     | Expr.ematches p q, Expr.ematches p' q' => lex (cmpPar p p') (cmpPar q q')
     | Expr.ematches _ _, _ => .lt | _, Expr.ematches _ _ => .gt
+    | Expr.epercentPercent p q, Expr.epercentPercent p' q' => lex (cmpPar p p') (cmpPar q q')
+    | Expr.epercentPercent _ _, _ => .lt | _, Expr.epercentPercent _ _ => .gt
+    | Expr.eplusPlus p q, Expr.eplusPlus p' q' => lex (cmpPar p p') (cmpPar q q')
+    | Expr.eplusPlus _ _, _ => .lt | _, Expr.eplusPlus _ _ => .gt
+    | Expr.eminusMinus p q, Expr.eminusMinus p' q' => lex (cmpPar p p') (cmpPar q q')
+    | Expr.eminusMinus _ _, _ => .lt | _, Expr.eminusMinus _ _ => .gt
     | Expr.emod p q, Expr.emod p' q' => lex (cmpPar p p') (cmpPar q q')
     | Expr.emod _ _, _ => .lt | _, Expr.emod _ _ => .gt
     | Expr.eshortand p q, Expr.eshortand p' q' => lex (cmpPar p p') (cmpPar q q')
@@ -379,6 +401,7 @@ def exprTag : Expr → Nat
   | .etuple _ => 7
   | .eset _ _ => 8
   | .emap _ _ => 9
+  | .ebigint _ => 13
   | .evar _ => 100
   | .eneg _ => 101
   | .emult _ _ => 102
@@ -394,7 +417,11 @@ def exprTag : Expr → Nat
   | .enot _ => 112
   | .eand _ _ => 113
   | .eor _ _ => 114
+  | .emethod _ _ _ => 115
   | .ematches _ _ => 118
+  | .epercentPercent _ _ => 119
+  | .eplusPlus _ _ => 120
+  | .eminusMinus _ _ => 121
   | .emod _ _ => 122
   | .eshortand _ _ => 123
   | .eshortor _ _ => 124
@@ -422,6 +449,11 @@ set_option maxHeartbeats 8000000 in
 set_option maxHeartbeats 8000000 in
 @[simp] theorem cmpExpr_emap (kvs kvs' : List (Par × Par)) (r r' : Option Var) :
     cmpExpr (.emap kvs r) (.emap kvs' r') = lex (cmpListParPair kvs kvs') (cmpOptionVar r r') := by
+  simp only [cmpExpr.eq_def]
+
+set_option maxHeartbeats 8000000 in
+@[simp] theorem cmpExpr_ebigint (n n' : Int) :
+    cmpExpr (.ebigint n) (.ebigint n') = _root_.cmp n n' := by
   simp only [cmpExpr.eq_def]
 
 set_option maxHeartbeats 8000000 in
@@ -500,6 +532,13 @@ set_option maxHeartbeats 8000000 in
   simp only [cmpExpr.eq_def]
 
 set_option maxHeartbeats 8000000 in
+@[simp] theorem cmpExpr_emethod (name name' : List Nat) (t t' : Par) (args args' : List Par) :
+    cmpExpr (.emethod name t args) (.emethod name' t' args') =
+      lex (cmpListF (fun a b => _root_.cmp a b) name name')
+        (lex (cmpPar t t') (cmpListPar args args')) := by
+  simp only [cmpExpr.eq_def]
+
+set_option maxHeartbeats 8000000 in
 @[simp] theorem cmpExpr_emod (p p' q q' : Par) :
     cmpExpr (.emod p q) (.emod p' q') = lex (cmpPar p p') (cmpPar q q') := by
   simp only [cmpExpr.eq_def]
@@ -507,6 +546,21 @@ set_option maxHeartbeats 8000000 in
 set_option maxHeartbeats 8000000 in
 @[simp] theorem cmpExpr_ematches (p p' q q' : Par) :
     cmpExpr (.ematches p q) (.ematches p' q') = lex (cmpPar p p') (cmpPar q q') := by
+  simp only [cmpExpr.eq_def]
+
+set_option maxHeartbeats 8000000 in
+@[simp] theorem cmpExpr_epercentPercent (p p' q q' : Par) :
+    cmpExpr (.epercentPercent p q) (.epercentPercent p' q') = lex (cmpPar p p') (cmpPar q q') := by
+  simp only [cmpExpr.eq_def]
+
+set_option maxHeartbeats 8000000 in
+@[simp] theorem cmpExpr_eplusPlus (p p' q q' : Par) :
+    cmpExpr (.eplusPlus p q) (.eplusPlus p' q') = lex (cmpPar p p') (cmpPar q q') := by
+  simp only [cmpExpr.eq_def]
+
+set_option maxHeartbeats 8000000 in
+@[simp] theorem cmpExpr_eminusMinus (p p' q q' : Par) :
+    cmpExpr (.eminusMinus p q) (.eminusMinus p' q') = lex (cmpPar p p') (cmpPar q q') := by
   simp only [cmpExpr.eq_def]
 
 set_option maxHeartbeats 8000000 in
@@ -770,6 +824,56 @@ private theorem cmpExpr_eshortor_tag_gt {p q : Par} {t : Expr}
   cases t <;> simp_all [exprTag, Nat.reduceLT] <;> simp only [cmpExpr.eq_def]
 
 set_option maxHeartbeats 8000000 in
+private theorem cmpExpr_ebigint_tag_lt {n : Int} {t : Expr}
+    (h : exprTag (.ebigint n) < exprTag t) : cmpExpr (.ebigint n) t = .lt := by
+  cases t <;> simp_all [exprTag, Nat.reduceLT] <;> simp only [cmpExpr.eq_def]
+
+set_option maxHeartbeats 8000000 in
+private theorem cmpExpr_ebigint_tag_gt {n : Int} {t : Expr}
+    (h : exprTag t < exprTag (.ebigint n)) : cmpExpr (.ebigint n) t = .gt := by
+  cases t <;> simp_all [exprTag, Nat.reduceLT] <;> simp only [cmpExpr.eq_def]
+
+set_option maxHeartbeats 8000000 in
+private theorem cmpExpr_emethod_tag_lt {name : List Nat} {tgt : Par} {args : List Par} {t : Expr}
+    (h : exprTag (.emethod name tgt args) < exprTag t) : cmpExpr (.emethod name tgt args) t = .lt := by
+  cases t <;> simp_all [exprTag, Nat.reduceLT] <;> simp only [cmpExpr.eq_def]
+
+set_option maxHeartbeats 8000000 in
+private theorem cmpExpr_emethod_tag_gt {name : List Nat} {tgt : Par} {args : List Par} {t : Expr}
+    (h : exprTag t < exprTag (.emethod name tgt args)) : cmpExpr (.emethod name tgt args) t = .gt := by
+  cases t <;> simp_all [exprTag, Nat.reduceLT] <;> simp only [cmpExpr.eq_def]
+
+set_option maxHeartbeats 8000000 in
+private theorem cmpExpr_epercentPercent_tag_lt {p q : Par} {t : Expr}
+    (h : exprTag (.epercentPercent p q) < exprTag t) : cmpExpr (.epercentPercent p q) t = .lt := by
+  cases t <;> simp_all [exprTag, Nat.reduceLT] <;> simp only [cmpExpr.eq_def]
+
+set_option maxHeartbeats 8000000 in
+private theorem cmpExpr_epercentPercent_tag_gt {p q : Par} {t : Expr}
+    (h : exprTag t < exprTag (.epercentPercent p q)) : cmpExpr (.epercentPercent p q) t = .gt := by
+  cases t <;> simp_all [exprTag, Nat.reduceLT] <;> simp only [cmpExpr.eq_def]
+
+set_option maxHeartbeats 8000000 in
+private theorem cmpExpr_eplusPlus_tag_lt {p q : Par} {t : Expr}
+    (h : exprTag (.eplusPlus p q) < exprTag t) : cmpExpr (.eplusPlus p q) t = .lt := by
+  cases t <;> simp_all [exprTag, Nat.reduceLT] <;> simp only [cmpExpr.eq_def]
+
+set_option maxHeartbeats 8000000 in
+private theorem cmpExpr_eplusPlus_tag_gt {p q : Par} {t : Expr}
+    (h : exprTag t < exprTag (.eplusPlus p q)) : cmpExpr (.eplusPlus p q) t = .gt := by
+  cases t <;> simp_all [exprTag, Nat.reduceLT] <;> simp only [cmpExpr.eq_def]
+
+set_option maxHeartbeats 8000000 in
+private theorem cmpExpr_eminusMinus_tag_lt {p q : Par} {t : Expr}
+    (h : exprTag (.eminusMinus p q) < exprTag t) : cmpExpr (.eminusMinus p q) t = .lt := by
+  cases t <;> simp_all [exprTag, Nat.reduceLT] <;> simp only [cmpExpr.eq_def]
+
+set_option maxHeartbeats 8000000 in
+private theorem cmpExpr_eminusMinus_tag_gt {p q : Par} {t : Expr}
+    (h : exprTag t < exprTag (.eminusMinus p q)) : cmpExpr (.eminusMinus p q) t = .gt := by
+  cases t <;> simp_all [exprTag, Nat.reduceLT] <;> simp only [cmpExpr.eq_def]
+
+set_option maxHeartbeats 8000000 in
 /-- The cross cases, by tag: a smaller tag compares `lt`. The 24-arm dispatch, one
     arm per *left* class, calling the `private cmpExpr_<class>_tag_lt` lemmas above — so the
     statement and the name are unchanged from the committed file (law 1b cites this name and the
@@ -782,6 +886,7 @@ set_option maxHeartbeats 8000000 in
     | exact cmpExpr_etuple_tag_lt h
     | exact cmpExpr_eset_tag_lt h
     | exact cmpExpr_emap_tag_lt h
+    | exact cmpExpr_ebigint_tag_lt h
     | exact cmpExpr_evar_tag_lt h
     | exact cmpExpr_eneg_tag_lt h
     | exact cmpExpr_enot_tag_lt h
@@ -797,7 +902,11 @@ set_option maxHeartbeats 8000000 in
     | exact cmpExpr_eneq_tag_lt h
     | exact cmpExpr_eand_tag_lt h
     | exact cmpExpr_eor_tag_lt h
+    | exact cmpExpr_emethod_tag_lt h
     | exact cmpExpr_ematches_tag_lt h
+    | exact cmpExpr_epercentPercent_tag_lt h
+    | exact cmpExpr_eplusPlus_tag_lt h
+    | exact cmpExpr_eminusMinus_tag_lt h
     | exact cmpExpr_emod_tag_lt h
     | exact cmpExpr_eshortand_tag_lt h
     | exact cmpExpr_eshortor_tag_lt h
@@ -815,6 +924,7 @@ set_option maxHeartbeats 8000000 in
     | exact cmpExpr_etuple_tag_gt h
     | exact cmpExpr_eset_tag_gt h
     | exact cmpExpr_emap_tag_gt h
+    | exact cmpExpr_ebigint_tag_gt h
     | exact cmpExpr_evar_tag_gt h
     | exact cmpExpr_eneg_tag_gt h
     | exact cmpExpr_enot_tag_gt h
@@ -830,7 +940,11 @@ set_option maxHeartbeats 8000000 in
     | exact cmpExpr_eneq_tag_gt h
     | exact cmpExpr_eand_tag_gt h
     | exact cmpExpr_eor_tag_gt h
+    | exact cmpExpr_emethod_tag_gt h
     | exact cmpExpr_ematches_tag_gt h
+    | exact cmpExpr_epercentPercent_tag_gt h
+    | exact cmpExpr_eplusPlus_tag_gt h
+    | exact cmpExpr_eminusMinus_tag_gt h
     | exact cmpExpr_emod_tag_gt h
     | exact cmpExpr_eshortand_tag_gt h
     | exact cmpExpr_eshortor_tag_gt h
@@ -936,6 +1050,29 @@ private theorem exprTag_eq_eshortand {s : Expr} (h : exprTag s = 123) : ∃ p q,
 
 set_option maxHeartbeats 8000000 in
 private theorem exprTag_eq_eshortor {s : Expr} (h : exprTag s = 124) : ∃ p q, s = .eshortor p q := by
+  cases s <;> first | exact ⟨p, q, rfl⟩ | simp_all [exprTag]
+
+set_option maxHeartbeats 8000000 in
+private theorem exprTag_eq_ebigint {s : Expr} (h : exprTag s = 13) : ∃ n, s = .ebigint n := by
+  cases s <;> first | exact ⟨n, rfl⟩ | simp_all [exprTag]
+
+set_option maxHeartbeats 8000000 in
+private theorem exprTag_eq_emethod {s : Expr} (h : exprTag s = 115) :
+    ∃ name tgt args, s = .emethod name tgt args := by
+  cases s <;> first | exact ⟨name, tgt, args, rfl⟩ | simp_all [exprTag]
+
+set_option maxHeartbeats 8000000 in
+private theorem exprTag_eq_epercentPercent {s : Expr} (h : exprTag s = 119) :
+    ∃ p q, s = .epercentPercent p q := by
+  cases s <;> first | exact ⟨p, q, rfl⟩ | simp_all [exprTag]
+
+set_option maxHeartbeats 8000000 in
+private theorem exprTag_eq_eplusPlus {s : Expr} (h : exprTag s = 120) : ∃ p q, s = .eplusPlus p q := by
+  cases s <;> first | exact ⟨p, q, rfl⟩ | simp_all [exprTag]
+
+set_option maxHeartbeats 8000000 in
+private theorem exprTag_eq_eminusMinus {s : Expr} (h : exprTag s = 121) :
+    ∃ p q, s = .eminusMinus p q := by
   cases s <;> first | exact ⟨p, q, rfl⟩ | simp_all [exprTag]
 
 
@@ -1100,6 +1237,41 @@ mutual
         case eshortor p' q' =>
           rw [cmpExpr_eshortor, lex_eq_iff, cmpPar_eq_iff p p', cmpPar_eq_iff q q',
             Expr.eshortor.injEq]
+        all_goals simp only [exprTag, Nat.reduceLT, cmpExpr_tag_lt, cmpExpr_tag_gt,
+          reduceCtorEq]
+    | (.ebigint n), t => by
+        cases t
+        case ebigint n' =>
+          simp [cmpExpr_ebigint, cmp_eq_eq_iff, Expr.ebigint.injEq]
+        all_goals simp only [exprTag, Nat.reduceLT, cmpExpr_tag_lt, cmpExpr_tag_gt,
+          reduceCtorEq]
+    | (.emethod name tgt args), t => by
+        cases t
+        case emethod name' tgt' args' =>
+          rw [cmpExpr_emethod, lex_eq_iff,
+            cmpListF_eq_iff (fun a b => _root_.cmp a b) (fun {a b} => cmp_eq_eq_iff a b) name name',
+            lex_eq_iff, cmpPar_eq_iff tgt tgt', cmpListPar_eq_iff args args', Expr.emethod.injEq]
+        all_goals simp only [exprTag, Nat.reduceLT, cmpExpr_tag_lt, cmpExpr_tag_gt,
+          reduceCtorEq]
+    | (.epercentPercent p q), t => by
+        cases t
+        case epercentPercent p' q' =>
+          rw [cmpExpr_epercentPercent, lex_eq_iff, cmpPar_eq_iff p p', cmpPar_eq_iff q q',
+            Expr.epercentPercent.injEq]
+        all_goals simp only [exprTag, Nat.reduceLT, cmpExpr_tag_lt, cmpExpr_tag_gt,
+          reduceCtorEq]
+    | (.eplusPlus p q), t => by
+        cases t
+        case eplusPlus p' q' =>
+          rw [cmpExpr_eplusPlus, lex_eq_iff, cmpPar_eq_iff p p', cmpPar_eq_iff q q',
+            Expr.eplusPlus.injEq]
+        all_goals simp only [exprTag, Nat.reduceLT, cmpExpr_tag_lt, cmpExpr_tag_gt,
+          reduceCtorEq]
+    | (.eminusMinus p q), t => by
+        cases t
+        case eminusMinus p' q' =>
+          rw [cmpExpr_eminusMinus, lex_eq_iff, cmpPar_eq_iff p p', cmpPar_eq_iff q q',
+            Expr.eminusMinus.injEq]
         all_goals simp only [exprTag, Nat.reduceLT, cmpExpr_tag_lt, cmpExpr_tag_gt,
           reduceCtorEq]
   termination_by s => sizeOf s
@@ -1478,6 +1650,41 @@ mutual
         cases t
         case eshortor p' q' =>
           rw [cmpExpr_eshortor, cmpExpr_eshortor, swap_lex, ← cmpPar_swap p p', ← cmpPar_swap q q']
+        all_goals simp only [exprTag, Nat.reduceLT, cmpExpr_tag_lt, cmpExpr_tag_gt,
+          Ordering.swap, reduceCtorEq]
+    | (.ebigint n), t => by
+        cases t
+        case ebigint n' =>
+          rw [cmpExpr_ebigint, cmpExpr_ebigint, ← cmp_swap n n']
+        all_goals simp only [exprTag, Nat.reduceLT, cmpExpr_tag_lt, cmpExpr_tag_gt,
+          Ordering.swap, reduceCtorEq]
+    | (.emethod name tgt args), t => by
+        cases t
+        case emethod name' tgt' args' =>
+          rw [cmpExpr_emethod, cmpExpr_emethod, swap_lex,
+            ← cmpListF_swap (fun a b => _root_.cmp a b) (fun {a b} => (cmp_swap a b).symm) name name',
+            swap_lex, ← cmpPar_swap tgt tgt', ← cmpListPar_swap args args']
+        all_goals simp only [exprTag, Nat.reduceLT, cmpExpr_tag_lt, cmpExpr_tag_gt,
+          Ordering.swap, reduceCtorEq]
+    | (.epercentPercent p q), t => by
+        cases t
+        case epercentPercent p' q' =>
+          rw [cmpExpr_epercentPercent, cmpExpr_epercentPercent, swap_lex, ← cmpPar_swap p p',
+            ← cmpPar_swap q q']
+        all_goals simp only [exprTag, Nat.reduceLT, cmpExpr_tag_lt, cmpExpr_tag_gt,
+          Ordering.swap, reduceCtorEq]
+    | (.eplusPlus p q), t => by
+        cases t
+        case eplusPlus p' q' =>
+          rw [cmpExpr_eplusPlus, cmpExpr_eplusPlus, swap_lex, ← cmpPar_swap p p',
+            ← cmpPar_swap q q']
+        all_goals simp only [exprTag, Nat.reduceLT, cmpExpr_tag_lt, cmpExpr_tag_gt,
+          Ordering.swap, reduceCtorEq]
+    | (.eminusMinus p q), t => by
+        cases t
+        case eminusMinus p' q' =>
+          rw [cmpExpr_eminusMinus, cmpExpr_eminusMinus, swap_lex, ← cmpPar_swap p p',
+            ← cmpPar_swap q q']
         all_goals simp only [exprTag, Nat.reduceLT, cmpExpr_tag_lt, cmpExpr_tag_gt,
           Ordering.swap, reduceCtorEq]
   termination_by s => sizeOf s
@@ -1938,8 +2145,68 @@ mutual
     · have hle : exprTag u ≤ exprTag s := le_of_not_lt hsu
       have hst' : exprTag s = exprTag t := le_antisymm htag_st (le_trans htag_tu hle)
       have hsu' : exprTag s = exprTag u := le_antisymm (le_trans htag_st htag_tu) hle
+      by_cases h13 : exprTag s = 13
+      · have ht : exprTag t = 13 := by rw [← hst', h13]
+        have hu : exprTag u = 13 := by rw [← hsu', h13]
+        obtain ⟨n₁, rfl⟩ := exprTag_eq_ebigint h13
+        obtain ⟨n₂, rfl⟩ := exprTag_eq_ebigint ht
+        obtain ⟨n₃, rfl⟩ := exprTag_eq_ebigint hu
+        rw [cmpExpr_ebigint] at hst htu ⊢
+        exact (linearOrderComparator Int).lt_trans hst htu
+      by_cases h115 : exprTag s = 115
+      · have ht : exprTag t = 115 := by rw [← hst', h115]
+        have hu : exprTag u = 115 := by rw [← hsu', h115]
+        obtain ⟨nm₁, tg₁, ar₁, rfl⟩ := exprTag_eq_emethod h115
+        obtain ⟨nm₂, tg₂, ar₂, rfl⟩ := exprTag_eq_emethod ht
+        obtain ⟨nm₃, tg₃, ar₃, rfl⟩ := exprTag_eq_emethod hu
+        rw [cmpExpr_emethod] at hst htu ⊢
+        refine lex_lt_trans_at3 (f := fun a b : List Nat => cmpListF (fun x y => _root_.cmp x y) a b)
+          (h_eq_f := fun {a b} =>
+            cmpListF_eq_iff (fun x y => _root_.cmp x y) (fun {x y} => cmp_eq_eq_iff x y) a b)
+          (h_lt_f := cmpListF_lt_trans (fun x y => _root_.cmp x y)
+            (fun {x y} => cmp_eq_eq_iff x y)
+            (fun {x y z} (h1 : _root_.cmp x y = Ordering.lt)
+              (h2 : _root_.cmp y z = Ordering.lt) => by
+              rw [cmp_eq_lt_iff] at h1 h2 ⊢; exact lt_trans h1 h2)
+            nm₁ nm₂ nm₃)
+          (g := cmpPar) (h_eq_g := fun {a b} => cmpPar_eq_iff a b)
+          (h_lt_g := cmpPar_lt_trans _ _ _)
+          (h := cmpListPar) (h_eq_h := fun {a b} => cmpListPar_eq_iff a b)
+          (h_lt_h := cmpListPar_lt_trans _ _ _)
+          hst htu
+      by_cases h119 : exprTag s = 119
+      · have ht : exprTag t = 119 := by rw [← hst', h119]
+        have hu : exprTag u = 119 := by rw [← hsu', h119]
+        obtain ⟨p₁, q₁, rfl⟩ := exprTag_eq_epercentPercent h119
+        obtain ⟨p₂, q₂, rfl⟩ := exprTag_eq_epercentPercent ht
+        obtain ⟨p₃, q₃, rfl⟩ := exprTag_eq_epercentPercent hu
+        rw [cmpExpr_epercentPercent] at hst htu ⊢; refine lex_lt_trans_at (f := cmpPar) (h_eq := fun {a b} => cmpPar_eq_iff a b) (h_lt := cmpPar_lt_trans _ _ _) (Dcmp := cmpPar) (hD := cmpPar_lt_trans _ _ _) hst htu
+      by_cases h120 : exprTag s = 120
+      · have ht : exprTag t = 120 := by rw [← hst', h120]
+        have hu : exprTag u = 120 := by rw [← hsu', h120]
+        obtain ⟨p₁, q₁, rfl⟩ := exprTag_eq_eplusPlus h120
+        obtain ⟨p₂, q₂, rfl⟩ := exprTag_eq_eplusPlus ht
+        obtain ⟨p₃, q₃, rfl⟩ := exprTag_eq_eplusPlus hu
+        rw [cmpExpr_eplusPlus] at hst htu ⊢; refine lex_lt_trans_at (f := cmpPar) (h_eq := fun {a b} => cmpPar_eq_iff a b) (h_lt := cmpPar_lt_trans _ _ _) (Dcmp := cmpPar) (hD := cmpPar_lt_trans _ _ _) hst htu
+      by_cases h121 : exprTag s = 121
+      · have ht : exprTag t = 121 := by rw [← hst', h121]
+        have hu : exprTag u = 121 := by rw [← hsu', h121]
+        obtain ⟨p₁, q₁, rfl⟩ := exprTag_eq_eminusMinus h121
+        obtain ⟨p₂, q₂, rfl⟩ := exprTag_eq_eminusMinus ht
+        obtain ⟨p₃, q₃, rfl⟩ := exprTag_eq_eminusMinus hu
+        rw [cmpExpr_eminusMinus] at hst htu ⊢; refine lex_lt_trans_at (f := cmpPar) (h_eq := fun {a b} => cmpPar_eq_iff a b) (h_lt := cmpPar_lt_trans _ _ _) (Dcmp := cmpPar) (hD := cmpPar_lt_trans _ _ _) hst htu
       cases s <;>
+      all_goals
         first
+          -- The five classes the `by_cases` chain above already settled are *unreachable* here — the
+          -- hypothesis that ruled each out is a contradiction at the class's own literal tag — so these
+          -- closers come first. An arm reaching one of these goals would `rw` on a stuck tag, and
+          -- `rw`'s failure is fatal rather than recoverable: it aborts the whole chain.
+          | (exact absurd rfl h13)
+          | (exact absurd rfl h115)
+          | (exact absurd rfl h119)
+          | (exact absurd rfl h120)
+          | (exact absurd rfl h121)
           | (obtain ⟨g', rfl⟩ := exprTag_eq_ground hst'.symm
              obtain ⟨g'', rfl⟩ := exprTag_eq_ground hsu'.symm
              rw [cmpExpr_ground] at hst htu ⊢; exact groundComparator.lt_trans hst htu)
@@ -2581,6 +2848,14 @@ mutual
     | Expr.etuple ps => Expr.etuple (sortList parComparator (sortListPar ps))
     | Expr.eset ps r => Expr.eset (sortList parComparator (sortListPar ps)) r
     | Expr.emap kvs r => Expr.emap (sortList (cmpPair parComparator parComparator) (sortListParPair kvs)) r
+    -- The five added 2026-09-25. Each argument is sorted *individually* and the list keeps its order
+    -- (`sorter.rs:677-698` sorts each scored argument and rebuilds `arguments` in place) — an
+    -- argument list is ordered, unlike a `Par` field.
+    | Expr.ebigint n => Expr.ebigint n
+    | Expr.emethod name t args => Expr.emethod name (sortPar t) (sortListPar args)
+    | Expr.epercentPercent p q => Expr.epercentPercent (sortPar p) (sortPar q)
+    | Expr.eplusPlus p q => Expr.eplusPlus (sortPar p) (sortPar q)
+    | Expr.eminusMinus p q => Expr.eminusMinus (sortPar p) (sortPar q)
   termination_by x => sizeOf x
 
   def sortBundle : Bundle → Bundle
@@ -2776,6 +3051,19 @@ mutual
         have hkvs : ∀ x, x ∈ kvs → sortParPair (sortParPair x) = sortParPair x := fun x _ => sortParPair_idempotent x
         simp [sortExpr]
         exact sortList_field_idem (cmpPair parComparator parComparator) sortParPair kvs hkvs
+    | Expr.ebigint n => by simp [sortExpr]
+    -- `emethod`'s arguments are sorted element-wise but keep their order (`sorter.rs:677-698`), so its
+    -- law is the order-preserving list's: `sortListPar` is a map, and the induction below is that map's
+    -- idempotence. (No `sortListPar_idempotent` exists to reuse — this is the first caller.)
+    | Expr.emethod name t args => by
+        have ht := sortPar_idempotent t
+        have hpt : ∀ a, a ∈ args → sortPar (sortPar a) = sortPar a := fun a _ => sortPar_idempotent a
+        simp [sortExpr, ht, hpt]
+        exact hpt
+    | Expr.epercentPercent p q | Expr.eplusPlus p q | Expr.eminusMinus p q => by
+        have hp := sortPar_idempotent p
+        have hq := sortPar_idempotent q
+        simp [sortExpr, hp, hq]
   termination_by x => sizeOf x
 
   theorem sortBundle_idempotent : ∀ (x : Bundle), sortBundle (sortBundle x) = sortBundle x

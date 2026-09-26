@@ -42,7 +42,7 @@ theorem swap_lex (o1 o2 : Ordering) : Ordering.swap (lex o1 o2) = lex (Ordering.
 
 -- Bound rather than left to `autoImplicit`: the library is compiled with the option off (the lakefile
 -- sets it for every module), so an unbound universe level is an error rather than a variable.
-universe u v
+universe u v w
 
 /-- A lawful three-way comparator. -/
 structure Comparator (α : Type u) where
@@ -53,7 +53,7 @@ structure Comparator (α : Type u) where
 
 namespace Comparator
 
-variable {α : Type u} {β : Type v}
+variable {α : Type u} {β : Type v} {γ : Type w}
 
 /-- The `≤` relation induced by a comparator: `cmp a b` is `.lt` or `.eq`. -/
 def le (C : Comparator α) (a b : α) : Prop :=
@@ -167,6 +167,32 @@ theorem lex_lt_trans_at {f : α → α → Ordering}
   · rcases h2 with h2 | ⟨h2e, h2d⟩
     · exact Or.inl ((h_eq.mp h1e).symm ▸ h2)
     · exact Or.inr ⟨h_eq.mpr ((h_eq.mp h1e).trans (h_eq.mp h2e)), hD h1d h2d⟩
+
+/-- **The three-component pointwise lex**, for a comparator whose tail is itself a two-component
+    `lex`. `Rchain.Sort`'s `emethod` arm is the caller: the node scores an `EMethod` as
+    `[EMETHOD, method_name, target, arguments…]` (`models/src/sorter.rs:677-698`), so its comparator is
+    `lex name (lex target args)` and its transitivity needs both levels at once. Pointwise for the same
+    reason `lex_lt_trans_at` is: the caller is inside `Sort.lean`'s `mutual` block, and the component
+    laws have to be applied at the *specific* terms the fields hold. -/
+theorem lex_lt_trans_at3 {f : α → α → Ordering}
+    (h_eq_f : ∀ {a b : α}, f a b = Ordering.eq ↔ a = b)
+    {a b c : α} (h_lt_f : f a b = Ordering.lt → f b c = Ordering.lt → f a c = Ordering.lt)
+    {g : β → β → Ordering}
+    (h_eq_g : ∀ {a b : β}, g a b = Ordering.eq ↔ a = b)
+    {d e f' : β} (h_lt_g : g d e = Ordering.lt → g e f' = Ordering.lt → g d f' = Ordering.lt)
+    {h : γ → γ → Ordering}
+    (h_eq_h : ∀ {a b : γ}, h a b = Ordering.eq ↔ a = b)
+    {p q r : γ} (h_lt_h : h p q = Ordering.lt → h q r = Ordering.lt → h p r = Ordering.lt) :
+    lex (f a b) (lex (g d e) (h p q)) = Ordering.lt →
+    lex (f b c) (lex (g e f') (h q r)) = Ordering.lt →
+    lex (f a c) (lex (g d f') (h p r)) = Ordering.lt := by
+  intro h1 h2
+  refine lex_lt_trans_at (f := f) h_eq_f h_lt_f
+    (Dcmp := fun x y : β × γ => lex (g x.1 y.1) (h x.2 y.2))
+    (x := (d, p)) (y := (e, q)) (z := (f', r)) ?_ h1 h2
+  intro hd he
+  exact lex_lt_trans_at (f := g) h_eq_g h_lt_g (Dcmp := h)
+    (a := d) (b := e) (c := f') (x := p) (y := q) (z := r) h_lt_h hd he
 
 /-! ## List and pair comparators -/
 

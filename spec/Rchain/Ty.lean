@@ -154,6 +154,13 @@ mutual
     | Expr.etuple ps => closedListPar ps
     | Expr.eset ps r => closedListPar ps && closedRemainder r
     | Expr.emap kvs r => closedListParPair kvs && closedRemainder r
+    -- The five added 2026-09-25. `emethod`'s name is a code-point list (no variables in it) and its
+    -- arguments are closed exactly when each is; `ebigint` is a ground.
+    | Expr.ebigint _ => true
+    | Expr.emethod _ t args => closed t && closedListPar args
+    | Expr.epercentPercent p q => closed p && closed q
+    | Expr.eplusPlus p q => closed p && closed q
+    | Expr.eminusMinus p q => closed p && closed q
   def closedBundle : Bundle → Bool
     | Bundle.mk b _ _ => closed b
   def closedGUnforgeable : GUnforgeable → Bool
@@ -633,6 +640,18 @@ mutual
             (closed x.1 && closed x.2) := fun x _ => closed_sortParPair x
         simp only [sortExpr, sortListParPair_eq_map, closedExpr]
         rw [closedListParPair_sorted kvs hkv]
+    | Expr.ebigint _ => by simp [sortExpr, closedExpr]
+    | Expr.emethod _ t args => by
+        have hps : ∀ x ∈ args, closed (sortPar x) = closed x := fun x _ => closed_sortPar x
+        -- `emethod`'s arguments are `sortListPar`'s plain map, not a `sortList` of one — the node sorts
+        -- each argument in place instead of ordering the list (`sorter.rs:677-698`) — so this is
+        -- `all_congr` rather than the `closedListPar_sorted` the collection arms use.
+        simp only [sortExpr, closedExpr, closed_sortPar t, closedListPar_all, sortListPar_eq_map,
+          List.all_map, Function.comp_def]
+        rw [all_congr args hps]
+    | Expr.epercentPercent p q => by simp only [sortExpr, closedExpr, closed_sortPar p, closed_sortPar q]
+    | Expr.eplusPlus p q => by simp only [sortExpr, closedExpr, closed_sortPar p, closed_sortPar q]
+    | Expr.eminusMinus p q => by simp only [sortExpr, closedExpr, closed_sortPar p, closed_sortPar q]
   termination_by x => sizeOf x
 end
 
