@@ -449,6 +449,7 @@ impl BlockIndex {
         block_store: &BlockStore,
         block_hash: BlockHash,
     ) -> Result<BlockIndex, String> {
+        INDEX_CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let cache = BLOCK_INDEX_CACHE.get_or_init(|| Mutex::new(BTreeMap::new()));
         if let Some(idx) = cache
             .lock()
@@ -508,10 +509,12 @@ impl BlockIndex {
         )
         .await?;
 
-        cache
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .insert(block_hash, index.clone());
+        let cache_len = {
+            let mut guard = cache.lock().unwrap_or_else(|p| p.into_inner());
+            guard.insert(block_hash, index.clone());
+            guard.len() as u64
+        };
+        INDEX_CACHE_LEN.store(cache_len, std::sync::atomic::Ordering::Relaxed);
         Ok(index)
     }
 
@@ -525,9 +528,17 @@ impl BlockIndex {
             return;
         };
         let mut guard = cache.lock().unwrap_or_else(|p| p.into_inner());
+        let before = guard.len();
         for h in hashes {
             guard.remove(h);
         }
+        // The oracle logs this (`Pruned N merging indices, new size: M`) and the port did not, which is
+        // part of why the cache's growth was invisible (#60).
+        let pruned = before - guard.len();
+        if pruned > 0 {
+            INDEX_CACHE_PRUNED.fetch_add(pruned as u64, std::sync::atomic::Ordering::Relaxed);
+        }
+        INDEX_CACHE_LEN.store(guard.len() as u64, std::sync::atomic::Ordering::Relaxed);
     }
 }
 
@@ -552,14 +563,27 @@ async fn regenerate_sidecars(
         && block.state.deploys.is_empty()
         && block.state.system_deploys.is_empty()
     {
-        runtime
+        // A failed *cache* write must not fail indexing: the caller only needs the (empty) channels,
+        // and the worst case is recomputing this block's index next start.
+        if runtime
             .save_mergeable_channels(post_state_hash, sender, seq_num, &[], pre_state_hash)
-            .await?;
-        runtime
-            .save_native_changes(post_state_hash, sender, seq_num, &[])
-            .await?;
+            .await
+            .is_err()
+            || runtime
+                .save_native_changes(post_state_hash, sender, seq_num, &[])
+                .await
+                .is_err()
+        {
+            INDEX_REPLAY_SAVE_FAILURES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
         return Ok((Vec::new(), Vec::new()));
     }
+    // The expensive path in #60: a full replay of the block from its own pre-state, taken whenever a
+    // sidecar is absent (a block that arrived by LFS restore or was deep-replayed, rather than
+    // proposed locally). Count and time it - a start-up that does this for every block used to
+    // advertise nothing at all.
+    INDEX_REPLAY_FALLBACKS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let replay_started = std::time::Instant::now();
     let forked = runtime.fork_replay_runtime(pre_state_hash).await?;
     let rand = BlockRandomSeed::random_generator_from_block(block);
     let with_cost_accounting = !block.justifications.is_empty();
@@ -605,6 +629,10 @@ async fn regenerate_sidecars(
     // `replay_compute_state_with` already persisted both sidecars; read the native changes back for
     // the index the caller is building.
     let native_changes = forked.last_native_changes();
+    INDEX_REPLAY_MILLIS.fetch_add(
+        replay_started.elapsed().as_millis() as u64,
+        std::sync::atomic::Ordering::Relaxed,
+    );
     Ok((channels, native_changes))
 }
 
@@ -910,6 +938,59 @@ impl MergeScope {
             .await
             .map_err(|e| e.to_string())?;
         Ok(new_repo.root())
+    }
+}
+
+// --- observability for a start-up replay ------------------------------------
+//
+// Indexing every stored block is the expensive half of a restart, and the port reported nothing about
+// it: no progress, no count, and no hint that an "unresponsive" node was in fact working through its
+// DAG (#60). These counters make that visible; the node logs them from its block-index closure while a
+// replay runs (`wire_block_processing` in `node_runtime.rs`).
+static INDEX_CALLS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static INDEX_REPLAY_FALLBACKS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static INDEX_REPLAY_MILLIS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static INDEX_REPLAY_SAVE_FAILURES: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+static INDEX_CACHE_PRUNED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static INDEX_CACHE_LEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// A snapshot of the block-index counters, for a node's progress line.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct IndexStats {
+    pub calls: u64,
+    pub replay_fallbacks: u64,
+    pub replay_millis: u64,
+    pub replay_save_failures: u64,
+    pub cache_len: u64,
+    pub cache_pruned: u64,
+}
+
+impl IndexStats {
+    /// Read the counters. Relaxed ordering throughout: this is a progress report, not a barrier.
+    pub fn read() -> Self {
+        use std::sync::atomic::Ordering::Relaxed;
+        IndexStats {
+            calls: INDEX_CALLS.load(Relaxed),
+            replay_fallbacks: INDEX_REPLAY_FALLBACKS.load(Relaxed),
+            replay_millis: INDEX_REPLAY_MILLIS.load(Relaxed),
+            replay_save_failures: INDEX_REPLAY_SAVE_FAILURES.load(Relaxed),
+            cache_len: INDEX_CACHE_LEN.load(Relaxed),
+            cache_pruned: INDEX_CACHE_PRUNED.load(Relaxed),
+        }
+    }
+
+    /// One line, for a log: what indexing has cost so far.
+    pub fn summary(&self) -> String {
+        format!(
+            "{} blocks indexed, {} replay fallbacks ({} ms, {} not persisted), index cache {} entries, {} pruned",
+            self.calls,
+            self.replay_fallbacks,
+            self.replay_millis,
+            self.replay_save_failures,
+            self.cache_len,
+            self.cache_pruned
+        )
     }
 }
 
@@ -1508,5 +1589,50 @@ mod native_merge_tests {
                 .is_some(),
             "and the base's native state must still be there"
         );
+    }
+}
+
+#[cfg(test)]
+mod index_stats_tests {
+    use super::{BlockIndex, IndexStats};
+
+    /// The progress line must name every counter, because that line is the only place the numbers
+    /// become visible (#60) - a summary that silently dropped one would hide it again.
+    #[test]
+    fn the_summary_names_every_counter() {
+        let stats = IndexStats {
+            calls: 3,
+            replay_fallbacks: 1,
+            replay_millis: 42,
+            replay_save_failures: 1,
+            cache_len: 3,
+            cache_pruned: 2,
+        };
+        let line = stats.summary();
+        for needle in [
+            "3 blocks indexed",
+            "1 replay fallbacks",
+            "42 ms",
+            "1 not persisted",
+            "index cache 3 entries",
+            "2 pruned",
+        ] {
+            assert!(
+                line.contains(needle),
+                "summary {line:?} must name {needle:?}"
+            );
+        }
+    }
+
+    /// `read` is a snapshot of process-wide counters: a second read agrees with the first, which is
+    /// the property the node's progress line relies on.
+    #[test]
+    fn read_reports_the_live_counters() {
+        let before = IndexStats::read().calls;
+        // `prune_cache` on an empty list removes nothing, so it must not move the counters.
+        BlockIndex::prune_cache(&[]);
+        let after = IndexStats::read();
+        assert_eq!(after.calls, before);
+        assert!(after.summary().contains("blocks indexed"));
     }
 }

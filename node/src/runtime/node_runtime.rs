@@ -624,10 +624,26 @@ pub fn wire_block_processing(
     let block_index = {
         let runtime = parts.runtime_manager.clone();
         let block_store = parts.block_store.clone();
+        let log = log.clone();
         move |hash: BlockHash| {
             let runtime = runtime.clone();
             let block_store = block_store.clone();
-            async move { BlockIndex::get_block_index(&runtime, &block_store, hash).await }
+            let log = log.clone();
+            async move {
+                let result = BlockIndex::get_block_index(&runtime, &block_store, hash).await;
+                // Indexing every stored block is the expensive half of a restart, and until now it was
+                // silent (#60): a node replaying its whole DAG looked exactly like a hung one, with the
+                // API down and nothing in the log. Report progress while it happens, so both the cost
+                // and its cause (a replay fallback per block) are visible.
+                let stats = rchain_casper::merging::IndexStats::read();
+                if stats.calls > 0 && stats.calls % 250 == 0 {
+                    log.info(
+                        LogSource::new("coop.rchain.node.runtime.BlockIndex"),
+                        &format!("block indexing: {}", stats.summary()),
+                    );
+                }
+                result
+            }
         }
     };
     let processor = block_processor::apply(
