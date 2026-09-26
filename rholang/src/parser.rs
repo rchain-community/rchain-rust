@@ -1053,23 +1053,69 @@ impl Parser {
         Ok(left)
     }
 
+    /// Whether the parenthesised interior at `self.pos` — which must hold an `LParen` — contains a
+    /// **top-level comma**, i.e. whether the `(` opens a tuple rather than a group.
+    ///
+    /// A **scan of the tokens, not a speculative parse**, and that distinction is the second half of
+    /// AUDIT C102. The first fix built the tuple from the group attempt's own partial parse, on the
+    /// reasoning that an interior the group's `Proc4` can read is the same interior the full grammar
+    /// would read. **That reasoning is false**, and `MultiSigRevVault.rho` is the counterexample:
+    /// `parse_proc4` reads `bundle+{*m}` as the *arithmetic* `bundle + {*m}` — the `bundle` keyword
+    /// production lives at a higher level — so a tuple whose first element is a bundle got a wrong
+    /// tree, and the normalizer rejected the file with "Free variable bundle is used twice as a
+    /// binder". `parse_proc4` is not a cheap oracle for "what does the full grammar see here".
+    ///
+    /// Deciding on the tokens means the interior is parsed **exactly once**, by the production that is
+    /// right for it, so there is no re-parse to be exponential (each level's scan is bounded by its own
+    /// interior, as the old speculative parse already was) and no partial parse to be wrong.
+    fn lparen_opens_a_tuple(&self) -> bool {
+        let mut depth = 0i32;
+        // `get` rather than a slice range (`&self.toks[pos..]`): a variable slice range is an
+        // `index`-class site in the type-system gate's books, and this needs no review, so it adds no
+        // site — the same reasoning as the value walk's `saturating_add` (AUDIT C100).
+        let mut i = self.pos.saturating_add(1);
+        while let Some(t) = self.toks.get(i) {
+            match t {
+                Tok::LParen | Tok::LBracket | Tok::LBrace => depth = depth.saturating_add(1),
+                Tok::RParen | Tok::RBracket | Tok::RBrace => {
+                    // The interior closed before any top-level comma: this is a group (or an error the
+                    // group attempt and the collection path will sort out between them).
+                    if depth == 0 {
+                        return false;
+                    }
+                    depth = depth.saturating_sub(1);
+                }
+                Tok::Comma if depth == 0 => return true,
+                _ => {}
+            }
+            i = i.saturating_add(1);
+        }
+        false
+    }
+
     /// The head of a `Proc11`: a parenthesised expression (`PExprs ::= "(" Proc4 ")"`) or whatever
     /// the deeper levels produce.
     ///
     /// `(` is ambiguous between a **group** (`PExprs`, at this level) and a **tuple** (`TupleSingle
     /// ::= "(" Proc ",)"` / `TupleMultiple ::= "(" Proc "," [Proc] ")"`, a collection at the deepest
-    /// level), and the grammar distinguishes them by *content*: a group's interior must be a
-    /// `Proc4` (arithmetic and below — no sends, no `|`, no `new`), while a tuple requires a comma
-    /// after its first element. So the group is tried first, speculatively, and anything that does
-    /// not fit (a comma, or an interior too loose for `Proc4`) rewinds and falls through to the
-    /// collection path — which requires the comma, so a form that is neither is a syntax error
-    /// rather than the one-element tuple this parser used to invent.
+    /// level), and the grammar distinguishes them by *content*: a group's interior must be a `Proc4`
+    /// (arithmetic and below — no sends, no `|`, no `new`), while a tuple requires a comma after its
+    /// first element. So the tuple case is decided by `lparen_opens_a_tuple` **on the tokens** and
+    /// handed straight to the collection path — the interior is read once, by the full grammar — and
+    /// only the group case is tried speculatively here.
     ///
-    /// The speculation re-parses the group's interior once in the tuple case (the tuple path reads
-    /// the same text again). That is bounded by the nesting of `(`, and it buys an unambiguous
-    /// decision without a second lookahead implementation.
+    /// The speculation rewinds for an interior this attempt could not read as a `Proc4` (a comma-less
+    /// `(a!(b))`, a `(a | b)`, an unclosed paren), and that is cheap: the failure is detected at the
+    /// first token the group's grammar cannot continue (the `!` of a send), not after a complete
+    /// re-parse of a nested interior. **No successful parse is ever re-read** — which is what made
+    /// nested tuples cost 2^n before this fix (parse only, debug, 32 MiB: 10 levels 7 ms, 20 levels
+    /// 4.8 s, 30 levels > 45 s, per AUDIT C102).
     fn parse_proc11_head(&mut self) -> Result<Proc, RholangError> {
         if self.peek() != &Tok::LParen {
+            return self.parse_proc12();
+        }
+        if self.lparen_opens_a_tuple() {
+            // A tuple: let the collection path parse the interior once, with the full grammar.
             return self.parse_proc12();
         }
         let save = self.pos;
@@ -1079,8 +1125,8 @@ impl Parser {
                 self.next();
                 Ok(inner)
             }
-            // A comma (a tuple), or an interior `Proc4` could not consume (a send, `|`, `new`, …),
-            // or an unclosed paren: hand the text back to the collection path.
+            // The interior did not fit `Proc4`, or the `)` never came: hand the text back to the
+            // collection path, which requires the comma too.
             _ => {
                 self.pos = save;
                 self.parse_proc12()
@@ -1359,6 +1405,41 @@ impl Parser {
         }
     }
 
+    /// A tuple's tail, given its **first element** and a current token of `Comma`: `TupleSingle` for
+    /// `(x,)` and `TupleMultiple` for `(x, y, …)`.
+    ///
+    /// Named rather than inlined because it *is* the tuple production, and because the second attempt
+    /// at AUDIT C102 wanted to call it from a second place — see `lparen_opens_a_tuple` for why that
+    /// turned out to be the wrong shape and this is back to one caller.
+    fn parse_tuple_tail(&mut self, first: Proc) -> Result<Collection, RholangError> {
+        self.next(); // the comma
+        if self.peek() == &Tok::RParen {
+            self.next();
+            Ok(Collection::CollectTuple(Tuple::TupleSingle(Box::new(
+                first,
+            ))))
+        } else {
+            let mut rest = Vec::new();
+            while self.peek() != &Tok::RParen {
+                rest.push(self.parse_proc()?);
+                if self.peek() == &Tok::Comma {
+                    self.next();
+                    // `u ::= X | X "," [X]`, and `Tuple ::= "(" Proc "," [Proc] ")"`
+                    // has no remainder, so `(1, 2,)` has no derivation. `(1,)` **does**:
+                    // it is `TupleSingle ::= "(" Proc ",)"` and is handled above, which
+                    // is why this check is here and not on the first comma.
+                } else {
+                    break;
+                }
+            }
+            self.expect(Tok::RParen)?;
+            Ok(Collection::CollectTuple(Tuple::TupleMultiple(
+                Box::new(first),
+                rest,
+            )))
+        }
+    }
+
     fn parse_collection(&mut self) -> Result<Collection, RholangError> {
         match self.peek().clone() {
             Tok::LBracket => {
@@ -1390,32 +1471,7 @@ impl Parser {
                 self.next();
                 let first = self.parse_proc()?;
                 if self.peek() == &Tok::Comma {
-                    self.next();
-                    if self.peek() == &Tok::RParen {
-                        self.next();
-                        Ok(Collection::CollectTuple(Tuple::TupleSingle(Box::new(
-                            first,
-                        ))))
-                    } else {
-                        let mut rest = Vec::new();
-                        while self.peek() != &Tok::RParen {
-                            rest.push(self.parse_proc()?);
-                            if self.peek() == &Tok::Comma {
-                                self.next();
-                                // `u ::= X | X "," [X]`, and `Tuple ::= "(" Proc "," [Proc] ")"`
-                                // has no remainder, so `(1, 2,)` has no derivation. `(1,)` **does**:
-                                // it is `TupleSingle ::= "(" Proc ",)"` and is handled above, which
-                                // is why this check is here and not on the first comma.
-                            } else {
-                                break;
-                            }
-                        }
-                        self.expect(Tok::RParen)?;
-                        Ok(Collection::CollectTuple(Tuple::TupleMultiple(
-                            Box::new(first),
-                            rest,
-                        )))
-                    }
+                    self.parse_tuple_tail(first)
                 } else {
                     // Reached only through `parse_proc11_head`'s fallback: the interior was not a
                     // `Proc4` (so it is not the `PExprs` group) *and* there is no comma (so it is
@@ -1993,6 +2049,64 @@ mod tests {
             inner = format!("({inner}{link})");
         }
         inner
+    }
+
+    /// `depth`-deep nested 2-tuples: `(((1, 1), 1), 1)` — the shape whose parse cost was exponential
+    /// (AUDIT C102).
+    fn nested_tuple(depth: usize) -> String {
+        let mut inner = String::from("1");
+        for _ in 0..depth {
+            inner = format!("({inner}, 1)");
+        }
+        inner
+    }
+
+    /// **Nested tuples parse in time linear in their nesting** (AUDIT C102).
+    ///
+    /// `(` is ambiguous between a group and a tuple, and the parser decides on the tokens
+    /// (`lparen_opens_a_tuple`). Until this unit's fix the comma case *rewound*, letting the collection
+    /// path read the interior a second time — and that re-read re-entered the next level's decision, so
+    /// the cost was 2^n. Measured before the fix, parse only, on a 32 MiB stack, in a debug build: 10
+    /// levels 7 ms, **20 levels 4.8 s**, and 30 levels did not finish in 45 s. The assertion is loose on
+    /// purpose — it guards an asymptote, and the gap is orders of magnitude (microseconds against
+    /// seconds), so a loaded CI machine cannot make it flap.
+    ///
+    /// The depths are the ones **both** parsers accept: deciding on the tokens costs the recursive
+    /// descent a few units of `MAX_PARSE_DEPTH` per tuple level, so ~28 levels is this shape's ceiling
+    /// under a budget of 128 where the old route reached deeper *in theory only* — 32 levels now report
+    /// `parse depth exceeded` in microseconds, and the old parser did not complete 40 levels in 900 s.
+    /// Every depth at which the old parser returned `Ok` in measurable time (20 levels, 4.8 s) is still
+    /// accepted, which is the property this pins.
+    #[test]
+    fn nested_tuples_parse_in_linear_time() {
+        // The parser is recursive and frame-heavy per level — 10 levels overflows a default test stack
+        // — so this runs on the node's own 32 MiB worker size (the `rho_examples.rs` pattern).
+        std::thread::Builder::new()
+            .stack_size(32 * 1024 * 1024)
+            .spawn(|| {
+                let mut worst = std::time::Duration::ZERO;
+                for depth in [10usize, 20, 28] {
+                    let started = std::time::Instant::now();
+                    let parsed = parse(&nested_tuple(depth))
+                        .unwrap_or_else(|e| panic!("{depth} nested tuples is a legal term: {e:?}"));
+                    worst = worst.max(started.elapsed());
+                    assert!(
+                        matches!(
+                            parsed,
+                            Proc::PCollect(Collection::CollectTuple(Tuple::TupleMultiple(..)))
+                        ),
+                        "depth {depth} must parse as a tuple, not a group"
+                    );
+                }
+                assert!(
+                    worst < std::time::Duration::from_secs(2),
+                    "the slowest nesting took {worst:?} — the speculative re-parse is back (AUDIT \
+                     C102): before the fix 20 levels took 4.8 s and 30 did not finish in 45 s"
+                );
+            })
+            .expect("spawn")
+            .join()
+            .expect("the parser must not overflow its stack on 28 levels");
     }
 
     /// `(x)` is a **group** (`PExprs ::= "(" Proc4 ")"`), not a tuple: the tuple productions
