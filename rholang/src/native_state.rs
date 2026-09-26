@@ -1228,6 +1228,11 @@ impl NativeSystemState {
         self.set_bonds(&pool);
         self.set_active(&active);
         self.set_withdrawers(&withdrawers);
+        // The pending-withdrawal entry this removes is in `pending`, and a slash that leaves it behind
+        // hands it to whatever occupies this validator key next: a later accepted bond is then moved into
+        // a claim at the epoch boundary instead of joining the active set. Found by the PoS review, which
+        // measured the stale entry surviving slash in 9/9 configurations.
+        self.set_pending_withdrawers(&pending);
         Ok(Ok(()))
     }
 
@@ -2592,6 +2597,43 @@ mod tests {
             i64::from(native.pos_vault_balance().await.unwrap()),
             0,
             "a refused debit leaves the vault untouched"
+        );
+    }
+
+    /// **A slash must not leave the pending withdrawal it removes behind.**
+    ///
+    /// `slash` deletes the validator's pending-withdrawal entry from a local copy of the map. Forgetting to
+    /// write that copy back leaves the stale entry in the store, and the next key to occupy the validator's
+    /// place - a later accepted bond, say - inherits it and is moved into a claim at the epoch boundary
+    /// instead of joining the active set. Found by the PoS review, which measured the entry surviving slash
+    /// in 9/9 configurations; this is the falsifier.
+    #[tokio::test]
+    async fn slash_persists_the_pending_map_it_edits() {
+        let bonded = validator(1);
+        let slashed = validator(2);
+        let native = native_with(
+            &[bonded],
+            PosParams::default(),
+            &[(bonded, 100), (slashed, 100)],
+        )
+        .await;
+
+        native.set_pending_withdrawers(&BTreeMap::from([(slashed, 100)]));
+        assert!(
+            native
+                .pending_withdrawers()
+                .await
+                .unwrap()
+                .contains_key(&slashed),
+            "the staged withdrawal must be in the store before the slash"
+        );
+
+        native.slash(&slashed).await.unwrap().unwrap();
+
+        assert!(
+            !native.pending_withdrawers().await.unwrap().contains_key(&slashed),
+            "slash removed the entry in memory and must persist that: otherwise the next holder of this key \
+             inherits the withdrawal and never becomes active"
         );
     }
 }
