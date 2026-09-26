@@ -391,7 +391,11 @@ while IFS= read -r row; do
       [[ -f "$ROOT/$t" ]] || { fail "INVENTORY row $num names $t, which does not exist"; law_bad=$((law_bad + 1)); }
     done
   else
-    printf '%s' "$status" | grep -qiE 'open|boundary|orphaned|axiomatic|deviation' \
+    # `owed` joined this vocabulary on 2026-09-26 with law 50: the register has carried that status
+    # since the consolidation pass (`Rchain/Laws.lean`'s `Status.owed` — "definition exists, proof
+    # missing"), and a row saying it is exactly a row saying why it does not claim coverage. The
+    # checker refusing it was the checker being narrower than the vocabulary it is checking.
+    printf '%s' "$status" | grep -qiE 'open|boundary|orphaned|axiomatic|deviation|owed' \
       || { fail "INVENTORY row $num neither claims coverage nor says why not (status: $status)"; law_bad=$((law_bad + 1)); }
   fi
 done < <(grep -E '^\| *[0-9]+ \|' "$ROOT/spec/INVENTORY.md")

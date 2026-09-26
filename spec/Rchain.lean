@@ -20,6 +20,7 @@ import Rchain.Lex
 import Rchain.Concurrent
 import Rchain.Tree
 import Rchain.FreeVars
+import Rchain.Depth
 import Rchain.Effect
 import Rchain.Scheduler
 import Rchain.SchedulerOnchain

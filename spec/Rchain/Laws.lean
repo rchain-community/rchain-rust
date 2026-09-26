@@ -2393,7 +2393,49 @@ def laws : List Law := [
       why it survived review. Modelled at the instance the charge sequence has (two charges, two \
       refunds) rather than in general: the general form is the same argument iterated, and the \
       iteration needs a permutation lemma over `List` that carries no further content — `Charging.lean` \
-      says so rather than proving a statement no caller uses" }
+      says so rather than proving a statement no caller uses" },
+  { number := 50, layer := "Rholang",
+    statement := "A term's **AST depth** is bounded: `parDepth` is the quantity, `maxAstDepth` (768) \
+      is the bound, and the parser refuses a source whose tree exceeds it — so no consumer of a term \
+      (the normalizer, the sorter, `well_scoped`, the evaluator, the matcher, the printer) recurses \
+      deeper than the bound, on a stack the bound was measured against",
+    status := .owed,
+    declarations := [`Rchain.parDepth, `Rchain.maxAstDepth, `Rchain.notsDepth],
+    rust := ["rholang/src/parser.rs"],
+    rustWitness := [
+      "rholang/src/parser.rs:rejects_a_deep_ast_that_stays_inside_both_component_guards",
+      "rholang/src/parser.rs:accepts_a_deep_ast_under_the_budget",
+      "rholang/src/parser.rs:a_maximal_chain_still_parses"],
+    falsifiable := some "**the walk's own children function is where it fails, so the falsifier is a \
+      dropped arm.** `parDepth` is defined; what is owed is that \
+      `rholang/src/parser.rs::exceeds_ast_depth` — an iterative, early-exiting walk — agrees with it: \
+      `walkExceeds limit p = false → parDepth p ≤ limit` (soundness: a term the node accepts is never \
+      deeper than the bound) and the control `parDepth p ≤ limit → walkExceeds limit p = false` \
+      (completeness: the refusal is not accidental). The witness for a mutation is `notsDepth`: a \
+      mutation that drops one arm of the walk's children function must make soundness false at \
+      `notsDepth 768` (`a_dropped_arm_breaks_soundness`), and a walk that could not be broken that way \
+      would be a restatement of the definition rather than a check of it — the vacuity law 22 records",
+    note := "**`owed`, and the reason is a measurement rather than an unfinished proof** (2026-09-26, \
+      AUDIT C99). The parser's older guards bound two *shapes* and compose into nothing: \
+      `MAX_PARSE_DEPTH` bounds the parser's recursion, and a flat chain is built by a loop — bounded \
+      frames, an AST of depth `n` — so `d` levels of `c` operators compose into an AST of depth \
+      `d × c` with both guards satisfied. Measured on the node's own 32 MiB worker: a debug build \
+      **aborts the process** between AST depth 732 and 994 (a ~4 KB deploy term, SIGABRT), and a \
+      release build costs **64 s** at 8,040 and aborts at 50,100 — while the deploy path runs parse \
+      and normalize *before* any phlo or balance check, so that is free to the submitter. The fix is \
+      `MAX_AST_DEPTH` + the walk, and this row is that fix's *quantity*; what is owed is the \
+      agreement between the walk and `parDepth`. **The recipe is `Rchain/FreeVars.lean`'s** (the same \
+      `mutual` block over `Par`/`Send`/`Expr`/the `List`s with `termination_by … => sizeOf …`), plus a \
+      second `mutual` block for the walk so that it is an *independent* recursion — a walk defined as \
+      `decide (limit < parDepth p)` would make both directions `rfl`, which is not a model of the \
+      code. **A trap this row met while being written**: `parDepth` needs `termination_by`, so it is \
+      **not kernel-reducible** and no `decide`d example can evaluate it (`spec/STYLE.md`'s \
+      reducibility note); the two directions are therefore inductions, and `notsDepth` is their \
+      witness shape rather than a checked instance. **The half that is not a Lean claim at all**: that \
+      the Rust walk descends into every `Proc` constructor. No theorem can say it — the walk is over \
+      the parser's syntax, which has no model — so it is pinned by the three `rustWitness` tests, and \
+      the residual (a *runtime*-built deep value, which never passes the parser and is phlo-bounded) \
+      is recorded rather than claimed closed" }
 ]
 
 /-- Every law number the catalog defines. Laws with clauses repeat. -/

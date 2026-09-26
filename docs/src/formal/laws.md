@@ -12,7 +12,7 @@ saying **what it is about**.
 > tied to the node by a conformance corpus) from **`proved-model`** (proved about a model a human keeps
 > in sync); the prose on this page is the narrative reading of the same rows, and where the two
 > disagree, the register is right. Its total is **<!-- counts:proved-laws -->44<!-- counts:end --> of
-> <!-- counts:laws -->49 laws<!-- counts:end --> proved at all — <!-- counts:proved-tied-laws -->17<!-- counts:end --> tied to the node by a corpus,
+> <!-- counts:laws -->50 laws<!-- counts:end --> proved at all — <!-- counts:proved-tied-laws -->17<!-- counts:end --> tied to the node by a corpus,
 > <!-- counts:proved-model-laws -->29<!-- counts:end --> over the model — with one more law proved but *vacuous* (its statement restates its own
 > definition, and the register has a word for that).
 
