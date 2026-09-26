@@ -1,0 +1,27 @@
+{
+  "name": "rev-wallet-extension",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Least-authority RChain deploy signing as a Manifest V3 browser extension - a page can request one signature at a time, approved explicitly in the extension popup. Never holds the key outside the background service worker.",
+  "scripts": {
+    "build": "vite build --config vite.config.ts && vite build --config vite.config.content-script.ts && vite build --config vite.config.inject.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "@noble/curves": "^2.3.0",
+    "@noble/hashes": "^2.3.0",
+    "@scure/base": "^2.3.0",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0"
+  },
+  "devDependencies": {
+    "@types/chrome": "^0.2.7",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@vitejs/plugin-react": "^6.0.2",
+    "typescript": "^5.8.3",
+    "vite": "^8.0.16"
+  }
+}

@@ -89,6 +89,10 @@ integration-tests.log
 .history
 .vscode
 
+# wallet-extension (Node/Vite subproject)
+###################
+wallet-extension/node_modules/
+wallet-extension/dist/
 # Claude Code local (personal) settings
 .claude/settings.local.json
 

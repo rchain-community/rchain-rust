@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>REV Wallet extension test page</title>
+  </head>
+  <body>
+    <h1>REV Wallet extension test page</h1>
+    <button id="connect">requestAccounts()</button>
+    <button id="getAddress">getAddress()</button>
+    <button id="sign">signDeploy(Nil)</button>
+    <pre id="out"></pre>
+    <script>
+      const out = document.getElementById("out");
+      const log = (label, value) => {
+        out.textContent += `${label}: ${JSON.stringify(value, null, 2)}\n`;
+      };
+      document.getElementById("connect").addEventListener("click", async () => {
+        try {
+          log("requestAccounts result", await window.revWallet.requestAccounts());
+        } catch (error) {
+          log("requestAccounts error", String(error));
+        }
+      });
+      document.getElementById("getAddress").addEventListener("click", async () => {
+        try {
+          log("getAddress result", await window.revWallet.getAddress());
+        } catch (error) {
+          log("getAddress error", String(error));
+        }
+      });
+      document.getElementById("sign").addEventListener("click", async () => {
+        try {
+          const statusRes = await fetch("http://127.0.0.1:50403/api/v1/status").then((r) => r.json());
+          const result = await window.revWallet.signDeploy({
+            term: "Nil",
+            timestamp: Date.now(),
+            phloPrice: 1,
+            phloLimit: 1000000,
+            validAfterBlockNumber: statusRes.latestBlockNumber,
+            shardId: "root"
+          });
+          log("signDeploy result", result);
+        } catch (error) {
+          log("signDeploy error", String(error));
+        }
+      });
+    </script>
+  </body>
+</html>
