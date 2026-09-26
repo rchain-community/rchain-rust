@@ -22,7 +22,7 @@ pub const MAX_CONNECTIONS: usize = 1024;
 /// Shuffle the connections and take up to `max` (port of `ConnectionsCell.random`).
 pub fn random_connections(connections: &[PeerNode], max: usize) -> Vec<PeerNode> {
     let mut shuffled: Vec<PeerNode> = connections.to_vec();
-    shuffled.shuffle(&mut rand::thread_rng());
+    shuffled.shuffle(&mut rand::rng());
     shuffled.truncate(max);
     shuffled
 }

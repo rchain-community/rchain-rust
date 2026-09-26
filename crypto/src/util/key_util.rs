@@ -12,8 +12,9 @@ use std::path::Path;
 use k256::pkcs8::{DecodePrivateKey, EncodePrivateKey, EncodePublicKey, LineEnding};
 use k256::SecretKey;
 use pkcs5::pbes2;
-use pkcs8::{EncryptedPrivateKeyInfo, SecretDocument};
-use rand::RngCore;
+use pkcs8::der::asn1::OctetString;
+use pkcs8::{EncryptedPrivateKeyInfoOwned, SecretDocument};
+use rand::Rng;
 
 use rchain_shared::base16;
 
@@ -77,16 +78,16 @@ pub fn write_keys(
     let private_der = secret.to_pkcs8_der().map_err(|e| e.to_string())?;
     let mut salt = [0u8; SALT_LEN];
     let mut iv = [0u8; AES_BLOCK_SIZE];
-    rand::rngs::OsRng.fill_bytes(&mut salt);
-    rand::rngs::OsRng.fill_bytes(&mut iv);
-    let params = pbes2::Parameters::pbkdf2_sha256_aes256cbc(PBKDF2_ITERATIONS, &salt, &iv)
+    rand::rng().fill_bytes(&mut salt);
+    rand::rng().fill_bytes(&mut iv);
+    let params = pbes2::Parameters::generate_pbkdf2_sha256_aes256cbc(PBKDF2_ITERATIONS, &salt, iv)
         .map_err(|e| e.to_string())?;
     let encrypted = params
         .encrypt(password.as_bytes(), private_der.as_bytes())
         .map_err(|e| e.to_string())?;
-    let epki = EncryptedPrivateKeyInfo {
+    let epki = EncryptedPrivateKeyInfoOwned {
         encryption_algorithm: params.into(),
-        encrypted_data: &encrypted,
+        encrypted_data: OctetString::new(encrypted).map_err(|e| e.to_string())?,
     };
     let secret_doc = SecretDocument::try_from(&epki).map_err(|e| e.to_string())?;
     let private_pem = secret_doc
@@ -219,7 +220,7 @@ mod tests {
         assert!(private_pem.starts_with("-----BEGIN ENCRYPTED PRIVATE KEY-----"));
         let (label, secret_doc) = SecretDocument::from_pem(&private_pem).unwrap();
         assert_eq!(label, "ENCRYPTED PRIVATE KEY");
-        let epki = EncryptedPrivateKeyInfo::try_from(secret_doc.as_bytes()).unwrap();
+        let epki = EncryptedPrivateKeyInfoOwned::try_from(secret_doc.as_bytes()).unwrap();
         let decrypted = epki.decrypt(b"password").unwrap();
         let secret2 = SecretKey::from_pkcs8_der(decrypted.as_bytes()).unwrap();
         assert_eq!(

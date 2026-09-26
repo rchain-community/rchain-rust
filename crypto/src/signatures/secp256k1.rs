@@ -13,11 +13,11 @@ use crate::private_key::PrivateKey;
 use crate::public_key::PublicKey;
 use k256::ecdsa::signature::hazmat::{PrehashSigner, PrehashVerifier};
 use k256::ecdsa::{Signature, SigningKey, VerifyingKey};
-use k256::elliptic_curve::sec1::ToEncodedPoint;
+use k256::elliptic_curve::sec1::ToSec1Point;
+use k256::elliptic_curve::Generate;
 use k256::pkcs8::DecodePrivateKey;
 use k256::SecretKey;
-use pkcs8::{EncryptedPrivateKeyInfo, SecretDocument};
-use rand::rngs::OsRng;
+use pkcs8::{EncryptedPrivateKeyInfoOwned, SecretDocument};
 
 /// The secp256k1 algorithm.
 pub struct Secp256k1;
@@ -52,7 +52,7 @@ impl Secp256k1 {
     /// Compute the uncompressed (65-byte) public key from a 32-byte secret key.
     pub fn to_public_bytes(seckey: &[u8]) -> Result<Vec<u8>, CryptoError> {
         let sk = SecretKey::from_slice(seckey).map_err(|_| CryptoError::InvalidKey)?;
-        Ok(sk.public_key().to_encoded_point(false).as_bytes().to_vec())
+        Ok(sk.public_key().to_sec1_point(false).as_bytes().to_vec())
     }
 
     /// Parse an encrypted PEM private key into a secp256k1 `PrivateKey`.
@@ -69,7 +69,7 @@ impl Secp256k1 {
         if label != "ENCRYPTED PRIVATE KEY" {
             return Err("PEM file is not encrypted".to_string());
         }
-        let epki = EncryptedPrivateKeyInfo::try_from(secret_doc.as_bytes())
+        let epki = EncryptedPrivateKeyInfoOwned::try_from(secret_doc.as_bytes())
             .map_err(|_| "PEM file is not encrypted".to_string())?;
         let decrypted = epki
             .decrypt(password.as_bytes())
@@ -94,11 +94,11 @@ impl SignaturesAlg for Secp256k1 {
     }
 
     fn new_key_pair(&self) -> (PrivateKey, PublicKey) {
-        let signing = SigningKey::random(&mut OsRng);
+        let signing = SigningKey::generate_from_rng(&mut rand::rng());
         let sec = signing.to_bytes().to_vec();
         let pub_key = signing
             .verifying_key()
-            .to_encoded_point(false)
+            .to_sec1_point(false)
             .as_bytes()
             .to_vec();
         (PrivateKey::new(sec), PublicKey::new(pub_key))

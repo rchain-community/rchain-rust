@@ -1,11 +1,11 @@
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    tonic_build::configure()
+    tonic_prost_build::configure()
         .build_server(true)
         .build_client(true)
         // `New.injections` is a `map<string, Par>` that participates in the content-addressed
         // state hash. Generate it as a `BTreeMap` so protobuf encoding iterates keys in sorted
         // order (a `HashMap` would make the post-state hash depend on process hash-seed order).
-        .btree_map([".rholang.New"])
+        .btree_map(".rholang.New")
         .compile_protos(
             &[
                 "proto/casper.proto",

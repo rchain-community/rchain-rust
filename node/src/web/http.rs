@@ -1011,7 +1011,10 @@ pub async fn acquire_http_server(
         deploy_rate_limiter: Arc::new(RateLimiter::new(DEFAULT_API_RATE_LIMIT_PER_SEC)),
         faucet_rate_limiter: Arc::new(RateLimiter::new(FAUCET_RATE_LIMIT_PER_SEC)),
     })
-    .layer(TimeoutLayer::new(max_connection_idle));
+    .layer(TimeoutLayer::with_status_code(
+        StatusCode::REQUEST_TIMEOUT,
+        max_connection_idle,
+    ));
     axum::serve(listener, app).await.map_err(|e| e.to_string())
 }
 
@@ -1034,7 +1037,10 @@ pub async fn acquire_admin_http_server(
         admin_web_api,
         enable_devnet_cors,
     })
-    .layer(TimeoutLayer::new(max_connection_idle));
+    .layer(TimeoutLayer::with_status_code(
+        StatusCode::REQUEST_TIMEOUT,
+        max_connection_idle,
+    ));
     axum::serve(listener, app).await.map_err(|e| e.to_string())
 }
 

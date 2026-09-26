@@ -11,15 +11,18 @@ use std::str::FromStr;
 use std::time::Duration;
 
 use p256::ecdsa::SigningKey;
-use p256::elliptic_curve::sec1::ToEncodedPoint;
+use p256::elliptic_curve::sec1::ToSec1Point;
+use p256::elliptic_curve::Generate;
 use p256::pkcs8::{DecodePrivateKey, EncodePrivateKey};
-use rand::rngs::OsRng;
-use rand::RngCore;
+use rand::Rng;
 use x509_cert::builder::{Builder, CertificateBuilder, Profile};
+use x509_cert::certificate::TbsCertificate;
 use x509_cert::der::{pem::LineEnding, Decode, DecodePem, EncodePem};
+use x509_cert::ext::pkix::{BasicConstraints, KeyUsage, KeyUsages};
+use x509_cert::ext::{Extension, ToExtension};
 use x509_cert::name::Name;
 use x509_cert::serial_number::SerialNumber;
-use x509_cert::spki::SubjectPublicKeyInfoOwned;
+use x509_cert::spki::{SubjectPublicKeyInfoOwned, SubjectPublicKeyInfoRef};
 use x509_cert::time::Validity;
 use x509_cert::Certificate;
 
@@ -178,9 +181,10 @@ impl EcKeyPair {
 /// Generate a fresh P-256 key pair.
 ///
 /// The Scala `generateKeyPair(useNonBlockingRandom)` selected between a blocking and non-blocking
-/// JVM `SecureRandom`; Rust's `OsRng` is a single, non-blocking OS CSPRNG, so the flag is dropped.
+/// JVM `SecureRandom`; the port draws from the thread-local OS-seeded CSPRNG (`rand::rng()`), so the
+/// flag is dropped. `p256::SecretKey::random` became the `Generate` trait in elliptic-curve 0.14.
 pub fn generate_key_pair() -> EcKeyPair {
-    let private_key = p256::SecretKey::random(&mut OsRng);
+    let private_key = p256::SecretKey::generate_from_rng(&mut rand::rng());
     let public_key = private_key.public_key();
     EcKeyPair::new(private_key, public_key)
 }
@@ -209,18 +213,60 @@ pub fn from_file(cert_file: &Path) -> Result<Certificate, String> {
     }
 }
 
+/// The self-signed-root profile the port's `generate` builds.
+///
+/// x509-cert 0.2 had a `Profile::Root` enum variant that added `BasicConstraints{ca:true}` and a CA
+/// `KeyUsage` to a V3 certificate. 0.3 replaced the enum with the `Profile` trait, and its
+/// only shipped root profile (`profile::cabf::Root`) enforces the CA/Browser Forum naming rule —
+/// `C`, `O` **and** `CN` are all required — while this port's certificate is `CN=<node address>`
+/// only. The shape the port used is therefore defined here, unchanged from 0.2.
+struct SelfSignedRoot {
+    subject: Name,
+}
+
+impl Profile for SelfSignedRoot {
+    fn get_issuer(&self, subject: &Name) -> Name {
+        subject.clone()
+    }
+
+    fn get_subject(&self) -> Name {
+        self.subject.clone()
+    }
+
+    fn build_extensions(
+        &self,
+        _spk: SubjectPublicKeyInfoRef<'_>,
+        _issuer_spk: SubjectPublicKeyInfoRef<'_>,
+        tbs: &TbsCertificate,
+    ) -> x509_cert::builder::Result<Vec<Extension>> {
+        // Neither extension reads its siblings (`to_extension`'s slice is for extensions such as
+        // `AuthorityKeyIdentifier` that look up the `SubjectKeyIdentifier`), so both are built
+        // against an empty context and the result is a two-element literal.
+        let subject = tbs.subject();
+        let basic_constraints = BasicConstraints {
+            ca: true,
+            path_len_constraint: None,
+        }
+        .to_extension(&subject, &[])?;
+        let key_usage =
+            KeyUsage(KeyUsages::KeyCertSign | KeyUsages::CRLSign | KeyUsages::DigitalSignature)
+                .to_extension(&subject, &[])?;
+        Ok(vec![basic_constraints, key_usage])
+    }
+}
+
 /// Build a self-signed X.509 certificate for `key_pair` (SHA256withECDSA, `CN=<address>`).
 ///
 /// The Scala built a minimal V3 cert through `sun.security.x509` and signed it twice (a
-/// `X509CertImpl` fix-up quirk). The port produces the equivalent self-signed cert directly via the
-/// `x509-cert` builder's `Profile::Root` (V3 + BasicConstraints CA + KeyUsage).
+/// `X509CertImpl` fix-up quirk). The port produces the equivalent self-signed cert directly through
+/// the `x509-cert` builder (V3 + BasicConstraints CA + KeyUsage), via [`SelfSignedRoot`].
 pub fn generate(key_pair: &EcKeyPair) -> Result<Certificate, String> {
     let signing_key = SigningKey::from(&key_pair.private_key);
     let subject_spki =
-        SubjectPublicKeyInfoOwned::from_key(key_pair.public_key).map_err(|e| e.to_string())?;
+        SubjectPublicKeyInfoOwned::from_key(&key_pair.public_key).map_err(|e| e.to_string())?;
 
     let mut serial_bytes = [0u8; 8];
-    OsRng.fill_bytes(&mut serial_bytes);
+    rand::rng().fill_bytes(&mut serial_bytes);
     let serial_number = SerialNumber::from(u64::from_be_bytes(serial_bytes));
 
     let validity =
@@ -229,18 +275,12 @@ pub fn generate(key_pair: &EcKeyPair) -> Result<Certificate, String> {
     let address = base16::encode(&public_address_from_public_key(&key_pair.public_key));
     let subject = Name::from_str(&format!("CN={address}")).map_err(|e| e.to_string())?;
 
-    let builder = CertificateBuilder::new(
-        Profile::Root,
-        serial_number,
-        validity,
-        subject,
-        subject_spki,
-        &signing_key,
-    )
-    .map_err(|e| e.to_string())?;
+    let profile = SelfSignedRoot { subject };
+    let builder = CertificateBuilder::new(profile, serial_number, validity, subject_spki)
+        .map_err(|e| e.to_string())?;
 
     builder
-        .build::<p256::ecdsa::DerSignature>()
+        .build::<_, p256::ecdsa::DerSignature>(&signing_key)
         .map_err(|e| e.to_string())
 }
 
@@ -249,7 +289,7 @@ pub fn generate(key_pair: &EcKeyPair) -> Result<Certificate, String> {
 /// The Scala guarded this with a runtime `isExpectedEllipticCurve` check; the static
 /// `p256::PublicKey` type makes that check unnecessary.
 pub fn public_address_from_public_key(public_key: &p256::PublicKey) -> Vec<u8> {
-    let point = public_key.to_encoded_point(false);
+    let point = public_key.to_sec1_point(false);
     let bytes = point.as_bytes();
     public_address(&bytes[1..])
 }
@@ -325,7 +365,7 @@ mod tests {
         let addr = public_address_from_public_key(&key_pair.public_key);
         assert_eq!(addr.len(), 20);
 
-        let point = key_pair.public_key.to_encoded_point(false);
+        let point = key_pair.public_key.to_sec1_point(false);
         let xy = &point.as_bytes()[1..];
         assert_eq!(addr, public_address(xy));
     }
@@ -336,8 +376,8 @@ mod tests {
         let cert = generate(&key_pair).expect("generate self-signed certificate");
 
         // The certificate carries the key pair's public key.
-        let spki = SubjectPublicKeyInfoOwned::from_key(key_pair.public_key).unwrap();
-        assert_eq!(cert.tbs_certificate.subject_public_key_info, spki);
+        let spki = SubjectPublicKeyInfoOwned::from_key(&key_pair.public_key).unwrap();
+        assert_eq!(cert.tbs_certificate().subject_public_key_info(), &spki);
 
         // PEM printing round-trips through parsing.
         let pem = print_certificate(&cert).expect("print certificate");

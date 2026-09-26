@@ -6,7 +6,7 @@
 
 use super::blake2b512_block::{u64_from_le_at, Blake2b512Block};
 use crate::errors::CryptoError;
-use rand::RngCore;
+use rand::Rng;
 
 /// The path region holds 112 bytes; the following 16 bytes hold the 128-bit counter (little-endian).
 const PATH_CAPACITY: usize = 112;
@@ -110,7 +110,7 @@ impl Blake2b512Random {
     /// Generate `length` random bytes and use them as the initial value (the Scala `apply(length)`).
     pub fn new_random(length: usize) -> Self {
         let mut bytes = vec![0u8; length];
-        rand::rngs::OsRng.fill_bytes(&mut bytes);
+        rand::rng().fill_bytes(&mut bytes);
         Self::from_init(&bytes)
     }
 

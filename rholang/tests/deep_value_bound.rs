@@ -75,7 +75,10 @@ fn a_value_built_at_runtime_is_refused_above_the_bound() {
                     let small = evaluate(20).await;
                     println!("fold 20 -> {small:?}");
                     let _ = std::io::stdout().flush();
-                    assert!(small.is_ok(), "a 20-deep fold is a normal program: {small:?}");
+                    assert!(
+                        small.is_ok(),
+                        "a 20-deep fold is a normal program: {small:?}"
+                    );
 
                     // 401 is the depth that aborted the process before the guard. It now has to be an
                     // error — and specifically a *refusal*, not a silent success.

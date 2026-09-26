@@ -12,7 +12,7 @@ use crate::peer_node::{NodeIdentifier, PeerNode};
 /// Return up to `limit` candidate peers (port of `KademliaNodeDiscovery.discover`).
 pub async fn discover(id: &NodeIdentifier, store: &dyn KademliaStore, rpc: &dyn KademliaRpc) {
     let mut peers = store.peers();
-    peers.shuffle(&mut rand::thread_rng());
+    peers.shuffle(&mut rand::rng());
     let dists = store.sparseness();
     let result = find(10, &dists, peers, HashSet::new(), id, store, rpc).await;
     for peer in result {

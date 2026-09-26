@@ -922,7 +922,10 @@ mod tests {
                 1,
                 "depth {n} was not stored"
             );
-            assert!(cost.total_charged() > 0, "depth {n} must still be charged for");
+            assert!(
+                cost.total_charged() > 0,
+                "depth {n} must still be charged for"
+            );
 
             let (charging, cost, mock) = charging_space(1_000_000);
             charging
@@ -998,10 +1001,13 @@ mod tests {
     /// prose that no test can fail is the thing this repo keeps deleting.
     #[test]
     fn the_value_bound_is_below_the_parser_bound() {
-        assert!(
-            MAX_VALUE_DEPTH < crate::parser::MAX_AST_DEPTH,
-            "the value bound ({MAX_VALUE_DEPTH}) must sit below the parser's ({})",
-            crate::parser::MAX_AST_DEPTH
-        );
+        // Both sides are constants, so the relation is checked at compile time — a violation is a
+        // build failure, not merely a failing test (clippy::assertions_on_constants).
+        const {
+            assert!(
+                MAX_VALUE_DEPTH < crate::parser::MAX_AST_DEPTH,
+                "MAX_VALUE_DEPTH must sit below parser::MAX_AST_DEPTH"
+            );
+        }
     }
 }

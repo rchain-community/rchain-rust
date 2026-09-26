@@ -9,7 +9,6 @@ use crate::errors::CryptoError;
 use crate::private_key::PrivateKey;
 use crate::public_key::PublicKey;
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
-use rand::rngs::OsRng;
 
 /// The Ed25519 algorithm.
 pub struct Ed25519;
@@ -65,7 +64,7 @@ impl SignaturesAlg for Ed25519 {
     }
 
     fn new_key_pair(&self) -> (PrivateKey, PublicKey) {
-        let signing = SigningKey::generate(&mut OsRng);
+        let signing = SigningKey::generate(&mut rand::rng());
         let sec = signing.to_bytes().to_vec();
         let pub_key = signing.verifying_key().to_bytes().to_vec();
         (PrivateKey::new(sec), PublicKey::new(pub_key))
