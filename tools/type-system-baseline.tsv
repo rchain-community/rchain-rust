@@ -7,7 +7,8 @@
 # can move without a commit saying so is a number nobody is watching — the same rule the coverage
 # floor uses (`tools/audit-test-register.sh`, `floor(measured) - 2`).
 #
-# Measured 2026-09-26 by the gate itself (`bash tools/audit-type-system.sh`), at `6b7a7f494`+C98.
+# Measured 2026-09-26 by the gate itself (`bash tools/audit-type-system.sh`), at `6b7a7f494`+C98;
+# `cast` and `div` re-measured and reviewed the same day at `1078a824c` (see the paragraph below).
 # Regenerate by running the gate after a change: it prints the measured value in the FAIL message.
 #
 # Two of these classes did not exist before that date. The audit pass of 2026-09-26 found the gate's
@@ -22,10 +23,41 @@
 # The index half is the `index` class now, counted properly at 313 rather than at the 95 that a
 # literal-index-only pattern could see.
 #
+# **`cast` 332→336 and `div` 49→50, reviewed 2026-09-26 — the five sites are not this pass's.** They
+# arrived with the merge of PR #67 (`016989af6`), *after* the measurement above, so the ratchet has
+# been failing at step 1 of `test & coverage` on every commit since C98 — the register gate, the test
+# suite and the coverage floor never ran behind it, which is how a green-looking audit series carried
+# a red job. Each site, reviewed rather than waved through:
+#
+#   casper/src/merging.rs:515,541  `guard.len() as u64`            — `usize` → `u64` is *widening* on
+#   casper/src/merging.rs:539      `pruned as u64`                   every target the node builds for,
+#   casper/src/merging.rs:633      `elapsed().as_millis() as u64`    and the values are the
+#                                                                    `Relaxed` observability counters
+#                                                                    of the block-index cache (read
+#                                                                    back at `:978`). The millis one is
+#                                                                    a `u128` → `u64` narrowing, and
+#                                                                    truncating it needs ~584 million
+#                                                                    years of replay; it is a
+#                                                                    diagnostic that never reaches
+#                                                                    consensus.
+#   node/src/runtime/node_runtime.rs:639  `stats.calls % 250`      — a log throttle: a counter modulo
+#                                                                    a non-zero literal. The `div` class
+#                                                                    flags it because a regex cannot
+#                                                                    judge intent, which is the case
+#                                                                    for a human reading it.
+#
+# Raise rather than fix, deliberately: the fix would be to rewrite another PR's freshly merged
+# diagnostics from inside an audit unit, and would swap `as u64` for `try_from(..).unwrap_or(u64::MAX)`
+# — a silent saturation in a metric, which is worse than the cast it replaces. The doctrine above is
+# that these classes are legal Rust and what is *not* legal is a site **arriving unremarked**; this
+# paragraph is the remark. `overflow` stays 41: the pass's own arithmetic (AUDIT C100's depth walk) is
+# written `saturating_add`, so it adds no site — a ratchet is for sites someone reviewed, and that one
+# needs no review.
+#
 # class	count
-cast	332
+cast	336
 lax	10
 get	0
 index	313
-div	49
+div	50
 overflow	41
