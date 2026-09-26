@@ -25,15 +25,39 @@
 #             keyed by text and each carry the guard their soundness rests on.
 #
 # Soft reports (exit 0, informational — refined by `cargo clippy` + manual review):
-#   cast    — narrowing / signedness-changing numeric casts (`as i8/i32/i64/u8/u32/..`).
-#   lax     — silent parse/hex escapes: `from_str_radix(..).unwrap_or(..)` and `base16::unsafe_decode`
-#             (a hex decode that skips non-hex and never length-checks).
-#   get     — index access and `.get(..).unwrap()`-style lookups.
+#   cast     — narrowing / signedness-changing numeric casts (`as i8/i32/i64/u8/u32/..`).
+#   lax      — silent parse/hex escapes: `from_str_radix(..).unwrap_or(..)` and `base16::unsafe_decode`
+#              (a hex decode that skips non-hex and never length-checks).
+#   get      — `.get(..).unwrap()`-style accessor lookups.
 #
-# Usage: tools/audit-type-system.sh [panic|unsafe|silent|escape|cast|lax|get]   (default: all)
+# Counted classes (a committed number compared in both directions — see `ratchet` below):
+#   index    — variable indexing and slice ranges (`arr[i]`, `chunk[..n]`), the class the
+#              2026-09-26 audit found the gate could not see at all. This is what `get` used to
+#              partly count: measured then, `get`'s literal-index half was all 95 of its sites and its
+#              accessor half was 0.
+#   div      — division and remainder.
+#   overflow — arithmetic not guarded by a `checked_`/`saturating_`/`wrapping_`/`overflowing_` call,
+#              **scoped to the refinement files**: an unchecked `a - b` elsewhere is a design choice,
+#              and one in `shared/src/refined.rs` is a refinement leaving its own domain.
+#
+# Usage: tools/audit-type-system.sh [panic|unsafe|silent|escape|cast|lax|get|index|div|overflow]
+#        (default: all)
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-CRATES=(sdk shared crypto graphz models block-storage comm rspace rholang casper regex node)
+CRATES=(sdk shared crypto graphz models block-storage comm rspace rholang casper qucalc node)
+
+# The roster is checked, not trusted. `regex` stood in this array until 2026-09-26 and does not exist
+# — it was skipped silently by the `[ -d "$c/src" ] || continue` guard, so the array claimed a crate
+# and the scan never read it. `qucalc` is a real workspace member and was *missing*, so its source was
+# never scanned at all. An earlier revision recorded the `regex` discrepancy in this file's prose
+# rather than fixing it; prose is not a check, so the roster now fails on an entry with no `src/`.
+for _c in "${CRATES[@]}"; do
+  if [ ! -d "$ROOT/$_c/src" ]; then
+    echo "FAIL: the crate roster names '$_c', which has no src/ directory — the scan would skip it silently." >&2
+    exit 1
+  fi
+done
+unset _c
 
 # ---------------------------------------------------------------------------
 # Brace-depth-aware test-block stripper.
@@ -175,6 +199,7 @@ WHITELIST_PANIC=(
 )
 
 hard_failures=0
+ratchet_failures=0
 # Every class appends its own name as its last act, and the summary refuses to print OK unless the set
 # of finished classes equals the set that was asked for. Without this the gate's OK is a claim about
 # the classes that *finished*, not about the classes that were *asked for* — and a class that exits
@@ -364,6 +389,137 @@ scan() {
                  | grep -vE 'self\.expect\(|\.expect\(Tok::')
     done < <(find "$dir" -name '*.rs' | grep -vE "$TEST_ONLY_FILE_RE")
   done
+}
+
+# ---------------------------------------------------------------------------------------------
+# The counted classes, and the ratchet.
+#
+# `cast`/`lax`/`get` were soft reports for as long as they existed: printed, never compared to
+# anything, so what a reader learned was how many sites a grep found that day and the number could
+# rise without a commit saying so. The audit pass of 2026-09-26 named the classes the gate cannot see
+# at all — **variable indexing and slice ranges**, and **division/remainder** — and why it matters:
+# `spec/TYPE-SYSTEM.md` §1.6's "no silent partiality" is the claim this gate is cited as enforcing,
+# and a green run of a scan whose scope is four hard classes says nothing about any other class.
+#
+# A counted class is not a hard failure. The tree has 313 indexing sites and 174 division sites and
+# they are legal Rust; what is not legal is one *arriving unremarked*. So the count is compared in
+# both directions against the committed number in `tools/type-system-baseline.tsv`: a commit that
+# adds a site fails until the baseline is raised deliberately, and a commit that removes one fails
+# until the baseline is lowered — the same discipline as the coverage floor
+# (`tools/audit-test-register.sh`'s `floor(measured) − 2`), for the same reason: a number that can
+# drift silently is a number nobody is watching.
+#
+# **The patterns are written in the conservative ERE subset** (`[a-zA-Z0-9_]`, not `[[:alnum:]]`),
+# because the count is compared to a committed number and a pattern that means different things to
+# different regex engines would make the ratchet fail on one machine and pass on another. Measured
+# 2026-09-26 on this tree: `[[:alpha:]]\[[^;]+\]` matched 3 of 3 hits under awk and **0** under this
+# machine's `ugrep`, while `[a-zA-Z]\[[^;]+\]` matched 3 under both. `cast`'s pattern keeps its `\b`
+# (it is the one the class has always used, and the count is taken with the same grep the scan uses,
+# so the two agree by construction) — a new class should prefer the portable spelling.
+#
+# The count is over *production* code: `#[cfg(test)]` blocks are stripped, comments removed, and
+# string literals emptied. The last of those is not cosmetic: measured on this tree, `"must be
+# non-negative, got {v}"` matched the arithmetic pattern three times in `shared/src/refined.rs` alone
+# — a class a third of whose hits are hyphens in messages is not an instrument. `gsub(/"[^"]*"/, "")`
+# is an approximation (a `\"` inside a literal ends the match early), and it can only *lower* a count;
+# the baseline is measured with the same stripper, so the number and the convention agree.
+# ---------------------------------------------------------------------------------------------
+COUNT_AWK='
+function braces(s,   o,c,i,ch){ o=0; c=0; for(i=1;i<=length(s);i++){ ch=substr(s,i,1); if(ch=="{")o++; else if(ch=="}")c++ } return o-c }
+BEGIN { skip=0; depth=0 }
+{
+  if (skip == 0) {
+    if ($0 ~ /^[[:space:]]*#\[cfg\(test\)\]/) { skip=1; depth=0; next }
+    if ($0 ~ /^[[:space:]]*#\[(tokio::)?test\]/) { skip=1; depth=braces($0); if (depth<=0) skip=0; next }
+    if ($0 ~ /^[[:space:]]*\/\//) next
+    sub(/\/\/.*$/, "")
+    gsub(/"[^"]*"/, "")
+    print
+    next
+  }
+  depth += braces($0)
+  if (depth <= 0) skip=0
+  next
+}'
+
+# The pattern table. One place, so the scan and the count cannot disagree about what a class is.
+PAT_CAST='\bas (i8|i16|i32|i64|u8|u16|u32|u64|usize|isize|f32|f64)\b'
+PAT_LAX='from_str_radix\([^)]*\)\.(unwrap_or|unwrap|expect)\(|unsafe_decode\('
+# Accessor lookups only. Until 2026-09-26 this class also carried `\b[a-zA-Z_]+\[[0-9]+\]`, and that
+# alternative was **all of it**: measured on this tree, the accessor half is 0 sites and the literal
+# index half is 95 of the class's 95. The class was named for what it barely contained and counted
+# what the `index` class now counts properly (95 of its 313 — the literal-index subset).
+PAT_GET='\.get\([^)]*\)\.(unwrap|expect)\(|\.(next|last|first|pop)\(\)\.(unwrap|expect)\('
+# Variable indexing and slice ranges: `arr[i]`, `chunk[..n]`, `remaining[1..]`. The leader cannot be
+# `[` or `#` or `<` or `&`, which is what keeps type positions (`[u8; 32]`, `#[cfg(test)]`, `&[u8]`)
+# out; the `[^;]` keeps `[u8; 32]`-shaped content out of the tail.
+PAT_INDEX='[a-zA-Z0-9_)]\[[^;]+\]'
+PAT_DIV='[a-zA-Z0-9_)]+[[:space:]]*[/%][[:space:]]*[a-zA-Z0-9_(]'
+# Arithmetic that is not guarded by a `checked_`/`saturating_`/`wrapping_`/`overflowing_` call.
+#
+# **Scoped to the refinement files, deliberately**, and for the reason the escape class gives for its
+# own scope: an unchecked `a - b` in an ordinary module is a design choice, and one in
+# `shared/src/refined.rs` is a *refinement* that can silently leave its own domain — which is the
+# shape `spec/TYPE-SYSTEM.md` §1.6/§1.7 is about, and the shape that made law 17's `NonNegI64`
+# arithmetic a law in the first place. Scoping keeps the count at 41 sites across the eleven files
+# rather than the thousands an unscoped arithmetic grep finds, so the number can be reviewed.
+#
+# `clippy::arithmetic_side_effects` is the precise instrument for the unscoped question, and it is
+# **not** what this class is: measured 2026-09-26, enabling it reports >= 33 sites in `shared/` and
+# `qucalc/` alone before the lint aborts the build, while the greppable half above fits on one screen.
+# Both numbers are recorded in AUDIT C98; the clippy half is the named follow-up, because a lint is a
+# judgement and a grep is a census.
+PAT_OVERFLOW='[a-zA-Z0-9_)]+[[:space:]]*[+*-][[:space:]]*[a-zA-Z0-9_(]'
+PAT_OVERFLOW_GUARDED='checked_|saturating_|wrapping_|overflowing_'
+
+counted_scan() {
+  # $1 = grep -E pattern. Prints the production-site count.
+  local pattern="$1" total=0 c f n
+  for c in "${CRATES[@]}"; do
+    local dir="$ROOT/$c/src"
+    [ -d "$dir" ] || continue
+    while IFS= read -r f; do
+      n=$(awk "$COUNT_AWK" "$f" | grep -cE "$pattern")
+      total=$((total + n))
+    done < <(find "$dir" -name '*.rs' | grep -vE "$TEST_ONLY_FILE_RE")
+  done
+  printf '%s' "$total"
+}
+
+counted_scan_refinements() {
+  # The `overflow` class is scoped to `REFINEMENT_FILES` (see `PAT_OVERFLOW`), so it cannot use
+  # `counted_scan`'s crate walk. Prints the number of *unguarded* arithmetic sites — the guarded ones
+  # are the point of the class, not a hit of it.
+  local total=0 f n
+  for f in "${REFINEMENT_FILES[@]}"; do
+    n=$(awk "$COUNT_AWK" "$ROOT/$f" \
+          | grep -E "$PAT_OVERFLOW" \
+          | grep -cvE "$PAT_OVERFLOW_GUARDED")
+    total=$((total + n))
+  done
+  printf '%s' "$total"
+}
+
+BASELINE_FILE="$ROOT/tools/type-system-baseline.tsv"
+
+ratchet() {
+  # $1 = class; $2 = measured count.
+  local cls="$1" measured="$2" recorded
+  recorded=$(awk -F'\t' -v c="$cls" '$1 == c { print $2 }' "$BASELINE_FILE")
+  if [ -z "$recorded" ]; then
+    echo "  RATCHET $cls: no baseline row — a class with no recorded number is a number nothing compares"
+    ratchet_failures=$((ratchet_failures + 1))
+    return
+  fi
+  if (( measured > recorded )); then
+    echo "  RATCHET $cls: rose from $recorded to $measured site(s) — a new site of a class the gate cannot judge. Review it, then raise $BASELINE_FILE deliberately in the same commit, or fix the site."
+    ratchet_failures=$((ratchet_failures + 1))
+  elif (( measured < recorded )); then
+    echo "  RATCHET $cls: fell from $recorded to $measured site(s) — lower the baseline to $measured. The ratchet only goes down, and a recorded number above the measurement is a number nobody is watching."
+    ratchet_failures=$((ratchet_failures + 1))
+  else
+    printf '  (ratchet) %-6s %s site(s), equal to the recorded baseline\n' "$cls" "$measured"
+  fi
 }
 
 # The refinement newtypes must not surrender the invariant they exist to carry.
@@ -888,12 +1044,18 @@ run_class() {
     panic)   scan_panic '\.unwrap\(\)|\.expect\(|panic!|unreachable!|todo!|unimplemented!|(^|[^[:alnum:]_])(debug_)?assert(_eq|_ne)?!\(|unwrap_or_else\([[:space:]]*\|\|[[:space:]]*panic!' ;;
     unsafe)  scan unsafe 'unsafe[[:space:]]*\{' ;;
     silent)  scan silent 'try_into\(\)\.(unwrap|expect)\(|try_(into\(\)|from\(.*\))\.unwrap_or(\(0\)|_default\(\))|\.parse(::<[^>]+>)?\(\)\.unwrap_or(\(0\)|_default\(\))' ;;
-    cast)    scan cast '\bas (i8|i16|i32|i64|u8|u16|u32|u64|usize|isize|f32|f64)\b' ;;
-    lax)     scan lax 'from_str_radix\([^)]*\)\.(unwrap_or|unwrap|expect)\(|unsafe_decode\(' ;;
-    get)     scan get '\.get\([^)]*\)\.(unwrap|expect)\(|\.(next|last|first|pop)\(\)\.(unwrap|expect)\(|\b[a-zA-Z_]+\[[0-9]+\]' ;;
+    cast)    scan cast "$PAT_CAST" ; ratchet cast "$(counted_scan "$PAT_CAST")" ;;
+    lax)     scan lax "$PAT_LAX" ; ratchet lax "$(counted_scan "$PAT_LAX")" ;;
+    get)     scan get "$PAT_GET" ; ratchet get "$(counted_scan "$PAT_GET")" ;;
+    # The two classes the 2026-09-26 audit found the gate could not see at all. They are counted
+    # rather than listed: printing 313 indexing sites each run would bury the sites that matter, and
+    # what makes a class actionable is knowing that the number moved.
+    index)   ratchet index "$(counted_scan "$PAT_INDEX")" ;;
+    div)     ratchet div "$(counted_scan "$PAT_DIV")" ;;
+    overflow) ratchet overflow "$(counted_scan_refinements)" ;;
     escape)  scan_escapes ;;
     *)
-      echo "unknown class: $cls (expected panic|unsafe|silent|escape|cast|lax|get)" >&2
+      echo "unknown class: $cls (expected panic|unsafe|silent|escape|cast|lax|get|index|div|overflow)" >&2
       exit 2
       ;;
   esac
@@ -902,7 +1064,7 @@ run_class() {
 }
 
 if [ "$#" -eq 0 ]; then
-  classes=(panic unsafe silent escape cast lax get)
+  classes=(panic unsafe silent escape cast lax get index div overflow)
 else
   classes=("$@")
 fi
@@ -928,4 +1090,10 @@ if [ "$hard_failures" -gt 0 ]; then
   echo "FAIL: $hard_failures hard violation(s) (panic/unsafe/silent/escape) in production code."
   exit 1
 fi
-echo "OK: no hard production violations (panic/unsafe/silent/escape)."
+if [ "$ratchet_failures" -gt 0 ]; then
+  echo "FAIL: $ratchet_failures counted class(es) moved (index/div/overflow/cast/lax/get) — the number"
+  echo "      is a ratchet: update tools/type-system-baseline.tsv in the same commit, deliberately."
+  exit 1
+fi
+echo "OK: no hard production violations (panic/unsafe/silent/escape), and every counted class is at"
+echo "    its recorded baseline."

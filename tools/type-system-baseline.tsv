@@ -1,0 +1,31 @@
+# The counted classes of tools/audit-type-system.sh, and the number each one is allowed to have.
+#
+# This is a **ratchet**: the gate measures each class over production code (test blocks stripped,
+# comments and string literals removed) and compares the measurement to the number here in *both*
+# directions. A rise fails the build until the baseline is raised deliberately in the same commit; a
+# fall fails it until the baseline is lowered. Neither direction is a warning, because a number that
+# can move without a commit saying so is a number nobody is watching — the same rule the coverage
+# floor uses (`tools/audit-test-register.sh`, `floor(measured) - 2`).
+#
+# Measured 2026-09-26 by the gate itself (`bash tools/audit-type-system.sh`), at `6b7a7f494`+C98.
+# Regenerate by running the gate after a change: it prints the measured value in the FAIL message.
+#
+# Two of these classes did not exist before that date. The audit pass of 2026-09-26 found the gate's
+# scope to be panic/unsafe/silent/escape (hard) and cast/lax/get (soft, printed, never compared), so
+# **variable indexing, slice ranges and division had no class at all** and overflow existed only as
+# clippy's opinion — while `spec/TYPE-SYSTEM.md` §1.6's "no silent partiality" is the claim this gate
+# is cited as enforcing. The counts are large because the classes are legal Rust; what is not legal is
+# one *arriving unremarked*.
+#
+# `get` is 0 as of the split: its pattern used to carry `\b[a-zA-Z_]+\[[0-9]+\]` alongside the
+# accessor form, and that alternative was all of it (measured: accessor half 0, index half 95 of 95).
+# The index half is the `index` class now, counted properly at 313 rather than at the 95 that a
+# literal-index-only pattern could see.
+#
+# class	count
+cast	332
+lax	10
+get	0
+index	313
+div	49
+overflow	41

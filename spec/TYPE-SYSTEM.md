@@ -99,6 +99,22 @@ def TotalOn (f : Par → Par) : Prop := ∀ p, Closed p → Closed (f p)
 
 (see Fundamental 6).
 
+**What the gate can and cannot certify — measured 2026-09-26 (AUDIT C98).** §1.6 is enforced by
+`tools/audit-type-system.sh`, and until that date its scope was narrower than the sentence above
+reads: the hard classes were `panic`/`unsafe`/`silent`/`escape`, and `cast`/`lax`/`get` were printed
+without being compared to anything — so **variable indexing, slice ranges and division had no class at
+all**, and a green run was evidence about four classes being read as evidence about totality. The
+classes now include `index` (variable indexing and slice ranges), `div`, and `overflow` (unguarded
+arithmetic, scoped to the refinement files, where an unchecked operation is a refinement leaving its
+own domain rather than a design choice), and every counted class is compared in both directions
+against `tools/type-system-baseline.tsv` — a rise or a fall fails the build until the same commit says
+so. **The counts are not repeated here**: they are the baseline file's, by construction, and a count
+written twice is a count checked once. Two limits are worth stating rather than implying: a counted class is a **census, not a
+judgement** (it says a site arrived, not that it is wrong — the `EDiv`/`EMod` arms it flagged on its
+first run are guarded one line above), and the unscoped overflow question belongs to
+`clippy::arithmetic_side_effects`, not to a grep. `#print axioms` on the Lean side is the other half of
+this claim and is checked by `tools/check-lean-conformance.sh`.
+
 ### 1.7 Refinement types are the security system (no type escape)
 
 The port's own Rust types carry the refinements of §1.6 **structurally**. A refinement type `R` over
@@ -215,10 +231,11 @@ A `Total` operation composed from `Total` parts is `Total` — the formal "no `.
 **Read this table as the record of a sweep, not as a list of current sites.** It was written in the
 present tense ("each site below *is* a production panic source") and then went stale in the worst
 direction: the sites were fixed, and the table kept claiming they existed. The live answer is the
-gate — `tools/audit-type-system.sh` reports zero hard violations (`panic`/`unsafe`/`silent`/`escape`),
-which is the only statement about the tree that anything re-checks; this table says what the sweep
-found and how each class was typed, and a reader looking for *current* partiality should run the gate
-rather than read it. (The tense was the defect, not the content: the same information as a record is
+gate — `tools/audit-type-system.sh` reports zero hard violations (`panic`/`unsafe`/`silent`/`escape`)
+plus a counted baseline for `index`/`div`/`overflow`/`cast`/`lax`/`get` that may only move by commit
+(§1.6, C98), which is the only statement about the tree that anything re-checks; this table says what
+the sweep found and how each class was typed, and a reader looking for *current* partiality should run
+the gate rather than read it. (The tense was the defect, not the content: the same information as a record is
 what makes the remediation auditable.)
 
 **And what that gate cannot see, said here rather than left for the next reader to assume: `dead-code`

@@ -16,8 +16,13 @@ fn main() {
         .or_else(|| std::env::var_os("QUCALC_CENSUS").map(PathBuf::from))
         .unwrap_or_else(|| PathBuf::from("census_inventory.json"));
 
-    let census =
-        Census::load(&path).unwrap_or_else(|e| panic!("failed to load {}: {e}", path.display()));
+    let census = match Census::load(&path) {
+        Ok(census) => census,
+        Err(e) => {
+            eprintln!("failed to load {}: {e}", path.display());
+            std::process::exit(1);
+        }
+    };
 
     // 1. The distribution of `ways` across every class in the inventory.
     let mut all_ways: Vec<u64> = census
@@ -43,7 +48,10 @@ fn main() {
 
     // 2. A concrete closure: `mix-ZX|R=3`, folded most-ways-first.
     let name = "mix-ZX|R=3";
-    let sup = census.closure(name).expect("closure exists");
+    let Some(sup) = census.closure(name) else {
+        eprintln!("the census has no closure named {name}");
+        return;
+    };
     println!("\n== {name}: superposition, most ways first ==");
     for w in &sup {
         println!(

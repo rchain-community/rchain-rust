@@ -686,7 +686,7 @@ pub mod gov {
             if counts.is_empty() {
                 return None;
             }
-            let max = *counts.values().max().unwrap();
+            let max = *counts.values().max()?;
             if max * 2 > total {
                 return counts
                     .iter()
@@ -694,7 +694,7 @@ pub mod gov {
                     .min_by_key(|(k, _)| *k)
                     .map(|(k, _)| k.clone());
             }
-            let min = *counts.values().min().unwrap();
+            let min = *counts.values().min()?;
             if min == max {
                 // all remaining candidates tied; deterministic lexicographic tie-break
                 return counts.keys().min().cloned();
