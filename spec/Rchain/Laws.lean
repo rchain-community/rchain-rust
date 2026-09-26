@@ -2224,7 +2224,7 @@ def laws : List Law := [
       are ledger steps). **The refusal is structural, not a hypothesis**: `payDue` is partial \
       (`Option`) and returns `none` when the vault cannot cover the payout, because the port's \
       `debit_pos_vault` *fails* the transfer (`native_state.rs:904`, its refusal at `:909`) and \
-      `close_block` (`native_state.rs:1083`) writes nothing on that path — the debit's `?` at `:1139` \
+      `close_block` (`native_state.rs:1083`) writes nothing on that path — the debit's `?` at `:1154` \
       returns before any of its state writes — an unguarded `Nat` subtraction would truncate the debit and mint the \
       difference, which is the quiet-wrong-answer shape this project refuses everywhere else. Two \
       falsifications, both run: deleting the payout's vault debit makes `payDue_conserves` unprovable, \
