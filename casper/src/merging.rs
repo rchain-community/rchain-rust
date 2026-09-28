@@ -684,11 +684,122 @@ fn rejections_for<'a>(
         .collect()
 }
 
+/// The `(prefix, key)` a native action writes.
+fn native_key(action: &NativeStoreAction) -> (u8, Blake2b256Hash) {
+    match action {
+        NativeStoreAction::Put { prefix, key, .. } | NativeStoreAction::Delete { prefix, key } => {
+            (*prefix, *key)
+        }
+    }
+}
+
+/// How native writes relate the deploy chains of a merge (issue #83).
+///
+/// A native write is an **absolute value** computed from its block's own pre-state, not an effect
+/// that composes: an epoch boundary's `close_block` writes the whole bond pool, a phlo charge writes
+/// the staking vault's new balance. So two blocks writing one key can be merged only when one has
+/// seen the other, and then the descendant's value is the merged one. Two *concurrent* writers of a
+/// key cannot both be kept - concatenating them handed radix history the same key twice and
+/// panicked every node at the first boundary with two sibling blocks, and keeping either value
+/// silently discards the other's transition (two sibling phlo charges of equal size write equal
+/// vault balances, and keeping one destroys the other's REV). Equal values are therefore not a
+/// licence to merge: the relation is on keys, not values.
+///
+/// - **conflict**: chains of two different blocks that wrote a common key and neither of which has
+///   seen the other. Resolution then rejects one side, as for a tuple-space conflict.
+/// - **dependency**: a chain of a block that wrote a common key with a block it has seen depends on
+///   that block's chains (rejecting the ancestor rejects the value built on it), and the chains of
+///   one native-writing block depend on each other, so the block is accepted or rejected whole.
+struct NativeRelations<'a> {
+    keys: &'a BTreeMap<Blake2b256Hash, BTreeSet<(u8, Blake2b256Hash)>>,
+    ancestry: &'a BTreeMap<BlockHash, BTreeSet<BlockHash>>,
+}
+
+impl NativeRelations<'_> {
+    fn sees(&self, a: &Blake2b256Hash, b: &Blake2b256Hash) -> bool {
+        self.ancestry
+            .get(&BlockHash::new(*a.as_bytes()))
+            .is_some_and(|seen| seen.contains(&BlockHash::new(*b.as_bytes())))
+    }
+
+    fn overlap(&self, a: &Blake2b256Hash, b: &Blake2b256Hash) -> bool {
+        match (self.keys.get(a), self.keys.get(b)) {
+            (Some(ka), Some(kb)) => !ka.is_disjoint(kb),
+            _ => false,
+        }
+    }
+
+    fn conflicting(&self, a: &DeployChainIndex, b: &DeployChainIndex) -> bool {
+        let (ha, hb) = (&a.host_block, &b.host_block);
+        ha != hb && self.overlap(ha, hb) && !self.sees(ha, hb) && !self.sees(hb, ha)
+    }
+
+    /// Whether `a` depends on `b`.
+    fn depends(&self, a: &DeployChainIndex, b: &DeployChainIndex) -> bool {
+        let (ha, hb) = (&a.host_block, &b.host_block);
+        if ha == hb {
+            return a != b && self.keys.contains_key(ha);
+        }
+        self.overlap(ha, hb) && self.sees(ha, hb)
+    }
+
+    /// The accepted blocks' native writes as one action per key: writers in ancestry order, so a
+    /// descendant's value replaces its ancestor's. Two accepted writers of a key that are not so
+    /// ordered would mean resolution kept a conflict, and that is refused rather than decided by
+    /// iteration order.
+    fn fold(
+        &self,
+        accepted: &BTreeSet<Blake2b256Hash>,
+        native_by_block: &BTreeMap<Blake2b256Hash, Vec<NativeStoreAction>>,
+    ) -> Result<Vec<NativeStoreAction>, String> {
+        // A block has seen strictly more in-scope blocks than any ancestor of it, so this order
+        // puts every ancestor before its descendants; the hash only makes the order total.
+        let mut writers: Vec<&Blake2b256Hash> = accepted
+            .iter()
+            .filter(|h| native_by_block.get(*h).is_some_and(|a| !a.is_empty()))
+            .collect();
+        let seen_count = |h: &Blake2b256Hash| {
+            self.ancestry
+                .get(&BlockHash::new(*h.as_bytes()))
+                .map_or(0, BTreeSet::len)
+        };
+        writers.sort_by_key(|h| (seen_count(h), **h));
+
+        let mut by_key: BTreeMap<(u8, Blake2b256Hash), (Blake2b256Hash, NativeStoreAction)> =
+            BTreeMap::new();
+        for host in writers {
+            for action in native_by_block.get(host).into_iter().flatten() {
+                let key = native_key(action);
+                if let Some((previous, _)) = by_key.get(&key) {
+                    if !self.sees(host, previous) {
+                        return Err(format!(
+                            "blocks {} and {} both write native key {:02x}/{} and neither has seen \
+                             the other; conflict resolution must reject one",
+                            previous.to_hex(),
+                            host.to_hex(),
+                            key.0,
+                            key.1.to_hex()
+                        ));
+                    }
+                }
+                by_key.insert(key, (*host, action.clone()));
+            }
+        }
+        Ok(by_key.into_values().map(|(_, action)| action).collect())
+    }
+}
+
 /// The scope of a merge: final (immutable) and conflict (alterable) blocks (port of `MergeScope`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MergeScope {
     pub final_scope: BTreeSet<BlockHash>,
     pub conflict_scope: BTreeSet<BlockHash>,
+    /// For each block of either scope, the blocks of either scope it has *seen* (its in-scope
+    /// ancestors, itself excluded). Not in the Scala: native writes are absolute values rather than
+    /// event logs, so whether two blocks writing one native key are a conflict or a dependency is a
+    /// question about the DAG, not about their effects (issue #83). A block absent from the map has
+    /// seen nothing in scope, i.e. every pair is read as concurrent.
+    pub ancestry: BTreeMap<BlockHash, BTreeSet<BlockHash>>,
 }
 
 impl MergeScope {
@@ -743,10 +854,27 @@ impl MergeScope {
             .copied()
             .collect();
 
+        // Restricted to the scope, so the map is as small as the merge rather than the chain.
+        let in_scope: BTreeSet<BlockHash> = conflict_scope.union(&f_scope_ids).copied().collect();
+        let ancestry: BTreeMap<BlockHash, BTreeSet<BlockHash>> = in_scope
+            .iter()
+            .filter_map(|id| {
+                let seen: BTreeSet<BlockHash> = dag_data
+                    .get(id)?
+                    .seen
+                    .iter()
+                    .filter(|s| *s != id && in_scope.contains(s))
+                    .copied()
+                    .collect();
+                (!seen.is_empty()).then_some((*id, seen))
+            })
+            .collect();
+
         Ok((
             MergeScope {
                 final_scope: f_scope_ids,
                 conflict_scope,
+                ancestry,
             },
             base_msg,
         ))
@@ -793,6 +921,25 @@ impl MergeScope {
                 )
             })
             .collect();
+        // The native keys each block of either scope wrote, for the relations below. The final
+        // scope's are needed too: a conflict-scope block that wrote a key concurrently with a
+        // finalised writer of it is incompatible with the final state.
+        let native_keys: BTreeMap<Blake2b256Hash, BTreeSet<(u8, Blake2b256Hash)>> =
+            conflict_indices
+                .iter()
+                .chain(final_indices.iter())
+                .filter(|b| !b.native_changes.is_empty())
+                .map(|b| {
+                    (
+                        Blake2b256Hash::from_bytes(*b.block_hash.as_bytes()),
+                        b.native_changes.iter().map(native_key).collect(),
+                    )
+                })
+                .collect();
+        let native = NativeRelations {
+            keys: &native_keys,
+            ancestry: &merge_scope.ancestry,
+        };
 
         let conflict_set: BTreeSet<DeployChainIndex> = conflict_indices
             .iter()
@@ -845,11 +992,13 @@ impl MergeScope {
         let init_mergeable_values =
             read_mergeable_values(history_repository, base_state, &all_channel_hashes).await?;
 
+        // A chain relation is its event-log relation, widened by its host block's native writes
+        // (issue #83): see `NativeRelations`.
         let (conflicts_map, dependency_map) = compute_relation_map_for_merge_set(
             &conflict_set,
             &final_set,
-            DeployChainIndex::deploys_are_conflicting,
-            DeployChainIndex::depends,
+            |a, b| DeployChainIndex::deploys_are_conflicting(a, b) || native.conflicting(a, b),
+            |a, b| DeployChainIndex::depends(a, b) || native.depends(a, b),
         );
 
         let (to_merge, rejected) = resolve_conflict_set(
@@ -863,22 +1012,15 @@ impl MergeScope {
             &init_mergeable_values,
         );
 
-        // The native effects of the blocks whose chains survive conflict resolution, in ascending
-        // host-block order (a `BTreeSet` of `Blake2b256Hash`), and so deterministically across nodes.
-        // A block contributes its native changes iff at least one of its chains is accepted - native
-        // effects are per block, not per chain, so "some chain accepted" is the closest available
-        // attribution, and rejecting a branch drops its native writes with its tuple-space ones. When
-        // two accepted blocks write the same native key, the later one wins; in an honest DAG they do
-        // not (a PoS membership change is applied by one branch), and making that a conflict is the
-        // refinement recorded on the issue.
+        // The native effects of the blocks whose chains survive conflict resolution. A block
+        // contributes its native changes iff at least one of its chains is accepted - native effects
+        // are per block, not per chain - and the relations above make that all-or-nothing for a block
+        // that wrote anything native. Two accepted blocks writing one key are therefore ancestor and
+        // descendant (concurrent writers conflict), and the descendant's value already includes the
+        // ancestor's, so writers are applied ancestors first and the last write of a key wins.
         let accepted_hosts: BTreeSet<Blake2b256Hash> =
             to_merge.iter().map(|c| c.host_block).collect();
-        let mut native_changes: Vec<NativeStoreAction> = Vec::new();
-        for host in &accepted_hosts {
-            if let Some(actions) = native_by_block.get(host) {
-                native_changes.extend(actions.iter().cloned());
-            }
-        }
+        let native_changes = native.fold(&accepted_hosts, &native_by_block)?;
 
         let new_state = MergeScope::compute_merged_state(
             &to_merge,
@@ -1583,6 +1725,7 @@ mod native_merge_tests {
         let scope = MergeScope {
             final_scope: BTreeSet::new(),
             conflict_scope: BTreeSet::from([child]),
+            ancestry: BTreeMap::new(),
         };
         let (merged, _rejected) = MergeScope::merge(
             &scope,
@@ -1611,6 +1754,332 @@ mod native_merge_tests {
                 .expect("a readable native leaf")
                 .is_some(),
             "and the base's native state must still be there"
+        );
+    }
+}
+
+/// Issue #83: two blocks that each wrote a native key, merged in one scope.
+///
+/// Every epoch boundary's `close_block` writes the same six PoS keys, so two unfinalised sibling
+/// blocks at a boundary height - routine with three validators - used to reach radix history as one
+/// batch with every key twice, and every node panicked (`Cannot process duplicate actions on one
+/// key`) in the same second. These play the boundary for real on `NativeSystemState`, then merge.
+#[cfg(test)]
+mod boundary_merge_tests {
+    use super::*;
+    use std::sync::Arc;
+
+    use rchain_crypto::public_key::PublicKey;
+    use rchain_rholang::native_state::{NativeSystemState, PosGenesis, PosParams};
+    use rchain_rholang::util::rev_address::RevAddress;
+    use rchain_rspace::factory::create_history_repository;
+    use rchain_rspace::native_store::InMemNativeStore;
+    use rchain_shared::store_manager::InMemoryStoreManager;
+
+    const EPOCH: i64 = 10;
+
+    fn validator(byte: u8) -> Validator {
+        Validator::from_slice(&[byte; 65])
+    }
+
+    fn nn(x: i64) -> NonNegI64 {
+        NonNegI64::try_from(x).unwrap()
+    }
+
+    fn payer(byte: u8) -> (PublicKey, String) {
+        let pk = PublicKey::new(vec![byte; 65]);
+        let address = RevAddress::from_public_key(&pk).unwrap().to_base58();
+        (pk, address)
+    }
+
+    /// The issue's genesis - bonds 100/100/50, `--epoch-length 10` - with two funded deployers.
+    async fn genesis() -> (RhoHistoryRepository, Blake2b256Hash) {
+        let manager = InMemoryStoreManager::default();
+        let repo = create_history_repository::<
+            SortedProc,
+            BindPattern,
+            ListParWithRandom,
+            TaggedContinuation,
+        >(&manager, "rspace")
+        .await
+        .unwrap();
+        let store = Arc::new(InMemNativeStore::empty());
+        let native = NativeSystemState::new(store.clone());
+        native
+            .install_genesis(&PosGenesis {
+                bonds: [
+                    (validator(1), nn(100)),
+                    (validator(2), nn(100)),
+                    (validator(3), nn(50)),
+                ]
+                .into_iter()
+                .collect(),
+                trusted: BTreeSet::new(),
+                params: PosParams {
+                    epoch_length: EPOCH,
+                    quarantine_length: EPOCH,
+                    minimum_bond: nn(1),
+                    maximum_bond: nn(100),
+                    number_of_active_validators: 10,
+                },
+            })
+            .unwrap();
+        for byte in [8, 9] {
+            native.set_vault_balance(&payer(byte).1, nn(1000));
+        }
+        let repo = repo
+            .do_checkpoint_with_native(&[], &store.drain_changes())
+            .await
+            .unwrap();
+        let root = repo.root();
+        (repo, root)
+    }
+
+    /// What a block does besides closing itself.
+    enum Body {
+        Nothing,
+        /// Validator 3 asks to withdraw: the stake change.
+        Withdraw,
+        /// A user deploy by `payer(byte)` whose phlo, 500, goes into the staking vault.
+        Deploy(u8),
+    }
+
+    /// Play block `number` on `pre_state`: its body, then `close_block`. Returns the block's native
+    /// writes.
+    async fn play(
+        repo: &RhoHistoryRepository,
+        pre_state: Blake2b256Hash,
+        number: i64,
+        fringe: u8,
+        body: Body,
+    ) -> Vec<NativeStoreAction> {
+        let store = Arc::new(InMemNativeStore::new(
+            repo.get_native_reader(pre_state).await,
+        ));
+        let native = NativeSystemState::new(store.clone());
+        match body {
+            Body::Nothing => {}
+            Body::Withdraw => native
+                .withdraw(&validator(3), number)
+                .await
+                .unwrap()
+                .unwrap(),
+            Body::Deploy(byte) => native
+                .pre_charge(&payer(byte).0, nn(500))
+                .await
+                .unwrap()
+                .unwrap(),
+        }
+        native
+            .close_block(number, Blake2b256Hash::create(&[fringe]))
+            .await
+            .unwrap()
+            .unwrap();
+        store.drain_changes()
+    }
+
+    fn block_hash(n: u8) -> BlockHash {
+        BlockHash::new([n; 32])
+    }
+
+    /// A block index with one (close-block) chain, as every block has.
+    fn index(n: u8, pre_state: Blake2b256Hash, native: Vec<NativeStoreAction>) -> BlockIndex {
+        BlockIndex {
+            block_hash: block_hash(n),
+            deploy_chains: vec![DeployChainIndex {
+                host_block: Blake2b256Hash::from_bytes([n; 32]),
+                deploys_with_cost: BTreeSet::from([DeployIdWithCost {
+                    id: vec![n],
+                    cost: 0,
+                }]),
+                pre_state_hash: pre_state,
+                post_state_hash: pre_state,
+                event_log_index: EventLogIndex::empty(),
+                state_changes: StateChange::empty(),
+            }],
+            native_changes: native,
+        }
+    }
+
+    async fn merge(
+        repo: &RhoHistoryRepository,
+        base: Blake2b256Hash,
+        blocks: Vec<BlockIndex>,
+        ancestry: BTreeMap<BlockHash, BTreeSet<BlockHash>>,
+    ) -> Result<(Blake2b256Hash, BTreeSet<Vec<u8>>), String> {
+        let scope = MergeScope {
+            final_scope: BTreeSet::new(),
+            conflict_scope: blocks.iter().map(|b| b.block_hash).collect(),
+            ancestry,
+        };
+        let lookup = move |h: BlockHash| {
+            let found = blocks.iter().find(|b| b.block_hash == h).cloned();
+            async move { found.ok_or_else(|| format!("no index for {h:?}")) }
+        };
+        MergeScope::merge(
+            &scope,
+            base,
+            &BTreeMap::<Blake2b256Hash, FringeData>::new(),
+            repo,
+            &lookup,
+            |_| 0,
+        )
+        .await
+    }
+
+    /// Every native value the writes of `actions` leave behind, read back from `state`.
+    async fn read_back(
+        repo: &RhoHistoryRepository,
+        state: Blake2b256Hash,
+        actions: &[NativeStoreAction],
+    ) -> Vec<Option<Vec<u8>>> {
+        let reader = repo.get_native_reader(state).await;
+        let mut out = Vec::new();
+        for action in actions {
+            let (prefix, key) = native_key(action);
+            out.push(reader.get_native(prefix, key).await.unwrap());
+        }
+        out
+    }
+
+    fn values(actions: &[NativeStoreAction]) -> Vec<Option<Vec<u8>>> {
+        actions
+            .iter()
+            .map(|a| match a {
+                NativeStoreAction::Put { value, .. } => Some(value.clone()),
+                NativeStoreAction::Delete { .. } => None,
+            })
+            .collect()
+    }
+
+    /// Two sibling boundary blocks on one pre-state: the merge must neither panic nor error, must
+    /// reject exactly one of them, and must leave exactly the other's boundary behind - never a mix.
+    async fn siblings_resolve_to_one(a_body: Body, a_fringe: u8, b_body: Body, b_fringe: u8) {
+        let (repo, base) = genesis().await;
+        let a = play(&repo, base, EPOCH, a_fringe, a_body).await;
+        let b = play(&repo, base, EPOCH, b_fringe, b_body).await;
+        let (merged, rejected) = merge(
+            &repo,
+            base,
+            vec![index(0xa0, base, a.clone()), index(0xb0, base, b.clone())],
+            BTreeMap::new(),
+        )
+        .await
+        .expect("sibling boundary blocks merge (#83)");
+
+        assert_eq!(rejected.len(), 1, "exactly one sibling is rejected");
+        let kept = if rejected.contains(&vec![0xa0]) {
+            &b
+        } else {
+            &a
+        };
+        assert_eq!(
+            read_back(&repo, merged, kept).await,
+            values(kept),
+            "the merged state is the surviving sibling's boundary, whole"
+        );
+    }
+
+    /// The panic of #83 itself: identical boundaries (same pre-state, same fringe, no stake change).
+    /// Equal writes are still two transitions, so one sibling is rejected rather than both kept.
+    #[tokio::test]
+    async fn identical_sibling_boundaries_merge() {
+        siblings_resolve_to_one(Body::Nothing, 1, Body::Nothing, 1).await;
+    }
+
+    /// The proposers saw different finalised fringes, so their epoch seeds differ.
+    #[tokio::test]
+    async fn sibling_boundaries_with_different_fringes_merge() {
+        siblings_resolve_to_one(Body::Nothing, 1, Body::Nothing, 2).await;
+    }
+
+    /// The stake changed in one sibling only (a withdrawal staged in the boundary block).
+    #[tokio::test]
+    async fn sibling_boundaries_with_a_stake_change_merge() {
+        siblings_resolve_to_one(Body::Withdraw, 1, Body::Nothing, 1).await;
+    }
+
+    /// One sibling carried a deploy, so its reward pot - and the committed rewards - differ.
+    #[tokio::test]
+    async fn sibling_boundaries_with_different_pots_merge() {
+        siblings_resolve_to_one(Body::Deploy(9), 1, Body::Nothing, 1).await;
+    }
+
+    /// Two concurrent blocks off a boundary, each charging a different deployer the same 500 of
+    /// phlo: both write the staking vault's balance as `base + 500`. Keeping one value for both
+    /// blocks - which is what de-duplicating equal writes does - credits the vault once for two
+    /// debits and destroys 500 REV. The merge must keep REV conserved.
+    #[tokio::test]
+    async fn equal_concurrent_vault_writes_do_not_destroy_rev() {
+        let (repo, base) = genesis().await;
+        let x = play(&repo, base, EPOCH - 3, 1, Body::Deploy(8)).await;
+        let y = play(&repo, base, EPOCH - 3, 1, Body::Deploy(9)).await;
+        let (merged, rejected) = merge(
+            &repo,
+            base,
+            vec![index(0xa0, base, x), index(0xb0, base, y)],
+            BTreeMap::new(),
+        )
+        .await
+        .expect("the merge");
+        assert_eq!(rejected.len(), 1, "the two charges conflict");
+
+        let total = |state: Blake2b256Hash| {
+            let repo = repo.clone();
+            async move {
+                let native = NativeSystemState::new(Arc::new(InMemNativeStore::new(
+                    repo.get_native_reader(state).await,
+                )));
+                let mut sum = i64::from(native.pos_vault_balance().await.unwrap());
+                for byte in [8, 9] {
+                    sum += native
+                        .vault_balance(&payer(byte).1)
+                        .await
+                        .unwrap()
+                        .map_or(0, i64::from);
+                }
+                sum
+            }
+        };
+        assert_eq!(total(merged).await, total(base).await, "REV is conserved");
+    }
+
+    /// The same two charges, but the second block has seen the first: its vault balance already
+    /// includes the first charge, so both blocks are kept and the descendant's value is the state.
+    #[tokio::test]
+    async fn an_ancestor_and_descendant_writing_one_key_both_merge() {
+        let (repo, base) = genesis().await;
+        let x = play(&repo, base, EPOCH - 3, 1, Body::Deploy(8)).await;
+        let after_x = repo
+            .reset(base)
+            .await
+            .unwrap()
+            .do_checkpoint_with_native(&[], &x)
+            .await
+            .unwrap()
+            .root();
+        let y = play(&repo, after_x, EPOCH - 2, 1, Body::Deploy(9)).await;
+        let ancestry = BTreeMap::from([(block_hash(0xb0), BTreeSet::from([block_hash(0xa0)]))]);
+        let (merged, rejected) = merge(
+            &repo,
+            base,
+            vec![index(0xa0, base, x), index(0xb0, after_x, y)],
+            ancestry,
+        )
+        .await
+        .expect("the merge");
+        assert!(rejected.is_empty(), "a chain of writers is not a conflict");
+
+        let native = NativeSystemState::new(Arc::new(InMemNativeStore::new(
+            repo.get_native_reader(merged).await,
+        )));
+        let base_native = NativeSystemState::new(Arc::new(InMemNativeStore::new(
+            repo.get_native_reader(base).await,
+        )));
+        assert_eq!(
+            i64::from(native.pos_vault_balance().await.unwrap()),
+            i64::from(base_native.pos_vault_balance().await.unwrap()) + 1000,
+            "both charges reach the staking vault"
         );
     }
 }

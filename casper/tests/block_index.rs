@@ -307,6 +307,7 @@ async fn a_merge_reproduces_a_branchs_post_state_including_its_native_writes() {
     let scope = MergeScope {
         final_scope: BTreeSet::new(),
         conflict_scope: BTreeSet::from([block.block_hash]),
+        ancestry: BTreeMap::new(),
     };
     let block_index = {
         let index = index.clone();
