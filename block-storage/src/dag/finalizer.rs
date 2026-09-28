@@ -101,8 +101,10 @@ where
         min_msgs: &[Message<M, S>],
         bonds_map: &BTreeMap<S, NonNegI64>,
     ) -> bool {
-        // TODO: epoch changes need more than a sender-count comparison.
-        min_msgs.len() == bonds_map.len()
+        let minimum_senders: BTreeSet<&S> =
+            min_msgs.iter().map(|message| &message.sender).collect();
+        let bonded_senders: BTreeSet<&S> = bonds_map.keys().collect();
+        min_msgs.len() == bonds_map.len() && minimum_senders == bonded_senders
     }
 
     /// Find the top (most recent) message referenced from the minimum messages, per sender.
@@ -323,6 +325,28 @@ mod tests {
             ],
             &bonds
         ));
+
+        // Matching the bond count is insufficient: duplicate sender 0 leaves
+        // bonded sender 2 uncovered.
+        assert!(!finalizer.check_min_messages(
+            &[
+                msg(0, 0, 0, &[], &[]),
+                msg(3, 0, 1, &[], &[]),
+                msg(1, 1, 0, &[], &[])
+            ],
+            &bonds
+        ));
+
+        // A non-bonded sender cannot substitute for a missing bonded sender.
+        assert!(!finalizer.check_min_messages(
+            &[
+                msg(0, 0, 0, &[], &[]),
+                msg(1, 1, 0, &[], &[]),
+                msg(99, 99, 0, &[], &[])
+            ],
+            &bonds
+        ));
+
         assert!(!finalizer.check_min_messages(&[msg(0, 0, 0, &[], &[])], &bonds));
     }
 
@@ -350,7 +374,7 @@ mod tests {
     }
 
     #[test]
-    fn calculate_finalization_advances_fringe_on_fork() {
+    fn calculate_finalization_requires_exact_sender_coverage() {
         // Genesis by a non-bonded sender (99); three bonded senders 0/1/2.
         let genesis = msg(99, 99, 0, &[], &[99]);
         // Layer 1: a three-way fork — each sees only genesis.
@@ -364,6 +388,7 @@ mod tests {
         let a3 = msg(30, 0, 3, &[20, 21, 22], &[99, 10, 11, 12, 20, 21, 22, 30]);
         let b3 = msg(31, 1, 3, &[20, 21, 22], &[99, 10, 11, 12, 20, 21, 22, 31]);
         let c3 = msg(32, 2, 3, &[20, 21, 22], &[99, 10, 11, 12, 20, 21, 22, 32]);
+        let a3_duplicate = msg(33, 0, 4, &[20, 21, 22], &[99, 10, 11, 12, 20, 21, 22, 33]);
 
         let map: BTreeMap<i32, Message<i32, i32>> = [
             genesis.clone(),
@@ -376,17 +401,32 @@ mod tests {
             a3.clone(),
             b3.clone(),
             c3.clone(),
+            a3_duplicate.clone(),
         ]
         .into_iter()
         .map(|m| (m.id, m))
         .collect();
-        let bonds: BTreeMap<i32, NonNegI64> = [(0, 10), (1, 10), (2, 10)]
+        let bonds: BTreeMap<i32, NonNegI64> = [(0, 80), (1, 10), (2, 10)]
             .into_iter()
             .map(|(k, v)| (k, NonNegI64::try_from(v).unwrap()))
             .collect();
 
-        let justifications: BTreeSet<Message<i32, i32>> = [a3, b3, c3].into_iter().collect();
         let finalizer: Finalizer<i32, i32> = Finalizer::new(&map);
+
+        // Count-only coverage accepted these three messages even though sender 0
+        // appeared twice and bonded sender 2 was absent. With 90/100 represented
+        // stake, the malformed candidate could advance the fringe.
+        let duplicate_justifications: BTreeSet<Message<i32, i32>> =
+            [a3.clone(), a3_duplicate, b3.clone()].into_iter().collect();
+        let (_parent, duplicate_fringe) =
+            finalizer.calculate_finalization(&duplicate_justifications, &bonds);
+        assert!(
+            duplicate_fringe.is_none(),
+            "duplicate sender must not substitute for a missing bonded sender"
+        );
+
+        // Exact coverage by all bonded senders still advances the fringe.
+        let justifications: BTreeSet<Message<i32, i32>> = [a3, b3, c3].into_iter().collect();
         let (_parent, new_fringe) = finalizer.calculate_finalization(&justifications, &bonds);
         let ids: BTreeSet<i32> = new_fringe
             .expect("fringe should advance")
