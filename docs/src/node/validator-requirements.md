@@ -112,6 +112,27 @@ Tracked as [#60](https://github.com/rchain-community/rchain-rust/issues/60), whi
 self-contained reproduction (a memory-capped `systemd-run` unit) and separates what is measured from what
 is still unattributed.
 
+### Resident memory is not only what the node holds — glibc's arenas
+
+glibc gives each thread its own malloc **arena**, and an arena keeps the high-water mark of what it has
+held; it is not returned to the OS. A node under fork load spreads allocation across its worker threads,
+so what the process retains is the *sum* of the per-thread peaks rather than any one peak. Measured on a
+3-validator devnet ([#117](https://github.com/rchain-community/rchain-rust/issues/117)): **29 anonymous
+regions of exactly 64 MiB** — glibc's `HEAP_MAX_SIZE`, one per worker thread — fully resident, while the
+main `[heap]` sat at 1.9 MiB and file-backed RSS at 26.8 MiB. A heap profile of that run accounts for
+16.4 GiB allocated against **2 MiB still live at exit**: nothing is leaked, and the limit is reached by
+retention rather than by growth.
+
+**Capping the arenas is unproven and is deliberately not shipped.** `MALLOC_ARENA_MAX=2` was tried, and
+the survival counts at a 4 GiB ceiling do not separate it from noise: post-fix runs at the same settings
+gave 1, 2 and 1 surviving nodes out of three (one of those arms died *earlier* than the uncapped arms),
+and a probe intended to read the arena count directly could not sample the nodes that mattered because
+two had already been killed. Do not set it on the strength of this page. What is worth knowing is the
+mechanism: a node cannot set it for itself, because `mallopt` and `malloc_trim` are `unsafe` and this
+crate graph is `#![forbid(unsafe_code)]`, so the only lever is a runtime environment variable — and
+whatever is done about it has to be measured against a reproduction whose run-to-run spread is first
+characterised, because single runs of this shape disagree with each other.
+
 ### Network — low bandwidth, latency-sensitive
 
 gRPC + Kademlia discovery over ~20 batch peer connections; blocks are capped at 256 MB streams and
