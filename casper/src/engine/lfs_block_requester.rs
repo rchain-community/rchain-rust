@@ -4,6 +4,14 @@
 //! from the finalized fringe. The pure requester state is [`super::LfsState`]; the `request_blocks`
 //! stream orchestration (request loop + response loop with an idle-resend timeout) is ported here
 //! onto tokio channels, mirroring the fs2 `requestStream concurrently responseStream` structure.
+//!
+//! **One deliberate departure from the oracle, and it is [`MAX_IDLE_ROUNDS`]**: the walk gives up
+//! when it has completed no block across several consecutive idle rounds. The Scala's only
+//! termination condition is `isFinished` (`LfsBlockRequester.scala:309-312`, the `terminateAfter`
+//! after `evalOnIdle`), so a fringe naming a block no peer serves retries forever — and the port did
+//! the same. Issue #102 records what that costs: the `join!` in `run_approved_state_sync` waits for
+//! both legs, so the sync attempt never finishes, `notify_when_restored` never fires, and the node
+//! sits in `NodeSyncing` for good **with a serving API and no error line**.
 
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -20,6 +28,28 @@ use crate::validate;
 
 /// The block-requester state keyed by block hash (port of `ST[BlockHash]`).
 type St = LfsState<BlockHash>;
+
+/// How many **consecutive** idle resend intervals may complete no block before the walk gives up and
+/// the sync attempt fails.
+///
+/// **The quantity is `finished.len()` — blocks the walk has completed — and it is monotone**
+/// ([`LfsState::done`] only ever adds to it, and [`LfsState::add`] refuses a key already there), which
+/// is what makes "did it move" a well-formed question. So the rule is a **pace** condition, not a
+/// deadline: it is **Law 51a**'s `Drift` shape — steps continue, the measure never moves, and nothing
+/// bounds the steps between two increases, which is what `Paced` refuses. **A wall-clock deadline
+/// would be the wrong instrument**: a long chain legitimately takes longer than any fixed number, and
+/// it is silence the walk must not tolerate, not duration.
+///
+/// Three rounds is `3 × request_timeout` — the production 30 s makes it 90 s of complete silence,
+/// which no honest peer produces and which a partial partition reaches in three lost responses. A
+/// *slow* walk is not touched: the counter resets on every block, so only consecutive empty rounds
+/// count, and `a_slow_but_progressing_walk_is_not_abandoned` pins that.
+///
+/// **Provisional, and deliberately a constant.** It is node-local policy — it changes no block and no
+/// hash — so a `PosParams` field would be wrong, but what it *should* be is a measurement; this is the
+/// same treatment `block-storage/src/dag/liveness.rs`'s `LIVENESS_WINDOW` records for its own
+/// provisional number.
+pub const MAX_IDLE_ROUNDS: u32 = 3;
 
 /// Validate a received block and, if accepted, request its justifications. Returns whether the
 /// block was requested and its hash valid (port of `validateReceivedBlock`).
@@ -66,9 +96,6 @@ async fn validate_received_block(
         if last_latest {
             log.info(source, "Latest blocks downloaded.");
         }
-        // Always request the block's justifications: `dag.insert` requires every justification to
-        // be present in the message map, so the requester must reconstruct the full ancestry chain
-        // down to the genesis block (a syncing node's DAG is always empty).
         // Always request the block's justifications: `dag.insert` requires every justification to
         // be present in the message map, so the requester must reconstruct the full ancestry chain
         // down to the genesis block (a syncing node's DAG is always empty).
@@ -204,6 +231,10 @@ pub async fn request_blocks(
     // Request loop: pull request triggers (or resend on idle timeout) and request next blocks,
     // terminating once all blocks are finished.
     let request_loop = async {
+        // The give-up rule's state: how many blocks the walk had completed at the last idle round that
+        // saw progress, and how many consecutive idle rounds have seen none since.
+        let mut last_finished: usize = 0;
+        let mut idle_rounds: u32 = 0;
         loop {
             let resend = tokio::select! {
                 r = request_rx.recv() => match r {
@@ -211,9 +242,33 @@ pub async fn request_blocks(
                     None => return Ok::<(), String>(()),
                 },
                 _ = tokio::time::sleep(request_timeout) => {
+                    // An idle round: a whole resend interval with no block response. Whether it is
+                    // *stuck* is a different question from whether it is *quiet*, and `finished` is
+                    // the measure that answers it.
+                    let (finished, outstanding) = {
+                        let guard = st.lock().await;
+                        (guard.finished.len(), guard.d.len())
+                    };
+                    if finished == last_finished {
+                        idle_rounds += 1;
+                        if idle_rounds >= MAX_IDLE_ROUNDS {
+                            return Err(format!(
+                                "no block finished in {idle_rounds} consecutive idle rounds of \
+                                 {request_timeout:?} ({finished} block(s) finished, {outstanding} \
+                                 key(s) still outstanding): the fringe names state no peer is \
+                                 serving, so the walk cannot reach it"
+                            ));
+                        }
+                    } else {
+                        idle_rounds = 0;
+                        last_finished = finished;
+                    }
                     log.warn(
                         source,
-                        &format!("No block responses for {request_timeout:?}. Resending requests."),
+                        &format!(
+                            "No block responses for {request_timeout:?}. Resending requests \
+                             ({idle_rounds}/{MAX_IDLE_ROUNDS} idle rounds without a finished block)."
+                        ),
                     );
                     true
                 }
@@ -954,6 +1009,220 @@ mod tests {
         assert!(
             elapsed < BOUND,
             "and it did not wait out the idle resend ({REQUEST_TIMEOUT:?}): took {elapsed:?}"
+        );
+    }
+
+    /// A transport that answers only after it has been asked for the same hash `after` times — the
+    /// shape a *slow but honest* peer has from the requester's point of view: one that needs several
+    /// resends before it can serve.
+    struct SlowServingTransport {
+        blocks: BTreeMap<BlockHash, BlockMessage>,
+        incoming: tokio::sync::mpsc::Sender<BlockMessage>,
+        after: usize,
+        asked: std::sync::Mutex<BTreeMap<BlockHash, usize>>,
+    }
+
+    #[async_trait]
+    impl TransportLayer for SlowServingTransport {
+        async fn send(&self, _peer: &PeerNode, _msg: Protocol) -> CommErr<()> {
+            Ok(())
+        }
+
+        async fn broadcast(&self, _peers: &[PeerNode], msg: Protocol) -> Vec<CommErr<()>> {
+            let Some(rchain_models::comm::protocol::protocol::Message::Packet(packet)) =
+                msg.message
+            else {
+                return Vec::new();
+            };
+            if packet.type_id != "BlockRequest" {
+                return Vec::new();
+            }
+            let Ok(request) = BlockRequestSerde.parse(&packet.content) else {
+                return Vec::new();
+            };
+            let hash = request.hash;
+            let ask_count = {
+                let mut asked = self.asked.lock().expect("ask-count lock");
+                let n = asked.entry(hash).or_insert(0);
+                *n += 1;
+                *n
+            };
+            if ask_count >= self.after {
+                if let Some(block) = self.blocks.get(&hash) {
+                    let _ = self.incoming.send(block.clone()).await;
+                }
+            }
+            Vec::new()
+        }
+
+        async fn stream(&self, _peers: &[PeerNode], _blob: Blob) {}
+    }
+
+    /// **Issue #102's owed falsifier: a walk whose fringe block is served by nobody fails rather than
+    /// hangs.**
+    ///
+    /// The oracle's only termination condition is `isFinished` (`LfsBlockRequester.scala:309-312`), so
+    /// a fringe naming state no peer has retries forever — and `run_approved_state_sync` `join!`s the
+    /// block walk with the tuple-space request, so "forever" is the whole sync attempt: the spawned
+    /// task never returns, `notify_when_restored` never fires, and the node sits in `NodeSyncing` with
+    /// a serving API and no error line. The bound here is the walk's own rule
+    /// ([`MAX_IDLE_ROUNDS`]), not a test harness: the `timeout` below exists only so that a
+    /// regression *hangs the assertion* rather than the suite.
+    ///
+    /// Two assertions carry the content. The walk **fails**, and the error names the silence rather
+    /// than the fringe. And it **retried first** — `broadcasts` is non-empty past the initial fire —
+    /// because a rule that gave up on the first empty interval would kill every slow honest sync; the
+    /// companion test below is what separates the two.
+    #[tokio::test]
+    async fn a_walk_nobody_serves_fails_rather_than_hangs() {
+        const REQUEST_TIMEOUT: Duration = Duration::from_millis(20);
+        // Three idle rounds of 20 ms is 60 ms; two seconds is thirty times that, and the timeout is
+        // a harness guard rather than the bound under test.
+        const HARNESS_BOUND: Duration = Duration::from_secs(2);
+
+        let blocks = chain(3);
+        let tip = blocks.last().expect("a non-empty chain").block_hash;
+        let store = store().await;
+        let (_incoming_tx, mut incoming_rx) = tokio::sync::mpsc::channel(64);
+        // Nobody answers: every request is recorded and dropped, which is what "the fringe names
+        // state no peer has" looks like from the requester's own point of view.
+        let transport = Arc::new(RecordingTransport::default());
+        let connections: ConnectionsCell =
+            Arc::new(tokio::sync::RwLock::new(vec![peer("bootstrap")]));
+        let conf = RPConf {
+            local: peer("local"),
+            network_id: "testnet".to_string(),
+            bootstrap: None,
+            default_timeout: Duration::from_secs(10),
+            max_num_of_connections: 10,
+            clear_connections: ClearConnectionsConf {
+                num_of_connections_pinged: 10,
+            },
+        };
+        let comm_util = CommUtil::new(transport.clone(), conf, connections, Arc::new(NopLog));
+        let fringe = FinalizedFringe {
+            hashes: vec![tip],
+            state_hash: StateHash::new([0u8; 32]),
+        };
+
+        let outcome = tokio::time::timeout(
+            HARNESS_BOUND,
+            request_blocks(
+                &fringe,
+                &mut incoming_rx,
+                REQUEST_TIMEOUT,
+                &store,
+                &comm_util,
+                &NopLog,
+            ),
+        )
+        .await;
+
+        let err = match outcome {
+            Ok(Ok(state)) => panic!(
+                "the walk reported success with the fringe unserved: {} block(s) finished, fringe \
+                 {} hash(es)",
+                state.finished.len(),
+                fringe.hashes.len()
+            ),
+            Ok(Err(e)) => e,
+            Err(_) => panic!(
+                "the walk hung: {HARNESS_BOUND:?} with no answer and no failure. This is #102's \
+                 defect — the node stays in `NodeSyncing` for good, serving an API over an empty DAG"
+            ),
+        };
+        assert!(
+            err.contains("no block finished"),
+            "the failure must name the silence, not the fringe: {err}"
+        );
+        assert!(
+            transport
+                .broadcasts
+                .lock()
+                .expect("broadcast log lock")
+                .len()
+                > 1,
+            "the walk must have re-requested before giving up: one broadcast is the initial fire, so \
+             a rule that abandoned the walk at the first empty interval would show exactly one"
+        );
+    }
+
+    /// **The other direction: a slow walk that is still completing blocks is not abandoned.**
+    ///
+    /// This is what makes [`MAX_IDLE_ROUNDS`] a *pace* rule rather than a deadline. The transport here
+    /// serves each block only on its **third** request — the walk's initial fire plus one resend per
+    /// idle round — so every block costs two idle rounds with no completion, the counter reaches
+    /// `MAX_IDLE_ROUNDS - 1`, and the block that then lands resets it. A rule that counted idle rounds
+    /// without resetting on progress, or one that measured elapsed time instead of progress, fails
+    /// here: the first abandons the walk on the second block, and the second abandons a chain that is
+    /// long rather than stuck.
+    ///
+    /// **The timeout is 100 ms and the count is calibrated to it**: the reset depends on the response
+    /// loop having processed the block before the next idle round fires, which is microseconds of work
+    /// against a hundred-millisecond interval — three orders of margin, not a race the test leans on.
+    #[tokio::test]
+    async fn a_slow_but_progressing_walk_is_not_abandoned() {
+        const REQUEST_TIMEOUT: Duration = Duration::from_millis(100);
+        const N: usize = 3;
+        const ASKED_BEFORE_SERVED: usize = 3;
+        const HARNESS_BOUND: Duration = Duration::from_secs(10);
+
+        let blocks = chain(N);
+        let tip = blocks.last().expect("a non-empty chain").block_hash;
+        let by_hash: BTreeMap<BlockHash, BlockMessage> =
+            blocks.iter().map(|b| (b.block_hash, b.clone())).collect();
+        let store = store().await;
+        let (incoming_tx, mut incoming_rx) = tokio::sync::mpsc::channel(64);
+        let transport = Arc::new(SlowServingTransport {
+            blocks: by_hash,
+            incoming: incoming_tx,
+            after: ASKED_BEFORE_SERVED,
+            asked: std::sync::Mutex::new(BTreeMap::new()),
+        });
+        let connections: ConnectionsCell =
+            Arc::new(tokio::sync::RwLock::new(vec![peer("bootstrap")]));
+        let conf = RPConf {
+            local: peer("local"),
+            network_id: "testnet".to_string(),
+            bootstrap: None,
+            default_timeout: Duration::from_secs(10),
+            max_num_of_connections: 10,
+            clear_connections: ClearConnectionsConf {
+                num_of_connections_pinged: 10,
+            },
+        };
+        let comm_util = CommUtil::new(transport, conf, connections, Arc::new(NopLog));
+        let fringe = FinalizedFringe {
+            hashes: vec![tip],
+            state_hash: StateHash::new([0u8; 32]),
+        };
+
+        let state = tokio::time::timeout(
+            HARNESS_BOUND,
+            request_blocks(
+                &fringe,
+                &mut incoming_rx,
+                REQUEST_TIMEOUT,
+                &store,
+                &comm_util,
+                &NopLog,
+            ),
+        )
+        .await
+        .expect("a progressing walk must finish well inside the harness bound")
+        .expect(
+            "a peer that is slow but answering must not fail the walk: the give-up rule counts \
+             *consecutive* rounds without a finished block, and every block resets it",
+        );
+
+        assert!(
+            state.is_finished(),
+            "the walk reached the fringe after {ASKED_BEFORE_SERVED} requests per block"
+        );
+        assert_eq!(
+            state.finished.len(),
+            N,
+            "and it completed every block of the chain"
         );
     }
 }

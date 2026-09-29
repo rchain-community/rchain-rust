@@ -2637,7 +2637,9 @@ def laws : List Law := [
       a depth bound's business" },
   -- ── Progress: the shapes of non-progress (Laws 51) ───────────────────────────────────────────────
   { number := 51, clause := "a", layer := "Progress",
-    rustWitness := [],
+    rustWitness := [
+      "casper/src/engine/lfs_block_requester.rs:a_walk_nobody_serves_fails_rather_than_hangs",
+      "casper/src/engine/lfs_block_requester.rs:a_slow_but_progressing_walk_is_not_abandoned"],
     statement := "A protocol's failure to make progress has three **shapes**, and each implies a \
       different repair: the requirement is unsatisfiable in **every reachable state** (`Void` — change \
       the requirement), a satisfying state was left and **no rule restores it** (`Terminal` — give the \
@@ -2653,7 +2655,7 @@ def laws : List Law := [
       `Rchain.System.Run, `Rchain.System.Drift, `Rchain.System.Paced],
     axioms := [],
     rust := ["casper/src/validate.rs", "block-storage/src/dag/liveness.rs",
-      "casper/src/blocks/proposer/proposer.rs"],
+      "casper/src/blocks/proposer/proposer.rs", "casper/src/engine/lfs_block_requester.rs"],
     witness := [`Rchain.System.void_goal_is_never_waiting,
       `Rchain.System.unrestorable_lost_is_never_regained, `Rchain.the_two_cycle_drifts],
     falsifiable := some "each shape is inhabited, which is what stops the vocabulary being a list of \
@@ -2678,7 +2680,13 @@ def laws : List Law := [
       (`Rchain/Concurrent.lean`) is the repo's own proof that the flat calculus fixes no schedule at \
       all — so starvation is registered `open` rather than defined as a shape. **Not modelled either**: \
       the protocol's inactivity leak (the honest fix for a net that stays below two thirds), which \
-      needs a state change this layer does not have (#24, #39)" },
+      needs a state change this layer does not have (#24, #39). **`Drift` has a port-side instance \
+      now, not only C171's**: the LFS block walk's give-up rule (`MAX_IDLE_ROUNDS`, \
+      `casper/src/engine/lfs_block_requester.rs`, §6, issue #102) is a `Paced` condition on a measure \
+      the state already kept — `LfsState::finished`, monotone because `done` only adds and `add` \
+      refuses a key that is there — and this row's two `rustWitness` entries falsify it in both \
+      directions: deleting the give-up leaves the walk drifting, and deleting the reset abandons a \
+      slow walk that is still completing blocks" },
   { number := 51, clause := "b", layer := "Progress",
     rustWitness := ["casper/src/blocks/proposer/proposer.rs:a_silent_validators_stale_message_does_not_carry_the_quorum"],
     statement := "The two **causes** of a non-progress shape, on the predicate side: a liveness \
