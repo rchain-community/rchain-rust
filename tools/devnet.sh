@@ -191,6 +191,17 @@ cmd_build() {
   if [[ -n "$commit" ]]; then
     opts+=(--build-arg "GIT_HEAD_COMMIT=$commit")
   fi
+  # Profiling passthroughs (#117): `RNODE_BUILD_FEATURES=dhat-heap` installs the heap profiler, and
+  # `RNODE_BUILD_RUSTFLAGS='-C debuginfo=1'` is what makes its output nameable — the release profile
+  # is `debug = 0`, so without it the profile is addresses with no symbols. Read from the environment
+  # rather than flags for the same reason the node's diagnostic knobs are: they change the *artifact*
+  # under investigation, not the network being started.
+  if [[ -n "${RNODE_BUILD_FEATURES:-}" ]]; then
+    opts+=(--build-arg "CARGO_FEATURES=$RNODE_BUILD_FEATURES")
+  fi
+  if [[ -n "${RNODE_BUILD_RUSTFLAGS:-}" ]]; then
+    opts+=(--build-arg "RUSTFLAGS=$RNODE_BUILD_RUSTFLAGS")
+  fi
   docker build "${opts[@]}" -f docker/rnode/Dockerfile -t "$IMAGE" .
 }
 
@@ -351,6 +362,13 @@ rnode_run_common() {
   # node with a height that does not move. Read from the environment rather than a flag, because it is
   # a diagnostic knob rather than a property of the network being started.
   if [[ -n "${DEVNET_LOG_LEVEL:-}" ]]; then flags="$flags --log-level $DEVNET_LOG_LEVEL"; fi
+  # The scheduler's worker count, from the environment rather than a flag, for the same reason as the
+  # log level: it is a diagnostic knob, not a property of the network being started. It is also a
+  # memory knob — the worker threads are where allocation happens, and glibc gives each one its own
+  # arena that holds its own high-water mark, so the count bounds the *sum* of those peaks (#117).
+  if [[ -n "${DEVNET_THREAD_POOL_SIZE:-}" ]]; then
+    flags="$flags --thread-pool-size $DEVNET_THREAD_POOL_SIZE"
+  fi
   # The effect-scheduler mode (Laws 20-25). The default is the sequential reference; `gate` and
   # `relaxed-validated` are the block-path-capable alternatives, and `relaxed` is rejected on the
   # block path at runtime (casper/tests/scheduler.rs::block_paths_reject_relaxed_mode), so starting

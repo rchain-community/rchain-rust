@@ -24,7 +24,14 @@ COPY . .
 # honest `commit # unknown` rather than inventing one.
 ARG GIT_HEAD_COMMIT=""
 
-RUN cargo build --release -p rchain-node --bin rnode
+# Profiling knobs for the memory investigations (#117), both defaulting to the shipped build.
+# `CARGO_FEATURES=dhat-heap` installs dhat's global allocator; `RUSTFLAGS=-C debuginfo=1` is what
+# makes the resulting profile *nameable* — the default release profile is `debug = 0` and the shipped
+# binary carries no debug sections at all, so a profile built without it is addresses with no symbols.
+# They are build args rather than defaults so the artifact that ships is unchanged.
+ARG CARGO_FEATURES=""
+ARG RUSTFLAGS=""
+RUN cargo build --release -p rchain-node --bin rnode ${CARGO_FEATURES:+--features "$CARGO_FEATURES"}
 
 # --- Runtime stage -------------------------------------------------------------
 # Must match the builder's glibc (rust:1.95.0 = Debian trixie / glibc 2.41).

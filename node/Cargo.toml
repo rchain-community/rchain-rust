@@ -35,6 +35,13 @@ tokio-stream = "0.1"
 tonic = { version = "0.14", features = ["transport"] }
 tower = { version = "0.5", features = ["timeout"] }
 tower-http = { version = "0.6", features = ["cors", "timeout"] }
+# Heap profiling (#117), off by default. The allocator and the profiler are wired in `src/main.rs`
+# only — the *bin*, not the lib — so `cargo test --all-features` (which `make test-*` uses) compiles
+# the dependency without installing a profiling global allocator in any test harness.
+dhat = { version = "0.3", optional = true }
+
+[features]
+dhat-heap = ["dep:dhat"]
 
 [dev-dependencies]
 

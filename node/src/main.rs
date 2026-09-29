@@ -1,6 +1,14 @@
 #![forbid(unsafe_code)]
 //! The node entry point (port of `Main.scala` + `NodeMain.startNode`).
 
+// Heap profiling, for the memory investigations (#117). `dhat::Alloc` implements `GlobalAlloc` inside
+// the dhat crate, so installing it needs no `unsafe` here and the crate-level `forbid` still holds.
+// It is registered in this *binary* only, never in the library, so a `--all-features` test build
+// compiles the dependency without putting a profiling allocator under the test harness.
+#[cfg(feature = "dhat-heap")]
+#[global_allocator]
+static ALLOC: dhat::Alloc = dhat::Alloc;
+
 use std::sync::Arc;
 
 use clap::Parser;
@@ -11,6 +19,16 @@ use rchain_node::runtime::{node_environment, node_runtime, run_cli};
 use rchain_shared::log::{Log, LogSource, StderrLog};
 
 fn main() {
+    // The profiler writes its dump when it drops, so it has to outlive the whole of `main` — and the
+    // node has to *return* from `main` for the file to exist at all, which is what AUDIT C144's
+    // SIGTERM handler buys: before it, `docker stop` ended at exit 137 and the dump was never
+    // written. `--profile docker` puts the data dir at /var/lib/rnode, where the dump is retrieved
+    // from after a clean stop.
+    #[cfg(feature = "dhat-heap")]
+    let _profiler = dhat::Profiler::builder()
+        .file_name("/var/lib/rnode/dhat-heap.json")
+        .build();
+
     // Parse options before building the tokio runtime: the thread-pool size must be known up
     // front (the worker count is fixed at runtime construction).
     let options = Options::parse();
