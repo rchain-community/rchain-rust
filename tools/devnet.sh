@@ -25,6 +25,34 @@ IMAGE="${RNODE_IMAGE:-rnode:local}"
 PREFIX="${DEVNET_PREFIX:-devnet}"
 NETWORK="${DEVNET_NETWORK:-devnet}"
 BOOTSTRAP="${PREFIX}-bootstrap"
+
+# Per-node memory ceiling, applied as `--memory` on every container this script starts. What it
+# protects is the *host*: a devnet is usually one of several heavy jobs on a workstation, and an
+# unconstrained node that goes wrong takes the machine with it. That is not hypothetical — on
+# 2026-09-29 a three-validator devnet under a four-way deploy storm ran beside two other heavy jobs,
+# the kernel logged `fill_page_cache_func hogged CPU for >10000us` and then `Under memory pressure,
+# flushing caches.`, and the machine froze: 47 GiB of RAM against 2 GiB of swap, so there was no
+# reclaim to fall back on. The unconstrained containers were the part of that this script could have
+# prevented, and nothing here stopped them.
+#
+# **The ceiling does bind under load, and that is the designed trade.** Measured the same day, after
+# this flag went in: with `4g`, two of three nodes were OOM-killed (exit 137, `oom=true`) *seventeen
+# seconds* into the four-way storm, at height ~13. The image is ~132 MiB; a node mid-storm is not. The
+# host stayed up with 37 GiB free, which is the outcome this flag is for. A measurement that needs a
+# node to *survive* a storm must raise this (`DEVNET_NODE_MEMORY=8g`), lower the storm's concurrency,
+# or count the OOM kill as one of its results — a node killed this way ends the run early and, from a
+# sampler's side, is indistinguishable from one that merely stopped answering.
+#
+# `--memory-swap` is set *equal* to `--memory` deliberately: that turns swap off for the node, so a
+# node that exceeds its ceiling is OOM-killed inside its own cgroup rather than pushing the host into
+# the thrash that makes a freeze a freeze. A killed node costs one run; a thrashed host costs the
+# session, and the evidence of what the run was doing.
+#
+# CPU is deliberately **not** capped. The block timing a devnet measurement observes is the thing
+# under test (issue #105's storm is a latency phenomenon), so constraining the scheduler would change
+# what is measured. Memory headroom does not. Set to the empty string to opt out of the memory cap.
+DEVNET_NODE_MEMORY="${DEVNET_NODE_MEMORY:-4g}"
+
 # The bootstrap's data volume, when a measurement must run against an existing artifact rather than
 # `${BOOTSTRAP}-data` (set by `up --data-volume`). Empty means the default.
 
@@ -279,7 +307,22 @@ docker_opts() {
   # long chain that measurements run against is the bootstrap's, and pointing every node at one
   # directory would have them fight over the same LMDB environments.
   if [[ "$name" == "$BOOTSTRAP" && -n "$BOOTSTRAP_DATA_VOLUME" ]]; then data="$BOOTSTRAP_DATA_VOLUME"; fi
-  echo "-d --name $name --network $NETWORK $ports \
+  # See `DEVNET_NODE_MEMORY` at the top of this file: the ceiling and the no-swap pair are what keep
+  # a runaway node inside its own cgroup instead of in the host's swap.
+  local limits=""
+  if [[ -n "$DEVNET_NODE_MEMORY" ]]; then
+    limits="--memory $DEVNET_NODE_MEMORY --memory-swap $DEVNET_NODE_MEMORY"
+  fi
+  # Extra container environment, comma-separated `KEY=VALUE` pairs (`DEVNET_NODE_ENV`). The allocator
+  # knobs are why this exists: a node's footprint under fork load is allocator-shaped — one worker per
+  # core means one glibc arena per worker, each holding its own high-water mark — and
+  # `MALLOC_ARENA_MAX=2` / `MALLOC_TRIM_THRESHOLD_` are how that is tested **without a rebuild**, which
+  # matters because a rebuild changes the binary under test (#117).
+  local envs="" pair
+  if [[ -n "${DEVNET_NODE_ENV:-}" ]]; then
+    for pair in ${DEVNET_NODE_ENV//,/ }; do envs="$envs -e $pair"; done
+  fi
+  echo "-d --name $name --network $NETWORK $ports $limits $envs \
     -v ${data}:/var/lib/rnode \
     -v ${CONTRACTS_DIR}:/contracts:ro"
 }

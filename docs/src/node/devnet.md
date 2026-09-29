@@ -38,6 +38,22 @@ one measurement was once mistaken for a hang (AUDIT C55).
 - `docker`
 - `openssl` (to read the bootstrap node-id from its generated TLS certificate)
 
+Every container `up` starts is given a **4 GiB memory ceiling with swap off** (`DEVNET_NODE_MEMORY`
+overrides the size, an empty value opts out). The ceiling is there so a node that runs away is
+OOM-killed inside its own cgroup instead of dragging the host into swap thrash — which is how one
+machine froze on 2026-09-29 while a devnet ran beside two other heavy jobs. Note that it **does** bind
+under load: measured with `4g`, two of three nodes were OOM-killed (exit 137) seventeen seconds into a
+four-way deploy storm at height ~13, the image being ~132 MiB and a node mid-storm being nothing like
+it. The host was unharmed. So a measurement that needs its nodes to *survive* a storm should raise
+`DEVNET_NODE_MEMORY`, lower the storm's concurrency, or record the OOM kill as a result. CPU is left
+uncapped deliberately: the block timing a measurement observes is the thing under test (issue #105's
+storm is a latency phenomenon).
+
+`DEVNET_NODE_ENV` passes extra container environment as comma-separated `KEY=VALUE` pairs — the
+allocator knobs (`MALLOC_ARENA_MAX`, `MALLOC_TRIM_THRESHOLD_`) are what it exists for, since a node's
+footprint under fork load is allocator-shaped and those are testable without a rebuild, which would
+change the binary under test.
+
 ## Commands
 
 ```text
