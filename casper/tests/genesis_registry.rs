@@ -1371,15 +1371,13 @@ fn only_the_ceremony_key_still_holds_the_parked_capability() {
         // One probe text, two signers: read the channel your own deployer keyed, write through the
         // capability if it is there, and say which of the two happened.
         let write_probe = |tag: &str, key: &str| {
-            format!(
-                r#"new deployerId(`rho:rchain:deployerId`), ack in {{
+            r#"new deployerId(`rho:rchain:deployerId`), ack in {
                      @"out"!("probe:TAG:start") |
-                     for (@{{"write": *MCAwrite, ..._}} <<- @[*deployerId, "MasterContractAdmin"]) {{
+                     for (@{"write": *MCAwrite, ..._} <<- @[*deployerId, "MasterContractAdmin"]) {
                        MCAwrite!("KEY", "written-by-TAG", *ack) |
-                       for (_ <- ack) {{ @"out"!("probe:TAG:wrote") }}
-                     }}
-                   }}"#
-            )
+                       for (_ <- ack) { @"out"!("probe:TAG:wrote") }
+                     }
+                   }"#
             .replace("TAG", tag)
             .replace("KEY", key)
         };
