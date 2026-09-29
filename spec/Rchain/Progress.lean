@@ -146,15 +146,6 @@ def Paced (S : System) (measure : S.State → Nat) (k : Nat) : Prop :=
   ∀ σ : S.State, ∀ rest : List S.State, S.Run (σ :: rest) → k < rest.length →
     ∃ t ∈ σ :: rest, measure t ≠ measure σ
 
-/-- **`Historic`** — a predicate with two histories that agree on the current view and disagree on the
-    predicate. C170's shape: the attestation guard read liveness off `latest_msgs`, which keeps a silent
-    sender's last message indefinitely. -/
-def Historic (P : List S.State → Bool) : Prop :=
-  ∃ l l' : List S.State, l.getLast? = l'.getLast? ∧ P l ≠ P l'
-
-/-- **`ReadsTheView`** — what a liveness predicate must have, and what `Historic` refutes. -/
-def ReadsTheView (P : List S.State → Bool) : Prop :=
-  ∀ l l' : List S.State, l.getLast? = l'.getLast? → P l = P l'
 
 /-- **`Split`** — two readers of one state that a reachable step makes disagree. C172's shape:
     `has_all_deps` asks the in-memory index while `block_summary` asks the persisted store. -/
@@ -248,12 +239,6 @@ theorem void_goal_is_never_waiting {S : System} {σ : S.State} {want goal : S.St
   rintro ⟨σ', _, hg⟩
   exact h σ' (hgoal σ' hg)
 
-/-- **A `Historic` predicate cannot be reading the view** — the two are complements, and this is the
-    direction C170 needs: whatever the guard measured, it was not the current view. -/
-theorem historic_refutes_reading_the_view {S : System} {P : List S.State → Bool}
-    (h : S.Historic P) : ¬ S.ReadsTheView P := by
-  obtain ⟨l, l', hsame, hne⟩ := h
-  exact fun hread => hne (hread l l' hsame)
 
 /-- **A `Split` is a disagreement a reader can observe** — the shape C172 needs, stated so that the fix
     ("order the writes", or "make both readers ask one side") is exactly the negation. -/
@@ -263,6 +248,29 @@ theorem split_refutes_agreement {S : System} {readA readB : S.State → Bool} {�
   exact fun hagree => hne (hagree σ hr)
 
 end System
+
+/-! ## The two predicate causes, which need no step relation
+
+Both are properties of a *history* — a list of views, oldest first — so they are polymorphic rather than
+`System`-relative, and an instance states them over its own history type. -/
+
+/-- **`Historic`** — a predicate with two histories that agree on the current view and disagree on the
+    predicate. C170's shape: the attestation guard read liveness off `latest_msgs`, a map that keeps a
+    silent sender's last message indefinitely, so its verdict depended on what had *ever* happened rather
+    than on what is true now. -/
+def Historic {σ : Type} (P : List σ → Bool) : Prop :=
+  ∃ l l' : List σ, l.getLast? = l'.getLast? ∧ P l ≠ P l'
+
+/-- **`ReadsTheView`** — what a liveness predicate must have, and what `Historic` refutes. -/
+def ReadsTheView {σ : Type} (P : List σ → Bool) : Prop :=
+  ∀ l l' : List σ, l.getLast? = l'.getLast? → P l = P l'
+
+/-- **A `Historic` predicate cannot be reading the view** — the two are complements, and this is the
+    direction C170 needs: whatever the guard measured, it was not the current view. -/
+theorem historic_refutes_reading_the_view {σ : Type} {P : List σ → Bool} (h : Historic P) :
+    ¬ ReadsTheView P := by
+  obtain ⟨l, l', hsame, hne⟩ := h
+  exact fun hread => hne (hread l l' hsame)
 
 /-! ## The calculus as an instance, and the smallest system with each shape
 

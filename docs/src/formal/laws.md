@@ -11,9 +11,9 @@ saying **what it is about**.
 > carry a part of it). It counts *clauses* rather than laws and separates **`proved-tied`** (proved *and*
 > tied to the node by a conformance corpus) from **`proved-model`** (proved about a model a human keeps
 > in sync); the prose on this page is the narrative reading of the same rows, and where the two
-> disagree, the register is right. Its total is **<!-- counts:proved-laws -->48<!-- counts:end --> of
-> <!-- counts:laws -->53 laws<!-- counts:end --> proved at all — <!-- counts:proved-tied-laws -->17<!-- counts:end --> tied to the node by a corpus,
-> <!-- counts:proved-model-laws -->33<!-- counts:end --> over the model — with one more law proved but *vacuous* (its statement restates its own
+> disagree, the register is right. Its total is **<!-- counts:proved-laws -->49<!-- counts:end --> of
+> <!-- counts:laws -->54 laws<!-- counts:end --> proved at all — <!-- counts:proved-tied-laws -->17<!-- counts:end --> tied to the node by a corpus,
+> <!-- counts:proved-model-laws -->34<!-- counts:end --> over the model — with one more law proved but *vacuous* (its statement restates its own
 > definition, and the register has a word for that).
 
 ## The set, and what each part of it is about
@@ -29,7 +29,7 @@ saying **what it is about**.
 | 30–43 | **The surface** | what a client writes and a matcher reads: grammar, lexing, normalization, matching, reply shapes, the JSON envelope | *(below)* |
 | 44–47 | **The validator lifecycle** | the Proof-of-Stake epoch: the boundary gate, the reward split, its conservation, staged withdrawal | *(below)* |
 | 48–49 | **Charging** | what a denied deploy does to the merged state, and what a matched deploy is charged | *(below)* |
-| 51–53 | **Progress** | non-progress: its three shapes (a requirement nothing satisfies, a refused state no rule restores, a run whose measure never moves), its two predicate causes (a predicate that reads history, two readers that split), the two answers finality's gate must give (52: the partition may shrink, the quorum denominator may not), and one attribution that is terminal (53: the refusal persists and the rule refuses its children) | [Progress: the shapes of non-progress](progress.md) |
+| 51–54 | **Progress** | non-progress: its three shapes (a requirement nothing satisfies, a refused state no rule restores, a run whose measure never moves), its two predicate causes (a predicate that reads history, two readers that split), the two answers finality's gate must give (52: the partition may shrink, the quorum denominator may not), one attribution that is terminal (53: the refusal persists and the rule refuses its children), and which view a rule reads (54) | [Progress: the shapes of non-progress](progress.md) |
 
 The last three sets are the ones a graph of the *calculus* does not reach. Rows 30–43 exist because every
 defect that started the formalisation programme (AUDIT C9–C22) lived there and **nothing errored**: an

@@ -2688,14 +2688,14 @@ def laws : List Law := [
       `Drift`), and the split is what turned an unresolvable justification into a dropped block with \
       nothing to re-queue it (a `Terminal` stall)",
     status := .provedModel,
-    declarations := [`Rchain.System.Historic, `Rchain.System.ReadsTheView, `Rchain.System.Split],
+    declarations := [`Rchain.Historic, `Rchain.ReadsTheView, `Rchain.System.Split],
     axioms := [],
     rust := ["casper/src/blocks/proposer/proposer.rs", "casper/src/block_metadata_store.rs"],
-    witness := [`Rchain.System.historic_refutes_reading_the_view,
+    witness := [`Rchain.historic_refutes_reading_the_view,
       `Rchain.System.split_refutes_agreement],
     falsifiable := some "both are *refutations*, so the falsifier is a predicate that does what the \
       cause says cannot be done: a liveness predicate that reads only the current view refutes \
-      `Rchain.System.Historic` (the window in `block-storage/src/dag/liveness.rs` is such a predicate, \
+      `Rchain.Historic` (the window in `block-storage/src/dag/liveness.rs` is such a predicate, \
       and the Rust test named above is its witness), and two readers that cannot disagree refute \
       `Rchain.System.Split` (which is what C172's fix — one order, or one authoritative side — \
       establishes). **The index/store test for the second half lands with the fix itself** (PR #106, \
@@ -2847,7 +2847,73 @@ def laws : List Law := [
       of 2026-09-24 describes. The fix is a fork decision and is recorded as such in AUDIT C173 \
       (`spec/audit/passes.md` §25): count failed justifications in the height maximum, or give a stranded \
       node an explicit path back. **Independent of C172's fix**, which is a dropped `Internal` rather than \
-      a recorded `ValidationFailed` and does not touch this path" }
+      a recorded `ValidationFailed` and does not touch this path" },
+  { number := 54, clause := "a", layer := "Casper",
+    rustWitness := [
+      "casper/src/blocks/proposer/proposer.rs:a_silent_validators_stale_message_does_not_carry_the_quorum",
+      "block-storage/src/dag/liveness.rs:a_validator_with_no_message_at_all_is_not_live"],
+    statement := "**A liveness predicate reads the current view, not a history.** A predicate that searches \
+      a retention map — the port's `latest_msgs`, which keeps a silent sender's last message indefinitely \
+      — has a verdict that depends on what has *ever* happened, so it is `Historic` (Law 51's cause): two \
+      histories that agree on the current view and differ only in their past get different answers from it. \
+      The predicate that replaces it takes the sender's **entry** and tests it against the window, which is \
+      what makes the same three-validator fixture read 200 rather than 300 — the false supermajority C170 \
+      measured",
+    status := .provedModel,
+    declarations := [`Rchain.Retention, `Rchain.everSpoke, `Rchain.inWindow, `Rchain.Historic,
+      `Rchain.ReadsTheView],
+    axioms := [],
+    rust := ["block-storage/src/dag/liveness.rs", "casper/src/blocks/proposer/proposer.rs",
+      "casper/src/multi_parent_casper.rs"],
+    witness := [`Rchain.everSpoke_is_historic, `Rchain.the_retention_reader_counts_a_stale_sender,
+      `Rchain.historic_refutes_reading_the_view],
+    falsifiable := some "both halves are refutations of the other reading: `Rchain.everSpoke_is_historic` \
+      exhibits two maps that agree on the current view and disagree on `everSpoke`, so a predicate with \
+      that shape can never be `Rchain.ReadsTheView` (which `Rchain.historic_refutes_reading_the_view` \
+      proves as the general complement); and `Rchain.the_retention_reader_counts_a_stale_sender` carries \
+      the port's own numbers into the model — sender 3, seven heights behind the tip, counted by the \
+      retention reader and refused by the window. The Rust test named above fails with `left: 200, \
+      right: 100`, which is the same disagreement in stake rather than in verdict, so the model and the \
+      code are pinned to the same fixture",
+    note := "**This is the cause rather than the shape**, and the distinction is what makes the      classification diagnostic: C170's predicate is why C171's storm ran (the guard's suppression never \
+      fired while the quorum *was* reachable) and why the arithmetic looked wrong when the defect was in \
+      what the guard was reading. The fix has two halves and only one of them is arithmetic: the predicate \
+      now reads the entry the view supplies (`liveness::live_weight_set`), and the *window* makes \
+      \"current\" a bounded claim rather than an appeal to history — so a predicate that reads a view \
+      still needs `Rchain.StalenessBound` to be a liveness predicate at all. **What it does not claim**: \
+      that every predicate over a map is historic (a map with exactly one entry per sender is its own \
+      view, which is why the port quotients to the newest per sender); the cause is the *shape of the \
+      read*, and `Rchain.everSpoke` is the shape" },
+  { number := 54, clause := "b", layer := "Casper",
+    rustWitness := [],
+    statement := "**One view, or both written together.** When a node keeps two views of the same set — the \
+      port's in-memory DAG index and the persisted store it is built from — and updates them by \
+      **separate** steps, a state is reachable in which one holds a key the other does not, and the two \
+      readers that disagree there are exactly the ones whose answers decide validation (`has_all_deps` \
+      asks the index; `block_summary` asks the store). The fix's shape is one step writing both: \
+      `the_atomic_order_cannot_split` proves the invariant for every reachable state from a consistent \
+      start, and `the_separate_steps_can_split` exhibits the state where the invariant fails",
+    status := .provedModel,
+    declarations := [`Rchain.TwoViews, `Rchain.viewsStep, `Rchain.atomicStep],
+    axioms := [],
+    rust := ["casper/src/block_metadata_store.rs"],
+    witness := [`Rchain.the_separate_steps_can_split, `Rchain.the_atomic_order_cannot_split],
+    falsifiable := some "**the falsifier is a rule, not a schedule**: `Rchain.the_atomic_order_cannot_split` \
+      is an induction whose step rewrites both views, so a rule that updates one side alone — which is the \
+      port's own pre-fix order — makes it unprovable by construction, and \
+      `Rchain.the_separate_steps_can_split` is that rule's reachable witness. The initial condition is a \
+      hypothesis rather than a fact, and it is the honest one: a node whose two views start out of step \
+      stays out of step, which is why the fix states *which* side a reader should ask as well as ordering \
+      the writes. The Rust side of this clause is AUDIT C172's fix and its two tests \
+      (`a_refused_height_gap_is_not_left_in_the_index`, \
+      `a_failed_store_write_is_not_left_in_the_index`, PR #106): the row may not name them until the branch \
+      carrying them is the base, because the witness checker refuses a symbol that is not in the file",
+    note := "The second cause, and the one that shows why the two axes are one axis: C172 is not a \
+      progress defect at all — nothing is stuck, two readers simply answer different questions about the \
+      same block — and it *produces* a `Terminal` stall, because the reader that disagrees feeds \
+      validation, the failure is attributed, and Law 53's refusal then makes the stall permanent. The \
+      diagnosis is what links them: a rule read a view that was not the authoritative one. **Independent \
+      of clause a**: there the fix is to read the view, here it is to have one" }
 ]
 
 /-- Every law number the catalog defines. Laws with clauses repeat. -/

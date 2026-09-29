@@ -31,10 +31,10 @@ cause** says where the fix goes. Reading a symptom on both axes is what turns "t
 | symptom an operator sees | shape | cause | law | the falsifier to run | the fix class |
 |---|---|---|---|---|---|
 | finality stops although more than two thirds of the stake is up | `Void` — nothing satisfies the requirement | — | **52b** (proved by the derivation `fullPartitionStake_eq_zero_of_a_silent_bonded`) | `the_whole_bonded_partition_is_unsatisfiable` | **drop the requirement nothing can satisfy** (shrink the *partition*, never the denominator — see below) |
-| a node attests although a third of the stake is silent | — | `Historic` | 51b | `a_silent_validators_stale_message_does_not_carry_the_quorum` | read the predicate off the **current view**, not the history |
-| the chain grows and the fringe does not | `Drift` | `Historic` | 51a/51b | `the_two_cycle_drifts` + the devnet measurement | **bound the rate** — and fix the predicate that let it run |
+| a node attests although a third of the stake is silent | — | `Historic` | **54a** (`everSpoke_is_historic`) | `a_silent_validators_stale_message_does_not_carry_the_quorum` | read the predicate off the **current view**, not the history |
+| the chain grows and the fringe does not | `Drift` | `Historic` | 51a + 54a | `the_two_cycle_drifts` + the devnet measurement | **bound the rate** — and fix the predicate that let it run |
 | one bad block, and the node refuses every block above it, forever | `Terminal` | — | **53a** (`the_refusal_is_persistent` + the neglect rule) | `the_refusal_is_persistent` — **a guard**: a restoring rule reddens it by construction | give the refused state an **inverse** (a restoring rule) |
-| a block is in the index and not in the store | `Terminal` | `Split` | 51a/51b | the index/store ordering tests | make both readers ask **one** side, or order the writes |
+| a block is in the index and not in the store | `Terminal` | `Split` | **54b** (`the_separate_steps_can_split` / `the_atomic_order_cannot_split`) | the index/store ordering tests (PR #106) | make both readers ask **one** side, or write both in one step |
 | **two groups finalise different histories** | safety, not liveness | — | 52a | `the_live_denominator_lets_two_sides_finalise` | **never** shrink the denominator |
 | an enabled step that no schedule takes | starvation | — | 51a (`open`) | — (the evidence is `reduce_not_deterministic`) | the schedule is the scheduler's |
 
