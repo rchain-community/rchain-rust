@@ -4485,3 +4485,52 @@ insufficient, because heights keep advancing on a chain that cannot finalise. Re
 rather than folded into C170 because it is open, and the `owes` cell names the falsifier that would
 close it.
 
+## 24. The DAG index and the store it indexes: the same measurement's other failure
+
+The same 2026-09-29 run produced a second, independent finding one layer down, and it is the one that
+keeps a joiner from ever catching up: the validator that stalled at the first epoch boundary never
+recovered, because a block can be **in the DAG index and not in the store the index is built from**.
+
+### C172 — `BlockMetadataStore::add` writes the index before the store, and two readers ask different sides
+
+`add` (`casper/src/block_metadata_store.rs:41-52`) updates the in-memory `DagState` **first** and
+writes the persisted store **second**, with an `await` between them. Two readers want the same fact
+and ask different questions: `has_all_deps` (`casper/src/blocks/block_receiver.rs:455`) and
+`not_validated` (`:245-255`) ask the **index** (`DagRepresentation::contains` → `dag_set`,
+`block-storage/src/dag/representation.rs:73-75`), while the whole of `block_summary` —
+`get_parents_metadata` (`casper/src/proto_util.rs:26-36`), `block_number` and `sequence_number`
+(`casper/src/validate.rs:220-236`) — asks the **store** (`dag.lookup` →
+`block_metadata_store.get`, `casper/src/dag.rs:419-421`). Inside that window a child's dependencies
+look satisfied, the child is queued, and validation then cannot resolve its parent: `missing
+justification …` → `block summary failed: …` (`casper/src/multi_parent_casper.rs:338-342`) →
+`ValidateError::Internal`.
+
+**`Internal` is terminal in a way `ValidationFailed` is not**: it is logged and `continue`d
+(`casper/src/blocks/block_processor.rs:124-130`), so the block never reaches `validated_tx`, so
+`BlockReceiver` never sees it *finish*, so every block waiting on it stays in `state` forever. That is
+the observed cascade (three failures, each naming the previous block) and why only a restart
+recovers: `BlockMetadataStore::create` rebuilds the index from the store. The retriever's log
+contradicts the processor's for the same reason — `ack_received` fires on the **block-store** write
+(`block_receiver.rs:452`), before validation, and removes the hash from the map `request_all`
+re-requests from (`block_retriever.rs:252-263`).
+
+**`dag.rs:260-262` makes this order the whole of a previous fix** (AUDIT F-5): *"Compute and store the
+fringe data **before** the block's own metadata… The order is the whole of this fix"* — chose so a torn
+write leaves orphan *data* rather than a pointer to data that is not there. `add` does the reverse for
+the pointer and the contents it points at. Same class, one layer down, and this is C164's shape again:
+the discipline existed, was pinned, and was not applied where the same fact is read.
+
+**Recorded `todo`, not `done`, and the distinction matters.** The observation (the log sequence, the
+terminal cascade, the restart recovering) is evidence; the *mechanism* is read out of the tree and is
+consistent with it, but **not reproduced** — the window is one `await` wide and needs a validation
+running inside it, and which of the concurrent validators (the processor's own spawned batch, the
+proposer's parent validation at `proposer.rs:385`, the LFS syncer) lands in it is owed. The
+store-write-*failure* path is the same divergence with no window at all: `add` returns `Err` after the
+index was updated, so the index keeps an entry the store never got until a restart. Filed as [#103],
+with three fix options and their trade-offs (the straight reorder wants a compensating delete, or
+`create` would refuse to rebuild at the next start). The `owes` cell names the gate the falsifier
+needs: a metadata store over a `KeyValueStore` whose `put` parks, with `contains` asserted false while
+it is parked.
+
+[#103]: https://github.com/rchain-community/rchain-rust/issues/103
+

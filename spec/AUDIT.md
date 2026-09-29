@@ -102,17 +102,18 @@ on the rows that are not reads.
 
 ## Check-off
 
-**Findings  TODO 1 · IN PROGRESS 0 · DONE 205** &nbsp;&nbsp;·&nbsp;&nbsp; **Coverage  all 89 T1 modules read**
+**Findings  TODO 2 · IN PROGRESS 0 · DONE 205** &nbsp;&nbsp;·&nbsp;&nbsp; **Coverage  all 89 T1 modules read**
 
 Closed when both halves are zero. A **done** row is settled -- fixed, assessed faithful, a
 deliberate deviation, or refuted -- and names what holds it. A **todo** row names what would
 close it.
 
-### TODO — findings (1)
+### TODO — findings (2)
 
 | id | what | what closes it | account |
 |---|---|---|---|
 | `C171` | an all-live net attesting on every remote block runs a block storm: the guard cannot suppress while the quorum IS reachable, so four deploys produced 126 blocks in about three minutes with autopropose off (reproduced 2026-09-29; 276 in a minute on #70) | the pace half on attest_warranted (node/src/runtime/node_runtime.rs:2590): this node's own latest message at least k heights behind the tip, so an all-live net's attestation rate is bounded. Falsifier: a three-validator devnet with --attest-on-new-blocks whose block growth per deploy is bounded, and red when the pace term is deleted. #70 increment 2 | §23 |
+| `C172` | BlockMetadataStore::add updates the in-memory DAG index before the store it indexes, so has_all_deps (index) can queue a child whose justification block_summary (store) cannot resolve: ValidateError::Internal is dropped with no re-queue, the receiver never sees the block finish, and the stall is permanent until a restart (#103) | reproduce the window (a validation running inside add's await) and order the two writes so the index cannot report a block the store does not hold — the gated-store falsifier in #103; or make has_all_deps/not_validated ask the store, which is what 'has this block been validated' means | §24 |
 
 ### T1 coverage — closed
 
