@@ -4662,3 +4662,88 @@ because a cadence that suppresses *every* round traps liveness). And a net that 
 of its stake **permanently** still cannot finalise — the honest fix there is an inactivity leak, which is
 a state change (burning a silent validator's stake) and belongs with the shard-configuration and
 validator-lifecycle work (#24, #39), not with a recency window.
+
+## 27. The memory ceiling is glibc's heap, and the audit that had to break its own instruments to say so (#117)
+
+#117 recorded that a node under fork load reaches its cgroup ceiling and is OOM-killed on a chain of
+fifteen blocks. This pass is an adversarial audit of that claim and of the work done against it: eight
+independent agents (four deriving blind, four attacking one seeded conclusion each), a synthesis across
+three revisions, and three rounds of mechanical gates that failed twice and returned real defects both
+times. Its full report is `spec/audit/evidence/n117-audit.md`; the frozen measurement protocol and its
+three amendments are `spec/audit/evidence/n117-preregistration.md`; what the measurement returned is
+`spec/audit/evidence/n117-stage-a-results.md`.
+
+**Verdict: the symptom is confirmed, the fix is not, and the mechanism is now half named.** The symptom
+by direct measurement (`run5`, `trim` and the three Stage A runs: anon to the ceiling, `file` flat, a
+lone validator flat, 2–3 nodes OOM-killed per run). The fix is not: at a 4 GiB ceiling on the tip, after
+both merge-path commits, two of three nodes still die — and the arm that died carried `MALLOC_ARENA_MAX=2`
+in its environment, so it was the arm *most favourable* to the fix. The mechanism is half named because
+the measurement attributed the memory but not its composition:
+
+- **The ceiling is glibc's malloc heap.** Over 760 samples at `anon` > 1 GiB, glibc's own accounting
+  (`uordblks + fordblks + hblkhd`, read by an `LD_PRELOAD` shim — `spec/audit/evidence/mallinfo-shim.c`)
+  explains the cgroup's anonymous memory at **92.0–163.9 %, mean 101.0 %**. Nothing in the tree could say
+  this before: a Rust heap profiler sees what passed through the global allocator and never what glibc
+  kept, and `/proc` reports resident pages without saying whether an allocator call still owns them.
+- **The audit's own rule could not have reached it.** The pre-registered table classifies on `R/A`, a
+  `smaps`-derived proxy for the arena class. Across the same runs, on the same process, `R/A` spans
+  **0.000–0.983**: 280 of 760 samples fall in the "arenas refuted" band, 377 in a band Amendment 2 had
+  to add, 103 in "accepted". The verdict is decided by which instant is sampled. That is recorded rather
+  than repaired, because it is the measurement's own finding about the instrument.
+- **H6's accepted Θ(N²) ancestry residency is exonerated by direct measurement.** The node's own DAG
+  gauges, read for the first time: at the ceiling, `logical_bytes` **46–125 MB** and `seen_entries`
+  **749–2584** against a 4 GiB anonymous footprint. The register's accepted residual is real and is a
+  hundredth of this defect — and it is now measured rather than argued from the N² term.
+- **Left open, and named:** the composition of the *in-use* half. glibc reports 2–3.5 GiB `uordblks` at
+  the ceiling while the only profile of this shape puts the live *Rust* heap at ~95 MiB — but that
+  profile stopped below the ceiling, and no instrument separates Rust-side growth from C-side allocation
+  from `lmdb-rkv-sys`. The subtraction needs a profile at the ceiling; the dump needs a clean exit a node
+  at its ceiling does not get.
+
+### C175 — the other half of the ingress→validate→process pipeline is still unbounded
+
+**The check-off is R15's class, one queue over.** R15 closed "unbounded block-validation pipeline" by
+bounding the processor-input channel at `MAX_PENDING_BLOCKS` with backpressure
+(`node/src/runtime/node_runtime.rs:764-781`). The **validated-blocks** half of the same pipeline was not
+touched: `mpsc::unbounded_channel()` at `node_runtime.rs:733` carries full `BlockMessage`s, and a second
+unbounded tap channel sits at `:2557` inside `tap_validated_blocks` — which is production code; the
+similarly-shaped `:2090` is inside `#[cfg(test)]` and is not a defect. `unbounded_channel::<BlockHash>()`
+also appears at `casper/src/engine/lfs_block_requester.rs:226` and
+`casper/src/blocks/block_receiver.rs:538`, so the count is **two in this pipeline, four in the tree**.
+
+This is the shape the register itself records as this port's most-repeated defect — a set with a line
+shared and a sibling missed — and it is the one candidate mechanism this audit could not rule out, for a
+plain reason: its depth is measured by nothing. `owes`: bound it as R15 bounded its sibling, **and add a
+depth gauge**, because a bound whose depth is unobservable is the same defect one level up.
+
+### C176 — a measurement's artifacts cannot say what they measured
+
+Three defects with one shape, all found by auditing this session's own evidence base and all of them
+correcting the *record* rather than the node:
+
+- **The arms recorded no configuration.** Six arm files in `target/n105/` share one schema with no
+  configuration column; which env var produced each is carried by the *filename* only, and one of them
+  (`arena-control.tsv`) contains two different runs appended, another (`trim.tsv`) three plus a restart.
+  So no cross-arm comparison in that evidence base is sound, and the session's published arm comparisons
+  must be read as unsupported rather than merely imprecise.
+- **A killed node's peak reads 0.** A container's cgroup is removed when it exits, so a peak read through
+  `/proc/<pid>/cgroup` returns nothing for exactly the nodes a death measurement exists to observe —
+  `acceptance.log:746-747` records `peak=0 MiB` for both nodes that died, beside a comment claiming the
+  counter "cannot miss a spike". The fix is to resolve the cgroup from the **container id** and read the
+  peak while the node lives; the Stage A sampler does both.
+- **A tracked page states a figure its own artifact refutes.** `docs/src/node/validator-requirements.md:120-121`
+  says "29 anonymous regions of exactly 64 MiB — `HEAP_MAX_SIZE`, one per worker thread — fully resident".
+  The snapshot it cites holds **29 regions of exactly 32 MiB** (the worker stacks, `thread_stack_size(32 MiB)`,
+  with **5.7 MiB** of RSS between them) and **11 regions of exactly 64 MiB** which *are* the arena heaps.
+  The count came from one size class and the size from another, and "fully resident" is the inverse of
+  the truth for the class it names. `owes`: replace the sentence with the measured histogram.
+
+### The record this pass corrects
+
+The audit's claim ledger marked **6 contradicted and 8 unsupported of 43** claims made on #117 and PR
+#118 — including the issue **title**'s "accumulates without bound" (2 MiB is live at exit), a published
+"two seconds" with no artifact behind it, the "29 × 64 MiB" sentence above, and an issue attribution the
+author had "corrected" to the wrong mechanism and which then propagated into an independent agent's
+verdict as though it were evidence. The corrected record is posted on both; what this pass registers is
+only the two rows above, because the rest are corrections to claims about runs, and a claim about a run
+belongs where the runs are described.
