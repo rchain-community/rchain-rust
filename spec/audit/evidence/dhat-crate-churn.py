@@ -27,6 +27,12 @@ totals — the choice is what has to be recorded, not the number):
 - A program point with no qualifying frame is `unknown`.
 
 Usage: `python3 spec/audit/evidence/dhat-crate-churn.py <profile.json> [<profile.json> ...]`
+
+Pass `--any-frame` to use the looser variant: credit a program point to the first crate-naming frame
+**anywhere** in its stack rather than only the outermost non-standard one. Both are defensible and they
+give different totals, which is the point of recording the rule. The tightened rule above is the one
+the cited figures come from; the audit's file cites a sensitivity figure for the loose variant, and one
+gate could not reproduce it, so printing both makes the pair checkable rather than asserted.
 """
 
 import collections
@@ -36,6 +42,19 @@ import sys
 
 MIB = 1 / 1048576
 STD_PREFIXES = ("alloc", "core", "std")
+
+
+def frames_of(pp, ftbl):
+    return [clean(ftbl[i]) for i in pp.get("fs", [])]
+
+
+def owner_any_frame(pp, ftbl) -> str:
+    """Loose variant: first crate-naming frame anywhere in the stack."""
+    for frame in frames_of(pp, ftbl):
+        head = frame.split("::")[0]
+        if head and not head.startswith(STD_PREFIXES) and not head.startswith(("[", "<", "0x")):
+            return head
+    return "unknown"
 
 
 def clean(frame: str) -> str:
@@ -50,7 +69,7 @@ def owner(pp, ftbl) -> str:
     return "unknown"
 
 
-def report(path: str) -> None:
+def report(path: str, chooser) -> None:
     with open(path) as fh:
         profile = json.load(fh)
     ftbl, pps = profile["ftbl"], profile["pps"]
@@ -58,9 +77,9 @@ def report(path: str) -> None:
     for pp in pps:
         total = pp.get("tb", 0)
         if total:
-            by_crate[owner(pp, ftbl)] += total
+            by_crate[chooser(pp, ftbl)] += total
     grand = sum(by_crate.values())
-    print(f"{path}")
+    print(f"{path}  [{chooser.__name__}]")
     print(f"  mode={profile.get('mode')}  program points={len(pps)}")
     print(f"  total allocated = {grand * MIB:,.1f} MiB")
     for crate, total in by_crate.most_common():
@@ -68,6 +87,8 @@ def report(path: str) -> None:
 
 
 if __name__ == "__main__":
-    for arg in sys.argv[1:]:
-        report(arg)
+    args = [a for a in sys.argv[1:] if not a.startswith("--")]
+    chooser = owner_any_frame if "--any-frame" in sys.argv else owner
+    for arg in args:
+        report(arg, chooser)
         print()

@@ -173,3 +173,36 @@ same-instant rule: its nearest cgroup reads are the monitor's 1-second samples (
 that artifact carries ≈ **±57 %**. It is therefore unable to decide the table under this protocol, which
 is the protocol working: the measurement has to be taken, and the existing snapshot is a bound rather
 than a reading.
+
+---
+
+## Amendment 3 — the two outcomes the protocol did not describe, and a repeat count
+
+**Stated, and why: the gate that passed this protocol listed two cases it could not decide, because the
+table is written for "at death" and says nothing about the node that does not die.** Both are
+additions of *handling*, not of thresholds.
+
+**A5. The node never reaches the ceiling.** The reproduction's own spread is wide — observed death
+times run 17 s to 186 s from the first sample — so a run that survives its observation window is a
+possible and informative outcome, not a failed run. Define: observe until the node dies **or** for a
+fixed 600 s, whichever comes first. If it is still alive at 600 s, report `R/A` at the end of the
+window, the same-instant `anon`, the run's peak `anon`, and the ramp rate over the last 60 s; and
+record the verdict as **"no ceiling event in the window"**, with the table's four rows explicitly *not
+applied*. A node that plateaus below the ceiling is evidence of a bound and is reported as such — it is
+the one outcome that would falsify the premise that the growth is uncapped.
+
+**A6. Stage A is repeated ≥ 3 times, not once.** `R/A` is a ratio of two instantaneous readings on a
+process moving at hundreds of MiB/s, so a single run cannot separate a systematic owner from an
+accident of that run's phase. All three `R/A` values are reported, with their `anon` and their sample
+times, and the verdict is taken from the pattern rather than from one number. This is the same reason
+the companion fix-verdict comparison already carries `≥ 3 repeats per arm`; the attribution arm had been
+left at one, which was an omission rather than a decision.
+
+**A7. Both variants of the crate-attribution rule are now derivable, and the audit's sensitivity
+figure is not.** `spec/audit/evidence/dhat-crate-churn.py` prints the tightened rule (8,796.1 →
+1,126.0 MiB for `rchain_casper`) and, with `--any-frame`, a looser one (277.0 → 162.7 MiB) — a **32×
+spread from the rule alone**, which makes the point the audit wanted to make and does so checkably. The
+figure that audit quoted for that sensitivity could not be reproduced by a gate, under either variant
+or its own stated rule; it should be dropped or replaced by the script's two printed values. Recorded
+here because it is the same defect the script itself was committed to fix: a number whose derivation is
+not recorded is prose.
