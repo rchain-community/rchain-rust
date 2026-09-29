@@ -9,7 +9,8 @@ said 29, that the two tables contradicted each other on Laws 5 and 24, or that L
 axioms" were really 12. This module is the single source of truth those documents are generated from,
 and `Rchain/LawsMain.lean` (the `rchain-laws` executable) is what enforces it:
 
-1. **Numbering** — every law 1..49 is present, with no gaps, so a law cannot be quietly dropped.
+1. **Numbering** — every law `1..lawCeiling` is present, with no gaps, so a law cannot be quietly
+   dropped.
 2. **Reference integrity** — every declaration a row names actually exists in `Rchain`. A renamed or
    deleted theorem fails this, instead of leaving a row that cites a proof that is gone.
 3. **Axiom accounting** — the set of axioms cited by these rows is *exactly* the set of `axiom`
@@ -194,7 +195,7 @@ structure Law where
   /-- A note where the status needs qualifying. -/
   note : String := ""
 
-/-- Every law in the catalog — 1..43, the orphaned ones and the open ones included, because a register
+/-- Every law in the catalog, the orphaned ones and the open ones included, because a register
 that lists only the formalized laws cannot notice a law that was dropped.
 
 Statements are the one-line form; `spec/INVENTORY.md` carries the long form and the Rust realization.

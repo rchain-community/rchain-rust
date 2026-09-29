@@ -32,7 +32,8 @@ decade.
 - **Part II — The ρ-calculus, formally** is the precise semantics: the grammar, the sorts, and the
   **[<!-- counts:laws -->54 laws<!-- counts:end -->](formal/laws.md)** that govern the node — the
   calculus (1–29), the surface a client writes and a matcher reads (30–43), the Proof-of-Stake epoch
-  (44–47), and the fee and charging rows (48–49). Each law is mapped to its machine-checked
+  (44–47), the fee and charging rows (48–49), the two depth guards (50) and the progress rows (51–54).
+  Each law is mapped to its machine-checked
   formalization, and the [folder's index](formal/README.md) says which document carries which set.
 - **Part III — The node** describes the software that executes rholang: the tuple space, the Merkle
   state, and the Casper consensus protocol.

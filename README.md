@@ -36,7 +36,8 @@ The documentation is served as a book (`mdbook serve docs`). It is organized sof
 - **Part II — The ρ-calculus, formally** ([`docs/src/formal/`](docs/src/formal/)) — the grammar, the
   sorts, and all <!-- counts:laws -->54 laws<!-- counts:end --> — the calculus (1–29), the surface a
   client writes and a matcher reads (30–43), the Proof-of-Stake epoch (44–47), the fee and charging
-  rows (48–49) and the depth guards (50) — mapped to their machine-checked proofs.
+  rows (48–49), the depth guards (50) and the progress rows (51–54) — mapped to their machine-checked
+  proofs.
 - **Part III — The node** ([`docs/src/node/`](docs/src/node/)) — consensus, the tuple space, storage,
   and operation.
 - **Part IV — Building applications** ([`docs/src/developer/`](docs/src/developer/)) — building

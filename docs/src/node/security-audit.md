@@ -158,7 +158,7 @@ Three aggravating factors:
    checked at continuation boundaries only, so a single builtin call of arbitrarily long duration runs
    to completion. There is no wall-clock timeout on the block execution path.
 
-**Why no gate caught this.** None of the project's gates is about cost. The 50 laws cover semantics —
+**Why no gate caught this.** None of the project's gates is about cost. The law register covers semantics —
 canonicalisation, substitution, COMM, matching, merge, finality arithmetic. A cost regression is not a
 panic, not an `unsafe`, not a type escape, not a coverage drop, and not a law violation, so it is
 invisible to every check the project runs. That is a gap in the shape of the register, not in the

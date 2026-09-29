@@ -29,6 +29,7 @@ saying **what it is about**.
 | 30–43 | **The surface** | what a client writes and a matcher reads: grammar, lexing, normalization, matching, reply shapes, the JSON envelope | *(below)* |
 | 44–47 | **The validator lifecycle** | the Proof-of-Stake epoch: the boundary gate, the reward split, its conservation, staged withdrawal | *(below)* |
 | 48–49 | **Charging** | what a denied deploy does to the merged state, and what a matched deploy is charged | *(below)* |
+| 50 | **Depth guards** | the two budgets a term's size is bounded by: the AST depth the parser refuses, and the value depth the space refuses — the second being the route the parser cannot see (a contract folding pairs at run time) | *(below)* |
 | 51–54 | **Progress** | non-progress: its three shapes (a requirement nothing satisfies, a refused state no rule restores, a run whose measure never moves), its two predicate causes (a predicate that reads history, two readers that split), the two answers finality's gate must give (52: the partition may shrink, the quorum denominator may not), one attribution that is terminal (53: the refusal persists and the rule refuses its children), and which view a rule reads (54) | [Progress: the shapes of non-progress](progress.md) |
 
 The last three sets are the ones a graph of the *calculus* does not reach. Rows 30–43 exist because every
@@ -241,7 +242,24 @@ chain that accepted such a block under the old (over-charging) rule diverges on 
 
 ---
 
-## Progress — the shapes of non-progress (Law 51)
+## Depth guards (Law 50)
+
+**What it is about.** A term's size is bounded twice, and for two different reasons. `MAX_AST_DEPTH`
+bounds what the **parser** will build: a flat chain of operators is built by a *loop*, so the parser's own
+recursion bound does not bound the tree it produces, and a source of a few kilobytes could otherwise make
+every later consumer recurse arbitrarily deep. `maxValueDepth` bounds what the **space** will store: a
+contract that folds a value into a deeper pair never passes the parser at all, so the parser's guard
+cannot see it.
+
+**Where it lives.** `Rchain/Depth.lean` — `parDepth` is the mutual depth over the model's syntax,
+`walkPar_iff_parDepth` ties it to the walk the node runs, and `walkExceeds_sound`/`walkExceeds_complete`
+are the two directions the guard needs; clause b's quantity is `parNestDepth`, at most three times
+`parDepth`. The register's row carries the measurements (a debug build aborts the *process* between AST
+depth 732 and 994; a release build costs 64 s at 8,040) and the boundary no theorem can state — that the
+Rust walk descends into every `Proc` constructor, which is pinned by a test that parks a deep child in
+each position the walk must reach.
+
+## Progress — the shapes of non-progress (Laws 51–54)
 
 **What it is about.** The same *kind* of defect arrived four times in two days under four names — a
 fringe partition no state could satisfy (C174), a refusal no rule clears (C173), steps forever with the

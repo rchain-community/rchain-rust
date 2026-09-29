@@ -41,7 +41,9 @@ RChain's behavior is pinned by **<!-- counts:laws -->54 laws<!-- counts:end -->*
 and [The laws](formal/laws.md) is the full set, grouped by layer. They divide into: the calculus rows
 (below), the surface a client writes and a matcher reads (30–43), the native Proof-of-Stake epoch
 (44–47), the fee consequence of a denied deploy (48 — a rule neither tree implements, recorded as an open
-design question), and what a matched deploy is charged (49, the first law about gas rather than state).
+design question), what a matched deploy is charged (49, the first law about gas rather than state), the two
+depth guards (50), and the progress rows (51–54 — the shapes of non-progress, and what finality's
+gate's partition may and may not shrink).
 The calculus rows group as:
 
 - **Rholang (Laws 1–6)** — canonicalization, α-equivalence, substitution, reduction, spatial matching,

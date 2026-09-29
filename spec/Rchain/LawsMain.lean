@@ -444,7 +444,7 @@ run_cmd do
   let register := laws
   let mut failures : Array String := #[]
 
-  -- 1. Numbering: 1..43, no gaps. A law silently dropped is a `FAIL` here rather than a quietly
+  -- 1. Numbering: `1..lawCeiling`, no gaps. A law silently dropped is a `FAIL` here rather than a quietly
   -- smaller catalog.
   let nums := (register.map (·.number)).eraseDups.erase 0 |>.mergeSort (· ≤ ·)
   let expected := List.range lawCeiling |>.map (· + 1)

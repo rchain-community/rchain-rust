@@ -125,6 +125,7 @@ map="$(for k in laws entries laws-entries axioms summary proved-laws proved-tied
 # Current totals plus the ones that have already gone stale at least once, so a document that states one
 # of them by hand is caught on the next run rather than after the next programme.
 stale_numbers="$(printf '%s\n' "$n_laws" "$entries" "$n_axioms" "$n_proved" 29 43 48 57 30 34 49 58 21 \
+  50 51 52 53 59 60 63 65 66 \
   | sort -u | paste -sd'|' -)"
 # The scan reads **paragraphs**, not lines, and that is load-bearing: the first version was line-based
 # and matched only `N axioms`, so it missed two of `TYPE-SYSTEM.md`'s three stale claims (one wrapped as
@@ -164,6 +165,15 @@ for f in "${FILES[@]}"; do
     # hand" and stops leaves the reader to find *which* number, and a check whose output needs
     # archaeology is one people learn to ignore.
     local matched="${BASH_REMATCH[0]}"
+    # **A citation, not a total: `law 51`, `laws 30-43`.** The noun-before-number form is how these files
+    # *cite* a law, and the 80-character window reaches into the next sentence — so every citation to a
+    # law whose number was ever a total reads as a hand-written total. Found on 2026-09-30 by widening
+    # the stale list to 50-53 (the numbers this sweep was about): `laws.md`'s "the first instance of law
+    # 51 is the one the vocabulary was written for, and it is the law this repository needed" was flagged
+    # on the noun of a sentence three clauses later. The guard keeps C106's window *and* stops reading
+    # citations as counts, which is the trade that window was said to be forced into.
+    local prefix="${paragraph%%"${matched}"*}"
+    [[ "${prefix: -10}" =~ (laws?)[-\ ]?$ ]] && return 0
     local rest="${paragraph#*"${matched}"}"
     if [[ "${rest:0:80}" =~ $nounpat ]]; then
       file_hits+="      '${matched%[- ]}' … ${1:0:140}"$'\n'
