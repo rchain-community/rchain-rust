@@ -14,7 +14,9 @@
 //!    **read cap**;
 //! 3. `extra_directory_slots_source` — our own term filling the three slots upstream's template
 //!    omits (`Chat`, `Ballot`, `Group`), because the wallet's editor asks the directory for those
-//!    names and an unwritten slot answers `Nil`;
+//!    names and an unwritten slot answers `Nil`. It also **publishes the grant capability**
+//!    ([`grantcap_uri`]), which the template mints and then parks where nothing can reach it (issue
+//!    #71) — see that function for why the publish lands here rather than in the vendored file;
 //! 4. the `GetMe`/`SendThem` feature, which is what a client's first call resolves.
 //!
 //! **Two registrations must not be conflated.** A *class* registers with `insertArbitrary`
@@ -132,6 +134,26 @@ pub fn contract_uri_for(name: &str) -> Result<String, String> {
 /// makes constant (`spec/GENESIS.md`).
 pub fn readcap_uri() -> Result<String, String> {
     Ok(build_uri(&blake2b256(b"rnode/genesis/rgov-readcap")))
+}
+
+/// The key the master directory's **grant capability** is published under — the minter an
+/// application resolves to obtain a writer for *its own* key.
+///
+/// This is the capability the testnet template used to mint and then park out of reach:
+/// `{"read", "write", "grant"}` went to `@[*deployerId, "MasterContractAdmin"]`, keyed by the
+/// **genesis** deployer, and no identity after genesis holds that key. So the directory was
+/// immutable from block 1 onward, and an application trying to register got silence rather than an
+/// error — law 40 (a call at the wrong arity does nothing) over law 38 (silence is not failure),
+/// which is what made it expensive to diagnose from outside (issue #71).
+///
+/// **`grant`, and not `write`, deliberately.** `Directory.rho`'s `grant(@key, ret)` returns a
+/// writer bound to **one key**, so a holder can own its own name and nothing else; publishing
+/// `write` would let any holder swap any application under a client's feet. What this constant does
+/// *not* decide is the admission policy — who may claim a name, and whether a claimed name may be
+/// overwritten or only extended — which is a governance question, recorded as open in
+/// `spec/GENESIS.md` rather than answered by a key name.
+pub fn grantcap_uri() -> Result<String, String> {
+    Ok(build_uri(&blake2b256(b"rnode/genesis/rgov-grantcap")))
 }
 
 /// The channel a vendored class publishes its registered URI on, as `["<name>", <uri>]`.
@@ -502,13 +524,25 @@ pub fn master_directory_template() -> Result<String, String> {
     Ok(load(&out))
 }
 
-/// The three class slots the wallet's editor asks for that upstream's template does not fill.
+/// The three class slots the wallet's editor asks for that upstream's template does not fill, **and
+/// the publication of the master directory's grant capability**.
 ///
 /// Upstream's template hardcodes seven member slots; the wallet's snippets look `Chat`, `Ballot` and
 /// `Group` up in the directory, and a slot that was never written answers `Nil` — which a client
 /// cannot tell from "broken" (`spec/GENESIS.md`). Rather than rewrite upstream's seven-slot body,
 /// this is **our own** term, authored here so it is auditable as ours: it takes the master
-/// directory's write capability that the template published and writes the three classes in.
+/// directory's capabilities that the template published and writes the three classes in.
+///
+/// **Why the grant capability is published from here and not from the template.** The template mints
+/// `{"read", "write", "grant"}` and parks all three on `@[*deployerId, "MasterContractAdmin"]`,
+/// keyed by the *genesis* deployer — an identity nothing holds after genesis. Publishing `grant` is
+/// therefore a change, and the vendored file is kept byte-faithful to upstream wherever it can be
+/// (that is what the vendoring discipline is for); this term already reads that parked datum and is
+/// already ours, so the publish lands here. `read` is published by the template under
+/// [`readcap_uri`], `write` stays unpublished on purpose, and [`grantcap_uri`] is the third.
+///
+/// The published uri is announced on [`URI_PUBLISH_CHANNEL`] exactly as a class registration is, so
+/// `seed_rgov_aliases_from` copies it onto the constant key and a client can hardcode it.
 pub fn extra_directory_slots_source() -> Result<String, String> {
     let (chat, ballot, group) = (
         contract_uri_for("chat")?,
@@ -518,11 +552,17 @@ pub fn extra_directory_slots_source() -> Result<String, String> {
     Ok(load(&format!(
         r#"new
    deployerId(`rho:rchain:deployerId`),
-   lookup(`rho:registry:lookup`)
+   lookup(`rho:registry:lookup`),
+   insertArbitrary(`rho:registry:insertArbitrary`)
 in {{
-   for (@{{"write": *MCAwrite, ..._}} <<- @[*deployerId, "MasterContractAdmin"]) {{ Nil
-   |  new chatCh, ballotCh, groupCh, ack
+   for (@{{"write": *MCAwrite, "grant": *MCAgrant, ..._}} <<- @[*deployerId, "MasterContractAdmin"]) {{ Nil
+   |  new chatCh, ballotCh, groupCh, ack, grantCh
       in {{
+         // Publish the grant capability under a constant key, so an application can own a name.
+         // `grant(@key, ret)` returns a writer bound to one key (`Directory.rho:22`), which is the
+         // restricted half of what the parked datum held: `write` is left unpublished on purpose.
+         insertArbitrary!(*MCAgrant, *grantCh) |
+         for (URI <- grantCh) {{ @"{publish_channel}"!(["grantcap", *URI]) }} |
          lookup!(`{chat}`, *chatCh) |
          lookup!(`{ballot}`, *ballotCh) |
          lookup!(`{group}`, *groupCh) |
@@ -536,7 +576,8 @@ in {{
       }}
    }}
 }}
-"#
+"#,
+        publish_channel = URI_PUBLISH_CHANNEL
     )))
 }
 
@@ -665,6 +706,17 @@ mod tests {
         let readcap = readcap_uri().unwrap();
         println!("readcap -> {readcap}");
         assert!(readcap.starts_with("rho:id:"));
+        // The grant capability (#71). It is a published key like the two above, and it is *not* a
+        // class key: it is minted by the master directory and published by `extraSlots`, so a
+        // genesis that installs the template but not that term names a key nothing resolves.
+        let grantcap = grantcap_uri().unwrap();
+        println!("grantcap -> {grantcap}");
+        assert!(grantcap.starts_with("rho:id:"));
+        assert_ne!(
+            grantcap, readcap,
+            "`grantcap` must be its own key: a client that resolved the read cap where it asked for \
+             the grant capability would get a reader it cannot write through, silently"
+        );
     }
 
     /// `memberIdGovRev` imports its dependencies by URI; the install order guarantees those exist,
@@ -752,6 +804,32 @@ mod tests {
                 "every slot write must pass the reply channel the directory's `write` takes"
             );
         }
+        // **Issue #71: the grant capability is published rather than parked.** The parked datum
+        // carried `grant` as well as `write`, and this term is what reads it — so it is where the
+        // publish lands, and the shape is asserted here. The behavioural half is
+        // `the_published_grant_capability_owns_exactly_one_key` in `tests/genesis_registry.rs`; a
+        // `contains` on the source text cannot tell a working publish from a two-argument call that
+        // matches nothing, which is exactly what went wrong with the slot writes above.
+        assert!(
+            term.contains("\"grant\": *MCAgrant"),
+            "the parked capability must be destructured for `grant`, or there is nothing to publish"
+        );
+        assert!(
+            term.contains("insertArbitrary!(*MCAgrant, *grantCh)"),
+            "the grant capability must be registered, or nothing can resolve it"
+        );
+        assert!(
+            term.contains(&format!(
+                "for (URI <- grantCh) {{ @\"{URI_PUBLISH_CHANNEL}\"!([\"grantcap\", *URI]) }}"
+            )),
+            "the registered uri must be announced on the publish channel, or the constant key \
+             `grantcap_uri()` names nothing"
+        );
+        assert!(
+            !term.contains("insertArbitrary!(*MCAwrite"),
+            "`write` must stay unpublished: a `write` holder could swap any application under a \
+             client's feet, which `grant`'s one-key writer exists to avoid"
+        );
     }
 
     /// **H2b.** A published datum is `["<name>", <uri>]`, and nothing bounds the list's *length*:

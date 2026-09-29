@@ -54,6 +54,26 @@ pub enum NativeStoreAction {
     },
 }
 
+impl NativeStoreAction {
+    /// The **one** trie slot this action addresses, as `(prefix, key)`.
+    ///
+    /// This is the identity a batch may hold only once: `RadixHistory::process` refuses a batch with
+    /// two actions on one key, and native actions share the trie's key space under their own
+    /// prefixes (`PREFIX_REGISTRY`..`PREFIX_VAULT_AUTH`), so the check applies to them exactly as it
+    /// does to tuple-space actions.
+    ///
+    /// It exists as a method because the *producer* of a batch has to dedupe by it and the reason is
+    /// not obvious from either variant: a `Put` and a `Delete` on one slot collide just as two
+    /// `Put`s do, and "one action per slot" is what a merge needs to restore when it concatenates
+    /// the native effects of several blocks (issue #83).
+    pub fn slot(&self) -> (u8, Blake2b256Hash) {
+        match self {
+            NativeStoreAction::Put { prefix, key, .. } => (*prefix, *key),
+            NativeStoreAction::Delete { prefix, key } => (*prefix, *key),
+        }
+    }
+}
+
 /// A keyed read of native state from a history root (implemented by the history reader).
 #[async_trait]
 pub trait NativeHistoryReader: Send + Sync {
@@ -223,6 +243,40 @@ mod tests {
         assert_eq!(
             store.get(PREFIX_POS, &key).await.unwrap(),
             Some(vec![1, 2, 3])
+        );
+    }
+
+    /// `slot` is the identity a batch may hold once, so it must report the same thing for a `Put`
+    /// and a `Delete` on one key — a mix the trie refuses exactly as it refuses two `Put`s, and the
+    /// shape a merge has to collapse (issue #83). Both axes are checked, because a `slot` that
+    /// ignored the prefix would merge two different stores' keys.
+    #[test]
+    fn a_slot_is_the_prefix_and_key_whatever_the_variant() {
+        let key = Blake2b256Hash::from_bytes([7u8; 32]);
+        let put = NativeStoreAction::Put {
+            prefix: PREFIX_POS,
+            key,
+            value: vec![1],
+        };
+        let delete = NativeStoreAction::Delete {
+            prefix: PREFIX_POS,
+            key,
+        };
+        assert_eq!(put.slot(), (PREFIX_POS, key));
+        assert_eq!(delete.slot(), (PREFIX_POS, key));
+        assert_eq!(
+            put.slot(),
+            delete.slot(),
+            "a write and a delete on one key are one slot, not two"
+        );
+        let other_prefix = NativeStoreAction::Delete {
+            prefix: PREFIX_VAULT,
+            key,
+        };
+        assert_ne!(
+            put.slot(),
+            other_prefix.slot(),
+            "the prefix is part of the identity: the same key under two prefixes is two slots"
         );
     }
 

@@ -33,7 +33,9 @@ fn process_response(
 fn process_error<R>(peer: &PeerNode, response: Result<R, Status>) -> CommErr<R> {
     response.map_err(|status| match status.code() {
         Code::DeadlineExceeded => CommError::TimeOut,
-        Code::Unavailable => CommError::PeerUnavailable(peer.clone()),
+        // The status text is the diagnosis (refused / TLS / DNS / reset are all `Unavailable`), so
+        // it travels with the error rather than being dropped here.
+        Code::Unavailable => CommError::PeerUnavailable(peer.clone(), status.message().to_string()),
         Code::ResourceExhausted => CommError::MessageTooLarge(peer.clone()),
         Code::PermissionDenied => {
             CommError::WrongNetwork(peer.clone(), status.message().to_string())
@@ -124,7 +126,7 @@ mod tests {
         let unavailable: Result<TlResponse, Status> = Err(Status::unavailable("down"));
         assert_eq!(
             process_error(&p, unavailable),
-            Err(CommError::PeerUnavailable(p.clone()))
+            Err(CommError::PeerUnavailable(p.clone(), "down".to_string()))
         );
 
         let deadline: Result<TlResponse, Status> = Err(Status::deadline_exceeded("slow"));

@@ -478,6 +478,29 @@ mod tests {
         blocks
     }
 
+    /// A transport that records every broadcast, so a test can assert that a walk asked for nothing.
+    #[derive(Default)]
+    struct RecordingTransport {
+        broadcasts: std::sync::Mutex<Vec<usize>>,
+    }
+
+    #[async_trait]
+    impl TransportLayer for RecordingTransport {
+        async fn send(&self, _peer: &PeerNode, _msg: Protocol) -> CommErr<()> {
+            Ok(())
+        }
+
+        async fn broadcast(&self, peers: &[PeerNode], _msg: Protocol) -> Vec<CommErr<()>> {
+            self.broadcasts
+                .lock()
+                .expect("broadcast log lock")
+                .push(peers.len());
+            vec![Ok(()); peers.len()]
+        }
+
+        async fn stream(&self, _peers: &[PeerNode], _blob: Blob) {}
+    }
+
     /// A transport that *answers*: every `BlockRequest` it sees is served by pushing the requested
     /// block into the requester's incoming channel, the way a peer's `handle_block_request` does.
     struct ServingTransport {
@@ -860,5 +883,77 @@ mod tests {
                  request\", so it waited on the idle resend instead of surfacing the error"
             ),
         }
+    }
+
+    /// **The premise of `node_syncing`'s empty-restore guard (issue #100): an empty fringe finishes
+    /// the walk at once, successfully, with nothing in it.**
+    ///
+    /// All three halves are the point. It returns `Ok` — so a caller that reads only the `Result`
+    /// cannot tell "the state was restored" from "there was nothing to restore", which is exactly how
+    /// a node came to log `LFS state is successfully restored.` having restored nothing and then run on
+    /// an empty DAG. The `height_map` is empty, which is what `run_approved_state_sync` now refuses.
+    /// And not one request goes out, which the recording transport asserts rather than assumes: the
+    /// emptiness check belongs to the *consumer*, because this function's own contract — "walk what
+    /// the fringe names" — is honestly satisfied by an empty fringe.
+    #[tokio::test]
+    async fn an_empty_fringe_finishes_the_walk_at_once_with_nothing_in_it() {
+        const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+        const BOUND: Duration = Duration::from_secs(5);
+
+        let store = store().await;
+        let (_incoming_tx, mut incoming_rx) = tokio::sync::mpsc::channel(64);
+        let transport = Arc::new(RecordingTransport::default());
+        let connections: ConnectionsCell =
+            Arc::new(tokio::sync::RwLock::new(vec![peer("bootstrap")]));
+        let conf = RPConf {
+            local: peer("local"),
+            network_id: "testnet".to_string(),
+            bootstrap: None,
+            default_timeout: Duration::from_secs(10),
+            max_num_of_connections: 10,
+            clear_connections: ClearConnectionsConf {
+                num_of_connections_pinged: 10,
+            },
+        };
+        let comm_util = CommUtil::new(transport.clone(), conf, connections, Arc::new(NopLog));
+        let fringe = FinalizedFringe {
+            hashes: Vec::new(),
+            state_hash: StateHash::new([0u8; 32]),
+        };
+
+        let started = Instant::now();
+        let state = request_blocks(
+            &fringe,
+            &mut incoming_rx,
+            REQUEST_TIMEOUT,
+            &store,
+            &comm_util,
+            &NopLog,
+        )
+        .await
+        .expect("an empty fringe is not an error for this function");
+        let elapsed = started.elapsed();
+
+        assert!(
+            state.is_finished(),
+            "an empty fringe is finished before it starts: `LfsState::is_finished` is \
+             `latest.is_empty() && d.is_empty()`, and both start empty"
+        );
+        assert!(
+            state.height_map.is_empty(),
+            "and it recorded no block, which is the shape `run_approved_state_sync` refuses"
+        );
+        assert!(
+            transport
+                .broadcasts
+                .lock()
+                .expect("broadcast log lock")
+                .is_empty(),
+            "and it asked the peer for nothing: a walk over no hashes sends no request"
+        );
+        assert!(
+            elapsed < BOUND,
+            "and it did not wait out the idle resend ({REQUEST_TIMEOUT:?}): took {elapsed:?}"
+        );
     }
 }

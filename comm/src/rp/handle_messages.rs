@@ -6,6 +6,7 @@
 use std::net::IpAddr;
 
 use rchain_models::comm::protocol::{protocol, Packet, Protocol};
+use rchain_shared::log::{Log, LogSource};
 
 use crate::errors::CommError;
 use crate::peer_node::PeerNode;
@@ -14,6 +15,21 @@ use crate::rp::protocol_helper;
 use crate::rp::rp_conf::RPConf;
 use crate::transport::communication_response::CommunicationResponse;
 use crate::transport::transport_layer::TransportLayer;
+
+/// The log source for the inbound path, so a diagnostic run can find these lines by name.
+const INBOUND: LogSource = LogSource::new("coop.rchain.comm.inbound");
+
+/// A short name for an inbound message, for the inbound line.
+fn message_name(proto: &Protocol) -> &'static str {
+    match &proto.message {
+        Some(protocol::Message::Heartbeat(_)) => "Heartbeat",
+        Some(protocol::Message::ProtocolHandshake(_)) => "ProtocolHandshake",
+        Some(protocol::Message::ProtocolHandshakeResponse(_)) => "ProtocolHandshakeResponse",
+        Some(protocol::Message::Disconnect(_)) => "Disconnect",
+        Some(protocol::Message::Packet(_)) => "Packet",
+        None => "no message",
+    }
+}
 
 /// A routing packet addressed from a peer (port of `RoutingMessage`).
 #[derive(Clone, Debug)]
@@ -113,11 +129,23 @@ pub async fn handle<T: TransportLayer + ?Sized>(
     transport: &T,
     connections: &tokio::sync::RwLock<Vec<PeerNode>>,
     routing_queue: &tokio::sync::mpsc::Sender<RoutingMessage>,
+    log: &dyn Log,
 ) -> CommunicationResponse {
     let sender = match protocol_helper::sender(&proto) {
         Ok(s) => s,
         Err(e) => return CommunicationResponse::not_handled(e),
     };
+
+    // **What this node received, before any decision about it.** The inbound path used to log nothing
+    // at all, which made three different outcomes indistinguishable from outside: a message that
+    // never arrived, one that arrived and was dropped by a gate below, and one that arrived and was
+    // routed somewhere with no consumer. Diagnosing issue #100 (a joining validator's
+    // `FinalizedFringeRequest` reaching the bootstrap and vanishing) cost a devnet run per hypothesis
+    // for exactly this reason. One line per message, at debug.
+    log.debug(
+        INBOUND,
+        &format!("Received {} from {}", message_name(&proto), sender.id),
+    );
     match proto.message {
         Some(protocol::Message::Heartbeat(_)) => {
             let mut conns = connections.write().await;
@@ -125,7 +153,7 @@ pub async fn handle<T: TransportLayer + ?Sized>(
             CommunicationResponse::handled_without_message()
         }
         Some(protocol::Message::ProtocolHandshake(_)) => {
-            handle_protocol_handshake(transport, conf, connections, &sender).await
+            handle_protocol_handshake(transport, conf, connections, &sender, log).await
         }
         Some(protocol::Message::ProtocolHandshakeResponse(_)) => {
             let mut conns = connections.write().await;
@@ -183,13 +211,55 @@ pub async fn handle_protocol_handshake<T: TransportLayer + ?Sized>(
     conf: &RPConf,
     connections: &tokio::sync::RwLock<Vec<PeerNode>>,
     peer: &PeerNode,
+    log: &dyn Log,
 ) -> CommunicationResponse {
     if check_peer_on_same_network(conf, peer) {
-        let response = protocol_helper::protocol_handshake_response(&conf.local, &conf.network_id);
-        if transport.send(peer, response).await.is_ok() {
+        // **The peer is recorded when its handshake arrives, not when the reply to it succeeds**
+        // (issue #100). Those used to be the same event, and they are not:
+        //
+        // A joining node dials its bootstrap *before its own protocol server has bound*, so the
+        // bootstrap's reply is refused at the TCP layer — measured: `Connection refused (os error
+        // 111)`, 157 ms before the joining node logged that it had started syncing. Under the old
+        // shape that refusal lost the peer **permanently**: `add_conn` was inside the reply's
+        // `is_ok()` arm, the dialler meanwhile considered itself connected because *its own* send had
+        // been acked, and nothing retried the handshake. The network then had two nodes that each
+        // thought the other was a peer, one connection table with the other in it and one empty — and
+        // because the empty side drops what arrives from a peer it has not recorded, the joining
+        // node's `FinalizedFringeRequest` reached this node and was routed nowhere. That is the whole
+        // of #100: a deadlock from genesis, with no panic and no error.
+        //
+        // A peer that has just proved possession of its identity (the transport checked that against
+        // its certificate before this was called) is a peer. The reply is how the *dialler* learns it
+        // was accepted, and losing it costs the dialler a retry — not the connection. The brief lock
+        // is released before any I/O, which is what H3 asks for.
+        {
             let mut conns = connections.write().await;
             *conns = add_conn(&*conns, std::slice::from_ref(peer));
         }
+        let response = protocol_helper::protocol_handshake_response(&conf.local, &conf.network_id);
+        if let Err(err) = transport.send(peer, response).await {
+            // Bounded and expected: the dialler may not be listening yet. It is a warning rather than
+            // an error because the connection is recorded either way, and the dialler retries.
+            log.warn(
+                INBOUND,
+                &format!(
+                    "Could not answer {peer}'s handshake ({err:?}); it is recorded as a peer anyway \
+                     and will retry"
+                ),
+            );
+        }
+    } else {
+        // **Refused on the subnetwork class, and it used to say nothing.** A peer on a different
+        // class gets no response and is not recorded, so from its side the handshake succeeded (the
+        // RPC is acked) while from this side nothing happened at all.
+        log.warn(
+            INBOUND,
+            &format!(
+                "Refusing {peer}: it is on a different subnetwork class than this node \
+                 (local host {}, peer host {})",
+                conf.local.endpoint.host, peer.endpoint.host
+            ),
+        );
     }
     CommunicationResponse::handled_without_message()
 }
@@ -197,6 +267,7 @@ pub async fn handle_protocol_handshake<T: TransportLayer + ?Sized>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rchain_shared::log::NopLog;
 
     /// A transport that is never called: the packet path enqueues for the router and touches no peer,
     /// so a mock that refuses everything is the honest shape for these tests.
@@ -258,7 +329,7 @@ mod tests {
 
         let conns = tokio::sync::RwLock::new(Vec::new());
         let proto = protocol_helper::packet(&local, &conf.network_id, Default::default());
-        let mut handler = Box::pin(handle(proto, &conf, &NoTransport, &conns, &tx));
+        let mut handler = Box::pin(handle(proto, &conf, &NoTransport, &conns, &tx, &NopLog));
 
         // With the queue full the handler must still be *waiting*. On the old code it has already
         // returned — having dropped the packet and answered "handled" — which is the defect.

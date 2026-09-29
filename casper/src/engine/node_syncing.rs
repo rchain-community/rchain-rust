@@ -150,6 +150,33 @@ impl<I: RSpaceImporter + Send + 'static> NodeSyncing<I> {
             );
         }
 
+        // **A fringe with no hashes names no state to sync to, and it must not consume the one-shot
+        // trigger** (issue #100). The genesis master broadcasts exactly that — `hashes: Vec::new()`
+        // paired with the genesis *pre*-state hash (`node_launch.rs`'s `create_store_broadcast_genesis`)
+        // — as an announcement that the approved state is the genesis, not as a sync target. On a fresh
+        // network that broadcast can arrive before the answer to our own request: measured on a devnet,
+        // it landed 34 ms after the master sent it and 83 ms *before* the master had even seen the
+        // request, so the node consumed the trigger on it, "restored" nothing, and discarded the
+        // correct answer in silence (a later fringe from the bootstrap logs nothing at all).
+        if fringe.hashes.is_empty() {
+            // The wording distinguishes the two senders on purpose: only the genesis master's empty
+            // fringe is an announcement, and a log that called a stranger's one that would be
+            // inventing an authority for it.
+            let what = if sender_is_bootstrap {
+                "the genesis master's announcement, not an answer to our request"
+            } else {
+                "an empty fringe, which names no block"
+            };
+            self.log.info(
+                self.log_source,
+                &format!(
+                    "Ignoring an empty fringe from {sender}: it is {what}. Still waiting for a fringe \
+                     that names a block to sync to."
+                ),
+            );
+            return Ok(());
+        }
+
         let start = if self.start_requester {
             if sender_is_bootstrap {
                 self.start_requester = false;
@@ -164,8 +191,17 @@ impl<I: RSpaceImporter + Send + 'static> NodeSyncing<I> {
         if start {
             self.log.info(
                 self.log_source,
+                // **The oracle puts the state hash in the parentheses and the hashes after**
+                // (`NodeSyncing.scala`: `s"Received finalized fringe from bootstrap node
+                // ($fringeStateHashStr) $fringeHashesStr."`). The port had the hashes in the
+                // parentheses and the state hash nowhere — and the state hash is the one field that
+                // tells the genesis master's *announcement* from the *answer* to a request, because
+                // the announcement carries the genesis **pre**-state and the response the genesis
+                // **post**-state. Diagnosing issue #100 meant distinguishing exactly those two, and
+                // this line could not show it.
                 &format!(
-                    "Received finalized fringe from bootstrap node ({}).",
+                    "Received finalized fringe from bootstrap node ({}) {}.",
+                    rchain_shared::base16::encode(fringe.state_hash.as_bytes()),
                     fringe
                         .hashes
                         .iter()
@@ -309,6 +345,22 @@ async fn run_approved_state_sync<I: RSpaceImporter + Send + 'static>(
     // A store failure while walking the blocks fails the sync attempt (the oracle's stream fails
     // the same way) rather than leaving a block marked done that was never persisted (AUDIT C65).
     let block_st = block_st.map_err(|e| e.to_string())?;
+
+    // **A finished walk that received nothing is not a restored state** (issue #100). The block walk
+    // starts from the fringe's own hashes, so any fringe that names a block records at least that block
+    // — `LfsState::received` writes a `height_map` entry only for a key it actually requested, and a
+    // non-empty `latest` cannot empty without one. So an empty map means the fringe we synced to named
+    // nothing, and the caller must fail: otherwise the node enters `NodeRunning` on an empty DAG and
+    // logs "LFS state is successfully restored." having restored nothing. AUDIT C68's claim that the
+    // notify handle fires "only when the state was actually restored" was implemented as `is_ok()`
+    // only, and this is the check that makes it true.
+    if block_st.height_map.is_empty() {
+        return Err(format!(
+            "the block walk finished without receiving a single block: the fringe ({} hash(es)) named \
+             no state to sync to",
+            fringe.hashes.len()
+        ));
+    }
 
     // The fringe tuple-space request above only hydrates the finalized-fringe root itself. Casper's
     // read/validation APIs (explore, data-at-name, and mergeable-sidecar regeneration during block
@@ -867,5 +919,108 @@ mod tests {
             None,
             "a failed sync must not record the fringe as approved"
         );
+    }
+
+    /// **Issue #100: the genesis master's empty fringe must not consume the one-shot sync trigger.**
+    ///
+    /// The master broadcasts `FinalizedFringe { hashes: Vec::new(), state_hash: genesis.pre_state }` as
+    /// an *announcement* (`node_launch.rs`'s `create_store_broadcast_genesis`), not as a sync target, and
+    /// on a fresh network it arrives **before** the answer to the joiner's own request — measured on a
+    /// devnet at 34 ms after the master sent it and 83 ms before the master had even seen the request.
+    /// Consuming the trigger on it made the node "restore" nothing and then discard the real answer in
+    /// silence, because a second fringe from the bootstrap logs nothing at all.
+    ///
+    /// The evidence is a two-phase log observation, and the *first* phase is the discriminator: the
+    /// ignore line is written synchronously inside `handle` before it returns, so its presence is
+    /// exactly "the empty fringe was seen and refused" and cannot depend on scheduling. Phase 2 is the
+    /// positive control — a store that cannot be read makes a *started* sync fail at once and say so, so
+    /// the failure line can only appear if the trigger was still available. (Without Unit 1 the sync
+    /// starts on the empty fringe in phase 1, and phase 2 produces nothing.)
+    #[tokio::test]
+    async fn an_empty_fringe_does_not_consume_the_sync_trigger() {
+        let bootstrap = peer("bootstrap");
+        let log = Arc::new(RecordingLog::default());
+
+        let inner_store: BlockStore = Arc::new(KeyValueTypedStoreCodec::new(
+            in_memory(),
+            Arc::new(BlockHashCodec),
+            Arc::new(BlockMessageCodec),
+        ));
+        let block_store: BlockStore = Arc::new(UnreadableBlockStore { inner: inner_store });
+        let dag = build_dag().await;
+        let approved_store: ApprovedStore = Arc::new(KeyValueTypedStoreCodec::new(
+            in_memory(),
+            Arc::new(ByteCodec),
+            Arc::new(FringeCodec),
+        ));
+
+        let transport: Arc<dyn TransportLayer> = Arc::new(SilentTransport);
+        let conf = RPConf {
+            local: peer("local"),
+            network_id: "testnet".to_string(),
+            bootstrap: Some(bootstrap.clone()),
+            default_timeout: Duration::from_secs(10),
+            max_num_of_connections: 10,
+            clear_connections: ClearConnectionsConf {
+                num_of_connections_pinged: 10,
+            },
+        };
+        let connections: ConnectionsCell =
+            Arc::new(tokio::sync::RwLock::new(vec![bootstrap.clone()]));
+        let comm_util = Arc::new(CommUtil::new(
+            transport.clone(),
+            conf.clone(),
+            connections,
+            log.clone(),
+        ));
+
+        let mut engine = NodeSyncing::new(
+            transport,
+            conf,
+            block_store,
+            dag,
+            approved_store,
+            comm_util,
+            log.clone(),
+            None,
+            false,
+            RefusingImporter,
+        );
+
+        // Phase 1: the master's announcement, exactly as `create_store_broadcast_genesis` sends it.
+        let announcement = FinalizedFringe {
+            hashes: Vec::new(),
+            state_hash: StateHash::new([0u8; 32]),
+        };
+        engine
+            .handle(&bootstrap, &CasperMessage::FinalizedFringe(announcement))
+            .await
+            .expect("the empty fringe is handled");
+
+        assert!(
+            log.contains("Ignoring an empty fringe"),
+            "an empty fringe must be refused as a sync target — it is the genesis master's \
+             announcement, not an answer. If this is absent the fringe was consumed as one."
+        );
+
+        // Phase 2: a fringe that names a block. It must still be able to start the sync.
+        let fringe = FinalizedFringe {
+            hashes: vec![hash(7)],
+            state_hash: StateHash::new([7u8; 32]),
+        };
+        engine
+            .handle(&bootstrap, &CasperMessage::FinalizedFringe(fringe))
+            .await
+            .expect("the named fringe is handled");
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        while !log.contains("LFS state sync failed") {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the fringe that named a block did not start a sync: the one-shot trigger was \
+                 consumed by the empty announcement, which is issue #100"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
     }
 }

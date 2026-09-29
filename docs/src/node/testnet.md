@@ -239,9 +239,21 @@ Built once with `scripts/localnet/keys.mjs`; the exact files are on each node:
 Genesis hash `6a6db0dbf47575d9c8e62935d8782bbd9d27ac6556f2fb0b518ea3d69b835b43`; A's node id
 `a014e1eee8dfcfcbe1cbe04641955d8c5941d709`, B's `d4434ebc582c09589d23acdc5aa56d0480a24cd5`.
 
-The genesis hash depends only on the genesis *inputs* (bonds, wallets, parameters), not on either node's
-identity, so it is stable across rebuilds but changes when the bonds change: the 2026-09-26 rebuilds that
-signed for one validator all produced `e525129d…`, and adding B's bond moved it to `6a6db0db…`.
+The genesis hash depends only on the genesis *inputs* — bonds, wallets, parameters **and the genesis
+content itself** — not on either node's identity, so it is stable across rebuilds but changes when any of
+those change: the 2026-09-26 rebuilds that signed for one validator all produced `e525129d…`, and adding
+B's bond moved it to `6a6db0db…`.
+
+**The content half of that list was missing until 2026-09-28, and it is the half that bites.** The
+blessed contract set and the governance deploys are genesis *state*, so a change to any of them moves the
+hash exactly as a bond change does — and unlike a bond change, nothing about it is obvious to a node
+operator. #71's fix is the worked example: publishing the master directory's grant capability (see
+[`spec/GENESIS.md`](https://github.com/rchain-community/rchain-rust/blob/dev/spec/GENESIS.md)) adds a
+registered capability and a native registry entry, so **every chain built from that commit onward has a
+different genesis hash, and the `6a6db0db…` above names a chain built before it.** An existing net is
+untouched — its genesis is already committed history — but a rebuilt data directory is a *different*
+chain, and a node pointed at the old bootstrap will not join it. Any change under
+`casper/src/genesis/` belongs on the hard-fork tracker before it lands for this reason.
 
 A node id is **not** derived from the validator key — a rebuilt data directory gets a fresh node
 identity, so any `--bootstrap` URI pointing at the master has to be updated after a rebuild. The
@@ -329,17 +341,20 @@ A join takes about 15 seconds and ~19 MB, measured.
 
 ## Do not onboard a validator yet
 
-**This net takes one validator on purpose, and adding a second is unsafe today.** Two independent
-blockers, both measured on this testnet:
+**This net takes one validator on purpose, and adding a second is unsafe today.** Three blockers, all
+measured:
 
-1. **Three validators panic at the first epoch boundary.** With bonds A 100 / B 100 / C 50 and
-   `--epoch-length 10`, all three nodes died in the same second at block 10 with
-   `Cannot process duplicate actions on one key`
-   (`rspace/src/history/instances/radix_history.rs:69`) and the chain froze — deploys were still
-   accepted and never proposed. Filed as
-   [#83](https://github.com/rchain-community/rchain-rust/issues/83). Two-validator chains cross the
-   same boundary happily (that boundary code ran 17 times on the 2026-09-26 chain), so this is the
-   three-validator case specifically.
+1. ~~**Three validators panic at the first epoch boundary.**~~ **Fixed, 2026-09-28.** With bonds
+   A 100 / B 100 / C 50 and `--epoch-length 10`, all three nodes used to die in the same second at
+   block 10 with `Cannot process duplicate actions on one key`
+   (`rspace/src/history/instances/radix_history.rs:69`) and the chain froze. The duplicate was **two
+   native actions on one key, across two accepted blocks**: at a boundary every proposer runs
+   `close_block` and writes the same `PREFIX_POS` leaves, and the merge concatenated both blocks'
+   actions into one batch. The merge now keeps one action per slot, last accepted host in ascending
+   order — a `BTreeSet<Blake2b256Hash>` iteration, so every node picks the same winner
+   ([#83](https://github.com/rchain-community/rchain-rust/issues/83), commit `b5e024d0c`). **Verified
+   on the configuration that killed every node**: a fresh three-validator devnet at `--epoch-length 10`
+   crossed heights 10, 20, 30 and 40 with all three containers healthy and no panic.
 2. **A silent validator keeps its weight, so added stake can stop finality.** The quorum is a *strict*
    supermajority — `sdk/src/consensus.rs:15`, `stake * 3 > total * 2`, with a test named
    `two_thirds_is_not_supermajority` — taken over the **whole bond pool**, and there is no inactivity
@@ -347,16 +362,31 @@ blockers, both measured on this testnet:
    ([#70](https://github.com/rchain-community/rchain-rust/issues/70)). Attesting also *is* proposing:
    the `--attest-on-new-blocks` tap enqueues into the proposer's queue, so a validator with no node
    contributes nothing while still diluting A.
+3. ~~**A fresh multi-validator network never forms at all.**~~ **Fixed, 2026-09-29.** It was two
+   faults, both on the same path. First, a node recorded a peer only if its *reply* to that peer's
+   handshake succeeded — and a joining node dials before its own server binds, so the reply was
+   refused and the peer was lost permanently (`peers: 0` against the joiner's `peers: 1`). Second,
+   once the peer was registered, the joiner latched on the **genesis master's *announcement*** — an
+   empty `FinalizedFringe { hashes: [] }` broadcast as genesis is created — and discarded the answer
+   to its own request in silence, then "restored" nothing and ran on an empty DAG. See
+   [#100](https://github.com/rchain-community/rchain-rust/issues/100); `tools/devnet.sh` also now
+   waits for the bootstrap to have **committed genesis** before starting any node, which is what let
+   a joiner receive that announcement in the first place. **Verified:** a fresh two-validator devnet
+   syncs 27 history / 198 data items, the joiner tracks the bootstrap's height, and both finalise in
+   lockstep — 264/257, 286/278, 317/309 as the chain grew.
 
-Together those mean that while A is the only proposer, A must hold **more than ⅔ of the whole pool**
-or nothing finalises — which is exactly why the split is 1000 against 100. Anyone bonding on top takes
-A's share down, and at ⅔ or below finality stops with no automatic recovery. That is the 2026-09-22
-incident, and the reason for this split.
+The arithmetic of (2) is unchanged and still the reason the split is 1000 against 100: while A is the
+only proposer, A must hold **more than ⅔ of the whole pool** or nothing finalises. Anyone bonding on
+top takes A's share down, and at ⅔ or below finality stops with no automatic recovery. That is the
+2026-09-22 incident.
 
-**Before a validator is added: #83 must be fixed, and the recovery case measured.** The intended test —
-three validators where the survivors hold > ⅔ of the pool, one killed, finality expected to continue —
-has not been run to completion (the chain died of #83 first). Until then, add nothing: use the net as a
-single-proposer chain, and read or deploy against A.
+**Before a validator is added: #70's recovery case must be measured.** Both of the mechanical blockers
+are gone — the boundary panic (#83) and the network that never formed (#100) — so the test that has
+never run is now the *only* thing standing here: three validators where the survivors hold > ⅔ of the
+pool, one killed, finality expected to continue. `tools/devnet.sh up --validators 3 --stakes 100,100,50`
+is that case in one flag, and its arithmetic is unchanged (a silent validator keeps full weight, so
+three *equal* validators minus one is exactly ⅔ and does not recover). Until it has been run, add
+nothing to a live net: use it as a single-proposer chain and read or deploy against A.
 
 ## Onboarding an observer into the validator pool
 

@@ -276,6 +276,7 @@ mod tests {
                     .store(remaining - 1, std::sync::atomic::Ordering::SeqCst);
                 Err(rchain_comm::errors::CommError::PeerUnavailable(
                     peer.clone(),
+                    "the test transport was told to fail".to_string(),
                 ))
             } else {
                 Ok(())

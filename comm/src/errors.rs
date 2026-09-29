@@ -17,7 +17,14 @@ pub enum CommError {
     EncryptionHandshakeIncorrectlySigned,
     BootstrapNotProvided,
     PeerNodeNotFound(PeerNode),
-    PeerUnavailable(PeerNode),
+    /// The peer could not be reached.
+    ///
+    /// **Carries the transport's own words**, because the status code is not a diagnosis: tonic
+    /// answers `Unavailable` for a refused connection, a failed TLS handshake, a DNS failure and a
+    /// reset alike, and this variant used to discard the message that tells them apart — the operator
+    /// saw "Peer is currently unavailable" and nothing else. That is what made issue #100 (a joining
+    /// validator's handshake answered with `Unavailable`) take a packet capture to explain.
+    PeerUnavailable(PeerNode, String),
     WrongNetwork(PeerNode, String),
     MessageTooLarge(PeerNode),
     CouldNotConnectToBootstrap,
@@ -38,7 +45,11 @@ impl CommError {
     /// The human-readable message (port of `CommError.errorMessage`).
     pub fn message(&self) -> String {
         match self {
-            CommError::PeerUnavailable(_) => "Peer is currently unavailable".to_string(),
+            // **The reason travels in the variant, not in this string.** `message()` is the Scala
+            // `errorMessage` text and a fidelity test pins it, so it stays as the Scala wrote it; the
+            // transport's own words are in the payload and reach a log through `Debug` (which is how
+            // `handle_protocol_handshake` reports a failed reply).
+            CommError::PeerUnavailable(..) => "Peer is currently unavailable".to_string(),
             CommError::MessageTooLarge(p) => {
                 format!("Message rejected by peer {p} because it was too large")
             }
@@ -96,7 +107,7 @@ mod tests {
     #[test]
     fn the_named_messages_are_the_scala_texts_and_the_rest_fall_through_to_debug() {
         assert_eq!(
-            CommError::PeerUnavailable(peer()).message(),
+            CommError::PeerUnavailable(peer(), "connection reset".to_string()).message(),
             "Peer is currently unavailable"
         );
         assert_eq!(

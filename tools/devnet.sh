@@ -122,6 +122,11 @@ Commands:
   --epoch-length N               PoS epoch length: the first epoch boundary is at block N (default
                                  10000, so a short devnet never reaches one). A *genesis* parameter,
                                  so every bonded validator is given the same value
+  --stakes A,B[,C]               per-validator genesis bond, in validator order (default: 100
+                                 each). Unequal stakes are how a measurement reaches the cases #70
+                                 turns on: three equal validators minus one is *exactly* 2/3, which
+                                 is not a supermajority (`two_thirds_is_not_supermajority`), while
+                                 100/100/50 minus the 50 leaves 80 % and should recover.
   --active-validators N          the active-set draw's cap. Below the validator count the draw
                                  *selects*, which is the only way to watch randomised selection do
                                  anything on a live chain (default 100, i.e. no selection at 1-3)
@@ -147,6 +152,14 @@ cmd_build() {
   elif [[ -n "${1:-}" ]]; then
     echo "unknown flag: $1" >&2; help
   fi
+  # The image's own provenance. `.dockerignore` excludes `.git/`, so the in-image build cannot run
+  # `git rev-parse` — without this argument the served `/version` reads `commit # unknown`, which is
+  # what the image did until it was measured (`node/build.rs`, issue #32).
+  local commit
+  commit="$(git -C "$(cd "$(dirname "$0")/.." && pwd)" rev-parse HEAD 2>/dev/null || true)"
+  if [[ -n "$commit" ]]; then
+    opts+=(--build-arg "GIT_HEAD_COMMIT=$commit")
+  fi
   docker build "${opts[@]}" -f docker/rnode/Dockerfile -t "$IMAGE" .
 }
 
@@ -155,7 +168,15 @@ genesis_files() {
   local dir="$1" n="$2" i
   : > "$dir/bonds.txt"
   for (( i = 0; i < n; i++ )); do
-    echo "${VALIDATOR_PUB[$i]} 100" >> "$dir/bonds.txt"
+    local stake=100
+    if [[ -n "$POS_STAKES" ]]; then
+      stake="$(echo "$POS_STAKES" | cut -d, -f$((i + 1)))"
+      if [[ -z "$stake" ]]; then
+        echo "--stakes needs one stake per bonded validator ($n wanted, $POS_STAKES given)" >&2
+        return 2
+      fi
+    fi
+    echo "${VALIDATOR_PUB[$i]} $stake" >> "$dir/bonds.txt"
   done
   if $DEPLOYER; then
     echo "$DEPLOYER_REV_ADDR,$DEPLOYER_BALANCE" > "$dir/wallets.txt"
@@ -196,6 +217,34 @@ bootstrap_id() {
 }
 
 # Wait until the bootstrap serves /api/v1/status and (if autopropose is on) is producing blocks.
+# Wait until the bootstrap has **committed its genesis** — a different event from serving HTTP.
+#
+# `latest_block_number()` is `max_height + 1`, so genesis alone reports `1`. This matters because the
+# genesis master *broadcasts* its approved fringe as it creates genesis — `FinalizedFringe { hashes: [] }`
+# with the genesis **pre**-state — and a node that connected first receives it. A joining validator that
+# latches on that empty announcement instead of the answer to its own request syncs to nothing and then
+# discards the real answer (issue #100). `wait_for_http` cannot serve here: with `--no-autopropose` it
+# skips the block-number check altogether, and it runs after the node loops in any case.
+#
+# The HTTP server is up before genesis exists (the same ordering `node/tests/node_api.rs` polls around),
+# so this is a real gate rather than a no-op.
+wait_for_genesis() {
+  local url="http://localhost:${HTTP_BASE}/api/v1/status"
+  local body block_num
+  for _ in $(seq 1 120); do
+    if body="$(curl -fsS --max-time 5 "$url" 2>/dev/null)"; then
+      block_num="$(printf '%s' "$body" | sed -n 's/.*"latestBlockNumber":\([0-9]*\).*/\1/p')"
+      if [[ -n "$block_num" && "$block_num" -gt 0 ]]; then
+        echo "==> $BOOTSTRAP has committed genesis (latestBlockNumber=$block_num); starting the network"
+        return 0
+      fi
+    fi
+    sleep 1
+  done
+  echo "timed out waiting for $BOOTSTRAP to commit its genesis" >&2
+  return 1
+}
+
 wait_for_http() {
   local url="http://localhost:${HTTP_BASE}/api/v1/status"
   local body block_num
@@ -250,6 +299,12 @@ rnode_run_common() {
   # producing blocks and the port was mapped — the listener was bound to the container's loopback.
   if $ADMIN; then flags="$flags --api-enable-devnet-admin-public"; fi
   if $DEPLOYER; then flags="$flags --dev-mode --deployer-private-key ${DEPLOYER_PRIV}"; fi
+  # A verbosity passthrough for diagnosing the **inbound** path, where a node's silence is otherwise
+  # indistinguishable from a message that never arrived (issue #100): the frames a node *receives* are
+  # logged at debug/trace and nowhere else, so without this a stalled handshake reads as a healthy
+  # node with a height that does not move. Read from the environment rather than a flag, because it is
+  # a diagnostic knob rather than a property of the network being started.
+  if [[ -n "${DEVNET_LOG_LEVEL:-}" ]]; then flags="$flags --log-level $DEVNET_LOG_LEVEL"; fi
   # The effect-scheduler mode (Laws 20-25). The default is the sequential reference; `gate` and
   # `relaxed-validated` are the block-path-capable alternatives, and `relaxed` is rejected on the
   # block path at runtime (casper/tests/scheduler.rs::block_paths_reject_relaxed_mode), so starting
@@ -282,6 +337,7 @@ cmd_up() {
   EFFECT_SCHEDULER=""   # default: the node's own default (dfs)
   POS_EPOCH_LENGTH=""   # default: the node's own (10000) — see `rnode_run_common`
   POS_ACTIVE_VALIDATORS=""
+  POS_STAKES=""   # default: 100 each; `--stakes` sets them per validator
   FRESH=false
 
   while [[ $# -gt 0 ]]; do
@@ -296,6 +352,7 @@ cmd_up() {
         BOOTSTRAP_DATA_VOLUME="${2:?--data-volume needs a volume name}"; shift 2 ;;
       --epoch-length) POS_EPOCH_LENGTH="${2:?}"; shift 2 ;;
       --active-validators) POS_ACTIVE_VALIDATORS="${2:?}"; shift 2 ;;
+      --stakes) POS_STAKES="${2:?}"; shift 2 ;;
       --effect-scheduler)
         EFFECT_SCHEDULER="${2:?}"
         case "$EFFECT_SCHEDULER" in
@@ -380,6 +437,9 @@ cmd_up() {
   local id
   id="$(bootstrap_id)"
   echo "==> bootstrap id: $id"
+
+  # Before any node joins: the master must have committed genesis, or a joiner races its broadcast.
+  wait_for_genesis
 
   # Validators 1..n-1: bonded in genesis.
   local i name host_port http_port admin_port

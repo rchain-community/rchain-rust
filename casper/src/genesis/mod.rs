@@ -297,10 +297,15 @@ pub async fn seed_rgov_aliases_from(
         let Some((name, uri)) = rgov::published_uri(datum) else {
             continue;
         };
-        let target = if name == "readcap" {
-            rgov::readcap_uri()?
-        } else {
-            rgov::contract_uri_for(&name)?
+        let target = match name.as_str() {
+            // The two capabilities the master directory mints. `readcap` is published by the
+            // template; `grantcap` by our own `extraSlots` term, because publishing it is a change
+            // to the vendored file's behaviour and that term is already ours. `write` is published
+            // by neither, on purpose: a `write` holder could swap any application under a client's
+            // feet, while `grant` returns a writer bound to one key (`Directory.rho:22`).
+            "readcap" => rgov::readcap_uri()?,
+            "grantcap" => rgov::grantcap_uri()?,
+            _ => rgov::contract_uri_for(&name)?,
         };
         if native
             .registry_lookup(&target)
@@ -325,7 +330,13 @@ pub async fn seed_rgov_aliases_from(
 }
 
 /// Every governance key a fresh chain must resolve, for the ceremony's completeness check: the
-/// classes, the master directory's read cap, and every seeded shorthand.
+/// classes, the master directory's two published capabilities, and every seeded shorthand.
+///
+/// **Both capabilities are required, and the second one is required because its absence is silent.**
+/// A chain whose `grantcap` never landed does not fail anything: an application resolving it gets
+/// `Nil`, calls it, matches no receive, and its registration simply does not happen — which is the
+/// diagnostic trap issue #71 records. So a missing `grantcap` is a genesis defect, and the ceremony
+/// is the only place it can be caught before a chain ships.
 pub async fn missing_governance_keys(
     native: &rchain_rholang::native_state::NativeSystemState,
 ) -> Result<Vec<String>, String> {
@@ -341,14 +352,15 @@ pub async fn missing_governance_keys(
             missing.push(uri);
         }
     }
-    let readcap = rgov::readcap_uri()?;
-    if native
-        .registry_lookup(&readcap)
-        .await
-        .map_err(|e| e.to_string())?
-        .is_none()
-    {
-        missing.push(readcap);
+    for uri in [rgov::readcap_uri()?, rgov::grantcap_uri()?] {
+        if native
+            .registry_lookup(&uri)
+            .await
+            .map_err(|e| e.to_string())?
+            .is_none()
+        {
+            missing.push(uri);
+        }
     }
     Ok(missing)
 }

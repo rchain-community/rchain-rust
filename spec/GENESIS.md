@@ -58,10 +58,52 @@ Two registrations live in these files and only one keeps upstream's shape:
 | `Chat.rho` | `rho:id:yaer85qmkisrnr3h7yir389u687jhrzs4p1h67jtqasp4j5fw8sy` | `newChat`, `sendChat`, `readChat` |
 | `Group.rho` | `rho:id:4ms51n1oramet9iu94df4483xp88jogfsfcnnsmen6xpraz7gs9o` | `newGroup`, `joinGroup`, `addMember` |
 | **the master directory's read cap** | `rho:id:wxc4mwdh7otq4fd6iuxt84inepssyz5tugojf7ao68dkh4ebbncy` | the `MasterURI` every governance snippet takes — the wallet's `master-uri.ts` |
+| **the master directory's grant cap** | `rho:id:h1uxxzbr71xnoz5r99tkr6jkuoky1o16usme58mzefqk5afym6yo` | an application registering under **its own name**: `grant!("myKey", *writerCh)` returns a writer bound to that one key |
 
 `ballot`, `chat` and `group` are **not** in upstream's deployment order: the master directory has
 slots for them here because the wallet's editor asks the directory for those class *names*, and a slot
 that was never filled answers `Nil` — which a client cannot tell from "broken".
+
+**The read cap alone made the directory immutable, and that is fixed** (#71). The template mints
+`{"read", "write", "grant"}` and parks all three on `@[*deployerId, "MasterContractAdmin"]`, keyed by
+the *genesis* deployer — an identity nothing holds after block 1 — so from genesis onward nothing could
+write a name, and an application trying to register got no error and no rejection: law 40 (a call the
+directory cannot match does nothing) over law 38 (silence is not failure). Measured on a live chain
+before the fix: `read("Inbox", *ret)` answered a capability, `write("probeKey", "probeValue", *ret)`
+answered `{"expr":[]}`. The **grant cap** above is the repair, and it is deliberately the restricted
+half: `Directory.rho`'s `grant(@key, ret)` returns a writer bound to one key, so a holder can own its
+own name and nothing else. Raw `write` stays unpublished, because a `write` holder can swap any
+application under a client's feet. It is published by **our own** `extraSlots` term rather than by the
+vendored template, which stays byte-faithful to upstream; the behavioural pin is
+`the_published_grant_capability_owns_exactly_one_key`, which takes a writer, writes, and reads the
+value back through the read cap — because a probe that only checks *that something answered* cannot
+distinguish this defect from a working chain.
+
+**The parked capability is not lost — it is held, and that distinction is measured, not assumed.** The
+datum sits on `@[*deployerId, "MasterContractAdmin"]` keyed by the ceremony key, and **both** genesis
+consumers (`MemberDirectory.rho:15,162` and `extraSlots`) read it with `<<-` — a *peek*, which restores
+what it reads. So nothing consumed it, and a deploy signed with the ceremony key still finds and writes
+through it: the directory is **operator-mutable and application-immutable**, not lost. That reading
+matters because it is the cheaper one to act on — "make the operator's write path usable" is a smaller
+change than "recover a lost capability". `only_the_ceremony_key_still_holds_the_parked_capability` pins
+both halves with one probe text signed by two keys: the ceremony key writes and the value is visible
+through the read cap, while a stranger's identical probe matches nothing and its write silently does not
+happen.
+
+**What publishing `grant` does not decide, recorded as open rather than implied by a key name:**
+
+- **Who may claim a name at block 0, and how that authority rotates.** `grant` returns a one-key
+  writer to *whoever calls it*, so on this genesis any caller may claim any unclaimed name. A
+  gatekeeper contract in front of it, holding an admission policy, is the shape that would restrict
+  that; nothing here does.
+- **Whether an existing name may be overwritten.** `write`'s `set` overwrites, so a `grant` holder for
+  a key can replace what is under it. Overwrite is the friendly upgrade path — publish a new value
+  under the same name and every client follows without redistributing a uri — and it is also the
+  supply-chain risk. Extending only as `Name@2` is the conservative reading and is not implemented.
+- **Whether `Group`/`Ballot`/`Chat` belong in genesis content at all.** Registering less at genesis is
+  arguably better: genesis freezes an interface for every chain built from the port, and voting rules
+  and group semantics are exactly what a governance experiment needs to change. They are installed
+  above, and that is a testnet scope decision, not a conclusion.
 
 Two of the vendored files carry a behavioural repair, both recorded in
 `resources/rgov/NOTICE` with their evidence: `Inbox.rho`'s zero-argument `read` restored a store it
@@ -131,7 +173,10 @@ must not do it:
   network that would rather each client run its own directory must install none of steps 2–4; that is
   a genesis flag to land, not something this arrangement can express. What makes the shared model
   tolerable is verifiability: the class URIs are chain constants, so a client can check what the
-  directory hands it against the table above instead of trusting the operator.
+  directory hands it against the table above instead of trusting the operator. **The parked capability
+  is `write` (and the grant cap it mints); since #71 the ceremony key is no longer the *only* holder
+  of a way to write** — any caller may take a one-key writer through the published grant cap, which is
+  what makes the two open admission questions above worth answering before a public genesis.
 - **A directory slot that was never filled answers `Nil`**, and a consumer cannot distinguish that
   from "broken" — so on mainnet a client must handle an absent class explicitly rather than wait.
 - **Class URIs derived from the deploy RNG move when the blessed order changes** (`BLESSED_DEPENDENCIES`

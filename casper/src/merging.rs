@@ -684,15 +684,6 @@ fn rejections_for<'a>(
         .collect()
 }
 
-/// The `(prefix, key)` a native action writes.
-fn native_key(action: &NativeStoreAction) -> (u8, Blake2b256Hash) {
-    match action {
-        NativeStoreAction::Put { prefix, key, .. } | NativeStoreAction::Delete { prefix, key } => {
-            (*prefix, *key)
-        }
-    }
-}
-
 /// How native writes relate the deploy chains of a merge (issue #83).
 ///
 /// A native write is an **absolute value** computed from its block's own pre-state, not an effect
@@ -769,7 +760,7 @@ impl NativeRelations<'_> {
             BTreeMap::new();
         for host in writers {
             for action in native_by_block.get(host).into_iter().flatten() {
-                let key = native_key(action);
+                let key = action.slot();
                 if let Some((previous, _)) = by_key.get(&key) {
                     if !self.sees(host, previous) {
                         return Err(format!(
@@ -932,7 +923,10 @@ impl MergeScope {
                 .map(|b| {
                     (
                         Blake2b256Hash::from_bytes(*b.block_hash.as_bytes()),
-                        b.native_changes.iter().map(native_key).collect(),
+                        b.native_changes
+                            .iter()
+                            .map(NativeStoreAction::slot)
+                            .collect(),
                     )
                 })
                 .collect();
@@ -1018,6 +1012,11 @@ impl MergeScope {
         // that wrote anything native. Two accepted blocks writing one key are therefore ancestor and
         // descendant (concurrent writers conflict), and the descendant's value already includes the
         // ancestor's, so writers are applied ancestors first and the last write of a key wins.
+        //
+        // This replaces the first #83 fix (b5e024d), which kept one write per slot by taking the last
+        // accepted host in hash order. That restored liveness, but it decided a disagreement by hash:
+        // two concurrent blocks' absolute values are two transitions, and keeping either discards the
+        // other's (see `NativeRelations`).
         let accepted_hosts: BTreeSet<Blake2b256Hash> =
             to_merge.iter().map(|c| c.host_block).collect();
         let native_changes = native.fold(&accepted_hosts, &native_by_block)?;
@@ -1756,6 +1755,112 @@ mod native_merge_tests {
             "and the base's native state must still be there"
         );
     }
+
+    /// **The reproduction for #83, at the granularity the defect lives at.**
+    ///
+    /// `merge` concatenates the native effects of every accepted host block (`native_by_block` ->
+    /// `extend`). Each *block's* own list is duplicate-free by construction —
+    /// `InMemNativeStore::drain_changes` maps a `BTreeMap<(prefix, key), _>`, one action per slot,
+    /// and clears the overlay — but **two blocks at the same height can write the same slot**, and
+    /// at an epoch boundary that is not a rare race: *every* proposer runs `close_block`, which
+    /// writes the same five `PREFIX_POS` leaves (`bonds`, `active`, `withdrawers`,
+    /// `pending_withdrawers`, `committed_rewards`) from the same pre-state. Two of those blocks both
+    /// accepted into one merge produce the same key twice, and `RadixHistory::process` refuses the
+    /// batch with the panic the issue reports — on every node, at the same height, because the
+    /// inputs are identical.
+    ///
+    /// This is the deterministic half of the diagnosis: no devnet, no scheduler, two branches and
+    /// one slot. What it asserts is the contract a fix owes, which is *not* merely "does not panic":
+    /// the two concurrent writers **conflict**, so exactly one host is rejected and the slot holds
+    /// the other's value whole. (The first fix kept the last host's write in hash order and rejected
+    /// nothing; `boundary_merge_tests` shows why a kept-both merge loses a transition.)
+    ///
+    /// The fixture is chosen so that assertion can discriminate. The *values* are swapped between
+    /// the two rounds, so the choice of which host survives must not depend on them: a rule that
+    /// took the numerically larger value, or the last-arriving write, would pick differently.
+    #[tokio::test]
+    async fn two_branch_blocks_writing_one_native_slot_do_not_panic_the_merge() {
+        let base_repo = empty_repo().await;
+        let base_state = base_repo.root();
+        let shared = key(9);
+
+        let branch = |host: u8, value: u8| BlockIndex {
+            block_hash: BlockHash::new([host; 32]),
+            deploy_chains: vec![DeployChainIndex {
+                host_block: key(host),
+                deploys_with_cost: BTreeSet::from([DeployIdWithCost {
+                    id: vec![host],
+                    cost: 0,
+                }]),
+                pre_state_hash: base_state,
+                post_state_hash: base_state,
+                event_log_index: EventLogIndex::empty(),
+                state_changes: StateChange::empty(),
+            }],
+            native_changes: vec![NativeStoreAction::Put {
+                prefix: PREFIX_POS,
+                key: shared,
+                value: vec![value],
+            }],
+        };
+        let hosts = [BlockHash::new([1u8; 32]), BlockHash::new([2u8; 32])];
+        let mut rejected_hosts = Vec::new();
+
+        for (first_value, second_value) in [(99u8, 22u8), (22u8, 99u8)] {
+            let indexes: BTreeMap<BlockHash, BlockIndex> = [
+                (hosts[0], branch(1, first_value)),
+                (hosts[1], branch(2, second_value)),
+            ]
+            .into_iter()
+            .collect();
+            let block_index = move |h: BlockHash| {
+                let index = indexes.get(&h).cloned();
+                async move { index.ok_or_else(|| format!("no index for {h:?}")) }
+            };
+            let scope = MergeScope {
+                final_scope: BTreeSet::new(),
+                conflict_scope: BTreeSet::from(hosts),
+                ancestry: BTreeMap::new(),
+            };
+
+            let (merged, rejected) = MergeScope::merge(
+                &scope,
+                base_state,
+                &BTreeMap::<Blake2b256Hash, FringeData>::new(),
+                &base_repo,
+                &block_index,
+                |_| 0,
+            )
+            .await
+            .expect(
+                "two accepted blocks writing one native slot must merge rather than panic (#83): \
+                 an epoch boundary puts several `close_block`s at one height by construction",
+            );
+
+            assert_eq!(rejected.len(), 1, "the two concurrent writers conflict");
+            let rejected_host = rejected.iter().next().expect("one rejected host")[0];
+            rejected_hosts.push(rejected_host);
+            let surviving_value = if rejected_host == 1 {
+                second_value
+            } else {
+                first_value
+            };
+            let reader = base_repo.get_history_reader(merged).await;
+            assert_eq!(
+                reader
+                    .get_native(PREFIX_POS, shared)
+                    .await
+                    .expect("a readable native leaf"),
+                Some(vec![surviving_value]),
+                "the slot holds the surviving host's write"
+            );
+        }
+        assert_eq!(
+            rejected_hosts[0], rejected_hosts[1],
+            "which host is rejected must not depend on what the hosts wrote: every node decides it \
+             from the same DAG, whatever the values"
+        );
+    }
 }
 
 /// Issue #83: two blocks that each wrote a native key, merged in one scope.
@@ -1936,7 +2041,7 @@ mod boundary_merge_tests {
         let reader = repo.get_native_reader(state).await;
         let mut out = Vec::new();
         for action in actions {
-            let (prefix, key) = native_key(action);
+            let (prefix, key) = action.slot();
             out.push(reader.get_native(prefix, key).await.unwrap());
         }
         out

@@ -901,6 +901,19 @@ fn spawn_peer_message_router(
                         // Hash-keyed requests: every member looks, only the owner answers.
                         _ => shards.values().collect(),
                     };
+                    if targets.is_empty() {
+                        // **The silent branch.** A block for a shard this node is not a member of is
+                        // logged above; every *other* message is sent to every member, so an empty
+                        // `shards` map dropped it with no line anywhere — and a node with no shard
+                        // task answers nothing while looking healthy (issue #100's class).
+                        log.warn(
+                            source,
+                            &format!(
+                                "Dropped a message from {peer}: this node has no shard task to \
+                                 deliver it to"
+                            ),
+                        );
+                    }
                     for tx in targets {
                         // `send().await` already applies backpressure when the shard is busy (this is
                         // not the drop-on-full site that AUDIT C105 is about) — but the *error* was
@@ -943,6 +956,7 @@ fn build_protocol_server(
     conf: &NodeConf,
     comm_state: &CommState,
     routing_tx: mpsc::Sender<RoutingMessage>,
+    log: Arc<dyn Log>,
 ) -> Result<ProtocolServer, String> {
     let cert = std::fs::read_to_string(&conf.tls.certificate_path).map_err(|e| e.to_string())?;
     let key = std::fs::read_to_string(&conf.tls.key_path).map_err(|e| e.to_string())?;
@@ -967,11 +981,13 @@ fn build_protocol_server(
         let rp_conf = comm_state.rp_conf.clone();
         let connections = comm_state.connections.clone();
         let routing_tx = routing_tx.clone();
+        let log = log.clone();
         Box::new(move |proto: Protocol| {
             let transport = transport.clone();
             let rp_conf = rp_conf.clone();
             let connections = connections.clone();
             let routing_tx = routing_tx.clone();
+            let log = log.clone();
             Box::pin(async move {
                 handle_messages::handle(
                     proto,
@@ -979,6 +995,7 @@ fn build_protocol_server(
                     transport.as_ref(),
                     connections.as_ref(),
                     &routing_tx,
+                    log.as_ref(),
                 )
                 .await
             })
@@ -987,15 +1004,40 @@ fn build_protocol_server(
 
     let handle_streamed: Box<dyn Fn(Blob) -> BoxFuture<()> + Send + Sync> = {
         let routing_tx = routing_tx.clone();
+        let log = log.clone();
         Box::new(move |blob: Blob| {
             let routing_tx = routing_tx.clone();
+            let log = log.clone();
             Box::pin(async move {
-                let _ = routing_tx
+                // **The streamed path had no inbound record at all** (issue #100). The one added to
+                // `handle_messages::handle` covers the *unary* dispatch, and every streamed message —
+                // the finalized fringe, every store-items page, every `stream_to_peers` broadcast —
+                // bypasses it. That is why a second fringe arriving and being ignored was invisible
+                // during #100's diagnosis, which had to be settled from the *other* node's timestamps.
+                // `type_id` is the serde tag, so it names the message without a decode.
+                log.debug(
+                    LogSource::new("coop.rchain.comm.inbound"),
+                    &format!(
+                        "Received {} (streamed) from {}",
+                        blob.packet.type_id, blob.sender.id
+                    ),
+                );
+                // The result was discarded as well: the only error left is a closed channel, i.e. the
+                // router task has exited, in which case the message cannot be delivered at all and a
+                // node that "handled" it would be lying about it.
+                if routing_tx
                     .send(RoutingMessage {
                         peer: blob.sender,
                         packet: blob.packet,
                     })
-                    .await;
+                    .await
+                    .is_err()
+                {
+                    log.warn(
+                        LogSource::new("coop.rchain.node.runtime.Setup"),
+                        "Could not deliver a streamed message: the peer-message router is not running",
+                    );
+                }
             })
         })
     };
@@ -1160,7 +1202,12 @@ pub async fn setup_node_program(
         enable_txn_api: conf.api_server.enable_txn_api,
         enable_devnet_cors: conf.api_server.enable_devnet_cors,
         enable_devnet_admin_public: conf.api_server.enable_devnet_admin_public,
-        protocol_server: Some(build_protocol_server(conf, &comm_state, routing_tx)?),
+        protocol_server: Some(build_protocol_server(
+            conf,
+            &comm_state,
+            routing_tx,
+            log.clone(),
+        )?),
         status_provider: Some(StatusProvider {
             connections: comm_state.connections.clone(),
             rp_conf: comm_state.rp_conf.clone(),

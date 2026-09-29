@@ -35,12 +35,33 @@ fn git(args: &[&str]) -> Option<String> {
 }
 
 fn main() {
+    // **An environment variable the build script reads is not a tracked input unless it says so.**
+    // Without this line cargo keeps the previous `cargo:rustc-env` and never re-runs the script when
+    // the variable changes — measured: `GIT_HEAD_COMMIT=deadbeef… cargo build` produced a binary
+    // still reporting the earlier git-resolved commit. The container build hides it (a fresh build
+    // has no cached script output), so it would have shipped as a local-only trap.
+    println!("cargo:rerun-if-env-changed=GIT_HEAD_COMMIT");
+
     if let Some(git_dir) = git(&["rev-parse", "--absolute-git-dir"]) {
         println!("cargo:rerun-if-changed={git_dir}/HEAD");
         if let Some(reference) = git(&["symbolic-ref", "--quiet", "HEAD"]) {
             println!("cargo:rerun-if-changed={git_dir}/{reference}");
         }
         println!("cargo:rerun-if-changed={git_dir}/packed-refs");
+    }
+
+    // **An explicitly-provided commit wins, and it is how the container image gets one.** The
+    // Dockerfile builds from a context that excludes `.git` (`.dockerignore`), so `git rev-parse`
+    // below cannot answer there and the image used to serve `commit # unknown` — the exact gap this
+    // build script exists to close, reintroduced by the packaging. `tools/devnet.sh build` passes the
+    // revision as a build argument; taking it here rather than only as an ambient variable makes the
+    // precedence explicit, and `cargo:rustc-env` is what carries it to `option_env!`.
+    if let Ok(provided) = std::env::var("GIT_HEAD_COMMIT") {
+        let provided = provided.trim();
+        if !provided.is_empty() {
+            println!("cargo:rustc-env=GIT_HEAD_COMMIT={provided}");
+            return;
+        }
     }
 
     match git(&["rev-parse", "HEAD"]) {
