@@ -375,6 +375,7 @@ impl Proposer {
             let block_store = block_store.clone();
             let block_index = block_index.clone();
             let shard_id = shard_id.clone();
+            let log = log.clone();
             Arc::new(move |block: &BlockMessage| {
                 let runtime = runtime.clone();
                 let dag = dag.clone();
@@ -382,6 +383,7 @@ impl Proposer {
                 let block_index = block_index.clone();
                 let block = block.clone();
                 let shard_id = shard_id.clone();
+                let log = log.clone();
                 Box::pin(async move {
                     match crate::multi_parent_casper::validate(
                         dag.as_ref(),
@@ -391,6 +393,7 @@ impl Proposer {
                         &shard_id,
                         min_phlo_price,
                         block_index.as_ref(),
+                        &log,
                     )
                     .await
                     {

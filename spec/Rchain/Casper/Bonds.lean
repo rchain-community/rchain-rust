@@ -5,7 +5,7 @@ import Rchain.Casper.Stake
 # Law 16d — the bonds cache equals the PoS state
 
 The finalizer's gates run on a bonds map — `calculate_fringe`'s stake and `check_min_messages`' sender
-coverage both take `bonds_map` (`block-storage/src/dag/finalizer.rs:29,102,168,189,217`) — and laws 14a/14b
+coverage both take `bonds_map` (`block-storage/src/dag/finalizer.rs:29,141,216-217`) — and laws 14a/14b
 therefore model `bonds : Bonds` as an *argument* to the gate. This module is where that argument's
 provenance is modelled, because the port does not assume the map: it *establishes* it, from the PoS
 state, at the one site the row's note names.
@@ -205,7 +205,7 @@ theorem a_bond_change_between_justifications_is_refused :
   decide
 
 /-- **The gates cannot tell which source answered** — the finalizer's gates take the map as an argument
-    (`finalizer.rs:29,102,168,189,217`), so two equal maps give equal verdicts. This is the step that
+    (`finalizer.rs:29,141,216-217`), so two equal maps give equal verdicts. This is the step that
     makes laws 14a/14b's `bonds : Bonds` sound *whatever* its provenance, and it composes with
     `the_sources_agree` to say: on an honest DAG the gate's verdict is the same read either way. -/
 theorem the_gate_reads_the_same_map {a b : Bonds} (h : a = b) (s : Sender) :

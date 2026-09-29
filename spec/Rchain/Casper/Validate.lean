@@ -505,7 +505,7 @@ noncomputable def fringeId (f : Fringe) : List Nat :=
 
 /-- **Law 18b** — the fringe identity is order-independent. In the port this is **structural**, not a
     law: `fringe` is a `BTreeSet<BlockHash>` wherever it appears (`models/src/fringe_data.rs:22`,
-    `block-storage/src/dag/finalizer.rs:30`), so there is no list order for the identity to be invariant
+    `block-storage/src/dag/finalizer.rs:31`), so there is no list order for the identity to be invariant
     under. The model keeps a list — so the claim can be *stated* at all — and proves the invariance the
     type supplies, the same way Law 7's join key does. -/
 theorem fringeId_perm (f g : Fringe) (h : List.Perm f.messages g.messages) :

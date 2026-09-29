@@ -1,6 +1,7 @@
 //! The multi-parent CBC-Casper façade (port of `MultiParentCasper.scala`).
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 use rchain_block_storage::block_store::BlockStore;
 use rchain_block_storage::dag::dag_storage::{BlockDagStorage, DeployId};
@@ -15,6 +16,7 @@ use rchain_models::casper::protocol::casper_message::{BlockMessage, SignedDeploy
 use rchain_models::fringe_data::FringeData;
 use rchain_models::normalizer_env::NormalizerEnv;
 use rchain_models::validator::Validator;
+use rchain_shared::log::Log;
 
 use crate::block_status::BlockStatus;
 use crate::interpreter_util::validate_block_checkpoint;
@@ -194,8 +196,8 @@ where
     // cannot finalise alone (#70). This is the same call the creator makes, which is what keeps a
     // block's `fringe` and this node's derivation of it the same value.
     let finalizer = Finalizer::new(msg_map);
-    let (_parent_fringe, new_fringe_opt) =
-        liveness::calculate_finalization(&finalizer, &parents, &bonds_map);
+    let (_parent_fringe, new_fringe_opt, no_advance) =
+        liveness::calculate_finalization_detailed(&finalizer, &parents, &bonds_map);
     let new_fringe_hashes: Option<BTreeSet<BlockHash>> =
         new_fringe_opt.map(|f| f.iter().map(|m| m.id).collect());
 
@@ -274,6 +276,7 @@ where
     };
 
     Ok(ParentsMergedState {
+        finality_stall: no_advance,
         justifications,
         max_block_num: max_height,
         max_seq_nums,
@@ -318,6 +321,7 @@ pub async fn validate<F, Fut>(
     shard_id: &str,
     min_phlo_price: i64,
     block_index: &F,
+    log: &Arc<dyn Log>,
 ) -> Result<BlockMetadata, ValidateError>
 where
     F: Fn(BlockHash) -> Fut,
@@ -352,7 +356,7 @@ where
 
     // Replay validation.
     let (block_metadata, validated) =
-        validate_block_checkpoint(runtime, dag, block_store, block, block_index)
+        validate_block_checkpoint(runtime, dag, block_store, block, block_index, log)
             .await
             .map_err(|e| ValidateError::Internal(format!("validateBlockCheckpoint failed: {e}")))?;
     match validated {

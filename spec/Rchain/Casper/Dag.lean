@@ -9,18 +9,18 @@ refute "same sender ⇒ same id" with no hypothesis to appeal to). What law 14b 
 the finalizer **derives**, and the derivation is four steps with a gate on each side of it
 (`block-storage/src/dag/finalizer.rs`):
 
-1. **`selfParents`** (`:74-95`) — the walk: a justification's ancestors of the **same sender** that are
+1. **`selfParents`** (`:102-124`) — the walk: a justification's ancestors of the **same sender** that are
    not already finalized (the previous fringe's messages are excluded);
-2. **`minMsgs`** — per justification, the **oldest** such ancestor (`next_fringe`, `:186-211`, takes
-   `chain.into_iter().last()` of `[p] ++ self_parents p`);
-3. **`checkMinMessages`** (`:99`) — the coverage gate: the minimum-message **sender set** must equal the
+2. **`minMsgs`** — per justification, the **oldest** such ancestor (`next_fringe_detailed`, `:282-288`,
+   takes `chain.into_iter().last()` of `[p] ++ self_parents p`);
+3. **`checkMinMessages`** (`:138-148`) — the coverage gate: the minimum-message **sender set** must equal the
    **bonded** set, not merely match it in count. (That is a **deliberate departure from the Scala**,
    which compares counts only and carries the epoch TODO saying so — `Finalizer.scala:64-66`; the §6
    row and law 14a's note carry the reason. Count-only accepted `[A, A, B]` for bonds `{A, B, C}`, and
    the layer fold then left bonded sender `C` out of the fringe it published);
-4. **`nextLayer`** (`:109-127`) — a **fold over the min messages**, keyed by sender, keeping the entry
-   with the higher `sender_seq`; then the stake gate (`calculate_fringe`, `:165-184`) decides whether
-   the layer is published (`:211`).
+4. **`nextLayer`** (`:150-168`) — a **fold over the min messages**, keyed by sender, keeping the entry
+   with the higher `sender_seq`; then the stake gate (`calculate_fringe`, `:213-236`) decides whether
+   the layer is published (`:315`).
 
 **The antichain comes from step 4's fold, not from the map it is stored in.** The port keeps the layer
 in a `BTreeMap<sender, Message>`, which gives distinct senders for free — and modelling the map would
@@ -54,7 +54,7 @@ before 2026-09-29.
 
 namespace Rchain
 
-/-- The DAG: messages by id, the port's `msg_map` (`block-storage/src/dag/finalizer.rs:23-33`). -/
+/-- The DAG: messages by id, the port's `msg_map` (`block-storage/src/dag/finalizer.rs:24-46`). -/
 abbrev Dag := List Message
 
 /-- A message by id — the port's `Finalizer::msg`. -/
@@ -75,7 +75,7 @@ def walkSameSender (d : Dag) (finalized : List Nat) :
   | fuel + 1, m :: rest, acc =>
     walkSameSender d finalized fuel (sameSenderParents d m.sender m finalized ++ rest) (m :: acc)
 
-/-- **Step 1 — `self_parents`** (`finalizer.rs:74-95`): the same-sender, not-yet-finalized ancestors
+/-- **Step 1 — `self_parents`** (`finalizer.rs:102-123`): the same-sender, not-yet-finalized ancestors
     reachable from `mv`, in walk order.
 
     The fuel is the DAG's own size: every step pops one message and folds in its parents, so `d.length`
@@ -84,15 +84,15 @@ def walkSameSender (d : Dag) (finalized : List Nat) :
 def selfParents (d : Dag) (mv : Message) (finalized : List Nat) : List Message :=
   walkSameSender d finalized d.length (sameSenderParents d mv.sender mv finalized) []
 
-/-- **Step 2 — the min messages** (`next_fringe`, `:186-211`): per justification, the *oldest*
+/-- **Step 2 — the min messages** (`next_fringe_detailed`, `:282-288`): per justification, the *oldest*
     non-finalized same-sender ancestor, with the justification itself when there is none (the port's
     `chain.into_iter().last()` over `[p] ++ self_parents p`).
 
     **This took the wrong end until 2026-09-25, and the fix is `.head?`.** `selfParents` returns its list
     **oldest-first** — the model prepends into its accumulator, so the deepest message lands last — while
     the port's `self_parents` builds its chain by `push`ing the visit order, which is **newest-first**
-    (`block-storage/src/dag/finalizer.rs:78-95`), and `next_fringe` seeds it with `chain = vec![p]` before
-    extending (`:194-199`). So the port's `.last()` is the oldest, and the model's `getLast?` on an
+    (`block-storage/src/dag/finalizer.rs:106-123`), and `next_fringe_detailed` seeds it with `chain = vec![p]`
+    before extending (`:285-286`). So the port's `.last()` is the oldest, and the model's `getLast?` on an
     oldest-first list was the *newest*. Measured on a chain `10 (h 0) ← 11 (h 1) ← 12 (h 2)`: the model's
     `selfParents` is `[10, 11]` and the port's chain is `[11, 10]`, so the model answered `11` where the
     port answers `10`.
@@ -125,7 +125,7 @@ theorem the_walk_is_oldest_first :
 theorem a_chain_of_three_picks_the_oldest :
     (minMsgs chain3 [⟨12, 2, 0, 2, [11], []⟩] []).map (·.id) = [10] := by decide
 
-/-- **Step 3 — `check_min_messages`** (`:99`): the coverage gate. The minimum-message **sender set**
+/-- **Step 3 — `check_min_messages`** (`:138-148`): the coverage gate. The minimum-message **sender set**
     must equal the **bonded** set. The length clause is the port's own first conjunct, kept because it
     is the shape the oracle has; the two inclusions are what the set comparison is, in a tree that
     carries lists rather than `BTreeSet`s.
@@ -140,7 +140,7 @@ def checkMinMessages (ms : List Message) (bonds : Bonds) : Bool :=
     ms.all (fun m => decide (m.sender ∈ bondedSenders bonds)) &&
     (bondedSenders bonds).all (fun s => decide (s ∈ ms.map (·.sender)))
 
-/-- **Step 4 — the layer fold** (`calculate_next_layer`, `:109-127`), as the derivation's own data:
+/-- **Step 4 — the layer fold** (`calculate_next_layer`, `:150-168`), as the derivation's own data:
     keyed by sender. An incoming message **replaces** whatever the list already holds for its sender —
     the port's `if m.sender_seq > curr.sender_seq` insertion, as a mutation. Which of two same-sender
     messages wins is the fold's own order here where the port compares `sender_seq`; **the antichain
@@ -158,7 +158,7 @@ def seedLayer (l : List Message) : List Message :=
 
 /-- **The candidate insertion, guarded as the port guards it**: a candidate takes its sender's slot **only
     when its `seqNum` is strictly greater** than the entry it would replace
-    (`block-storage/src/dag/finalizer.rs:119-125`). This is the difference the model used to elide — and
+    (`block-storage/src/dag/finalizer.rs:160-166`). This is the difference the model used to elide — and
     the port's own comment calls it *"the Law 15 monotonicity invariant"* (`message_state.rs:77`), so
     eliding it elides the invariant: the antichain (law 14b) is indifferent to which same-sender message
     wins, and law 15's comparison is *about* which one wins. -/
@@ -175,7 +175,7 @@ def nextLayer (d : Dag) (ms : List Message) : List Message :=
     (fun c => decide (c.sender ∈ seeded.map (·.sender)))
   cands.foldl (fun acc m => insertCandidate m acc) seeded
 
-/-- **The derivation** — the port's `next_fringe` (`:186-211`) in its own decision order: the walk, the
+/-- **The derivation** — the port's `next_fringe_detailed` (`:275-317`) in its own decision order: the walk, the
     count gate, the layer, the stake gate. The support map is an argument (its content is law 14a's,
     `Rchain.Casper.Stake`), exactly as it is for `Rchain.nextFringe`. -/
 def derivedFringe (d : Dag) (js : List Message) (prev : Fringe) (supp : SupportMap)
@@ -873,7 +873,7 @@ theorem the_comparison_is_false_without_fork_freedom :
 /-! ### And fork-freedom is *not enough*: the fold can still publish below the previous fringe
 
 The sentinel theorem is about `selfParents`, and the derivation does not stop there: `nextLayer` folds the
-min messages and then adds their **candidate parents** (`:129-135`). The DAG below shows that step can
+min messages and then adds their **candidate parents** (`:155-159`). The DAG below shows that step can
 publish a message *below* the previous fringe's message for the same sender — and it is fork-free, so the
 hypothesis the sentinel theorem needs does not exclude it.
 

@@ -30,20 +30,20 @@ The axiom that stood here — `isSuperMajority s t ↔ s * 3 > t * 2` — was `N
 the definition's own body, which is why the register called the row `vacuous`. What the port has is a
 *gate*, and the law is what that gate computes: the supporting stake is the bonded stake whose senders saw
 the full partition, and the fringe advances exactly when that is a supermajority
-(`block-storage/src/dag/finalizer.rs:153-171`, `:174-197`, `:202-215`). -/
+(`block-storage/src/dag/finalizer.rs:221-230`, `:213-236`, `:354-365`). -/
 
 /-- A validator identifier (the port's `S`). -/
 abbrev Sender := Nat
 
-/-- The bonds map: each bonded sender's stake (`BTreeMap<S, NonNegI64>`, `finalizer.rs:156`). -/
+/-- The bonds map: each bonded sender's stake (`BTreeMap<S, NonNegI64>`, `finalizer.rs:29`). -/
 abbrev Bonds := List (Sender × Nat)
 
 /-- The support map `calculate_fringe` is called with: for each candidate sender, the senders that saw it,
     each mapped to the set of senders *that* one saw — the port's
-    `BTreeMap<S, BTreeMap<S, BTreeSet<S>>>` (`finalizer.rs:155`). -/
+    `BTreeMap<S, BTreeMap<S, BTreeSet<S>>>` (`finalizer.rs:176`). -/
 abbrev SupportMap := List (Sender × List (Sender × List Sender))
 
-/-- The bonded senders — the port's `bonds_map.keys()` (`finalizer.rs:157`). -/
+/-- The bonded senders — the port's `bonds_map.keys()` (`finalizer.rs:145`). -/
 def bondedSenders (bonds : Bonds) : List Sender := bonds.map (·.1)
 
 /-- A sender's stake, if it is bonded — the port's `bonds_map.get(sender)`. -/
@@ -59,18 +59,18 @@ theorem find?_eq_none_of_not_mem (bonds : Bonds) (s : Sender) (h : s ∉ bondedS
 /-- **A non-bonded sender has no stake to contribute.** This is the port's `if let Some(stake) =
     bonds_map.get(sender)` branch — the one that keeps a non-bonded justification sender from indexing
     the bonds map at all, which the code's own `calculate_fringe_ignores_non_bonded_sender`
-    (`block-storage/src/dag/finalizer.rs:282`) pins. -/
+    (`block-storage/src/dag/finalizer.rs:223-228`) pins. -/
 theorem stakeOf_eq_none (bonds : Bonds) (s : Sender) (h : s ∉ bondedSenders bonds) :
     stakeOf bonds s = none := by
   simp [stakeOf, find?_eq_none_of_not_mem bonds s h]
 
 /-- Every seer saw the whole bonded set — the port's
-    `!seen_by.is_empty() && seen_by.values().all(|v| v == &bonded_senders)` (`finalizer.rs:161`). -/
+    `!seen_by.is_empty() && seen_by.values().all(|v| v == &bonded_senders)` (`finalizer.rs:222`). -/
 def allBonded (bonded : List Sender) (seenBy : List (Sender × List Sender)) : Bool :=
   !seenBy.isEmpty && seenBy.all (fun p => p.2 == bonded)
 
 /-- The senders whose full-partition support is recorded — the accumulation the port runs before the
-    stake lookup (`finalizer.rs:158-168`). -/
+    stake lookup (`finalizer.rs:221-230`). -/
 def bondedSupport (supp : SupportMap) (bonded : List Sender) : List Sender :=
   (supp.filter (fun p => allBonded bonded p.2)).map (·.1)
 
@@ -88,7 +88,7 @@ def fullPartitionStake (supp : SupportMap) (partition : Bonds) (quorum : Bonds) 
     (fun n acc => n + acc) 0
 
 /-- The total bonded stake — summed exactly in the model. The port sums in `i128` for the same reason
-    (`finalizer.rs:170`): a validator set can exceed `i64` before this comparison is reached
+    (`finalizer.rs:231`): a validator set can exceed `i64` before this comparison is reached
     (`sdk/src/consensus.rs:50`). -/
 def totalStake (bonds : Bonds) : Nat := (bonds.map (·.2)).foldr (fun n acc => n + acc) 0
 

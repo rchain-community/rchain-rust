@@ -50,6 +50,34 @@ impl<M: Hash, S> Hash for Message<M, S> {
     }
 }
 
+/// **Why the derivation did not advance** — the gate's three exits, as data.
+///
+/// A stall is otherwise indistinguishable from the outside: the chain grows, nothing finalises, and
+/// the logs say nothing (the 2026-09-29 measurement that stopped at finality 44 had exactly this
+/// problem — see #70). Each variant carries the numbers that name the fault, and they are *returned
+/// by the gate itself* rather than recomputed by an explainer, because two implementations of one
+/// rule can disagree (`Split`, Law 51b) and this is the rule the node's finality runs on.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum NoAdvance<S> {
+    /// `check_min_messages` refused: the minimum messages' **senders** are not the partition's.
+    /// `missing` is the partition minus those senders — a validator with no message anywhere in the
+    /// non-finalized region (C174's shape), or a region no single layer covers.
+    Coverage {
+        missing: BTreeSet<S>,
+        senders: BTreeSet<S>,
+    },
+    /// `calculate_fringe` refused: a layer exists whose candidates were seen by the whole
+    /// partition, but the stake behind them is not a supermajority.
+    Support {
+        supporting: i128,
+        total: i128,
+        full_partitions: usize,
+        candidates: usize,
+    },
+    /// The progress guard: the derivation would publish exactly what is already finalised.
+    AlreadyPublished,
+}
+
 /// Multi-parent finalization over a cache of all messages. The message map is borrowed (never
 /// cloned) — the finalizer only reads it, so a per-call full-map clone is unnecessary (H6).
 #[derive(Clone, Debug)]
@@ -207,13 +235,50 @@ where
         is_super_majority(full_partition_stake, total_stake)
     }
 
-    fn next_fringe(
+    /// **The gate's arithmetic, once** — what `calculate_fringe` decides on, returned rather than only
+    /// compared: `(full_partition_stake, total_stake, full_partitions, candidates)`.
+    ///
+    /// A refusal has to name the numbers it was made of ([`NoAdvance::Support`]), and computing them
+    /// *beside* the gate would be two implementations of one rule — the disagreement `Split` (Law 51b)
+    /// names, in the one place the node's finality needs a single answer. `calculate_fringe` is this
+    /// function's comparison, and the refusal site reads the same tuple.
+    pub fn calculate_fringe_numbers(
+        &self,
+        next_fringe_support_map: &BTreeMap<S, BTreeMap<S, BTreeSet<S>>>,
+        partition_bonds: &BTreeMap<S, NonNegI64>,
+        quorum_bonds: &BTreeMap<S, NonNegI64>,
+    ) -> (i128, i128, usize, usize) {
+        let must_be_seen: BTreeSet<S> = partition_bonds.keys().cloned().collect();
+        let mut full_partition_stake: i128 = 0;
+        let mut full_partitions: usize = 0;
+        for (sender, seen_by) in next_fringe_support_map {
+            let all_bonded = !seen_by.is_empty() && seen_by.values().all(|v| v == &must_be_seen);
+            if all_bonded {
+                full_partitions += 1;
+                if let Some(stake) = quorum_bonds.get(sender) {
+                    full_partition_stake += i128::from(i64::from(*stake));
+                }
+            }
+        }
+        let total_stake: i128 = quorum_bonds
+            .values()
+            .map(|v| i128::from(i64::from(*v)))
+            .sum();
+        (
+            full_partition_stake,
+            total_stake,
+            full_partitions,
+            next_fringe_support_map.len(),
+        )
+    }
+
+    pub fn next_fringe_detailed(
         &self,
         justifications: &BTreeSet<Message<M, S>>,
         partition_bonds: &BTreeMap<S, NonNegI64>,
         quorum_bonds: &BTreeMap<S, NonNegI64>,
         prev_fringe: &BTreeSet<Message<M, S>>,
-    ) -> Option<BTreeSet<Message<M, S>>> {
+    ) -> Result<BTreeSet<Message<M, S>>, NoAdvance<S>> {
         // Minimum (oldest non-finalized) message from each justification sender.
         let mut min_msgs = Vec::new();
         for p in justifications {
@@ -223,16 +288,31 @@ where
             min_msgs.push(chain.into_iter().last().unwrap_or_else(|| p.clone()));
         }
         if !self.check_min_messages(&min_msgs, partition_bonds) {
-            return None;
+            let senders: BTreeSet<S> = min_msgs.iter().map(|m| m.sender.clone()).collect();
+            let missing = partition_bonds
+                .keys()
+                .filter(|v| !senders.contains(*v))
+                .cloned()
+                .collect();
+            return Err(NoAdvance::Coverage { missing, senders });
         }
         let next_layer = self.calculate_next_layer(&min_msgs);
         let fringe_support_map =
             self.calculate_next_fringe_support_map(justifications, &next_layer, prev_fringe);
-        if self.calculate_fringe(&fringe_support_map, partition_bonds, quorum_bonds) {
-            Some(next_layer.values().cloned().collect())
-        } else {
-            None
+        if !self.calculate_fringe(&fringe_support_map, partition_bonds, quorum_bonds) {
+            // The numbers the refusal is made of, from the gate's own arithmetic — never a second
+            // implementation of it (`Split`, Law 51b). Paid for only on a refusal, which is the path a
+            // capture exists to explain rather than the path a chain takes.
+            let (supporting, total, full_partitions, candidates) =
+                self.calculate_fringe_numbers(&fringe_support_map, partition_bonds, quorum_bonds);
+            return Err(NoAdvance::Support {
+                supporting,
+                total,
+                full_partitions,
+                candidates,
+            });
         }
+        Ok(next_layer.values().cloned().collect())
     }
 
     /// Compute the fringe from joined justifications and any newly detected fringe.
@@ -248,21 +328,52 @@ where
         partition_bonds: &BTreeMap<S, NonNegI64>,
         quorum_bonds: &BTreeMap<S, NonNegI64>,
     ) -> (BTreeSet<Message<M, S>>, Option<BTreeSet<Message<M, S>>>) {
+        let (parent, new_fringe, _why) =
+            self.calculate_finalization_detailed(justifications, partition_bonds, quorum_bonds);
+        (parent, new_fringe)
+    }
+
+    /// [`Self::calculate_finalization`], with the reason it did not advance — see [`NoAdvance`].
+    ///
+    /// The plain form delegates to this one, so the gate has a single implementation and the reason
+    /// cannot drift from the decision it explains.
+    pub fn calculate_finalization_detailed(
+        &self,
+        justifications: &BTreeSet<Message<M, S>>,
+        partition_bonds: &BTreeMap<S, NonNegI64>,
+        quorum_bonds: &BTreeMap<S, NonNegI64>,
+    ) -> (
+        BTreeSet<Message<M, S>>,
+        Option<BTreeSet<Message<M, S>>>,
+        Option<NoAdvance<S>>,
+    ) {
         let parent_fringe = message_map::latest_fringe(self.msg_map, justifications);
         let mut current = parent_fringe.clone();
         let mut new_fringe_opt: Option<BTreeSet<Message<M, S>>> = None;
-        while let Some(nf) =
-            self.next_fringe(justifications, partition_bonds, quorum_bonds, &current)
-        {
-            // Progress guard: a non-advancing fringe would loop forever. Only record a strictly
-            // new fringe.
-            if nf == current {
-                break;
+        // The reason the *last* attempt failed — the one that stopped the walk.
+        let why: NoAdvance<S> = loop {
+            match self.next_fringe_detailed(justifications, partition_bonds, quorum_bonds, &current)
+            {
+                Err(reason) => break reason,
+                Ok(nf) => {
+                    // Progress guard: a non-advancing fringe would loop forever. Only record a
+                    // strictly new fringe.
+                    if nf == current {
+                        break NoAdvance::AlreadyPublished;
+                    }
+                    new_fringe_opt = Some(nf.clone());
+                    current = nf;
+                }
             }
-            new_fringe_opt = Some(nf.clone());
-            current = nf;
-        }
-        (parent_fringe, new_fringe_opt)
+        };
+        // A walk that advanced somewhere has no reason to report; one that never published anything
+        // reports why its last attempt failed.
+        let reason = if new_fringe_opt.is_some() {
+            None
+        } else {
+            Some(why)
+        };
+        (parent_fringe, new_fringe_opt, reason)
     }
 }
 
@@ -458,12 +569,25 @@ mod tests {
         // stake, the malformed candidate could advance the fringe.
         let duplicate_justifications: BTreeSet<Message<i32, i32>> =
             [a3.clone(), a3_duplicate, b3.clone()].into_iter().collect();
-        let (_parent, duplicate_fringe) =
-            finalizer.calculate_finalization(&duplicate_justifications, &bonds, &bonds);
+        let (_parent, duplicate_fringe, why) =
+            finalizer.calculate_finalization_detailed(&duplicate_justifications, &bonds, &bonds);
         assert!(
             duplicate_fringe.is_none(),
             "duplicate sender must not substitute for a missing bonded sender"
         );
+        // **And the reason names the sender that went missing** — the assertion #70's second stop
+        // needs: `Coverage { missing }` is what a validator with no message in the unfinalized region
+        // looks like, and it must not be reported as the stake gate or the progress guard.
+        match why {
+            Some(NoAdvance::Coverage { missing, .. }) => {
+                assert_eq!(
+                    missing,
+                    [2].into_iter().collect(),
+                    "bonded sender 2 has no message"
+                )
+            }
+            other => panic!("expected Coverage, got {other:?}"),
+        }
 
         // Exact coverage by all bonded senders still advances the fringe.
         let justifications: BTreeSet<Message<i32, i32>> = [a3, b3, c3].into_iter().collect();
@@ -497,9 +621,16 @@ mod tests {
                 .into_iter()
                 .collect();
         let finalizer: Finalizer<i32, i32> = Finalizer::new(&map);
-        let (_parent, new_fringe) =
-            finalizer.calculate_finalization(&justifications, &bonds, &bonds);
+        let (_parent, new_fringe, why) =
+            finalizer.calculate_finalization_detailed(&justifications, &bonds, &bonds);
         assert!(new_fringe.is_none(), "lockstep chain must not finalize");
+        // **The reason is the stake gate, not the coverage gate** — the distinction #70's measurement
+        // needed: a lockstep chain has min messages covering the partition (every sender speaks), and
+        // what stops it is that no candidate was seen by all of them.
+        assert!(
+            matches!(why, Some(NoAdvance::Support { .. })),
+            "expected the stake gate, got {why:?}"
+        );
     }
     /// **C69's second half, settled: the fringe walk is bounded by the non-finalized chain length.**
     ///
@@ -553,7 +684,8 @@ mod tests {
         let mut current = message_map::latest_fringe(finalizer.msg_map, &justifications);
         let mut steps = 0usize;
         loop {
-            let Some(nf) = finalizer.next_fringe(&justifications, &bonds, &bonds, &current) else {
+            let Ok(nf) = finalizer.next_fringe_detailed(&justifications, &bonds, &bonds, &current)
+            else {
                 break;
             };
             if nf == current {

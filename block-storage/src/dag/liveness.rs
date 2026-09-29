@@ -38,7 +38,7 @@ use std::hash::Hash;
 
 use rchain_shared::refined::{BlockHeight, NonNegI64};
 
-use super::finalizer::{Finalizer, Message};
+use super::finalizer::{Finalizer, Message, NoAdvance};
 
 /// How many heights of silence a bonded validator may accumulate before its stake leaves the live
 /// weight set — the one number the proposer's attestation guard and the finalizer's fringe gate share.
@@ -124,6 +124,32 @@ where
     M: Ord + Clone + Eq + Hash,
     S: Ord + Clone + Eq + Hash,
 {
+    let (parent, fringe, _why) = calculate_finalization_detailed(finalizer, justifications, bonds);
+    (parent, fringe)
+}
+
+/// [`calculate_finalization`], with the reason it did not advance — and with the **partition** the rule
+/// derived, so a reader can see which validator the gate was waiting for.
+///
+/// This exists because a stall is otherwise indistinguishable from the outside: on 2026-09-29 a
+/// two-validator chain stopped finalising at height 44 and produced ~160 more blocks with no log line
+/// saying why (#70). The three reasons are the gate's three exits, returned by the gate itself
+/// ([`super::finalizer::Finalizer::NoAdvance`]) rather than recomputed by an explainer — two
+/// implementations of one rule can disagree, which is `Split` (Law 51b), and this is the rule the node's
+/// finality runs on.
+pub fn calculate_finalization_detailed<M, S>(
+    finalizer: &Finalizer<'_, M, S>,
+    justifications: &BTreeSet<Message<M, S>>,
+    bonds: &BTreeMap<S, NonNegI64>,
+) -> (
+    BTreeSet<Message<M, S>>,
+    Option<BTreeSet<Message<M, S>>>,
+    Option<NoAdvance<S>>,
+)
+where
+    M: Ord + Clone + Eq + Hash,
+    S: Ord + Clone + Eq + Hash,
+{
     let tip = justifications
         .iter()
         .map(|m| m.height)
@@ -131,7 +157,7 @@ where
         .unwrap_or_else(BlockHeight::zero);
     let latest = latest_heights(justifications.iter().map(|m| (m.sender.clone(), m.height)));
     let live = live_weight_set(bonds, &latest, tip, LIVENESS_WINDOW);
-    finalizer.calculate_finalization(justifications, &live, bonds)
+    finalizer.calculate_finalization_detailed(justifications, &live, bonds)
 }
 
 #[cfg(test)]

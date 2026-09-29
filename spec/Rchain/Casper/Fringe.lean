@@ -18,7 +18,7 @@ are proved in this file (`fringe_antichain_is_false`, `fringe_monotone_is_false`
 
 What each actually needs is the **derivation**, not a hypothesis on the value: the fringe the port
 finalizes comes from `calculate_finalization`, which advances only when the support gate holds and only
-to a strictly new layer (`block-storage/src/dag/finalizer.rs:174-197`, `:202-215`), and a message's `seen` set is
+to a strictly new layer (`block-storage/src/dag/finalizer.rs:219-235`, `:361-363`), and a message's `seen` set is
 *constructed* — the union of its justifications' seen sets plus its own id
 (`block-storage/src/dag/message_state.rs:54-59`). That construction is modelled below (`seenOf`), so the
 half of Law 15 that follows from it is a theorem; the transitive closure it induces over the DAG — which
@@ -30,7 +30,7 @@ namespace Rchain
 
 /-- A DAG message: id, block height, sender, sequence number, justification (parent) ids, and the seen
     set (the port's `Message`; `seen` is its cache of seen message ids,
-    `block-storage/src/dag/finalizer.rs:23-33`). -/
+    `block-storage/src/dag/finalizer.rs:24-46`). -/
 structure Message where
   id : Nat
   height : Nat
@@ -50,7 +50,7 @@ structure Fringe where
 /-- **The axiom that stood here was false.** Two messages from one sender with different ids: the claim
     "same sender ⇒ same id" is refuted by the value itself, with no hypothesis to appeal to. What the
     law needs is the derivation — a fringe advanced by `calculate_finalization` holds one message per
-    bonded sender (`finalizer.rs:174-197`) — which is owed. -/
+    bonded sender (`finalizer.rs:138-148`) — which is owed. -/
 theorem fringe_antichain_is_false :
     ¬ ∀ f : Fringe, ∀ m ∈ f.messages, ∀ n ∈ f.messages, m.sender = n.sender → m.id = n.id := by
   intro h

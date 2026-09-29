@@ -870,7 +870,7 @@ def laws : List Law := [
       case the port's `i128` exists for (`:50`); and `stakeOf_eq_none` is false for a gate that \
       indexed the bonds map by every support sender — the panic the port's `calculate_fringe` skips \
       instead, pinned by `calculate_fringe_ignores_non_bonded_sender` \
-      (`block-storage/src/dag/finalizer.rs:294`, and `law14_fringe_requires_supermajority` at `:280`); \
+      (`block-storage/src/dag/finalizer.rs:447`, and `law14_fringe_requires_supermajority` at `:425`); \
       and the split itself is falsified by the *other* direction — reverting the node to one map for \
       both makes `a_silent_bonded_validator_does_not_cap_the_fringe`'s control arm the only arm, which \
       is the pre-2026-09-29 behaviour where a silent bonded validator capped finality at any stake share",
@@ -878,8 +878,8 @@ def laws : List Law := [
       t * 2` restated the definition's own body, which is why the row was `vacuous` and why it tied \
       finality to nothing. It is a **theorem** now, and the law is the **gate**: `calculateFringe` is \
       the port's `calculate_fringe` (the full-partition filter, the skip for a non-bonded sender, the \
-      exact integer comparison — `finalizer.rs:165-184`) and `nextFringe` is `next_fringe`'s decision \
-      with `calculate_finalization`'s progress guard (`finalizer.rs:186-211`, `:214`). **Where the content is, stated \
+      exact integer comparison — `finalizer.rs:219-235`) and `nextFringe` is `next_fringe_detailed`'s \
+      decision with `calculate_finalization`'s progress guard (`finalizer.rs:275-317`, `:361-363`). **Where the content is, stated \
       plainly**: the `↔`'s shape is the gate's own `if`, so the weight sits in *what the gate computes*, \
       and that is what the boundary theorems falsify — the strict `>`, the exact `3·stake > 2·total` at \
       the 2⁵³ boundary, and the non-bonded skip. Each is pinned by a named Rust test, which is what \
@@ -890,8 +890,8 @@ def laws : List Law := [
       so the boundary theorems above are unchanged rather than re-earned. The **policy** that chooses the \
       partition is the node's live weight set (`block-storage/src/dag/liveness.rs`, §6, AUDIT C174), and \
       it enters here as an argument, exactly as the support map does. Modelled, and **as a deliberate \
-      deviation from the oracle**: `check_min_messages` ahead of the stake gate (`finalizer.rs:99`, \
-      called at `:200`) demands the minimum-message **sender set** equal the bonded set, where the \
+      deviation from the oracle**: `check_min_messages` ahead of the stake gate (`finalizer.rs:127`, \
+      called at `:290`) demands the minimum-message **sender set** equal the bonded set, where the \
       Scala compares counts only and carries the epoch TODO saying so \
       (`legacy/block-storage/src/main/scala/coop/rchain/blockstorage/dag/Finalizer.scala:64-66`, \
       \"add support for epoch changes, simple comparison for senders count is not enough\"). Count-only \
@@ -933,10 +933,10 @@ def laws : List Law := [
     note := "**the axiom that stood here was false**: it quantified over a *bare* `Fringe`, and a \
       `Fringe` is freely constructed, so the refutation is three lines. What it was missing was not a \
       hypothesis on the value but the **derivation**, and that is modelled now \
-      (`Rchain/Casper/Dag.lean`, 2026-09-24): the walk (`self_parents`, `finalizer.rs:74-95`), the min \
-      messages (`finalizer.rs:186-211`), the coverage gate (`finalizer.rs:99`, a sender-set comparison \
+      (`Rchain/Casper/Dag.lean`, 2026-09-24): the walk (`self_parents`, `finalizer.rs:102-123`), the min \
+      messages (`finalizer.rs:282-288`), the coverage gate (`finalizer.rs:127`, a sender-set comparison \
       since 2026-09-29 — the departure from the Scala law 14a's row and §6 record), the layer fold \
-      (`calculate_next_layer`, `finalizer.rs:109-127`) and the stake gate (law 14a's \
+      (`calculate_next_layer`, `finalizer.rs:150-168`) and the stake gate (law 14a's \
       `calculate_fringe`, so its support map stays an argument as it is for `nextFringe`, and since \
       2026-09-29 so does the **partition**: `derivedFringe` takes the set whose senders must be covered \
       and the quorum's denominator separately, and the node passes the live weight set and the whole \
@@ -1024,7 +1024,7 @@ def laws : List Law := [
       (`message_state.rs:54-59`), which the model now has (`seenOf`, with both halves proved: \
       `seenOf_contains_justifications` and `mem_seenOf_self`); and height monotonicity relates \
       *successive* fringes of one validator, which the finalizer's advance gate produces \
-      (`finalizer.rs:186-211`, `:214`). **The transitive closure is proved, along the relation that does not need a lookup** (2026-09-24): \
+      (`finalizer.rs:275-317`, `:361-363`). **The transitive closure is proved, along the relation that does not need a lookup** (2026-09-24): \
       `Reaches a b` (a is a justification of b, or of a justification that reaches it) gives \
       `a.seen ⊆ b.seen` by induction (`seen_monotone_of_reaches`), and the hypothesis it needs — that a \
       message's seen set *is* `seenOf` of its justifications — is the port's own construction \
@@ -1119,7 +1119,7 @@ def laws : List Law := [
       (`the_fold_can_publish_below_the_previous_fringe`, with \
       `fold4_is_fork_free`, `fold5_is_fork_free` and `fold5_satisfies_the_sequence_rule` proving each \
       instance *has* the hypothesis it tests — the two refutation instances, and the two checks on the \
-      fold that now mirrors the port). **And the fold itself was the thing in the way, which is now fixed rather than argued about.** The port's `calculate_next_layer` gives a candidate its sender's slot **only when its `sender_seq` is strictly greater** (`block-storage/src/dag/finalizer.rs:119-125`), and the port's own comment calls that guard *\"the Law 15 monotonicity invariant\"* (`message_state.rs:77`). `layerInsert` did not: it is the *seeding* rule (the port's `BTreeMap::collect`, last wins) and the model used it for the candidates too, justified by *\"the antichain does not depend on that choice\"* — true of law 14b's **keys**, false of the **message** law 15 is about. `seedLayer` and `insertCandidate` now carry both rules, and the difference shows on this file's own instance: `dag3`'s published layer was [10, 12] and is now [11, 12] — the model was publishing a **stale** same-sender message, which no law-14b check could see because the *keys* were right either way. **With the faithful fold the counterexample is `fold4` and nothing else**, stated per sender as law 15 states it: `the_fold_can_publish_below_the_previous_fringe` holds of a fork-free DAG whose `101` justifies the older `99` while `100` is finalized — a shape the **sequence rule** refuses, since `101`'s same-sender justification is not its sender's latest. `fold5` refutes nothing now: with the guard it publishes `z` (height 6) for sender 0 and the comparison holds (`the_guard_keeps_the_newer_message`, `the_comparison_holds_on_fold5`). **So the lift's hypothesis is the sequence rule, on a fold that mirrors the port** — which is what this row said before two of its own corrections, and it is now what the machine says rather than what a guess said. **And the lift is proved** (2026-09-25), so the row is no longer owed anything: the last two ingredients \
+      fold that now mirrors the port). **And the fold itself was the thing in the way, which is now fixed rather than argued about.** The port's `calculate_next_layer` gives a candidate its sender's slot **only when its `sender_seq` is strictly greater** (`block-storage/src/dag/finalizer.rs:160-166`), and the port's own comment calls that guard *\"the Law 15 monotonicity invariant\"* (`message_state.rs:77`). `layerInsert` did not: it is the *seeding* rule (the port's `BTreeMap::collect`, last wins) and the model used it for the candidates too, justified by *\"the antichain does not depend on that choice\"* — true of law 14b's **keys**, false of the **message** law 15 is about. `seedLayer` and `insertCandidate` now carry both rules, and the difference shows on this file's own instance: `dag3`'s published layer was [10, 12] and is now [11, 12] — the model was publishing a **stale** same-sender message, which no law-14b check could see because the *keys* were right either way. **With the faithful fold the counterexample is `fold4` and nothing else**, stated per sender as law 15 states it: `the_fold_can_publish_below_the_previous_fringe` holds of a fork-free DAG whose `101` justifies the older `99` while `100` is finalized — a shape the **sequence rule** refuses, since `101`'s same-sender justification is not its sender's latest. `fold5` refutes nothing now: with the guard it publishes `z` (height 6) for sender 0 and the comparison holds (`the_guard_keeps_the_newer_message`, `the_comparison_holds_on_fold5`). **So the lift's hypothesis is the sequence rule, on a fold that mirrors the port** — which is what this row said before two of its own corrections, and it is now what the machine says rather than what a guess said. **And the lift is proved** (2026-09-25), so the row is no longer owed anything: the last two ingredients \
       are `seqNum_lt_height_lt` (on a sender, a higher `seqNum` is a higher height — from `SeqStep`, the \
       port's `sequence_number`, with `SeqUnique`, H-1's one-message-per-`seq_num`) and \
       `insertCandidate_height_le` (**the guarded insertion never lowers a sender's entry** — the port's \

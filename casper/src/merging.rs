@@ -10,6 +10,7 @@ use std::sync::{Mutex, OnceLock};
 
 use rchain_block_storage::block_store::BlockStore;
 use rchain_block_storage::dag::finalizer::Message;
+use rchain_block_storage::dag::finalizer::NoAdvance;
 use rchain_block_storage::dag::message_map;
 use rchain_crypto::hash::blake2b256_hash::Blake2b256Hash;
 use rchain_models::block_hash::BlockHash;
@@ -90,6 +91,10 @@ impl DeployIndex {
 /// The merged state seen by a block's parents (port of `ParentsMergedState`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ParentsMergedState {
+    /// Why the fringe derivation did not advance, when it did not — the gate's own reason
+    /// (`NoAdvance`), carried here so the caller that holds a logger can report it. `None` means the
+    /// fringe advanced or the walk had nothing to publish from the start.
+    pub finality_stall: Option<NoAdvance<Validator>>,
     pub justifications: Vec<BlockMetadata>,
     pub max_block_num: i64,
     pub max_seq_nums: BTreeMap<Validator, i64>,

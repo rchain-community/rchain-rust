@@ -32,6 +32,7 @@ pub async fn validate_and_add_to_dag<F, Fut>(
     shard_id: &str,
     min_phlo_price: i64,
     block_index: &F,
+    log: &Arc<dyn Log>,
 ) -> Result<Result<(), BlockStatus>, String>
 where
     F: Fn(BlockHash) -> Fut,
@@ -45,6 +46,7 @@ where
         shard_id,
         min_phlo_price,
         block_index,
+        log,
     )
     .await;
     let (block_meta, status) = match result {
@@ -94,6 +96,7 @@ pub async fn apply<F, Fut>(
             let shard_id = shard_id.clone();
             let block_index = block_index.clone();
             let block = block.clone();
+            let log = log.clone();
             handles.push(tokio::spawn(async move {
                 crate::multi_parent_casper::validate(
                     dag.as_ref(),
@@ -103,6 +106,7 @@ pub async fn apply<F, Fut>(
                     &shard_id,
                     min_phlo_price,
                     &block_index,
+                    &log,
                 )
                 .await
             }));

@@ -1,9 +1,12 @@
 //! Interpreter utilities (port of `rholang/InterpreterUtil.scala`).
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::Arc;
 
 use rchain_block_storage::block_store::BlockStore;
 use rchain_block_storage::dag::dag_storage::BlockDagStorage;
+use rchain_block_storage::dag::finalizer::NoAdvance;
 use rchain_crypto::hash::blake2b256_hash::Blake2b256Hash;
 use rchain_crypto::hash::blake2b512_random::Blake2b512Random;
 use rchain_models::ast::Par;
@@ -11,10 +14,12 @@ use rchain_models::block::state_hash::StateHash;
 use rchain_models::block_hash::BlockHash;
 use rchain_models::block_metadata::BlockMetadata;
 use rchain_models::casper::protocol::casper_message::{BlockMessage, SignedDeployData};
+use rchain_models::validator::Validator;
 use rchain_rholang::errors::RholangError;
 use rchain_rholang::runtime::ReplayRhoRuntime;
 use rchain_rholang::system_processes::BlockData;
 use rchain_shared::base16;
+use rchain_shared::log::{Log, LogSource};
 
 use crate::block_random_seed::BlockRandomSeed;
 use crate::block_status::BlockStatus;
@@ -178,6 +183,65 @@ async fn slash_is_unjustified(
     Ok(!slashed.is_subset(&justified))
 }
 
+/// The tip height at which a finality stall was last logged. A `static` because the alternative is
+/// threading a counter through every call for one log line — and the gate itself is stateless.
+///
+/// `i64::MIN` is the "never logged" sentinel, and the comparison is a `saturating_sub` for that reason:
+/// plain subtraction would overflow on the first stall of a process's life, which is a panic in debug
+/// and a wrapped negative in release — a rate limiter that never fires, on the path it exists for.
+static LAST_STALL_LOG: AtomicI64 = AtomicI64::new(i64::MIN);
+
+/// How many heights may pass between two stall lines: one per hundred blocks keeps a stall that lasts
+/// hundreds of blocks to a readable number of lines (#70's measurement ran ~160 blocks at finality 44).
+const STALL_LOG_INTERVAL: i64 = 100;
+
+/// A validator id, short enough for a log line: its first four bytes in hex.
+///
+/// The slice cannot be short — a `Validator` is a fixed 65-byte array (`models/src/validator.rs:10`,
+/// an uncompressed secp256k1 key), so this is a *display* truncation and not a guard. Said plainly
+/// because the four bytes are the only handle an operator has on which validator the gate is waiting
+/// for, and a reader who thinks the length is a risk will "fix" it into a lossy form that hides one.
+fn short_id(v: &Validator) -> String {
+    v.as_bytes()[..4]
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
+/// The gate's reason for not advancing, as one line an operator can act on.
+///
+/// The three are the gate's three exits and they imply different faults, which is the whole point of
+/// logging them rather than "finality stalled": a partition no layer covers is a different defect from a
+/// layer whose stake is short, and both differ from "the derivation would publish what is already
+/// finalised".
+fn describe_no_advance(reason: &NoAdvance<Validator>) -> String {
+    match reason {
+        NoAdvance::Coverage { missing, senders } => format!(
+            "the unfinalized region has no layer covering the partition — {} of its senders have a \
+             minimum message and {} do not ({})",
+            senders.len(),
+            missing.len(),
+            missing
+                .iter()
+                .map(short_id)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        NoAdvance::Support {
+            supporting,
+            total,
+            full_partitions,
+            candidates,
+        } => format!(
+            "a layer exists but its supporting stake is not a supermajority — {supporting} of {total} \
+             ({full_partitions} full partition(s) among {candidates} candidate(s))"
+        ),
+        NoAdvance::AlreadyPublished => {
+            "the derivation would publish the fringe that is already finalized".to_string()
+        }
+    }
+}
+
 /// Validate a block by recomputing its pre-state and replaying its deploys (port of
 /// `validateBlockCheckpoint`). Returns the block metadata plus a `bool` (valid) / `BlockStatus`
 /// (rejectable) outcome.
@@ -187,6 +251,7 @@ pub async fn validate_block_checkpoint<F, Fut>(
     block_store: &BlockStore,
     block: &BlockMessage,
     block_index: &F,
+    log: &Arc<dyn Log>,
 ) -> Result<(BlockMetadata, Result<bool, BlockStatus>), String>
 where
     F: Fn(BlockHash) -> Fut,
@@ -203,12 +268,33 @@ where
     }
     let parents_set: BTreeSet<BlockHash> = parents.iter().copied().collect();
 
+    let source = LogSource::new("casper.interpreter.validate");
     let pre_state = if !parents_set.is_empty() {
-        get_pre_state_for_parents(dag, block_store, runtime, &parents_set, block_index).await?
+        let pre_state =
+            get_pre_state_for_parents(dag, block_store, runtime, &parents_set, block_index).await?;
+        // **Why finality is not advancing, in this node's own log.** On 2026-09-29 a two-validator
+        // chain sat at finality 44 while the height ran to 202 and nothing in the logs said why (#70).
+        // The reason comes back from the gate itself, so it cannot disagree with the decision it
+        // explains, and it is rate-limited to one line per `STALL_LOG_INTERVAL` heights.
+        if let Some(reason) = &pre_state.finality_stall {
+            let tip = pre_state.max_block_num;
+            if tip.saturating_sub(LAST_STALL_LOG.load(Ordering::Relaxed)) >= STALL_LOG_INTERVAL {
+                LAST_STALL_LOG.store(tip, Ordering::Relaxed);
+                log.warn(
+                    source,
+                    &format!(
+                        "finality did not advance at tip {tip}: {}",
+                        describe_no_advance(reason)
+                    ),
+                );
+            }
+        }
+        pre_state
     } else {
         // Genesis block: no parents.
         let genesis_pre_state_hash = empty_state_hash_fixed();
         ParentsMergedState {
+            finality_stall: None,
             justifications: Vec::new(),
             max_block_num: 0,
             max_seq_nums: BTreeMap::from([(block.sender, 0)]),
