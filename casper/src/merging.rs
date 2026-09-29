@@ -164,8 +164,8 @@ impl DeployChainIndex {
     /// (AUDIT C41): the alternative was to answer `true` — "conflicting" — on an un-computable sum,
     /// which would be a silent semantic choice where the merge's own arithmetic returns an error.
     pub fn branches_are_conflicting(
-        a: &BTreeSet<DeployChainIndex>,
-        b: &BTreeSet<DeployChainIndex>,
+        a: &BTreeSet<Arc<DeployChainIndex>>,
+        b: &BTreeSet<Arc<DeployChainIndex>>,
     ) -> Result<bool, String> {
         let a_ids: BTreeSet<&Vec<u8>> = a
             .iter()
@@ -243,7 +243,21 @@ impl DeployChainIndex {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BlockIndex {
     pub block_hash: BlockHash,
-    pub deploy_chains: Vec<DeployChainIndex>,
+    /// The block's deploy chains, `Arc`-shared.
+    ///
+    /// A `DeployChainIndex` carries an `EventLogIndex` (sets of produces and consumes) and a
+    /// `StateChange`, so it is a large value — and the merge path does not merely read chains, it
+    /// copies them into *sets keyed by chain*: the conflict and final scope sets, the
+    /// accepted/rejected-against-the-finally sets, the mergeable-diff map, and every set and map the
+    /// SDK's `resolve_conflict_set`, `compute_rejection_options` and relation maps build on top of
+    /// those. Sharing makes each of those copies a refcount bump. Measured under a devnet fork storm
+    /// (#117), that copy traffic was the dominant allocation site: a heap profile put
+    /// `resolve_conflict_set`'s `BTreeMap::clone` at 99,982 allocations against a 35 MiB peak.
+    ///
+    /// Safe because a chain index is immutable once built, and every comparison the port relies on is
+    /// preserved: `Ord` delegates to the inner `(host_block, post_state_hash)`, and `Eq`/`Hash` to
+    /// the inner `deploys_with_cost`, exactly as they do for the owned value.
+    pub deploy_chains: Vec<Arc<DeployChainIndex>>,
     /// The native state mutations this block folded into its post-state (PoS pool/active/trusted/
     /// params, vault balances, registry, the HTTP oracle). Block-level because a hard checkpoint drains
     /// them per deploy-set, not per deploy. Carried so [`MergeScope::merge`] can re-apply them: the
@@ -407,7 +421,7 @@ impl BlockIndex {
         let host_block = Blake2b256Hash::from_bytes(*block_hash.as_bytes());
         let mut chains = Vec::new();
         for chain in &deploy_chains {
-            chains.push(
+            chains.push(Arc::new(
                 DeployChainIndex::apply(
                     host_block,
                     chain,
@@ -416,7 +430,7 @@ impl BlockIndex {
                     history_repository,
                 )
                 .await?,
-            );
+            ));
         }
 
         Ok(BlockIndex {
@@ -762,11 +776,14 @@ impl NativeRelations<'_> {
     /// taken by host block, so it does not rest on the chains' `Ord`; see the type's comment.
     fn reject_whole_blocks(
         &self,
-        conflict_set: &BTreeSet<DeployChainIndex>,
-        to_merge: BTreeSet<DeployChainIndex>,
-        rejected: BTreeSet<DeployChainIndex>,
-        dependency_map: &BTreeMap<DeployChainIndex, BTreeSet<DeployChainIndex>>,
-    ) -> (BTreeSet<DeployChainIndex>, BTreeSet<DeployChainIndex>) {
+        conflict_set: &BTreeSet<Arc<DeployChainIndex>>,
+        to_merge: BTreeSet<Arc<DeployChainIndex>>,
+        rejected: BTreeSet<Arc<DeployChainIndex>>,
+        dependency_map: &BTreeMap<Arc<DeployChainIndex>, BTreeSet<Arc<DeployChainIndex>>>,
+    ) -> (
+        BTreeSet<Arc<DeployChainIndex>>,
+        BTreeSet<Arc<DeployChainIndex>>,
+    ) {
         let scope_hosts: BTreeSet<Blake2b256Hash> =
             conflict_set.iter().map(|c| c.host_block).collect();
         let mut rejected_hosts: BTreeSet<Blake2b256Hash> = rejected
@@ -826,7 +843,7 @@ impl NativeRelations<'_> {
     fn fold(
         &self,
         accepted: &BTreeSet<Blake2b256Hash>,
-        native_by_block: &BTreeMap<Blake2b256Hash, Vec<NativeStoreAction>>,
+        native_by_block: &BTreeMap<Blake2b256Hash, &[NativeStoreAction]>,
     ) -> Result<Vec<NativeStoreAction>, String> {
         // A block has seen strictly more in-scope blocks than any ancestor of it, so this order
         // puts every ancestor before its descendants; the hash only makes the order total.
@@ -844,7 +861,7 @@ impl NativeRelations<'_> {
         let mut by_key: BTreeMap<(u8, Blake2b256Hash), (Blake2b256Hash, NativeStoreAction)> =
             BTreeMap::new();
         for host in writers {
-            for action in native_by_block.get(host).into_iter().flatten() {
+            for action in native_by_block.get(host).copied().unwrap_or_default() {
                 let key = action.slot();
                 if let Some((previous, _)) = by_key.get(&key) {
                     if !self.sees(host, previous) {
@@ -988,12 +1005,15 @@ impl MergeScope {
         // Native effects are block-level, so index them by host block here. The final scope's blocks
         // are ancestors of the base state (their effects are already in it); the conflict scope's are
         // what this merge applies, and the map below keeps only the ones with an accepted chain.
-        let native_by_block: BTreeMap<Blake2b256Hash, Vec<NativeStoreAction>> = conflict_indices
+        // Borrowed, not cloned: the actions live in the `BlockIndex` this scope already holds behind
+        // an `Arc`, so the map only needs a view of them (#117 — the merge path copied these per
+        // conflict block per merge).
+        let native_by_block: BTreeMap<Blake2b256Hash, &[NativeStoreAction]> = conflict_indices
             .iter()
             .map(|b| {
                 (
                     Blake2b256Hash::from_bytes(*b.block_hash.as_bytes()),
-                    b.native_changes.clone(),
+                    b.native_changes.as_slice(),
                 )
             })
             .collect();
@@ -1015,11 +1035,11 @@ impl MergeScope {
                     )
                 })
                 .collect();
-        let conflict_set: BTreeSet<DeployChainIndex> = conflict_indices
+        let conflict_set: BTreeSet<Arc<DeployChainIndex>> = conflict_indices
             .iter()
             .flat_map(|b| b.deploy_chains.iter().cloned())
             .collect();
-        let final_set: BTreeSet<DeployChainIndex> = final_indices
+        let final_set: BTreeSet<Arc<DeployChainIndex>> = final_indices
             .iter()
             .flat_map(|b| b.deploy_chains.iter().cloned())
             .collect();
@@ -1036,13 +1056,14 @@ impl MergeScope {
                 .map(|b| b.block_hash)
                 .collect::<BTreeSet<BlockHash>>(),
         );
-        let mut rejected_finally: BTreeSet<DeployChainIndex> = BTreeSet::new();
-        let mut accepted_finally: BTreeSet<DeployChainIndex> = BTreeSet::new();
+        let mut rejected_finally: BTreeSet<Arc<DeployChainIndex>> = BTreeSet::new();
+        let mut accepted_finally: BTreeSet<Arc<DeployChainIndex>> = BTreeSet::new();
         for b in &final_indices {
             let rejected = rejections_map.get(&b.block_hash).copied();
             for chain in &b.deploy_chains {
-                let first_id = chain.deploys_with_cost.iter().next().map(|d| d.id.clone());
-                let is_rejected = match (rejected, &first_id) {
+                // Borrowed rather than cloned: only used for a set lookup below.
+                let first_id = chain.deploys_with_cost.iter().next().map(|d| &d.id);
+                let is_rejected = match (rejected, first_id) {
                     (Some(rej), Some(id)) => rej.contains(id),
                     _ => false,
                 };
@@ -1055,10 +1076,14 @@ impl MergeScope {
         }
 
         // Mergeable channels.
-        let mergeable_diffs_map: BTreeMap<DeployChainIndex, NumberChannelsDiff> = conflict_set
-            .iter()
-            .map(|b| (b.clone(), b.event_log_index.number_channels_data.clone()))
-            .collect();
+        // A view, not a copy: each diff is owned by the chain it describes, and those live in
+        // `conflict_set` for the whole merge, so the map only needs to point at them (#117 — this
+        // copied one diff map per chain per merge).
+        let mergeable_diffs_map: BTreeMap<Arc<DeployChainIndex>, &NumberChannelsDiff> =
+            conflict_set
+                .iter()
+                .map(|b| (Arc::clone(b), &b.event_log_index.number_channels_data))
+                .collect();
         let mut all_channel_hashes: BTreeSet<Blake2b256Hash> = BTreeSet::new();
         for diffs in mergeable_diffs_map.values() {
             all_channel_hashes.extend(diffs.keys().copied());
@@ -1083,7 +1108,11 @@ impl MergeScope {
             &conflict_set,
             &accepted_finally,
             &rejected_finally,
-            rejection_cost,
+            // The scope sets hold `Arc<DeployChainIndex>`, so the cost closure that the SDK's generic
+            // `D` sees takes the shared handle; `rejection_cost` stays a plain `Fn(&DeployChainIndex)`
+            // for every caller, and the deref coercion bridges the two here rather than at each call
+            // site.
+            |c: &Arc<DeployChainIndex>| rejection_cost(c),
             &conflicts_map,
             &dependency_map,
             &mergeable_diffs_map,
@@ -1129,7 +1158,7 @@ impl MergeScope {
     /// reconstruct only tuple space, so without them a merge would revert every native write the
     /// merged branches made (issue #74).
     pub async fn compute_merged_state(
-        to_merge: &BTreeSet<DeployChainIndex>,
+        to_merge: &BTreeSet<Arc<DeployChainIndex>>,
         base_state: Blake2b256Hash,
         history_repository: &RhoHistoryRepository,
         native_changes: &[NativeStoreAction],
@@ -1570,7 +1599,7 @@ mod merge_relation_tests {
     /// **`DeployChainIndex`'s equality and ordering are over *different* fields** — equality over the
     /// deploy set (the Scala override, to speed up rejection-option computation), ordering over
     /// `(host_block, post_state_hash)`. That mismatch is faithful to the Scala, and it is a real
-    /// hazard for a Rust `BTreeSet<DeployChainIndex>` (which uses `Ord`), because `Ord` is supposed to
+    /// hazard for a Rust `BTreeSet<Arc<DeployChainIndex>>` (which uses `Ord`), because `Ord` is supposed to
     /// agree with `Eq`: a set can then hold two members that compare unequal yet `==` each other.
     /// Pinned here so the mismatch is visible rather than latent.
     #[test]
@@ -1660,16 +1689,19 @@ mod merge_relation_tests {
     /// `branches_are_conflicting` lifts the same test to *sets* of chains: a shared id anywhere in
     /// either branch is a conflict, and so is a conflicting pair of combined event logs. It is
     /// fallible (AUDIT C41), so this test unwraps: a test chain's diffs are small.
-    fn conflicts(a: &BTreeSet<DeployChainIndex>, b: &BTreeSet<DeployChainIndex>) -> bool {
+    fn conflicts(a: &BTreeSet<Arc<DeployChainIndex>>, b: &BTreeSet<Arc<DeployChainIndex>>) -> bool {
         DeployChainIndex::branches_are_conflicting(a, b)
             .expect("a test chain's accumulation cannot overflow")
     }
 
     #[test]
     fn branch_conflicts_lift_the_chain_relation() {
-        let a: BTreeSet<DeployChainIndex> = [chain(1, 2, &[(1, 10, 1)])].into_iter().collect();
-        let b: BTreeSet<DeployChainIndex> = [chain(3, 4, &[(1, 10, 9)])].into_iter().collect();
-        let c: BTreeSet<DeployChainIndex> = [chain(5, 6, &[(2, 10, 2)])].into_iter().collect();
+        let a: BTreeSet<Arc<DeployChainIndex>> =
+            [Arc::new(chain(1, 2, &[(1, 10, 1)]))].into_iter().collect();
+        let b: BTreeSet<Arc<DeployChainIndex>> =
+            [Arc::new(chain(3, 4, &[(1, 10, 9)]))].into_iter().collect();
+        let c: BTreeSet<Arc<DeployChainIndex>> =
+            [Arc::new(chain(5, 6, &[(2, 10, 2)]))].into_iter().collect();
 
         assert!(conflicts(&a, &b));
         assert!(!conflicts(&a, &c));
@@ -1784,7 +1816,7 @@ mod native_merge_tests {
         let child = BlockHash::new([3u8; 32]);
         let branch_index = BlockIndex {
             block_hash: child,
-            deploy_chains: vec![DeployChainIndex {
+            deploy_chains: vec![Arc::new(DeployChainIndex {
                 host_block: key(3),
                 deploys_with_cost: BTreeSet::from([DeployIdWithCost {
                     id: vec![42],
@@ -1794,7 +1826,7 @@ mod native_merge_tests {
                 post_state_hash: base_state,
                 event_log_index: EventLogIndex::empty(),
                 state_changes: StateChange::empty(),
-            }],
+            })],
             native_changes: vec![NativeStoreAction::Put {
                 prefix: PREFIX_POS,
                 key: branch_key,
@@ -1872,7 +1904,7 @@ mod native_merge_tests {
 
         let branch = |host: u8, value: u8| BlockIndex {
             block_hash: BlockHash::new([host; 32]),
-            deploy_chains: vec![DeployChainIndex {
+            deploy_chains: vec![Arc::new(DeployChainIndex {
                 host_block: key(host),
                 deploys_with_cost: BTreeSet::from([DeployIdWithCost {
                     id: vec![host],
@@ -1882,7 +1914,7 @@ mod native_merge_tests {
                 post_state_hash: base_state,
                 event_log_index: EventLogIndex::empty(),
                 state_changes: StateChange::empty(),
-            }],
+            })],
             native_changes: vec![NativeStoreAction::Put {
                 prefix: PREFIX_POS,
                 key: shared,
@@ -2081,7 +2113,7 @@ mod boundary_merge_tests {
     fn index(n: u8, pre_state: Blake2b256Hash, native: Vec<NativeStoreAction>) -> BlockIndex {
         BlockIndex {
             block_hash: block_hash(n),
-            deploy_chains: vec![DeployChainIndex {
+            deploy_chains: vec![Arc::new(DeployChainIndex {
                 host_block: Blake2b256Hash::from_bytes([n; 32]),
                 deploys_with_cost: BTreeSet::from([DeployIdWithCost {
                     id: vec![n],
@@ -2091,7 +2123,7 @@ mod boundary_merge_tests {
                 post_state_hash: pre_state,
                 event_log_index: EventLogIndex::empty(),
                 state_changes: StateChange::empty(),
-            }],
+            })],
             native_changes: native,
         }
     }
@@ -2251,12 +2283,12 @@ mod boundary_merge_tests {
         let (repo, base) = genesis().await;
         let x = play(&repo, base, EPOCH - 3, 1, Body::Deploy(8)).await;
         let mut block = index(0xa0, base, x);
-        let mut second = block.deploy_chains[0].clone();
+        let mut second = (*block.deploy_chains[0]).clone();
         second.deploys_with_cost = BTreeSet::from([DeployIdWithCost {
             id: vec![0xa1],
             cost: 0,
         }]);
-        block.deploy_chains.push(second);
+        block.deploy_chains.push(Arc::new(second));
         let merged = tokio::time::timeout(
             std::time::Duration::from_secs(5),
             merge(&repo, base, vec![block], BTreeMap::new()),
@@ -2275,12 +2307,12 @@ mod boundary_merge_tests {
         let a = play(&repo, base, EPOCH, 1, Body::Nothing).await;
         let b = play(&repo, base, EPOCH, 2, Body::Nothing).await;
         let with_second_chain = |mut block: BlockIndex, id: u8| {
-            let mut second = block.deploy_chains[0].clone();
+            let mut second = (*block.deploy_chains[0]).clone();
             second.deploys_with_cost = BTreeSet::from([DeployIdWithCost {
                 id: vec![id],
                 cost: 0,
             }]);
-            block.deploy_chains.push(second);
+            block.deploy_chains.push(Arc::new(second));
             block
         };
         let (_, rejected) = merge(

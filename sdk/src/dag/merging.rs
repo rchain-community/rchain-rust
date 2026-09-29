@@ -13,6 +13,7 @@
 //! iteration deterministic by construction — matching the *intent* of Law 17 and the callers
 //! that already sort (`compute_greedy_non_intersecting_branches`, `add_mergeable_overflow_rejections`).
 
+use std::borrow::Borrow;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 /// `cats` `|+|` for `Map[D, Set[D]]`: union the value sets under shared keys.
@@ -294,14 +295,20 @@ where
         .unwrap_or_default()
 }
 
-fn calc_merged_result<D: Ord + Clone, CH: Ord + Clone>(
+fn calc_merged_result<D: Ord + Clone, CH: Ord + Clone, V: Borrow<BTreeMap<CH, i64>>>(
     deploy: &D,
     balances: &BTreeMap<CH, i64>,
-    mergeable_diffs: &BTreeMap<D, BTreeMap<CH, i64>>,
+    mergeable_diffs: &BTreeMap<D, V>,
 ) -> Option<BTreeMap<CH, i64>> {
-    let diff = mergeable_diffs.get(deploy).cloned().unwrap_or_default();
+    // Borrowed, not copied: the diff is only read, and the caller may hold it behind a reference (a
+    // devnet fork storm's merge path did this per chain per merge — #117).
+    let no_diff = BTreeMap::new();
+    let diff: &BTreeMap<CH, i64> = mergeable_diffs
+        .get(deploy)
+        .map(Borrow::borrow)
+        .unwrap_or(&no_diff);
     let mut acc = balances.clone();
-    for (channel, change) in &diff {
+    for (channel, change) in diff {
         let current = acc.get(channel).copied().unwrap_or(0);
         let result = current.checked_add(*change)?; // None on overflow
         if result < 0 {
@@ -324,11 +331,11 @@ fn traverse_tree<D: Ord + Clone, F: Fn(&D) -> BTreeSet<D>>(root: &D, next: &F) -
     result
 }
 
-fn fold_rejection<D: Ord + Clone, CH: Ord + Clone>(
+fn fold_rejection<D: Ord + Clone, CH: Ord + Clone, V: Borrow<BTreeMap<CH, i64>>>(
     base_balance: &BTreeMap<CH, i64>,
     to_merge: &BTreeSet<D>,
     dependency_map: &BTreeMap<D, BTreeSet<D>>,
-    mergeable_diffs: &BTreeMap<D, BTreeMap<CH, i64>>,
+    mergeable_diffs: &BTreeMap<D, V>,
 ) -> BTreeSet<D> {
     let branches = compute_branches(to_merge, dependency_map);
     let mut concurrent_roots: Vec<D> = branches.keys().cloned().collect();
@@ -358,12 +365,16 @@ fn fold_rejection<D: Ord + Clone, CH: Ord + Clone>(
 }
 
 /// Extend the rejection options with rejections forced by mergeable-value overflow.
-pub fn add_mergeable_overflow_rejections<D: Ord + Clone, CH: Ord + Clone>(
+pub fn add_mergeable_overflow_rejections<
+    D: Ord + Clone,
+    CH: Ord + Clone,
+    V: Borrow<BTreeMap<CH, i64>>,
+>(
     conflict_set: &BTreeSet<D>,
     dependency_map: &BTreeMap<D, BTreeSet<D>>,
     reject_options: &BTreeSet<BTreeSet<D>>,
     init_mergeable_values: &BTreeMap<CH, i64>,
-    mergeable_diffs: &BTreeMap<D, BTreeMap<CH, i64>>,
+    mergeable_diffs: &BTreeMap<D, V>,
 ) -> BTreeSet<BTreeSet<D>> {
     if reject_options.is_empty() {
         let r = fold_rejection(
@@ -392,19 +403,20 @@ pub fn add_mergeable_overflow_rejections<D: Ord + Clone, CH: Ord + Clone>(
 
 /// Compute the resolution for a conflict set: `(accepted, rejected)`.
 #[allow(clippy::too_many_arguments)]
-pub fn resolve_conflict_set<D, CH, F>(
+pub fn resolve_conflict_set<D, CH, F, V>(
     conflict_set: &BTreeSet<D>,
     accepted_finally: &BTreeSet<D>,
     rejected_finally: &BTreeSet<D>,
     cost: F,
     conflicts_map: &BTreeMap<D, BTreeSet<D>>,
     dependency_map: &BTreeMap<D, BTreeSet<D>>,
-    mergeable_diffs: &BTreeMap<D, BTreeMap<CH, i64>>,
+    mergeable_diffs: &BTreeMap<D, V>,
     init_mergeable_values: &BTreeMap<CH, i64>,
 ) -> (BTreeSet<D>, BTreeSet<D>)
 where
     D: Ord + Clone,
     CH: Ord + Clone,
+    V: Borrow<BTreeMap<CH, i64>>,
     F: Fn(&D) -> i64,
 {
     let enforce_rejected = with_dependencies(
