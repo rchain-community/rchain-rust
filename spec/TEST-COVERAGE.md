@@ -266,7 +266,7 @@ not found in that file. Coverage claims live here rather than in prose so they c
 | G12 | `rholang/src/storage.rs` | `produce_at_charges_the_storage_up_front` |
 | G12 | `rholang/src/storage.rs` | `commit_produce_charges_the_event_at_the_commit` |
 | G12 | `rholang/src/storage.rs` | `a_matched_produce_refunds_its_storage_before_the_event_costs` |
-| G8 | `block-storage/src/dag/finalizer.rs` | `calculate_finalization_advances_fringe_on_fork` |
+| G8 | `block-storage/src/dag/finalizer.rs` | `calculate_finalization_requires_exact_sender_coverage` |
 | G9 | `comm/src/peer_node.rs` | `from_hex_rejects_malformed_input` |
 | G9 | `comm/src/peer_node.rs` | `from_address_rejects_malformed_uris` |
 | G9 | `rspace/src/history/key_segment.rs` | `try_from_rejects_oversized_segment` |
@@ -464,9 +464,11 @@ hard mode would fail on, so that a half-finished sweep is legible instead of inv
   recorded trace is mutable from a test; if not, a `#[cfg(test)]` accessor is the minimal change and
   must be listed before writing.
 
-- **G8 — The Finalizer full loop.** ✅ `calculate_finalization` fork/lockstep
-  (`calculate_finalization_advances_fringe_on_fork`); the direct-loop gap is closed.
-  `calculate_next_fringe_support_map`'s antichain property is not separately pinned.
+- **G8 — The Finalizer full loop.** ✅ `calculate_finalization` fork/lockstep and the
+  minimum-message coverage gate (`calculate_finalization_requires_exact_sender_coverage`, renamed
+  2026-09-29 from `…advances_fringe_on_fork` when the gate became a sender-set comparison, issue #97);
+  the direct-loop gap is closed. `calculate_next_fringe_support_map`'s antichain property is not
+  separately pinned.
 
 - **G9 — Malformed-input rejection.** ✅ `NodeIdentifier::from_hex`/`from_address`, `KeySegment`
   (`try_from_rejects_oversized_segment`), `BlockHash::try_from`/`try_from_hex`, and the deploy

@@ -869,51 +869,62 @@ def laws : List Law := [
       plainly**: the `↔`'s shape is the gate's own `if`, so the weight sits in *what the gate computes*, \
       and that is what the boundary theorems falsify — the strict `>`, the exact `3·stake > 2·total` at \
       the 2⁵³ boundary, and the non-bonded skip. Each is pinned by a named Rust test, which is what \
-      makes the row a claim about code rather than arithmetic. Not modelled: `check_min_messages`' \
-      arity check ahead of the gate (`finalizer.rs:99`, called at `finalizer.rs:200`), which rejects a \
-      layer before the stake question is asked — and that is **fidelity rather than an oversight**: the \
-      Scala oracle carries the identical body and the identical TODO \
+      makes the row a claim about code rather than arithmetic. Modelled, and **as a deliberate \
+      deviation from the oracle**: `check_min_messages` ahead of the stake gate (`finalizer.rs:99`, \
+      called at `:200`) demands the minimum-message **sender set** equal the bonded set, where the \
+      Scala compares counts only and carries the epoch TODO saying so \
       (`legacy/block-storage/src/main/scala/coop/rchain/blockstorage/dag/Finalizer.scala:64-66`, \
-      \"add support for epoch changes, simple comparison for senders count is not enough\"), so the \
-      sender-count comparison is a design decision upstream has not made either — the law-48 shape, \
-      recorded open *with its reason* rather than invented here" },
+      \"add support for epoch changes, simple comparison for senders count is not enough\"). Count-only \
+      admitted `[A, A, B]` for bonds `{A, B, C}`: the layer fold collapsed the duplicate sender, and \
+      the published fringe **omitted bonded validator `C`** while presenting A's stake twice — 90 of \
+      100 on the merged change's own fixture. The model follows the port (`Rchain.checkMinMessages`), \
+      the divergence is §6's, and the gate is pinned both ways by `the_gate_demands_the_bonded_senders` \
+      here and by `check_min_messages_needs_all_bonded_senders` on the Rust side" },
   { number := 14, clause := "b", layer := "Casper",
     rustWitness := [
       "block-storage/src/dag/finalizer.rs:calculate_next_layer_picks_max_sender_seq",
       "block-storage/src/dag/finalizer.rs:check_min_messages_needs_all_bonded_senders"],
     statement := "A fringe holds one message per bonded validator (an antichain) — **of the fringe the \
-      derivation publishes**; over a bare `Fringe` the claim is false and its refutation is proved. What \
-      the walk and the layer earn is pairwise-distinct **senders**; the step to one per *bonded* \
-      validator rests on `checkMinMessages`' count comparison, which is the upstream epoch TODO (law \
-      14a's row records it as fidelity)",
+      derivation publishes**; over a bare `Fringe` the claim is false and its refutation is proved. Both \
+      halves are proved of the derivation: the walk and the layer give pairwise-distinct **senders**, and \
+      the gate gives that the layer's sender set **is** the bonded set, so \
+      `derivedFringe_holds_one_per_bonded` states one per *bonded* validator directly — no longer \
+      delegated to the upstream epoch TODO, which the port now departs from (law 14a's row, §6)",
     status := .provedModel,
-    declarations := [`Rchain.derivedFringe_antichain, `Rchain.Fringe, `Rchain.fringe_antichain_is_false,
-      `Rchain.Dag],
+    declarations := [`Rchain.derivedFringe_antichain, `Rchain.derivedFringe_holds_one_per_bonded,
+      `Rchain.Fringe, `Rchain.fringe_antichain_is_false, `Rchain.Dag],
     axioms := [],
     rust := ["block-storage/src/dag/finalizer.rs"],
     witness := [`Rchain.derivedFringe_antichain, `Rchain.fringe_antichain_is_false,
-      `Rchain.a_derivation_is_an_antichain],
+      `Rchain.a_derivation_is_an_antichain, `Rchain.derivedFringe_holds_one_per_bonded,
+      `Rchain.checkMinMessages_senders, `Rchain.the_gate_demands_the_bonded_senders],
     falsifiable := some "**both directions, and a mutation that makes the statement false rather than \
       merely unproved.** `fringe_antichain_is_false` refutes the unrestricted form on a bare `Fringe` — a \
       value the model can build and the derivation cannot publish — and `a_derivation_is_an_antichain` is \
       a `decide`d instance where the derivation *does* publish a two-sender layer. The mutation is one \
       word: `layerInsert`'s filter dropped (`m :: l.filter …` → `m :: l`), and then \
       `a_derivation_is_an_antichain` and `a_derivation_publishes_a_layer` are **false of the model** \
-      (the layer's senders stop being `[0, 1]`) while `derivedFringe_antichain`'s proof breaks with them",
+      (the layer's senders stop being `[0, 1]`) while `derivedFringe_antichain`'s proof breaks with them. \
+      The coverage half has its own two-way witness: reverting `checkMinMessages` to the count \
+      comparison makes `the_gate_demands_the_bonded_senders`' second conjunct **false of the model** — \
+      it accepts `[0, 1]` against `{0, 1, 2}` — which is the case the merged Rust change refuses",
     note := "**the axiom that stood here was false**: it quantified over a *bare* `Fringe`, and a \
       `Fringe` is freely constructed, so the refutation is three lines. What it was missing was not a \
       hypothesis on the value but the **derivation**, and that is modelled now \
       (`Rchain/Casper/Dag.lean`, 2026-09-24): the walk (`self_parents`, `finalizer.rs:74-95`), the min \
-      messages (`finalizer.rs:186-211`), the count gate (`finalizer.rs:99`), the layer fold \
+      messages (`finalizer.rs:186-211`), the coverage gate (`finalizer.rs:99`, a sender-set comparison \
+      since 2026-09-29 — the departure from the Scala law 14a's row and §6 record), the layer fold \
       (`calculate_next_layer`, `finalizer.rs:109-127`) and the stake gate (law 14a's \
       `calculate_fringe`, so its support map stays an argument as it is for `nextFringe`). **And the \
       antichain is a property of the fold, not of the type it is stored in**: the port keeps the layer in \
       a `BTreeMap<sender, Message>`, which gives distinct senders for free — modelling *that* would make \
       this row true by construction, the shape G6 refused one unit earlier — so the model carries the \
-      derivation's own data and states the antichain about the fold. **What it does not claim**: \
-      pairwise-distinct *senders* is what the walk and the layer earn; the step to one per *bonded* \
-      validator rests on `checkMinMessages`' count comparison — the epoch TODO whose body law 14a's row \
-      records as fidelity rather than oversight — so the theorem is named for what it proves" },
+      derivation's own data and states the antichain about the fold. **What the two theorems claim, and \
+      where the second one's content is**: `derivedFringe_antichain` is the walk and the fold, \
+      `derivedFringe_holds_one_per_bonded` is the gate — the fold preserves the sender *set* \
+      (`mem_senders_nextLayer`), so the gate's equation between the min messages' senders and the bonded \
+      set *is* one-per-bonded-validator. Neither statement needs the port's `BTreeMap`: what it needs is \
+      the gate, which is why the row is named for the pair rather than for the map" },
   { number := 15, layer := "Casper",
     rustWitness := ["block-storage/src/property_tests.rs:law15_adding_blocks_only_grows_the_state"],
     statement := "The fringe is monotone by height **per sender** and the seen set is monotone (no \

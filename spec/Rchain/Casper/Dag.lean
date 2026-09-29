@@ -13,9 +13,11 @@ the finalizer **derives**, and the derivation is four steps with a gate on each 
    not already finalized (the previous fringe's messages are excluded);
 2. **`minMsgs`** — per justification, the **oldest** such ancestor (`next_fringe`, `:186-211`, takes
    `chain.into_iter().last()` of `[p] ++ self_parents p`);
-3. **`checkMinMessages`** (`:99`) — the count gate: `min_msgs.len() == bonds_map.len()`. Count-only, and
-   the upstream epoch TODO in its body is recorded in law 14a's row as **fidelity rather than
-   oversight**;
+3. **`checkMinMessages`** (`:99`) — the coverage gate: the minimum-message **sender set** must equal the
+   **bonded** set, not merely match it in count. (That is a **deliberate departure from the Scala**,
+   which compares counts only and carries the epoch TODO saying so — `Finalizer.scala:64-66`; the §6
+   row and law 14a's note carry the reason. Count-only accepted `[A, A, B]` for bonds `{A, B, C}`, and
+   the layer fold then left bonded sender `C` out of the fringe it published);
 4. **`nextLayer`** (`:109-127`) — a **fold over the min messages**, keyed by sender, keeping the entry
    with the higher `sender_seq`; then the stake gate (`calculate_fringe`, `:165-184`) decides whether
    the layer is published (`:211`).
@@ -30,8 +32,10 @@ candidate instead of keeping one per sender — and it fails `derivedFringe_anti
 messages from one sender.
 
 **What the theorem earns, and what it does not**: pairwise-distinct **senders** is what the derivation
-gives. "One message per **bonded** validator" additionally rests on `checkMinMessages`' count
-comparison — the epoch TODO above — so the statement is named for what it proves.
+gives, and "one message per **bonded** validator" is a second theorem beside it — the gate above makes
+the layer's sender set *equal* to the bonded set, so `derivedFringe_holds_one_per_bonded` states the
+stronger form rather than leaving it to a count comparison. (The count comparison was the upstream TODO
+until 2026-09-29; the port and this model now require the sender set, which is the §6 deviation.)
 
 The stake gate's *content* is law 14a's (`Rchain.Casper.Stake`'s `calculateFringe`, with its boundary
 theorems), so the support map enters `derivedFringe` as an argument, exactly as it enters
@@ -111,9 +115,20 @@ theorem the_walk_is_oldest_first :
 theorem a_chain_of_three_picks_the_oldest :
     (minMsgs chain3 [⟨12, 2, 0, 2, [11], []⟩] []).map (·.id) = [10] := by decide
 
-/-- **Step 3 — `check_min_messages`** (`:99`): the count gate. Its body is a count comparison, which is
-    the upstream epoch TODO that law 14a's row records as fidelity rather than oversight. -/
-def checkMinMessages (ms : List Message) (bonds : Bonds) : Bool := ms.length == bonds.length
+/-- **Step 3 — `check_min_messages`** (`:99`): the coverage gate. The minimum-message **sender set**
+    must equal the **bonded** set. The length clause is the port's own first conjunct, kept because it
+    is the shape the oracle has; the two inclusions are what the set comparison is, in a tree that
+    carries lists rather than `BTreeSet`s.
+
+    **Why the count comparison was not enough** (the port's TODO, and the Scala's, until 2026-09-29): a
+    candidate whose min messages were `[A, A, B]` passed for bonds `{A, B, C}`, the layer fold collapsed
+    the duplicate sender into one entry, and the published fringe **omitted bonded validator `C`** while
+    presenting A's stake twice — 90 of 100 on the PR's own fixture. The Scala still compares counts, so
+    this is a `spec/audit/passes.md` §6 deviation, recorded with the epoch TODO it supersedes. -/
+def checkMinMessages (ms : List Message) (bonds : Bonds) : Bool :=
+  ms.length == bonds.length &&
+    ms.all (fun m => decide (m.sender ∈ bondedSenders bonds)) &&
+    (bondedSenders bonds).all (fun s => decide (s ∈ ms.map (·.sender)))
 
 /-- **Step 4 — the layer fold** (`calculate_next_layer`, `:109-127`), as the derivation's own data:
     keyed by sender. An incoming message **replaces** whatever the list already holds for its sender —
@@ -226,8 +241,7 @@ theorem nextLayer_nodup (d : Dag) (ms : List Message) :
 
 /-- **Law 14b — the derived fringe is an antichain.** A fringe the derivation *publishes* holds at most
     one message per sender: `(f.messages.map (·.sender)).Nodup`. That is what the walk and the layer
-    earn; the step to "one per **bonded** validator" is `checkMinMessages`' count comparison, which is
-    the epoch TODO this module does not model (law 14a's row carries it as fidelity). -/
+    earn; the step to "one per **bonded** validator" is the gate, and is stated below. -/
 theorem derivedFringe_antichain (d : Dag) (js : List Message) (prev : Fringe) (supp : SupportMap)
     (bonds : Bonds) (f : Fringe) (h : derivedFringe d js prev supp bonds = some f) :
     (f.messages.map (·.sender)).Nodup := by
@@ -237,6 +251,114 @@ theorem derivedFringe_antichain (d : Dag) (js : List Message) (prev : Fringe) (s
     · simp only [Option.some.injEq] at h
       rw [← h]
       exact nextLayer_nodup d _
+    · exact absurd h (by simp)
+  · exact absurd h (by simp)
+
+/-! ### Coverage: the layer's senders are the bonded senders
+
+The antichain says the layer holds **at most** one message per sender. The gate says the min messages'
+senders are **exactly** the bonded ones, and the fold below only ever replaces one entry per sender, so
+the stronger law follows: the published fringe holds one message per **bonded validator**. That is the
+half the register used to leave to the upstream epoch TODO — it is a theorem now, because the gate is a
+sender-set comparison rather than a count. -/
+
+/-- `layerInsert` keeps every sender the list had, and adds its own: the message is prepended and the
+    earlier entries of the same sender are dropped, so nothing else moves. -/
+theorem mem_senders_layerInsert (m : Message) (l : List Message) (s : Nat) :
+    s ∈ (layerInsert m l).map (·.sender) ↔ s = m.sender ∨ s ∈ l.map (·.sender) := by
+  unfold layerInsert
+  rw [List.map_cons, filter_senders, List.mem_cons, List.mem_filter]
+  by_cases hs : s = m.sender
+  · subst hs; simp
+  · simp [hs]
+
+/-- …and the seeding fold keeps exactly the min messages' senders. -/
+theorem mem_senders_seedLayer_aux (l : List Message) :
+    ∀ acc s, s ∈ (l.foldl (fun acc m => layerInsert m acc) acc).map (·.sender) ↔
+      s ∈ acc.map (·.sender) ∨ s ∈ l.map (·.sender) := by
+  induction l with
+  | nil => intro acc s; simp
+  | cons m rest ih =>
+    intro acc s
+    rw [List.foldl_cons, ih (layerInsert m acc) s, mem_senders_layerInsert m acc s]
+    simp only [List.map_cons, List.mem_cons]
+    tauto
+
+theorem mem_senders_seedLayer (l : List Message) (s : Nat) :
+    s ∈ (seedLayer l).map (·.sender) ↔ s ∈ l.map (·.sender) := by
+  simpa [seedLayer] using mem_senders_seedLayer_aux l [] s
+
+/-- The guarded candidate insertion replaces an entry or is the identity — either way the sender **set**
+    is the one it was given. (This is where the "an incoming candidate cannot introduce a sender the
+    min messages did not have" claim lives: the `none` branch drops the candidate outright.) -/
+theorem mem_senders_insertCandidate (m : Message) (l : List Message) (s : Nat) :
+    s ∈ (insertCandidate m l).map (·.sender) ↔ s ∈ l.map (·.sender) := by
+  unfold insertCandidate
+  split
+  · rename_i cur hfind
+    have hmem : cur ∈ l := List.mem_of_find?_eq_some hfind
+    have hbeq : cur.sender = m.sender := by
+      have hpred : (fun m' : Message => decide (m'.sender = m.sender)) cur = true :=
+        (List.find?_eq_some.mp hfind).1
+      simpa using hpred
+    split
+    · rw [mem_senders_layerInsert]
+      constructor
+      · rintro (h | h)
+        · rw [h, ← hbeq]
+          exact List.mem_map_of_mem _ hmem
+        · exact h
+      · exact Or.inr
+    · exact Iff.rfl
+  · exact Iff.rfl
+
+theorem mem_senders_foldl_insertCandidate (l : List Message) :
+    ∀ acc s, s ∈ (l.foldl (fun acc m => insertCandidate m acc) acc).map (·.sender) ↔
+      s ∈ acc.map (·.sender) := by
+  induction l with
+  | nil => intro acc s; simp
+  | cons m rest ih =>
+    intro acc s
+    rw [List.foldl_cons, ih (insertCandidate m acc) s, mem_senders_insertCandidate m acc s]
+
+/-- **The layer's senders are the min messages' senders** — the fold neither adds nor drops one. -/
+theorem mem_senders_nextLayer (d : Dag) (ms : List Message) (s : Nat) :
+    s ∈ (nextLayer d ms).map (·.sender) ↔ s ∈ ms.map (·.sender) := by
+  unfold nextLayer
+  rw [mem_senders_foldl_insertCandidate]
+  exact mem_senders_seedLayer ms s
+
+/-- **The gate, unpacked**: passing it means the min messages' sender set *is* the bonded set. -/
+theorem checkMinMessages_senders {ms : List Message} {bonds : Bonds}
+    (h : checkMinMessages ms bonds = true) :
+    ∀ s, s ∈ ms.map (·.sender) ↔ s ∈ bondedSenders bonds := by
+  unfold checkMinMessages at h
+  rw [Bool.and_eq_true, Bool.and_eq_true] at h
+  obtain ⟨⟨_, hsub⟩, hsup⟩ := h
+  intro s
+  constructor
+  · intro hs
+    rcases List.mem_map.mp hs with ⟨m, hm, rfl⟩
+    exact of_decide_eq_true (List.all_eq_true.mp hsub m hm)
+  · intro hs
+    exact of_decide_eq_true (List.all_eq_true.mp hsup s hs)
+
+/-- **Law 14b, the strong form: one message per bonded validator.** A fringe the derivation publishes is
+    an antichain *and* covers every bonded sender — so it holds exactly one message per bonded
+    validator, which is the law as written rather than the sender-distinctness half of it. -/
+theorem derivedFringe_holds_one_per_bonded (d : Dag) (js : List Message) (prev : Fringe)
+    (supp : SupportMap) (bonds : Bonds) (f : Fringe)
+    (h : derivedFringe d js prev supp bonds = some f) :
+    (f.messages.map (·.sender)).Nodup ∧
+      ∀ s, s ∈ f.messages.map (·.sender) ↔ s ∈ bondedSenders bonds := by
+  unfold derivedFringe at h
+  split at h
+  · rename_i hgate
+    split at h
+    · simp only [Option.some.injEq] at h
+      rw [← h]
+      exact ⟨nextLayer_nodup d _, fun s =>
+        (mem_senders_nextLayer d _ s).trans (checkMinMessages_senders hgate s)⟩
     · exact absurd h (by simp)
   · exact absurd h (by simp)
 
@@ -269,6 +391,17 @@ theorem a_derivation_publishes_a_layer :
 theorem a_derivation_is_an_antichain :
     ((nextLayer dag3 (minMsgs dag3 [⟨11, 1, 0, 1, [10], [10]⟩, ⟨12, 1, 1, 0, [11], [10, 11]⟩] []))
       |>.map (·.sender)).Nodup = true := by decide
+
+/-- **The gate, `decide`d on the same instance: it demands the bonded senders.** `dag3`'s min messages
+    are senders `[0, 1]`, so the gate accepts them against bonds `[0, 1]` and **rejects** the identical
+    messages against a bond set carrying a third sender — the case that used to pass on a count while
+    the layer below it published a fringe missing that validator. This is the coverage theorem's
+    non-vacuity half: the strong statement is about a gate that has been exercised both ways. -/
+theorem the_gate_demands_the_bonded_senders :
+    checkMinMessages (minMsgs dag3 [⟨11, 1, 0, 1, [10], [10]⟩, ⟨12, 1, 1, 0, [11], [10, 11]⟩] [])
+        [(0, 10), (1, 10)] = true ∧
+      checkMinMessages (minMsgs dag3 [⟨11, 1, 0, 1, [10], [10]⟩, ⟨12, 1, 1, 0, [11], [10, 11]⟩] [])
+        [(0, 10), (1, 10), (2, 10)] = false := by decide
 
 /-! ### The walk stops at the finalized boundary, and law 15's two readings -/
 

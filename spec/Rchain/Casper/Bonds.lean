@@ -4,8 +4,8 @@ import Rchain.Casper.Stake
 /-!
 # Law 16d — the bonds cache equals the PoS state
 
-The finalizer's gates run on a bonds map — `calculate_fringe`'s stake and `check_min_messages`' count
-both take `bonds_map` (`block-storage/src/dag/finalizer.rs:29,102,168,189,217`) — and laws 14a/14b
+The finalizer's gates run on a bonds map — `calculate_fringe`'s stake and `check_min_messages`' sender
+coverage both take `bonds_map` (`block-storage/src/dag/finalizer.rs:29,102,168,189,217`) — and laws 14a/14b
 therefore model `bonds : Bonds` as an *argument* to the gate. This module is where that argument's
 provenance is modelled, because the port does not assume the map: it *establishes* it, from the PoS
 state, at the one site the row's note names.
@@ -79,7 +79,7 @@ def newestJustification : List Justification → Option Justification
 /-- **Law 16d, the state's side — the map the gates read is the state's *selected* map, and a bond does
     not move it.** `bond` writes `pool` and leaves `active` alone (law 44), and the gates read
     `bondsOfState s.active`, so a validator that bonds between boundaries does **not** enter the map the
-    fringe's stake and `checkMinMessages`' count are computed from until a boundary selects it. This is
+    fringe's stake and `checkMinMessages`' coverage are computed from until a boundary selects it. This is
     C92's finding stated: the coarser model, whose only stake-carrying field was `pool`, could not state
     it at all — and the second theorem is what makes this one a claim rather than a spelling. -/
 theorem a_bond_does_not_move_the_map_the_gates_read (s : PosState) (v : Validator) (stake : Nat) :

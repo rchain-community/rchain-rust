@@ -95,7 +95,18 @@ where
         chain
     }
 
-    /// Whether the minimum messages are enough for the next-fringe calculation.
+    /// Whether the minimum messages are enough for the next-fringe calculation: their **sender set**
+    /// must be the bonded set, not merely as many senders as there are bonds.
+    ///
+    /// A count comparison — which is what the Scala oracle has, with the epoch TODO saying so
+    /// (`Finalizer.scala:64-66`, *"simple comparison for senders count is not enough"*) — admitted
+    /// `[A, A, B]` for bonds `{A, B, C}`: `calculate_next_layer` collapses the duplicate sender into one
+    /// entry, so the published fringe **omitted bonded validator `C`** while presenting A's stake
+    /// twice. **This is a deliberate departure from the oracle** — upstream has not made the decision —
+    /// and it is registered with its reason in `spec/audit/passes.md` §6; `spec/Rchain/Casper/Dag.lean`
+    /// models the same gate, and law 14b's statement of "one message per bonded validator" rests on it.
+    /// The length clause is kept because it is the oracle's own first conjunct; the set comparison
+    /// subsumes it.
     pub fn check_min_messages(
         &self,
         min_msgs: &[Message<M, S>],
