@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use rchain_block_storage::dag::metadata_store::{
     add_block_to_dag_state_mut, block_metadata_to_info, recreate_in_memory_state,
-    validate_dag_state, BlockInfo, DagState,
+    validate_dag_state_after, BlockInfo, DagState,
 };
 use rchain_models::block_hash::BlockHash;
 use rchain_models::block_metadata::BlockMetadata;
@@ -37,17 +37,35 @@ impl BlockMetadataStore {
         })
     }
 
-    /// Insert a block's metadata into both the in-memory index and the persisted store.
+    /// Insert a block's metadata into both the persisted store and the in-memory index.
+    ///
+    /// **The store first, then the index, and the transition is checked before either.** The order is
+    /// the whole of this shape, and [`validate_dag_state_after`] says what the old one cost: it
+    /// extended the live index *before* validating and before writing the store, so a refused add —
+    /// a block whose height leaves a gap in the height map, which a validation-failed block makes
+    /// reachable — left the index reporting a block the store never received. The two are read by
+    /// different callers (`DagRepresentation::contains` reads the index, `dag.lookup` reads the
+    /// store), so a disagreement is a block that satisfies `has_all_deps`, is queued for validation,
+    /// then fails with `missing justification` and is dropped with nothing to re-queue it. AUDIT
+    /// C172, issue #103.
+    ///
+    /// The check runs twice on purpose. The first is what normally decides, because callers hold
+    /// `BlockDagKeyValueStorage`'s insert lock; the second runs under the write guard that performs
+    /// the mutation, so the state it validated cannot change between the check and the extension,
+    /// and a lost race leaves the store holding a block the index does not — the safe direction,
+    /// since `contains` false is exactly what "not in the DAG yet" means to both of its callers.
     pub async fn add(&self, block: BlockMetadata) -> Result<(), String> {
         let info = block_metadata_to_info(&block);
         {
-            let mut state = self.dag_state.write().await;
-            // In place: the index is `Arc`-shared with the DAG representation, so this copies a map
-            // only if a reader still holds the previous one (AUDIT C56's owed paragraph).
-            add_block_to_dag_state_mut(&info, &mut state);
-            validate_dag_state(&state)?;
+            let state = self.dag_state.read().await;
+            validate_dag_state_after(&state, &info)?;
         }
         self.store.put(&[(block.block_hash, block)]).await?;
+        let mut state = self.dag_state.write().await;
+        validate_dag_state_after(&state, &info)?;
+        // In place: the index is `Arc`-shared with the DAG representation, so this copies a map only
+        // if a reader still holds the previous one (AUDIT C56's owed paragraph).
+        add_block_to_dag_state_mut(&info, &mut state);
         Ok(())
     }
 
@@ -92,14 +110,39 @@ mod tests {
     type Shared = Arc<tokio::sync::Mutex<Box<dyn KeyValueStore + Send + Sync>>>;
 
     fn metadata_store() -> Arc<dyn KeyValueTypedStore<BlockHash, BlockMetadata>> {
-        let shared: Shared = Arc::new(tokio::sync::Mutex::new(Box::new(
-            InMemoryKeyValueStore::default(),
-        )));
+        metadata_store_over(Box::new(InMemoryKeyValueStore::default()))
+    }
+
+    fn metadata_store_over(
+        store: Box<dyn KeyValueStore + Send + Sync>,
+    ) -> Arc<dyn KeyValueTypedStore<BlockHash, BlockMetadata>> {
+        let shared: Shared = Arc::new(tokio::sync::Mutex::new(store));
         Arc::new(KeyValueTypedStoreCodec::new(
             shared,
             Arc::new(BlockHashCodec),
             Arc::new(BlockMetadataCodec),
         ))
+    }
+
+    /// A store whose writes always fail: every read still works, so the only thing under test is what
+    /// `add` does with the index when its write does not land.
+    struct FailingPutStore {
+        inner: InMemoryKeyValueStore,
+    }
+
+    impl KeyValueStore for FailingPutStore {
+        fn get(&self, keys: &[Vec<u8>]) -> Result<Vec<Option<Vec<u8>>>, String> {
+            self.inner.get(keys)
+        }
+        fn put(&mut self, _pairs: Vec<(Vec<u8>, Vec<u8>)>) -> Result<(), String> {
+            Err("the block store is down".to_string())
+        }
+        fn delete(&mut self, keys: &[Vec<u8>]) -> Result<usize, String> {
+            self.inner.delete(keys)
+        }
+        fn entries(&self) -> Result<Vec<(Vec<u8>, Vec<u8>)>, String> {
+            self.inner.entries()
+        }
     }
 
     fn hash(byte: u8) -> BlockHash {
@@ -137,6 +180,49 @@ mod tests {
 
         // get_unchecked panics (errors) on a missing key.
         assert!(store.get_unchecked(&hash(9)).await.is_err());
+    }
+
+    /// **A refused add changes nothing — neither side of the pair.** The block whose height leaves a
+    /// gap in the height map is the reachable refusal (a *validation-failed* block is not counted into
+    /// `height_map`, so its child's height is a gap), and the index is what `has_all_deps` reads while
+    /// the store is what the summary path reads. Leaving the index extended is a block that passes the
+    /// dependency gate, is queued, and then fails with `missing justification` — permanently, since
+    /// nothing re-queues it (AUDIT C172, issue #103).
+    ///
+    /// Red before the reorder: `contains` answered `true` for a block `get` could not find.
+    #[tokio::test]
+    async fn a_refused_height_gap_is_not_left_in_the_index() {
+        let store = BlockMetadataStore::create(metadata_store()).await.unwrap();
+        store.add(meta(hash(0), &[], 0)).await.unwrap();
+
+        // Height 5 with nothing at 1..4: the height map would stop being contiguous.
+        let refusal = store.add(meta(hash(5), &[hash(0)], 5)).await;
+        assert!(refusal.is_err(), "a height gap must be refused");
+        assert!(
+            !store.contains(&hash(5)).await,
+            "the index must not report a block the add refused"
+        );
+        assert_eq!(store.get(&hash(5)).await.unwrap(), None);
+    }
+
+    /// **And the other side of the same pair: a write that fails does not leave the index claiming the
+    /// block.** `has_all_deps` asks the index; the summary path asks the store; a block in the first
+    /// and not the second is the divergence from the store's direction. Red before the reorder:
+    /// the index entry was made before the write, so the failed `put` left it behind.
+    #[tokio::test]
+    async fn a_failed_store_write_is_not_left_in_the_index() {
+        let store = BlockMetadataStore::create(metadata_store_over(Box::new(FailingPutStore {
+            inner: InMemoryKeyValueStore::default(),
+        })))
+        .await
+        .unwrap();
+
+        assert!(store.add(meta(hash(0), &[], 0)).await.is_err());
+        assert!(
+            !store.contains(&hash(0)).await,
+            "the index must not report a block the store never took"
+        );
+        assert_eq!(store.get(&hash(0)).await.unwrap(), None);
     }
 
     /// **The regression test for AUDIT C122**, written against the *store* because that is the path C110's

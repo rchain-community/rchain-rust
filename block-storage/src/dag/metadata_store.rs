@@ -86,12 +86,70 @@ pub fn add_block_to_dag_state_mut(block: &BlockInfo, state: &mut DagState) {
 
 /// Validate that the height-map keys form a contiguous range (Law 18).
 pub fn validate_dag_state(state: &DagState) -> Result<(), String> {
+    check_height_extent(height_extent(state))
+}
+
+/// **The same check as [`validate_dag_state`], for the state `block` would produce** — so a caller can
+/// refuse an add *before* it has written anything or mutated anything.
+///
+/// This exists because the mutating form cannot be used as a gate: `add_block_to_dag_state_mut`
+/// extends the live state in place, so validating *after* it has run returns `Err` with the state
+/// already extended. That is not hypothetical — a block whose height leaves a gap in the height map
+/// (the reachable case is a failed block, which is not counted into `height_map`, with a later block
+/// above it) made the index report a block the store never received, permanently, because the store
+/// write sits after the `?`. AUDIT C172.
+///
+/// The equivalence with the mutating form is **pinned rather than trusted**
+/// (`validate_after_agrees_with_validating_the_extended_state`), for the same reason
+/// `recreate_in_memory_state`'s in-place rebuild is: a gate that disagrees with the check it replaces
+/// is a worse defect than the one it fixes.
+pub fn validate_dag_state_after(state: &DagState, block: &BlockInfo) -> Result<(), String> {
+    check_height_extent(height_extent_after(state, block))
+}
+
+/// `(min, max_exclusive, len)` — the three numbers the contiguity check compares.
+fn height_extent(state: &DagState) -> (BlockHeight, BlockHeight, i64) {
     let m = &state.height_map;
     let (min, max) = match (m.keys().next(), m.keys().next_back()) {
         (Some(first), Some(last)) => (*first, *last + NonNegI64::one()),
         _ => (BlockHeight::zero(), BlockHeight::zero()),
     };
-    if max - min != i64::try_from(m.len()).unwrap_or(i64::MAX) {
+    (min, max, i64::try_from(m.len()).unwrap_or(i64::MAX))
+}
+
+/// The extent the state would have with `block` in it.
+///
+/// Two cases are the ones to be careful with, and both are `height_map`'s **keys** rather than its
+/// blocks:
+///
+/// - **An empty map is `(0, 0, 0)` by the convention above**, and inserting the *first* key resets the
+///   minimum to that key rather than keeping the conventional zero — a first block at height 5 is a
+///   valid single-key state, and treating `0` as the minimum would refuse it.
+/// - **A second block at a height the map already has does not add a key**, so the length must not
+///   grow: the extent is over key positions, not over blocks. (This one was wrong until the
+///   equivalence test below caught it, on the state `[(0, false)]` with a candidate at height 0 — a
+///   case the mutating form accepts and the arithmetic refused.)
+fn height_extent_after(state: &DagState, block: &BlockInfo) -> (BlockHeight, BlockHeight, i64) {
+    let m = &state.height_map;
+    // A validation-failed block is recorded in `dag_set` and `child_map` but not at its height.
+    if block.validation_failed {
+        return height_extent(state);
+    }
+    let len = i64::try_from(m.len()).unwrap_or(i64::MAX);
+    let adds_a_key = !m.contains_key(&block.block_num);
+    let len = if adds_a_key { len + 1 } else { len };
+    match (m.keys().next(), m.keys().next_back()) {
+        (Some(first), Some(last)) => {
+            let min = (*first).min(block.block_num);
+            let max = (*last + NonNegI64::one()).max(block.block_num + NonNegI64::one());
+            (min, max, len)
+        }
+        _ => (block.block_num, block.block_num + NonNegI64::one(), len),
+    }
+}
+
+fn check_height_extent((min, max, len): (BlockHeight, BlockHeight, i64)) -> Result<(), String> {
+    if max - min != len {
         return Err("DAG store height map has numbers not in sequence.".to_string());
     }
     Ok(())
@@ -160,6 +218,63 @@ mod tests {
             recreate_in_memory_state(&blocks).unwrap_err(),
             "DAG store height map has numbers not in sequence."
         );
+    }
+
+    /// **The gate agrees with the check it replaces**, over the states and blocks that matter: empty,
+    /// a single high block, a contiguous chain, a gap, a *failed* block (which is not counted into the
+    /// height map), and a candidate that is itself failed.
+    ///
+    /// `validate_dag_state_after` exists so a caller can refuse an add **before** the in-place
+    /// mutation; if it disagreed with `validate_dag_state` on the extended state, it would be a worse
+    /// defect than the one it fixes, and nothing else would catch it — the two are compared here
+    /// rather than argued about (AUDIT C172).
+    #[test]
+    fn validate_after_agrees_with_validating_the_extended_state() {
+        let states: Vec<Vec<(i64, bool)>> = vec![
+            vec![],
+            vec![(0, false)],
+            vec![(0, false), (1, false)],
+            vec![(0, false), (1, true), (2, false)],
+            vec![(0, false), (2, false)],
+            vec![(5, false)],
+            vec![(0, false), (5, false)],
+        ];
+        let candidates: Vec<(i64, bool)> = vec![
+            (0, false),
+            (1, false),
+            (2, false),
+            (3, false),
+            (5, false),
+            (0, true),
+            (3, true),
+            (6, true),
+        ];
+        for state_blocks in &states {
+            for (height, failed) in &candidates {
+                let mut state = DagState::empty();
+                for (i, (h, f)) in state_blocks.iter().enumerate() {
+                    let block = BlockInfo {
+                        hash: hash(i as u8 + 1),
+                        parents: BTreeSet::new(),
+                        block_num: BlockHeight::try_from(*h).unwrap(),
+                        validation_failed: *f,
+                    };
+                    add_block_to_dag_state_mut(&block, &mut state);
+                }
+                let candidate = BlockInfo {
+                    hash: hash(200),
+                    parents: BTreeSet::new(),
+                    block_num: BlockHeight::try_from(*height).unwrap(),
+                    validation_failed: *failed,
+                };
+                assert_eq!(
+                    validate_dag_state_after(&state, &candidate).is_ok(),
+                    validate_dag_state(&add_block_to_dag_state(&candidate, &state)).is_ok(),
+                    "disagreement on state {state_blocks:?} with a candidate at {height} \
+                     (failed={failed})"
+                );
+            }
+        }
     }
 
     #[test]

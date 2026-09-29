@@ -4521,17 +4521,33 @@ write leaves orphan *data* rather than a pointer to data that is not there. `add
 the pointer and the contents it points at. Same class, one layer down, and this is C164's shape again:
 the discipline existed, was pinned, and was not applied where the same fact is read.
 
-**Recorded `todo`, not `done`, and the distinction matters.** The observation (the log sequence, the
-terminal cascade, the restart recovering) is evidence; the *mechanism* is read out of the tree and is
-consistent with it, but **not reproduced** — the window is one `await` wide and needs a validation
-running inside it, and which of the concurrent validators (the processor's own spawned batch, the
-proposer's parent validation at `proposer.rs:385`, the LFS syncer) lands in it is owed. The
-store-write-*failure* path is the same divergence with no window at all: `add` returns `Err` after the
-index was updated, so the index keeps an entry the store never got until a restart. Filed as [#103],
-with three fix options and their trade-offs (the straight reorder wants a compensating delete, or
-`create` would refuse to rebuild at the next start). The `owes` cell names the gate the falsifier
-needs: a metadata store over a `KeyValueStore` whose `put` parks, with `contains` asserted false while
-it is parked.
+**What the run establishes, and what it does not.** The observation (the log sequence, the terminal
+cascade, the restart recovering) is evidence; the *mechanism* is read out of the tree and is
+consistent with it, and the reading found a **deterministic** instance of it as well — see the fix
+below. Whether the concurrency window is what the run hit is still not reproduced: it is one `await`
+wide and needs a validation running inside it, and which of the concurrent validators (the processor's
+own spawned batch, the proposer's parent validation at `proposer.rs:385`, the LFS syncer) lands in it
+would take a targeted repro. That is recorded as owed rather than implied by the fix.
+
+**Fixed in the order, with the gate moved ahead of it.** `add` now writes the **store** first, then the
+index, and checks the transition **before either** — `validate_dag_state_after`
+(`block-storage/src/dag/metadata_store.rs`), the contiguity predicate evaluated on the state a block
+*would* produce. That second half is not decoration: the old code extended the live index in place
+*before* running `validate_dag_state`, so a **refused** add returned `Err` with the index already
+extended — deterministically. And the refusal is reachable: a validation-failed block is not counted
+into `height_map`, so a block above one leaves a gap and the check refuses it. The old body therefore
+had the divergence on a path with no concurrency in it at all, which is why this is `done` while the
+window above stays owed.
+
+Both halves are pinned by tests that were **red against the old body** —
+`a_refused_height_gap_is_not_left_in_the_index` and `a_failed_store_write_is_not_left_in_the_index`,
+each asserting `contains` false where it answered true — and the new gate's agreement with the check it
+replaces is **pinned rather than trusted** (`validate_after_agrees_with_validating_the_extended_state`),
+the same rule `recreate_in_memory_state`'s in-place rebuild follows. That equivalence test earned its
+keep on its first run: the arithmetic first treated a second block at an existing height as a new
+*key*, which the mutating form does not. The remaining window is closed by construction rather than by
+a lock — the store-first order can only ever leave the index *under*-claiming, which is the answer both
+of its callers want ("not in the DAG yet"). Filed and closed as [#103].
 
 [#103]: https://github.com/rchain-community/rchain-rust/issues/103
 
