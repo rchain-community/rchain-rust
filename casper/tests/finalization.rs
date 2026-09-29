@@ -115,3 +115,121 @@ fn fork_structure_advances_fringe() {
         "fringe should be the layer-1 fork"
     );
 }
+
+/// **A bonded validator that has stopped producing messages must not cap the fringe (#70).**
+///
+/// The fringe gate's partition ranged over the *whole* bonded map, so a validator that produced no
+/// message could never be "seen by every seer": the partition was unsatisfiable, and finality stopped
+/// whatever share of the stake the survivors held. Measured on a three-validator devnet at
+/// `100/100/50` on 2026-09-29 — with the 50-stake validator stopped, the two survivors at 80 % of the
+/// pool did not resume finality.
+///
+/// The falsifier is two-way, because either half alone is satisfiable by the wrong rule:
+///
+/// - through `liveness::calculate_finalization` — the partition ranges over the *live* weight set, so
+///   four bonded validators of which three are speaking still finalise the three-way fork;
+/// - through the raw gate with the same map twice — the pre-fix shape — the silent fourth member
+///   leaves the partition unsatisfiable and the fringe does **not** advance. Delete the liveness rule
+///   from the first call and this is the behaviour that comes back.
+///
+/// The quorum stays the whole bonded map in both, which is the other half of the design: 300 of 400
+/// is a supermajority, and a minority still could not finalise on its own.
+#[test]
+fn a_silent_bonded_validator_does_not_cap_the_fringe() {
+    use rchain_block_storage::dag::finalizer::Finalizer;
+    use rchain_block_storage::dag::liveness;
+    use rchain_block_storage::dag::message_state::DagMessageState;
+    use rchain_models::validator::Validator;
+    use rchain_shared::refined::{BlockHeight, SeqNum};
+
+    fn validator(byte: u8) -> Validator {
+        Validator::new([byte; 65])
+    }
+    fn id(sender: u8, height: i64) -> BlockHash {
+        let mut bytes = [0u8; 32];
+        bytes[0] = sender;
+        bytes[1] = (height & 0xff) as u8;
+        BlockHash::new(bytes)
+    }
+    fn h(n: i64) -> BlockHeight {
+        BlockHeight::try_from(n).expect("height")
+    }
+    fn s(n: i64) -> SeqNum {
+        SeqNum::try_from(n).expect("seq num")
+    }
+
+    let v0 = validator(0);
+    let v1 = validator(1);
+    let v2 = validator(2);
+    // Bonded, and never speaks: the validator the rule exists for.
+    let silent = validator(3);
+    let g = validator(255);
+    let bonds: std::collections::BTreeMap<Validator, NonNegI64> = [
+        (v0.clone(), NonNegI64::try_from(100).unwrap()),
+        (v1.clone(), NonNegI64::try_from(100).unwrap()),
+        (v2.clone(), NonNegI64::try_from(100).unwrap()),
+        (silent.clone(), NonNegI64::try_from(100).unwrap()),
+    ]
+    .into_iter()
+    .collect();
+
+    let st: DagMessageState<BlockHash, Validator> = DagMessageState::empty();
+    let genesis = st.create_message(id(255, 0), h(0), g, s(0), bonds.clone(), &BTreeSet::new());
+    let st = st.insert_msg(&genesis);
+
+    // Layers 1–3: a three-way fork, then convergence, exactly the shape the finalizer needs (a
+    // justification must reference messages *beyond* the candidate next layer).
+    let mut state = st;
+    let mut previous: Vec<_> = Vec::new();
+    let mut layer1: std::collections::BTreeSet<_> = std::collections::BTreeSet::new();
+    for (i, v) in [v0.clone(), v1.clone(), v2.clone()].into_iter().enumerate() {
+        let parents: std::collections::BTreeSet<_> = if previous.is_empty() {
+            [genesis.clone()].into_iter().collect()
+        } else {
+            previous.iter().cloned().collect()
+        };
+        let m = state.create_message(id(i as u8, 1), h(1), v, s(1), bonds.clone(), &parents);
+        state = state.insert_msg(&m);
+        layer1.insert(m);
+    }
+    previous = layer1.iter().cloned().collect();
+    for height in 2..=3 {
+        let mut layer = std::collections::BTreeSet::new();
+        for (i, v) in [v0.clone(), v1.clone(), v2.clone()].into_iter().enumerate() {
+            let m = state.create_message(
+                id(i as u8, height),
+                h(height),
+                v,
+                s(height),
+                bonds.clone(),
+                &previous.iter().cloned().collect(),
+            );
+            state = state.insert_msg(&m);
+            layer.insert(m);
+        }
+        previous = layer.iter().cloned().collect();
+    }
+
+    // The finalizing message's justifications: all of layer 3.
+    let justifications: std::collections::BTreeSet<_> = previous.iter().cloned().collect();
+    let finalizer = Finalizer::new(&state.msg_map);
+
+    let (_, live) = liveness::calculate_finalization(&finalizer, &justifications, &bonds);
+    assert_eq!(
+        live.map(|f| f
+            .iter()
+            .map(|m| m.id)
+            .collect::<std::collections::BTreeSet<_>>()),
+        Some([id(0, 1), id(1, 1), id(2, 1)].into_iter().collect()),
+        "the three speaking validators finalise the layer-1 fork without the silent fourth"
+    );
+
+    // The control: the same map as both the partition and the quorum — the shape before the liveness
+    // rule — where the silent validator the partition requires can never have seen anything.
+    let (_, without) = finalizer.calculate_finalization(&justifications, &bonds, &bonds);
+    assert!(
+        without.is_none(),
+        "with the silent validator in the partition, no candidate can be a full partition and \
+         nothing advances — this is the behaviour the rule replaces"
+    );
+}

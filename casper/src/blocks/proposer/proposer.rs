@@ -11,6 +11,7 @@ use std::sync::Arc;
 
 use rchain_block_storage::block_store::BlockStore;
 use rchain_block_storage::dag::dag_storage::{BlockDagStorage, DeployId};
+use rchain_block_storage::dag::liveness;
 use rchain_block_storage::syntax::put_block;
 use rchain_crypto::private_key::PrivateKey;
 use rchain_crypto::signatures::secp256k1::Secp256k1;
@@ -613,6 +614,20 @@ where
         .max()
         .unwrap_or_else(BlockHeight::zero);
     let new_state_transition = parents.iter().any(|b| has_deploys(b));
+    // The live weight set: the one liveness rule, shared with the finalizer through `liveness` (#70
+    // increment 2). It decides who counts as *moving*; the quorum itself stays measured against the
+    // whole bonded map below, so a minority cannot attest its way to a supermajority.
+    let live_bonds = liveness::live_weight_set(
+        &pre_state_bonds,
+        &liveness::latest_heights(
+            pre_state
+                .justifications
+                .iter()
+                .map(|m| (m.sender.clone(), m.block_num)),
+        ),
+        tip,
+        liveness::LIVENESS_WINDOW,
+    );
     let pre_state_bonds_stake: i128 = pre_state_bonds
         .values()
         .map(|s| i128::from(i64::from(*s)))
@@ -622,12 +637,7 @@ where
         .filter(|(v, _)| **v == creators_validator)
         .map(|(_, s)| i128::from(i64::from(*s)))
         .sum();
-    let attestation_stake = moving_attestation_stake(
-        &pre_state.justifications,
-        &pre_state_bonds,
-        &creators_validator,
-        tip,
-    );
+    let attestation_stake = moving_attestation_stake(&live_bonds, &creators_validator);
     let quorum_reachable =
         attestation_reaches_supermajority(attestation_stake, own_stake, pre_state_bonds_stake);
 
@@ -1008,53 +1018,29 @@ mod tests {
 /// Whether this validator should attest now: its own weight plus the stake already moving on the fringe
 /// reaches a supermajority.
 ///
-/// How many heights of silence are tolerated, on both sides of the attestation guard: a validator whose
-/// latest message is further than this behind the tip no longer counts toward the moving stake (#70's
-/// F4 — before this, a silent validator's stake counted forever and carried a false quorum), and a node
-/// that has itself been quiet this long speaks again even while the quorum is out of reach (without
-/// which a chain where nobody can reach a quorum would produce no messages, never advance its tip, and
-/// never see a peer that came back — the liveness trap of a blanket suppress).
+/// The stake that counts as "moving" toward the quorum: the **live** weight set minus ourselves.
 ///
-/// **Provisional, and deliberately a constant rather than a genesis parameter.** As a `PosParams` field
-/// it would enter `spec/GENESIS.md` and move the genesis block — a hard fork, #51 category A — so
-/// parameterising it belongs with #24 (on-chain shard configuration storage), which is already in that
-/// category. The value tolerates a peer lagging by a few blocks while dropping one that has stopped for
-/// more than a handful; what it *should* be is a measurement, and #70's increment 2 is where that gets
-/// recorded.
-const ATTESTATION_WINDOW: i64 = 5;
-
-/// `tip - message`, saturating rather than wrapping: a message cannot be ahead of the tip, but a
-/// `BlockHeight` subtraction that wrapped would read as maximally *stale* and drop a live validator.
-fn heights_behind(tip: BlockHeight, message: BlockHeight) -> i64 {
-    i64::from(tip).saturating_sub(i64::from(message))
-}
-
-/// The stake that counts as "moving" toward the quorum: the bonded senders of the parents' latest
-/// messages, **whose message is recent**, excluding ourselves.
+/// The set is the shared liveness rule ([`liveness::live_weight_set`], #70 increment 2) — the same
+/// function the finalizer's partition ranges over, so "who is speaking" cannot differ between the two
+/// consumers. The exclusion is ours to make here: our own message is the attestation we are about to
+/// add, and [`attestation_reaches_supermajority`] counts it on the other side of the comparison.
 ///
-/// The exclusion is the point — our own message is the attestation we are about to add, and
-/// [`attestation_reaches_supermajority`] counts it on the other side of the comparison.
-///
-/// The recency check is #70's F4. `justifications` is `latest_msgs`, and that map keeps a sender's last
-/// message **indefinitely**, so without a recency test a validator that has gone silent stays in this
-/// set forever and keeps contributing its full stake: "moving" would mean *has ever spoken* rather than
-/// *is speaking now*. Three equal validators with one dead returned 200 — the live peer's message
-/// *plus the dead one's stale one* — which `own_stake` made 300 of 300, a false supermajority. Pinned by
+/// **What this replaced, and why it was a defect (F4).** The stake used to be summed over the senders
+/// of `pre_state.justifications`, which is `latest_msgs` — a map that keeps a silent sender's last
+/// message **indefinitely** — so "moving" meant *has ever spoken*. Three equal validators with one dead
+/// summed 200 (the live peer's message *plus* the dead one's stale one) and, with `own_stake`, reached
+/// 300 of 300: a supermajority that does not exist. Pinned by
 /// `a_silent_validators_stale_message_does_not_carry_the_quorum` in `attestation_suppression_tests`.
-fn moving_attestation_stake(
-    justifications: &[BlockMetadata],
-    bonds: &BTreeMap<Validator, NonNegI64>,
-    own: &Validator,
-    tip: BlockHeight,
-) -> i128 {
-    let new_senders: BTreeSet<Validator> = justifications
+///
+/// **The denominator is not this set.** The quorum is measured against the whole bonded map
+/// (`pre_state_bonds`), not the live one: a quorum over the live stake would let any self-consistent
+/// subset finalise, and under a partition each side would finalise its own view — two conflicting
+/// finalisations. The issue is that an absent validator must not *block* the partition; it is not that
+/// an absent validator's stake stops counting. See `liveness`' module doc and the §6 row.
+fn moving_attestation_stake(live_bonds: &BTreeMap<Validator, NonNegI64>, own: &Validator) -> i128 {
+    live_bonds
         .iter()
-        .filter(|m| &m.sender != own && heights_behind(tip, m.block_num) <= ATTESTATION_WINDOW)
-        .map(|m| m.sender.clone())
-        .collect();
-    bonds
-        .iter()
-        .filter(|(v, _)| new_senders.contains(v))
+        .filter(|(v, _)| *v != own)
         .map(|(_, s)| i128::from(i64::from(*s)))
         .sum()
 }
@@ -1063,7 +1049,7 @@ fn moving_attestation_stake(
 /// `justifications` — so the pace bound needs no new state, no counter, and no persistence.
 fn cadence_due(justifications: &[BlockMetadata], own: &Validator, tip: BlockHeight) -> bool {
     match justifications.iter().find(|m| &m.sender == own) {
-        Some(mine) => heights_behind(tip, mine.block_num) > ATTESTATION_WINDOW,
+        Some(mine) => liveness::heights_behind(tip, mine.block_num) > liveness::LIVENESS_WINDOW,
         // Nothing from us in the DAG yet: there is no quiet to have broken.
         None => true,
     }
@@ -1147,8 +1133,9 @@ mod attestation_guard_tests {
 mod attestation_suppression_tests {
     use super::{
         attestation_reaches_supermajority, attestation_suppressed, cadence_due,
-        moving_attestation_stake, ATTESTATION_WINDOW,
+        moving_attestation_stake,
     };
+    use rchain_block_storage::dag::liveness;
     use rchain_models::block_hash::BlockHash;
     use rchain_models::block_metadata::BlockMetadata;
     use rchain_models::validator::Validator;
@@ -1193,15 +1180,26 @@ mod attestation_suppression_tests {
     /// (`two_thirds_is_not_supermajority`, `sdk/src/consensus.rs:24`). Counting `b`'s stale message
     /// makes it 300 of 300 and has this node attest at every height — the spin #70 reports.
     ///
-    /// Red until `moving_attestation_stake` filters by recency against the tip.
+    /// Red before the recency filter — and still red if it is deleted from `live_weight_set`: the
+    /// moving stake then reads 200, which `own_stake` turns into 300 of 300.
     #[test]
     fn a_silent_validators_stale_message_does_not_carry_the_quorum() {
         let (a, b, c) = (validator(1), validator(2), validator(3));
         let bonded = bonds(&[(a.clone(), 100), (b.clone(), 100), (c.clone(), 100)]);
-        let justifications = vec![latest(b.clone(), 3), latest(c.clone(), 10)];
+        let justifications = [latest(b.clone(), 3), latest(c.clone(), 10)];
         let tip = BlockHeight::try_from(10).unwrap();
 
-        let moving = moving_attestation_stake(&justifications, &bonded, &a, tip);
+        let live = liveness::live_weight_set(
+            &bonded,
+            &liveness::latest_heights(
+                justifications
+                    .iter()
+                    .map(|m| (m.sender.clone(), m.block_num)),
+            ),
+            tip,
+            liveness::LIVENESS_WINDOW,
+        );
+        let moving = moving_attestation_stake(&live, &a);
         assert_eq!(
             moving, 100,
             "only `c` is moving — `b`'s message is 7 heights stale and must not count toward quorum"
@@ -1209,6 +1207,24 @@ mod attestation_suppression_tests {
         assert!(
             !attestation_reaches_supermajority(moving, 100, 300),
             "200 of 300 is exactly 2/3, which is not a supermajority"
+        );
+    }
+
+    /// **The quorum is measured against the whole bonded map, not the live set** — the difference
+    /// between "an absent validator must not block the partition" and "an absent validator's stake
+    /// stops counting", and the second is what would cost safety: a quorum over the live stake is
+    /// trivially reached by any self-consistent subset, so under a partition each side would finalise
+    /// its own view. Pinned as the arithmetic that separates the two readings.
+    #[test]
+    fn the_quorum_is_measured_against_the_whole_bonded_map_not_the_live_one() {
+        // Three equal validators, one silent: the live set is 200, the bonded map 300.
+        assert!(
+            attestation_reaches_supermajority(100, 100, 200),
+            "against the live set alone this is a quorum — which is the shape that loses safety"
+        );
+        assert!(
+            !attestation_reaches_supermajority(100, 100, 300),
+            "against the whole bonded map it is exactly 2/3, and 2/3 is not a supermajority"
         );
     }
 
@@ -1274,7 +1290,11 @@ mod attestation_suppression_tests {
             "we spoke one height ago"
         );
         assert!(
-            cadence_due(&[latest(a.clone(), 20 - ATTESTATION_WINDOW - 1)], &a, tip),
+            cadence_due(
+                &[latest(a.clone(), 20 - liveness::LIVENESS_WINDOW - 1)],
+                &a,
+                tip
+            ),
             "quiet past the window"
         );
         // Someone else's message is not ours, and must not reset our cadence.

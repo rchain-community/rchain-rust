@@ -48,12 +48,18 @@ Concretely, the finalizer (`Finalizer` in the DAG layer) tracks the **support** 
 the bonded validators, and advances the finalized fringe whenever that support crosses `> 2/3`.
 
 **Support counts only full partitions.** A candidate message contributes its sender's stake only when
-**every validator that has seen it has itself seen a message from every bonded validator**
-(`all_bonded`, `block-storage/src/dag/finalizer.rs:173`) — so what stands behind a block is a complete
-cross-justified cut, not a plurality. One bonded validator that produces no messages therefore caps
-finality whatever share of the stake the others hold: measured on a three-validator devnet at
-`100/100/50` (2026-09-29), the two survivors at 80 % of the active set did not resume finality while
-the third was stopped ([#70](https://github.com/rchain-community/rchain-rust/issues/70)).
+**every validator that has seen it has itself seen a message from every validator of the partition**
+(`all_bonded`, `block-storage/src/dag/finalizer.rs`) — so what stands behind a block is a complete
+cross-justified cut, not a plurality. Until 2026-09-29 the partition was the whole bonded set, which
+meant one bonded validator that produced no messages capped finality whatever share of the stake the
+others held: measured on a three-validator devnet at `100/100/50`, the two survivors at 80 % of the
+active set did not resume finality while the third was stopped. The partition is now the **live weight
+set** — the bonded validators whose latest message is within `LIVENESS_WINDOW` heights of the tip
+(`block-storage/src/dag/liveness.rs`) — so a stopped validator stops blocking the partition. The quorum
+is still measured against the **whole** bonded stake, which is what keeps the safety property: a quorum
+over the speaking subset alone would be reached by any self-consistent group, and under a partition two
+groups would finalise different histories
+([#70](https://github.com/rchain-community/rchain-rust/issues/70)).
 
 ## Block validity (Laws 16–17)
 

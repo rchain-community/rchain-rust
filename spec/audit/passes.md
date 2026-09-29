@@ -347,6 +347,7 @@ Every place the Rust port deliberately departs from the Scala oracle, with the r
 | **Native writes join the merge's conflict relation** (issue #83): two chains of different blocks that wrote a common native key conflict when neither block has seen the other, and depend on each other when one has; a native-writing block's chains are accepted or rejected together; the accepted writes are applied ancestors first (`NativeRelations`, `casper/src/merging.rs`) | — (no Scala counterpart: the Scala's PoS and vault state is tuple-space data, so `deploysAreConflicting` sees it through the event logs; the port's native state has no event log) | a native write is an absolute value from its block's own pre-state, so two concurrent writers can be neither concatenated (duplicate keys: every node panicked at the first epoch boundary with two sibling blocks) nor de-duplicated (two equal phlo charges write equal vault balances, and keeping one destroys the other's REV). **Behaviour change:** concurrent blocks that both write a native key - both boundary blocks at one height, or both charging phlo - now conflict, so one is rejected exactly as a tuple-space conflict would be, where before the merge panicked. Tests: `boundary_merge_tests` |
 | **An empty `FinalizedFringe` is refused as a sync target**, and a finished LFS walk that received no block fails the attempt | `NodeSyncing.scala:124-128` — `startRequester.modify { case true if isValid => (false, true); … }` — latches on the **first** fringe from the bootstrap and inspects nothing about its contents, so it starts the sync on an empty one and `requestApprovedState` then reports the state restored | the genesis master **broadcasts** `FinalizedFringe { hashes: Vec::new() }` as it creates genesis (`node_launch.rs::create_store_broadcast_genesis`) — an announcement that the approved state *is* the genesis, not a sync target. A node already connected receives it **before** the answer to its own request: measured on a devnet, 34 ms after the announcement and 83 ms *before* the master had even seen the request, so the trigger was consumed by the announcement, the correct answer was discarded in silence (a later fringe from the bootstrap logs nothing at all), and the node logged `LFS state is successfully restored.` having restored nothing, then ran on an empty DAG and rejected every block it heard about (#100). Under the oracle's shape a fresh multi-validator network never forms at all. **Not a hard fork**: it changes which fringe a *joining* node acts on, not any block's validity, and no block or deploy changes meaning. One thing keeps the refusal narrow: the responder can never emit an empty fringe — both of its branches return at least one hash — so the only producer of one is the genesis broadcast, and this refuses exactly the input the oracle mishandles. **The companion guard is defence in depth, not the fix**: `run_approved_state_sync` also fails a walk that finishes with an empty `height_map`, which the empty fringe is the only way to reach, because `LfsState::received` writes a `height_map` entry only for a key it actually requested. Witnesses: `an_empty_fringe_does_not_consume_the_sync_trigger` (the regression pin — fails with the check disabled) and `an_empty_fringe_finishes_the_walk_at_once_with_nothing_in_it` (the premise, in the block requester) |
 | `check_min_messages` requires the minimum-message **sender set** to equal the bonded set, where the oracle compares counts (issue #97) | `legacy/block-storage/src/main/scala/coop/rchain/blockstorage/dag/Finalizer.scala:64-66` — the identical body, and the identical TODO above it: *"add support for epoch changes, simple comparison for senders count is not enough"* | count-only coverage admitted `[A, A, B]` for bonds `{A, B, C}`: `calculate_next_layer` collapses the duplicate sender into one entry, so the published fringe **omitted bonded validator `C`** while presenting A's stake twice — 90 of 100 support on the contributing change's own fixture, a malformed fringe a byzantine proposer can present as a supermajority. **Stricter than the oracle, and not a hard fork**: the only newly refused case is equal count with a different sender set, and that case used to publish a fringe no honest node could derive from the same justifications — no block or deploy changes meaning. The oracle has *not* made this decision (the TODO is upstream's, open), so this row is a deliberate departure rather than a divergence by oversight, and the register's law 14a/14b rows plus `spec/Rchain/Casper/Dag.lean`'s `checkMinMessages` carry the same change. Falsified both ways: `check_min_messages_needs_all_bonded_senders` and `calculate_finalization_requires_exact_sender_coverage` fail against the count-only body, and the model's `the_gate_demands_the_bonded_senders` fails against the count-only model |
+| **The finality gate's partition is the *live weight set***: `calculate_fringe` takes the set a candidate must have been seen by and the quorum's denominator as **separate maps**, and the node passes the bonded validators whose latest message is within `LIVENESS_WINDOW` (5) heights of the tip as the partition, and the whole bonded map as the quorum (issue #70) | `Finalizer.scala`'s `calculateFinalization` takes one `bonds_map` and uses it for both the full-partition filter and `totalStake`; there is **no liveness predicate anywhere upstream** — a validator that stops producing messages keeps blocking the fringe | with one map, a bonded validator that produces no message can never be "seen by every seer", so the partition is unsatisfiable and finality stops **whatever share of the stake the survivors hold**: measured on a three-validator devnet at `100/100/50` on 2026-09-29, the two survivors at 80 % of the pool did not resume finality after the third was stopped, and the same shape froze #105's two-validator chain with the survivor holding 91 %. **Shrinking only the *partition* is what keeps the safety property**: a quorum measured over the live set instead would be reached by *any* self-consistent subset — `3·F > 2·L` with `F ≤ L` over the live set is unconditional — so under a partition each side would finalise its own view and two conflicting finalisations would exist. "Finality needs quorum stake, not live nodes" is the requirement, and the denominator is what keeps it. **Hard fork** (#51 category A): which fringe is agreed changes, hence the merge base and every block hash after it. Falsified both ways by `a_silent_bonded_validator_does_not_cap_the_fringe`, and the predicate itself by the `liveness` unit tests |
 
 ---
 
@@ -4598,3 +4599,65 @@ next block above it. Independent of C172's fix, which is `ValidateError::Interna
 `ValidationFailed` → recorded, and does not touch this path.
 
 [#105]: https://github.com/rchain-community/rchain-rust/issues/105
+## 26. The fringe gate asked two questions of one map: a silent validator capped finality at any stake share (#70)
+
+#70's measurement asked whether the survivors resume finality after a validator is killed. They did not —
+finality stayed at 8 while the height ran to 126 — and the reason is not the quorum arithmetic the issue
+is about.
+
+### C174 — `calculate_fringe` required a message from **every** bonded validator, so one that stopped producing capped the fringe whatever the survivors held
+
+`calculate_fringe` asked two questions of one map, and the map it was given was the whole bonded one:
+
+- **who must have seen a candidate** — the full-partition filter, whose `bonded_senders` are the map's
+  **keys**;
+- **what the quorum is measured against** — `total_stake`, the map's **values**.
+
+A validator that produces no message can never be "seen by every seer", so with the whole map as the
+partition the filter is unsatisfiable and the fringe cannot advance — no matter how much stake the
+survivors hold. Measured on a three-validator devnet at `100/100/50`: the two survivors at **80 %** of
+the pool did not resume finality after the third was stopped. The same shape is visible in #105's second
+run, where the survivor held 91 % and finality was stuck: A was not missing *stake*, it was missing a
+*message*.
+
+**The fix separates the two questions**, and the separation is the whole design:
+
+- the **partition** ranges over the bonded validators whose latest message is within
+  `LIVENESS_WINDOW` heights of the tip — `block-storage/src/dag/liveness.rs` — so a validator that has
+  stopped is not required to have seen the candidate, and the survivors can complete a partition;
+- the **quorum stays the whole bonded map**, so a minority still cannot finalise.
+
+**The plan this replaces had the shape wrong, and the arithmetic is why.** It proposed handing the live
+set to `calculate_finalization` as `bonds_map`, on the argument that "a silent validator leaves numerator
+*and* denominator together". That is exactly the problem: with the live set as the denominator, the gate
+is `3·F > 2·L` with `F ≤ L` over the live set, which holds for **any** self-consistent subset. Under a
+network partition each side's live set is its own validators, so each side finalises its own view — two
+conflicting finalisations, safety gone. The issue's own title is the requirement — *finality needs quorum
+stake, not live nodes* — and it is the denominator that keeps it. So the partition shrinks and the
+denominator does not: `calculate_fringe(support_map, partition_bonds, quorum_bonds)`, with
+`Rchain.calculateFringe` taking the two maps and
+`calculateFringeOneMap_eq_calculateFringe_self` recording that the one-map call is their identity (which
+is why the boundary theorems carry over unchanged rather than being re-earned).
+
+**Determinism and reversibility need no state.** The predicate is derived from the bonds and the heights
+the DAG already records for the block's justifications — no new leaf, no genesis field, no scan — so every
+node validating the same block derives the same partition; and a returning validator's message is at the
+tip, so its stake is back on the next block. The two consumers that must not disagree share one function:
+the block creator's fringe (`create_message`) and the validator's (`multi_parent_casper`) both go through
+`liveness::calculate_finalization`, because the creator writes the fringe into the block and a validator
+that derived a different one would refuse it.
+
+**Falsified both ways.** `a_silent_bonded_validator_does_not_cap_the_fringe` (`casper/tests/finalization.rs`)
+drives a four-bond fixture in which three validators speak: through the liveness rule the three-way fork
+finalises, and through the raw gate with one map it does not. Deleting the rule reddens the first arm and
+leaves the second, which is the pre-2026-09-29 behaviour. `the_quorum_is_measured_against_the_whole_bonded_map_not_the_live_one`
+pins the denominator half as arithmetic — the same numbers are a quorum over the live set and are not one
+over the bonded map — and the predicate itself is pinned by the `liveness` unit tests (window edge,
+never-spoke, ahead-of-tip, return).
+
+**What it does not fix, said plainly.** The all-live attestation storm is untouched (AUDIT C171, still
+`todo`: the pace bound belongs on the guard or the tap, and the guard-side shape needs a measurement,
+because a cadence that suppresses *every* round traps liveness). And a net that loses more than a third
+of its stake **permanently** still cannot finalise — the honest fix there is an inactivity leak, which is
+a state change (burning a silent validator's stake) and belongs with the shard-configuration and
+validator-lifecycle work (#24, #39), not with a recency window.

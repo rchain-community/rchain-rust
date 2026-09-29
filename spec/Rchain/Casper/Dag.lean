@@ -32,14 +32,24 @@ candidate instead of keeping one per sender — and it fails `derivedFringe_anti
 messages from one sender.
 
 **What the theorem earns, and what it does not**: pairwise-distinct **senders** is what the derivation
-gives, and "one message per **bonded** validator" is a second theorem beside it — the gate above makes
-the layer's sender set *equal* to the bonded set, so `derivedFringe_holds_one_per_bonded` states the
-stronger form rather than leaving it to a count comparison. (The count comparison was the upstream TODO
+gives, and "one message per validator of the partition" is a second theorem beside it — the gate above
+makes the layer's sender set *equal* to the **partition** map's senders, so
+`derivedFringe_holds_one_per_bonded` states the stronger form rather than leaving it to a count
+comparison. (It is the partition rather than the whole bonded set because that is what the gate
+requires coverage of; the two are the same map in the pre-2026-09-29 call.) (The count comparison was the upstream TODO
 until 2026-09-29; the port and this model now require the sender set, which is the §6 deviation.)
 
 The stake gate's *content* is law 14a's (`Rchain.Casper.Stake`'s `calculateFringe`, with its boundary
 theorems), so the support map enters `derivedFringe` as an argument, exactly as it enters
 `Rchain.nextFringe`: this module is about the walk and the layer, not about the stake.
+
+The gate asks **two** questions of the bonds (the port's `liveness`, #70), so `derivedFringe` takes
+both maps: `partition` — the senders a candidate must have been seen by, and the set `checkMinMessages`
+requires the min messages to cover — and `bonds`, the quorum's denominator. One map for both capped
+finality at any stake share (a validator that produced no message could never be seen by every seer); a
+quorum over the speaking subset alone would let any self-consistent group finalise. The node passes the
+**live weight set** and the whole bonded map, and passing the same map twice is what this gate did
+before 2026-09-29.
 -/
 
 namespace Rchain
@@ -168,10 +178,10 @@ def nextLayer (d : Dag) (ms : List Message) : List Message :=
 /-- **The derivation** — the port's `next_fringe` (`:186-211`) in its own decision order: the walk, the
     count gate, the layer, the stake gate. The support map is an argument (its content is law 14a's,
     `Rchain.Casper.Stake`), exactly as it is for `Rchain.nextFringe`. -/
-def derivedFringe (d : Dag) (js : List Message) (prev : Fringe) (supp : SupportMap) (bonds : Bonds) :
-    Option Fringe :=
-  if checkMinMessages (minMsgs d js (prev.messages.map (·.id))) bonds then
-    if calculateFringe supp bonds then
+def derivedFringe (d : Dag) (js : List Message) (prev : Fringe) (supp : SupportMap)
+    (partition bonds : Bonds) : Option Fringe :=
+  if checkMinMessages (minMsgs d js (prev.messages.map (·.id))) partition then
+    if calculateFringe supp partition bonds then
       some ⟨nextLayer d (minMsgs d js (prev.messages.map (·.id)))⟩
     else none
   else none
@@ -243,7 +253,7 @@ theorem nextLayer_nodup (d : Dag) (ms : List Message) :
     one message per sender: `(f.messages.map (·.sender)).Nodup`. That is what the walk and the layer
     earn; the step to "one per **bonded** validator" is the gate, and is stated below. -/
 theorem derivedFringe_antichain (d : Dag) (js : List Message) (prev : Fringe) (supp : SupportMap)
-    (bonds : Bonds) (f : Fringe) (h : derivedFringe d js prev supp bonds = some f) :
+    (partition bonds : Bonds) (f : Fringe) (h : derivedFringe d js prev supp partition bonds = some f) :
     (f.messages.map (·.sender)).Nodup := by
   unfold derivedFringe at h
   split at h
@@ -347,10 +357,10 @@ theorem checkMinMessages_senders {ms : List Message} {bonds : Bonds}
     an antichain *and* covers every bonded sender — so it holds exactly one message per bonded
     validator, which is the law as written rather than the sender-distinctness half of it. -/
 theorem derivedFringe_holds_one_per_bonded (d : Dag) (js : List Message) (prev : Fringe)
-    (supp : SupportMap) (bonds : Bonds) (f : Fringe)
-    (h : derivedFringe d js prev supp bonds = some f) :
+    (supp : SupportMap) (partition bonds : Bonds) (f : Fringe)
+    (h : derivedFringe d js prev supp partition bonds = some f) :
     (f.messages.map (·.sender)).Nodup ∧
-      ∀ s, s ∈ f.messages.map (·.sender) ↔ s ∈ bondedSenders bonds := by
+      ∀ s, s ∈ f.messages.map (·.sender) ↔ s ∈ bondedSenders partition := by
   unfold derivedFringe at h
   split at h
   · rename_i hgate
@@ -1421,8 +1431,8 @@ theorem nextLayer_above_the_previous_fringe (d : Dag) (hdes : Descends d) (hnofo
     height per sender — with its hypothesis named. -/
 theorem derivedFringe_above_the_previous_fringe (d : Dag) (hdes : Descends d) (hnofork : NoFork d)
     (huniq : SeqUnique d) (hstep : SeqStep d) (js : List Message) (hjs : ∀ p ∈ js, p ∈ d)
-    (prev : Fringe) (supp : SupportMap) (bonds : Bonds) (f : Fringe)
-    (hf : derivedFringe d js prev supp bonds = some f) (q : Message) (hq : q ∈ prev.messages)
+    (prev : Fringe) (supp : SupportMap) (partition bonds : Bonds) (f : Fringe)
+    (hf : derivedFringe d js prev supp partition bonds = some f) (q : Message) (hq : q ∈ prev.messages)
     (hjust : ∀ p ∈ js, p.sender = q.sender → ReachesF d q p)
     {e' : Message} (he' : entryFor f.messages q.sender = some e') :
     q.height < e'.height := by

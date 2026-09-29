@@ -103,12 +103,15 @@ theorem mem_seenOf_self (js : List Message) (id : Nat) : id ∈ seenOf js id :=
 /-! ## Law 14 — the fringe advance gate -/
 
 /-- **The finalizer's advance gate**: a strictly new layer is published exactly when the support gate
-    holds, and a non-advancing layer is dropped (`block-storage/src/dag/finalizer.rs:174-197` for the
-    decision, `:202-215` for the guard — the
-    `if self.calculate_fringe(...) { Some(next_layer) } else { None }` and the
-    `if nf == current { break }` progress guard). -/
-def nextFringe (prev next : Fringe) (supp : SupportMap) (bonds : Bonds) : Option Fringe :=
-  if calculateFringe supp bonds && decide (next ≠ prev) then some next else none
+    holds, and a non-advancing layer is dropped (`block-storage/src/dag/finalizer.rs` for the decision,
+    the `if self.calculate_fringe(...) { Some(next_layer) } else { None }` and the
+    `if nf == current { break }` progress guard).
+
+    `partition` is the set a candidate must have been seen by, `bonds` the quorum's denominator — the
+    node passes the **live weight set** and the whole bonded map (`block-storage/src/dag/liveness.rs`,
+    #70). Passing the same map twice is what this gate did before 2026-09-29. -/
+def nextFringe (prev next : Fringe) (supp : SupportMap) (partition bonds : Bonds) : Option Fringe :=
+  if calculateFringe supp partition bonds && decide (next ≠ prev) then some next else none
 
 /-- **Law 14** — the fringe advances **iff** the supporting stake is a strict supermajority of the
     bonded stake and the layer is strictly new.
@@ -117,9 +120,9 @@ def nextFringe (prev next : Fringe) (supp : SupportMap) (bonds : Bonds) : Option
     `calculateFringe` computes (`Rchain.Casper.Stake`) — the full-partition filter, the skip for a
     non-bonded sender, and the exact integer comparison — which the boundary theorems there pin against
     the port's named tests. -/
-theorem finality_iff_supermajority (prev next : Fringe) (supp : SupportMap) (bonds : Bonds) :
-    nextFringe prev next supp bonds = some next ↔
-      isSuperMajority (fullPartitionStake supp bonds) (totalStake bonds) ∧ next ≠ prev := by
+theorem finality_iff_supermajority (prev next : Fringe) (supp : SupportMap) (partition bonds : Bonds) :
+    nextFringe prev next supp partition bonds = some next ↔
+      isSuperMajority (fullPartitionStake supp partition bonds) (totalStake bonds) ∧ next ≠ prev := by
   simp [nextFringe, calculateFringe]
 
 /-! ### Law 15's transitive half: the closure the finalizer leans on

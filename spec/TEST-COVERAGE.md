@@ -464,7 +464,11 @@ hard mode would fail on, so that a half-finished sweep is legible instead of inv
   recorded trace is mutable from a test; if not, a `#[cfg(test)]` accessor is the minimal change and
   must be listed before writing.
 
-- **G8 — The Finalizer full loop.** ✅ `calculate_finalization` fork/lockstep and the
+- **G8 — The Finalizer full loop.** ✅ The liveness layer over the gate has its own two-way witness:
+  `casper/tests/finalization.rs`'s `a_silent_bonded_validator_does_not_cap_the_fringe` (a four-bond
+  fixture where three validators speak — the live partition finalises, the one-map gate does not), and
+  `block-storage/src/dag/liveness.rs`'s unit tests pin the predicate (window edge, never-spoke,
+  ahead-of-tip, return). `calculate_finalization` fork/lockstep and the
   minimum-message coverage gate (`calculate_finalization_requires_exact_sender_coverage`, renamed
   2026-09-29 from `…advances_fringe_on_fork` when the gate became a sender-set comparison, issue #97);
   the direct-loop gap is closed. `calculate_next_fringe_support_map`'s antichain property is not

@@ -102,7 +102,7 @@ on the rows that are not reads.
 
 ## Check-off
 
-**Findings  TODO 2 · IN PROGRESS 0 · DONE 206** &nbsp;&nbsp;·&nbsp;&nbsp; **Coverage  all 89 T1 modules read**
+**Findings  TODO 2 · IN PROGRESS 0 · DONE 207** &nbsp;&nbsp;·&nbsp;&nbsp; **Coverage  all 89 T1 modules read**
 
 Closed when both halves are zero. A **done** row is settled -- fixed, assessed faithful, a
 deliberate deviation, or refuted -- and names what holds it. A **todo** row names what would
@@ -127,7 +127,7 @@ defects this register had not recorded (C164, C165).
 Nothing is in flight. The state exists because a person mid-read needs somewhere to say so;
 that it is empty is the fact, and it is said rather than shown as a table with no rows.
 
-### DONE (206)
+### DONE (207)
 
 | id | what | evidence | account |
 |---|---|---|---|
@@ -251,6 +251,7 @@ that it is empty is the fact, and it is said rather than shown as a table with n
 | `C169` | law 50b's statement was not true as written: the walk's counted quantity is `Par`-nesting, and the gap is a tight factor of 3 rather than a slack of 128 | parNestDepth/walkValuePar/parDepth_le_three_mul_parNestDepth | §20 |
 | `C170` | the attestation guard counted a validator that had *ever* spoken as moving stake, and its supermajority clause was short-circuited by a deploy-bearing parent — so a node that had lost over a third of its stake attested at every height, the reverse of what the shipped comment claimed | moving_attestation_stake/attestation_suppressed/a_silent_validators_stale_message_does_not_carry_the_quorum/an_unreachable_supermajority_suppresses_even_with_a_deploy_bearing_parent/but_a_node_quiet_past_the_window_speaks_again | §23 |
 | `C172` | BlockMetadataStore::add updates the in-memory DAG index before the store it indexes, so has_all_deps (index) can queue a child whose justification block_summary (store) cannot resolve: ValidateError::Internal is dropped with no re-queue, the receiver never sees the block finish, and the stall is permanent until a restart (#103) | validate_dag_state_after/a_refused_height_gap_is_not_left_in_the_index/a_failed_store_write_is_not_left_in_the_index/validate_after_agrees_with_validating_the_extended_state | §24 |
+| `C174` | the fringe gate asked two questions of one map, so a bonded validator that produced no message made the full-partition filter unsatisfiable and capped finality whatever share of the stake the survivors held (80 % survivors did not resume finality; the same shape froze #105's 91 % survivor) | live_weight_set/calculate_fringe/a_silent_bonded_validator_does_not_cap_the_fringe/the_quorum_is_measured_against_the_whole_bonded_map_not_the_live_one | §26 |
 | `F1` | The interpreter core is a mechanical Scala port. `rholang/src/reduce.rs` (1773 lines) | — | §9 |
 | `F2` | The blessed genesis contracts re-implement a HashMap trie in interpreted rholang | — | §9 |
 | `F3` | Silent partiality hides the failure. `compute_bonds` (`casper/src/runtime_manager.rs:503-509`) | — | §9 |

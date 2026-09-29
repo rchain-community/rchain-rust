@@ -5,6 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use rchain_block_storage::block_store::BlockStore;
 use rchain_block_storage::dag::dag_storage::{BlockDagStorage, DeployId};
 use rchain_block_storage::dag::finalizer::{Finalizer, Message};
+use rchain_block_storage::dag::liveness;
 use rchain_block_storage::dag::message_map;
 use rchain_crypto::hash::blake2b256_hash::Blake2b256Hash;
 use rchain_models::block::state_hash::StateHash;
@@ -186,8 +187,15 @@ where
     };
 
     // If a new fringe is finalized, merge it.
+    //
+    // Through the liveness rule (`liveness`), so the partition a candidate must satisfy ranges over the
+    // bonded validators that are **still speaking** while the quorum stays the whole bonded map: a
+    // validator that has stopped producing messages no longer caps finality, and a minority still
+    // cannot finalise alone (#70). This is the same call the creator makes, which is what keeps a
+    // block's `fringe` and this node's derivation of it the same value.
     let finalizer = Finalizer::new(msg_map);
-    let (_parent_fringe, new_fringe_opt) = finalizer.calculate_finalization(&parents, &bonds_map);
+    let (_parent_fringe, new_fringe_opt) =
+        liveness::calculate_finalization(&finalizer, &parents, &bonds_map);
     let new_fringe_hashes: Option<BTreeSet<BlockHash>> =
         new_fringe_opt.map(|f| f.iter().map(|m| m.id).collect());
 

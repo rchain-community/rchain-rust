@@ -74,10 +74,17 @@ def allBonded (bonded : List Sender) (seenBy : List (Sender × List Sender)) : B
 def bondedSupport (supp : SupportMap) (bonded : List Sender) : List Sender :=
   (supp.filter (fun p => allBonded bonded p.2)).map (·.1)
 
-/-- **The stake supporting the candidate fringe**: the bonded stake whose senders saw the full partition.
-    A sender with no bond contributes nothing (`stakeOf_eq_none`). -/
-def fullPartitionStake (supp : SupportMap) (bonds : Bonds) : Nat :=
-  ((bondedSupport supp (bondedSenders bonds)).filterMap (fun s => stakeOf bonds s)).foldr
+/-- **The stake supporting the candidate fringe**: the bonded stake whose senders saw the full
+    partition — the *partition* map's senders, staked at the *quorum* map's rates. A sender with no bond
+    in the quorum contributes nothing (`stakeOf_eq_none`).
+
+    **Two maps, because the gate asks two questions** (the port's `liveness`, #70): which validators a
+    candidate message must have been seen by, and what the supermajority is measured against. One map for
+    both capped finality at *any* stake share, because a validator that produced no message could never
+    be "seen by every seer"; a quorum over the speaking subset instead would let any self-consistent
+    group finalise, and under a partition two groups would finalise different histories. -/
+def fullPartitionStake (supp : SupportMap) (partition : Bonds) (quorum : Bonds) : Nat :=
+  ((bondedSupport supp (bondedSenders partition)).filterMap (fun s => stakeOf quorum s)).foldr
     (fun n acc => n + acc) 0
 
 /-- The total bonded stake — summed exactly in the model. The port sums in `i128` for the same reason
@@ -85,9 +92,22 @@ def fullPartitionStake (supp : SupportMap) (bonds : Bonds) : Nat :=
     (`sdk/src/consensus.rs:50`). -/
 def totalStake (bonds : Bonds) : Nat := (bonds.map (·.2)).foldr (fun n acc => n + acc) 0
 
-/-- **`calculate_fringe`** (`block-storage/src/dag/finalizer.rs:153-171`), as the model computes it. -/
-def calculateFringe (supp : SupportMap) (bonds : Bonds) : Bool :=
-  decide (isSuperMajority (fullPartitionStake supp bonds) (totalStake bonds))
+/-- **`calculate_fringe`** (`block-storage/src/dag/finalizer.rs`), as the model computes it: the
+    partition ranges over one map, the supermajority is measured against the other. -/
+def calculateFringe (supp : SupportMap) (partition : Bonds) (quorum : Bonds) : Bool :=
+  decide (isSuperMajority (fullPartitionStake supp partition quorum) (totalStake quorum))
+
+/-- **One map for both — the call this gate made until 2026-09-29**, and the case the boundary theorems
+    below are stated about: they are statements about the *gate* (the strict `>`, the exact integer
+    comparison, the non-bonded skip), not about the liveness policy that now chooses the partition. -/
+def calculateFringeOneMap (supp : SupportMap) (bonds : Bonds) : Bool :=
+  calculateFringe supp bonds bonds
+
+/-- **The split changes nothing when the partition is the quorum.** Stated as the identity so a reader
+    can see the two-map gate is a generalisation rather than a different rule — which is also what makes
+    the boundary theorems below carry over unchanged. -/
+theorem calculateFringeOneMap_eq_calculateFringe_self (supp : SupportMap) (bonds : Bonds) :
+    calculateFringeOneMap supp bonds = calculateFringe supp bonds bonds := rfl
 
 /-! ### The boundary, which is where this law's content is
 

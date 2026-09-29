@@ -362,12 +362,17 @@ measured:
    `stake * 3 > total * 2`, with a test named `two_thirds_is_not_supermajority` — taken over the
    **active set** (`compute_bonds` reads `pos:active`, `casper/src/runtime_manager.rs:1370-1381`;
    `defaults.conf` caps that set at 100, so on a small net it equals the whole pool), and there is no
-   inactivity leak, no decay and no eviction, so an absent validator's stake counts forever. But the
-   fringe's **full-partition filter** counts a candidate message only when **every validator that has
-   seen it has itself seen a message from every bonded validator** (`all_bonded`,
-   `block-storage/src/dag/finalizer.rs:173`), so one bonded validator that produces nothing stops the
-   fringe advancing regardless of the survivors' stake share — measured 2026-09-29 with
-   `--stakes 100,100,50`: the survivors at **80 %** did not resume finality. Attesting also *is*
+   inactivity leak, no decay and no eviction, so an absent validator's stake counts forever. The
+   binding constraint was stricter still, and until 2026-09-29 it was not just arithmetic: the fringe's
+   **full-partition filter** counts a candidate message only when **every validator that has seen it has
+   itself seen a message from every validator of the partition** (`all_bonded`,
+   `block-storage/src/dag/finalizer.rs`), and the partition was the **whole bonded set** — so one bonded
+   validator that produced nothing stopped the fringe advancing regardless of the survivors' stake share.
+   Measured 2026-09-29 with `--stakes 100,100,50`: the survivors at **80 %** did not resume finality. The
+   partition is now the **live weight set** (the bonded validators whose latest message is within
+   `LIVENESS_WINDOW` heights of the tip, `block-storage/src/dag/liveness.rs`) while the quorum stays the
+   whole bonded set, so a stopped validator stops blocking the partition and a minority still cannot
+   finalise alone. Attesting also *is*
    proposing: the `--attest-on-new-blocks` tap enqueues into the proposer's queue, so a validator with
    no node contributes nothing while still being counted
    ([#70](https://github.com/rchain-community/rchain-rust/issues/70)). **Confirmed from the other side
@@ -393,16 +398,21 @@ the partition reading rather than the arithmetic one — A held 1000 of a 1200 a
 threshold, and finality still stopped while the other two produced nothing. Anyone bonding on top takes
 A's share down, and the recovery needs the absent validator to speak again, not merely a larger share.
 
-**Before a validator is added: #70's recovery case has now been measured and it did not recover.** The
-2026-09-29 three-validator run (`--stakes 100,100,50 --epoch-length 10 --no-autopropose
---propose-on-deploy`, recorded on [#70](https://github.com/rchain-community/rchain-rust/issues/70))
-answered all three questions and changed the order of what blocks this: the survivors at 80 % did
-**not** resume finality (the partition reason above), and the run's own blocker is a **joiner** — the
-50-stake validator stalled at its first epoch boundary with `missing justification` and never
-recovered, because a block can be in the DAG index before the store that index is built from holds it,
-and nothing re-queues it ([#103](https://github.com/rchain-community/rchain-rust/issues/103)). So the
-order is #103, then a weight set the finalizer and the proposer share (a liveness predicate, #70's
-increment 2), then this measurement again. Until then, add nothing to a live net: use it as a
+**Before a validator is added: #70's recovery case has been measured, and what blocked it is now
+fixed or in review.** The 2026-09-29 three-validator run (`--stakes 100,100,50 --epoch-length 10
+--no-autopropose --propose-on-deploy`, recorded on
+[#70](https://github.com/rchain-community/rchain-rust/issues/70)) answered all three questions. The
+survivors at 80 % did **not** resume finality, for the partition reason above — since fixed: the
+partition is the live weight set, and the quorum the whole bonded map. The run's own blocker was a
+**joiner**: the 50-stake validator stalled at its first epoch boundary with `missing justification` and
+never recovered, because a block could be in the DAG index before the store that index is built from
+held it, and nothing re-queued it
+([#103](https://github.com/rchain-community/rchain-rust/issues/103), fixed in #106). And #105's
+live-testnet run found a third: a node that attributes one failure to a **bonded** validator's block is
+estranged from its chain permanently — the height maximum skips failed justifications and
+`neglected_invalid_block` refuses any block justifying a failed bonded sender
+([#105](https://github.com/rchain-community/rchain-rust/issues/105), AUDIT C173, open). So the order is
+C173's decision, then this measurement again, and until then add nothing to a live net: use it as a
 single-proposer chain and read or deploy against A.
 
 **A second, independent way for a live net to lose a validator:**

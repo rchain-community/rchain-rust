@@ -47,8 +47,11 @@ where
         justifications: &BTreeSet<Message<M, S>>,
     ) -> Message<M, S> {
         let finalizer = Finalizer::new(&self.msg_map);
+        // Through the liveness rule, not the raw gate: the creator writes this fringe into the block,
+        // and a validator that derived a different one would refuse the block it was handed — so both
+        // sides must come through here (see `super::liveness`).
         let (parent_fringe, new_fringe_opt) =
-            finalizer.calculate_finalization(justifications, &fin_bonds_map);
+            super::liveness::calculate_finalization(&finalizer, justifications, &fin_bonds_map);
 
         let new_fringe = new_fringe_opt.unwrap_or(parent_fringe);
         let new_fringe_ids: BTreeSet<M> = new_fringe.iter().map(|m| m.id.clone()).collect();

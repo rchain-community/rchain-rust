@@ -835,22 +835,32 @@ def laws : List Law := [
     rustWitness := [
       "block-storage/src/dag/finalizer.rs:law14_fringe_requires_supermajority",
       "sdk/src/property_tests.rs:law14_super_majority_is_strictly_more_than_two_thirds",
-      "sdk/src/property_tests.rs:law14_the_two_thirds_boundary_survives_past_the_f64_mantissa"],
-    statement := "Finality is the fringe's advance gate: the fringe advances iff the supporting stake is \
-      a strict supermajority of the bonded stake, as the exact integer comparison `3·stake > 2·total` \
-      (no float rounding)",
+      "sdk/src/property_tests.rs:law14_the_two_thirds_boundary_survives_past_the_f64_mantissa",
+      "casper/tests/finalization.rs:a_silent_bonded_validator_does_not_cap_the_fringe",
+      "casper/src/blocks/proposer/proposer.rs:the_quorum_is_measured_against_the_whole_bonded_map_not_the_live_one",
+      "block-storage/src/dag/liveness.rs:the_window_is_heights_behind_the_tip"],
+    statement := "Finality is the fringe's advance gate: the fringe advances iff the supporting stake — \
+      the stake of the candidates **seen by every sender of the partition** — is a strict supermajority \
+      of the **whole bonded** stake, as the exact integer comparison `3·stake > 2·total` (no float \
+      rounding). The two sets are separate arguments because the gate asks two questions: what a \
+      candidate must have been seen *by* (the partition) and what the quorum is measured *against* (the \
+      bonded map). The node passes the **live weight set** as the partition — the bonded validators \
+      whose latest message is within a window of the tip — so a validator that has stopped producing \
+      messages stops blocking the partition while its stake still counts against the quorum (#70); that \
+      policy is §6's, and the gate below is proved with the partition as an argument",
     status := .provedTied,
     corpus := some "stake",
     declarations := [`Rchain.isSuperMajority, `Rchain.bondedSenders, `Rchain.stakeOf,
       `Rchain.stakeOf_eq_none, `Rchain.allBonded, `Rchain.bondedSupport,
       `Rchain.fullPartitionStake, `Rchain.totalStake, `Rchain.calculateFringe,
+      `Rchain.calculateFringeOneMap, `Rchain.calculateFringeOneMap_eq_calculateFringe_self,
       `Rchain.finality_iff_supermajority, `Rchain.two_thirds_is_not_supermajority,
       `Rchain.above_two_thirds_is_supermajority, `Rchain.below_two_thirds_is_not_supermajority,
       `Rchain.large_stake_just_above_two_thirds_is_exact,
       `Rchain.i64_overflowing_stakes_do_not_wrap],
     axioms := [],
     rust := ["block-storage/src/dag/finalizer.rs", "sdk/src/consensus.rs"],
-    witness := [`Rchain.two_thirds_is_not_supermajority, `Rchain.below_two_thirds_is_not_supermajority, `Rchain.large_stake_just_above_two_thirds_is_exact, `Rchain.i64_overflowing_stakes_do_not_wrap, `Rchain.stakeOf_eq_none],
+    witness := [`Rchain.two_thirds_is_not_supermajority, `Rchain.below_two_thirds_is_not_supermajority, `Rchain.large_stake_just_above_two_thirds_is_exact, `Rchain.i64_overflowing_stakes_do_not_wrap, `Rchain.stakeOf_eq_none, `Rchain.calculateFringeOneMap_eq_calculateFringe_self],
     falsifiable := some "each boundary is an independent witness, and each names the port's own test: \
       `two_thirds_is_not_supermajority` fails the moment the comparison is `≥` (`consensus.rs:24`); \
       `large_stake_just_above_two_thirds_is_exact` is false for the `f64` form the Scala oracle uses \
@@ -859,7 +869,10 @@ def laws : List Law := [
       case the port's `i128` exists for (`:50`); and `stakeOf_eq_none` is false for a gate that \
       indexed the bonds map by every support sender — the panic the port's `calculate_fringe` skips \
       instead, pinned by `calculate_fringe_ignores_non_bonded_sender` \
-      (`block-storage/src/dag/finalizer.rs:294`, and `law14_fringe_requires_supermajority` at `:280`)",
+      (`block-storage/src/dag/finalizer.rs:294`, and `law14_fringe_requires_supermajority` at `:280`); \
+      and the split itself is falsified by the *other* direction — reverting the node to one map for \
+      both makes `a_silent_bonded_validator_does_not_cap_the_fringe`'s control arm the only arm, which \
+      is the pre-2026-09-29 behaviour where a silent bonded validator capped finality at any stake share",
     note := "**the axiom that stood here was `Nat.mul_comm` twice** — `isSuperMajority s t ↔ s * 3 > \
       t * 2` restated the definition's own body, which is why the row was `vacuous` and why it tied \
       finality to nothing. It is a **theorem** now, and the law is the **gate**: `calculateFringe` is \
@@ -869,7 +882,13 @@ def laws : List Law := [
       plainly**: the `↔`'s shape is the gate's own `if`, so the weight sits in *what the gate computes*, \
       and that is what the boundary theorems falsify — the strict `>`, the exact `3·stake > 2·total` at \
       the 2⁵³ boundary, and the non-bonded skip. Each is pinned by a named Rust test, which is what \
-      makes the row a claim about code rather than arithmetic. Modelled, and **as a deliberate \
+      makes the row a claim about code rather than arithmetic. **Two maps since 2026-09-29**, because \
+      one map made the gate ask both questions of the same set: `calculateFringe`'s partition now ranges \
+      over `partition`'s senders while `totalStake` sums `quorum`'s values, and \
+      `calculateFringeOneMap_eq_calculateFringe_self` records that the one-map call is their identity — \
+      so the boundary theorems above are unchanged rather than re-earned. The **policy** that chooses the \
+      partition is the node's live weight set (`block-storage/src/dag/liveness.rs`, §6, AUDIT C174), and \
+      it enters here as an argument, exactly as the support map does. Modelled, and **as a deliberate \
       deviation from the oracle**: `check_min_messages` ahead of the stake gate (`finalizer.rs:99`, \
       called at `:200`) demands the minimum-message **sender set** equal the bonded set, where the \
       Scala compares counts only and carries the epoch TODO saying so \
@@ -885,11 +904,13 @@ def laws : List Law := [
       "block-storage/src/dag/finalizer.rs:calculate_next_layer_picks_max_sender_seq",
       "block-storage/src/dag/finalizer.rs:check_min_messages_needs_all_bonded_senders"],
     statement := "A fringe holds one message per bonded validator (an antichain) — **of the fringe the \
-      derivation publishes**; over a bare `Fringe` the claim is false and its refutation is proved. Both \
-      halves are proved of the derivation: the walk and the layer give pairwise-distinct **senders**, and \
-      the gate gives that the layer's sender set **is** the bonded set, so \
-      `derivedFringe_holds_one_per_bonded` states one per *bonded* validator directly — no longer \
-      delegated to the upstream epoch TODO, which the port now departs from (law 14a's row, §6)",
+      derivation publishes**, and with the *partition* as the set: the walk and the layer give \
+      pairwise-distinct **senders**, and the coverage gate gives that the layer's sender set **is** the \
+      partition map's, so `derivedFringe_holds_one_per_bonded` states one per validator directly — no \
+      longer delegated to the upstream epoch TODO, which the port now departs from (law 14a's row, §6). \
+      The partition is the node's live weight set (AUDIT C174), so on a chain where a bonded validator \
+      has stopped, one per bonded validator is read against the ones still speaking; over a bare `Fringe` \
+      the antichain claim is false and its refutation is proved",
     status := .provedModel,
     declarations := [`Rchain.derivedFringe_antichain, `Rchain.derivedFringe_holds_one_per_bonded,
       `Rchain.Fringe, `Rchain.fringe_antichain_is_false, `Rchain.Dag],
@@ -915,7 +936,12 @@ def laws : List Law := [
       messages (`finalizer.rs:186-211`), the coverage gate (`finalizer.rs:99`, a sender-set comparison \
       since 2026-09-29 — the departure from the Scala law 14a's row and §6 record), the layer fold \
       (`calculate_next_layer`, `finalizer.rs:109-127`) and the stake gate (law 14a's \
-      `calculate_fringe`, so its support map stays an argument as it is for `nextFringe`). **And the \
+      `calculate_fringe`, so its support map stays an argument as it is for `nextFringe`, and since \
+      2026-09-29 so does the **partition**: `derivedFringe` takes the set whose senders must be covered \
+      and the quorum's denominator separately, and the node passes the live weight set and the whole \
+      bonded map, so a stopped validator stops blocking the coverage gate while its stake still counts \
+      against the quorum (law 14a's row, AUDIT C174) — the same map twice being what the gate did \
+      before). **And the \
       antichain is a property of the fold, not of the type it is stored in**: the port keeps the layer in \
       a `BTreeMap<sender, Message>`, which gives distinct senders for free — modelling *that* would make \
       this row true by construction, the shape G6 refused one unit earlier — so the model carries the \

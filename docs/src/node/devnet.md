@@ -131,13 +131,14 @@ inputs simplified (theory in [Consensus (Casper)](consensus.md)):
   the strict `> 2/3` threshold requires *all* validators to attest before a block finalizes (2 of 3 is
   exactly 2/3, not a supermajority). Production's uneven stakes let a proper subset reach `> 2/3` — but
   see the next bullet: the threshold is not the binding constraint on a net where someone is silent.
-- **A validator that stops producing caps finality, whatever the survivors hold.** `calculate_fringe`'s
-  full-partition filter counts a candidate message only when **every validator that has seen it has
-  itself seen a message from every bonded validator** (`all_bonded`,
-  `block-storage/src/dag/finalizer.rs:173`), so one absent validator stops the fringe from advancing.
-  Measured 2026-09-29 on `--stakes 100,100,50`: with the 50-stake node stopped, the two survivors at
-  **80 %** of the active set did not resume finality (finality stayed at 8 while the height ran to
-  126). [#70](https://github.com/rchain-community/rchain-rust/issues/70).
+- **A validator that stops producing used to cap finality, whatever the survivors held.** Until
+  2026-09-29 the full-partition filter required a message seen by every validator of the **whole bonded
+  set** (`all_bonded`, `block-storage/src/dag/finalizer.rs`), so one absent validator stopped the fringe
+  from advancing: measured on `--stakes 100,100,50`, the two survivors at **80 %** of the active set did
+  not resume finality (finality stayed at 8 while the height ran to 126). The partition is now the
+  **live weight set** (`block-storage/src/dag/liveness.rs`) while the quorum stays the whole bonded set,
+  so the survivors can finalise and a minority still cannot
+  ([#70](https://github.com/rchain-community/rchain-rust/issues/70)).
 - **A joiner can stall permanently on `missing justification`.** A block can be in the DAG's in-memory
   index before the store that index is built from holds it, so it is queued for validation, fails to
   resolve a justification, and is dropped with nothing to re-queue it; only a restart recovers.

@@ -5,6 +5,7 @@
 pub mod codecs;
 pub mod dag_storage;
 pub mod finalizer;
+pub mod liveness;
 pub mod message_map;
 pub mod message_state;
 pub mod metadata_store;

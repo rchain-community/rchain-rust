@@ -175,31 +175,43 @@ where
     }
 
     /// Whether the supporting stake is a supermajority (Law 14).
+    ///
+    /// **Two maps, because the gate asks two questions** (see [`super::liveness`]): `partition_bonds`'
+    /// *keys* are the senders a candidate message must have been seen by, and `quorum_bonds`' *values*
+    /// are what the supermajority is measured against. They were one map until 2026-09-29, which is why
+    /// a bonded validator that produced no message capped finality however little stake it held; passing
+    /// the same map twice is exactly the old behaviour, and is what the identity case of the model
+    /// recovers (`Rchain.calculateFringe`).
     pub fn calculate_fringe(
         &self,
         next_fringe_support_map: &BTreeMap<S, BTreeMap<S, BTreeSet<S>>>,
-        bonds_map: &BTreeMap<S, NonNegI64>,
+        partition_bonds: &BTreeMap<S, NonNegI64>,
+        quorum_bonds: &BTreeMap<S, NonNegI64>,
     ) -> bool {
-        let bonded_senders: BTreeSet<S> = bonds_map.keys().cloned().collect();
+        let must_be_seen: BTreeSet<S> = partition_bonds.keys().cloned().collect();
         let mut full_partition_stake: i128 = 0;
         for (sender, seen_by) in next_fringe_support_map {
-            let all_bonded = !seen_by.is_empty() && seen_by.values().all(|v| v == &bonded_senders);
+            let all_bonded = !seen_by.is_empty() && seen_by.values().all(|v| v == &must_be_seen);
             // Only bonded senders contribute stake. A non-bonded justification sender must not
-            // index `bonds_map` (it would panic) — skip it instead.
+            // index the bonds map (it would panic) — skip it instead.
             if all_bonded {
-                if let Some(stake) = bonds_map.get(sender) {
+                if let Some(stake) = quorum_bonds.get(sender) {
                     full_partition_stake += i128::from(i64::from(*stake));
                 }
             }
         }
-        let total_stake: i128 = bonds_map.values().map(|v| i128::from(i64::from(*v))).sum();
+        let total_stake: i128 = quorum_bonds
+            .values()
+            .map(|v| i128::from(i64::from(*v)))
+            .sum();
         is_super_majority(full_partition_stake, total_stake)
     }
 
     fn next_fringe(
         &self,
         justifications: &BTreeSet<Message<M, S>>,
-        bonds_map: &BTreeMap<S, NonNegI64>,
+        partition_bonds: &BTreeMap<S, NonNegI64>,
+        quorum_bonds: &BTreeMap<S, NonNegI64>,
         prev_fringe: &BTreeSet<Message<M, S>>,
     ) -> Option<BTreeSet<Message<M, S>>> {
         // Minimum (oldest non-finalized) message from each justification sender.
@@ -210,13 +222,13 @@ where
             // `chain` is non-empty by construction (seeded with `p`).
             min_msgs.push(chain.into_iter().last().unwrap_or_else(|| p.clone()));
         }
-        if !self.check_min_messages(&min_msgs, bonds_map) {
+        if !self.check_min_messages(&min_msgs, partition_bonds) {
             return None;
         }
         let next_layer = self.calculate_next_layer(&min_msgs);
         let fringe_support_map =
             self.calculate_next_fringe_support_map(justifications, &next_layer, prev_fringe);
-        if self.calculate_fringe(&fringe_support_map, bonds_map) {
+        if self.calculate_fringe(&fringe_support_map, partition_bonds, quorum_bonds) {
             Some(next_layer.values().cloned().collect())
         } else {
             None
@@ -224,15 +236,24 @@ where
     }
 
     /// Compute the fringe from joined justifications and any newly detected fringe.
+    ///
+    /// `partition_bonds` is the set a candidate message must have been seen by — in the node, the
+    /// **live weight set** ([`super::liveness::calculate_finalization`]) — and `quorum_bonds` is the
+    /// whole bonded map the supermajority is measured against. Passing the same map twice is the
+    /// pre-2026-09-29 behaviour; the tests below do exactly that, which is what keeps them a statement
+    /// about the gate rather than about the liveness rule layered over it.
     pub fn calculate_finalization(
         &self,
         justifications: &BTreeSet<Message<M, S>>,
-        bonds_map: &BTreeMap<S, NonNegI64>,
+        partition_bonds: &BTreeMap<S, NonNegI64>,
+        quorum_bonds: &BTreeMap<S, NonNegI64>,
     ) -> (BTreeSet<Message<M, S>>, Option<BTreeSet<Message<M, S>>>) {
         let parent_fringe = message_map::latest_fringe(self.msg_map, justifications);
         let mut current = parent_fringe.clone();
         let mut new_fringe_opt: Option<BTreeSet<Message<M, S>>> = None;
-        while let Some(nf) = self.next_fringe(justifications, bonds_map, &current) {
+        while let Some(nf) =
+            self.next_fringe(justifications, partition_bonds, quorum_bonds, &current)
+        {
             // Progress guard: a non-advancing fringe would loop forever. Only record a strictly
             // new fringe.
             if nf == current {
@@ -297,10 +318,18 @@ mod tests {
         let bonded_senders: BTreeSet<i32> = bonds.keys().copied().collect();
 
         // All 3 validators see the full partition -> 3/3 > 2/3 -> finalizes.
-        assert!(finalizer.calculate_fringe(&support_with_full(&[0, 1, 2], &bonded_senders), &bonds));
+        assert!(finalizer.calculate_fringe(
+            &support_with_full(&[0, 1, 2], &bonded_senders),
+            &bonds,
+            &bonds
+        ));
 
         // Only 2 of 3 -> 2/3 is NOT > 2/3 -> does not finalize.
-        assert!(!finalizer.calculate_fringe(&support_with_full(&[0, 1], &bonded_senders), &bonds));
+        assert!(!finalizer.calculate_fringe(
+            &support_with_full(&[0, 1], &bonded_senders),
+            &bonds,
+            &bonds
+        ));
     }
 
     #[test]
@@ -320,7 +349,7 @@ mod tests {
                 .map(|&b| (b, bonded_senders.clone()))
                 .collect(),
         );
-        assert!(finalizer.calculate_fringe(&support, &bonds));
+        assert!(finalizer.calculate_fringe(&support, &bonds, &bonds));
     }
 
     #[test]
@@ -430,7 +459,7 @@ mod tests {
         let duplicate_justifications: BTreeSet<Message<i32, i32>> =
             [a3.clone(), a3_duplicate, b3.clone()].into_iter().collect();
         let (_parent, duplicate_fringe) =
-            finalizer.calculate_finalization(&duplicate_justifications, &bonds);
+            finalizer.calculate_finalization(&duplicate_justifications, &bonds, &bonds);
         assert!(
             duplicate_fringe.is_none(),
             "duplicate sender must not substitute for a missing bonded sender"
@@ -438,7 +467,8 @@ mod tests {
 
         // Exact coverage by all bonded senders still advances the fringe.
         let justifications: BTreeSet<Message<i32, i32>> = [a3, b3, c3].into_iter().collect();
-        let (_parent, new_fringe) = finalizer.calculate_finalization(&justifications, &bonds);
+        let (_parent, new_fringe) =
+            finalizer.calculate_finalization(&justifications, &bonds, &bonds);
         let ids: BTreeSet<i32> = new_fringe
             .expect("fringe should advance")
             .into_iter()
@@ -467,7 +497,8 @@ mod tests {
                 .into_iter()
                 .collect();
         let finalizer: Finalizer<i32, i32> = Finalizer::new(&map);
-        let (_parent, new_fringe) = finalizer.calculate_finalization(&justifications, &bonds);
+        let (_parent, new_fringe) =
+            finalizer.calculate_finalization(&justifications, &bonds, &bonds);
         assert!(new_fringe.is_none(), "lockstep chain must not finalize");
     }
     /// **C69's second half, settled: the fringe walk is bounded by the non-finalized chain length.**
@@ -522,7 +553,7 @@ mod tests {
         let mut current = message_map::latest_fringe(finalizer.msg_map, &justifications);
         let mut steps = 0usize;
         loop {
-            let Some(nf) = finalizer.next_fringe(&justifications, &bonds, &current) else {
+            let Some(nf) = finalizer.next_fringe(&justifications, &bonds, &bonds, &current) else {
                 break;
             };
             if nf == current {
