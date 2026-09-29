@@ -2807,7 +2807,47 @@ def laws : List Law := [
       fix, said plainly**: a net that stays below two thirds permanently (three equal validators minus \
       one is exactly two thirds) still cannot finalise, and the honest repair there is an inactivity leak \
       — a state change that burns a silent validator's stake — which belongs with the shard-configuration \
-      and validator-lifecycle work (#24, #39), not with a recency window" }
+      and validator-lifecycle work (#24, #39), not with a recency window" },
+  { number := 53, clause := "a", layer := "Casper",
+    rustWitness := [
+      "casper/src/validate.rs:neglected_invalid_block_detects_bonded_invalid_justification",
+      "casper/src/dag.rs:h1b_a_justified_bonded_failed_block_is_refused_rather_than_forced"],
+    statement := "**One attribution is terminal: the refusal persists and the rule refuses its children.** \
+      A node that marks a bonded validator's block failed never follows that validator's chain again, \
+      because (i) the record persists — `mark_failed` records the metadata of every \
+      `ValidateError::ValidationFailed` and no rule clears it — and (ii) `neglected_invalid_block` refuses \
+      any block justifying a failed **bonded** sender's block, before any other rule runs (and, \
+      independently, `block_number`'s maximum skips failed justifications, so a child numbered above the \
+      last non-failed height is refused too). Together they are `Rchain.System.persistent_blocks_the_goal`: \
+      from a state holding the refusal, **no** reachable state admits a block above it. The node is \
+      `Terminal`, not slow",
+    status := .provedModel,
+    declarations := [`Rchain.Strand, `Rchain.strandStep, `Rchain.strandSystem, `Rchain.neglects],
+    axioms := [],
+    rust := ["casper/src/validate.rs", "casper/src/dag.rs", "casper/src/multi_parent_casper.rs"],
+    witness := [`Rchain.the_refusal_is_persistent, `Rchain.a_neglected_block_is_detected,
+      `Rchain.a_refused_validator_is_never_followed],
+    falsifiable := some "**the falsifier is a rule that restores, and the port has none**: \
+      `Rchain.the_refusal_is_persistent` is proved from the modelled step relation, so a step that \
+      unmarked a sender — a revalidation of failed metadata, or a bounded re-fetch — makes it false *by \
+      construction*. That makes this theorem a **guard on the fix**: the row is stated so that the red it \
+      produces when C173's decision lands is read as the guard firing rather than as a regression. The \
+      rule half is non-vacuous on the model's own fixture (`Rchain.a_neglected_block_is_detected`: a block \
+      justifying a failed bonded sender's block is neglected, one justifying a failed *unbonded* sender's \
+      is not), which is why the reachable route to a failed parent is the unbonded one",
+    note := "This is C173, filed as #105 from a live-testnet run on 2026-09-29: a two-validator chain \
+      froze with the survivor holding 91 % of the stake, and the reason was not the quorum — the \
+      survivor had marked the other's block failed, so it refused every block above it for good. **Both \
+      rules are the oracle's**, which is why the law is a *decision* rather than a bug fix: `block_number` \
+      skips failed justifications (the port's own note cites the Scala's `if (!m.validationFailed)`) and \
+      `neglectedInvalidBlock` is a straight port. **What is not upstream is the consequence**: the failure \
+      is attributed (`mark_failed_attributable`, reached by every `ValidateError::ValidationFailed`), so \
+      the block is recorded failed *and* slashable, and the one-block-per-node divergence becomes a \
+      deterministic estrangement with slash evidence attached — the mutual-blame shape #70's own comment \
+      of 2026-09-24 describes. The fix is a fork decision and is recorded as such in AUDIT C173 \
+      (`spec/audit/passes.md` §25): count failed justifications in the height maximum, or give a stranded \
+      node an explicit path back. **Independent of C172's fix**, which is a dropped `Internal` rather than \
+      a recorded `ValidationFailed` and does not touch this path" }
 ]
 
 /-- Every law number the catalog defines. Laws with clauses repeat. -/
