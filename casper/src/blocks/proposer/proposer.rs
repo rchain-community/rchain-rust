@@ -3,7 +3,7 @@
 //! `Proposer.apply` builds the dependency closures from the DAG/runtime; the `proposeEffect`
 //! (broadcast via `CommUtil`) is supplied by the caller.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -17,6 +17,7 @@ use rchain_crypto::signatures::secp256k1::Secp256k1;
 use rchain_crypto::signatures::signed::Signed;
 use rchain_models::block::state_hash::StateHash;
 use rchain_models::block_hash::BlockHash;
+use rchain_models::block_metadata::BlockMetadata;
 use rchain_models::casper::protocol::casper_message::{BlockMessage, DeployData, SignedDeployData};
 use rchain_models::validator::Validator;
 use rchain_sdk::consensus::is_super_majority;
@@ -601,18 +602,17 @@ where
         }
         v
     };
-    let new_state_transition = parents.iter().any(|b| has_deploys(b));
-    let new_senders: BTreeSet<Validator> = pre_state
+    // The guard's inputs are named functions rather than inline sums, so that its behaviour is
+    // falsifiable without a DAG: `moving_attestation_stake` (who counts as moving),
+    // `attestation_suppressed` (the decision) and `cadence_due` (the pace bound). `tip` is the newest
+    // height this node can see, which is the datum the recency checks need.
+    let tip = pre_state
         .justifications
         .iter()
-        .map(|m| m.sender.clone())
-        .filter(|s| *s != creators_validator)
-        .collect();
-    let attestation_stake: i128 = pre_state_bonds
-        .iter()
-        .filter(|(v, _)| new_senders.contains(v))
-        .map(|(_, s)| i128::from(i64::from(*s)))
-        .sum();
+        .map(|m| m.block_num)
+        .max()
+        .unwrap_or_else(BlockHeight::zero);
+    let new_state_transition = parents.iter().any(|b| has_deploys(b));
     let pre_state_bonds_stake: i128 = pre_state_bonds
         .values()
         .map(|s| i128::from(i64::from(*s)))
@@ -622,10 +622,21 @@ where
         .filter(|(v, _)| **v == creators_validator)
         .map(|(_, s)| i128::from(i64::from(*s)))
         .sum();
-    let waiting_for_supermajority = !(new_state_transition
-        || attestation_reaches_supermajority(attestation_stake, own_stake, pre_state_bonds_stake));
+    let attestation_stake = moving_attestation_stake(
+        &pre_state.justifications,
+        &pre_state_bonds,
+        &creators_validator,
+        tip,
+    );
+    let quorum_reachable =
+        attestation_reaches_supermajority(attestation_stake, own_stake, pre_state_bonds_stake);
 
-    let suppress_attestation = nothing_to_finalize || waiting_for_supermajority;
+    let suppress_attestation = attestation_suppressed(
+        nothing_to_finalize,
+        new_state_transition,
+        quorum_reachable,
+        cadence_due(&pre_state.justifications, &creators_validator, tip),
+    );
 
     // User deploys: filter future / expired / replayed, then cap at what the block can seed — the pool
     // may hold far more than one block can carry, and the leftover stays pooled (AUDIT C123).
@@ -997,6 +1008,103 @@ mod tests {
 /// Whether this validator should attest now: its own weight plus the stake already moving on the fringe
 /// reaches a supermajority.
 ///
+/// How many heights of silence are tolerated, on both sides of the attestation guard: a validator whose
+/// latest message is further than this behind the tip no longer counts toward the moving stake (#70's
+/// F4 — before this, a silent validator's stake counted forever and carried a false quorum), and a node
+/// that has itself been quiet this long speaks again even while the quorum is out of reach (without
+/// which a chain where nobody can reach a quorum would produce no messages, never advance its tip, and
+/// never see a peer that came back — the liveness trap of a blanket suppress).
+///
+/// **Provisional, and deliberately a constant rather than a genesis parameter.** As a `PosParams` field
+/// it would enter `spec/GENESIS.md` and move the genesis block — a hard fork, #51 category A — so
+/// parameterising it belongs with #24 (on-chain shard configuration storage), which is already in that
+/// category. The value tolerates a peer lagging by a few blocks while dropping one that has stopped for
+/// more than a handful; what it *should* be is a measurement, and #70's increment 2 is where that gets
+/// recorded.
+const ATTESTATION_WINDOW: i64 = 5;
+
+/// `tip - message`, saturating rather than wrapping: a message cannot be ahead of the tip, but a
+/// `BlockHeight` subtraction that wrapped would read as maximally *stale* and drop a live validator.
+fn heights_behind(tip: BlockHeight, message: BlockHeight) -> i64 {
+    i64::from(tip).saturating_sub(i64::from(message))
+}
+
+/// The stake that counts as "moving" toward the quorum: the bonded senders of the parents' latest
+/// messages, **whose message is recent**, excluding ourselves.
+///
+/// The exclusion is the point — our own message is the attestation we are about to add, and
+/// [`attestation_reaches_supermajority`] counts it on the other side of the comparison.
+///
+/// The recency check is #70's F4. `justifications` is `latest_msgs`, and that map keeps a sender's last
+/// message **indefinitely**, so without a recency test a validator that has gone silent stays in this
+/// set forever and keeps contributing its full stake: "moving" would mean *has ever spoken* rather than
+/// *is speaking now*. Three equal validators with one dead returned 200 — the live peer's message
+/// *plus the dead one's stale one* — which `own_stake` made 300 of 300, a false supermajority. Pinned by
+/// `a_silent_validators_stale_message_does_not_carry_the_quorum` in `attestation_suppression_tests`.
+fn moving_attestation_stake(
+    justifications: &[BlockMetadata],
+    bonds: &BTreeMap<Validator, NonNegI64>,
+    own: &Validator,
+    tip: BlockHeight,
+) -> i128 {
+    let new_senders: BTreeSet<Validator> = justifications
+        .iter()
+        .filter(|m| &m.sender != own && heights_behind(tip, m.block_num) <= ATTESTATION_WINDOW)
+        .map(|m| m.sender.clone())
+        .collect();
+    bonds
+        .iter()
+        .filter(|(v, _)| new_senders.contains(v))
+        .map(|(_, s)| i128::from(i64::from(*s)))
+        .sum()
+}
+
+/// Whether this node has been quiet long enough to speak again, read from its own latest message in
+/// `justifications` — so the pace bound needs no new state, no counter, and no persistence.
+fn cadence_due(justifications: &[BlockMetadata], own: &Validator, tip: BlockHeight) -> bool {
+    match justifications.iter().find(|m| &m.sender == own) {
+        Some(mine) => heights_behind(tip, mine.block_num) > ATTESTATION_WINDOW,
+        // Nothing from us in the DAG yet: there is no quiet to have broken.
+        None => true,
+    }
+}
+
+/// Whether this node withholds its attestation for the block it is building.
+///
+/// A pair of bounds, and the order matters:
+///
+/// - nothing to finalise → suppress. An idle chain must not grow.
+/// - the quorum is reachable → attest now. The ordinary case, unchanged.
+/// - the quorum is unreachable, but a state transition exists to attest to **and** this node has itself
+///   been quiet for longer than `ATTESTATION_WINDOW` → attest anyway, at that reduced cadence.
+/// - otherwise → suppress.
+///
+/// **This used to be `nothing_to_finalize || !(new_state_transition || quorum)`, and that was #70's
+/// F3.** `new_state_transition` ("any parent carries deploys", the ordinary case on a chain with
+/// traffic) was OR-ed *inside* the quorum test, so it short-circuited it to `false`; suppression then
+/// collapsed to `nothing_to_finalize`, which was also `false` because the deploy-bearing block was
+/// unfinalized. A node that had lost over a third of its stake attested at **every** height — the
+/// 276-blocks-in-a-minute run on #70 — and the contract stated in the attestation-tap comment at
+/// `node_runtime.rs` ("a chain that has lost over a third of its stake does not spin") was not what the
+/// code did. `new_state_transition` still licenses an attestation; it no longer licenses an unbounded
+/// rate of them. Pinned by
+/// `an_unreachable_supermajority_suppresses_even_with_a_deploy_bearing_parent`, and the cadence half by
+/// `but_a_node_quiet_past_the_window_speaks_again`.
+fn attestation_suppressed(
+    nothing_to_finalize: bool,
+    new_state_transition: bool,
+    quorum_reachable: bool,
+    cadence_due: bool,
+) -> bool {
+    if nothing_to_finalize {
+        return true;
+    }
+    if quorum_reachable {
+        return false;
+    }
+    !(new_state_transition && cadence_due)
+}
+
 /// Counting our own weight is the point. Without it, a validator whose attestation is exactly what would
 /// complete the quorum can never be the one to add it — it is always "waiting for a supermajority" that
 /// only its own message could create. With it, four validators at equal stake attest as soon as one of
@@ -1025,6 +1133,152 @@ mod attestation_guard_tests {
         // A lone 10% validator on a net where nobody has moved still waits.
         assert!(!attestation_reaches_supermajority(0, 10, 100));
         assert!(!attestation_reaches_supermajority(10, 10, 100));
+    }
+}
+
+/// The two defects in the attestation guard, pinned as tests that are **red against this tree** rather
+/// than described in prose — F4 (`moving_attestation_stake` cannot see recency) and F3
+/// (`attestation_suppressed`'s quorum clause is short-circuited by a deploy-bearing parent).
+///
+/// Both were found by the #70 design pass on 2026-09-29; the issue's own comments do not contain
+/// either, and three of them are stale against this tree. See the plan at
+/// `~/.claude/plans/from-open-issues-and-nested-eclipse.md`.
+#[cfg(test)]
+mod attestation_suppression_tests {
+    use super::{
+        attestation_reaches_supermajority, attestation_suppressed, cadence_due,
+        moving_attestation_stake, ATTESTATION_WINDOW,
+    };
+    use rchain_models::block_hash::BlockHash;
+    use rchain_models::block_metadata::BlockMetadata;
+    use rchain_models::validator::Validator;
+    use rchain_shared::refined::{BlockHeight, NonNegI64, SeqNum};
+    use std::collections::{BTreeMap, BTreeSet};
+
+    fn validator(byte: u8) -> Validator {
+        Validator::new([byte; 65])
+    }
+
+    /// A sender's latest message, at `block_num`. `latest_msgs` keeps one of these per sender
+    /// indefinitely, so an old `block_num` is the whole of the staleness signal a guard could read.
+    fn latest(sender: Validator, block_num: i64) -> BlockMetadata {
+        BlockMetadata {
+            block_hash: BlockHash::new([0u8; 32]),
+            block_num: BlockHeight::try_from(block_num).unwrap(),
+            sender,
+            seq_num: SeqNum::zero(),
+            justifications: BTreeSet::new(),
+            bonds_map: BTreeMap::new(),
+            validated: true,
+            validation_failed: false,
+            slashable: false,
+            fringe: BTreeSet::new(),
+            fringe_state_hash: rchain_models::block::state_hash::StateHash::new([0u8; 32]),
+            member_of_fringe: None,
+        }
+    }
+
+    fn bonds(entries: &[(Validator, i64)]) -> BTreeMap<Validator, NonNegI64> {
+        entries
+            .iter()
+            .map(|(v, s)| (v.clone(), NonNegI64::try_from(*s).unwrap()))
+            .collect()
+    }
+
+    /// **F4: a silent validator's stale message must not carry the quorum.**
+    ///
+    /// Three equal validators. `b` has gone silent, so its latest message sits 7 heights behind `c`'s —
+    /// and both stay in `latest_msgs` forever. Only `c` is moving, so the quorum is
+    /// `100 + our own 100 = 200` of 300, which is *exactly* 2/3 and therefore **not** a supermajority
+    /// (`two_thirds_is_not_supermajority`, `sdk/src/consensus.rs:24`). Counting `b`'s stale message
+    /// makes it 300 of 300 and has this node attest at every height — the spin #70 reports.
+    ///
+    /// Red until `moving_attestation_stake` filters by recency against the tip.
+    #[test]
+    fn a_silent_validators_stale_message_does_not_carry_the_quorum() {
+        let (a, b, c) = (validator(1), validator(2), validator(3));
+        let bonded = bonds(&[(a.clone(), 100), (b.clone(), 100), (c.clone(), 100)]);
+        let justifications = vec![latest(b.clone(), 3), latest(c.clone(), 10)];
+        let tip = BlockHeight::try_from(10).unwrap();
+
+        let moving = moving_attestation_stake(&justifications, &bonded, &a, tip);
+        assert_eq!(
+            moving, 100,
+            "only `c` is moving — `b`'s message is 7 heights stale and must not count toward quorum"
+        );
+        assert!(
+            !attestation_reaches_supermajority(moving, 100, 300),
+            "200 of 300 is exactly 2/3, which is not a supermajority"
+        );
+    }
+
+    /// **F3: a deploy-bearing parent must not defeat the quorum clause.**
+    ///
+    /// Four validators at 100, one peer moving: `100 + our own 100 = 200` of 400, unreachable. A parent
+    /// carrying deploys is the ordinary case on a chain with traffic, and it used to short-circuit the
+    /// quorum test entirely, so this node attested at **every** height — the 276-blocks-in-a-minute
+    /// run. This pins the contract stated in the attestation-tap comment at `node_runtime.rs`: *a chain
+    /// that has lost over a third of its stake does not spin.*
+    #[test]
+    fn an_unreachable_supermajority_suppresses_even_with_a_deploy_bearing_parent() {
+        assert!(
+            attestation_suppressed(
+                false, // nothing_to_finalize: there *is* an unfinalized transition to attest to
+                true,  // new_state_transition: a parent carries deploys — the ordinary case
+                false, // quorum_reachable: 200 of 400 is not a supermajority
+                false, // cadence_due: we spoke within the window
+            ),
+            "the quorum is unreachable (200 of 400), so suppression must not be defeated by a \
+             deploy-bearing parent"
+        );
+    }
+
+    /// **The other half of F3, and the reason the repair is not a blanket suppress.**
+    ///
+    /// A hard suppress would trap liveness: no messages → no tip movement → no fresh justifications →
+    /// the quorum stays unreachable forever, and a peer that came back is never seen. So a node quiet
+    /// for longer than the window attests anyway, which bounds the spin to one block per window instead
+    /// of one per height.
+    #[test]
+    fn but_a_node_quiet_past_the_window_speaks_again() {
+        assert!(
+            !attestation_suppressed(false, true, false, true),
+            "a node that has been quiet past the window must attest even while the quorum is out of \
+             reach, or a stalled chain can never discover that a peer returned"
+        );
+    }
+
+    /// The ordinary case, unchanged: a reachable quorum attests immediately, whatever the cadence.
+    #[test]
+    fn a_reachable_quorum_attests_without_waiting_for_the_cadence() {
+        assert!(!attestation_suppressed(false, true, true, false));
+        assert!(!attestation_suppressed(false, false, true, false));
+    }
+
+    /// And an idle chain still produces nothing: suppression outranks every other term.
+    #[test]
+    fn an_idle_chain_suppresses_whatever_else_is_true() {
+        assert!(attestation_suppressed(true, true, true, true));
+    }
+
+    /// The pace bound is read from the DAG, so it needs no new state: our own latest message's height
+    /// against the tip. Nothing from us at all counts as due — there is no quiet to have broken.
+    #[test]
+    fn the_cadence_is_read_from_our_own_latest_message() {
+        let (a, b) = (validator(1), validator(2));
+        let tip = BlockHeight::try_from(20).unwrap();
+
+        assert!(cadence_due(&[], &a, tip), "nothing from us: speak");
+        assert!(
+            !cadence_due(&[latest(a.clone(), 19)], &a, tip),
+            "we spoke one height ago"
+        );
+        assert!(
+            cadence_due(&[latest(a.clone(), 20 - ATTESTATION_WINDOW - 1)], &a, tip),
+            "quiet past the window"
+        );
+        // Someone else's message is not ours, and must not reset our cadence.
+        assert!(cadence_due(&[latest(b, 20)], &a, tip));
     }
 }
 

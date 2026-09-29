@@ -2573,9 +2573,18 @@ fn tap_validated_blocks(
 /// deploy-bearing blocks produced exactly one round, and the fringe never advanced ([#70]).
 ///
 /// The traffic is bounded by the proposer's guard, not here: `suppress_attestation` refuses to attest while
-/// nothing unfinalized carries deploys (so an idle chain produces nothing) or while a supermajority is out
-/// of reach (so a chain that has lost over a third of its stake does not spin). Each remote block can also
-/// prompt at most one proposal in response.
+/// nothing unfinalized carries deploys (so an idle chain produces nothing), and while a supermajority is out
+/// of reach it attests only once per `ATTESTATION_WINDOW` heights rather than at every one (so a chain that
+/// has lost over a third of its stake does not spin). Each remote block can also prompt at most one proposal
+/// in response.
+///
+/// **What these bounds do *not* cover, said plainly because this comment used to overstate them.** When the
+/// quorum *is* reachable, none of the above limits the rate: a node attests promptly, its attestation is a
+/// remote block for its peers, and they attest in turn. On an all-live net that is the `--attest-on-new-blocks`
+/// storm recorded on #70 — 276 blocks in about a minute, finalised only to block 11 — and it is still open:
+/// the per-remote-height rule above is not a bound at all while the height itself keeps advancing, so the pace
+/// half belongs on *our own* quiet (`our latest message at least k heights behind`) and is not here yet. See
+/// `docs/src/node/running-a-public-testnet.md`, "Attesting on every remote block is a block storm".
 ///
 /// [#70]: https://github.com/rchain-community/rchain-rust/issues/70
 fn attest_warranted(

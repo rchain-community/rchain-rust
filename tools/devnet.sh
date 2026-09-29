@@ -76,6 +76,9 @@ Commands:
   build [--fresh]                build the rnode:local image (--fresh: --no-cache --pull)
   up [options]                   start the network (see options below)
   down [-v]                      stop the network (+ drop data volumes with -v)
+  stop <node>                    stop ONE node and leave the rest running — a validator's death, so a
+                                 liveness measurement can ask what the survivors do (#70)
+  start <node>                   start a node that `stop` stopped (data volume intact)
   status                         docker ps for the network
   logs <node>                    tail a node's logs
   diagnose                       per-node health check (PASS/WARN/FAIL)
@@ -511,6 +514,38 @@ cmd_status() {
   docker ps --filter "network=$NETWORK" --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}'
 }
 
+# Resolve what a user calls a node to a container name: `2` -> `devnet-validator-2`, `bootstrap` or a
+# full name passes through. One resolver for `stop`/`start`, so they cannot drift apart.
+node_container() {
+  case "${1:?node required — a validator number (1..3), 'bootstrap', or a container name}" in
+    [0-9]*) validator_name "$1" ;;
+    *) echo "$1" ;;
+  esac
+}
+
+# stop <node>: stop ONE node and leave the rest of the devnet running.
+#
+# `down` removes the whole network and takes no node name, so before this a liveness measurement had no
+# supported way to remove a single participant — and #70's recovery case is exactly the measurement that
+# needs one: kill a validator, then ask whether the survivors keep finalising. Without it the only
+# implementable "kill" is `docker rm -f` typed by hand, which is not a repeatable experiment.
+#
+# Stopped, not removed: the container's logs and its data volume survive, so `start` brings the same
+# validator back with its chain — which is the *other* half of the question (a silent validator that
+# returns), and the reason this is a stop rather than a `down`.
+cmd_stop() {
+  local name; name="$(node_container "${1:-}")"
+  docker stop "$name" >/dev/null || { echo "could not stop $name" >&2; exit 1; }
+  echo "stopped $name"
+}
+
+# start <node>: bring back a node that `stop` stopped.
+cmd_start() {
+  local name; name="$(node_container "${1:-}")"
+  docker start "$name" >/dev/null || { echo "could not start $name" >&2; exit 1; }
+  echo "started $name"
+}
+
 cmd_logs() {
   docker logs -f "${1:?node name required}"
 }
@@ -699,6 +734,8 @@ case "${1:-}" in
   build) shift; cmd_build "$@" ;;
   up) shift; cmd_up "$@" ;;
   down) cmd_down "${2:-}" ;;
+  stop) cmd_stop "${2:-}" ;;
+  start) cmd_start "${2:-}" ;;
   status) cmd_status ;;
   logs) cmd_logs "${2:-}" ;;
   diagnose) cmd_diagnose ;;

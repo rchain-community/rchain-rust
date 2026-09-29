@@ -4407,3 +4407,81 @@ lower the ceiling, because the historical backlog it counts is a separate questi
 shrank the ceiling while the denominator grew would be reporting coverage as reassurance, which is the
 defect class §21's completeness section is about.
 
+## 23. The attestation guard: #70's two defects, one layer below where the issue looks
+
+[#70] is titled *"Resilience: finality needs quorum stake, not live nodes — an absent validator blocks
+it, and attesting requires proposing"*, and it locates the problem in the weight layer: an absent
+validator keeps full weight, and only a proposer may attest. A design pass over the tree on 2026-09-29
+found the first symptom **one layer lower** — in the proposer's attestation guard, which no comment on
+the issue names — and a second defect beside it. Both were red first, each against its own mutation,
+and both are the *opposite* of what the guard's shipped comment and the docs said.
+
+[#70]: https://github.com/rchain-community/rchain-rust/issues/70
+
+### C170 — the guard counted a validator that had *ever* spoken, and could not suppress in the case it exists for
+
+`suppress_attestation` (`casper/src/blocks/proposer/proposer.rs`) decides whether a proposer folds an
+empty attestation into the block it is building. It had two independent defects, and neither is visible
+from the issue's own arithmetic:
+
+- **F4 — "moving" meant "has ever spoken".** The stake counted toward the quorum was summed over the
+  senders of `pre_state.justifications`, which is `latest_msgs` — a map that **keeps a silent sender's
+  last message indefinitely**. Three equal validators with one dead therefore summed 200 (the live
+  peer's message *plus* the dead one's stale one), and adding `own_stake`'s 100 made it 300 of 300: a
+  supermajority that does not exist. The guard was reading liveness of *the past*.
+- **F3 — the supermajority clause could not suppress in the case it exists for.** Suppression was
+  `nothing_to_finalize || !(new_state_transition || quorum_reachable)` with
+  `new_state_transition = parents.iter().any(has_deploys)`. A deploy-bearing parent is the *ordinary*
+  case on a chain with traffic, and it was OR-ed **inside** the quorum test, so it short-circuited that
+  test to `false`; suppression then collapsed to `nothing_to_finalize`, which was `false` too because
+  the deploy-bearing block was unfinalized. **A node that had lost over a third of its stake attested
+  at every height** — the 276-blocks-in-a-minute storm recorded on the issue — and the comment at
+  `attest_warranted` (`node/src/runtime/node_runtime.rs:2590`) stating that such a chain "does not
+  spin" was not what the code did. The comment is corrected in the same change rather than left
+  claiming more than the code does: a stale contract comment is F3's own defect class.
+
+**The fix is two named predicates rather than inline arithmetic.** `moving_attestation_stake`
+(`:1044`) drops any sender whose latest message is further than `ATTESTATION_WINDOW` (`:1024`, 5
+heights) behind the tip, the tip being the newest height among the pre-state justifications — so the
+recency check needs no new state leaf, no DAG scan and no genesis field, and a returning validator's
+justification height jumps to the tip and its stake re-enters. `attestation_suppressed` (`:1093`) takes
+`(nothing_to_finalize, new_state_transition, quorum_reachable, cadence_due)`: suppress on nothing to
+finalize; attest immediately when the quorum is reachable; and while it is **un**reachable, attest only
+if a state transition exists *and* this node has itself been quiet past the window. A deploy-bearing
+parent still licenses an attestation; it no longer licenses an unbounded rate of them. The cadence is
+what keeps the repair from being a blanket suppress, which would trap liveness: no messages → no tip
+movement → no fresh justifications → a peer that came back is never seen. `cadence_due` (`:1064`) reads
+our own latest message's height against the tip, so the pace bound needs no counter and no persistence.
+
+**Falsified both ways, per defect.** Restoring the recency-free body to `moving_attestation_stake`
+makes `a_silent_validators_stale_message_does_not_carry_the_quorum` fail with `left: 200, right: 100` —
+the dead validator's stake, summed; restoring the old `nothing_to_finalize || !(new_state_transition ||
+quorum_reachable)` makes `an_unreachable_supermajority_suppresses_even_with_a_deploy_bearing_parent`
+fail on its own assertion. **The other five tests in the module stay green under both mutations**, so
+each falsifier pins its own defect and neither is satisfied by the other's removal. With the fix in
+place, `cargo test -p rchain-casper --lib` is 321 passed.
+
+**What this does not fix, and it is why #70 stays open.** The storm in the case where the quorum *is*
+reachable is untouched: nothing here bounds the rate at which an all-live net attests, because C170's
+own repair deliberately keeps the reachable case immediate. The 2026-09-29 measurement below reproduced
+that storm with autopropose **off**, so the fuel is the attestation tap and not the dummy-deploy
+injector. And the weight layer the issue names — one liveness predicate shared by the proposer and the
+finalizer — is a separate increment, not this one.
+
+### C171 — an all-live net attesting on every remote block runs a block storm, and the pace bound is owed
+
+Measured 2026-09-29, three validators at 100/100/50, `--no-autopropose --propose-on-deploy`,
+`--epoch-length 10`: **four deploys produced 126 blocks in about three minutes** (~2/s) while finality
+stayed at 8, and the height ran to 126. Attestation is the fuel — each attestation is itself a remote
+block for the peers, which attest in turn — so it is the tap, not the dummy-`Nil` injector, that makes
+the chain grow. The shape was already recorded twice on a two-validator net (23 blocks from six
+deploys) and on the issue itself (276 blocks in about a minute, finalised only to 11).
+
+`suppress_attestation` cannot bound this: the quorum *is* reachable, so its suppression clause is
+deliberately inert, C170's repair included. The bound has to be on **our own quiet** — this node's
+latest message at least `k` heights behind the tip — which is where `attest_warranted`
+(`node/src/runtime/node_runtime.rs:2590`) already computes a per-remote-height rule that is real but
+insufficient, because heights keep advancing on a chain that cannot finalise. Recorded as `todo`
+rather than folded into C170 because it is open, and the `owes` cell names the falsifier that would
+close it.
+

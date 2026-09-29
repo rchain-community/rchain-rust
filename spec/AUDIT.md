@@ -102,18 +102,17 @@ on the rows that are not reads.
 
 ## Check-off
 
-**Findings  TODO 0 · IN PROGRESS 0 · DONE 204** &nbsp;&nbsp;·&nbsp;&nbsp; **Coverage  all 89 T1 modules read**
+**Findings  TODO 1 · IN PROGRESS 0 · DONE 205** &nbsp;&nbsp;·&nbsp;&nbsp; **Coverage  all 89 T1 modules read**
 
-**Both halves are closed.** A `done` row is settled -- fixed, assessed faithful, a
-deliberate deviation, or refuted -- and names what holds it where there is evidence to
-name. What that does *not* mean is stated under each half below.
+Closed when both halves are zero. A **done** row is settled -- fixed, assessed faithful, a
+deliberate deviation, or refuted -- and names what holds it. A **todo** row names what would
+close it.
 
-### Findings — closed
+### TODO — findings (1)
 
-All 204 are settled: **140 name the evidence that holds them** and **64 do not** — the
-second number is the honest residual, and a column rather than an implication. A `done`
-row says the fix is in the tree or that the decision was taken; it does not say either is
-right. Read a row that matters at the § its account cites.
+| id | what | what closes it | account |
+|---|---|---|---|
+| `C171` | an all-live net attesting on every remote block runs a block storm: the guard cannot suppress while the quorum IS reachable, so four deploys produced 126 blocks in about three minutes with autopropose off (reproduced 2026-09-29; 276 in a minute on #70) | the pace half on attest_warranted (node/src/runtime/node_runtime.rs:2590): this node's own latest message at least k heights behind the tip, so an all-live net's attestation rate is bounded. Falsifier: a three-validator devnet with --attest-on-new-blocks whose block growth per deploy is bounded, and red when the pace term is deleted. #70 increment 2 | §23 |
 
 ### T1 coverage — closed
 
@@ -127,7 +126,7 @@ defects this register had not recorded (C164, C165).
 Nothing is in flight. The state exists because a person mid-read needs somewhere to say so;
 that it is empty is the fact, and it is said rather than shown as a table with no rows.
 
-### DONE (204)
+### DONE (205)
 
 | id | what | evidence | account |
 |---|---|---|---|
@@ -249,6 +248,7 @@ that it is empty is the fact, and it is said rather than shown as a table with n
 | `C167` | law 50a's own falsifier could not fire: its witness was `n` siblings rather than `n` nested levels, so the mutation test would have passed vacuously, under the cell that cites law 22 | parDepth_notsDepth/a_dropped_arm_breaks_soundness | §20 |
 | `C168` | law 50a's Rust half was pinned by three tests that do not test it, while the every-constructor test that does exists and belongs to clause b | every_construct_in_the_parser_walk_is_descended | §20 |
 | `C169` | law 50b's statement was not true as written: the walk's counted quantity is `Par`-nesting, and the gap is a tight factor of 3 rather than a slack of 128 | parNestDepth/walkValuePar/parDepth_le_three_mul_parNestDepth | §20 |
+| `C170` | the attestation guard counted a validator that had *ever* spoken as moving stake, and its supermajority clause was short-circuited by a deploy-bearing parent — so a node that had lost over a third of its stake attested at every height, the reverse of what the shipped comment claimed | moving_attestation_stake/attestation_suppressed/a_silent_validators_stale_message_does_not_carry_the_quorum/an_unreachable_supermajority_suppresses_even_with_a_deploy_bearing_parent/but_a_node_quiet_past_the_window_speaks_again | §23 |
 | `F1` | The interpreter core is a mechanical Scala port. `rholang/src/reduce.rs` (1773 lines) | — | §9 |
 | `F2` | The blessed genesis contracts re-implement a HashMap trie in interpreted rholang | — | §9 |
 | `F3` | Silent partiality hides the failure. `compute_bonds` (`casper/src/runtime_manager.rs:503-509`) | — | §9 |
