@@ -4551,3 +4551,50 @@ of its callers want ("not in the DAG yet"). Filed and closed as [#103].
 
 [#103]: https://github.com/rchain-community/rchain-rust/issues/103
 
+## 25. One attributable failure estranges a node from the chain (#105)
+
+Filed from the live testnet while attempting #70's recovery measurement, and **checked in the tree rather
+than taken on trust**: the observed symptom — a node that fails one block, then refuses every block above
+it, permanently — is two rules, and both are the oracle's.
+
+### C173 — a failed justification cannot raise a child's height *and* cannot be justified at all, so recording one failure is terminal
+
+- **The height rule.** `block_number` (`casper/src/validate.rs:221-241`) skips failed justifications when
+  computing the maximum, so a block's number must be `(the highest *non-failed* parent's height) + 1`.
+  Mark one justification failed and every later block, whose number counts that block, is refused with
+  `InvalidBlockNumber` — #105's cascade, log and all.
+- **The neglect rule, which fires first for a bonded sender.** `neglected_invalid_block`
+  (`casper/src/validate.rs:321-340`) refuses any block justifying a failed justification whose sender is
+  bonded (`b.bonds[sender] > 0`). A validator's next block always justifies its previous one, so the node
+  that recorded the failure can never accept another block from that validator — nor from any peer
+  building on it.
+
+**Both are faithful, which is why this is a decision and not a bug fix.** The skip is the oracle's own
+`if (!m.validationFailed)` — the port's own doc cites it as staying while registering the *descent bound*
+beside it as the deliberate divergence — and `neglectedInvalidBlock` is a straight port. What no register
+carried is the **consequence**: the failure is attributable (`mark_failed_attributable`,
+`casper/src/multi_parent_casper.rs:433`, reached by every `ValidateError::ValidationFailed` — a rejected
+status, a state-hash disagreement, a structural fault), so the block is recorded failed *and* `slashable`.
+That turns the one-block-per-node divergence #70's 2026-09-24 comment describes — each node attributing
+the failure to the other and proposing to slash it — into a **deterministic** outcome rather than a
+coincidence: a node that attributes a failure to a bonded peer is estranged from that peer's chain for
+good, and offers the slash as evidence against it.
+
+**What it explains, and what it does not.** It explains #105's second measurement exactly — B wedged at
+45 while A advanced to 50, every later rejection `InvalidBlockNumber`, and finality frozen with A holding
+91 % of the pool, which #70's full-partition filter predicts (a bonded validator with no message caps the
+fringe whatever the survivors hold). It does **not** explain why B failed the block in the first place:
+the state-hash divergence is undetermined, and the hypothesis #105 proposes — the randomised-selection
+seed is drawn a boundary ahead from the **finalised** fringe's state, so two nodes whose fringes differ
+while finality lags derive different state — is checkable from the two nodes' last-finalised block hashes
+at the failing height, without a re-run.
+
+**Recorded `todo`; the fix is a fork decision and that is the `owes` cell.** Either count failed
+justifications in the height maximum — the H1b descent bound still refuses a failed parent at or above the
+child, so what is given up is only the protection against an *unverified* height raising a child's claim
+— or give a stranded node an explicit path back (a revalidation of the failed metadata, or a bounded
+re-fetch), and then the falsifier is a node that has marked one block failed and must still accept the
+next block above it. Independent of C172's fix, which is `ValidateError::Internal` → dropped where this is
+`ValidationFailed` → recorded, and does not touch this path.
+
+[#105]: https://github.com/rchain-community/rchain-rust/issues/105

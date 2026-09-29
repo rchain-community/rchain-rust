@@ -102,17 +102,18 @@ on the rows that are not reads.
 
 ## Check-off
 
-**Findings  TODO 1 · IN PROGRESS 0 · DONE 206** &nbsp;&nbsp;·&nbsp;&nbsp; **Coverage  all 89 T1 modules read**
+**Findings  TODO 2 · IN PROGRESS 0 · DONE 206** &nbsp;&nbsp;·&nbsp;&nbsp; **Coverage  all 89 T1 modules read**
 
 Closed when both halves are zero. A **done** row is settled -- fixed, assessed faithful, a
 deliberate deviation, or refuted -- and names what holds it. A **todo** row names what would
 close it.
 
-### TODO — findings (1)
+### TODO — findings (2)
 
 | id | what | what closes it | account |
 |---|---|---|---|
 | `C171` | an all-live net attesting on every remote block runs a block storm: the guard cannot suppress while the quorum IS reachable, so four deploys produced 126 blocks in about three minutes with autopropose off (reproduced 2026-09-29; 276 in a minute on #70) | the pace half on attest_warranted (node/src/runtime/node_runtime.rs:2590): this node's own latest message at least k heights behind the tip, so an all-live net's attestation rate is bounded. Falsifier: a three-validator devnet with --attest-on-new-blocks whose block growth per deploy is bounded, and red when the pace term is deleted. #70 increment 2 | §23 |
+| `C173` | one attributable failure in a bonded validator's block estranges the node that recorded it, permanently: the height maximum skips failed justifications, and neglected_invalid_block refuses any block justifying a failed bonded sender — so a node that fails one block is refused every block above it (#105) | a fork decision, since both rules are the oracle's: count failed justifications in the height maximum (the H1b descent bound still refuses a failed parent at or above the child), or give a stranded node an explicit path back (revalidation of the failed metadata, or a bounded re-fetch). Falsifier: a node that has marked one block failed must still accept the next block above it | §25 |
 
 ### T1 coverage — closed
 
