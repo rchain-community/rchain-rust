@@ -104,6 +104,8 @@ on the rows that are not reads.
 
 **Findings  TODO 2 · IN PROGRESS 0 · DONE 207** &nbsp;&nbsp;·&nbsp;&nbsp; **Coverage  all 89 T1 modules read**
 
+**Laws  3 of 209 findings name one** (ceiling 206; 206 done row(s) unclassified)
+
 Closed when both halves are zero. A **done** row is settled -- fixed, assessed faithful, a
 deliberate deviation, or refuted -- and names what holds it. A **todo** row names what would
 close it.

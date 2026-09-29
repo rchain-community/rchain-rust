@@ -55,13 +55,55 @@ bad_vocab="$(printf '%s\n' "$rows" | awk -F'\t' -v vocab="$VOCAB" '
   BEGIN { n = split(vocab, v, "|"); for (i = 1; i <= n; i++) ok[v[i]] = 1 }
   { if (!($4 in ok)) printf " %s=%s", $1, ($4 == "" ? "(empty)" : $4) }')"
 bad_shape="$(printf '%s\n' "$rows" | awk -F'\t' '
-  NF != 7 { printf " %s(%d fields)", $1, NF }
+  NF != 7 && NF != 8 { printf " %s(%d fields)", $1, NF }
   $3 == "" || $4 == "" || $5 == "" { printf " %s(empty)", $1 }')"
 
 # **A `todo` row that does not say what would close it is the defect this column exists for.** The
 # register recorded five findings as "owed" without saying what was owed, which is how a row stays
 # open for a year and reads as addressed.
 todo_unowed="$(printf '%s\n' "$rows" | awk -F'\t' '$4 == "todo" && ($7 == "-" || $7 == "") { printf " %s", $1 }')"
+
+# --- the law column (8th): which law a finding is an instance of ---------------------------------
+#
+# **A finding that names no law is a defect of the register rather than of the code.** Four findings of
+# 2026-09-28/29 (C170-C174) were the same property failing, argued in prose and filed as one-offs, and
+# nothing could tell an instance of a known property from a novelty; the column is that tell. It is
+# validated in both directions -- a name that resolves to nothing is refused, the `evidence` check's
+# lesson -- and the residue is a **number printed on every run** rather than silence, which is how the
+# T1 coverage half already turns its own gap into a count.
+#
+# **The ceiling is a ratchet.** It may be lowered as rows are classified and may not be raised: a change
+# that adds rows naming no law is exactly what it exists to make visible, and the open rows (a `todo`)
+# must name one, because an open finding without a law cannot be classified at all.
+LAWLESS_CEILING="${LAWLESS_CEILING:-206}"
+LAWS_TSV="$ROOT/spec/laws.tsv"
+[[ -f "$LAWS_TSV" ]] || {
+  printf 'emit-findings-register: no %s, so a law citation cannot be resolved\n' "$LAWS_TSV" >&2
+  exit 1
+}
+# **By column name, not by index** — the register's own lesson about `rustWitness`, where `$14` was a
+# fact about the writer that the reader could not check.
+_lawcol() { head -1 "$LAWS_TSV" | tr '\t' '\n' | grep -nx "$1" | cut -d: -f1; }
+num_col="$(_lawcol number)"
+clause_col="$(_lawcol clause)"
+if [[ -z "$num_col" || -z "$clause_col" ]]; then
+  printf 'emit-findings-register: %s has no `number`/`clause` column\n' "$LAWS_TSV" >&2
+  exit 1
+fi
+laws_known="$(awk -F'\t' -v n="$num_col" -v c="$clause_col" 'NR > 1 { printf "%s%s\n", $n, $c }' "$LAWS_TSV" | sort -u)"
+lawless="$(printf '%s\n' "$rows" | awk -F'\t' '$4 == "done" && ($8 == "" || $8 == "-")' | wc -l)"
+laws_named="$(printf '%s\n' "$rows" | awk -F'\t' '$8 != "" && $8 != "-"' | wc -l)"
+todo_lawless="$(printf '%s\n' "$rows" | awk -F'\t' '($4 == "todo" || $4 == "in progress") && ($8 == "" || $8 == "-") { printf " %s", $1 }')"
+bad_law="$(printf '%s\n' "$rows" | awk -F'\t' -v known="$laws_known" '
+  BEGIN { n = split(known, k, "\n"); for (i = 1; i <= n; i++) ok[k[i]] = 1 }
+  $8 != "" && $8 != "-" {
+    n = split($8, t, ",")
+    for (i = 1; i <= n; i++) {
+      q = t[i]; gsub(/^[ \t]+|[ \t]+$/, "", q)
+      if (q ~ /^candidate:[a-z0-9-]+$/) continue
+      if (!(q in ok)) printf " %s(%s)", $1, q
+    }
+  }')"
 
 # --- every `evidence` token names something that exists ------------------------------------------
 #
@@ -109,6 +151,20 @@ if [[ -n "$unresolved" ]]; then
   printf 'emit-findings-register: evidence naming nothing in the tree:%s\n' "$unresolved" >&2
   fail=1
 fi
+if [[ -n "$todo_lawless" ]]; then
+  printf 'emit-findings-register: open row(s) naming no law — an open finding cannot be classified:%s\n' "$todo_lawless" >&2
+  printf '  write a law id (its `number`+`clause` in spec/laws.tsv) or `candidate:<slug>`\n' >&2
+  fail=1
+fi
+if [[ -n "$bad_law" ]]; then
+  printf 'emit-findings-register: law cell(s) naming a law the register does not define:%s\n' "$bad_law" >&2
+  fail=1
+fi
+if (( lawless > LAWLESS_CEILING )); then
+  printf 'emit-findings-register: %s done rows name no law, above the ceiling of %s\n' "$lawless" "$LAWLESS_CEILING" >&2
+  printf '  classify one, or lower-then-raise the ceiling deliberately (it is a ratchet)\n' >&2
+  fail=1
+fi
 if [[ "$fail" == "1" ]]; then exit 1; fi
 
 # --- the coverage half ---------------------------------------------------------------------------
@@ -153,6 +209,11 @@ panel="$(mktemp)"
   printf '## Check-off\n\n'
   printf '**Findings  TODO %s · IN PROGRESS %s · DONE %s** &nbsp;&nbsp;·&nbsp;&nbsp; %s\n\n' \
     "$(count_of todo)" "$(count_of 'in progress')" "$(count_of done)" "$t1_line"
+  # **The law residue is a number, printed every run.** The half that is classified is the half a reader
+  # can trace to a property; the other is the honest backlog, and a backlog nobody prints is the silence
+  # this column exists to replace.
+  printf '**Laws  %s of %s findings name one** (ceiling %s; %s done row(s) unclassified)\n\n' \
+    "$laws_named" "$n_total" "$LAWLESS_CEILING" "$lawless"
   # **The line a reader takes away says which state the audit is in**, not what a closed one would
   # mean — the same reason the coverage half is phrased by which way it reads.
   if (( $(count_of todo) == 0 && t1_deferred == 0 )); then
