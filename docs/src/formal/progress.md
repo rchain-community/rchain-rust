@@ -82,7 +82,8 @@ a **decidable** "is a step available now" predicate tied to the relation by the 
 | `Stuck` / `Silent` | no step leaves this state / no continuation satisfies the goal |
 | `Void` | no state satisfies the requirement |
 | `Terminal` | a satisfying state was left **and** no continuation restores it |
-| `Absorbing` | once lost, never regained — the second obligation of `Terminal`, and the word 2PC already uses |
+| `Unrestorable` | once lost, never regained — the second obligation of `Terminal` |
+| `Persistent` | once true, always true — the port's own sense of *absorbing* (`an_abort_is_absorbing`), and the shape C173's refusal has |
 | `Run` / `Drift` / `Paced` | a finite trace / a run of `n` steps whose measure never moves / the repair shape that forbids it |
 | `Historic` | a predicate that disagrees with itself on two histories agreeing on the current view |
 | `ReadsTheView` | what a liveness predicate must have — `Historic`'s complement |
@@ -115,7 +116,7 @@ stall must not share a name.
   the requirement (the partition is the live weight set) and left the denominator alone. Law 52b.
 - **C173, a `Terminal`** — the refusal rules have no inverse: the height maximum skips failed
   justifications, and a block justifying a failed bonded sender is refused before any other rule runs, so
-  the refusal is `Absorbing` and the goal (a block above it) is never reachable again. The fix class is a
+  the refusal is `Persistent` and the goal (a block above it) is therefore unreachable — `persistent_blocks_the_goal`. The fix class is a
   restoring step; the register's row is a *guard on that fix*, because a rule that restores reddens the
   theorem on purpose.
 - **C171, a `Drift` whose cause is `Historic`** — the guard read "has ever spoken", so its suppression

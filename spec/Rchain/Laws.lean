@@ -2647,21 +2647,22 @@ def laws : List Law := [
       `Terminal` from `Drift` is whether anything moved at all",
     status := .provedModel,
     declarations := [`Rchain.System.Reach, `Rchain.System.Enabled, `Rchain.System.Stuck,
-      `Rchain.System.Silent, `Rchain.System.Void, `Rchain.System.Terminal, `Rchain.System.Absorbing,
+      `Rchain.System.Silent, `Rchain.System.Void, `Rchain.System.Terminal, `Rchain.System.Unrestorable,
+      `Rchain.System.Persistent,
       `Rchain.System.Run, `Rchain.System.Drift, `Rchain.System.Paced],
     axioms := [],
     rust := ["casper/src/validate.rs", "block-storage/src/dag/liveness.rs",
       "casper/src/blocks/proposer/proposer.rs"],
     witness := [`Rchain.System.void_goal_is_never_waiting,
-      `Rchain.System.absorbing_lost_is_never_regained, `Rchain.the_two_cycle_drifts],
+      `Rchain.System.unrestorable_lost_is_never_regained, `Rchain.the_two_cycle_drifts],
     falsifiable := some "each shape is inhabited, which is what stops the vocabulary being a list of \
       empty names: `Rchain.the_two_cycle_drifts` exhibits a `Drift` on the smallest system that has one \
       (a 2-cycle with a constant measure, so no `Paced` bound holds), and the `Void` and `Terminal` \
       lemmas are *implications* whose hypotheses the instances must prove of real rules — C174's \
       partition filter is `Void` because a validator that never speaks has no message to be seen, and \
       C173's refusal is `Terminal` because the rules have no inverse for it. **Refuted by deleting a \
-      hypothesis**: an `Absorbing` property that a step restores makes \
-      `Rchain.System.absorbing_lost_is_never_regained` false by construction, and a system whose steps \
+      hypothesis**: an `Unrestorable` property that a step restores makes \
+      `Rchain.System.unrestorable_lost_is_never_regained` false by construction, and a system whose steps \
       all advance the measure makes `Rchain.the_two_cycle_drifts` unprovable — which is exactly the \
       obligation C171's fix is owed (`Paced`)",
     note := "**What this row is about, and why it is a law rather than a module.** Four findings of \

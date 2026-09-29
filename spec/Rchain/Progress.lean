@@ -112,11 +112,20 @@ def Void (want : S.State → Prop) : Prop := ∀ σ, ¬ want σ
 def Terminal (S : System) (want : S.State → Prop) (σ₀ : S.State) : Prop :=
   ∃ σ σ', S.Reach σ₀ σ ∧ want σ ∧ S.Step σ σ' ∧ ∀ τ, S.Reach σ' τ → ¬ want τ
 
-/-- **`Absorbing`** — once lost, a property is never regained. The word and the shape are the port's
-    already: `an_abort_is_absorbing` and `a_commit_is_absorbing` (`Rchain/CrossShard.lean`) prove it of
-    2PC's terminal records. -/
-def Absorbing (S : System) (want : S.State → Prop) : Prop :=
+/-- **`Unrestorable`** — once lost, a property is never regained: a refusal no rule clears (C173), or a
+    window that has passed. **Named `Unrestorable` rather than "absorbing" because the port already uses
+    *absorbing* for the other polarity** — `an_abort_is_absorbing` and `a_commit_is_absorbing`
+    (`Rchain/CrossShard.lean`) mean *once true, always true*, which is the dual below — so two names for
+    two polarities, and a reader cannot take one for the other. -/
+def Unrestorable (S : System) (want : S.State → Prop) : Prop :=
   ∀ σ σ', S.Step σ σ' → ¬ want σ → ¬ want σ'
+
+/-- **`Persistent`** — once true, always true: the port's own sense of *absorbing* for 2PC's terminal
+    records, and the shape C173's refusal has (a validator the node has marked failed is never unmarked).
+    Its consequence is what the laws consume: a goal that `want` forbids is unreachable, for good, from
+    every state that holds `want`. -/
+def Persistent (S : System) (want : S.State → Prop) : Prop :=
+  ∀ σ σ', S.Step σ σ' → want σ → want σ'
 
 /-- A **run** — a finite trace of states, oldest first. `List.Chain'` is where this tree already puts a
     run (`Rchain/SchedulerOnchain.lean`'s `DFSSerializable`). -/
@@ -201,15 +210,33 @@ theorem terminal_blocks_the_wait {S : System} {σ₀ : S.State} {want : S.State 
   obtain ⟨_σ, σ', hσ, _hwant, hstep, hnever⟩ := h
   exact ⟨σ', hσ.trans (reach_step hstep), hnever⟩
 
-/-- **Absorption ⇒ permanence**: a property no step restores, once lost, is lost forever. This is the
+/-- **Unrestorable ⇒ permanence**: a property no step restores, once lost, is lost forever. This is the
     second obligation of `Terminal`, and at the protocol level it is a property of the refusal rules
     (`Rchain.Casper.Validate`): C173's whole content. -/
-theorem absorbing_lost_is_never_regained {S : System} {want : S.State → Prop}
-    (h : S.Absorbing want) {σ : S.State} (hσ : ¬ want σ) : ∀ σ', S.Reach σ σ' → ¬ want σ' := by
+theorem unrestorable_lost_is_never_regained {S : System} {want : S.State → Prop}
+    (h : S.Unrestorable want) {σ : S.State} (hσ : ¬ want σ) : ∀ σ', S.Reach σ σ' → ¬ want σ' := by
   intro σ' hr
   induction hr with
   | refl => exact hσ
   | tail _ hstep ih => exact h _ _ hstep ih
+
+/-- **Persistent ⇒ it stays true along every run** — the form the goals below consume. -/
+theorem persistent_of_reaches {S : System} {want : S.State → Prop} (h : S.Persistent want)
+    {σ : S.State} (hσ : want σ) : ∀ σ', S.Reach σ σ' → want σ' := by
+  intro σ' hr
+  induction hr with
+  | refl => exact hσ
+  | tail _ hstep ih => exact h _ _ hstep ih
+
+/-- **A persistent property that forbids the goal makes it permanently unreachable.** C173's shape in one
+    line: the refusal persists (`Persistent`), the rules refuse a block above it (`want → ¬ goal`), so
+    from a state that holds the refusal *no* reachable state satisfies the goal — the node is `Terminal`,
+    not slow. -/
+theorem persistent_blocks_the_goal {S : System} {want goal : S.State → Prop}
+    (hpers : S.Persistent want) (hgoal : ∀ σ, want σ → ¬ goal σ) {σ : S.State} (hσ : want σ) :
+    ¬ ∃ σ', S.Reach σ σ' ∧ goal σ' := by
+  rintro ⟨σ', hr, hg⟩
+  exact hgoal σ' (S.persistent_of_reaches hpers hσ σ' hr) hg
 
 /-- **The `Void` shape, as an implication from the predicate** — nothing satisfies the goal's requirement,
     so nothing satisfies the goal, so nothing is ever `Waiting` on it. What makes this a statement about
