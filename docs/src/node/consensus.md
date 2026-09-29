@@ -47,6 +47,14 @@ holding at most one third of the stake can out-vote it.
 Concretely, the finalizer (`Finalizer` in the DAG layer) tracks the **support** each block has from
 the bonded validators, and advances the finalized fringe whenever that support crosses `> 2/3`.
 
+**Support counts only full partitions.** A candidate message contributes its sender's stake only when
+**every validator that has seen it has itself seen a message from every bonded validator**
+(`all_bonded`, `block-storage/src/dag/finalizer.rs:173`) — so what stands behind a block is a complete
+cross-justified cut, not a plurality. One bonded validator that produces no messages therefore caps
+finality whatever share of the stake the others hold: measured on a three-validator devnet at
+`100/100/50` (2026-09-29), the two survivors at 80 % of the active set did not resume finality while
+the third was stopped ([#70](https://github.com/rchain-community/rchain-rust/issues/70)).
+
 ## Block validity (Laws 16–17)
 
 Before a block is added to the DAG, the node validates it:

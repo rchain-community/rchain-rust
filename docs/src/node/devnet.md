@@ -51,8 +51,16 @@ tools/devnet.sh propose                      force the bootstrap to propose a bl
 tools/devnet.sh status                       docker ps for the devnet
 tools/devnet.sh logs <node>                  tail a node's logs
 tools/devnet.sh diagnose                     per-node health check (PASS/FAIL)
+tools/devnet.sh stop <node>                  stop ONE node, leaving the rest running
+tools/devnet.sh start <node>                 start a node that `stop` stopped (its data survives)
 tools/devnet.sh down [-v]                    stop the devnet (+ drop volumes)
 ```
+
+`stop <node>` is the one-validator death of a liveness measurement — `2` resolves to
+`devnet-validator-2`, and `start` brings the same validator back with its chain, which is the other
+half of the question (a silent validator that returns). It exists because `down` removes the whole
+network and takes no node name, so "kill one validator" had no supported command
+([#70](https://github.com/rchain-community/rchain-rust/issues/70)).
 
 **Autopropose and friends are `up` flags, not build flags** — set them per run:
 
@@ -62,6 +70,12 @@ tools/devnet.sh up --validators 1 --no-autopropose   # autopropose OFF — block
 tools/devnet.sh up --validators 1 --no-propose-on-deploy
                                                      # deploy no longer auto-proposes
 ```
+
+**`--no-autopropose` does not make a multi-validator net quiet.** The dummy-`Nil` injector goes away,
+but attestation is still on by default, and each attestation is itself a remote block for the peers,
+which attest in turn: three validators produced **126 blocks in about three minutes** from four deploys
+with autopropose off (2026-09-29, [#70](https://github.com/rchain-community/rchain-rust/issues/70);
+AUDIT C171). On one validator there is nobody to attest to, so the flag does buy quiet there.
 
 `--admin` (default on) publishes the admin HTTP port `40405`, which exposes only `POST /api/v1/propose`
 (*force a block*) — deploys always go through the public `40403` surface or the deploy gRPC, never
@@ -115,7 +129,19 @@ inputs simplified (theory in [Consensus (Casper)](consensus.md)):
 
 - **Equal stake ⇒ unanimous finality.** The validators have equal stake `100` each (total `300`), so
   the strict `> 2/3` threshold requires *all* validators to attest before a block finalizes (2 of 3 is
-  exactly 2/3, not a supermajority). Production's uneven stakes let a proper subset reach `> 2/3`.
+  exactly 2/3, not a supermajority). Production's uneven stakes let a proper subset reach `> 2/3` — but
+  see the next bullet: the threshold is not the binding constraint on a net where someone is silent.
+- **A validator that stops producing caps finality, whatever the survivors hold.** `calculate_fringe`'s
+  full-partition filter counts a candidate message only when **every validator that has seen it has
+  itself seen a message from every bonded validator** (`all_bonded`,
+  `block-storage/src/dag/finalizer.rs:173`), so one absent validator stops the fringe from advancing.
+  Measured 2026-09-29 on `--stakes 100,100,50`: with the 50-stake node stopped, the two survivors at
+  **80 %** of the active set did not resume finality (finality stayed at 8 while the height ran to
+  126). [#70](https://github.com/rchain-community/rchain-rust/issues/70).
+- **A joiner can stall permanently on `missing justification`.** A block can be in the DAG's in-memory
+  index before the store that index is built from holds it, so it is queued for validation, fails to
+  resolve a justification, and is dropped with nothing to re-queue it; only a restart recovers.
+  [#103](https://github.com/rchain-community/rchain-rust/issues/103), observed on this devnet.
 - **Dummy `Nil` deploys** stand in for real user traffic, and **autopropose is a tight loop** (no
   backoff), so the block rate is unbounded rather than a production cadence.
 - **Single shard** (`root`); **no Byzantine behavior** (all validators honest — the slash path exists

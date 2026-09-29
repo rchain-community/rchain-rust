@@ -355,13 +355,20 @@ measured:
    ([#83](https://github.com/rchain-community/rchain-rust/issues/83), commit `b5e024d0c`). **Verified
    on the configuration that killed every node**: a fresh three-validator devnet at `--epoch-length 10`
    crossed heights 10, 20, 30 and 40 with all three containers healthy and no panic.
-2. **A silent validator keeps its weight, so added stake can stop finality.** The quorum is a *strict*
-   supermajority — `sdk/src/consensus.rs:15`, `stake * 3 > total * 2`, with a test named
-   `two_thirds_is_not_supermajority` — taken over the **whole bond pool**, and there is no inactivity
-   leak and no eviction, so an absent validator's stake counts forever
-   ([#70](https://github.com/rchain-community/rchain-rust/issues/70)). Attesting also *is* proposing:
-   the `--attest-on-new-blocks` tap enqueues into the proposer's queue, so a validator with no node
-   contributes nothing while still diluting A.
+2. **A silent validator caps finality, whatever the survivors hold.** Two constraints, and the second
+   is the binding one. The quorum itself is a *strict* supermajority — `sdk/src/consensus.rs:15`,
+   `stake * 3 > total * 2`, with a test named `two_thirds_is_not_supermajority` — taken over the
+   **active set** (`compute_bonds` reads `pos:active`, `casper/src/runtime_manager.rs:1370-1381`;
+   `defaults.conf` caps that set at 100, so on a small net it equals the whole pool), and there is no
+   inactivity leak, no decay and no eviction, so an absent validator's stake counts forever. But the
+   fringe's **full-partition filter** counts a candidate message only when **every validator that has
+   seen it has itself seen a message from every bonded validator** (`all_bonded`,
+   `block-storage/src/dag/finalizer.rs:173`), so one bonded validator that produces nothing stops the
+   fringe advancing regardless of the survivors' stake share — measured 2026-09-29 with
+   `--stakes 100,100,50`: the survivors at **80 %** did not resume finality. Attesting also *is*
+   proposing: the `--attest-on-new-blocks` tap enqueues into the proposer's queue, so a validator with
+   no node contributes nothing while still being counted
+   ([#70](https://github.com/rchain-community/rchain-rust/issues/70)).
 3. ~~**A fresh multi-validator network never forms at all.**~~ **Fixed, 2026-09-29.** It was two
    faults, both on the same path. First, a node recorded a peer only if its *reply* to that peer's
    handshake succeeded — and a joining node dials before its own server binds, so the reply was
@@ -375,18 +382,24 @@ measured:
    syncs 27 history / 198 data items, the joiner tracks the bootstrap's height, and both finalise in
    lockstep — 264/257, 286/278, 317/309 as the chain grew.
 
-The arithmetic of (2) is unchanged and still the reason the split is 1000 against 100: while A is the
-only proposer, A must hold **more than ⅔ of the whole pool** or nothing finalises. Anyone bonding on
-top takes A's share down, and at ⅔ or below finality stops with no automatic recovery. That is the
-2026-09-22 incident.
+The split is 1000 against 100 because **every bonded validator must have its message seen** for the
+fringe to advance, and B is the only other participant: A's share of the active set is what decides
+whether A alone can carry a quorum *when B is running*, and the 2026-09-22 incident is consistent with
+the partition reading rather than the arithmetic one — A held 1000 of a 1200 active set, **above** the
+threshold, and finality still stopped while the other two produced nothing. Anyone bonding on top takes
+A's share down, and the recovery needs the absent validator to speak again, not merely a larger share.
 
-**Before a validator is added: #70's recovery case must be measured.** Both of the mechanical blockers
-are gone — the boundary panic (#83) and the network that never formed (#100) — so the test that has
-never run is now the *only* thing standing here: three validators where the survivors hold > ⅔ of the
-pool, one killed, finality expected to continue. `tools/devnet.sh up --validators 3 --stakes 100,100,50`
-is that case in one flag, and its arithmetic is unchanged (a silent validator keeps full weight, so
-three *equal* validators minus one is exactly ⅔ and does not recover). Until it has been run, add
-nothing to a live net: use it as a single-proposer chain and read or deploy against A.
+**Before a validator is added: #70's recovery case has now been measured and it did not recover.** The
+2026-09-29 three-validator run (`--stakes 100,100,50 --epoch-length 10 --no-autopropose
+--propose-on-deploy`, recorded on [#70](https://github.com/rchain-community/rchain-rust/issues/70))
+answered all three questions and changed the order of what blocks this: the survivors at 80 % did
+**not** resume finality (the partition reason above), and the run's own blocker is a **joiner** — the
+50-stake validator stalled at its first epoch boundary with `missing justification` and never
+recovered, because a block can be in the DAG index before the store that index is built from holds it,
+and nothing re-queues it ([#103](https://github.com/rchain-community/rchain-rust/issues/103)). So the
+order is #103, then a weight set the finalizer and the proposer share (a liveness predicate, #70's
+increment 2), then this measurement again. Until then, add nothing to a live net: use it as a
+single-proposer chain and read or deploy against A.
 
 ## Onboarding an observer into the validator pool
 

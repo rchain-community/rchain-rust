@@ -357,3 +357,12 @@ block 11, and the 1 GB hosts at 40% CPU with the memory cost that implies (see t
 
 Attestation has to be bounded — one per height per sender, or gated on the finaliser having something to
 finalise — rather than "one per remote block seen". Recorded on #70.
+
+**Reproduced 2026-09-29, in the case the guard cannot reach.** Three validators at `100/100/50` with
+**autopropose off** (`--no-autopropose --propose-on-deploy`) produced 126 blocks in about three minutes
+from four deploys, finality stopped at 8, and the height ran to 126. So the fuel is the attestation tap
+itself, not the dummy-`Nil` injector, and the per-remote-height rule on `attest_warranted` is not a
+bound while the height keeps advancing. The guard-level half of this was fixed in the same pass
+(`suppress_attestation` could not suppress at all in the case it exists for, and counted a silent
+validator's stale message toward the quorum — AUDIT C170); the pace half is AUDIT C171 and is still
+owed.
