@@ -1,8 +1,9 @@
 # Progress: the shapes of non-progress
 
 **Read this before proposing a fix to a liveness-shaped defect.** The vocabulary here is shared by the
-reducer and the protocol, its definitions live in `spec/Rchain/Progress.lean`, and its register row is
-`51a`–`51c` in [`spec/LAWS.md`](../../../spec/LAWS.md).
+reducer and the protocol, its definitions live in `spec/Rchain/Progress.lean`, its first instance is the
+finality gate (`spec/Rchain/Casper/Liveness.lean`), and its register rows are `51a`–`52b` in
+[`spec/LAWS.md`](../../../spec/LAWS.md).
 
 ## Why this page exists
 
@@ -29,7 +30,7 @@ cause** says where the fix goes. Reading a symptom on both axes is what turns "t
 
 | symptom an operator sees | shape | cause | law | the falsifier to run | the fix class |
 |---|---|---|---|---|---|
-| finality stops although more than two thirds of the stake is up | `Void` — nothing satisfies the requirement | `Historic` | 51a/51b | the partition filter's `Void` proof on the silent-validator fixture | **drop the requirement nothing can satisfy** (shrink the *partition*, never the denominator — see below) |
+| finality stops although more than two thirds of the stake is up | `Void` — nothing satisfies the requirement | — | **52b** (proved by the derivation `fullPartitionStake_eq_zero_of_a_silent_bonded`) | `the_whole_bonded_partition_is_unsatisfiable` | **drop the requirement nothing can satisfy** (shrink the *partition*, never the denominator — see below) |
 | a node attests although a third of the stake is silent | — | `Historic` | 51b | `a_silent_validators_stale_message_does_not_carry_the_quorum` | read the predicate off the **current view**, not the history |
 | the chain grows and the fringe does not | `Drift` | `Historic` | 51a/51b | `the_two_cycle_drifts` + the devnet measurement | **bound the rate** — and fix the predicate that let it run |
 | one bad block, and the node refuses every block above it, forever | `Terminal` | — | 51a | the estrangement fixture (AUDIT C173) | give the refused state an **inverse** (a restoring rule) |
@@ -41,7 +42,12 @@ The row that matters most is the second-to-last, because it is the one this voca
 **the partition may shrink; the denominator may not.** A quorum measured against the speaking subset is
 reached by *any* self-consistent group — `3·F > 2·L` with `F ≤ L` over the live set is unconditional — so
 under a network partition each side finalises its own view and safety is gone. Law 52a carries the
-arithmetic (`supermajorities_overlap`) and the two-sided counterexample.
+arithmetic (`supermajorities_overlap`: `3·s₁ > 2·t` and `3·s₂ > 2·t` force `t < s₁ + s₂`) and the
+two-sided instance on the four-bond fixture, where each side advances at its own denominator and both are
+refused at the bonded one — while the *full* partition advances there, so the counterexample cannot be
+read as "the gate never fires". Law 52b is the other half: with the whole bonded set as the partition, a
+validator that produces no message makes the filter *empty* rather than slow, and that emptiness is
+derived from the predicate (`fullPartitionStake_eq_zero_of_a_silent_bonded`) rather than observed.
 
 ## The hypotheses, and what each one is worth
 

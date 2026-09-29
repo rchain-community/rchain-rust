@@ -11,9 +11,9 @@ saying **what it is about**.
 > carry a part of it). It counts *clauses* rather than laws and separates **`proved-tied`** (proved *and*
 > tied to the node by a conformance corpus) from **`proved-model`** (proved about a model a human keeps
 > in sync); the prose on this page is the narrative reading of the same rows, and where the two
-> disagree, the register is right. Its total is **<!-- counts:proved-laws -->46<!-- counts:end --> of
-> <!-- counts:laws -->51 laws<!-- counts:end --> proved at all — <!-- counts:proved-tied-laws -->17<!-- counts:end --> tied to the node by a corpus,
-> <!-- counts:proved-model-laws -->31<!-- counts:end --> over the model — with one more law proved but *vacuous* (its statement restates its own
+> disagree, the register is right. Its total is **<!-- counts:proved-laws -->47<!-- counts:end --> of
+> <!-- counts:laws -->52 laws<!-- counts:end --> proved at all — <!-- counts:proved-tied-laws -->17<!-- counts:end --> tied to the node by a corpus,
+> <!-- counts:proved-model-laws -->32<!-- counts:end --> over the model — with one more law proved but *vacuous* (its statement restates its own
 > definition, and the register has a word for that).
 
 ## The set, and what each part of it is about
@@ -29,7 +29,7 @@ saying **what it is about**.
 | 30–43 | **The surface** | what a client writes and a matcher reads: grammar, lexing, normalization, matching, reply shapes, the JSON envelope | *(below)* |
 | 44–47 | **The validator lifecycle** | the Proof-of-Stake epoch: the boundary gate, the reward split, its conservation, staged withdrawal | *(below)* |
 | 48–49 | **Charging** | what a denied deploy does to the merged state, and what a matched deploy is charged | *(below)* |
-| 51 | **Progress** | non-progress: its three shapes (a requirement nothing satisfies, a refused state no rule restores, a run whose measure never moves), its two predicate causes (a predicate that reads history, two readers that split), and the vocabulary it shares with the calculus | [Progress: the shapes of non-progress](progress.md) |
+| 51–52 | **Progress** | non-progress: its three shapes (a requirement nothing satisfies, a refused state no rule restores, a run whose measure never moves), its two predicate causes (a predicate that reads history, two readers that split), and — as clause 52 — the two answers finality's gate must give: the partition may shrink, the quorum denominator may not | [Progress: the shapes of non-progress](progress.md) |
 
 The last three sets are the ones a graph of the *calculus* does not reach. Rows 30–43 exist because every
 defect that started the formalisation programme (AUDIT C9–C22) lived there and **nothing errored**: an
@@ -282,6 +282,37 @@ protocol level delivery is itself a step — a blocked wait and a permanent stal
 Its register row is `51a`–`51c` (`spec/LAWS.md`), its model is `spec/Rchain/Progress.lean`, and
 [Progress: the shapes of non-progress](progress.md) is the triage table an agent reads before proposing
 a fix.
+
+### The finality instance (Law 52)
+
+The first instance of law 51 is the one the vocabulary was written for, and it is the law this
+repository needed on 2026-09-29 and did not have: the increment-2 plan proposed handing the *live* weight
+set to the finalizer as **both** the set a candidate must be seen by and the set the supermajority is
+measured against — "so a silent validator leaves numerator and denominator together" — and nothing in the
+tree could refuse it.
+
+**Clause a — the denominator is the whole bonded stake.** Two disjoint groups cannot each hold a strict
+supermajority of one total: `3·s₁ > 2·t` and `3·s₂ > 2·t` force `t < s₁ + s₂`
+(`supermajorities_overlap`). So a denominator taken from the live set makes *any* self-consistent subset
+a supermajority of itself, and under a network partition each side would finalise its own view — two
+conflicting finalisations. The falsifier is two-sided on one fixture: the two disjoint sides each advance
+at their own denominator (200 of 200) and both are refused at the bonded one (200 of 400), while the
+*full* partition advances there (300 of 400), so the result cannot be read as "the gate never fires".
+What the clause does **not** claim: that two conflicting *messages* cannot be supported — the step from
+"the supporting sets overlap" to "the chain cannot fork" is Law 15's, named as a hook rather than proved
+here.
+
+**Clause b — the requirement must be one a reachable state can satisfy.** With the whole bonded set as
+the *partition*, a validator that produces no message makes the full-partition filter unsatisfiable — not
+slow, **empty** — because `allBonded` demands that every seer's seen set equal the bonded set and no seer
+can have seen a validator that never spoke. That is the `Void` shape of Law 51 with its proof obligation
+discharged: the emptiness is derived from the predicate rather than observed on a fixture, and the
+fixture instance is two-sided as well (three speaking validators refused at 300 of 400; the identical
+fixture advancing once the fourth speaks). The hypotheses are named in the instance module
+(`Participation`, `Delivery`, `StalenessBound`) because a liveness claim without its hypothesis is Law
+20's trap. What it still does not fix, plainly: a net that stays below two thirds **permanently** still
+cannot finalise, and the honest repair there is an inactivity leak — a state change that burns a silent
+validator's stake — which belongs with #24 and #39, not with a recency window.
 
 ---
 

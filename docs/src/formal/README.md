@@ -11,7 +11,7 @@ its Rust realization. These pages point at those rather than restating them.
 
 | Document | Laws | What it is about |
 |---|---|---|
-| [The laws](laws.md) | <!-- counts:laws -->51 laws<!-- counts:end --> | the full set, grouped by layer, each row mapped to the feature it pins and the file it lives in |
+| [The laws](laws.md) | <!-- counts:laws -->52 laws<!-- counts:end --> | the full set, grouped by layer, each row mapped to the feature it pins and the file it lives in |
 | [Grammar and sorts](grammar-sorts.md) | 2, 3, 6 | the ρ-calculus as the base sort of a Calculus of Constructions: what a name, a pattern and a process *are*, and which of them a binder may mention |
 | [Substitution and matching](substitution-matching.md) | 2, 3, 4, 5 | the two operations every rholang term goes through, and what happens when a pattern matches nothing |
 | [Closedness and the Calculus of Constructions](closedness-coc.md) | 6 | the type discipline's own story: what "no globally free variable" buys, and what it refuses |
@@ -19,7 +19,7 @@ its Rust realization. These pages point at those rather than restating them.
 | [Effect scheduling](scheduling.md) | 20–25 | the three scheduler tiers: the effect level (S.1–S.4), the per-channel claim queue with the DFS gate, and on-chain validated speculation |
 | [Determinism of the block state transition](determinism.md) | 14–16, 19 | what determinism means for a block: the fringe, the DAG, the merge, and the RNG |
 | [Cross-shard transactions](cross-shard-transactions.md) | 26–29 | the two-phase-commit flow across shards, its roles, its state machine, and its recovery caveat |
-| [Progress: the shapes of non-progress](progress.md) | 51 | the vocabulary for an obligation that cannot be met — its three shapes, its two predicate causes, the hypotheses each law carries, and the table that turns a symptom into a law |
+| [Progress: the shapes of non-progress](progress.md) | 51–52 | the vocabulary for an obligation that cannot be met — its three shapes, its two predicate causes, the hypotheses each law carries, and the table that turns a symptom into a law |
 
 ## What the set is, and what it is not
 

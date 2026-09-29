@@ -2729,7 +2729,84 @@ def laws : List Law := [
       which kind it is — `definitional`, `instance`, `theorem <name>`, or `not modelled, because \
       <reason>` — the register's own `status` discipline applied to a table that is prose. Two rows are \
       honestly `not modelled`: the join rule (`spec/Rchain/Silence.lean` already records that boundary, and \
-      a half-filled join is silence there as it is in the node) and the inactivity leak above" }
+      a half-filled join is silence there as it is in the node) and the inactivity leak above" },
+  { number := 52, clause := "a", layer := "Casper",
+    rustWitness := [
+      "casper/src/blocks/proposer/proposer.rs:the_quorum_is_measured_against_the_whole_bonded_map_not_the_live_one"],
+    statement := "**Finality's quorum denominator is the whole bonded stake, and only the partition may \
+      shrink.** Two disjoint groups cannot each hold a strict supermajority of one total \
+      (`supermajorities_overlap`: `3·s₁ > 2·t` and `3·s₂ > 2·t` force `t < s₁ + s₂`), so a denominator \
+      taken from the *live* set — the fix this repository's own plan proposed on 2026-09-29, *so a \
+      silent validator leaves numerator and denominator together* — lets each side of a partition \
+      finalise its own history. Shrinking the **partition** is what restores liveness, because a \
+      validator that has stopped producing messages stops being required to have seen the cut",
+    status := .provedModel,
+    declarations := [`Rchain.supermajorities_overlap, `Rchain.bonds4, `Rchain.bondsAB, `Rchain.bondsCD,
+      `Rchain.suppOf, `Rchain.Participation, `Rchain.Delivery, `Rchain.StalenessBound],
+    axioms := [],
+    rust := ["block-storage/src/dag/liveness.rs", "block-storage/src/dag/finalizer.rs",
+      "casper/src/blocks/proposer/proposer.rs"],
+    witness := [`Rchain.supermajorities_overlap, `Rchain.the_live_denominator_lets_two_sides_finalise,
+      `Rchain.the_quorum_is_the_whole_bonded_map],
+    falsifiable := some "the arithmetic is general and the counterexample is its instance on one fixture, \
+      and the instance is **two-sided on purpose**: `Rchain.the_live_denominator_lets_two_sides_finalise` \
+      shows the two disjoint sides each advancing at their own denominator (200 of 200) and both being \
+      refused at the bonded one (200 of 400), while `Rchain.the_quorum_is_the_whole_bonded_map` shows the \
+      *full* partition advancing there (300 of 400) — so the second cannot be read as *the gate never \
+      fires*. A change that made the denominator the live set makes the second conjunct of the first \
+      theorem false, which is the disagreement this week settled by an instance. **What it does not \
+      claim**: that two conflicting *messages* cannot be supported — the step from *the supporting sets \
+      overlap* to *the chain cannot fork* is the DAG's causality, which is Law 15's \
+      (`Rchain.seen_monotone_of_reaches`) and is a named hook here rather than a theorem",
+    note := "**This is the row the increment-2 plan needed and the tree did not have.** The plan handed \
+      the live weight set to `calculate_finalization` as the bonds map — both questions of one map — and \
+      the argument for it was that a silent validator leaves numerator and denominator together. It does, \
+      and that is the defect: over the live set the gate is `3·F > 2·L` with `F ≤ L`, which holds for \
+      *any* self-consistent subset, so under a network partition each side finalises its own view. The \
+      shipped fix is asymmetric for this reason (partition = the live set, quorum = the whole bonded map, \
+      registered in `spec/audit/passes.md` §6, AUDIT C174), and the phrasing of the requirement that this \
+      law pins is the issue's own title: finality needs quorum *stake*, not live nodes. **The hypotheses \
+      are named in the instance module** (`Rchain.Participation`, `Rchain.Delivery`, \
+      `Rchain.StalenessBound`) rather than left implicit, because a liveness claim without its hypothesis \
+      is Law 20's trap: `law20_deadlock_freedom` was an axiom until it was deleted as unprovable as \
+      stated" },
+  { number := 52, clause := "b", layer := "Casper",
+    rustWitness := [
+      "casper/tests/finalization.rs:a_silent_bonded_validator_does_not_cap_the_fringe",
+      "block-storage/src/dag/liveness.rs:the_window_is_heights_behind_the_tip"],
+    statement := "**The requirement must be one a reachable state can satisfy.** With the whole bonded set \
+      as the *partition*, a validator that produces no message makes the full-partition filter \
+      unsatisfiable — not slow, **empty**: `allBonded` demands that every seer's seen set equal the \
+      bonded set, and no seer can have seen a validator that never spoke. That is C174's measured shape, \
+      where the survivors at 80 % of the stake could not lift the gate at all, and it is Law 51's `Void` \
+      with its proof obligation discharged here: the emptiness is *derived from the predicate* rather \
+      than observed on a fixture",
+    status := .provedModel,
+    declarations := [`Rchain.allBonded_false_of_a_silent_seer,
+      `Rchain.allBonded_false_of_seers_omitting,
+      `Rchain.fullPartitionStake_eq_zero_of_a_silent_bonded],
+    axioms := [],
+    rust := ["block-storage/src/dag/liveness.rs", "block-storage/src/dag/finalizer.rs",
+      "casper/tests/finalization.rs"],
+    witness := [`Rchain.fullPartitionStake_eq_zero_of_a_silent_bonded,
+      `Rchain.the_whole_bonded_partition_is_unsatisfiable],
+    falsifiable := some "the general theorem is an induction over the support map whose step is \
+      `Rchain.allBonded_false_of_a_silent_seer` — a seer whose seen set omits a bonded validator cannot \
+      equal the bonded set — so a filter that kept such a candidate would falsify it. Its fixture instance \
+      is **two-sided**: `Rchain.the_whole_bonded_partition_is_unsatisfiable` has the gate refusing three \
+      speaking validators' candidates at 300 of 400 *and* advancing the identical fixture once the fourth \
+      speaks, so the first half is a finding rather than a definition. Delete the hypothesis that a \
+      validator is silent and the theorem is unprovable, which is the honest shape: what the fix changed \
+      was the *hypothesis* (the partition is `Rchain.Participation`'s live subset), not the arithmetic",
+    note := "The two clauses of this law are the two halves of the increment that landed on 2026-09-29, \
+      and they are separable: clause a is safety (the denominator) and clause b is liveness (the \
+      partition). C174's measurement is what forced the second — the survivors at 80 % could not resume \
+      finality while the third validator was stopped, and #105's run froze with the survivor at 91 %, \
+      where the binding constraint was a *message* and not a stake share. **What clause b still does not \
+      fix, said plainly**: a net that stays below two thirds permanently (three equal validators minus \
+      one is exactly two thirds) still cannot finalise, and the honest repair there is an inactivity leak \
+      — a state change that burns a silent validator's stake — which belongs with the shard-configuration \
+      and validator-lifecycle work (#24, #39), not with a recency window" }
 ]
 
 /-- Every law number the catalog defines. Laws with clauses repeat. -/
