@@ -85,7 +85,16 @@ blocks are already in the DAG. Three measured points, and they do not lie on a l
 |---|---|
 | 131 produced blocks (the table above) | ~0.02 MB |
 | 100–300 blocks, fresh devnet, 2026-09-28 (`tools/devnet-bench.py`) | 0.16–0.23 MB |
-| **3 200 blocks** ([#68](https://github.com/rchain-community/rchain-rust/issues/68)) | **~1.8 GB peak, ~17 minutes before the API opens** |
+| **3 200 blocks** ([#68](https://github.com/rchain-community/rchain-rust/issues/68)) | **~1.8 GB peak, ~17 minutes before the API opens** — *pre-`b37410b2e`, see the correction below* |
+
+**Correction, 2026-09-29: the third row is an upper bound, not a measurement of the current build.**
+There were **two** Θ(N²) terms in the start-up path and one of them is gone: the metadata-index rebuild
+(`recreate_in_memory_state`) used to fold through `add_block_to_dag_state` — a full `DagState` clone per
+block — and now extends the index in place, which is what `b37410b2e` landed. The ancestry-set term above
+remains, and it is the one this page's rule is about, so the figure still bounds the cost from *above* —
+but the peak and the start-up time are both now unknown at 3,200 blocks, and no re-measurement has been
+taken ([#68](https://github.com/rchain-community/rchain-rust/issues/68) is the issue that would close on
+one). Size from the ceiling, and treat the row as the last measurement rather than the current cost.
 
 So the third row is the one to size from, and it is why "≥ 2 GB for ~1k blocks" should not be extended by
 multiplication: 1.8 GB at 3 200 blocks is *below* a linear reading of that sentence, while a 10 000-block
