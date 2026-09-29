@@ -36,7 +36,7 @@ pub async fn validate_and_add_to_dag<F, Fut>(
 ) -> Result<Result<(), BlockStatus>, String>
 where
     F: Fn(BlockHash) -> Fut,
-    Fut: std::future::Future<Output = Result<BlockIndex, String>>,
+    Fut: std::future::Future<Output = Result<Arc<BlockIndex>, String>>,
 {
     let result = crate::multi_parent_casper::validate(
         dag,
@@ -73,7 +73,7 @@ pub async fn apply<F, Fut>(
     log: Arc<dyn Log>,
 ) where
     F: Fn(BlockHash) -> Fut + Clone + Send + Sync + 'static,
-    Fut: std::future::Future<Output = Result<BlockIndex, String>> + Send + 'static,
+    Fut: std::future::Future<Output = Result<Arc<BlockIndex>, String>> + Send + 'static,
 {
     let source = LogSource::new("casper.blocks.BlockProcessor");
     while let Some(first) = input_blocks.recv().await {

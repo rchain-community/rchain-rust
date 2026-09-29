@@ -301,7 +301,7 @@ impl Proposer {
     ) -> Proposer
     where
         F: Fn(BlockHash) -> Fut + Send + Sync + 'static,
-        Fut: Future<Output = Result<BlockIndex, String>> + Send + 'static,
+        Fut: Future<Output = Result<Arc<BlockIndex>, String>> + Send + 'static,
     {
         let block_index = Arc::new(block_index);
 
@@ -501,7 +501,7 @@ async fn create_block<'a, F, Fut>(
 ) -> Result<BlockCreatorResult, String>
 where
     F: Fn(BlockHash) -> Fut + Sync,
-    Fut: Future<Output = Result<BlockIndex, String>>,
+    Fut: Future<Output = Result<Arc<BlockIndex>, String>>,
 {
     let pre_state = get_pre_state_for_new_block(dag, block_store, runtime, block_index).await?;
     let pre_state_hash = pre_state.pre_state_hash;

@@ -102,7 +102,7 @@ pub async fn get_pre_state_for_parents<F, Fut>(
 ) -> Result<ParentsMergedState, String>
 where
     F: Fn(BlockHash) -> Fut,
-    Fut: std::future::Future<Output = Result<BlockIndex, String>>,
+    Fut: std::future::Future<Output = Result<Arc<BlockIndex>, String>>,
 {
     if parent_hashes.is_empty() {
         return Err(
@@ -299,7 +299,7 @@ pub async fn get_pre_state_for_new_block<F, Fut>(
 ) -> Result<ParentsMergedState, String>
 where
     F: Fn(BlockHash) -> Fut,
-    Fut: std::future::Future<Output = Result<BlockIndex, String>>,
+    Fut: std::future::Future<Output = Result<Arc<BlockIndex>, String>>,
 {
     let dag_repr = dag.get_representation().await;
     let parent_hashes: BTreeSet<BlockHash> = dag_repr
@@ -325,7 +325,7 @@ pub async fn validate<F, Fut>(
 ) -> Result<BlockMetadata, ValidateError>
 where
     F: Fn(BlockHash) -> Fut,
-    Fut: std::future::Future<Output = Result<BlockIndex, String>>,
+    Fut: std::future::Future<Output = Result<Arc<BlockIndex>, String>>,
 {
     let init_block_meta = BlockMetadata::from_block(block);
 

@@ -255,7 +255,7 @@ pub async fn validate_block_checkpoint<F, Fut>(
 ) -> Result<(BlockMetadata, Result<bool, BlockStatus>), String>
 where
     F: Fn(BlockHash) -> Fut,
-    Fut: std::future::Future<Output = Result<BlockIndex, String>>,
+    Fut: std::future::Future<Output = Result<Arc<BlockIndex>, String>>,
 {
     // Non-failed parent hashes.
     let mut parents: Vec<BlockHash> = Vec::new();

@@ -302,6 +302,24 @@ async fn a_merge_reproduces_a_branchs_post_state_including_its_native_writes() {
         "the index must carry the block's native writes for the merge (#74)"
     );
 
+    // A second request for the same block is a cache hit, and a hit must **share** the entry rather
+    // than deep-copy it (#117). A `BlockIndex` carries a `Vec<DeployChainIndex>`, each with its own
+    // `EventLogIndex`, and the merge asks for every block of its conflict and final scopes — 711 of
+    // 750 requests were hits across one measured devnet stall, which made this copy the workload's
+    // dominant allocating site in a heap profile.
+    //
+    // Asserted on *identity*, not on bytes: this crate graph has no allocation counter, because
+    // `#![forbid(unsafe_code)]` rules out a `#[global_allocator]` (see `casper/src/dag.rs`). That
+    // makes `Arc::ptr_eq` the available falsifier — restore the old `idx.clone()` on the hit path and
+    // this goes red, while still passing every behavioural test in the file.
+    let again = BlockIndex::get_block_index(&rm, &store, block.block_hash, fringe_state(1))
+        .await
+        .expect("the block index again");
+    assert!(
+        Arc::ptr_eq(&index, &again),
+        "a cache hit must share the cached index, not deep-copy it (#117)"
+    );
+
     // Merge the single branch over the genesis: nothing has finalised, so the branch is the whole
     // conflict scope and the base is the genesis.
     let scope = MergeScope {

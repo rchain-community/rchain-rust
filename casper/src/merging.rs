@@ -6,7 +6,7 @@
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 use std::hash::{Hash, Hasher};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use rchain_block_storage::block_store::BlockStore;
 use rchain_block_storage::dag::finalizer::Message;
@@ -435,7 +435,15 @@ fn sys_deploy_id(block_hash: &BlockHash, prefix: u8) -> Vec<u8> {
 }
 
 /// The in-memory block-index cache (port of `BlockIndex.cache`).
-static BLOCK_INDEX_CACHE: OnceLock<Mutex<BTreeMap<BlockHash, BlockIndex>>> = OnceLock::new();
+///
+/// Entries are `Arc`-shared rather than owned. A `BlockIndex` holds a `Vec<DeployChainIndex>` and each
+/// of those holds an `EventLogIndex` — sets of produces and consumes — so an entry is kilobytes to
+/// megabytes, and this cache is read on *every* block validated and every block proposed: the merge
+/// asks for each block of its conflict and final scopes, and a hit used to deep-copy the whole index.
+/// Measured under a devnet fork storm (#117): ~750 requests over one stall with 711 of them hits, and
+/// a heap profile put `DeployChainIndex::clone`/`Vec::clone` under this frame among the largest
+/// allocating sites. Sharing is safe because an index is immutable once built.
+static BLOCK_INDEX_CACHE: OnceLock<Mutex<BTreeMap<BlockHash, Arc<BlockIndex>>>> = OnceLock::new();
 
 async fn get_block_unsafe(
     block_store: &BlockStore,
@@ -460,7 +468,7 @@ impl BlockIndex {
         block_store: &BlockStore,
         block_hash: BlockHash,
         fringe_state_hash: Blake2b256Hash,
-    ) -> Result<BlockIndex, String> {
+    ) -> Result<Arc<BlockIndex>, String> {
         INDEX_CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let cache = BLOCK_INDEX_CACHE.get_or_init(|| Mutex::new(BTreeMap::new()));
         if let Some(idx) = cache
@@ -468,7 +476,8 @@ impl BlockIndex {
             .unwrap_or_else(|p| p.into_inner())
             .get(&block_hash)
         {
-            return Ok(idx.clone());
+            // A hit is a refcount bump, not a copy: see the cache's own comment.
+            return Ok(Arc::clone(idx));
         }
 
         let block = get_block_unsafe(block_store, &block_hash).await?;
@@ -535,13 +544,14 @@ impl BlockIndex {
         )
         .await?;
 
+        let shared = Arc::new(index);
         let cache_len = {
             let mut guard = cache.lock().unwrap_or_else(|p| p.into_inner());
-            guard.insert(block_hash, index.clone());
+            guard.insert(block_hash, Arc::clone(&shared));
             guard.len() as u64
         };
         INDEX_CACHE_LEN.store(cache_len, std::sync::atomic::Ordering::Relaxed);
-        Ok(index)
+        Ok(shared)
     }
 
     /// Remove cached block indices for `hashes` (port of `BlockIndex.cache.remove` in `pruneDiff`).
@@ -958,16 +968,16 @@ impl MergeScope {
     ) -> Result<(Blake2b256Hash, BTreeSet<Vec<u8>>), String>
     where
         F: Fn(BlockHash) -> Fut,
-        Fut: std::future::Future<Output = Result<BlockIndex, String>>,
+        Fut: std::future::Future<Output = Result<Arc<BlockIndex>, String>>,
     {
-        let conflict_indices: Vec<BlockIndex> = {
+        let conflict_indices: Vec<Arc<BlockIndex>> = {
             let mut v = Vec::new();
             for h in &merge_scope.conflict_scope {
                 v.push(block_index(*h).await?);
             }
             v
         };
-        let final_indices: Vec<BlockIndex> = {
+        let final_indices: Vec<Arc<BlockIndex>> = {
             let mut v = Vec::new();
             for h in &merge_scope.final_scope {
                 v.push(block_index(*h).await?);
@@ -1793,7 +1803,7 @@ mod native_merge_tests {
         };
         let block_index = move |_h: BlockHash| {
             let index = branch_index.clone();
-            async move { Ok::<BlockIndex, String>(index) }
+            async move { Ok::<Arc<BlockIndex>, String>(Arc::new(index)) }
         };
 
         // The branch is the conflict scope; nothing has finalised.
@@ -1891,7 +1901,11 @@ mod native_merge_tests {
             .collect();
             let block_index = move |h: BlockHash| {
                 let index = indexes.get(&h).cloned();
-                async move { index.ok_or_else(|| format!("no index for {h:?}")) }
+                async move {
+                    index
+                        .map(Arc::new)
+                        .ok_or_else(|| format!("no index for {h:?}"))
+                }
             };
             let scope = MergeScope {
                 final_scope: BTreeSet::new(),
@@ -2095,7 +2109,11 @@ mod boundary_merge_tests {
         };
         let lookup = move |h: BlockHash| {
             let found = blocks.iter().find(|b| b.block_hash == h).cloned();
-            async move { found.ok_or_else(|| format!("no index for {h:?}")) }
+            async move {
+                found
+                    .map(Arc::new)
+                    .ok_or_else(|| format!("no index for {h:?}"))
+            }
         };
         MergeScope::merge(
             &scope,
