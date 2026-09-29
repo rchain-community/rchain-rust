@@ -28,6 +28,7 @@
 - [Effect scheduling](formal/scheduling.md)
 - [Determinism of the block state transition](formal/determinism.md)
 - [Cross-shard transactions](formal/cross-shard-transactions.md)
+- [Progress: the shapes of non-progress](formal/progress.md)
 
 # Part III — The node
 
