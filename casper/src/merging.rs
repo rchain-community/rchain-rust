@@ -699,8 +699,17 @@ fn rejections_for<'a>(
 /// - **conflict**: chains of two different blocks that wrote a common key and neither of which has
 ///   seen the other. Resolution then rejects one side, as for a tuple-space conflict.
 /// - **dependency**: a chain of a block that wrote a common key with a block it has seen depends on
-///   that block's chains (rejecting the ancestor rejects the value built on it), and the chains of
-///   one native-writing block depend on each other, so the block is accepted or rejected whole.
+///   that block's chains, so rejecting the ancestor rejects the value built on it.
+///
+/// A native-writing block is then accepted or rejected **whole**, and that is enforced after
+/// resolution by host block (`reject_whole_blocks`) rather than by an edge between its own chains.
+/// The chains of one block are equal under `DeployChainIndex`'s `Ord` (host block, post-state)
+/// while unequal under its `Eq` (deploy ids), so resolution's `BTreeSet`s hold them as one class
+/// for lookups but as separate members for iteration: `difference` removes only the member it
+/// meets, and a two-chain block survives with one chain (`a_rejected_native_block_loses_every_chain`).
+/// A same-block edge is worse - under that `Ord` it is a self-loop, and `sdk`'s `traverse_tree`
+/// walks the dependency map without a visited set, so the merge never returns
+/// (`a_native_block_with_two_chains_merges`).
 struct NativeRelations<'a> {
     keys: &'a BTreeMap<Blake2b256Hash, BTreeSet<(u8, Blake2b256Hash)>>,
     ancestry: &'a BTreeMap<BlockHash, BTreeSet<BlockHash>>,
@@ -728,10 +737,71 @@ impl NativeRelations<'_> {
     /// Whether `a` depends on `b`.
     fn depends(&self, a: &DeployChainIndex, b: &DeployChainIndex) -> bool {
         let (ha, hb) = (&a.host_block, &b.host_block);
-        if ha == hb {
-            return a != b && self.keys.contains_key(ha);
+        ha != hb && self.overlap(ha, hb) && self.sees(ha, hb)
+    }
+
+    /// Close resolution's result over whole native-writing blocks. A block with any rejected chain
+    /// loses all of them - its native writes are block-level and were computed with every chain's
+    /// effects - and so does every block that depends on a rejected block: natively (it wrote a
+    /// common key on top of it) or through the event logs (a dependency-map edge). The fixpoint is
+    /// taken by host block, so it does not rest on the chains' `Ord`; see the type's comment.
+    fn reject_whole_blocks(
+        &self,
+        conflict_set: &BTreeSet<DeployChainIndex>,
+        to_merge: BTreeSet<DeployChainIndex>,
+        rejected: BTreeSet<DeployChainIndex>,
+        dependency_map: &BTreeMap<DeployChainIndex, BTreeSet<DeployChainIndex>>,
+    ) -> (BTreeSet<DeployChainIndex>, BTreeSet<DeployChainIndex>) {
+        let scope_hosts: BTreeSet<Blake2b256Hash> =
+            conflict_set.iter().map(|c| c.host_block).collect();
+        let mut rejected_hosts: BTreeSet<Blake2b256Hash> = rejected
+            .iter()
+            .map(|c| c.host_block)
+            .filter(|h| self.keys.contains_key(h))
+            .collect();
+        loop {
+            let before = rejected_hosts.len();
+            let natively_dependent: Vec<Blake2b256Hash> = scope_hosts
+                .iter()
+                .filter(|h| {
+                    !rejected_hosts.contains(*h)
+                        && rejected_hosts
+                            .iter()
+                            .any(|r| self.overlap(h, r) && self.sees(h, r))
+                })
+                .copied()
+                .collect();
+            rejected_hosts.extend(natively_dependent);
+            let dependent: Vec<Blake2b256Hash> = conflict_set
+                .iter()
+                .filter(|c| rejected_hosts.contains(&c.host_block))
+                .filter_map(|c| dependency_map.get(c))
+                .flatten()
+                .map(|d| d.host_block)
+                .filter(|h| scope_hosts.contains(h))
+                .collect();
+            rejected_hosts.extend(dependent);
+            if rejected_hosts.len() == before {
+                break;
+            }
         }
-        self.overlap(ha, hb) && self.sees(ha, hb)
+        if rejected_hosts.is_empty() {
+            return (to_merge, rejected);
+        }
+        let to_merge = to_merge
+            .into_iter()
+            .filter(|c| !rejected_hosts.contains(&c.host_block))
+            .collect();
+        let rejected = rejected
+            .into_iter()
+            .chain(
+                conflict_set
+                    .iter()
+                    .filter(|c| rejected_hosts.contains(&c.host_block))
+                    .cloned(),
+            )
+            .collect();
+        (to_merge, rejected)
     }
 
     /// The accepted blocks' native writes as one action per key: writers in ancestry order, so a
@@ -930,11 +1000,6 @@ impl MergeScope {
                     )
                 })
                 .collect();
-        let native = NativeRelations {
-            keys: &native_keys,
-            ancestry: &merge_scope.ancestry,
-        };
-
         let conflict_set: BTreeSet<DeployChainIndex> = conflict_indices
             .iter()
             .flat_map(|b| b.deploy_chains.iter().cloned())
@@ -988,6 +1053,10 @@ impl MergeScope {
 
         // A chain relation is its event-log relation, widened by its host block's native writes
         // (issue #83): see `NativeRelations`.
+        let native = NativeRelations {
+            keys: &native_keys,
+            ancestry: &merge_scope.ancestry,
+        };
         let (conflicts_map, dependency_map) = compute_relation_map_for_merge_set(
             &conflict_set,
             &final_set,
@@ -1005,6 +1074,8 @@ impl MergeScope {
             &mergeable_diffs_map,
             &init_mergeable_values,
         );
+        let (to_merge, rejected) =
+            native.reject_whole_blocks(&conflict_set, to_merge, rejected, &dependency_map);
 
         // The native effects of the blocks whose chains survive conflict resolution. A block
         // contributes its native changes iff at least one of its chains is accepted - native effects
@@ -2147,6 +2218,65 @@ mod boundary_merge_tests {
             }
         };
         assert_eq!(total(merged).await, total(base).await, "REV is conserved");
+    }
+
+    /// A block with a user deploy has at least two chains (the deploy's and the close-block's), and
+    /// its native writes make them one unit. The merge must terminate on such a block: the
+    /// dependency map is walked by traversals that do not tolerate a cycle.
+    #[tokio::test]
+    async fn a_native_block_with_two_chains_merges() {
+        let (repo, base) = genesis().await;
+        let x = play(&repo, base, EPOCH - 3, 1, Body::Deploy(8)).await;
+        let mut block = index(0xa0, base, x);
+        let mut second = block.deploy_chains[0].clone();
+        second.deploys_with_cost = BTreeSet::from([DeployIdWithCost {
+            id: vec![0xa1],
+            cost: 0,
+        }]);
+        block.deploy_chains.push(second);
+        let merged = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            merge(&repo, base, vec![block], BTreeMap::new()),
+        )
+        .await
+        .expect("the merge terminates")
+        .expect("the merge");
+        assert!(merged.1.is_empty(), "nothing conflicts with a lone block");
+    }
+
+    /// A rejected native block loses every chain, including a second one: its user deploy's
+    /// effects go with the boundary it rode in on.
+    #[tokio::test]
+    async fn a_rejected_native_block_loses_every_chain() {
+        let (repo, base) = genesis().await;
+        let a = play(&repo, base, EPOCH, 1, Body::Nothing).await;
+        let b = play(&repo, base, EPOCH, 2, Body::Nothing).await;
+        let with_second_chain = |mut block: BlockIndex, id: u8| {
+            let mut second = block.deploy_chains[0].clone();
+            second.deploys_with_cost = BTreeSet::from([DeployIdWithCost {
+                id: vec![id],
+                cost: 0,
+            }]);
+            block.deploy_chains.push(second);
+            block
+        };
+        let (_, rejected) = merge(
+            &repo,
+            base,
+            vec![
+                with_second_chain(index(0xa0, base, a), 0xa1),
+                with_second_chain(index(0xb0, base, b), 0xb1),
+            ],
+            BTreeMap::new(),
+        )
+        .await
+        .expect("sibling boundary blocks with two chains each merge");
+        let a_ids = BTreeSet::from([vec![0xa0], vec![0xa1]]);
+        let b_ids = BTreeSet::from([vec![0xb0], vec![0xb1]]);
+        assert!(
+            rejected == a_ids || rejected == b_ids,
+            "exactly one block is rejected, with every chain it carried: {rejected:?}"
+        );
     }
 
     /// The same two charges, but the second block has seen the first: its vault balance already
