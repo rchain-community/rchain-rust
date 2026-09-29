@@ -116,3 +116,60 @@ that turns on `R/A` must not turn on which of two reads of the same instant was 
 
 Both changes make the measurement *harder* to satisfy, not easier: they exclude a class that could
 have inflated `R`, and they add a consistency check that can fail. Nothing here relaxes a criterion.
+
+---
+
+## Amendment 2 — the four corrections the audit's own analysis found in Amendment 1
+
+**Stated, and why: Amendment 1 was audited and four defects were found in it. Two of them change what
+a reading means; both are narrowings, and no threshold moves.** They are recorded here rather than
+edited into Amendment 1 so the history of the protocol is readable.
+
+**A1. `A` was ambiguous between two readings, and the ambiguity decides the verdict.** Amendment 1 said
+"peak `anon` … from `memory.peak`", which mixes a counter (`memory.peak` is `memory.current`'s
+high-water, which includes file-backed pages) with a different one (`anon`), *and* invites the peak at
+death — which the protocol's own step 1 forbids reading, because the cgroup is gone.
+
+`A` is therefore defined as **the `anon` value from `memory.stat` read in the same sampler tick that
+produced the `smaps` read for `R`**, and `R/A` is a **same-instant ratio**. The run's peak `anon` and
+`memory.peak` are reported separately and are **not** used as `A`.
+
+The measured cost of getting this wrong, on the one artifact that exists: with `R` = 1018.9 MiB and
+the same-instant `anon` = 1151, `R/A` = **0.885** — the "arena retention accepted" row; with the peak
+at death (5847.6), `R/A` = **0.174** — the "arenas refuted" row. One artifact, one rule, opposite
+verdicts.
+
+**A2. `R`'s classifier needed a size floor and an adjacency tolerance, and now has neither criterion
+in the form that failed.** Amendment 1's literal reading admitted a **0.766 MiB** region purely for
+being full and adjacent to a large one, while *excluding* three fully-resident 64-MiB heaps that sit
+inside a coalesced mapping — a region-based rule undercounts heaps exactly when heaps are adjacent.
+
+`R` is therefore the **total Rss of unnamed `rw-p` regions with `Size ≥ 32 MiB` _and_
+`Rss / Size ≥ 0.9`**. Adjacency is demoted from an admission criterion to a **note** recording
+coalesced blocks. This is mechanical, and it fixes the undercount by counting *bytes* rather than
+*regions*: a fully-resident 192 MiB coalesced block contributes its full 192 MiB, which is the three
+heaps it contains. It excludes the worker stacks (29 regions of 32 MiB at `Rss/Size` ≈ 0.004) and the
+0.766 MiB region (size floor) without special-casing either. The **region count** is reported
+separately, beside `R`, for the heaps-per-arena question.
+
+**A3. The `[0.5, 0.8)` band produced no verdict, and now has a row.** A strict reading of the
+pre-amendment rule lands at 0.597 on the one artifact that exists — a reading the table could not
+classify. The added row says what that reading means rather than inventing a threshold:
+
+| observation | verdict | consequence |
+|---|---|---|
+| `0.5 ≤ R/A < 0.8` | **partial attribution** | the arena class is a major contributor but not dominant: the remainder is unnamed, the measurement has **not** decided the owner, and the class that holds the rest must be named before any fix follows |
+
+**A4. Two series are now required per second, not because the table uses them but because the
+analysis showed they are the cheap discriminator:** the **thread count** (`ls /proc/<pid>/task`) and
+the **count of ~32 MiB regions**. The arena story implies the heap count tracks the *thread* count —
+the arithmetic needs ~143 threads, not the ~62 an earlier draft assumed, to reach a 4 GiB ceiling from
+13 heaps at 30 threads. Sampled per second this separates "arenas grow per thread" from "a fixed set of
+arenas retains more", and it is measured with `ls`, not with a profiler.
+
+**And one limitation Amendment 1 cannot shed.** The unchanged snapshot **cannot** satisfy the
+same-instant rule: its nearest cgroup reads are the monitor's 1-second samples (753.2 / 1151.0 /
+1698.0 MiB at `:38` / `:39` / `:40`), and at ~650 MiB/s a one-second offset is ±650 MiB — `R/A` from
+that artifact carries ≈ **±57 %**. It is therefore unable to decide the table under this protocol, which
+is the protocol working: the measurement has to be taken, and the existing snapshot is a bound rather
+than a reading.
