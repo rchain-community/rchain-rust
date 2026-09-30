@@ -120,14 +120,34 @@ where
         }
     }
 
-    /// **The parent set for a new block** — [`Self::round_parents`], which is what the fringe gate can
-    /// finalise. Falls back to `latest_msgs` only before the first boundary exists (an empty DAG).
-    pub fn parents_for_new_block(&self) -> BTreeSet<Message<M, S>> {
+    /// **The parent set for a new block by `sender`** — [`Self::round_parents`], with **the sender's own
+    /// entry replaced by its newest message**.
+    ///
+    /// The substitution is not a refinement, it is what keeps the chain a chain. The block creator derives
+    /// both the new block's `block_num` and its `seq_num` **from this set** (`block_creator.rs:58-75`), so a
+    /// parent set that omits the proposer's own newest message makes a second proposal in the same round
+    /// carry the same `(sender, seq_num)` as the first — and the DAG refuses it, correctly, as an
+    /// equivocation:
+    ///
+    /// ```text
+    /// Self-created block #93 (seq 92) failed validation: failed to insert block into DAG:
+    /// equivocation detected: sender produced two blocks with the same sequence number
+    /// ```
+    ///
+    /// That is measured, not anticipated: it is what a devnet run against the first version of this
+    /// function logged, and it is why the fixture in `casper/tests/finalization.rs` derives `sender_seq`
+    /// from the parent set the way the block creator does. The first block of a round is unaffected — the
+    /// sender's newest *is* the snapshot's entry for it — so the cross-sender snapshot, which is what the
+    /// fringe gate needs, is untouched.
+    pub fn parents_for_new_block(&self, sender: &S) -> BTreeSet<Message<M, S>> {
         if self.round_parents.is_empty() {
-            self.latest_msgs.values().cloned().collect()
-        } else {
-            self.round_parents.values().cloned().collect()
+            return self.latest_msgs.values().cloned().collect();
         }
+        let mut parents = self.round_parents.clone();
+        if let Some(mine) = self.latest_msgs.get(sender) {
+            parents.insert(sender.clone(), mine.clone());
+        }
+        parents.values().cloned().collect()
     }
 
     /// Create a new message, generating its finalization fringe.
@@ -257,7 +277,7 @@ where
             .map(|m| m.sender_seq)
             .unwrap_or_else(SeqNum::zero);
         let new_seq_num = seq_num + NonNegI64::one();
-        let justifications: BTreeSet<Message<M, S>> = self.parents_for_new_block();
+        let justifications: BTreeSet<Message<M, S>> = self.parents_for_new_block(creator);
         let bonds_map = self
             .latest_msgs
             .values()

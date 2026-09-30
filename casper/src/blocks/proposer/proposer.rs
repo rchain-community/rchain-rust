@@ -503,7 +503,16 @@ where
     F: Fn(BlockHash) -> Fut + Sync,
     Fut: Future<Output = Result<Arc<BlockIndex>, String>>,
 {
-    let pre_state = get_pre_state_for_new_block(dag, block_store, runtime, block_index).await?;
+    let creators_validator_for_parents =
+        Validator::from_slice(validator_identity.public_key.bytes());
+    let pre_state = get_pre_state_for_new_block(
+        dag,
+        block_store,
+        runtime,
+        block_index,
+        &creators_validator_for_parents,
+    )
+    .await?;
     let pre_state_hash = pre_state.pre_state_hash;
     let creators_validator = Validator::from_slice(validator_identity.public_key.bytes());
     let next_block_num = pre_state

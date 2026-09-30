@@ -779,3 +779,112 @@ fn a_round_snapshot_of_the_latest_messages_is_what_the_gate_needs() {
          rate problem, and a lag that is constant is the unfinalized region the gate's rule needs"
     );
 }
+
+/// **The coupling the fixture above did not model, and a devnet run found instead.**
+///
+/// `the_chain_the_nodes_own_proposer_builds_reaches_a_fringe` drives
+/// `create_msg_and_update_sender`, which takes the sender's `seq_num` from `latest_msgs` — so it cannot
+/// see a parent set that omits the proposer's own newest message. **The block creator does not work that
+/// way**: `block_creator.rs:58-75` derives both the new block's `block_num` and its `seq_num` **from the
+/// justification set**:
+///
+/// ```text
+/// block_num = max(justifications.block_num) + 1
+/// seq_num   = justifications.find(|m| m.sender == creator).seq_num + 1
+/// ```
+///
+/// A parent set that is a *cross-sender snapshot* therefore has to keep the proposer's own entry current,
+/// or a second proposal in the same round carries the same `(sender, seq_num)` as the first. The DAG
+/// refuses that, correctly, and the node says so in as many words:
+///
+/// ```text
+/// ERROR Self-created block #93 (seq 92) failed validation with internal error: failed to insert block
+///       into DAG: equivocation detected: sender produced two blocks with the same sequence number
+/// ```
+///
+/// **This test is that coupling.** It derives `seq_num` and `block_num` the way the block creator does —
+/// from the parent set, not from a counter the test owns — and proposes twice from the same validator
+/// inside one round, which is the case the earlier fixture could not reach. It is red against a parent set
+/// that omits the proposer's own newest message and green against one that carries it.
+#[test]
+fn a_validator_proposing_twice_in_one_round_keeps_its_sequence() {
+    use rchain_block_storage::dag::message_state::DagMessageState;
+    use rchain_models::validator::Validator;
+    use rchain_shared::refined::{BlockHeight, NonNegI64 as Stake, SeqNum};
+
+    fn validator(b: u8) -> Validator {
+        Validator::new([b; 65])
+    }
+    fn id(sender: u8, height: i64) -> BlockHash {
+        let mut b = [0u8; 32];
+        b[0] = sender;
+        b[1] = (height & 0xff) as u8;
+        b[2] = ((height >> 8) & 0xff) as u8;
+        BlockHash::new(b)
+    }
+    fn h(n: i64) -> BlockHeight {
+        BlockHeight::try_from(n).expect("height")
+    }
+    fn s(n: i64) -> SeqNum {
+        SeqNum::try_from(n).expect("seq num")
+    }
+    fn byte_of(v: &Validator) -> u8 {
+        (0u8..=255)
+            .find(|b| Validator::new([*b; 65]) == *v)
+            .expect("a validator this fixture built")
+    }
+
+    let vs = [validator(0), validator(1), validator(2)];
+    let g = validator(255);
+    let bonds: std::collections::BTreeMap<Validator, Stake> = [
+        (vs[0].clone(), Stake::try_from(100).unwrap()),
+        (vs[1].clone(), Stake::try_from(100).unwrap()),
+        (vs[2].clone(), Stake::try_from(50).unwrap()),
+    ]
+    .into_iter()
+    .collect();
+
+    let st: DagMessageState<BlockHash, Validator> = DagMessageState::empty();
+    let genesis = st.create_message(id(255, 0), h(0), g, s(0), bonds.clone(), &BTreeSet::new());
+    let mut state = st.insert_msg(&genesis);
+
+    let mut seen: std::collections::BTreeMap<Validator, SeqNum> = std::collections::BTreeMap::new();
+    // `v0` proposes twice in a row at the start of every round, which is what a two-validator tail of a
+    // chain does and what the tap produces when it fires on each validated block.
+    let order = [0usize, 0, 1, 0, 0, 2, 0, 0, 1, 1, 2, 0, 0, 1, 0, 0, 2, 1];
+    for (step, who) in order.iter().enumerate() {
+        let v = vs[*who].clone();
+        let parents = state.parents_for_new_block(&v);
+        // **The block creator's own derivation**, verbatim in shape: both numbers come off the parent set.
+        let block_num = parents
+            .iter()
+            .map(|m| m.height)
+            .max()
+            .map(|m| m + rchain_shared::refined::NonNegI64::one())
+            .unwrap_or_else(BlockHeight::zero);
+        let seq_num = parents
+            .iter()
+            .find(|m| m.sender == v)
+            .map(|m| m.sender_seq + rchain_shared::refined::NonNegI64::one())
+            .unwrap_or_else(SeqNum::zero);
+
+        assert!(
+            seen.get(&v).is_none_or(|prev| *prev < seq_num),
+            "step {step}: {} proposes with seq {seq_num:?} after {:?} — the DAG refuses two blocks from one \
+             sender with the same sequence number as an equivocation, and it is right to",
+            byte_of(&v),
+            seen.get(&v)
+        );
+        seen.insert(v.clone(), seq_num);
+
+        let m = state.create_message(
+            id(*who as u8, i64::from(block_num)),
+            block_num,
+            v.clone(),
+            seq_num,
+            bonds.clone(),
+            &parents,
+        );
+        state = state.insert_msg(&m);
+    }
+}
