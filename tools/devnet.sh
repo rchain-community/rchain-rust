@@ -329,9 +329,15 @@ docker_opts() {
   # core means one glibc arena per worker, each holding its own high-water mark — and
   # `MALLOC_ARENA_MAX=2` / `MALLOC_TRIM_THRESHOLD_` are how that is tested **without a rebuild**, which
   # matters because a rebuild changes the binary under test (#117).
-  local envs="" pair
-  if [[ -n "${DEVNET_NODE_ENV:-}" ]]; then
-    for pair in ${DEVNET_NODE_ENV//,/ }; do envs="$envs -e $pair"; done
+  # Pairs are comma-separated, **or semicolon-separated when the value contains a comma** — which every
+  # jemalloc `MALLOC_CONF` does (`background_thread:true,dirty_decay_ms:0,...`), and splitting those
+  # commas shreds the setting into fragments that docker then reads as separate variables. With a
+  # semicolon anywhere in the string, that becomes the separator and commas belong to the values.
+  local envs="" pair spec="${DEVNET_NODE_ENV:-}"
+  if [[ -n "$spec" ]]; then
+    local sep=","
+    [[ "$spec" == *";"* ]] && sep=";"
+    for pair in ${spec//$sep/ }; do envs="$envs -e $pair"; done
   fi
   echo "-d --name $name --network $NETWORK $ports $limits $envs \
     -v ${data}:/var/lib/rnode \

@@ -15,7 +15,30 @@ RUST_TEST_THREADS = "10"
 # 9136 KiB growth (~100 %, i.e. no purge in any window the test can wait for)**, while a 0 decay retained
 # **2132 KiB of 6928 (31 %)**. `retain:false` in addition changes nothing measurable (2060 KiB), so it is
 # not set. The cost is that freed pages are not kept for reuse, which is the trade this buys: a footprint
-# that tracks live data (see the falsifier's doc comment for the assertion and its headroom). This is the bound
+# that tracks live data (see the falsifier's doc comment for the assertion and its headroom).
+#
+# **`retain:false` is the half that actually bounded the node, and it was found by measurement.** The
+# decay settings alone did nothing visible end to end: on a 3-validator devnet at a 4 GiB ceiling, all
+# three nodes were still OOM-killed, and the memory sat in one ~6.2 GiB jemalloc extent — `retain:true`,
+# the default, keeps freed extents *mapped* and madvises them, and `MADV_FREE` pages stay in RSS. Setting
+# `retain:false` (munmap instead) on the same build, same reproduction, same ceiling:
+#
+#   | peak anon | survivors |
+#   | 3.3-4.1 GiB, killed in 20-170 s | 0-1 of 3   (decay settings only) |
+#   | **624 / 248 / 207 MiB**         | **3 of 3** (with `retain:false`) |
+#
+# That run also settled what the bytes *are*: the memory followed the allocator across the swap, so it is
+# Rust-side allocation and not C-side LMDB — the composition question the audit could not answer.
+#
+# **And the bound is partial, which the same measurement says plainly.** Repeat runs of the identical
+# configuration do not agree: one survived 3 of 3 with peaks of 624 / 248 / 207 MiB (the runtime override),
+# and the next, with `retain:false` compiled in, lost 2 of 3 at peaks of 3919 / 3930 MiB — while the third
+# node's anon fell from 2352 MiB to 79 MiB, so the purge demonstrably returns memory. A 3.9 GiB footprint
+# that *follows the allocator* and *is returned when freed* is neither retained nor a leak in the
+# allocator: it is live. What fills the remainder has not been named, and two attempts to name it failed —
+# `dhat` suppresses the failure (no ramp in 600 s on the profiling build, storm included, because
+# instrumenting every allocation changes the node's timing), and jemalloc's own sampler did not catch a
+# ramp in the window available before the host signalled memory pressure. That is the next unit. This is the bound
 # on #117 (`casper/tests/memory_retention.rs` is its falsifier; the defect it answers is glibc's
 # per-thread arena retention, see `spec/audit/passes.md` §27).
-JEMALLOC_SYS_WITH_MALLOC_CONF = "background_thread:true,dirty_decay_ms:0,muzzy_decay_ms:0"
+JEMALLOC_SYS_WITH_MALLOC_CONF = "background_thread:true,dirty_decay_ms:0,muzzy_decay_ms:0,retain:false"
