@@ -4823,9 +4823,21 @@ a running node: the defect had been described with an *assumed* fork.
 reports keys, conflict pairs, asymmetric pairs, self-conflicts, states expanded, frontier and options;
 `resolve_conflict_set_with_census` returns it from the merge itself, `casper/src/merging.rs`'s
 `search_census` accumulates the envelope process-wide, and `casper/src/interpreter_util.rs` logs it once
-per five seconds on the node's own log. The casper merge fixtures now assert the one field that decides
-the fix: `the_merge_search_sees_the_shape_the_merge_builds` reads **0 asymmetric pairs** — the relation
-the merge hands the search is symmetric on its keys, which is the precondition of the exact rewrite.
+per five seconds on the node's own log. `the_merge_search_sees_the_shape_the_merge_builds` asserts the
+field that decides the fix on the merge fixtures, and there it reads **0 asymmetric pairs**.
+
+**And on the node it does not.** 3 attempts of the frozen reproduction, 9 node-runs, every one of them
+asymmetric — 376 to 653 pairs — with a widest scope of **33 to 43 chains** and **up to 1,663,395 states
+expanded on a single merge** (`spec/audit/evidence/n117-after-fix-results.md`). The asymmetry is not
+noise: `resolve_conflict_set` hands the search `full_conflicts_map`, which unions each key's
+**dependencies** into its conflict set, and a dependency is a one-way constraint. So the exact rewrite
+below **declines on the node's real input** — the precondition check does its job, and the enumeration
+runs — and the node is running on the C177 dedup, not on it.
+
+**That correction is this section's own lesson, and it is the repository's stated one.** The precondition
+was checked on casper's merge *fixtures*: 2-chain scopes with an empty final set, which cannot exhibit an
+asymmetry that comes from dependencies. A fixture that cannot fail is not evidence; the devnet run is
+where this was decided, and it took an instrument to see it at all.
 
 **The exact rewrite.** With a symmetric, irreflexive relation on the keys, "reachable" is exactly
 "independent set" and "terminal" is exactly "dominating", so **the terminal states are precisely the
@@ -4836,7 +4848,7 @@ asymmetric map, or a key that conflicts with itself, takes the enumeration as be
 `rejection_options_match_a_literal_enumeration` now asserts which path each generated map earned as well
 as that both agree with the literal transcription.
 
-| shape | before | after |
+| shape (**symmetric** — see the correction above) | before | after |
 |---|---|---|
 | 20 chains in two branches | 2,046 states / 13.4 ms | 30 states / 0.17 ms |
 | 40 chains | 2^21 states / 34.6 s | 60 states / 0.7 ms |
@@ -4846,6 +4858,14 @@ as that both agree with the literal transcription.
 The counts grow linearly with width and the options are byte-identical; the falsifier that was
 `#[ignore]`d red for two commits is now a gate (`rejection_options_are_bounded_on_a_fork_shape`), asserting
 `expanded ≤ (keys + 1) × (options + 1)` — a bound the enumeration misses by an exponential — at every width.
+
+**What that is worth on the node, which is the number this section should be read against: nothing yet.**
+The shape is `directed`, so the rewrite declines, and the node's merge search still expands up to 1.66M
+states at the widths it reaches. The dedup (C177) is what it is actually running on — the pre-fix search
+at 33 chains would have queued a factorial number of entries rather than 1.6M states, which is why the
+tree is strictly better than it was and why the defect is not closed. Growth is ~2× per chain
+(411,199 at 33 -> 1,663,395 at 35), so 50 chains lands near 5·10¹⁰: the node is one wider fork from the
+same ceiling. C178 is therefore **in progress**, not done, and the directed case is what it owes.
 
 **Two honest limits.** The recursion is output-sensitive but a node is not free: the pivot scan is
 `O(|p| · log)` per candidate, so 2,000 chains costs 21 s of CPU (20 ms at 200). And the *options* can
@@ -4859,6 +4879,12 @@ been *rejected* can never be accepted afterwards: for `{0: {1}, 1: {0}, 2: {}}` 
 `{{0}, {1}}` while the closure also yields `{0, 1}`. That counter-example is pinned by
 `rejection_options_are_not_the_closure` and the enumeration it refutes is still in the tree, as the
 fallback path.
+
+**The end-to-end number, with its missing control.** With the fix in place, no node crossed 3000 MiB in
+three attempts of the frozen reproduction (peaks 918–1869 MiB). That is not yet evidence that the fix
+removed the ramp: the pre-fix runs on record crossed at a **4 GiB** cap and a different window, so they
+are a different experiment, and the controlled baseline — the parent commit through the same script — has
+not been run. Owed, and named rather than assumed.
 
 C175 — the unbounded ingress queue §27 could not rule out — is not this defect. Its observation half
 landed (`#120`) and the depth reads 0.0 at every sample through a ramp that OOM-kills all three nodes, so
