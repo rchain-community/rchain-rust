@@ -239,19 +239,48 @@ impl BlockDagKeyValueStorage {
             "max_states_expanded",
             load(&search_census::MAX_EXPANDED),
         );
+        // The mean's numerator: `scope_width_total / searches` is the **exact** mean scope width, where
+        // the histogram below can only offer a mean of bucket edges (C182's second defect).
+        self.metrics.set_gauge(
+            &source,
+            "scope_width_total",
+            i64::try_from(search_census::TOTAL_WIDTH.load(Ordering::Relaxed)).unwrap_or(i64::MAX),
+        );
         // The distribution: one histogram sample per bucket, valued at its edge. The counts are exact
         // and that is what the histogram is read for; `_sum`/`_min`/`_max` over edges are meaningless
         // by construction, and the open-ended bucket is valued at the last edge (`usize::MAX` would
         // overflow the wire).
+        self.metrics.set_gauge(
+            &source,
+            "states_expanded_total",
+            i64::try_from(search_census::TOTAL_EXPANDED.load(Ordering::Relaxed))
+                .unwrap_or(i64::MAX),
+        );
+        // The two distributions, one sample per bucket, valued at its edge: the counts are exact and
+        // that is what a threshold is read off; `_sum`/`_min`/`_max` over edges are meaningless by
+        // construction, which is why the exact means are published as `*_total` gauges above, and the
+        // open-ended bucket is valued at the last edge (`usize::MAX` would overflow the wire).
+        let open = |edges: &[usize]| edges[edges.len() - 1];
         for (edge, delta) in search_census::take_width_deltas() {
             if delta > 0 {
                 let edge = if edge == usize::MAX {
-                    search_census::WIDTH_EDGES[search_census::WIDTH_EDGES.len() - 1]
+                    open(&search_census::WIDTH_EDGES)
                 } else {
                     edge
                 };
                 self.metrics
                     .record(&source, "scope_width", count(edge), count(delta));
+            }
+        }
+        for (edge, delta) in search_census::take_expanded_deltas() {
+            if delta > 0 {
+                let edge = if edge == usize::MAX {
+                    open(&search_census::EXPANDED_EDGES)
+                } else {
+                    edge
+                };
+                self.metrics
+                    .record(&source, "states_expanded", count(edge), count(delta));
             }
         }
     }

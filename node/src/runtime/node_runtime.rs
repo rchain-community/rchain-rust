@@ -1227,9 +1227,7 @@ pub async fn setup_node_program(
         admin_web_api,
         shards: registry,
         block_report_api: primary_parts.block_report_api.clone(),
-        reporter: Arc::new(NewPrometheusReporter::new(
-            crate::diagnostics::scrape_data_builder::Configuration::default(),
-        )),
+        reporter: Arc::new(NewPrometheusReporter::new(prometheus_scrape_config())),
         metrics,
         host: conf.api_server.host.clone(),
         port_http: Port::try_from(conf.api_server.port_http).map_err(|e| e.to_string())?,
@@ -2592,6 +2590,41 @@ mod dummy_deploy_tests {
     }
 }
 
+/// The scrape configuration: the default, plus the merge shape's own histogram buckets.
+///
+/// **Why the shape needs its own** (C182). The default bucket set runs 0.005 .. 10, and a scope width is
+/// 1 .. 43 chains — so in Stage 1's first run every width sample landed in `+Inf`, the distribution
+/// collapsed to its total, and the artifact said so while the code looked right. The defect was in *this
+/// configuration*, so the configuration is a named function with a test rather than an argument to a
+/// constructor.
+///
+/// The edges are the shape's own: the census's width edges, and a logarithmic set for the cost, whose
+/// 10^6 bucket is the order the heap profile reached. The writer appends `+Inf`.
+///
+/// **The key is the source's own name, dots and all.** `Source::sub` joins with `.`, so the registry
+/// looks the bucket set up under `rchain.merge.scope_width`; the underscores a reader sees on `/metrics`
+/// are `normalize_metric_name`'s work at *render* time, one step later. The first fix of this defect used
+/// the rendered form and changed nothing — which the second measurement caught, and which the test below
+/// now cannot miss because it builds the key the same way the publisher does.
+fn metric_key(name: &str) -> String {
+    rchain_shared::metrics::Source::base()
+        .sub("merge")
+        .sub(name)
+        .0
+}
+
+fn prometheus_scrape_config() -> crate::diagnostics::scrape_data_builder::Configuration {
+    let mut config = crate::diagnostics::scrape_data_builder::Configuration::default();
+    config.custom_buckets.insert(
+        metric_key("scope_width"),
+        vec![8.0, 16.0, 32.0, 64.0, 128.0, 256.0],
+    );
+    config
+        .custom_buckets
+        .insert(metric_key("states_expanded"), vec![1e3, 1e4, 1e5, 1e6, 1e7]);
+    config
+}
+
 /// Forward a validated-blocks stream, running `tap` on each block first (when there is one).
 fn tap_validated_blocks(
     rx: mpsc::UnboundedReceiver<BlockMessage>,
@@ -2647,6 +2680,85 @@ fn attest_warranted(
     last_attested_height: Option<i64>,
 ) -> bool {
     sender != me && last_attested_height.map_or(true, |last| height > last)
+}
+
+/// The regression guard for C182's first defect: the shape's metrics must carry buckets that reach the
+/// values they record. The default set tops out at 10, which is what put every sample in `+Inf`.
+#[cfg(test)]
+mod prometheus_scrape_config_tests {
+    use super::{metric_key, prometheus_scrape_config};
+    use crate::diagnostics::effects::MetricsRegistry;
+    use crate::diagnostics::prometheus_reporter::NewPrometheusReporter;
+    use rchain_shared::metrics::{Metrics, Source};
+
+    /// **The test that decides whether the fix is a fix.** It renders the artifact an operator reads —
+    /// through the same registry, the same `record` path and the same configuration production uses —
+    /// instead of asserting that the configuration contains the key the configuration used, which is what
+    /// certified the first attempt while every sample sat in `+Inf`.
+    #[test]
+    fn a_merge_width_renders_into_the_shapes_own_buckets() {
+        let registry = MetricsRegistry::new();
+        // Exactly the publisher's call shape: the base source, then the metric's name.
+        let merge = Source::base().sub("merge");
+        registry.record(&merge, "scope_width", 20, 1); // one merge whose conflict set was 20 chains
+        registry.record(&merge, "states_expanded", 50_000, 1); // expanding 50,000 states
+
+        let reporter = NewPrometheusReporter::new(prometheus_scrape_config());
+        reporter.report_period_snapshot(&registry.snapshot());
+        let rendered = reporter.scrape_data();
+
+        // 20 chains is above the 16 edge and below the 32 — the shape's own boundaries, not the
+        // registry's defaults (0.005 .. 10), which is the defect this asserts against.
+        assert!(
+            rendered.contains(r#"rchain_merge_scope_width_bucket{le="16.0"} 0.0"#),
+            "the width must be bucketed by the shape's edges, not the default set:\n{rendered}"
+        );
+        assert!(
+            rendered.contains(r#"rchain_merge_scope_width_bucket{le="32.0"} 1.0"#),
+            "a 20-chain scope lands in the 32 bucket:\n{rendered}"
+        );
+        assert!(
+            !rendered.contains(r#"rchain_merge_scope_width_bucket{le="0.005"}"#),
+            "the default set's edges must be gone from the shape's metric:\n{rendered}"
+        );
+        // And the cost, on its own logarithmic edges.
+        assert!(
+            rendered.contains(r#"rchain_merge_states_expanded_bucket{le="100000.0"} 1.0"#),
+            "a 50,000-state merge lands in the 10^5 bucket:\n{rendered}"
+        );
+    }
+
+    #[test]
+    fn the_merge_shape_metrics_carry_their_own_buckets() {
+        let config = prometheus_scrape_config();
+        let width = config
+            .custom_buckets
+            .get(&metric_key("scope_width"))
+            .expect("the width metric has its own buckets");
+        let cost = config
+            .custom_buckets
+            .get(&metric_key("states_expanded"))
+            .expect("the cost metric has its own buckets");
+        // And the key must be the *distribution's* name, not the rendered one: `Source::sub` joins with
+        // a dot and the renderer turns those into underscores one step later, so a set keyed on the
+        // rendered form is looked up by nothing and changes nothing (measured: the first fix of this
+        // defect did exactly that and left every sample in `+Inf`).
+        assert!(
+            metric_key("scope_width").contains('.'),
+            "the registry's name for a metric keeps the source separator: {}",
+            metric_key("scope_width")
+        );
+        // The widest scope two devnet runs reached is 43 chains, and one merge expanded 1,663,395 states;
+        // a bucket set that does not reach those puts the samples in `+Inf` again.
+        assert!(
+            width.iter().any(|edge| *edge >= 64.0),
+            "the width buckets must reach the widths actually observed: {width:?}"
+        );
+        assert!(
+            cost.iter().any(|edge| *edge >= 1_000_000.0),
+            "the cost buckets must reach the costs actually observed: {cost:?}"
+        );
+    }
 }
 
 #[cfg(test)]
