@@ -226,7 +226,7 @@ fn churn_retention_is_measured_once_and_both_properties_hold() {
     let (baseline, peak, retained) = churn_and_measure();
     let grown = peak.saturating_sub(baseline);
     let kept = retained.saturating_sub(baseline);
-    let ratio = if grown == 0 { 0 } else { kept * 100 / grown };
+    let ratio = kept.saturating_mul(100).checked_div(grown).unwrap_or(0);
     eprintln!(
         "churn retention: baseline={baseline} KiB peak={peak} KiB retained={retained} KiB \
          (grew {grown} KiB, kept {kept} KiB, {ratio} % of the growth)"
