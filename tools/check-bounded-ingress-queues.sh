@@ -62,14 +62,17 @@ if (( violations > 0 )); then
   cat >&2 <<EOF
 check-bounded-ingress-queues: $violations unbounded queue(s) on the ingress -> validate -> process path.
 
-This is C175 (spec/findings.tsv), and it is the defect this check exists to gate. The fix is R15's:
-bound the queue with backpressure -- \`mpsc::channel(N)\` and an awaiting \`send\` -- and change
+This is C175 (spec/findings.tsv), and it is the defect this check exists to gate. R15's fix is the
+pattern: bound the queue with backpressure -- \`mpsc::channel(N)\` and an awaiting \`send\` -- and change
 \`wire_block_processing\`'s return type from \`mpsc::UnboundedSender<BlockMessage>\` to
-\`mpsc::Sender<BlockMessage>\` so the type carries the bound. Add a depth gauge at the same time: the
-audit could not rule this queue out as #117's mechanism for the plain reason that nothing measures its
-depth.
+\`mpsc::Sender<BlockMessage>\` so the type carries the bound.
 
-When the fix lands, wire this script into the lint job with --gate.
+**The observation half landed in #120** (a queue observer at the validated, autopropose and attestation
+stages), so the depth is readable for the first time and the queue is no longer unmeasured. What C175
+still owes is the bound itself, which is why this check is still red and why it is the check that row
+closes.
+
+When the bound lands, wire this script into the lint job with --gate.
 EOF
   [[ "${1:-}" == "--gate" ]] && exit 1
   exit 0

@@ -102,7 +102,7 @@ on the rows that are not reads.
 
 ## Check-off
 
-**Findings  TODO 4 · IN PROGRESS 0 · DONE 207** &nbsp;&nbsp;·&nbsp;&nbsp; **Coverage  all 89 T1 modules read**
+**Findings  TODO 3 · IN PROGRESS 1 · DONE 207** &nbsp;&nbsp;·&nbsp;&nbsp; **Coverage  all 89 T1 modules read**
 
 **Laws  5 of 211 findings name one** (ceiling 206; 206 done row(s) unclassified)
 
@@ -110,13 +110,12 @@ Closed when both halves are zero. A **done** row is settled -- fixed, assessed f
 deliberate deviation, or refuted -- and names what holds it. A **todo** row names what would
 close it.
 
-### TODO — findings (4)
+### TODO — findings (3)
 
 | id | what | what closes it | account |
 |---|---|---|---|
 | `C171` | an all-live net attesting on every remote block runs a block storm: the guard cannot suppress while the quorum IS reachable, so four deploys produced 126 blocks in about three minutes with autopropose off (reproduced 2026-09-29; 276 in a minute on #70) | the pace half on attest_warranted (node/src/runtime/node_runtime.rs:2590): this node's own latest message at least k heights behind the tip, so an all-live net's attestation rate is bounded. Falsifier: a three-validator devnet with --attest-on-new-blocks whose block growth per deploy is bounded, and red when the pace term is deleted. #70 increment 2 | §23 |
 | `C173` | one attributable failure in a bonded validator's block estranges the node that recorded it, permanently: the height maximum skips failed justifications, and neglected_invalid_block refuses any block justifying a failed bonded sender — so a node that fails one block is refused every block above it (#105) | a fork decision, since both rules are the oracle's: count failed justifications in the height maximum (the H1b descent bound still refuses a failed parent at or above the child), or give a stranded node an explicit path back (revalidation of the failed metadata, or a bounded re-fetch). Falsifier: a node that has marked one block failed must still accept the next block above it | §25 |
-| `C175` | the other half of the ingress->validate->process pipeline is still unbounded: `mpsc::unbounded_channel()` at `node/src/runtime/node_runtime.rs:733` carries full `BlockMessage`s, with a second unbounded tap at `:2557`. R15 bounded the processor-input half of this same pipeline (`:764-781`) and this half was missed — the shape the register records as this port's most-repeated defect. It is the one candidate mechanism for #117 the audit could not rule out, because its depth is measured by nothing | bound `validated_blocks` with backpressure as R15 bounded its sibling, and add a depth gauge: a bound whose depth is unobservable is the same defect one level up | §27 |
 | `C176` | a measurement's artifacts cannot say what they measured: the devnet's arm samplers write no configuration column, so six arm files carry only a filename and one of them holds two different runs; a killed node's cgroup is gone, so a peak read through `/proc/<pid>/cgroup` returns 0 for exactly the nodes a death measurement exists to observe (`acceptance.log:746-747`); and `docs/src/node/validator-requirements.md:120-121` states a figure its own artifact refutes — "29 regions of exactly 64 MiB ... fully resident" where the snapshot holds 29 regions of exactly 32 MiB (5.7 MiB resident between them) and 11 of exactly 64 MiB, which are the arena heaps | the devnet echoes its configuration into each artifact's header, a death measurement resolves the cgroup from the container id and reads the peak while the node lives, and the docs sentence is replaced with the measured histogram | §27 |
 
 ### T1 coverage — closed
@@ -126,10 +125,11 @@ verdict of `cleared`, 24 produced a finding, and 4 are `exempt` with a reason cl
 The twenty reads of the 2026-09-27 coverage pass are in the pass record, and two of them found
 defects this register had not recorded (C164, C165).
 
-### In progress — none
+### IN PROGRESS (1)
 
-Nothing is in flight. The state exists because a person mid-read needs somewhere to say so;
-that it is empty is the fact, and it is said rather than shown as a table with no rows.
+| id | what | what closes it | account |
+|---|---|---|---|
+| `C175` | the other half of the ingress->validate->process pipeline is still unbounded: `mpsc::unbounded_channel()` at `node/src/runtime/node_runtime.rs:733` carries full `BlockMessage`s, with a second unbounded tap at `:2557`. R15 bounded the processor-input half of this same pipeline (`:764-781`) and this half was missed — the shape the register records as this port's most-repeated defect. It is the one candidate mechanism for #117 the audit could not rule out, because its depth is measured by nothing The **observation half landed** in #120 — a queue observer at the validated, autopropose and attestation stages — so the depth is readable for the first time; the bound is still outstanding, which is why `tools/check-bounded-ingress-queues.sh` remains red. | bound the queue: `mpsc::channel(N)` with an awaiting `send`, and change `wire_block_processing`'s return type from `mpsc::UnboundedSender<BlockMessage>` to `mpsc::Sender<BlockMessage>` so the type carries the bound. Then run `tools/check-bounded-ingress-queues.sh --gate` — it is the check this row closes — and wire it into the lint job | §27 |
 
 ### DONE (207)
 
