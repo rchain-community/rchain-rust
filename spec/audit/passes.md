@@ -5373,3 +5373,47 @@ on the campaign's rig — is the *next* measurement, not this one. The in-proces
 two-way: `the_chain_the_nodes_own_proposer_builds_reaches_a_fringe` asserts the production path publishes
 and keeps the `latest_msgs` shape inline as the control that still refuses with
 `Support { supporting: 0, full_partitions: 0 }`.
+
+## 36. The proposer fix on the node: the pin is gone, and the next stop is a different one (C185, C186)
+
+§35 ended with the fix made and the node unmeasured. It is measured now
+(`spec/audit/evidence/n127-proposer-fix-results.md`), on the campaign's own rig, against the fixed build —
+and the result is two findings rather than one.
+
+### The pin is gone
+
+| arm | finality @T+120 | height @T+120 | gap | finality last advanced |
+|---|---|---|---|---|
+| before-arm (`c5442ee1f`) | 14, 17, 10 | 27, 32, 23 | 13–15 | T+111s, T+55s, T+17s |
+| broken after-arm (`ef412ef84`) | 13, 4, 18 | 28, 65, 32 | **15–61** | T+33s, T+19s, T+128s |
+| **fixed (`de4e9af02`)** | **72, 90, 105** | 76, 94, 109 | **3–4** | **T+120s — still advancing at the kill** |
+
+Three to four heights behind, in all three attempts, and still moving at the kill instant. The chain runs at
+~38 blocks/min against the campaign's 12–16. The stall line has effectively disappeared: six lines per
+attempt against seventy-five, and all six are the boundary warming up at genesis. The C184 budget control is
+still empty.
+
+That closes the question §31 opened with a devnet run and §32 answered with a wrong cause: the two earlier
+arms' last advance 87–104 seconds *before* the kill was the parent set, and the rig was reporting it as a
+fact about a killed validator for three runs.
+
+### The second stop, isolated and not explained
+
+**The chain stops producing the moment a validator is killed** — flat height in all three attempts across
+the 180 seconds after the kill, both survivors alive and serving. It is *not* the proposer's idle contract,
+which would be correct: the discriminator is a deploy **after** the kill, and 4 of 4 submitted at T+201 left
+the height at 100 for the rest of the window. Work available, nothing produced for 180 seconds.
+
+**Filed as C186, `todo`, law 51a** — it is a progress failure, not a safety one. What is owed is the
+instrument: the proposer logs only a self-created block that fails its own validation, so a proposer that
+*declines* to propose says nothing, and the run could not have produced the line that explains it. Node logs
+at WARN and above are captured from the next run onward (`logs-<node>-a<N>.txt`); if the suppressing path
+has no line at all, the missing log line is the first change — a proposer that declines must say why, which
+is the class this register keeps finding (C176).
+
+### What this does not settle
+
+- Three attempts plus one diagnostic, one configuration, one machine. Not a proof.
+- **A mixed network is untested.** §6's classification — an unpatched node accepts a patched node's blocks —
+  is argued from the validation rules and not measured, and a patched node beside an unpatched one is the
+  measurement that would test it.
