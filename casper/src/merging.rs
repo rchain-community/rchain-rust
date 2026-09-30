@@ -35,7 +35,7 @@ use rchain_rspace::native_store::NativeStoreAction;
 use rchain_rspace::trace::event::{Event as REvent, Produce};
 use rchain_sdk::dag::merging::{
     compute_dependency_map, compute_greedy_non_intersecting_branches,
-    compute_relation_map_for_merge_set, resolve_conflict_set,
+    compute_relation_map_for_merge_set, resolve_conflict_set_with_census, SearchCensus,
 };
 use rchain_shared::refined::NonNegI64;
 use rchain_shared::serialize::Serialize;
@@ -44,6 +44,68 @@ use crate::block_random_seed::BlockRandomSeed;
 use crate::event_converter::to_rspace_event;
 use crate::interpreter_util::is_genesis_pre_state;
 use crate::runtime_manager::RuntimeManager;
+
+/// **The merge search's real input, which nothing observed (#117).**
+///
+/// `compute_rejection_options` (`sdk/src/dag/merging.rs`) expands one state per nonempty subset of the
+/// conflict set that induces an acyclic subgraph of the conflict relation, and its cost is exponential
+/// in how many chains can be accepted together. That much is now a pinned, deterministic fact. What was
+/// *not* pinned — and what the defect was argued about with instead — is the shape the running node
+/// actually hands it: how wide a merge scope gets and how dense its conflicts are. These accumulate
+/// that, so the answer is read off a running node rather than assumed.
+///
+/// Atomics rather than a return value because `MergeScope::merge` is async and has no log handle; its
+/// callers do, and they read this. Every value is a monotone maximum or a count, so a lost race can
+/// only under-report, never invent.
+///
+/// **An instrument for #117: remove it with the fix.**
+pub mod search_census {
+    use super::SearchCensus;
+    use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+
+    /// Merges that ran a conflict search.
+    pub static MERGES: AtomicU64 = AtomicU64::new(0);
+    /// Widest conflict set seen (chains in one merge scope's conflict search).
+    pub static MAX_KEYS: AtomicUsize = AtomicUsize::new(0);
+    /// Densest conflict map seen (`(key, conflict)` pairs).
+    pub static MAX_CONFLICTS: AtomicUsize = AtomicUsize::new(0);
+    /// Most asymmetric pairs seen in one conflict map — `0` everywhere means the exact
+    /// output-sensitive rewrite is the symmetric (maximal-independent-set) case.
+    pub static MAX_ASYMMETRIC: AtomicUsize = AtomicUsize::new(0);
+    /// Most states the search ever expanded on one merge.
+    pub static MAX_EXPANDED: AtomicUsize = AtomicUsize::new(0);
+
+    pub fn record(census: &SearchCensus) {
+        MERGES.fetch_add(1, Ordering::Relaxed);
+        MAX_KEYS.fetch_max(census.keys, Ordering::Relaxed);
+        MAX_CONFLICTS.fetch_max(census.conflicts, Ordering::Relaxed);
+        MAX_ASYMMETRIC.fetch_max(census.asymmetric, Ordering::Relaxed);
+        MAX_EXPANDED.fetch_max(census.expanded, Ordering::Relaxed);
+    }
+
+    /// One line, for a caller that has a `Log`.
+    pub fn summary() -> String {
+        format!(
+            "merge search: {} merges · widest scope {} chains / {} conflict pairs / {} asymmetric · \
+             most states expanded on one merge {}",
+            MERGES.load(Ordering::Relaxed),
+            MAX_KEYS.load(Ordering::Relaxed),
+            MAX_CONFLICTS.load(Ordering::Relaxed),
+            MAX_ASYMMETRIC.load(Ordering::Relaxed),
+            MAX_EXPANDED.load(Ordering::Relaxed),
+        )
+    }
+
+    /// Forget everything. Tests only: the statics are process-wide.
+    #[cfg(test)]
+    pub fn reset() {
+        MERGES.store(0, Ordering::Relaxed);
+        MAX_KEYS.store(0, Ordering::Relaxed);
+        MAX_CONFLICTS.store(0, Ordering::Relaxed);
+        MAX_ASYMMETRIC.store(0, Ordering::Relaxed);
+        MAX_EXPANDED.store(0, Ordering::Relaxed);
+    }
+}
 
 /// A deploy id paired with its execution cost (port of `DeployIdWithCost`).
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -1104,7 +1166,7 @@ impl MergeScope {
             |a, b| DeployChainIndex::depends(a, b) || native.depends(a, b),
         );
 
-        let (to_merge, rejected) = resolve_conflict_set(
+        let ((to_merge, rejected), search) = resolve_conflict_set_with_census(
             &conflict_set,
             &accepted_finally,
             &rejected_finally,
@@ -1118,6 +1180,8 @@ impl MergeScope {
             &mergeable_diffs_map,
             &init_mergeable_values,
         );
+        // #117's instrument: what this merge handed the search. See `search_census`.
+        search_census::record(&search);
         let (to_merge, rejected) =
             native.reject_whole_blocks(&conflict_set, to_merge, rejected, &dependency_map);
 
@@ -2216,6 +2280,29 @@ mod boundary_merge_tests {
     #[tokio::test]
     async fn identical_sibling_boundaries_merge() {
         siblings_resolve_to_one(Body::Nothing, 1, Body::Nothing, 1).await;
+    }
+
+    /// **The shape the merge search is really handed (#117).** Every other statement about the search's
+    /// cost in this tree is made against a *chosen* shape (`sdk/tests/merging_scaling.rs` picks a fork;
+    /// `sdk/src/dag/merging.rs`'s table picks four). This one is produced by the merge path itself, out
+    /// of the fixtures the sibling-boundary tests use, and it answers the question the choice of fix
+    /// turns on: **is the relation symmetric?** If it is, the exact output-sensitive rewrite is the
+    /// classical maximal-independent-set enumeration and is output-polynomial; if it is not, the
+    /// rewrite needs the directed argument instead.
+    ///
+    /// The assertion is on a process-wide maximum, and it is still deterministic: `MAX_ASYMMETRIC` is
+    /// monotone, so it holds every merge this test binary ran, and any test whose real merge produced an
+    /// asymmetric pair would raise it above zero regardless of the order the tests ran in.
+    #[tokio::test]
+    async fn the_merge_search_sees_the_shape_the_merge_builds() {
+        siblings_resolve_to_one(Body::Nothing, 1, Body::Nothing, 1).await;
+        eprintln!("{}", search_census::summary());
+        assert_eq!(
+            search_census::MAX_ASYMMETRIC.load(std::sync::atomic::Ordering::Relaxed),
+            0,
+            "the conflict relation the merge hands the search is not symmetric, so the exact \
+             rewrite cannot be the symmetric (maximal-independent-set) case without more work"
+        );
     }
 
     /// The proposers saw different finalised fringes, so their epoch seeds differ.

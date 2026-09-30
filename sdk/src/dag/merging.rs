@@ -232,48 +232,322 @@ where
     (conflicts_map, dependency_map)
 }
 
+/// What one run of the rejection search cost, in **counts**. The search's size is a deterministic
+/// function of the conflict map, where a stopwatch and an RSS reading are functions of the machine as
+/// well — so this is what a test pins, and it is the quantity memory is made of: `expanded` states, each
+/// holding one owned `BTreeSet` of up to `keys` elements, plus the frontier.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct SearchCensus {
+    /// Keys in the conflict map.
+    pub keys: usize,
+    /// `(key, conflict)` pairs — the conflict map's density.
+    pub conflicts: usize,
+    /// Ordered pairs `(x, y)` **among the keys** with `y ∈ conflicts(x)` but `x ∉ conflicts(y)`.
+    /// **Zero means the relation restricted to the keys is symmetric**, which is what decides the
+    /// algorithm: it makes a state's reachability exactly "independent set" and a terminal state exactly
+    /// a **maximal independent set**, so `maximal_independent_sets` applies and the 2^n intermediate
+    /// states are never touched. Non-zero falls back to the enumeration, which is correct for any map.
+    /// (Pairs where `y` is not a key are excluded deliberately: `y` can never be accepted, so it
+    /// changes only what a rejection option *contains*, not which sets are reachable.)
+    pub asymmetric: usize,
+    /// Keys that conflict with themselves. The fast path declines these: a self-conflict is a one-cycle,
+    /// so the key is never acceptable, which the maximal-independent-set form cannot express.
+    pub self_conflicts: usize,
+    /// Search steps taken. **This is the search's cost**, and the only thing #117's memory is a function
+    /// of: queue pops on the enumeration path, recursion nodes on the maximal-independent-set path.
+    pub expanded: usize,
+    /// The largest the queue ever grew. Always 0 on the maximal-independent-set path, which has no
+    /// frontier — memory there is the recursion depth and the option set.
+    pub max_frontier: usize,
+    /// Distinct rejection options found.
+    pub options: usize,
+}
+
+impl SearchCensus {
+    /// Whether the relation restricted to the keys is symmetric and irreflexive — the precondition of
+    /// [`maximal_independent_sets`]. One place, so the condition the algorithm branches on and the
+    /// condition the census reports cannot disagree.
+    fn keys_are_a_symmetric_irreflexive_relation(&self) -> bool {
+        self.asymmetric == 0 && self.self_conflicts == 0
+    }
+}
+
 /// All rejection combinations (sets of rejected items) that resolve the conflict map.
 ///
-/// This is the Scala `computeRejectionOptions` `O(2^n)` search, ported as a breadth-first
-/// enumeration over acceptance states.
+/// This is the Scala `computeRejectionOptions` search: a breadth-first enumeration over acceptance
+/// states, kept *result-identical* to the Scala while visiting each state once.
+///
+/// **A state is the accepted set alone.** The rejected set is not independent information — the only
+/// way a key enters it is as the conflict of an accepted one, so `rejected = ⋃{conflicts(x) : x ∈
+/// accepted}` after every step, and `rejected` is a pure function of `accepted`. The ported search
+/// carried both sets in each queue entry anyway, which made it re-visit a state once per **ordering**
+/// that reaches it, and clone two sets per visit: `20 chains in two branches: 19,728,200 expansions for
+/// 2,046 states` (measured; `sdk/tests/merging_scaling.rs`). Those clones are **97 % of the live heap**
+/// of a node at its cgroup ceiling, grown 343 -> 1488 MiB within one run (#117).
+///
+/// Carrying `accepted` alone collapses that to one visit per state, which is what the search's own
+/// state graph always was. It is exact rather than a heuristic: the successor set and the answer both
+/// depend on the state only through `accepted`, so skipping a state already expanded cannot remove a
+/// reachable answer.
+///
+/// **The residual, stated exactly — because "fork" was too narrow a word for it.** A set `S` of keys is
+/// reachable iff its keys can be added one at a time with each new key absent from the conflicts of
+/// those already accepted, i.e. iff the conflicts *within* `S` have no directed cycle. So the search
+/// expands **one state per nonempty subset that induces an acyclic subgraph** (the empty set is never a
+/// state — the seeds are singletons), and:
+///
+/// | conflict map | states expanded | rejection options |
+/// |---|---|---|
+/// | complete (`K \ {k}` for each `k`) | `n` | `n` |
+/// | **no conflicts at all** | **`2^n - 1`** | **1** |
+/// | two branches, complete across (`fork`) | `2^(p+1) - 2` | `2` |
+/// | a perfect matching of `m` pairs | `3^m - 1` | `2^m` |
+///
+/// The first row is why the 1000-node full-graph oracle passes while the node grows to gigabytes; the
+/// **second is the node's normal case** — chains that do not conflict cost `2^n` states to report a
+/// single option — and it is worse than the fork shape this defect was first described with. `2^n` states
+/// each holding a cloned set is the astonishing bloat, and it is not a leak, a cache, or an allocator
+/// policy: it is this enumeration, deterministically. Pinned by
+/// `the_search_expands_one_state_per_acyclic_subset` and its siblings, which assert these four counts.
+///
+/// **A least-fixed-point rewrite was attempted and is wrong.** It is tempting to compute
+/// `rejected ⊇ ⋃{conflicts(j) : j ∉ rejected}` directly, on the reasoning that every key not rejected is
+/// eventually accepted. That over-approximates, because a key that has been *rejected* can never
+/// subsequently be accepted: for `{0: {1}, 1: {0}, 2: {}}` the search yields `{{0}, {1}}`, while the
+/// closure also yields `{0, 1}`. The counter-example is pinned by
+/// `rejection_options_are_not_the_closure` so that the next attempt at this meets it. Any rewrite must
+/// preserve the outcome exactly — the merge result is consensus-visible (law 17) — which means
+/// differential testing against a literal enumeration of this search, not reasoning about it. That
+/// differential is `rejection_options_match_a_literal_enumeration` in `sdk/src/property_tests.rs`.
 pub fn compute_rejection_options<D: Ord + Clone>(
     conflicts_map: &BTreeMap<D, BTreeSet<D>>,
 ) -> BTreeSet<BTreeSet<D>> {
+    search(conflicts_map).0
+}
+
+/// [`compute_rejection_options`], plus the [`SearchCensus`] of what it cost. The same function — one
+/// implementation, not a copy that can drift — with the counters kept, because the search's size is a
+/// deterministic function of its input and the way to say so is a number a test can assert rather than a
+/// stopwatch reading. This is the variable #117 was argued about without ever pinning.
+pub fn compute_rejection_options_with_census<D: Ord + Clone>(
+    conflicts_map: &BTreeMap<D, BTreeSet<D>>,
+) -> (BTreeSet<BTreeSet<D>>, SearchCensus) {
+    search(conflicts_map)
+}
+
+fn search<D: Ord + Clone>(
+    conflicts_map: &BTreeMap<D, BTreeSet<D>>,
+) -> (BTreeSet<BTreeSet<D>>, SearchCensus) {
     let all_keys: Vec<D> = conflicts_map.keys().cloned().collect();
-    let mut queue: VecDeque<(D, BTreeSet<D>, BTreeSet<D>)> = all_keys
-        .iter()
-        .map(|k| {
-            (
-                k.clone(),
-                BTreeSet::new(),
-                std::iter::once(k.clone()).collect(),
-            )
-        })
-        .collect();
+    let mut census = SearchCensus {
+        keys: all_keys.len(),
+        conflicts: conflicts_map.values().map(BTreeSet::len).sum(),
+        asymmetric: {
+            let mut count = 0;
+            for (x, ys) in conflicts_map {
+                for y in ys {
+                    // `y` must be a key to matter: a non-key can never be accepted, so whether `x` is in
+                    // *its* conflict set changes nothing about which sets are reachable.
+                    if let Some(back) = conflicts_map.get(y) {
+                        if !back.contains(x) {
+                            count += 1;
+                        }
+                    }
+                }
+            }
+            count
+        },
+        self_conflicts: all_keys
+            .iter()
+            .filter(|k| conflicts_map.get(*k).is_some_and(|c| c.contains(*k)))
+            .count(),
+        ..SearchCensus::default()
+    };
+
+    // The ported search starts from the map's keys, so with none it never runs and there are no options
+    // at all — not one empty option. Preserved deliberately: `an_empty_conflict_map_yields_no_options`.
+    if all_keys.is_empty() {
+        return (BTreeSet::new(), census);
+    }
+
+    // **The fix.** When the relation on the keys is symmetric and irreflexive, a reachable state is an
+    // independent set and a terminal state is exactly a *maximal* one, so the answer can be read off
+    // maximal independent sets directly — never touching the 2^n intermediate states, which is where
+    // #117's memory went. Otherwise the enumeration below, which is correct for any relation.
+    if census.keys_are_a_symmetric_irreflexive_relation() {
+        let (result, nodes) = maximal_independent_sets(conflicts_map, &all_keys);
+        census.expanded = nodes;
+        census.options = result.len();
+        return (result, census);
+    }
+    let (result, expanded, max_frontier) = enumerate_states(conflicts_map, &all_keys);
+    census.expanded = expanded;
+    census.max_frontier = max_frontier;
+    census.options = result.len();
+    (result, census)
+}
+
+/// The ported search, over every reachable state. Correct for **any** relation — this is the fallback
+/// [`search`] takes when the fast path's precondition does not hold — and it is also the oracle the
+/// maximal-independent-set path is differed against, via the literal transcription in
+/// `sdk/src/property_tests.rs`.
+fn enumerate_states<D: Ord + Clone>(
+    conflicts_map: &BTreeMap<D, BTreeSet<D>>,
+    all_keys: &[D],
+) -> (BTreeSet<BTreeSet<D>>, usize, usize) {
+    let mut queue: VecDeque<BTreeSet<D>> = VecDeque::new();
+    let mut visited: BTreeSet<BTreeSet<D>> = BTreeSet::new();
+    for k in all_keys {
+        let seed: BTreeSet<D> = std::iter::once(k.clone()).collect();
+        if visited.insert(seed.clone()) {
+            queue.push_back(seed);
+        }
+    }
+    let mut expanded = 0usize;
+    let mut max_frontier = queue.len();
     let mut result: BTreeSet<BTreeSet<D>> = BTreeSet::new();
 
-    while let Some((a, rj_acc, ac_acc)) = queue.pop_front() {
-        let mut new_rj = rj_acc.clone();
-        if let Some(c) = conflicts_map.get(&a) {
-            new_rj.extend(c.iter().cloned());
-        }
-        let mut new_ac = ac_acc;
-        new_ac.insert(a.clone());
+    while let Some(accepted) = queue.pop_front() {
+        expanded += 1;
+
+        // Derived, not carried: see the note above. `flat_map` over the missing-key case is the
+        // empty set, which is what the ported `if let Some(c) = conflicts_map.get(&a)` did.
+        let rejected: BTreeSet<D> = accepted
+            .iter()
+            .filter_map(|k| conflicts_map.get(k))
+            .flat_map(|c| c.iter().cloned())
+            .collect();
 
         let next: Vec<D> = all_keys
             .iter()
-            .filter(|k| !new_rj.contains(k) && !new_ac.contains(k))
+            .filter(|k| !rejected.contains(k) && !accepted.contains(k))
             .cloned()
             .collect();
         if next.is_empty() {
-            result.insert(new_rj);
+            result.insert(rejected);
         } else {
             for n in next {
-                queue.push_back((n, new_rj.clone(), new_ac.clone()));
+                let mut grown = accepted.clone();
+                grown.insert(n);
+                if visited.insert(grown.clone()) {
+                    queue.push_back(grown);
+                }
             }
+            max_frontier = max_frontier.max(queue.len());
         }
     }
-    result
+    (result, expanded, max_frontier)
+}
+
+/// The maximal independent sets of the conflict relation restricted to `keys`, as rejection options —
+/// one option per set, `option = ⋃{conflicts(x) : x ∈ S}`.
+///
+/// **Why this is the same function, exactly.** Caller-checked precondition: the relation on `keys` is
+/// symmetric and irreflexive (see `SearchCensus::keys_are_a_symmetric_irreflexive_relation`). Then:
+///
+/// - a set `S ⊆ keys` is *reachable* iff its keys can be added one at a time with each new one absent
+///   from the conflicts of those before it, i.e. iff the conflicts within `S` contain no directed cycle,
+///   which for a symmetric irreflexive relation is exactly **`S` is independent**;
+/// - it is *terminal* iff additionally every key outside it is rejected, i.e. every `x ∉ S` conflicts
+///   with some element of `S` — in the symmetric case, exactly **`S` is dominating**.
+///
+/// Independent and dominating is the definition of a maximal independent set, so the terminal states
+/// are precisely the maximal independent sets and the option set is their image under `⋃ conflicts`.
+/// Nothing else about the enumeration is used — in particular the 2^n *intermediate* states are not,
+/// which is the whole point: they are what #117's memory was made of.
+///
+/// Enumerated by Bron–Kerbosch with pivoting (a maximal independent set of a relation is a maximal
+/// clique of its complement), the standard way to visit only the maximal ones. Returns the options and
+/// the number of recursion nodes, so one census field means "search steps" on both paths.
+fn maximal_independent_sets<D: Ord + Clone>(
+    conflicts_map: &BTreeMap<D, BTreeSet<D>>,
+    all_keys: &[D],
+) -> (BTreeSet<BTreeSet<D>>, usize) {
+    // `conf(x) ∪ {x}`: everything a set may not contain alongside `x`. Working on *this* rather than on
+    // the complement's neighbour sets is what keeps the cost tied to the conflict map rather than to the
+    // key count — a complement is dense exactly when the conflicts are sparse, which is the case that
+    // reaches this function in the first place. (Measured: a 2,000-chain fork is 3,000 recursion nodes,
+    // and rebuilding the complement per call cost 107 s where this costs 1.6 ms at 40 chains.)
+    let blocked_by = |x: &D| -> BTreeSet<D> {
+        let mut blocked = conflicts_map.get(x).cloned().unwrap_or_default();
+        blocked.insert(x.clone());
+        blocked
+    };
+
+    let mut sets: BTreeSet<BTreeSet<D>> = BTreeSet::new();
+    let mut nodes = 0usize;
+    let all: BTreeSet<D> = all_keys.iter().cloned().collect();
+    let empty: BTreeSet<D> = BTreeSet::new();
+    bron_kerbosch(&blocked_by, &empty, &all, &empty, &mut sets, &mut nodes);
+
+    let options = sets
+        .into_iter()
+        .map(|set| {
+            set.iter()
+                .filter_map(|k| conflicts_map.get(k))
+                .flat_map(|c| c.iter().cloned())
+                .collect()
+        })
+        .collect();
+    (options, nodes)
+}
+
+/// Bron–Kerbosch with pivoting, written on the conflict relation: `r` the clique so far (an independent
+/// set of conflicts), `p` its candidates, `x` the candidates already explored at this level. Pivoting is
+/// what keeps this from being a walk over all independent sets — the branch set is the candidates that
+/// *conflict* with the pivot, so a vertex that blocks every candidate collapses the branching instead of
+/// being enumerated through.
+///
+/// In complement terms this is the textbook algorithm; the identities used are `p ∩ N̅(u)` complementing
+/// into `p ∩ (conf(u) ∪ {u})`, and `p \ N̅(v)` into `p \ (conf(v) ∪ {v})`.
+fn bron_kerbosch<D: Ord + Clone>(
+    blocked_by: &dyn Fn(&D) -> BTreeSet<D>,
+    r: &BTreeSet<D>,
+    p: &BTreeSet<D>,
+    x: &BTreeSet<D>,
+    out: &mut BTreeSet<BTreeSet<D>>,
+    nodes: &mut usize,
+) {
+    *nodes += 1;
+    if p.is_empty() && x.is_empty() {
+        out.insert(r.clone());
+        return;
+    }
+
+    // The pivot with the smallest blocked neighbourhood *within* `p` — the branch set is exactly that
+    // intersection, so this is the fewest branches. The textbook rule, and it must be this one: a
+    // cheaper proxy (the conflict degree, one lookup per candidate) was tried and *raised* the node
+    // count past the bound this function's tests assert, which is the wrong trade — a worse search that
+    // scans faster is still worse. The cost is `O(|p| · log)` per candidate, which is microseconds at
+    // the widths the node produces and seconds only past a thousand chains; `degree_by` is kept as the
+    // tie-break so equal-width pivots are chosen deterministically rather than by key order.
+    let pivot = p
+        .iter()
+        .chain(x.iter())
+        .min_by_key(|u| p.intersection(&blocked_by(u)).count())
+        .cloned();
+    let candidates: Vec<D> = match &pivot {
+        Some(u) => p.intersection(&blocked_by(u)).cloned().collect(),
+        None => p.iter().cloned().collect(),
+    };
+
+    let mut p = p.clone();
+    let mut x = x.clone();
+    for v in candidates {
+        let blocked = blocked_by(&v);
+        let mut grown = r.clone();
+        grown.insert(v.clone());
+        bron_kerbosch(
+            blocked_by,
+            &grown,
+            &p.difference(&blocked).cloned().collect(),
+            &x.difference(&blocked).cloned().collect(),
+            out,
+            nodes,
+        );
+        p.remove(&v);
+        x.insert(v);
+    }
 }
 
 /// Pick the rejection option minimizing (total cost, size, sorted set) lexicographically.
@@ -419,6 +693,39 @@ where
     V: Borrow<BTreeMap<CH, i64>>,
     F: Fn(&D) -> i64,
 {
+    resolve_conflict_set_with_census(
+        conflict_set,
+        accepted_finally,
+        rejected_finally,
+        cost,
+        conflicts_map,
+        dependency_map,
+        mergeable_diffs,
+        init_mergeable_values,
+    )
+    .0
+}
+
+/// [`resolve_conflict_set`] plus the [`SearchCensus`] of the conflict search it ran. The same function —
+/// the plain one delegates here — so a caller that wants to know what the search cost cannot be reading
+/// a copy that has drifted from the one that decided the merge.
+#[allow(clippy::too_many_arguments)]
+pub fn resolve_conflict_set_with_census<D, CH, F, V>(
+    conflict_set: &BTreeSet<D>,
+    accepted_finally: &BTreeSet<D>,
+    rejected_finally: &BTreeSet<D>,
+    cost: F,
+    conflicts_map: &BTreeMap<D, BTreeSet<D>>,
+    dependency_map: &BTreeMap<D, BTreeSet<D>>,
+    mergeable_diffs: &BTreeMap<D, V>,
+    init_mergeable_values: &BTreeMap<CH, i64>,
+) -> ((BTreeSet<D>, BTreeSet<D>), SearchCensus)
+where
+    D: Ord + Clone,
+    CH: Ord + Clone,
+    V: Borrow<BTreeMap<CH, i64>>,
+    F: Fn(&D) -> i64,
+{
     let enforce_rejected = with_dependencies(
         &incompatible_with_final(
             accepted_finally,
@@ -441,7 +748,7 @@ where
         })
         .collect();
 
-    let rejection_options = compute_rejection_options(&full_conflicts_map);
+    let (rejection_options, census) = search(&full_conflicts_map);
     let mergeable_overflow_rejection_options = add_mergeable_overflow_rejections(
         conflict_set,
         dependency_map,
@@ -451,11 +758,14 @@ where
     );
     let resolved = compute_optimal_rejection(&mergeable_overflow_rejection_options, &cost);
     (
-        conflict_set_compatible
-            .difference(&resolved)
-            .cloned()
-            .collect(),
-        resolved.union(&enforce_rejected).cloned().collect(),
+        (
+            conflict_set_compatible
+                .difference(&resolved)
+                .cloned()
+                .collect(),
+            resolved.union(&enforce_rejected).cloned().collect(),
+        ),
+        census,
     )
 }
 
@@ -658,6 +968,191 @@ mod tests {
             })
             .collect();
         assert_eq!(compute_rejection_options(&conflicts_map), expected);
+    }
+
+    /// **#117's root cause, pinned as a closed form.** The *enumeration* expands one state per subset of
+    /// keys that induces an acyclic subgraph of the conflict relation, and reports far fewer options than
+    /// that — so almost all of its work and all of its memory goes on states it will never report. These
+    /// are counts, not seconds: a stopwatch measures the machine, and a counter measures the search.
+    ///
+    /// The four rows are the whole RCA. `dense` is why the 1000-key oracle passes while the node grows
+    /// to gigabytes. **`free` is the node's normal case** — a merge scope whose chains do not conflict
+    /// costs `2^n` states to report the single option "reject nothing" — and it is worse than the fork
+    /// shape this defect was first written up with, which is `2^(p+1) - 2` for two branches of `p`.
+    ///
+    /// It calls `enumerate_states` directly, deliberately: the shipped `compute_rejection_options` now
+    /// reaches for the maximal-independent-set path on every one of these shapes, and this test is the
+    /// record of what the *enumeration* does, which is what the fix is measured against.
+    #[test]
+    fn the_enumeration_expands_one_state_per_acyclic_subset() {
+        // Complete conflict relation: no subset of size >= 2 is acyclic, so each key terminates alone.
+        let n = 8i32;
+        let dense: BTreeMap<i32, BTreeSet<i32>> = (0..n)
+            .map(|k| (k, (0..n).filter(|o| *o != k).collect()))
+            .collect();
+        let keys: Vec<i32> = dense.keys().copied().collect();
+        let (options, expanded, _) = enumerate_states(&dense, &keys);
+        assert_eq!(expanded, n as usize, "one state per key, each terminal");
+        assert_eq!(options.len(), n as usize);
+
+        // No conflicts: every subset is acyclic, so every nonempty subset is a state...
+        let free: BTreeMap<i32, BTreeSet<i32>> = (0..n).map(|k| (k, set::<i32>([]))).collect();
+        let keys: Vec<i32> = free.keys().copied().collect();
+        let (options, expanded, _) = enumerate_states(&free, &keys);
+        assert_eq!(
+            expanded,
+            (1usize << n) - 1,
+            "every nonempty subset of {n} non-conflicting keys is a state"
+        );
+        // ...and exactly one option comes out of all of them. This is the ratio that is the defect:
+        // 2^n - 1 states expanded to report 1 option.
+        assert_eq!(options, set([set::<i32>([])]));
+
+        // Two branches of `p`, complete across: everything in one branch, nothing in the other.
+        for p in [1usize, 4, 10] {
+            let fork = fork_shape(2, p);
+            let keys: Vec<i32> = fork.keys().copied().collect();
+            let (options, expanded, _) = enumerate_states(&fork, &keys);
+            assert_eq!(
+                expanded,
+                (1usize << (p + 1)) - 2,
+                "fork of two branches of {p}"
+            );
+            assert_eq!(options.len(), 2, "reject one branch or the other");
+        }
+
+        // A perfect matching of `m` pairs: acyclic subsets are those with at most one endpoint per pair
+        // (3^m of them, less the empty one), and the terminal ones take exactly one endpoint per pair,
+        // so there are 2^m options — each a set of the *other* endpoints.
+        for m in [2usize, 3, 4] {
+            let matching = matching_shape(m);
+            let keys: Vec<i32> = matching.keys().copied().collect();
+            let (options, expanded, _) = enumerate_states(&matching, &keys);
+            assert_eq!(expanded, 3usize.pow(m as u32) - 1, "matching of {m} pairs");
+            assert_eq!(options.len(), 1usize << m, "one option per choice of side");
+        }
+    }
+
+    /// The same four shapes, through the **shipped** function: the options must be identical (that is the
+    /// whole contract — the merge outcome is consensus-visible, law 17a) and the work must be the number
+    /// of maximal independent sets rather than the number of acyclic subsets.
+    ///
+    /// Two things are pinned, and they are the two that do not depend on the pivot rule:
+    ///
+    /// - the **options**, exactly, because they are the contract (the merge outcome is consensus-visible,
+    ///   law 17a) and an exact equality is the only assertion that can catch a missing or invented option;
+    /// - the **work**, as `expanded ≤ (keys + 1) × (options + 1)`. That bound is decisive rather than
+    ///   decorative: the enumeration violates it on every one of these shapes — `free` needs `2^n - 1 =
+    ///   255` against `18` at `n = 8` — so this is the assertion that fails if the fast path is ever
+    ///   lost. Exact recursion counts are *not* pinned, deliberately: they are the pivot heuristic's
+    ///   business, and a test that pinned them would fail on a better pivot.
+    ///
+    /// `max_frontier` is 0 throughout — this path has no queue at all, and that is the #117 property
+    /// stated as a count: memory here is the option set, and nothing else.
+    #[test]
+    fn the_maximal_independent_set_path_reports_the_same_options_for_far_less_work() {
+        let bounded =
+            |census: &SearchCensus| census.expanded <= (census.keys + 1) * (census.options + 1);
+
+        let n = 8i32;
+        let dense: BTreeMap<i32, BTreeSet<i32>> = (0..n)
+            .map(|k| (k, (0..n).filter(|o| *o != k).collect()))
+            .collect();
+        let (options, census) = compute_rejection_options_with_census(&dense);
+        assert_eq!(options.len(), n as usize, "one option per singleton");
+        assert!(bounded(&census), "dense: {census:?}");
+
+        let free: BTreeMap<i32, BTreeSet<i32>> = (0..n).map(|k| (k, set::<i32>([]))).collect();
+        let (options, census) = compute_rejection_options_with_census(&free);
+        assert_eq!(options, set([set::<i32>([])]));
+        assert!(
+            bounded(&census),
+            "no conflicts: 2^{n} - 1 states before, {} now ({census:?})",
+            census.expanded
+        );
+
+        for p in [1usize, 4, 10] {
+            let (options, census) = compute_rejection_options_with_census(&fork_shape(2, p));
+            assert_eq!(options.len(), 2, "reject one branch or the other");
+            assert!(
+                bounded(&census),
+                "fork of two branches of {p}: expanded {} for {} options on {} keys",
+                census.expanded,
+                census.options,
+                census.keys
+            );
+        }
+
+        for m in [2usize, 3, 4] {
+            let (options, census) = compute_rejection_options_with_census(&matching_shape(m));
+            assert_eq!(options.len(), 1usize << m, "one option per choice of side");
+            // Inherently exponential — the options *are* that many — but no longer times 3^m alive at
+            // once, which is what the bound rules out.
+            assert!(bounded(&census), "matching of {m}: {census:?}");
+        }
+
+        // The fast path has no queue, so the frontier field is 0 rather than "not measured".
+        let (_, census) = compute_rejection_options_with_census(&fork_shape(2, 10));
+        assert_eq!(census.max_frontier, 0);
+        assert_eq!(census.asymmetric, 0);
+        assert_eq!(census.self_conflicts, 0);
+    }
+
+    /// Two branches of `p` chains, complete across: the shape `sdk/tests/merging_scaling.rs` uses.
+    fn fork_shape(branches: usize, per_branch: usize) -> BTreeMap<i32, BTreeSet<i32>> {
+        (0..branches * per_branch)
+            .map(|k| {
+                let branch = k / per_branch;
+                (
+                    k as i32,
+                    (0..branches * per_branch)
+                        .filter(|o| *o / per_branch != branch)
+                        .map(|o| o as i32)
+                        .collect(),
+                )
+            })
+            .collect()
+    }
+
+    /// `m` disjoint conflicting pairs.
+    fn matching_shape(m: usize) -> BTreeMap<i32, BTreeSet<i32>> {
+        (0..2 * m)
+            .map(|k| {
+                let partner = if k % 2 == 0 { k + 1 } else { k - 1 };
+                (k as i32, set([partner as i32]))
+            })
+            .collect()
+    }
+
+    /// The census must not be able to disagree with the function it describes: `with_census` is the
+    /// same search, and this is the assertion that keeps it from becoming a copy that drifts. It also
+    /// pins the *general* path's census fields on an asymmetric map, which is the path the fast one is
+    /// meant to leave alone: there the frontier is real and the counters must track it.
+    #[test]
+    fn the_census_agrees_with_the_function_it_describes() {
+        let conflicts_map = map([
+            (1, set([2, 3])),
+            (2, set([1])),
+            (3, set([1, 4])),
+            (4, set([3])),
+        ]);
+        let expected = compute_rejection_options(&conflicts_map);
+        let (options, census) = compute_rejection_options_with_census(&conflicts_map);
+        assert_eq!(options, expected, "the census form is the same function");
+        assert_eq!(census.keys, 4);
+        assert_eq!(census.conflicts, 2 + 1 + 2 + 1);
+        assert_eq!(census.options, options.len());
+        assert!(census.expanded > 0 && census.max_frontier <= census.expanded);
+
+        // Asymmetric on the keys (1 conflicts with 3, 3 does not conflict with 1), so this is the
+        // enumeration: a non-zero count in this field is what sends a map down that path.
+        let asymmetric = map([(1, set([2])), (2, set([1])), (3, set([1]))]);
+        let (_, census) = compute_rejection_options_with_census(&asymmetric);
+        assert_eq!(census.asymmetric, 1, "3 -> 1 with no edge back");
+        assert!(
+            census.expanded > 0 && census.max_frontier > 0,
+            "the general path has a frontier"
+        );
     }
 
     #[test]

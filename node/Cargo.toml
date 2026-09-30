@@ -43,6 +43,30 @@ dhat = { version = "0.3", optional = true }
 [features]
 dhat-heap = ["dep:dhat"]
 
+[target.'cfg(target_os = "linux")'.dependencies]
+# The node's allocator on Linux: jemalloc, with the background purge thread configured in `src/main.rs`.
+# See the comment on the `#[global_allocator]` there — this is the bound on #117, where glibc's per-thread
+# arena retention let a node reach its cgroup ceiling with a live heap in the tens of MiB.
+#
+# `stats` is what makes the allocator able to answer the question #117 turned on, and it is not optional
+# decoration: `tikv-jemalloc-sys` passes `--enable-stats` **only** when this feature is on, so without it
+# jemalloc silently has no accounting at all — `stats_print:true` prints its configuration echo and then
+# no numbers, and `stats.allocated` does not exist to be read. That is how two profiling attempts failed
+# with a *plausible-looking* absence of data rather than an error: `prof:true` is likewise ignored here
+# (the `profiling` feature would be needed, and it is deliberately not enabled — see below), so an
+# instrument that was never compiled in was read as an instrument that caught nothing. With `stats` on,
+# `MALLOC_CONF=stats_print:true,stats_print_opts:g` reports `Allocated` (live), `active`, `metadata`,
+# `resident`, `mapped` and `retained` at exit, which is the live-versus-held split no other instrument in
+# the tree can produce.
+#
+# `profiling` is enabled for the heap dump that names the live structure, and it is the *light* instrument
+# for that job: it unwinds one stack per 2^lg_prof_sample allocations (1 in 1,048,576 here), where `dhat`
+# instruments every one — measured, `dhat`'s build reproduces no ramp at all, and one of the two reasons
+# is the perturbation. The dump is triggered by `prof.dump` from the shim at the moment the node's cgroup
+# passes a threshold, which is the only way to read the live set *at* the ceiling: jemalloc's `prof_final`
+# and `stats_print` both write at exit, after the node has freed its world.
+tikv-jemallocator = { version = "0.7", features = ["stats", "profiling"] }
+
 [dev-dependencies]
 
 [[bin]]

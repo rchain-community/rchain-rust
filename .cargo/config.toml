@@ -3,3 +3,62 @@
 # thread per core in every test binary, OOM-crashing the session. Ten threads per test binary is
 # enough for the suite without exhausting memory. (Build parallelism is unchanged.)
 RUST_TEST_THREADS = "10"
+
+# jemalloc's purge configuration, read by `tikv-jemalloc-sys`'s build script and compiled into the
+# library's defaults — so it applies to every build that reads this file, host tests included, and a
+# deployment cannot forget it. `background_thread` makes the purge run on a timer *independent of
+# allocation activity*, which is the whole point: without it jemalloc reclaims only during a subsequent
+# allocation, and an idle worker never allocates again, so it pins exactly like glibc.
+#
+# **The decay is 0 because it was measured, and 5 s was not enough.** On `casper/tests/memory_retention.rs`
+# — the same churn, the same process, only the setting changed — a 5 s decay retained **9144 KiB of a
+# 9136 KiB growth (~100 %, i.e. no purge in any window the test can wait for)**, while a 0 decay retained
+# **2132 KiB of 6928 (31 %)**. `retain:false` in addition changes nothing measurable (2060 KiB), so it is
+# not set. The cost is that freed pages are not kept for reuse, which is the trade this buys: a footprint
+# that tracks live data (see the falsifier's doc comment for the assertion and its headroom).
+#
+# **`retain:false` is the half that actually bounded the node, and it was found by measurement.** The
+# decay settings alone did nothing visible end to end: on a 3-validator devnet at a 4 GiB ceiling, all
+# three nodes were still OOM-killed, and the memory sat in one ~6.2 GiB jemalloc extent — `retain:true`,
+# the default, keeps freed extents *mapped* and madvises them, and `MADV_FREE` pages stay in RSS. Setting
+# `retain:false` (munmap instead) on the same build, same reproduction, same ceiling:
+#
+#   | peak anon | survivors |
+#   | 3.3-4.1 GiB, killed in 20-170 s | 0-1 of 3   (decay settings only) |
+#   | **624 / 248 / 207 MiB**         | **3 of 3** (with `retain:false`) |
+#
+# That run also settled what the bytes *are*: the memory followed the allocator across the swap, so it is
+# Rust-side allocation and not C-side LMDB — the composition question the audit could not answer.
+#
+# **And the bound is partial: what fills the ceiling is LIVE, which is now measured rather than argued.**
+# Repeat runs of the identical configuration do not agree — one survived 3 of 3 at peaks of 624 / 248 /
+# 207 MiB, the next lost 2 of 3 at 3919 / 3930 MiB — and the remainder was first called live, then argued
+# to be reclaimable, and is now settled by an instrument. `spec/audit/evidence/jemalloc-stats-shim.c` reads
+# jemalloc's own accounting once a second from *inside* the running node, over three attempts of the frozen
+# reproduction, at the moment the cgroup's `anon` peaked:
+#
+#   | node            | anon      | jemalloc allocated | resident  | A/a   | R/a   |
+#   | 3 attempts x 3  | 3143-8162 | 3114-8051 MiB      | +-1 %     | 0.968-0.994 | 0.978-1.012 |
+#
+# **Nine of nine nodes: LIVE**, and `retained` was 0 in every one of ~1700 samples. jemalloc accounts for
+# 97-99 % of the cgroup's anonymous memory, so there is no un-attributed remainder and no purge lag to
+# tune: the bytes are handed out by `alloc` and not yet returned by `dealloc`. Since jemalloc is this
+# binary's *Rust* global allocator (C-side `malloc` is still glibc), the peak is live **Rust** allocations
+# — a structure in the node. That is the defect #117 is actually about, and it is in the code, not in this
+# configuration. The purge settings above answer a different problem (glibc's per-thread arena retention,
+# `spec/audit/passes.md` §27) and `casper/tests/memory_retention.rs` remains their falsifier.
+#
+# Two earlier attempts to name the remainder failed, and the reasons were recorded rather than repaired:
+# `dhat` reproduced no ramp (600 s, storm included) — which is now explained, not mysterious: the
+# phenomenon is intermittent, and that run profiled a node that never grew. jemalloc's own sampler was
+# **no evidence at all**: `tikv-jemalloc-sys` passes `--enable-prof` only for the `profiling` feature, so
+# `prof:true` in a `MALLOC_CONF` is an unrecognised option jemalloc ignores without complaint, and the run
+# reported "no ramp" from an instrument that had never been compiled in. `--enable-stats` is gated the same
+# way, which is why `node/Cargo.toml` now enables `stats`. Because the peak is live Rust allocations, a
+# heap profiler is the right instrument for the next unit after all.
+# `stats_print:true,stats_print_opts:g` is instrumentation for #117, compiled in rather than passed at
+# runtime so that the artifact under test *is* the artifact, with nothing injected by the operator and no
+# environment variable to be mis-parsed — a failure mode this work has already hit once, when
+# `DEVNET_NODE_ENV` split a comma-containing `MALLOC_CONF` into fragments. It costs one block on stderr at
+# process exit, after the measurement point, so it cannot perturb a run. Remove it when #117 closes.
+JEMALLOC_SYS_WITH_MALLOC_CONF = "background_thread:true,dirty_decay_ms:0,muzzy_decay_ms:0,retain:false,stats_print:true,stats_print_opts:g,prof:true,lg_prof_sample:20,prof_prefix:/var/lib/rnode/jeprof"
