@@ -4880,11 +4880,19 @@ been *rejected* can never be accepted afterwards: for `{0: {1}, 1: {0}, 2: {}}` 
 `rejection_options_are_not_the_closure` and the enumeration it refutes is still in the tree, as the
 fallback path.
 
-**The end-to-end number, with its missing control.** With the fix in place, no node crossed 3000 MiB in
-three attempts of the frozen reproduction (peaks 918–1869 MiB). That is not yet evidence that the fix
-removed the ramp: the pre-fix runs on record crossed at a **4 GiB** cap and a different window, so they
-are a different experiment, and the controlled baseline — the parent commit through the same script — has
-not been run. Owed, and named rather than assumed.
+**The end-to-end number, with its missing control — and a correction to how this sentence first read.**
+With the fix in place, **one of three attempts of the frozen reproduction still ramps**: attempts 1 and 2
+did not cross 3000 MiB (peaks 1647/1674/63 and 918/1869/65 MiB), and attempt 3 crossed **twice** (1943 /
+**3014** / **5273** MiB, validators 1 and 2). It is also the attempt with the largest expansion counts
+(1,663,395 states on bootstrap and on v2), which is the correlation the run's own pre-registered rule asks
+for. **This paragraph said "no node crossed 3000 MiB in three attempts (peaks 918–1869 MiB)" and that was
+wrong** — it was written from a summary that contradicted the raw log tracked beside it, and it is the
+same defect this section is about (C176: a measurement's artifacts cannot say what they measured),
+committed inside the fix for it. The corrected reading is also the stronger one for C178: the mechanism is
+unbounded, and the run says so. What is still **not** established is the size of the fix's effect — the
+pre-fix runs on record crossed at a **4 GiB** cap and a different window, so they are a different
+experiment, and the controlled baseline (the parent commit through the same script) has not been run.
+Owed, and named rather than assumed.
 
 C175 — the unbounded ingress queue §27 could not rule out — is not this defect. Its observation half
 landed (`#120`) and the depth reads 0.0 at every sample through a ramp that OOM-kills all three nodes, so

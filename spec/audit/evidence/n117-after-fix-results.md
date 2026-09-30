@@ -9,19 +9,31 @@ configuration: 3 validators, stakes 100/100/50, epoch length 10, an 8 GiB cgroup
 
 | attempt | bootstrap peak | validator-1 peak | validator-2 peak | crossed 3000 MiB |
 |---|---|---|---|---|
-| 1 | 1647 MiB | 1674 MiB | 63 MiB | **0 of 3** |
-| 2 | 918 MiB | 1869 MiB | 65 MiB | **0 of 3** |
-| 3 | *(not recorded — see below)* | | | **0 of 3** |
+| 1 | 1647 MiB | 1674 MiB | 63 MiB | 0 of 3 |
+| 2 | 918 MiB | 1869 MiB | 65 MiB | 0 of 3 |
+| 3 | 1943 MiB | **3014 MiB** | **5273 MiB** | **2 of 3** |
 
-So no node reached the 3000 MiB threshold in three attempts. **This is not yet evidence that the fix
-removed the ramp**, and the reason is a variable that was not pinned: the pre-fix runs on record crossed
-at a **4 GiB** cap and a different window, so they are not the same experiment. The controlled baseline —
-the parent commit through this same script — has not been run. Until it is, the honest claim is "the
-configuration above did not cross in three attempts", not "the fix is why".
+**Two of three runs show no ramp, and the third crosses twice.** The third is the one that decides the
+claim, because it carries the run's **largest** expansion counts — 1,663,395 states on bootstrap *and* on
+v2, the node that reached 5273 MiB — and `n117-after-fix-run.sh`'s pre-registered rule is explicit that a
+crossing "must come with a census line whose `most states expanded` is large, or the two are unrelated".
+By the run's own criterion the crossing is **linked to the merge search**: the mechanism is not bounded,
+and this is the run that says so.
 
-(The attempt-3 peaks line is missing from the log because the loop's peak tracking is per-attempt and the
-attempt was cut short by the shutdown path; the crossing count is recorded, and it is the field the
-pre-registered outcome turns on.)
+**This section previously reported "0 of 3" for all three attempts, and that was wrong** — the summary
+contradicted the raw log tracked beside it, which has carried attempt 3's peaks (`peaks: bootstrap=1943
+v1=3014 v2=5273`, `crossed: 2 of 3`) since the run finished. An earlier version of this file went further
+and explained that the attempt-3 line was *missing from the log*; it is present, at line 35. The
+correction is recorded rather than quietly applied because it is the defect this whole thread is about —
+C176, "a measurement's artifacts cannot say what they measured" — committed inside the fix for it, and by
+the summary rather than by the instrument. What the raw log records was never in doubt; what the summary
+made of it was.
+
+**What this does *not* establish.** The pre-fix runs on record crossed at a **4 GiB** cap and a different
+window, so they are a different experiment, and the controlled baseline — the parent commit through this
+same script — has still not been run. The honest claim is therefore: *with the fix in place, one of three
+attempts still ramps, and the ramp correlates with the largest search expansion; whether the fix reduced
+the ramp's frequency or amplitude is unmeasured.*
 
 ## 2. What the search is handed, which nothing had measured
 
