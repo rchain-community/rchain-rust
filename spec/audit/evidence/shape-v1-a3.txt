@@ -1,0 +1,25 @@
+# tree=18ab4e4af image=sha256:c2e56e912d6298cefeca47d8b041d0934960a7ab4f3a700c927ecd92974ebc4d
+# shape: --validators 3 --stakes 100,100,50 --epoch-length 10 --fresh, cap=8g, window=300s, threshold=100000MiB (disabled)
+# scraped 2026-09-30T15:05:39Z from :41403/metrics, attempt 3, node v1
+rchain_merge_max_asymmetric_pairs 459.0
+rchain_merge_max_conflict_pairs 1155.0
+rchain_merge_max_scope_width 43.0
+rchain_merge_max_states_expanded 899236.0
+rchain_merge_searches 187.0
+rchain_merge_scope_width_bucket{le="0.005"} 0.0
+rchain_merge_scope_width_bucket{le="0.01"} 0.0
+rchain_merge_scope_width_bucket{le="0.025"} 0.0
+rchain_merge_scope_width_bucket{le="0.05"} 0.0
+rchain_merge_scope_width_bucket{le="0.075"} 0.0
+rchain_merge_scope_width_bucket{le="0.1"} 0.0
+rchain_merge_scope_width_bucket{le="0.25"} 0.0
+rchain_merge_scope_width_bucket{le="0.5"} 0.0
+rchain_merge_scope_width_bucket{le="0.75"} 0.0
+rchain_merge_scope_width_bucket{le="1.0"} 0.0
+rchain_merge_scope_width_bucket{le="2.5"} 0.0
+rchain_merge_scope_width_bucket{le="5.0"} 0.0
+rchain_merge_scope_width_bucket{le="7.5"} 0.0
+rchain_merge_scope_width_bucket{le="10.0"} 0.0
+rchain_merge_scope_width_bucket{le="+Inf"} 187.0
+rchain_merge_scope_width_count 187.0
+rchain_merge_scope_width_sum 3568.0
