@@ -75,35 +75,82 @@ pub mod search_census {
     /// Most states the search ever expanded on one merge.
     pub static MAX_EXPANDED: AtomicUsize = AtomicUsize::new(0);
 
+    /// **The width distribution, which the maxima above cannot give.** A maximum answers "how bad was
+    /// the worst merge"; a bound on this class needs "how *often* is a scope wide", because that is what
+    /// a threshold is chosen from and what a price is set against (C182, #127's change record, Stage 1).
+    ///
+    /// `WIDTH_EDGES` are the upper edges; `WIDTH_COUNTS[i]` counts merges whose scope width — the
+    /// census's `keys`, the number of chains in the conflict set — was `<= WIDTH_EDGES[i]`, and the last
+    /// bucket counts everything above the last edge. Cumulative rather than per-bucket, which is the
+    /// shape Prometheus histograms use, and the shape `WIDTH_PUBLISHED` below needs to take deltas from.
+    pub const WIDTH_EDGES: [usize; 4] = [16, 32, 64, 128];
+    pub static WIDTH_COUNTS: [AtomicUsize; 5] = [
+        AtomicUsize::new(0),
+        AtomicUsize::new(0),
+        AtomicUsize::new(0),
+        AtomicUsize::new(0),
+        AtomicUsize::new(0),
+    ];
+    /// What has already been handed to the metrics registry, per bucket. `MetricsRegistry::record`
+    /// *accumulates*, so publishing a running total would double-count; the publisher takes the
+    /// difference instead. Only the DAG's write path publishes (under its write guard), so the
+    /// read-and-set below is not racing another publisher.
+    static WIDTH_PUBLISHED: [AtomicUsize; 5] = [
+        AtomicUsize::new(0),
+        AtomicUsize::new(0),
+        AtomicUsize::new(0),
+        AtomicUsize::new(0),
+        AtomicUsize::new(0),
+    ];
+
+    /// Which width bucket a scope of `keys` chains falls in: the first edge it is `<=`, or the
+    /// open-ended bucket past the last edge. Split out as a pure function so the boundaries can be
+    /// tested without touching the process-wide counters — a test that asserted bucket *counts* would
+    /// race every other test in the binary that runs a merge, which is the fixture-isolation rule this
+    /// repository already records.
+    pub fn width_bucket(keys: usize) -> usize {
+        WIDTH_EDGES
+            .iter()
+            .position(|edge| keys <= *edge)
+            .unwrap_or(WIDTH_EDGES.len())
+    }
+
     pub fn record(census: &SearchCensus) {
         MERGES.fetch_add(1, Ordering::Relaxed);
         MAX_KEYS.fetch_max(census.keys, Ordering::Relaxed);
         MAX_CONFLICTS.fetch_max(census.conflicts, Ordering::Relaxed);
         MAX_ASYMMETRIC.fetch_max(census.asymmetric, Ordering::Relaxed);
         MAX_EXPANDED.fetch_max(census.expanded, Ordering::Relaxed);
+        let bucket = width_bucket(census.keys);
+        WIDTH_COUNTS[bucket].fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// The merges since the last call, per bucket, as `(edge, new merges)` — the last entry is the
+    /// open-ended bucket above the last edge. See `WIDTH_PUBLISHED` for why this is a delta.
+    pub fn take_width_deltas() -> [(usize, usize); 5] {
+        let mut out = [(0usize, 0usize); 5];
+        for i in 0..5 {
+            let published =
+                WIDTH_PUBLISHED[i].swap(WIDTH_COUNTS[i].load(Ordering::Relaxed), Ordering::Relaxed);
+            let total = WIDTH_COUNTS[i].load(Ordering::Relaxed);
+            let edge = WIDTH_EDGES.get(i).copied().unwrap_or(usize::MAX);
+            out[i] = (edge, total.saturating_sub(published));
+        }
+        out
     }
 
     /// One line, for a caller that has a `Log`.
     pub fn summary() -> String {
         format!(
             "merge search: {} merges · widest scope {} chains / {} conflict pairs / {} asymmetric · \
-             most states expanded on one merge {}",
+             most states expanded on one merge {} · width buckets {:?}",
             MERGES.load(Ordering::Relaxed),
             MAX_KEYS.load(Ordering::Relaxed),
             MAX_CONFLICTS.load(Ordering::Relaxed),
             MAX_ASYMMETRIC.load(Ordering::Relaxed),
             MAX_EXPANDED.load(Ordering::Relaxed),
+            WIDTH_COUNTS.each_ref().map(|c| c.load(Ordering::Relaxed)),
         )
-    }
-
-    /// Forget everything. Tests only: the statics are process-wide.
-    #[cfg(test)]
-    pub fn reset() {
-        MERGES.store(0, Ordering::Relaxed);
-        MAX_KEYS.store(0, Ordering::Relaxed);
-        MAX_CONFLICTS.store(0, Ordering::Relaxed);
-        MAX_ASYMMETRIC.store(0, Ordering::Relaxed);
-        MAX_EXPANDED.store(0, Ordering::Relaxed);
     }
 }
 
@@ -2293,6 +2340,27 @@ mod boundary_merge_tests {
     /// The assertion is on a process-wide maximum, and it is still deterministic: `MAX_ASYMMETRIC` is
     /// monotone, so it holds every merge this test binary ran, and any test whose real merge produced an
     /// asymmetric pair would raise it above zero regardless of the order the tests ran in.
+    /// The width distribution's boundaries — the half of C182 that can be tested without racing the
+    /// process-wide counters, since every other test in this binary that runs a merge updates them.
+    #[test]
+    fn the_width_buckets_are_inclusive_at_their_edges() {
+        use crate::merging::search_census::width_bucket;
+        assert_eq!(width_bucket(0), 0);
+        assert_eq!(width_bucket(16), 0, "the edge is inclusive");
+        assert_eq!(width_bucket(17), 1);
+        assert_eq!(width_bucket(32), 1);
+        assert_eq!(width_bucket(33), 2);
+        assert_eq!(width_bucket(64), 2);
+        assert_eq!(width_bucket(65), 3);
+        assert_eq!(width_bucket(128), 3);
+        assert_eq!(
+            width_bucket(129),
+            4,
+            "past the last edge is the open-ended bucket"
+        );
+        assert_eq!(width_bucket(1_000_000), 4);
+    }
+
     #[tokio::test]
     async fn the_merge_search_sees_the_shape_the_merge_builds() {
         siblings_resolve_to_one(Body::Nothing, 1, Body::Nothing, 1).await;

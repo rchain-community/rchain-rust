@@ -173,6 +173,7 @@ impl BlockDagKeyValueStorage {
                 representation.index_entries(),
                 representation.logical_bytes(),
             );
+            self.set_merge_shape_gauges();
         }
         self
     }
@@ -197,6 +198,62 @@ impl BlockDagKeyValueStorage {
             .set_gauge(&source, "index_entries", count(index_entries));
         self.metrics
             .set_gauge(&source, "logical_bytes", count(logical_bytes));
+    }
+
+    /// Push the merge search's shape: the envelope as gauges, and the **width distribution** as a
+    /// histogram. Published from the same two places as the DAG gauges — on attach and per insert —
+    /// because a merge is what moves the DAG and this is the node's observability tick.
+    ///
+    /// **Why a distribution and not only the maxima** (register row C182, #127's change record,
+    /// Stage 1): `search_census` carries the *worst* scope seen, and a bound on this class is chosen
+    /// from how *often* a scope is wide — a threshold and a price are set from a distribution. The
+    /// counts are taken as deltas (`search_census::take_width_deltas`) because the registry's `record`
+    /// accumulates, so a running total would double-count.
+    fn set_merge_shape_gauges(&self) {
+        use crate::merging::search_census;
+        use std::sync::atomic::Ordering;
+
+        let source = Source::base().sub("merge");
+        let count = |n: usize| i64::try_from(n).unwrap_or(i64::MAX);
+        let load = |a: &std::sync::atomic::AtomicUsize| count(a.load(Ordering::Relaxed));
+
+        self.metrics.set_gauge(
+            &source,
+            "searches",
+            i64::try_from(search_census::MERGES.load(Ordering::Relaxed)).unwrap_or(i64::MAX),
+        );
+        self.metrics
+            .set_gauge(&source, "max_scope_width", load(&search_census::MAX_KEYS));
+        self.metrics.set_gauge(
+            &source,
+            "max_conflict_pairs",
+            load(&search_census::MAX_CONFLICTS),
+        );
+        self.metrics.set_gauge(
+            &source,
+            "max_asymmetric_pairs",
+            load(&search_census::MAX_ASYMMETRIC),
+        );
+        self.metrics.set_gauge(
+            &source,
+            "max_states_expanded",
+            load(&search_census::MAX_EXPANDED),
+        );
+        // The distribution: one histogram sample per bucket, valued at its edge. The counts are exact
+        // and that is what the histogram is read for; `_sum`/`_min`/`_max` over edges are meaningless
+        // by construction, and the open-ended bucket is valued at the last edge (`usize::MAX` would
+        // overflow the wire).
+        for (edge, delta) in search_census::take_width_deltas() {
+            if delta > 0 {
+                let edge = if edge == usize::MAX {
+                    search_census::WIDTH_EDGES[search_census::WIDTH_EDGES.len() - 1]
+                } else {
+                    edge
+                };
+                self.metrics
+                    .record(&source, "scope_width", count(edge), count(delta));
+            }
+        }
     }
 
     /// Expire deploys from the pool whose `valid_after_block_number` is older than the deploy
@@ -409,6 +466,7 @@ impl BlockDagStorage for BlockDagKeyValueStorage {
                 repr.index_entries(),
                 repr.logical_bytes(),
             );
+            self.set_merge_shape_gauges();
         }
 
         BlockIndex::prune_cache(&prune_cache_ids);

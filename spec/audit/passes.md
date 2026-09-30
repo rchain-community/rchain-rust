@@ -4947,3 +4947,62 @@ latched sync attempt, its two `NodeSyncing` tests, and the recovery path it owes
 syncing — and its `evidence` names two tests that assert the node **stays** in `NodeSyncing` after a
 failure. That is the residual defect, not a contract: a recovery rule changes exactly those assertions, so
 C68's row now says they are the tests the fix must replace.
+
+## 30. The merge's shape is a distribution now, and the change that would price it (C182, #127)
+
+C180 proposed the law this class lacks — `candidate:bounded-work-per-step` — and #127 owns the work. This
+section is its first stage, and it also records **the change order the stages belong to**, because that
+order lives in a plan outside the repository and a register row cannot cite a document a reader cannot
+open.
+
+### The change, and what each stage costs
+
+The cost a node pays to resolve a merge is a function of the DAG's *shape* — fork width, 33–43 chains
+observed, up to 1,663,395 states expanded on one merge at ~2× per chain — and nobody pays for it: phlo
+prices deploy execution, and the shape is chosen by proposers. The stages, increasing blast radius:
+
+| stage | what | consensus-visible? |
+|---|---|---|
+| 0 | an activation rule (height-gated; the tree has none — `validate::version` has no production caller) | yes, strictly |
+| 1 | count the shape (**this section**) | no — an instrument |
+| 2 | refuse a scope above a threshold **N**, the shape `MAX_BLOCK_DEPLOYS`/`MAX_BLOCK_PHLO` already have | yes — refuses blocks that were valid (§6, #51 §A) |
+| 3 | price the shape, proposer-facing and superlinear | yes — moves stake (§6, #51 §A) |
+| 4 | the proposer computes the resolution and the block carries it, so validators check rather than re-derive | yes — a block-format change |
+
+**The honest claim, which every row above must carry:** this *raises the cost of the attack*; it does not
+bound the exponential. Stages 2 and 4 refine *who* pays and *who* computes; below N the search is still
+exponential, and the proposer's own cost still is too.
+
+Two things the change order rests on, each verified rather than assumed: **sharding a merge scope with
+`partition_scope` would be a fork, not an optimisation** — it is safe where there are no conflicts, which
+is why `casper/src/merging.rs:481` uses it to split the deploys *within* one block, and `full_conflicts_map`
+widens every conflict by its dependency closure, so a partition cuts live edges and the per-partition optima
+do not compose; and **the certificate is a block-format change**, because the block carries only
+`pre_state_hash`/`post_state_hash` for the conflict scope while the resolution itself is computed and
+discarded.
+
+### C182 — Stage 1: the shape as a distribution
+
+`search_census` published `MERGES`, `MAX_KEYS`, `MAX_CONFLICTS`, `MAX_ASYMMETRIC` and `MAX_EXPANDED` and one
+log line every five seconds: how bad the *worst* merge was, and nothing about how often. A maximum cannot
+choose a threshold and cannot set a price — both of those numbers are read off a distribution.
+
+Landed: the scope width (the census's `keys`) is bucketed at merge time (`width_bucket`, edges 16/32/64/128
+with an open-ended top bucket, `WIDTH_COUNTS`) and published through the node's own metrics path as the DAG
+gauges are — `Source::base().sub("merge")`, the maxima as gauges, and the distribution as a Prometheus
+histogram via `record`. The counts are published as **deltas** (`take_width_deltas`), because the registry's
+`record` accumulates and a running total would double-count; the deltas are taken under the DAG's write
+guard, which is also where the publish happens.
+
+**What it does not do, stated because the next stage will be tempted to skip it:** no bound, no price, no
+change to any block or hash — and the *distribution itself* is not yet measured. The devnet run that
+produces it is owed, and it is what Stage 2's threshold **N** and Stage 3's schedule are chosen from
+(numbers the approver sets, not this pass). The acceptance is pre-registered before that run: the three
+nodes must report identical values for the same block, and the run's width distribution is published with
+the artifact.
+
+**One limit worth stating before the threshold exists.** There is no cheap general bound on the *state
+count* in this tree — only the four closed forms `compute_rejection_options`'s doc comment pins (complete
+`n`; no-conflicts `2^n − 1`; fork `2^(p+1) − 2`; matching `3^m − 1`). So the priced and gated quantity is a
+**proxy** — scope width, conflict-pair count, asymmetry — and any claim that the proxy predicts the cost
+must be measured on the distribution rather than asserted. Stage 2 inherits that.
