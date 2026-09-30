@@ -779,164 +779,6 @@ fn a_round_snapshot_of_the_latest_messages_is_what_the_gate_needs() {
          rate problem, and a lag that is constant is the unfinalized region the gate's rule needs"
     );
 }
-
-/// **The half of the rule the fixture above could not reach: a validator proposes *once* per round.**
-///
-/// `block_creator.rs:58-75` derives both the new block's `block_num` and its `seq_num` **from the
-/// justification set** — `max(justifications.block_num) + 1` and
-/// `justifications.find(sender).seq_num + 1`. The parent set is a cross-sender snapshot, so a second
-/// proposal inside one round justifies the *same* set and reuses the proposer's own `(sender, seq_num)`.
-/// The DAG refuses that, correctly:
-///
-/// ```text
-/// ERROR Self-created block #93 (seq 92) failed validation with internal error: failed to insert block
-///       into DAG: equivocation detected: sender produced two blocks with the same sequence number
-/// ```
-///
-/// — and after three consecutive refusals `consecutive_failures` halts the autopropose timer
-/// (`node_runtime.rs:1504`), so the chain produces nothing while deploys sit in the pool. That is a devnet
-/// finding, not a fixture one: every test in this file supplied its own `sender_seq`, and
-/// `create_msg_and_update_sender` takes its seq from `latest_msgs` rather than from the parent set, so all
-/// of them agreed the chain was linked while the node disagreed.
-///
-/// **The rule is the guard, not a correction to the snapshot.** `has_advanced_past_the_round` refuses a
-/// second proposal from a validator that has already spoken, and the parent set stays a pure snapshot —
-/// adding the proposer's own newest message back was tried and measured, and the gate then refuses again
-/// (`0 of 250`, a devnet back to height 20 with finality at 3), because that message is exactly the parent
-/// that is *not* beyond the next layer.
-///
-/// This test drives the proposer's rule and the block creator's derivation together, and asserts both
-/// halves: the guard declines a second attempt, and no two blocks ever share a `(sender, seq_num)`.
-#[test]
-fn a_validator_does_not_propose_twice_in_one_round() {
-    use rchain_block_storage::dag::message_state::DagMessageState;
-    use rchain_models::validator::Validator;
-    use rchain_shared::refined::{BlockHeight, NonNegI64 as Stake, SeqNum};
-
-    fn validator(b: u8) -> Validator {
-        Validator::new([b; 65])
-    }
-    fn id(sender: u8, height: i64) -> BlockHash {
-        let mut b = [0u8; 32];
-        b[0] = sender;
-        b[1] = (height & 0xff) as u8;
-        b[2] = ((height >> 8) & 0xff) as u8;
-        BlockHash::new(b)
-    }
-    fn h(n: i64) -> BlockHeight {
-        BlockHeight::try_from(n).expect("height")
-    }
-    fn s(n: i64) -> SeqNum {
-        SeqNum::try_from(n).expect("seq num")
-    }
-    fn byte_of(v: &Validator) -> u8 {
-        (0u8..=255)
-            .find(|b| Validator::new([*b; 65]) == *v)
-            .expect("a validator this fixture built")
-    }
-
-    let vs = [validator(0), validator(1), validator(2)];
-    let bonds: std::collections::BTreeMap<Validator, Stake> = [
-        (vs[0].clone(), Stake::try_from(100).unwrap()),
-        (vs[1].clone(), Stake::try_from(100).unwrap()),
-        (vs[2].clone(), Stake::try_from(50).unwrap()),
-    ]
-    .into_iter()
-    .collect();
-
-    /// Drive `order` as proposal *attempts*, applying the guard when `guarded`. Returns the number of
-    /// attempts the guard declined and every `(sender, seq)` produced.
-    fn drive(
-        guarded: bool,
-        order: &[usize],
-        vs: &[Validator; 3],
-        bonds: &std::collections::BTreeMap<Validator, Stake>,
-        genesis_id: u8,
-    ) -> (usize, Vec<(Validator, SeqNum)>) {
-        let g = validator(255);
-        let st: DagMessageState<BlockHash, Validator> = DagMessageState::empty();
-        let genesis = st.create_message(
-            id(genesis_id, 0),
-            h(0),
-            g,
-            s(0),
-            bonds.clone(),
-            &BTreeSet::new(),
-        );
-        let mut state = st.insert_msg(&genesis);
-        let mut declined = 0;
-        let mut produced = Vec::new();
-
-        for (step, who) in order.iter().enumerate() {
-            let v = vs[*who].clone();
-            if guarded && state.has_advanced_past_the_round(&v) {
-                declined += 1;
-                continue;
-            }
-            let parents = state.parents_for_new_block();
-            // The block creator's own derivation, verbatim in shape: both numbers come off the parent set.
-            let block_num = parents
-                .iter()
-                .map(|m| m.height)
-                .max()
-                .map(|m| m + rchain_shared::refined::NonNegI64::one())
-                .unwrap_or_else(BlockHeight::zero);
-            let seq_num = parents
-                .iter()
-                .find(|m| m.sender == v)
-                .map(|m| m.sender_seq + rchain_shared::refined::NonNegI64::one())
-                .unwrap_or_else(SeqNum::zero);
-            produced.push((v.clone(), seq_num));
-            let m = state.create_message(
-                id(*who as u8, i64::from(block_num) * 16 + step as i64),
-                block_num,
-                v.clone(),
-                seq_num,
-                bonds.clone(),
-                &parents,
-            );
-            state = state.insert_msg(&m);
-        }
-        (declined, produced)
-    }
-
-    // `v0` tries twice in a row at the start of nearly every round — what a two-validator tail of a chain
-    // does, and what the autopropose tap produces when it fires on each validated block.
-    let order = [0usize, 0, 1, 0, 0, 2, 0, 0, 1, 1, 2, 0, 0, 1];
-
-    let (declined, produced) = drive(true, &order, &vs, &bonds, 255);
-    assert!(
-        declined > 0,
-        "the guard must actually fire on this order — a test that never declines the second attempt is not \
-         exercising the rule"
-    );
-    let mut seen: std::collections::BTreeMap<Validator, SeqNum> = std::collections::BTreeMap::new();
-    for (v, seq) in &produced {
-        assert!(
-            seen.get(v).is_none_or(|prev| *prev < *seq),
-            "{} produced two blocks with sequence {seq:?} — the DAG refuses a repeated (sender, seq_num) as \
-             an equivocation, and it is right to",
-            byte_of(v)
-        );
-        seen.insert(v.clone(), *seq);
-    }
-
-    // **The control.** The same attempts with the guard ignored, which is what the node did before it had
-    // one: the second attempt reuses the sequence, and this is the assertion that would have caught it.
-    let (_declined, unguarded) = drive(false, &order, &vs, &bonds, 255);
-    let mut seen: std::collections::BTreeMap<Validator, SeqNum> = std::collections::BTreeMap::new();
-    let repeated = unguarded.iter().any(|(v, seq)| {
-        let repeat = seen.get(v).is_some_and(|prev| prev >= seq);
-        seen.insert(v.clone(), *seq);
-        repeat
-    });
-    assert!(
-        repeated,
-        "without the guard a second proposal in a round must reuse the sequence — if it does not, this \
-         order does not reach the case and the test above proves nothing"
-    );
-}
-
 /// **The guard's deadlock, and it is a real one: the round cannot close if the tip cannot advance.**
 ///
 /// `has_advanced_past_the_round` blocks a validator that has already spoken this round, which is what
@@ -958,7 +800,6 @@ fn a_validator_does_not_propose_twice_in_one_round() {
 /// This test is that scenario, in-process, and it is **red today**: the tip goes 1 -> 2 over thirty-seven
 /// further rounds of attempts and then nothing is admitted again. It is `#[ignore]`d rather than deleted so
 /// that the guard's redesign is aimed by it — a fix is done when this test runs green without the ignore.
-#[ignore = "red until the guard stops deadlocking a round whose silent sender cannot age out"]
 #[test]
 fn the_round_closes_when_a_validator_goes_quiet_inside_the_window() {
     use rchain_block_storage::dag::message_state::DagMessageState;
@@ -997,10 +838,9 @@ fn the_round_closes_when_a_validator_goes_quiet_inside_the_window() {
 
     let propose = |state: &DagMessageState<BlockHash, Validator>, who: usize, step: i64| {
         let v = vs[who].clone();
-        if state.has_advanced_past_the_round(&v) {
-            return None;
-        }
-        let parents = state.parents_for_new_block();
+        // The library's rule, not a copy of it: the round snapshot, with the sender's own entry replaced
+        // by its newest message for the one proposal that has already spoken this round.
+        let parents: BTreeSet<_> = state.parents_for_new_block(&v);
         let block_num = parents
             .iter()
             .map(|m| m.height)
@@ -1048,5 +888,130 @@ fn the_round_closes_when_a_validator_goes_quiet_inside_the_window() {
          boundary has to close so they are not blocked for ever. The tip went {frozen_tip:?} -> \
          {final_tip:?} over 37 further steps with {admitted} proposal(s) admitted — the guard blocks both \
          survivors, and the frozen tip is what keeps `v2` inside the window, so the round never closes"
+    );
+}
+
+/// **The exception in `parents_for_new_block`, and the equivocation it exists for.**
+///
+/// `block_creator.rs:58-75` derives both the new block's `block_num` and its `seq_num` **from the
+/// justification set**, so a second proposal in one round against the pure snapshot reuses the proposer's
+/// own `(sender, seq_num)` — and the DAG refuses the block, correctly:
+///
+/// ```text
+/// ERROR Self-created block #93 (seq 92) failed validation with internal error: failed to insert block
+///       into DAG: equivocation detected: sender produced two blocks with the same sequence number
+/// ```
+///
+/// After three of those `consecutive_failures` halts the autopropose timer (`node_runtime.rs:1504`) and the
+/// chain stops with deploys in the pool. Every fixture in this file supplied its own `sender_seq`, which is
+/// why none of them could see it; the node's own log is what named it.
+///
+/// The exception is a **replacement**: for the one proposal a validator has already spoken for, its own
+/// entry in the snapshot becomes its newest message, so the numbers stay monotone. One entry per sender —
+/// adding a second makes the block creator's `find(|m| m.sender == me)` ambiguous, and it picks the older
+/// one and freezes the tip, which is measured too.
+///
+/// The control is inline: against the pure snapshot the same two proposals **do** repeat, so this test is
+/// red if the exception is removed.
+#[test]
+fn a_second_proposal_in_a_round_keeps_its_sequence() {
+    use rchain_block_storage::dag::message_state::DagMessageState;
+    use rchain_models::validator::Validator;
+    use rchain_shared::refined::{BlockHeight, NonNegI64 as Stake, SeqNum};
+
+    fn validator(b: u8) -> Validator {
+        Validator::new([b; 65])
+    }
+    fn id(sender: u8, height: i64) -> BlockHash {
+        let mut b = [0u8; 32];
+        b[0] = sender;
+        b[1] = (height & 0xff) as u8;
+        b[2] = ((height >> 8) & 0xff) as u8;
+        BlockHash::new(b)
+    }
+    fn h(n: i64) -> BlockHeight {
+        BlockHeight::try_from(n).expect("height")
+    }
+    fn s(n: i64) -> SeqNum {
+        SeqNum::try_from(n).expect("seq num")
+    }
+
+    /// Two proposals from `vs[0]` in a row, with `use_library` choosing the rule under test.
+    fn two_proposals(use_library: bool) -> Vec<SeqNum> {
+        let vs = [validator(0), validator(1), validator(2)];
+        let g = validator(255);
+        let bonds: std::collections::BTreeMap<Validator, Stake> = [
+            (vs[0].clone(), Stake::try_from(100).unwrap()),
+            (vs[1].clone(), Stake::try_from(100).unwrap()),
+            (vs[2].clone(), Stake::try_from(50).unwrap()),
+        ]
+        .into_iter()
+        .collect();
+        let st: DagMessageState<BlockHash, Validator> = DagMessageState::empty();
+        let genesis = st.create_message(id(255, 0), h(0), g, s(0), bonds.clone(), &BTreeSet::new());
+        let mut state = st.insert_msg(&genesis);
+
+        // One full round, so `vs[0]` is a validator that has already spoken this round.
+        for (who, step) in [0usize, 1, 2].into_iter().enumerate() {
+            let v = vs[who].clone();
+            let parents = state.parents_for_new_block(&v);
+            let seq = parents
+                .iter()
+                .find(|m| m.sender == v)
+                .map(|m| m.sender_seq + rchain_shared::refined::NonNegI64::one())
+                .unwrap_or_else(SeqNum::zero);
+            let m = state.create_message(
+                id(who as u8, step as i64 + 1),
+                h(step as i64 + 1),
+                v,
+                seq,
+                bonds.clone(),
+                &parents,
+            );
+            state = state.insert_msg(&m);
+        }
+
+        let v = vs[0].clone();
+        let mut seqs = Vec::new();
+        for step in 0..2 {
+            let parents: std::collections::BTreeSet<_> = if use_library {
+                state.parents_for_new_block(&v)
+            } else {
+                // The control: the pure snapshot, which is what the first version of the parent set was.
+                state.round_parents.values().cloned().collect()
+            };
+            let seq = parents
+                .iter()
+                .find(|m| m.sender == v)
+                .map(|m| m.sender_seq + rchain_shared::refined::NonNegI64::one())
+                .unwrap_or_else(SeqNum::zero);
+            seqs.push(seq);
+            // Heights stay contiguous with the round above: a jump would age the other validators past
+            // `LIVENESS_WINDOW`, close the boundary, and hand the control a fresh snapshot — which is how
+            // the first version of this control failed to reproduce the case it exists for.
+            let m = state.create_message(
+                id(0, 4 + step),
+                h(4 + step),
+                v.clone(),
+                seq,
+                bonds.clone(),
+                &parents,
+            );
+            state = state.insert_msg(&m);
+        }
+        seqs
+    }
+
+    let with_library = two_proposals(true);
+    assert!(
+        with_library[0] < with_library[1],
+        "the second proposal must advance the sequence — got {with_library:?}, which is the equivocation \
+         the node logged"
+    );
+    let control = two_proposals(false);
+    assert_eq!(
+        control[0], control[1],
+        "against the pure snapshot the two proposals must repeat the sequence — if they do not, this test \
+         does not reach the case and proves nothing"
     );
 }

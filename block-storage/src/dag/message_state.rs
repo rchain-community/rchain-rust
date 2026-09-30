@@ -120,42 +120,45 @@ where
         }
     }
 
-    /// **The parent set for a new block** — [`Self::round_parents`], which is what the fringe gate can
-    /// finalise. Falls back to `latest_msgs` only before the first boundary exists (an empty DAG).
+    /// **The parent set for a new block by `sender`** — the round snapshot, with one exception.
     ///
-    /// **It is deliberately *not* corrected for the proposer's own newest message, and that is the point
-    /// of the boundary.** Adding it back was tried and measured: the fringe gate then refuses again
-    /// (`0 of 250`, and a devnet returns to height 20 with finality at 3), because the whole property the
-    /// snapshot provides is that a candidate's parents lie *beyond* the next layer, and the proposer's own
-    /// newest message is exactly the parent that is not. So the parent set stays a pure snapshot, and the
-    /// second half of the rule is [`Self::has_advanced_past_the_round`].
-    pub fn parents_for_new_block(&self) -> BTreeSet<Message<M, S>> {
+    /// **The ordinary case is the pure snapshot**, because that is what the fringe gate can advance on. The
+    /// exception is a validator that has **already spoken this round**: its own entry in the snapshot is its
+    /// *previous* message, and `block_creator.rs:58-75` derives both `block_num` and `seq_num` from this set,
+    /// so a second proposal against the pure snapshot reuses its `(sender, seq_num)` and the DAG refuses the
+    /// block as an equivocation. For that one proposal the sender's own entry is **replaced** by its newest
+    /// message, which keeps the numbers monotone.
+    ///
+    /// **Replaced, not added.** A parent set carrying two messages from one sender makes the block creator's
+    /// `find(|m| m.sender == me)` ambiguous, and it picks the older one — so the numbers stop advancing and
+    /// the tip freezes however many proposals are admitted. Measured; one entry per sender, always.
+    ///
+    /// **Why an exception rather than a refusal.** Refusing a second proposal deadlocks: the round closes
+    /// only when every bonded sender has advanced past the boundary, a quiet sender stops holding it back
+    /// only once [`super::liveness::LIVENESS_WINDOW`] heights have passed above its last message, and that is
+    /// measured from the tip — which a refusal freezes. A validator killed while inside the window is then
+    /// never retired and the round never closes. Measured on the node (flat height for the whole window
+    /// after a kill, no error) and in-process (`the_round_closes_when_a_validator_goes_quiet_inside_the_window`).
+    /// An exception has no such clock: the tip moves, the window ages out the quiet sender, the round closes,
+    /// and the next proposal is an ordinary one again.
+    pub fn parents_for_new_block(&self, sender: &S) -> BTreeSet<Message<M, S>> {
         if self.round_parents.is_empty() {
-            self.latest_msgs.values().cloned().collect()
-        } else {
-            self.round_parents.values().cloned().collect()
+            return self.latest_msgs.values().cloned().collect();
         }
+        let mut parents = self.round_parents.clone();
+        if self.has_advanced_past_the_round(sender) {
+            if let Some(mine) = self.latest_msgs.get(sender) {
+                parents.insert(sender.clone(), mine.clone());
+            }
+        }
+        parents.values().cloned().collect()
     }
 
-    /// **Whether `sender` has already produced a block since the last round boundary** — and must therefore
-    /// not propose again until the round closes.
+    /// **Whether `sender` has already produced a block since the last round boundary** — the case
+    /// [`Self::parents_for_new_block`] carries its own newest message for.
     ///
-    /// The other half of the snapshot, and the reason it can stay pure. `block_creator.rs:58-75` derives both
-    /// the new block's `block_num` and its `seq_num` **from the justification set**, so a validator that
-    /// proposes twice inside one round reuses its `(sender, seq_num)` and the DAG refuses the block —
-    /// correctly — as an equivocation:
-    ///
-    /// ```text
-    /// ERROR Self-created block #93 (seq 92) failed validation with internal error: failed to insert block
-    ///       into DAG: equivocation detected: sender produced two blocks with the same sequence number
-    /// ```
-    ///
-    /// Read off the node, after three consecutive refusals halted autopropose
-    /// (`consecutive_failures >= AUTOPROPOSE_MAX_CONSECUTIVE_FAILURES`) and the chain produced nothing while
-    /// deploys sat in the pool. One block per validator per round is what the boundary means, so a proposer
-    /// that has already spoken waits rather than equivocating with itself. The wait is bounded by the round:
-    /// it closes as soon as every bonded sender has advanced, or as soon as one silent past
-    /// [`super::liveness::LIVENESS_WINDOW`] is retired from the count.
+    /// Not a veto. It was one, and the refusal deadlocked a round whose quiet sender could not age out; the
+    /// doc on `parents_for_new_block` has the measurement.
     pub fn has_advanced_past_the_round(&self, sender: &S) -> bool {
         !self.round_parents.is_empty()
             && self
@@ -291,7 +294,7 @@ where
             .map(|m| m.sender_seq)
             .unwrap_or_else(SeqNum::zero);
         let new_seq_num = seq_num + NonNegI64::one();
-        let justifications: BTreeSet<Message<M, S>> = self.parents_for_new_block();
+        let justifications: BTreeSet<Message<M, S>> = self.parents_for_new_block(creator);
         let bonds_map = self
             .latest_msgs
             .values()

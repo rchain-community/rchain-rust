@@ -195,14 +195,6 @@ impl Proposer {
                 },
                 None,
             )),
-            // Not a failure and not counted as one: the validator is simply not due yet, and the round
-            // closes as soon as the other bonded senders have advanced.
-            BlockCreatorResult::AlreadyProposedThisRound => Ok((
-                ProposeResult {
-                    propose_status: ProposeStatus::NotEnoughNewBlocks,
-                },
-                None,
-            )),
             BlockCreatorResult::Created(block) => match (self.validate_block)(&block).await {
                 Ok(()) => {
                     self.consecutive_failures.store(0, Ordering::Relaxed);
@@ -513,21 +505,14 @@ where
 {
     let creators_validator_for_parents =
         Validator::from_slice(validator_identity.public_key.bytes());
-    // **One block per bonded validator per round.** A second proposal inside one round would justify the
-    // same snapshot, and since the block creator derives `block_num` and `seq_num` *from that set*, it
-    // would reuse its own `(sender, seq_num)` — which the DAG refuses, correctly, as an equivocation, after
-    // which three consecutive failures halt autopropose and the chain stops with work in the pool. Measured
-    // on a devnet; the node's own log is quoted on `DagMessageState::has_advanced_past_the_round`.
-    {
-        let dag_repr = dag.get_representation().await;
-        if dag_repr
-            .dag_message_state
-            .has_advanced_past_the_round(&creators_validator_for_parents)
-        {
-            return Ok(BlockCreatorResult::AlreadyProposedThisRound);
-        }
-    }
-    let pre_state = get_pre_state_for_new_block(dag, block_store, runtime, block_index).await?;
+    let pre_state = get_pre_state_for_new_block(
+        dag,
+        block_store,
+        runtime,
+        block_index,
+        &creators_validator_for_parents,
+    )
+    .await?;
     let pre_state_hash = pre_state.pre_state_hash;
     let creators_validator = Validator::from_slice(validator_identity.public_key.bytes());
     let next_block_num = pre_state
