@@ -25,6 +25,11 @@
  * Load with `LD_PRELOAD=/contracts/jemalloc-stats-shim.so`, output path from `JEMALLOC_STATS_OUT`
  * (default `/var/lib/rnode/jemalloc-stats.txt`).
  *
+ * **A trap worth writing down:** `LD_PRELOAD` is inherited by every process the loader starts, so running
+ * `LD_PRELOAD=... timeout 30 ./rnode` preloads this into `timeout` first, where jemalloc's symbols do not
+ * exist. That produced a `symbol lookup error: undefined symbol: _rjem_mallctl` and an hour of chasing a
+ * resolution failure that was not real. Run the binary directly, or preload only where it is wanted.
+ *
  * Deliberately outside the node binary: the crate graph is `#![forbid(unsafe_code)]`, so the node cannot
  * call `mallctl` itself. Caveat, stated because it is real: the shim allocates a little (its stdio buffer)
  * and takes jemalloc's stats lock once a second. It is a fixed, tiny, per-process cost, identical in
@@ -36,6 +41,7 @@
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -58,6 +64,19 @@ static void resolve(void) {
     }
 }
 
+/* **The epoch must be advanced before every read, or the values are frozen.** jemalloc's merged
+ * `stats.*` are cached and refreshed only when the epoch is bumped; reading them without a bump returns
+ * the value from the first read, forever. Measured the hard way: a series of 319 one-second samples was
+ * byte-identical — 78232 allocated, 6492160 resident, 14770176 mapped, every line — while the cgroup's
+ * `anon` for the same process climbed past 4 GiB. That is an instrument reporting a still photograph and
+ * looking exactly like a finding. */
+static void advance_epoch(void) {
+    size_t epoch = 1;
+    if (ctl != NULL) {
+        ctl("epoch", NULL, NULL, &epoch, sizeof(epoch));
+    }
+}
+
 static long long read_stat(const char *name) {
     size_t v = 0;
     size_t sz = sizeof(v);
@@ -67,8 +86,21 @@ static long long read_stat(const char *name) {
     return (long long)v;
 }
 
-static long long read_opt(const char *name) {
-    size_t v = 0;
+/* Options must be read into a buffer of the option's *native* type: jemalloc writes the value and then
+ * returns EINVAL if the length supplied did not match — so reading a `bool` into a `size_t` yields the
+ * right byte and a non-zero return, which a `!= 0` check turns into a confident -1. Measured: every
+ * `opt.*` field in this header read as -1 until the types below were fixed. */
+static int opt_bool(const char *name) {
+    unsigned char v = 0;
+    size_t sz = sizeof(v);
+    if (ctl == NULL || ctl(name, &v, &sz, NULL, 0) != 0) {
+        return -1;
+    }
+    return v;
+}
+
+static long long opt_u32(const char *name) {
+    unsigned int v = 0;
     size_t sz = sizeof(v);
     if (ctl == NULL || ctl(name, &v, &sz, NULL, 0) != 0) {
         return -1;
@@ -76,22 +108,39 @@ static long long read_opt(const char *name) {
     return (long long)v;
 }
 
+static long long opt_ssize(const char *name) {
+    long long v = -1;
+    size_t sz = sizeof(v);
+    if (ctl == NULL || ctl(name, &v, &sz, NULL, 0) != 0) {
+        return -1;
+    }
+    return v;
+}
+
 static void write_header(FILE *out) {
-    char version[64] = "?";
+    /* The version is reported only if the call succeeds; "(unavailable)" otherwise. An artifact header
+     * that misreports what it measured is the defect the register carries as C176, and the first version
+     * of this file printed an uninitialised buffer there. */
+    char version[64];
+    const char *ver = "(unavailable)";
+    memset(version, 0, sizeof(version));
     if (ctl != NULL) {
-        size_t sz = sizeof(version) - 1;
-        ctl("version", version, &sz, NULL, 0);
+        size_t sz = sizeof(version);
+        if (ctl("version", version, &sz, NULL, 0) == 0 && version[0] != '\0') {
+            ver = version;
+        }
     }
     fprintf(out,
             "# symbol=%s jemalloc=%s\n"
             "# the options the process is actually running, read back out of jemalloc rather than assumed:\n"
-            "#   opt.retain=%lld opt.background_thread=%lld opt.dirty_decay_ms=%lld opt.muzzy_decay_ms=%lld "
-            "opt.narenas=%lld\n"
+            "#   opt.retain=%d opt.background_thread=%d opt.dirty_decay_ms=%lld opt.muzzy_decay_ms=%lld "
+            "opt.narenas=%lld arenas.narenas=%lld\n"
             "#   _RJEM_MALLOC_CONF=%s\n"
             "# columns: utc allocated_bytes active_bytes resident_bytes mapped_bytes retained_bytes metadata_bytes\n",
-            ctl_symbol, version,
-            read_opt("opt.retain"), read_opt("opt.background_thread"),
-            read_opt("opt.dirty_decay_ms"), read_opt("opt.muzzy_decay_ms"), read_opt("opt.narenas"),
+            ctl_symbol, ver,
+            opt_bool("opt.retain"), opt_bool("opt.background_thread"),
+            opt_ssize("opt.dirty_decay_ms"), opt_ssize("opt.muzzy_decay_ms"),
+            opt_u32("opt.narenas"), opt_u32("arenas.narenas"),
             getenv("_RJEM_MALLOC_CONF") ? getenv("_RJEM_MALLOC_CONF") : "(unset)");
     fflush(out);
 }
@@ -115,6 +164,7 @@ static void *report_forever(void *unused) {
     }
     for (;;) {
         struct timespec now;
+        advance_epoch();
         clock_gettime(CLOCK_REALTIME, &now);
         fprintf(out, "%lld.%03ld %lld %lld %lld %lld %lld %lld\n",
                 (long long)now.tv_sec, now.tv_nsec / 1000000,
