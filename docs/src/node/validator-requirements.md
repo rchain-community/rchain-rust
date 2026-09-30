@@ -117,18 +117,31 @@ is still unattributed.
 glibc gives each thread its own malloc **arena**, and an arena keeps the high-water mark of what it has
 held; it is not returned to the OS. A node under fork load spreads allocation across its worker threads,
 so what the process retains is the *sum* of the per-thread peaks rather than any one peak. Measured on a
-3-validator devnet ([#117](https://github.com/rchain-community/rchain-rust/issues/117)): **29 anonymous
-regions of exactly 64 MiB** — glibc's `HEAP_MAX_SIZE`, one per worker thread — fully resident, while the
-main `[heap]` sat at 1.9 MiB and file-backed RSS at 26.8 MiB. A heap profile of that run accounts for
-16.4 GiB allocated against **2 MiB still live at exit**: nothing is leaked, and the limit is reached by
-retention rather than by growth.
+3-validator devnet ([#117](https://github.com/rchain-community/rchain-rust/issues/117)), the anonymous
+regions are **29 of exactly 32 MiB** — the worker **stacks** (`thread_stack_size(32 MiB)`), holding
+5.7 MiB of RSS between them — and **11 of exactly 64 MiB**, which *are* the arena heaps, while the main
+`[heap]` sat at 1.9 MiB and file-backed RSS at 26.8 MiB.
+
+**That paragraph used to read the same histogram backwards**, as "29 regions of exactly 64 MiB, one per
+worker thread, fully resident": a count taken from one size class and a size from another, with the
+residency inverted — 29 × 64 MiB is 1.86 GiB, more than the whole anonymous RSS of that run. It is
+corrected here because the audit of #117 says so — C176 of that audit's register, §27 of its pass record.
+
+**And what reaches the ceiling is held, not returned.** Read from inside the running node by the
+allocator's own accounting, `retained` was **0** in every one of ~1,700 samples across nine node-runs,
+with allocated bytes explaining 97–99 % of the cgroup's `anon` at peaks of 3.1–8.2 GiB. So a node that
+dies at its limit is dying of memory it still holds, not of a leak and not of purge lag — which is why
+the fix space is the code, and why the arena cap below is not the answer. The audit's §27 carries the
+instruments, and the one composition question they leave open.
 
 **Capping the arenas is unproven and is deliberately not shipped.** `MALLOC_ARENA_MAX=2` was tried, and
-the survival counts at a 4 GiB ceiling do not separate it from noise: post-fix runs at the same settings
-gave 1, 2 and 1 surviving nodes out of three (one of those arms died *earlier* than the uncapped arms),
-and a probe intended to read the arena count directly could not sample the nodes that mattered because
-two had already been killed. Do not set it on the strength of this page. What is worth knowing is the
-mechanism: a node cannot set it for itself, because `mallopt` and `malloc_trim` are `unsafe` and this
+the survival counts at a 4 GiB ceiling do not separate it from noise — nor are they reproducible from the
+artifacts: the earlier version of this paragraph quoted "1, 2 and 1 surviving nodes of three", of which
+one figure is on disk and the other two are not, while at the same setting an arm *carrying* the cap was
+the one that lost 2 of 3 nodes. Do not set it on the strength of this page. What is worth knowing is the
+mechanism — and its measurement limit: a probe intended to read the arena count directly could not sample
+the nodes that mattered, because a killed node's cgroup is gone and the peak then reads 0 (that audit's C176); a node
+cannot set the cap for itself, because `mallopt` and `malloc_trim` are `unsafe` and this
 crate graph is `#![forbid(unsafe_code)]`, so the only lever is a runtime environment variable — and
 whatever is done about it has to be measured against a reproduction whose run-to-run spread is first
 characterised, because single runs of this shape disagree with each other.
