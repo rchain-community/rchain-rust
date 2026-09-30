@@ -234,19 +234,30 @@ where
 
 /// All rejection combinations (sets of rejected items) that resolve the conflict map.
 ///
-/// This is the Scala `computeRejectionOptions` `O(2^n)` search, ported as a breadth-first
-/// enumeration over acceptance states.
+/// This is the Scala `computeRejectionOptions` search: a breadth-first enumeration over acceptance
+/// states, kept *result-identical* to the Scala while visiting each state once.
 ///
-/// **The cost is the node's memory ceiling (#117), and it is not avoidable by the obvious rewrite.**
-/// The search is exponential in the number of *forked* chains, which is the shape this node produces:
-/// chains within a branch do not conflict while chains across branches conflict completely, so the
-/// enumeration visits every subset of a branch — 2^(n/2) states, each holding two cloned sets.
-/// Measured locally (`sdk/tests/merging_scaling.rs`): **20 chains in two branches takes 11 seconds**,
-/// and 40 is 2^20 states. A heap profile of a node at its cgroup ceiling puts **97 % of the live heap**
-/// in `BTreeSet::clone` under `resolve_conflict_set`, grown 343 -> 1488 MiB within a single run.
+/// **A state is the accepted set alone.** The rejected set is not independent information — the only
+/// way a key enters it is as the conflict of an accepted one, so `rejected = ⋃{conflicts(x) : x ∈
+/// accepted}` after every step, and `conflicts` is a pure function of `accepted`. The ported search
+/// carried both sets in each queue entry anyway, which made it re-visit a state once per **ordering**
+/// that reaches it, and clone two sets per visit. On the shape this node produces — a **fork**: chains
+/// within a branch do not conflict, chains across branches conflict completely — the reachable states
+/// are the subsets of one branch, 2^(n/2 + 1), but the paths to them are factorially many:
+/// `20 chains in two branches: 19,728,200 expansions for 2,046 states` (measured; the report is
+/// `sdk/tests/merging_scaling.rs`). The clones under this function are **97 % of the live heap** of a
+/// node at its cgroup ceiling, grown 343 -> 1488 MiB within one run (#117).
 ///
-/// The dense case is not the problem — accepting any key rejects all the others, so it terminates in one
-/// step, which is why the 1000-node full-graph test passes while the node grows to gigabytes.
+/// Carrying `accepted` alone collapses that to one visit per state, which is what the search's own
+/// state graph always was. It is exact rather than a heuristic: the successor set and the answer both
+/// depend on the state only through `accepted`, so skipping a state already expanded cannot remove a
+/// reachable answer.
+///
+/// **The residual is real and is *not* the path count.** Reachable states still grow as 2^(n/2 + 1) on a
+/// fork, so a fork wide enough to reach tens of thousands of states per branch is still exponential in
+/// the number of *branches' worth of chains* — that is the search's true shape, not an artefact. The
+/// dense case is not a problem at all: accepting any key rejects all the others, so it terminates in one
+/// step, which is why the 1000-node full-graph oracle passes.
 ///
 /// **A least-fixed-point rewrite was attempted and is wrong.** It is tempting to compute
 /// `rejected ⊇ ⋃{conflicts(j) : j ∉ rejected}` directly, on the reasoning that every key not rejected is
@@ -255,41 +266,46 @@ where
 /// closure also yields `{0, 1}`. The counter-example is pinned by
 /// `rejection_options_are_not_the_closure` so that the next attempt at this meets it. Any rewrite must
 /// preserve the outcome exactly — the merge result is consensus-visible (law 17) — which means
-/// differential testing against this enumeration, not reasoning about it.
+/// differential testing against a literal enumeration of this search, not reasoning about it. That
+/// differential is `rejection_options_match_a_literal_enumeration` in `sdk/src/property_tests.rs`.
 pub fn compute_rejection_options<D: Ord + Clone>(
     conflicts_map: &BTreeMap<D, BTreeSet<D>>,
 ) -> BTreeSet<BTreeSet<D>> {
     let all_keys: Vec<D> = conflicts_map.keys().cloned().collect();
-    let mut queue: VecDeque<(D, BTreeSet<D>, BTreeSet<D>)> = all_keys
-        .iter()
-        .map(|k| {
-            (
-                k.clone(),
-                BTreeSet::new(),
-                std::iter::once(k.clone()).collect(),
-            )
-        })
-        .collect();
+
+    let mut queue: VecDeque<BTreeSet<D>> = VecDeque::new();
+    let mut expanded: BTreeSet<BTreeSet<D>> = BTreeSet::new();
+    for k in &all_keys {
+        let seed: BTreeSet<D> = std::iter::once(k.clone()).collect();
+        if expanded.insert(seed.clone()) {
+            queue.push_back(seed);
+        }
+    }
     let mut result: BTreeSet<BTreeSet<D>> = BTreeSet::new();
 
-    while let Some((a, rj_acc, ac_acc)) = queue.pop_front() {
-        let mut new_rj = rj_acc.clone();
-        if let Some(c) = conflicts_map.get(&a) {
-            new_rj.extend(c.iter().cloned());
-        }
-        let mut new_ac = ac_acc;
-        new_ac.insert(a.clone());
+    while let Some(accepted) = queue.pop_front() {
+        // Derived, not carried: see the note above. `flat_map` over the missing-key case is the
+        // empty set, which is what the ported `if let Some(c) = conflicts_map.get(&a)` did.
+        let rejected: BTreeSet<D> = accepted
+            .iter()
+            .filter_map(|k| conflicts_map.get(k))
+            .flat_map(|c| c.iter().cloned())
+            .collect();
 
         let next: Vec<D> = all_keys
             .iter()
-            .filter(|k| !new_rj.contains(k) && !new_ac.contains(k))
+            .filter(|k| !rejected.contains(k) && !accepted.contains(k))
             .cloned()
             .collect();
         if next.is_empty() {
-            result.insert(new_rj);
+            result.insert(rejected);
         } else {
             for n in next {
-                queue.push_back((n, new_rj.clone(), new_ac.clone()));
+                let mut grown = accepted.clone();
+                grown.insert(n);
+                if expanded.insert(grown.clone()) {
+                    queue.push_back(grown);
+                }
             }
         }
     }

@@ -5,7 +5,7 @@
 //! these are the randomized half of the evidence, alongside the Lean statements and the unit tests in
 //! `sdk/src/consensus.rs` and `sdk/src/dag/merging.rs`.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use proptest::prelude::*;
 
@@ -29,6 +29,60 @@ fn arb_conflicts() -> impl Strategy<Value = BTreeMap<u8, BTreeSet<u8>>> {
                 edges.contains(&(*a, *b)) || edges.contains(&(*b, *a))
             })
         })
+}
+
+/// A conflict map of **any** shape, up to 7 keys, including the asymmetric ones and the self-conflicts
+/// the merge cannot produce. This is the *differential's* input space, not a claim about the merge:
+/// `resolve_conflict_set` hands the search `full_conflicts_map`, which unions each key's dependencies
+/// into its conflict set, so the shipped input is not necessarily symmetric either. More shapes can
+/// only catch more disagreement between the two implementations.
+fn arb_any_conflicts() -> impl Strategy<Value = BTreeMap<u8, BTreeSet<u8>>> {
+    prop::collection::btree_map(0u8..7, prop::collection::btree_set(0u8..7, 0..4), 0..7)
+}
+
+/// The search **as originally ported from Scala**: each queue entry carries the last-accepted key, the
+/// rejected set accumulated so far, and the accepted set, and it clones both sets on every push. Kept
+/// verbatim as the oracle for [`rejection_options_match_a_literal_enumeration`] — the shipped
+/// implementation must be the *same function*, and the only way to check that is against the literal
+/// enumeration, not against an argument about it (law 17: the merge outcome is consensus-visible).
+fn rejection_options_by_literal_enumeration<D: Ord + Clone>(
+    conflicts_map: &BTreeMap<D, BTreeSet<D>>,
+) -> BTreeSet<BTreeSet<D>> {
+    let all_keys: Vec<D> = conflicts_map.keys().cloned().collect();
+    let mut queue: VecDeque<(D, BTreeSet<D>, BTreeSet<D>)> = all_keys
+        .iter()
+        .map(|k| {
+            (
+                k.clone(),
+                BTreeSet::new(),
+                std::iter::once(k.clone()).collect(),
+            )
+        })
+        .collect();
+    let mut result: BTreeSet<BTreeSet<D>> = BTreeSet::new();
+
+    while let Some((a, rj_acc, ac_acc)) = queue.pop_front() {
+        let mut new_rj = rj_acc.clone();
+        if let Some(c) = conflicts_map.get(&a) {
+            new_rj.extend(c.iter().cloned());
+        }
+        let mut new_ac = ac_acc;
+        new_ac.insert(a.clone());
+
+        let next: Vec<D> = all_keys
+            .iter()
+            .filter(|k| !new_rj.contains(k) && !new_ac.contains(k))
+            .cloned()
+            .collect();
+        if next.is_empty() {
+            result.insert(new_rj);
+        } else {
+            for n in next {
+                queue.push_back((n, new_rj.clone(), new_ac.clone()));
+            }
+        }
+    }
+    result
 }
 
 proptest! {
@@ -128,6 +182,24 @@ proptest! {
                 }
             }
         }
+    }
+
+    /// **The state-dedup is the same function (#117).** `compute_rejection_options` now carries only the
+    /// accepted set through its queue and expands each state once; it used to carry the rejected set too
+    /// and clone both per visit, which re-expanded a state once per *ordering* reaching it — 19,728,200
+    /// expansions for 2,046 states on a 20-chain fork, and the clones are 97 % of the node's live heap at
+    /// its cgroup ceiling. The reduction rests on the claim that `rejected` is always
+    /// `⋃{conflicts(x) : x ∈ accepted}` and so is redundant state. That claim is a proof, and proofs are
+    /// what this project does not accept in place of a check: this is the check, over both the legally
+    /// shaped maps and arbitrary ones, against the literal enumeration.
+    #[test]
+    fn rejection_options_match_a_literal_enumeration(
+        conflicts in prop_oneof![arb_conflicts(), arb_any_conflicts()]
+    ) {
+        prop_assert_eq!(
+            compute_rejection_options(&conflicts),
+            rejection_options_by_literal_enumeration(&conflicts)
+        );
     }
 
     /// With deploys but no conflicts, the only rejection option is the empty set — nothing needs to

@@ -4747,3 +4747,74 @@ author had "corrected" to the wrong mechanism and which then propagated into an 
 verdict as though it were evidence. The corrected record is posted on both; what this pass registers is
 only the two rows above, because the rest are corrections to claims about runs, and a claim about a run
 belongs where the runs are described.
+
+## 28. The merge's rejection search re-expanded a state once per ordering (#117)
+
+§27 named the heap's *owner* — glibc — and could not name the structure inside it, because the
+instrument that names structures needs a clean exit a node at the ceiling does not get. This section
+has one: a jemalloc heap profile dumped **at** the ceiling, triggered the moment the node's own cgroup
+crossed a threshold rather than at exit after it has freed its world
+(`spec/audit/evidence/n117-heap-profile-results.md`). It attributes **97 % of the live heap** to
+`BTreeSet`/`BTreeMap` clones under `rchain_sdk::dag::merging::resolve_conflict_set`, reached from
+`MergeScope::merge` via `get_pre_state_for_parents`, growing 343 -> 881 -> 1488 MiB across three dumps at
+1.5 / 3.0 / 4.6 GiB of live bytes. (`BTreeSet<T>` wraps `BTreeMap<T, ()>`, so a set clone shows as a map
+clone.)
+
+### C177 — the rejected set was carried as state, and it is not state
+
+`resolve_conflict_set` calls `compute_rejection_options` (`sdk/src/dag/merging.rs`), the Scala
+`computeRejectionOptions` port: a BFS whose queue entries each carry the last-accepted key, the rejected
+set, and the accepted set — cloning **two** sets per push. The rejected set is *derivable*: the only way a
+key enters it is as the conflict of an accepted one, so after every step
+`rejected = ⋃{conflicts(x) : x ∈ accepted}`. Carrying it separately does not change what the search
+computes; it changes how many queue entries it takes to compute it, because a state becomes reachable by
+one entry per *ordering* that reaches it.
+
+**The census** (`spec/audit/evidence/n117-rejection-state-census.rs`, the pre-fix search kept verbatim so
+the count can be reproduced) on the shape the node produces — a **fork**, where chains within a branch do
+not conflict and chains across branches conflict completely:
+
+| chains | queue entries pushed | distinct states |
+|---|---|---|
+| 10 | 650 | 62 |
+| 16 | 219,200 | 510 |
+| 20 | **19,728,200** | **2,046** |
+
+Two registers and two cloned sets per entry, at 19.7M entries, is the gigabytes the profile sees. The
+distinct count is exactly `2^(per+1) - 2` — the nonempty subsets of one branch, twice over — so the ratio
+between the columns is the redundancy, and it is factorial in the branch width.
+
+**Fixed by carrying the accepted set alone, which expands each state once.** This is exact, not a
+heuristic, and the argument is short enough to state: the successor set (`all_keys \ (rejected ∪
+accepted)`) and the answer (`rejected` at a terminal state) both depend on the state *only* through
+`accepted`, so skipping a state already expanded cannot remove a reachable answer. Per the rule this
+project holds proofs to, the argument is prose and the check is a test:
+`rejection_options_match_a_literal_enumeration` (`sdk/src/property_tests.rs`) differs the shipped
+function against a **literal transcription of the old search**, over both the legally-shaped maps the
+merge produces and arbitrary maps including the asymmetric ones, since `resolve_conflict_set` unions each
+key's dependencies into its conflict set and so does not hand the search a symmetric map.
+
+**This is not the closure rewrite, and the earlier refutation still stands.** Computing
+`rejected ⊇ ⋃{conflicts(j) : j ∉ rejected}` to a fixed point over-approximates, because a key that has
+been *rejected* can never be accepted afterwards: for `{0: {1}, 1: {0}, 2: {}}` the search yields `{{0},
+{1}}` while the closure also yields `{0, 1}`. That counter-example is pinned by
+`rejection_options_are_not_the_closure` and is untouched by this fix — the enumeration is left exactly
+where it was; only its redundancy moved.
+
+**Measured after** (`sdk/tests/merging_scaling.rs`): 20 chains **11.3 s -> 13.4 ms**; 40 chains, which
+was infeasible to run at all before, completes in **34.6 s at 351 MiB**.
+
+**What this fixes and what it does not.** The *memory* ceiling is gone: 351 MiB is the worst this
+pathological shape reaches, against gigabytes at half the width before, and the node's observed case
+(≈20 chains) is now thousands of states rather than tens of millions. The *time* is not: the reachable
+state count is still `2^(n/2 + 1)`, which is the search's true shape rather than its redundancy, so a fork
+wide enough to matter is still exponential. Bounding that is not a dedup — it is either a direct
+enumeration of the terminal states or a cap on the search, and a cap is a **consensus-visible deviation**
+(law 17: the merge outcome picks the min-cost option *out of these options*). The falsifier stays ignored
+and red for that reason, with its new reading in its doc comment: memory bounded, time not.
+
+C175 — the unbounded ingress queue §27 could not rule out — is not this defect. Its observation half
+landed (`#120`) and the depth reads 0.0 at every sample through a ramp that OOM-kills all three nodes, so
+a drained queue is not what held the memory. The profile and the census agree on which path did.
+
+[#117]: https://github.com/rchain-community/rchain-rust/issues/117
