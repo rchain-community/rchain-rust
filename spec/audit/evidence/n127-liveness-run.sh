@@ -20,6 +20,11 @@ DEPLOY_AT=${DEPLOY_AT:-30}
 DEPLOYS=${DEPLOYS:-4}
 KILL_AT=${KILL_AT:-120}
 DEPLOY_TIMEOUT=${DEPLOY_TIMEOUT:-45}
+# Off by default, so the protocol `n127-liveness-preregistration.md` froze is what runs unchanged. Set it
+# to a T+ offset to deploy **again after the kill**, which is the discriminator between the two readings of
+# a chain that goes quiet once a validator is stopped: "there is nothing left to finalise" (the proposer's
+# documented idle contract, so blocks resume when there is) versus a second stop (they do not).
+DEPLOY_AGAIN_AT=${DEPLOY_AGAIN_AT:-0}
 
 TREE=$(git rev-parse --short HEAD)
 STAMP=$(date -u +%Y%m%dT%H%M%SZ)
@@ -36,7 +41,12 @@ FLAGS="--validators 3 --stakes 100,100,50 --epoch-length 10 --fresh"
   echo "# shape: $FLAGS, cap=$CAP, window=${WINDOW_S}s, kill=validator-2 at T+${KILL_AT}s, attempts=$ATTEMPTS"
   echo "# started $(date -u +%Y-%m-%dT%H:%M:%SZ)"
   echo "# binary_sha256=$(docker run --rm --entrypoint sha256sum rnode:local /usr/local/bin/rnode 2>/dev/null | cut -d' ' -f1 || echo '?')"
-  echo "# rust_diff_vs_80782e184=$([ -n "$(git diff --stat 80782e184 -- '*.rs' 2>/dev/null)" ] && echo 'NON-EMPTY' || echo 'empty')"
+  # **Is the binary under test this tree?** Two facts, both checked rather than asserted: the working tree
+  # is HEAD (a dirty Rust tree means the image may be neither), and when the image was built — which a
+  # reader compares against when this harness was started. The line this replaces named a fixed commit
+  # (`80782e184`) and so answered a question nobody was asking after that commit stopped being the tip.
+  echo "# image_created=$(docker inspect rnode:local --format '{{.Created}}' 2>/dev/null || echo 'none')"
+  echo "# rust_diff_vs_HEAD=$([ -n "$(git diff --stat HEAD -- '*.rs' 2>/dev/null)" ] && echo 'NON-EMPTY — the image may be neither' || echo 'empty — the Rust tree is HEAD')"
 } > "$OUT/manifest.txt"
 cat "$OUT/manifest.txt"
 
@@ -72,6 +82,16 @@ for attempt in $(seq 1 "$ATTEMPTS"); do
   tools/devnet.sh stop 2 >/dev/null 2>&1
   echo "  killed validator-2 at T+$(( $(date +%s) - t0 ))s (target ${KILL_AT}s)"
 
+  if (( DEPLOY_AGAIN_AT > 0 )); then
+    wait_until $((t0 + DEPLOY_AGAIN_AT))
+    again=0
+    for _ in $(seq 1 "$DEPLOYS"); do
+      timeout "$DEPLOY_TIMEOUT" tools/devnet.sh deploy examples/hello.rho >/dev/null 2>&1 \
+        && again=$((again + 1))
+    done
+    echo "  deploys after the kill: $again of $DEPLOYS at T+$(( $(date +%s) - t0 ))s (target ${DEPLOY_AGAIN_AT}s)"
+  fi
+
   wait "$sampler"
 
   # **The node's own reason**, read before the containers go: the stall line now fires on a change of
@@ -88,6 +108,15 @@ for attempt in $(seq 1 "$ATTEMPTS"); do
       "$TREE" "$n" "$attempt" > "$OUT/budget-${n}-a${attempt}.txt"
     docker logs "${CONTAINERS[$n]}" 2>&1 | grep 'exceeded its budget' \
       >> "$OUT/budget-${n}-a${attempt}.txt" || true
+    # **Everything the node said at WARN or above.** The 2026-09-30 run found a chain that stops
+    # proposing once a validator is killed and keeps stopping with four deploys in the pool — and the
+    # proposer logs nothing on the path that suppresses it (`proposer.rs` logs only a self-created block
+    # that fails validation), so the artifact that would explain the halt was never captured. It is here
+    # now: this is the instrument, and the missing log line is the next unit's first change.
+    printf '# provenance: tree=%s node=%s attempt=%s — `docker logs`, WARN and above, verbatim\n' \
+      "$TREE" "$n" "$attempt" > "$OUT/logs-${n}-a${attempt}.txt"
+    docker logs "${CONTAINERS[$n]}" 2>&1 | grep -E ' (WARN|ERROR) ' \
+      >> "$OUT/logs-${n}-a${attempt}.txt" || true
   done
   echo "  stall lines: $(cat "$OUT"/stall-*-a${attempt}.txt 2>/dev/null | grep -vc '^#')"
   tools/devnet.sh down >/dev/null 2>&1
