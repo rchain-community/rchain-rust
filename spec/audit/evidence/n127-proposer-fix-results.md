@@ -44,6 +44,27 @@ pair per node). No stall line carries the support value the two earlier arms pin
 
 ## 0.2 — and the second stop, which this run isolates but does not explain
 
+> **CORRECTION, same day, after one more run: this section is wrong, and the run that found out is the run
+> whose logs are quoted below.** The halt is real and the discriminator stands, but its **cause is the
+> round snapshot's own first version, not a property of a killed validator** — and that version never
+> reached `dev`, so the table below describes the behaviour of a branch, not of the node. What the node
+> said, once node logs were captured:
+>
+> ```text
+> ERROR Self-created block #93 (seq 92) failed validation with internal error: failed to insert block
+>       into DAG: equivocation detected: sender produced two blocks with the same sequence number
+> ```
+>
+> `block_creator.rs:58-75` derives `block_num` and `seq_num` **from the parent set**, so a parent set that
+> omitted the proposer's own newest message made a second proposal in a round reuse its sequence — refused,
+> correctly — after which autopropose halts at three consecutive failures
+> (`node_runtime.rs:1504`) and the chain produces nothing with work available. **Exactly the observed
+> signature, from exactly the change under test.** The fix is the sender's own entry kept current
+> (`parents_for_new_block(sender)`); the falsifier is
+> `a_validator_proposing_twice_in_one_round_keeps_its_sequence`, observed red without it and failing with
+> the node's own sentence. C186 is `done` and says so. **Read the rest of this section as the record of a
+> defect this branch introduced and the logs found — which is what the log capture was added for.**
+
 **The chain stops when a validator is killed, in every attempt, and it stops immediately** — height 76 → 77,
 94 → 95, 109 → 109 across the 180 seconds after the kill, with both survivors alive and serving.
 

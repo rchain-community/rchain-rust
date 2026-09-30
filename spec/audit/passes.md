@@ -5417,3 +5417,35 @@ is the class this register keeps finding (C176).
 - **A mixed network is untested.** §6's classification — an unpatched node accepts a patched node's blocks —
   is argued from the validation rules and not measured, and a patched node beside an unpatched one is the
   measurement that would test it.
+
+### §36 correction (2026-09-30, same day): the second stop was this branch's own bug
+
+**The halt is real, the discriminator stands, and the cause was the round snapshot's first version — not a
+property of a killed validator.** One more run captured node logs at WARN and above, and the node said what
+it had been unable to say:
+
+```text
+ERROR Self-created block #93 (seq 92) failed validation with internal error: failed to insert block into
+      DAG: equivocation detected: sender produced two blocks with the same sequence number
+```
+
+`block_creator.rs:58-75` derives **both** the new block's `block_num` and its `seq_num` **from the parent
+set**, so the first version of `parents_for_new_block` — a cross-sender snapshot that omitted the proposer's
+own newest message — made a second proposal in a round reuse its `(sender, seq_num)`. The DAG refused it,
+correctly, three times, and `consecutive_failures >= AUTOPROPOSE_MAX_CONSECUTIVE_FAILURES` broke the
+autopropose timer (`node_runtime.rs:1504`). Nothing produced, work available. That is the whole signature.
+
+**The fix and its falsifier.** `parents_for_new_block(sender)` keeps the sender's own entry current; the
+first block of a round is unaffected, because the sender's newest *is* the snapshot's entry, so the
+cross-sender snapshot the gate needs is untouched.
+`a_validator_proposing_twice_in_one_round_keeps_its_sequence` derives its `seq_num` and `block_num` the way
+the block creator does and proposes twice from one validator inside a round — **observed red with the
+substitution disabled**, failing with the node's own sentence. C186 is `done` and rewritten to what it
+actually is.
+
+**The lesson is the one worth carrying, and it is not about this fix.** Three fixtures and a policy
+comparison all agreed the chain was linked while the node disagreed, because every one of them supplied its
+own `sender_seq` and `create_msg_and_update_sender` takes its `seq_num` from `latest_msgs` rather than from
+the parent set. **A fixture that owns the counter it is testing cannot test the rule that computes it** —
+and the instrument that found it was not a better fixture but a log capture, added one commit earlier for a
+different reason.
