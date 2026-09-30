@@ -63,6 +63,10 @@ pub enum CheckProposeConstraintsResult {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum BlockCreatorResult {
     NoNewDeploys,
+    /// This validator has already produced a block since the last round boundary, and a second one in the
+    /// same round would equivocate against itself — see `DagMessageState::has_advanced_past_the_round`. The
+    /// proposer takes this only while the round can still close; past `LIVENESS_WINDOW` attempts it escapes.
+    AlreadyProposedThisRound,
     Created(BlockMessage),
 }
 

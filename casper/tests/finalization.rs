@@ -836,11 +836,27 @@ fn the_round_closes_when_a_validator_goes_quiet_inside_the_window() {
     let genesis = st.create_message(id(255, 0), h(0), g, s(0), bonds.clone(), &BTreeSet::new());
     let mut state = st.insert_msg(&genesis);
 
-    let propose = |state: &DagMessageState<BlockHash, Validator>, who: usize, step: i64| {
+    let mut declined_since_advance = 0i64;
+    let mut propose = |state: &DagMessageState<BlockHash, Validator>, who: usize, step: i64| {
         let v = vs[who].clone();
-        // The library's rule, not a copy of it: the round snapshot, with the sender's own entry replaced
-        // by its newest message for the one proposal that has already spoken this round.
-        let parents: BTreeSet<_> = state.parents_for_new_block(&v);
+        // **The proposer's rule, mirrored from `proposer.rs`**: refuse while the round can still close, and
+        // take the escape only after `LIVENESS_WINDOW` consecutive declines. The clock is local on purpose —
+        // every DAG-derived clock here is measured from a tip the refusal freezes.
+        let escaping = if state.has_advanced_past_the_round(&v) {
+            declined_since_advance += 1;
+            if declined_since_advance <= rchain_block_storage::dag::liveness::LIVENESS_WINDOW {
+                return None;
+            }
+            true
+        } else {
+            declined_since_advance = 0;
+            false
+        };
+        let parents: BTreeSet<_> = if escaping {
+            state.parents_for_new_block_escaping(&v)
+        } else {
+            state.parents_for_new_block()
+        };
         let block_num = parents
             .iter()
             .map(|m| m.height)
@@ -954,7 +970,7 @@ fn a_second_proposal_in_a_round_keeps_its_sequence() {
         // One full round, so `vs[0]` is a validator that has already spoken this round.
         for (who, step) in [0usize, 1, 2].into_iter().enumerate() {
             let v = vs[who].clone();
-            let parents = state.parents_for_new_block(&v);
+            let parents = state.parents_for_new_block();
             let seq = parents
                 .iter()
                 .find(|m| m.sender == v)
@@ -975,7 +991,7 @@ fn a_second_proposal_in_a_round_keeps_its_sequence() {
         let mut seqs = Vec::new();
         for step in 0..2 {
             let parents: std::collections::BTreeSet<_> = if use_library {
-                state.parents_for_new_block(&v)
+                state.parents_for_new_block_escaping(&v)
             } else {
                 // The control: the pure snapshot, which is what the first version of the parent set was.
                 state.round_parents.values().cloned().collect()

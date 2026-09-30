@@ -195,6 +195,15 @@ impl Proposer {
                 },
                 None,
             )),
+            // Not a failure and not counted as one: the validator is not due yet, and the round closes as
+            // soon as the other bonded senders have advanced — or, after `LIVENESS_WINDOW` attempts, the
+            // escape is taken rather than waiting for ever.
+            BlockCreatorResult::AlreadyProposedThisRound => Ok((
+                ProposeResult {
+                    propose_status: ProposeStatus::NotEnoughNewBlocks,
+                },
+                None,
+            )),
             BlockCreatorResult::Created(block) => match (self.validate_block)(&block).await {
                 Ok(()) => {
                     self.consecutive_failures.store(0, Ordering::Relaxed);
@@ -343,6 +352,11 @@ impl Proposer {
             let block_index = block_index.clone();
             let shard_id = shard_id.clone();
             let dummy_deploy_opt = dummy_deploy_opt.clone();
+            // **How many proposals this validator has declined waiting for the round to close.** Local to
+            // the proposer on purpose: the round's own clock is DAG-derived and measured from a tip that a
+            // refusal freezes, so it cannot say when the wait has gone on too long. This can.
+            let blocked_since_advance: Arc<std::sync::atomic::AtomicI64> =
+                Arc::new(std::sync::atomic::AtomicI64::new(0));
             Arc::new(move |vi: &ValidatorIdentity| {
                 let runtime = runtime.clone();
                 let dag = dag.clone();
@@ -350,6 +364,7 @@ impl Proposer {
                 let block_index = block_index.clone();
                 let vi = vi.clone();
                 let shard_id = shard_id.clone();
+                let blocked_since_advance = blocked_since_advance.clone();
                 let dummy_deploy_opt = dummy_deploy_opt.clone();
                 Box::pin(async move {
                     create_block(
@@ -361,6 +376,7 @@ impl Proposer {
                         &shard_id,
                         epoch_length,
                         dummy_deploy_opt.as_ref(),
+                        &blocked_since_advance,
                     )
                     .await
                 })
@@ -498,6 +514,7 @@ async fn create_block<'a, F, Fut>(
     shard_id: &str,
     epoch_length: i32,
     dummy_deploy_opt: Option<&(PrivateKey, String)>,
+    blocked_since_advance: &std::sync::atomic::AtomicI64,
 ) -> Result<BlockCreatorResult, String>
 where
     F: Fn(BlockHash) -> Fut + Sync,
@@ -505,12 +522,36 @@ where
 {
     let creators_validator_for_parents =
         Validator::from_slice(validator_identity.public_key.bytes());
+    // **One block per validator per round, with a way out.** Every validator enforces the rule the numbers
+    // imply: `validate.rs:236` requires `max(justifications) + 1 == block_number` and `:259` requires
+    // `creator_latest_seq + 1 == seq_num`, so a second proposal against the same snapshot is an
+    // equivocation. Refusing for ever deadlocks a round whose quiet sender cannot age out — the round's
+    // clock is measured from a tip the refusal freezes — so the wait is bounded here, and past
+    // `LIVENESS_WINDOW` attempts the escape below is taken rather than waiting for ever.
+    let escape = {
+        let dag_repr = dag.get_representation().await;
+        if dag_repr
+            .dag_message_state
+            .has_advanced_past_the_round(&creators_validator_for_parents)
+        {
+            let waited =
+                blocked_since_advance.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+            if waited <= rchain_block_storage::dag::liveness::LIVENESS_WINDOW {
+                return Ok(BlockCreatorResult::AlreadyProposedThisRound);
+            }
+            true
+        } else {
+            blocked_since_advance.store(0, std::sync::atomic::Ordering::Relaxed);
+            false
+        }
+    };
     let pre_state = get_pre_state_for_new_block(
         dag,
         block_store,
         runtime,
         block_index,
         &creators_validator_for_parents,
+        escape,
     )
     .await?;
     let pre_state_hash = pre_state.pre_state_hash;

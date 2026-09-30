@@ -120,45 +120,59 @@ where
         }
     }
 
-    /// **The parent set for a new block by `sender`** — the round snapshot, with one exception.
+    /// **The parent set for a new block** — the pure round snapshot, which is what the fringe gate can
+    /// advance on.
     ///
-    /// **The ordinary case is the pure snapshot**, because that is what the fringe gate can advance on. The
-    /// exception is a validator that has **already spoken this round**: its own entry in the snapshot is its
-    /// *previous* message, and `block_creator.rs:58-75` derives both `block_num` and `seq_num` from this set,
-    /// so a second proposal against the pure snapshot reuses its `(sender, seq_num)` and the DAG refuses the
-    /// block as an equivocation. For that one proposal the sender's own entry is **replaced** by its newest
-    /// message, which keeps the numbers monotone.
+    /// Unconditional, and it has to be. A validator must not propose twice inside one round, because
+    /// `block_creator.rs:58-75` derives `block_num` and `seq_num` from this set and **every validator checks
+    /// both against it** — `validate.rs:236` requires `max(justifications) + 1 == block_number` and `:259`
+    /// requires `creator_latest_seq + 1 == seq_num`, so a second proposal against the same snapshot is
+    /// refused as an equivocation, correctly. The proposer is what enforces the rule
+    /// ([`Self::has_advanced_past_the_round`]); this function stays pure so that every proposal that is
+    /// admitted has the parents the gate wants.
+    pub fn parents_for_new_block(&self) -> BTreeSet<Message<M, S>> {
+        if self.round_parents.is_empty() {
+            return self.latest_msgs.values().cloned().collect();
+        }
+        self.round_parents.values().cloned().collect()
+    }
+
+    /// **[`Self::parents_for_new_block`] with the sender's own entry replaced by its newest message** — the
+    /// escape, for a proposer that has already spoken this round and has been waiting past
+    /// [`super::liveness::LIVENESS_WINDOW`] attempts for the round to close.
     ///
-    /// **Replaced, not added.** A parent set carrying two messages from one sender makes the block creator's
-    /// `find(|m| m.sender == me)` ambiguous, and it picks the older one — so the numbers stop advancing and
-    /// the tip freezes however many proposals are admitted. Measured; one entry per sender, always.
+    /// It exists because refusing has no way out. The round closes only when every bonded sender has
+    /// advanced past the boundary, a quiet sender stops holding it back only once `LIVENESS_WINDOW` heights
+    /// have passed above its last message, and that is measured from the tip — which a refusal freezes. So a
+    /// validator killed while inside the window is never retired and the round never closes: measured on the
+    /// node (flat height for the whole window after a kill, no error) and in-process
+    /// (`the_round_closes_when_a_validator_goes_quiet_inside_the_window`). This parent set moves the tip, so
+    /// the window ages the quiet sender out and the round closes on its own — and the next proposal is an
+    /// ordinary one again.
     ///
-    /// **Why an exception rather than a refusal.** Refusing a second proposal deadlocks: the round closes
-    /// only when every bonded sender has advanced past the boundary, a quiet sender stops holding it back
-    /// only once [`super::liveness::LIVENESS_WINDOW`] heights have passed above its last message, and that is
-    /// measured from the tip — which a refusal freezes. A validator killed while inside the window is then
-    /// never retired and the round never closes. Measured on the node (flat height for the whole window
-    /// after a kill, no error) and in-process (`the_round_closes_when_a_validator_goes_quiet_inside_the_window`).
-    /// An exception has no such clock: the tip moves, the window ages out the quiet sender, the round closes,
-    /// and the next proposal is an ordinary one again.
-    pub fn parents_for_new_block(&self, sender: &S) -> BTreeSet<Message<M, S>> {
+    /// **It may not advance the fringe, and that is the accepted cost.** It is taken only after the
+    /// `LIVENESS_WINDOW`-attempt wait, so in a healthy round it is never taken at all; the rate matters more
+    /// than this block's own finality, because a chain that cannot move cannot finalise anything.
+    ///
+    /// Replaced, not added: a parent set with two messages from one sender makes the block creator's
+    /// `find(|m| m.sender == me)` ambiguous, it picks the older one, and the tip freezes with the numbers
+    /// stuck — measured, and the reason the first version of this escape admitted 74 proposals to a tip that
+    /// never left 2.
+    pub fn parents_for_new_block_escaping(&self, sender: &S) -> BTreeSet<Message<M, S>> {
         if self.round_parents.is_empty() {
             return self.latest_msgs.values().cloned().collect();
         }
         let mut parents = self.round_parents.clone();
-        if self.has_advanced_past_the_round(sender) {
-            if let Some(mine) = self.latest_msgs.get(sender) {
-                parents.insert(sender.clone(), mine.clone());
-            }
+        if let Some(mine) = self.latest_msgs.get(sender) {
+            parents.insert(sender.clone(), mine.clone());
         }
         parents.values().cloned().collect()
     }
 
-    /// **Whether `sender` has already produced a block since the last round boundary** — the case
-    /// [`Self::parents_for_new_block`] carries its own newest message for.
+    /// **Whether `sender` has already produced a block since the last round boundary** — and so must not
+    /// propose again until the round closes, on pain of equivocating with itself.
     ///
-    /// Not a veto. It was one, and the refusal deadlocked a round whose quiet sender could not age out; the
-    /// doc on `parents_for_new_block` has the measurement.
+    /// The proposer's veto, not this module's: the escape above is what keeps the veto from deadlocking.
     pub fn has_advanced_past_the_round(&self, sender: &S) -> bool {
         !self.round_parents.is_empty()
             && self
@@ -294,7 +308,7 @@ where
             .map(|m| m.sender_seq)
             .unwrap_or_else(SeqNum::zero);
         let new_seq_num = seq_num + NonNegI64::one();
-        let justifications: BTreeSet<Message<M, S>> = self.parents_for_new_block(creator);
+        let justifications: BTreeSet<Message<M, S>> = self.parents_for_new_block();
         let bonds_map = self
             .latest_msgs
             .values()
