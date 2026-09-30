@@ -35,7 +35,8 @@ use rchain_rspace::native_store::NativeStoreAction;
 use rchain_rspace::trace::event::{Event as REvent, Produce};
 use rchain_sdk::dag::merging::{
     compute_dependency_map, compute_greedy_non_intersecting_branches,
-    compute_relation_map_for_merge_set, resolve_conflict_set_with_census, SearchCensus,
+    compute_relation_map_for_merge_set, resolve_conflict_set_with_census, SearchBudget,
+    SearchCensus,
 };
 use rchain_shared::refined::NonNegI64;
 use rchain_shared::serialize::Serialize;
@@ -1247,7 +1248,21 @@ impl MergeScope {
             &dependency_map,
             &mergeable_diffs_map,
             &init_mergeable_values,
-        );
+            // **The bound, and where its refusal goes.** `SearchBudget::NODE` is node-local policy, not
+            // a protocol constant: an exceeded search returns **no answer**, this refuses the merge, and
+            // the `Err` travels as `String` to `ValidateError::Internal` — a *drop*, which is the same
+            // class as a missing dependency. It must never become `mark_failed_attributable`: nothing
+            // clears that record, so a budget would otherwise estrange a node from a proposer for ever
+            // (C173), turning a local resource policy into a permanent wedge. Every node that does run
+            // the search interior its budget gets the identical answer.
+            SearchBudget::NODE,
+        )
+        .map_err(|e| {
+            format!(
+                "merge search exceeded its budget ({} steps, {} options, budget {} steps / {} options):                  refused locally rather than answered from a partial enumeration",
+                e.steps, e.options, e.budget.max_steps, e.budget.max_options
+            )
+        })?;
         // #117's instrument: what this merge handed the search. See `search_census`.
         search_census::record(&search);
         let (to_merge, rejected) =
