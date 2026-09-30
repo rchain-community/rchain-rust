@@ -51,4 +51,9 @@ RUST_TEST_THREADS = "10"
 # makes `Allocated` (live) readable against `resident` at the ceiling. This is the bound on #117
 # (`casper/tests/memory_retention.rs` is its falsifier; the defect it answers is glibc's per-thread arena
 # retention, see `spec/audit/passes.md` §27).
-JEMALLOC_SYS_WITH_MALLOC_CONF = "background_thread:true,dirty_decay_ms:0,muzzy_decay_ms:0,retain:false"
+# `stats_print:true,stats_print_opts:g` is instrumentation for #117, compiled in rather than passed at
+# runtime so that the artifact under test *is* the artifact, with nothing injected by the operator and no
+# environment variable to be mis-parsed — a failure mode this work has already hit once, when
+# `DEVNET_NODE_ENV` split a comma-containing `MALLOC_CONF` into fragments. It costs one block on stderr at
+# process exit, after the measurement point, so it cannot perturb a run. Remove it when #117 closes.
+JEMALLOC_SYS_WITH_MALLOC_CONF = "background_thread:true,dirty_decay_ms:0,muzzy_decay_ms:0,retain:false,stats_print:true,stats_print_opts:g"
