@@ -47,7 +47,22 @@ dhat-heap = ["dep:dhat"]
 # The node's allocator on Linux: jemalloc, with the background purge thread configured in `src/main.rs`.
 # See the comment on the `#[global_allocator]` there — this is the bound on #117, where glibc's per-thread
 # arena retention let a node reach its cgroup ceiling with a live heap in the tens of MiB.
-tikv-jemallocator = "0.7"
+#
+# `stats` is what makes the allocator able to answer the question #117 turned on, and it is not optional
+# decoration: `tikv-jemalloc-sys` passes `--enable-stats` **only** when this feature is on, so without it
+# jemalloc silently has no accounting at all — `stats_print:true` prints its configuration echo and then
+# no numbers, and `stats.allocated` does not exist to be read. That is how two profiling attempts failed
+# with a *plausible-looking* absence of data rather than an error: `prof:true` is likewise ignored here
+# (the `profiling` feature would be needed, and it is deliberately not enabled — see below), so an
+# instrument that was never compiled in was read as an instrument that caught nothing. With `stats` on,
+# `MALLOC_CONF=stats_print:true,stats_print_opts:g` reports `Allocated` (live), `active`, `metadata`,
+# `resident`, `mapped` and `retained` at exit, which is the live-versus-held split no other instrument in
+# the tree can produce.
+#
+# `profiling` is **not** enabled: it costs a per-allocation sampled unwinding, and the point of the
+# measurement is to not perturb the timing that the defect depends on. Add it only when a heap dump is
+# actually wanted, and record the build flags with the artifact when it is (register C176).
+tikv-jemallocator = { version = "0.7", features = ["stats"] }
 
 [dev-dependencies]
 
