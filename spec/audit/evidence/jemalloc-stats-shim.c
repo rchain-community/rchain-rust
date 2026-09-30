@@ -86,6 +86,68 @@ static long long read_stat(const char *name) {
     return (long long)v;
 }
 
+/* This process's own cgroup, in MiB, or -1. Read here rather than by an orchestrator so the dump lands at
+ * the instant the ceiling is approached and not one sampling interval later. cgroup v2 first, then v1. */
+static long long own_cgroup_anon_mib(void) {
+    FILE *f = fopen("/sys/fs/cgroup/memory.stat", "r");
+    if (f != NULL) {
+        char key[64];
+        long long val;
+        while (fscanf(f, "%63s %lld", key, &val) == 2) {
+            if (strcmp(key, "anon") == 0) {
+                fclose(f);
+                return val / 1048576;
+            }
+        }
+        fclose(f);
+    }
+    f = fopen("/sys/fs/cgroup/memory/memory.usage_in_bytes", "r");
+    if (f != NULL) {
+        long long v = -1;
+        if (fscanf(f, "%lld", &v) != 1) {
+            v = -1;
+        }
+        fclose(f);
+        return v < 0 ? -1 : v / 1048576;
+    }
+    return -1;
+}
+
+/* Write a heap dump **at the moment of interest**. `prof_final` and `stats_print` both write at process
+ * exit, after the node has freed its world — measured: a node stopped cleanly with 3258 MiB of `anon`
+ * printed `Allocated: 2.9 MiB`. This is the only trigger that reads the live set at the ceiling. */
+static int dump_if_triggered(FILE *out, long long threshold_mib, long long step_mib) {
+    /* Fires at `threshold`, then every `step` MiB above it, so the profile names what dominates at several
+     * sizes rather than at one arbitrary moment. A trigger file (JEMALLOC_DUMP_TRIGGER) forces one dump. */
+    static int file_fired = 0;
+    static long long next_mib = 0;
+    if (ctl == NULL) {
+        return 0;
+    }
+    if (next_mib == 0) {
+        next_mib = threshold_mib;
+    }
+    const char *trigger = getenv("JEMALLOC_DUMP_TRIGGER");
+    int fire = 0;
+    long long anon = own_cgroup_anon_mib();
+    if (trigger != NULL && !file_fired && access(trigger, F_OK) == 0) {
+        fire = 1;
+        file_fired = 1;
+    }
+    if (threshold_mib > 0 && anon >= next_mib) {
+        fire = 1;
+        next_mib = anon + (step_mib > 0 ? step_mib : threshold_mib);
+    }
+    if (!fire) {
+        return 0;
+    }
+    int rc = ctl("prof.dump", NULL, NULL, NULL, 0);
+    fprintf(out, "# PROF_DUMP rc=%d anon_mib=%lld alloc_mib=%lld resident_mib=%lld\n", rc, anon,
+            read_stat("stats.allocated") / 1048576, read_stat("stats.resident") / 1048576);
+    fflush(out);
+    return 1;
+}
+
 /* Options must be read into a buffer of the option's *native* type: jemalloc writes the value and then
  * returns EINVAL if the length supplied did not match — so reading a `bool` into a `size_t` yields the
  * right byte and a non-zero return, which a `!= 0` check turns into a confident -1. Measured: every
@@ -117,6 +179,41 @@ static long long opt_ssize(const char *name) {
     return v;
 }
 
+/* The executable's load base, from /proc/self/maps, as a hex address.
+ *
+ * The release binary is PIE (`Type: DYN`), so every address jemalloc records in a `prof.dump` is a runtime
+ * address and symbolising it needs the base — which cannot be recovered afterwards because the process is
+ * gone by the time the dump is analysed. Recording it here is what makes the dump readable at all. */
+static unsigned long long exe_load_base(void) {
+    char exe[512];
+    ssize_t n = readlink("/proc/self/exe", exe, sizeof(exe) - 1);
+    if (n <= 0) {
+        return 0;
+    }
+    exe[n] = '\0';
+    FILE *m = fopen("/proc/self/maps", "r");
+    if (m == NULL) {
+        return 0;
+    }
+    char line[1024];
+    unsigned long long base = 0;
+    while (fgets(line, sizeof(line), m) != NULL) {
+        /* The first mapping whose pathname is the executable is its base. Matched on the tail of the path
+         * so that a chroot or container prefix does not defeat it. */
+        const char *slash = strrchr(exe, '/');
+        const char *tail = slash != NULL ? slash + 1 : exe;
+        if (strstr(line, tail) != NULL && strchr(line, '/') != NULL) {
+            unsigned long long start = 0;
+            if (sscanf(line, "%llx-", &start) == 1) {
+                base = start;
+            }
+            break;
+        }
+    }
+    fclose(m);
+    return base;
+}
+
 static void write_header(FILE *out) {
     /* The version is reported only if the call succeeds; "(unavailable)" otherwise. An artifact header
      * that misreports what it measured is the defect the register carries as C176, and the first version
@@ -136,12 +233,14 @@ static void write_header(FILE *out) {
             "#   opt.retain=%d opt.background_thread=%d opt.dirty_decay_ms=%lld opt.muzzy_decay_ms=%lld "
             "opt.narenas=%lld arenas.narenas=%lld\n"
             "#   _RJEM_MALLOC_CONF=%s\n"
+            "# exe_base=0x%llx (subtract from any prof.dump address before symbolising: the binary is PIE)\n"
             "# columns: utc allocated_bytes active_bytes resident_bytes mapped_bytes retained_bytes metadata_bytes\n",
             ctl_symbol, ver,
             opt_bool("opt.retain"), opt_bool("opt.background_thread"),
             opt_ssize("opt.dirty_decay_ms"), opt_ssize("opt.muzzy_decay_ms"),
             opt_u32("opt.narenas"), opt_u32("arenas.narenas"),
-            getenv("_RJEM_MALLOC_CONF") ? getenv("_RJEM_MALLOC_CONF") : "(unset)");
+            getenv("_RJEM_MALLOC_CONF") ? getenv("_RJEM_MALLOC_CONF") : "(unset)",
+            exe_load_base());
     fflush(out);
 }
 
@@ -162,6 +261,10 @@ static void *report_forever(void *unused) {
         fflush(out);
         return NULL;
     }
+    const char *thr = getenv("JEMALLOC_DUMP_ANON_MIB");
+    const char *stp = getenv("JEMALLOC_DUMP_STEP_MIB");
+    long long threshold_mib = thr != NULL ? atoll(thr) : 0;
+    long long step_mib = stp != NULL ? atoll(stp) : threshold_mib;
     for (;;) {
         struct timespec now;
         advance_epoch();
@@ -172,6 +275,7 @@ static void *report_forever(void *unused) {
                 read_stat("stats.resident"), read_stat("stats.mapped"),
                 read_stat("stats.retained"), read_stat("stats.metadata"));
         fflush(out);
+        dump_if_triggered(out, threshold_mib, step_mib);
         sleep(1);
     }
     return NULL;
