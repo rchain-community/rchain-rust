@@ -4899,3 +4899,51 @@ landed (`#120`) and the depth reads 0.0 at every sample through a ramp that OOM-
 a drained queue is not what held the memory. The profile and the census agree on which path did.
 
 [#117]: https://github.com/rchain-community/rchain-rust/issues/117
+
+## 29. The tracker consolidated onto the register's causes — and the rule that says which issues can close
+
+Nine issues were open and tracked by symptom. Six of them already opened with a classification naming
+their shape or cause in laws 51–54's vocabulary — the previous pass put those there — and each then sat in
+the tracker as its own incident. This section records the consolidation, because it produced two rows
+(C180, C181) and because its first attempt was **wrong in a way worth stating**.
+
+### What was done
+
+Three cause-issues now hold the classes, each founded on clauses that are `proved-model`:
+
+- **`Terminal`** — law 51a's shape, with 53a as its Casper instance (`#102` closed into it; `#105`'s
+  estrangement strand linked, the issue itself kept open for its `Split` divergence).
+- **The liveness path** — 52b/52a/51a/54a (`#70` linked, not closed: its `Closes when` has three conjuncts
+  and none is met).
+- **Unbounded work per step** — the class with *no* law; **C180** proposes `candidate:bounded-work-per-step`
+  (`#117` and `#68` linked, both open).
+
+`#71` closed into `#99` rather than into `Terminal`, because its writability half landed and what remains is
+a naming defect that thread's design already owns. `#99`, `#98` and `#51` stay open untouched: a design, a
+portability boundary, and a tracker.
+
+### The rule the first attempt got wrong
+
+**An issue closes into a successor only when the successor owns the issue's *unmet* close condition.**
+Five issues were closed in the first pass; **four were reopened**, because their conditions name work no
+successor held: #105's `InvalidStateHash` divergence is undiagnosed and has no other home; #70's second
+stop, once its discriminator was built, was never read; #68's condition is a re-measurement it can satisfy
+by itself, and closing it into a class decision made a measurable task depend on a consensus change. The
+successors now carry each open condition **verbatim**, and the members stay open until they are met. The
+alternative — a tidy tracker with four untrue `NOT_PLANNED` closures — is the same defect class as the rest
+of this pass: an artifact saying something the evidence does not.
+
+### The vocabulary that would have been lost
+
+`candidate:` slugs live in the register's `laws` column and, until this pass, in issue prose alone. Closing
+#102 into `Terminal` would have deleted `candidate:lfs-sync-recovery` with it, so **C181** files it — the
+latched sync attempt, its two `NodeSyncing` tests, and the recovery path it owes. The other four
+(`candidate:inactivity-leak`, `candidate:rooted-namespace`, `candidate:startup-rebuild-envelope`,
+`candidate:host-supplied-clock`) stay where they are, on issues that remain open.
+
+### And a register row corrected in passing
+
+**C68** is `done` on the *other* fault of the LFS thread — a failed sync wrongly signalling the node out of
+syncing — and its `evidence` names two tests that assert the node **stays** in `NodeSyncing` after a
+failure. That is the residual defect, not a contract: a recovery rule changes exactly those assertions, so
+C68's row now says they are the tests the fix must replace.
