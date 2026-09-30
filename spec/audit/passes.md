@@ -5268,3 +5268,69 @@ mostly never reaches its quorum test. Two mechanisms produce that and want diffe
 *every* live seer has seen *every* next-layer message, and `calculate_next_fringe_support_map` resolving
 `mv.parents` through the full `msg_map` (`finalizer.rs:185-193`) so a non-live sender can land in a `seen_by`
 value. C185's `owes` names the fixture that separates them, and it is unchanged.
+
+## 35. The pin is the parent set the proposer builds, and the file said so all along (C185, #126)
+
+§34 left the mechanism unestablished and named three candidates. The in-process fixture it asked for was
+built (`the_dag_the_nodes_own_proposer_builds_cannot_advance_the_fringe`), and it settles which — by
+**driving the production entry point** rather than modelling it.
+
+### The measurement
+
+Three validators at the devnet's own `100/100/50`, all live, no kill, no stopped validator, 60 blocks
+through `DagMessageState::create_msg_and_update_sender` — the call the block creator makes:
+
+```
+Support { supporting: 0, total: 250, full_partitions: 0, candidates: 2 }
+```
+
+`supporting: 0` is **not a stake shortfall**: `calculate_fringe` sums the stake of the candidates whose
+`seen_by` values all equal the live partition, and no candidate qualifies, so the numerator is zero *before*
+the quorum is consulted. The live set is all three validators, asserted in the fixture.
+
+### Why, and what the gate is actually asking for
+
+`create_msg_and_update_sender` sets a block's height to `max(latest_msgs) + 1` and justifies **every**
+`latest_msgs` entry, one per sender. The chain is therefore *totally connected* — every block sees every
+validator's most recent block. `calculate_next_fringe_support_map` builds each candidate's `seen_by` from
+`mv.parents ∖ next_layer`: the justifications **beyond** the candidate next layer. A block whose
+justifications *are* the next layer credits nobody with having seen it, so the mover at the head of each
+round has an empty remainder and the later movers have seen a prefix, never the whole partition.
+
+**So the shape this gate accepts is the fork** that the other four tests in that file construct — and a
+proposer justifying `latest_msgs` never builds one. This is not a defect in the arithmetic, in the live
+window, or in `inPartition`; the rule and the proposer ask for different DAGs.
+
+### The sentence that was already there
+
+`casper/tests/finalization.rs`'s module header, since the file was written: *"The `Finalizer` only advances
+the fringe on a **fork** structure ... so a lockstep DAG — which the full block pipeline's `latest_msgs`
+proposer always produces, and which the Scala `MultiParentCasperFinalizationSpec` round-robin scenario built
+— never finalizes. That Scala spec is itself `ignore`d."* The mechanism was documented, in the file, the
+whole time. What had never been done is connect it to a devnet's stalled finality — which is what §31–§34
+were chasing, through three devnet runs and a fixed derivation, at a gate whose input the node never
+produces.
+
+### Corrections this forces
+
+- §34's *"`150 = 100 + 50`: the bootstrap's stake plus the killed validator's"* — retracted there, and the
+  reason is sharper here: **10 of the instrumented run's `150 of 250` lines are pre-kill.**
+- C185's three named candidates ("whether the stale sender enters `live_weight_set`, or the support map is
+  keyed on a set the derivation no longer uses, or the two sides disagree after `inPartition`") — **none of
+  them**. The live set is correct, the map's keys are correct, and the two sides agree.
+- The stall line's dominant form, `0 of 250 (0 full partition(s) among N candidate(s))`, is exactly this
+  shape. With `N = 0` — the campaign's line on all three nodes in all three attempts — the support map
+  never got built at all. `NoAdvance::Support`'s doc reads "a layer exists whose candidates were seen by the
+  whole partition, but the stake behind them is not a supermajority", which describes neither case.
+
+### What it does not settle, and this is the decision
+
+Two corrections are available and they are **not** equivalent:
+
+| | what changes | a fork? |
+|---|---|---|
+| **the proposer's parent set** — build the fork the gate wants, instead of `latest_msgs` | which blocks a node *makes*. `latest_msgs` is a proposer heuristic, not a validity rule, and a block justifying a stale set is accepted by every existing check | **no** — an unpatched node accepts a patched node's blocks |
+| **the gate's seeing relation** — count a candidate's *direct* justification of a next-layer message as having seen it, instead of only the ancestry past that layer | which fringe every node *agrees*. It moves the merge base and every block hash after it | **yes** — §6 row, #51 category A |
+
+The fixture is written to pin the defect, so it is the falsifier's premise for either: corrected, it fails,
+and the fix inverts it to assert that the derivation publishes a fringe on the chain the proposer builds.
