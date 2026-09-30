@@ -112,9 +112,41 @@ bad_law="$(printf '%s\n' "$rows" | awk -F'\t' -v known="$laws_known" '
 # or never written -- the class pass 9 found three of (C152, C153, C154). One pass over the tracked
 # tree, ~1.5 s, 22,878 identifiers. `legacy/` and the generated `docs/book/` are excluded: a name that
 # only exists in the unported Scala is not evidence that the port holds the fix.
+#
+# **Three ways this check was a tautology, all three repaired together**, because fixing any one alone
+# still passes on a cell that resolves to nothing:
+#
+#   1. **It indexed its own source of truth.** The tokens are read *out of* `spec/findings.tsv`, so
+#      including that file here made every token resolve against its own cell. `spec/AUDIT.md` is the
+#      rendered form of the same cells. Both are excluded.
+#   2. **It read the working tree, not the commit.** `git ls-files | xargs grep` greps the *files on
+#      disk*, so a test that has never been committed resolves — which is how C182's guard came to be
+#      cited while it lived only in an uncommitted edit. `git grep HEAD` reads the committed blobs.
+#   3. **Any mention satisfied it.** The subject is "does this identifier occur anywhere in the tree",
+#      and a *prose mention* is an occurrence. The first draft of this very comment contained the
+#      underscored form of a filename and so kept its row green — which is the check failing on the case
+#      it exists for, demonstrated by the person fixing it. Hence no identifier in this comment.
+#
+# What the check now means, honestly: *the named identifier exists in the committed tree somewhere* —
+# not that it names the right thing, not that it is a definition, and not that the file still exists
+# under that name. It catches a renamed or deleted symbol; it does not catch a wrong reference.
 tree_ids="$(mktemp)"
-git -C "$ROOT" ls-files 2>/dev/null | grep -vE '^(legacy/|docs/book/|target/)' \
-  | xargs -r grep -hoE '[A-Za-z_][A-Za-z0-9_]{5,}' 2>/dev/null | sort -u > "$tree_ids"
+{
+  # Symbols *inside* the sources that can hold a fix.
+  git -C "$ROOT" grep -hoE '[A-Za-z_][A-Za-z0-9_]{5,}' HEAD -- \
+    '*.rs' '*.sh' '*.py' '*.lean' '*.toml' '*.proto' '*.rho' '*.ts' '*.c' '*.h' 2>/dev/null
+  # And the *paths themselves*: a cell may name a file that holds the fix, which is what the check's
+  # own doc says it accepts ("an evidence cell holds forms like `casper/src/gateway/ledger.rs::...`").
+  # Both spellings of a filename: with its extension (`.` stripped by the normaliser turns `x.sh`
+  # into `xsh`, which matches no symbol) and without it, so `check-rust-witnesses.sh` and
+  # `check_rust_witnesses` are the same subject — which is what the doc above says they are.
+  git -C "$ROOT" ls-tree -r --name-only HEAD 2>/dev/null \
+    | awk -F/ '{ print $NF; e = $NF; sub(/\..*$/, "", e); print e }'
+} | awk '{ n = $0; gsub(/[^A-Za-z0-9]/, "", n); print $0; print n }' | sort -u > "$tree_ids"
+# **Separator-insensitive on both sides**, because the doc's own rule is "the subject is the *name*,
+# not the path spelling" — `check-rust-witnesses.sh` and `check_rust_witnesses` are the same subject,
+# and a check that refused the second would be enforcing a spelling rather than a fact. One awk pass,
+# not a subshell per token: the first draft of this line ran for minutes on ~25k identifiers.
 # The subject is the *name*, not the path spelling: an evidence cell holds forms like
 # `casper/src/gateway/ledger.rs::record_vote` and `tokio::task::spawn_blocking`, and the question worth
 # asking of either is whether the symbol at the end of it is in this tree.
@@ -123,7 +155,7 @@ unresolved="$(
     | awk -F'\t' '$6 != "" && $6 != "-" {
         n = split($6, t, "/")
         for (i = 1; i <= n; i++) {
-          q = t[i]; sub(/^.*::/, "", q); gsub(/[^A-Za-z0-9_]/, "", q)
+          q = t[i]; sub(/^.*::/, "", q); gsub(/[^A-Za-z0-9_]/, "", q); gsub(/_/, "", q)
           if (length(q) >= 6) print $1 "\t" q
         }
       }' \

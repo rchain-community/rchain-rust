@@ -41,7 +41,7 @@ F2		9	done	The blessed genesis contracts re-implement a HashMap trie in interpre
 F3		9	done	Silent partiality hides the failure. `compute_bonds` (`casper/src/runtime_manager.rs:503-509`)		-
 F4		9	done	Gas metering is unwired. `ChargingRSpace` (`rholang/src/storage.rs:103`) is a pure		-
 F5		9	done	Scala-specific encodings leaked into the port		-
-R1		11	done	deploy signature not verified on the gRPC path. `casper/src/api/block_api_impl.rs::deploy`	verify_signature_accepts_valid_deploy/_rejects_tampered_term	-
+R1		11	done	deploy signature not verified on the gRPC path. `casper/src/api/block_api_impl.rs::deploy`	verify_signature_accepts_valid_deploy/verify_signature_rejects_tampered_term	-
 R2		11	done	unbounded deploy pool. `casper/src/dag.rs::add_deploy` put without bound (keyed by	add_deploy_rejects_when_pool_full	-
 R3		11	done	lz4 decompression bomb. `comm/src/transport/stream_handler.rs::decompress_content`	restore_rejects_oversized_decompressed_content	-
 R4		11	done	unchecked phlo multiply. `models/.../casper_message.rs::total_phlo_charge` did	total_phlo_charge_does_not_wrap_on_overflow	-
@@ -134,7 +134,7 @@ C27		17	done	the base-sort receive never said which channel it listens on		-
 C29		17	done	the served OpenAPI document was stale, and nothing held it to the code it describes		-
 C28		17	done	the model's ground scalars were missing two of the five the protobuf has		-
 C30		18	done	`parse` returned `Ok` for a valid *prefix* of its input. `Tok::Eof` is pushed by the lexer	source_to_adt_with_env	-
-C31		18	done	a trailing separator was accepted at every list site — and then refused, and then	a_trailing_separator_is_accepted_as_a_deviation/expect_element_after_separator	-
+C31		18	done	a trailing separator was accepted at every list site — and then refused, and then	a_trailing_separator_is_accepted_as_a_deviation	-
 C32		18	done	`in` was optional in `new` and `let`. `PNew ::= "new" [NameDecl] "in" Proc1` and		-
 C33		18	done	a method call without its argument list parsed. `PMethod ::= Proc11 "." Var "(" [Proc]		-
 C34		18	done	`GroundBigInt` was unreachable. `BigInt(42)` parsed as the *simple type* `BigInt` followed	parse_simple_type	-

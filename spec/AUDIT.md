@@ -169,7 +169,7 @@ defects this register had not recorded (C164, C165).
 | `C28` | the model's ground scalars were missing two of the five the protobuf has | — | §17 |
 | `C29` | the served OpenAPI document was stale, and nothing held it to the code it describes | — | §17 |
 | `C30` | `parse` returned `Ok` for a valid *prefix* of its input. `Tok::Eof` is pushed by the lexer | source_to_adt_with_env | §18 |
-| `C31` | a trailing separator was accepted at every list site — and then refused, and then | a_trailing_separator_is_accepted_as_a_deviation/expect_element_after_separator | §18 |
+| `C31` | a trailing separator was accepted at every list site — and then refused, and then | a_trailing_separator_is_accepted_as_a_deviation | §18 |
 | `C32` | `in` was optional in `new` and `let`. `PNew ::= "new" [NameDecl] "in" Proc1` and | — | §18 |
 | `C33` | a method call without its argument list parsed. `PMethod ::= Proc11 "." Var "(" [Proc] | — | §18 |
 | `C34` | `GroundBigInt` was unreachable. `BigInt(42)` parsed as the *simple type* `BigInt` followed | parse_simple_type | §18 |
@@ -280,7 +280,7 @@ defects this register had not recorded (C164, C165).
 | `M6` | unauth `/reporting/trace` forceReplay | — | §5 |
 | `M7` | plaintext-HTTP external-IP discovery | — | §5 |
 | `M8` | bootstrap retry-forever | keep_on_requesting_till_running | §5 |
-| `R1` | deploy signature not verified on the gRPC path. `casper/src/api/block_api_impl.rs::deploy` | verify_signature_accepts_valid_deploy/_rejects_tampered_term | §11 |
+| `R1` | deploy signature not verified on the gRPC path. `casper/src/api/block_api_impl.rs::deploy` | verify_signature_accepts_valid_deploy/verify_signature_rejects_tampered_term | §11 |
 | `R2` | unbounded deploy pool. `casper/src/dag.rs::add_deploy` put without bound (keyed by | add_deploy_rejects_when_pool_full | §11 |
 | `R3` | lz4 decompression bomb. `comm/src/transport/stream_handler.rs::decompress_content` | restore_rejects_oversized_decompressed_content | §11 |
 | `R4` | unchecked phlo multiply. `models/.../casper_message.rs::total_phlo_charge` did | total_phlo_charge_does_not_wrap_on_overflow | §11 |

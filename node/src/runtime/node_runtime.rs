@@ -2728,6 +2728,41 @@ mod prometheus_scrape_config_tests {
         );
     }
 
+    /// **Red by construction until C182's third defect is fixed, and ignored so the suite stays green
+    /// while it is.** The devnet campaign of 2026-09-30 found the census and `/metrics` disagreeing on one
+    /// quantity: the census emits `101 merges` with width buckets summing to 101, while the endpoint
+    /// renders `_count 7617` — a factor of ~75, and the factor is the number of reporting periods. This
+    /// test names the mechanism: `report_period_snapshot` merges each snapshot into a five-year
+    /// accumulator, and this registry's histograms are *cumulative*, so a re-reported snapshot is added to
+    /// itself. `cargo test -p rchain-node --lib -- --ignored re_reporting_a_snapshot` reproduces it.
+    ///
+    /// It is the only histogram in the tree (`casper/src/dag.rs:272,283` are the sole `Metrics::record`
+    /// call sites), so the blast radius is exactly the two metrics C182 added — the queue depths are
+    /// gauges and are unaffected.
+    #[test]
+    #[ignore = "C182's third defect: the reporter accumulates a cumulative histogram; red until it is fixed"]
+    fn re_reporting_a_snapshot_does_not_double_a_histogram_count() {
+        let registry = MetricsRegistry::new();
+        let merge = Source::base().sub("merge");
+        registry.record(&merge, "scope_width", 20, 1);
+
+        let reporter = NewPrometheusReporter::new(prometheus_scrape_config());
+        reporter.report_period_snapshot(&registry.snapshot());
+        let first = reporter.scrape_data();
+        reporter.report_period_snapshot(&registry.snapshot());
+        let second = reporter.scrape_data();
+
+        assert!(
+            first.contains("rchain_merge_scope_width_count 1.0"),
+            "one merge, one count:\n{first}"
+        );
+        assert!(
+            second.contains("rchain_merge_scope_width_count 1.0"),
+            "a re-reported snapshot doubled the histogram's count — which is what inflates the \
+             devnet's histogram ~75x over the census:\n{second}"
+        );
+    }
+
     #[test]
     fn the_merge_shape_metrics_carry_their_own_buckets() {
         let config = prometheus_scrape_config();
