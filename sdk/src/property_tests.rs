@@ -12,7 +12,7 @@ use proptest::prelude::*;
 use crate::consensus::is_super_majority;
 use crate::dag::merging::{
     compute_conflicts_map, compute_optimal_rejection, compute_rejection_options,
-    compute_rejection_options_with_census,
+    compute_rejection_options_with_census, SearchBudget,
 };
 
 /// A **legally shaped** conflict map: built through `compute_conflicts_map`, so it is undirected and
@@ -170,7 +170,7 @@ proptest! {
         conflicts in arb_conflicts()
     ) {
         let keys: BTreeSet<u8> = conflicts.keys().copied().collect();
-        for option in compute_rejection_options(&conflicts) {
+        for option in compute_rejection_options(&conflicts, SearchBudget::UNBOUNDED).expect("unbounded") {
             for kept in keys.difference(&option) {
                 if let Some(opposed) = conflicts.get(kept) {
                     for other in opposed {
@@ -199,7 +199,9 @@ proptest! {
     fn rejection_options_match_a_literal_enumeration(
         conflicts in prop_oneof![arb_conflicts(), arb_any_conflicts()]
     ) {
-        let (options, census) = compute_rejection_options_with_census(&conflicts);
+        let (options, census) =
+        compute_rejection_options_with_census(&conflicts, SearchBudget::UNBOUNDED)
+            .expect("unbounded");
         prop_assert_eq!(options, rejection_options_by_literal_enumeration(&conflicts));
 
         // The path the shape *earns*, asserted rather than assumed: a relation that is symmetric and
@@ -222,7 +224,7 @@ proptest! {
     fn law17_deploys_without_conflicts_need_no_rejection(keys in prop::collection::btree_set(0u8..6, 1..5)) {
         let conflicts: BTreeMap<u8, BTreeSet<u8>> =
             keys.into_iter().map(|k| (k, BTreeSet::new())).collect();
-        let options = compute_rejection_options(&conflicts);
+        let options = compute_rejection_options(&conflicts, SearchBudget::UNBOUNDED).expect("unbounded");
         prop_assert!(options.contains(&BTreeSet::new()));
         prop_assert_eq!(compute_optimal_rejection(&options, |_| 1), BTreeSet::new());
     }
@@ -235,7 +237,9 @@ proptest! {
 #[test]
 fn an_empty_conflict_map_yields_no_options() {
     let empty: BTreeMap<u8, BTreeSet<u8>> = BTreeMap::new();
-    assert!(compute_rejection_options(&empty).is_empty());
+    assert!(compute_rejection_options(&empty, SearchBudget::UNBOUNDED)
+        .expect("unbounded")
+        .is_empty());
     assert_eq!(
         compute_optimal_rejection(&BTreeSet::<BTreeSet<u8>>::new(), |_: &u8| 1),
         BTreeSet::new(),

@@ -22,7 +22,9 @@
 //! The dense case was never the problem — accepting any chain rejects all the others — which is why the
 //! 1000-node full-graph test passed throughout.
 
-use rchain_sdk::dag::merging::{compute_rejection_options, compute_rejection_options_with_census};
+use rchain_sdk::dag::merging::{
+    compute_rejection_options, compute_rejection_options_with_census, SearchBudget,
+};
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Instant;
 
@@ -68,7 +70,7 @@ fn set<D: Ord + Clone>(items: impl IntoIterator<Item = D>) -> BTreeSet<D> {
 fn rejection_options_are_not_the_closure() {
     let map: BTreeMap<i32, BTreeSet<i32>> =
         BTreeMap::from([(0, set([1])), (1, set([0])), (2, set::<i32>([]))]);
-    let options = compute_rejection_options(&map);
+    let options = compute_rejection_options(&map, SearchBudget::UNBOUNDED).expect("unbounded");
     assert_eq!(
         options,
         BTreeSet::from([set([0]), set([1])]),
@@ -89,7 +91,7 @@ fn rejection_options_are_not_the_closure() {
 fn rejection_options_expand_each_state_once_on_a_fork_shape() {
     let map = fork_shape(2, 10);
     let started = Instant::now();
-    let options = compute_rejection_options(&map);
+    let options = compute_rejection_options(&map, SearchBudget::UNBOUNDED).expect("unbounded");
     let elapsed = started.elapsed();
     assert_eq!(
         options.len(),
@@ -124,7 +126,9 @@ fn rejection_options_are_bounded_on_a_fork_shape() {
     for per_branch in [10, 20, 100, 200] {
         let map = fork_shape(2, per_branch);
         let started = Instant::now();
-        let (options, census) = compute_rejection_options_with_census(&map);
+        let (options, census) =
+            compute_rejection_options_with_census(&map, SearchBudget::UNBOUNDED)
+                .expect("unbounded");
         let elapsed = started.elapsed();
         assert_eq!(
             options.len(),

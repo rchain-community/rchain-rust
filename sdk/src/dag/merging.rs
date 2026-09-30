@@ -375,13 +375,9 @@ impl SearchCensus {
 /// differential is `rejection_options_match_a_literal_enumeration` in `sdk/src/property_tests.rs`.
 pub fn compute_rejection_options<D: Ord + Clone>(
     conflicts_map: &BTreeMap<D, BTreeSet<D>>,
-) -> BTreeSet<BTreeSet<D>> {
-    // **Unbounded, and that is the point of this entry point**: the differential tests must see the exact
-    // search, so a defect in the budget cannot hide behind a truncated answer. Every production caller
-    // goes through a budgeted path.
-    search(conflicts_map, SearchBudget::UNBOUNDED)
-        .expect("an unbounded search cannot exceed its budget")
-        .0
+    budget: SearchBudget,
+) -> Result<BTreeSet<BTreeSet<D>>, SearchBudgetExceeded> {
+    Ok(search(conflicts_map, budget)?.0)
 }
 
 /// [`compute_rejection_options`], plus the [`SearchCensus`] of what it cost. The same function — one
@@ -390,21 +386,9 @@ pub fn compute_rejection_options<D: Ord + Clone>(
 /// stopwatch reading. This is the variable #117 was argued about without ever pinning.
 pub fn compute_rejection_options_with_census<D: Ord + Clone>(
     conflicts_map: &BTreeMap<D, BTreeSet<D>>,
-) -> (BTreeSet<BTreeSet<D>>, SearchCensus) {
-    search(conflicts_map, SearchBudget::UNBOUNDED)
-        .expect("an unbounded search cannot exceed its budget")
-}
-
-/// [`compute_rejection_options`] **under a budget** — the node's path.
-///
-/// `Err` means the search was **abandoned**, not that it found nothing: the caller must drop the work,
-/// never act on a partial answer. See [`SearchBudget`] for why that is what makes this a node-local policy
-/// rather than a fork.
-pub fn compute_rejection_options_with_budget<D: Ord + Clone>(
-    conflicts_map: &BTreeMap<D, BTreeSet<D>>,
     budget: SearchBudget,
-) -> Result<BTreeSet<BTreeSet<D>>, SearchBudgetExceeded> {
-    Ok(search(conflicts_map, budget)?.0)
+) -> Result<(BTreeSet<BTreeSet<D>>, SearchCensus), SearchBudgetExceeded> {
+    search(conflicts_map, budget)
 }
 
 fn search<D: Ord + Clone>(
@@ -900,6 +884,21 @@ mod tests {
         items.into_iter().collect()
     }
 
+    /// The oracle's call in this module: **unbounded**, so the counts these tests assert are the exact
+    /// search's rather than a truncated one. Production has no unbounded path at all — every entry point
+    /// takes a `SearchBudget`, which is why there is no `.expect` on a production call.
+    fn exact<D: Ord + Clone>(conflicts_map: &BTreeMap<D, BTreeSet<D>>) -> BTreeSet<BTreeSet<D>> {
+        compute_rejection_options(conflicts_map, SearchBudget::UNBOUNDED).expect("unbounded")
+    }
+
+    /// As [`exact`], keeping the census the tests assert their counts on.
+    fn exact_with_census<D: Ord + Clone>(
+        conflicts_map: &BTreeMap<D, BTreeSet<D>>,
+    ) -> (BTreeSet<BTreeSet<D>>, SearchCensus) {
+        compute_rejection_options_with_census(conflicts_map, SearchBudget::UNBOUNDED)
+            .expect("unbounded")
+    }
+
     #[test]
     fn with_dependencies_collects_transitive_closure() {
         let dependents_map = map([
@@ -1023,7 +1022,7 @@ mod tests {
     #[test]
     fn compute_rejection_options_matches_oracle() {
         assert_eq!(
-            compute_rejection_options(&map([
+            exact(&map([
                 (1, set([2, 3, 4])),
                 (2, set([1])),
                 (3, set([1, 2])),
@@ -1033,7 +1032,7 @@ mod tests {
         );
 
         assert_eq!(
-            compute_rejection_options(&map([
+            exact(&map([
                 (1, set([2, 3, 4])),
                 (2, set([1, 3, 4])),
                 (3, set([1, 2, 4])),
@@ -1048,7 +1047,7 @@ mod tests {
         );
 
         assert_eq!(
-            compute_rejection_options(&map([
+            exact(&map([
                 (1, set([2, 3, 4])),
                 (2, set([1])),
                 (3, set([1, 4])),
@@ -1058,7 +1057,7 @@ mod tests {
         );
 
         assert_eq!(
-            compute_rejection_options(&map([
+            exact(&map([
                 (1, set::<i32>([])),
                 (2, set([3])),
                 (3, set([2, 4])),
@@ -1083,7 +1082,7 @@ mod tests {
                 v
             })
             .collect();
-        assert_eq!(compute_rejection_options(&conflicts_map), expected);
+        assert_eq!(exact(&conflicts_map), expected);
     }
 
     /// **#117's root cause, pinned as a closed form.** The *enumeration* expands one state per subset of
@@ -1149,20 +1148,19 @@ mod tests {
             ("fork", fork),
             ("matching", matching),
         ] {
-            let exact = compute_rejection_options(&shapes);
+            let unbounded = exact(&shapes);
 
             // 2. Not hit -> identical answer, on the node's own budget.
-            let node = compute_rejection_options_with_budget(&shapes, SearchBudget::NODE)
-                .unwrap_or_else(|e| {
-                    panic!("{name}: SearchBudget::NODE refused an honest shape: {e:?}")
-                });
+            let node = compute_rejection_options(&shapes, SearchBudget::NODE).unwrap_or_else(|e| {
+                panic!("{name}: SearchBudget::NODE refused an honest shape: {e:?}")
+            });
             assert_eq!(
-                node, exact,
+                node, unbounded,
                 "{name}: a budget that is not hit must not change the answer, or this is a fork"
             );
 
             // 1. Hit -> refused, and nothing returned that could be mistaken for an answer.
-            let refused = compute_rejection_options_with_budget(
+            let refused = compute_rejection_options(
                 &shapes,
                 SearchBudget {
                     max_steps: 0,
@@ -1255,12 +1253,12 @@ mod tests {
         let dense: BTreeMap<i32, BTreeSet<i32>> = (0..n)
             .map(|k| (k, (0..n).filter(|o| *o != k).collect()))
             .collect();
-        let (options, census) = compute_rejection_options_with_census(&dense);
+        let (options, census) = exact_with_census(&dense);
         assert_eq!(options.len(), n as usize, "one option per singleton");
         assert!(bounded(&census), "dense: {census:?}");
 
         let free: BTreeMap<i32, BTreeSet<i32>> = (0..n).map(|k| (k, set::<i32>([]))).collect();
-        let (options, census) = compute_rejection_options_with_census(&free);
+        let (options, census) = exact_with_census(&free);
         assert_eq!(options, set([set::<i32>([])]));
         assert!(
             bounded(&census),
@@ -1269,7 +1267,7 @@ mod tests {
         );
 
         for p in [1usize, 4, 10] {
-            let (options, census) = compute_rejection_options_with_census(&fork_shape(2, p));
+            let (options, census) = exact_with_census(&fork_shape(2, p));
             assert_eq!(options.len(), 2, "reject one branch or the other");
             assert!(
                 bounded(&census),
@@ -1281,7 +1279,7 @@ mod tests {
         }
 
         for m in [2usize, 3, 4] {
-            let (options, census) = compute_rejection_options_with_census(&matching_shape(m));
+            let (options, census) = exact_with_census(&matching_shape(m));
             assert_eq!(options.len(), 1usize << m, "one option per choice of side");
             // Inherently exponential — the options *are* that many — but no longer times 3^m alive at
             // once, which is what the bound rules out.
@@ -1289,7 +1287,7 @@ mod tests {
         }
 
         // The fast path has no queue, so the frontier field is 0 rather than "not measured".
-        let (_, census) = compute_rejection_options_with_census(&fork_shape(2, 10));
+        let (_, census) = exact_with_census(&fork_shape(2, 10));
         assert_eq!(census.max_frontier, 0);
         assert_eq!(census.asymmetric, 0);
         assert_eq!(census.self_conflicts, 0);
@@ -1333,8 +1331,8 @@ mod tests {
             (3, set([1, 4])),
             (4, set([3])),
         ]);
-        let expected = compute_rejection_options(&conflicts_map);
-        let (options, census) = compute_rejection_options_with_census(&conflicts_map);
+        let expected = exact(&conflicts_map);
+        let (options, census) = exact_with_census(&conflicts_map);
         assert_eq!(options, expected, "the census form is the same function");
         assert_eq!(census.keys, 4);
         assert_eq!(census.conflicts, 2 + 1 + 2 + 1);
@@ -1344,7 +1342,7 @@ mod tests {
         // Asymmetric on the keys (1 conflicts with 3, 3 does not conflict with 1), so this is the
         // enumeration: a non-zero count in this field is what sends a map down that path.
         let asymmetric = map([(1, set([2])), (2, set([1])), (3, set([1]))]);
-        let (_, census) = compute_rejection_options_with_census(&asymmetric);
+        let (_, census) = exact_with_census(&asymmetric);
         assert_eq!(census.asymmetric, 1, "3 -> 1 with no edge back");
         assert!(
             census.expanded > 0 && census.max_frontier > 0,
