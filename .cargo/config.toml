@@ -30,27 +30,32 @@ RUST_TEST_THREADS = "10"
 # That run also settled what the bytes *are*: the memory followed the allocator across the swap, so it is
 # Rust-side allocation and not C-side LMDB — the composition question the audit could not answer.
 #
-# **And the bound is partial, which the same measurement says plainly.** Repeat runs of the identical
-# configuration do not agree: one survived 3 of 3 with peaks of 624 / 248 / 207 MiB (the runtime override),
-# and the next, with `retain:false` compiled in, lost 2 of 3 at peaks of 3919 / 3930 MiB — while the third
-# node's anon fell from 2352 MiB to 79 MiB, so the purge demonstrably returns memory. That fall is the one
-# hard fact about the remainder, and it says the opposite of what was first concluded here: a running
-# process that hands 2.27 GiB back to the kernel was never holding it *live*. The bulk of the peak is
-# therefore reclaimable, allocator-held memory (munmapped extents, or pages the purge had not yet reached),
-# not a structure in the node — and the ~4 GiB figure is a *rate* question, not a residency question.
+# **And the bound is partial: what fills the ceiling is LIVE, which is now measured rather than argued.**
+# Repeat runs of the identical configuration do not agree — one survived 3 of 3 at peaks of 624 / 248 /
+# 207 MiB, the next lost 2 of 3 at 3919 / 3930 MiB — and the remainder was first called live, then argued
+# to be reclaimable, and is now settled by an instrument. `spec/audit/evidence/jemalloc-stats-shim.c` reads
+# jemalloc's own accounting once a second from *inside* the running node, over three attempts of the frozen
+# reproduction, at the moment the cgroup's `anon` peaked:
 #
-# **Two attempts to name the remainder failed, and the second failed for a reason worth keeping.** `dhat`
-# is a real instrument that reproduces no ramp (600 s on the profiling build, storm included) — but that is
-# one run of a phenomenon now known to be intermittent (2 of 3 unprofiled runs ramp), so it is weaker
-# evidence than it was read as. jemalloc's own sampler is not weak evidence, it is **no evidence at all**:
-# `tikv-jemalloc-sys` passes `--enable-prof` only when the `profiling` feature is on, so `prof:true` in a
-# `MALLOC_CONF` is an unrecognised option that jemalloc ignores without complaint, and the run reported
-# "no ramp in the window" from an instrument that was never compiled in. The same is true of the
-# accounting this file's reasoning needs: `--enable-stats` is likewise feature-gated, so `stats_print:true`
-# prints jemalloc's option echo and then no numbers. `node/Cargo.toml` now enables `stats`, which is what
-# makes `Allocated` (live) readable against `resident` at the ceiling. This is the bound on #117
-# (`casper/tests/memory_retention.rs` is its falsifier; the defect it answers is glibc's per-thread arena
-# retention, see `spec/audit/passes.md` §27).
+#   | node            | anon      | jemalloc allocated | resident  | A/a   | R/a   |
+#   | 3 attempts x 3  | 3143-8162 | 3114-8051 MiB      | +-1 %     | 0.968-0.994 | 0.978-1.012 |
+#
+# **Nine of nine nodes: LIVE**, and `retained` was 0 in every one of ~1700 samples. jemalloc accounts for
+# 97-99 % of the cgroup's anonymous memory, so there is no un-attributed remainder and no purge lag to
+# tune: the bytes are handed out by `alloc` and not yet returned by `dealloc`. Since jemalloc is this
+# binary's *Rust* global allocator (C-side `malloc` is still glibc), the peak is live **Rust** allocations
+# — a structure in the node. That is the defect #117 is actually about, and it is in the code, not in this
+# configuration. The purge settings above answer a different problem (glibc's per-thread arena retention,
+# `spec/audit/passes.md` §27) and `casper/tests/memory_retention.rs` remains their falsifier.
+#
+# Two earlier attempts to name the remainder failed, and the reasons were recorded rather than repaired:
+# `dhat` reproduced no ramp (600 s, storm included) — which is now explained, not mysterious: the
+# phenomenon is intermittent, and that run profiled a node that never grew. jemalloc's own sampler was
+# **no evidence at all**: `tikv-jemalloc-sys` passes `--enable-prof` only for the `profiling` feature, so
+# `prof:true` in a `MALLOC_CONF` is an unrecognised option jemalloc ignores without complaint, and the run
+# reported "no ramp" from an instrument that had never been compiled in. `--enable-stats` is gated the same
+# way, which is why `node/Cargo.toml` now enables `stats`. Because the peak is live Rust allocations, a
+# heap profiler is the right instrument for the next unit after all.
 # `stats_print:true,stats_print_opts:g` is instrumentation for #117, compiled in rather than passed at
 # runtime so that the artifact under test *is* the artifact, with nothing injected by the operator and no
 # environment variable to be mis-parsed — a failure mode this work has already hit once, when

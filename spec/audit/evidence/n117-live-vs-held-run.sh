@@ -128,6 +128,5 @@ done
 rm -f "examples/$SHIM"
 echo
 echo "=== analysis (pre-registered bands) ==="
-python3 target/n117-audit/align-live-vs-held.py \
-  target/n117-audit/live-vs-held-attempt1.tsv "$RUN_DATE" \
-  target/n117-audit/stats-*-a*.txt 2>&1
+python3 target/n117-audit/align-live-vs-held.py "$RUN_DATE" \
+  target/n117-audit/live-vs-held-attempt*.tsv target/n117-audit/stats-*-a*.txt 2>&1
