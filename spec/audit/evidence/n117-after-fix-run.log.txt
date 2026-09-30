@@ -1,0 +1,51 @@
+tree=0d111c2d7 cap=8g threshold=3000MiB window=300s attempts=3
+image=sha256:f39f4ed615a45c04c94985d085acf17b0761c14b72da3db48fbdf91c5f0dc744
+=================== attempt 1 of 3  11:37:33 UTC ===================
+    Admin HTTP API:   http://localhost:40405/api/v1/propose
+  three containers up; no shim (USE_SHIM=0)
+cgroups: {'bootstrap': '/sys/fs/cgroup/system.slice/docker-6130659bdbb750142be10af1d19171692397eef15ba8bca2b7e2253f7ffe2b78.scope', 'v1': '/sys/fs/cgroup/system.slice/docker-9bf54c8a7994dfde7cf4b56a1c00618acfbdff083b2385baec6505203fa01208.scope', 'v2': '/sys/fs/cgroup/system.slice/docker-cc3294b20d6e73f3ade5703fd1d02df044f0b65d881fc7608ccede818242d162.scope'}
+window elapsed with a node still alive
+wrote target/n117-audit/after-fix-attempt1.tsv
+  peaks: bootstrap=1647 v1=1674 v2=63 MiB (threshold 3000)
+  crossed: 0 of 3
+  bootstrap census: 2026-09-30T11:42:44.708Z WARN  [casper.interpreter.validate] merge search: 183 merges · widest scope 33 chains / 2031 conflict pairs / 376 asymmetric · most states expanded on one merge 411199
+  v1 census: 2026-09-30T11:42:41.463Z WARN  [casper.interpreter.validate] merge search: 179 merges · widest scope 33 chains / 2006 conflict pairs / 376 asymmetric · most states expanded on one merge 411199
+  v2 census: 2026-09-30T11:42:46.974Z WARN  [casper.interpreter.validate] merge search: 230 merges · widest scope 33 chains / 2056 conflict pairs / 376 asymmetric · most states expanded on one merge 117075
+  attempt 1 done
+=================== attempt 2 of 3  11:42:50 UTC ===================
+    Admin HTTP API:   http://localhost:40405/api/v1/propose
+  three containers up; no shim (USE_SHIM=0)
+cgroups: {'bootstrap': '/sys/fs/cgroup/system.slice/docker-287a07197d0989ca6e56d8ac80071de7765158967a5ce09b19f3a48afae0b7e2.scope', 'v1': '/sys/fs/cgroup/system.slice/docker-c1573b19ffcb8f3a6db3101e68b659eafd47156f966f88add19226b528280379.scope', 'v2': '/sys/fs/cgroup/system.slice/docker-88b21e0a83d897c114b8d5384c74045b4e6713ba590ebb7017a6cddb6ec8f206.scope'}
+window elapsed with a node still alive
+wrote target/n117-audit/after-fix-attempt2.tsv
+  peaks: bootstrap=918 v1=1869 v2=65 MiB (threshold 3000)
+  crossed: 0 of 3
+  bootstrap census: 2026-09-30T11:47:00.624Z WARN  [casper.interpreter.validate] merge search: 161 merges · widest scope 40 chains / 1282 conflict pairs / 554 asymmetric · most states expanded on one merge 593221
+  v1 census: 2026-09-30T11:47:13.927Z WARN  [casper.interpreter.validate] merge search: 162 merges · widest scope 43 chains / 1282 conflict pairs / 653 asymmetric · most states expanded on one merge 1389065
+  v2 census: 2026-09-30T11:47:54.047Z WARN  [casper.interpreter.validate] merge search: 167 merges · widest scope 34 chains / 1447 conflict pairs / 419 asymmetric · most states expanded on one merge 161913
+  attempt 2 done
+=================== attempt 3 of 3  11:48:05 UTC ===================
+    Admin HTTP API:   http://localhost:40405/api/v1/propose
+  three containers up; no shim (USE_SHIM=0)
+cgroups: {'bootstrap': '/sys/fs/cgroup/system.slice/docker-b37598be93559216bb579801c6240961380093fd5a67e54d87dfe9242834f276.scope', 'v1': '/sys/fs/cgroup/system.slice/docker-26f7aa8cb41080eb833bb52ffdbcefec15d954e1eb20c1d0b02c9c5914f03f54.scope', 'v2': '/sys/fs/cgroup/system.slice/docker-6d40cde8ec5812e2bba1ee4c9bb66a623597cb412a0e23555f0cdf65dc31fac7.scope'}
+  v1 CROSSED at anon=3014 MiB — stopping cleanly
+window elapsed with a node still alive
+wrote target/n117-audit/after-fix-attempt3.tsv
+  v2 CROSSED at anon=5273 MiB — stopping cleanly
+  peaks: bootstrap=1943 v1=3014 v2=5273 MiB (threshold 3000)
+  crossed: 2 of 3
+  bootstrap census: 2026-09-30T11:53:30.583Z WARN  [casper.interpreter.validate] merge search: 130 merges · widest scope 35 chains / 1162 conflict pairs / 427 asymmetric · most states expanded on one merge 1663395
+  v1 census: 2026-09-30T11:51:45.011Z WARN  [casper.interpreter.validate] merge search: 167 merges · widest scope 35 chains / 1162 conflict pairs / 427 asymmetric · most states expanded on one merge 1028567
+  v2 census: 2026-09-30T11:52:18.956Z WARN  [casper.interpreter.validate] merge search: 126 merges · widest scope 35 chains / 1162 conflict pairs / 427 asymmetric · most states expanded on one merge 1663395
+  attempt 3 done
+
+=== summary ===
+a1 bootstrap 2026-09-30T11:42:44.708Z WARN  [casper.interpreter.validate] merge search: 183 merges · widest scope 33 chains / 2031 conflict pairs / 376 asymmetric · most states expanded on one merge 411199
+a1 v1 2026-09-30T11:42:41.463Z WARN  [casper.interpreter.validate] merge search: 179 merges · widest scope 33 chains / 2006 conflict pairs / 376 asymmetric · most states expanded on one merge 411199
+a1 v2 2026-09-30T11:42:46.974Z WARN  [casper.interpreter.validate] merge search: 230 merges · widest scope 33 chains / 2056 conflict pairs / 376 asymmetric · most states expanded on one merge 117075
+a2 bootstrap 2026-09-30T11:47:00.624Z WARN  [casper.interpreter.validate] merge search: 161 merges · widest scope 40 chains / 1282 conflict pairs / 554 asymmetric · most states expanded on one merge 593221
+a2 v1 2026-09-30T11:47:13.927Z WARN  [casper.interpreter.validate] merge search: 162 merges · widest scope 43 chains / 1282 conflict pairs / 653 asymmetric · most states expanded on one merge 1389065
+a2 v2 2026-09-30T11:47:54.047Z WARN  [casper.interpreter.validate] merge search: 167 merges · widest scope 34 chains / 1447 conflict pairs / 419 asymmetric · most states expanded on one merge 161913
+a3 bootstrap 2026-09-30T11:53:30.583Z WARN  [casper.interpreter.validate] merge search: 130 merges · widest scope 35 chains / 1162 conflict pairs / 427 asymmetric · most states expanded on one merge 1663395
+a3 v1 2026-09-30T11:51:45.011Z WARN  [casper.interpreter.validate] merge search: 167 merges · widest scope 35 chains / 1162 conflict pairs / 427 asymmetric · most states expanded on one merge 1028567
+a3 v2 2026-09-30T11:52:18.956Z WARN  [casper.interpreter.validate] merge search: 126 merges · widest scope 35 chains / 1162 conflict pairs / 427 asymmetric · most states expanded on one merge 1663395
