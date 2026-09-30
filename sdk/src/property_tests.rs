@@ -12,6 +12,7 @@ use proptest::prelude::*;
 use crate::consensus::is_super_majority;
 use crate::dag::merging::{
     compute_conflicts_map, compute_optimal_rejection, compute_rejection_options,
+    compute_rejection_options_with_census,
 };
 
 /// A **legally shaped** conflict map: built through `compute_conflicts_map`, so it is undirected and
@@ -184,21 +185,34 @@ proptest! {
         }
     }
 
-    /// **The state-dedup is the same function (#117).** `compute_rejection_options` now carries only the
-    /// accepted set through its queue and expands each state once; it used to carry the rejected set too
-    /// and clone both per visit, which re-expanded a state once per *ordering* reaching it — 19,728,200
-    /// expansions for 2,046 states on a 20-chain fork, and the clones are 97 % of the node's live heap at
-    /// its cgroup ceiling. The reduction rests on the claim that `rejected` is always
-    /// `⋃{conflicts(x) : x ∈ accepted}` and so is redundant state. That claim is a proof, and proofs are
-    /// what this project does not accept in place of a check: this is the check, over both the legally
-    /// shaped maps and arbitrary ones, against the literal enumeration.
+    /// **The exact rewrite is the same function (#117).** `compute_rejection_options` now reads the answer
+    /// off the **maximal independent sets** of the conflict relation when that relation is symmetric and
+    /// irreflexive on its keys, instead of enumerating every reachable acceptance state — the enumeration
+    /// expands one state per acyclic subset, which is `2^n` on a scope whose chains do not conflict, and
+    /// those states are what the node's memory ceiling was made of. The rewrite rests on a proof (symmetric
+    /// and irreflexive makes "reachable" = "independent" and "terminal" = "dominating", so the terminal
+    /// states *are* the maximal independent sets), and this project does not accept a proof in place of a
+    /// check: this is the check, against a literal transcription of the ported search, over both the
+    /// legally-shaped maps the merge produces and arbitrary ones — which is what exercises **both** paths,
+    /// since the arbitrary generator produces the asymmetric maps the fast path declines.
     #[test]
     fn rejection_options_match_a_literal_enumeration(
         conflicts in prop_oneof![arb_conflicts(), arb_any_conflicts()]
     ) {
+        let (options, census) = compute_rejection_options_with_census(&conflicts);
+        prop_assert_eq!(options, rejection_options_by_literal_enumeration(&conflicts));
+
+        // The path the shape *earns*, asserted rather than assumed: a relation that is symmetric and
+        // irreflexive on its keys must have taken the fast path (which keeps no frontier at all), and any
+        // other must have kept one. Without this the differential could pass with the fast path quietly
+        // never firing — a green test measuring the code the fix was meant to replace.
+        let fast_path_applies = census.asymmetric == 0 && census.self_conflicts == 0;
         prop_assert_eq!(
-            compute_rejection_options(&conflicts),
-            rejection_options_by_literal_enumeration(&conflicts)
+            census.max_frontier == 0,
+            fast_path_applies,
+            "census {:?} on {:?}",
+            census,
+            conflicts
         );
     }
 

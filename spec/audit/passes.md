@@ -4748,7 +4748,7 @@ verdict as though it were evidence. The corrected record is posted on both; what
 only the two rows above, because the rest are corrections to claims about runs, and a claim about a run
 belongs where the runs are described.
 
-## 28. The merge's rejection search re-expanded a state once per ordering (#117)
+## 28. The merge's conflict resolution was the memory ceiling: an ordering blow-up, then the enumeration itself (#117)
 
 §27 named the heap's *owner* — glibc — and could not name the structure inside it, because the
 instrument that names structures needs a clean exit a node at the ceiling does not get. This section
@@ -4758,7 +4758,8 @@ crossed a threshold rather than at exit after it has freed its world
 `BTreeSet`/`BTreeMap` clones under `rchain_sdk::dag::merging::resolve_conflict_set`, reached from
 `MergeScope::merge` via `get_pre_state_for_parents`, growing 343 -> 881 -> 1488 MiB across three dumps at
 1.5 / 3.0 / 4.6 GiB of live bytes. (`BTreeSet<T>` wraps `BTreeMap<T, ()>`, so a set clone shows as a map
-clone.)
+clone.) Two defects were inside that number, and they are separate findings because the first is a
+constant factor removed and the second is the exponent.
 
 ### C177 — the rejected set was carried as state, and it is not state
 
@@ -4784,34 +4785,80 @@ Two registers and two cloned sets per entry, at 19.7M entries, is the gigabytes 
 distinct count is exactly `2^(per+1) - 2` — the nonempty subsets of one branch, twice over — so the ratio
 between the columns is the redundancy, and it is factorial in the branch width.
 
-**Fixed by carrying the accepted set alone, which expands each state once.** This is exact, not a
-heuristic, and the argument is short enough to state: the successor set (`all_keys \ (rejected ∪
-accepted)`) and the answer (`rejected` at a terminal state) both depend on the state *only* through
-`accepted`, so skipping a state already expanded cannot remove a reachable answer. Per the rule this
-project holds proofs to, the argument is prose and the check is a test:
+**Fixed by carrying the accepted set alone, which expands each state once.** Exact, not a heuristic: the
+successor set (`all_keys \ (rejected ∪ accepted)`) and the answer (`rejected` at a terminal state) depend
+on the state only through `accepted`, so skipping a state already expanded cannot remove a reachable
+answer. Per the rule this project holds proofs to, the argument is prose and the check is a test:
 `rejection_options_match_a_literal_enumeration` (`sdk/src/property_tests.rs`) differs the shipped
 function against a **literal transcription of the old search**, over both the legally-shaped maps the
-merge produces and arbitrary maps including the asymmetric ones, since `resolve_conflict_set` unions each
-key's dependencies into its conflict set and so does not hand the search a symmetric map.
+merge produces and arbitrary maps including the asymmetric ones.
 
-**This is not the closure rewrite, and the earlier refutation still stands.** Computing
+Measured: 20 chains **11.3 s -> 13.4 ms**, and 40 chains, infeasible to run at all before, in 34.6 s at
+351 MiB. That is where this pass first stopped, and it is worth recording why that was not the fix: 40
+chains still took 34.6 s, and the enumeration behind the 2,046 states had not moved.
+
+### C178 — the enumeration is exponential in the width, and the width was never measured
+
+**What the search does, exactly.** A set `S ⊆ keys` is reachable iff its keys can be added one at a time
+with each new one absent from the conflicts of those already accepted — equivalently, iff the conflicts
+*within* `S` contain no directed cycle. So the search expands **one state per nonempty subset that induces
+an acyclic subgraph**, and the number of rejection options is unrelated to that count. Pinned as four
+closed forms in `the_enumeration_expands_one_state_per_acyclic_subset`, counts rather than seconds
+because a stopwatch measures the machine:
+
+| conflict map | states the enumeration expands | options reported |
+|---|---|---|
+| complete, `n` keys | `n` | `n` |
+| **no conflicts at all** | **`2^n - 1`** | **1** |
+| two branches of `p` (fork) | `2^(p+1) - 2` | `2` |
+| a perfect matching of `m` pairs | `3^m - 1` | `2^m` |
+
+Row one is why the 1000-key full-graph oracle passed while the node grew to gigabytes. **Row two is the
+node's normal case** — two chains conflict only if they touch a common channel
+(`DeployChainIndex::deploys_are_conflicting`, `casper/src/merging.rs:1103`), so a merge scope's conflict
+relation is *sparse*, and sparse is where the enumeration is worst. And the shape had never been read off
+a running node: the defect had been described with an *assumed* fork.
+
+**So the shape was made observable before it was fixed.** `SearchCensus` (`sdk/src/dag/merging.rs`)
+reports keys, conflict pairs, asymmetric pairs, self-conflicts, states expanded, frontier and options;
+`resolve_conflict_set_with_census` returns it from the merge itself, `casper/src/merging.rs`'s
+`search_census` accumulates the envelope process-wide, and `casper/src/interpreter_util.rs` logs it once
+per five seconds on the node's own log. The casper merge fixtures now assert the one field that decides
+the fix: `the_merge_search_sees_the_shape_the_merge_builds` reads **0 asymmetric pairs** — the relation
+the merge hands the search is symmetric on its keys, which is the precondition of the exact rewrite.
+
+**The exact rewrite.** With a symmetric, irreflexive relation on the keys, "reachable" is exactly
+"independent set" and "terminal" is exactly "dominating", so **the terminal states are precisely the
+maximal independent sets** and the option set is their image under `⋃ conflicts`. `compute_rejection_options`
+now enumerates those with Bron–Kerbosch and pivoting — and touches none of the `2^n` intermediate states,
+which were the entire defect. The rewrite is gated on the precondition being *checked*, not assumed: an
+asymmetric map, or a key that conflicts with itself, takes the enumeration as before, and
+`rejection_options_match_a_literal_enumeration` now asserts which path each generated map earned as well
+as that both agree with the literal transcription.
+
+| shape | before | after |
+|---|---|---|
+| 20 chains in two branches | 2,046 states / 13.4 ms | 30 states / 0.17 ms |
+| 40 chains | 2^21 states / 34.6 s | 60 states / 0.7 ms |
+| 200 chains | — | 300 states / 22 ms |
+| 2,000 chains | — | 3,000 states / 21 s |
+
+The counts grow linearly with width and the options are byte-identical; the falsifier that was
+`#[ignore]`d red for two commits is now a gate (`rejection_options_are_bounded_on_a_fork_shape`), asserting
+`expanded ≤ (keys + 1) × (options + 1)` — a bound the enumeration misses by an exponential — at every width.
+
+**Two honest limits.** The recursion is output-sensitive but a node is not free: the pivot scan is
+`O(|p| · log)` per candidate, so 2,000 chains costs 21 s of CPU (20 ms at 200). And the *options* can
+themselves be exponential — a perfect matching of `m` pairs has `2^m` of them — but they are now the only
+exponential thing, which is inherent to the question the merge asks and not to how this answers it.
+`max_frontier` is 0 on this path: #117's memory is now the option set and nothing else.
+
+**This is not the closure rewrite, and that refutation still stands.** Computing
 `rejected ⊇ ⋃{conflicts(j) : j ∉ rejected}` to a fixed point over-approximates, because a key that has
-been *rejected* can never be accepted afterwards: for `{0: {1}, 1: {0}, 2: {}}` the search yields `{{0},
-{1}}` while the closure also yields `{0, 1}`. That counter-example is pinned by
-`rejection_options_are_not_the_closure` and is untouched by this fix — the enumeration is left exactly
-where it was; only its redundancy moved.
-
-**Measured after** (`sdk/tests/merging_scaling.rs`): 20 chains **11.3 s -> 13.4 ms**; 40 chains, which
-was infeasible to run at all before, completes in **34.6 s at 351 MiB**.
-
-**What this fixes and what it does not.** The *memory* ceiling is gone: 351 MiB is the worst this
-pathological shape reaches, against gigabytes at half the width before, and the node's observed case
-(≈20 chains) is now thousands of states rather than tens of millions. The *time* is not: the reachable
-state count is still `2^(n/2 + 1)`, which is the search's true shape rather than its redundancy, so a fork
-wide enough to matter is still exponential. Bounding that is not a dedup — it is either a direct
-enumeration of the terminal states or a cap on the search, and a cap is a **consensus-visible deviation**
-(law 17: the merge outcome picks the min-cost option *out of these options*). The falsifier stays ignored
-and red for that reason, with its new reading in its doc comment: memory bounded, time not.
+been *rejected* can never be accepted afterwards: for `{0: {1}, 1: {0}, 2: {}}` the search yields
+`{{0}, {1}}` while the closure also yields `{0, 1}`. That counter-example is pinned by
+`rejection_options_are_not_the_closure` and the enumeration it refutes is still in the tree, as the
+fallback path.
 
 C175 — the unbounded ingress queue §27 could not rule out — is not this defect. Its observation half
 landed (`#120`) and the depth reads 0.0 at every sample through a ramp that OOM-kills all three nodes, so

@@ -1,23 +1,28 @@
-//! The merge's conflict resolution was re-expanding a search state once per *ordering* that reached it, and
-//! that was the node's memory ceiling (#117).
+//! The merge's conflict resolution was the node's memory ceiling (#117), in two steps, and both are measured
+//! here.
 //!
 //! `MergeScope::merge` calls `resolve_conflict_set` once per parent, and a heap profile of a node at its
-//! cgroup ceiling attributes **97 %** of the live heap to `BTreeSet` clones inside it — the search's
-//! frontier and its accumulated sets, grown 343 -> 1488 MiB within one run. The shape that gets there is a
-//! **fork**: chains within a branch do not conflict while chains across branches conflict completely.
+//! cgroup ceiling attributes **97 %** of the live heap to `BTreeSet` clones inside it, grown 343 -> 1488 MiB
+//! within one run.
 //!
-//! The ported search carried the rejected set in every queue entry beside the accepted set, and cloned both
-//! per push. The rejected set is not independent state — it is always `⋃{conflicts(x) : x ∈ accepted}` — so
-//! that only made each state reachable by as many queue entries as there are orderings of it:
-//! **19,728,200 expansions for 2,046 states** on a 20-chain fork. Carrying the accepted set alone (see
-//! `compute_rejection_options`) expands each state once, which is the whole of the fix measured below.
+//! **First the redundancy.** The ported search carried the rejected set in every queue entry beside the
+//! accepted set, and cloned both per push. The rejected set is not independent state — it is always
+//! `⋃{conflicts(x) : x ∈ accepted}` — so that only made a state reachable by one entry per *ordering* of it:
+//! **19,728,200 expansions for 2,046 states** on a 20-chain fork. Carrying the accepted set alone fixed that
+//! (11.3 s -> 13.4 ms) and left the enumeration itself untouched.
 //!
-//! **What is left is the search's true shape, not its redundancy.** Reachable states still grow as
-//! 2^(n/2 + 1) on a fork — that is every subset of a branch — so the search remains exponential in the
-//! number of chains per branch. The dense case is *not* a problem (accepting any chain rejects all the
-//! others, so it terminates in one step), which is why the 1000-node full-graph test passes.
+//! **Then the enumeration.** It expands one state per subset of chains that can be accepted together, which
+//! is `2^n` when the chains do not conflict and `2^(n/2 + 1)` on a fork — exponential in the number of chains
+//! a merge scope holds, and unrelated to how many rejection options come out. When the conflict relation is
+//! symmetric and irreflexive on its keys, the terminal states *are* the maximal independent sets, so
+//! `compute_rejection_options` now enumerates those instead (Bron–Kerbosch with pivoting) and never touches
+//! the intermediate states. The counts below are that: 40 chains went from an infeasible enumeration to 60
+//! recursion nodes, and the growth with width is linear rather than exponential.
+//!
+//! The dense case was never the problem — accepting any chain rejects all the others — which is why the
+//! 1000-node full-graph test passed throughout.
 
-use rchain_sdk::dag::merging::compute_rejection_options;
+use rchain_sdk::dag::merging::{compute_rejection_options, compute_rejection_options_with_census};
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Instant;
 
@@ -75,10 +80,11 @@ fn rejection_options_are_not_the_closure() {
     );
 }
 
-/// **The fix, pinned.** A 20-chain fork — the width the heap profile was taken at — used to take
-/// **11.3 s** here and push 19,728,200 queue entries for 2,046 states. It now expands each state once.
-/// The bound is loose on purpose: this is a regression guard against re-introducing the per-ordering
-/// re-expansion (which is the only thing that puts this in seconds), not a performance gate.
+/// **The first fix, pinned.** A 20-chain fork — the width the heap profile was taken at — used to take
+/// **11.3 s** here and push 19,728,200 queue entries for 2,046 states, and the enumeration still expands
+/// those 2,046 (see `the_enumeration_expands_one_state_per_acyclic_subset` in the sdk). This is the
+/// per-*ordering* re-expansion guard: the same input that took 11.3 s while a state was visited once per
+/// ordering reaching it. The time bound is loose on purpose; the count bound next door is the real one.
 #[test]
 fn rejection_options_expand_each_state_once_on_a_fork_shape() {
     let map = fork_shape(2, 10);
@@ -97,38 +103,57 @@ fn rejection_options_expand_each_state_once_on_a_fork_shape() {
     );
 }
 
-/// **The falsifier for what the fix did not remove.** Ignored, because it is still red: it is the
-/// measurement that says whether the search's *remaining* cost has been bounded, not a gate that should
-/// block a build.
+/// **The gate for the bound, and it is counts rather than seconds.** A fork of two branches has exactly
+/// two maximal independent sets — one branch or the other — so the exact rewrite's work is a walk down
+/// each branch, not `2^(p+1)`: 40 chains goes from an infeasible enumeration to two options in about a
+/// millisecond, and the *count* stays linear out to 2,000 chains.
 ///
-///     cargo test -p rchain-sdk --release --test merging_scaling -- --ignored --nocapture
+/// The count asserted is `expanded ≤ (keys + 1) × (options + 1)`, which the enumeration misses by an
+/// exponential on this shape, so this fails loudly if the fast path is ever lost — on any machine, at
+/// any speed. That is why it is asserted at every width, including widths where the *time* is no longer
+/// small: the two are different claims, and only the count is a claim about the algorithm.
 ///
-/// It is red for a different reason than before. The dedup removed the redundancy (each state once), and
-/// 40 chains — infeasible to run at all before — now completes in **34.6 s at 351 MiB**: memory is
-/// bounded, time is not. 40 chains in two branches is 2^21 reachable states, and that count is the
-/// search's true shape, so bounding it is an algorithmic decision (enumerate the terminal states
-/// directly, or cap the search) and not a dedup.
+/// **The time, and its honest limit.** The pivot scan costs `O(|p| · log)` per candidate, so the search
+/// is output-sensitive but not free per node: measured on this tree, 200 chains takes 22 ms and 2,000
+/// takes 21 s. The widths asserted here therefore stop at 200 — a hundred times past anything observed
+/// (the widest real merge scope in this tree's fixtures is 2 chains, and the node's true widths are what
+/// `search_census` reports on a devnet run) — while 2,000 was run and its count is linear (3,000 nodes),
+/// because half a minute in every `cargo test` is not worth the extra column.
 #[test]
-#[ignore = "deliberately red: the state count is exponential in fork breadth, and bounding it is a decision (#117)"]
-fn rejection_options_scales_on_a_fork_shape() {
-    for per_branch in [10, 20] {
+fn rejection_options_are_bounded_on_a_fork_shape() {
+    for per_branch in [10, 20, 100, 200] {
         let map = fork_shape(2, per_branch);
         let started = Instant::now();
-        let options = compute_rejection_options(&map);
+        let (options, census) = compute_rejection_options_with_census(&map);
         let elapsed = started.elapsed();
         assert_eq!(
             options.len(),
             2,
             "a fork of two branches has exactly two outcomes: reject the other branch"
         );
-        println!(
-            "{per_branch} chains per branch ({} total): {elapsed:?}",
-            per_branch * 2
-        );
         assert!(
-            elapsed.as_millis() < 1000,
-            "{} conflicting chains in two branches took {elapsed:?}; this must be bounded",
-            per_branch * 2
+            census.expanded <= (census.keys + 1) * (census.options + 1),
+            "{} conflicting chains in two branches expanded {} states for {} options",
+            per_branch * 2,
+            census.expanded,
+            census.options
         );
+        assert_eq!(
+            census.max_frontier, 0,
+            "the exact path keeps no frontier at all"
+        );
+        println!(
+            "{} chains per branch ({} total): {} states, {elapsed:?}",
+            per_branch,
+            per_branch * 2,
+            census.expanded
+        );
+        if per_branch <= 100 {
+            assert!(
+                elapsed.as_millis() < 1000,
+                "{} conflicting chains in two branches took {elapsed:?}; this must be bounded",
+                per_branch * 2
+            );
+        }
     }
 }

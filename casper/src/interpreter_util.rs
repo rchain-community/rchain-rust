@@ -1,8 +1,9 @@
 //! Interpreter utilities (port of `rholang/InterpreterUtil.scala`).
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::atomic::{AtomicI64, Ordering};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
+use std::sync::{Arc, OnceLock};
+use std::time::Instant;
 
 use rchain_block_storage::block_store::BlockStore;
 use rchain_block_storage::dag::dag_storage::BlockDagStorage;
@@ -195,6 +196,13 @@ static LAST_STALL_LOG: AtomicI64 = AtomicI64::new(i64::MIN);
 /// hundreds of blocks to a readable number of lines (#70's measurement ran ~160 blocks at finality 44).
 const STALL_LOG_INTERVAL: i64 = 100;
 
+/// The merge search's census, reported on the node's own log (#117). Wall-clock-gated rather than
+/// height-gated: the instrument exists to be read off a *run*, and a run is measured in seconds. The
+/// clock starts at the first report rather than at process start, so the first line is immediate.
+static CENSUS_CLOCK: OnceLock<Instant> = OnceLock::new();
+static LAST_CENSUS_LOG_MS: AtomicU64 = AtomicU64::new(0);
+const CENSUS_LOG_INTERVAL_MS: u64 = 5000;
+
 /// A validator id, short enough for a log line: its first four bytes in hex.
 ///
 /// The slice cannot be short — a `Validator` is a fixed 65-byte array (`models/src/validator.rs:10`,
@@ -272,6 +280,19 @@ where
     let pre_state = if !parents_set.is_empty() {
         let pre_state =
             get_pre_state_for_parents(dag, block_store, runtime, &parents_set, block_index).await?;
+        // **What the merge's conflict search was handed, from the running node (#117).** The search's
+        // cost is a deterministic function of the conflict map, and the map's real shape — how wide a
+        // scope gets, how dense its conflicts are — had never been observed, so the defect was argued
+        // about with an assumed shape. `warn`, not `info`, so it is visible at the default level; the
+        // five-second gate keeps a long run to a readable number of lines. See
+        // `crate::merging::search_census`, and remove both with the fix.
+        let elapsed_ms = CENSUS_CLOCK.get_or_init(Instant::now).elapsed().as_millis() as u64;
+        if elapsed_ms.saturating_sub(LAST_CENSUS_LOG_MS.load(Ordering::Relaxed))
+            >= CENSUS_LOG_INTERVAL_MS
+        {
+            LAST_CENSUS_LOG_MS.store(elapsed_ms, Ordering::Relaxed);
+            log.warn(source, &crate::merging::search_census::summary());
+        }
         // **Why finality is not advancing, in this node's own log.** On 2026-09-29 a two-validator
         // chain sat at finality 44 while the height ran to 202 and nothing in the logs said why (#70).
         // The reason comes back from the gate itself, so it cannot disagree with the decision it
