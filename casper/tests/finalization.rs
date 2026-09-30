@@ -936,3 +936,117 @@ fn a_validator_does_not_propose_twice_in_one_round() {
          order does not reach the case and the test above proves nothing"
     );
 }
+
+/// **The guard's deadlock, and it is a real one: the round cannot close if the tip cannot advance.**
+///
+/// `has_advanced_past_the_round` blocks a validator that has already spoken this round, which is what
+/// removes the self-equivocation. But the boundary only closes when every bonded sender has advanced — and a
+/// sender stops holding it back only once `LIVENESS_WINDOW` heights have passed **above its last message**.
+/// That is measured from the tip, and the guard is what stops the tip advancing. So with a validator killed
+/// while still inside the window:
+///
+/// ```text
+/// v2 killed, latest at 89, tip 91  ->  heights_behind(91, 89) = 2 <= 5, v2 not retired
+/// v0 and v1 have both spoken this round      ->  both blocked by the guard
+/// nobody proposes                            ->  tip stays 91
+/// heights_behind never grows                 ->  v2 never retires, the round never closes
+/// ```
+///
+/// **Measured on the node**: after the kill the height is flat for the whole remaining window, and the
+/// node logs no equivocation and no error — it is not failing, it is waiting for a round that cannot close.
+///
+/// This test is that scenario, in-process, and it is **red today**: the tip goes 1 -> 2 over thirty-seven
+/// further rounds of attempts and then nothing is admitted again. It is `#[ignore]`d rather than deleted so
+/// that the guard's redesign is aimed by it — a fix is done when this test runs green without the ignore.
+#[ignore = "red until the guard stops deadlocking a round whose silent sender cannot age out"]
+#[test]
+fn the_round_closes_when_a_validator_goes_quiet_inside_the_window() {
+    use rchain_block_storage::dag::message_state::DagMessageState;
+    use rchain_models::validator::Validator;
+    use rchain_shared::refined::{BlockHeight, NonNegI64 as Stake, SeqNum};
+
+    fn validator(b: u8) -> Validator {
+        Validator::new([b; 65])
+    }
+    fn id(sender: u8, height: i64) -> BlockHash {
+        let mut b = [0u8; 32];
+        b[0] = sender;
+        b[1] = (height & 0xff) as u8;
+        b[2] = ((height >> 8) & 0xff) as u8;
+        BlockHash::new(b)
+    }
+    fn h(n: i64) -> BlockHeight {
+        BlockHeight::try_from(n).expect("height")
+    }
+    fn s(n: i64) -> SeqNum {
+        SeqNum::try_from(n).expect("seq num")
+    }
+
+    let vs = [validator(0), validator(1), validator(2)];
+    let g = validator(255);
+    let bonds: std::collections::BTreeMap<Validator, Stake> = [
+        (vs[0].clone(), Stake::try_from(100).unwrap()),
+        (vs[1].clone(), Stake::try_from(100).unwrap()),
+        (vs[2].clone(), Stake::try_from(50).unwrap()),
+    ]
+    .into_iter()
+    .collect();
+    let st: DagMessageState<BlockHash, Validator> = DagMessageState::empty();
+    let genesis = st.create_message(id(255, 0), h(0), g, s(0), bonds.clone(), &BTreeSet::new());
+    let mut state = st.insert_msg(&genesis);
+
+    let propose = |state: &DagMessageState<BlockHash, Validator>, who: usize, step: i64| {
+        let v = vs[who].clone();
+        if state.has_advanced_past_the_round(&v) {
+            return None;
+        }
+        let parents = state.parents_for_new_block();
+        let block_num = parents
+            .iter()
+            .map(|m| m.height)
+            .max()
+            .map(|m| m + rchain_shared::refined::NonNegI64::one())
+            .unwrap_or_else(BlockHeight::zero);
+        let seq_num = parents
+            .iter()
+            .find(|m| m.sender == v)
+            .map(|m| m.sender_seq + rchain_shared::refined::NonNegI64::one())
+            .unwrap_or_else(SeqNum::zero);
+        Some(state.create_message(
+            id(who as u8, i64::from(block_num) * 16 + step),
+            block_num,
+            v,
+            seq_num,
+            bonds.clone(),
+            &parents,
+        ))
+    };
+
+    // One full round, then `v2` — the 50 — goes quiet. `v0` and `v1` keep asking.
+    for step in 0..3 {
+        let m = propose(&state, step, step as i64)
+            .expect("the first round admits every validator once");
+        state = state.insert_msg(&m);
+    }
+    let frozen_tip = state.latest_msgs.values().map(|m| m.height).max().unwrap();
+    let mut admitted = 0;
+    for step in 3..40 {
+        for who in [0usize, 1] {
+            if let Some(m) = propose(&state, who, step as i64) {
+                state = state.insert_msg(&m);
+                admitted += 1;
+            }
+        }
+    }
+    let final_tip = state.latest_msgs.values().map(|m| m.height).max().unwrap();
+    // **Not `admitted > 0`**: the first round admits three proposals and would satisfy that on its own —
+    // which is how the first version of this test passed while measuring nothing. What matters is whether
+    // production *continues* after `v2` goes quiet, so the bar is real growth.
+    assert!(
+        i64::from(final_tip) > i64::from(frozen_tip) + 5,
+        "with `v2` quiet but inside `LIVENESS_WINDOW`, `v0` and `v1` must keep the chain moving: the \
+         boundary has to close so they are not blocked for ever. The tip went {frozen_tip:?} -> \
+         {final_tip:?} over 37 further steps with {admitted} proposal(s) admitted — the guard blocks both \
+         survivors, and the frozen tip is what keeps `v2` inside the window, so the round never closes"
+    );
+}
