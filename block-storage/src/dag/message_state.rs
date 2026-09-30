@@ -174,11 +174,20 @@ where
     ///
     /// The proposer's veto, not this module's: the escape above is what keeps the veto from deadlocking.
     pub fn has_advanced_past_the_round(&self, sender: &S) -> bool {
-        !self.round_parents.is_empty()
-            && self
-                .latest_msgs
-                .get(sender)
-                .is_some_and(|m| m.height > self.round_height)
+        if self.round_parents.is_empty() {
+            return false;
+        }
+        // **Against the snapshot's entry for this sender, not against `round_height`.** A boundary set at a
+        // tip *above* this sender's own last block leaves `latest.height > round_height` false while the
+        // snapshot's entry for it is older still — and the pure snapshot then hands back a sequence number
+        // already used. Measured: one node logged ten `equivocation detected` lines in three seconds that
+        // way, in one of three attempts, before the round closed and it recovered on its own.
+        match (self.latest_msgs.get(sender), self.round_parents.get(sender)) {
+            (Some(latest), Some(at_boundary)) => latest.sender_seq > at_boundary.sender_seq,
+            // Spoke after the boundary and was not in it.
+            (Some(_), None) => true,
+            (None, _) => false,
+        }
     }
 
     /// Create a new message, generating its finalization fringe.

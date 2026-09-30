@@ -5449,3 +5449,41 @@ own `sender_seq` and `create_msg_and_update_sender` takes its `seq_num` from `la
 the parent set. **A fixture that owns the counter it is testing cannot test the rule that computes it** —
 and the instrument that found it was not a better fixture but a log capture, added one commit earlier for a
 different reason.
+
+## 37. The pin is fixed on the node, and two designs died getting there (C185, C186, C187)
+
+§35 found the defect, §36 found its first repair wrong. This is the one that holds, and the two failures in
+between are the part worth keeping — each is a measurement, and each would have been a plausible "obvious"
+fix.
+
+The governing constraint came out of the second failure and closes the design space: **`validate.rs:236`
+requires `max(justifications) + 1 == block_number` and `:259` requires `creator_latest_seq + 1 == seq_num`**.
+Both numbers are determined by the justification set and checked by every validator, so the parent set must
+carry the proposer's own newest message — while the fringe gate needs it not to. The tension is structural.
+Any repair that moves the derivation is a category A change, not a proposer-local one.
+
+| design | pin fixed | equivocates against itself | keeps producing after a kill |
+|---|---|---|---|
+| `latest_msgs` (the state before) | no | — | no |
+| pure round snapshot | **yes** | yes, and three halt autopropose | no |
+| + refuse a second proposal in a round | yes | no | **no — deadlocks** |
+| + escape, bounded by a local clock | **yes** | **no** | **yes** |
+
+The deadlock is worth naming precisely because it is the kind of thing that looks like a hang: the round
+closes only when every bonded sender has advanced past the boundary, a quiet sender stops holding it back
+only once `LIVENESS_WINDOW` heights have passed above its last message, and that is measured from the tip —
+which the refusal is what freezes. A validator killed inside the window is never retired and the round never
+closes. The escape's clock therefore had to be **local** (the proposer's own count of declined attempts),
+which is the one clock in this design that is not derived from the DAG.
+
+**On the node, tree `e7967ed35`, all three attempts** (`n127-proposer-fix-results.md`): finality 4 heights
+behind the tip at the kill — 80 of 84, 111 of 115, 127 of 131 — against 15–61 behind and last advancing
+87–104 seconds *before* the kill in the two earlier arms; production continuing for +12 heights over the 180
+seconds after the kill; **zero equivocation lines on any survivor in any attempt**; 12 / 32 / 12 stall lines
+against 75; the C184 control empty.
+
+**And one caveat, in the results file and repeated here because it is the difference between verified and
+almost:** the killed node logged ten equivocations pre-kill in one of the three attempts, traced to the guard
+comparing heights rather than sequence numbers. That predicate is now exact, and the change is covered by the
+fixtures **and not by this run** — the binary measured is the one with the height comparison.
+

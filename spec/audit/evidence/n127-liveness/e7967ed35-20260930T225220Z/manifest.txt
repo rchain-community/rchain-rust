@@ -1,0 +1,6 @@
+# tree=e7967ed35 image=sha256:722ee686fecdef17c804502fbd0faeda5a0b89e78473a58c2fadfccb04efaf6d
+# shape: --validators 3 --stakes 100,100,50 --epoch-length 10 --fresh, cap=8g, window=300s, kill=validator-2 at T+120s, attempts=3
+# started 2026-09-30T22:52:20Z
+# binary_sha256=8b41e1b36ad635614e61d2b12949ea76f568d472df9cedf9d74a744c0616ca76
+# image_created=2026-09-30T23:50:55.195266801+01:00
+# rust_diff_vs_HEAD=empty — the Rust tree is HEAD
