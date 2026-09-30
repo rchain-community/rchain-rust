@@ -60,7 +60,8 @@ RUST_TEST_THREADS = "10"
 # runtime so that the artifact under test *is* the artifact, with nothing injected by the operator and no
 # environment variable to be mis-parsed — a failure mode this work has already hit once, when
 # `DEVNET_NODE_ENV` split a comma-containing `MALLOC_CONF` into fragments. It costs one block on stderr at
-# process exit, after the measurement point, so it cannot perturb a run. Remove it when #117 closes.
+# process exit, after the measurement point, so it cannot perturb a run. Remove it when #127 closes --
+# the successor #117 was rolled into, since the investigation (and the stats it reads) is not over.
 #
 # **The profiling keys are not here, and that is a correction.** `prof:true,lg_prof_sample:20,prof_prefix:…`
 # were baked in for one commit, which — together with the `profiling` feature that commit also turned on —

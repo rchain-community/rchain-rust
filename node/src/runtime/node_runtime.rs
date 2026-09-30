@@ -2633,8 +2633,9 @@ fn tap_validated_blocks(
 /// **What these bounds do *not* cover, said plainly because this comment used to overstate them.** When the
 /// quorum *is* reachable, none of the above limits the rate: a node attests promptly, its attestation is a
 /// remote block for its peers, and they attest in turn. On an all-live net that is the `--attest-on-new-blocks`
-/// storm recorded on #70 — 276 blocks in about a minute, finalised only to block 11 — and it is still open:
-/// the per-remote-height rule above is not a bound at all while the height itself keeps advancing, so the pace
+/// storm recorded on #70 — 276 blocks in about a minute, finalised only to block 11 — and it is still
+/// unbound: #70 is rolled into #126, whose open half is exactly this. The per-remote-height rule above is not
+/// a bound at all while the height itself keeps advancing, so the pace
 /// half belongs on *our own* quiet (`our latest message at least k heights behind`) and is not here yet. See
 /// `docs/src/node/running-a-public-testnet.md`, "Attesting on every remote block is a block storm".
 ///
