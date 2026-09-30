@@ -177,10 +177,12 @@ pub async fn version() -> String {
 /// placeholder string, because the reporter only renders inside `report_period_snapshot` and no
 /// production path called it.
 pub async fn metrics(State(state): State<HttpState>) -> String {
-    state
-        .reporter
-        .report_period_snapshot(&state.metrics.snapshot());
-    state.reporter.scrape_data()
+    // **Rendered, not accumulated.** `report_period_snapshot` merges into a period accumulator, which
+    // is right for kamon's periodic reporter and wrong for a per-request endpoint over a *cumulative*
+    // registry: each scrape added the running totals to themselves, so the merge histogram read
+    // `_count 7617` against a census of 101 and the factor was how often someone scraped. See
+    // `NewPrometheusReporter::render`.
+    state.reporter.render(&state.metrics.snapshot())
 }
 
 /// `GET /status` (port of `StatusInfo.service`): the node address, version, and peer/node counts.

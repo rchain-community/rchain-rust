@@ -1,5 +1,14 @@
 # Phase 0 — the campaign: what the rig gave, and the third defect it found in the instrument
 
+> **Corrections, added 2026-09-30 after a panel re-derived the plan.** §2's "~75 is the number of reporting
+> periods" is wrong — there is no period: `/metrics` pushes a snapshot per *request*, and this campaign's own
+> sampler scraped once a second, so the instrument was inflated by the measurement. §5's "the storm's
+> signature appears after the kill" is not supported by the run: v1 made 17.6 blocks/min after the kill
+> against 16.1 before it, so height and finality *decouple* while the rate does not rise. And §1's
+> `38 + 55 + 8 = 101 ✓` is a tautology — `MERGES` and `WIDTH_COUNTS` are incremented in one function, so
+> that identity holds for any output the code can produce. What survives is the finding itself: the endpoint
+> did not carry the census, and Unit 2 fixed it (`n127-endpoint-vs-census-results.md`).
+
 Run 2026-09-30 on tree `c5442ee1f`, image `sha256:783fe97d6054…` (built 17:10:49 from this tree; the
 manifest's `rust_diff_vs_1732306c7` reads **empty**, so the binary under test is the tree the artifacts
 name). Three attempts of the reproduction frozen in `n127-campaign-preregistration.md`, 8 GiB cgroup, 300 s

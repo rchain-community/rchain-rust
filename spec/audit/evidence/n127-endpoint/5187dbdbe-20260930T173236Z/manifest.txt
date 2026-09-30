@@ -1,0 +1,2 @@
+# tree=5187dbdbe scraped=2026-09-30T17:34:14Z node=bootstrap scrapes=200
+# shape: --validators 3 --stakes 100,100,50 --epoch-length 10 --fresh, cap=8g, window=90s

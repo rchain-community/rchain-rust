@@ -152,20 +152,41 @@ impl NewPrometheusReporter {
     }
 
     /// Accumulate `snapshot` and re-render the merged result (port of `reportPeriodSnapshot`).
+    ///
+    /// This is the **periodic** entry point, and its merging is the port's: kamon reports a period's
+    /// worth of data, so accumulating builds the window. It is not what `/metrics` should call — see
+    /// [`NewPrometheusReporter::render`].
     pub fn report_period_snapshot(&self, snapshot: &PeriodSnapshot) {
         let mut accumulator = lock(&self.accumulator);
         accumulator.add(snapshot);
         let current = accumulator.peek();
         drop(accumulator);
 
+        *lock(&self.prepared) = self.render(&current);
+    }
+
+    /// Render `snapshot` as scrape data **without accumulating it**, and return it.
+    ///
+    /// **The port changed the trigger, and this is the correction.** The oracle's `/metrics` route
+    /// returns a cached string — `Ok(Sync[F].delay(reporter.scrapeData()))` — and
+    /// `reportPeriodSnapshot` is reached from a *periodic* reporter. This port wired the endpoint
+    /// straight into `reportPeriodSnapshot`, so every scrape accumulated. That is harmless for gauges
+    /// (the accumulator uses `insert`) and wrong for everything cumulative: the registry's counters
+    /// accumulate and its histograms accumulate, so each request added the running total to itself.
+    ///
+    /// Measured, 2026-09-30: the merge shape's histogram rendered `_count 7617` against a census of
+    /// 101 on the same node at the same instant, and the factor was the **scrape count** — the
+    /// campaign's own sampler curled `/metrics` once a second, so the instrument was inflated by the
+    /// measurement. Rendering directly makes `/metrics` **idempotent**: N scrapes render what one
+    /// scrape renders, which is the property the guard test asserts.
+    pub fn render(&self, snapshot: &PeriodSnapshot) -> String {
         let mut builder = ScrapeDataBuilder::new(self.config.clone(), Tags::new());
         builder
-            .append_counters(&current.metrics.counters)
-            .append_gauges(&current.metrics.gauges)
-            .append_histograms(&current.metrics.histograms)
-            .append_histograms(&current.metrics.range_samplers);
-
-        *lock(&self.prepared) = builder.build();
+            .append_counters(&snapshot.metrics.counters)
+            .append_gauges(&snapshot.metrics.gauges)
+            .append_histograms(&snapshot.metrics.histograms)
+            .append_histograms(&snapshot.metrics.range_samplers);
+        builder.build()
     }
 
     /// Return the last-rendered scrape payload (port of `scrapeData`).

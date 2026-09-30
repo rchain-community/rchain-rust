@@ -36,6 +36,15 @@ window, where only the survivors can. Each scrape carries the tree, the image id
 the scrape time in its header; a scrape from a node that is not serving writes *that fact* rather than a
 stale body (C176's class — an artifact that cannot say what it measured).
 
+> **Amendment 2026-09-30, after the run: that is not what happened, and it mattered.** "Scraped twice"
+> describes this harness's own scrapes *only*. The sampler launched four lines earlier in the same script
+> reads `/metrics` on every node **once a second for the whole window**, so the endpoint was scraped ~200
+> times per node — and the endpoint accumulated per request over a cumulative registry, so those scrapes
+> inflated the very histogram this run was reading. The measurement was inflated by the measurement; the
+> exact protocol above is false as a description of the run. The instrument is fixed and the comparison
+> that would have caught it on the spot is now the close condition
+> (`n127-endpoint-vs-census-results.md`).
+
 **Discipline:** one devnet at a time; ≥ 3 attempts, unfiltered; a node that dies is recorded, not dropped.
 
 ## The acceptance rows, frozen

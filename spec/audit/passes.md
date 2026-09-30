@@ -5068,3 +5068,33 @@ Stage 2's **N** cannot be read from this run's endpoint, and the distribution is
 census's log until the endpoint's counts are fixed — which makes that fix a prerequisite for Stage 2 rather
 than a follow-up, and `C182` stays `in progress` with its `owes` naming all three. The numbers above are what
 a threshold is weighed against, with the caveat attached. Nothing here bounds or prices anything.
+
+### Correction (2026-09-30, after the panel)
+
+Three claims in this section are wrong, and the panel that re-derived the plan found them by reading the
+artifacts rather than the summary. They are corrected here rather than deleted, because the failure mode is
+the one this register exists to record.
+
+- **"the storm is a post-kill phenomenon here" is not supported by the run.** v1 in attempt 2 made
+  **17.6 blocks/min** after the kill against **16.1** before it. What the kill does is *decouple height from
+  finality* — the chain keeps producing while the fringe stops advancing — and the rate is the same on both
+  sides. Calling that a storm stretches the word past the 276 blocks/min the storm is recorded at.
+- **"~75 is the number of reporting periods" is wrong: there is no period.** The only production caller of
+  `report_period_snapshot` is the `/metrics` handler, **once per request** (`node/src/web/http.rs:180-184`);
+  the oracle's route returns a cached string instead. So the factor is the *scrape count* — and this
+  campaign's own sampler curled `/metrics` once a second, which means **the instrument was inflated by the
+  measurement**. The pre-registration's "scraped twice" describes a protocol that did not run.
+- **The envelope's "storm" label was mine and it was wrong.** This section's 0.2 heading reports the
+  *pre-kill* scrapes, and they show all three validators live at 12–16 blocks/min with widest scopes of
+  **30–36 chains and up to 985,391 states**. The kill did not widen the scope; it changed the *cost* on the
+  survivors. `n127-shape-distribution-results.md` had already called its 43-chain point "the quiet devnet".
+
+And one claim the section makes that is a **tautology**, not evidence: `summary()`'s width buckets summing
+to `MERGES` cannot fail, because `MERGES` and `WIDTH_COUNTS` are incremented in one function
+(`casper/src/merging.rs:148-159`) and `bucket_index` returns `0..=4`.
+
+**What the section got right, and it is the thing that mattered:** the endpoint did not carry the census.
+That was found by reading the artifact, and Unit 2 of the programme fixed it — `HistogramAcc` had no bucket
+map at all, and the endpoint accumulated on every request. See
+`spec/audit/evidence/n127-endpoint-vs-census-results.md`: 200 scrapes now read `_count 93` against the
+census's `93 merges`, with every boundary equal.

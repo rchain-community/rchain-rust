@@ -2613,15 +2613,27 @@ fn metric_key(name: &str) -> String {
         .0
 }
 
+/// The merge shape's own boundaries, **derived from the census's constants rather than retyped**.
+///
+/// The two renderings of one quantity are the census's log line and this endpoint, and until now the
+/// endpoint's edges were a hand-written superset (`8,16,32,64,128,256`) of the census's
+/// (`WIDTH_EDGES`). Nothing compared them, so nothing could notice them drifting — and they had
+/// already drifted in a way that made C182's own close condition unsatisfiable: the census's
+/// open-ended bucket is *published at* its last edge, so a width of 200 and a width of 128 both arrive
+/// as `128`, which is the value the configured edge list must contain for the two to agree. Deriving
+/// the list from the constant is what makes "the endpoint agrees with the census" a claim a test can
+/// state. (`search_census`'s buckets are five over four edges: the last is the open one.)
 fn prometheus_scrape_config() -> crate::diagnostics::scrape_data_builder::Configuration {
+    use rchain_casper::merging::search_census::{EXPANDED_EDGES, WIDTH_EDGES};
+
+    let edges = |e: &[usize]| e.iter().map(|x| *x as f64).collect::<Vec<f64>>();
     let mut config = crate::diagnostics::scrape_data_builder::Configuration::default();
-    config.custom_buckets.insert(
-        metric_key("scope_width"),
-        vec![8.0, 16.0, 32.0, 64.0, 128.0, 256.0],
-    );
     config
         .custom_buckets
-        .insert(metric_key("states_expanded"), vec![1e3, 1e4, 1e5, 1e6, 1e7]);
+        .insert(metric_key("scope_width"), edges(&WIDTH_EDGES));
+    config
+        .custom_buckets
+        .insert(metric_key("states_expanded"), edges(&EXPANDED_EDGES));
     config
 }
 
@@ -2704,8 +2716,9 @@ mod prometheus_scrape_config_tests {
         registry.record(&merge, "states_expanded", 50_000, 1); // expanding 50,000 states
 
         let reporter = NewPrometheusReporter::new(prometheus_scrape_config());
-        reporter.report_period_snapshot(&registry.snapshot());
-        let rendered = reporter.scrape_data();
+        // Through the endpoint's own path (`render`), not the periodic accumulator: the two render the
+        // same bytes for one snapshot, but only one of them is what an operator's scrape sees.
+        let rendered = reporter.render(&registry.snapshot());
 
         // 20 chains is above the 16 edge and below the 32 — the shape's own boundaries, not the
         // registry's defaults (0.005 .. 10), which is the defect this asserts against.
@@ -2728,29 +2741,30 @@ mod prometheus_scrape_config_tests {
         );
     }
 
-    /// **Red by construction until C182's third defect is fixed, and ignored so the suite stays green
-    /// while it is.** The devnet campaign of 2026-09-30 found the census and `/metrics` disagreeing on one
-    /// quantity: the census emits `101 merges` with width buckets summing to 101, while the endpoint
-    /// renders `_count 7617` — a factor of ~75, and the factor is the number of reporting periods. This
-    /// test names the mechanism: `report_period_snapshot` merges each snapshot into a five-year
-    /// accumulator, and this registry's histograms are *cumulative*, so a re-reported snapshot is added to
-    /// itself. `cargo test -p rchain-node --lib -- --ignored re_reporting_a_snapshot` reproduces it.
+    /// **Idempotence: a scrape must not change what the next scrape says.** The devnet campaign of
+    /// 2026-09-30 found the census and `/metrics` disagreeing on one quantity — the census rendered `101
+    /// merges` while the endpoint rendered `_count 7617`. The factor was the **scrape count**, not a
+    /// reporting period: the endpoint pushes a snapshot per request into a five-year accumulator, and
+    /// this registry's histograms are *cumulative*, so each request added the running total to itself.
+    /// The campaign's own sampler curled `/metrics` once a second, so the instrument was inflated by the
+    /// measurement. Counters were summed the same way; gauges used `insert` and were the one channel that
+    /// read correctly, which is what caught it.
     ///
-    /// It is the only histogram in the tree (`casper/src/dag.rs:272,283` are the sole `Metrics::record`
-    /// call sites), so the blast radius is exactly the two metrics C182 added — the queue depths are
-    /// gauges and are unaffected.
+    /// The blast radius was exactly the two metrics C182 added — `casper/src/dag.rs:272,283` are the sole
+    /// `Metrics::record` call sites in the workspace, and the queue depths are gauges.
     #[test]
-    #[ignore = "C182's third defect: the reporter accumulates a cumulative histogram; red until it is fixed"]
     fn re_reporting_a_snapshot_does_not_double_a_histogram_count() {
         let registry = MetricsRegistry::new();
         let merge = Source::base().sub("merge");
         registry.record(&merge, "scope_width", 20, 1);
 
+        // `render` is the path `/metrics` takes; `report_period_snapshot` is the *periodic* entry and
+        // merges by design (kamon's contract, and its own tests pin that). The defect was the trigger,
+        // so the guard exercises the trigger's path — twice, because the whole class is "the second
+        // scrape disagrees with the first".
         let reporter = NewPrometheusReporter::new(prometheus_scrape_config());
-        reporter.report_period_snapshot(&registry.snapshot());
-        let first = reporter.scrape_data();
-        reporter.report_period_snapshot(&registry.snapshot());
-        let second = reporter.scrape_data();
+        let first = reporter.render(&registry.snapshot());
+        let second = reporter.render(&registry.snapshot());
 
         assert!(
             first.contains("rchain_merge_scope_width_count 1.0"),
@@ -2760,6 +2774,39 @@ mod prometheus_scrape_config_tests {
             second.contains("rchain_merge_scope_width_count 1.0"),
             "a re-reported snapshot doubled the histogram's count — which is what inflates the \
              devnet's histogram ~75x over the census:\n{second}"
+        );
+    }
+
+    /// **Two observations, two buckets — the guard the registry needed and never had.** Without a
+    /// recorded value map, `snapshot()` emitted a single `Bucket { value: max, frequency: count }`, so
+    /// every `_bucket{le=…}` line was a function of the **running maximum** and the scrape schedule
+    /// rather than of the data. Every histogram fixture in this tree recorded exactly one sample, which
+    /// is why neither this nor the accumulation defect was visible: a one-sample distribution is
+    /// correctly rendered by a single-bucket accumulator.
+    #[test]
+    fn a_histogram_renders_every_observation_it_recorded() {
+        let registry = MetricsRegistry::new();
+        let merge = Source::base().sub("merge");
+        registry.record(&merge, "scope_width", 20, 1); // one merge whose conflict set was 20 chains
+        registry.record(&merge, "scope_width", 40, 1); // and one at 40
+
+        let reporter = NewPrometheusReporter::new(prometheus_scrape_config());
+        // Through the endpoint's own path (`render`), not the periodic accumulator: the two render the
+        // same bytes for one snapshot, but only one of them is what an operator's scrape sees.
+        let rendered = reporter.render(&registry.snapshot());
+
+        assert!(
+            rendered.contains("rchain_merge_scope_width_count 2.0"),
+            "both observations are counted:\n{rendered}"
+        );
+        // Cumulative, as a Prometheus histogram is: 20 lands in le=32, and 40 in le=64.
+        assert!(
+            rendered.contains(r#"rchain_merge_scope_width_bucket{le="32.0"} 1.0"#),
+            "the 20-chain observation is in the 32 bucket, not the top one:\n{rendered}"
+        );
+        assert!(
+            rendered.contains(r#"rchain_merge_scope_width_bucket{le="64.0"} 2.0"#),
+            "and the 40-chain one joins it at 64:\n{rendered}"
         );
     }
 
@@ -2783,15 +2830,29 @@ mod prometheus_scrape_config_tests {
             "the registry's name for a metric keeps the source separator: {}",
             metric_key("scope_width")
         );
-        // The widest scope two devnet runs reached is 43 chains, and one merge expanded 1,663,395 states;
-        // a bucket set that does not reach those puts the samples in `+Inf` again.
-        assert!(
-            width.iter().any(|edge| *edge >= 64.0),
-            "the width buckets must reach the widths actually observed: {width:?}"
+        // **Equality with the census's own constants, not a superset check.** The previous assertion was
+        // existential — `width.iter().any(|edge| *edge >= 64.0)` — which passes for the correct list and
+        // for `[64]` and for any hand-written superset, which is what this was. Nothing compared the two
+        // renderings of one quantity, and they had already drifted into a state that made C182's close
+        // condition unsatisfiable (see `prometheus_scrape_config`). Deriving the list makes this an
+        // equality; asserting the equality is what keeps it derived.
+        use rchain_casper::merging::search_census::{EXPANDED_EDGES, WIDTH_EDGES};
+        let expect = |constant: &[usize]| constant.iter().map(|e| *e as f64).collect::<Vec<f64>>();
+        assert_eq!(
+            *width,
+            expect(&WIDTH_EDGES),
+            "the width boundaries are the census's own, not a hand-written set: {width:?}"
         );
-        assert!(
-            cost.iter().any(|edge| *edge >= 1_000_000.0),
-            "the cost buckets must reach the costs actually observed: {cost:?}"
+        assert_eq!(
+            *cost,
+            expect(&EXPANDED_EDGES),
+            "the cost boundaries are the census's own: {cost:?}"
+        );
+        // And the top edge is the one the census *publishes its open bucket at*, so a width past it
+        // arrives as this value and must land on this edge rather than past the last one.
+        assert_eq!(
+            width.last(),
+            Some(&(WIDTH_EDGES[WIDTH_EDGES.len() - 1] as f64))
         );
     }
 }

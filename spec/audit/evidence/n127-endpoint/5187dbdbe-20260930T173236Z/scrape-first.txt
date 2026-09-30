@@ -1,0 +1,64 @@
+# TYPE rchain_block_pipeline_shard_0_attestation_consumer_active gauge
+rchain_block_pipeline_shard_0_attestation_consumer_active 1.0
+# TYPE rchain_block_pipeline_shard_0_attestation_depth gauge
+rchain_block_pipeline_shard_0_attestation_depth 0.0
+# TYPE rchain_block_pipeline_shard_0_attestation_observations gauge
+rchain_block_pipeline_shard_0_attestation_observations 990.0
+# TYPE rchain_block_pipeline_shard_0_attestation_sampled_peak gauge
+rchain_block_pipeline_shard_0_attestation_sampled_peak 0.0
+# TYPE rchain_block_pipeline_shard_0_autopropose_consumer_active gauge
+rchain_block_pipeline_shard_0_autopropose_consumer_active 1.0
+# TYPE rchain_block_pipeline_shard_0_autopropose_depth gauge
+rchain_block_pipeline_shard_0_autopropose_depth 0.0
+# TYPE rchain_block_pipeline_shard_0_autopropose_observations gauge
+rchain_block_pipeline_shard_0_autopropose_observations 990.0
+# TYPE rchain_block_pipeline_shard_0_autopropose_sampled_peak gauge
+rchain_block_pipeline_shard_0_autopropose_sampled_peak 1.0
+# TYPE rchain_block_pipeline_shard_0_validated_consumer_active gauge
+rchain_block_pipeline_shard_0_validated_consumer_active 1.0
+# TYPE rchain_block_pipeline_shard_0_validated_depth gauge
+rchain_block_pipeline_shard_0_validated_depth 0.0
+# TYPE rchain_block_pipeline_shard_0_validated_observations gauge
+rchain_block_pipeline_shard_0_validated_observations 990.0
+# TYPE rchain_block_pipeline_shard_0_validated_sampled_peak gauge
+rchain_block_pipeline_shard_0_validated_sampled_peak 0.0
+# TYPE rchain_dag_fringe_states gauge
+rchain_dag_fringe_states 3.0
+# TYPE rchain_dag_index_entries gauge
+rchain_dag_index_entries 210.0
+# TYPE rchain_dag_logical_bytes gauge
+rchain_dag_logical_bytes 109107.0
+# TYPE rchain_dag_messages gauge
+rchain_dag_messages 81.0
+# TYPE rchain_dag_seen_entries gauge
+rchain_dag_seen_entries 2094.0
+# TYPE rchain_merge_max_asymmetric_pairs gauge
+rchain_merge_max_asymmetric_pairs 420.0
+# TYPE rchain_merge_max_conflict_pairs gauge
+rchain_merge_max_conflict_pairs 1033.0
+# TYPE rchain_merge_max_scope_width gauge
+rchain_merge_max_scope_width 41.0
+# TYPE rchain_merge_max_states_expanded gauge
+rchain_merge_max_states_expanded 320079.0
+# TYPE rchain_merge_scope_width_total gauge
+rchain_merge_scope_width_total 1230.0
+# TYPE rchain_merge_searches gauge
+rchain_merge_searches 92.0
+# TYPE rchain_merge_states_expanded_total gauge
+rchain_merge_states_expanded_total 1816116.0
+# TYPE rchain_merge_scope_width histogram
+rchain_merge_scope_width_bucket{le="16.0"} 67.0
+rchain_merge_scope_width_bucket{le="32.0"} 85.0
+rchain_merge_scope_width_bucket{le="64.0"} 92.0
+rchain_merge_scope_width_bucket{le="128.0"} 92.0
+rchain_merge_scope_width_bucket{le="+Inf"} 92.0
+rchain_merge_scope_width_count 92.0
+rchain_merge_scope_width_sum 2096.0
+# TYPE rchain_merge_states_expanded histogram
+rchain_merge_states_expanded_bucket{le="1000.0"} 68.0
+rchain_merge_states_expanded_bucket{le="10000.0"} 76.0
+rchain_merge_states_expanded_bucket{le="100000.0"} 86.0
+rchain_merge_states_expanded_bucket{le="1000000.0"} 92.0
+rchain_merge_states_expanded_bucket{le="+Inf"} 92.0
+rchain_merge_states_expanded_count 92.0
+rchain_merge_states_expanded_sum 7148000.0

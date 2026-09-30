@@ -15,12 +15,24 @@ use super::model::{
     PeriodSnapshot, Tags,
 };
 
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Debug, Default)]
 struct HistogramAcc {
     count: i64,
     sum: i64,
     min: i64,
     max: i64,
+    /// Observed value → how many times it was seen. **Without this the registry cannot produce a
+    /// distribution at all**, and the first version did not have it: `snapshot()` emitted a single
+    /// `Bucket { value: h.max, frequency: h.count }`, so every `_bucket{le=…}` line the endpoint
+    /// rendered was a function of the **running maximum** and the scrape schedule rather than of the
+    /// data. C182's two earlier "bucket" defects were both faces of this one — the boundaries were
+    /// changed twice while the thing being bucketed was a single fabricated value (2026-09-30, Unit 2
+    /// of the programme; the devnet's histogram read `_count 7617` against a census of 101).
+    ///
+    /// Bounded by the number of **distinct** values, not by the number of observations: the two
+    /// publishers here send one sample per bucket edge (`casper/src/dag.rs:272,283`), so this holds at
+    /// most five entries each. It is a `BTreeMap` so the rendered order is stable.
+    buckets: BTreeMap<i64, i64>,
 }
 
 #[derive(Debug, Default)]
@@ -112,14 +124,17 @@ impl MetricsRegistry {
                     sum: h.sum,
                     min: h.min,
                     max: h.max,
-                    buckets: if h.count > 0 {
-                        vec![Bucket {
-                            value: h.max,
-                            frequency: h.count,
-                        }]
-                    } else {
-                        Vec::new()
-                    },
+                    // The observations, as recorded. This one line is the difference between an
+                    // instrument and a shape: the renderer buckets these against its configured edges,
+                    // so `_bucket{le=…}` is now a fact about the data.
+                    buckets: h
+                        .buckets
+                        .iter()
+                        .map(|(value, frequency)| Bucket {
+                            value: *value,
+                            frequency: *frequency,
+                        })
+                        .collect(),
                 },
             });
         }
@@ -205,6 +220,15 @@ impl Metrics for MetricsRegistry {
         }
         h.count += count;
         h.sum += value * count;
+        // The observation itself, which is what `snapshot` renders a distribution *from*. A `count` of
+        // zero carries no observation, and recording one would invent a bucket out of a call that
+        // observed nothing.
+        if count > 0 {
+            h.buckets
+                .entry(value)
+                .and_modify(|f| *f += count)
+                .or_insert(count);
+        }
     }
 }
 
