@@ -236,6 +236,26 @@ where
 ///
 /// This is the Scala `computeRejectionOptions` `O(2^n)` search, ported as a breadth-first
 /// enumeration over acceptance states.
+///
+/// **The cost is the node's memory ceiling (#117), and it is not avoidable by the obvious rewrite.**
+/// The search is exponential in the number of *forked* chains, which is the shape this node produces:
+/// chains within a branch do not conflict while chains across branches conflict completely, so the
+/// enumeration visits every subset of a branch — 2^(n/2) states, each holding two cloned sets.
+/// Measured locally (`sdk/tests/merging_scaling.rs`): **20 chains in two branches takes 11 seconds**,
+/// and 40 is 2^20 states. A heap profile of a node at its cgroup ceiling puts **97 % of the live heap**
+/// in `BTreeSet::clone` under `resolve_conflict_set`, grown 343 -> 1488 MiB within a single run.
+///
+/// The dense case is not the problem — accepting any key rejects all the others, so it terminates in one
+/// step, which is why the 1000-node full-graph test passes while the node grows to gigabytes.
+///
+/// **A least-fixed-point rewrite was attempted and is wrong.** It is tempting to compute
+/// `rejected ⊇ ⋃{conflicts(j) : j ∉ rejected}` directly, on the reasoning that every key not rejected is
+/// eventually accepted. That over-approximates, because a key that has been *rejected* can never
+/// subsequently be accepted: for `{0: {1}, 1: {0}, 2: {}}` the search yields `{{0}, {1}}`, while the
+/// closure also yields `{0, 1}`. The counter-example is pinned by
+/// `rejection_options_are_not_the_closure` so that the next attempt at this meets it. Any rewrite must
+/// preserve the outcome exactly — the merge result is consensus-visible (law 17) — which means
+/// differential testing against this enumeration, not reasoning about it.
 pub fn compute_rejection_options<D: Ord + Clone>(
     conflicts_map: &BTreeMap<D, BTreeSet<D>>,
 ) -> BTreeSet<BTreeSet<D>> {
