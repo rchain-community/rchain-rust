@@ -2008,7 +2008,12 @@ removing the fix and confirming the test fails.
   `(1, 2,)`, `a.b(1,)` and `for (x <- c;) { … }` have no derivation, and the port accepted all of
   them — a separator with nothing after it, in eleven loops. **Fixed** at each site, by a shared check
   (`expect_element_after_separator`, and its multiple-terminator form for a bind's names and a
-  declaration's values). Two distinctions the fix had to keep, both from the grammar rather than from
+  declaration's values). [! **Corrected 2026-09-30: `expect_element_after_separator` is a name this pass
+  invented and no source file contains** — `rholang/src/parser.rs` has `expect` and `expect_ident`, and the
+  register cell for C31 pointed at it until the evidence check stopped being a tautology and the row went
+  red. The check itself exists and the fix is real; the symbol does not. The cell is corrected; this record
+  is not rewritten, because a historical pass that silently changes its own account is worse than one that
+  names a function that was never there.] Two distinctions the fix had to keep, both from the grammar rather than from
   taste: `(1,)` is derivable (`TupleSingle ::= "(" Proc ",)"`), so it stays; and a separator followed
   by a **remainder** (`{name: *voter, ...tail}`) is *equally* underivable but is how the vendored
   contracts are written (`Issue.rho:110`, `Ballot.rho:106`, and 31 such sites), so it is a recorded
@@ -5228,3 +5233,38 @@ attempt. The mechanism is *not* established: whether the stale sender is enterin
 `calculate_fringe`'s support map is keyed on a set the derivation no longer uses, or the two sides of the
 comparison disagree after `inPartition` filtered one of them, is unmeasured. The next step is the
 in-process fixture that reproduces `150 of 250`, not a third devnet run.
+
+### §34 correction (2026-09-30, later, same day): the pin is not the kill
+
+**The sentence above that reads `150 = 100 + 50`: "the bootstrap's stake plus **the killed validator's**" is
+wrong, and the run's own artifacts say so.** The stall lines were never split at the kill until now. Split:
+
+| run | lines | before the kill | after it |
+|---|---|---|---|
+| this section's instrumented run | 75 | **73** | 2 |
+| §31's campaign, each attempt | 3 | 3 | 0 |
+
+Ten of the `150 of 250` lines are **before** the kill; the killed validator is alive and proposing at all
+ten. `150` is "two of three candidates were full partitions" — at stakes `100/100/50` that pair is
+`100 + 50`, which is what the arithmetic looked like and not a fact about the departed validator.
+
+**And the freeze is not the kill either.** Computed for the first time from the series both arms already
+had (`n127-liveness-results.md`, `n127-liveness-summarise.py`): of the **16 survivor node-runs across both
+arms, 14 had finished finalising before T+120**, the kill instant, and the other two moved by one increment
+within 10 s of it. In this arm's three attempts finality last moved at T+33s, T+30s, T+19s, T+16s and T+24s —
+85 to 104 seconds before anything was stopped. §31's campaign series, which is committed and was never
+computed this way, says the same: T+111s, T+90s, T+55s, T+17s, T+16s.
+
+So the acceptance row §31 and this section both report against — "finality does not resume after the kill" —
+measures *when finality naturally pins*, which is 16–130 seconds into a 300-second run in both arms. It is
+not a comparison of the fix, and reading it as one is how "the fix did not work on the node" was recorded
+when the quantity had never been decomposed.
+
+**What survives is sharper.** The dominant refusal is not a shortfall at all: `0 of 250` with no full
+partition — that form is 39 of the run's 73 pre-kill lines, 53 % — and `0 full partitions` contradicts
+`NoAdvance::Support`'s own doc ("a layer exists whose candidates were seen by the whole partition"). The gate
+mostly never reaches its quorum test. Two mechanisms produce that and want different repairs —
+`calculate_fringe`'s `seen_by.values().all(|v| v == &must_be_seen)` (`finalizer.rs:222`) demanding that
+*every* live seer has seen *every* next-layer message, and `calculate_next_fringe_support_map` resolving
+`mv.parents` through the full `msg_map` (`finalizer.rs:185-193`) so a non-live sender can land in a `seen_by`
+value. C185's `owes` names the fixture that separates them, and it is unchanged.

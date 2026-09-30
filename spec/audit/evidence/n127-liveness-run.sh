@@ -77,63 +77,38 @@ for attempt in $(seq 1 "$ATTEMPTS"); do
   # **The node's own reason**, read before the containers go: the stall line now fires on a change of
   # variant as well as per 100 heights (`interpreter_util.rs`), because the previous campaign measured the
   # pin in 3 of 3 attempts and could not say why — the instrument that explains it was gated out of range.
+  # Each file carries its own provenance, not the directory's: a log grepped out of here and read elsewhere
+  # otherwise cannot say which tree, node and attempt it came from (C176's class).
   for n in bootstrap v1 v2; do
+    printf '# provenance: tree=%s node=%s attempt=%s — `docker logs` grepped at the end of the attempt (%s)\n' \
+      "$TREE" "$n" "$attempt" "n127-liveness-run.sh" > "$OUT/stall-${n}-a${attempt}.txt"
     docker logs "${CONTAINERS[$n]}" 2>&1 | grep 'finality did not advance' \
-      > "$OUT/stall-${n}-a${attempt}.txt" || true
+      >> "$OUT/stall-${n}-a${attempt}.txt" || true
+    printf '# provenance: tree=%s node=%s attempt=%s — the C184 control: `SearchBudgetExceeded` must be absent here (empty below = the budget refused nothing)\n' \
+      "$TREE" "$n" "$attempt" > "$OUT/budget-${n}-a${attempt}.txt"
     docker logs "${CONTAINERS[$n]}" 2>&1 | grep 'exceeded its budget' \
       >> "$OUT/budget-${n}-a${attempt}.txt" || true
   done
-  echo "  stall lines: $(cat "$OUT"/stall-*-a${attempt}.txt 2>/dev/null | wc -l)"
+  echo "  stall lines: $(cat "$OUT"/stall-*-a${attempt}.txt 2>/dev/null | grep -vc '^#')"
   tools/devnet.sh down >/dev/null 2>&1
   echo "  attempt $attempt done at $(date -u +%H:%M:%S) UTC"
 done
 
 echo
-echo "=== finality after the kill, per attempt ==="
-python3 - "$OUT" "$KILL_AT" <<'PY'
-import glob, os, re, sys
-out, kill = sys.argv[1], int(sys.argv[2])
-
-def secs(t):
-    h, m, s = (int(x) for x in t.split(":"))
-    return h * 3600 + m * 60 + s
-
-for path in sorted(glob.glob(os.path.join(out, "series-a*.tsv"))):
-    attempt = re.search(r"series-a(\d+)\.tsv$", path).group(1)
-    rows = []
-    for line in open(path):
-        if line.startswith("#") or line.startswith("utc\t"):
-            continue
-        p = line.rstrip("\n").split("\t")
-        if len(p) >= 10:
-            rows.append(p)
-    if not rows:
-        print(f"  attempt {attempt}: no series"); continue
-    t0 = secs(rows[0][0])
-    span = secs(rows[-1][0]) - t0
-    print(f"  --- attempt {attempt} ({span:.0f}s window)")
-    for node in sorted({r[1] for r in rows}):
-        rs = [r for r in rows if r[1] == node]
-        def at(t):
-            return min(rs, key=lambda r: abs(secs(r[0]) - t0 - t))
-        b, e = at(kill - 1), at(span)
-        hb, fb = b[7], b[8]
-        he, fe = e[7], e[8]
-        def n(v):
-            return 0 if v == "none" else (int(v) if v.isdigit() else None)
-        fb_n, fe_n, hb_n, he_n = n(fb), n(fe), n(hb), n(he)
-        moved = (fe_n is not None and fb_n is not None) and fe_n > fb_n
-        delta = fe_n - fb_n if (fe_n is not None and fb_n is not None) else None
-        grew = he_n - hb_n if (he_n is not None and hb_n is not None) else None
-        print(f"      {node:<9} finality {fb_n} -> {fe_n} (+{delta})   height {hb_n} -> {he_n} (+{grew})   "
-              f"{'FINALITY ADVANCED' if moved else 'finality did not move'}")
-PY
+echo "=== the pre-registered reading, computed by the committed program ==="
+# One implementation of the reading, and it writes an artifact: the inline version this replaces printed
+# the rows to a terminal, which is why the number in the tracker came from a person reading a gitignored
+# `target/` directory rather than from a file anyone could check.
+python3 spec/audit/evidence/n127-liveness-summarise.py "$OUT" | tee "$OUT/readings.txt"
 
 echo
 echo "=== the budget control: SearchBudgetExceeded must not appear on honest scopes ==="
+# Read from the artifacts this run wrote, not from `docker logs` again — the containers are down by now, and
+# a control computed a second way is a second implementation of one reading (`Split`, law 51b).
 hits=0
-for n in bootstrap v1 v2; do
-  c=$(docker logs "${CONTAINERS[$n]}" 2>&1 | grep -c 'exceeded its budget' || true)
+for f in "$OUT"/budget-*-a*.txt; do
+  [ -e "$f" ] || continue
+  c=$(grep -vc '^#' "$f" || true)
   hits=$((hits + c))
 done
 if [[ "$hits" -eq 0 ]]; then

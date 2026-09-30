@@ -1,0 +1,5 @@
+# tree=ef412ef84 image=sha256:b5c317909f5979bbf6994066e8e4464e90dbf2233fd57b845d788bc3d349b49d
+# shape: --validators 3 --stakes 100,100,50 --epoch-length 10 --fresh, cap=8g, window=300s, kill=validator-2 at T+120s, attempts=1
+# started 2026-09-30T18:38:22Z
+# binary_sha256=694f9d878aa96d089de9aa10e93bf41c0602ec66adca5049eb2d4cd1dcad1b38
+# rust_diff_vs_80782e184=NON-EMPTY

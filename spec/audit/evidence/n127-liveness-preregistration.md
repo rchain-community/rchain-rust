@@ -2,6 +2,19 @@
 
 **Status: FROZEN before the run.**
 
+> **Correction, 2026-09-30 after the run: the premise this was frozen on is false, and the run's own series
+> says so.** "Once the 50-stake validator is killed, finality stops" is the wrong reading of the campaign
+> and of this arm. Finality stops **16 to 130 seconds into the run, with every validator live**: in this
+> arm's three attempts it last moved at T+33s, T+30s, T+19s, T+16s and T+24s against a kill at T+120, and
+> across both arms 14 of 16 survivor node-runs had finished finalising before the kill
+> (`n127-liveness-results.md`). The kill neither causes the pin nor changes it, so the acceptance row below
+> — "finality advances on the survivors after the kill, by more than the +4" — measures **when finality
+> naturally pins**, and reading it as a verdict on the §32 fix is what produced "the fix did not work on the
+> node". The rows are left frozen as written; this block is the correction, not a rewrite.
+>
+> The reproduction itself stands, and one thing in it is now known to be wrong: the **+4 the before-arm
+> reached** was that arm's own late increment, not a head start over a working build.
+
 ## Why this is the measurement
 
 The campaign of 2026-09-30 ran this exact rig and found the opposite of what the register expected: with all

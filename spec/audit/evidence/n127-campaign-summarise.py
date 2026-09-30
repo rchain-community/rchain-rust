@@ -14,10 +14,26 @@ import os
 import re
 import sys
 
-# The shape's own edges (search_census::WIDTH_EDGES + the cost's) versus the registry's defaults. The
-# distinction is the acceptance row PR #132's fix has to satisfy: if these are the defaults, the
-# distribution collapsed into +Inf and nothing may be keyed on it.
-SHAPE_EDGES = {8.0, 16.0, 32.0, 64.0, 128.0, 256.0}
+# The shape's own edges are **read out of the source that publishes them**, not written down here. The
+# previous version of this file carried `{8, 16, 32, 64, 128, 256}` labelled as the shape's — which was the
+# endpoint's old *hand-written* superset, the defect PR #132 removed — and tested it by **intersection**, so
+# a published set sharing one edge with it passed. An acceptance row that cannot fail on the axis it exists
+# for is the defect this file was written to avoid, one level up.
+ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+RUST = os.path.join(ROOT, "casper", "src", "merging.rs")
+
+
+def shape_edges(const):
+    """`WIDTH_EDGES`/`EXPANDED_EDGES` as a set of floats, from `search_census`'s own declarations."""
+    m = re.search(rf"const {const}: \[usize; \d+\] = \[([^\]]*)\]", open(RUST).read())
+    if not m:
+        sys.exit(f"cannot find {const} in {RUST}: the edges are not derivable, so no row may be checked")
+    return {float(v.replace("_", "")) for v in m.group(1).split(",")}
+
+
+SHAPE_EDGES = shape_edges("WIDTH_EDGES")
+# The registry's defaults, which the published edges must *not* be: if these are what came out, the
+# distribution collapsed into a range that says nothing about chains.
 DEFAULT_EDGES = {0.005, 0.01, 0.025, 0.05, 0.075, 0.1, 0.25, 0.5, 0.75, 1.0, 2.5, 5.0, 7.5, 10.0}
 
 BUCKET = re.compile(r"^rchain_merge_(\w+)_bucket\{le=\"([^\"]+)\"\}\s+(\S+)")
@@ -93,8 +109,12 @@ def distribution(path):
     if not buckets:
         return None
     edges = sorted(e for e in buckets if e != float("inf"))
-    shape = bool(set(edges) & SHAPE_EDGES)
-    default = bool(set(edges) & DEFAULT_EDGES)
+    # **Equality, not intersection**: the published boundary set must *be* the shape's, because the
+    # acceptance row is "the histogram's boundaries are the shape's own". A superset or a subset is a
+    # different rendering of the same quantity, which is exactly what went unnoticed once already.
+    published = set(edges)
+    shape = published == SHAPE_EDGES
+    default = bool(published & DEFAULT_EDGES)
     median = None
     if count:
         for e in edges:
@@ -103,6 +123,7 @@ def distribution(path):
                 break
     return {
         "edges": edges, "shape_edges": shape, "default_edges": default,
+        "extra": sorted(published - SHAPE_EDGES), "missing": sorted(SHAPE_EDGES - published),
         "median": median, "count": count, "sum": total, "gauges": gauges,
     }
 
@@ -150,8 +171,9 @@ def main():
             if d is None:
                 print(f"  0.2 {node:<9} no pre-kill scrape, or SCRAPE FAILED (see the artifact)")
                 continue
-            edges = "shape's" if d["shape_edges"] and not d["default_edges"] else (
-                "REGISTRY DEFAULTS — the distribution is void" if d["default_edges"] else "unknown")
+            edges = "the shape's own" if d["shape_edges"] else (
+                f"MISMATCH — extra {d['extra']}, missing {d['missing']}"
+                + (" (the registry's defaults: void)" if d["default_edges"] else ""))
             env = d["gauges"]
             print(f"  0.2 {node:<9} edges={edges} median={d['median']} merges={d['count']:.0f} "
                   f"widest={env.get('max_scope_width')} pairs={env.get('max_conflict_pairs')} "

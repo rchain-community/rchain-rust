@@ -109,7 +109,12 @@ for attempt in $(seq 1 "$ATTEMPTS"); do
     fi
   done
   echo "  deploys: $submitted of $DEPLOYS returned within ${DEPLOY_TIMEOUT}s, $timed_out did not (now T+$(( $(date +%s) - t0 ))s)"
-  echo "$submitted	$timed_out	$DEPLOY_TIMEOUT" > "$OUT/deploys-a${attempt}.txt"
+  # The columns are named, because `4 0 45` says nothing to a reader who was not here when it was written.
+  {
+    printf '# provenance: tree=%s attempt=%s — columns: submitted, timed out, deploy timeout (s) (%s)\n' \
+      "$TREE" "$attempt" "n127-campaign-run.sh"
+    printf '%s\t%s\t%s\n' "$submitted" "$timed_out" "$DEPLOY_TIMEOUT"
+  } > "$OUT/deploys-a${attempt}.txt"
 
   wait_until $((t0 + KILL_AT))
   scrape bootstrap "$attempt" prekill
@@ -127,12 +132,19 @@ for attempt in $(seq 1 "$ATTEMPTS"); do
   scrape v2        "$attempt" end
 
   # The envelope the nodes logged, beside the histogram they published — the two must agree.
+  # Each artifact carries its own provenance, because a file copied out of this directory otherwise cannot
+  # say what it measured (C176's class) — the tree, the node and the attempt were recoverable only from the
+  # directory name and the filename, and the directory name was wrong until 2026-09-30.
   for n in bootstrap v1 v2; do
+    printf '# provenance: tree=%s node=%s attempt=%s — `docker logs` grepped at the end of the attempt (%s)\n' \
+      "$TREE" "$n" "$attempt" "n127-campaign-run.sh" > "$OUT/mergelog-${n}-a${attempt}.txt"
     docker logs "${CONTAINERS[$n]}" 2>&1 | grep 'merge search' | tail -1 \
-      > "$OUT/mergelog-${n}-a${attempt}.txt" || true
+      >> "$OUT/mergelog-${n}-a${attempt}.txt" || true
     # 0.3: the stall line, verbatim, with the tip it fired at.
+    printf '# provenance: tree=%s node=%s attempt=%s — `docker logs` grepped at the end of the attempt (%s)\n' \
+      "$TREE" "$n" "$attempt" "n127-campaign-run.sh" > "$OUT/stall-${n}-a${attempt}.txt"
     docker logs "${CONTAINERS[$n]}" 2>&1 | grep 'finality did not advance' \
-      > "$OUT/stall-${n}-a${attempt}.txt" || true
+      >> "$OUT/stall-${n}-a${attempt}.txt" || true
   done
   echo "  stall lines: $(cat "$OUT"/stall-*-a${attempt}.txt 2>/dev/null | wc -l)"
 

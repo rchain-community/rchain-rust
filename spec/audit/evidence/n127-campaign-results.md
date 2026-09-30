@@ -8,6 +8,17 @@
 > `38 + 55 + 8 = 101 ✓` is a tautology — `MERGES` and `WIDTH_COUNTS` are incremented in one function, so
 > that identity holds for any output the code can produce. What survives is the finding itself: the endpoint
 > did not carry the census, and Unit 2 fixed it (`n127-endpoint-vs-census-results.md`).
+>
+> **Correction, added later on 2026-09-30: §3's table was never decomposed, and this file's own series
+> refutes the reading put on it.** The table reports finality at T+120 and at T+300, which makes the kill
+> look like the variable. The quantity that was never computed is **when finality last moved**: for these
+> three attempts it is T+111s, T+90s, T+69s (attempt 1), T+55s, T+130s, T+84s (attempt 2) and T+17s, T+16s,
+> T+18s (attempt 3), against a kill at T+120. Five of the six survivor node-runs had stopped finalising
+> **before** the kill; the sixth moved by one increment 10 s after it. So "finality did not resume after the
+> kill" describes the window it was measured in, not a cause — the pin is 16–130 seconds into the run in
+> both arms, with every validator live. The same reading of the after-arm, and the cross-arm count, are in
+> `n127-liveness-results.md`; §5's "the storm is a post-kill phenomenon" carries the same defect and was
+> already retracted above for a different reason.
 
 Run 2026-09-30 on tree `c5442ee1f`, image `sha256:783fe97d6054…` (built 17:10:49 from this tree; the
 manifest's `rust_diff_vs_1732306c7` reads **empty**, so the binary under test is the tree the artifacts
@@ -128,6 +139,18 @@ boundaries did not make the counts right, and the row that certified the fix cer
 already visible. A row that guards an instrument must cross-check it against a **second, independent
 rendering of the same quantity** — here, `searches` or the census's own log line — not a property of one
 rendering's shape.
+
+> **Correction (2026-09-30, later): "passed, correctly" is wrong — the check could not fail.** The
+> summariser tested the published boundaries by **intersection** with a hand-written set, so any artefact
+> sharing one boundary passed; and the set it intersected with was itself the endpoint's hand-written
+> superset rather than the census's. Both are fixed (`n127-campaign-summarise.py` now reads `WIDTH_EDGES`
+> out of `casper/src/merging.rs` and tests **equality**), and re-run over this file's own artefact the row
+> **fails**: `MISMATCH — extra [8.0, 256.0]`, on every node and every attempt. The campaign's endpoints
+> published two boundaries the census never emits. They are not lies — `le=8` is 0 and `le=256` is the
+> total — but the row's question ("are the boundaries the shape's own?") has the answer *no*, and the row
+> said yes. The derivation from `search_census::{WIDTH_EDGES, EXPANDED_EDGES}` landed afterwards (the
+> campaign's tree `c5442ee1f` and #132's both hand-write them; only `2752eb384` derives), so this is the
+> drift the derivation removed, found by the test that was supposed to be able to see it.
 
 ## 3. 0.1 — the rate, and what the kill does
 

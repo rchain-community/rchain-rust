@@ -1,1 +1,2 @@
+# provenance: tree=c5442ee1f node=v2 attempt=3 — `docker logs` grepped at the end of the attempt (n127-campaign-run.sh)
 2026-09-30T16:47:05.312Z WARN  [casper.interpreter.validate] merge search: 84 merges · widest scope 35 chains / 669 conflict pairs / 437 asymmetric · most states expanded on one merge 736023 · width buckets [40, 42, 2, 0, 0] · cost buckets [42, 12, 20, 10, 0]
