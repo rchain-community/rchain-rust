@@ -92,7 +92,11 @@ for attempt in $(seq 1 "$ATTEMPTS"); do
   esac
 
   out="target/n117-audit/live-vs-held-attempt${attempt}.tsv"
-  python3 target/n117-audit/queue-depth.py "$out" &
+  # `n117-queue-depth.py` is tracked beside this script; it was a scratch file in `target/` when
+  # these artifacts were taken. The path changed when the record was closed out so that the run is
+  # reproducible from the repository alone (C178's owed baseline re-run needs that); nothing else
+  # about the protocol did.
+  python3 spec/audit/evidence/n117-queue-depth.py "$out" &
   sampler=$!
 
   declare -A stopped=()
@@ -128,5 +132,5 @@ done
 rm -f "examples/$SHIM"
 echo
 echo "=== analysis (pre-registered bands) ==="
-python3 target/n117-audit/align-live-vs-held.py "$RUN_DATE" \
+python3 spec/audit/evidence/n117-align-live-vs-held.py "$RUN_DATE" \
   target/n117-audit/live-vs-held-attempt*.tsv target/n117-audit/stats-*-a*.txt 2>&1
