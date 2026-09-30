@@ -351,6 +351,8 @@ Every place the Rust port deliberately departs from the Scala oracle, with the r
 | **The merge search is bounded, and an exceeded search is refused rather than answered** (`SearchBudget`, `sdk/src/dag/merging.rs`; the node's policy is `SearchBudget::NODE`) | `ConflictResolutionLogic.scala`'s `computeRejectionOptions` enumerates unconditionally — the oracle has no bound at all, and its cost is exponential in the conflict set's size, which the DAG decides | **Node-local, not a fork**, and the distinction is exact rather than hopeful: an exceeded search returns *no answer*, the merge is refused, and the error reaches `ValidateError::Internal` (`multi_parent_casper.rs:361`) — a drop, which inserts no metadata. It must never become `mark_failed_attributable`, because nothing clears that record (C173) and a local resource policy would then estrange a node from a proposer for ever. Every node that *does* finish the search gets the identical option set, so no block hash moves. Measured: the widest single merge observed was **2,026,511 steps** over nine node-runs, and the enumerated worst case is `2^43 = 8.8e12`. AUDIT C184; `candidate:bounded-work-per-step` (C180) gains its first held member. |
 | **The LFS block walk gives up when it stops completing blocks**: `request_blocks` fails after `MAX_IDLE_ROUNDS` (3) **consecutive** idle resend intervals in which `LfsState::finished` did not grow (`casper/src/engine/lfs_block_requester.rs`, issue #102) | `LfsBlockRequester.scala:309-312` — `requestStream.evalOnIdle(resendRequests, requestTimeout).terminateAfter(_.isFinished) concurrently responseStream`: the **only** termination condition is `isFinished`, so a fringe naming state no peer has retries forever. Nothing upstream bounds the walk: `requestTimeout` is the *resend* interval, not a deadline | the port did the same, and the consequence is #102's first defect rather than a theoretical one: `run_approved_state_sync` `join!`s the block walk with the tuple-space request, so a walk that never ends is a **sync attempt that never ends** — the spawned task never returns, `notify_when_restored` never fires, and the node sits in `NodeSyncing` for good **with a serving API and no error line**, which is the "silently stuck" class this register keeps finding. **Why a pace rule and not a deadline**: a long chain legitimately takes longer than any fixed duration, so a wall-clock bound would abandon a walk that is *long* rather than *stuck*; the quantity that distinguishes them is whether blocks are still being completed, and `finished` is monotone (`done` only adds, `add` refuses an existing key), which is what makes "did it move" well-formed — **Law 51a**'s `Drift`, the same shape as C171 and refused by the same `Paced`. **Pace, not a rate**: a slow peer that needs several resends per block is untouched, because the counter resets on every completed block. Falsified in both directions: deleting the give-up leaves the walk hanging (`a_walk_nobody_serves_fails_rather_than_hangs` reports #102's exact symptom after its 2 s harness bound), and deleting the reset abandons a progressing walk (`a_slow_but_progressing_walk_is_not_abandoned` fails on the second block) — the two mutations cannot both be satisfied by a rule that is not this one |
 
+| **A new block justifies the `latest_msgs` as of the last round boundary, not `latest_msgs`** (`DagMessageState::round_parents`, `block-storage/src/dag/message_state.rs`; the proposer reads it in `get_pre_state_for_new_block`) | `BlockCreator`'s `getPreStateForNewBlock` builds the parent set as `dag.latestMessages.map(_.id)`, every sender's newest message | the oracle's parent set is one its **own** finalizer cannot advance on. `calculate_next_fringe_support_map` derives each candidate's `seen_by` from `parents ∖ next_layer`, so a parent set that *is* every sender's newest message has almost no remainder: the head of each round has an empty one and the later movers have seen a prefix. Measured in-process through the production entry point with three live validators at the devnet's `100/100/50`: `Support { supporting: 0, total: 250, full_partitions: 0, candidates: 2 }`, refusing before the quorum is ever consulted. With the round snapshot the same chain publishes a fringe and tracks the tip at a constant 12-height lag (48/60, 168/180, 348/360). Nothing else moves: heights stay `max + 1`, the validity rules are untouched, and the gate is unchanged. **What this is not:** not a validation fork — a block justifying a snapshot is an ordinary block every existing check accepts, so an unpatched node accepts a patched node's blocks — but it *is* a proposer divergence, because the two produce different blocks on the same history, which is why it is registered rather than assumed. The `150 of 250` the devnet logged is this defect's half-fixed shape, reproduced in-process on the way to the correction. AUDIT C185; pass §35. |
+
 ---
 
 ## 7. Verification
@@ -5334,3 +5336,40 @@ Two corrections are available and they are **not** equivalent:
 
 The fixture is written to pin the defect, so it is the falsifier's premise for either: corrected, it fails,
 and the fix inverts it to assert that the derivation publishes a fringe on the chain the proposer builds.
+
+### §35, continued: the fix, and the shape that produced the devnet's number
+
+**The correction is in the proposer.** `DagMessageState` carries `round_parents` — the `latest_msgs` as of
+the last **round boundary** — and both the block creator (`create_msg_and_update_sender`) and the proposer
+(`get_pre_state_for_new_block`) justify that instead of `latest_msgs`. A boundary is the first message at
+which every bonded sender has advanced past the previous one; a sender silent past `LIVENESS_WINDOW` is
+retired, so the boundary cannot freeze — the same window, the same rule the fringe gate already uses.
+
+**Nothing else moves.** Heights stay `max + 1`; no validity rule and no gate changes; a block justifying a
+snapshot is an ordinary block every existing check accepts, so an unpatched node accepts a patched node's
+blocks. It *is* a proposer divergence — the two produce different blocks on the same history — and that is
+why it is registered in §6 rather than assumed.
+
+Measured, in-process, through the production entry point: the same three live validators at the devnet's
+`100/100/50` now publish a fringe at a **constant** 12-height lag — 48/60, 168/180, 348/360 — where before
+they never advanced at all. A constant lag is the unfinalized region the rule needs; a growing one would be
+the rate problem this is not.
+
+**The intermediate deserves recording, because it is the devnet's own line.** The first version of the
+boundary closed as soon as the *currently live* set advanced — and `live_weight_set` drops a bonded sender
+that has not spoken *yet*, so on a fresh chain the boundary closed after the very first message and
+`round_parents` held a single message instead of a set. That produced, with all three validators live and
+nothing stopped:
+
+```
+Support { supporting: 150, total: 250, full_partitions: 2, candidates: 3 }
+```
+
+— which is character for character the line `n127-liveness/*/stall-*.txt` carries, and C185 spent two
+devnet runs reading it as a fact about the killed validator. It is the parent set, two-thirds fixed.
+
+**What is owed and not done here.** The pre-registration's own falsifier — the survivor's finality resuming
+on the campaign's rig — is the *next* measurement, not this one. The in-process falsifier is in place and
+two-way: `the_chain_the_nodes_own_proposer_builds_reaches_a_fringe` asserts the production path publishes
+and keeps the `latest_msgs` shape inline as the control that still refuses with
+`Support { supporting: 0, full_partitions: 0 }`.
