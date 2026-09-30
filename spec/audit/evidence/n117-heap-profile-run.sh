@@ -14,8 +14,20 @@
 # `Allocated: 2.9 MiB`). The shim watches its own cgroup and calls `prof.dump` at 1.5 GiB and every 1.5 GiB
 # above that, so the profile shows what dominates at several sizes rather than at one arbitrary moment.
 #
-# The build must carry `profiling` (for the sampler) and `-C debuginfo=1` (or the dump is addresses with no
-# names — the release profile is `debug = 0`), plus `--export-dynamic` so the shim can reach `mallctl`.
+# The build must carry the sampler (`jemalloc-profiling`, opt-in since the sampler was made an opt-in —
+# `node/Cargo.toml` carries the reasoning) and `-C debuginfo=1` (or the dump is addresses with no names: the
+# release profile is `debug = 0`), plus `--export-dynamic` so the shim can reach `mallctl`. The profiling
+# keys are no longer in the compiled-in default, so the build is:
+#
+#   JEMALLOC_SYS_WITH_MALLOC_CONF='background_thread:true,dirty_decay_ms:0,muzzy_decay_ms:0,retain:false,stats_print:true,stats_print_opts:g,prof:true,lg_prof_sample:20,prof_prefix:/var/lib/rnode/jeprof' \
+#   RNODE_BUILD_MALLOC_CONF="$JEMALLOC_SYS_WITH_MALLOC_CONF" \
+#   RNODE_BUILD_FEATURES=jemalloc-profiling \
+#   RNODE_BUILD_RUSTFLAGS='-C debuginfo=1 -C link-arg=-Wl,--export-dynamic' \
+#     tools/devnet.sh build
+#
+# `JEMALLOC_SYS_WITH_MALLOC_CONF` is read by `tikv-jemalloc-sys`'s build script, and jemalloc marks those
+# options read-only once it starts, so a runtime `MALLOC_CONF` cannot set them — the conf has to reach the
+# build, which is why it is an argument here rather than an environment variable for the container.
 set -u
 cd /home/patrick/RNodeRust
 CAP=${CAP:-8g}

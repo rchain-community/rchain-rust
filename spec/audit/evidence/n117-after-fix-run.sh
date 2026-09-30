@@ -98,7 +98,7 @@ for attempt in $(seq 1 "$ATTEMPTS"); do
   fi
 
   out="target/n117-audit/after-fix-attempt${attempt}.tsv"
-  python3 target/n117-audit/queue-depth.py "$out" &
+  python3 spec/audit/evidence/n117-queue-depth.py "$out" &
   sampler=$!
 
   declare -A stopped=()
