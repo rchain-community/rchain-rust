@@ -91,3 +91,28 @@ next unit's first change. **This file claims the halt, the discriminator, and no
   the classification — an unpatched node accepts a patched node's blocks — is argued from the validation
   rules, not measured. A patched node alongside an unpatched one is the measurement that would test it.
 - Nothing here measures the merge shape (C182) or sets N.
+
+---
+
+## Addendum: the guard run (`260c40053`), and what it did and did not fix
+
+The self-equivocation §0.2 was corrected in two steps, and the second one is not finished.
+
+**The guard works.** `260c40053` (`has_advanced_past_the_round`) run on the rig: **zero** equivocation lines
+in either survivor's captured logs, against a continuous stream before. Finality also kept its 4-height gap
+before the kill — 87 of 91, 86 of 90 at T+120 — so the pin fix survives the guard.
+
+**And the guard livelocks.** The height is flat at 91 from the kill to the end, with no error and no
+equivocation: the node is not failing, it is waiting. The boundary closes only when every bonded sender has
+advanced past it, a quiet sender stops holding it back only once `LIVENESS_WINDOW` heights have passed above
+its last message, and that is measured from the tip — which the guard is what freezes. So the killed
+validator is never retired and the round never closes.
+
+Confirmed in-process, not inferred: `the_round_closes_when_a_validator_goes_quiet_inside_the_window` drives
+the guarded proposer with one validator quiet and the tip goes **1 → 2 over thirty-seven further rounds of
+attempts**, then nothing is admitted. It is `#[ignore]`d, and **C187** carries the design constraint the
+failure names: the escape has to be local, because the clock cannot be derived from a tip the guard freezes.
+
+**So the branch is not landable as it stands.** What is settled: the pin was the parent set and is fixed;
+the snapshot cannot carry the proposer's own newest message; one block per validator per round is the rule.
+What is not: how a round closes around a validator that cannot age out.
