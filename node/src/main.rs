@@ -9,6 +9,26 @@
 #[global_allocator]
 static ALLOC: dhat::Alloc = dhat::Alloc;
 
+// jemalloc on Linux, with the background purge thread on. **This is the bound on the defect** (#117):
+// glibc gives each thread an arena, keeps that arena's high-water mark, and returns free pages only when
+// they happen to sit at the heap top — so a node under fork load reaches its cgroup ceiling while its
+// live heap stays small. Measured: the ceiling is glibc's own heap (its accounting explains the cgroup's
+// `anon` at 92–164 %, mean 101 %, over 760 samples), with roughly half of that free-but-retained.
+// jemalloc purges dirty pages on a decay timer *independent of allocation activity*, so the footprint
+// tracks live data instead. The profiling allocator wins when both are selected, because a heap profile
+// of the real allocator is the point of that feature.
+#[cfg(all(target_os = "linux", not(feature = "dhat-heap")))]
+#[global_allocator]
+static ALLOC: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+
+// The purge settings are **not** here: they are `JEMALLOC_SYS_WITH_MALLOC_CONF` in `.cargo/config.toml`,
+// which `tikv-jemalloc-sys` reads at build time and compiles into jemalloc's defaults. The usual in-code
+// route — a `#[export_name = "_rjem_malloc_conf"]` static — is unavailable in this crate graph, because
+// *declaring a static with `export_name`* is itself what `#![forbid(unsafe_code)]` refuses. Baking it in
+// is also the stronger form: it cannot be forgotten by a deployment that runs the binary outside this
+// repository's image, and the settings are that `background_thread:true` (the purge must not depend on
+// allocation activity — an idle worker never allocates again) with 5 s decay on dirty and muzzy pages.
+
 use std::sync::Arc;
 
 use clap::Parser;

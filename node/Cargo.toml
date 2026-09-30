@@ -43,6 +43,12 @@ dhat = { version = "0.3", optional = true }
 [features]
 dhat-heap = ["dep:dhat"]
 
+[target.'cfg(target_os = "linux")'.dependencies]
+# The node's allocator on Linux: jemalloc, with the background purge thread configured in `src/main.rs`.
+# See the comment on the `#[global_allocator]` there — this is the bound on #117, where glibc's per-thread
+# arena retention let a node reach its cgroup ceiling with a live heap in the tens of MiB.
+tikv-jemallocator = "0.7"
+
 [dev-dependencies]
 
 [[bin]]
