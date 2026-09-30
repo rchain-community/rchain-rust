@@ -42,6 +42,30 @@ dhat = { version = "0.3", optional = true }
 
 [features]
 dhat-heap = ["dep:dhat"]
+# The jemalloc sampler, for the heap dump that named #117's live structure. **Off by default, and it has
+# to be**: `tikv-jemalloc-sys` passes `--enable-prof` only under this feature, so it is what puts a
+# sampled stack unwinding (one per 2^lg_prof_sample allocations) on every allocation *and* makes the
+# sampled allocations unpurgeable — a confound in exactly the measurements #117 rests on. It was on by
+# default for one commit, and this is the correction.
+#
+# A profiling build is reproducible from the tree without changing any default:
+#
+#   JEMALLOC_SYS_WITH_MALLOC_CONF='background_thread:true,dirty_decay_ms:0,muzzy_decay_ms:0,retain:false,stats_print:true,stats_print_opts:g,prof:true,lg_prof_sample:20,prof_prefix:/var/lib/rnode/jeprof' \
+#   RNODE_BUILD_MALLOC_CONF="$JEMALLOC_SYS_WITH_MALLOC_CONF" \
+#   RNODE_BUILD_FEATURES=jemalloc-profiling \
+#   RNODE_BUILD_RUSTFLAGS='-C debuginfo=1 -C link-arg=-Wl,--export-dynamic' \
+#     tools/devnet.sh build
+#
+# (`JEMALLOC_SYS_WITH_MALLOC_CONF` is read by the sys crate's build script, so a shell value beats the
+# `[env]` default in `.cargo/config.toml` — which is the hook this uses, and why the profiling keys are
+# not baked there. `--export-dynamic` is what lets the shim reach `mallctl` at runtime; `debuginfo=1` is
+# what makes the dump nameable.)
+#
+# **`--all-features` enables it**, because that is what `--all-features` means — CI, `make`, coverage and
+# nightly compile it in. It is then inert: the sampler is present but `prof:true` is not in the compiled
+# configuration, so it neither samples nor dumps. The cost is build time, and it is the price of an
+# opt-in that does not need an out-of-workspace manifest.
+jemalloc-profiling = ["tikv-jemallocator/profiling"]
 
 [target.'cfg(target_os = "linux")'.dependencies]
 # The node's allocator on Linux: jemalloc, with the background purge thread configured in `src/main.rs`.
@@ -59,13 +83,14 @@ dhat-heap = ["dep:dhat"]
 # `resident`, `mapped` and `retained` at exit, which is the live-versus-held split no other instrument in
 # the tree can produce.
 #
-# `profiling` is enabled for the heap dump that names the live structure, and it is the *light* instrument
-# for that job: it unwinds one stack per 2^lg_prof_sample allocations (1 in 1,048,576 here), where `dhat`
-# instruments every one — measured, `dhat`'s build reproduces no ramp at all, and one of the two reasons
-# is the perturbation. The dump is triggered by `prof.dump` from the shim at the moment the node's cgroup
-# passes a threshold, which is the only way to read the live set *at* the ceiling: jemalloc's `prof_final`
-# and `stats_print` both write at exit, after the node has freed its world.
-tikv-jemallocator = { version = "0.7", features = ["stats", "profiling"] }
+# `profiling` is **not** enabled here: it is the `jemalloc-profiling` feature above, opt-in, because a
+# default build must not pay a sampled unwinding per allocation nor hold sampled allocations unpurgeable.
+# When it is wanted it is the *light* instrument for the job — one unwind per 2^lg_prof_sample
+# allocations where `dhat` instruments every one — and the dump is triggered by `prof.dump` from the shim
+# the moment the node's cgroup passes a threshold, which is the only way to read the live set *at* the
+# ceiling: jemalloc's `prof_final` and `stats_print` both write at exit, after the node has freed its
+# world.
+tikv-jemallocator = { version = "0.7", features = ["stats"] }
 
 [dev-dependencies]
 

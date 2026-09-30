@@ -202,6 +202,14 @@ cmd_build() {
   if [[ -n "${RNODE_BUILD_RUSTFLAGS:-}" ]]; then
     opts+=(--build-arg "RUSTFLAGS=$RNODE_BUILD_RUSTFLAGS")
   fi
+  # And the allocator's configuration, which a profiling build has to set: `prof:true,lg_prof_sample:20,
+  # prof_prefix:…` are read by `tikv-jemalloc-sys`'s build script and cannot be supplied at run time
+  # (jemalloc marks them read-only after start), so they have to reach the *build*. It is passed through
+  # only when set — the Dockerfile guards the empty case, because an empty value would override the
+  # purge settings `.cargo/config.toml` compiles in rather than leaving them alone.
+  if [[ -n "${RNODE_BUILD_MALLOC_CONF:-}" ]]; then
+    opts+=(--build-arg "JEMALLOC_SYS_WITH_MALLOC_CONF=$RNODE_BUILD_MALLOC_CONF")
+  fi
   docker build "${opts[@]}" -f docker/rnode/Dockerfile -t "$IMAGE" .
 }
 
