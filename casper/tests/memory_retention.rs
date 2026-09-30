@@ -60,6 +60,11 @@ const ITERATIONS: usize = 150;
 /// How often a churn thread reads its own `Anonymous` for the peak. Every tenth iteration: 15 reads per
 /// thread against 150 iterations of chain building, so the instrument is far cheaper than what it measures.
 const SAMPLE_EVERY: usize = 10;
+/// How long to wait for the allocator to settle after the churn, and how still it must be to count as
+/// settled: a poll every 100 ms, stopping after ten consecutive non-decreasing readings, capped at 30 s.
+const SETTLE_POLL_MS: u64 = 100;
+const SETTLE_MAX_MS: u64 = 30_000;
+const SETTLE_STABLE_SAMPLES: u32 = 10;
 /// Deploy chains built per iteration — the width of a merge scope on the devnet that reproduced #117.
 const CHAINS_PER_ITERATION: usize = 40;
 /// Event-log entries per chain, which is what makes a chain index large rather than a few hashes.
@@ -75,6 +80,35 @@ fn anonymous_kib() -> u64 {
         .and_then(|rest| rest.split_whitespace().next())
         .and_then(|kib| kib.parse().ok())
         .expect("smaps_rollup reports Anonymous")
+}
+
+/// Wait for the allocator to settle, and *then* read — the window is adaptive because a fixed one is a
+/// machine constant.
+///
+/// The purge is performed by the allocator's own background thread, and this process has just finished
+/// running sixteen churn threads, so how long the purge takes to become visible in `Anonymous` is a
+/// property of the machine's scheduler rather than of the configuration being tested. A fixed 1.5 s sleep
+/// reads **29 % retained here and 77 % on CI** — the same purge, the same decay of 0, two machines — and
+/// the CI reading fails an assertion whose subject (the allocator) is working. That is the same defect as
+/// the peak sampler above, one layer down: a constant that encodes this workstation. Polling until the
+/// value stops falling takes the machine's speed out of the measurement.
+fn settled_anonymous_kib() -> u64 {
+    let mut previous = anonymous_kib();
+    let mut stable = 0u32;
+    for _ in 0..(SETTLE_MAX_MS / SETTLE_POLL_MS) {
+        thread::sleep(Duration::from_millis(SETTLE_POLL_MS));
+        let now = anonymous_kib();
+        if now < previous {
+            stable = 0;
+            previous = now;
+        } else {
+            stable += 1;
+            if stable >= SETTLE_STABLE_SAMPLES {
+                return now.min(previous);
+            }
+        }
+    }
+    previous
 }
 
 /// One merge-shaped transient: the chain-index values a scope set holds for one block.
@@ -144,12 +178,7 @@ fn churn_and_measure() -> (u64, u64, u64) {
     for worker in workers {
         worker.join().expect("the churn thread finishes");
     }
-    // Settle, and the constant is load-bearing rather than arbitrary: the purge runs on the allocator's
-    // own thread and the measurement must not race it. This is 1.5 s against a decay of 0, and the earlier
-    // 5 s decay needed a *longer* window than any this test could wait for — which is how a working
-    // configuration reads as a broken one, and why the shipped decay is 0 (see `.cargo/config.toml`).
-    thread::sleep(Duration::from_millis(1500));
-    let retained = anonymous_kib();
+    let retained = settled_anonymous_kib();
     (baseline, peak.load(Ordering::Relaxed), retained)
 }
 
