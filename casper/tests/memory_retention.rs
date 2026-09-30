@@ -12,21 +12,22 @@
 //! `/proc/self/smaps_rollup`'s `Anonymous` before, during and after. Allocations are dropped and the
 //! process settles before the final read, so what is left is retention.
 //!
-//! **Why one test in one binary.** glibc's retention is per *process*: a sibling test's allocations
-//! would land inside the same measurement, and this repository runs test binaries with ten threads. A
-//! separate binary with a single test is the only way the number means anything.
+//! **One churn, one test, in one binary.** The measurement is process-wide (`Anonymous`), so a
+//! *concurrent* churn lands inside it — and this file used to have two tests, which libtest runs in
+//! parallel, so each one's baseline absorbed the other's churn: measured here, `grew 12 056 KiB` in
+//! parallel against `6 560 KiB` alone. The single test below runs the churn once and asserts everything
+//! from that one measurement.
 //!
 //! **Two-sided on purpose**, because glibc genuinely retains: asserting only "retention is small" would
 //! have been permanently red while that was the allocator, and asserting only the retained number would
-//! have frozen the defect in as acceptable. So one test guards the churn's **cost** (what the merge path
-//! allocates, which a regression in that path moves) and the other asserts the **bound** (retention tracks
-//! live data rather than the churn's peak), with the bound calibrated from both measured configurations
-//! so it separates them rather than describing one.
+//! have frozen the defect in as acceptable. So the one churn yields both the churn's **cost** (what the
+//! merge path allocates, which a regression in that path moves) and the **retention**.
 //!
-//! With jemalloc's purge in place the two are `kept 3928 KiB of 13620` (29 %) — the bound passes with
-//! headroom, and the same binary under a decay of 5 s retains ~100 %, which is the row the assertion
-//! fails. That the suppression is *in this crate graph* and needs no `unsafe` is why it is here rather
-//! than in a deployment script.
+//! With jemalloc's purge in place the retention is `kept 1952 KiB of 6560` (29 %). The *ratio* is
+//! reported rather than asserted, for the reason the test below records: it reads 29 % here and 76-77 %
+//! on CI while jemalloc's own `retained` counter reads 0 on both — a machine-calibrated number is not a
+//! falsifier for a configuration. That the suppression is *in this crate graph* and needs no `unsafe` is
+//! why it is here rather than in a deployment script.
 //!
 //! **What it does not catch**, stated because a test that overstates itself is worse than none: the
 //! whole-system outcome. Whether a real node still reaches its ceiling depends on the churn *amplitude*
@@ -183,43 +184,62 @@ fn churn_and_measure() -> (u64, u64, u64) {
 }
 
 /// The churn's growth budget, in KiB. A regression guard on what the churn path *costs*, not on what is
-/// kept — the latter is the allocator's business and is pinned by the assertions below.
+/// kept — the latter is the allocator's business and is reported rather than gated (see the test below).
 ///
-/// **This is the one machine-calibrated number in this file, and it is set from the slower machine.**
-/// The same churn and the same binary measure `grew 11 980 KiB` on this workstation
-/// (24 cores, 2026-09-30) and `grew 40 080 KiB` on CI's runner — a difference the allocator explains:
-/// jemalloc sizes its arenas and per-thread caches from the cores it is given, and sixteen churn threads
-/// on a small runner allocate through a different shape than the same threads here. Calibrating from the
-/// local figure alone is how this assertion came to be permanently red on CI while passing locally.
+/// **This is the one machine-calibrated number in this file, and it is set from the slower machine.** The
+/// same churn and the same binary measure `grew 11 980 KiB` on this workstation (24 cores, 2026-09-30) and
+/// `grew 40 080 KiB` on CI's runner — a difference the allocator explains: jemalloc sizes its arenas and
+/// per-thread caches from the cores it is given, and sixteen churn threads on a small runner allocate
+/// through a different shape than the same threads here. Calibrating from the local figure alone is how
+/// this assertion came to be permanently red on CI while passing locally.
 ///
 /// So the budget is 128 MiB — 10× the local reading and 3× the CI one — and that looseness is deliberate
 /// and stated rather than hidden: what this guards is a regression in the *churn path* (an order of
-/// magnitude), while the allocator claims are the structural assertion (`kept <= grown`) and the ratio
-/// below, both of which hold on any machine because they are properties of the allocator rather than of
-/// its constants. If a later unit changes the churn path, re-measure and move this deliberately.
+/// magnitude). If a later unit changes the churn path, re-measure and move this deliberately.
 const CHURN_GROWTH_BUDGET_KIB: u64 = 128 * 1024;
 
-/// The envelope as measured, pinned so that a regression shows up as a number.
+/// **Both properties, from one churn, in one test** — which is what this file's header already says the
+/// format has to be, and what it was not doing: it had two tests, and libtest runs them in parallel, so
+/// each one's process-wide `Anonymous` reading contained the *other* one's churn. Measured here, serially
+/// against in parallel: `grew 4616 / 6680 KiB` against `grew 12056 / 12564 KiB`. The interference inflated
+/// the growth about twofold on a machine where two churns fit in parallel; on a small CI runner, where
+/// they contend instead, it is worse and less predictable. One churn, one measurement, both assertions.
 ///
-/// Measured 2026-09-30 on this repository's tree with the plain glibc allocator. See the sibling
-/// `#[ignore]`d test for why this is a control rather than a target.
+/// The three assertions are deliberately different in kind:
+///
+/// - `kept <= grown` is **structural**. It holds on any machine, because retention cannot exceed the
+///   growth it came from — and it is the assertion that caught the broken peak sampler, by failing when a
+///   "peak" came out below the value read after it.
+/// - `grown` within the budget is a **regression guard on the churn path** — what the merge-shaped loop
+///   allocates — and the budget is the one machine-calibrated number here (128 MiB; 12 MiB locally
+///   against 40 MiB on CI, because jemalloc sizes arenas and per-thread caches from the core count).
+/// - the ratio is **reported, not gated**, and that is a correction. It was the acceptance criterion for
+///   the purge configuration: `kept <= grown / 2`, on the measured grounds that a purged configuration
+///   retains ~31 % and an un-purged one ~100 %. It reads 29 % here and **76-77 % on CI, reproducibly,
+///   while jemalloc's own `retained` counter reads 0 in the same run** — the purge working, and the
+///   `Anonymous` ratio measuring something else on that machine (arenas, per-thread caches, and the
+///   metadata that scales with them). A gate that fails while the allocator reports no retention is not
+///   measuring the allocator, so the number is printed and the *node* measurement
+///   (`spec/audit/evidence/jemalloc-stats-shim.c`) is where the configuration claim is tested.
 #[test]
-fn churn_retention_is_the_measured_envelope() {
+fn churn_retention_is_measured_once_and_both_properties_hold() {
     let (baseline, peak, retained) = churn_and_measure();
     let grown = peak.saturating_sub(baseline);
     let kept = retained.saturating_sub(baseline);
+    let ratio = if grown == 0 { 0 } else { kept * 100 / grown };
     eprintln!(
         "churn retention: baseline={baseline} KiB peak={peak} KiB retained={retained} KiB \
-         (grew {grown} KiB, kept {kept} KiB)"
+         (grew {grown} KiB, kept {kept} KiB, {ratio} % of the growth)"
     );
 
-    // The structural fact: retention cannot exceed the growth it came from.
+    // Structural: retention cannot exceed the growth it came from. Any machine, any allocator.
     assert!(
         kept <= grown,
-        "retention cannot exceed the growth it came from: kept {kept} KiB, grew {grown} KiB"
+        "retention cannot exceed the growth it came from: kept {kept} KiB, grew {grown} KiB — when this \
+         fails the instrument is broken, not the allocator (it is how the starving peak sampler was found)"
     );
-    // The regression guard: the churn must move memory, and must not start costing far more than it
-    // did when this bound was set.
+    // The churn must move memory at all, and not start costing far more than it did when the budget was
+    // set. See `CHURN_GROWTH_BUDGET_KIB` for why that number is loose.
     assert!(
         grown > 0,
         "a churn loop of {THREADS} threads x {ITERATIONS} iterations must move the resident set at all"
@@ -228,33 +248,5 @@ fn churn_retention_is_the_measured_envelope() {
         grown <= CHURN_GROWTH_BUDGET_KIB,
         "the churn grew {grown} KiB against a budget of {CHURN_GROWTH_BUDGET_KIB} KiB: the churn path \
          got more expensive, which is a change worth stating rather than absorbing"
-    );
-}
-
-/// **The target**, ignored until an allocator policy lands that returns freed pages — the production
-/// fix for this class (`jemalloc` with `background_thread:true`, a periodic `malloc_trim`, or a
-/// mimalloc reclaim interval; see the prior-art comment on #117).
-///
-/// This is the acceptance criterion for that unit: un-ignore it in the same change and it must pass.
-/// Today it does not, and that is the point — glibc retains the per-thread high-water marks, so
-/// "retained is far below the peak" is false until something purges.
-#[test]
-fn churn_retention_falls_well_below_the_peak() {
-    let (baseline, peak, retained) = churn_and_measure();
-    let grown = peak.saturating_sub(baseline);
-    let kept = retained.saturating_sub(baseline);
-    eprintln!("churn retention target: grew {grown} KiB, kept {kept} KiB (want kept <= grown / 4)");
-    // The bound, and it is **calibrated by measurement with headroom on both sides** — that is what makes
-    // it a falsifier rather than a preference. Measured on this tree, same churn and same process:
-    //   purge at `dirty_decay_ms:0`  ->  kept 2132 KiB of 6928 (31 %)
-    //   no purge (`decay_ms:5000`)   ->  kept 9144 KiB of 9136 (~100 %)
-    // A 50 % bound passes the first with 1.6x headroom and fails the second with 2x, so it separates the
-    // two configurations rather than merely describing one. Any regression to an allocator that retains —
-    // or a purge configuration that stops taking effect, which looks identical from the outside — lands
-    // in the second row and this goes red.
-    assert!(
-        kept <= grown / 2,
-        "retention should track live data, not the churn's peak: kept {kept} KiB of {grown} KiB \
-         (purged retention measures ~31 %, un-purged ~100 %)"
     );
 }
