@@ -359,3 +359,121 @@ fn a_validator_that_spoke_and_then_stopped_does_not_cap_the_fringe() {
          live partition and refuses — which is the second stop of #70."
     );
 }
+
+/// **The devnet's own stake split, with one validator stopped — and it advances.**
+///
+/// This is the separator, and it is what the next fix is aimed by. The 2026-09-30 devnet run pinned
+/// finality in 3 of 3 attempts *after* the derivation was fixed (`80782e184`), and the node's own stall
+/// line says the remaining pin is **`Support`** — `150 of 250`, i.e. 60 %, below the 2/3 threshold — not
+/// `Coverage`. **This fixture proves the derivation is not that stop**, so the fix belongs in the support
+/// arithmetic rather than in `inPartition`.
+#[test]
+fn the_devnet_stake_split_finalises_with_one_validator_stopped() {
+    use rchain_block_storage::dag::finalizer::Finalizer;
+    use rchain_block_storage::dag::liveness;
+    use rchain_block_storage::dag::message_state::DagMessageState;
+    use rchain_models::validator::Validator;
+    use rchain_shared::refined::{BlockHeight, SeqNum};
+
+    fn validator(byte: u8) -> Validator {
+        Validator::new([byte; 65])
+    }
+    fn id(sender: u8, height: i64) -> BlockHash {
+        let mut bytes = [0u8; 32];
+        bytes[0] = sender;
+        bytes[1] = (height & 0xff) as u8;
+        BlockHash::new(bytes)
+    }
+    fn h(n: i64) -> BlockHeight {
+        BlockHeight::try_from(n).expect("height")
+    }
+    fn s(n: i64) -> SeqNum {
+        SeqNum::try_from(n).expect("seq num")
+    }
+
+    let v0 = validator(0);
+    let v1 = validator(1);
+    let stopped = validator(2);
+    let g = validator(255);
+    // The devnet's genesis stakes: 100 / 100 / 50, validator 2 the 50 that gets killed.
+    let bonds: std::collections::BTreeMap<Validator, NonNegI64> = [
+        (v0.clone(), NonNegI64::try_from(100).unwrap()),
+        (v1.clone(), NonNegI64::try_from(100).unwrap()),
+        (stopped.clone(), NonNegI64::try_from(50).unwrap()),
+    ]
+    .into_iter()
+    .collect();
+
+    let st: DagMessageState<BlockHash, Validator> = DagMessageState::empty();
+    let genesis = st.create_message(id(255, 0), h(0), g, s(0), bonds.clone(), &BTreeSet::new());
+    let mut state = st.insert_msg(&genesis);
+
+    let mut layer: std::collections::BTreeSet<_> = std::collections::BTreeSet::new();
+    for (i, v) in [v0.clone(), v1.clone(), stopped.clone()]
+        .into_iter()
+        .enumerate()
+    {
+        let m = state.create_message(
+            id(i as u8, 1),
+            h(1),
+            v,
+            s(1),
+            bonds.clone(),
+            &[genesis.clone()].into_iter().collect(),
+        );
+        state = state.insert_msg(&m);
+        layer.insert(m);
+    }
+    let stale = layer
+        .iter()
+        .find(|m| m.sender == stopped)
+        .expect("the stopped validator's last message")
+        .clone();
+
+    let mut previous: Vec<_> = layer
+        .iter()
+        .filter(|m| m.sender != stopped)
+        .cloned()
+        .collect();
+    for height in 2..=8 {
+        let mut parents: std::collections::BTreeSet<_> = previous.iter().cloned().collect();
+        parents.insert(stale.clone());
+        let mut next = std::collections::BTreeSet::new();
+        for (i, v) in [v0.clone(), v1.clone()].into_iter().enumerate() {
+            let m = state.create_message(
+                id(i as u8, height),
+                h(height),
+                v,
+                s(height),
+                bonds.clone(),
+                &parents,
+            );
+            state = state.insert_msg(&m);
+            next.insert(m);
+        }
+        previous = next.iter().cloned().collect();
+    }
+
+    let mut justifications: std::collections::BTreeSet<_> = previous.iter().cloned().collect();
+    justifications.insert(stale.clone());
+
+    let finalizer = Finalizer::new(&state.msg_map);
+    let (_, live) = liveness::calculate_finalization(&finalizer, &justifications, &bonds);
+    let (_, raw) = finalizer.calculate_finalization(&justifications, &bonds, &bonds);
+
+    assert!(
+        live.is_some(),
+        "with 200 of 250 stake live (80 %), the derivation must publish a fringe — the pin measured on \
+         the devnet is Support, not Coverage, so it is not this function"
+    );
+    assert!(
+        raw.is_none(),
+        "the control: without the liveness rule the partition is the whole bonded map and nothing advances"
+    );
+    assert!(
+        liveness::calculate_finalization_detailed(&finalizer, &justifications, &bonds)
+            .2
+            .is_none(),
+        "and it reports no stall reason at all"
+    );
+}

@@ -5192,3 +5192,39 @@ observed (2,026,511), so it would have refused nothing in any run on record, whi
 bounded multiple of the honest cost instead of `2^43`. **That number is provisional and is stated as
 such**: it must be re-read from a campaign on C171's own arm (`--no-autopropose --propose-on-deploy`),
 which is the arm the previous campaign did not run. The type's doc comment says so where a reader meets it.
+
+## 34. The second stop is in the support arithmetic, and it has a number (C185)
+
+§32 fixed the derivation and the devnet did not move: finality advanced **+1 height in 1 of 3 attempts**
+against the before-arm's **+4**. In-process, with the devnet's own stake split (100/100/50, the 50 killed),
+the derivation publishes a fringe — so the fix is right and it is not the remaining stop
+(`the_devnet_stake_split_finalises_with_one_validator_stopped`).
+
+### The instrument that had never been read
+
+The node's own `NoAdvance` reason (PR #115) was gated at **one line per 100 heights**
+(`interpreter_util.rs:197`), and a 300 s devnet's tip never leaves the low twenties — so the only line a run
+could emit was the genesis-tip one. That is why §31's campaign measured a pin it could not explain. The gate
+now also fires **when the rendered reason changes**, which for this pin means the *numbers* in it, because
+the variant is `Support` from genesis onward and a variant-keyed gate never re-fires. It produced **75
+lines** in one attempt where the previous campaign produced three genesis ones.
+
+### What it says
+
+Every node's last line before teardown:
+
+```
+finality did not advance at tip 19: a layer exists but its supporting stake is not a
+supermajority — 150 of 250 (2 full partition(s) among 3 candidate(s))
+```
+
+**150 of 250 is 60 %**, below the 2/3 threshold — and `150 = 100 + 50`: the bootstrap's stake plus **the
+killed validator's**. The supporting figure climbs `0 → 100 → 150` and pins there. So the departed
+validator's 50 is being counted while a live validator's 100 is not. This is not `Coverage` (the C183
+path), and it is not the rate (C171); it is the **partition the fringe's support is measured against**.
+
+**What is known and what is not.** The observation is a number off the node's own log, reproduced within one
+attempt. The mechanism is *not* established: whether the stale sender is entering `live_weight_set`, or
+`calculate_fringe`'s support map is keyed on a set the derivation no longer uses, or the two sides of the
+comparison disagree after `inPartition` filtered one of them, is unmeasured. The next step is the
+in-process fixture that reproduces `150 of 250`, not a third devnet run.

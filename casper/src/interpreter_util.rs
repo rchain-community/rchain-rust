@@ -191,6 +191,15 @@ async fn slash_is_unjustified(
 /// plain subtraction would overflow on the first stall of a process's life, which is a panic in debug
 /// and a wrapped negative in release — a rate limiter that never fires, on the path it exists for.
 static LAST_STALL_LOG: AtomicI64 = AtomicI64::new(i64::MIN);
+/// The last stall *kind* logged, so a **change of reason** is reported immediately.
+///
+/// **Why this exists, and it is the reason the discriminator has never been read.** The gate was
+/// height-only — one line per `STALL_LOG_INTERVAL` (100) heights — and a short run's tip never leaves the
+/// low thirties, so the *only* line a devnet can emit is the genesis-tip one. The 2026-09-30 campaign
+/// measured finality pinning in 3 of 3 attempts and could not say why, because the instrument that
+/// explains it was gated out of range. A stall that changes reason is the event worth reporting; the
+/// height gate stays as the rate limit for a stall that does *not* change.
+static LAST_STALL_DESC: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
 
 /// How many heights may pass between two stall lines: one per hundred blocks keeps a stall that lasts
 /// hundreds of blocks to a readable number of lines (#70's measurement ran ~160 blocks at finality 44).
@@ -299,14 +308,27 @@ where
         // explains, and it is rate-limited to one line per `STALL_LOG_INTERVAL` heights.
         if let Some(reason) = &pre_state.finality_stall {
             let tip = pre_state.max_block_num;
-            if tip.saturating_sub(LAST_STALL_LOG.load(Ordering::Relaxed)) >= STALL_LOG_INTERVAL {
+            // **Compare the rendered line, not the variant name.** The first version of this gate keyed on
+            // the variant, and the devnet pin is `Support` from genesis onward — so the kind never changed
+            // and the line never re-fired: the 2026-09-30 run produced three genesis-tip lines and nothing
+            // about the pin. What moves is the *numbers* in the line (0 of 250 becomes 200 of 250 becomes
+            // …), and those are the diagnosis, so the line firing on any change is what makes it readable.
+            let line = describe_no_advance(reason);
+            let changed = {
+                let mut last = LAST_STALL_DESC.lock().unwrap_or_else(|p| p.into_inner());
+                let changed = last.as_deref() != Some(line.as_str());
+                if changed {
+                    *last = Some(line.clone());
+                }
+                changed
+            };
+            if changed
+                || tip.saturating_sub(LAST_STALL_LOG.load(Ordering::Relaxed)) >= STALL_LOG_INTERVAL
+            {
                 LAST_STALL_LOG.store(tip, Ordering::Relaxed);
                 log.warn(
                     source,
-                    &format!(
-                        "finality did not advance at tip {tip}: {}",
-                        describe_no_advance(reason)
-                    ),
+                    &format!("finality did not advance at tip {tip}: {line}"),
                 );
             }
         }
