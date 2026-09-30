@@ -157,7 +157,21 @@ where
         .unwrap_or_else(BlockHeight::zero);
     let latest = latest_heights(justifications.iter().map(|m| (m.sender.clone(), m.height)));
     let live = live_weight_set(bonds, &latest, tip, LIVENESS_WINDOW);
-    finalizer.calculate_finalization_detailed(justifications, &live, bonds)
+    // **The derivation ranges over the partition, and the partition is the live set.** A justification
+    // from a sender the window has retired is still in this set — `latest_msgs` keeps one entry per
+    // sender forever (`block-storage/src/dag/message_state.rs:90-102`), so every candidate goes on
+    // justifying it — while `live_weight_set` has by then dropped it for being more than
+    // `LIVENESS_WINDOW` heights behind. Handing both to the coverage gate asks it to compare a message
+    // set against a *different* set's size: four messages against three bonded senders, refused for
+    // ever, which is the second stop of #70 and was measured as "+4 heights and then nothing" in two
+    // independent devnet runs. Retiring a validator from the partition must retire it from the layer.
+    // (C174 narrowed the partition to the live set and left this side of it alone.)
+    let live_justifications: BTreeSet<Message<M, S>> = justifications
+        .iter()
+        .filter(|m| live.contains_key(&m.sender))
+        .cloned()
+        .collect();
+    finalizer.calculate_finalization_detailed(&live_justifications, &live, bonds)
 }
 
 #[cfg(test)]

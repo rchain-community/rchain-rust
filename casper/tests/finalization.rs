@@ -233,3 +233,129 @@ fn a_silent_bonded_validator_does_not_cap_the_fringe() {
          nothing advances — this is the behaviour the rule replaces"
     );
 }
+
+/// **The case a real net produces, and the fixture above cannot see.**
+///
+/// `a_silent_bonded_validator_does_not_cap_the_fringe` builds a validator that *never speaks*, so it is
+/// absent from `latest_heights` and the window drops it precisely because nothing ever saw a message from
+/// it. What a net actually does is different: a validator produces blocks and then stops, so its **last
+/// message stays in `latest_msgs`** (`block-storage/src/dag/message_state.rs:90-102` — one entry per
+/// sender, no bond check, no eviction) and every later candidate still justifies it. The window then drops
+/// it — `heights_behind(tip, stale) > LIVENESS_WINDOW` — while the justification set still carries it, so
+/// the coverage gate is asked to compare a message set against a *different* set's size:
+///
+/// ```text
+/// min_msgs  = [v0@8, v1@8, v2@8, stopped@1]   -> 4 entries, 4 senders
+/// partitions = {v0, v1, v2}                   -> 3 bonded senders, the live set
+/// check_min_messages: 4 == 3?  no  ->  NoAdvance::Coverage, forever
+/// ```
+///
+/// That is the second stop of #70, and it is why finality advances a few heights after a validator is
+/// killed and then stops: the stale message survives the window that was meant to retire it.
+#[test]
+fn a_validator_that_spoke_and_then_stopped_does_not_cap_the_fringe() {
+    use rchain_block_storage::dag::finalizer::Finalizer;
+    use rchain_block_storage::dag::liveness;
+    use rchain_block_storage::dag::message_state::DagMessageState;
+    use rchain_models::validator::Validator;
+    use rchain_shared::refined::{BlockHeight, SeqNum};
+
+    fn validator(byte: u8) -> Validator {
+        Validator::new([byte; 65])
+    }
+    fn id(sender: u8, height: i64) -> BlockHash {
+        let mut bytes = [0u8; 32];
+        bytes[0] = sender;
+        bytes[1] = (height & 0xff) as u8;
+        BlockHash::new(bytes)
+    }
+    fn h(n: i64) -> BlockHeight {
+        BlockHeight::try_from(n).expect("height")
+    }
+    fn s(n: i64) -> SeqNum {
+        SeqNum::try_from(n).expect("seq num")
+    }
+
+    let v0 = validator(0);
+    let v1 = validator(1);
+    let v2 = validator(2);
+    // Bonded, speaks at height 1, then stops. Its message never leaves `latest_msgs`.
+    let stopped = validator(3);
+    let g = validator(255);
+    let bonds: std::collections::BTreeMap<Validator, NonNegI64> = [
+        (v0.clone(), NonNegI64::try_from(100).unwrap()),
+        (v1.clone(), NonNegI64::try_from(100).unwrap()),
+        (v2.clone(), NonNegI64::try_from(100).unwrap()),
+        (stopped.clone(), NonNegI64::try_from(100).unwrap()),
+    ]
+    .into_iter()
+    .collect();
+
+    let st: DagMessageState<BlockHash, Validator> = DagMessageState::empty();
+    let genesis = st.create_message(id(255, 0), h(0), g, s(0), bonds.clone(), &BTreeSet::new());
+    let mut state = st.insert_msg(&genesis);
+
+    // Height 1: all four speak, so the stopped validator's last message is at the tip's floor.
+    let mut layer: std::collections::BTreeSet<_> = std::collections::BTreeSet::new();
+    for (i, v) in [v0.clone(), v1.clone(), v2.clone(), stopped.clone()]
+        .into_iter()
+        .enumerate()
+    {
+        let m = state.create_message(
+            id(i as u8, 1),
+            h(1),
+            v,
+            s(1),
+            bonds.clone(),
+            &[genesis.clone()].into_iter().collect(),
+        );
+        state = state.insert_msg(&m);
+        layer.insert(m);
+    }
+    let stale = layer
+        .iter()
+        .find(|m| m.sender == stopped)
+        .expect("the stopped validator's last message")
+        .clone();
+
+    // Heights 2..=8: the three survivors only, each justifying the previous layer **plus the stale
+    // message** — which is what `latest_msgs` hands them, one entry per sender.
+    let mut previous: Vec<_> = layer
+        .iter()
+        .filter(|m| m.sender != stopped)
+        .cloned()
+        .collect();
+    for height in 2..=8 {
+        let mut next = std::collections::BTreeSet::new();
+        let mut parents: std::collections::BTreeSet<_> = previous.iter().cloned().collect();
+        parents.insert(stale.clone());
+        for (i, v) in [v0.clone(), v1.clone(), v2.clone()].into_iter().enumerate() {
+            let m = state.create_message(
+                id(i as u8, height),
+                h(height),
+                v,
+                s(height),
+                bonds.clone(),
+                &parents,
+            );
+            state = state.insert_msg(&m);
+            next.insert(m);
+        }
+        previous = next.iter().cloned().collect();
+    }
+
+    // The candidate's parents: the latest message per sender, which still includes the stale one.
+    let mut justifications: std::collections::BTreeSet<_> = previous.iter().cloned().collect();
+    justifications.insert(stale.clone());
+
+    let finalizer = Finalizer::new(&state.msg_map);
+    let (_, live) = liveness::calculate_finalization(&finalizer, &justifications, &bonds);
+
+    assert!(
+        live.is_some(),
+        "three of four bonded validators are live and hold 75 % of the stake; a message from a \
+         validator that stopped seven heights ago must not hold the fringe at the height it stopped at. \
+         Today the coverage gate compares the four-message justification set against the three-sender \
+         live partition and refuses — which is the second stop of #70."
+    );
+}

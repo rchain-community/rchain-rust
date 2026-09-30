@@ -175,14 +175,27 @@ def nextLayer (d : Dag) (ms : List Message) : List Message :=
     (fun c => decide (c.sender ∈ seeded.map (·.sender)))
   cands.foldl (fun acc m => insertCandidate m acc) seeded
 
+/-- **The justifications a derivation may range over: those whose sender is still in the partition.**
+    The port's `live_justifications` (`block-storage/src/dag/liveness.rs`).
+
+    This is the half C174 left standing when it narrowed the partition to the live weight set. A validator
+    that stops is retired from the partition after `LIVENESS_WINDOW` heights — but its **last message stays
+    in `latest_msgs`** (one entry per sender, no eviction), so every later candidate goes on justifying it.
+    Without this filter the gate is handed four messages and a three-sender partition and compares their
+    sizes: `4 == 3`, refused for ever, and the fringe stops at the height the departed validator stopped
+    at. Measured as "+4 heights and then nothing" in two independent devnet runs, and reproduced in-process
+    by `a_validator_that_spoke_and_then_stopped_does_not_cap_the_fringe`. -/
+def inPartition (js : List Message) (partition : Bonds) : List Message :=
+  js.filter (fun m => decide (m.sender ∈ bondedSenders partition))
+
 /-- **The derivation** — the port's `next_fringe_detailed` (`:275-317`) in its own decision order: the walk, the
     count gate, the layer, the stake gate. The support map is an argument (its content is law 14a's,
     `Rchain.Casper.Stake`), exactly as it is for `Rchain.nextFringe`. -/
 def derivedFringe (d : Dag) (js : List Message) (prev : Fringe) (supp : SupportMap)
     (partition bonds : Bonds) : Option Fringe :=
-  if checkMinMessages (minMsgs d js (prev.messages.map (·.id))) partition then
+  if checkMinMessages (minMsgs d (inPartition js partition) (prev.messages.map (·.id))) partition then
     if calculateFringe supp partition bonds then
-      some ⟨nextLayer d (minMsgs d js (prev.messages.map (·.id)))⟩
+      some ⟨nextLayer d (minMsgs d (inPartition js partition) (prev.messages.map (·.id)))⟩
     else none
   else none
 
@@ -1437,7 +1450,17 @@ theorem derivedFringe_above_the_previous_fringe (d : Dag) (hdes : Descends d) (h
     {e' : Message} (he' : entryFor f.messages q.sender = some e') :
     q.height < e'.height := by
   have hqfin : q.id ∈ prev.messages.map (·.id) := List.mem_map.mpr ⟨q, hq, rfl⟩
-  have heq : f.messages = nextLayer d (minMsgs d js (prev.messages.map (·.id))) := by
+  -- **The derivation ranges over `inPartition js partition`, so the lemma is applied to that list** and
+  -- the two hypotheses have to cross the filter. This is where the narrowing shows up in the model: the
+  -- statement is the same law 15 sentence, about the layer the derivation actually builds.
+  have hjs' : ∀ p ∈ inPartition js partition, p ∈ d := by
+    intro p hp
+    exact hjs p (List.mem_of_mem_filter hp)
+  have hjust' : ∀ p ∈ inPartition js partition, p.sender = q.sender → ReachesF d q p := by
+    intro p hp
+    exact hjust p (List.mem_of_mem_filter hp)
+  have heq : f.messages =
+      nextLayer d (minMsgs d (inPartition js partition) (prev.messages.map (·.id))) := by
     unfold derivedFringe at hf
     split at hf
     · split at hf
@@ -1446,8 +1469,8 @@ theorem derivedFringe_above_the_previous_fringe (d : Dag) (hdes : Descends d) (h
       · exact absurd hf (by simp)
     · exact absurd hf (by simp)
   rw [heq] at he'
-  exact nextLayer_above_the_previous_fringe d hdes hnofork huniq hstep js hjs
-    (prev.messages.map (·.id)) q hqfin hjust he'
+  exact nextLayer_above_the_previous_fringe d hdes hnofork huniq hstep (inPartition js partition) hjs'
+    (prev.messages.map (·.id)) q hqfin hjust' he'
 
 /-! ### Non-vacuity: a derivation the comparison holds on, with every hypothesis in place
 
