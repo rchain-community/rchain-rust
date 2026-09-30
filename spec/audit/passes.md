@@ -4662,3 +4662,232 @@ because a cadence that suppresses *every* round traps liveness). And a net that 
 of its stake **permanently** still cannot finalise — the honest fix there is an inactivity leak, which is
 a state change (burning a silent validator's stake) and belongs with the shard-configuration and
 validator-lifecycle work (#24, #39), not with a recency window.
+
+## 27. The memory ceiling is glibc's heap, and the audit that had to break its own instruments to say so (#117)
+
+#117 recorded that a node under fork load reaches its cgroup ceiling and is OOM-killed on a chain of
+fifteen blocks. This pass is an adversarial audit of that claim and of the work done against it: eight
+independent agents (four deriving blind, four attacking one seeded conclusion each), a synthesis across
+three revisions, and three rounds of mechanical gates that failed twice and returned real defects both
+times. Its full report is `spec/audit/evidence/n117-audit.md`; the frozen measurement protocol and its
+three amendments are `spec/audit/evidence/n117-preregistration.md`; what the measurement returned is
+`spec/audit/evidence/n117-stage-a-results.md`.
+
+**Verdict: the symptom is confirmed, the fix is not, and the mechanism is now half named.** The symptom
+by direct measurement (`run5`, `trim` and the three Stage A runs: anon to the ceiling, `file` flat, a
+lone validator flat, 2–3 nodes OOM-killed per run). The fix is not: at a 4 GiB ceiling on the tip, after
+both merge-path commits, two of three nodes still die — and the arm that died carried `MALLOC_ARENA_MAX=2`
+in its environment, so it was the arm *most favourable* to the fix. The mechanism is half named because
+the measurement attributed the memory but not its composition:
+
+- **The ceiling is glibc's malloc heap.** Over 760 samples at `anon` > 1 GiB, glibc's own accounting
+  (`uordblks + fordblks + hblkhd`, read by an `LD_PRELOAD` shim — `spec/audit/evidence/mallinfo-shim.c`)
+  explains the cgroup's anonymous memory at **92.0–163.9 %, mean 101.0 %**. Nothing in the tree could say
+  this before: a Rust heap profiler sees what passed through the global allocator and never what glibc
+  kept, and `/proc` reports resident pages without saying whether an allocator call still owns them.
+- **The audit's own rule could not have reached it.** The pre-registered table classifies on `R/A`, a
+  `smaps`-derived proxy for the arena class. Across the same runs, on the same process, `R/A` spans
+  **0.000–0.983**: 280 of 760 samples fall in the "arenas refuted" band, 377 in a band Amendment 2 had
+  to add, 103 in "accepted". The verdict is decided by which instant is sampled. That is recorded rather
+  than repaired, because it is the measurement's own finding about the instrument.
+- **H6's accepted Θ(N²) ancestry residency is exonerated by direct measurement.** The node's own DAG
+  gauges, read for the first time: at the ceiling, `logical_bytes` **46–125 MB** and `seen_entries`
+  **749–2584** against a 4 GiB anonymous footprint. The register's accepted residual is real and is a
+  hundredth of this defect — and it is now measured rather than argued from the N² term.
+- **Left open, and named:** the composition of the *in-use* half. glibc reports 2–3.5 GiB `uordblks` at
+  the ceiling while the only profile of this shape puts the live *Rust* heap at ~95 MiB — but that
+  profile stopped below the ceiling, and no instrument separates Rust-side growth from C-side allocation
+  from `lmdb-rkv-sys`. The subtraction needs a profile at the ceiling; the dump needs a clean exit a node
+  at its ceiling does not get.
+
+### C175 — the other half of the ingress→validate→process pipeline is still unbounded
+
+**The check-off is R15's class, one queue over.** R15 closed "unbounded block-validation pipeline" by
+bounding the processor-input channel at `MAX_PENDING_BLOCKS` with backpressure
+(`node/src/runtime/node_runtime.rs:764-781`). The **validated-blocks** half of the same pipeline was not
+touched: `mpsc::unbounded_channel()` at `node_runtime.rs:733` carries full `BlockMessage`s, and a second
+unbounded tap channel sits at `:2557` inside `tap_validated_blocks` — which is production code; the
+similarly-shaped `:2090` is inside `#[cfg(test)]` and is not a defect. `unbounded_channel::<BlockHash>()`
+also appears at `casper/src/engine/lfs_block_requester.rs:226` and
+`casper/src/blocks/block_receiver.rs:538`, so the count is **two in this pipeline, four in the tree**.
+
+This is the shape the register itself records as this port's most-repeated defect — a set with a line
+shared and a sibling missed — and it is the one candidate mechanism this audit could not rule out, for a
+plain reason: its depth is measured by nothing. `owes`: bound it as R15 bounded its sibling, **and add a
+depth gauge**, because a bound whose depth is unobservable is the same defect one level up.
+
+### C176 — a measurement's artifacts cannot say what they measured
+
+Three defects with one shape, all found by auditing this session's own evidence base and all of them
+correcting the *record* rather than the node:
+
+- **The arms recorded no configuration.** Six arm files in `target/n105/` share one schema with no
+  configuration column; which env var produced each is carried by the *filename* only, and one of them
+  (`arena-control.tsv`) contains two different runs appended, another (`trim.tsv`) three plus a restart.
+  So no cross-arm comparison in that evidence base is sound, and the session's published arm comparisons
+  must be read as unsupported rather than merely imprecise.
+- **A killed node's peak reads 0.** A container's cgroup is removed when it exits, so a peak read through
+  `/proc/<pid>/cgroup` returns nothing for exactly the nodes a death measurement exists to observe —
+  `acceptance.log:746-747` records `peak=0 MiB` for both nodes that died, beside a comment claiming the
+  counter "cannot miss a spike". The fix is to resolve the cgroup from the **container id** and read the
+  peak while the node lives; the Stage A sampler does both.
+- **A tracked page states a figure its own artifact refutes.** `docs/src/node/validator-requirements.md:120-121`
+  says "29 anonymous regions of exactly 64 MiB — `HEAP_MAX_SIZE`, one per worker thread — fully resident".
+  The snapshot it cites holds **29 regions of exactly 32 MiB** (the worker stacks, `thread_stack_size(32 MiB)`,
+  with **5.7 MiB** of RSS between them) and **11 regions of exactly 64 MiB** which *are* the arena heaps.
+  The count came from one size class and the size from another, and "fully resident" is the inverse of
+  the truth for the class it names. `owes`: replace the sentence with the measured histogram.
+
+### The record this pass corrects
+
+The audit's claim ledger marked **6 contradicted and 8 unsupported of 43** claims made on #117 and PR
+#118 — including the issue **title**'s "accumulates without bound" (2 MiB is live at exit), a published
+"two seconds" with no artifact behind it, the "29 × 64 MiB" sentence above, and an issue attribution the
+author had "corrected" to the wrong mechanism and which then propagated into an independent agent's
+verdict as though it were evidence. The corrected record is posted on both; what this pass registers is
+only the two rows above, because the rest are corrections to claims about runs, and a claim about a run
+belongs where the runs are described.
+
+## 28. The merge's conflict resolution was the memory ceiling: an ordering blow-up, then the enumeration itself (#117)
+
+§27 named the heap's *owner* — glibc — and could not name the structure inside it, because the
+instrument that names structures needs a clean exit a node at the ceiling does not get. This section
+has one: a jemalloc heap profile dumped **at** the ceiling, triggered the moment the node's own cgroup
+crossed a threshold rather than at exit after it has freed its world
+(`spec/audit/evidence/n117-heap-profile-results.md`). It attributes **97 % of the live heap** to
+`BTreeSet`/`BTreeMap` clones under `rchain_sdk::dag::merging::resolve_conflict_set`, reached from
+`MergeScope::merge` via `get_pre_state_for_parents`, growing 343 -> 881 -> 1488 MiB across three dumps at
+1.5 / 3.0 / 4.6 GiB of live bytes. (`BTreeSet<T>` wraps `BTreeMap<T, ()>`, so a set clone shows as a map
+clone.) Two defects were inside that number, and they are separate findings because the first is a
+constant factor removed and the second is the exponent.
+
+### C177 — the rejected set was carried as state, and it is not state
+
+`resolve_conflict_set` calls `compute_rejection_options` (`sdk/src/dag/merging.rs`), the Scala
+`computeRejectionOptions` port: a BFS whose queue entries each carry the last-accepted key, the rejected
+set, and the accepted set — cloning **two** sets per push. The rejected set is *derivable*: the only way a
+key enters it is as the conflict of an accepted one, so after every step
+`rejected = ⋃{conflicts(x) : x ∈ accepted}`. Carrying it separately does not change what the search
+computes; it changes how many queue entries it takes to compute it, because a state becomes reachable by
+one entry per *ordering* that reaches it.
+
+**The census** (`spec/audit/evidence/n117-rejection-state-census.rs`, the pre-fix search kept verbatim so
+the count can be reproduced) on the shape the node produces — a **fork**, where chains within a branch do
+not conflict and chains across branches conflict completely:
+
+| chains | queue entries pushed | distinct states |
+|---|---|---|
+| 10 | 650 | 62 |
+| 16 | 219,200 | 510 |
+| 20 | **19,728,200** | **2,046** |
+
+Two registers and two cloned sets per entry, at 19.7M entries, is the gigabytes the profile sees. The
+distinct count is exactly `2^(per+1) - 2` — the nonempty subsets of one branch, twice over — so the ratio
+between the columns is the redundancy, and it is factorial in the branch width.
+
+**Fixed by carrying the accepted set alone, which expands each state once.** Exact, not a heuristic: the
+successor set (`all_keys \ (rejected ∪ accepted)`) and the answer (`rejected` at a terminal state) depend
+on the state only through `accepted`, so skipping a state already expanded cannot remove a reachable
+answer. Per the rule this project holds proofs to, the argument is prose and the check is a test:
+`rejection_options_match_a_literal_enumeration` (`sdk/src/property_tests.rs`) differs the shipped
+function against a **literal transcription of the old search**, over both the legally-shaped maps the
+merge produces and arbitrary maps including the asymmetric ones.
+
+Measured: 20 chains **11.3 s -> 13.4 ms**, and 40 chains, infeasible to run at all before, in 34.6 s at
+351 MiB. That is where this pass first stopped, and it is worth recording why that was not the fix: 40
+chains still took 34.6 s, and the enumeration behind the 2,046 states had not moved.
+
+### C178 — the enumeration is exponential in the width, and the width was never measured
+
+**What the search does, exactly.** A set `S ⊆ keys` is reachable iff its keys can be added one at a time
+with each new one absent from the conflicts of those already accepted — equivalently, iff the conflicts
+*within* `S` contain no directed cycle. So the search expands **one state per nonempty subset that induces
+an acyclic subgraph**, and the number of rejection options is unrelated to that count. Pinned as four
+closed forms in `the_enumeration_expands_one_state_per_acyclic_subset`, counts rather than seconds
+because a stopwatch measures the machine:
+
+| conflict map | states the enumeration expands | options reported |
+|---|---|---|
+| complete, `n` keys | `n` | `n` |
+| **no conflicts at all** | **`2^n - 1`** | **1** |
+| two branches of `p` (fork) | `2^(p+1) - 2` | `2` |
+| a perfect matching of `m` pairs | `3^m - 1` | `2^m` |
+
+Row one is why the 1000-key full-graph oracle passed while the node grew to gigabytes. **Row two is the
+node's normal case** — two chains conflict only if they touch a common channel
+(`DeployChainIndex::deploys_are_conflicting`, `casper/src/merging.rs:1103`), so a merge scope's conflict
+relation is *sparse*, and sparse is where the enumeration is worst. And the shape had never been read off
+a running node: the defect had been described with an *assumed* fork.
+
+**So the shape was made observable before it was fixed.** `SearchCensus` (`sdk/src/dag/merging.rs`)
+reports keys, conflict pairs, asymmetric pairs, self-conflicts, states expanded, frontier and options;
+`resolve_conflict_set_with_census` returns it from the merge itself, `casper/src/merging.rs`'s
+`search_census` accumulates the envelope process-wide, and `casper/src/interpreter_util.rs` logs it once
+per five seconds on the node's own log. `the_merge_search_sees_the_shape_the_merge_builds` asserts the
+field that decides the fix on the merge fixtures, and there it reads **0 asymmetric pairs**.
+
+**And on the node it does not.** 3 attempts of the frozen reproduction, 9 node-runs, every one of them
+asymmetric — 376 to 653 pairs — with a widest scope of **33 to 43 chains** and **up to 1,663,395 states
+expanded on a single merge** (`spec/audit/evidence/n117-after-fix-results.md`). The asymmetry is not
+noise: `resolve_conflict_set` hands the search `full_conflicts_map`, which unions each key's
+**dependencies** into its conflict set, and a dependency is a one-way constraint. So the exact rewrite
+below **declines on the node's real input** — the precondition check does its job, and the enumeration
+runs — and the node is running on the C177 dedup, not on it.
+
+**That correction is this section's own lesson, and it is the repository's stated one.** The precondition
+was checked on casper's merge *fixtures*: 2-chain scopes with an empty final set, which cannot exhibit an
+asymmetry that comes from dependencies. A fixture that cannot fail is not evidence; the devnet run is
+where this was decided, and it took an instrument to see it at all.
+
+**The exact rewrite.** With a symmetric, irreflexive relation on the keys, "reachable" is exactly
+"independent set" and "terminal" is exactly "dominating", so **the terminal states are precisely the
+maximal independent sets** and the option set is their image under `⋃ conflicts`. `compute_rejection_options`
+now enumerates those with Bron–Kerbosch and pivoting — and touches none of the `2^n` intermediate states,
+which were the entire defect. The rewrite is gated on the precondition being *checked*, not assumed: an
+asymmetric map, or a key that conflicts with itself, takes the enumeration as before, and
+`rejection_options_match_a_literal_enumeration` now asserts which path each generated map earned as well
+as that both agree with the literal transcription.
+
+| shape (**symmetric** — see the correction above) | before | after |
+|---|---|---|
+| 20 chains in two branches | 2,046 states / 13.4 ms | 30 states / 0.17 ms |
+| 40 chains | 2^21 states / 34.6 s | 60 states / 0.7 ms |
+| 200 chains | — | 300 states / 22 ms |
+| 2,000 chains | — | 3,000 states / 21 s |
+
+The counts grow linearly with width and the options are byte-identical; the falsifier that was
+`#[ignore]`d red for two commits is now a gate (`rejection_options_are_bounded_on_a_fork_shape`), asserting
+`expanded ≤ (keys + 1) × (options + 1)` — a bound the enumeration misses by an exponential — at every width.
+
+**What that is worth on the node, which is the number this section should be read against: nothing yet.**
+The shape is `directed`, so the rewrite declines, and the node's merge search still expands up to 1.66M
+states at the widths it reaches. The dedup (C177) is what it is actually running on — the pre-fix search
+at 33 chains would have queued a factorial number of entries rather than 1.6M states, which is why the
+tree is strictly better than it was and why the defect is not closed. Growth is ~2× per chain
+(411,199 at 33 -> 1,663,395 at 35), so 50 chains lands near 5·10¹⁰: the node is one wider fork from the
+same ceiling. C178 is therefore **in progress**, not done, and the directed case is what it owes.
+
+**Two honest limits.** The recursion is output-sensitive but a node is not free: the pivot scan is
+`O(|p| · log)` per candidate, so 2,000 chains costs 21 s of CPU (20 ms at 200). And the *options* can
+themselves be exponential — a perfect matching of `m` pairs has `2^m` of them — but they are now the only
+exponential thing, which is inherent to the question the merge asks and not to how this answers it.
+`max_frontier` is 0 on this path: #117's memory is now the option set and nothing else.
+
+**This is not the closure rewrite, and that refutation still stands.** Computing
+`rejected ⊇ ⋃{conflicts(j) : j ∉ rejected}` to a fixed point over-approximates, because a key that has
+been *rejected* can never be accepted afterwards: for `{0: {1}, 1: {0}, 2: {}}` the search yields
+`{{0}, {1}}` while the closure also yields `{0, 1}`. That counter-example is pinned by
+`rejection_options_are_not_the_closure` and the enumeration it refutes is still in the tree, as the
+fallback path.
+
+**The end-to-end number, with its missing control.** With the fix in place, no node crossed 3000 MiB in
+three attempts of the frozen reproduction (peaks 918–1869 MiB). That is not yet evidence that the fix
+removed the ramp: the pre-fix runs on record crossed at a **4 GiB** cap and a different window, so they
+are a different experiment, and the controlled baseline — the parent commit through the same script — has
+not been run. Owed, and named rather than assumed.
+
+C175 — the unbounded ingress queue §27 could not rule out — is not this defect. Its observation half
+landed (`#120`) and the depth reads 0.0 at every sample through a ramp that OOM-kills all three nodes, so
+a drained queue is not what held the memory. The profile and the census agree on which path did.
+
+[#117]: https://github.com/rchain-community/rchain-rust/issues/117

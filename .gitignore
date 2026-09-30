@@ -94,3 +94,6 @@ integration-tests.log
 
 # The coverage report (`cargo llvm-cov --lcov`); CI uploads it as an artifact.
 lcov.info
+
+# The shims are compiled from the tracked .c beside them; the build product is not source.
+spec/audit/evidence/*.so

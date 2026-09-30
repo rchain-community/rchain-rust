@@ -1,0 +1,208 @@
+# #117 — pre-registration of the discriminating measurement
+
+**Status: FROZEN before the run.** This file exists so the measurement's verdict cannot be
+rationalised after the fact. The thresholds and the arm design below were fixed while no result was
+known. Any later change is a new commit that says why it was necessary and what invalidated the
+original — silently editing this file would destroy the only thing it is for.
+
+The convention it follows is the register's own for a measured bound (`spec/TEST-COVERAGE.md:412-416`:
+a bound is *falsified before it is believed*, expressed relative to a same-process baseline so it
+survives a different machine), plus `spec/audit/passes.md:2943-2945`: a bound calibrated against a tree
+that no longer exists is prose, not a bound.
+
+## Why this measurement
+
+A node on a three-validator devnet is OOM-killed by its cgroup's memory controller within one to three
+minutes, on a chain of ~15–90 blocks — three orders of magnitude below the project's own sizing model
+(`docs/src/node/validator-requirements.md:68` budgets ~4 GB for a *1,000-block* chain). Two fixes
+reduced allocation churn in the merge path by ~8× (8,796 → 1,126 MiB in `rchain_casper`) and changed
+time-to-death by about two seconds.
+
+**So the open question is not how much is allocated but who owns the bytes at the ceiling.** No
+instrument currently in the tree answers it: the Rust heap profiler sees only the Rust global
+allocator; the cgroup accounts for everything but attributes nothing; and the per-second monitors
+record `anon` as a single number.
+
+## The reproduction (fixed)
+
+```bash
+DEVNET_NODE_MEMORY=4g DEVNET_NODE_ENV= \
+  tools/devnet.sh up --validators 3 --stakes 100,100,50 --epoch-length 10 --fresh
+```
+
+The configuration — ceiling, environment, thread count, image id — is written into the **filename and
+the header** of every artifact this produces. The arm that misled the earlier work was labelled "no
+arena cap" while its container environment contained `MALLOC_ARENA_MAX=2`; nothing in the tree records
+which environment an arm ran under, so no existing arm file can be compared with another.
+
+## What is read, per node, per second, until it dies
+
+1. cgroup: `memory.stat` (`anon`, `file`), `memory.current`, `memory.peak` — read from the cgroup
+   **path resolved from the container id**, not from `/proc/<pid>/cgroup` after exit, because a dead
+   node's cgroup is gone and the previous instrument reported `peak=0` for exactly the nodes it existed
+   to measure.
+2. `/proc/<pid>/smaps`: every unnamed `rw-p` region, classified by 64-MiB alignment, with summed
+   virtual size and summed Rss. This yields `R`.
+3. `/proc/<pid>/smaps_rollup`: `Rss`, `Anonymous`.
+4. thread count from `/proc/<pid>/task`.
+5. the node's own gauges (`logical_bytes`, `seen_entries`) — which settle the DAG-residency question
+   directly rather than by inference.
+
+## Quantities and the frozen decision table
+
+- `A` = peak `anon` of the dying node (MiB), from `memory.peak`.
+- `R` = Rss in 64-MiB-aligned unnamed `rw-p` regions at the last sample before death.
+- `F` = `fordblks + hblkhd` from glibc's allocator accounting (Stage B, or its `/proc` equivalent).
+- `U` = `uordblks`, likewise.
+
+| observation | verdict | consequence |
+|---|---|---|
+| `R/A ≥ 0.8` **and** `F ≥ 0.8·R` | arena retention **accepted** | the cap in use is the wrong knob; the fix space is allocator configuration, not the merge path |
+| `R/A ≥ 0.8` **and** `F ≪ R` **and** `U ≥ 0.8·R` | **refuted as "freed"** — those regions hold live bytes | the heap profile's live figure is wrong or blind, and the fix space is unidentified |
+| `R/A ≥ 0.8` **and** `F ≪ R` **and** `U ≪ R` | **mislabelled** — the bytes sit in a mapping no allocator call owns | the class name is wrong; a reservation, a dirty-page map or a runtime mapping owns them |
+| `R/A < 0.5` | arenas **refuted** | the owner is outside this class and the same instrument names it |
+
+**The single number to report: `R/A`**, with its sample time, `memory.peak` at death, and the arm's
+recorded configuration. One number, one artifact, one configuration.
+
+## The companion comparison for the fix verdict
+
+A separate run, never concurrent with the above, and never rebuilt between its arms (a rebuild changes
+the binary under test, which is part of what this audit is correcting):
+
+- **arms**: pre-fix `rnode:control-94ea0a1d2` (verify the image still exists locally before committing
+  to this design; do **not** rebuild that commit mid-audit) and the current tree;
+- **one** stated ceiling and **one** stated environment for both;
+- **≥ 3 repeats per arm**;
+- **endpoint: continuous** — peak `anon` at a fixed time — *not* a survival count. The observed spread
+  in survival counts at nominally identical settings was 1, 2 and 1 of 3; separating that endpoint at
+  80 % power would need about eight runs per arm, whereas a continuous endpoint separates in three.
+
+## What this does not settle
+
+The C-side allocations that the Rust heap profiler cannot see. If Stage A is ambiguous about ownership,
+a `LD_PRELOAD` shim calling `mallinfo2()` once per second is the one piece of new machinery permitted —
+it is compiled on the host and changes nothing about the node binary.
+
+---
+
+## Amendment 1 — the region classifier and the same-instant rule
+
+**Stated, and why: this refinement is forced by evidence produced after the freeze, and it changes no
+threshold in the decision table.** The audit's third seeded attack recomputed the only preserved
+`smaps` snapshot and found that "64-MiB-aligned unnamed `rw-p`" is ambiguous as a definition of the
+arena class: the same snapshot holds **29 regions of exactly 32 MiB** that are the worker thread stacks
+(`thread_stack_size(32 MiB)`) and **11 regions of exactly 64 MiB** that are the arena heaps, and a
+figure that merged the count from one class with the size of the other produced a claim the artifact
+contradicts. With the original definition, `R` could be dominated by a class that is not the one under
+test, and a misclassification would decide the verdict. The thresholds `0.8` / `0.5` and the four-row
+table are unchanged.
+
+**`R` is redefined as the Rss of the _arena_ class only**, identified by all three signatures below
+rather than by alignment alone. A region counts toward `R` only if it matches the arena row.
+
+| class | signature in one `smaps` read |
+|---|---|
+| **arena heap** (counts toward `R`) | starts on a 64-MiB boundary; `Rss ≈ Size` (the used portion is resident); adjacent to other 64 MiB blocks |
+| **thread stack** (excluded from `R`) | immediately preceded by a 4 KiB `---p` guard; `Rss ≪ Size`; one per worker thread by count |
+| **reservation / transient buffer** (excluded from `R`, reported separately) | 64-MiB-aligned possible, but `Rss < Size`, and its presence changes between snapshots |
+
+**The same-instant rule.** Every `smaps`-derived total must be paired with a `smaps_rollup` and a
+cgroup `memory.stat` read **at the same instant**, and the three must be reported together. The reason
+is measured: across the four files of the preserved snapshot, written ~90 ms apart, the `smaps`-summed
+Rss exceeds the `smaps_rollup` Rss by **219 MiB**. The process is mid-runaway and non-monotonic
+(anon dips of 30–78% recur), so a single-point total taken alone is not trustworthy — and a verdict
+that turns on `R/A` must not turn on which of two reads of the same instant was used.
+
+Both changes make the measurement *harder* to satisfy, not easier: they exclude a class that could
+have inflated `R`, and they add a consistency check that can fail. Nothing here relaxes a criterion.
+
+---
+
+## Amendment 2 — the four corrections the audit's own analysis found in Amendment 1
+
+**Stated, and why: Amendment 1 was audited and four defects were found in it. Two of them change what
+a reading means; both are narrowings, and no threshold moves.** They are recorded here rather than
+edited into Amendment 1 so the history of the protocol is readable.
+
+**A1. `A` was ambiguous between two readings, and the ambiguity decides the verdict.** Amendment 1 said
+"peak `anon` … from `memory.peak`", which mixes a counter (`memory.peak` is `memory.current`'s
+high-water, which includes file-backed pages) with a different one (`anon`), *and* invites the peak at
+death — which the protocol's own step 1 forbids reading, because the cgroup is gone.
+
+`A` is therefore defined as **the `anon` value from `memory.stat` read in the same sampler tick that
+produced the `smaps` read for `R`**, and `R/A` is a **same-instant ratio**. The run's peak `anon` and
+`memory.peak` are reported separately and are **not** used as `A`.
+
+The measured cost of getting this wrong, on the one artifact that exists: with `R` = 1018.9 MiB and
+the same-instant `anon` = 1151, `R/A` = **0.885** — the "arena retention accepted" row; with the peak
+at death (5847.6), `R/A` = **0.174** — the "arenas refuted" row. One artifact, one rule, opposite
+verdicts.
+
+**A2. `R`'s classifier needed a size floor and an adjacency tolerance, and now has neither criterion
+in the form that failed.** Amendment 1's literal reading admitted a **0.766 MiB** region purely for
+being full and adjacent to a large one, while *excluding* three fully-resident 64-MiB heaps that sit
+inside a coalesced mapping — a region-based rule undercounts heaps exactly when heaps are adjacent.
+
+`R` is therefore the **total Rss of unnamed `rw-p` regions with `Size ≥ 32 MiB` _and_
+`Rss / Size ≥ 0.9`**. Adjacency is demoted from an admission criterion to a **note** recording
+coalesced blocks. This is mechanical, and it fixes the undercount by counting *bytes* rather than
+*regions*: a fully-resident 192 MiB coalesced block contributes its full 192 MiB, which is the three
+heaps it contains. It excludes the worker stacks (29 regions of 32 MiB at `Rss/Size` ≈ 0.004) and the
+0.766 MiB region (size floor) without special-casing either. The **region count** is reported
+separately, beside `R`, for the heaps-per-arena question.
+
+**A3. The `[0.5, 0.8)` band produced no verdict, and now has a row.** A strict reading of the
+pre-amendment rule lands at 0.597 on the one artifact that exists — a reading the table could not
+classify. The added row says what that reading means rather than inventing a threshold:
+
+| observation | verdict | consequence |
+|---|---|---|
+| `0.5 ≤ R/A < 0.8` | **partial attribution** | the arena class is a major contributor but not dominant: the remainder is unnamed, the measurement has **not** decided the owner, and the class that holds the rest must be named before any fix follows |
+
+**A4. Two series are now required per second, not because the table uses them but because the
+analysis showed they are the cheap discriminator:** the **thread count** (`ls /proc/<pid>/task`) and
+the **count of ~32 MiB regions**. The arena story implies the heap count tracks the *thread* count —
+the arithmetic needs ~143 threads, not the ~62 an earlier draft assumed, to reach a 4 GiB ceiling from
+13 heaps at 30 threads. Sampled per second this separates "arenas grow per thread" from "a fixed set of
+arenas retains more", and it is measured with `ls`, not with a profiler.
+
+**And one limitation Amendment 1 cannot shed.** The unchanged snapshot **cannot** satisfy the
+same-instant rule: its nearest cgroup reads are the monitor's 1-second samples (753.2 / 1151.0 /
+1698.0 MiB at `:38` / `:39` / `:40`), and at ~650 MiB/s a one-second offset is ±650 MiB — `R/A` from
+that artifact carries ≈ **±57 %**. It is therefore unable to decide the table under this protocol, which
+is the protocol working: the measurement has to be taken, and the existing snapshot is a bound rather
+than a reading.
+
+---
+
+## Amendment 3 — the two outcomes the protocol did not describe, and a repeat count
+
+**Stated, and why: the gate that passed this protocol listed two cases it could not decide, because the
+table is written for "at death" and says nothing about the node that does not die.** Both are
+additions of *handling*, not of thresholds.
+
+**A5. The node never reaches the ceiling.** The reproduction's own spread is wide — observed death
+times run 17 s to 186 s from the first sample — so a run that survives its observation window is a
+possible and informative outcome, not a failed run. Define: observe until the node dies **or** for a
+fixed 600 s, whichever comes first. If it is still alive at 600 s, report `R/A` at the end of the
+window, the same-instant `anon`, the run's peak `anon`, and the ramp rate over the last 60 s; and
+record the verdict as **"no ceiling event in the window"**, with the table's four rows explicitly *not
+applied*. A node that plateaus below the ceiling is evidence of a bound and is reported as such — it is
+the one outcome that would falsify the premise that the growth is uncapped.
+
+**A6. Stage A is repeated ≥ 3 times, not once.** `R/A` is a ratio of two instantaneous readings on a
+process moving at hundreds of MiB/s, so a single run cannot separate a systematic owner from an
+accident of that run's phase. All three `R/A` values are reported, with their `anon` and their sample
+times, and the verdict is taken from the pattern rather than from one number. This is the same reason
+the companion fix-verdict comparison already carries `≥ 3 repeats per arm`; the attribution arm had been
+left at one, which was an omission rather than a decision.
+
+**A7. Both variants of the crate-attribution rule are now derivable, and the audit's sensitivity
+figure is not.** `spec/audit/evidence/dhat-crate-churn.py` prints the tightened rule (8,796.1 →
+1,126.0 MiB for `rchain_casper`) and, with `--any-frame`, a looser one (277.0 → 162.7 MiB) — a **32×
+spread from the rule alone**, which makes the point the audit wanted to make and does so checkably. The
+figure that audit quoted for that sensitivity could not be reproduced by a gate, under either variant
+or its own stated rule; it should be dropped or replaced by the script's two printed values. Recorded
+here because it is the same defect the script itself was committed to fix: a number whose derivation is
+not recorded is prose.
