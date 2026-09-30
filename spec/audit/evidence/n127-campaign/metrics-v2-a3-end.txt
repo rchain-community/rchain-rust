@@ -1,0 +1,1 @@
+# tree=c5442ee1f node=v2 attempt=3 phase=end scraped=2026-09-30T16:50:44Z: SCRAPE FAILED — the node is not serving. This file records the failure, not a stale scrape.

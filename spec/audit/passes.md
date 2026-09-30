@@ -5006,3 +5006,65 @@ count* in this tree — only the four closed forms `compute_rejection_options`'s
 `n`; no-conflicts `2^n − 1`; fork `2^(p+1) − 2`; matching `3^m − 1`). So the priced and gated quantity is a
 **proxy** — scope width, conflict-pair count, asymmetry — and any claim that the proxy predicts the cost
 must be measured on the distribution rather than asserted. Stage 2 inherits that.
+
+## 31. Stage 1's distribution was measured, and the endpoint does not carry it (C182, #126, #127)
+
+§30 above ends by saying Stage 1's distribution "is not yet measured". It was measured within the hour, and
+the sentence is corrected here rather than edited there, because the run changed what the change order can
+do next. This section is the campaign's record; the artifacts are
+`spec/audit/evidence/n127-campaign-results.md` and `target/n127-campaign/c5442ee1f-20260930T163518Z/`, and
+the pre-registration it was frozen against is `n127-campaign-preregistration.md`.
+
+### What the run was
+
+Phase 0 of the programme for the three causes (#125, #126, #127): three readings off one rig, because they
+want the same devnet — the block rate and what a validator's death does to finality (C171's baseline), the
+merge scope-width and state-count distributions (C182's re-run, and the input Stage 2's **N** is read from),
+and which `NoAdvance` variant a stall carries (#70's second stop). Three attempts, 3 validators at
+100/100/50, an 8 GiB cgroup, a 300 s window, four deploys at T+30 s, `validator-2` stopped at T+120 s;
+`rust_diff_vs_1732306c7` is empty in the manifest, so the binary under test is the tree the artifacts name.
+
+### What it found
+
+**0.2 — the endpoint does not carry the census's distribution, and that is a third defect in this
+instrument.** The node's own log line is self-consistent (`101 merges`, width buckets
+`[38, 55, 8, 0, 0]`, summing to `MERGES`) while `/metrics`, scraped at the same moment, renders `_count
+7617` — a factor of ~75 — and its low bucket (`le="16"` → 13) is **below** the census's 38, so what is
+published is not a rescaling of the truth. The mechanism was separated in-process rather than argued:
+`report_period_snapshot` merges every snapshot into a **five-year** accumulator
+(`prometheus_reporter.rs:155-171`) while this registry's histograms are cumulative, so each reporting period
+adds the running total to itself. The guard is
+`re_reporting_a_snapshot_does_not_double_a_histogram_count` (`node/src/runtime/node_runtime.rs`), ignored
+until the fix lands and runnable with `--ignored`; it renders `_count 2.0` for one merge reported twice.
+**Blast radius: exactly two metrics** — `casper/src/dag.rs:272,283` are the only `Metrics::record` call
+sites in the workspace, and the queue depths C175 observes are gauges, which the accumulator replaces.
+
+**The row that should have caught this is the lesson.** "The histogram's boundaries are 16/32/64/128, not
+the registry's defaults" passed, correctly — the boundaries *are* the shape's. Stage 1's defect had been the
+boundaries; fixing them did not make the counts right, and the row certified the half that was visible. **A
+row that guards an instrument must cross-check a second, independent rendering of the same quantity** — a
+gauge beside the histogram, or the process's own log line — not a property of one rendering's shape.
+
+**The honest envelope, read from the census's log line** (the only correct rendering until the endpoint is
+fixed): nine node-runs, **median bucket 32 chains** (>half of every node's merges have a scope of 17–32),
+mean width 15.7–19.6, widest 32–37, and **2,026,511 states expanded on one merge** — *more* than the census
+run's 1,663,395, on a chain whose block rate is lower. Load is not the only thing that moves the cost.
+
+**0.1 — the storm is a post-kill phenomenon in this configuration, and the pre-registration did not foresee
+the rate it found.** All three validators live: 12–16 blocks/min, one block per 4–5 s, *slower* than the 2 s
+autopropose timer and an order of magnitude below the recorded 276/min storm — a case the frozen table has
+no row for, so it is a correction to the pre-registration rather than a reading. After the kill, finality did
+not resume in **3 of 3** attempts: two froze completely (height and finality both stopped for 180 s) and one
+kept producing at ~18 blocks/min while finality moved +4 heights. The chain that runs while finality is
+pinned is the one an absent validator creates — C171's own mechanism, and #70's second stop.
+
+**0.3 — void, by construction at this scale.** Every stall line carries `at tip 0`: the line is rate-limited
+to one per 100 heights (`interpreter_util.rs:197`) and the tip never left the low thirties, so the
+genesis-time line suppressed every later one. The reading needs a longer chain or a smaller interval.
+
+### What it changes for the change order
+
+Stage 2's **N** cannot be read from this run's endpoint, and the distribution is readable only from the
+census's log until the endpoint's counts are fixed — which makes that fix a prerequisite for Stage 2 rather
+than a follow-up, and `C182` stays `in progress` with its `owes` naming all three. The numbers above are what
+a threshold is weighed against, with the caveat attached. Nothing here bounds or prices anything.

@@ -1,0 +1,1 @@
+2026-09-30T16:37:08.051Z WARN  [casper.interpreter.validate] merge search: 86 merges · widest scope 36 chains / 742 conflict pairs / 489 asymmetric · most states expanded on one merge 389977 · width buckets [34, 44, 8, 0, 0] · cost buckets [37, 12, 24, 13, 0]

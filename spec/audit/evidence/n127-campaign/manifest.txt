@@ -1,0 +1,7 @@
+# tree=c5442ee1f image=sha256:783fe97d60543639162f8e26385ce0f5bbc122b2c125d1df897b0bd725bc6347
+# shape: --validators 3 --stakes 100,100,50 --epoch-length 10 --fresh (devnet defaults: autopropose on, propose-on-deploy on, attest-on-new-blocks on)
+# cap=8g window=300s attempts=3 deploys=4 at T+30s kill=validator-2 at T+120s
+# started 2026-09-30T16:35:18Z
+# binary_sha256=30577a5a6dfb93b1c181360339c4500359055cb3d299b291a1e2fa368c33c2ba
+# image_built_from=2026-09-30T17:10:49.720620197+01:00
+# rust_diff_vs_1732306c7=empty — the binary is this tree

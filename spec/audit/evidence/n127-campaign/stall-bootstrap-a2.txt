@@ -1,0 +1,1 @@
+2026-09-30T16:40:34.904Z WARN  [casper.interpreter.validate] finality did not advance at tip 0: a layer exists but its supporting stake is not a supermajority — 0 of 250 (0 full partition(s) among 0 candidate(s))
