@@ -477,64 +477,51 @@ fn the_devnet_stake_split_finalises_with_one_validator_stopped() {
         "and it reports no stall reason at all"
     );
 }
-
-/// **The chain the node's own block creator builds cannot be finalised — in-process, with every validator
-/// live, and no devnet.**
+/// **The chain the node's own block creator builds now reaches a fringe — and it did not.**
 ///
-/// `DagMessageState::create_msg_and_update_sender` is the production call: a block's height is
-/// `max(latest_msgs) + 1` and its justifications are **every** `latest_msgs` entry, one per sender. So the
-/// chain it builds is *totally connected* — every block sees every validator's most recent block — and the
-/// fringe gate refuses it:
+/// Driven through the production entry point, `DagMessageState::create_msg_and_update_sender`, with three
+/// validators at the devnet's own `100/100/50`, all live, no kill and no stopped validator. Before the
+/// round snapshot this refused and never advanced:
 ///
 /// ```text
 /// Support { supporting: 0, total: 250, full_partitions: 0, candidates: 2 }
 /// ```
 ///
-/// **`supporting: 0` is not a stake shortfall.** `calculate_fringe` sums the stake of the candidates whose
-/// `seen_by` values all equal the live partition, and here *no* candidate does, so the numerator is zero
-/// before the quorum is ever consulted. The live set is all three validators (asserted below), no validator
-/// is silent, and the stake split is the devnet's own.
-///
-/// **What the gate wants and this chain does not have.** `calculate_next_fringe_support_map` computes each
-/// candidate's `seen_by` from `mv.parents ∖ next_layer` — the justify-cations *beyond* the candidate next
-/// layer — so a block whose justifications **are** the next layer credits nobody with having seen it. In a
-/// totally connected chain that is every block: the mover at the head of a round has an empty remainder,
-/// and the later movers see only a prefix of the layer. So the gate's demand ("every live seer has seen
-/// every next-layer message, through messages past that layer") is satisfiable only by the *fork* shape the
-/// tests above construct — which is the opposite of what a proposer justifying `latest_msgs` produces.
+/// **`supporting: 0` was not a stake shortfall.** `calculate_fringe` sums the stake of the candidates whose
+/// `seen_by` values all equal the live partition, and no candidate qualified, so the numerator was zero
+/// before the quorum was ever consulted. `calculate_next_fringe_support_map` builds each candidate's
+/// `seen_by` from `mv.parents ∖ next_layer` — the justifications *beyond* the candidate next layer — so a
+/// block whose justifications **are** every sender's newest message credits nobody with having seen
+/// anything: the head of each round has an empty remainder and the later movers have seen a prefix.
 ///
 /// **This file's own header has said so since it was written**: "a lockstep DAG — which the full block
 /// pipeline's `latest_msgs` proposer always produces, and which the Scala `MultiParentCasperFinalizationSpec`
-/// round-robin scenario built — never finalizes. That Scala spec is itself `ignore`d." What was never done
-/// is connect that sentence to a devnet's stalled finality. That is what this fixture is: the campaign's
-/// `0 of 250 (0 full partition(s) among N candidate(s))` lines, produced on demand, with no kill and no
-/// stopped validator.
+/// round-robin scenario built — never finalizes. That Scala spec is itself `ignore`d." What had never been
+/// done is connect that sentence to a devnet's stalled finality. Three devnet runs and a fixed derivation
+/// went into chasing a gate whose input the node never produced.
 ///
-/// The third block is the separator, and it is what makes this a finding rather than an assertion: the
-/// **same** validators at the **same** stakes on a fork-shaped DAG publish a fringe. The variable is the
-/// parent set, not the stake split and not a departed validator.
-///
-/// **This test pins the defect, so it is the falsifier's premise and it will fail when the gate is
-/// corrected.** That failure is the signal, and the fix inverts it: the assertions become "the derivation
-/// publishes a fringe on the chain the proposer builds", with the fork control unchanged as the shape the
-/// rule already accepts.
+/// The fix is the parent set and nothing else: `create_msg_and_update_sender` now justifies
+/// `DagMessageState::round_parents` — the `latest_msgs` as of the last round boundary — while the height
+/// rule (`max + 1`), the validity rules and the gate all stay as they were. **The control is inline**: the
+/// same chain built with `latest_msgs` as parents still does not advance, so this test is red if the round
+/// snapshot is dropped.
 #[test]
-fn the_dag_the_nodes_own_proposer_builds_cannot_advance_the_fringe() {
+fn the_chain_the_nodes_own_proposer_builds_reaches_a_fringe() {
     use rchain_block_storage::dag::finalizer::{Finalizer, NoAdvance};
     use rchain_block_storage::dag::liveness;
     use rchain_block_storage::dag::message_state::DagMessageState;
     use rchain_models::validator::Validator;
     use rchain_shared::refined::{BlockHeight, NonNegI64 as Stake, SeqNum};
 
-    fn validator(byte: u8) -> Validator {
-        Validator::new([byte; 65])
+    fn validator(b: u8) -> Validator {
+        Validator::new([b; 65])
     }
     fn id(sender: u8, height: i64) -> BlockHash {
-        let mut bytes = [0u8; 32];
-        bytes[0] = sender;
-        bytes[1] = (height & 0xff) as u8;
-        bytes[2] = ((height >> 8) & 0xff) as u8;
-        BlockHash::new(bytes)
+        let mut b = [0u8; 32];
+        b[0] = sender;
+        b[1] = (height & 0xff) as u8;
+        b[2] = ((height >> 8) & 0xff) as u8;
+        BlockHash::new(b)
     }
     fn h(n: i64) -> BlockHeight {
         BlockHeight::try_from(n).expect("height")
@@ -563,7 +550,6 @@ fn the_dag_the_nodes_own_proposer_builds_cannot_advance_the_fringe() {
     let genesis = st.create_message(id(255, 0), h(0), g, s(0), bonds.clone(), &BTreeSet::new());
     let mut state = st.insert_msg(&genesis);
 
-    // Round-robin over three live validators, 60 blocks, each through the production entry point.
     for height in 1..=60_i64 {
         let v = vs[(height as usize - 1) % 3].clone();
         let (next, _m) = state
@@ -574,12 +560,6 @@ fn the_dag_the_nodes_own_proposer_builds_cannot_advance_the_fringe() {
 
     let justifications: std::collections::BTreeSet<_> =
         state.latest_msgs.values().cloned().collect();
-    assert_eq!(
-        justifications.len(),
-        4,
-        "`create_msg_and_update_sender` justifies every `latest_msgs` entry — three validators plus \
-         genesis — which is the parent set the gate is asked about"
-    );
     let tip = justifications
         .iter()
         .map(|m| m.height)
@@ -594,74 +574,73 @@ fn the_dag_the_nodes_own_proposer_builds_cannot_advance_the_fringe() {
     assert_eq!(
         live.len(),
         3,
-        "all three validators are live at the tip — the refusal below is not a retired validator, and \
-         there is no stopped one anywhere in this fixture"
+        "all three validators are live at the tip, so nothing here is a retired validator or a rate"
     );
 
     let finalizer = Finalizer::new(&state.msg_map);
     let (_parent, fringe, why) =
         liveness::calculate_finalization_detailed(&finalizer, &justifications, &bonds);
-    match why {
-        Some(NoAdvance::Support {
-            supporting,
-            total,
-            full_partitions,
-            candidates,
-        }) => {
-            assert_eq!(
-                (supporting, total, full_partitions),
-                (0, 250, 0),
-                "no candidate is a full partition, so the numerator is zero before any quorum is \
-                 consulted — this is the campaign's line, and it is not a stake shortfall"
-            );
-            assert!(
-                candidates > 0,
-                "and the support map is not empty: the refusal is `0 full partitions`, not a map that \
-                 never got built"
-            );
-        }
-        other => panic!(
-            "the derivation was expected to refuse with Support and did not: {other:?} (fringe \
-             advanced: {})",
-            fringe.is_some()
-        ),
-    }
+    let fringe = fringe.unwrap_or_else(|| {
+        panic!(
+            "the chain the block creator builds must publish a fringe now that it justifies the round \
+             snapshot instead of `latest_msgs` — got {why:?}"
+        )
+    });
+    let finalized = fringe
+        .iter()
+        .map(|m| m.height)
+        .max()
+        .expect("a published fringe is non-empty");
+    assert!(
+        finalized < tip,
+        "and the fringe trails the tip rather than claiming it: {finalized:?} of {tip:?}"
+    );
 
-    // **The separator.** Same three validators, same stakes, a fork-shaped DAG — and it publishes.
+    // **The control, and it is what makes this test a falsifier.** The same three validators on the same
+    // chain, with `latest_msgs` as the parent set — the shape before the round snapshot — do not advance.
     let st2: DagMessageState<BlockHash, Validator> = DagMessageState::empty();
     let genesis2 = st2.create_message(id(255, 0), h(0), g, s(0), bonds.clone(), &BTreeSet::new());
     let mut state2 = st2.insert_msg(&genesis2);
-    let mut previous: Vec<_> = Vec::new();
-    for height in 1..=20 {
-        let parents: std::collections::BTreeSet<_> = if previous.is_empty() {
-            [genesis2.clone()].into_iter().collect()
-        } else {
-            previous.iter().cloned().collect()
-        };
-        let mut layer = std::collections::BTreeSet::new();
-        for (i, v) in vs.iter().enumerate() {
-            let m = state2.create_message(
-                id(i as u8, height),
-                h(height),
-                v.clone(),
-                s(height),
-                bonds.clone(),
-                &parents,
-            );
-            state2 = state2.insert_msg(&m);
-            layer.insert(m);
-        }
-        previous = layer.iter().cloned().collect();
+    for height in 1..=60_i64 {
+        let v = vs[(height as usize - 1) % 3].clone();
+        let max = state2
+            .latest_msgs
+            .values()
+            .map(|m| m.height)
+            .max()
+            .expect("a tip");
+        let parents: std::collections::BTreeSet<_> = state2.latest_msgs.values().cloned().collect();
+        let m = state2.create_message(
+            id((height - 1) as u8 % 3, height),
+            max + rchain_shared::refined::NonNegI64::one(),
+            v,
+            s(height),
+            bonds.clone(),
+            &parents,
+        );
+        state2 = state2.insert_msg(&m);
     }
-    let justifications2: std::collections::BTreeSet<_> = previous.iter().cloned().collect();
+    let justifications2: std::collections::BTreeSet<_> =
+        state2.latest_msgs.values().cloned().collect();
     let finalizer2 = Finalizer::new(&state2.msg_map);
     let (_p2, fringe2, why2) =
         liveness::calculate_finalization_detailed(&finalizer2, &justifications2, &bonds);
     assert!(
-        fringe2.is_some(),
-        "the same validators at the same stakes on a fork-shaped DAG publish a fringe — so the variable \
-         is the parent set the proposer chooses, not the stake split and not a departed validator (got \
-         {why2:?})"
+        fringe2.is_none(),
+        "`latest_msgs` as the parent set still refuses — this is the shape the round snapshot replaced, \
+         and if it starts advancing the snapshot is not what fixed this (got {why2:?})"
+    );
+    assert!(
+        matches!(
+            why2,
+            Some(NoAdvance::Support {
+                supporting: 0,
+                full_partitions: 0,
+                ..
+            })
+        ),
+        "and it refuses for the recorded reason: no candidate is a full partition, so the numerator is \
+         zero before any quorum is consulted — got {why2:?}"
     );
 }
 

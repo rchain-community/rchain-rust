@@ -302,10 +302,13 @@ where
     Fut: std::future::Future<Output = Result<Arc<BlockIndex>, String>>,
 {
     let dag_repr = dag.get_representation().await;
+    // **The round snapshot, not `latest_msgs`.** The fringe gate cannot finalise a parent set made of
+    // every sender's newest message — see `DagMessageState::round_parents` — so the proposer justifies
+    // the messages as of the last round boundary instead.
     let parent_hashes: BTreeSet<BlockHash> = dag_repr
         .dag_message_state
-        .latest_msgs
-        .values()
+        .parents_for_new_block()
+        .into_iter()
         .map(|m| m.id)
         .collect();
     get_pre_state_for_parents(dag, block_store, runtime, &parent_hashes, block_index).await
