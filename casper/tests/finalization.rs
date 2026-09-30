@@ -664,3 +664,139 @@ fn the_dag_the_nodes_own_proposer_builds_cannot_advance_the_fringe() {
          {why2:?})"
     );
 }
+
+/// **What the gate needs from the proposer, measured rather than reasoned: the parent set, not the
+/// heights and not the rule.**
+///
+/// The fixture above shows the chain the node builds (`latest_msgs`) is refused. This one shows what
+/// changes it, by holding everything else fixed — the same three validators, the same stakes, the same
+/// height rule (`max + 1`, one message per height), the same round-robin order — and varying **only which
+/// messages a block justifies**:
+///
+/// | parent set | result |
+/// |---|---|
+/// | the current `latest_msgs` | refuses, `Support { supporting: 0, … }`, and never advances |
+/// | the `latest_msgs` **as of the start of the round** | publishes a fringe, and keeps up |
+///
+/// The second row is the finding. At 20, 60 and 120 rounds the fringe sits exactly **12 heights** behind
+/// the tip — 48/60, 168/180, 348/360 — so it advances with the chain rather than falling further behind.
+/// The lag is the structure the gate asks for (a candidate needs, for every live sender, a parent that is
+/// not that sender's *oldest* unfinalized message, which needs at least two unfinalized layers), not a
+/// rate.
+///
+/// So the correction lives in the proposer's parent set. Heights are untouched, no validity rule is
+/// touched, and an unpatched node accepts a patched node's blocks — the blocks are ordinary blocks that
+/// justify a snapshot instead of the newest message of every sender.
+#[test]
+fn a_round_snapshot_of_the_latest_messages_is_what_the_gate_needs() {
+    use rchain_block_storage::dag::finalizer::Finalizer;
+    use rchain_block_storage::dag::liveness;
+    use rchain_block_storage::dag::message_state::DagMessageState;
+    use rchain_models::validator::Validator;
+    use rchain_shared::refined::{BlockHeight, NonNegI64 as Stake, SeqNum};
+
+    fn validator(b: u8) -> Validator {
+        Validator::new([b; 65])
+    }
+    fn id(sender: u8, height: i64) -> BlockHash {
+        let mut b = [0u8; 32];
+        b[0] = sender;
+        b[1] = (height & 0xff) as u8;
+        b[2] = ((height >> 8) & 0xff) as u8;
+        BlockHash::new(b)
+    }
+    fn h(n: i64) -> BlockHeight {
+        BlockHeight::try_from(n).expect("height")
+    }
+    fn s(n: i64) -> SeqNum {
+        SeqNum::try_from(n).expect("seq num")
+    }
+
+    /// -> (tip height, fringe height if any, the refusal if any). `snapshot` is the parent policy:
+    /// `false` justifies the current `latest_msgs`, `true` the set that was latest when the round began.
+    fn drive(snapshot: bool, rounds: i64) -> (i64, Option<i64>, Option<String>) {
+        let vs = [validator(0), validator(1), validator(2)];
+        let g = validator(255);
+        let bonds: std::collections::BTreeMap<Validator, Stake> = [
+            (vs[0].clone(), Stake::try_from(100).unwrap()),
+            (vs[1].clone(), Stake::try_from(100).unwrap()),
+            (vs[2].clone(), Stake::try_from(50).unwrap()),
+        ]
+        .into_iter()
+        .collect();
+        let st: DagMessageState<BlockHash, Validator> = DagMessageState::empty();
+        let genesis = st.create_message(id(255, 0), h(0), g, s(0), bonds.clone(), &BTreeSet::new());
+        let mut state = st.insert_msg(&genesis);
+        let mut round_parents: std::collections::BTreeSet<_> =
+            [genesis.clone()].into_iter().collect();
+
+        for round in 1..=rounds {
+            let at_round_start: std::collections::BTreeSet<_> =
+                state.latest_msgs.values().cloned().collect();
+            for (i, v) in vs.iter().enumerate() {
+                let max = state
+                    .latest_msgs
+                    .values()
+                    .map(|m| m.height)
+                    .max()
+                    .expect("a tip");
+                let parents: std::collections::BTreeSet<_> = if snapshot {
+                    round_parents.clone()
+                } else {
+                    state.latest_msgs.values().cloned().collect()
+                };
+                let m = state.create_message(
+                    id(i as u8, round * 3 + i as i64),
+                    max + rchain_shared::refined::NonNegI64::one(),
+                    v.clone(),
+                    s(round * 3 + i as i64),
+                    bonds.clone(),
+                    &parents,
+                );
+                state = state.insert_msg(&m);
+            }
+            round_parents = at_round_start;
+        }
+
+        let justifications: std::collections::BTreeSet<_> =
+            state.latest_msgs.values().cloned().collect();
+        let tip = justifications
+            .iter()
+            .map(|m| m.height)
+            .max()
+            .expect("a tip");
+        let finalizer = Finalizer::new(&state.msg_map);
+        let (_p, fringe, why) =
+            liveness::calculate_finalization_detailed(&finalizer, &justifications, &bonds);
+        (
+            i64::from(tip),
+            fringe
+                .as_ref()
+                .and_then(|f| f.iter().map(|m| m.height).max())
+                .map(i64::from),
+            why.map(|w| format!("{w:?}")),
+        )
+    }
+
+    // 1. The node's parent set: nothing is ever published.
+    let (tip, fringe, why) = drive(false, 20);
+    assert_eq!(
+        (tip, fringe),
+        (60, None),
+        "the current `latest_msgs` parent set never advances — got {fringe:?}, {why:?}"
+    );
+
+    // 2. A round snapshot: it publishes, and the lag does not grow with the chain.
+    let mut lags = Vec::new();
+    for rounds in [20, 60, 120] {
+        let (tip, fringe, why) = drive(true, rounds);
+        let fringe = fringe.unwrap_or_else(|| panic!("no fringe at {rounds} rounds: {why:?}"));
+        lags.push(tip - fringe);
+    }
+    assert_eq!(
+        lags,
+        vec![12, 12, 12],
+        "the fringe tracks the tip at a constant distance — a lag that grew with the chain would be a \
+         rate problem, and a lag that is constant is the unfinalized region the gate's rule needs"
+    );
+}
