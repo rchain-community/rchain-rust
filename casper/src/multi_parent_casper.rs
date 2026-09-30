@@ -296,7 +296,6 @@ pub async fn get_pre_state_for_new_block<F, Fut>(
     block_store: &BlockStore,
     runtime: &RuntimeManager,
     block_index: &F,
-    sender: &rchain_models::validator::Validator,
 ) -> Result<ParentsMergedState, String>
 where
     F: Fn(BlockHash) -> Fut,
@@ -308,7 +307,7 @@ where
     // the messages as of the last round boundary instead.
     let parent_hashes: BTreeSet<BlockHash> = dag_repr
         .dag_message_state
-        .parents_for_new_block(sender)
+        .parents_for_new_block()
         .into_iter()
         .map(|m| m.id)
         .collect();

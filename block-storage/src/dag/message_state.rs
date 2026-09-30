@@ -120,34 +120,48 @@ where
         }
     }
 
-    /// **The parent set for a new block by `sender`** — [`Self::round_parents`], with **the sender's own
-    /// entry replaced by its newest message**.
+    /// **The parent set for a new block** — [`Self::round_parents`], which is what the fringe gate can
+    /// finalise. Falls back to `latest_msgs` only before the first boundary exists (an empty DAG).
     ///
-    /// The substitution is not a refinement, it is what keeps the chain a chain. The block creator derives
-    /// both the new block's `block_num` and its `seq_num` **from this set** (`block_creator.rs:58-75`), so a
-    /// parent set that omits the proposer's own newest message makes a second proposal in the same round
-    /// carry the same `(sender, seq_num)` as the first — and the DAG refuses it, correctly, as an
-    /// equivocation:
+    /// **It is deliberately *not* corrected for the proposer's own newest message, and that is the point
+    /// of the boundary.** Adding it back was tried and measured: the fringe gate then refuses again
+    /// (`0 of 250`, and a devnet returns to height 20 with finality at 3), because the whole property the
+    /// snapshot provides is that a candidate's parents lie *beyond* the next layer, and the proposer's own
+    /// newest message is exactly the parent that is not. So the parent set stays a pure snapshot, and the
+    /// second half of the rule is [`Self::has_advanced_past_the_round`].
+    pub fn parents_for_new_block(&self) -> BTreeSet<Message<M, S>> {
+        if self.round_parents.is_empty() {
+            self.latest_msgs.values().cloned().collect()
+        } else {
+            self.round_parents.values().cloned().collect()
+        }
+    }
+
+    /// **Whether `sender` has already produced a block since the last round boundary** — and must therefore
+    /// not propose again until the round closes.
+    ///
+    /// The other half of the snapshot, and the reason it can stay pure. `block_creator.rs:58-75` derives both
+    /// the new block's `block_num` and its `seq_num` **from the justification set**, so a validator that
+    /// proposes twice inside one round reuses its `(sender, seq_num)` and the DAG refuses the block —
+    /// correctly — as an equivocation:
     ///
     /// ```text
-    /// Self-created block #93 (seq 92) failed validation: failed to insert block into DAG:
-    /// equivocation detected: sender produced two blocks with the same sequence number
+    /// ERROR Self-created block #93 (seq 92) failed validation with internal error: failed to insert block
+    ///       into DAG: equivocation detected: sender produced two blocks with the same sequence number
     /// ```
     ///
-    /// That is measured, not anticipated: it is what a devnet run against the first version of this
-    /// function logged, and it is why the fixture in `casper/tests/finalization.rs` derives `sender_seq`
-    /// from the parent set the way the block creator does. The first block of a round is unaffected — the
-    /// sender's newest *is* the snapshot's entry for it — so the cross-sender snapshot, which is what the
-    /// fringe gate needs, is untouched.
-    pub fn parents_for_new_block(&self, sender: &S) -> BTreeSet<Message<M, S>> {
-        if self.round_parents.is_empty() {
-            return self.latest_msgs.values().cloned().collect();
-        }
-        let mut parents = self.round_parents.clone();
-        if let Some(mine) = self.latest_msgs.get(sender) {
-            parents.insert(sender.clone(), mine.clone());
-        }
-        parents.values().cloned().collect()
+    /// Read off the node, after three consecutive refusals halted autopropose
+    /// (`consecutive_failures >= AUTOPROPOSE_MAX_CONSECUTIVE_FAILURES`) and the chain produced nothing while
+    /// deploys sat in the pool. One block per validator per round is what the boundary means, so a proposer
+    /// that has already spoken waits rather than equivocating with itself. The wait is bounded by the round:
+    /// it closes as soon as every bonded sender has advanced, or as soon as one silent past
+    /// [`super::liveness::LIVENESS_WINDOW`] is retired from the count.
+    pub fn has_advanced_past_the_round(&self, sender: &S) -> bool {
+        !self.round_parents.is_empty()
+            && self
+                .latest_msgs
+                .get(sender)
+                .is_some_and(|m| m.height > self.round_height)
     }
 
     /// Create a new message, generating its finalization fringe.
@@ -277,7 +291,7 @@ where
             .map(|m| m.sender_seq)
             .unwrap_or_else(SeqNum::zero);
         let new_seq_num = seq_num + NonNegI64::one();
-        let justifications: BTreeSet<Message<M, S>> = self.parents_for_new_block(creator);
+        let justifications: BTreeSet<Message<M, S>> = self.parents_for_new_block();
         let bonds_map = self
             .latest_msgs
             .values()
