@@ -81,11 +81,27 @@ Two cautions on reading it. It is **one attempt**, and its rig differs from #148
 attribution and which is why it is written here rather than left to inference.
 
 It also does **not** reproduce the 2026-09-30 campaign's "12–16 blocks/min with all three validators
-live" (`n127-campaign-results.md:165-169`). This rig measures ≈ 173 blocks/min on the same
-configuration family — ten times that figure. The frozen row said the control would reproduce the
-campaign's number; it did not, and the difference is not attributable from here: the campaign's arm also
-sent four deploys before its kill, and this one sends none before its single deploy. That row is
-**refuted as stated** and is carried as an open discrepancy rather than quietly dropped.
+live" (`n127-campaign-results.md:165-169`) — but that row does not say what it appears to say, and the
+first version of this paragraph read it as a refutation when it is mostly a **units artifact**.
+Checked at the source rather than taken on report:
+
+- The campaign's table column is **"height at T+119 s"** and its rows are 27, 32, 23; the rate is
+  `height ÷ 119 × 60`, so the numbers printed as "blocks/min" are **heights/min**. Its own gloss, "one
+  block per 4–5 s", inherits the same substitution.
+- Heights are not blocks on that tree either — the same `max_block_number + 1 == b.block_number`
+  derivation is in `c5442ee1f:validate.rs:221-236` — and this rig measures **2.99 blocks per height** at
+  N=3. So the row is at least ~3× larger than printed: ≈ 40 blocks/min, not 12–16.
+- Against this control's ≈ 173 blocks/min that is a factor of ~4, not ~10, and the remainder is **not
+  attributable from here**. The likeliest cause is the *tree*, not the rig: the campaign's trees predate
+  `AlreadyProposedThisRound`, which landed with #126 (`6c37a23f5`), so they are a different regime — one
+  where a validator could propose repeatedly inside a round. Nobody has measured both regimes with one
+  instrument; this control is the first block-level measurement of either.
+
+So the frozen row is **not reproduced**, and the honest statement is that it is partly a units artifact
+and partly an unmeasured regime difference — not a refutation. (The related figure on the scaling page,
+`~38 blocks/min` cited to `n127-proposer-fix-results.md`, has since been found to appear *nowhere* in
+that file, which reports heights and finality and no rate at all; that is the #148 session's finding and
+their correction, noted here because it is the same measurement spelled the same wrong way.)
 
 ## The idle control, and the number the #148 session asked for
 
@@ -112,7 +128,7 @@ artifact alone can tell which configuration produced it.
 |---|---|
 | senders reaches N and blocks per deploy grows with N, in all three attempts | **confirmed** — senders = N and blocks = N exactly, 3 of 3 attempts, at N ∈ {3, 5, 8} |
 | the primary arm's idle window is non-zero → rig void | **did not fire** — 0 in every run |
-| the control arm reproduces 12–16 blocks/min at N = 3 | **refuted** — ≈ 173 blocks/min; see the caution above |
+| the control arm reproduces 12–16 blocks/min at N = 3 | **not reproduced**, and the comparison is not like-for-like: the campaign's row is heights/min, so it is ≈ 40 blocks/min against this rig's ≈ 173, and the residual ~4× is most likely the pre-#126 round rule. Partly a units artifact, partly an unmeasured regime difference — see the caution above |
 | the control arm's idle window mints, and is not a void attempt | as expected — 165 blocks in its 60 s idle window |
 
 ## The instrument, and the defect the pre-flight caught
@@ -137,6 +153,8 @@ exactly one parent. The merge's width is not the justification count, and the co
   arm, whose stakes and kill differ.
 - **The consensus half.** The issue's step 3 — attestations that are not blocks — is untouched and remains
   hard-fork-class (#51).
-- **The 12–16 blocks/min discrepancy.** Refuted here, unexplained here.
+- **The 12–16 blocks/min comparison.** Not reproduced, not like-for-like: the campaign's row is a height
+  rate, so it is ≈ 40 blocks/min against this rig's ≈ 173, and the residual is unattributed — most
+  likely the pre-#126 round rule, which no one has measured against the current one with one instrument.
 - Four validator counts, three attempts, one machine. This is the measurement the issue asked for before
   its claim was written down, not a proof of a bound.
