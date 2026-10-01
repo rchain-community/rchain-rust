@@ -30,7 +30,8 @@ use rchain_rspace::trace::event::Event as REvent;
 use rchain_shared::base16;
 
 use crate::api::block_api::{
-    get_full_block_info, get_light_block_info, ApiErr, BlockApi, Capabilities,
+    get_full_block_info, get_light_block_info, ApiErr, BlockApi, Capabilities, ProposeHealth,
+    ProposerHealth,
 };
 use crate::api::graph_generator::{dag_as_cluster, ValidatorBlock};
 use crate::api::machine_verifiable_dag::machine_verifiable_dag;
@@ -80,6 +81,9 @@ pub struct BlockApiImpl {
     propose_on_deploy: bool,
     admin_http: bool,
     system_public_keys: BTreeSet<Vec<u8>>,
+    /// #157: the shard's proposer health, read live. Not a `Capabilities` field: that reports what the
+    /// node was configured to do, and this reports what it is doing — see `to_api_status`.
+    propose_health: ProposeHealth,
 }
 
 /// The messages at or above `lowest_height`, in the shape the DAG view renders.
@@ -153,6 +157,7 @@ impl BlockApiImpl {
         propose_on_deploy: bool,
         admin_http: bool,
         system_public_keys: BTreeSet<Vec<u8>>,
+        propose_health: ProposeHealth,
     ) -> Self {
         BlockApiImpl {
             dag,
@@ -173,6 +178,7 @@ impl BlockApiImpl {
             propose_on_deploy,
             admin_http,
             system_public_keys,
+            propose_health,
         }
     }
 
@@ -316,6 +322,10 @@ impl BlockApi for BlockApiImpl {
             admin_http: self.admin_http,
             dev_mode: self.dev_mode,
         }
+    }
+
+    async fn proposer_health(&self) -> ProposerHealth {
+        self.propose_health.snapshot()
     }
 
     async fn deploy(&self, deploy: &SignedDeployData) -> ApiErr<String> {

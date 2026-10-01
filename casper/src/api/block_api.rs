@@ -114,6 +114,16 @@ pub trait BlockApi: Send + Sync {
     /// The node's block-creation mode + deploy-gating capabilities.
     async fn capabilities(&self) -> Capabilities;
 
+    /// #157: the shard's proposer health — the consecutive self-validation failure count and whether
+    /// the autopropose timer has stopped.
+    ///
+    /// **The default is for stubs**, which model an API surface rather than a proposer and have no
+    /// failing proposer to report; a reader must not take it as "observed healthy". The one
+    /// implementation that matters is `BlockApiImpl`'s, which reads the live cell the proposer writes.
+    async fn proposer_health(&self) -> ProposerHealth {
+        ProposerHealth::default()
+    }
+
     async fn create_block(&self, is_async: bool) -> ApiErr<String>;
 
     async fn get_propose_result(&self) -> ApiErr<String>;

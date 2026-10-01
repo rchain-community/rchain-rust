@@ -90,6 +90,14 @@ pub struct ApiStatus {
     pub admin_http: bool,
     /// Dev mode is on.
     pub dev_mode: bool,
+    /// #157: self-validation failures the proposer has recorded in a row. `0` on a healthy node, and
+    /// cleared by a successful propose — this is what tells "quiet" from "broken" on a chain whose
+    /// steady state is a node that produces nothing until work arrives.
+    pub consecutive_self_validation_failures: u64,
+    /// #157: the shard's autopropose **timer** has stopped, and nothing restarts it but the process.
+    /// Deliberately not called `halted`: the tap and the admin `POST /api/propose` keep running, so a
+    /// node can have a stopped timer and still be producing blocks.
+    pub autopropose_timer_halted: bool,
 }
 
 /// The node's capabilities, returned by `GET /api/v1/capabilities` (the app-facing "can I propose /
@@ -210,6 +218,8 @@ mod tests {
             manual_propose: false,
             admin_http: true,
             dev_mode: true,
+            consecutive_self_validation_failures: 0,
+            autopropose_timer_halted: false,
         };
         assert_eq!(status.min_phlo_price, 3);
         assert_eq!(status.latest_block_number, 4);

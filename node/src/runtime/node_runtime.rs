@@ -1459,6 +1459,10 @@ async fn setup_shard_runtime(
     log: &Arc<dyn Log>,
     metrics: Arc<MetricsRegistry>,
 ) -> Result<ShardRuntime, String> {
+    // #157: created **here**, before `setup_shard`, because that call builds the `BlockApiImpl` that
+    // reports it and the autopropose loop below is what writes it. One cell per shard, shared by
+    // `Clone`.
+    let propose_health = ProposeHealth::new();
     let mut parts = setup_shard(
         conf,
         spec,
@@ -1468,6 +1472,7 @@ async fn setup_shard_runtime(
         comm_state.discovery.clone(),
         validator_opt.clone(),
         metrics.clone(),
+        propose_health.clone(),
     )
     .await?;
     // LFS sync is shard-blind: the fringe exchange carries no shard id, so a multi-shard node could
@@ -1496,12 +1501,12 @@ async fn setup_shard_runtime(
     // self-validation failure, and the shard's autopropose timer halts after a burst of failures. Per
     // shard, so a shard that cannot self-validate does not stop the others producing blocks.
     //
-    // Since #157 it is also **published** — the halt used to be one ERROR line and nothing else, so a
-    // node that had stopped producing looked exactly like a node with nothing to do, which is the
-    // ambiguity #148's probe cannot resolve without a witness. `push_proposer_health` is called from
-    // both triggers below, because `/metrics` renders a snapshot of a push-populated registry: a value
-    // pushed only at setup would read `0` for ever.
-    let propose_health = ProposeHealth::new();
+    // Since #157 it is also **published**, on two surfaces — the halt used to be one ERROR line and
+    // nothing else, so a node that had stopped producing looked exactly like a node with nothing to do,
+    // which is the ambiguity #148's probe cannot resolve without a witness. `push_proposer_health` is
+    // called from both triggers below, because `/metrics` renders a snapshot of a push-populated
+    // registry: a value pushed only at setup would read `0` for ever. No cell is created here: the one
+    // handed to `setup_shard` above is the same cell, which is why it is created before that call.
     let consecutive_failures = propose_health.failures();
     let health_source = Source::base()
         .sub("proposer")
@@ -1784,6 +1789,7 @@ pub async fn setup_shard(
     discovery: Arc<dyn NodeDiscovery>,
     validator_opt: Option<ValidatorIdentity>,
     metrics: Arc<MetricsRegistry>,
+    propose_health: ProposeHealth,
 ) -> Result<ShardParts, String> {
     let data_dir = shard_data_dir(&conf.storage.data_dir, index, &spec.shard_id);
     let store_manager = rnode_key_value_store_manager(&data_dir);
@@ -2005,6 +2011,7 @@ pub async fn setup_shard(
         conf.propose_on_deploy,
         conf.api_server.enable_devnet_cors,
         std::collections::BTreeSet::new(),
+        propose_health,
     ));
 
     let report_store: Arc<dyn KeyValueTypedStore<BlockHash, BlockEventInfo>> = Arc::new(
@@ -2269,6 +2276,7 @@ mod tests {
             discovery,
             None,
             metrics_for_test(),
+            ProposeHealth::new(),
         )
         .await
         .expect("setup_shard should assemble");
@@ -2310,12 +2318,32 @@ mod tests {
         let (c2, d2) = noop_comm();
         let child = conf.casper.shards.iter().nth(1).unwrap().clone();
 
-        let _primary_parts = setup_shard(&conf, &primary, 0, &id, c1, d1, None, metrics_for_test())
-            .await
-            .expect("primary shard");
-        let child_parts = setup_shard(&conf, &child, 1, &id, c2, d2, None, metrics_for_test())
-            .await
-            .expect("child shard");
+        let _primary_parts = setup_shard(
+            &conf,
+            &primary,
+            0,
+            &id,
+            c1,
+            d1,
+            None,
+            metrics_for_test(),
+            ProposeHealth::new(),
+        )
+        .await
+        .expect("primary shard");
+        let child_parts = setup_shard(
+            &conf,
+            &child,
+            1,
+            &id,
+            c2,
+            d2,
+            None,
+            metrics_for_test(),
+            ProposeHealth::new(),
+        )
+        .await
+        .expect("child shard");
 
         assert_eq!(child_parts.spec.shard_id.to_string(), "/root/child");
         assert_eq!(child_parts.block_api.status().await.shard_id, "/root/child");
@@ -2353,6 +2381,7 @@ mod tests {
             discovery,
             None,
             metrics_for_test(),
+            ProposeHealth::new(),
         )
         .await
         {
@@ -2528,6 +2557,7 @@ mod tests {
             discovery,
             None,
             metrics_for_test(),
+            ProposeHealth::new(),
         )
         .await
         .expect("first assembly");
@@ -2570,6 +2600,7 @@ mod tests {
             discovery,
             None,
             metrics_for_test(),
+            ProposeHealth::new(),
         )
         .await
         {

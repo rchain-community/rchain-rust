@@ -1,4 +1,4 @@
-envelope	ApiStatus	GET /api/v1/status	version,address,networkId,shardId,peers,nodes,minPhloPrice,latestBlockNumber,autopropose,proposeOnDeploy,manualPropose,adminHttp,devMode	-
+envelope	ApiStatus	GET /api/v1/status	version,address,networkId,shardId,peers,nodes,minPhloPrice,latestBlockNumber,autopropose,proposeOnDeploy,manualPropose,adminHttp,devMode,consecutiveSelfValidationFailures,autoproposeTimerHalted	-
 envelope	NodeCapabilities	GET /api/v1/capabilities	autopropose,proposeOnDeploy,manualPropose,adminHttp,devMode,faucet	-
 envelope	LightBlockInfo	the `block` field of most responses	version,shardId,blockHash,blockNumber,sender,seqNum,preStateHash,postStateHash,justifications,bonds,sigAlgorithm,sig,blockSize,deployCount,rejectedDeploys,timestamp	-
 envelope	DeployInfo	the `deploys` entries of a block response	deployer,term,timestamp,sig,sigAlgorithm,phloPrice,phloLimit,validAfterBlockNumber,cost,errored,systemDeployError	-

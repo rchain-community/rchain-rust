@@ -524,7 +524,8 @@ impl WebApi for WebApiImpl {
     async fn status(&self) -> Result<ApiStatus, BlockApiException> {
         let status = self.block_api.status().await;
         let caps = self.block_api.capabilities().await;
-        Ok(to_api_status(&status, &caps))
+        let health = self.block_api.proposer_health().await;
+        Ok(to_api_status(&status, &caps, &health))
     }
 
     async fn deploy(&self, request: &DeployRequest) -> Result<String, BlockApiException> {
