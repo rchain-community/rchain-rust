@@ -8,7 +8,7 @@
 use std::collections::BTreeMap;
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -22,7 +22,7 @@ use rchain_block_storage::dag::codecs::{
     Blake2b256HashCodec, BlockHashCodec, BlockMetadataCodec, FringeDataCodec, SignedDeployDataCodec,
 };
 use rchain_block_storage::dag::dag_storage::{BlockDagStorage, DeployId};
-use rchain_casper::api::block_api::BlockApi;
+use rchain_casper::api::block_api::{BlockApi, ProposeHealth, ProposerHealth};
 use rchain_casper::api::block_api_impl::{
     BlockApiImpl, NetworkStatus, NetworkStatusFn, ProposeFunction,
 };
@@ -87,6 +87,7 @@ use rchain_rspace::state::instances::{RSpaceExporterStore, RSpaceImporterStore};
 use rchain_shared::base16;
 use rchain_shared::lmdb::LmdbDirStoreManager;
 use rchain_shared::log::{Log, LogSource};
+use rchain_shared::metrics::{Metrics, Source};
 use rchain_shared::refined::{Port, ShardId};
 use rchain_shared::store_manager::database;
 use rchain_shared::typed_store::{BytesCodec, Codec, KeyValueTypedStore};
@@ -1422,6 +1423,29 @@ async fn build_eval_runtime(data_dir: &std::path::Path) -> Result<Arc<RhoRuntime
     Ok(Arc::new(eval_runtime))
 }
 
+/// **Publish a shard's proposer health (#157).** Two gauges, under one source per shard:
+/// `consecutive_failures` and `autopropose_timer_halted`.
+///
+/// **Why it is a push and not a getter.** `/metrics` renders `state.metrics.snapshot()`
+/// (`node/src/web/http.rs::metrics`), and this registry has no mechanism to pull a live value at scrape
+/// time — `snapshot()` can only emit what some `set_gauge` previously wrote. So the value has to be
+/// pushed by whatever can change it, which is why this is called from the autopropose tap and the
+/// autopropose timer rather than once from setup. A gauge pushed only at setup would read `0` for ever
+/// and look like a healthy node, which is the failure this exists to prevent.
+fn push_proposer_health(metrics: &MetricsRegistry, source: &Source, health: &ProposeHealth) {
+    let health: ProposerHealth = health.snapshot();
+    metrics.set_gauge(
+        source,
+        "consecutive_failures",
+        i64::try_from(health.consecutive_self_validation_failures).unwrap_or(i64::MAX),
+    );
+    metrics.set_gauge(
+        source,
+        "autopropose_timer_halted",
+        i64::from(health.autopropose_timer_halted),
+    );
+}
+
 /// Wire one shard's block pipeline, `NodeLaunch` and proposer stream (port of the per-shard part of
 /// `Setup.setupNodeProgram`), returning its handles and the router's delivery channel.
 #[allow(clippy::too_many_arguments)]
@@ -1468,10 +1492,20 @@ async fn setup_shard_runtime(
     // enqueue a propose on each validated block.
     let proposer_parts = parts.proposer.take();
 
-    // This shard's consecutive-failure counter: the proposer resets it on success and bumps it on a
-    // self-validation failure; the shard's autopropose timer halts after a burst of failures. Per
+    // This shard's proposer health: the proposer resets the counter on success and bumps it on a
+    // self-validation failure, and the shard's autopropose timer halts after a burst of failures. Per
     // shard, so a shard that cannot self-validate does not stop the others producing blocks.
-    let consecutive_failures: Arc<AtomicU64> = Arc::new(AtomicU64::new(0));
+    //
+    // Since #157 it is also **published** — the halt used to be one ERROR line and nothing else, so a
+    // node that had stopped producing looked exactly like a node with nothing to do, which is the
+    // ambiguity #148's probe cannot resolve without a witness. `push_proposer_health` is called from
+    // both triggers below, because `/metrics` renders a snapshot of a push-populated registry: a value
+    // pushed only at setup would read `0` for ever.
+    let propose_health = ProposeHealth::new();
+    let consecutive_failures = propose_health.failures();
+    let health_source = Source::base()
+        .sub("proposer")
+        .sub(&format!("shard_{index}"));
 
     // Autopropose tap: fire an (async) propose on each validated block.
     let autopropose: Option<Arc<dyn Fn() + Send + Sync>> = if conf.autopropose {
@@ -1479,9 +1513,16 @@ async fn setup_shard_runtime(
             Some(pp) => {
                 let tap_log = log.clone();
                 let tap_tx = pp.queue_tx.clone();
+                // #157: this tap is one of the two paths that can still change the counter after the
+                // timer halts — a proposer that recovers clears it (`proposer.rs`'s success arm), and
+                // without a push from here the gauge would keep reporting the pre-recovery count.
+                let tap_metrics = metrics.clone();
+                let tap_source = health_source.clone();
+                let tap_health = propose_health.clone();
                 // The tap runs on every validated block; if the propose queue is full or the
                 // proposer stream is gone, the request is dropped — and nothing else would say so.
                 let tap: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
+                    push_proposer_health(&tap_metrics, &tap_source, &tap_health);
                     let (otx, _orx) = tokio::sync::oneshot::channel();
                     if let Err(e) = tap_tx.try_send((true, otx)) {
                         tap_log.warn(
@@ -1502,6 +1543,12 @@ async fn setup_shard_runtime(
                 let timer_failures = consecutive_failures.clone();
                 let timer_log = log.clone();
                 let timer_shard = shard_id.clone();
+                // #157: the timer is the one trigger that stops, so it is the one that must leave the
+                // halt readable — pushed at the tick *and* once more after the flag is set, because the
+                // tick that breaks is the last write this task will ever make.
+                let timer_metrics = metrics.clone();
+                let timer_source = health_source.clone();
+                let timer_health = propose_health.clone();
                 tokio::spawn(async move {
                     let mut interval = tokio::time::interval(AUTOPROPOSE_INTERVAL);
                     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -1509,6 +1556,8 @@ async fn setup_shard_runtime(
                         interval.tick().await;
                         let failures = timer_failures.load(Ordering::Relaxed);
                         if failures >= AUTOPROPOSE_MAX_CONSECUTIVE_FAILURES {
+                            timer_health.note_timer_halted();
+                            push_proposer_health(&timer_metrics, &timer_source, &timer_health);
                             timer_log.error(
                                 LogSource::new("coop.rchain.node.runtime.Setup"),
                                 &format!(
@@ -1518,6 +1567,7 @@ async fn setup_shard_runtime(
                             );
                             break;
                         }
+                        push_proposer_health(&timer_metrics, &timer_source, &timer_health);
                         let (otx, _orx) = tokio::sync::oneshot::channel();
                         if let Err(e) = timer_tx.try_send((true, otx)) {
                             timer_log.warn(
@@ -2865,6 +2915,73 @@ mod prometheus_scrape_config_tests {
         assert_eq!(
             width.last(),
             Some(&(WIDTH_EDGES[WIDTH_EDGES.len() - 1] as f64))
+        );
+    }
+}
+
+/// #157: the halt, read off the artifact an operator reads.
+#[cfg(test)]
+mod proposer_health_metric_tests {
+    use super::{prometheus_scrape_config, push_proposer_health};
+    use crate::diagnostics::effects::MetricsRegistry;
+    use crate::diagnostics::prometheus_reporter::NewPrometheusReporter;
+    use rchain_casper::api::block_api::ProposeHealth;
+    use rchain_shared::metrics::Source;
+    use std::sync::atomic::Ordering;
+
+    fn scrape(health: &ProposeHealth, source: &Source) -> String {
+        let registry = MetricsRegistry::new();
+        push_proposer_health(&registry, source, health);
+        NewPrometheusReporter::new(prometheus_scrape_config()).render(&registry.snapshot())
+    }
+
+    /// **The witness itself, through the reporter rather than through the registry.** A node that has
+    /// halted publishes a non-zero count *and* the flag; a node that is merely quiet publishes neither,
+    /// and that contrast is the whole reason #148's probe can now tell the two apart.
+    #[test]
+    fn a_halted_timer_is_readable_on_the_scrape() {
+        let source = Source::base().sub("proposer").sub("shard_0");
+        let health = ProposeHealth::new();
+
+        // Quiet: nothing has failed, so nothing reads as halted.
+        let quiet = scrape(&health, &source);
+        assert!(
+            quiet.contains("rchain_proposer_shard_0_consecutive_failures 0"),
+            "{quiet}"
+        );
+        assert!(
+            quiet.contains("rchain_proposer_shard_0_autopropose_timer_halted 0"),
+            "{quiet}"
+        );
+
+        // Three self-validation failures, then the timer's own halt.
+        let counter = health.failures();
+        counter.fetch_add(1, Ordering::Relaxed);
+        counter.fetch_add(1, Ordering::Relaxed);
+        counter.fetch_add(1, Ordering::Relaxed);
+        health.note_timer_halted();
+
+        let halted = scrape(&health, &source);
+        assert!(
+            halted.contains("rchain_proposer_shard_0_consecutive_failures 3"),
+            "the count that caused the halt is reported beside it:\n{halted}"
+        );
+        assert!(
+            halted.contains("rchain_proposer_shard_0_autopropose_timer_halted 1"),
+            "{halted}"
+        );
+
+        // **The case that makes the pair worth having.** The node recovers and proposes: the count
+        // clears, and the flag must NOT — the timer is still stopped, and it is the flag that says so.
+        counter.store(0, Ordering::Relaxed);
+        let recovered = scrape(&health, &source);
+        assert!(
+            recovered.contains("rchain_proposer_shard_0_consecutive_failures 0"),
+            "{recovered}"
+        );
+        assert!(
+            recovered.contains("rchain_proposer_shard_0_autopropose_timer_halted 1"),
+            "a recovered node must still report its stopped timer:\n{recovered}"
         );
     }
 }

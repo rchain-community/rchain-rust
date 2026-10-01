@@ -3,6 +3,9 @@
 
 use async_trait::async_trait;
 
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::Arc;
+
 use rchain_block_storage::dag::dag_storage::DeployId;
 use rchain_models::ast::Par;
 use rchain_models::block_metadata::BlockMetadata;
@@ -37,6 +40,62 @@ pub struct Capabilities {
     pub admin_http: bool,
     /// Dev mode is on (`--dev-mode`).
     pub dev_mode: bool,
+}
+
+/// **A shard's proposer health, as the API reports it.**
+///
+/// **The flag names its trigger, and that is the point.** Three paths feed the proposer queue — the
+/// autopropose tap, the attest-on-new-blocks tap, and the admin `POST /api/propose` — and only the
+/// autopropose *timer* stops when the failure count reaches `AUTOPROPOSE_MAX_CONSECUTIVE_FAILURES`
+/// (`node/src/runtime/node_runtime.rs`). The other two keep running, so a node whose timer has halted
+/// can still produce blocks on inbound traffic or on demand. A field called `halted` would claim more
+/// than the code does; this one says which trigger stopped, and the counter is reported beside it
+/// because that is what an operator needs to tell "quiet" from "broken" (#148's probe needs exactly
+/// that witness — the API could not tell the three causes apart).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ProposerHealth {
+    /// Self-validation failures recorded in a row. The proposer clears it on a successful propose —
+    /// "consecutive" is the whole quantity, since one success in between is a node that recovered.
+    pub consecutive_self_validation_failures: u64,
+    /// The shard's autopropose timer has stopped. Nothing restarts it but the process, and the value
+    /// is therefore sticky: a later success does **not** clear it.
+    pub autopropose_timer_halted: bool,
+}
+
+/// The per-shard cell behind [`ProposerHealth`]: the proposer bumps the counter, the autopropose loop
+/// records the halt, and the API reads both. Shared by `Clone` (every field is an `Arc`), so all three
+/// holders see one cell rather than three copies.
+#[derive(Clone, Debug, Default)]
+pub struct ProposeHealth {
+    failures: Arc<AtomicU64>,
+    timer_halted: Arc<AtomicBool>,
+}
+
+impl ProposeHealth {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// The counter the proposer bumps on a self-validation failure and clears on success — the same
+    /// `Arc<AtomicU64>` `Proposer::apply` already takes, so the proposer needs no metrics handle of
+    /// its own to be observable.
+    pub fn failures(&self) -> Arc<AtomicU64> {
+        self.failures.clone()
+    }
+
+    /// Record that the autopropose timer has stopped, called once immediately before its `break`.
+    pub fn note_timer_halted(&self) {
+        self.timer_halted.store(true, Ordering::Relaxed);
+    }
+
+    /// Both values as one observation, so a reader cannot see a count from one instant and a flag from
+    /// another.
+    pub fn snapshot(&self) -> ProposerHealth {
+        ProposerHealth {
+            consecutive_self_validation_failures: self.failures.load(Ordering::Relaxed),
+            autopropose_timer_halted: self.timer_halted.load(Ordering::Relaxed),
+        }
+    }
 }
 
 /// The block API (port of `BlockApi[F]`). Implementations read from the block store/DAG and drive
@@ -229,5 +288,36 @@ mod tests {
         let info = get_full_block_info(&block());
         assert_eq!(info.block_info.block_number, 5);
         assert!(info.deploys.is_empty());
+    }
+
+    /// **The witness #157 is about, at the seam where its two halves meet.**
+    ///
+    /// The value the API reads is the cell the proposer writes — not a copy taken at setup, which
+    /// would read zero for ever — and the two halves of the snapshot keep their distinct semantics: the
+    /// count is *consecutive* (a success clears it), while the halt is *sticky* (the timer really has
+    /// stopped, and a later success is exactly the case where a reader must not conclude the node is
+    /// healthy).
+    #[test]
+    fn propose_health_is_the_live_cell_and_the_halt_outlives_a_success() {
+        let health = ProposeHealth::new();
+        assert_eq!(health.snapshot(), ProposerHealth::default());
+
+        // The proposer's handle and the reader's view are the same cell.
+        let proposer_handle = health.failures();
+        proposer_handle.fetch_add(1, Ordering::Relaxed);
+        proposer_handle.fetch_add(1, Ordering::Relaxed);
+        assert_eq!(health.snapshot().consecutive_self_validation_failures, 2);
+        assert!(!health.snapshot().autopropose_timer_halted);
+
+        health.note_timer_halted();
+        // The node recovers and proposes: the count clears, the halt does not.
+        proposer_handle.store(0, Ordering::Relaxed);
+        assert_eq!(
+            health.snapshot(),
+            ProposerHealth {
+                consecutive_self_validation_failures: 0,
+                autopropose_timer_halted: true,
+            }
+        );
     }
 }
