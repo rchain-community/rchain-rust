@@ -14,11 +14,22 @@
 > freezes exactly at it (`n148-results.md`, arm A). #148 is reproduced, and the deploy in its narrative is
 > incidental to the freeze.
 >
-> **And a third defect, in the rig rather than the arm list.** The devnet defaults enable `--dev-mode`,
-> whose dummy deploy pins `new_state_transition` true and `nothing_to_finalize` false, so
+> **And a third defect, in the rig rather than the arm list — itself corrected; see the block below.**
+> The devnet defaults set `AUTOPROPOSE=true` (`tools/devnet.sh:80`) and pass it as `--autopropose` (`:383`),
+> and autopropose is the gate that makes the dummy deploy live (`dummy_deploy_key`, `node_runtime.rs:2575`);
+> that dummy deploy pins `new_state_transition` true and `nothing_to_finalize` false, so
 > `attestation_suppressed` — the mechanism #148 is *about* — is not exercised by either arm. The shipped
 > defaults still freeze finality on a validator loss, which is worth knowing; but a `--no-autopropose` arm
 > is owed before anything is claimed about the guard, and this freeze did not name it.
+>
+> **Correction, 2026-10-01 (second, same day): the first version of this block blamed `--dev-mode`.**
+> That was wrong, and a peer session caught it. `--dev-mode` supplies the deployer *key*, which is necessary
+> and not sufficient: `dummy_deploy_key` returns `None` unless autopropose is on, which the node's own test
+> `the_dummy_deploy_needs_autopropose_and_not_just_a_key` pins ("a faucet key alone must not imply empty
+> blocks"). The gate named above is the corrected one. The same mistake reached `n148-results.md` and
+> `docs/src/node/testnet.md`, both corrected in the pull request that carries this block. It changed a flag
+> name and not a conclusion — the rig was dummy-deploy-driven either way — but a mechanism named wrong is
+> the class this file exists to avoid.
 
 ## Why this is the measurement
 

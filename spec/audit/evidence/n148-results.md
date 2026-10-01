@@ -19,10 +19,14 @@ bound on post-deploy production, held by a test — is therefore owed.
 
 **But this rig does not exercise the attestation guard, which is the mechanism #148 describes — so read
 the rows above as a finding about the shipped defaults, not about `attestation_suppressed`.** The devnet
-defaults set `DEPLOYER=true`, which passes `--dev-mode --deployer-private-key`
-(`tools/devnet.sh:393`); in dev mode the proposer **injects a dummy `Nil` deploy whenever the pool is
-empty** so `--autopropose` can keep producing (`casper/src/blocks/proposer/proposer.rs:711`). That dummy
-deploy is part of the block's deploy list, so on this rig:
+defaults set `AUTOPROPOSE=true` (`tools/devnet.sh:80`), which the script passes as `--autopropose`
+(`:383`), and `DEPLOYER=true` supplies the key (`:393`). **Autopropose is the gate**: `dummy_deploy_key`
+returns `None` unless autopropose is on (`node_runtime.rs:2575`, built into `dummy_deploy_opt` at `:1685`,
+pinned by the node's own test `the_dummy_deploy_needs_autopropose_and_not_just_a_key`) — a faucet key alone
+does not imply empty blocks, so `--dev-mode` is necessary here and not sufficient. With autopropose on the
+proposer **injects a dummy `Nil` deploy whenever the pool is empty**
+(`casper/src/blocks/proposer/proposer.rs:711`). That dummy deploy is part of the block's deploy list, so on
+this rig:
 
 - `new_state_transition` — `parents.iter().any(|b| has_deploys(b))` (`proposer.rs:669`) — is **permanently
   true**, and
@@ -92,11 +96,11 @@ the change and its manifest is as frozen.
 
 - **The per-deploy minting of #149** is a separate issue and is not measured here.
 - **Whether a deploy is *sufficient*** to start a storm on a chain that is otherwise idle, and **what the
-  attestation guard does at all**. This rig runs the devnet defaults (autopropose on, dev-mode dummy deploy
-  on), so production continues after the kill without any deploy and the guard's clauses are pinned (see
-  the caveat above); #148's "chain idle, then one deploy" shape implies its measurement had autopropose
-  **off**. A `--no-autopropose` arm is owed before either "a deploy re-arms it" or "the guard suppresses
-  it" is written down as fact — and it is the only arm on which `attestation_suppressed` is live.
+  attestation guard does at all**. This rig runs the devnet defaults (autopropose on, which makes the
+  dummy deploy live), so production continues after the kill without any deploy and the guard's clauses are
+  pinned (see the caveat above); #148's "chain idle, then one deploy" shape implies its measurement had
+  autopropose **off**. A `--no-autopropose` arm is owed before either "a deploy re-arms it" or "the guard
+  suppresses it" is written down as fact — and it is the only arm on which `attestation_suppressed` is live.
 - **The bound itself** (part 2) — this unit measures; it does not fix.
 - Three attempts of one configuration, on one machine, at an 8 GiB cap (the original hosts were 1 GB and
   the run was halted by the cap there). Not a capacity plan and not a proof.
