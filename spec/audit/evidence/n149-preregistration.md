@@ -30,7 +30,7 @@ of the work submitted. Three code facts behind it, re-read on `dev` (`8118001fe`
 
 The number has never been taken. Taking it is this unit.
 
-## The finding that shapes the rig: the guard is dead in the devnet's default configuration
+## The finding that shapes the rig: the guard decides nothing on the devnet's default configuration
 
 `has_deploys` is not the only thing that can make `should_propose` true. The dev-mode dummy deploy is
 injected whenever the pool is empty (`proposer.rs:711-743`), and it is pushed into the very `deploys`
@@ -38,10 +38,17 @@ vector that `should_propose` reads (`block_creator.rs:87`). `dummy_deploy_key` r
 `autopropose` **and** a deployer key (`node_runtime.rs:2575`), and `tools/devnet.sh` sets both by
 default. So on a default devnet:
 
-| configuration | `deploys` at `create` | branch taken | is `attestation_suppressed` consulted? |
+| configuration | `deploys` at `create` | branch taken | does `attestation_suppressed` decide anything? |
 |---|---|---|---|
 | `--autopropose` (the default) | non-empty — the dummy | the full-transition branch | **no** |
 | `--no-autopropose` | empty unless a real deploy is pooled | `!suppress_attestation` → empty attestation, else `NoNewDeploys` | **yes** |
+
+**"Decides nothing" is exact, and "is never consulted" is not.** `attestation_suppressed` *is* called
+(`proposer.rs:697`) and its result *is* passed into `create` (`:756`); what the dummy deploy removes is
+the reachability of the branch that reads it, because `should_propose` is already true from the
+non-empty `deploys`. The correction is a peer's (the #148 session), checked here against both call
+sites, and it is worth the sentence: "computed and discarded" and "never called" are different defects,
+and only the first is what the tree has.
 
 The guard and the empty-attestation branch it gates are therefore **only live with autopropose off**.
 A measurement of "#149's mechanism" taken on the default devnet measures the dummy-deploy path instead.
