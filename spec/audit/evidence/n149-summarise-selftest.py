@@ -18,7 +18,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 BASE = "target/n149-blocks/SELFTEST"
 
 
-def run(name, settle_end, deploy_epoch, read_end, blocks, finals, nodes):
+def run(name, settle_end, deploy_epoch, read_end, blocks, finals, nodes, parents=2):
     d = os.path.join(BASE, name)
     os.makedirs(d, exist_ok=True)
     n = name.split("-")[0][1:]
@@ -28,9 +28,9 @@ def run(name, settle_end, deploy_epoch, read_end, blocks, finals, nodes):
         fh.write(f"settle_end\t{settle_end}\nidle_end_and_deploy\t{deploy_epoch}\n")
         fh.write(f"read_end\t{read_end}\n")
     with open(os.path.join(d, "blocks.tsv"), "w") as fh:
-        fh.write("# first_seen_epoch\tblock_number\tsender\tdeploy_count\tblock_hash\n")
+        fh.write("# first_seen_epoch\tblock_number\tsender\tdeploy_count\tparents\tblock_hash\n")
         for i, (e, sender, dc) in enumerate(blocks):
-            fh.write(f"{e}\t{i + 1}\t{sender}\t{dc}\th{i + 1}\n")
+            fh.write(f"{e}\t{i + 1}\t{sender}\t{dc}\t{parents}\th{i + 1}\n")
     with open(os.path.join(d, "series.tsv"), "w") as fh:
         fh.write("# header\nutc\tepoch\tnode\theight\tfinalized\talive\n")
         for e in range(settle_end, read_end + 1, 5):
@@ -69,8 +69,8 @@ def main():
             bad.append(f"{name}: no row")
             continue
         cols = line.split()
-        if (int(cols[1]), int(cols[3]), int(cols[4]), cols[5]) != (idle, blocks, senders, ttf):
-            bad.append(f"{name}: got {cols[1:6]}, want {[idle, blocks, senders, ttf]}")
+        if (int(cols[1]), int(cols[3]), int(cols[4]), cols[6]) != (idle, blocks, senders, ttf):
+            bad.append(f"{name}: got {cols[1:7]}, want {[idle, blocks, senders, ttf]}")
     if "2 deploy-bearing blocks" not in out:
         bad.append("the non-unique-deploy note is missing")
     if "*** VOID" not in out:

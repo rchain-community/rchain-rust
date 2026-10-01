@@ -29,9 +29,9 @@ def read_blocks(path):
         for line in fh:
             if line.startswith("#") or not line.strip():
                 continue
-            t, num, sender, dc, h = line.rstrip("\n").split("\t")
+            t, num, sender, dc, parents, h = line.rstrip("\n").split("\t")
             rows.append({"epoch": int(t), "number": int(num), "sender": sender,
-                         "deploy_count": int(dc), "hash": h})
+                         "deploy_count": int(dc), "parents": int(parents), "hash": h})
     return rows
 
 
@@ -78,7 +78,8 @@ def main():
     out = sys.argv[1] if len(sys.argv) > 1 else "target/n149-blocks"
     runs = sorted(d for d in os.listdir(out) if re.match(r"^n\d+-\w+-a\d+$", d))
     print(f"run dir: {out}")
-    print(f"{'run':<18}{'idle':>6}{'deploys':>9}{'blocks':>8}{'senders':>9}{'ttf_s':>7}  note")
+    print(f"{'run':<18}{'idle':>6}{'deploys':>9}{'blocks':>8}{'senders':>9}{'maxpar':>7}"
+          f"{'ttf_s':>7}  note")
     rows = []
     for r in runs:
         d = os.path.join(out, r)
@@ -103,15 +104,16 @@ def main():
             note = (note + "; " if note else "") + "blocks first seen after the window"
 
         senders = len({b["sender"] for b in post})
+        maxpar = max((b["parents"] for b in post), default=0)
         target = carriers[0]["number"] if carriers else None
         ttf = None
         if target is not None:
             ttf = time_to_finality(read_series(series_p), deploy_epoch, target)
 
-        print(f"{r:<18}{len(idle):>6}{len(carriers):>9}{len(post):>8}{senders:>9}"
+        print(f"{r:<18}{len(idle):>6}{len(carriers):>9}{len(post):>8}{senders:>9}{maxpar:>7}"
               f"{('never' if ttf is None else ttf):>7}  {note}")
         rows.append({"run": r, "idle": len(idle), "carriers": len(carriers),
-                     "blocks": len(post), "senders": senders, "ttf": ttf})
+                     "blocks": len(post), "senders": senders, "maxpar": maxpar, "ttf": ttf})
 
     print()
     print("by N (primary arm = noauto):")
@@ -123,8 +125,10 @@ def main():
         rs = by_n[(n, arm)]
         blocks = [r["blocks"] for r in rs]
         senders = [r["senders"] for r in rs]
+        par = [r["maxpar"] for r in rs]
         ttfs = ["never" if r["ttf"] is None else str(r["ttf"]) for r in rs]
-        print(f"  N={n:<3} arm={arm:<7} attempts={len(rs)}  blocks={blocks} senders={senders} ttf_s={ttfs}")
+        print(f"  N={n:<3} arm={arm:<7} attempts={len(rs)}  blocks={blocks} senders={senders} "
+              f"maxpar={par} ttf_s={ttfs}")
         if any(r["idle"] for r in rs):
             print(f"    *** VOID: a run had {[r['idle'] for r in rs]} idle-window blocks — the deploy "
                   f"was not the only driver")

@@ -119,8 +119,12 @@ def main():
             for b in blocks if isinstance(blocks, list) else []:
                 h = b.get("blockHash")
                 if h and h not in seen:
+                    # `justifications` is recorded, not summarised, because the 5- and 8-validator arms
+                    # are the ones where merge width could be the dominant term: `max-number-of-parents`
+                    # is `i32::MAX` with no consensus rule behind it (#153), so a curve that bends at 5
+                    # or 8 cannot be attributed to attestation without this column beside it.
                     seen[h] = (int(now), b.get("blockNumber", -1), b.get("sender", "?"),
-                               b.get("deployCount", -1))
+                               b.get("deployCount", -1), len(b.get("justifications") or []))
         with open(SERIES, "a") as fh:
             for name, height, fin, al in rows:
                 fh.write("\t".join([utc, f"{now:.0f}", name, str(height), str(fin), al]) + "\n")
@@ -132,9 +136,10 @@ def main():
         print("window elapsed with a node still alive", flush=True)
 
     with open(BLOCKS, "w") as fh:
-        fh.write("# first_seen_epoch\tblock_number\tsender\tdeploy_count\tblock_hash\n")
-        for h, (t, num, sender, dc) in sorted(seen.items(), key=lambda kv: (kv[1][0], kv[1][1])):
-            fh.write(f"{t}\t{num}\t{sender}\t{dc}\t{h}\n")
+        fh.write("# first_seen_epoch\tblock_number\tsender\tdeploy_count\tparents\tblock_hash\n")
+        for h, (t, num, sender, dc, parents) in sorted(seen.items(),
+                                                      key=lambda kv: (kv[1][0], kv[1][1])):
+            fh.write(f"{t}\t{num}\t{sender}\t{dc}\t{parents}\t{h}\n")
     print(f"wrote {SERIES} ({len(seen)} distinct blocks) and {BLOCKS}", flush=True)
 
 

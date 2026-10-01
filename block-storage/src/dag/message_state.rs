@@ -409,4 +409,100 @@ mod tests {
         assert_eq!(*new_msg.seen, [0, 1].into_iter().collect());
         assert_eq!(new_msg.parents, [0].into_iter().collect());
     }
+
+    fn at(id: i32, sender: i32, seq: i64, height: i64, bonds: &[(i32, i64)]) -> Message<i32, i32> {
+        Message {
+            id,
+            height: BlockHeight::try_from(height).unwrap(),
+            sender,
+            sender_seq: SeqNum::try_from(seq).unwrap(),
+            bonds_map: bonds
+                .iter()
+                .map(|(s, b)| (*s, NonNegI64::try_from(*b).unwrap()))
+                .collect(),
+            parents: BTreeSet::new(),
+            fringe: BTreeSet::new(),
+            seen: Arc::new([id].into_iter().collect()),
+        }
+    }
+
+    /// **The round is what makes the per-deploy cost linear in the validator count** (#149).
+    ///
+    /// The issue asks for a node-local rule that stops a validator attesting when its own latest message
+    /// already covers the unfinalised set. That rule exists, in the stronger form one-block-per-validator
+    /// -per-round ([`Self::has_advanced_past_the_round`], consulted by the proposer at
+    /// `casper/src/blocks/proposer/proposer.rs:531`), and this test pins the part that survives it: the
+    /// round closes **only when every bonded sender has a message above the boundary**, so a deploy
+    /// cannot be finalised without all N of them speaking — once per round, for as many rounds as
+    /// finality takes. No node-local rule removes that N, because the sender with nothing to say is
+    /// exactly the one the round is waiting for; that is why #149's step 2 would be a no-op and its
+    /// step 3 is the consensus change.
+    #[test]
+    fn a_round_closes_only_when_every_bonded_sender_has_spoken() {
+        let bonds = [(0, 100), (1, 100), (2, 100)];
+        let state: DagMessageState<i32, i32> = DagMessageState::empty();
+
+        // Genesis: sender 0 alone forms the first boundary, which is the set the next round builds on.
+        // The veto reads *since* the boundary, so the message that **is** the boundary does not count as
+        // having passed it — each validator speaks once per round, and this is the licensing half.
+        let s1 = state.insert_msg(&at(0, 0, 0, 0, &bonds));
+        assert_eq!(s1.round_parents.len(), 1);
+        assert!(
+            !s1.has_advanced_past_the_round(&0),
+            "the message that set the boundary has not passed it, so sender 0 may still speak"
+        );
+
+        // Two of the three speak. The round does **not** close: sender 0 is at the boundary and has
+        // nothing above it yet, so the snapshot — a set, not a stack — is still incomplete.
+        let s2 = s1.insert_msg(&at(1, 1, 0, 1, &bonds));
+        let s3 = s2.insert_msg(&at(2, 2, 0, 1, &bonds));
+        assert_eq!(
+            s3.round_height,
+            BlockHeight::zero(),
+            "the round closed with one of three bonded senders still at the boundary"
+        );
+        assert_eq!(s3.round_parents.len(), 1);
+
+        // The third speaks: the round closes and the new snapshot holds all three.
+        let s4 = s3.insert_msg(&at(3, 0, 1, 1, &bonds));
+        assert_eq!(s4.round_height, BlockHeight::try_from(1).unwrap());
+        assert_eq!(s4.round_parents.len(), 3);
+        // The new boundary resets the veto for everyone: the next round is theirs to speak in.
+        for v in [0, 1, 2] {
+            assert!(
+                !s4.has_advanced_past_the_round(&v),
+                "sender {v} is clear to speak in the round the boundary just opened"
+            );
+        }
+    }
+
+    /// The falsifier twin of the test above: the wait is for **bonded** senders, and for nothing else.
+    ///
+    /// Same three messages, same order — only the bond map differs, dropping sender 0. The round now
+    /// closes at the second insertion. Without this the test above would pass just as well for a rule
+    /// that waits for any sender, or for none, and the N it attributes to the bond set would be
+    /// unearned.
+    #[test]
+    fn and_it_closes_at_once_when_the_quiet_sender_is_not_bonded() {
+        let bonds = [(1, 100), (2, 100)];
+        let state: DagMessageState<i32, i32> = DagMessageState::empty();
+
+        let s1 = state.insert_msg(&at(0, 0, 0, 0, &bonds));
+        let s2 = s1.insert_msg(&at(1, 1, 0, 1, &bonds));
+        assert_eq!(
+            s2.round_height,
+            BlockHeight::zero(),
+            "one bonded sender has spoken and the other has not"
+        );
+        let s3 = s2.insert_msg(&at(2, 2, 0, 1, &bonds));
+        assert_eq!(
+            s3.round_height,
+            BlockHeight::try_from(1).unwrap(),
+            "both bonded senders are above the boundary — the unbonded one is not waited for"
+        );
+        // The *wait* is over the bonded set; the snapshot is every sender's latest message, the unbonded
+        // one included. The two are different sets, and conflating them is how this assertion was wrong
+        // on the first run: 3, not 2.
+        assert_eq!(s3.round_parents.len(), 3);
+    }
 }
