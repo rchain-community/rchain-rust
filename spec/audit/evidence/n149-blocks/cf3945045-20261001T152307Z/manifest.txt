@@ -1,0 +1,6 @@
+# tree=cf3945045 image=sha256:d7fd75fb7175a41ee16875cae03f0df5a811aecc7dc351d3d81884f2f449b7ca
+# sweep: N in {2 3 5 8}, primary arm=--no-autopropose, control arm=defaults at N=3
+# windows: settle=60s idle=60s reading=180s, cap=4g, attempts=3
+# started 2026-10-01T15:23:07Z
+# image_created=2026-10-01T16:14:45.799544934+01:00
+# rust_diff_vs_HEAD=empty — the Rust tree is HEAD

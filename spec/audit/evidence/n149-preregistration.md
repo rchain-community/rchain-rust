@@ -116,6 +116,12 @@ asymmetry the rig does not remove.
 **Attempts: 3 per (N, arm)**, unfiltered, one devnet at a time. Artifacts under
 `target/n149-blocks/<tree>-<utc>/`, every file carrying the tree, the image id and the flags.
 
+> **Where the run actually is, added after it finished.** That path is where the runner *writes*, and
+> `target/` is gitignored — so the run was copied to
+> **`spec/audit/evidence/n149-blocks/cf3945045-20261001T152307Z/`** and committed with the reading.
+> Without that the numbers in `n149-results.md` cite an artifact no reader can open, which is C176's
+> class; the #148 session caught it and is the reason it is here.
+
 ### Arms
 
 | arm | flags | what it is for |

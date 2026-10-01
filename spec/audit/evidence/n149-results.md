@@ -1,9 +1,13 @@
 # Blocks per deploy as a function of the validator count — the reading
 
 Protocol: `n149-preregistration.md`, frozen before the run. Artifacts:
-`target/n149-blocks/cf3945045-20261001T152307Z/` (tree `cf3945045`, image
-`sha256:d7fd75fb7175…`, cap `4g`). 13 runs, **0 void attempts**, the C184 budget control empty in all
-of them.
+**`spec/audit/evidence/n149-blocks/cf3945045-20261001T152307Z/`** — committed, because every number below
+is otherwise uncheckable, which is C176's class and the defect this file's own instrument section
+records. Per run: `series.tsv` (the 1 Hz height/finality samples, whose header carries the node's argv),
+`blocks.tsv` (the block-hash union with each block's sender, deploy count and parent count),
+`marks.tsv` (the window boundaries), the budget control and the log extractions. Tree `cf3945045`, image
+`sha256:d7fd75fb7175…`, cap `4g`. 13 runs, **0 void attempts**, the C184 budget control empty in all of
+them.
 
 ## The answer to #149, in one table
 
