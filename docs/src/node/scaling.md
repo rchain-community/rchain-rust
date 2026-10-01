@@ -46,9 +46,11 @@ rests on them.**
   validator in a round derives the same one — so **several blocks share a height** and this row understates
   the block rate. The exact factor is not recoverable from the artifact: that series records
   `latestBlockNumber` only, with no block-level rows.
-- The **~38** row has **no artifact at all**. `n127-proposer-fix-results.md` reports height and finality for
-  three attempts, not a blocks/min rate, and the figure appears **nowhere** in `spec/audit/evidence/n127-*`.
-  It should be re-derived or removed, not carried.
+- The **~38** row is **the same substitution on another table**. `passes.md` §36 derives it as *height at
+  T+120 s ÷ 120 × 60* — the fixed arm's 76 gives 38.0 — so it is a height rate too, and the *figure* is in no
+  artifact: `n127-proposer-fix-results.md` carries the heights it is computed from, not a rate. *(This
+  bullet first said "no artifact at all", which was too strong; corrected 2026-10-01 when the derivation was
+  found in the register.)*
 
 The default node config is neither continuous nor on-deploy: `autopropose = false` and
 `propose-on-deploy = false`, with `attest-on-new-blocks = true` supplying the liveness trigger. The
