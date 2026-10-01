@@ -63,7 +63,7 @@ DEVNET_NODE_MEMORY="${DEVNET_NODE_MEMORY:-4g}"
 #                              recorded, 6,339 after the 2026-09-24 serving-term runs), so a measurement
 #                              quoting a height must say which height it measured.
 #   devnet-bootstrap-data      the standard bootstrap's own store; `up` reuses it and `--fresh` discards
-#   devnet-validator-{1,2}-data  the standard validators' stores, same reuse/`--fresh` semantics
+#   devnet-validator-{1..7}-data  the standard validators' stores, same reuse/`--fresh` semantics
 #   devnet-perf-boot           an earlier measurement's bootstrap store, kept for comparison
 #   perfsync-validator-{1,2}-data  created by `DEVNET_PREFIX=perfsync` for the fresh-peer measurement;
 #                              **disposable** — `DEVNET_PREFIX=perfsync tools/devnet.sh down -v` removes
@@ -91,15 +91,33 @@ M=0
 
 # Throwaway validator keypairs (secp256k1, base16). validator[0] also funds the deployer wallet, so
 # the deployer private key is validator[0]'s private key.
+#
+# The first three are the original table; entries 4..8 were added for the #149 attestation-cost sweep,
+# which needs 5 and 8 validators. `MAX_VALIDATORS` is `#VALIDATOR_PRIV`, so the table *is* the cap — the
+# range check at `--validators` and the `node_container` resolver both read it, and the help text's
+# `1..8` is a literal only because that text lives in a quoted heredoc. Every public key here is the
+# uncompressed `04 || X || Y` of the private key beside it in the same column position; that
+# correspondence is what `genesis_files` writes into `bonds.txt`, so a bad row bonds a validator that
+# cannot sign.
 VALIDATOR_PRIV=(
   "a68a6e6cca30f81bd24a719f3145d20e8424bd7b396309b0708a16c7d8000b76"
   "b8a48b02757c0cfc9325498a93c3b28582e3967072f8fab0cdc8bd04d0d401ee"
   "d78ff60a424d71ce99d6b7d7f44a8c49b38a3757ff9e6fa9b32fcba8aa2c973b"
+  "f484e1c24de228819213904c7da8999a94cfdd20e0c70f47a37ae0b6b8c9feb7"
+  "0fdf01171ca75c3266ab277b5bee7ef1d05abd63f9bb379f7fb513e5c0778961"
+  "515155da7d0242c9c72ae39fda9d19fce088a1c1808011df011380333449ec88"
+  "133da16f5f331aa064de134e99803d29d13ad0180258812a38d2530f2bf1e490"
+  "3af51aebbbba62593223d85ff47ea73c80da6f199d57be4c83502d6a83782db7"
 )
 VALIDATOR_PUB=(
   "04f700a417754b775d95421973bdbdadb2d23c8a5af46f1829b1431f5c136e549e8a0d61aa0c793f1a614f8e437711c7758473c6ceb0859ac7e9e07911ca66b5c4"
   "04dbe32c2062240a4ba0bcad01d7edd98c78b51c77765d5e1e5e9fa3743d2f12a1f82f42cd7dc4f41445979117d790f23e9b3d08d0aa06d527c236172043e747fc"
   "04d8b6c325ae12e89823866b2a292a62d7acee520954761890a1621fef79dca1c8e8df79dd8519480e5c015ae6cf3ba7de8669e260561616a36eb9c308b5983ab0"
+  "04ea3ce04abbe780205eb5f94a82889600630ca73bd31e7a336efb6700e24c515b900dea427d3e0c0fc74a8a6d5e173331433f00df2de4b7f953c2922297c2c08e"
+  "04699fa4251b70aca0d402f0285e9323bde5d00b0d781a60dd95944e453c853e5832086317b8476577100b948db451344d18b11b598dc31216bae117722d511b04"
+  "04a58d28edabbe8e1ced19805e3ed3177f8148f5450b50e892ebbd1079c2b2e2ac35723768c74211743ca39e4510fd8ea9d310ae3b97f168d6426b0db1671d2782"
+  "0404ba90d6bb60cc079f196580c0c1a70b7e9cb441a054aa05ead1bd4ca697d38869c6047ae734ceb570c2881f51146d666bd86ceb3a16e0f8c0f770435300c645"
+  "0494961fa32a09892cb0273fb054492ef7229c596bbc48d73e8f7ea3d9e3e7f7a2da0ad8b702f84a2f895f0821d5a9ff4eb4515b125f88494718cc1e962d2e918c"
 )
 MAX_VALIDATORS=${#VALIDATOR_PRIV[@]}
 
@@ -146,7 +164,7 @@ Commands:
   help                           this message
 
 `up` options:
-  --validators N                 bonded validators (1..3, default 1)
+  --validators N                 bonded validators (1..8, default 1)
   --observers M                  unbonded observers (0..3, default 0)
   --nodes N                      bare network topology: 1 bootstrap + N-1 peers (1..5),
                                  shorthand for --validators 1 --observers N-1 --no-autopropose
@@ -616,7 +634,7 @@ cmd_status() {
 # Resolve what a user calls a node to a container name: `2` -> `devnet-validator-2`, `bootstrap` or a
 # full name passes through. One resolver for `stop`/`start`, so they cannot drift apart.
 node_container() {
-  case "${1:?node required — a validator number (1..3), 'bootstrap', or a container name}" in
+  case "${1:?node required — a validator number (1..$MAX_VALIDATORS), 'bootstrap', or a container name}" in
     [0-9]*) validator_name "$1" ;;
     *) echo "$1" ;;
   esac
