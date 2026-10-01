@@ -1516,4 +1516,66 @@ mod tests {
         assert!(err.contains("equivocation"), "{err}");
         assert!(err.contains("sequence number"), "{err}");
     }
+
+    /// **`insert` is not an update — and the restoring rule uses it as one.**
+    ///
+    /// `restore_divergent_justifications` re-validates a stored justification and, on success, writes the
+    /// cleared record back with `dag.insert(record, msg)` (`casper/src/multi_parent_casper.rs:473`). But
+    /// `revalidated_record` keeps the block's **hash** (`:394-409`, `..fresh`/`..stored.clone()`), the
+    /// failed block is already in the store — `add_block_to_dag_state_mut` puts every hash in `dag_set`
+    /// unconditionally (`block-storage/src/dag/metadata_store.rs:71`) — and `insert` short-circuits on a
+    /// known hash (`:322-328`). So the write never happens: the store keeps `validation_failed: true`,
+    /// the representation is never touched, and the rule logs *"cleared the failure record for … the block
+    /// validates"* (`multi_parent_casper.rs:485-490`) while doing nothing at all.
+    ///
+    /// **This is why C173's clearing branch had never been verified end to end**, and it is invisible to
+    /// `casper/tests/restoring_rule.rs` by construction: that file drives a **fake** storage whose
+    /// `insert` unconditionally records (`inserts_for`), so the rule looks correct there and the real
+    /// short-circuit is never in the path.
+    ///
+    /// The assertion pins the defect rather than failing on it, so the tree stays honest — invert it (and
+    /// the rule's own success test beside it) when the clearing gets a write path that is an update.
+    #[tokio::test]
+    async fn re_inserting_a_known_block_does_not_clear_its_failure_record() {
+        let storage = build_storage().await;
+        let genesis = hash(0);
+        storage
+            .insert(meta(genesis, &[], 0), block(genesis))
+            .await
+            .unwrap();
+
+        let failed = hash(1);
+        let mut failed_meta = meta_by(1, 0, failed, &[genesis], 1);
+        failed_meta.validation_failed = true;
+        storage
+            .insert(failed_meta.clone(), block(failed))
+            .await
+            .unwrap();
+        assert!(
+            storage
+                .lookup(&failed)
+                .await
+                .unwrap()
+                .unwrap()
+                .validation_failed,
+            "the control: the failed record is in the store to begin with"
+        );
+
+        // Exactly what the restoring rule writes on a successful revalidation.
+        let cleared = BlockMetadata {
+            validation_failed: false,
+            failure_cause: None,
+            ..failed_meta.clone()
+        };
+        storage.insert(cleared, block(failed)).await.unwrap();
+
+        let stored = storage.lookup(&failed).await.unwrap().unwrap();
+        assert!(
+            stored.validation_failed,
+            "the cleared record did NOT reach the store: `insert` returned Ok without writing, so the \
+             restoring rule's success path is a no-op that reports success. If this assertion fails, a \
+             real update path landed — invert it (C173's clearing branch, and the self-clearing step a \
+             proposer needs when its own record is spent — `casper/tests/finalization.rs`, #156)"
+        );
+    }
 }
