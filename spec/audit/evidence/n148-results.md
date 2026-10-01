@@ -42,6 +42,14 @@ mechanism.**
 
 ## Arm A — kill at T+120, one deploy at T+180 (the issue's shape)
 
+**Read every height column in this file as a *block height*, and the `rate` derived from it as a rate of
+*rounds*, not of blocks.** A block's number comes from its justification set — `validate.rs:232-253`
+requires it to be `max(justification height) + 1`, so every validator in a round derives the *same* number —
+and the proposer emits at most one block per round (`proposer.rs:532-547`, `AlreadyProposedThisRound`). At
+N validators each height therefore carries about N blocks: **≈3 at N = 3**. The chain's block rate is that
+factor larger than the rates below. *(Added 2026-10-01 after these rates were misread as blocks-per-second
+in a cross-session comparison, understating the chain by 3×; the rows are unchanged.)*
+
 | attempt | survivor | height at the deploy → end | gained | rate | finality at the kill → end | finality last moved |
 |---|---|---|---|---|---|---|
 | 1 | bootstrap | 125 → **243** | +118 | 0.49 /s | 110 → **110** | **T+121** |
