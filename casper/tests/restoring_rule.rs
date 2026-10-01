@@ -205,7 +205,9 @@ async fn drive(
     // checks that would need it.
     let index = |_h: BlockHash| async move { Err("no index in this test".to_string()) };
 
-    let _ = validate(&*dag, &store, &rm, &b, "root", 0, &index, &log).await;
+    // The parent bound is off (`0`) — this test is about the restoring rule, and #153's check is
+    // exercised by its own tests in `validate.rs`.
+    let _ = validate(&*dag, &store, &rm, &b, "root", 0, 0, &index, &log).await;
 
     dag
 }

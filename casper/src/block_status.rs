@@ -66,6 +66,25 @@ pub enum BlockStatus {
     /// every node would replay all of them. The bound is a length, so it costs nothing to apply, and it
     /// belongs among the pre-replay checks for the same reason `phlo_price` does.
     TooManyDeploys,
+    /// A block's justification set is wider than the protocol allows (#153).
+    ///
+    /// **The half `TooManyDeploys` does not cover, and the one that mattered more.** The deploy count
+    /// has a proposer-side bound and, since AUDIT F-3, a receiving-side check. The *justification* count
+    /// had neither: `max-number-of-parents` was read from configuration and consulted by no code
+    /// anywhere in the tree, while two doc comments and C123's fix rationale all asserted that it
+    /// bounded the set. So a proposer could hand every validator an arbitrarily wide justification set,
+    /// and the merge — the one input a proposer fully controls — was paid for by everyone.
+    ///
+    /// The width is legitimate: the parent set is the round snapshot, one message per sender, so a
+    /// bonded network produces a set of the order of its validator count. What was missing is the
+    /// refusal, and a refusal of a set above a fixed width is a **consensus change**, because it
+    /// rejects blocks that are valid today. It is registered as one in `spec/audit/passes.md` §6 and on
+    /// #51 §A; the shipped bound is `max-number-of-parents`, defaulted to the protocol's existing
+    /// per-block width rather than to `i32::MAX`.
+    ///
+    /// It is [`FailureCause::Attributable`]: the count is a property of the block alone, together with
+    /// the DAG's structure, in the same sense and for the same reason as `TooManyDeploys`.
+    TooManyJustifications,
     /// A block's total declared phlo exceeds the block budget (AUDIT F-3).
     ///
     /// Without this there is no bound on what one block costs: the per-deploy budget bounds each deploy
@@ -134,6 +153,7 @@ impl BlockStatus {
             | BlockStatus::InvalidPhloLimit
             | BlockStatus::InvalidDeploySignature
             | BlockStatus::TooManyDeploys
+            | BlockStatus::TooManyJustifications
             | BlockStatus::ExceedsBlockPhloLimit
             | BlockStatus::InvalidVersion => FailureCause::Attributable,
         }
@@ -175,6 +195,10 @@ impl std::fmt::Display for BlockStatus {
             BlockStatus::TooManyDeploys => {
                 "the block carries more deploys than the protocol's seed index can address"
             }
+            BlockStatus::TooManyJustifications => {
+                "the block justifies more parents than the protocol allows — the merge it asks every \
+                 validator to pay for is wider than a bonded network can produce"
+            }
             BlockStatus::ExceedsBlockPhloLimit => {
                 "the block's total declared phlo exceeds the per-block budget"
             }
@@ -191,7 +215,7 @@ mod tests {
     use super::*;
 
     /// Every status, so a variant added without a message (or with a copy-pasted one) fails here.
-    const ALL: [BlockStatus; 20] = [
+    const ALL: [BlockStatus; 21] = [
         BlockStatus::Valid,
         BlockStatus::InvalidBlockNumber,
         BlockStatus::InvalidRepeatDeploy,
@@ -210,6 +234,7 @@ mod tests {
         BlockStatus::UnjustifiedSlash,
         BlockStatus::InvalidDeploySignature,
         BlockStatus::TooManyDeploys,
+        BlockStatus::TooManyJustifications,
         BlockStatus::ExceedsBlockPhloLimit,
         BlockStatus::InvalidVersion,
     ];

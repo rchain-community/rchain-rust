@@ -440,6 +440,11 @@ pub async fn bonds_cache(
 }
 
 /// Compose the effectful + pure checks (port of `blockSummary`).
+///
+/// `max_number_of_parents` is threaded here from `casper.max-number-of-parents` exactly as
+/// `min_phlo_price` is, and for the same reason: it is a consensus bound that is a property of the
+/// *network's* configuration rather than of the block, so it cannot be read off the block and must be
+/// handed in by the node (#153).
 pub async fn block_summary(
     dag: &dyn BlockDagStorage,
     block_store: &BlockStore,
@@ -447,6 +452,7 @@ pub async fn block_summary(
     shard_id: &str,
     expiration_threshold: i64,
     min_phlo_price: i64,
+    max_number_of_parents: i32,
 ) -> Result<ValidBlockProcessing, String> {
     if let Err(status) = justification_regressions(dag, block).await? {
         return Ok(Err(status));
@@ -483,6 +489,10 @@ pub async fn block_summary(
         // And the block's declared version (F-6). `version` had a predicate and a test from the port
         // onward and no caller: a block stamped `version: 999` was accepted by every check here.
         block_version(block),
+        // The *other* per-block width, and the one that had no check on either side (#153). It sits in
+        // this list for the reason the two F-3 bounds do: the count is a length over wire-supplied data,
+        // so a peer's block has to be refused before every validator merges over the set it names.
+        justification_count(block, max_number_of_parents),
     ];
     for status in pure {
         if !status.is_valid() {
@@ -568,6 +578,29 @@ pub fn deploy_count(b: &BlockMessage) -> BlockStatus {
         BlockStatus::Valid
     } else {
         BlockStatus::TooManyDeploys
+    }
+}
+
+/// Validate that the block's justification set is no wider than the protocol allows (#153).
+///
+/// **What makes this the input bound #153 asks for, and not a second `deploy_count`.** The merge is the
+/// one part of block processing whose input a proposer chooses outright: the justification set decides
+/// which chains every validator weighs, and until this check nothing on either side bounded it — the
+/// proposer had no cap and the validator had no refusal. `max-number-of-parents` said otherwise in two
+/// doc comments and in C123's fix rationale, and no code read the key at all.
+///
+/// **The bound is a property of the network, so it arrives as an argument.** A non-positive value
+/// disables the check, which is how a chain that has not adopted it keeps the pre-#153 semantics
+/// exactly — the same shape as `min_phlo_price` being handed in rather than compiled in.
+///
+/// Refusing a set above a fixed width **is a consensus change**, because such a block is valid today.
+/// It is registered in `spec/audit/passes.md` §6 and tracked on #51 §A, and the shipped default is the
+/// protocol's existing per-block width rather than `i32::MAX`.
+pub fn justification_count(b: &BlockMessage, max_number_of_parents: i32) -> BlockStatus {
+    if max_number_of_parents <= 0 || b.justifications.len() <= max_number_of_parents as usize {
+        BlockStatus::Valid
+    } else {
+        BlockStatus::TooManyJustifications
     }
 }
 
@@ -702,6 +735,56 @@ mod tests {
         let mut past = block();
         past.state.deploys = (0..=cap).map(|_| deploy(0, 1, "root")).collect();
         assert_eq!(deploy_count(&past), BlockStatus::TooManyDeploys);
+    }
+
+    /// A block whose justification set is wider than the network allows is refused, and the bound
+    /// itself is allowed (#153).
+    ///
+    /// **This is the input bound, and it had no check on either side.** The proposer had no cap and the
+    /// validator had no refusal, while `max-number-of-parents` sat in the configuration read by nothing —
+    /// and two doc comments plus C123's fix rationale asserted it bounded exactly this. What makes it the
+    /// *input* bound rather than a second `deploy_count` is that the justification set is the one block
+    /// input a proposer chooses outright: it decides which chains every validator weighs.
+    ///
+    /// The pair is asserted together, at the bound and one past it, for the reason the F-3 tests above
+    /// do: a check that refused everything would pass the refusal half alone.
+    #[test]
+    fn a_block_justifying_more_parents_than_the_network_allows_is_refused() {
+        let cap = 255;
+
+        let mut at_limit = block();
+        at_limit.justifications = (0..cap).map(|i| BlockHash::new([i as u8; 32])).collect();
+        assert_eq!(
+            justification_count(&at_limit, cap),
+            BlockStatus::Valid,
+            "the bound itself is within the protocol's envelope"
+        );
+
+        let mut past = block();
+        past.justifications = (0..=cap).map(|i| BlockHash::new([i as u8; 32])).collect();
+        assert_eq!(
+            justification_count(&past, cap),
+            BlockStatus::TooManyJustifications
+        );
+    }
+
+    /// A non-positive bound disables the check, which is how a chain that has not adopted #153 keeps the
+    /// pre-#153 semantics exactly.
+    ///
+    /// Without this the default would be the only thing standing between an operator and a network that
+    /// refuses blocks it used to accept, and "0 means off" would be an assumption rather than a test.
+    #[test]
+    fn a_non_positive_parent_bound_disables_the_check() {
+        let mut wide = block();
+        wide.justifications = (0..300).map(|i| BlockHash::new([i as u8; 32])).collect();
+
+        for off in [0, -1, i32::MIN] {
+            assert_eq!(
+                justification_count(&wide, off),
+                BlockStatus::Valid,
+                "a bound of {off} means the check is off, not that every block is refused"
+            );
+        }
     }
 
     /// A block whose deploys collectively declare more phlo than the block budget is refused, and the
@@ -1315,7 +1398,7 @@ mod effectful_tests {
             "the honest fixture must satisfy the check the block path is about to run"
         );
         assert_eq!(
-            block_summary(&dag, &store, &block_at(vec![honest]), "root", 100, 1)
+            block_summary(&dag, &store, &block_at(vec![honest]), "root", 100, 1, 0)
                 .await
                 .unwrap(),
             Ok(()),
@@ -1333,7 +1416,7 @@ mod effectful_tests {
             "a deploy whose deployer names a key that did not sign it must not verify"
         );
         assert_eq!(
-            block_summary(&dag, &store, &block_at(vec![impersonation]), "root", 100, 1)
+            block_summary(&dag, &store, &block_at(vec![impersonation]), "root", 100, 1, 0)
                 .await
                 .unwrap(),
             Err(BlockStatus::InvalidDeploySignature),
@@ -1345,7 +1428,7 @@ mod effectful_tests {
         let mut garbage = signed_deploy("Nil");
         garbage.deploy.sig = vec![1];
         assert_eq!(
-            block_summary(&dag, &store, &block_at(vec![garbage]), "root", 100, 1)
+            block_summary(&dag, &store, &block_at(vec![garbage]), "root", 100, 1, 0)
                 .await
                 .unwrap(),
             Err(BlockStatus::InvalidDeploySignature),
@@ -1358,7 +1441,7 @@ mod effectful_tests {
         let mut tampered = signed_deploy("Nil");
         tampered.deploy.data.term = "Nil | Nil".to_string();
         assert_eq!(
-            block_summary(&dag, &store, &block_at(vec![tampered]), "root", 100, 1)
+            block_summary(&dag, &store, &block_at(vec![tampered]), "root", 100, 1, 0)
                 .await
                 .unwrap(),
             Err(BlockStatus::InvalidDeploySignature),
@@ -1414,7 +1497,7 @@ mod effectful_tests {
         let mut supported = block(2, 0, 0, vec![]);
         supported.state.deploys = vec![signed_deploy("Nil")];
         assert_eq!(
-            block_summary(&dag, &store, &supported, "root", 100, 1)
+            block_summary(&dag, &store, &supported, "root", 100, 1, 0)
                 .await
                 .unwrap(),
             Ok(()),
@@ -1425,7 +1508,7 @@ mod effectful_tests {
         let mut unsupported = supported.clone();
         unsupported.version = 999;
         assert_eq!(
-            block_summary(&dag, &store, &unsupported, "root", 100, 1)
+            block_summary(&dag, &store, &unsupported, "root", 100, 1, 0)
                 .await
                 .unwrap(),
             Err(BlockStatus::InvalidVersion),
@@ -1455,7 +1538,7 @@ mod effectful_tests {
         over.state.deploys = vec![signed_deploy_with_phlo("Nil", MAX_BLOCK_PHLO + 1)];
 
         assert_eq!(
-            block_summary(&dag, &store, &over, "root", 100, 1)
+            block_summary(&dag, &store, &over, "root", 100, 1, 0)
                 .await
                 .unwrap(),
             Err(BlockStatus::ExceedsBlockPhloLimit),

@@ -31,6 +31,7 @@ pub async fn validate_and_add_to_dag<F, Fut>(
     block: BlockMessage,
     shard_id: &str,
     min_phlo_price: i64,
+    max_number_of_parents: i32,
     block_index: &F,
     log: &Arc<dyn Log>,
 ) -> Result<Result<(), BlockStatus>, String>
@@ -45,6 +46,7 @@ where
         &block,
         shard_id,
         min_phlo_price,
+        max_number_of_parents,
         block_index,
         log,
     )
@@ -65,6 +67,7 @@ pub async fn apply<F, Fut>(
     validated_tx: mpsc::Sender<BlockMessage>,
     shard_id: String,
     min_phlo_price: i64,
+    max_number_of_parents: i32,
     dag: Arc<dyn BlockDagStorage>,
     block_store: BlockStore,
     runtime: Arc<RuntimeManager>,
@@ -105,6 +108,7 @@ pub async fn apply<F, Fut>(
                     &block,
                     &shard_id,
                     min_phlo_price,
+                    max_number_of_parents,
                     &block_index,
                     &log,
                 )

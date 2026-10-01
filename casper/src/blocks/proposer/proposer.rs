@@ -298,6 +298,7 @@ impl Proposer {
         validator_identity: ValidatorIdentity,
         shard_id: String,
         min_phlo_price: i64,
+        max_number_of_parents: i32,
         epoch_length: i32,
         dummy_deploy_opt: Option<(PrivateKey, String)>,
         dag: Arc<dyn BlockDagStorage>,
@@ -366,6 +367,7 @@ impl Proposer {
                 let shard_id = shard_id.clone();
                 let blocked_since_advance = blocked_since_advance.clone();
                 let dummy_deploy_opt = dummy_deploy_opt.clone();
+                let max_number_of_parents = max_number_of_parents;
                 Box::pin(async move {
                     create_block(
                         runtime.as_ref(),
@@ -374,6 +376,7 @@ impl Proposer {
                         block_index.as_ref(),
                         &vi,
                         &shard_id,
+                        max_number_of_parents,
                         epoch_length,
                         dummy_deploy_opt.as_ref(),
                         &blocked_since_advance,
@@ -400,6 +403,7 @@ impl Proposer {
                 let block = block.clone();
                 let shard_id = shard_id.clone();
                 let log = log.clone();
+                let max_number_of_parents = max_number_of_parents;
                 Box::pin(async move {
                     match crate::multi_parent_casper::validate(
                         dag.as_ref(),
@@ -408,6 +412,7 @@ impl Proposer {
                         &block,
                         &shard_id,
                         min_phlo_price,
+                        max_number_of_parents,
                         block_index.as_ref(),
                         &log,
                     )
@@ -512,6 +517,7 @@ async fn create_block<'a, F, Fut>(
     block_index: &'a F,
     validator_identity: &ValidatorIdentity,
     shard_id: &str,
+    max_number_of_parents: i32,
     epoch_length: i32,
     dummy_deploy_opt: Option<&(PrivateKey, String)>,
     blocked_since_advance: &std::sync::atomic::AtomicI64,
@@ -568,6 +574,27 @@ where
         .iter()
         .map(|m| m.block_hash)
         .collect();
+
+    // **The proposer's half of #153's bound.** A justification set wider than the protocol allows is
+    // refused by every validator (`validate::justification_count`), so emitting one would be a block
+    // this node cannot get accepted — it would burn its own round and, worse, look like a validation
+    // failure to everyone else. Refusing here is the proposer respecting the same bound the receivers
+    // enforce, which is what `MAX_BLOCK_DEPLOYS` does for the deploy count on the other side of the same
+    // arithmetic.
+    //
+    // It should not be reachable on a sane chain: the set is `round_parents`, one message per sender, so
+    // it takes more than `max_number_of_parents` distinct senders to get here. That is exactly why the
+    // refusal is loud — reaching it means the DAG holds more senders than the network is configured for,
+    // which is a fact the operator needs rather than a proposal to quietly skip.
+    if max_number_of_parents > 0 && parent_hashes.len() > max_number_of_parents as usize {
+        return Err(format!(
+            "the round's parent set holds {} justifications, above this network's \
+             max-number-of-parents of {} — every validator would refuse a block built on it, so this \
+             node is not proposing one",
+            parent_hashes.len(),
+            max_number_of_parents
+        ));
+    }
 
     let pre_state_bonds = runtime
         .compute_bonds(&StateHash::from_slice(pre_state_hash.as_bytes()))

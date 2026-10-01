@@ -416,6 +416,7 @@ async fn restore_divergent_justifications<F, Fut>(
     block: &BlockMessage,
     shard_id: &str,
     min_phlo_price: i64,
+    max_number_of_parents: i32,
     block_index: &F,
     log: &Arc<dyn Log>,
 ) where
@@ -459,6 +460,7 @@ async fn restore_divergent_justifications<F, Fut>(
             &msg,
             shard_id,
             min_phlo_price,
+            max_number_of_parents,
             block_index,
             log,
         )
@@ -510,6 +512,7 @@ pub async fn validate<F, Fut>(
     block: &BlockMessage,
     shard_id: &str,
     min_phlo_price: i64,
+    max_number_of_parents: i32,
     block_index: &F,
     log: &Arc<dyn Log>,
 ) -> Result<BlockMetadata, ValidateError>
@@ -524,6 +527,7 @@ where
         block,
         shard_id,
         min_phlo_price,
+        max_number_of_parents,
         block_index,
         log,
     )
@@ -536,6 +540,7 @@ where
         block,
         shard_id,
         min_phlo_price,
+        max_number_of_parents,
         block_index,
         log,
     )
@@ -556,6 +561,7 @@ async fn validate_checks<F, Fut>(
     block: &BlockMessage,
     shard_id: &str,
     min_phlo_price: i64,
+    max_number_of_parents: i32,
     block_index: &F,
     log: &Arc<dyn Log>,
 ) -> Result<BlockMetadata, ValidateError>
@@ -573,6 +579,7 @@ where
         shard_id,
         DEPLOY_LIFESPAN,
         min_phlo_price,
+        max_number_of_parents,
     )
     .await
     {

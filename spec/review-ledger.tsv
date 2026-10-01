@@ -83,7 +83,7 @@ config	host	T3	deferred	-	-	-	-	-	-
 config	influxdb	T3	deferred	-	-	-	-	-	-
 config	influxdb-udp	T3	deferred	-	-	-	-	-	-
 config	log-level	T3	deferred	-	-	-	-	-	-
-config	max-number-of-parents	T3	deferred	-	-	-	-	-	-
+config	max-number-of-parents	T3	deferred	-	-	-	-	-	enforced as of #153 (AUDIT C190): `validate.rs::justification_count` refuses a block above it and `proposer.rs::create_block` refuses to build one, default moved 2147483647 -> 255. The verdict column is left as authored — this records the fact rather than re-reviewing the row, and the header says nothing checks this file.
 config	min-phlo-price	T3	deferred	-	-	-	-	-	-
 config	network-id	T3	deferred	-	-	-	-	-	-
 config	network-timeout	T3	deferred	-	-	-	-	-	-

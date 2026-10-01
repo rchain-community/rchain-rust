@@ -526,7 +526,10 @@ mod tests {
                 ),
                 casper_loop_interval: secs(30),
                 requested_blocks_timeout: secs(240),
-                max_number_of_parents: 2147483647,
+                // Mirrors `defaults.conf`; it moved with it when #153 made the key a consensus bound.
+                // The two have to agree, and this fixture is what proves the parsed defaults equal the
+                // documented ones.
+                max_number_of_parents: 255,
                 fork_choice_stale_threshold: secs(10 * 60),
                 fork_choice_check_if_stale_interval: secs(11 * 60),
                 synchrony_constraint_threshold: 0.67,
