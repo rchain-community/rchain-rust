@@ -5842,3 +5842,45 @@ is discharged in every member.
 cheap, and below it the work may still be exponential — the honest sentence every row of this class
 carries, and the reason Stage 2 of #127's change order (a threshold **N**) and Stage 3 (a price) remain the
 approver's decisions rather than the implementation's.
+
+## 44. The restoring rule clears nothing, and says it did (C192)
+
+**Found by checking the premise of #156's repair rather than by looking for it.** The team's recommendation
+for C190 was for the proposer to re-validate its own spent record and clear it. The first question that has
+to be answered before that is writable is whether the *existing* clearing path works — and it does not.
+
+**The chain, three links:**
+
+- `revalidated_record` rebuilds the record with the **same hash** (`..fresh` / `..stored.clone()`,
+  `multi_parent_casper.rs:394-409`);
+- `BlockMetadataStore::contains` is `dag_set.contains(hash)`, and `add_block_to_dag_state_mut` inserts every
+  hash there **unconditionally** (`block-storage/src/dag/metadata_store.rs:71`) — so the failed block is in
+  it;
+- `dag.insert` returns `Ok(())` **without writing** when the hash is already known
+  (`casper/src/dag.rs:322-328`).
+
+So `restore_divergent_justifications` (`multi_parent_casper.rs:473`) calls `insert` with an already-known
+hash, gets success, and logs *"cleared the failure record for … the block validates"*. The store keeps
+`validation_failed: true`; the in-memory representation is never touched. **The rule that exists to clear a
+view-dependent failure has never cleared one.**
+
+**This is what "its clearing branch is not verified end to end" was.** The record of #125's close-out said
+the branch was unverified and gave it to #139; the truth is narrower and worse — the branch cannot succeed,
+and the log says it did. A verification gap and a dead path look identical from the outside when the path
+reports success.
+
+**Why no test saw it: the double.** `casper/tests/restoring_rule.rs` drives a **fake** storage whose `insert`
+unconditionally records (`inserts_for`), which is what makes the rule's effect observable there — and is
+exactly why the real short-circuit is never in the path. This is C186's lesson one layer up: a fixture that
+supplies the behaviour under test cannot see the real thing's.
+
+**Pinned, not fixed.** `dag.rs::re_inserting_a_known_block_does_not_clear_its_failure_record` asserts the
+defect is present, and was **observed red when inverted** — the inverted run is what shows it measures the
+write rather than passing vacuously. The repair is one real **update path** for a known block (replace the
+metadata, re-index it, promote it into `latest_msgs`), and it is the same path the proposer needs for C190's
+self-clearing step: one missing primitive behind two symptoms. Node-local, so §6 and `#51` §A are not
+engaged.
+
+**What is not claimed.** That the rule is useless: the *attempt* accounting (`restore_attempts`, the
+per-block budget) is written by the same no-op and is equally inert, so the bounds it is supposed to enforce
+have never been enforced either — the fix has to account for both halves of a write that never happened.
