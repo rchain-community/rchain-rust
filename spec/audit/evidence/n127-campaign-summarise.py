@@ -60,7 +60,21 @@ def read_series(path):
 
 
 def rate(series, node):
-    """Blocks/minute for a node, from the first and last sample that has a height."""
+    """**Heights**/minute for a node, from the first and last sample that has a height.
+
+    It is *not* a block rate, and the name and the printed label said it was from the day this was
+    written — "Blocks/minute … from … a height" in one sentence, with the body reading `h`. The
+    quantity is a `latestBlockNumber` delta, and `latestBlockNumber` is `max_height + 1`, so what this
+    returns is a **round** rate: one height is one round, and a round carries one block per bonded
+    sender (measured at 2.99 blocks per height on a 3-validator net, `n149-results.md`).
+
+    Every rate in `n127-campaign-results.md` and every document quoting them inherits this, which is
+    why the campaign's "12–16 blocks/min" is a height figure. Converting is not a multiplication by 3
+    for those runs: the block-per-height ratio was never recorded, the series here keeps only
+    `latestBlockNumber`, and the sender count differs between arms. So the honest repair is to label
+    the number for what it is and let a block-level instrument re-derive it — which is what
+    `n149-sample.py`'s block-hash union does.
+    """
     pts = [(u, int(h)) for u, n, h, _f, _a in series if n == node and h.isdigit()]
     if len(pts) < 2:
         return None
@@ -160,7 +174,9 @@ def main():
         nodes = sorted({n for _u, n, _h, _f, _av in series})
         for node in nodes:
             r, f = rate(series, node), finality(series, node)
-            rtxt = f"{r:.1f} blocks/min" if r is not None else "rate: too few samples"
+            # `heights/min`, not `blocks/min` — see `rate`'s docstring. The label is the whole defect:
+            # every number below was read as a block rate for two days.
+            rtxt = f"{r:.1f} heights/min" if r is not None else "rate: too few samples"
             ftxt = (f"finality {f[0]} -> {f[1]}" + (" (moved)" if f[2] else " (did not move)")) if f else "finality: none"
             samples = sum(1 for _u, n, _h, _f, _a in series if n == node)
             print(f"  0.1 {node:<9} {samples:>4} samples  {rtxt:<22} {ftxt}")

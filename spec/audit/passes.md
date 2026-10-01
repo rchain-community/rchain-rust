@@ -4485,10 +4485,13 @@ finalizer — is a separate increment, not this one.
 
 Measured 2026-09-29, three validators at 100/100/50, `--no-autopropose --propose-on-deploy`,
 `--epoch-length 10`: **four deploys produced 126 blocks in about three minutes** (~2/s) while finality
-stayed at 8, and the height ran to 126. Attestation is the fuel — each attestation is itself a remote
+stayed at 8, and the height ran to 126 — **the unit here is unverified, and the sentence itself equates
+the two**: if 126 is the height, the block count is ~3x that on a three-validator net, and the same
+substitution is what `n127-campaign-summarise.py`'s `rate()` was found to make (2026-10-01, see §0.1).
+No artifact for this measurement is committed in the tree, so it is flagged rather than corrected. Attestation is the fuel — each attestation is itself a remote
 block for the peers, which attest in turn — so it is the tap, not the dummy-`Nil` injector, that makes
 the chain grow. The shape was already recorded twice on a two-validator net (23 blocks from six
-deploys) and on the issue itself (276 blocks in about a minute, finalised only to 11).
+deploys) and on the issue itself (276 in about a minute, finalised only to 11 — unit unverified, see above).
 
 `suppress_attestation` cannot bound this: the quorum *is* reachable, so its suppression clause is
 deliberately inert, C170's repair included. The bound has to be on **our own quiet** — this node's
@@ -5158,11 +5161,14 @@ mean width 15.7–19.6, widest 32–37, and **2,026,511 states expanded on one m
 run's 1,663,395, on a chain whose block rate is lower. Load is not the only thing that moves the cost.
 
 **0.1 — the storm is a post-kill phenomenon in this configuration, and the pre-registration did not foresee
-the rate it found.** All three validators live: 12–16 blocks/min, one block per 4–5 s, *slower* than the 2 s
-autopropose timer and an order of magnitude below the recorded 276/min storm — a case the frozen table has
-no row for, so it is a correction to the pre-registration rather than a reading. After the kill, finality did
-not resume in **3 of 3** attempts: two froze completely (height and finality both stopped for 180 s) and one
-kept producing at ~18 blocks/min while finality moved +4 heights. The chain that runs while finality is
+the rate it found.** All three validators live: 12–16 **heights**/min (written "blocks/min" here and
+elsewhere until 2026-10-01 — the figures come from `n127-campaign-summarise.py`'s `rate()`, which is
+documented as "Blocks/minute … from … a height" and reads `latestBlockNumber`, a round count, one block per
+bonded sender per round; ~3 blocks each, measured block-level in `n149-results.md`), one height per 4–5 s,
+*slower* than the 2 s autopropose timer and an order of magnitude below the recorded 276/min storm — a case
+the frozen table has no row for, so it is a correction to the pre-registration rather than a reading. After
+the kill, finality did not resume in **3 of 3** attempts: two froze completely (height and finality both
+stopped for 180 s) and one kept producing at ~18 heights/min while finality moved +4 heights. The chain that runs while finality is
 pinned is the one an absent validator creates — C171's own mechanism, and #70's second stop.
 
 **0.3 — void, by construction at this scale.** Every stall line carries `at tip 0`: the line is rate-limited
@@ -5183,16 +5189,21 @@ artifacts rather than the summary. They are corrected here rather than deleted, 
 the one this register exists to record.
 
 - **"the storm is a post-kill phenomenon here" is not supported by the run.** v1 in attempt 2 made
-  **17.6 blocks/min** after the kill against **16.1** before it. What the kill does is *decouple height from
+  **17.6 heights/min** after the kill against **16.1** before it (both are the campaign's rates; see §0.1's
+  correction on the unit). What the kill does is *decouple height from
   finality* — the chain keeps producing while the fringe stops advancing — and the rate is the same on both
-  sides. Calling that a storm stretches the word past the 276 blocks/min the storm is recorded at.
+  sides. Calling that a storm stretches the word past the 276/min the storm is recorded at (that figure's
+  unit is **unverified** — the sentence below states it as "276 blocks in about a minute" and, for the
+  adjacent measurement, "the height ran to 126", so both may be the same quantity, and no artifact for
+  either exists in this tree; see the flag on that line).
 - **"~75 is the number of reporting periods" is wrong: there is no period.** The only production caller of
   `report_period_snapshot` is the `/metrics` handler, **once per request** (`node/src/web/http.rs:180-184`);
   the oracle's route returns a cached string instead. So the factor is the *scrape count* — and this
   campaign's own sampler curled `/metrics` once a second, which means **the instrument was inflated by the
   measurement**. The pre-registration's "scraped twice" describes a protocol that did not run.
 - **The envelope's "storm" label was mine and it was wrong.** This section's 0.2 heading reports the
-  *pre-kill* scrapes, and they show all three validators live at 12–16 blocks/min with widest scopes of
+  *pre-kill* scrapes, and they show all three validators live at 12–16 heights/min (see §0.1's correction
+  on the unit) with widest scopes of
   **30–36 chains and up to 985,391 states**. The kill did not widen the scope; it changed the *cost* on the
   survivors. `n127-shape-distribution-results.md` had already called its 43-chain point "the quiet devnet".
 
@@ -5488,7 +5499,9 @@ and the result is two findings rather than one.
 | **fixed (`de4e9af02`)** | **72, 90, 105** | 76, 94, 109 | **3–4** | **T+120s — still advancing at the kill** |
 
 Three to four heights behind, in all three attempts, and still moving at the kill instant. The chain runs at
-~38 blocks/min against the campaign's 12–16. The stall line has effectively disappeared: six lines per
+~38 heights/min against the campaign's 12–16 (both height rates — see §0.1's correction; the ~38 is also
+**unverified at its source**: it is cited to `n127-proposer-fix-results.md`, which reports heights and
+finality and no rate at all, a finding of the #148 session). The stall line has effectively disappeared: six lines per
 attempt against seventy-five, and all six are the boundary warming up at genesis. The C184 budget control is
 still empty.
 

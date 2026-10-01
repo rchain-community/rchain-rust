@@ -3,7 +3,7 @@
 > **Corrections, added 2026-09-30 after a panel re-derived the plan.** §2's "~75 is the number of reporting
 > periods" is wrong — there is no period: `/metrics` pushes a snapshot per *request*, and this campaign's own
 > sampler scraped once a second, so the instrument was inflated by the measurement. §5's "the storm's
-> signature appears after the kill" is not supported by the run: v1 made 17.6 blocks/min after the kill
+> signature appears after the kill" is not supported by the run: v1 made 17.6 heights/min after the kill
 > against 16.1 before it, so height and finality *decouple* while the rate does not rise. And §1's
 > `38 + 55 + 8 = 101 ✓` is a tautology — `MERGES` and `WIDTH_COUNTS` are incremented in one function, so
 > that identity holds for any output the code can produce. What survives is the finding itself: the endpoint
@@ -19,6 +19,19 @@
 > both arms, with every validator live. The same reading of the after-arm, and the cross-arm count, are in
 > `n127-liveness-results.md`; §5's "the storm is a post-kill phenomenon" carries the same defect and was
 > already retracted above for a different reason.
+>
+> **Correction, added 2026-10-01: every "blocks/min" in this file is a *height* rate.** §"All three live"
+> below prints a table whose column is "height at T+119 s" (27, 32, 23) and labels its rows
+> "blocks/min" — the rate is `height ÷ 119 × 60`, so those are heights/min, and the gloss "one block per
+> 4–5 s" inherits the same substitution. The cause is a single label: `rate()`
+> (`n127-campaign-summarise.py:62`) is documented as "**Blocks**/minute … from … a **height**" and reads
+> `h` = `latestBlockNumber`, which is `max_height + 1` — a **round** count, one block per bonded sender
+> per round. On a 3-validator net that is ~3 blocks per height, measured block-level for the first time
+> in `n149-results.md` (2.99). **The numbers are not wrong; the unit is.** Converting is not a
+> multiplication by 3 here — the block-per-height ratio was never recorded for these runs and the arms
+> hold different sender counts — so this file's rates are left as written and read as heights/min. The
+> label at the source is fixed (`rate()` now prints `heights/min`), which is where every downstream
+> quotation of these figures inherited it.
 
 Run 2026-09-30 on tree `c5442ee1f`, image `sha256:783fe97d6054…` (built 17:10:49 from this tree; the
 manifest's `rust_diff_vs_1732306c7` reads **empty**, so the binary under test is the tree the artifacts
@@ -162,12 +175,15 @@ by ~55 s in a first pass at this analysis).
 
 | attempt | height at T+119 s | rate |
 |---|---|---|
-| 1 | 27 | ~13.6 blocks/min |
-| 2 | 32 | ~16.1 blocks/min |
-| 3 | 23 | ~11.6 blocks/min |
+| 1 | 27 | ~13.6 heights/min |
+| 2 | 32 | ~16.1 heights/min |
+| 3 | 23 | ~11.6 heights/min |
 
-So the all-live chain runs at **12–16 blocks/min, one block per 4–5 s** — *slower* than the 2 s autopropose
-timer, and an order of magnitude below the 276 blocks/min the storm is recorded at. **The storm did not
+So the all-live chain runs at **12–16 heights/min, one height per 4–5 s** — *slower* than the 2 s autopropose
+timer, and an order of magnitude below the 276 the storm is recorded at (that figure's unit is
+**unverified**: `passes.md` states it as "276 blocks in about a minute" and, in the same sentence, "the
+height ran to 126" for the adjacent measurement, so the two may be the same quantity; no artifact for
+either exists in this tree. See the correction block at the top). **The storm did not
 appear while every validator was live in this configuration**, which is not what the pre-registration
 anticipated. Its table has rows for "faster than the timer" and "about the timer"; it has none for
 *slower*, and that gap is a correction to the pre-registration rather than a reading.
@@ -184,7 +200,7 @@ anticipated. Its table has rows for "faster than the timer" and "about the timer
 | 3 | v1 | 23 → 24 (+1) | 10 → 10 |
 
 Two of three attempts **freeze completely** — the height stops as well as the finality. One attempt keeps
-producing at ~18 blocks/min while finality moves by **+4 heights in 180 s**. So the storm's signature
+producing at ~18 heights/min while finality moves by **+4 heights in 180 s**. So the storm's signature
 appears **after the kill, not before**, and intermittently: the chain that grows under an absent validator
 is the one that runs while finality is pinned. The pre-registered row "the survivors do not resume finality
 after the kill" is **met (3 of 3)**, with attempt 2's +4 recorded rather than rounded to zero.

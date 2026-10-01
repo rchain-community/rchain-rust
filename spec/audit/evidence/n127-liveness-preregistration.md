@@ -14,6 +14,12 @@
 >
 > The reproduction itself stands, and one thing in it is now known to be wrong: the **+4 the before-arm
 > reached** was that arm's own late increment, not a head start over a working build.
+>
+> **Correction, added 2026-10-01: the "12–16 blocks/min" below is a *height* rate.** It comes from
+> `n127-campaign-summarise.py`'s `rate()`, which is documented as "Blocks/minute … from … a height" and
+> reads `latestBlockNumber` — `max_height + 1`, a **round** count, one block per bonded sender per round.
+> The label at the source is fixed; the figure quoted here is left as written and read as 12–16
+> **heights**/min (~3 blocks each, measured block-level in `n149-results.md`).
 
 ## Why this is the measurement
 

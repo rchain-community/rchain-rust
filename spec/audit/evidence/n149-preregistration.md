@@ -57,7 +57,11 @@ the contrast between the two is itself a result of this unit.
 
 This also retires a number already in the tree: the 2026-09-30 campaign's "12–16 blocks/min with all
 three validators live" was taken with autopropose on (`n127-campaign-results.md:165-169`), so it is a
-rate for the dummy-deploy path, not for attestation. The idle arm below re-measures it.
+rate for the dummy-deploy path, not for attestation. The idle arm below re-measures it. **And its unit
+was wrong** (added 2026-10-01, before the run): the figure is a **height** rate — it comes from
+`n127-campaign-summarise.py`'s `rate()`, which is documented as "Blocks/minute … from … a height" and
+reads `latestBlockNumber`, a round count — so in blocks it is ~3x that. The source label is fixed; the
+frozen row below is left as written and read accordingly.
 
 ## The node-local change the issue asks for is already in the tree
 
@@ -177,7 +181,7 @@ the control working — with nothing to finalise and autopropose off, the chain 
 | the primary arm's `senders` reaches N and `blocks_per_deploy` grows with N across all three attempts | **#149's inference is confirmed and quantified** — the stated function is the measured curve, and step 2 of the issue is the next unit |
 | the primary arm's `senders` is N but `blocks_per_deploy` does not grow with N | **#149 is half right**: every validator does speak, but the count is bounded by a constant the issue does not name |
 | the **primary** arm's `idle_blocks` is non-zero | **the rig is void** — the deploy is not the only driver and nothing below can be read |
-| the control arm reproduces 12–16 blocks/min at N = 3 | the campaign's number is the dummy-deploy path, as this unit infers |
+| the control arm reproduces 12–16 **heights**/min at N = 3 (the row said "blocks/min"; corrected above) | the campaign's number is the dummy-deploy path, as this unit infers |
 | the **control** arm's `idle_blocks` is non-zero | expected, and **not** a void attempt: on that arm the autopropose dummy deploy is the driver by construction. The idle control is a precondition of the primary arm only |
 
 **The single number to report:** `blocks_per_deploy` at N = 2, 3, 5, 8 on the primary arm, with its

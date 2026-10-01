@@ -352,8 +352,12 @@ evidence of misbehaviour.
 
 `--attest-on-new-blocks` makes a validator attest when it sees a remote block, which is what gets its stake
 into the finality count. With three validators, each attestation is itself a remote block for the other two,
-so the chain grows continuously: 276 blocks of mostly empty attestations in about a minute, finalised only to
+so the chain grows continuously: 276 of mostly empty attestations in about a minute, finalised only to
 block 11, and the 1 GB hosts at 40% CPU with the memory cost that implies (see the sizing trap above).
+**"276" has no unit here on purpose** — the measurement is recorded as "276 blocks in about a minute"
+in the register, and, for the adjacent run in the same sentence, as "the height ran to 126", so it may
+be a height rather than a block count, in which case the block count is about three times larger on a
+three-validator net. No artifact for it is committed, so it is flagged rather than restated either way.
 
 Attestation has to be bounded — one per height per sender, or gated on the finaliser having something to
 finalise — rather than "one per remote block seen". Recorded on #70.
