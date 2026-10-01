@@ -461,7 +461,9 @@ the picture above changes.** On the live two-host net, both shapes now behave di
   not the deploy.** Killing the 50-stake validator froze finality *at the kill* and production ran to the
   end of a 420 s window in **3 of 3** attempts; the all-live control held finality at a gap of 4 throughout.
   In that run finality stopped about **55 s before** the single deploy, so "one deploy re-arms it" is not
-  what the rig shows — see `spec/audit/evidence/n148-results.md`.
+  what the rig shows. The run used the devnet defaults (autopropose and dev-mode on), so it measures the
+  **shipped configuration**, not the attestation guard — see the caveat in
+  `spec/audit/evidence/n148-results.md`.
 
 **So "do not onboard a validator yet" is still the rule, for a third reason again**: not blocker 2's
 unsatisfiable partition (fixed by #108), but **the unattested storm an absent validator lets run** — and

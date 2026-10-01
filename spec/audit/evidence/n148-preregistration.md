@@ -13,6 +13,12 @@
 > is not the variable") does not hold here: with no pre-kill deploy, finality is healthy until the kill and
 > freezes exactly at it (`n148-results.md`, arm A). #148 is reproduced, and the deploy in its narrative is
 > incidental to the freeze.
+>
+> **And a third defect, in the rig rather than the arm list.** The devnet defaults enable `--dev-mode`,
+> whose dummy deploy pins `new_state_transition` true and `nothing_to_finalize` false, so
+> `attestation_suppressed` — the mechanism #148 is *about* — is not exercised by either arm. The shipped
+> defaults still freeze finality on a validator loss, which is worth knowing; but a `--no-autopropose` arm
+> is owed before anything is claimed about the guard, and this freeze did not name it.
 
 ## Why this is the measurement
 

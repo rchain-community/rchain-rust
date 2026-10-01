@@ -12,9 +12,29 @@ python3 spec/audit/evidence/n148-summarise.py \
 
 ## Verdict against the frozen acceptance row
 
-**#148 is reproduced on `dev`.** Arm A's row was "height runs away after the single deploy while finality
-does not advance past its pre-deploy value", and that is what all three attempts did. Part 2 of the issue's
-`Closes when` — a bound on post-deploy production, held by a test — is therefore owed.
+**The phenomenon is reproduced on `dev`: killing a validator freezes finality and the chain keeps
+producing.** Arm A's row was "height runs away after the single deploy while finality does not advance past
+its pre-deploy value", and that is what all three attempts did. Part 2 of the issue's `Closes when` — a
+bound on post-deploy production, held by a test — is therefore owed.
+
+**But this rig does not exercise the attestation guard, which is the mechanism #148 describes — so read
+the rows above as a finding about the shipped defaults, not about `attestation_suppressed`.** The devnet
+defaults set `DEPLOYER=true`, which passes `--dev-mode --deployer-private-key`
+(`tools/devnet.sh:393`); in dev mode the proposer **injects a dummy `Nil` deploy whenever the pool is
+empty** so `--autopropose` can keep producing (`casper/src/blocks/proposer/proposer.rs:711`). That dummy
+deploy is part of the block's deploy list, so on this rig:
+
+- `new_state_transition` — `parents.iter().any(|b| has_deploys(b))` (`proposer.rs:669`) — is **permanently
+  true**, and
+- `nothing_to_finalize` is **permanently false**, because every parent carries a deploy.
+
+So the guard's suppression clauses are pinned, and the chain's production here is **dummy-deploy-driven**,
+not an attestation loop. `attestation_suppressed` is still called and is not "dead code"
+(`proposer.rs:697`, passed to `BlockCreator::create` at `:756`), but its decision is forced to *attest* by
+the inputs above regardless of the quorum term. **The guard is only load-testable with `--no-autopropose`**
+— which is also what #148's own "chain idle, then one deploy" observation implies its rig had, since a
+dummy-deploy-driven chain cannot sit idle. **That arm is owed, and it is the one that bears on #148's stated
+mechanism.**
 
 ## Arm A — kill at T+120, one deploy at T+180 (the issue's shape)
 
@@ -71,11 +91,12 @@ the change and its manifest is as frozen.
 ## What this does not settle
 
 - **The per-deploy minting of #149** is a separate issue and is not measured here.
-- **Whether a deploy is *sufficient*** to start a storm on a chain that is otherwise idle. This rig runs
-  the devnet defaults (autopropose on), so production continues after the kill without any deploy; #148's
-  "chain idle, then one deploy" shape implies its measurement had autopropose **off**. The hazard is the
-  same, the trigger is not, and a `--no-autopropose` arm is owed before "a deploy re-arms it" is written
-  down as fact.
+- **Whether a deploy is *sufficient*** to start a storm on a chain that is otherwise idle, and **what the
+  attestation guard does at all**. This rig runs the devnet defaults (autopropose on, dev-mode dummy deploy
+  on), so production continues after the kill without any deploy and the guard's clauses are pinned (see
+  the caveat above); #148's "chain idle, then one deploy" shape implies its measurement had autopropose
+  **off**. A `--no-autopropose` arm is owed before either "a deploy re-arms it" or "the guard suppresses
+  it" is written down as fact — and it is the only arm on which `attestation_suppressed` is live.
 - **The bound itself** (part 2) — this unit measures; it does not fix.
 - Three attempts of one configuration, on one machine, at an 8 GiB cap (the original hosts were 1 GB and
   the run was halted by the cap there). Not a capacity plan and not a proof.
