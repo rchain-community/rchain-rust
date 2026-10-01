@@ -59,6 +59,13 @@ def read_series(path):
     return rows
 
 
+def _sec_of_day(u):
+    """`HH:MM:SS` to seconds-of-day. The series' own timestamp, so the elapsed time is read rather than
+    assumed — see `rate`."""
+    h, m, s = (int(x) for x in u.split(":"))
+    return h * 3600 + m * 60 + s
+
+
 def rate(series, node):
     """**Heights**/minute for a node, from the first and last sample that has a height.
 
@@ -74,15 +81,23 @@ def rate(series, node):
     `latestBlockNumber`, and the sender count differs between arms. So the honest repair is to label
     the number for what it is and let a block-level instrument re-derive it — which is what
     `n149-sample.py`'s block-hash union does.
+
+    **And the divisor was wrong too, in the opposite direction.** This used `secs = len(pts)` on a
+    `# one sample a second` assumption. The sampler is `sleep(1)` **plus the work of a sample**, so the
+    campaign's committed series ran at **1.158 s per sample** — 260 distinct timestamps over 300 s,
+    `n127-campaign/c5442ee1f-20260930T163518Z/series-a1.tsv`, measured. Dividing by the count therefore
+    understates the elapsed time and **overstates every rate by 300/260 ≈ 1.15x**. The elapsed time now
+    comes from the timestamps themselves, which is what the function should always have used.
     """
     pts = [(u, int(h)) for u, n, h, _f, _a in series if n == node and h.isdigit()]
     if len(pts) < 2:
         return None
-    first, last = pts[0], pts[-1]
-    secs = len(pts)  # one sample a second
-    if secs < 2:
+    span = _sec_of_day(pts[-1][0]) - _sec_of_day(pts[0][0])
+    if span <= 0:
+        # One sample is not a rate, and a non-positive span is a run that crossed midnight — which this
+        # refuses rather than reporting a negative or absurd rate from a clock that wrapped.
         return None
-    return (last[1] - first[1]) * 60.0 / secs
+    return (pts[-1][1] - pts[0][1]) * 60.0 / span
 
 
 def finality(series, node):

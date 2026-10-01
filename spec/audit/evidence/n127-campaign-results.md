@@ -32,6 +32,16 @@
 > hold different sender counts — so this file's rates are left as written and read as heights/min. The
 > label at the source is fixed (`rate()` now prints `heights/min`), which is where every downstream
 > quotation of these figures inherited it.
+>
+> **And a second error in the same function, pointing the other way.** `rate()` divided by `len(pts)`
+> with the comment *"one sample a second"*. The sampler is `sleep(1)` **plus the work of a sample**, and
+> this campaign's own committed series ran at **1.158 s per sample** — 260 distinct timestamps over
+> 300 s in `n127-campaign/c5442ee1f-20260930T163518Z/series-a1.tsv`, counted. So the divisor understated
+> the elapsed time and **overstated every rate the summariser printed by 300/260 ≈ 1.15x**. It now reads
+> the timestamps. **Which figures this touches:** the table below is computed by hand from
+> `height ÷ 119 × 60`, so it is wall-clock and unaffected; any rate this file or `passes.md` took from
+> the *summariser* — the 17.6/16.1 pair in the correction above, §5's ~18 — carries the extra ~1.15x
+> and should be read ~15% lower as well as in heights.
 
 Run 2026-09-30 on tree `c5442ee1f`, image `sha256:783fe97d6054…` (built 17:10:49 from this tree; the
 manifest's `rust_diff_vs_1732306c7` reads **empty**, so the binary under test is the tree the artifacts

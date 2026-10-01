@@ -5168,7 +5168,8 @@ bonded sender per round; ~3 blocks each, measured block-level in `n149-results.m
 *slower* than the 2 s autopropose timer and an order of magnitude below the recorded 276/min storm — a case
 the frozen table has no row for, so it is a correction to the pre-registration rather than a reading. After
 the kill, finality did not resume in **3 of 3** attempts: two froze completely (height and finality both
-stopped for 180 s) and one kept producing at ~18 heights/min while finality moved +4 heights. The chain that runs while finality is
+stopped for 180 s) and one kept producing at ~18 heights/min (~15% high — summariser output, see the
+divisor note in §0.1's correction) while finality moved +4 heights. The chain that runs while finality is
 pinned is the one an absent validator creates — C171's own mechanism, and #70's second stop.
 
 **0.3 — void, by construction at this scale.** Every stall line carries `at tip 0`: the line is rate-limited
@@ -5190,7 +5191,8 @@ the one this register exists to record.
 
 - **"the storm is a post-kill phenomenon here" is not supported by the run.** v1 in attempt 2 made
   **17.6 heights/min** after the kill against **16.1** before it (both are the campaign's rates; see §0.1's
-  correction on the unit). What the kill does is *decouple height from
+  correction on the unit — and, being summariser output, both are also ~15% high: `rate()` divided by the
+  sample *count* rather than the elapsed time, ~1.158 s/sample). What the kill does is *decouple height from
   finality* — the chain keeps producing while the fringe stops advancing — and the rate is the same on both
   sides. Calling that a storm stretches the word past the 276/min the storm is recorded at (that figure's
   unit is **unverified** — the sentence below states it as "276 blocks in about a minute" and, for the
