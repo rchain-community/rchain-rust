@@ -5199,6 +5199,16 @@ And one claim the section makes that is a **tautology**, not evidence: `summary(
 to `MERGES` cannot fail, because `MERGES` and `WIDTH_COUNTS` are incremented in one function
 (`casper/src/merging.rs:148-159`) and `bucket_index` returns `0..=4`.
 
+- **Correction, 2026-10-01: every `blocks/min` in this section is a `heights/min`.** `latestBlockNumber`
+  advances once per **round**, and a round carries one block per bonded validator — a block's number is
+  derived from its justification set (`casper/src/validate.rs:232-253` requires `max(justification height) +
+  1`) — so blocks ≈ **3×** these figures at N = 3. The substitution came from the instrument:
+  `n127-campaign-summarise.py`'s `rate()` said *"Blocks/minute … from … a height"* in a single docstring and
+  printed `blocks/min`, and it divided by a sample count rather than wall-clock seconds. Both are fixed
+  there; `n127-campaign-results.md` §3 carries the full correction. **The three bullets above are
+  unaffected** — they turn on the *ratio* between two rates taken the same way, and on finality, not on the
+  label.
+
 **What the section got right, and it is the thing that mattered:** the endpoint did not carry the census.
 That was found by reading the artifact, and Unit 2 of the programme fixed it — `HistogramAcc` had no bucket
 map at all, and the endpoint accumulated on every request. See
@@ -5487,7 +5497,12 @@ and the result is two findings rather than one.
 | **fixed (`de4e9af02`)** | **72, 90, 105** | 76, 94, 109 | **3–4** | **T+120s — still advancing at the kill** |
 
 Three to four heights behind, in all three attempts, and still moving at the kill instant. The chain runs at
-~38 blocks/min against the campaign's 12–16. The stall line has effectively disappeared: six lines per
+~38 blocks/min against the campaign's 12–16. *(Correction, 2026-10-01: both figures are **height** rates and
+both are computed the same way — `height @T+120 ÷ 120 × 60`, so the fixed arm's 76 gives 38.0 and the
+before-arm's 27 gives 13.6. `latestBlockNumber` advances once per round and a round carries one block per
+bonded validator, so blocks ≈ 3× these at N = 3. The figure `38` is in no artifact: the file named beside
+§35 carries the *heights* it is computed from, not a rate. See §31's correction and
+`n127-campaign-results.md` §3.)* The stall line has effectively disappeared: six lines per
 attempt against seventy-five, and all six are the boundary warming up at genesis. The C184 budget control is
 still empty.
 

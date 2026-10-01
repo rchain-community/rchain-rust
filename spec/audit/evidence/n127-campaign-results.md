@@ -19,6 +19,13 @@
 > both arms, with every validator live. The same reading of the after-arm, and the cross-arm count, are in
 > `n127-liveness-results.md`; §5's "the storm is a post-kill phenomenon" carries the same defect and was
 > already retracted above for a different reason.
+>
+> **Correction, added 2026-10-01: every `blocks/min` figure in this file is a `heights/min` figure.**
+> Including the one in the first block above — "v1 made 17.6 blocks/min after the kill against 16.1 before
+> it". `latestBlockNumber` advances once per *round* and a round carries one block per bonded validator, so
+> blocks ≈ 3× these at N = 3; the divisor was also a sample count rather than wall-clock seconds. The
+> instrument's own `rate()` said "Blocks/minute … from … a height" in one docstring — the origin of the
+> substitution — and is fixed. §3 carries the full correction; no conclusion here changes.
 
 Run 2026-09-30 on tree `c5442ee1f`, image `sha256:783fe97d6054…` (built 17:10:49 from this tree; the
 manifest's `rust_diff_vs_1732306c7` reads **empty**, so the binary under test is the tree the artifacts
@@ -171,6 +178,22 @@ timer, and an order of magnitude below the 276 blocks/min the storm is recorded 
 appear while every validator was live in this configuration**, which is not what the pre-registration
 anticipated. Its table has rows for "faster than the timer" and "about the timer"; it has none for
 *slower*, and that gap is a correction to the pre-registration rather than a reading.
+
+> **Correction, 2026-10-01: the rates in this section are *height* rates, not block rates — and the same
+> substitution was in `n127-campaign-summarise.py` itself.**
+>
+> `height at T+119 s ÷ 119 × 60` is a rate of **rounds**. `latestBlockNumber` advances once per round, and a
+> round carries **one block per bonded validator** — a block's number is derived from its justification set
+> (`casper/src/validate.rs:232-253` requires `max(justification height) + 1`, so every validator in a round
+> derives the same one) — so blocks ≈ **3×** these figures at N = 3. The `~18 blocks/min` below is the same
+> quantity. The summariser's `rate()` carried it as a docstring — *"Blocks/minute … from … a height"* — and
+> printed it as `blocks/min`; that function is fixed, its rows now read `heights/min`, and it uses wall-clock
+> seconds rather than a sample count (this run's sampler ran at **1.16 s/sample** over 260 samples, so
+> `len(pts)` overstated the rate by ~1.2×).
+>
+> **This section's conclusion is unaffected.** "The storm did not appear while every validator was live"
+> rests on finality's behaviour and on the height series, not on the label. Read every rate here as
+> heights/min.
 
 **After the kill (T+120 → T+300), finality did not resume in 3 of 3 attempts:**
 

@@ -59,16 +59,32 @@ def read_series(path):
     return rows
 
 
+def secs(t):
+    """`HH:MM:SS` -> seconds. Wall clock, because a sample count is not a duration — see `rate`."""
+    h, m, s = (int(x) for x in t.split(":"))
+    return h * 3600 + m * 60 + s
+
+
 def rate(series, node):
-    """Blocks/minute for a node, from the first and last sample that has a height."""
-    pts = [(u, int(h)) for u, n, h, _f, _a in series if n == node and h.isdigit()]
+    """**Heights** — that is, rounds — per minute for a node, over the wall clock its samples span.
+
+    **This is not a block rate, and it said it was until 2026-10-01.** `latestBlockNumber` advances once
+    per round and a round carries one block per bonded validator, so the block rate is this times the
+    bonded count: about 3× at N = 3. The wrong label propagated into `n127-campaign-results.md`, six lines
+    of `passes.md` and `n127-liveness-preregistration.md`; each carries a dated correction.
+
+    Seconds are **wall clock**, not a sample count. This used `secs = len(pts)` under a "one sample a
+    second" assumption; the sampler actually runs at ~1.16 s per sample (measured over the 260 samples of
+    `n127-campaign/c5442ee1f-20260930T163518Z/series-a1.tsv`), so the elapsed time was understated and the
+    rate overstated by that factor. Two errors in six lines, pointing opposite ways.
+    """
+    pts = [(secs(u), int(h)) for u, n, h, _f, _a in series if n == node and h.isdigit()]
     if len(pts) < 2:
         return None
-    first, last = pts[0], pts[-1]
-    secs = len(pts)  # one sample a second
-    if secs < 2:
-        return None
-    return (last[1] - first[1]) * 60.0 / secs
+    (t0, h0), (t1, h1) = pts[0], pts[-1]
+    if t1 <= t0:
+        return None  # a span shorter than its own clock cannot give a rate
+    return (h1 - h0) * 60.0 / (t1 - t0)
 
 
 def finality(series, node):
@@ -160,7 +176,7 @@ def main():
         nodes = sorted({n for _u, n, _h, _f, _av in series})
         for node in nodes:
             r, f = rate(series, node), finality(series, node)
-            rtxt = f"{r:.1f} blocks/min" if r is not None else "rate: too few samples"
+            rtxt = f"{r:.1f} heights/min" if r is not None else "rate: too few samples"
             ftxt = (f"finality {f[0]} -> {f[1]}" + (" (moved)" if f[2] else " (did not move)")) if f else "finality: none"
             samples = sum(1 for _u, n, _h, _f, _a in series if n == node)
             print(f"  0.1 {node:<9} {samples:>4} samples  {rtxt:<22} {ftxt}")

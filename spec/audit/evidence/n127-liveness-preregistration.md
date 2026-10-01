@@ -14,6 +14,10 @@
 >
 > The reproduction itself stands, and one thing in it is now known to be wrong: the **+4 the before-arm
 > reached** was that arm's own late increment, not a head start over a working build.
+>
+> **Correction, 2026-10-01: the `12–16 blocks/min` quoted below is a *heights* rate.** `latestBlockNumber`
+> advances once per round and a round carries one block per bonded validator, so blocks ≈ 3× that at N = 3.
+> See `n127-campaign-results.md` §3 for the full correction and the fixed instrument.
 
 ## Why this is the measurement
 
