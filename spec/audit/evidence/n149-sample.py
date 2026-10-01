@@ -31,10 +31,14 @@ HTTP_BASE = 40403
 PREFIX = os.environ.get("DEVNET_PREFIX", "devnet")
 N = int(os.environ.get("N149_N", "3"))
 WINDOW_S = int(os.environ.get("N149_WINDOW_S", "300"))
-# Deep enough to hold every block the run can mint: the node's own cap is `api_server.max-blocks-limit`,
-# which is 111111 under `--dev-mode` (the devnet's default) — so this is a bound on *our* request, not on
-# the node's retention, and it is stated rather than silently clamped.
-DEPTH = int(os.environ.get("N149_DEPTH", "2000"))
+# **The node's own limit, not a guess.** `/api/blocks/{depth}` refuses anything above
+# `api_server.max-blocks-limit`, which is 50 in the shipped `defaults.conf:143` — and `--dev-mode` does
+# *not* raise it (`check_dev_mode` only strips the deployer key from a non-dev node). Asking for 2000
+# returns a 400 whose body is an error object, which this sampler's first version read as "no blocks";
+# the pre-flight caught it. The requested depth is now `min(MAX_DEPTH, height)`, and a height of 0 is
+# floored to 1 because `get_blocks` computes `start = latest - depth` and a negative start makes the
+# topological sort refuse.
+MAX_DEPTH = int(os.environ.get("N149_MAX_DEPTH", "50"))
 
 OUTDIR = sys.argv[1] if len(sys.argv) > 1 else "target/n149-blocks"
 SERIES = os.path.join(OUTDIR, "series.tsv")
@@ -75,6 +79,8 @@ def header():
         "env=" + (", ".join(e for e in envs if e.startswith(("_RJEM_MALLOC_CONF=", "LD_PRELOAD=")))
                   or "none"),
         f"container_cmd={cmd}",
+        f"blocks_read=/api/blocks/<depth>, depth=min({MAX_DEPTH}, height) — the node's own "
+        f"max-blocks-limit; a failed read is recorded, never counted as zero blocks",
         "tree=" + sh("git rev-parse HEAD").strip(),
         "image=" + sh("docker inspect rnode:local --format '{{.Id}} {{.Created}}'").strip(),
         "container=" + cid,
@@ -86,6 +92,7 @@ def header():
 def main():
     os.makedirs(OUTDIR, exist_ok=True)
     seen = {}
+    errors = []
     with open(SERIES, "w") as fh:
         for line in header():
             fh.write(f"# {line}\n")
@@ -111,12 +118,19 @@ def main():
             rows.append((name, height, fm.group(1) if fm else "none", "1"))
 
             # The union: first sighting wins, so `first_seen_epoch` is the earliest node's answer.
-            body = get(f"http://localhost:{port}/api/blocks/{DEPTH}")
+            depth = min(MAX_DEPTH, max(1, int(height))) if height else 1
+            body = get(f"http://localhost:{port}/api/blocks/{depth}")
             try:
                 blocks = json.loads(body)
             except Exception:
+                blocks = None
+            if not isinstance(blocks, list):
+                # **A failed read is not an empty chain.** Treating the two alike is how the first
+                # version of this file reported "0 blocks" for a run whose heights plainly advanced;
+                # the failure is recorded and re-printed at the end rather than absorbed.
+                errors.append((utc, name, depth, body[:200]))
                 blocks = []
-            for b in blocks if isinstance(blocks, list) else []:
+            for b in blocks:
                 h = b.get("blockHash")
                 if h and h not in seen:
                     # `justifications` is recorded, not summarised, because the 5- and 8-validator arms
@@ -140,7 +154,17 @@ def main():
         for h, (t, num, sender, dc, parents) in sorted(seen.items(),
                                                       key=lambda kv: (kv[1][0], kv[1][1])):
             fh.write(f"{t}\t{num}\t{sender}\t{dc}\t{parents}\t{h}\n")
-    print(f"wrote {SERIES} ({len(seen)} distinct blocks) and {BLOCKS}", flush=True)
+    # Written only when non-empty, and shaped like the other artifacts: a reader who finds this file has
+    # a run whose block counts are a floor rather than a reading.
+    if errors:
+        with open(os.path.join(OUTDIR, "blocks-read-errors.txt"), "w") as fh:
+            fh.write(f"# provenance: {len(errors)} failed /api/blocks reads — the block counts in "
+                     f"blocks.tsv are a floor, not a reading\n")
+            fh.write("# utc\tnode\tdepth\tresponse_body\n")
+            for utc, name, depth, body in errors:
+                fh.write(f"{utc}\t{name}\t{depth}\t{body}\n")
+    print(f"wrote {SERIES} ({len(seen)} distinct blocks) and {BLOCKS}; "
+          f"{len(errors)} failed block read(s)", flush=True)
 
 
 if __name__ == "__main__":

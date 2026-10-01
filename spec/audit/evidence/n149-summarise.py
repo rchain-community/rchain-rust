@@ -100,6 +100,13 @@ def main():
         note = ""
         if len(carriers) != 1:
             note = f"{len(carriers)} deploy-bearing blocks (expected 1)"
+        # A failed block read makes every count below a floor. The sampler says so in its own artifact,
+        # and this refuses to present the floor as the reading — the shape that produced "0 blocks" for
+        # a run whose heights plainly advanced.
+        errs = os.path.join(d, "blocks-read-errors.txt")
+        if os.path.exists(errs):
+            n = sum(1 for ln in open(errs) if ln.strip() and not ln.startswith("#"))
+            note = (note + "; " if note else "") + f"*** {n} FAILED BLOCK READS — counts are a floor"
         if any(b["epoch"] > read_end for b in blocks):
             note = (note + "; " if note else "") + "blocks first seen after the window"
 

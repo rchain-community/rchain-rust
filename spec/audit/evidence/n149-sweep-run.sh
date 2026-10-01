@@ -27,7 +27,10 @@ DEPLOY_TIMEOUT=${DEPLOY_TIMEOUT:-45}
 
 TREE=$(git rev-parse --short HEAD)
 STAMP=$(date -u +%Y%m%dT%H%M%SZ)
-OUT="target/n149-blocks/${TREE}-${STAMP}"
+# `OUT_ROOT` exists so the sampler and reading can be exercised end to end on a short-window pre-flight
+# without that run landing among the sweep's artifacts. It changes where the run is written and nothing
+# else — the protocol is the windows and the flags, and neither reads this.
+OUT="${OUT_ROOT:-target/n149-blocks}/${TREE}-${STAMP}"
 mkdir -p "$OUT"
 
 IMAGE=$(docker inspect rnode:local --format '{{.Id}}' 2>/dev/null || echo "none")

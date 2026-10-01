@@ -142,6 +142,28 @@ hashes the sampler saw:
 `blocks_per_deploy` counts blocks, not heights: two validators can mint at the same height, and a
 height delta would report them as one.
 
+### The instrument, and the defect the pre-flight found
+
+A short-window pre-flight (N=2, 20 s / 20 s / 40 s) runs before the sweep, because a sampler exercised
+only by the real run is a sampler whose failures are indistinguishable from the chain being quiet. It
+paid for itself immediately. The first version asked `/api/blocks/2000` and the node refused it:
+`api_server.max-blocks-limit` is **50** in the shipped `defaults.conf:143`, and `--dev-mode` does not
+raise it (`check_dev_mode` only strips the deployer key from a non-dev node). The 400 body is an error
+object, which the parser read as "no blocks" — so a run whose heights plainly advanced 1 → 2 → 4 → 5
+was reported as **0 blocks, 0 senders, never finalised**.
+
+Two things changed and both are the point:
+
+- the requested depth is now `min(50, height)`, floored at 1 (`get_blocks` computes
+  `start = latest - depth`, and a negative start makes the topological sort refuse);
+- **a failed read is recorded, never counted as zero.** The sampler writes `blocks-read-errors.txt`
+  when any read fails, and the summariser refuses to present such a run's counts as the reading. An
+  instrument that cannot tell "the chain minted nothing" from "I could not read the chain" reports
+  silence as a measurement, which is the one thing a measurement may not do.
+
+The re-run reads: 8 blocks, 2 senders, `maxpar` 2, finality 6 s, idle window **0**. That last number is
+the control working — with nothing to finalise and autopropose off, the chain does not grow.
+
 ## The acceptance rows, frozen
 
 | observation | verdict |

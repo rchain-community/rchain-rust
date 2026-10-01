@@ -56,6 +56,12 @@ def main():
     #    driver), so it must **not** void the attempt — the distinction the void rule turns on.
     run("n3-auto-a2", 1000, 1060, 1240, [(1020, "A", 0), (1061, "A", 1), (1062, "B", 0)],
         lambda e: 1 if e >= 1070 else "none", ["bootstrap", "v1", "v2"])
+    # 6. A run whose `/api/blocks` reads failed. The counts are then a floor and the reading has to say
+    #    so — the exact shape that reported "0 blocks" for a run whose heights advanced.
+    run("n2-noauto-a1", 1000, 1060, 1240, [], lambda e: 1, ["bootstrap", "v1"])
+    with open(os.path.join(BASE, "n2-noauto-a1", "blocks-read-errors.txt"), "w") as fh:
+        fh.write("# provenance: 3 failed /api/blocks reads\n# utc\tnode\tdepth\tresponse_body\n")
+        fh.write("00:01\tbootstrap\t2000\t{\"message\":\"Your request depth 2000 exceed the max limit 50\"}\n")
 
     out = subprocess.run([sys.executable, os.path.join(HERE, "n149-summarise.py"), BASE],
                          capture_output=True, text=True).stdout
@@ -68,6 +74,7 @@ def main():
         # `never`: its deploy-bearing block is #2 and the fixture's finality only reaches #1. The case
         # exists for the idle/void distinction, not for its latency.
         "n3-auto-a2": (1, 2, 2, "never"),
+        "n2-noauto-a1": (0, 0, 0, "never"),
     }
     bad = []
     for name, (idle, blocks, senders, ttf) in want.items():
@@ -84,6 +91,8 @@ def main():
         bad.append("the non-quiescent idle window did not void the primary arm")
     if "expected on this arm" not in out:
         bad.append("the control arm's idle window was not distinguished from a void primary attempt")
+    if "FAILED BLOCK READS" not in out:
+        bad.append("a run with failed /api/blocks reads did not have its counts marked as a floor")
     if bad:
         print("SELFTEST FAILED:")
         for b in bad:
