@@ -11,7 +11,11 @@
 #
 # Usage:  ATTEMPTS=3 spec/audit/evidence/n127-liveness-run.sh
 set -u
-cd /home/patrick/RNodeRust
+# The repo root is overridable so a probe can run against a `dev` checkout in a worktree without moving
+# the primary tree. It has to be overridable because `tools/devnet.sh build` builds the image from the
+# **current directory**, and the image under test must be the tree under test. Default unchanged, so the
+# protocol `n127-liveness-preregistration.md` froze is what runs when nothing is set.
+cd "${REPO:-/home/patrick/RNodeRust}"
 
 ATTEMPTS=${ATTEMPTS:-3}
 CAP=${CAP:-8g}
@@ -25,6 +29,13 @@ DEPLOY_TIMEOUT=${DEPLOY_TIMEOUT:-45}
 # a chain that goes quiet once a validator is stopped: "there is nothing left to finalise" (the proposer's
 # documented idle contract, so blocks resume when there is) versus a second stop (they do not).
 DEPLOY_AGAIN_AT=${DEPLOY_AGAIN_AT:-0}
+# How many deploys the after-kill arm submits. Defaults to `$DEPLOYS`, so the frozen protocol — in which
+# the after-kill arm is off entirely — is unchanged. A probe that wants **one** deploy after the kill sets
+# this to 1 and `DEPLOYS=0` to send none before it, which is the idle-then-one-deploy shape of #148.
+DEPLOYS_AGAIN=${DEPLOYS_AGAIN:-$DEPLOYS}
+# The attribution control: leave every validator alive and run the same timeline, so a storm can be
+# attributed to the absence rather than to a deploy. Default off (the campaign and n127 arms kill).
+NO_KILL=${NO_KILL:-0}
 
 TREE=$(git rev-parse --short HEAD)
 STAMP=$(date -u +%Y%m%dT%H%M%SZ)
@@ -36,9 +47,26 @@ mkdir -p "$OUT"
 IMAGE=$(docker inspect rnode:local --format '{{.Id}}' 2>/dev/null || echo "none")
 FLAGS="--validators 3 --stakes 100,100,50 --epoch-length 10 --fresh"
 
+# **The production driver, read from the running container rather than restated by the caller** — the same
+# rule this header already follows for the memory ceiling. It is not decoration: **`--autopropose` plus a
+# deployer key** makes the dev-mode dummy deploy live (`dummy_deploy_key`, `node_runtime.rs:2575`, built at
+# `:1685`), and that deploy is injected into *any* block whose pool is empty — attestation blocks included
+# (`proposer.rs:711`) — so every block carries a deploy, `new_state_transition` is pinned true, and
+# `attestation_suppressed` is never exercised. **`--dev-mode` alone is not the gate**: a faucet key without
+# autopropose implies no empty blocks, which the node's own test
+# (`the_dummy_deploy_needs_autopropose_and_not_just_a_key`) pins. A transcript that does not say which of
+# these flags was set cannot be read as a guard measurement (C176's class) — which is how the #148 probe
+# came to need a hand-written caveat, and then a corrected one.
+driver_flags() {
+  docker inspect "${CONTAINERS[bootstrap]}" --format '{{join .Config.Cmd " "}}' 2>/dev/null \
+    | tr ' ' '\n' | grep -E '^--(no-)?(autopropose|propose-on-deploy|attest-on-new-blocks|dev-mode|deployer-private-key)$' \
+    | sort | tr '\n' ' '
+}
+
 {
   echo "# tree=$TREE image=$IMAGE"
-  echo "# shape: $FLAGS, cap=$CAP, window=${WINDOW_S}s, kill=validator-2 at T+${KILL_AT}s, attempts=$ATTEMPTS"
+  echo "# shape: $FLAGS, cap=$CAP, window=${WINDOW_S}s, kill=validator-2 at T+${KILL_AT}s, NO_KILL=${NO_KILL}, attempts=$ATTEMPTS"
+  echo "# deploys: ${DEPLOYS} at T+${DEPLOY_AT}s; after the kill: ${DEPLOYS_AGAIN} at T+${DEPLOY_AGAIN_AT}s (0 = arm off)"
   echo "# started $(date -u +%Y-%m-%dT%H:%M:%SZ)"
   echo "# binary_sha256=$(docker run --rm --entrypoint sha256sum rnode:local /usr/local/bin/rnode 2>/dev/null | cut -d' ' -f1 || echo '?')"
   # **Is the binary under test this tree?** Two facts, both checked rather than asserted: the working tree
@@ -62,6 +90,20 @@ for attempt in $(seq 1 "$ATTEMPTS"); do
     continue
   fi
   echo "  3 of 3 up at $(date -u +%H:%M:%S)"
+  # Record the driver per attempt, now that the container exists, and say plainly when the guard is out of
+  # reach. A reader of the artifact alone must be able to tell a guard measurement from a dummy-deploy one.
+  # The warning keys on `--autopropose`, which is the gate (`node_runtime.rs:2575`), not on `--dev-mode`.
+  df=$(driver_flags)
+  {
+    echo "# driver a${attempt}: ${df:-unknown — no driver flags found in the container argv}"
+    if printf '%s' "$df" | grep -q -- '--autopropose'; then
+      echo "# *** a${attempt}: --autopropose IS SET. With a deployer key present that makes the dummy deploy"
+      echo "#     live (`node_runtime.rs:2575`), and it is injected into any block whose pool is empty —"
+      echo "#     attestation blocks included — so every block carries a deploy, `new_state_transition` is"
+      echo "#     pinned true, and THIS RUN DOES NOT MEASURE attestation_suppressed."
+    fi
+  } >> "$OUT/manifest.txt"
+  [[ "$df" == *--autopropose* ]] && echo "  *** driver: --autopropose is set — the attestation guard is NOT exercised by this run"
 
   python3 spec/audit/evidence/n117-queue-depth.py "$OUT/series-a${attempt}.tsv" \
     > "$OUT/series-a${attempt}.log" 2>&1 &
@@ -78,18 +120,26 @@ for attempt in $(seq 1 "$ATTEMPTS"); do
   done
   echo "  deploys: $submitted of $DEPLOYS"
 
-  wait_until $((t0 + KILL_AT))
-  tools/devnet.sh stop 2 >/dev/null 2>&1
-  echo "  killed validator-2 at T+$(( $(date +%s) - t0 ))s (target ${KILL_AT}s)"
+  # `NO_KILL=1` is the attribution control — the same timeline with every validator live. **`KILL_AT`
+  # cannot express it**: `KILL_AT` gates the kill *and* the wait before it, so a `KILL_AT` past the window
+  # also pushes the after-kill deploy past the window and leaves nothing to read. (Measured once; the run
+  # it voided is disclosed in `n148-results.md`.) Default off, so the frozen protocols are unchanged.
+  if (( NO_KILL )); then
+    echo "  NO_KILL=1: validator-2 left alive — the all-live control"
+  else
+    wait_until $((t0 + KILL_AT))
+    tools/devnet.sh stop 2 >/dev/null 2>&1
+    echo "  killed validator-2 at T+$(( $(date +%s) - t0 ))s (target ${KILL_AT}s)"
+  fi
 
   if (( DEPLOY_AGAIN_AT > 0 )); then
     wait_until $((t0 + DEPLOY_AGAIN_AT))
     again=0
-    for _ in $(seq 1 "$DEPLOYS"); do
+    for _ in $(seq 1 "$DEPLOYS_AGAIN"); do
       timeout "$DEPLOY_TIMEOUT" tools/devnet.sh deploy examples/hello.rho >/dev/null 2>&1 \
         && again=$((again + 1))
     done
-    echo "  deploys after the kill: $again of $DEPLOYS at T+$(( $(date +%s) - t0 ))s (target ${DEPLOY_AGAIN_AT}s)"
+    echo "  deploys after the kill: $again of $DEPLOYS_AGAIN at T+$(( $(date +%s) - t0 ))s (target ${DEPLOY_AGAIN_AT}s)"
   fi
 
   wait "$sampler"

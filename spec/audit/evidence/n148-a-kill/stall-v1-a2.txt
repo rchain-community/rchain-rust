@@ -1,0 +1,5 @@
+# provenance: tree=45e46c4a7 node=v1 attempt=2 — `docker logs` grepped at the end of the attempt (n127-liveness-run.sh)
+2026-10-01T13:54:03.239Z WARN  [casper.interpreter.validate] finality did not advance at tip 0: a layer exists but its supporting stake is not a supermajority — 0 of 250 (0 full partition(s) among 0 candidate(s))
+2026-10-01T13:54:04.405Z WARN  [casper.interpreter.validate] finality did not advance at tip 2: a layer exists but its supporting stake is not a supermajority — 0 of 250 (0 full partition(s) among 3 candidate(s))
+2026-10-01T13:56:05.966Z WARN  [casper.interpreter.validate] finality did not advance at tip 114: a layer exists but its supporting stake is not a supermajority — 100 of 250 (1 full partition(s) among 3 candidate(s))
+2026-10-01T13:56:07.478Z WARN  [casper.interpreter.validate] finality did not advance at tip 119: a layer exists but its supporting stake is not a supermajority — 0 of 250 (0 full partition(s) among 2 candidate(s))

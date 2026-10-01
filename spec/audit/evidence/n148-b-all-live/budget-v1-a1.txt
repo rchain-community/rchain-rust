@@ -1,0 +1,1 @@
+# provenance: tree=45e46c4a7 node=v1 attempt=1 — the C184 control: `SearchBudgetExceeded` must be absent here (empty below = the budget refused nothing)

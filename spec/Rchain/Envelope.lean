@@ -65,7 +65,8 @@ are held to. `endpoint` is for the reader; the check is on the type, which both 
 def envelopeCatalog : List EnvelopeRow :=
   [ { name := "ApiStatus", endpoint := "GET /api/v1/status",
       keys := ["version", "address", "networkId", "shardId", "peers", "nodes", "minPhloPrice",
-        "latestBlockNumber", "autopropose", "proposeOnDeploy", "manualPropose", "adminHttp", "devMode"] }
+        "latestBlockNumber", "autopropose", "proposeOnDeploy", "manualPropose", "adminHttp", "devMode",
+        "consecutiveSelfValidationFailures", "autoproposeTimerHalted"] }
   , { name := "NodeCapabilities", endpoint := "GET /api/v1/capabilities",
       keys := ["autopropose", "proposeOnDeploy", "manualPropose", "adminHttp", "devMode", "faucet"] }
   , { name := "LightBlockInfo", endpoint := "the `block` field of most responses",

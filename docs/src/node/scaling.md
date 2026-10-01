@@ -33,17 +33,33 @@ and the block rate is what the rest of this page is about.
 | Cadence | Measured block rate | Where |
 |---|---|---|
 | `--autopropose` timer (default interval 2 s, `AUTOPROPOSE_INTERVAL` in `node/src/runtime/node_runtime.rs`) | 0.5 blocks/s (**derived** — the timer's period) | — |
-| all-live three-validator devnet | **12–16 blocks/min** (~1 block per 4–5 s) | `spec/audit/evidence/n127-campaign-results.md` |
-| the fixed proposer (`de4e9af02`) | **~38 blocks/min** | `spec/audit/evidence/n127-proposer-fix-results.md` |
+| all-live three-validator devnet | **12–16 heights/min** (~1 height per 4–5 s) — *a height rate, not blocks* | `spec/audit/evidence/n127-campaign-results.md` |
+| the fixed proposer (`de4e9af02`) | **~38** — *units and provenance unverified; see below* | `spec/audit/evidence/n127-proposer-fix-results.md` |
 | attestation storm (a defect, not a capability) | ~4 blocks/s, of mostly *empty* blocks | `docs/src/node/testnet.md` |
+
+**Correction, 2026-10-01. Two rows above do not say what the column claims, and the derived band below
+rests on them.**
+
+- The **12–16** row is a **height** rate. `n127-campaign-results.md` computes it as *height at T+119 s ÷
+  119 × 60* and reads its own 4.4 s interval as "one block per 4–5 s". A block's number is derived from its
+  justification set — `casper/src/validate.rs:232-253` requires `max(justification height) + 1`, so every
+  validator in a round derives the same one — so **several blocks share a height** and this row understates
+  the block rate. The exact factor is not recoverable from the artifact: that series records
+  `latestBlockNumber` only, with no block-level rows.
+- The **~38** row is **the same substitution on another table**. `passes.md` §36 derives it as *height at
+  T+120 s ÷ 120 × 60* — the fixed arm's 76 gives 38.0 — so it is a height rate too, and the *figure* is in no
+  artifact: `n127-proposer-fix-results.md` carries the heights it is computed from, not a rate. *(This
+  bullet first said "no artifact at all", which was too strong; corrected 2026-10-01 when the derivation was
+  found in the register.)*
 
 The default node config is neither continuous nor on-deploy: `autopropose = false` and
 `propose-on-deploy = false`, with `attest-on-new-blocks = true` supplying the liveness trigger. The
 public testnet runs deliberately idle — blocks appear when a deploy arrives.
 
-**Applying the ceiling:** at the measured 12–38 blocks/min, a single shard sustains roughly
-**60–160 deploys per second** (derived). The 2 s timer gives ~128. That is the honest single-shard
-band. Note that only the *timer* row is a constant; the two measured rows are what the node actually
+**Applying the ceiling:** reading the table at face value — 12–38 per minute — a single shard sustains
+roughly **60–160 deploys per second** (derived), and the 2 s timer gives ~128. **That band inherits the
+correction above**: it is arithmetic on a height rate and an unverified figure, so treat it as an order of
+magnitude until it is re-derived from a sampler that counts blocks rather than heights. Note that only the *timer* row is a constant; the two measured rows are what the node actually
 achieved on small hosts, and the fixed-proposer number is 2.5–3× the pre-fix one, so this band has
 already moved once.
 
@@ -145,7 +161,7 @@ make any single shard faster.
 | Limit | Value | What kind of thing it is |
 |---|---|---|
 | Deploys per block | 255 | **Artifact** — a `u8` seed index, not a protocol bound |
-| Block rate | 12–38 blocks/min measured | **Mixed** — the 2 s timer is a constant; the rest is the proposer and the merge |
+| Block rate | 12–38 per minute — **one row a height rate, one unverified** (see the correction above) | **Mixed** — the 2 s timer is a constant; the rest is the proposer and the merge |
 | Single-shard deploys/s | ~60–160 | **Derived** from the two above |
 | Finality | gap 3–4 blocks | **Measured**, best case observed |
 | Merge cost | up to ~2M states/merge | **Structural** — the directed case is unsolved (C178) |

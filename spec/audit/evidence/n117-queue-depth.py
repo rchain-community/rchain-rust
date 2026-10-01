@@ -12,6 +12,7 @@ container had one.
 """
 
 import csv
+import os
 import re
 import subprocess
 import sys
@@ -20,7 +21,7 @@ import time
 NODES = {"bootstrap": 40403, "v1": 41403, "v2": 42403}
 CONTAINERS = {"bootstrap": "devnet-bootstrap", "v1": "devnet-validator-1", "v2": "devnet-validator-2"}
 OUT = sys.argv[1] if len(sys.argv) > 1 else "target/n117-audit/queue-depth.tsv"
-WINDOW_S = 300
+WINDOW_S = int(os.environ.get("WINDOW_S", "300"))
 MIB = 1 / 1048576
 DEPTH = re.compile(r"rchain_block_pipeline_shard_(\d+)_(validated|autopropose|attestation)_depth\s+(\d+)")
 

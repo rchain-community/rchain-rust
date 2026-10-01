@@ -1,6 +1,6 @@
 //! Web API protobuf conversion functions (port of the conversion fns in `api/WebApi.scala`).
 
-use rchain_casper::api::block_api::Capabilities;
+use rchain_casper::api::block_api::{Capabilities, ProposerHealth};
 use rchain_casper::runtime_manager::CapturedReply;
 use rchain_crypto::public_key::PublicKey;
 use rchain_crypto::signatures::signatures_alg::from_algorithm;
@@ -19,8 +19,16 @@ use super::dto::{
 };
 use super::rho_expr::{expr_from_par, RhoExpr};
 
-/// Map a casper `Status` + `Capabilities` to an `ApiStatus` (port of `toApiStatus`).
-pub fn to_api_status(status: &Status, caps: &Capabilities) -> ApiStatus {
+/// Map a casper `Status` + `Capabilities` + the proposer's health to an `ApiStatus` (port of
+/// `toApiStatus`).
+///
+/// **The third argument is #157's, and it is not a capability.** `Capabilities` reports what the node
+/// was *configured* to do (`--autopropose` and friends); `ProposerHealth` reports what it is *doing* —
+/// how many self-validation failures it has recorded in a row, and whether its autopropose timer has
+/// stopped. `Status` is the wrong home for it for a second reason: that struct is a wire type with a
+/// protobuf counterpart, so adding a field there would force a schema change for a value the gRPC
+/// surface has no use for.
+pub fn to_api_status(status: &Status, caps: &Capabilities, health: &ProposerHealth) -> ApiStatus {
     ApiStatus {
         version: VersionInfo {
             api: status.version.api.clone(),
@@ -38,6 +46,8 @@ pub fn to_api_status(status: &Status, caps: &Capabilities) -> ApiStatus {
         manual_propose: caps.manual_propose,
         admin_http: caps.admin_http,
         dev_mode: caps.dev_mode,
+        consecutive_self_validation_failures: health.consecutive_self_validation_failures,
+        autopropose_timer_halted: health.autopropose_timer_halted,
     }
 }
 
@@ -206,12 +216,20 @@ mod tests {
             admin_http: true,
             dev_mode: true,
         };
-        let api = to_api_status(&status, &caps);
+        let health = ProposerHealth {
+            consecutive_self_validation_failures: 3,
+            autopropose_timer_halted: true,
+        };
+        let api = to_api_status(&status, &caps, &health);
         assert_eq!(api.version.api, "1.0");
         assert_eq!(api.address, "addr");
         assert_eq!(api.min_phlo_price, 3);
         assert!(api.autopropose);
         assert!(!api.manual_propose);
+        // #157: the health is carried through, and it is the third source rather than a capability —
+        // the configured mode above says nothing about whether the proposer is failing.
+        assert_eq!(api.consecutive_self_validation_failures, 3);
+        assert!(api.autopropose_timer_halted);
     }
 
     #[test]

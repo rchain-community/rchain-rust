@@ -457,6 +457,15 @@ the picture above changes.** On the live two-host net, both shapes now behave di
   [#70](https://github.com/rchain-community/rchain-rust/issues/70#issuecomment-5890809631) and
   [#70](https://github.com/rchain-community/rchain-rust/issues/70#issuecomment-5891685869).
 
+  **Re-measured 2026-10-01 on `dev` (`f1548dec4`): the hazard reproduces, and the trigger is the absence,
+  not the deploy.** Killing the 50-stake validator froze finality *at the kill* and production ran to the
+  end of a 420 s window in **3 of 3** attempts; the all-live control held finality at a gap of 4 throughout.
+  In that run finality stopped about **55 s before** the single deploy, so "one deploy re-arms it" is not
+  what the rig shows. The run used the devnet defaults — **autopropose on**, which is the gate that makes
+  the dev-mode dummy deploy live (`dummy_deploy_key`, `node_runtime.rs:2575`) — so it measures the
+  **shipped configuration**, not the attestation guard; see the caveat in
+  `spec/audit/evidence/n148-results.md`.
+
 **So "do not onboard a validator yet" is still the rule, for a third reason again**: not blocker 2's
 unsatisfiable partition (fixed by #108), but **the unattested storm an absent validator lets run** — and
 behind that, whatever bounds the storm while every validator is live.

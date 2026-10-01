@@ -770,7 +770,9 @@ pub const OPENAPI_JSON: &str = r##"{
           "proposeOnDeploy": { "type": "boolean", "description": "Propose immediately after a deploy is accepted" },
           "manualPropose": { "type": "boolean", "description": "Blocks only by an explicit propose" },
           "adminHttp": { "type": "boolean", "description": "The admin HTTP surface is published" },
-          "devMode": { "type": "boolean", "description": "Dev mode is on" }
+          "devMode": { "type": "boolean", "description": "Dev mode is on" },
+          "consecutiveSelfValidationFailures": { "type": "integer", "format": "int64", "description": "Self-validation failures the proposer has recorded in a row; cleared by a successful propose" },
+          "autoproposeTimerHalted": { "type": "boolean", "description": "The autopropose timer has stopped and will not restart until the process does. Not the same as block production having stopped: the tap and POST /api/propose keep running" }
         }
       },
       "DeployData": {
@@ -1371,6 +1373,8 @@ mod tests {
             manual_propose: false,
             admin_http: true,
             dev_mode: true,
+            consecutive_self_validation_failures: 0,
+            autopropose_timer_halted: false,
         }
     }
 
