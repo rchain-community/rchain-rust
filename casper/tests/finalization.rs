@@ -1031,3 +1031,144 @@ fn a_second_proposal_in_a_round_keeps_its_sequence() {
          does not reach the case and proves nothing"
     );
 }
+
+/// **The second way a sender collides with its own numbers — the one C186's fix does not cover (#156).**
+///
+/// The H-1 gate asks **`msg_map`**: `casper/src/dag.rs` refuses a block when *any* stored message already
+/// carries that `(sender, seq_num)`. The proposer asks a **different structure**: `block_creator.rs` takes
+/// `seq_num` from its parent set, which is the round snapshot built from `latest_msgs` — and `latest_msgs`
+/// excludes, by design, every message recorded through `insert_msg_without_latest_mut` (H-2: a
+/// validation-failed block must not become a parent, `dag.rs`'s `validation_failed` branch).
+///
+/// So a validator whose own block **failed validation** has consumed a sequence number that its own
+/// proposal arithmetic cannot see. The next proposal derives that same number, and the DAG refuses the
+/// node's own block with C186's sentence — and three of those halt the autopropose timer, which is the
+/// pair of lines #145's fifth attempt recorded and which #157 has now made visible.
+///
+/// **This is the reproduction #156's close condition asks for, and it names the path**: the entry the
+/// arithmetic cannot see is the one written by `dag.rs`'s `validation_failed` branch. The test does not
+/// need the node: the two structures are in this crate's own fixture, and the disagreement is a property
+/// of them rather than of a devnet.
+///
+/// **What this test asserts, and why it asserts the defect rather than its absence.** It pins the
+/// disagreement, because the repair is a decision and not a local edit. Two are available and they are
+/// not the same kind of change:
+///
+/// 1. **Make the gate consistent with the rest of the DAG's state** — `add_block_to_dag_state_mut` already
+///    excludes a `validation_failed` block from `height_map`, with a comment naming this very reachable
+///    case, so a failed block is non-occupying everywhere *except* the `(sender, seq_num)` gate. This
+///    restores production but changes **which blocks are admitted**, which is a validation rule: §6 and
+///    `#51` §A, the same handling the parent-set bound gets.
+/// 2. **A proposer-side rule** — treat a consumed-but-invisible sequence number as "already spoken" and
+///    refuse. Node-local and not consensus-visible, but it converts the equivocation-and-halt into a
+///    refusal-and-quiet, which is a different liveness failure wearing a better label.
+///
+/// The assertion below is what a fix **inverts**: change `taken` to `!taken` (or `derived != failed_seq`)
+/// when the decision lands, and this test is the falsifier for whichever one it is. Observed red in that
+/// inverted form before landing, with the message quoting `SeqNum(1)` for both — the run that produced it
+/// is recorded in the commit and on #156.
+#[test]
+fn the_failed_record_is_invisible_to_the_proposer_and_visible_to_the_gate() {
+    use rchain_block_storage::dag::message_state::DagMessageState;
+    use rchain_models::validator::Validator;
+    use rchain_shared::refined::{BlockHeight, NonNegI64, NonNegI64 as Stake, SeqNum};
+
+    fn validator(b: u8) -> Validator {
+        Validator::new([b; 65])
+    }
+    fn id(sender: u8, height: i64) -> BlockHash {
+        let mut b = [0u8; 32];
+        b[0] = sender;
+        b[1] = (height & 0xff) as u8;
+        b[2] = ((height >> 8) & 0xff) as u8;
+        BlockHash::new(b)
+    }
+    fn h(n: i64) -> BlockHeight {
+        BlockHeight::try_from(n).expect("height")
+    }
+    fn s(n: i64) -> SeqNum {
+        SeqNum::try_from(n).expect("seq num")
+    }
+
+    let vs = [validator(0), validator(1), validator(2)];
+    let g = validator(255);
+    let bonds: std::collections::BTreeMap<Validator, Stake> = [
+        (vs[0].clone(), Stake::try_from(100).unwrap()),
+        (vs[1].clone(), Stake::try_from(100).unwrap()),
+        (vs[2].clone(), Stake::try_from(50).unwrap()),
+    ]
+    .into_iter()
+    .collect();
+    let st: DagMessageState<BlockHash, Validator> = DagMessageState::empty();
+    let genesis = st.create_message(id(255, 0), h(0), g, s(0), bonds.clone(), &BTreeSet::new());
+    let mut state = st.insert_msg(&genesis);
+
+    // One full round, built as the sibling test builds it: every validator has spoken once.
+    for (who, step) in [0usize, 1, 2].into_iter().enumerate() {
+        let v = vs[who].clone();
+        let parents = state.parents_for_new_block();
+        let seq = parents
+            .iter()
+            .find(|m| m.sender == v)
+            .map(|m| m.sender_seq + NonNegI64::one())
+            .unwrap_or_else(SeqNum::zero);
+        let m = state.create_message(
+            id(who as u8, step as i64 + 1),
+            h(step as i64 + 1),
+            v,
+            seq,
+            bonds.clone(),
+            &parents,
+        );
+        state = state.insert_msg(&m);
+    }
+
+    // **The shape under test.** `vs[0]`'s own next block is recorded the way the DAG records a block that
+    // failed validation — into the message map, and *not* into `latest_msgs`.
+    let v = vs[0].clone();
+    let spoken = state
+        .parents_for_new_block()
+        .iter()
+        .find(|m| m.sender == v)
+        .expect("the round gave vs[0] a message")
+        .sender_seq;
+    let failed_seq = spoken + NonNegI64::one();
+    let failed = state.create_message(
+        id(0, 9),
+        h(9),
+        v.clone(),
+        failed_seq,
+        bonds.clone(),
+        &state.parents_for_new_block(),
+    );
+    state.insert_msg_without_latest_mut(&failed);
+
+    // What the proposer would put in the block it is about to create. The **escaping** rule is the
+    // stronger of the two — it already replaces the sender's own entry with its newest — so a collision
+    // here is a collision under either rule, and under the pure snapshot too.
+    let parents = state.parents_for_new_block_escaping(&v);
+    let derived = parents
+        .iter()
+        .find(|m| m.sender == v)
+        .map(|m| m.sender_seq + NonNegI64::one())
+        .unwrap_or_else(SeqNum::zero);
+
+    // The gate's predicate, verbatim from `casper/src/dag.rs` (`insert`): any stored message with this
+    // `(sender, seq_num)` refuses the block before any partial write.
+    let taken = state
+        .msg_map
+        .values()
+        .any(|m| m.sender == v && m.sender_seq == derived);
+
+    // The proposal the node is about to make carries the sequence number it has already used.
+    assert_eq!(
+        derived, failed_seq,
+        "the parent set must be the structure that misses the failed record, or this test is measuring \
+         something else"
+    );
+    assert!(
+        taken,
+        "the two structures agree here, so the defect is gone: if a repair landed, invert this assertion \
+         and the one above — that is the falsifier for it (#156)"
+    );
+}
