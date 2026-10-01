@@ -6090,3 +6090,39 @@ proposer never writes its own failed block — `proposer.rs:430` — so the reac
 *receives and records* one of its own blocks as failed, the lost-store shape `tools/devnet.sh reset`
 creates); and **a running node and a restarted one already disagree**, since the rebuild folds `height_map`
 and so drops every failed record from the gate's view.
+
+
+## 46. The memory envelope is unreproduced, not fixed — and the condition is discharged by saying so (C189, #68, #154)
+
+#154's own first unit was **a decision in writing, before another rig was built**, and the two rounds it
+carried settle it.
+
+**The two exits, and why the second is the honest one.** #127's close carried C189 as *a rig that
+reproduces the ceiling — or, failing that, a re-scope of the memory claims in #117/#68 that says they are
+**unreproduced** on the current lineage, with the sizing point replaced by that statement*. The rigs were
+built, pre-registered, and both run on 2026-10-01:
+
+| rig | crossing | widest merge scope | peak |
+|---|---|---|---|
+| no-load, control **and** fixed (`n127-directed-results.md`) | **0 of 3** on both | **9 chains** on every attempt | 49–66 MiB against a 3000 MiB threshold |
+| loaded, four bounded deploys + `stop 2` (`n127-loaded-results.md`) | **0 of 3** on either arm | 161–174 chains fixed, 29 pre-quotient | 647–689 MiB control vs 31–45 MiB fixed |
+
+**The first exit is not merely unmet — it is unreachable with these rigs, and that is the finding.** The
+ramp's input is a DAG *shape*: the 32–43 chain merge scopes the 1.8 GB figure was measured at. The proposer
+fix (#138) moved that shape, and on this lineage the widest scope is **9 chains** — no node comes within
+45× of the threshold, so there is no ramp to be gone, as against a ramp that has been fixed. The loaded rig
+does reach 161–174 chains and still peaks 647–689 MiB, 4–5× below the threshold.
+
+**So the claims are recorded as unreproduced.** #117's cgroup ceiling and #68's start-up envelope are both
+properties of a tree this repository no longer builds;
+`docs/src/node/validator-requirements.md:92` no longer carries the 3,200-block row as a figure to size
+from, and it does not claim the ramp is fixed.
+
+**What this does not claim.** That the Θ(N²) ancestry term is gone — it is not: it is unbounded, and
+start-up still gets worse superlinearly with height. That no ceiling exists under some *other* load — nobody
+has looked. And that the 1.8 GB measurement was wrong when it was taken: it described the tree it was taken
+on, which is exactly why it cannot be read against this one.
+
+**Row C189: `todo` → `done`.** Its close condition was the re-scope, and the re-scope is this section plus
+the sizing point. #68's condition, carried into #154 verbatim, is satisfied by the same act: the document
+now carries the statement where the figure was.

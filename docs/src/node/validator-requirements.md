@@ -89,22 +89,41 @@ blocks are already in the DAG. Three measured points, and they do not lie on a l
 |---|---|
 | 131 produced blocks (the table above) | ~0.02 MB |
 | 100–300 blocks, fresh devnet, 2026-09-28 (`tools/devnet-bench.py`) | 0.16–0.23 MB |
-| **3 200 blocks** ([#68](https://github.com/rchain-community/rchain-rust/issues/68)) | **~1.8 GB peak, ~17 minutes before the API opens** — *pre-`b37410b2e`, see the correction below* |
+| **3 200 blocks** ([#68](https://github.com/rchain-community/rchain-rust/issues/68)) | **~1.8 GB peak, ~17 minutes before the API opens** — *pre-`b37410b2e`, and **unreproduced** on this lineage; see below* |
 
 **Correction, 2026-09-29: the third row is an upper bound, not a measurement of the current build.**
 There were **two** Θ(N²) terms in the start-up path and one of them is gone: the metadata-index rebuild
 (`recreate_in_memory_state`) used to fold through `add_block_to_dag_state` — a full `DagState` clone per
 block — and now extends the index in place, which is what `b37410b2e` landed. The ancestry-set term above
 remains, and it is the one this page's rule is about, so the figure still bounds the cost from *above* —
-but the peak and the start-up time are both now unknown at 3,200 blocks, and no re-measurement has been
-taken ([#68](https://github.com/rchain-community/rchain-rust/issues/68) is the issue that would close on
-one). Size from the ceiling, and treat the row as the last measurement rather than the current cost.
+but the peak and the start-up time are both now unknown at 3,200 blocks.
 
-So the third row is the one to size from, and it is why "≥ 2 GB for ~1k blocks" should not be extended by
-multiplication: 1.8 GB at 3 200 blocks is *below* a linear reading of that sentence, while a 10 000-block
-chain is not, and restart time grows faster than the height. What can be said honestly is what has been
-measured: **size for the peak at the height you intend to carry, expect start-up to get worse
-superlinearly, and treat a few thousand blocks as the point where this stops fitting a small host.**
+**Decision, 2026-10-01 (#154): the row is *unreproduced*, not re-measured — and the statement replaces the
+sizing point rather than waiting for one.** Two pre-registered rounds ran that day and neither reached the
+ceiling:
+
+| rig | crossing | widest merge scope | peak |
+|---|---|---|---|
+| no-load, both trees (`n127-directed-results.md`) | **0 of 3**, on the control *and* the fixed arm | **9 chains** | 49–66 MiB against a 3000 MiB threshold |
+| loaded, four bounded deploys + `stop 2` (`n127-loaded-results.md`) | **0 of 3**, on either arm | 161–174 chains after the fix, 29 pre-quotient | 647–689 MiB control vs 31–45 MiB fixed |
+
+The no-load rig cannot reach the ceiling because **the input it needs no longer occurs**: the 32–43 chain
+scopes the 1.8 GB figure was measured at were a DAG shape the proposer fix (#138) moved, and on this
+lineage the widest scope is 9 chains. The loaded rig does reach 161–174 chains — and still peaks 647–689 MiB,
+4–5× below the 3000 MiB threshold. The honest reading is therefore **not "the ramp is fixed" but "there is
+no ramp to be gone on this build"**, and the 3,200-block row is a property of a tree this repository no
+longer builds. It is kept above as history, marked as such, and **it is no longer a figure to size from.**
+
+What survives as advice is only what a host has to hold for a *start-up* on a chain of the height intended:
+the ancestry term is still Θ(N²) and still unbounded, so **expect start-up to get worse superlinearly and
+treat a few thousand blocks as the point where a small host stops fitting** — but the ~1.8 GB figure is not
+evidence for where that point is, because nobody has measured it since the tree changed.
+
+**The two statements are not in tension, and the difference is worth keeping straight.** The 2026-09-29
+correction's *upper bound* still stands: a term was removed, so the current cost is **at most** the old one.
+That is a ceiling on a number nobody has re-taken — it is not a sizing point, and "provision for 1.8 GB at
+3,200 blocks" reads a bound as a measurement. The row above is kept because it is the last thing anyone
+measured on this path; it is marked unreproduced because that is now all it is.
 
 **And one line of the list above is now stale: there *is* progress output.** A node indexing its store
 logs a line every 250 blocks (`casper/src/merging.rs`, commit `43a549e9c`), and a node speaks as it starts
