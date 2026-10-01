@@ -2906,6 +2906,68 @@ mod attest_warranted_tests {
         // A strictly newer height still is.
         assert!(attest_warranted(&me, &other, 8, Some(7)));
     }
+
+    /// **The same rule, run as a sequence, is a deadlock — and this is the test that shows it is the
+    /// rule and not the rig.** The assertion above is a single call; the defect is what the calls do in
+    /// order, which no case in this module exercises.
+    ///
+    /// Reproduce a node's tap over a round: a deploy-bearing block at height 1, then the peer
+    /// attestations that answer it. On a three-or-more validator net the peers all react before any of
+    /// them has produced, so every one of their blocks lands at **height 1** — that is the measured
+    /// shape of the `n149` sweep (`n149-results.md`: genesis plus eight blocks, all at height 1, no
+    /// height 2), not an assumption. The node answers the **first** and refuses every other, and
+    /// because nothing above height 1 exists or can now exist, it will refuse every block that ever
+    /// arrives from a peer afterwards. The chain is sealed with its deploy unfinalised.
+    ///
+    /// The control is the same sequence one height apart, which is what a two-validator net produces:
+    /// every call is answered, and the height keeps advancing. So the difference between the two nets
+    /// is *whether a round comes to rest at one height*, and the rule that seals one of them is the
+    /// rule this module already asserts bounds the storm.
+    #[test]
+    fn a_round_that_comes_to_rest_at_one_height_is_sealed_by_its_own_bound() {
+        let me = vec![1u8; 65];
+        let peers: Vec<Vec<u8>> = (2..9u8).map(|i| vec![i; 65]).collect();
+
+        // Three or more validators: seven peers' attestations, all at height 1. The node answers one.
+        let mut last: Option<i64> = None;
+        let answered = peers
+            .iter()
+            .filter(|p| {
+                let w = attest_warranted(&me, p, 1, last);
+                if w {
+                    last = Some(1);
+                }
+                w
+            })
+            .count();
+        assert_eq!(
+            answered, 1,
+            "one height is answered once, so the round's other six attestations get no reply from us"
+        );
+        // And nothing can rescue it: no peer block can exceed a height that no block reaches, so every
+        // later block from a peer is refused too.
+        assert!(
+            !peers.iter().any(|p| attest_warranted(&me, p, 1, last)),
+            "the height can never be exceeded, because nothing above it will ever be produced"
+        );
+
+        // The control: the same number of blocks, one height apart — a two-validator net's shape.
+        let mut last: Option<i64> = None;
+        let answered = (1..=7)
+            .filter(|h| {
+                let w = attest_warranted(&me, &peers[0], *h, last);
+                if w {
+                    last = Some(*h);
+                }
+                w
+            })
+            .count();
+        assert_eq!(
+            answered, 7,
+            "when the height keeps advancing, every block is a reason to attest — so the two nets \
+             differ by whether a round comes to rest at one height, not by the count"
+        );
+    }
 }
 
 #[cfg(test)]

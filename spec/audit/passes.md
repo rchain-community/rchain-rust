@@ -5858,3 +5858,48 @@ is discharged in every member.
 cheap, and below it the work may still be exponential — the honest sentence every row of this class
 carries, and the reason Stage 2 of #127's change order (a threshold **N**) and Stage 3 (a price) remain the
 approver's decisions rather than the implementation's.
+
+---
+
+## 44. Attestation is bounded per remote *height*, and a round that rests at one height is sealed (C192, #149)
+
+**What was measured.** One deploy on a guard-live devnet (`--no-autopropose --propose-on-deploy`), all
+validators live, three attempts at each of N ∈ {3, 5, 8}, and an idle control. Blocks after the deploy
+are **exactly N** — one per bonded validator, every validator among the senders, 3 of 3 attempts — and
+the whole DAG is genesis plus N blocks **all at one height**. Finality advances **not at all**. At N = 2
+the chain instead runs four rounds, 2 blocks at each of heights 1-4, and finalises height 1. The reading
+and its artifacts are `spec/audit/evidence/n149-results.md` and `n149-blocks/`.
+
+**The mechanism, and it is one rule.** The attestation tap answers a remote block only if its height is
+strictly greater than the last height it answered (`node_runtime.rs:2706`):
+
+```rust
+sender != me && last_attested_height.map_or(true, |last| height > last)
+```
+
+On a three-or-more validator net the peers react to the deploy-bearing block **before any of them has
+produced**, so all of their attestations land at the **same height**. Every node's
+`last_attested_height` is then that height, and since no block above it exists — or can now be produced
+— the tap refuses every block that will ever arrive from a peer. Nothing else requests a proposal with
+autopropose off, so no second round is enqueued, and the proposer's round veto and its escape
+(`proposer.rs:531-547`) are never even reached: the escape's counter increments on a proposal
+*request*, and the tap is the only thing that issues one here. **The chain is sealed with its deploy
+unfinalised.** At N = 2 the blocks arrive one at a time and each raises the tip before the other node
+answers, so the rule never binds and the chain cascades normally. So the difference is not the validator
+count as such but whether a round comes to rest at a single height.
+
+**The bound is real and it is too strong.** The rule exists to stop a burst at one height enqueuing a
+proposal per block — the #70 fan-out — and that is a genuine bound. It is also the wrong quantity: its
+own comment says *"The per-remote-height rule above is not a bound at all **while the height itself
+keeps advancing**"*, and the case it did not consider is the height **stopping**, which this rule causes.
+
+**Falsified in both directions.** `a_round_that_comes_to_rest_at_one_height_is_sealed_by_its_own_bound`
+runs the rule as a *sequence* — seven peer blocks at one height against the same seven one height
+apart — and asserts 1 answered against 7. Mutating `>` to `>=` turns it red with `left: 7, right: 1`,
+so it pins this rule rather than the arithmetic around it. The existing cases in that module are single
+calls and none of them could see a sequence.
+
+**What is not claimed.** The fix is a design question — key the tap on the round rather than on the
+height, or on the tip — and it is deliberately not guessed here. Nor is this a cost finding: unlike
+#148's storm, production is *bounded* (exactly N blocks) and stops. What it shares with #148 is the
+frozen finality; what it does not share is the growth.

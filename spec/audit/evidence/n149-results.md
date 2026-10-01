@@ -56,6 +56,44 @@ not say which mechanism — the tap's trigger, the round veto's reset, or the fi
 produces the second, third and fourth round. It is the first thing a follow-up should measure, and it is
 recorded as open rather than explained.
 
+### The mechanism, read from the code after the run — and it is a defect
+
+**Answered 2026-10-01, the same day, by reading the tap rather than running the rig again.** The
+attestation tap is gated by one rule (`node_runtime.rs:2706`):
+
+```rust
+fn attest_warranted(me, sender, height, last_attested_height) -> bool {
+    sender != me && last_attested_height.map_or(true, |last| height > last)
+}
+```
+
+**A node answers a remote block only if its height is strictly greater than the last height it
+answered.** That is the whole story, and the two arms differ only in whether the round's attestations
+land at one height or at successive ones:
+
+- **N = 8.** Validator 0 proposes the deploy-bearing block at height 1. The other **seven** react to it
+  before any of them has produced, so all seven compute `block_num = max(justifications) + 1` from the
+  *same* snapshot and all seven land at **height 1**. Every node's `last_attested_height` is now 1, and
+  no block anywhere is above height 1 — so `height > last` is false for every block that will ever
+  arrive from a peer, and **the tap never fires again**. Nothing else requests a proposal (autopropose
+  is off), so no second round is ever enqueued, the round veto is never even reached, and the chain is
+  sealed at height 1. Measured: genesis plus **eight blocks, all at height 1**.
+- **N = 2.** The blocks arrive one at a time and each raises the tip before the other node answers, so
+  the tap keeps firing: 2 blocks at each of heights 1, 2, 3, 4, and finality advances to 1.
+
+So the difference is not the validator count *as such* but whether a full round of attestations comes to
+rest at a **single height**. At N ≥ 3 it does, and the rule that seals it is the same rule the comment
+above it credits with bounding the storm: *"answering each remote height at most once so a burst at one
+height cannot enqueue a request per block."* That bound is real, and it is too strong — it makes the
+height itself unable to advance, which is the one thing the rule's own comment says it depends on
+("The per-remote-height rule above is not a bound at all **while the height itself keeps advancing**").
+
+**This is a liveness defect, not a cost one.** The chain holds a deploy it cannot finalise and has no
+rule that restores progress: the escape in `proposer.rs:531-547` needs a proposal *request* to
+increment its counter, and the tap is the only thing that issues one on this configuration. It is
+registered as **C192**; the fix is a design question (key the tap on the round rather than the height,
+or on the tip) and is deliberately not guessed here.
+
 ## The control arm reproduces #148's storm rate with every validator live
 
 The control is the devnet default (`--autopropose`, which `devnet.sh:80` passes as `--autopropose`), N = 3,
