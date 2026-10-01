@@ -1,0 +1,7 @@
+# tree=45e46c4a7 image=sha256:54c45778975100b981c44cb8e2bb0e441a8a4317e76a4125de610421bf38e8a4
+# shape: --validators 3 --stakes 100,100,50 --epoch-length 10 --fresh, cap=8g, window=420s, kill=validator-2 at T+120s, NO_KILL=1, attempts=3
+# deploys: 0 at T+0s; after the kill: 1 at T+180s (0 = arm off)
+# started 2026-10-01T14:23:26Z
+# binary_sha256=9a97e3c5ed58261f401f8c695205feaeb4d760e91457b60bb95eee13e84b2095
+# image_created=2026-10-01T14:42:42.576236415+01:00
+# rust_diff_vs_HEAD=empty — the Rust tree is HEAD

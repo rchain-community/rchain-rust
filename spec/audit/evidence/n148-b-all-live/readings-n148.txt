@@ -1,0 +1,29 @@
+# run spec/audit/evidence/n148-b-all-live
+  tree=45e46c4a7 image=sha256:54c45778975100b981c44cb8e2bb0e441a8a4317e76a4125de610421bf38e8a4
+  shape: --validators 3 --stakes 100,100,50 --epoch-length 10 --fresh, cap=8g, window=420s, kill=validator-2 at T+120s, NO_KILL=1, attempts=3
+  deploys: 0 at T+0s; after the kill: 1 at T+180s (0 = arm off)
+  started 2026-10-01T14:23:26Z
+  binary_sha256=9a97e3c5ed58261f401f8c695205feaeb4d760e91457b60bb95eee13e84b2095
+  image_created=2026-10-01T14:42:42.576236415+01:00
+  rust_diff_vs_HEAD=empty — the Rust tree is HEAD
+  attempt 1 — window 419s, kill scheduled at T+120s, deploy at T+180s
+    bootstrap height  143@179s -> 143@179s(deploy) -> 402@419s   |  finality 139 -> 139 -> 398   |  after deploy: +259 at 1.08/s
+              finality last moved at T+419s (value 398), frozen 0s by the end
+    v1        height  143@179s -> 143@179s(deploy) -> 402@419s   |  finality 139 -> 139 -> 398   |  after deploy: +259 at 1.08/s
+              finality last moved at T+419s (value 398), frozen 0s by the end
+    v2        height  143@179s -> 143@179s(deploy) -> 402@419s   |  finality 139 -> 139 -> 398   |  after deploy: +259 at 1.08/s
+              finality last moved at T+419s (value 398), frozen 0s by the end
+  attempt 2 — window 420s, kill scheduled at T+120s, deploy at T+180s
+    bootstrap height  200@179s -> 201@180s(deploy) -> 461@420s   |  finality 196 -> 197 -> 457   |  after deploy: +260 at 1.08/s
+              finality last moved at T+420s (value 457), frozen 0s by the end
+    v1        height  200@179s -> 201@180s(deploy) -> 461@420s   |  finality 196 -> 197 -> 457   |  after deploy: +260 at 1.08/s
+              finality last moved at T+420s (value 457), frozen 0s by the end
+    v2        height  200@179s -> 201@180s(deploy) -> 461@420s   |  finality 196 -> 197 -> 457   |  after deploy: +260 at 1.08/s
+              finality last moved at T+420s (value 457), frozen 0s by the end
+  attempt 3 — window 419s, kill scheduled at T+120s, deploy at T+180s
+    bootstrap height  207@179s -> 208@180s(deploy) -> 470@419s   |  finality 203 -> 204 -> 466   |  after deploy: +262 at 1.10/s
+              finality last moved at T+419s (value 466), frozen 0s by the end
+    v1        height  206@179s -> 208@180s(deploy) -> 470@419s   |  finality 202 -> 204 -> 466   |  after deploy: +262 at 1.10/s
+              finality last moved at T+419s (value 466), frozen 0s by the end
+    v2        height  207@179s -> 208@180s(deploy) -> 469@419s   |  finality 203 -> 204 -> 465   |  after deploy: +261 at 1.09/s
+              finality last moved at T+419s (value 465), frozen 0s by the end

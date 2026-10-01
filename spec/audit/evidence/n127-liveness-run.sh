@@ -33,6 +33,9 @@ DEPLOY_AGAIN_AT=${DEPLOY_AGAIN_AT:-0}
 # the after-kill arm is off entirely — is unchanged. A probe that wants **one** deploy after the kill sets
 # this to 1 and `DEPLOYS=0` to send none before it, which is the idle-then-one-deploy shape of #148.
 DEPLOYS_AGAIN=${DEPLOYS_AGAIN:-$DEPLOYS}
+# The attribution control: leave every validator alive and run the same timeline, so a storm can be
+# attributed to the absence rather than to a deploy. Default off (the campaign and n127 arms kill).
+NO_KILL=${NO_KILL:-0}
 
 TREE=$(git rev-parse --short HEAD)
 STAMP=$(date -u +%Y%m%dT%H%M%SZ)
@@ -46,7 +49,7 @@ FLAGS="--validators 3 --stakes 100,100,50 --epoch-length 10 --fresh"
 
 {
   echo "# tree=$TREE image=$IMAGE"
-  echo "# shape: $FLAGS, cap=$CAP, window=${WINDOW_S}s, kill=validator-2 at T+${KILL_AT}s (KILL_AT>window = no kill), attempts=$ATTEMPTS"
+  echo "# shape: $FLAGS, cap=$CAP, window=${WINDOW_S}s, kill=validator-2 at T+${KILL_AT}s, NO_KILL=${NO_KILL}, attempts=$ATTEMPTS"
   echo "# deploys: ${DEPLOYS} at T+${DEPLOY_AT}s; after the kill: ${DEPLOYS_AGAIN} at T+${DEPLOY_AGAIN_AT}s (0 = arm off)"
   echo "# started $(date -u +%Y-%m-%dT%H:%M:%SZ)"
   echo "# binary_sha256=$(docker run --rm --entrypoint sha256sum rnode:local /usr/local/bin/rnode 2>/dev/null | cut -d' ' -f1 || echo '?')"
@@ -87,9 +90,17 @@ for attempt in $(seq 1 "$ATTEMPTS"); do
   done
   echo "  deploys: $submitted of $DEPLOYS"
 
-  wait_until $((t0 + KILL_AT))
-  tools/devnet.sh stop 2 >/dev/null 2>&1
-  echo "  killed validator-2 at T+$(( $(date +%s) - t0 ))s (target ${KILL_AT}s)"
+  # `NO_KILL=1` is the attribution control — the same timeline with every validator live. **`KILL_AT`
+  # cannot express it**: `KILL_AT` gates the kill *and* the wait before it, so a `KILL_AT` past the window
+  # also pushes the after-kill deploy past the window and leaves nothing to read. (Measured once; the run
+  # it voided is disclosed in `n148-results.md`.) Default off, so the frozen protocols are unchanged.
+  if (( NO_KILL )); then
+    echo "  NO_KILL=1: validator-2 left alive — the all-live control"
+  else
+    wait_until $((t0 + KILL_AT))
+    tools/devnet.sh stop 2 >/dev/null 2>&1
+    echo "  killed validator-2 at T+$(( $(date +%s) - t0 ))s (target ${KILL_AT}s)"
+  fi
 
   if (( DEPLOY_AGAIN_AT > 0 )); then
     wait_until $((t0 + DEPLOY_AGAIN_AT))
@@ -98,7 +109,7 @@ for attempt in $(seq 1 "$ATTEMPTS"); do
       timeout "$DEPLOY_TIMEOUT" tools/devnet.sh deploy examples/hello.rho >/dev/null 2>&1 \
         && again=$((again + 1))
     done
-    echo "  deploys after the kill: $again of $DEPLOYS at T+$(( $(date +%s) - t0 ))s (target ${DEPLOY_AGAIN_AT}s)"
+    echo "  deploys after the kill: $again of $DEPLOYS_AGAIN at T+$(( $(date +%s) - t0 ))s (target ${DEPLOY_AGAIN_AT}s)"
   fi
 
   wait "$sampler"

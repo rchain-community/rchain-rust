@@ -1,0 +1,42 @@
+# run target/n127-liveness/45e46c4a7-20261001T134643Z
+  tree=45e46c4a7 image=sha256:54c45778975100b981c44cb8e2bb0e441a8a4317e76a4125de610421bf38e8a4
+  shape: --validators 3 --stakes 100,100,50 --epoch-length 10 --fresh, cap=8g, window=420s, kill=validator-2 at T+120s (KILL_AT>window = no kill), attempts=3
+  deploys: 0 at T+0s; after the kill: 1 at T+180s (0 = arm off)
+  started 2026-10-01T13:46:43Z
+  binary_sha256=9a97e3c5ed58261f401f8c695205feaeb4d760e91457b60bb95eee13e84b2095
+  image_created=2026-10-01T14:42:42.576236415+01:00
+  rust_diff_vs_HEAD=empty — the Rust tree is HEAD
+  attempt 1 — window 420s, kill scheduled at T+120s
+    bootstrap height 113@120s -> 243@420s   finality 109@120s -> 110@420s   finality last moved at T+121s, frozen 299s
+    v1        height 113@120s -> 244@420s   finality 109@120s -> 110@420s   finality last moved at T+121s, frozen 299s
+    v2        height ?@120s -> ?@120s   finality ?@120s -> ?@120s   finality last moved at T+119s, frozen 0s
+    stalls: 200 lines, 6 before the kill and 194 after it
+      before x3   0 of 250 (0 full among 0)
+      before x3   0 of 250 (0 full among 3)
+      after  x94  0 of 250 (0 full among 2)
+      after  x93  0 of 250 (0 full among 1)
+      after  x3   100 of 250 (1 full among 3)
+      after  x2   0 of 250 (0 full among 0)
+      after  x2   0 of 250 (0 full among 3)
+  attempt 2 — window 419s, kill scheduled at T+120s
+    bootstrap height 115@120s -> 213@419s   finality 111@120s -> 111@419s   finality last moved at T+119s, frozen 300s
+    v1        height 115@120s -> 213@419s   finality 111@120s -> 111@419s   finality last moved at T+119s, frozen 300s
+    v2        height 113@120s -> 113@118s   finality 109@120s -> 109@118s   finality last moved at T+118s, frozen 0s
+    stalls: 12 lines, 6 before the kill and 6 after it
+      before x3   0 of 250 (0 full among 0)
+      before x3   0 of 250 (0 full among 3)
+      after  x2   0 of 250 (0 full among 0)
+      after  x2   0 of 250 (0 full among 3)
+      after  x1   100 of 250 (1 full among 3)
+      after  x1   0 of 250 (0 full among 2)
+  attempt 3 — window 420s, kill scheduled at T+120s
+    bootstrap height 123@120s -> 221@420s   finality 119@120s -> 120@420s   finality last moved at T+121s, frozen 299s
+    v1        height 123@120s -> 221@420s   finality 119@120s -> 120@420s   finality last moved at T+121s, frozen 299s
+    v2        height ?@120s -> ?@120s   finality ?@120s -> ?@120s   finality last moved at T+117s, frozen 1s
+    stalls: 12 lines, 6 before the kill and 6 after it
+      before x3   0 of 250 (0 full among 0)
+      before x3   0 of 250 (0 full among 3)
+      after  x2   0 of 250 (0 full among 0)
+      after  x2   0 of 250 (0 full among 3)
+      after  x1   100 of 250 (1 full among 3)
+      after  x1   0 of 250 (0 full among 2)

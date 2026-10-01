@@ -2,6 +2,18 @@
 
 **Status: FROZEN before the run.**
 
+> **Correction, 2026-10-01 after the run: arm B as written was VOID, and the run says so.** The arm was
+> specified as "`KILL_AT` beyond the window", but the harness waits for `KILL_AT` *before* the after-kill
+> deploy, so pushing the kill past the window pushes the **deploy** past it too: the first arm B attempt
+> deployed at T+421, after sampling ended at 420 s, and read nothing. Arm B was re-run with a `NO_KILL=1`
+> control (skip the kill, keep the timeline) — a knob this freeze should have named. The rows are left
+> frozen as written; this block is the correction, not a rewrite. Arm A ran before the change.
+>
+> **And one claim in "Why" is now known to be wrong on this rig.** The n127-liveness correction ("the kill
+> is not the variable") does not hold here: with no pre-kill deploy, finality is healthy until the kill and
+> freezes exactly at it (`n148-results.md`, arm A). #148 is reproduced, and the deploy in its narrative is
+> incidental to the freeze.
+
 ## Why this is the measurement
 
 [#148](https://github.com/rchain-community/rchain-rust/issues/148) reports that with a validator

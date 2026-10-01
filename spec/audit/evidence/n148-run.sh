@@ -4,8 +4,8 @@
 # own defaults and its own meaning.
 #
 # Arm A (the issue's shape):  REPO=<dev worktree> spec/audit/evidence/n148-run.sh
-# Arm B (attribution control, only if A reproduces — no kill):
-#                             KILL_AT=9999 REPO=<dev worktree> spec/audit/evidence/n148-run.sh
+# Arm B (attribution control, only if A reproduces — every validator left alive):
+#                             NO_KILL=1 REPO=<dev worktree> spec/audit/evidence/n148-run.sh
 #
 # `REPO` must point at a checkout of the tree under test: `tools/devnet.sh build` builds `rnode:local`
 # from the current directory and the harness `cd`s to `$REPO`, so the image and the tree must agree.
@@ -26,7 +26,7 @@ DEPLOYS=0
 DEPLOY_AGAIN_AT=180
 DEPLOYS_AGAIN=1
 
-export REPO ATTEMPTS CAP WINDOW_S KILL_AT DEPLOY_AT DEPLOYS DEPLOY_AGAIN_AT DEPLOYS_AGAIN
+export REPO ATTEMPTS CAP WINDOW_S KILL_AT NO_KILL DEPLOY_AT DEPLOYS DEPLOY_AGAIN_AT DEPLOYS_AGAIN
 
-echo "==> arm: kill at T+${KILL_AT}s (window ${WINDOW_S}s$([ "$KILL_AT" -gt "$WINDOW_S" ] && echo ' — no kill'), one deploy at T+${DEPLOY_AGAIN_AT}s"
+echo "==> arm: NO_KILL=${NO_KILL:-0}, kill at T+${KILL_AT}s, window ${WINDOW_S}s, one deploy at T+${DEPLOY_AGAIN_AT}s"
 exec spec/audit/evidence/n127-liveness-run.sh
