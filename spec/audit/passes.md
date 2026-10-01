@@ -6044,3 +6044,49 @@ engaged.
 **What is not claimed.** That the rule is useless: the *attempt* accounting (`restore_attempts`, the
 per-block budget) is written by the same no-op and is equally inert, so the bounds it is supposed to enforce
 have never been enforced either — the fix has to account for both halves of a write that never happened.
+
+### §43 addendum (2026-10-01): the oracle's shape is ruled out, and H-2 has no counterpart
+
+*(Placed at the end of the file rather than directly beneath §43 because it landed after a concurrent
+branch's §44 — the heading is what matters, not the order.)*
+
+A five-lens review of the C190 decision (consensus safety and law, reachability and provenance, proposer
+mechanics and liveness, structural design against the Scala, and a falsifier briefed to break the framing)
+settled it, and one lens settled it in a way this pass had not anticipated **by reading the oracle**.
+
+**The Scala cannot have this defect, and the reason is structural**: it has exactly **one** insert writer,
+`insertMsg` (`legacy/block-storage/.../DagMessageState.scala:66`), with **no `insertMsgWithoutLatest`
+analogue anywhere** — a failed block goes through the same writer and therefore occupies `(sender, seq)` in
+**`latestMsgs` and `msgMap` alike** (`MultiParentCasper.scala:264` marks it failed; the DAG's `insert` has no
+`validationFailed` branch). The proposer's parents *are* `latestMsgs` (`MultiParentCasper.scala:43-45`), so
+it derives `seq + 1` **from the failed record** and never reuses a spent number. The two structures cannot
+disagree because one writer feeds both.
+
+⇒ **H-2 is this port's own departure, and the proximate cause of C190.**
+`insert_msg_without_latest_mut` (`message_state.rs:284`) exists so a failed block cannot become a parent,
+which is what makes the gate and the arithmetic read different populations.
+
+**And the oracle's own shape does not transfer**, which is the part worth keeping. Adopting it — deleting the
+`validation_failed` branch at `dag.rs:463-467`, about four lines — satisfies both constraints the review set
+(the gate is untouched; `msg_map` never holds two messages at one `(sender, seq)`, because the new block
+lands at `k+1`). But it **wedges on `neglected_invalid_block`** (`validate.rs:331-356`), which is
+byte-for-byte the Scala's rule. The Scala escapes because it **slashes** the failed justification's sender in
+the same block — `offenders = preState.justifications.filter(_.validationFailed)` (`Proposer.scala:151`) — so
+the post-state bonds read zero and the check passes. The Rust slashes only records flagged `slashable`
+(`validate.rs:147`), and this defect's path tags the failed record `Divergence`, which is not slashable.
+**So the divergence is not in the parent set; it is in the missing slash**, and a repair that copies the
+oracle's parent set without its slashing would inherit the wedge.
+
+**What the review rejected, and why — recorded rather than left as options.** Making the gate ignore a failed
+record lets an *honest* validator publish two distinct blocks at one `(sender, seq)` and partition
+permanently from peers holding the first; the `height_map` analogy offered for it is a category error
+(contiguity, law 18, not identity); and the cause-gated refinement is inert because the replay path is
+`Divergence` while the classification itself is view-dependent. A silent proposer-side refusal is rejected
+for hiding #157's halt. **What stands is the proposer-side, self-clearing repair** — which needs the update
+path **C193** owes, since `dag.insert` cannot write an update for a known block.
+
+**Also settled by the review, and independent of the repair**: the reproduction's premise was too wide (the
+proposer never writes its own failed block — `proposer.rs:430` — so the reachable shape is a node that
+*receives and records* one of its own blocks as failed, the lost-store shape `tools/devnet.sh reset`
+creates); and **a running node and a restarted one already disagree**, since the rebuild folds `height_map`
+and so drops every failed record from the gate's view.
