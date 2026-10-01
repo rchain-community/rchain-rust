@@ -125,8 +125,25 @@ use rchain_casper::gateway::{GatewayTxn, LocalShard, LocalShardDeployService};
 /// `rchain_dag_logical_bytes` — and that doc also states the measurement volumes' disposition.
 const AUTOPROPOSE_INTERVAL: Duration = Duration::from_secs(2);
 
-/// After this many consecutive self-validation failures the autopropose timer halts, so a node with
-/// inconsistent state accounting stops producing blocks instead of silently spinning on `BugError`.
+/// After this many consecutive self-validation failures the autopropose **timer** halts, so a node with
+/// inconsistent state accounting stops proposing instead of silently spinning on `BugError`.
+///
+/// **Three things about this constant that a reader should not have to infer (#157).**
+///
+/// - **What stops is the timer, and only the timer.** Three paths feed the proposer queue — the
+///   autopropose tap above, the attest-on-new-blocks tap below, and the admin `POST /api/propose` — and
+///   each of them keeps running. So a halted node is *not* a wedged one: it still proposes on inbound
+///   blocks and on demand, and because the proposer stores `0` on a success it can even clear the
+///   counter while the timer stays stopped. That is why the API and `/metrics` report
+///   `autopropose_timer_halted` rather than a bare `halted` — the flag would otherwise claim the whole
+///   node had stopped when one of its three triggers had.
+/// - **Nothing restarts it.** The task `break`s and no `JoinHandle` is kept, so the halt lasts until the
+///   process does. That is a decision rather than an oversight: a resume path that quietly restarts a
+///   proposer whose state accounting is inconsistent is the failure this constant exists to prevent.
+/// - **It is observable as of #157.** Before that the halt was one ERROR line, and on a chain whose
+///   steady state is a node that produces nothing until a deploy arrives, "quiet" and "broken" looked
+///   identical to every API client — which is also why #148's probe could not be read without a witness
+///   that says which of the two a node is in.
 const AUTOPROPOSE_MAX_CONSECUTIVE_FAILURES: u64 = 3;
 
 /// Where the **admin** HTTP server binds (AUDIT C112).

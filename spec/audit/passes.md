@@ -5842,3 +5842,53 @@ is discharged in every member.
 cheap, and below it the work may still be exponential — the honest sentence every row of this class
 carries, and the reason Stage 2 of #127's change order (a threshold **N**) and Stage 3 (a price) remain the
 approver's decisions rather than the implementation's.
+
+## 42. The halt becomes readable, and the issue's premise is corrected by the code (#157)
+
+**#157 files two defects in one sentence**: a proposer whose own block fails validation three times halts
+its autopropose timer, and the halt is visible only in a log line. The second half is the one that matters
+on a net nobody watches continuously, and reading the code narrowed it in three ways that the issue's own
+text gets wrong.
+
+**1. What halts is the timer, and only the timer.** The `break` is in the timer task
+(`node_runtime.rs:1590`, guarded by `AUTOPROPOSE_MAX_CONSECUTIVE_FAILURES` at `:147`), and that task is one
+of **three** triggers into the proposer queue, not the only one: the autopropose tap
+(`node_runtime.rs:1532`), the attest-on-new-blocks tap (`:1614`) and the admin `POST /api/propose`
+(`node/src/web/http.rs:1004` → `trigger_propose`, `node_runtime.rs:1967`) all keep enqueueing. So "the
+shard stops producing blocks" holds only for a chain with no inbound blocks and no deploys, and the issue's
+"there is no command to resume block production (`rnode propose` requires a manual-propose mode the net
+does not run)" is **false** — `POST /api/propose` reaches `create_block` regardless of the halt. The consequence is naming, and the naming is not cosmetic: a boolean
+called `halted` on `/api/status` would be its own misleading signal, claiming the node had stopped when one
+trigger had. The surfaces report the **counter** and `autopropose_timer_halted`, and the counter can clear
+under a stopped timer (the proposer stores `0` on a success), which is exactly the state a reader must not
+mistake for health.
+
+**2. Nothing restarts it, and that is recorded as a decision rather than fixed.** The task `break`s with no
+`JoinHandle` kept. A resume path that quietly restarts a proposer whose state accounting is inconsistent is
+the failure the constant exists to prevent, so #157's second exit is taken — permanence stated, with the
+reason, at the constant itself.
+
+**3. The consequence is now observable on both surfaces.** `consecutive_failures` and
+`autopropose_timer_halted` are gauges under `rchain.proposer.shard_<i>` on `/metrics`, pushed from the two
+paths that can still change the values after the halt (the timer's tick, and the tap, which is what
+notices a recovery), and the same cell feeds two fields on `ApiStatus`. The observation is a *push* because
+`/metrics` renders a snapshot of a push-populated registry — a value pushed once at setup would read `0`
+for ever and look healthy, which is the defect restated.
+
+**The envelope half is law 43's, and it moved with its checked data.** `ApiStatus` is one of the rows
+`spec/Rchain/Envelope.lean` pins, so the change touched the catalog, the re-emitted
+`spec/conformance/envelope.tsv`, the hand-written `OPENAPI_JSON` schema and the DTO together — the three
+parties law 43 holds equal, and the check that caught C29's stale document. It was **observed red for the
+right reason** before landing: with only the served schema reverted, the test fails naming both keys.
+
+**Why this is not a C-row.** The defect's record already exists — C186 carries the halt and the failure
+that triggers it, and C187 the round-snapshot trade-off that causes it. What was missing was not a number
+but a *witness*, and where the earlier rows say the chain "produces nothing" this pass records the narrower
+truth their text implies: the timer produces nothing, and the node around it is still working. That
+sentence is left in C186 as written rather than rewritten, because it is the consequence that was measured,
+and the correction belongs where a reader hits it — the constant, and here.
+
+**What this does not claim.** That the halt is *right* in every case it fires: the failures that reach the
+threshold need not be state-accounting failures at all — #145's occurrence came from a self-equivocation
+(#156), so a liveness failure in the proposer silences its timer. Turning the halt into a signal is what
+makes that visible; it does not make the trigger correct.
