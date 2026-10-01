@@ -40,6 +40,7 @@
 - [Operating the node](node/operating.md)
 - [Cross-shard invoke (remote deploy)](node/shard-invoke.md)
 - [Running a validator: hardware requirements](node/validator-requirements.md)
+- [Scaling and performance limits](node/scaling.md)
 - [Local devnet (Docker)](node/devnet.md)
 - [The public testnet](node/testnet.md)
 - [Running a public testnet of your own](node/running-a-public-testnet.md)

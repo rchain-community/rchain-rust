@@ -5,6 +5,10 @@ binding constraints are the synchronous-write storage layer (LMDB) and being onl
 page gives a grounded sizing estimate derived from the code's storage envelope and execution model —
 there is no in-repo production benchmark, so treat the numbers as an estimate, not a measurement.
 
+This page answers **"how big a box"**. For **"how fast, and what stops it"** — the throughput ceiling,
+finality latency, merge cost and the Θ(N²) residency that sets a validator's time-to-ceiling — see
+[Scaling and performance limits](scaling.md).
+
 ## What drives each dimension
 
 ### Storage — the biggest variable
