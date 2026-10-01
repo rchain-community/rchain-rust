@@ -52,6 +52,10 @@ def main():
     # 4. Finality that never catches up.
     run("n3-auto-a1", 1000, 1060, 1240, [(1061, "A", 1), (1062, "B", 0), (1063, "C", 0)],
         lambda e: "none", ["bootstrap", "v1", "v2"])
+    # 5. The control arm, idle window minting: expected here (the autopropose dummy deploy is the
+    #    driver), so it must **not** void the attempt — the distinction the void rule turns on.
+    run("n3-auto-a2", 1000, 1060, 1240, [(1020, "A", 0), (1061, "A", 1), (1062, "B", 0)],
+        lambda e: 1 if e >= 1070 else "none", ["bootstrap", "v1", "v2"])
 
     out = subprocess.run([sys.executable, os.path.join(HERE, "n149-summarise.py"), BASE],
                          capture_output=True, text=True).stdout
@@ -61,6 +65,9 @@ def main():
         "n3-noauto-a2": (1, 2, 2, "never"),
         "n3-noauto-a3": (0, 2, 2, "10"),
         "n3-auto-a1": (0, 3, 3, "never"),
+        # `never`: its deploy-bearing block is #2 and the fixture's finality only reaches #1. The case
+        # exists for the idle/void distinction, not for its latency.
+        "n3-auto-a2": (1, 2, 2, "never"),
     }
     bad = []
     for name, (idle, blocks, senders, ttf) in want.items():
@@ -74,13 +81,15 @@ def main():
     if "2 deploy-bearing blocks" not in out:
         bad.append("the non-unique-deploy note is missing")
     if "*** VOID" not in out:
-        bad.append("the non-quiescent idle window did not void the attempt")
+        bad.append("the non-quiescent idle window did not void the primary arm")
+    if "expected on this arm" not in out:
+        bad.append("the control arm's idle window was not distinguished from a void primary attempt")
     if bad:
         print("SELFTEST FAILED:")
         for b in bad:
             print("  " + b)
         return 1
-    print("selftest ok: 4 of 4 shapes read as the pre-registration says they must")
+    print(f"selftest ok: {len(want)} of {len(want)} shapes read as the pre-registration says they must")
     shutil.rmtree(BASE, ignore_errors=True)
     return 0
 

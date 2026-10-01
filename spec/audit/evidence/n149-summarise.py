@@ -129,9 +129,15 @@ def main():
         ttfs = ["never" if r["ttf"] is None else str(r["ttf"]) for r in rs]
         print(f"  N={n:<3} arm={arm:<7} attempts={len(rs)}  blocks={blocks} senders={senders} "
               f"maxpar={par} ttf_s={ttfs}")
-        if any(r["idle"] for r in rs):
+        # The idle control is a *precondition* of the primary arm only: it says the deploy was the sole
+        # driver. On the control arm an idle window that mints is the dummy-deploy path doing what it
+        # says on the tin, and reading it as a void attempt would discard the arm's whole point.
+        if arm == "noauto" and any(r["idle"] for r in rs):
             print(f"    *** VOID: a run had {[r['idle'] for r in rs]} idle-window blocks — the deploy "
                   f"was not the only driver")
+        elif arm != "noauto" and any(r["idle"] for r in rs):
+            print(f"    (idle window minted {[r['idle'] for r in rs]} — expected on this arm: the "
+                  f"autopropose dummy deploy is the driver here, not the deploy)")
 
 
 if __name__ == "__main__":
