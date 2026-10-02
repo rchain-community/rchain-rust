@@ -837,7 +837,7 @@ fn epoch_pot(
 ///
 /// A validator that has **never** signed on this chain is as absent as it is possible to be, so it is
 /// dropped too — which is the honest reading of a missing record rather than a special case.
-fn apply_absence(
+pub(crate) fn apply_absence(
     rewards: BTreeMap<Validator, NonNegI64>,
     spoke: &BTreeMap<Validator, BlockHeight>,
     boundary: i64,
@@ -856,7 +856,12 @@ fn apply_absence(
         .collect()
 }
 
-fn epoch_reward(pot: i64, minimum_bond: i64, active_bonds: i64, bond: i64) -> Result<i64, String> {
+pub(crate) fn epoch_reward(
+    pot: i64,
+    minimum_bond: i64,
+    active_bonds: i64,
+    bond: i64,
+) -> Result<i64, String> {
     if minimum_bond <= 0 {
         return Ok(0);
     }

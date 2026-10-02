@@ -21,6 +21,120 @@ use crate::matcher::{spatial_match, FreeMap};
 use crate::scheduler::EffectMode;
 
 /// An arbitrary **closed** process: grounds, bound vars, wildcards, and collections of them.
+/// **Law 46 and the absence rule as properties, over the space the Lean statements quantify over.**
+///
+/// Issue #150's close condition asks for the chosen formula to be "held by a property test against the
+/// Lean statement", and until this module there was none for the reward: the laws' witnesses are unit
+/// tests, and the two property-test modules in the tree cover laws 3/4/5/21/25 (here) and 26/27/29
+/// (`casper/src/property_tests.rs`). A unit test fixes an instance; these two theorems are about *every*
+/// instance, and the difference is what this module exists to close.
+///
+/// Both are tested through the functions the Lean names — `epoch_reward` (`reward`) and `apply_absence`
+/// (`absenceAdjusted`) — rather than through `close_block`, so the property is about the arithmetic
+/// itself and not about the boundary plumbing that calls it. The plumbing has its own tests.
+mod reward_laws {
+    use super::*;
+    use crate::native_state::{apply_absence, epoch_reward};
+    use rchain_models::validator::Validator;
+    use rchain_shared::refined::{BlockHeight, NonNegI64};
+    use std::collections::BTreeMap;
+
+    fn validator(i: usize) -> Validator {
+        let byte = u8::try_from(i).expect("a test index");
+        Validator::new([byte; 65])
+    }
+
+    fn nn(v: i64) -> NonNegI64 {
+        NonNegI64::try_from(v).expect("a non-negative test amount")
+    }
+
+    proptest! {
+        /// **Law 46 — the shares never exceed the pot, and none is negative.**
+        ///
+        /// The Lean hypotheses are the contract's own and are reproduced here rather than assumed: the
+        /// active total **is** the sum of the members' bonds (`hactive`, which is why the generator sums
+        /// them rather than taking an independent draw), and the normaliser is positive (`hD`). With
+        /// those two, `sum_rewards_le_pot` holds for every list of stakes — and the ranges here are wide
+        /// enough that a formula which dropped either division, or multiplied the wrong factor, would
+        /// break it on the first few cases.
+        #[test]
+        fn law46_the_shares_never_exceed_the_pot(
+            pot in 0i64..1_000_000_000,
+            minimum_bond in 1i64..1_000,
+            bonds in prop::collection::vec(0i64..100_000, 1..6),
+        ) {
+            let active_bonds: i64 = bonds.iter().sum();
+            prop_assume!(active_bonds / minimum_bond > 0);
+            let shares: Vec<i64> = bonds
+                .iter()
+                .map(|b| epoch_reward(pot, minimum_bond, active_bonds, *b).expect("in range"))
+                .collect();
+            let total: i128 = shares.iter().map(|s| i128::from(*s)).sum();
+            prop_assert!(
+                total <= i128::from(pot),
+                "shares {:?} sum to {total}, above the pot {pot}",
+                shares
+            );
+            prop_assert!(shares.iter().all(|s| *s >= 0), "a share cannot be negative: {:?}", shares);
+        }
+
+        /// **The absence rule is income-only in the only sense that can be tested of it**: what comes
+        /// out of `apply_absence` is a *sub-map* of what went in — same keys with the same values, or
+        /// keys gone. It never raises a reward, never scales one, and never invents an entry, which is
+        /// the whole of "it cannot reach a bond" at this level: a bond is not an argument to it.
+        ///
+        /// `absence_never_raises` and `the_absence_rule_moves_no_stake` are the Lean statements.
+        #[test]
+        fn law44_the_absence_rule_only_ever_removes_entries(
+            slack in 0usize..8,
+            heights in prop::collection::vec(0i64..20, 1..5),
+            boundary in 0i64..20,
+        ) {
+            let rewards: BTreeMap<Validator, NonNegI64> =
+                (0..heights.len()).map(|i| (validator(i), nn(100))).collect();
+            let spoke: BTreeMap<Validator, BlockHeight> = heights
+                .iter()
+                .enumerate()
+                .map(|(i, h)| (validator(i), BlockHeight::try_from(*h).expect("a test height")))
+                .collect();
+            let slack = i64::try_from(slack).expect("a small slack");
+            let out = apply_absence(rewards.clone(), &spoke, boundary, slack);
+
+            for (v, kept) in &out {
+                prop_assert_eq!(
+                    rewards.get(v),
+                    Some(kept),
+                    "an entry survives with the value it had, or it does not survive"
+                );
+            }
+            prop_assert!(out.len() <= rewards.len());
+        }
+
+        /// **And a validator inside the slack is paid in full** — `a_returning_validator_is_paid_in_full`
+        /// as a property: a height within `slack` of the boundary is indistinguishable from having just
+        /// spoken, so the rule has nothing to recover from and an honest validator that was briefly away
+        /// is made whole.
+        #[test]
+        fn law44_a_validator_inside_the_slack_is_kept(
+            slack in 1usize..8,
+            offset in 0i64..8,
+            boundary in 8i64..40,
+        ) {
+            let slack = i64::try_from(slack).expect("a small slack");
+            prop_assume!(offset <= slack);
+            let v = validator(1);
+            let rewards = BTreeMap::from([(v, nn(100))]);
+            let spoke = BTreeMap::from([
+                (v, BlockHeight::try_from(boundary - offset).expect("a height")),
+            ]);
+            prop_assert_eq!(
+                apply_absence(rewards.clone(), &spoke, boundary, slack),
+                rewards
+            );
+        }
+    }
+}
+
 fn arb_closed(depth: u32) -> BoxedStrategy<Par<ProcSort>> {
     if depth == 0 {
         return any::<i64>().prop_map(|i| from_expr(Expr::GInt(i))).boxed();

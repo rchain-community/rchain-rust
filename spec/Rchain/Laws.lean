@@ -2248,7 +2248,9 @@ def laws : List Law := [
   { number := 44, layer := "PoS",
     rustWitness := [
       "rholang/src/native_state.rs:the_epoch_gate_does_nothing_off_a_boundary",
-      "rholang/src/native_state.rs:bond_escrows_the_stake_and_activates_at_the_boundary"],
+      "rholang/src/native_state.rs:bond_escrows_the_stake_and_activates_at_the_boundary",
+      "rholang/src/property_tests.rs:law44_the_absence_rule_only_ever_removes_entries",
+      "rholang/src/property_tests.rs:law44_a_validator_inside_the_slack_is_kept"],
     statement := "Membership takes effect at an **epoch boundary**: the epoch sequence runs only when \
       `blockNumber % epochLength = 0`, and off a boundary a bond is pooled but not activated, a \
       withdrawal is staged but not moved, and no claim is paid. The same machine carries the **slash**, \
@@ -2338,7 +2340,8 @@ def laws : List Law := [
       the two-part statement is: the model is the formula, and the Rust is the model on the model's \
       domain" },
   { number := 46, layer := "PoS",
-    rustWitness := ["rholang/src/native_state.rs:an_epoch_splits_the_pot_and_keeps_the_dust"],
+    rustWitness := ["rholang/src/native_state.rs:an_epoch_splits_the_pot_and_keeps_the_dust",
+      "rholang/src/property_tests.rs:law46_the_shares_never_exceed_the_pot"],
     statement := "The split **does not conserve**: `Σ rewards ≤ pot`, and the difference is the dust of \
       two integer divisions — which is not lost but stays in the pot for the next epoch",
     status := .provedModel,
