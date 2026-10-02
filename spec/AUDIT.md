@@ -102,20 +102,19 @@ on the rows that are not reads.
 
 ## Check-off
 
-**Findings  TODO 0 · IN PROGRESS 0 · DONE 235** &nbsp;&nbsp;·&nbsp;&nbsp; **Coverage  all 89 T1 modules read**
+**Findings  TODO 1 · IN PROGRESS 0 · DONE 235** &nbsp;&nbsp;·&nbsp;&nbsp; **Coverage  all 89 T1 modules read**
 
-**Laws  29 of 235 findings name one** (ceiling 206; 206 done row(s) unclassified)
+**Laws  30 of 236 findings name one** (ceiling 206; 206 done row(s) unclassified)
 
-**Both halves are closed.** A `done` row is settled -- fixed, assessed faithful, a
-deliberate deviation, or refuted -- and names what holds it where there is evidence to
-name. What that does *not* mean is stated under each half below.
+Closed when both halves are zero. A **done** row is settled -- fixed, assessed faithful, a
+deliberate deviation, or refuted -- and names what holds it. A **todo** row names what would
+close it.
 
-### Findings — closed
+### TODO — findings (1)
 
-All 235 are settled: **171 name the evidence that holds them** and **64 do not** — the
-second number is the honest residual, and a column rather than an implication. A `done`
-row says the fix is in the tree or that the decision was taken; it does not say either is
-right. Read a row that matters at the § its account cites.
+| id | what | what closes it | account |
+|---|---|---|---|
+| `C201` | **the proposer re-nominates a `Slash` for a validator that is no longer bonded, on every block, for ever.** Found by the live A2 arm (`spec/audit/evidence/a2-live-equivocation-run.sh`, #150): the bootstrap's proposer logged `[pos] slashing 1 bonded validator(s) … Malicious/10000bps (equivocation evidence)` **59 times and still counting** at a chain height of 62 — one per block — while every one of those blocks carried a `bonds` map with the offender already gone, the transition being block 22. The evidence arm of the fold is gated on `bonded` (`casper/src/blocks/proposer/proposer.rs`, `add_recorded_equivocations`), and `bonded` is `compute_bonds(pre_state_hash)` — `pos:active` read at the pre-state — so it should exclude a validator that `slash` has removed from both the pool and the active set (`rholang/src/native_state.rs`, `active.remove(validator)`). **The observation and the reading of the code cannot both be right.** One half is now measured and clean: `a_slashed_validator_is_absent_from_the_bonds_at_the_post_state` slashes a bonded validator and asks `compute_bonds` at that block's post-state — the victim is absent, so the leaf is written and read correctly *at a post-state*. What differs in the live run is therefore **which hash the proposer reads**: the *merged* pre-state, whose native view is reconstructed from the native-changes sidecar (`MergeScope::merge`, issue #74). **Impact as far as the run shows: bounded** — the repeated slash is idempotent (the offender is already out of the pool, so `slash` confiscates nothing), both nodes replayed it identically, and the chain advanced to 62 with no disagreement. Named anyway because the read that is stale here is the proposer's own view of who is bonded, and the same read feeds `check_active_validator` and the attestation quorum — the class is why this is a row rather than a note. **Not fixed**: the diagnosis stops at `compute_bonds` at a post-state being correct, and the merge fixture that would finish it is the unit this row asks for. | a **merged** pre-state fixture — the same test as `a_slashed_validator_is_absent_from_the_bonds_at_the_post_state` with a merge in the middle: build a two-parent block whose parents include a slashing block and assert the victim is absent from `compute_bonds(merged_root)`. If it passes, the stale read is in the proposer's hash choice and not in the merge; if it fails, the merge's native reconstruction (#74) is the defect and this row closes into a fix there | §57 |
 
 ### T1 coverage — closed
 
