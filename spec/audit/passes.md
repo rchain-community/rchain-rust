@@ -6383,6 +6383,14 @@ accrued amount. The bond's confiscation is pot-neutral — the vault loses preci
 so the assertion isolates the one quantity that was wrong. Deleting `committed.remove(validator)` from
 `slash` turns it red with the pot unmoved, which is the defect this row recorded.
 
+**Measured 2026-10-02**, over the real `BlockDagKeyValueStorage` rather than a model of it:
+`a_local_knob_changes_the_refusal_and_never_the_offence_across_a_store` takes a strictly-refused block
+through the *store* and out to the rule the proposer uses, and finds nobody to slash — the flag a C198
+refusal writes survives the round trip as false, which is the same field whose failure to survive
+`from_proto` was C110's defect. The measurement and its limits, including what it does **not** establish
+(that two differently-configured nodes agree about validity — they do not, and a node below the network's
+floor will still lag), are in [`spec/audit/evidence/slash-measures-results.md`](evidence/slash-measures-results.md).
+
 ## 53. The slash was unbounded, and now it is graded (C199, #150)
 
 A1 made *whose fault* a refusal is objective; this is what the fault **costs**. The rule was
@@ -6494,6 +6502,15 @@ that was already there: `Rchain.malicious` is the tier that takes everything.
 
 **Hard fork (#51 category A)**: a fixed node proposes a `Slash` an unfixed one cannot, and accepts one
 an unfixed one refuses with `UnjustifiedSlash` — lockstep upgrade is the practice, and §6's row says so.
+
+**Measured 2026-10-02**, over two real `BlockDagKeyValueStorage` instances:
+`an_equivocation_is_proved_on_a_node_that_never_saw_the_offending_block` has a real-key validator
+double-sign at one `seq_num`, shows the second block to **one** node only, and then has the *other* —
+which never held it — prove the offence from the header alone, with three controls (its own first block,
+another key's signature, a node with no first block) all false. Red under two mutations: the gate
+recording nothing, and the receiver dropping the conflict check. The wire is **not** covered (two `Arc`s
+in one process, a direct call rather than gossip) and the file says so, along with the live two-node arm
+that remains owed. [`spec/audit/evidence/slash-measures-results.md`](evidence/slash-measures-results.md).
 
 ## 55. What a validator is paid: a weighted draw, and a share for the producer (B1, B2, #150)
 
@@ -6608,3 +6625,37 @@ about seeds *because the lists are the same list*, so an entry inserted anywhere
 seed after it. The one property still left to a comment is `create_block`'s choice of `selected.len()`
 (the deploys actually in the pool) over `deploys.len()` (the ones requested) — pinned only by its own
 note, and predating this change.
+
+## 56. B3: the free performance, taken where it is provably free (issue #144, #150)
+
+The plan's B3 says "the node-local levers need **no fork** and should be done while A is being
+designed", and points at issue #144's family A. A is designed and landed (§52–§55); this section closes
+B3's account of itself, and it is mostly a *refusal* with a reason rather than a list of edits.
+
+**Why the other five are not landed here.** #144 is not a list of known-good optimizations; it is an
+open question with a **pre-registered method**, and that method's own Stage 2 says *"choose a lever only
+then"* — after Stage 1 instruments the play path and counts what the snapshots, the pool decode and the
+critical section actually cost. The issue says of its first-ranked candidate, in its own words, that the
+magnitude is **unmeasured**, and its opening warning is the one that decides this section: raising
+throughput without addressing Θ(N²) residency trades a number for a shorter time-to-ceiling. Landing
+those five now would be choosing before measuring, which is the thing that method exists to prevent — and
+two of them (the soft-checkpoint snapshot, `insert`'s critical section) change *when* work happens, so a
+wrong call is a correctness risk rather than a missed speed-up.
+
+**Candidate 4 is the exception, because its saving is provable rather than empirical.** `hash_block`
+cloned the whole `BlockMessage` — up to 255 deploys, each with its term and event log — in order to zero
+two fields, and the proto construction then copied all of that *again*. The clone could never be needed:
+the target is a proto with two fields cleared, which is constructible directly.
+`BlockMessage::to_bytes_cleared` (`models`) builds exactly that, and `hash_block` calls it.
+
+**How it is pinned.** The change is only sound if the bytes are identical, because the block hash is
+taken over them and a different hash is a chain split.
+`the_cleared_encoding_matches_the_clone_then_clear_it_replaced` requires the new route's bytes to equal
+the old route's — clone, clear, encode — for a block carrying a 4 KiB deploy term, with the *uncleared*
+encoding asserted different as the control that the clearing does work. Red when only one of the two
+fields is cleared. And `hash_block`'s three existing tests (`is_deterministic_and_ignores_sig`,
+`changes_with_body`, `changes_with_timestamp`) pass unchanged, which is the equivalence claim measured
+from the other side.
+
+No §6 row and no hard fork: the verdict, the state and the bytes are the same bytes, which is the
+definition of family A. The remaining candidates are recorded on #144 rather than here.

@@ -892,6 +892,25 @@ impl BlockMessage {
         self.to_proto().encode_to_vec()
     }
 
+    /// **The wire form with the two self-referential fields cleared** — `block_hash` and `sig` — which
+    /// is exactly what the content-addressed hash is taken over (`hashBlock`).
+    ///
+    /// A method here rather than a clone-then-clear at the caller, which is what `proto_util::hash_block`
+    /// used to do: the clone deep-copies the whole block, and a block holds up to 255 deploys each with
+    /// its term and event log, while the proto construction below copies all of that *again* — so the
+    /// clone was pure surplus, paid on every block a node creates and every block it validates (issue
+    /// #144's family A, candidate 4). The two fields are cleared on the **proto**, after it is built, so
+    /// the bytes are the same bytes: the clearing is a field assignment either way, and `to_proto` reads
+    /// neither field into any other.
+    pub fn to_bytes_cleared(&self) -> Vec<u8> {
+        let mut proto = self.to_proto();
+        proto.block_hash = BlockHash::new([0u8; crate::block_hash::LENGTH])
+            .as_bytes()
+            .to_vec();
+        proto.sig = Vec::new();
+        proto.encode_to_vec()
+    }
+
     pub fn from_bytes(bytes: &[u8]) -> Result<BlockMessage, crate::errors::ModelsError> {
         let proto = BlockMessageProto::decode(bytes)
             .map_err(|e| crate::errors::ModelsError::Decode(e.to_string()))?;
@@ -1445,6 +1464,57 @@ mod tests {
             sig: Vec::new(),
             timestamp: 0,
         }
+    }
+
+    /// **`to_bytes_cleared` is the same bytes as the clone-then-clear it replaced** (issue #144's
+    /// family A, candidate 4).
+    ///
+    /// The change is only sound if the two routes agree **byte for byte**: the block's hash is taken
+    /// over exactly these bytes, so a field cleared differently would be a different hash, and a
+    /// different hash is a chain split. The test builds a block that carries a deploy with a real term
+    /// and event log — so the clone being removed was copying something — and requires the two
+    /// encodings to be equal, with the uncleared encoding asserted different as the control that the
+    /// clearing is doing work at all.
+    #[test]
+    fn the_cleared_encoding_matches_the_clone_then_clear_it_replaced() {
+        let mut block = empty_block();
+        block.state.deploys = vec![ProcessedDeploy {
+            deploy: SignedDeployData {
+                data: DeployData {
+                    term: "x".repeat(4096),
+                    timestamp: 0,
+                    phlo_price: 1,
+                    phlo_limit: 100,
+                    valid_after_block_number: 0,
+                    shard_id: "root".to_string(),
+                    attachments: Vec::new(),
+                },
+                deployer: vec![1u8; 65],
+                sig: vec![2u8; 64],
+                sig_algorithm: "secp256k1".to_string(),
+            },
+            cost: PCost { cost: 1 },
+            deploy_log: Vec::new(),
+            is_failed: false,
+            system_deploy_error: None,
+        }];
+        block.sig = vec![7u8; 64];
+        block.block_hash = block_hash(9);
+
+        let mut cleared = block.clone();
+        cleared.block_hash = BlockHash::new([0u8; 32]);
+        cleared.sig = Vec::new();
+
+        assert_eq!(
+            block.to_bytes_cleared(),
+            cleared.to_bytes(),
+            "the hash is taken over these bytes; a difference here is a different block"
+        );
+        assert_ne!(
+            block.to_bytes(),
+            block.to_bytes_cleared(),
+            "the control: this block does carry a hash and a signature, so the clearing does work"
+        );
     }
 
     /// **Every `CasperMessage` variant survives its own wire codec.** The tests here round-trip

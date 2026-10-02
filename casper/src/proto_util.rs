@@ -55,11 +55,13 @@ pub async fn get_parent_metadatas_above_block_number(
 ///
 /// `block_hash` and `sig` are cleared before hashing. The Scala clears them to an *empty*
 /// `ByteString`; the fixed-width Rust `BlockHash` maps that to a zero-filled 32-byte value.
+///
+/// The clearing happens in [`BlockMessage::to_bytes_cleared`] rather than on a clone of the block
+/// (issue #144's family A, candidate 4): this used to deep-copy every deploy — up to 255 of them, with
+/// their terms and event logs — to zero two fields, on every block a node creates and every block it
+/// validates. The bytes are unchanged, which is what the models-side test pins.
 pub fn hash_block(block: &BlockMessage) -> BlockHash {
-    let mut cleared = block.clone();
-    cleared.block_hash = BlockHash::new([0u8; 32]);
-    cleared.sig = Vec::new();
-    let bytes = cleared.to_bytes();
+    let bytes = block.to_bytes_cleared();
     BlockHash::from(Blake2b256Hash::create(&bytes))
 }
 
