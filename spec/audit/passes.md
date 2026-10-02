@@ -345,6 +345,7 @@ Every place the Rust port deliberately departs from the Scala oracle, with the r
 | The block path **verifies every deploy's signature** — `validate::deploy_signatures` in `block_summary`'s pure list, refusing with `InvalidDeploySignature` before any replay | `legacy/casper/src/main/scala/coop/rchain/casper/Validate.scala:92-116` — `blockSummary` validates the deploy's shard, window and dedup and **never its signature**; `legacy/models/src/main/scala/coop/rchain/models/NormalizerEnv.scala:33-36` binds `deployerId` from `deploy.pk` with nothing having checked it either. So the oracle has the *same* defect on both paths, which is why this row records a **shared defect** rather than a port divergence — the port simply closes it in the stricter of the two trees | a deploy's `deployer` is the field the replay reads to decide whose vault is charged and paid, so an unauthenticated one is an authorization claim rather than a malformed datum: a bonded proposer could name any account, put arbitrary bytes in `sig`, and have every validator debit that account and pay the proposer's term, with a post-state hash the proposer computed honestly — the block was **valid and unattributable** (AUDIT C120). The check belongs in `block_summary` beside `phloLimit`, for the reason that list's own comment gives, and it is the second instance of the port choosing to be stricter there than the oracle (the first is that `blockSummary` here checks `phloPrice` and `phloLimit` at all, which the Scala does not). **Hard fork:** a block whose deploy signature does not verify was accepted before and is refused now, so a chain upgrading in place diverges on such a block — and the honest reading of that is that only a proposer which *forged* the deploy could have produced one, which is the point of the refusal rather than a cost of it |
 | The node's own block metadata **carries the `slashable` flag** (`BlockMetadataProto.slashable = 22`), where the port dropped it | — (no Scala counterpart: `BlockMetadata.slashable` is this port's own distinction, and the Scala has neither the field nor the rule that reads it) | the flag is the input to C110's slash rule, and the port hard-coded it to `false` in `from_proto` while writing it into every stored metadata — so the rule had no reachable input, a proposer's `to_slash` was always empty, and the **receiving** side refused *every* `Slash` as unjustified (`slash_is_unjustified` is `!slashed.is_subset(&justified)`, and `justified` was always empty). Carrying it restores the economic consequence of an attributable failure, which C111 left as the only seizure rule in the tree (AUDIT C122). **Hard fork:** a proposer on a fixed node may include a `Slash` an unfixed one would not, and a fixed node accepts a justified `Slash` that an unfixed one refuses with `UnjustifiedSlash` — so a chain upgrading in place diverges on any block containing one; lockstep upgrade is the practice, and this is the row that says so. The metadata is node-local and never on the wire, so the field itself changes no format and no state hash. **Narrowed 2026-10-02 (C198, §52):** `slashable` is now derived from `BlockStatus::is_slashing_offence`, not from `FailureCause::Attributable` — the three statuses that read a per-node knob or the compiled version set are no longer offences, because a node that reached the opposite verdict about blame would refuse the slashing block and split rather than disagree. |
 | **A slash is graded by the offence** — `Malicious` takes everything the validator holds in the PoS system, `Misdemeanour` a quarter, `HonestMistake` a tenth, with the remainder **returned to its own vault** (`SlashSeverity` / `BlockStatus::slash_severity` / `NativeSystemState::slash`) | `Pos.rhox:470-482` — the contract transfers `allBonds.get(slashedValidator)`, **the whole bond**, and has no notion of fault at all (its only guard is an auth token) | the *fault* distinction is this port's (C110, C173) and the *gradation* is C199's. The deviation here is the tiers: before C199 the port took the whole bond, as the oracle does. **Hard fork (#51 category A):** the same offence now moves a different amount, so bond and reward amounts move, every downstream block hash moves, and a fixed node and an unfixed one compute different post-states for a block containing a slash — lockstep upgrade is the practice, and this is the row that says so |
+| **An equivocation is slashable, and its proof travels in the block** — the `Slash` system deploy carries an `EquivocationEvidenceProto` header (`EquivocationEvidenceProto.blockHash/sender/seqNum/sig/sigAlgorithm`), the H-1 gate records the refused block's header (`BlockDagStorage::recorded_equivocations`), and a receiver re-checks the offence against **its own DAG** (`validate::equivocation_is_proved`) | — (the Scala has no equivocation *slashing* at all: `BlockDagKeyValueStorage` refuses the second block and keeps nothing, so the fault is free) | the H-1 *refusal* is the oracle's; the penalty is this port's (AUDIT C200, and #150's risk plan). **Hard fork (#51 category A):** a fixed node proposes a `Slash` an unfixed one cannot, and **accepts** one an unfixed one refuses as `UnjustifiedSlash` — so a chain upgrading in place diverges on any block containing one; lockstep upgrade is the practice, and this is the row that says so. The payload is a fixed-width header rather than the refused block because it lands in consensus state and a refused block's size is whatever its sender chose |
 | `Secp256k1::verify_bytes` **refuses a message that is not the 32-byte prehash** (a named `PREHASH_LEN`), where the dependency truncates a longer one to its leftmost 32 bytes | `Secp256k1.scala` / `NativeSecp256k1` take exactly 32 bytes and the Scala's doc warns of an **assertion exception** on other lengths, so the oracle either asserts (a crash, if the JNI assertion is enabled) or its C++ truncates — the ambiguity is C134's and is unresolved in the oracle | the truncation made this function answer for a *prefix* of its message, which on `rho:crypto:secp256k1Verify` is a verdict a contract can receive for a message nobody signed. The port refuses: a defined `false` for an input that is not a prehash, which is neither the crash nor the silent truncation the oracle offers, and is the same preference this register records elsewhere — a refusal at the boundary rather than a value from a failure. Safe for every caller because `signature_hash` produces 32 bytes for `secp256k1` and `secp256k1:eth` alike (AUDIT C134). **Hard fork:** a deploy whose contract verified a suffixed message was answered `true` before and `false` now, so a chain upgrading in place diverges on it; lockstep upgrade is the practice, and this is the row that says so |
 | **Native writes join the merge's conflict relation** (issue #83): two chains of different blocks that wrote a common native key conflict when neither block has seen the other, and depend on each other when one has; a native-writing block's chains are accepted or rejected together; the accepted writes are applied ancestors first (`NativeRelations`, `casper/src/merging.rs`) | — (no Scala counterpart: the Scala's PoS and vault state is tuple-space data, so `deploysAreConflicting` sees it through the event logs; the port's native state has no event log) | a native write is an absolute value from its block's own pre-state, so two concurrent writers can be neither concatenated (duplicate keys: every node panicked at the first epoch boundary with two sibling blocks) nor de-duplicated (two equal phlo charges write equal vault balances, and keeping one destroys the other's REV). **Behaviour change:** concurrent blocks that both write a native key - both boundary blocks at one height, or both charging phlo - now conflict, so one is rejected exactly as a tuple-space conflict would be, where before the merge panicked. Tests: `boundary_merge_tests` |
 | **An empty `FinalizedFringe` is refused as a sync target**, and a finished LFS walk that received no block fails the attempt | `NodeSyncing.scala:124-128` — `startRequester.modify { case true if isValid => (false, true); … }` — latches on the **first** fringe from the bootstrap and inspects nothing about its contents, so it starts the sync on an empty one and `requestApprovedState` then reports the state restored | the genesis master **broadcasts** `FinalizedFringe { hashes: Vec::new() }` as it creates genesis (`node_launch.rs::create_store_broadcast_genesis`) — an announcement that the approved state *is* the genesis, not a sync target. A node already connected receives it **before** the answer to its own request: measured on a devnet, 34 ms after the announcement and 83 ms *before* the master had even seen the request, so the trigger was consumed by the announcement, the correct answer was discarded in silence (a later fringe from the bootstrap logs nothing at all), and the node logged `LFS state is successfully restored.` having restored nothing, then ran on an empty DAG and rejected every block it heard about (#100). Under the oracle's shape a fresh multi-validator network never forms at all. **Not a hard fork**: it changes which fringe a *joining* node acts on, not any block's validity, and no block or deploy changes meaning. One thing keeps the refusal narrow: the responder can never emit an empty fringe — both of its branches return at least one hash — so the only producer of one is the genesis broadcast, and this refuses exactly the input the oracle mishandles. **The companion guard is defence in depth, not the fix**: `run_approved_state_sync` also fails a walk that finishes with an empty `height_map`, which the empty fringe is the only way to reach, because `LfsState::received` writes a `height_map` entry only for a key it actually requested. Witnesses: `an_empty_fringe_does_not_consume_the_sync_trigger` (the regression pin — fails with the check disabled) and `an_empty_fringe_finishes_the_walk_at_once_with_nothing_in_it` (the premise, in the block requester) |
@@ -6423,3 +6424,70 @@ a local setting cannot create an offence.
 **Hard fork (#51 category A)**: a slash now moves a different amount, so the state hash and every
 downstream block differ — and the field is in the block's own state rather than in node-local metadata
 precisely because a replayer has no DAG to re-derive a tier from.
+
+## 54. Equivocation is slashable, and the evidence travels (C200, #150)
+
+The H-1 gate refuses a second block at a `(sender, seq_num)` the DAG already holds and returns **before
+any write** — that ordering is deliberate (it is what keeps an equivocating validator out of the DAG and
+out of the finaliser's way), and its consequence was that the refused block existed nowhere: not in the
+DAG, not in a store, not in a `BlockStatus`, and therefore not in `mark_failed` and not in the offence
+predicate. So the tree punished a stale deploy with the whole bond and punished a **double signature** —
+the one fault that is unambiguous, objective, and verifiable by anyone — with nothing at all. A2 of the
+risk plan is the half that was missing: refusal already cost the offender its block; now it costs its
+stake.
+
+**The evidence is a header, and the size is the reason.** The payload lands in a slashing block's own
+`state` — consensus data every node stores and every replayer reads — and a block refused at the gate has
+passed **no check at all**, so its size is whatever the peer that produced it chose. Carrying the refused
+block would therefore be an unbounded write into consensus state, authored by anyone willing to sign two
+blocks at one sequence number. `EquivocationEvidenceProto` carries the five fields that make the offence
+checkable — the conflicting hash, the sender, the reused `seqNum`, the signature and its algorithm — all
+fixed-width, so the payload is a few hundred bytes whatever the offender does. The proof itself needs no
+second block: the offender's **first** block is already in the receiver's own DAG, which is why "the DAG
+holds a different block by this sender at this sequence number, and this sender signed this hash" is the
+whole of it.
+
+**What a receiver checks, and what it never takes on trust.** `validate::equivocation_is_proved`:
+
+1. **the header is the offender's own signing** — `EquivocationEvidence::is_signed_by` compares the
+   sender field to the named victim *and* verifies the signature over the hash against that key. Both
+   halves are load-bearing: without the sender check a proposer could name victim V while attaching W's
+   valid signature over W's hash, and the DAG check below — which is about V — would then find V's block
+   at that sequence number and **accept**; without the verification a proposer could invent a hash
+   nobody signed.
+2. **the conflict is in the receiver's own DAG** — a message with that sender and `sender_seq`, whose id
+   is *not* the evidence's hash.
+
+Nothing else is added to the slashable set in this pass, and the tier is unchanged: an equivocation is
+`Malicious`, which is what the C199 table already says it earns.
+
+**The payload rides through play and replay symmetrically.** `NativeSystemDeployOp::Slash` carries the
+evidence from the proposer's set into the recorded `SystemDeployData::Slash` (`runtime_manager.rs`) and
+back out again on replay (`runtime_replay.rs`), exactly as the tier does — the native `slash` itself
+ignores it, because the evidence is what makes the offence *justifiable*, not an input to the
+arithmetic. So a replay reproduces the same bytes rather than re-encoding a block, and no canonical
+encoding rule has to be stated.
+
+**Falsified both ways.** Two mutations, each red on the arm that owns the property: deleting the DAG
+conflict test (`Ok(true)` after the signature check) fails *"a block the DAG has no counterpart for
+proves nothing"*; deleting the sender check fails *"the evidence must be the offender's own signature"* —
+the arm the mutation makes reachable, and the reason the sender check is not redundant with the hash.
+`the_evidence_is_a_fixed_size_header_whatever_the_block_it_names` asserts the header's length is
+invariant to a megabyte-sized deploy in the block it names, which is the property that keeps the payload
+out of the "write what you like into consensus state" class.
+`equivocation_evidence_round_trips_and_refuses_a_malformed_field` pins the ingress validation: a
+31-byte hash and a 64-byte sender are refused at `decode`. `insert_rejects_equivocation_same_seq_num`
+asserts the gate records the *refused* block's header and not the one the DAG holds, and
+`a_recorded_equivocation_is_slashed_with_its_evidence` asserts the proposer attaches it at the harshest
+tier — with `an_equivocation_hardens_a_milder_metadata_tier` pinning that the fold can only harden a
+sentence, never soften it.
+
+**No new Lean statement.** The model's `slash` already takes the tier as a parameter and the offence
+*set* is not modelled (`spec/Rchain/Pos.lean` has `Rchain.slash` and the three tiers; it has no
+`BlockStatus`). A2 changes *which offences exist*, not the arithmetic or the ordering the theorems
+constrain, so the honest statement is that the model covers the consequence and not the input — and that
+the input is instead pinned in Rust, both ways. What the model does say about this offence is the part
+that was already there: `Rchain.malicious` is the tier that takes everything.
+
+**Hard fork (#51 category A)**: a fixed node proposes a `Slash` an unfixed one cannot, and accepts one
+an unfixed one refuses with `UnjustifiedSlash` — lockstep upgrade is the practice, and §6's row says so.

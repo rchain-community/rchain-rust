@@ -392,16 +392,17 @@ pub enum SystemDeployData {
         validator: Validator,
         severity: SlashSeverity,
         /// **Equivocation evidence** (AUDIT C200): the offender's *second* block at a `(sender,
-        /// seq_num)` the DAG already holds a **different** block for.
+        /// seq_num)` the DAG already holds a **different** block for, as an
+        /// [`EquivocationEvidence`] header.
         ///
         /// It travels because the H-1 gate refuses such a block *before any write*, so no node stores
         /// it and a receiver cannot look it up. The receiver does not need to have seen it, though: the
         /// offender's *first* block is in **its own DAG**, and the rest of the proof is a signature
         /// verification over content the evidence carries itself.
         ///
-        /// **Serialized**, not a decoded `BlockMessage`, for two reasons: this enum is `serde`, which a
-        /// `BlockMessage` is not, and a block that contains a slash that contains a block would be a
-        /// recursive type. The verifier decodes it (`BlockMessageProto::decode`) when it checks it.
+        /// **Serialized**, not a decoded header, for two reasons: this enum is `serde`, which the
+        /// header's field types are not all of, and a block that contains a slash that contains a block
+        /// would be a recursive type. The verifier decodes it when it checks it.
         ///
         /// `None` (empty on the wire) means the slash is justified the other way — by the offender's
         /// failed block sitting in the slashing block's justifications.
@@ -411,26 +412,94 @@ pub enum SystemDeployData {
     Empty,
 }
 
-/// Decode a serialized `BlockMessage` — the **equivocation evidence** a slash carries (AUDIT C200).
+/// **The minimal proof of an equivocation** (AUDIT C200) — the offender's second block, reduced to the
+/// header fields that make the offence checkable by a node that never saw it.
 ///
-/// Here rather than in the caller because the bytes are a `BlockMessageProto` and this crate is the one
-/// that owns that type (and the `prost` dependency); a consumer that only reads the field would
-/// otherwise have to reach past this module into the generated code.
-/// Serialize a `BlockMessage` for the equivocation-evidence field (AUDIT C200) — the inverse of
-/// [`decode_block`], and here for the same reason.
+/// `models` owns the type because the wire form is a proto this module generates, and the *crypto* is
+/// here too because this crate already depends on `rchain-crypto` ([`is_signed_by`] is one signature
+/// verification, the same call `validate::block_signature` makes).
 ///
-/// **The bytes are carried, not recomputed.** They are part of the block's state, so what matters is
-/// that they are the *same bytes* on play and replay, which they are because the replay reads them
-/// rather than re-encoding — so a discrepancy between two encoders of the same block could not
-/// diverge a chain, which is why no one has to state a canonical-encoding rule here.
-pub fn encode_block(block: &BlockMessage) -> Vec<u8> {
-    block.to_proto().encode_to_vec()
+/// **Why the header and not the block.** This travels in a slashing block's own `state`, i.e. in
+/// consensus data every node stores and every replayer reads — and a block the H-1 gate refused passed
+/// no check at all, so its size is whatever the peer that produced it chose. Carrying the block would
+/// therefore be an unbounded write into consensus state; every field here is fixed-width, so the
+/// payload is a few hundred bytes no matter what the offender sends.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EquivocationEvidence {
+    pub block_hash: BlockHash,
+    pub sender: Validator,
+    pub seq_num: SeqNum,
+    pub sig: Vec<u8>,
+    pub sig_algorithm: String,
 }
 
-pub fn decode_block(bytes: &[u8]) -> Result<BlockMessage, crate::errors::ModelsError> {
-    let proto = BlockMessageProto::decode(bytes)
-        .map_err(|e| crate::errors::ModelsError::Decode(format!("block: {e}")))?;
-    BlockMessage::from_proto(&proto)
+impl EquivocationEvidence {
+    /// The header of a block the gate refused.
+    ///
+    /// Read off the *block*, not off the metadata the gate matched on: the signature covers the block's
+    /// own hash and sender, so the evidence has to be the block's own account of itself for
+    /// [`is_signed_by`] to mean anything.
+    pub fn from_block(block: &BlockMessage) -> Self {
+        Self {
+            block_hash: block.block_hash,
+            sender: block.sender,
+            seq_num: block.seq_num,
+            sig: block.sig.clone(),
+            sig_algorithm: block.sig_algorithm.clone(),
+        }
+    }
+
+    /// The wire form — what a `Slash`'s `evidence` field carries.
+    ///
+    /// **The bytes are carried, not recomputed.** They are part of the block's state, so what matters is
+    /// that they are the *same bytes* on play and replay, which they are because the replay reads them
+    /// rather than re-encoding.
+    pub fn encode(&self) -> Vec<u8> {
+        let proto = EquivocationEvidenceProto {
+            block_hash: self.block_hash.as_bytes().to_vec(),
+            sender: self.sender.as_bytes().to_vec(),
+            seq_num: i64::from(self.seq_num),
+            sig: self.sig.clone(),
+            sig_algorithm: self.sig_algorithm.clone(),
+        };
+        proto.encode_to_vec()
+    }
+
+    /// Parse the wire form, **validating every field on ingress**: a hash that is not 32 bytes and a
+    /// sender that is not a key are refused here rather than reaching a slice or an assert.
+    pub fn decode(bytes: &[u8]) -> Result<Self, crate::errors::ModelsError> {
+        let proto = EquivocationEvidenceProto::decode(bytes).map_err(|e| {
+            crate::errors::ModelsError::Decode(format!("equivocation evidence: {e}"))
+        })?;
+        Ok(Self {
+            block_hash: BlockHash::try_from(proto.block_hash.as_slice())?,
+            sender: Validator::try_from(proto.sender.as_slice())?,
+            seq_num: SeqNum::try_from(proto.seq_num)
+                .map_err(|_| crate::errors::ModelsError::Malformed("negative sequence number"))?,
+            sig: proto.sig,
+            sig_algorithm: proto.sig_algorithm,
+        })
+    }
+
+    /// **Does the named offender's own signature cover `block_hash`?**
+    ///
+    /// Both halves matter and neither is redundant: the sender check is what stops a proposer naming a
+    /// victim and attaching its *own* signature, and the verification is what stops it inventing a
+    /// hash the victim never signed. What is left is the offence itself — only the offender can produce
+    /// this payload, and it can only produce it by signing once per sequence number.
+    pub fn is_signed_by(&self, offender: &Validator) -> bool {
+        if self.sender != *offender {
+            return false;
+        }
+        match rchain_crypto::signatures::signatures_alg::from_algorithm(&self.sig_algorithm) {
+            Some(alg) => alg.verify(
+                self.block_hash.as_bytes(),
+                &self.sig,
+                self.sender.as_bytes(),
+            ),
+            None => false,
+        }
+    }
 }
 
 impl SystemDeployData {
@@ -1836,5 +1905,47 @@ mod tests {
         processed.deploy.data.phlo_price = 1;
         processed.deploy.data.phlo_limit = -100;
         assert_eq!(i64::from(processed.refund_amount()), 0);
+    }
+
+    /// **The equivocation evidence round-trips, and every field is checked on ingress** (AUDIT C200).
+    ///
+    /// The decode is the boundary between a proposer's bytes and a signature verification, so a field
+    /// that is the wrong length has to be refused *here* rather than reaching a slice or an assert: a
+    /// 31-byte "hash" that got through would be verified against a key it cannot belong to, and the
+    /// verifier would answer `false` for a reason that has nothing to do with the offence. `decode` is
+    /// also what makes `is_signed_by` total, since the hash it reads is a real one by then.
+    #[test]
+    fn equivocation_evidence_round_trips_and_refuses_a_malformed_field() {
+        let evidence = EquivocationEvidence {
+            block_hash: BlockHash::new([7u8; 32]),
+            sender: Validator::new([9u8; 65]),
+            seq_num: SeqNum::try_from(12).unwrap(),
+            sig: vec![1, 2, 3],
+            sig_algorithm: "secp256k1".to_string(),
+        };
+        assert_eq!(
+            EquivocationEvidence::decode(&evidence.encode()).unwrap(),
+            evidence,
+            "the wire form carries every field, including the ones the verifier reads"
+        );
+
+        // A hash that is not 32 bytes: refused by the constructor, not by an assert further in.
+        let short_hash = EquivocationEvidenceProto {
+            block_hash: vec![7u8; 31],
+            ..Default::default()
+        };
+        assert!(EquivocationEvidence::decode(&short_hash.encode_to_vec()).is_err());
+
+        // A sender that is not a 65-byte key: the same, and this is the field `is_signed_by` reads
+        // first, so a short one would otherwise be compared against a key of another length.
+        let short_sender = EquivocationEvidenceProto {
+            block_hash: vec![7u8; 32],
+            sender: vec![9u8; 64],
+            ..Default::default()
+        };
+        assert!(EquivocationEvidence::decode(&short_sender.encode_to_vec()).is_err());
+
+        // Bytes that are not the message at all.
+        assert!(EquivocationEvidence::decode(b"not evidence").is_err());
     }
 }

@@ -127,11 +127,34 @@ message SlashSystemDeployDataProto {
   // node has to be able to check it against its own derivation rather than take the proposer's word.
   int32 slashSeverity = 2;
   // **Equivocation evidence** (AUDIT C200): the offender's *second* block at a `(sender, seqNum)` the
-  // DAG already holds a different block for, serialized. Carried as bytes rather than as a nested
-  // `BlockMessage` because a block that contains it would otherwise be a recursive proto; decoded and
-  // verified by every receiver against its own DAG. Empty means the slash is justified the other way —
-  // by the offender's failed block sitting in the slashing block's justifications.
+  // DAG already holds a different block for, reduced to its header and serialized
+  // (`EquivocationEvidenceProto`). Carried as bytes rather than as a nested `BlockMessage` because a
+  // block that contains it would otherwise be a recursive proto; decoded and verified by every
+  // receiver against its own DAG. Empty means the slash is justified the other way — by the offender's
+  // failed block sitting in the slashing block's justifications.
   bytes equivocationEvidence = 3;
+}
+
+// **The minimal proof of an equivocation** (AUDIT C200) — the offender's second block, reduced to the
+// fields that make the offence checkable by someone who never saw it.
+//
+// It is a block *header* and not a block, and the reason is the payload's destination: this rides in
+// the slashing block's own state, which is consensus data every node stores and every replayer reads.
+// A whole block is bounded by nothing a peer must respect (a refused block has passed no check at
+// all), so carrying one would let any peer plant an arbitrarily large object in consensus state by
+// signing two blocks at one sequence number. Every field here is fixed-width, so the payload is a few
+// hundred bytes whatever the offender does.
+//
+// What a receiver checks with it: that `sender` signed `blockHash` (`sig` over `sigAlgorithm`), and
+// that **its own DAG** already holds a *different* block by that sender at `seqNum`. The second half
+// is why the payload needs no copy of the first block, and why a proposer cannot forge the offence —
+// it would have to make two signatures by the victim.
+message EquivocationEvidenceProto {
+  bytes blockHash      = 1;  // the conflicting block's content-addressed hash
+  bytes sender         = 2;  // the offender: the 65-byte uncompressed public key that signed it
+  sint64 seqNum        = 3;  // the sequence number both of the offender's blocks claim
+  bytes sig            = 4;  // the offender's signature over `blockHash`
+  string sigAlgorithm  = 5;  // that signature's algorithm
 }
 
 message CloseBlockSystemDeployDataProto {

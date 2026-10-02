@@ -315,7 +315,7 @@ marked **`slashable`** — and `slashable` is set for one cause only:
 ```rust
 // casper/src/multi_parent_casper.rs  (mark_failed)
 validation_failed: true,
-slashable: matches!(cause, FailureCause::Attributable),
+slashable: status.is_slashing_offence(),
 
 // casper/src/blocks/proposer/proposer.rs  (slashable_offenders)
 crate::validate::slashable_senders(justifications)
@@ -333,9 +333,19 @@ evidence against every validator above it
 refusals that read a setting this node owns** rather than the block: the fee floor
 `casper.min-phlo-price`, the width `casper.max-number-of-parents`, and the compiled version set
 `SUPPORTED`. Those are `Attributable` and still refused, but not offences, because another node with a
-different value would refuse the slashing block rather than agree to it (AUDIT C198). And every receiving
-node checks the producer's work: a block whose slashes are not a subset of the slashable senders *in the
-receiver's own DAG* is refused, so the proposer's opinion of the victim carries no weight (AUDIT C110).
+different value would refuse the slashing block rather than agree to it (AUDIT C198).
+
+**A failed block is one of two ways to be slashed; an equivocation is the other.** A validator that signs
+two different blocks at one sequence number has committed the one fault no honest node can produce, and it
+is no longer free: the gate that refuses the second block records its **header**, the proposer attaches
+that header to a slash, and every other node re-checks it — the offender's own signature over the
+conflicting hash, and a *different* block by that sender at that sequence number **in the receiver's own
+DAG** (AUDIT C200). The header travels in the block's state rather than the block itself, so what a peer
+can put into consensus state by double-signing is a few hundred fixed-width bytes.
+
+And every receiving node checks the producer's work in either case: a block whose slashes it cannot
+re-derive from its own view is refused, so the proposer's opinion of the victim carries no weight
+(AUDIT C110, C200).
 
 `NativeSystemState::slash` removes that validator from the pool, the active set, the withdrawers and the
 pending withdrawers — confiscation, not deactivation — and moves a **share of everything it holds in the

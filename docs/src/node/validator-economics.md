@@ -113,9 +113,10 @@ the rule as shipped, not of any proposal.
 Which regime a net is in is a property of its size, not a policy — and the two are the same code path
 (`select_active` returns the whole eligible pool when the cap does not bite).
 
-## The asymmetry: a whole bond at risk, one epoch's phlo at reward
+## The asymmetry: everything at risk, one epoch's phlo at reward
 
-What is at stake is the validator's **entire** bond, and what is earned is its share of one epoch's
+What is at stake is **everything the validator holds in the PoS system** — its bond, its accrued and
+unwithdrawn rewards, and an escrowed withdrawal claim — and what is earned is its share of one epoch's
 burned phlo. The two exits from the active set are not symmetric, and the asymmetry is deliberate rather
 than an accident of the code — [Running a public testnet of your own](running-a-public-testnet.md) states
 it:
@@ -123,24 +124,28 @@ it:
 > A silent validator is not slashed; it is a drag instead. […] The protocol is asymmetric: going offline
 > is free, while a block that *fails validation on another node* costs the sender its stake.
 
-So a validator that never proposes keeps its bond and (if drawn) still earns; a validator that proposes a
-block another node attributes a failure to loses the bond. Nothing in this tree **underwrites** the
-second risk — no insurance, no partial slash, no reward floor, and (below) no delegation to spread it.
-That is an observation about the code, not a theorem about incentives: it says what the protocol does,
-not that the balance is the one a rational operator would choose.
+So a validator that never proposes keeps its bond and (if drawn) still earns; a validator that commits an
+offence loses a **stated share** of what it holds, and the share is set by what it did (below). Nothing in
+this tree **underwrites** that risk — no insurance, no reward floor, and (below) no delegation to spread
+it — and there is no programme that shares the income either, which is the risk/reward shape the page
+returns to. That is an observation about the code, not a theorem about incentives: it says what the
+protocol does, not that the balance is the one a rational operator would choose.
 
-## Slashing: behavioural, trustless, and full
+## Slashing: behavioural, trustless, and graded
 
 A slash is decided by **what the block did**, not by who is watching, and every node checks the
 producer's work.
 
 **Behavioural.** A failure is recorded in one place, `mark_failed`
-(`casper/src/multi_parent_casper.rs:835`), which sets `validation_failed: true` for **every** cause but
-`slashable: true` for only one:
+(`casper/src/multi_parent_casper.rs`), which takes the refusing status and derives **both** the cause and
+whether it is an offence from it:
 
 ```rust
+validated: true,
 validation_failed: true,
-slashable: matches!(cause, FailureCause::Attributable),
+slashable: status.is_slashing_offence(),
+slash_severity: status.slash_severity().unwrap_or(SlashSeverity::Unspecified),
+failure_cause: Some(status.failure_cause()),
 ```
 
 The cause is `FailureCause` (`models/src/block_metadata.rs`) — `Attributable` (the block's own fault,
@@ -161,22 +166,40 @@ longer offences: a node that reached the opposite verdict about blame would not 
 **refuse the block carrying the slash** — a permanent split, over a local setting, with the sender's whole
 bond gone.
 
-**Trustless.** The offence set is the senders of justifications whose metadata is `slashable`, intersected
-with the bonded set — `slashable_senders` (`casper/src/validate.rs:142`), called through
-`slashable_offenders` (`casper/src/blocks/proposer/proposer.rs:1637`). What makes the rule the
-*protocol's* rather than the proposer's is the receiving side: `slash_is_unjustified`
-(`casper/src/interpreter_util.rs:170`) refuses a block whose slashes are not a subset of the slashable
-senders **in the receiving node's own DAG**. The proposer's opinion of the victim carries no weight, and
-the slash service is not auth-gated — that per-node check is the guard (AUDIT C110,
-[`spec/audit/passes.md`](../../../spec/audit/passes.md)).
+**Two ways a slash is justified, and neither is the proposer's word.** The first is a failed block: the
+offence set is the senders of justifications whose metadata is `slashable`, intersected with the bonded
+set — `slashable_senders` (`casper/src/validate.rs`), called through `slashable_offenders`
+(`casper/src/blocks/proposer/proposer.rs`). The second is an **equivocation**.
+
+**Equivocation: the one fault that needs no judgement, and it used to be free.** The H-1 gate refuses a
+second block at a `(sender, seq_num)` the DAG already holds, and it refuses it **before any write** — so
+the refused block was stored nowhere, was never a `BlockStatus`, and was therefore never an offence.
+Double-signing cost a validator nothing while a stale deploy cost it its bond. Now the gate records the
+refused block's **header**, the proposer attaches it to the slash of every recorded equivocation by a
+bonded sender, and the header travels in the block's own state (`SystemDeployData::Slash`). It is a
+*header* — sender, reused sequence number, the conflicting hash and its signature — and not the block,
+because it lands in consensus data and a block refused at that gate has passed no check at all, so its
+size would be whatever its sender chose.
+
+**Trustless.** What makes either arm the *protocol's* rule rather than the proposer's is the receiving
+side: `slash_is_unjustified` (`casper/src/interpreter_util.rs:170`) refuses a block whose slashes it
+cannot re-derive from **its own** view. For the first arm, that is the slashable senders in the receiving
+node's own DAG. For the second it is a signature and a conflict the receiver checks itself:
+`validate::equivocation_is_proved` requires that the named offender's **own** signature covers the
+evidence's hash, and that the receiver's DAG already holds a **different** block by that sender at that
+sequence number. So a receiver needs neither to have seen the refused block nor to trust the proposer
+that showed it — a forged, relabelled or non-conflicting payload is refused. The proposer's opinion of
+the victim carries no weight, and the slash service is not auth-gated — that per-node check is the guard
+(AUDIT C110 and C200, [`spec/audit/passes.md`](../../../spec/audit/passes.md)).
 
 **Graded, and bounded.** `slash` (`rholang/src/native_state.rs`) removes the validator from the pool, the
 active set, the withdrawers and the pending withdrawers — confiscation, not deactivation — and what it
 takes is a **share of everything that validator holds in the PoS system**: its bond, its accrued and
 unwithdrawn rewards, and an escrowed withdrawal claim. The share is set by the **tier of the offence**
 (`SlashSeverity`, and the table is `BlockStatus::slash_severity`): a **forged** deploy — a signature that
-does not verify against the key it names — takes all of it; a rule the author's own block breaks takes a
-**quarter**; and a bound a stale deploy pool or a clock skew explains takes a **tenth**. **The remainder
+does not verify against the key it names — or a **proved equivocation** takes all of it; a rule the
+author's own block breaks takes a **quarter**; and a bound a stale deploy pool or a clock skew explains
+takes a **tenth**. **The remainder
 returns to the validator's own vault**, so the loss is exactly the tier and the worst case is one an
 operator can read before bonding. A validator that offended more than once answers for the worst tier it
 committed. (Before 2026-10-02 the rule took the *whole* bond whatever the offence, which is the exposure

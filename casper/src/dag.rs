@@ -361,18 +361,20 @@ impl BlockDagStorage for BlockDagKeyValueStorage {
                 m.sender == block_metadata.sender && m.sender_seq == block_metadata.seq_num
             });
             if equivocating {
-                // **Record the refused block before refusing it** (AUDIT C200). This is the only copy
-                // that will ever exist — the gate returns before any write — and it is what a proposer
-                // attaches as evidence so that every other node can check the offence against its own
-                // DAG. A second offence by the same sender replaces the first: one piece of evidence is
-                // enough to take the bond, and holding more would be unbounded.
-                self.equivocations
-                    .lock()
-                    .await
-                    .insert(
-                        block_metadata.sender,
-                        rchain_models::casper::protocol::casper_message::encode_block(&block),
-                    );
+                // **Record the refused block's header before refusing it** (AUDIT C200). This is the
+                // only copy of the offence that will ever exist — the gate returns before any write —
+                // and it is what a proposer attaches as evidence so that every other node can check the
+                // offence against its own DAG. The header and not the block: the payload lands in a
+                // block's *state*, and a refused block's size is whatever its sender chose. A second
+                // offence by the same sender replaces the first — one piece of evidence takes the bond,
+                // and holding more would be unbounded.
+                self.equivocations.lock().await.insert(
+                    block_metadata.sender,
+                    rchain_models::casper::protocol::casper_message::EquivocationEvidence::from_block(
+                        &block,
+                    )
+                    .encode(),
+                );
                 return Err(format!(
                     "{EQUIVOCATION_PREFIX}: sender produced two blocks with the same sequence number"
                 ));
@@ -777,10 +779,10 @@ mod tests {
         let stored = storage.lookup(&first).await.unwrap().unwrap();
         assert_eq!(stored.block_hash, first);
 
-        // **And the refused block is recorded as evidence** (AUDIT C200). This gate is the only place it
-        // will ever exist — it returned before any write — and it is what a proposer attaches so that
-        // every *other* node can re-check the offence against its own DAG. Red before this: nothing was
-        // kept, so an equivocation could be refused and then never punished.
+        // **And the refused block's header is recorded as evidence** (AUDIT C200). This gate is the only
+        // place the offence will ever exist — it returned before any write — and it is what a proposer
+        // attaches so that every *other* node can re-check the offence against its own DAG. Red before
+        // this: nothing was kept, so an equivocation could be refused and then never punished.
         let recorded = storage.recorded_equivocations().await;
         assert_eq!(recorded.len(), 1, "the refused block is kept as evidence");
         let (sender, bytes) = &recorded[0];
@@ -789,11 +791,12 @@ mod tests {
             meta(second, &[], 0).sender,
             "keyed by the validator that equivocated"
         );
-        let decoded = rchain_models::casper::protocol::casper_message::decode_block(bytes)
-            .expect("the recorded evidence decodes");
+        let decoded =
+            rchain_models::casper::protocol::casper_message::EquivocationEvidence::decode(bytes)
+                .expect("the recorded evidence decodes");
         assert_eq!(
             decoded.block_hash, second,
-            "and it is the *refused* block, not the one the DAG holds"
+            "and it is the *refused* block's own hash, not the one the DAG holds"
         );
     }
 

@@ -183,7 +183,9 @@ pub fn slashed_validators(
 
 /// The **equivocation evidence** a block carries, per victim (AUDIT C200). A slash with none is the
 /// metadata-justified kind, which `slashed_validators` above is the whole story for.
-pub fn slashed_evidence(b: &BlockMessage) -> BTreeMap<rchain_models::validator::Validator, Vec<u8>> {
+pub fn slashed_evidence(
+    b: &BlockMessage,
+) -> BTreeMap<rchain_models::validator::Validator, Vec<u8>> {
     b.state
         .system_deploys
         .iter()
@@ -205,19 +207,18 @@ pub fn slashed_evidence(b: &BlockMessage) -> BTreeMap<rchain_models::validator::
 /// **Does this evidence prove that `offender` equivocated** (AUDIT C200) — the second way a slash can
 /// be justified, and the one that needs no failed block.
 ///
-/// Three conditions, and every node can check all three against the chain it already has:
+/// Two conditions, and every node can check both against the chain it already has:
 ///
-/// 1. the evidence decodes to a block, and its declared hash **is** its content hash — recomputed
-///    rather than taken ([`block_hash`]);
-/// 2. its signature verifies against the offender's key ([`block_signature`]), so the offender did
-///    sign it;
-/// 3. the DAG **already holds a different block** by that sender at that `seq_num`, which is what makes
+/// 1. the evidence is a header the **offender itself signed** — the sender check and the signature
+///    verification are [`EquivocationEvidence::is_signed_by`], so a proposer can neither name a victim
+///    it did not sign for nor invent a hash the victim never signed;
+/// 2. the DAG **already holds a different block** by that sender at that `seq_num`, which is what makes
 ///    two blocks an equivocation rather than one block.
 ///
 /// **The first block does not travel.** It was inserted normally and is in the receiver's own DAG —
-/// only the *second* was refused, at the H-1 gate, before any write. So the evidence is one block and
-/// no receiver has to take the proposer's word for anything: it re-derives the offence from a block it
-/// already has, a signature it verifies, and content it hashes itself.
+/// only the *second* was refused, at the H-1 gate, before any write. So the evidence is a header and no
+/// receiver has to take the proposer's word for anything: it re-derives the offence from a block it
+/// already has and a signature it verifies.
 ///
 /// A malformed or unparsable payload is `false`, not an error: it proves nothing, which is exactly what
 /// a refusal should say.
@@ -226,18 +227,17 @@ pub async fn equivocation_is_proved(
     offender: &rchain_models::validator::Validator,
     evidence: &[u8],
 ) -> Result<bool, String> {
-    let Ok(block) =
-        rchain_models::casper::protocol::casper_message::decode_block(evidence)
+    let Ok(proved) =
+        rchain_models::casper::protocol::casper_message::EquivocationEvidence::decode(evidence)
     else {
         return Ok(false);
     };
-    if block.sender != *offender || !block_hash(&block) || !block_signature(&block) {
+    if !proved.is_signed_by(offender) {
         return Ok(false);
     }
     let repr = dag.get_representation().await;
-    let seq_num = block.seq_num;
     Ok(repr.dag_message_state.msg_map.iter().any(|(h, m)| {
-        m.sender == *offender && m.sender_seq == seq_num && *h != block.block_hash
+        m.sender == *offender && m.sender_seq == proved.seq_num && *h != proved.block_hash
     }))
 }
 
@@ -1703,6 +1703,214 @@ mod effectful_tests {
                 .unwrap(),
             Err(BlockStatus::ExceedsBlockPhloLimit),
             "an over-budget block must be refused by the summary, not merely by a predicate nobody calls"
+        );
+    }
+
+    // --- Equivocation evidence (AUDIT C200) ------------------------------------------------------
+
+    use rchain_models::casper::protocol::casper_message::EquivocationEvidence;
+
+    /// A real secp256k1 key pair, fixed by a seed byte so the fixture is deterministic.
+    ///
+    /// A *real* key rather than a byte pattern: the evidence's whole acceptance rule is that the
+    /// signature verifies against the named sender, so a fixture that cannot sign proves nothing
+    /// about it.
+    fn identity(byte: u8) -> crate::validator_identity::ValidatorIdentity {
+        use rchain_crypto::private_key::PrivateKey;
+        crate::validator_identity::ValidatorIdentity::from_private_key(PrivateKey::new(vec![
+            byte;
+            32
+        ]))
+        .expect("a fixed 32-byte scalar is a valid key")
+    }
+
+    /// A signed block by `id` at `seq`, distinguishable from its twin by `marker` — which changes its
+    /// content hash, so the two are a genuine conflict rather than the same block twice.
+    fn signed_block(
+        id: &crate::validator_identity::ValidatorIdentity,
+        seq: i64,
+        marker: u8,
+    ) -> BlockMessage {
+        let base = BlockMessage {
+            version: rchain_models::block_version::CURRENT,
+            shard_id: "root".to_string(),
+            block_hash: BlockHash::new([0u8; 32]),
+            block_number: rchain_shared::refined::BlockHeight::try_from(1).unwrap(),
+            sender: Validator::from_slice(&id.public_key.bytes()),
+            seq_num: rchain_shared::refined::SeqNum::try_from(seq).unwrap(),
+            pre_state_hash: rchain_models::block::state_hash::StateHash::new([marker; 32]),
+            post_state_hash: rchain_models::block::state_hash::StateHash::new([marker; 32]),
+            justifications: Vec::new(),
+            bonds: BTreeMap::new(),
+            rejected_deploys: BTreeSet::new(),
+            rejected_blocks: BTreeSet::new(),
+            rejected_senders: BTreeSet::new(),
+            state: rchain_models::casper::protocol::casper_message::RholangState::default(),
+            sig_algorithm: "secp256k1".to_string(),
+            sig: vec![],
+            timestamp: 0,
+        };
+        id.sign_block(&base).expect("signing with a real key")
+    }
+
+    /// A DAG holding exactly these blocks, as messages — the receiver's own view, which is what
+    /// `equivocation_is_proved` checks the evidence against.
+    fn dag_holding(blocks: &[BlockMessage]) -> MockDag {
+        let msg_map = blocks
+            .iter()
+            .map(|b| {
+                (
+                    b.block_hash,
+                    rchain_block_storage::dag::finalizer::Message {
+                        id: b.block_hash,
+                        height: b.block_number,
+                        sender: b.sender,
+                        sender_seq: b.seq_num,
+                        bonds_map: BTreeMap::new(),
+                        parents: BTreeSet::new(),
+                        fringe: BTreeSet::new(),
+                        seen: Arc::new(BTreeSet::new()),
+                    },
+                )
+            })
+            .collect();
+        MockDag {
+            metadata: BTreeMap::new(),
+            representation: DagRepresentation {
+                dag_set: Arc::new(BTreeSet::new()),
+                child_map: Arc::new(BTreeMap::new()),
+                height_map: Arc::new(BTreeMap::new()),
+                dag_message_state: DagMessageState::from_parts(BTreeMap::new(), msg_map),
+                fringe_states: BTreeMap::new(),
+            },
+        }
+    }
+
+    /// The header a proposer would attach for `block`.
+    fn evidence_for(block: &BlockMessage) -> Vec<u8> {
+        rchain_models::casper::protocol::casper_message::EquivocationEvidence::from_block(block)
+            .encode()
+    }
+
+    /// **The C200 falsifier: evidence proves an equivocation only when it is a *signed conflict*, and
+    /// the check needs nothing the receiver does not already have.**
+    ///
+    /// Two conditions, one arm each: the offender signed it, and the DAG already holds a **different**
+    /// block by that sender at the same `seq_num`. The conflict arm is the only one that is an offence —
+    /// and it is checked against the *receiver's own* DAG, which is why a node that never saw the
+    /// refused block still needs no trust in the proposer. Red before this: the function did not exist,
+    /// and an equivocation could be refused and never punished.
+    #[tokio::test]
+    async fn equivocation_evidence_is_proved_only_by_a_signed_conflict() {
+        let me = identity(0x11);
+        let other = identity(0x22);
+        let held = signed_block(&me, 3, 0x01);
+        let conflict = signed_block(&me, 3, 0x02);
+        let offender = Validator::from_slice(&me.public_key.bytes());
+        let dag = dag_holding(&[held.clone()]);
+
+        // The offence: a second, differently-hashed block at a `(sender, seq_num)` the DAG holds.
+        assert!(
+            equivocation_is_proved(&dag, &offender, &evidence_for(&conflict))
+                .await
+                .unwrap(),
+            "two signed blocks at one sequence number is an equivocation"
+        );
+
+        // A block at a *fresh* sequence number is just a block.
+        assert!(
+            !equivocation_is_proved(&dag, &offender, &evidence_for(&signed_block(&me, 4, 0x02)))
+                .await
+                .unwrap(),
+            "a block the DAG has no counterpart for proves nothing"
+        );
+
+        // …and neither is a block signed by somebody else, whatever it says.
+        assert!(
+            !equivocation_is_proved(
+                &dag,
+                &offender,
+                &evidence_for(&signed_block(&other, 3, 0x03))
+            )
+            .await
+            .unwrap(),
+            "the evidence must be the *offender's* own signature"
+        );
+
+        // **A signature that is not the offender's over the offender's own hash** — the proposer
+        // relabelling somebody else's block as the victim's. The sender field is what catches it, and
+        // this is the arm that shows the sender check is not redundant with the hash.
+        let mut relabelled = signed_block(&other, 3, 0x03);
+        relabelled.sender = offender;
+        assert!(
+            !equivocation_is_proved(&dag, &offender, &evidence_for(&relabelled))
+                .await
+                .unwrap(),
+            "a signature by a key the header does not name proves nothing"
+        );
+
+        // A payload that is not evidence proves nothing rather than erroring: a refusal is what a
+        // payload that proves nothing earns.
+        assert!(
+            !equivocation_is_proved(&dag, &offender, b"not a block")
+                .await
+                .unwrap(),
+            "garbage must be refused, not accepted or raised"
+        );
+    }
+
+    /// **The evidence is a header, and its size is fixed by its own fields** (AUDIT C200).
+    ///
+    /// This is the arm that keeps a peer from writing into consensus state: the payload rides in a
+    /// slashing block's `state`, so if it carried the refused *block* its size would be whatever that
+    /// peer chose — a block refused at the H-1 gate has passed no check at all. The header cannot
+    /// exceed its fields no matter what the offender signs, and the bound is asserted rather than
+    /// argued because the next person to "simplify" this into a whole-block payload would otherwise
+    /// only find out from a chain.
+    #[test]
+    fn the_evidence_is_a_fixed_size_header_whatever_the_block_it_names() {
+        let me = identity(0x11);
+        let plain = signed_block(&me, 3, 0x01);
+
+        // The same header, whose block carries a deploy of a megabyte. A whole-block payload would
+        // grow by that megabyte; the header cannot, because no field of it holds the block.
+        let mut fat = plain.clone();
+        fat.state.deploys = vec![ProcessedDeploy {
+            deploy: SignedDeployData {
+                deployer: vec![1u8; 65],
+                data: DeployData {
+                    term: "x".repeat(1 << 20),
+                    timestamp: 0,
+                    phlo_price: 0,
+                    phlo_limit: 0,
+                    valid_after_block_number: 0,
+                    shard_id: "root".to_string(),
+                    attachments: vec![],
+                },
+                sig_algorithm: "secp256k1".to_string(),
+                sig: vec![],
+            },
+            cost: PCost { cost: 0 },
+            deploy_log: vec![],
+            is_failed: false,
+            system_deploy_error: None,
+        }];
+        let fat_header = EquivocationEvidence::from_block(&fat).encode();
+        let plain_header = EquivocationEvidence::from_block(&plain).encode();
+
+        assert_eq!(
+            fat_header.len(),
+            plain_header.len(),
+            "the evidence's size must not depend on the block it names"
+        );
+        assert!(
+            plain_header.len() < 1024,
+            "a header is a few hundred bytes, not a block: got {}",
+            plain_header.len()
+        );
+        assert!(
+            EquivocationEvidence::decode(&fat_header).is_ok(),
+            "and it round-trips"
         );
     }
 }
