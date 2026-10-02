@@ -593,6 +593,12 @@ pub struct Run {
     #[arg(long = "min-phlo-price")]
     pub min_phlo_price: Option<i64>,
 
+    /// **Broadcast a twin of every block this node creates** — the same block, equally signed, at the
+    /// same `(sender, seq_num)`. A measurement instrument, not an operating mode: every peer will
+    /// record this node as having equivocated and may take its bond (AUDIT C200).
+    #[arg(long = "equivocation-injection")]
+    pub equivocation_injection: bool,
+
     /// Public keys of the Coop multisig vault.
     ///
     /// **Wired, but not to what the name suggests.** In the blessed contract these keys own the Coop

@@ -137,6 +137,14 @@ pub struct CasperConf {
     pub synchrony_constraint_threshold: f64,
     pub height_constraint_threshold: i64,
     pub min_phlo_price: i64,
+    /// **Broadcast a twin of every block this node creates** (default off). A devnet-only injection,
+    /// for producing the one fault no honest node can produce — two distinct signed blocks at one
+    /// `(sender, seq_num)` — so the equivocation rules (AUDIT C200) can be exercised between two live
+    /// nodes rather than only in one process.
+    ///
+    /// It is *self-harm* on a real network and it says so: the twin is equally signed, so every peer
+    /// records the node as having equivocated, and it is the node's own bond the peers will take.
+    pub equivocation_injection: bool,
     /// The effect-scheduler mode (Laws 20–25): `dfs` (default), `gate`, `relaxed`, or
     /// `relaxed-validated`. Parsed via `FromStr` at consumption (`EffectMode`); the block paths
     /// hard-reject `relaxed` (off-chain only) and accept `relaxed-validated` with

@@ -1725,4 +1725,90 @@ mod tests {
             "the record is consensus data: both paths must reach the same post-state"
         );
     }
+
+    /// **AUDIT C201: after a block slashes a validator, is it gone from the bonds the *next* proposer
+    /// reads?**
+    ///
+    /// The live A2 arm (`spec/audit/evidence/a2-live-equivocation-run.sh`) turned this up: the proposer
+    /// emitted a `Slash` for the offender on **every** block after the first, 59 of them and still
+    /// counting, while every one of those blocks carried a bonds map with the offender already gone.
+    /// `add_recorded_equivocations` filters on `bonded`, which is `compute_bonds(pre_state_hash)` —
+    /// `pos:active` read at the pre-state — so either that read is stale, or the offender is somehow
+    /// still in the active set, and the two cannot both be true.
+    ///
+    /// This test splits the question at the one place it can be split cheaply: it slashes a bonded
+    /// validator in a block and then asks `compute_bonds` at that block's **post-state**. A pass here
+    /// means the read is right and the live behaviour comes from *which hash* the proposer reads (the
+    /// merged pre-state, and the native sidecar that reconstructs it — #74's territory); a failure here
+    /// is the bug itself, named.
+    #[tokio::test]
+    async fn a_slashed_validator_is_absent_from_the_bonds_at_the_post_state() {
+        use rchain_models::block_metadata::SlashSeverity;
+        use rchain_rholang::native_state::PosParams;
+        use rchain_shared::refined::{BlockHeight, SeqNum};
+
+        let rm = manager().await;
+        let rand = Blake2b512Random::from_init(&[0u8; 32]);
+        let operator = Validator::from_slice(&[1u8; 65]);
+        let victim = Validator::from_slice(&[2u8; 65]);
+        let pos = PosGenesis {
+            bonds: BTreeMap::from([
+                (operator, NonNegI64::try_from(100).expect("a stake")),
+                (victim, NonNegI64::try_from(100).expect("a stake")),
+            ]),
+            trusted: BTreeSet::new(),
+            params: PosParams::default(),
+        };
+        let (_pre, genesis_post, _) = rm
+            .compute_genesis(&[], &rand, BlockData::empty(), &pos, &[])
+            .await
+            .expect("compute_genesis");
+
+        let before = rm
+            .compute_bonds(&StateHash::from_slice(genesis_post.as_bytes()))
+            .await
+            .expect("bonds at the genesis post-state");
+        assert!(
+            before.contains_key(&victim),
+            "the control: the victim is bonded before anything is slashed"
+        );
+
+        let block_data = BlockData {
+            block_number: BlockHeight::try_from(1).expect("a height"),
+            sender: PublicKey::new(vec![1u8; 65]),
+            seq_num: SeqNum::zero(),
+            timestamp: 0,
+        };
+        let slashing = [SystemDeploy::slash(
+            &victim,
+            SlashSeverity::Malicious,
+            None,
+            rand.split_byte(0),
+        )];
+        let (post, _, _) = rm
+            .compute_state(
+                &genesis_post,
+                &[],
+                &slashing,
+                &rand,
+                block_data,
+                &Blake2b256Hash::from_bytes([5u8; 32]),
+            )
+            .await
+            .expect("a block that slashes the victim");
+
+        let after = rm
+            .compute_bonds(&StateHash::from_slice(post.as_bytes()))
+            .await
+            .expect("bonds at the slashing block's post-state");
+        assert!(
+            after.contains_key(&operator),
+            "the control: the operator is untouched by the slash"
+        );
+        assert!(
+            !after.contains_key(&victim),
+            "a slashed validator must be gone from `pos:active` at the post-state — if it is still \
+             here, this is C201's defect and the live run's repeated `Slash` is explained by it"
+        );
+    }
 }

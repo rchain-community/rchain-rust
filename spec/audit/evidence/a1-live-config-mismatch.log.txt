@@ -1,0 +1,39 @@
+04f700a417754b775d95421973bdbdadb2d23c8a5af46f1829b1431f5c136e549e8a0d61aa0c793f1a614f8e437711c7758473c6ceb0859ac7e9e07911ca66b5c4 100
+04dbe32c2062240a4ba0bcad01d7edd98c78b51c77765d5e1e5e9fa3743d2f12a1f82f42cd7dc4f41445979117d790f23e9b3d08d0aa06d527c236172043e747fc 100
+[a1] -- bootstrap (floor 1) status
+  "peers": 1,
+  "nodes": 0,
+  "latestBlockNumber": 8
+[a1] -- bootstrap (floor 1) last-finalized-block
+Finalized fringe is not available.
+[a1] -- validator-1 (floor 5) status
+  "peers": 1,
+  "nodes": 1,
+  "latestBlockNumber": 1
+[a1] -- validator-1 (floor 5) last-finalized-block
+Finalized fringe is not available.
+==> deploying hello.rho to devnet-bootstrap (validAfterBlockNumber=9)
+Response: Success!
+DeployId is: 3045022100c03cfd001556f8c82a219ac115b47789fcfc46eeba1ce7355358e58f023eb46c02203c02bed67476bacd5c349e40de6a939baea8b451eead7aec3fb5e4af96e138b3
+[a1] -- bootstrap (floor 1), after status
+  "peers": 1,
+  "nodes": 0,
+  "latestBlockNumber": 26
+[a1] -- bootstrap (floor 1), after last-finalized-block
+Finalized fringe is not available.
+[a1] -- validator-1 (floor 5), after status
+  "peers": 1,
+  "nodes": 1,
+  "latestBlockNumber": 1
+[a1] -- validator-1 (floor 5), after last-finalized-block
+Finalized fringe is not available.
+2026-10-02T15:16:03.681Z WARN  [casper.blocks.BlockProcessor] Block #16 d661ec1abfa5081ce5bcbbac6ca1f95fe2571b5140245cb2d323ead712267f47 from 04f700a417754b77 failed validation: a deploy's phlo price is below the minimum
+2026-10-02T15:16:03.892Z WARN  [casper.blocks.BlockProcessor] Block #17 20be82d139abf76f5867e966ad048ae601371428e4a6f89b690d6ccbf8fc091c from 04f700a417754b77 failed validation: a deploy's phlo price is below the minimum
+2026-10-02T15:16:05.820Z WARN  [casper.blocks.BlockProcessor] Block #18 4371e5c8f1c7bfbb3aa4dfe9b72e9d83fc7183d481bd8f9e86416a655e56d0dc from 04f700a417754b77 failed validation: a deploy's phlo price is below the minimum
+2026-10-02T15:16:07.884Z WARN  [casper.blocks.BlockProcessor] Block #19 f25a85e27dd65ce51de5451dc2f8dab932adf039d71557b456ff44cad62917a8 from 04f700a417754b77 failed validation: a deploy's phlo price is below the minimum
+2026-10-02T15:16:20.139Z WARN  [casper.blocks.BlockProcessor] Block #20 6a3267914092e295526c66a514fee82d30e31897d71257f1aa1b16428ff920f6 from 04f700a417754b77 failed validation: a deploy's phlo price is below the minimum
+2026-10-02T15:16:21.978Z WARN  [casper.blocks.BlockProcessor] Block #21 df3ce29a70b0f913d52eff699487afe49402c9e5ae558c37307d6a1201a7c2c5 from 04f700a417754b77 failed validation: a deploy's phlo price is below the minimum
+2026-10-02T15:16:23.852Z WARN  [casper.blocks.BlockProcessor] Block #22 f3731af2b05a4c1b702f8906a8aa5960bd1d13f25c3201655b3f30063185ead4 from 04f700a417754b77 failed validation: a deploy's phlo price is below the minimum
+2026-10-02T15:16:25.805Z WARN  [casper.blocks.BlockProcessor] Block #23 1ad4bdb8ab379c474863f32cc1c1fe3dca2be281acd3da5eec1b0627991eef8a from 04f700a417754b77 failed validation: a deploy's phlo price is below the minimum
+2026-10-02T15:16:27.857Z WARN  [casper.blocks.BlockProcessor] Block #24 bd2c4450be8defd392b56c12d7f911f79360115d8b81192cf49b982bb965c469 from 04f700a417754b77 failed validation: a deploy's phlo price is below the minimum
+2026-10-02T15:16:29.586Z WARN  [casper.blocks.BlockProcessor] Block #25 93c22a0f4e76d41fc9f2f8e642a4e3fd3bdb61982b85f567f5c8e5d836954d54 from 04f700a417754b77 failed validation: a deploy's phlo price is below the minimum

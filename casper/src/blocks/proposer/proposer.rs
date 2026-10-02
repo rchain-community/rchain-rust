@@ -160,6 +160,14 @@ pub struct Proposer {
     log: Arc<dyn Log>,
     consecutive_failures: Arc<AtomicU64>,
     stale_snapshot_equivocations: Arc<AtomicU64>,
+    /// Broadcast a twin of every block this node creates (see `CasperConf::equivocation_injection`).
+    equivocation_injection: bool,
+    /// The block store, kept here for one purpose: **persisting the injected twin's body**. A peer
+    /// answers a hash announcement by asking for the block, so a twin that is announced and not held is
+    /// a twin nobody ever receives — which is what the first version of this arm measured (45 twins
+    /// broadcast, no refusal anywhere, no slash). `validate_block` stores the real block's body and
+    /// nothing validates the twin, so the twin needs its own write.
+    block_store: BlockStore,
 }
 
 impl Proposer {
@@ -185,6 +193,8 @@ impl Proposer {
         log: Arc<dyn Log>,
         consecutive_failures: Arc<AtomicU64>,
         stale_snapshot_equivocations: Arc<AtomicU64>,
+        equivocation_injection: bool,
+        block_store: BlockStore,
     ) -> Self {
         Proposer {
             get_latest_seq_number,
@@ -196,6 +206,8 @@ impl Proposer {
             log,
             consecutive_failures,
             stale_snapshot_equivocations,
+            equivocation_injection,
+            block_store,
         }
     }
 
@@ -254,6 +266,43 @@ impl Proposer {
                 Ok(()) => {
                     self.consecutive_failures.store(0, Ordering::Relaxed);
                     (self.propose_effect)(&block).await;
+                    // **The equivocation injection**, when armed: a second, equally valid block at the
+                    // same `(sender, seq_num)`. Loud on every block, because a node that is doing this
+                    // has been asked to and should never look healthy while it does.
+                    if self.equivocation_injection {
+                        match equivocation_twin(&block, &self.validator) {
+                            Ok(twin) => {
+                                // **The body as well as the hash.** A peer answers a hash announcement
+                                // by asking for the block, so a twin that is announced and not held is
+                                // a twin no peer ever receives — and the first version of this arm did
+                                // exactly that: 45 twins broadcast, no refusal anywhere, no slash, and
+                                // an empty ledger of refusals that looked like the fix failing.
+                                // `validate_block` stores the real block's body; nothing validates the
+                                // twin, so nothing else would store its.
+                                if let Err(e) = put_block(&self.block_store, twin.clone()).await {
+                                    self.log.error(
+                                        LogSource::new("casper.blocks.Proposer"),
+                                        &format!("could not store the injected twin's body: {e}"),
+                                    );
+                                }
+                                self.log.warn(
+                                    LogSource::new("casper.blocks.Proposer"),
+                                    &format!(
+                                        "EQUIVOCATION INJECTION: broadcasting a second block #{} \
+                                         (seq {}) from this node's own key. Every peer will record \
+                                         this node as having equivocated and may slash it. This is \
+                                         the devnet-only `--equivocation-injection`.",
+                                        twin.block_number, twin.seq_num
+                                    ),
+                                );
+                                (self.propose_effect)(&twin).await;
+                            }
+                            Err(e) => self.log.error(
+                                LogSource::new("casper.blocks.Proposer"),
+                                &format!("could not build the injected twin: {e}"),
+                            ),
+                        }
+                    }
                     Ok((
                         ProposeResult {
                             propose_status: ProposeStatus::ProposeSuccess,
@@ -379,6 +428,7 @@ impl Proposer {
         log: Arc<dyn Log>,
         consecutive_failures: Arc<AtomicU64>,
         stale_snapshot_equivocations: Arc<AtomicU64>,
+        equivocation_injection: bool,
     ) -> Proposer
     where
         F: Fn(BlockHash) -> Fut + Send + Sync + 'static,
@@ -536,6 +586,8 @@ impl Proposer {
             log,
             consecutive_failures,
             stale_snapshot_equivocations,
+            equivocation_injection,
+            block_store,
         )
     }
 }
@@ -1187,7 +1239,23 @@ mod tests {
             log,
             consecutive_failures,
             stale_snapshot_equivocations,
+            false,
+            block_store(),
         )
+    }
+
+    /// A block store for tests that never read it — this file's tests run with the injection off.
+    fn block_store() -> BlockStore {
+        use rchain_block_storage::dag::codecs::{BlockHashCodec, BlockMessageCodec};
+        use rchain_shared::store::InMemoryKeyValueStore;
+        use rchain_shared::typed_store::KeyValueTypedStoreCodec;
+        Arc::new(KeyValueTypedStoreCodec::new(
+            Arc::new(tokio::sync::Mutex::new(Box::new(
+                InMemoryKeyValueStore::default(),
+            ))),
+            Arc::new(BlockHashCodec),
+            Arc::new(BlockMessageCodec),
+        ))
     }
 
     fn block() -> BlockMessage {
@@ -1280,6 +1348,8 @@ mod tests {
             log,
             consecutive_failures.clone(),
             stale_snapshot_equivocations.clone(),
+            false,
+            block_store(),
         );
 
         let (tx, rx) = tokio::sync::oneshot::channel();
@@ -1637,6 +1707,116 @@ mod attestation_suppression_tests {
         // Someone else's message is not ours, and must not reset our cadence.
         assert!(cadence_due(&[latest(b, 20)], &a, tip));
     }
+}
+
+#[cfg(test)]
+mod equivocation_injection_tests {
+    use super::equivocation_twin;
+    use crate::proto_util::hash_block;
+    use crate::validate::block_signature;
+    use crate::validator_identity::ValidatorIdentity;
+    use rchain_models::block::state_hash::StateHash;
+    use rchain_models::block_hash::BlockHash;
+    use rchain_models::casper::protocol::casper_message::{BlockMessage, RholangState};
+    use rchain_models::validator::Validator;
+    use rchain_shared::refined::{BlockHeight, SeqNum};
+
+    fn identity() -> ValidatorIdentity {
+        ValidatorIdentity::from_hex(
+            "67e56582298859ddae725f972992a07c6c4fb9f62a8fff58ce3ca926a1063530",
+        )
+        .expect("a known secp256k1 key")
+    }
+
+    /// A block signed by the identity, at a real sequence number.
+    fn block(id: &ValidatorIdentity) -> BlockMessage {
+        let base = BlockMessage {
+            version: 1,
+            shard_id: "root".to_string(),
+            block_hash: BlockHash::new([0u8; 32]),
+            block_number: BlockHeight::try_from(7).expect("a height"),
+            sender: Validator::from_slice(id.public_key.bytes()),
+            seq_num: SeqNum::try_from(3).expect("a sequence number"),
+            pre_state_hash: StateHash::new([1u8; 32]),
+            post_state_hash: StateHash::new([2u8; 32]),
+            justifications: Vec::new(),
+            bonds: std::collections::BTreeMap::new(),
+            rejected_deploys: std::collections::BTreeSet::new(),
+            rejected_blocks: std::collections::BTreeSet::new(),
+            rejected_senders: std::collections::BTreeSet::new(),
+            state: RholangState::default(),
+            sig_algorithm: "secp256k1".to_string(),
+            sig: Vec::new(),
+            timestamp: 1_700_000_000_000,
+        };
+        id.sign_block(&base).expect("signing with a real key")
+    }
+
+    /// **The twin is the same block in every way the protocol reads, and a different block in the one
+    /// way that makes it an equivocation.**
+    ///
+    /// The injection is only a *measurement* of the equivocation rules if the second block is otherwise
+    /// beyond reproach: same sender, same sequence number, same state claim, a valid content-addressed
+    /// hash and a valid signature — and a different hash, which is the whole offence. A twin that
+    /// differed anywhere else would be refused for some other reason and the arm would measure nothing.
+    ///
+    /// The field-by-field assertion below is that claim spelled out: everything equal but `timestamp`,
+    /// `block_hash` and `sig`.
+    #[test]
+    fn the_injected_twin_differs_only_where_an_equivocation_demands() {
+        let id = identity();
+        let first = block(&id);
+        let twin = equivocation_twin(&first, &id).expect("the twin signs");
+
+        assert_ne!(
+            first.block_hash, twin.block_hash,
+            "the offence: two distinct signed blocks, so the hashes must differ"
+        );
+        assert_eq!(
+            first.sender, twin.sender,
+            "same sender — that is what makes it one validator's equivocation"
+        );
+        assert_eq!(first.seq_num, twin.seq_num, "and the same sequence number");
+        assert_eq!(first.block_number, twin.block_number);
+        assert_eq!(first.pre_state_hash, twin.pre_state_hash);
+        assert_eq!(first.post_state_hash, twin.post_state_hash);
+        assert_eq!(first.justifications, twin.justifications);
+        assert_eq!(first.state, twin.state);
+
+        // Both are *valid*: a real content-addressed hash and a signature that verifies against the
+        // sender. Without this the arm measures the wrong refusal.
+        assert_eq!(twin.block_hash, hash_block(&twin));
+        assert!(block_signature(&twin));
+        assert_eq!(first.block_hash, hash_block(&first));
+        assert!(block_signature(&first));
+
+        assert_eq!(
+            twin.timestamp,
+            first.timestamp + 1,
+            "the one field the twin moves — informational, and covered by the hash"
+        );
+    }
+}
+
+/// **A twin of `block`** — the same block with a different `timestamp`, re-hashed and re-signed by the
+/// same identity.
+///
+/// This is the *only* difference between the two blocks, and that is deliberate. The timestamp is a
+/// header field the block hash covers, so the twin is a distinct block; it is also **not a consensus
+/// input** — no rule reads it, it is exposed to rholang as `rho:block:data` for applications — so the
+/// twin passes every check the original passes. That matters for what the injection measures: a peer's
+/// refusal of the second block must be the equivocation gate and nothing else, and a twin that were
+/// invalid in any other way would leave that ambiguous.
+///
+/// It exists for the devnet arm of A2 (#150): the fault it produces is the one no honest node
+/// produces, so it cannot be produced by driving the node honestly — it has to be asked for, here,
+/// behind a flag whose own documentation says it is self-harm on a real network.
+fn equivocation_twin(block: &BlockMessage, id: &ValidatorIdentity) -> Result<BlockMessage, String> {
+    let twin = BlockMessage {
+        timestamp: block.timestamp + 1,
+        ..block.clone()
+    };
+    id.sign_block(&twin).map_err(|e| e.to_string())
 }
 
 /// **A slash the proposer is about to attach**: how much the offence takes (AUDIT C199), and — when

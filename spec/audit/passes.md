@@ -6659,3 +6659,44 @@ from the other side.
 
 No §6 row and no hard fork: the verdict, the state and the bytes are the same bytes, which is the
 definition of family A. The remaining candidates are recorded on #144 rather than here.
+
+## 57. The live arms: the fix works, a floor wedges the net, and a slash that will not stop (A1, A2, C201)
+
+The plan's residue was one sentence: the two measurements ran two DAGs in one process, so the **wire** was
+not covered. Two devnet drivers close it — `spec/audit/evidence/a1-live-config-mismatch-run.sh` and
+`a2-live-equivocation-run.sh`, with their raw logs beside them, and the results and their limits written up
+in `spec/audit/evidence/slash-measures-live-results.md`.
+
+**A2, live.** `--equivocation-injection` (a new, explicitly self-harming node flag) broadcasts a twin of
+every block the node creates, and the bootstrap — which never stored the offending block — slashed the
+offender at the `Malicious` tier with the evidence attached: 59 `[pos] slashing … (equivocation evidence)`
+lines over a chain that ran to height 62, with the offender gone from the bonds map from block 22 on and
+both nodes agreeing at every height. C200, end to end, over gossip.
+
+**A1, live.** Two validators, floors 1 and 5, one deploy at price 1. The strict node refused **every**
+block from #16 onward (the autopropose dummy deploy keeps the violation alive), froze at height 1 while
+the bootstrap ran to 26, and stopped finality for the whole network. Over 26 blocks: **zero** slashes and
+every bonds entry still 100. So C198 does what it claims — the disagreement costs nobody their bond — and
+does not fix what it never claimed to: a mis-set floor still wedges a network.
+
+**And C201, which the A2 run found rather than looked for.** The same proposer logged that slash **59
+times, one per block, for ever** — for a validator already out of the pool. `add_recorded_equivocations`
+filters on `bonded` (`compute_bonds(pre_state_hash)`, i.e. `pos:active` at the pre-state), which should
+have excluded it, so the observation and the code cannot both be right. The row is open, with the half
+that is measured: `a_slashed_validator_is_absent_from_the_bonds_at_the_post_state` shows the leaf is
+written and read correctly **at a post-state**, so what is left is *which hash* the proposer reads — the
+merged pre-state, reconstructed by `MergeScope::merge` from the native sidecar (#74) — and the fixture
+that would finish it is named in the row's owed column. It is a `todo` rather than a note because the read
+in question is the proposer's own view of who is bonded, which also feeds `check_active_validator` and the
+attestation quorum.
+
+**Two corrections this work owes, both recorded where they were made.** Each driver's first version
+reported an absence that its own command had produced: the A1 driver grepped a `show-blocks -d 30` (no
+such flag) and the A2 driver grepped a dump for `slash`, which `show-blocks` never prints because a
+`Slash` lives in `state.systemDeploys`. Both now read evidence a failing command cannot fake — the block
+count before the claim, the proposer's own line, the bonds transition — and both scripts say so in the
+comment where it happened.
+
+**One tool change.** `tools/devnet.sh` takes per-node extra `rnode run` flags
+(`DEVNET_EXTRA_FLAGS_<container name>`), because every arm here is one node set differently from its peers
+and the shared flag string is shared on purpose (AUDIT C46).

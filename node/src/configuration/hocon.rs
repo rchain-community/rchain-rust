@@ -392,6 +392,12 @@ fn casper_conf_from_hocon(h: &Hocon) -> Result<CasperConf, String> {
         synchrony_constraint_threshold: to_f64(get(h, "synchrony-constraint-threshold")?)?,
         height_constraint_threshold: to_i64(get(h, "height-constraint-threshold")?)?,
         min_phlo_price: to_i64(get(h, "min-phlo-price")?)?,
+        // Defaults to *off* when absent, unlike its neighbours: a config written before the key
+        // existed must resolve to the behaviour of a node that does not inject anything.
+        equivocation_injection: match get_opt(h, "equivocation-injection") {
+            Some(v) => to_bool(v)?,
+            None => false,
+        },
         effect_mode: to_optional_string(h, "effect-scheduler")?
             .unwrap_or_else(|| "dfs".to_string()),
     })

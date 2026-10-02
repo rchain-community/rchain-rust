@@ -537,6 +537,7 @@ mod tests {
                 synchrony_constraint_threshold: 0.67,
                 height_constraint_threshold: 1000,
                 min_phlo_price: 1,
+                equivocation_injection: false,
                 effect_mode: "dfs".to_string(),
             },
             metrics: Metrics {
@@ -1111,6 +1112,7 @@ mod tests {
                 synchrony_constraint_threshold: 111111.0,
                 height_constraint_threshold: 111111,
                 min_phlo_price: 1,
+                equivocation_injection: false,
                 effect_mode: "dfs".to_string(),
             },
             metrics: Metrics {

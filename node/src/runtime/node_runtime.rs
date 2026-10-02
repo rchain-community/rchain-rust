@@ -1789,6 +1789,7 @@ async fn setup_shard_runtime(
             log.clone(),
             consecutive_failures.clone(),
             stale_snapshot_equivocations.clone(),
+            conf.casper.equivocation_injection,
         );
         let proposer_stream = proposer_instance::create(
             proposer_parts.queue_rx,

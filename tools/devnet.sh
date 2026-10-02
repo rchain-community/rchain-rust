@@ -441,6 +441,22 @@ rnode_run_common() {
   if [[ -n "$POS_ACTIVE_VALIDATORS" ]]; then
     flags="$flags --number-of-active-validators $POS_ACTIVE_VALIDATORS"
   fi
+  # **Per-node extra `rnode run` flags.** The flag string above is deliberately *shared*, because a
+  # genesis parameter handed to one node and not another is a different chain (AUDIT C46) — but a
+  # measurement of what a **config mismatch** does needs exactly the opposite: one node set differently
+  # from its peers, and everything else identical. So the escape hatch is per node, and it is read from
+  # the environment rather than added as a flag, for the reason `DEVNET_LOG_LEVEL` is: it is a property
+  # of the node *under investigation* rather than of the network being started.
+  #
+  #   DEVNET_EXTRA_FLAGS_devnet_validator_1="--min-phlo-price 5" tools/devnet.sh up --validators 2
+  #
+  # The variable name is the container name with dashes turned into underscores; `DEVNET_EXTRA_FLAGS`
+  # applies to every node. Used by the risk plan's A1 arm (#150), whose whole subject is two nodes that
+  # disagree about one setting.
+  local node_var
+  node_var="DEVNET_EXTRA_FLAGS_$(printf '%s' "$name" | tr '-' '_')"
+  if [[ -n "${DEVNET_EXTRA_FLAGS:-}" ]]; then flags="$flags ${DEVNET_EXTRA_FLAGS}"; fi
+  if [[ -n "${!node_var:-}" ]]; then flags="$flags ${!node_var}"; fi
   echo "$flags"
 }
 
