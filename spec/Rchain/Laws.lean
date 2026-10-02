@@ -2250,7 +2250,10 @@ def laws : List Law := [
       "rholang/src/native_state.rs:the_epoch_gate_does_nothing_off_a_boundary",
       "rholang/src/native_state.rs:bond_escrows_the_stake_and_activates_at_the_boundary",
       "rholang/src/property_tests.rs:law44_the_absence_rule_only_ever_removes_entries",
-      "rholang/src/property_tests.rs:law44_a_validator_inside_the_slack_is_kept"],
+      "rholang/src/property_tests.rs:law44_a_validator_inside_the_slack_is_kept",
+      "rholang/src/property_tests.rs:law44_a_validator_outside_the_slack_is_not_paid",
+      "rholang/src/property_tests.rs:law44_a_validator_that_never_spoke_is_not_paid",
+      "rholang/src/property_tests.rs:law44_a_zero_slack_withholds_nothing"],
     statement := "Membership takes effect at an **epoch boundary**: the epoch sequence runs only when \
       `blockNumber % epochLength = 0`, and off a boundary a bond is pooled but not activated, a \
       withdrawal is staged but not moved, and no claim is paid. The same machine carries the **slash**, \

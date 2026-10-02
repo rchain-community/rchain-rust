@@ -110,6 +110,73 @@ mod reward_laws {
             prop_assert!(out.len() <= rewards.len());
         }
 
+        /// **The rule withholds.** This is the direction the two properties above do **not** pin, and
+        /// that is not a hypothetical: the identity function — `apply_absence` returning its input
+        /// unchanged — satisfies `law44_the_absence_rule_only_ever_removes_entries`,
+        /// `law44_a_validator_inside_the_slack_is_kept` and all three of the Lean theorems
+        /// (`absence_never_raises`, `a_returning_validator_is_paid_in_full`,
+        /// `the_absence_rule_moves_no_stake`). So a rule that withholds nothing was, until this test,
+        /// indistinguishable from the real one by every check in the tree.
+        ///
+        /// A validator silent *past* the slack, under a rule that is on, is not paid — and the reward it
+        /// does not receive is not moved anywhere, it stays in the vault for a later epoch.
+        #[test]
+        fn law44_a_validator_outside_the_slack_is_not_paid(
+            slack in 1usize..5,
+            extra in 1i64..3,
+            reward in 1i64..1_000_000,
+            boundary in 10i64..40,
+        ) {
+            let slack = i64::try_from(slack).expect("a small slack");
+            let v = validator(1);
+            let rewards = BTreeMap::from([(v, nn(reward))]);
+            // The ranges are chosen so this cannot go negative — a `prop_assume!` would be the other
+            // way, and the first version of this test got it wrong and panicked in the generator
+            // rather than in the assertion.
+            let spoken_at = boundary - slack - extra;
+            let spoke = BTreeMap::from([(
+                v,
+                BlockHeight::try_from(spoken_at).expect("a height at or above zero"),
+            )]);
+            prop_assert!(
+                apply_absence(rewards, &spoke, boundary, slack).is_empty(),
+                "a validator silent past the slack is not paid, whatever it was owed"
+            );
+        }
+
+        /// **And one that has never spoken at all is as absent as it gets** — the missing-record
+        /// branch, which is a separate arm of the rule and the one a validator that never bonded in
+        /// would take.
+        #[test]
+        fn law44_a_validator_that_never_spoke_is_not_paid(slack in 1usize..8, boundary in 0i64..40) {
+            let slack = i64::try_from(slack).expect("a small slack");
+            let v = validator(1);
+            let rewards = BTreeMap::from([(v, nn(100))]);
+            prop_assert!(
+                apply_absence(rewards, &BTreeMap::new(), boundary, slack).is_empty(),
+                "a validator with no entry has not spoken, so it is not paid"
+            );
+        }
+
+        /// **And a slack of zero withholds nothing** — `Pos.rhox`'s behaviour, and the shipped
+        /// default: the rule is off, so the oldest possible silence costs nothing. This is the opposite
+        /// direction from the two tests above, and the three together are what make the rule's *switch*
+        /// a checked thing rather than a claim.
+        #[test]
+        fn law44_a_zero_slack_withholds_nothing(
+            heights in prop::collection::vec(0i64..20, 1..5),
+            boundary in 0i64..40,
+        ) {
+            let rewards: BTreeMap<Validator, NonNegI64> =
+                (0..heights.len()).map(|i| (validator(i), nn(100))).collect();
+            let spoke: BTreeMap<Validator, BlockHeight> = heights
+                .iter()
+                .enumerate()
+                .map(|(i, h)| (validator(i), BlockHeight::try_from(*h).expect("a test height")))
+                .collect();
+            prop_assert_eq!(apply_absence(rewards.clone(), &spoke, boundary, 0), rewards);
+        }
+
         /// **And a validator inside the slack is paid in full** — `a_returning_validator_is_paid_in_full`
         /// as a property: a height within `slack` of the boundary is indistinguishable from having just
         /// spoken, so the rule has nothing to recover from and an honest validator that was briefly away

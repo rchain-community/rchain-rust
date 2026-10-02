@@ -1,4 +1,4 @@
-56 laws, 72 entries: 19 proved and tied to the node by a conformance corpus, 47 proved over the model — of which 53 carry a Rust witness the gate runs (120 witness entries, 111 distinct tests, a test being able to witness two laws) — 1 proved but vacuous (the statement restates its own definition), 1 axiomatized by design (the cryptographic primitives), 0 owed, 0 deferred, 0 open, 2 retired (the port has no rule of that shape — the row says what was read), 2 orphaned.
+56 laws, 72 entries: 19 proved and tied to the node by a conformance corpus, 47 proved over the model — of which 53 carry a Rust witness the gate runs (123 witness entries, 114 distinct tests, a test being able to witness two laws) — 1 proved but vacuous (the statement restates its own definition), 1 axiomatized by design (the cryptographic primitives), 0 owed, 0 deferred, 0 open, 2 retired (the port has no rule of that shape — the row says what was read), 2 orphaned.
 
 ### Rholang
 
