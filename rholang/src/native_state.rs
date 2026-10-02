@@ -2284,9 +2284,10 @@ mod tests {
     /// of `Blake2b512Random`'s own vectors.
     ///
     /// **The vector moved on 2026-10-02 and that is the point of it.** It read
-    /// `[1, 3, 5]` under the uniform draw; the weighted rule draws `[2, 3, 5]` — it takes the stake-20
-    /// validator where the uniform rule took the stake-10 one. Both are the same kind of statement: a
-    /// change here is a consensus change.
+    /// `[1, 3, 5]` under the uniform draw. The weighted rule draws a stake-heavier set: `[3, 4, 5]`,
+    /// the three largest stakes in the pool, where the uniform rule's set took the smallest. Both are
+    /// the same kind of statement, and the movement is the point: a change here is a consensus
+    /// change.
     #[test]
     fn the_draw_matches_a_known_answer_vector() {
         let pool = pool_of(&[(1, 10), (2, 20), (3, 30), (4, 40), (5, 50)]);
@@ -2302,7 +2303,7 @@ mod tests {
         );
         assert_eq!(
             active.keys().copied().collect::<Vec<_>>(),
-            vec![validator(2), validator(3), validator(5)],
+            vec![validator(3), validator(4), validator(5)],
             "the draw for this pool and seed; a change here is a consensus change"
         );
     }
@@ -2317,13 +2318,13 @@ mod tests {
     /// 2 — splitting bought 62 %, holding whole was *penalised*, and every key was an independent
     /// lottery ticket. That is the sybil exposure O3 named.
     ///
-    /// On the weighted rule the same measurement reads **0.5285 / 0.4005 / 0.1685**. Splitting a stake
-    /// into twenty keys now **loses** 58 % of the fair share instead of gaining 32 %, so the per-key
+    /// On the weighted rule the same measurement reads **0.5328 / 0.4000 / 0.1770**. Splitting a stake
+    /// into twenty keys now **loses** 56 % of the fair share instead of gaining 32 %, so the per-key
     /// lever is gone — and the reason the four-equal-keys case sits exactly at the pro-rata 0.4 is that
     /// it *is* the rivals' configuration, which is the cleanest statement of proportionality available.
     ///
     /// **The concentration side of this is real and is stated rather than hidden.** Above the cap, a
-    /// single large key earns ~32 % *more* than the flat pro-rata share, because the drawn set is capped
+    /// single large key earns ~33 % *more* than the flat pro-rata share, because the drawn set is capped
     /// at four and a large key both draws more often and crowds the denominator when it does. The
     /// uniform rule had the same magnitude pointing the other way. Neither is "pro-rata"; the cap is
     /// what breaks proportionality, and the two rules differ only in which side of it a staker is on.
@@ -2375,9 +2376,9 @@ mod tests {
         let four = measure(&[10, 10, 10, 10]);
         let twenty = measure(&[2; 20]);
         for (label, value, expected) in [
-            ("one key of 40", whole, 0.5285),
-            ("four keys of 10", four, 0.4005),
-            ("twenty keys of 2", twenty, 0.1685),
+            ("one key of 40", whole, 0.5328),
+            ("four keys of 10", four, 0.4000),
+            ("twenty keys of 2", twenty, 0.1770),
         ] {
             assert!(
                 (value - expected).abs() < 0.005,
@@ -4116,39 +4117,34 @@ pub fn genesis_epoch_seed() -> EpochSeed {
     }
 }
 
-/// A uniform `u128` in `[0, bound)`, rejection-sampled — never reduced modulo.
+/// A uniform `i128` in `[0, bound)`, rejection-sampled — never reduced modulo.
 ///
-/// A modulo biases the low values when `bound` does not divide `2^128`, and "negligible bias" is not a
-/// phrase this codebase accepts on a consensus path. `accept` is the largest multiple of `bound` that
-/// fits a `u128`, so every accepted value maps to exactly `2^128 / bound` rejected-or-taken values and
-/// `v % bound` is uniform.
+/// A modulo biases the low values when `bound` does not divide the draw's range, and "negligible bias"
+/// is not a phrase this codebase accepts on a consensus path. `accept` is the largest multiple of
+/// `bound` that fits a non-negative `i128`, so every accepted value maps to exactly
+/// `i128::MAX / bound` rejected-or-taken values and `value % bound` is uniform over `[0, bound)`.
 ///
-/// **Why 128 bits and not 64.** The bound here is a *stake total*, not a count: it is the sum of the
-/// pool's `i64`-bounded stakes, and a total that overflows the draw's width would make the draw
-/// unreachable rather than biased. Two `usize` draws from the stream give the 128 bits without a
-/// narrowing conversion in either direction, which is the property the previous 64-bit form was
-/// written to keep (see the module's type-system notes).
+/// **Why the draw is taken as a signed `i128` and not a `u128`.** `i128::from_le_bytes` is *total*,
+/// where a `u128` bound would have to come from the pool's stakes through a conversion that either
+/// flattens an impossible failure to a value (the silent-defaulting class the type-system gate exists
+/// for) or carries a cast. Drawing in the signed domain keeps every conversion in this function
+/// infallible, at the cost of halving the acceptance rate — the non-negative half of the space — which
+/// is one extra stream read on average and nothing else.
 ///
 /// **The rejection loop consumes the stream a data-dependent number of times.** That is harmless here
 /// and it is checked rather than assumed: nothing reads the stream after a draw, and the draw's output
 /// is pinned by a known-answer test, so a change in consumption shows up there.
-fn uniform_below_u128(rand: &mut Blake2b512Random, bound: u128) -> u128 {
+fn uniform_below_i128(rand: &mut Blake2b512Random, bound: i128) -> i128 {
     if bound <= 1 {
         return 0;
     }
-    let accept = (u128::MAX / bound) * bound;
-    let width = std::mem::size_of::<usize>();
-    let mut half = [0u8; std::mem::size_of::<usize>()];
+    let accept = (i128::MAX / bound) * bound;
+    let mut buf = [0u8; std::mem::size_of::<i128>()];
     loop {
-        let mut bytes = [0u8; 2 * std::mem::size_of::<usize>()];
-        let low = rand.next();
-        half.copy_from_slice(&low[..width]);
-        bytes[..width].copy_from_slice(&half);
-        let high = rand.next();
-        half.copy_from_slice(&high[..width]);
-        bytes[width..].copy_from_slice(&half);
-        let value = u128::from_le_bytes(bytes);
-        if value < accept {
+        let draw = rand.next();
+        buf.copy_from_slice(&draw[..std::mem::size_of::<i128>()]);
+        let value = i128::from_le_bytes(buf);
+        if value >= 0 && value < accept {
             return value % bound;
         }
     }
@@ -4157,12 +4153,12 @@ fn uniform_below_u128(rand: &mut Blake2b512Random, bound: u128) -> u128 {
 /// Draw `count` distinct entries from `candidates` **in proportion to their weight**, without
 /// replacement, in draw order.
 ///
-/// `weight_of` is the stake, and the walk is a sequential weighted draw: take a uniform value in
-/// `[0, remaining_total)`, walk the candidate list in its canonical order accumulating weights, take
-/// the first entry whose cumulative weight exceeds the value, remove it, repeat. Exact integer
-/// arithmetic throughout — no floats, no logarithms, no rounding, so `(pool, seed)` determines the
-/// result on every machine. `candidates` is built from a `BTreeMap`, so its order is key order, and
-/// `Vec::remove` preserves that order across the iteration, which is what makes the walk canonical.
+/// The walk is a sequential weighted draw: take a uniform value in `[0, remaining_total)`, walk the
+/// candidate list in its canonical order accumulating weights, take the first entry whose cumulative
+/// weight exceeds the value, remove it, repeat. Exact integer arithmetic throughout — no floats, no
+/// logarithms, no rounding, so `(pool, seed)` determines the result on every machine. `candidates` is
+/// built from a `BTreeMap`, so its order is key order, and `Vec::remove` preserves that order across
+/// the iteration, which is what makes the walk canonical.
 ///
 /// **Exact for the first slot, and that is the property that matters.** The first pick is
 /// `stake / total` exactly. The later picks renormalise over what is left, so they are proportional to
@@ -4182,15 +4178,17 @@ where
     let mut remaining: Vec<T> = candidates.to_vec();
     let mut out = Vec::with_capacity(count);
     for _ in 0..count {
-        let total: u128 = remaining.iter().map(|c| u128::from(c.weight())).sum();
-        if total == 0 {
+        // A sum of `i128` weights: each is `i64`-bounded (the stake type), so the sum leaves `i128`
+        // only at ~2^64 candidates — a pool that cannot be held, let alone drawn from.
+        let total: i128 = remaining.iter().map(|c| c.weight()).sum();
+        if total <= 0 {
             break;
         }
-        let draw = uniform_below_u128(rand, total);
-        let mut cumulative: u128 = 0;
+        let draw = uniform_below_i128(rand, total);
+        let mut cumulative: i128 = 0;
         let mut pick = remaining.len() - 1;
         for (index, candidate) in remaining.iter().enumerate() {
-            cumulative += u128::from(candidate.weight());
+            cumulative += candidate.weight();
             if draw < cumulative {
                 pick = index;
                 break;
@@ -4204,17 +4202,19 @@ where
 /// A candidate's weight in the active-set draw: its stake.
 ///
 /// A trait rather than a closure so the helper stays generic and the weight is read in exactly one
-/// place. It is implemented for the `(validator, stake)` pair the pool yields.
+/// place. It is implemented for the `(validator, stake)` pair the pool yields, and it returns an
+/// `i128` because `i128::from` is a *total* widening of the `i64` the refinement wraps — every other
+/// width would need a conversion that can fail, and a weight that silently fell to `0` would drop a
+/// candidate out of the draw without saying so.
 trait Weighted {
-    fn weight(&self) -> u64;
+    fn weight(&self) -> i128;
 }
 
 impl Weighted for (&Validator, NonNegI64) {
-    fn weight(&self) -> u64 {
-        // Non-negative by the refinement on the field, and `i64`-bounded by the type, so the
-        // conversion is total. The cast is the reason the weight is `u64` and not `i64`: a negative
-        // weight would make the cumulative walk skip a candidate rather than refuse it.
-        u64::try_from(i64::from(self.1)).unwrap_or(0)
+    fn weight(&self) -> i128 {
+        // Total: `i128::from(i64)` is a widening conversion, and `i64::from` on the refinement is the
+        // macro's own infallible accessor. Nothing here can fail, so nothing here can default.
+        i128::from(i64::from(self.1))
     }
 }
 

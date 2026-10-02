@@ -100,14 +100,14 @@ rather than samples):
 
 | how one stake of 40 is held | uniform draw (before) | weighted draw (now) |
 |---|---|---|
-| one key of 40 | **0.326** — *below* the flat pro-rata 0.400 | **0.5285** — *above* it |
-| four keys of 10 | 0.400 — exactly pro-rata | 0.4005 — exactly pro-rata |
-| twenty keys of 2 | **0.528** — 62 % *more* than whole | **0.1685** — 58 % *less* |
+| one key of 40 | **0.326** — *below* the flat pro-rata 0.400 | **0.5328** — *above* it |
+| four keys of 10 | 0.400 — exactly pro-rata | 0.4000 — exactly pro-rata |
+| twenty keys of 2 | **0.528** — 62 % *more* than whole | **0.1770** — 56 % *less* |
 
 Each pair is the same pool at the same total stake, differing only in how the stake is held. **Under the
 uniform rule the lever was the number of keys, and splitting was worth 62 %** — a per-key rule mints
 finality weight (and income) for free, which is a consensus-safety problem and not just an economic
-quirk. **Under the weighted rule the lever is the size of the key, and splitting costs 58 %.** Neither
+quirk. **Under the weighted rule the lever is the size of the key, and splitting costs 56 %.** Neither
 regime is exactly pro-rata; the cap is what breaks proportionality, and the two rules differ only in
 which side of it a staker lands on. Weighting is the side chosen: it is the side on which **stake buys
 weight**, which is what the cap exists to bound — a bond is bounded above by `maximum_bond`, and the
@@ -257,7 +257,7 @@ stated.** Both conclusions are arguments about the code above, not preferences.
    reachable today is one more validator key** — which *concentrates* the slash on the operator rather
    than spreading it, and leaves members with no on-chain claim at all. Above the cap it is the wrong
    direction economically too: merging many small stakes into one key **raises** income under the
-   weighted draw (0.1685 for twenty keys of 2 against 0.5285 for one key of 40, above) — a pool
+   weighted draw (0.1770 for twenty keys of 2 against 0.5328 for one key of 40, above) — a pool
    *concentrates* the stake it claims to spread, and it concentrates the cap's reward too. A pool that
    would actually spread risk needs a new primitive — bonding from a named vault, or a delegation leaf —
    which is a genesis-plus-hard-fork change, not a contract. Tracked on

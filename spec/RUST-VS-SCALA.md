@@ -239,8 +239,8 @@ concrete, auditable ways:
      weights that remain. **The measured direction of the residue is the opposite of what a per-key rule
      gave, and it is worth stating**: `the_cap_regime_no_longer_rewards_a_split_stake` re-measures the
      same pool the book publishes — one stake of 40 held as one key, four keys of 10, or twenty keys of
-     2, against six rivals at 10, cap 4 — and reads **0.5285 / 0.4005 / 0.1685** where the uniform rule
-     read 0.326 / 0.400 / 0.528. Splitting now *costs* 58 % instead of *earning* 32 %, because the cap
+     2, against six rivals at 10, cap 4 — and reads **0.5328 / 0.4000 / 0.1770** where the uniform rule
+     read 0.326 / 0.400 / 0.528. Splitting now *costs* 56 % instead of *earning* 32 %, because the cap
      is fixed and a large key both draws more often and crowds the denominator when it does. Neither
      regime is pro-rata; the cap is what breaks proportionality, and the two rules differ only in which
      side of it a staker lands on. Weighting is the side chosen — the side on which **stake buys
