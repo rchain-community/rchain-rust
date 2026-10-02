@@ -435,7 +435,8 @@ impl<'a, R: ReplayRuntime + ?Sized> RuntimeReplayOps<'a, R> {
             SystemDeployData::Slash {
                 validator,
                 severity,
-            } => SystemDeploy::slash(validator, *severity, rand),
+                evidence,
+            } => SystemDeploy::slash(validator, *severity, evidence.clone(), rand),
             SystemDeployData::CloseBlock => {
                 SystemDeploy::close_block(block_number, *fringe_state_hash, rand)
             }
@@ -554,6 +555,7 @@ impl<'a, R: ReplayRuntime + ?Sized> RuntimeReplayOps<'a, R> {
             NativeSystemDeployOp::Slash {
                 validator,
                 severity,
+                evidence: _,
             } => native.slash(validator, *severity).await?,
         };
         let eval_result = EvaluateResult {

@@ -6,7 +6,6 @@ use rchain_block_storage::dag::dag_storage::{BlockDagStorage, DeployId};
 use rchain_crypto::hash::blake2b256_hash::Blake2b256Hash;
 use rchain_models::block::state_hash::StateHash;
 use rchain_models::block_hash::BlockHash;
-use rchain_models::block_metadata::SlashSeverity;
 use rchain_models::block_version::CURRENT;
 use rchain_models::casper::protocol::casper_message::{
     ProcessedDeploy, ProcessedSystemDeploy, RholangState, SignedDeployData,
@@ -17,6 +16,7 @@ use rchain_shared::refined::{BlockHeight, NonNegI64, SeqNum};
 use rchain_shared::time::current_millis;
 
 use crate::block_random_seed::BlockRandomSeed;
+use crate::blocks::proposer::proposer::ProposedSlash;
 use crate::interpreter_util::compute_deploys_checkpoint;
 use crate::merging::ParentsMergedState;
 use crate::proto_util::unsigned_block_proto;
@@ -50,7 +50,7 @@ impl BlockCreator {
         dag: &dyn BlockDagStorage,
         pre_state: &ParentsMergedState,
         deploys: &[DeployId],
-        to_slash: &BTreeMap<Validator, SlashSeverity>,
+        to_slash: &BTreeMap<Validator, ProposedSlash>,
         change_epoch: bool,
         suppress_attestation: bool,
     ) -> Result<BlockCreatorResult, String> {
@@ -111,10 +111,15 @@ impl BlockCreator {
             // Slash + close-block system deploys. `to_slash` is a `BTreeMap`, so its iteration order is
             // already the canonical one the seed index depends on.
             let mut system_deploys: Vec<SystemDeploy> = Vec::new();
-            for (i, (v, severity)) in to_slash.iter().enumerate() {
+            for (i, (v, slash)) in to_slash.iter().enumerate() {
                 let seed =
                     rand.split_byte(u8::try_from(selected.len() + i).map_err(|e| e.to_string())?);
-                system_deploys.push(SystemDeploy::slash(v, *severity, seed));
+                system_deploys.push(SystemDeploy::slash(
+                    v,
+                    slash.severity,
+                    slash.evidence.clone(),
+                    seed,
+                ));
             }
             let close_seed = rand.split_byte(
                 u8::try_from(selected.len() + to_slash.len()).map_err(|e| e.to_string())?,

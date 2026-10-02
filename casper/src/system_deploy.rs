@@ -117,6 +117,9 @@ pub enum NativeSystemDeployOp {
         /// own `SystemDeployData::Slash`, so play and replay size the confiscation identically and a
         /// receiving node can check the tier against its own derivation.
         severity: SlashSeverity,
+        /// **Equivocation evidence** (AUDIT C200), carried through to the recorded state so a receiver
+        /// can check the offence against its own DAG. `None` is the metadata-justified kind.
+        evidence: Option<Vec<u8>>,
     },
 }
 
@@ -167,6 +170,7 @@ impl SystemDeploy {
     pub fn slash(
         validator: &Validator,
         severity: SlashSeverity,
+        evidence: Option<Vec<u8>>,
         rand: Blake2b512Random,
     ) -> SystemDeploy {
         SystemDeploy {
@@ -177,6 +181,7 @@ impl SystemDeploy {
             op: Some(NativeSystemDeployOp::Slash {
                 validator: *validator,
                 severity,
+                evidence,
             }),
         }
     }

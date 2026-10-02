@@ -170,6 +170,7 @@ pub fn slashed_validators(
                 rchain_models::casper::protocol::casper_message::SystemDeployData::Slash {
                     validator,
                     severity,
+                    evidence: _,
                 } => Some((*validator, *severity)),
                 _ => None,
             },
@@ -178,6 +179,66 @@ pub fn slashed_validators(
             } => None,
         })
         .collect()
+}
+
+/// The **equivocation evidence** a block carries, per victim (AUDIT C200). A slash with none is the
+/// metadata-justified kind, which `slashed_validators` above is the whole story for.
+pub fn slashed_evidence(b: &BlockMessage) -> BTreeMap<rchain_models::validator::Validator, Vec<u8>> {
+    b.state
+        .system_deploys
+        .iter()
+        .filter_map(|sd| match sd {
+            rchain_models::casper::protocol::casper_message::ProcessedSystemDeploy::Succeeded {
+                system_deploy:
+                    rchain_models::casper::protocol::casper_message::SystemDeployData::Slash {
+                        validator,
+                        evidence: Some(bytes),
+                        ..
+                    },
+                ..
+            } => Some((*validator, bytes.clone())),
+            _ => None,
+        })
+        .collect()
+}
+
+/// **Does this evidence prove that `offender` equivocated** (AUDIT C200) — the second way a slash can
+/// be justified, and the one that needs no failed block.
+///
+/// Three conditions, and every node can check all three against the chain it already has:
+///
+/// 1. the evidence decodes to a block, and its declared hash **is** its content hash — recomputed
+///    rather than taken ([`block_hash`]);
+/// 2. its signature verifies against the offender's key ([`block_signature`]), so the offender did
+///    sign it;
+/// 3. the DAG **already holds a different block** by that sender at that `seq_num`, which is what makes
+///    two blocks an equivocation rather than one block.
+///
+/// **The first block does not travel.** It was inserted normally and is in the receiver's own DAG —
+/// only the *second* was refused, at the H-1 gate, before any write. So the evidence is one block and
+/// no receiver has to take the proposer's word for anything: it re-derives the offence from a block it
+/// already has, a signature it verifies, and content it hashes itself.
+///
+/// A malformed or unparsable payload is `false`, not an error: it proves nothing, which is exactly what
+/// a refusal should say.
+pub async fn equivocation_is_proved(
+    dag: &dyn BlockDagStorage,
+    offender: &rchain_models::validator::Validator,
+    evidence: &[u8],
+) -> Result<bool, String> {
+    let Ok(block) =
+        rchain_models::casper::protocol::casper_message::decode_block(evidence)
+    else {
+        return Ok(false);
+    };
+    if block.sender != *offender || !block_hash(&block) || !block_signature(&block) {
+        return Ok(false);
+    }
+    let repr = dag.get_representation().await;
+    let seq_num = block.seq_num;
+    Ok(repr.dag_message_state.msg_map.iter().any(|(h, m)| {
+        m.sender == *offender && m.sender_seq == seq_num && *h != block.block_hash
+    }))
 }
 
 // --- Effectful checks (depend on the block DAG) ------------------------------------------------
@@ -1040,6 +1101,7 @@ mod tests {
             system_deploy: SystemDeployData::Slash {
                 validator: offender,
                 severity: SlashSeverity::Malicious,
+                evidence: None,
             },
         }];
         assert_eq!(
@@ -1073,6 +1135,7 @@ mod tests {
             system_deploy: SystemDeployData::Slash {
                 validator: offender,
                 severity: SlashSeverity::Misdemeanour,
+                evidence: None,
             },
         }];
         assert!(
@@ -1088,6 +1151,7 @@ mod tests {
             system_deploy: SystemDeployData::Slash {
                 validator: innocent,
                 severity: SlashSeverity::Malicious,
+                evidence: None,
             },
         }];
         assert!(
@@ -1142,6 +1206,7 @@ mod tests {
             system_deploy: SystemDeployData::Slash {
                 validator: Validator::new([0x44; 65]),
                 severity: SlashSeverity::Malicious,
+                evidence: None,
             },
         }];
         assert_eq!(

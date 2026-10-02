@@ -182,13 +182,29 @@ async fn slash_is_unjustified(
         }
     }
     let justified = crate::validate::slashable_senders(&metadata);
-    // **The tier is checked, not taken** (AUDIT C199). A victim must be an offender *at the tier this
-    // node derives*: without that, a proposer would size the confiscation freely and the tiers would
-    // be advice. A slash recorded before the tiers existed carries `Unspecified` — which takes
-    // everything — and a legacy record derives the same, so an old block replays unchanged.
-    Ok(slashed
-        .iter()
-        .any(|(victim, tier)| justified.get(victim) != Some(tier)))
+    let evidence = crate::validate::slashed_evidence(block);
+    // **A victim must be justified one of two ways, and both are re-derived here** (AUDIT C199, C200).
+    //
+    // The tier is *checked, not taken*: a victim must be an offender **at the tier this node derives**,
+    // or a proposer would size the confiscation freely and the tiers would be advice. A slash recorded
+    // before the tiers existed carries `Unspecified` — which takes everything — and a legacy record
+    // derives the same, so an old block replays unchanged.
+    //
+    // The second way is evidence: a block the proposer attaches as proof of an **equivocation**, which
+    // this node re-checks against **its own DAG** rather than believing. That is what lets the one
+    // unambiguous Byzantine fault be punished without any node having to store the refused block.
+    for (victim, tier) in &slashed {
+        if justified.get(victim) == Some(tier) {
+            continue;
+        }
+        let Some(bytes) = evidence.get(victim) else {
+            return Ok(true);
+        };
+        if !crate::validate::equivocation_is_proved(dag, victim, bytes).await? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 /// The tip height at which a finality stall was last logged. A `static` because the alternative is

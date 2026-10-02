@@ -892,6 +892,7 @@ impl RuntimeManager {
             NativeSystemDeployOp::Slash {
                 validator,
                 severity,
+                evidence: _,
             } => native.slash(validator, *severity).await?,
         };
         let eval_result = EvaluateResult {
@@ -938,9 +939,11 @@ impl RuntimeManager {
                     Some(NativeSystemDeployOp::Slash {
                         validator,
                         severity,
+                        evidence,
                     }) => SystemDeployData::Slash {
                         validator: *validator,
                         severity: *severity,
+                        evidence: evidence.clone(),
                     },
                     _ => SystemDeployData::Empty,
                 };

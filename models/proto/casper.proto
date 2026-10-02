@@ -126,6 +126,12 @@ message SlashSystemDeployDataProto {
   // the system deploy from here and has no DAG to re-derive a tier from — and because a receiving
   // node has to be able to check it against its own derivation rather than take the proposer's word.
   int32 slashSeverity = 2;
+  // **Equivocation evidence** (AUDIT C200): the offender's *second* block at a `(sender, seqNum)` the
+  // DAG already holds a different block for, serialized. Carried as bytes rather than as a nested
+  // `BlockMessage` because a block that contains it would otherwise be a recursive proto; decoded and
+  // verified by every receiver against its own DAG. Empty means the slash is justified the other way —
+  // by the offender's failed block sitting in the slashing block's justifications.
+  bytes equivocationEvidence = 3;
 }
 
 message CloseBlockSystemDeployDataProto {

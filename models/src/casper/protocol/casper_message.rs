@@ -391,18 +391,61 @@ pub enum SystemDeployData {
     Slash {
         validator: Validator,
         severity: SlashSeverity,
+        /// **Equivocation evidence** (AUDIT C200): the offender's *second* block at a `(sender,
+        /// seq_num)` the DAG already holds a **different** block for.
+        ///
+        /// It travels because the H-1 gate refuses such a block *before any write*, so no node stores
+        /// it and a receiver cannot look it up. The receiver does not need to have seen it, though: the
+        /// offender's *first* block is in **its own DAG**, and the rest of the proof is a signature
+        /// verification over content the evidence carries itself.
+        ///
+        /// **Serialized**, not a decoded `BlockMessage`, for two reasons: this enum is `serde`, which a
+        /// `BlockMessage` is not, and a block that contains a slash that contains a block would be a
+        /// recursive type. The verifier decodes it (`BlockMessageProto::decode`) when it checks it.
+        ///
+        /// `None` (empty on the wire) means the slash is justified the other way — by the offender's
+        /// failed block sitting in the slashing block's justifications.
+        evidence: Option<Vec<u8>>,
     },
     CloseBlock,
     Empty,
+}
+
+/// Decode a serialized `BlockMessage` — the **equivocation evidence** a slash carries (AUDIT C200).
+///
+/// Here rather than in the caller because the bytes are a `BlockMessageProto` and this crate is the one
+/// that owns that type (and the `prost` dependency); a consumer that only reads the field would
+/// otherwise have to reach past this module into the generated code.
+/// Serialize a `BlockMessage` for the equivocation-evidence field (AUDIT C200) — the inverse of
+/// [`decode_block`], and here for the same reason.
+///
+/// **The bytes are carried, not recomputed.** They are part of the block's state, so what matters is
+/// that they are the *same bytes* on play and replay, which they are because the replay reads them
+/// rather than re-encoding — so a discrepancy between two encoders of the same block could not
+/// diverge a chain, which is why no one has to state a canonical-encoding rule here.
+pub fn encode_block(block: &BlockMessage) -> Vec<u8> {
+    block.to_proto().encode_to_vec()
+}
+
+pub fn decode_block(bytes: &[u8]) -> Result<BlockMessage, crate::errors::ModelsError> {
+    let proto = BlockMessageProto::decode(bytes)
+        .map_err(|e| crate::errors::ModelsError::Decode(format!("block: {e}")))?;
+    BlockMessage::from_proto(&proto)
 }
 
 impl SystemDeployData {
     pub fn from_proto(p: &SystemDeployDataProto) -> Result<Self, crate::errors::ModelsError> {
         match &p.system_deploy {
             Some(system_deploy_data_proto::SystemDeploy::SlashSystemDeploy(sd)) => {
+                let evidence = if sd.equivocation_evidence.is_empty() {
+                    None
+                } else {
+                    Some(sd.equivocation_evidence.clone())
+                };
                 Ok(SystemDeployData::Slash {
                     validator: Validator::try_from(sd.slashed_validator.as_slice())?,
                     severity: SlashSeverity::from_code(sd.slash_severity),
+                    evidence,
                 })
             }
             Some(system_deploy_data_proto::SystemDeploy::CloseBlockSystemDeploy(_)) => {
@@ -417,11 +460,13 @@ impl SystemDeployData {
             SystemDeployData::Slash {
                 validator,
                 severity,
+                evidence,
             } => SystemDeployDataProto {
                 system_deploy: Some(system_deploy_data_proto::SystemDeploy::SlashSystemDeploy(
                     SlashSystemDeployDataProto {
                         slashed_validator: validator.as_bytes().to_vec(),
                         slash_severity: severity.to_code(),
+                        equivocation_evidence: evidence.clone().unwrap_or_default(),
                     },
                 )),
             },

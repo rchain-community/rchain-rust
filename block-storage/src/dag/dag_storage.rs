@@ -31,6 +31,20 @@ pub trait BlockDagStorage: Send + Sync {
     /// invisible to them; the writer takes the copy at most once per insert via `Arc::make_mut`.
     async fn get_representation(&self) -> Arc<DagRepresentation>;
 
+    /// **The equivocating blocks this node has refused**, as serialized blocks keyed by the sender that
+    /// equivocated (AUDIT C200).
+    ///
+    /// The H-1 gate refuses such a block *before any write*, so nothing else in the tree holds it — and
+    /// a proposer cannot slash for an equivocation it cannot show. Recording it here gives the evidence
+    /// somewhere to live that is **not** consensus state until a block actually carries it, and reading
+    /// it is what lets a proposer attach a proof every other node can check for itself.
+    ///
+    /// The default is empty, and that is a statement rather than a stub: a storage that does not record
+    /// them has none, and only the real implementation can.
+    async fn recorded_equivocations(&self) -> Vec<(rchain_models::validator::Validator, Vec<u8>)> {
+        Vec::new()
+    }
+
     async fn insert(
         &self,
         block_metadata: BlockMetadata,

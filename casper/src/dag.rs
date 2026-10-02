@@ -65,6 +65,13 @@ pub struct BlockDagKeyValueStorage {
     /// `MetricsRegistry` in). This is the attribution instrument for the structure's cost, in place
     /// of the profiler this environment cannot run (AUDIT C56's owed paragraph).
     metrics: Arc<dyn Metrics + Send + Sync>,
+    /// **Equivocating blocks this node has refused, keyed by the sender** (AUDIT C200).
+    ///
+    /// The H-1 gate below refuses such a block *before any write*, so this is the only place it exists
+    /// — and without it a proposer could never show the one offence that is unambiguous. In memory, so a
+    /// restart forgets: the *evidence* is what has to be checkable, and it is checked by the receiver
+    /// against its own DAG, not against a store this node happens to keep.
+    equivocations: tokio::sync::Mutex<BTreeMap<Validator, Vec<u8>>>,
 }
 
 impl BlockDagKeyValueStorage {
@@ -151,6 +158,7 @@ impl BlockDagKeyValueStorage {
             deploy_index,
             deploy_store,
             metrics: Arc::new(MetricsNop),
+            equivocations: tokio::sync::Mutex::new(BTreeMap::new()),
         })
     }
 
@@ -319,6 +327,17 @@ impl BlockDagStorage for BlockDagKeyValueStorage {
         self.representation.read().await.clone()
     }
 
+    /// The equivocations the H-1 gate recorded (AUDIT C200) — see the field's own note for why they
+    /// live here and only here.
+    async fn recorded_equivocations(&self) -> Vec<(Validator, Vec<u8>)> {
+        self.equivocations
+            .lock()
+            .await
+            .iter()
+            .map(|(sender, bytes)| (*sender, bytes.clone()))
+            .collect()
+    }
+
     async fn insert(
         &self,
         block_metadata: BlockMetadata,
@@ -342,6 +361,18 @@ impl BlockDagStorage for BlockDagKeyValueStorage {
                 m.sender == block_metadata.sender && m.sender_seq == block_metadata.seq_num
             });
             if equivocating {
+                // **Record the refused block before refusing it** (AUDIT C200). This is the only copy
+                // that will ever exist — the gate returns before any write — and it is what a proposer
+                // attaches as evidence so that every other node can check the offence against its own
+                // DAG. A second offence by the same sender replaces the first: one piece of evidence is
+                // enough to take the bond, and holding more would be unbounded.
+                self.equivocations
+                    .lock()
+                    .await
+                    .insert(
+                        block_metadata.sender,
+                        rchain_models::casper::protocol::casper_message::encode_block(&block),
+                    );
                 return Err(format!(
                     "{EQUIVOCATION_PREFIX}: sender produced two blocks with the same sequence number"
                 ));
@@ -745,6 +776,25 @@ mod tests {
         // The first block's metadata is still present and unchanged.
         let stored = storage.lookup(&first).await.unwrap().unwrap();
         assert_eq!(stored.block_hash, first);
+
+        // **And the refused block is recorded as evidence** (AUDIT C200). This gate is the only place it
+        // will ever exist — it returned before any write — and it is what a proposer attaches so that
+        // every *other* node can re-check the offence against its own DAG. Red before this: nothing was
+        // kept, so an equivocation could be refused and then never punished.
+        let recorded = storage.recorded_equivocations().await;
+        assert_eq!(recorded.len(), 1, "the refused block is kept as evidence");
+        let (sender, bytes) = &recorded[0];
+        assert_eq!(
+            *sender,
+            meta(second, &[], 0).sender,
+            "keyed by the validator that equivocated"
+        );
+        let decoded = rchain_models::casper::protocol::casper_message::decode_block(bytes)
+            .expect("the recorded evidence decodes");
+        assert_eq!(
+            decoded.block_hash, second,
+            "and it is the *refused* block, not the one the DAG holds"
+        );
     }
 
     #[tokio::test]
