@@ -544,6 +544,11 @@ pub struct Run {
     #[arg(long = "executor-share")]
     pub executor_share: Option<i32>,
 
+    /// **How long a validator may go without signing a block before an epoch stops paying it** (B4,
+    /// #150), in heights; `0` is the contract's behaviour and the shipped default.
+    #[arg(long = "absence-slack")]
+    pub absence_slack: Option<i32>,
+
     /// Public key for transfers from the PoS vault.
     ///
     /// Reserved: parsed and validated, but not yet wired to the native PoS contract

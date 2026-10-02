@@ -160,10 +160,22 @@ message EquivocationEvidenceProto {
 message CloseBlockSystemDeployDataProto {
 }
 
+// **The block says who produced it** (B4, #150), so that the chain has a per-validator *activity*
+// record at all.
+//
+// The message is deliberately **empty**, and that is the property that makes the record
+// unsteerable: the speaker and the height are the block's own `sender` and `block_number`, read from
+// the block being processed by every node, so a proposer cannot write another validator's entry and
+// cannot claim a height that is not its own. What the presence of this deploy records is that the
+// block's producer spoke at the block's own height — nothing a proposer can choose.
+message RecordSpokeSystemDeployDataProto {
+}
+
 message SystemDeployDataProto {
   oneof systemDeploy {
     SlashSystemDeployDataProto slashSystemDeploy = 1;
     CloseBlockSystemDeployDataProto closeBlockSystemDeploy = 2;
+    RecordSpokeSystemDeployDataProto recordSpokeSystemDeploy = 3;
   }
 }
 

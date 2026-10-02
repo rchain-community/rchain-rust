@@ -611,4 +611,49 @@ theorem producer_pay_is_monotone {a b : Nat} (h : a ≤ b) :
     a * executorShare / 10000 ≤ b * executorShare / 10000 :=
   Nat.div_le_div_right (Nat.mul_le_mul_right _ h)
 
+/-! ## The absence rule (B4)
+
+The epoch pays for *being drawn*; `payExecutor` pays for *producing*. Neither says anything about a
+validator that is drawn and produces nothing — which, on this protocol, is free: an absent validator
+keeps its bond, counts in the finality denominator, and until this rule existed collected its share of
+the pot.
+
+The rule is stated here as what it is: **a function of an epoch's reward and of how long the validator
+has been silent**, and of nothing else. That is the whole of "income only, never the bond" — it cannot
+reach a stake because a stake is not one of its arguments. -/
+
+/-- **The absence rule** (`native_state.rs`'s `apply_absence`): a validator that has not signed a block
+    within `slack` heights of the boundary forfeits *that epoch's* reward. `slack = 0` is the off
+    switch, and off is `Pos.rhox`'s behaviour: in the contract absence costs nothing. -/
+def absenceAdjusted (silentFor slack reward : Nat) : Nat :=
+  if slack = 0 then reward else if silentFor ≤ slack then reward else 0
+
+/-- **The rule never raises a reward.** It pays or it withholds, and there is no third thing — which is
+    what makes it a penalty rather than a second reward axis. -/
+theorem absence_never_raises (silentFor slack reward : Nat) :
+    absenceAdjusted silentFor slack reward ≤ reward := by
+  unfold absenceAdjusted
+  split
+  · exact Nat.le_refl _
+  · split <;> omega
+
+/-- **A validator inside the slack is paid in full** — "an honest, temporarily-offline validator
+    recovers fully", as arithmetic: having been away for less than the slack is indistinguishable from
+    never having been away, so the rule has no memory to recover from. -/
+theorem a_returning_validator_is_paid_in_full {silentFor slack reward : Nat}
+    (h : silentFor ≤ slack) :
+    absenceAdjusted silentFor slack reward = reward := by
+  unfold absenceAdjusted
+  by_cases hs : slack = 0
+  · simp [hs]
+  · simp [hs, h]
+
+/-- **And the rule moves no stake.** Committing a reward leaves the pool and the active set exactly as
+    they were — for *any* reward function, which is what makes the statement about the transition
+    rather than about the rule. A validator that was not paid is not a validator that was slashed, and
+    that is the plan's condition on this rule stated as a theorem. -/
+theorem the_absence_rule_moves_no_stake (r : Validator → Nat) (s : PosState) :
+    (commitRewards r s).pool = s.pool ∧ (commitRewards r s).active = s.active :=
+  ⟨rfl, rfl⟩
+
 end Rchain

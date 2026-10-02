@@ -40,6 +40,9 @@ pub struct ProofOfStake {
     /// "at most the whole" invariant has to hold where a config becomes a number and where the number
     /// is read back.
     pub executor_share: NonNegI64,
+    /// **How long a validator may go without signing a block before an epoch stops paying it** (B4,
+    /// #150), in heights. Refined like its neighbours, and carried straight into `PosParams`.
+    pub absence_slack: NonNegI64,
     pub pos_multi_sig_public_keys: Vec<String>,
     pub pos_multi_sig_quorum: i32,
     pub pos_vault_pub_key: String,

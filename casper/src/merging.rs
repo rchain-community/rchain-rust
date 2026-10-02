@@ -547,6 +547,13 @@ impl BlockIndex {
                     event_list,
                     system_deploy: SystemDeployData::Empty,
                 } => (sys_deploy_id(&block_hash, 3), event_list),
+                // The block's own account of itself (B4, #150). It contributes an index like the
+                // others — a merge has to fold its one native write, which is why the id is distinct
+                // from every other kind's.
+                ProcessedSystemDeploy::Succeeded {
+                    event_list,
+                    system_deploy: SystemDeployData::RecordSpoke,
+                } => (sys_deploy_id(&block_hash, 4), event_list),
                 ProcessedSystemDeploy::Failed { .. } => continue,
             };
             let event_log_index = Self::create_event_log_index(
@@ -2397,6 +2404,7 @@ mod boundary_merge_tests {
                     maximum_bond: nn(100),
                     number_of_active_validators: 10,
                     executor_share: nn(0),
+                    absence_slack: nn(0),
                 },
             })
             .unwrap();

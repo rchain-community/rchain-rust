@@ -58,6 +58,7 @@ pub async fn create_genesis_block(
     quarantine_length: i32,
     number_of_active_validators: i32,
     executor_share: NonNegI64,
+    absence_slack: NonNegI64,
     pos_multi_sig_public_keys: &[String],
     pos_multi_sig_quorum: i32,
     pos_vault_pub_key: &str,
@@ -93,6 +94,7 @@ pub async fn create_genesis_block(
             quarantine_length,
             number_of_active_validators,
             executor_share,
+            absence_slack,
             pos_multi_sig_public_keys: pos_multi_sig_public_keys.to_vec(),
             pos_multi_sig_quorum,
             pos_vault_pub_key: pos_vault_pub_key.to_string(),
@@ -131,6 +133,8 @@ pub async fn create_genesis_block_from_config(
             i64::from(executor_share)
         ));
     }
+    let absence_slack = NonNegI64::try_from(i64::from(gbd.absence_slack))
+        .map_err(|e| format!("casper.genesis.absence-slack must not be negative: {e}"))?;
     create_genesis_block(
         validator,
         &shard_id,
@@ -144,6 +148,7 @@ pub async fn create_genesis_block_from_config(
         gbd.quarantine_length,
         gbd.number_of_active_validators,
         executor_share,
+        absence_slack,
         &gbd.pos_multi_sig_public_keys,
         gbd.pos_multi_sig_quorum,
         &gbd.pos_vault_pub_key,

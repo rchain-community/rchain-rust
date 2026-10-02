@@ -121,6 +121,14 @@ pub enum NativeSystemDeployOp {
         /// can check the offence against its own DAG. `None` is the metadata-justified kind.
         evidence: Option<Vec<u8>>,
     },
+    /// **The block records that its producer spoke at its own height** (B4, #150).
+    ///
+    /// Carries nothing, and that is the design: the *speaker* and the *height* are the block's own
+    /// `sender` and `block_number`, which every node reads off the block it is processing, so there is
+    /// nothing here for a proposer to choose — it cannot write another validator's entry and cannot
+    /// claim a height that is not its own. The model's counterpart is
+    /// `spec/Rchain/Pos.lean`'s absence section.
+    RecordSpoke,
     /// **Pay the block's producer for the work it did** (B2, #150): a share of what this deploy
     /// burned, taken out of the staking vault by [`NativeSystemState::pay_executor`].
     ///
@@ -161,6 +169,21 @@ impl SystemDeploy {
                 deployer: deployer.to_owned(),
                 amount,
             }),
+        }
+    }
+
+    /// **The block accounts for itself** (B4, #150): a block-level system deploy carrying nothing,
+    /// whose execution writes the block's own sender and height into `pos:last_spoke`.
+    ///
+    /// Built by the proposer for its own blocks and reconstructed by every receiver from the recorded
+    /// `SystemDeployData::RecordSpoke`, so both sides run it at the same point in the same sequence.
+    pub fn record_spoke(rand: Blake2b512Random) -> SystemDeploy {
+        SystemDeploy {
+            source: "",
+            normalizer_env: BTreeMap::new(),
+            rand,
+            return_channel: Par::default(),
+            op: Some(NativeSystemDeployOp::RecordSpoke),
         }
     }
 

@@ -161,6 +161,9 @@ pub struct GenesisBlockData {
     /// parameter because it decides amounts, which are consensus state: two nodes with different
     /// values compute different post-states.
     pub executor_share: i32,
+    /// **How long a validator may go without signing a block before an epoch stops paying it** (B4,
+    /// #150), in heights. `0` is the contract's behaviour: absence costs nothing.
+    pub absence_slack: i32,
     pub pos_multi_sig_public_keys: Vec<String>,
     pub pos_multi_sig_quorum: i32,
     pub pos_vault_pub_key: String,
@@ -183,6 +186,7 @@ mod tests {
             genesis_block_number: 0,
             number_of_active_validators: 10,
             executor_share: 2500,
+            absence_slack: 0,
             pos_multi_sig_public_keys: Vec::new(),
             pos_multi_sig_quorum: 0,
             pos_vault_pub_key: String::new(),

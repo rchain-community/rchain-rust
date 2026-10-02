@@ -409,6 +409,14 @@ pub enum SystemDeployData {
         evidence: Option<Vec<u8>>,
     },
     CloseBlock,
+    /// **The block's producer records that it signed a block at this height** (B4, #150).
+    ///
+    /// Empty on purpose. The *speaker* and the *height* are the block's own `sender` and
+    /// `block_number`, which every node reads off the block it is processing — so this deploy's
+    /// presence is the whole of its payload, and there is nothing here for a proposer to lie about:
+    /// it cannot write another validator's entry, and it cannot claim a height that is not its own.
+    /// Its absence costs the proposer its own activity record and nothing more.
+    RecordSpoke,
     Empty,
 }
 
@@ -520,6 +528,9 @@ impl SystemDeployData {
             Some(system_deploy_data_proto::SystemDeploy::CloseBlockSystemDeploy(_)) => {
                 Ok(SystemDeployData::CloseBlock)
             }
+            Some(system_deploy_data_proto::SystemDeploy::RecordSpokeSystemDeploy(_)) => {
+                Ok(SystemDeployData::RecordSpoke)
+            }
             None => Ok(SystemDeployData::Empty),
         }
     }
@@ -538,6 +549,13 @@ impl SystemDeployData {
                         equivocation_evidence: evidence.clone().unwrap_or_default(),
                     },
                 )),
+            },
+            SystemDeployData::RecordSpoke => SystemDeployDataProto {
+                system_deploy: Some(
+                    system_deploy_data_proto::SystemDeploy::RecordSpokeSystemDeploy(
+                        RecordSpokeSystemDeployDataProto {},
+                    ),
+                ),
             },
             SystemDeployData::CloseBlock => SystemDeployDataProto {
                 system_deploy: Some(

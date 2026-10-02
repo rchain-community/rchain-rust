@@ -301,6 +301,13 @@ fn genesis_block_data_from_hocon(h: &Hocon) -> Result<GenesisBlockData, String> 
             Some(v) => to_i32(v)?,
             None => DEFAULT_EXECUTOR_SHARE,
         },
+        // Optional for the same reason as `executor-share` and with a fallback that is *off*: this
+        // keys a rule the contract does not have, so a config written before it must resolve to the
+        // contract's behaviour rather than to a rule nobody chose.
+        absence_slack: match get_opt(h, "absence-slack") {
+            Some(v) => to_i32(v)?,
+            None => 0,
+        },
         pos_multi_sig_public_keys: to_string_list(get(h, "pos-multi-sig-public-keys")?)?,
         pos_multi_sig_quorum: to_i32(get(h, "pos-multi-sig-quorum")?)?,
         pos_vault_pub_key: to_string(get(h, "pos-vault-pub-key")?)?,
@@ -345,6 +352,9 @@ fn genesis_block_data_over(
     }
     if let Some(v) = get_opt(h, "executor-share") {
         out.executor_share = to_i32(v)?;
+    }
+    if let Some(v) = get_opt(h, "absence-slack") {
+        out.absence_slack = to_i32(v)?;
     }
     if let Some(v) = get_opt(h, "pos-multi-sig-public-keys") {
         out.pos_multi_sig_public_keys = to_string_list(v)?;
@@ -682,6 +692,7 @@ mod tests {
     fn genesis() -> GenesisBlockData {
         GenesisBlockData {
             executor_share: 2500,
+            absence_slack: 0,
             genesis_data_dir: PathBuf::from("/genesis"),
             bonds_file: "/genesis/bonds.txt".to_string(),
             wallets_file: "/genesis/wallets.txt".to_string(),

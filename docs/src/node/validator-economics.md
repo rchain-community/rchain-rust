@@ -84,6 +84,45 @@ So the protocol's liveness signal remains the one finality carries — `Particip
 formula above, if it is drawn) and **how much phlo the blocks it signs burn** (the producer's share).
 Everything else a node does for the network is unpaid.
 
+## What the block's *producer* is paid, and what an absent validator forgoes
+
+Two payments sit outside the epoch formula, and both read the block rather than the boundary.
+
+**The producer's share.** A deploy's phlo is charged into the staking vault by `pre_charge` and the
+unconsumed part returned by `refund`, so what the vault keeps for a deploy is exactly what that deploy
+burned — and that is what the epoch pot is made of. `pay_executor` takes `executor-share` basis points of
+it (**a quarter** by default, set at genesis) and pays it to the block's **own signed `sender`**, at the
+end of that deploy's cost accounting. The producer is the one party the protocol can identify without new
+state and that nobody but the signer can steer, so this is the *only* place a payout reads who did the
+work — and it is coarse: a block's producer is paid for the deploys it carried, weighted by what they
+burned. Attesting, relaying and staying up pay nothing.
+
+It is a **reallocation inside a fixed pie**, not an emission: nothing is minted and the epoch pot is
+smaller by exactly what was paid out. `executor-share = 0` is `Pos.rhox`'s behaviour — the contract pays
+a producer nothing beyond its share of the pot — and it is what a params record written before the key
+existed decodes to. See [`spec/RUST-FIRST.md`](../../../spec/RUST-FIRST.md) for the transfer table, and
+`payExecutor_conserves` in [`spec/Rchain/Pos.lean`](../../../spec/Rchain/Pos.lean) for the conservation
+that holds across it.
+
+**The absence rule, off by default.** A block writes its own sender and height into `pos:last_spoke`
+(B4): one entry per block, chosen by nobody, because the payload is empty and every node reads the values
+off the block it is processing. On that record, `absence-slack` arms an income-only rule: at an epoch
+boundary, a drawn validator whose entry is older than `absence-slack` heights *forfeits that epoch's
+reward*, which stays in the vault for a later epoch.
+
+Three properties, and each is why the rule is shaped as it is. It **cannot touch a bond** — it removes an
+entry from the rewards a boundary is about to commit, and a stake is not reachable from there. It **is
+not a slash** — nothing about it appears in `mark_failed`, the offence predicate, or any exemption ledger.
+And it **recovers in full**: the record is written by the validator's own signature, so one block puts it
+back inside the slack immediately, and the next boundary pays it exactly as if it had never been away.
+
+**The shipped default is `absence-slack = 0`, which is off.** That is `Pos.rhox`'s behaviour — in the
+contract absence costs nothing and an absent validator is paid for being drawn — and it is a rule the
+contract does not have, so a network chooses it rather than inheriting it. It is also **not a fix for the
+liveness defect**: a validator that goes offline still freezes finality and still counts in the
+denominator ([#149](https://github.com/rchain-community/rchain-rust/issues/149)); this rule only decides
+that it is not paid for the boundary it sat out.
+
 ## Who is paid: the drawn set, and where "pro-rata" stops holding
 
 `epoch_rewards` pays the **active** set. It writes an entry for **every** pooled validator and the entry

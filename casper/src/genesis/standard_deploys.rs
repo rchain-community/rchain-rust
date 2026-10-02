@@ -851,6 +851,7 @@ mod builder_tests {
             quarantine_length: 5,
             number_of_active_validators: 7,
             executor_share: NonNegI64::try_from(0).unwrap(),
+            absence_slack: NonNegI64::try_from(0).unwrap(),
             pos_multi_sig_public_keys: Vec::new(),
             pos_multi_sig_quorum: 1,
             pos_vault_pub_key: "cd".repeat(65),

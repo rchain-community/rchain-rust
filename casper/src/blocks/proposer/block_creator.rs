@@ -111,9 +111,16 @@ impl BlockCreator {
             // Slash + close-block system deploys. `to_slash` is a `BTreeMap`, so its iteration order is
             // already the canonical one the seed index depends on.
             let mut system_deploys: Vec<SystemDeploy> = Vec::new();
+            // **The block accounts for itself first** (B4, #150). Its position in this list is the
+            // position it occupies in the block's recorded `system_deploys`, and the replay assigns
+            // each entry's rand by that position (`terms.len() + i`), so the seeds line up because the
+            // lists line up — which is why this one is pushed *before* the rest rather than appended.
+            system_deploys.push(SystemDeploy::record_spoke(
+                rand.split_byte(u8::try_from(selected.len()).map_err(|e| e.to_string())?),
+            ));
             for (i, (v, slash)) in to_slash.iter().enumerate() {
-                let seed =
-                    rand.split_byte(u8::try_from(selected.len() + i).map_err(|e| e.to_string())?);
+                let seed = rand
+                    .split_byte(u8::try_from(selected.len() + 1 + i).map_err(|e| e.to_string())?);
                 system_deploys.push(SystemDeploy::slash(
                     v,
                     slash.severity,
@@ -122,7 +129,7 @@ impl BlockCreator {
                 ));
             }
             let close_seed = rand.split_byte(
-                u8::try_from(selected.len() + to_slash.len()).map_err(|e| e.to_string())?,
+                u8::try_from(selected.len() + 1 + to_slash.len()).map_err(|e| e.to_string())?,
             );
             // The **fringe's** state hash goes in with the close deploy: it is what the next epoch's
             // active-set draw is anchored to, and unlike `rand` (or the pre-state, which this

@@ -42,7 +42,7 @@ use rchain_crypto::public_key::PublicKey;
 use rchain_models::ast::Par;
 use rchain_models::block_metadata::SlashSeverity;
 use rchain_models::validator::Validator;
-use rchain_shared::refined::NonNegI64;
+use rchain_shared::refined::{BlockHeight, NonNegI64};
 use rchain_shared::serialize::Serialize;
 
 use rchain_rspace::native_store::{
@@ -62,12 +62,13 @@ const WITHDRAWER_ENTRY_LEN: usize = VALIDATOR_LEN + 8 + 8;
 const PENDING_ENTRY_LEN: usize = VALIDATOR_LEN + 8;
 /// The size of a serialized trusted-set entry.
 const TRUSTED_ENTRY_LEN: usize = VALIDATOR_LEN;
-/// `PosParams` serializes as six little-endian `i64`s.
-const PARAMS_LEN: usize = 6 * 8;
-/// The length a params record had before [`PosParams::executor_share`] (B2, #150) existed. A record
-/// of exactly this length is a chain whose genesis predates the producer's share, and it decodes with
-/// that share at zero — see [`decode_params`].
-const PARAMS_LEN_BEFORE_EXECUTOR_SHARE: usize = 5 * 8;
+/// `PosParams` serializes as seven little-endian `i64`s.
+const PARAMS_LEN: usize = 7 * 8;
+/// The length of the *original* `PosParams` — the five fields before the producer's share (B2, #150)
+/// and the absence slack (B4, #150) were added, in that order. A record shorter than [`PARAMS_LEN`]
+/// but at least this long reads the fields it carries and defaults the rest to zero, which is the
+/// pre-change rule for each (see [`decode_params`]).
+const PARAMS_LEN_ORIGINAL: usize = 5 * 8;
 
 // --- Leaf keys ---------------------------------------------------------------
 
@@ -103,6 +104,21 @@ pub fn pos_pending_withdrawers_key() -> Blake2b256Hash {
 /// its bond when its withdrawal is released.
 pub fn pos_committed_key() -> Blake2b256Hash {
     Blake2b256Hash::create(b"pos:committed")
+}
+
+/// **Leaf key for the height of the last block each validator signed** — `validator → BlockHeight`
+/// (B4, #150).
+///
+/// The one per-validator **activity** record in state, and it exists because every other candidate
+/// signal was proposer-steerable: a block writes only its **own** entry, from its own signed `sender`
+/// and its own `block_number`, and each node replays that write from the same two values. Nothing a
+/// proposer can put in a block changes what another validator's entry says.
+///
+/// What it is for: an income-only absence rule, and any later score that needs to know whether a
+/// validator has been doing the work — neither of which could be stated honestly against a signal the
+/// proposer chose.
+pub fn pos_last_spoke_key() -> Blake2b256Hash {
+    Blake2b256Hash::create(b"pos:last_spoke")
 }
 
 /// Leaf key for the immutable PoS parameters.
@@ -263,6 +279,42 @@ pub fn encode_bonds(bonds: &BTreeMap<Validator, NonNegI64>) -> Vec<u8> {
         out.extend_from_slice(&i64::from(*stake).to_le_bytes());
     }
     out
+}
+
+/// Encode the last-spoke map (B4, #150): the same wire shape as [`encode_bonds`] — a 65-byte
+/// validator and a little-endian `i64` — with the block height in the value slot.
+///
+/// Deliberately the same shape rather than a second codec: `BlockHeight` and `NonNegI64` are both a
+/// non-negative `i64` in a fixed-width slot, and a reader who has met one map has met both.
+pub fn encode_last_spoke(spoke: &BTreeMap<Validator, BlockHeight>) -> Vec<u8> {
+    let mut out = Vec::with_capacity(spoke.len() * BOND_ENTRY_LEN);
+    for (v, height) in spoke {
+        out.extend_from_slice(v.as_bytes());
+        out.extend_from_slice(&i64::from(*height).to_le_bytes());
+    }
+    out
+}
+
+/// Decode a last-spoke map (inverse of [`encode_last_spoke`]).
+pub fn decode_last_spoke(bytes: &[u8]) -> Result<BTreeMap<Validator, BlockHeight>, String> {
+    if bytes.len() % BOND_ENTRY_LEN != 0 {
+        return Err(format!(
+            "last-spoke encoding has {} bytes, not a multiple of {BOND_ENTRY_LEN}",
+            bytes.len()
+        ));
+    }
+    let mut out = BTreeMap::new();
+    for chunk in bytes.chunks_exact(BOND_ENTRY_LEN) {
+        let validator = Validator::from_slice(&chunk[..VALIDATOR_LEN]);
+        let height_bytes: [u8; 8] = chunk[VALIDATOR_LEN..BOND_ENTRY_LEN]
+            .try_into()
+            .map_err(|_| "last-spoke encoding: invalid height length".to_string())?;
+        let height = i64::from_le_bytes(height_bytes);
+        let height = BlockHeight::try_from(height)
+            .map_err(|_| format!("negative last-spoke height {height}"))?;
+        out.insert(validator, height);
+    }
+    Ok(out)
 }
 
 /// Decode a bonds map (inverse of [`encode_bonds`]).
@@ -480,6 +532,15 @@ pub struct PosParams {
     /// different values compute different post-states, and genesis identity is the mechanism that
     /// makes a network agree on one.
     pub executor_share: NonNegI64,
+    /// **How long a validator may go without signing a block before an epoch stops paying it** (B4,
+    /// #150), in heights. `0` disables the rule, which is `Pos.rhox`'s behaviour — in the contract
+    /// absence costs nothing and an absent validator is paid for being drawn — and it is what a params
+    /// record written before this field decodes to.
+    ///
+    /// The rule it gates can only ever *remove* an entry from the rewards a boundary is about to
+    /// commit, so it is income-only by construction: no bond, no pool entry and no ledger is reachable
+    /// from it.
+    pub absence_slack: NonNegI64,
 }
 
 impl Default for PosParams {
@@ -494,12 +555,13 @@ impl Default for PosParams {
             quarantine_length: 0,
             number_of_active_validators: 0,
             executor_share: NonNegI64::zero(),
+            absence_slack: NonNegI64::zero(),
         }
     }
 }
 
 impl PosParams {
-    /// Encode as six little-endian `i64`s (inverse: [`decode_params`]).
+    /// Encode as seven little-endian `i64`s (inverse: [`decode_params`]).
     pub fn encode(&self) -> Vec<u8> {
         let mut out = Vec::with_capacity(PARAMS_LEN);
         out.extend_from_slice(&i64::from(self.minimum_bond).to_le_bytes());
@@ -508,38 +570,39 @@ impl PosParams {
         out.extend_from_slice(&self.quarantine_length.to_le_bytes());
         out.extend_from_slice(&self.number_of_active_validators.to_le_bytes());
         out.extend_from_slice(&i64::from(self.executor_share).to_le_bytes());
+        out.extend_from_slice(&i64::from(self.absence_slack).to_le_bytes());
         out
     }
 }
 
 /// Decode [`PosParams`] (inverse of [`PosParams::encode`]).
 ///
-/// **A five-field record is accepted and reads as a producer share of zero** — the rule
-/// [`SlashSeverity::Unspecified`] uses for a slash that predates the tiers, and for the same reason:
-/// the forty-byte form is a chain that ran before the field existed, and its own rule is exactly
-/// "every burned photon reaches the epoch pot". A short record is not a corrupt one; a record of any
-/// other length is.
+/// **A record that stops short of the current form reads the fields it carries and defaults the rest
+/// to zero** — the rule [`SlashSeverity::Unspecified`] uses for a slash that predates the tiers, and
+/// for the same reason: each trailing field's zero is exactly the behaviour of a chain that ran before
+/// it existed (no producer's share; no absence rule). A record that is *not* a whole number of fields,
+/// or that is shorter than the original five, is refused.
 ///
 /// [`SlashSeverity::Unspecified`]: rchain_models::block_metadata::SlashSeverity::Unspecified
 pub fn decode_params(bytes: &[u8]) -> Result<PosParams, String> {
-    if bytes.len() != PARAMS_LEN && bytes.len() != PARAMS_LEN_BEFORE_EXECUTOR_SHARE {
+    if bytes.len() % 8 != 0 || bytes.len() < PARAMS_LEN_ORIGINAL || bytes.len() > PARAMS_LEN {
         return Err(format!(
-            "params encoding has {} bytes, expected {PARAMS_LEN} or the pre-producer-share \
-             {PARAMS_LEN_BEFORE_EXECUTOR_SHARE}",
+            "params encoding has {} bytes: a params record is a whole number of eight-byte fields, \
+             between {PARAMS_LEN_ORIGINAL} and {PARAMS_LEN}",
             bytes.len()
         ));
     }
     let read = |i: usize| -> i64 {
+        // A field the record does not carry is the pre-change rule, not a missing value.
+        if (i + 1) * 8 > bytes.len() {
+            return 0;
+        }
         let mut arr = [0u8; 8];
         arr.copy_from_slice(&bytes[i * 8..i * 8 + 8]);
         i64::from_le_bytes(arr)
     };
-    // A field the record does not carry is the pre-change rule, not a missing value.
-    let executor_share = if bytes.len() == PARAMS_LEN {
-        read(5)
-    } else {
-        0
-    };
+    let executor_share = read(5);
+    let absence_slack = read(6);
     if executor_share > 10_000 {
         return Err(format!(
             "executor_share is {executor_share} basis points, above the whole of what was burned"
@@ -558,6 +621,8 @@ pub fn decode_params(bytes: &[u8]) -> Result<PosParams, String> {
         number_of_active_validators: read(4),
         executor_share: NonNegI64::try_from(executor_share)
             .map_err(|e| format!("executor_share is not a valid basis-point share: {e}"))?,
+        absence_slack: NonNegI64::try_from(absence_slack)
+            .map_err(|e| format!("absence_slack is not a valid number of heights: {e}"))?,
     })
 }
 
@@ -755,6 +820,42 @@ fn epoch_pot(
 /// the epoch total. That is the same case the Lean model leaves as a hypothesis
 /// (`hD : 0 < activeBonds / minimumBond`): the model states the theorem for the defined case, the port
 /// pays nothing in the undefined one. `an_epoch_with_a_zero_normaliser_pays_nothing` pins it.
+/// **The absence rule** (B4, #150): drop from an epoch's rewards every drawn validator whose last
+/// signed block is older than `slack` heights before `boundary`.
+///
+/// **Income only, and that is structural rather than promised.** The whole effect of this function is
+/// to remove entries from the map a boundary is about to commit, so no bond, no pool entry and no
+/// ledger is reachable from it — an absent validator is not slashed, not evicted, and not deactivated,
+/// it is simply not paid for a boundary at which it did not act. The withheld reward stays in the
+/// staking vault (nothing debits it), so the next epoch distributes it: the epoch's conservation is
+/// untouched by construction.
+///
+/// **And it is fully recoverable.** The rule reads only the height in `pos:last_spoke`, and a validator
+/// writes that entry itself by signing one block — so one block from a validator that was away puts it
+/// back in full at its next boundary. `slack == 0` disables the rule entirely, which is `Pos.rhox`'s
+/// behaviour: in the contract absence costs nothing and an absent validator is paid for being drawn.
+///
+/// A validator that has **never** signed on this chain is as absent as it is possible to be, so it is
+/// dropped too — which is the honest reading of a missing record rather than a special case.
+fn apply_absence(
+    rewards: BTreeMap<Validator, NonNegI64>,
+    spoke: &BTreeMap<Validator, BlockHeight>,
+    boundary: i64,
+    slack: i64,
+) -> BTreeMap<Validator, NonNegI64> {
+    if slack <= 0 {
+        return rewards;
+    }
+    let earliest = boundary.saturating_sub(slack);
+    rewards
+        .into_iter()
+        .filter(|(validator, _)| match spoke.get(validator) {
+            None => false,
+            Some(height) => i64::from(*height) >= earliest,
+        })
+        .collect()
+}
+
 fn epoch_reward(pot: i64, minimum_bond: i64, active_bonds: i64, bond: i64) -> Result<i64, String> {
     if minimum_bond <= 0 {
         return Ok(0);
@@ -853,6 +954,42 @@ impl NativeSystemState {
     pub fn set_active(&self, active: &BTreeMap<Validator, NonNegI64>) {
         self.store
             .put(PREFIX_POS, pos_active_key(), encode_bonds(active));
+    }
+
+    /// **The height of the last block each validator signed** (B4, #150) — the activity record the
+    /// absence rule reads. Absent from the map means the validator has never signed a block on this
+    /// chain, which is the same thing the rule needs to know as "very long ago".
+    pub async fn last_spoke(&self) -> Result<BTreeMap<Validator, BlockHeight>, String> {
+        match self
+            .store
+            .get(PREFIX_POS, &pos_last_spoke_key())
+            .await
+            .map_err(|e| e.to_string())?
+        {
+            Some(bytes) => decode_last_spoke(&bytes),
+            None => Ok(BTreeMap::new()),
+        }
+    }
+
+    /// **Record that `speaker` signed a block at `height`** (B4, #150).
+    ///
+    /// A block writes exactly one entry — its own sender's — and the value it writes is its own
+    /// height, so the write is a function of the block alone. It is a *record*, not a reward or a
+    /// penalty: nothing reads it until an epoch boundary, and nothing about it can touch a bond.
+    ///
+    /// Nothing prunes the map. Its size is bounded by the number of distinct keys that have ever
+    /// signed a block on this chain, which is the bond pool plus anything ever slashed out of it —
+    /// small, and the entries are 73 bytes each.
+    pub async fn record_spoke(
+        &self,
+        speaker: &Validator,
+        height: BlockHeight,
+    ) -> Result<(), String> {
+        let mut spoke = self.last_spoke().await?;
+        spoke.insert(*speaker, height);
+        self.store
+            .put(PREFIX_POS, pos_last_spoke_key(), encode_last_spoke(&spoke));
+        Ok(())
     }
 
     /// The active-validator set (the consensus validator set).
@@ -1302,10 +1439,18 @@ impl NativeSystemState {
         let mut pending = self.pending_withdrawers().await?;
         let mut committed = self.committed_rewards().await?;
 
-        // 1. The epoch's rewards, from the state as it stands.
-        let rewards = self
-            .epoch_rewards(&pool, &withdrawers, &committed, &params)
-            .await?;
+        // 1. The epoch's rewards, from the state as it stands — and then the **absence rule** (B4,
+        // #150), which can only ever *remove* an entry from what this boundary is about to commit. The
+        // withheld reward stays in the staking vault and is distributed by a later epoch: nothing is
+        // minted, nothing is burned, and no bond is reachable from here.
+        let spoke = self.last_spoke().await?;
+        let rewards = apply_absence(
+            self.epoch_rewards(&pool, &withdrawers, &committed, &params)
+                .await?,
+            &spoke,
+            block_number,
+            i64::from(params.absence_slack),
+        );
         for (validator, reward) in &rewards {
             let carried = committed
                 .get(validator)
@@ -2244,20 +2389,23 @@ mod tests {
             quarantine_length: 5,
             number_of_active_validators: 3,
             executor_share: NonNegI64::try_from(2500).unwrap(),
+            absence_slack: NonNegI64::try_from(0).unwrap(),
         };
         assert_eq!(decode_params(&params.encode()).unwrap(), params);
     }
 
-    /// **The five-field record is a chain that predates the producer's share, and it reads as zero**
-    /// (B2, #150) — the same compatibility rule the slash tiers use (`SlashSeverity::Unspecified` is
-    /// code `0`, the pre-tier rule). The alternative, refusing the short form, would make a node that
-    /// upgrades unable to read its own genesis params leaf.
+    /// **A shorter record is a chain that predates the fields it does not carry, and each missing
+    /// field reads as the rule of that chain** (B2 and B4, #150) — the same compatibility rule the
+    /// slash tiers use (`SlashSeverity::Unspecified` is code `0`, the pre-tier rule). The alternative,
+    /// refusing a short record, would make a node that upgrades unable to read its own genesis params
+    /// leaf.
     ///
-    /// And the *upper* bound is refused rather than clamped: a share above 10 000 basis points would
-    /// pay the producer more than the deploy burned, out of the same vault other validators' stake
-    /// sits in — a reward funded by everyone else's bond.
+    /// Both new fields are *off* at zero and both zeros are the older behaviour: no producer's share,
+    /// and no absence rule. And the *upper* bound on the share is refused rather than clamped: a share
+    /// above 10 000 basis points would pay the producer more than the deploy burned, out of the same
+    /// vault other validators' stake sits in — a reward funded by everyone else's bond.
     #[test]
-    fn a_pre_producer_share_record_reads_as_no_share_and_an_over_share_is_refused() {
+    fn a_short_params_record_reads_the_pre_change_rule_and_an_over_share_is_refused() {
         let current = PosParams {
             minimum_bond: NonNegI64::try_from(1).unwrap(),
             maximum_bond: NonNegI64::try_from(1000).unwrap(),
@@ -2265,20 +2413,33 @@ mod tests {
             quarantine_length: 5,
             number_of_active_validators: 3,
             executor_share: NonNegI64::try_from(2500).unwrap(),
+            absence_slack: NonNegI64::try_from(7).unwrap(),
         };
-        let legacy = &current.encode()[..PARAMS_LEN_BEFORE_EXECUTOR_SHARE];
+        let original = &current.encode()[..PARAMS_LEN_ORIGINAL];
         assert_eq!(
-            decode_params(legacy).unwrap(),
+            decode_params(original).unwrap(),
             PosParams {
                 executor_share: NonNegI64::zero(),
+                absence_slack: NonNegI64::zero(),
                 ..current.clone()
             },
-            "a forty-byte record is the pre-share rule, not a corrupt one"
+            "the five-field record is both pre-change rules at once"
+        );
+        // And the intermediate form — the producer's share without the absence slack — reads the share
+        // it carries and defaults only what it lacks.
+        let share_only = &current.encode()[..PARAMS_LEN_ORIGINAL + 8];
+        assert_eq!(
+            decode_params(share_only).unwrap(),
+            PosParams {
+                absence_slack: NonNegI64::zero(),
+                ..current.clone()
+            },
+            "the six-field record carries the share it has and defaults the slack it lacks"
         );
 
-        // A record of any other length is still refused — the short form is one named case, not a
-        // general tolerance, so a truncated 48-byte record cannot slip through as a 40-byte one.
-        for len in [0usize, 8, 41, 47, 56] {
+        // A record that is not a whole number of fields, or shorter than the original, is refused: the
+        // tolerance is "a field the record does not carry", not "any byte string".
+        for len in [0usize, 8, 39, 41, 47, 57, 64] {
             assert!(
                 decode_params(&vec![0u8; len]).is_err(),
                 "{len} bytes is not a params record this protocol has ever written"
@@ -2310,6 +2471,7 @@ mod tests {
             quarantine_length: 5,
             number_of_active_validators: 3,
             executor_share: NonNegI64::zero(),
+            absence_slack: NonNegI64::zero(),
         };
         assert!(
             decode_params(&params.encode()).is_ok(),
@@ -3667,6 +3829,7 @@ mod tests {
                 trusted: BTreeSet::from([validator]),
                 params: PosParams {
                     executor_share: NonNegI64::try_from(2500).expect("a quarter"),
+                    absence_slack: NonNegI64::zero(),
                     ..PosParams::default()
                 },
             })
@@ -3753,6 +3916,130 @@ mod tests {
         assert_eq!(
             i64::from(native.vault_balance(&addr).await.unwrap().unwrap()),
             42
+        );
+    }
+
+    /// **The block's own activity record, and the rule that reads it** (B4, #150).
+    ///
+    /// Three properties, and each is one of the plan's conditions for the rule existing at all:
+    ///
+    /// 1. **the record is the block's own** — `record_spoke` writes the key it is given at the height
+    ///    it is given, and the *only* caller passes the block's own `sender` and `block_number`, so no
+    ///    party can write another validator's entry;
+    /// 2. **the rule is income only** — a validator that has gone quiet loses its epoch reward and
+    ///    keeps its bond, stays in the pool, and stays in the active set;
+    /// 3. **and it recovers fully** — one block from it puts it back in full at the next boundary,
+    ///    which is what makes this an incentive rather than a confiscation;
+    /// 4. with `absence_slack = 0` the rule does nothing at all, which is the contract's behaviour.
+    #[tokio::test]
+    async fn the_absence_rule_takes_income_only_and_releases_it_on_a_single_block() {
+        let params = PosParams {
+            minimum_bond: NonNegI64::try_from(1).unwrap(),
+            epoch_length: 1,
+            absence_slack: NonNegI64::try_from(5).unwrap(),
+            ..PosParams::default()
+        };
+        let native = native_with(
+            &[validator(1), validator(2)],
+            params.clone(),
+            &[(validator(1), 4), (validator(2), 8)],
+        )
+        .await;
+        // A pot, the way a deploy's phlo makes one.
+        let payer = PublicKey::new(vec![9u8; 65]);
+        let payer_addr = RevAddress::from_public_key(&payer).unwrap().to_base58();
+        native.set_vault_balance(&payer_addr, nn(10));
+        native.pre_charge(&payer, nn(10)).await.unwrap().unwrap();
+
+        // Validator 1 last spoke at height 4; validator 2 has no record at all.
+        native
+            .record_spoke(&validator(1), BlockHeight::try_from(4).unwrap())
+            .await
+            .unwrap();
+        let spoke = native.last_spoke().await.unwrap();
+        assert_eq!(
+            spoke.get(&validator(1)).map(|h| i64::from(*h)),
+            Some(4),
+            "the record is the key and height it was given"
+        );
+        assert_eq!(
+            spoke.get(&validator(2)),
+            None,
+            "and nothing else is written"
+        );
+
+        // The boundary is height 12, so the slack of 5 reaches back to 7: validator 1 (height 4) is
+        // out of time and validator 2 (nothing) is as absent as it gets.
+        native
+            .close_block(12, fringe_state(12))
+            .await
+            .unwrap()
+            .unwrap();
+        let committed = native.committed_rewards().await.unwrap();
+        assert_eq!(
+            committed.get(&validator(1)).map(|r| i64::from(*r)),
+            None,
+            "a quiet validator is not paid for the boundary it sat out"
+        );
+        assert_eq!(
+            committed.get(&validator(2)),
+            None,
+            "nor is a silent stranger"
+        );
+
+        // **Income only.** The bond is where it was and both are still bonded, so the rule cannot
+        // reach a stake — a validator that was never paid is not a validator that was slashed.
+        let pool = native.bonds().await.unwrap();
+        assert_eq!(pool.get(&validator(1)).map(|s| i64::from(*s)), Some(4));
+        assert_eq!(pool.get(&validator(2)).map(|s| i64::from(*s)), Some(8));
+
+        // **And one block recovers it in full.** Validator 1 speaks at 16, the next boundary is 20
+        // (slack reaches back to 15, and 16 is inside it), so it is paid the share it would have had.
+        native
+            .record_spoke(&validator(1), BlockHeight::try_from(16).unwrap())
+            .await
+            .unwrap();
+        native
+            .close_block(20, fringe_state(20))
+            .await
+            .unwrap()
+            .unwrap();
+        let committed = native.committed_rewards().await.unwrap();
+        let paid = committed
+            .get(&validator(1))
+            .map(|r| i64::from(*r))
+            .unwrap_or(0);
+        assert!(
+            paid > 0,
+            "a validator that has signed again is paid again — the rule has no memory of the lapse"
+        );
+
+        // **Slack zero is the contract's behaviour**: no record, no penalty.
+        let off = native_with(
+            &[validator(1)],
+            PosParams {
+                minimum_bond: NonNegI64::try_from(1).unwrap(),
+                epoch_length: 1,
+                ..PosParams::default()
+            },
+            &[(validator(1), 4)],
+        )
+        .await;
+        off.set_vault_balance(&payer_addr, nn(10));
+        off.pre_charge(&payer, nn(10)).await.unwrap().unwrap();
+        off.close_block(12, fringe_state(12))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            off.committed_rewards()
+                .await
+                .unwrap()
+                .get(&validator(1))
+                .map(|r| i64::from(*r)),
+            Some(10),
+            "with the rule off, an absent validator is paid for being drawn — exactly as Pos.rhox \\
+             does: the only drawn validator takes the whole pot, never having signed a block"
         );
     }
 

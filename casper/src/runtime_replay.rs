@@ -464,6 +464,7 @@ impl<'a, R: ReplayRuntime + ?Sized> RuntimeReplayOps<'a, R> {
                 severity,
                 evidence,
             } => SystemDeploy::slash(validator, *severity, evidence.clone(), rand),
+            SystemDeployData::RecordSpoke => SystemDeploy::record_spoke(rand),
             SystemDeployData::CloseBlock => {
                 SystemDeploy::close_block(block_number, *fringe_state_hash, rand)
             }
@@ -573,6 +574,15 @@ impl<'a, R: ReplayRuntime + ?Sized> RuntimeReplayOps<'a, R> {
             }
             NativeSystemDeployOp::PayExecutor { executor, burned } => {
                 native.pay_executor(executor, *burned).await?
+            }
+            // The block's own account of itself (B4, #150), from *this* runtime's block data — which
+            // is the block being replayed, so the entry written is the same one the play path wrote.
+            NativeSystemDeployOp::RecordSpoke => {
+                let block_data = self.runtime.block_data();
+                let speaker =
+                    rchain_models::validator::Validator::try_from(block_data.sender.bytes())
+                        .map_err(|e| format!("recordSpoke: block sender: {e}"))?;
+                native.record_spoke(&speaker, block_data.block_number).await
             }
             NativeSystemDeployOp::CloseBlock {
                 block_number,

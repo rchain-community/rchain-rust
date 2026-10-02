@@ -897,6 +897,16 @@ impl RuntimeManager {
             NativeSystemDeployOp::PayExecutor { executor, burned } => {
                 native.pay_executor(executor, *burned).await?
             }
+            // **The block's own account of itself** (B4, #150). The speaker is the block's `sender`
+            // and the height its `block_number`, both read from the block data this runtime was set
+            // with — so the entry written is the block's own and cannot be anyone else's.
+            NativeSystemDeployOp::RecordSpoke => {
+                let block_data = runtime.block_data();
+                let speaker = Validator::try_from(block_data.sender.bytes()).map_err(|e| {
+                    format!("recordSpoke: the block's sender is not a validator key: {e}")
+                })?;
+                native.record_spoke(&speaker, block_data.block_number).await
+            }
             NativeSystemDeployOp::CloseBlock {
                 block_number,
                 fringe_state_hash,
@@ -952,6 +962,7 @@ impl RuntimeManager {
             Ok(()) => {
                 let system_deploy = match &deploy.op {
                     Some(NativeSystemDeployOp::CloseBlock { .. }) => SystemDeployData::CloseBlock,
+                    Some(NativeSystemDeployOp::RecordSpoke) => SystemDeployData::RecordSpoke,
                     Some(NativeSystemDeployOp::Slash {
                         validator,
                         severity,
@@ -1594,6 +1605,124 @@ mod tests {
             native.bonds().await.expect("read the pool").get(&bonded),
             Some(&NonNegI64::try_from(1_000).expect("a stake")),
             "and the payment does not come out of anyone's bond"
+        );
+    }
+
+    /// **A block records its own producer, and the replay records the same thing** (B4, #150).
+    ///
+    /// The activity record's whole security argument is that the entry is the *block's*, so this test
+    /// puts the op in the block's system-deploy list and then asks the native state who spoke: the
+    /// answer must be the block's `sender`, at the block's `block_number`, and no one else's. The
+    /// replay is run over the same block and must reach the same post-state hash, which is what makes
+    /// the record consensus data rather than a node's local note.
+    #[tokio::test]
+    async fn a_block_records_its_own_producer_and_the_replay_agrees() {
+        use rchain_models::casper::protocol::casper_message::{DeployData, SignedDeployData};
+        use rchain_rholang::native_state::PosParams;
+        use rchain_rholang::util::rev_address::RevAddress;
+        use rchain_shared::refined::{BlockHeight, SeqNum};
+
+        let rm = manager().await;
+        let rand = Blake2b512Random::from_init(&[0u8; 32]);
+        let deployer = PublicKey::new(vec![7u8; 65]);
+        let producer = PublicKey::new(vec![5u8; 65]);
+
+        let pos = PosGenesis {
+            bonds: BTreeMap::from([(
+                Validator::from_slice(&[1u8; 65]),
+                NonNegI64::try_from(1_000).expect("a stake"),
+            )]),
+            trusted: BTreeSet::new(),
+            params: PosParams::default(),
+        };
+        let vaults = [Vault {
+            rev_address: RevAddress::from_public_key(&deployer).expect("deployer address"),
+            initial_balance: NonNegI64::try_from(1_000_000_000).expect("a funded deployer"),
+        }];
+        let (_pre, genesis_post, _) = rm
+            .compute_genesis(&[], &rand, BlockData::empty(), &pos, &vaults)
+            .await
+            .expect("compute_genesis");
+
+        // Height 3, so the recorded height is a number the genesis did not write.
+        let block_data = BlockData {
+            block_number: BlockHeight::try_from(3).expect("a height"),
+            sender: producer.clone(),
+            seq_num: SeqNum::zero(),
+            timestamp: 0,
+        };
+        let deploy = SignedDeployData {
+            data: DeployData {
+                attachments: Vec::new(),
+                term: "Nil".to_string(),
+                timestamp: 0,
+                phlo_price: 1,
+                phlo_limit: 500_000,
+                valid_after_block_number: 0,
+                shard_id: "root".to_string(),
+            },
+            deployer: deployer.bytes().to_vec(),
+            sig: Vec::new(),
+            sig_algorithm: "secp256k1".to_string(),
+        };
+        let system_deploys = [SystemDeploy::record_spoke(rand.split_byte(0))];
+        let (post_state, user_results, sys_results) = rm
+            .compute_state(
+                &genesis_post,
+                &[deploy],
+                &system_deploys,
+                &rand,
+                block_data.clone(),
+                &Blake2b256Hash::from_bytes([4u8; 32]),
+            )
+            .await
+            .expect("play compute_state");
+
+        let producer_validator =
+            Validator::try_from(producer.bytes()).expect("the producer is a validator key");
+        let native = NativeSystemState::new(rm.runtime.native_store());
+        assert_eq!(
+            native
+                .last_spoke()
+                .await
+                .expect("read the activity record")
+                .get(&producer_validator)
+                .copied()
+                .map(i64::from),
+            Some(3),
+            "the block's sender, at the block's own height"
+        );
+        assert!(
+            sys_results.iter().any(|r| matches!(
+                &r.deploy,
+                ProcessedSystemDeploy::Succeeded {
+                    system_deploy: SystemDeployData::RecordSpoke,
+                    ..
+                }
+            )),
+            "and the block's own state carries the record, so a receiver can replay it"
+        );
+
+        let processed: Vec<ProcessedDeploy> = user_results.into_iter().map(|r| r.deploy).collect();
+        let processed_sys: Vec<ProcessedSystemDeploy> =
+            sys_results.into_iter().map(|r| r.deploy).collect();
+        let (replay_state, _) = rm
+            .replay_compute_state(
+                &genesis_post,
+                &processed,
+                &processed_sys,
+                &rand,
+                block_data,
+                &Blake2b256Hash::from_bytes([4u8; 32]),
+                true,
+                &pos,
+                &[],
+            )
+            .await
+            .expect("replay compute_state");
+        assert_eq!(
+            post_state, replay_state,
+            "the record is consensus data: both paths must reach the same post-state"
         );
     }
 }
