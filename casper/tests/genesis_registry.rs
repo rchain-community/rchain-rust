@@ -108,6 +108,7 @@ fn proof_of_stake() -> ProofOfStake {
         epoch_length: 1,
         quarantine_length: 1,
         number_of_active_validators: 1,
+        executor_share: rchain_shared::refined::NonNegI64::try_from(0).unwrap(),
         pos_multi_sig_public_keys: Vec::new(),
         pos_multi_sig_quorum: 1,
         pos_vault_pub_key: String::new(),

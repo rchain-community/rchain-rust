@@ -62,8 +62,12 @@ const WITHDRAWER_ENTRY_LEN: usize = VALIDATOR_LEN + 8 + 8;
 const PENDING_ENTRY_LEN: usize = VALIDATOR_LEN + 8;
 /// The size of a serialized trusted-set entry.
 const TRUSTED_ENTRY_LEN: usize = VALIDATOR_LEN;
-/// `PosParams` serializes as five little-endian `i64`s.
-const PARAMS_LEN: usize = 5 * 8;
+/// `PosParams` serializes as six little-endian `i64`s.
+const PARAMS_LEN: usize = 6 * 8;
+/// The length a params record had before [`PosParams::executor_share`] (B2, #150) existed. A record
+/// of exactly this length is a chain whose genesis predates the producer's share, and it decodes with
+/// that share at zero — see [`decode_params`].
+const PARAMS_LEN_BEFORE_EXECUTOR_SHARE: usize = 5 * 8;
 
 // --- Leaf keys ---------------------------------------------------------------
 
@@ -465,11 +469,23 @@ pub struct PosParams {
     pub quarantine_length: i64,
     /// Maximum size of the active set, by descending stake (`0` = unlimited).
     pub number_of_active_validators: i64,
+    /// **What share of a deploy's burned phlo goes to the block's producer** (B2, #150), in basis
+    /// points of the amount the staking vault keeps for that deploy. `0` is the contract's own
+    /// behaviour — every burned photon reaches the epoch pot and is split by the drawn set — and it is
+    /// what a params record written before this field existed decodes to.
+    ///
+    /// Refined and bounded above by `10000`: a share over 100 % would pay the producer more than the
+    /// deploy burned, out of other validators' stake in the same vault. A genesis parameter rather
+    /// than a constant because it decides *amounts*, which are consensus state: two nodes with
+    /// different values compute different post-states, and genesis identity is the mechanism that
+    /// makes a network agree on one.
+    pub executor_share: NonNegI64,
 }
 
 impl Default for PosParams {
-    /// Permissive parameters: no bond bounds, no quarantine, unlimited active set. Used when no
-    /// genesis PoS state has been installed (ad-hoc runtimes/tests).
+    /// Permissive parameters: no bond bounds, no quarantine, unlimited active set, and **no producer
+    /// share** — which is the contract's own behaviour, so an ad-hoc runtime pays exactly what
+    /// `Pos.rhox` pays. Used when no genesis PoS state has been installed (ad-hoc runtimes/tests).
     fn default() -> Self {
         PosParams {
             minimum_bond: NonNegI64::zero(),
@@ -477,12 +493,13 @@ impl Default for PosParams {
             epoch_length: 0,
             quarantine_length: 0,
             number_of_active_validators: 0,
+            executor_share: NonNegI64::zero(),
         }
     }
 }
 
 impl PosParams {
-    /// Encode as five little-endian `i64`s (inverse: [`decode_params`]).
+    /// Encode as six little-endian `i64`s (inverse: [`decode_params`]).
     pub fn encode(&self) -> Vec<u8> {
         let mut out = Vec::with_capacity(PARAMS_LEN);
         out.extend_from_slice(&i64::from(self.minimum_bond).to_le_bytes());
@@ -490,15 +507,25 @@ impl PosParams {
         out.extend_from_slice(&self.epoch_length.to_le_bytes());
         out.extend_from_slice(&self.quarantine_length.to_le_bytes());
         out.extend_from_slice(&self.number_of_active_validators.to_le_bytes());
+        out.extend_from_slice(&i64::from(self.executor_share).to_le_bytes());
         out
     }
 }
 
 /// Decode [`PosParams`] (inverse of [`PosParams::encode`]).
+///
+/// **A five-field record is accepted and reads as a producer share of zero** — the rule
+/// [`SlashSeverity::Unspecified`] uses for a slash that predates the tiers, and for the same reason:
+/// the forty-byte form is a chain that ran before the field existed, and its own rule is exactly
+/// "every burned photon reaches the epoch pot". A short record is not a corrupt one; a record of any
+/// other length is.
+///
+/// [`SlashSeverity::Unspecified`]: rchain_models::block_metadata::SlashSeverity::Unspecified
 pub fn decode_params(bytes: &[u8]) -> Result<PosParams, String> {
-    if bytes.len() != PARAMS_LEN {
+    if bytes.len() != PARAMS_LEN && bytes.len() != PARAMS_LEN_BEFORE_EXECUTOR_SHARE {
         return Err(format!(
-            "params encoding has {} bytes, expected {PARAMS_LEN}",
+            "params encoding has {} bytes, expected {PARAMS_LEN} or the pre-producer-share \
+             {PARAMS_LEN_BEFORE_EXECUTOR_SHARE}",
             bytes.len()
         ));
     }
@@ -507,6 +534,17 @@ pub fn decode_params(bytes: &[u8]) -> Result<PosParams, String> {
         arr.copy_from_slice(&bytes[i * 8..i * 8 + 8]);
         i64::from_le_bytes(arr)
     };
+    // A field the record does not carry is the pre-change rule, not a missing value.
+    let executor_share = if bytes.len() == PARAMS_LEN {
+        read(5)
+    } else {
+        0
+    };
+    if executor_share > 10_000 {
+        return Err(format!(
+            "executor_share is {executor_share} basis points, above the whole of what was burned"
+        ));
+    }
     // The two bond bounds are refused rather than clamped (the deferred item 1d): a stored negative
     // is not a value this protocol can mean, and clamping it would silently turn a corrupted or
     // malicious params leaf into "no minimum", which is the permissive reading of the same bytes.
@@ -518,6 +556,8 @@ pub fn decode_params(bytes: &[u8]) -> Result<PosParams, String> {
         epoch_length: read(2),
         quarantine_length: read(3),
         number_of_active_validators: read(4),
+        executor_share: NonNegI64::try_from(executor_share)
+            .map_err(|e| format!("executor_share is not a valid basis-point share: {e}"))?,
     })
 }
 
@@ -1928,6 +1968,56 @@ impl NativeSystemState {
         Ok(Ok(()))
     }
 
+    /// **Pay the block's producer for the work it did** (B2, #150): `burned * executor_share / 10000`
+    /// leaves the staking vault and arrives in the producer's own REV vault.
+    ///
+    /// **Why this is a payment and not a new pot.** The deploy's phlo was charged *into* the staking
+    /// vault and the unconsumed part refunded *out* of it, so what the vault keeps for a deploy is
+    /// exactly what that deploy burned — and that is what an epoch's reward pot is made of. Paying the
+    /// producer a share of it moves money between two parties who are both already paid out of the
+    /// same vault, so the total paid out is unchanged: the pie is the same, and this decides **who**
+    /// gets a slice of it. Nothing is minted, nothing is destroyed, and the conservation law the
+    /// epoch's own transitions carry holds here too.
+    ///
+    /// **The producer is the block's own signed `sender`**, which is the only production signal the
+    /// protocol can read without new state. It is set before the block's deploys run and is identical
+    /// on play and replay, so the payment is deterministic; it needs no participation score, and no
+    /// third party can steer it — the address is the one that signed the block.
+    ///
+    /// `burned` is the deploy's *whole* burned amount and the share is applied **here**, from this
+    /// node's own `PosParams`, so the number lives in consensus state rather than in each caller.
+    /// A short vault is the platform error [`Self::debit_pos_vault`] describes, and it cannot arise
+    /// here: the payment is a fraction of an amount this vault just retained.
+    pub async fn pay_executor(
+        &self,
+        executor: &PublicKey,
+        burned: NonNegI64,
+    ) -> Result<Result<(), String>, String> {
+        let share = i64::from(self.params().await?.executor_share);
+        // `i128`, because the product of an `i64`-bounded amount and a `i64`-bounded share is not an
+        // `i64` — and a wrapped product here would pay the producer a *different* amount than the one
+        // the share names, silently, on a consensus path.
+        let payment = i128::from(i64::from(burned)) * i128::from(share) / 10000;
+        let payment = checked_i64(payment, "executor payment")?;
+        let payment = NonNegI64::try_from(payment).map_err(|e| format!("payExecutor: {e}"))?;
+        if payment == NonNegI64::zero() {
+            return Ok(Ok(()));
+        }
+        let address = RevAddress::from_public_key(executor)
+            .ok_or_else(|| "payExecutor: invalid executor public key".to_string())?
+            .to_base58();
+        self.debit_pos_vault(payment).await?;
+        let balance = self
+            .vault_balance(&address)
+            .await?
+            .unwrap_or(NonNegI64::zero());
+        self.set_vault_balance(
+            &address,
+            balance_plus(balance, i64::from(payment), "payExecutor")?,
+        );
+        Ok(Ok(()))
+    }
+
     /// The REV address (base58) of a validator's public key.
     fn vault_address(&self, validator: &Validator) -> Result<String, String> {
         let pk = PublicKey::new(validator.as_bytes().to_vec());
@@ -2153,8 +2243,52 @@ mod tests {
             epoch_length: 10,
             quarantine_length: 5,
             number_of_active_validators: 3,
+            executor_share: NonNegI64::try_from(2500).unwrap(),
         };
         assert_eq!(decode_params(&params.encode()).unwrap(), params);
+    }
+
+    /// **The five-field record is a chain that predates the producer's share, and it reads as zero**
+    /// (B2, #150) — the same compatibility rule the slash tiers use (`SlashSeverity::Unspecified` is
+    /// code `0`, the pre-tier rule). The alternative, refusing the short form, would make a node that
+    /// upgrades unable to read its own genesis params leaf.
+    ///
+    /// And the *upper* bound is refused rather than clamped: a share above 10 000 basis points would
+    /// pay the producer more than the deploy burned, out of the same vault other validators' stake
+    /// sits in — a reward funded by everyone else's bond.
+    #[test]
+    fn a_pre_producer_share_record_reads_as_no_share_and_an_over_share_is_refused() {
+        let current = PosParams {
+            minimum_bond: NonNegI64::try_from(1).unwrap(),
+            maximum_bond: NonNegI64::try_from(1000).unwrap(),
+            epoch_length: 10,
+            quarantine_length: 5,
+            number_of_active_validators: 3,
+            executor_share: NonNegI64::try_from(2500).unwrap(),
+        };
+        let legacy = &current.encode()[..PARAMS_LEN_BEFORE_EXECUTOR_SHARE];
+        assert_eq!(
+            decode_params(legacy).unwrap(),
+            PosParams {
+                executor_share: NonNegI64::zero(),
+                ..current.clone()
+            },
+            "a forty-byte record is the pre-share rule, not a corrupt one"
+        );
+
+        // A record of any other length is still refused — the short form is one named case, not a
+        // general tolerance, so a truncated 48-byte record cannot slip through as a 40-byte one.
+        for len in [0usize, 8, 41, 47, 56] {
+            assert!(
+                decode_params(&vec![0u8; len]).is_err(),
+                "{len} bytes is not a params record this protocol has ever written"
+            );
+        }
+
+        let mut over = current.encode();
+        over[40..48].copy_from_slice(&10_001i64.to_le_bytes());
+        let err = decode_params(&over).expect_err("a share above the whole is not a share");
+        assert!(err.contains("executor_share"), "{err}");
     }
 
     /// **Deferred item 1d, and the shape of the hole it closed.** The wire record held the two bond
@@ -2175,6 +2309,7 @@ mod tests {
             epoch_length: 10,
             quarantine_length: 5,
             number_of_active_validators: 3,
+            executor_share: NonNegI64::zero(),
         };
         assert!(
             decode_params(&params.encode()).is_ok(),
@@ -3508,6 +3643,96 @@ mod tests {
         // Deducting more than the balance fails via the user-error branch.
         let result = native.pre_charge(&pk, nn(100)).await.unwrap();
         assert!(result.is_err(), "insufficient funds must be rejected");
+    }
+
+    /// **The producer is paid a share of what the deploy burned** (B2, #150) — and it is a *transfer*:
+    /// the staking vault loses exactly what the producer's own vault gains, so the pie is unchanged and
+    /// only the recipient moves.
+    ///
+    /// The three facts, one arm each: the two vaults move by the same amount and in opposite
+    /// directions; the bond pool is untouched, because a payment that could touch a stake would be a
+    /// slash wearing a reward's clothes; and a share of zero — the contract's own behaviour, and what a
+    /// params record written before this field decodes to — moves nothing at all.
+    #[tokio::test]
+    async fn the_producer_is_paid_a_share_of_what_the_deploy_burned() {
+        let native = NativeSystemState::new(Arc::new(InMemNativeStore::empty()));
+        let producer = PublicKey::new(vec![9u8; 65]);
+        let producer_addr = RevAddress::from_public_key(&producer).unwrap().to_base58();
+        let deployer = PublicKey::new(vec![1u8; 65]);
+        let deployer_addr = RevAddress::from_public_key(&deployer).unwrap().to_base58();
+        let validator = validator(1);
+        native
+            .install_genesis(&PosGenesis {
+                bonds: BTreeMap::from([(validator, nn(100))]),
+                trusted: BTreeSet::from([validator]),
+                params: PosParams {
+                    executor_share: NonNegI64::try_from(2500).expect("a quarter"),
+                    ..PosParams::default()
+                },
+            })
+            .unwrap();
+        let staking_before = i64::from(native.pos_vault_balance().await.unwrap());
+
+        // A deploy charged 100 that burns 40: `pre_charge` puts the whole charge in the vault and
+        // `refund` takes the unconsumed 60 back out, so the vault keeps the burned 40.
+        native.set_vault_balance(&deployer_addr, NonNegI64::try_from(1000).unwrap());
+        native
+            .pre_charge(&deployer, nn(100))
+            .await
+            .unwrap()
+            .unwrap();
+        native.refund(&deployer, nn(60)).await.unwrap().unwrap();
+        assert_eq!(
+            i64::from(native.pos_vault_balance().await.unwrap()),
+            staking_before + 40,
+            "the control: the vault keeps exactly what was burned"
+        );
+
+        native
+            .pay_executor(&producer, nn(40))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            i64::from(native.vault_balance(&producer_addr).await.unwrap().unwrap()),
+            10,
+            "a quarter of 40, in the address that signed the block"
+        );
+        assert_eq!(
+            i64::from(native.pos_vault_balance().await.unwrap()),
+            staking_before + 30,
+            "and the same 10 left the staking vault"
+        );
+        assert_eq!(
+            native.bonds().await.unwrap().get(&validator),
+            Some(&nn(100)),
+            "the bond is not a payment source"
+        );
+
+        // Zero share: the pre-field rule, and it must move nothing — not even a rounding remainder.
+        let no_share = NativeSystemState::new(Arc::new(InMemNativeStore::empty()));
+        no_share
+            .install_genesis(&PosGenesis {
+                bonds: BTreeMap::from([(validator, nn(100))]),
+                trusted: BTreeSet::from([validator]),
+                params: PosParams::default(),
+            })
+            .unwrap();
+        let before = i64::from(no_share.pos_vault_balance().await.unwrap());
+        no_share
+            .pay_executor(&producer, nn(40))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            i64::from(no_share.pos_vault_balance().await.unwrap()),
+            before
+        );
+        assert_eq!(
+            no_share.vault_balance(&producer_addr).await.unwrap(),
+            None,
+            "a share of zero does not even create the producer's vault"
+        );
     }
 
     #[tokio::test]

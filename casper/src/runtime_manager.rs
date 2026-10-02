@@ -670,6 +670,19 @@ impl RuntimeManager {
         );
         let _ = Self::eval_system_deploy_with(runtime, &refund).await?;
 
+        // **And the block's producer is paid for the work** (B2, #150). Last, because the amount is a
+        // share of what the deploy *burned* — which is only known once the refund has returned the
+        // unconsumed phlo — and because the vault has to hold the burned amount before it can pay out
+        // of it. The executor is the block's own signed `sender`, read from the runtime the block
+        // data was set on, so the play and replay paths pay the same address without either of them
+        // carrying it any further than this.
+        let pay_executor = SystemDeploy::pay_executor(
+            &runtime.block_data().sender,
+            processed.burned_amount(),
+            rand.split_byte(3),
+        );
+        let _ = Self::eval_system_deploy_with(runtime, &pay_executor).await?;
+
         processed.deploy_log = collector.event_log.clone();
         Ok(UserDeployRuntimeResult {
             deploy: processed,
@@ -880,6 +893,9 @@ impl RuntimeManager {
             }
             NativeSystemDeployOp::Refund { deployer, amount } => {
                 native.refund(deployer, *amount).await?
+            }
+            NativeSystemDeployOp::PayExecutor { executor, burned } => {
+                native.pay_executor(executor, *burned).await?
             }
             NativeSystemDeployOp::CloseBlock {
                 block_number,
@@ -1404,10 +1420,8 @@ mod tests {
     use rchain_shared::store_manager::{database, InMemoryStoreManager};
     use rchain_shared::typed_store::BytesCodec;
 
-    /// A forked replay runtime (used for parallel block validation) must be constructible at the
-    /// empty root and able to replay an empty deploy set.
-    #[tokio::test]
-    async fn fork_replay_runtime_replays_empty() {
+    /// A manager over fresh in-memory stores — the fixture the tests below share.
+    async fn manager() -> RuntimeManager {
         let manager = InMemoryStoreManager::default();
         let history = create_history_repository::<
             SortedProc,
@@ -1448,14 +1462,26 @@ mod tests {
             .await
             .unwrap(),
         );
-        let runtime = RuntimeManager::new(
+        RuntimeManager::new(
             rho,
             replay,
             history,
             mergeable_store,
             native_changes_store,
             EffectMode::Sequential,
-        );
+        )
+    }
+
+    /// A forked replay runtime (used for parallel block validation) must be constructible at the
+    /// empty root and able to replay an empty deploy set.
+    #[tokio::test]
+    async fn fork_replay_runtime_replays_empty() {
+        let runtime = manager().await;
+        let empty_root = runtime
+            .runtime
+            .empty_state_hash()
+            .await
+            .expect("the empty state hash");
 
         let forked = runtime.fork_replay_runtime(empty_root).await.unwrap();
         let result = runtime
@@ -1473,5 +1499,101 @@ mod tests {
             )
             .await;
         assert!(result.is_ok());
+    }
+
+    /// **The deploy fold pays the block's own sender** (B2, #150) — the integration half of the
+    /// native unit test, and the half the compiler cannot check: `pay_executor` being correct says
+    /// nothing about whether anything calls it, or whether it is called with the **block's** sender
+    /// rather than the deployer's.
+    ///
+    /// The deployer and the producer are different keys on purpose, so a payment to the wrong one is
+    /// visible rather than accidentally right. The share is read back from the manager's own runtime,
+    /// which is where the block's native store actually lives — a `fork_play_runtime` carries the
+    /// tuple space and not the native store, so reading through one would report the empty map.
+    #[tokio::test]
+    async fn the_deploy_fold_pays_the_blocks_sender() {
+        use rchain_models::casper::protocol::casper_message::{DeployData, SignedDeployData};
+        use rchain_rholang::native_state::PosParams;
+        use rchain_rholang::util::rev_address::RevAddress;
+        use rchain_shared::refined::{BlockHeight, SeqNum};
+
+        let rm = manager().await;
+        let rand = Blake2b512Random::from_init(&[0u8; 32]);
+        let deployer = PublicKey::new(vec![7u8; 65]);
+        let producer = PublicKey::new(vec![5u8; 65]);
+        let producer_address = RevAddress::from_public_key(&producer)
+            .expect("producer address")
+            .to_base58();
+
+        let bonded = Validator::from_slice(&[1u8; 65]);
+        let pos = PosGenesis {
+            bonds: BTreeMap::from([(bonded, NonNegI64::try_from(1_000).expect("a stake"))]),
+            trusted: BTreeSet::new(),
+            params: PosParams {
+                executor_share: NonNegI64::try_from(2_500).expect("a quarter"),
+                ..PosParams::default()
+            },
+        };
+        let vaults = [Vault {
+            rev_address: RevAddress::from_public_key(&deployer).expect("deployer address"),
+            initial_balance: NonNegI64::try_from(1_000_000_000).expect("a funded deployer"),
+        }];
+        let (_pre, genesis_post, _) = rm
+            .compute_genesis(&[], &rand, BlockData::empty(), &pos, &vaults)
+            .await
+            .expect("compute_genesis");
+
+        let block_data = BlockData {
+            block_number: BlockHeight::zero(),
+            sender: producer.clone(),
+            seq_num: SeqNum::zero(),
+            timestamp: 0,
+        };
+        let deploy = SignedDeployData {
+            data: DeployData {
+                attachments: Vec::new(),
+                term: r#"new deployerId(`rho:rchain:deployerId`) in { @"marker"!(true) }"#
+                    .to_string(),
+                timestamp: 0,
+                phlo_price: 1,
+                phlo_limit: 500_000,
+                valid_after_block_number: 0,
+                shard_id: "root".to_string(),
+            },
+            deployer: deployer.bytes().to_vec(),
+            sig: Vec::new(),
+            sig_algorithm: "secp256k1".to_string(),
+        };
+        let (_post, user_results, _) = rm
+            .compute_state(
+                &genesis_post,
+                &[deploy],
+                &[],
+                &rand,
+                block_data,
+                &Blake2b256Hash::from_bytes([3u8; 32]),
+            )
+            .await
+            .expect("play compute_state");
+        let burned = i64::from(user_results[0].deploy.burned_amount());
+        assert!(burned > 0, "the control: this deploy burns phlo");
+
+        let native = NativeSystemState::new(rm.runtime.native_store());
+        assert_eq!(
+            i64::from(
+                native
+                    .vault_balance(&producer_address)
+                    .await
+                    .expect("read the producer's balance")
+                    .unwrap_or(NonNegI64::zero())
+            ),
+            burned * 2_500 / 10_000,
+            "the producer's own vault holds a quarter of what the deploy burned"
+        );
+        assert_eq!(
+            native.bonds().await.expect("read the pool").get(&bonded),
+            Some(&NonNegI64::try_from(1_000).expect("a stake")),
+            "and the payment does not come out of anyone's bond"
+        );
     }
 }

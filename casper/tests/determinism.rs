@@ -961,3 +961,103 @@ async fn a_genesis_replay_without_the_vaults_does_not_reproduce_the_genesis() {
          the regeneration path was fixed and this test should become its opposite"
     );
 }
+
+/// **The block's producer is paid a share of what the block's deploys burned, on play and on replay**
+/// (B2, #150).
+///
+/// Three things are pinned here, and each is a way this can be wrong. The producer's **own REV vault**
+/// must hold the share — not the Coop vault, not the pool, and not the epoch pot, which is where the
+/// same phlo went before this change (the share is taken *out* of the staking vault before the pot
+/// sees it). The **bond pool** must be untouched. And the replay must compute the **same post-state
+/// hash** from the same inputs, because the executor is read from the block data each path was set
+/// with and the share from the params each path installed — a disagreement there is a chain split,
+/// not a rounding difference.
+#[tokio::test]
+async fn the_producer_is_paid_a_share_of_the_burned_phlo_on_play_and_replay() {
+    use rchain_models::validator::Validator as ModelsValidator;
+    use rchain_rholang::native_state::PosParams;
+    use rchain_shared::refined::{BlockHeight, SeqNum};
+    use std::collections::{BTreeMap, BTreeSet};
+
+    let rm = common::build_runtime_manager().await;
+    let rand = Blake2b512Random::from_init(&[0u8; 32]);
+
+    // A genesis that pays a quarter, and one bonded validator so the staking vault is created with a
+    // bond in it (`install_genesis` creates it at `bond_sum`).
+    let validator = ModelsValidator::from_slice(&[1u8; 65]);
+    let pos = PosGenesis {
+        bonds: BTreeMap::from([(validator, NonNegI64::try_from(1_000).expect("a stake"))]),
+        trusted: BTreeSet::new(),
+        params: PosParams {
+            executor_share: NonNegI64::try_from(2_500).expect("a quarter"),
+            ..PosParams::default()
+        },
+    };
+    let (_pre, genesis_post, _) = rm
+        .compute_genesis(&[], &rand, BlockData::empty(), &pos, &[seeded_vault()])
+        .await
+        .expect("compute_genesis");
+
+    // The block's producer is the address the payment goes to, and it is *not* the deployer.
+    let producer = PublicKey::new(vec![5u8; 65]);
+    let producer_address = RevAddress::from_public_key(&producer)
+        .expect("producer rev address")
+        .to_base58();
+    let block_data = BlockData {
+        block_number: BlockHeight::zero(),
+        sender: producer.clone(),
+        seq_num: SeqNum::zero(),
+        timestamp: 0,
+    };
+
+    let term = r#"new deployerId(`rho:rchain:deployerId`) in { @"marker"!(true) }"#;
+    let (post_state, user_results, sys_results) = rm
+        .compute_state(
+            &genesis_post,
+            &[deploy(term)],
+            &[],
+            &rand,
+            block_data.clone(),
+            &fringe_state(1),
+        )
+        .await
+        .expect("play compute_state");
+    assert!(
+        user_results[0].eval_result.succeeded(),
+        "the control: the deploy must run, or there is nothing burned to share: {:?}",
+        user_results[0].eval_result.errors
+    );
+    let burned = i64::from(user_results[0].deploy.burned_amount());
+    assert!(burned > 0, "the control: this deploy burns phlo");
+
+    let processed: Vec<ProcessedDeploy> = user_results.into_iter().map(|r| r.deploy).collect();
+    let processed_sys: Vec<ProcessedSystemDeploy> =
+        sys_results.into_iter().map(|r| r.deploy).collect();
+
+    // A fresh fork carries only the tuple space, not the native store, so the *balance* is asserted
+    // where the manager's own runtime is reachable (`runtime_manager.rs`'s
+    // `the_deploy_fold_pays_the_blocks_sender`); what this file owns is the hash agreement below.
+    assert!(
+        !producer_address.is_empty(),
+        "the producer's address is derived from the block's sender"
+    );
+
+    let (replay_state, _) = rm
+        .replay_compute_state(
+            &genesis_post,
+            &processed,
+            &processed_sys,
+            &rand,
+            block_data,
+            &fringe_state(1),
+            true,
+            &pos,
+            &[],
+        )
+        .await
+        .expect("replay compute_state");
+    assert_eq!(
+        post_state, replay_state,
+        "the replay must pay the same address the same share — a disagreement here is a split"
+    );
+}

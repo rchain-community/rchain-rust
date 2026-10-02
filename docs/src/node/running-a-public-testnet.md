@@ -307,6 +307,17 @@ A 10000-block epoch is not a detail: the active set is only recomputed at a boun
 bonds on a chain with that epoch does not become active for another 10000 blocks. It sits in the pool
 (`getBonds` counts it) while the active set — and therefore consensus — ignores it.
 
+**`executor-share` is one of them, and it is the one with a shipped non-zero default.** It is what a
+block's producer is paid out of the phlo its deploys burned — a quarter, unless you say otherwise — so two
+nodes that disagree about it pay the producer different amounts and compute different post-states for the
+same block. It is **optional in a config file** (a config written before the key existed resolves to the
+shipped 2 500 rather than failing to start), which makes it the one parameter a joiner can omit and still
+get a working node that disagrees with its peers about amounts. State it explicitly:
+
+```
+--executor-share 2500     # or 0, for the contract's own behaviour: producers are paid nothing extra
+```
+
 ### A validator is slashed for a block that fails validation, not for staying silent
 
 The proposer attaches a `slash` system deploy for every bonded validator whose latest justification is

@@ -2255,7 +2255,9 @@ def laws : List Law := [
       which is graded by the offence (AUDIT C199): `bps` basis points of everything the validator holds \
       in the PoS system — its bond, its accrued rewards and an escrowed claim — go to the Coop vault and \
       the remainder returns to its own vault, so the loss is bounded by the tier and a milder tier never \
-      takes more",
+      takes more. And the same vault pays for **work**: a share of a deploy's burned phlo goes to the \
+      block's own signed sender (`payExecutor`), which is a transfer inside the staking vault — it moves \
+      income, never stake, and it is monotone in what the deploy burned",
     status := .provedModel,
     declarations := [`Rchain.PosState, `Rchain.PosClaim, `Rchain.PosRequest, `Rchain.totalRev,
       `Rchain.divisor, `Rchain.isBoundary, `Rchain.bond, `Rchain.epochStep, `Rchain.closeBlock,
@@ -2264,10 +2266,13 @@ def laws : List Law := [
       `Rchain.a_bond_pools_but_does_not_activate, `Rchain.a_boundary_activates_the_pool,
       `Rchain.atRisk, `Rchain.malicious, `Rchain.misdemeanour, `Rchain.honestMistake, `Rchain.slash,
       `Rchain.taken_le_risk, `Rchain.slash_conserves, `Rchain.a_milder_tier_takes_no_more,
-      `Rchain.slash_clears_every_ledger],
+      `Rchain.slash_clears_every_ledger,
+      `Rchain.executorShare, `Rchain.producer_share_le_burned, `Rchain.payExecutor,
+      `Rchain.payExecutor_conserves, `Rchain.payExecutor_leaves_the_stake,
+      `Rchain.producer_pay_is_monotone],
     axioms := [],
     rust := ["rholang/src/native_state.rs"],
-    witness := [`Rchain.closeBlock_off_a_boundary, `Rchain.epochStep_conserves, `Rchain.the_ledger_steps_leave_the_coins, `Rchain.a_bond_pools_but_does_not_activate, `Rchain.a_boundary_activates_the_pool, `Rchain.slash_conserves, `Rchain.a_milder_tier_takes_no_more, `Rchain.slash_clears_every_ledger, `Rchain.taken_le_risk],
+    witness := [`Rchain.closeBlock_off_a_boundary, `Rchain.epochStep_conserves, `Rchain.the_ledger_steps_leave_the_coins, `Rchain.a_bond_pools_but_does_not_activate, `Rchain.a_boundary_activates_the_pool, `Rchain.slash_conserves, `Rchain.a_milder_tier_takes_no_more, `Rchain.slash_clears_every_ledger, `Rchain.taken_le_risk, `Rchain.payExecutor_conserves, `Rchain.payExecutor_leaves_the_stake, `Rchain.producer_pay_is_monotone],
     falsifiable := some "`the_epoch_gate_does_nothing_off_a_boundary` builds the off-boundary state — a \
       staged withdrawal *and* a full reward pot — and asserts the whole state is unchanged, then that \
       the same call at the boundary moves it and pays it; the bond half is in the same test (pooled at \

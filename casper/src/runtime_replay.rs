@@ -53,11 +53,21 @@ const PRE_CHARGE_SPLIT_INDEX: u8 = 0;
 const USER_DEPLOY_SPLIT_INDEX: u8 = 1;
 const REFUND_SPLIT_INDEX: u8 = 2;
 
+/// The producer's payment (B2, #150) — the fourth system deploy of the cost-accounting unit, after
+/// the pre-charge, the user deploy and the refund. Its own index, so adding it cannot shift the
+/// stream any of the other three reads.
+const EXECUTOR_SPLIT_INDEX: u8 = 3;
+
 /// The subset of a replay runtime needed to re-execute a block (implemented by both
 /// [`ReplayRhoRuntime`] and [`ReportingRuntime`]).
 #[async_trait]
 pub trait ReplayRuntime {
     fn set_block_data(&self, block_data: BlockData);
+
+    /// The per-block data as it stands — what the producer's payment (B2, #150) reads the block's
+    /// **sender** from, on the replay side. The play side reads the same field of its own runtime, so
+    /// both folds pay the address the block names.
+    fn block_data(&self) -> BlockData;
 
     fn cost(&self) -> &CostAccounting;
 
@@ -357,6 +367,23 @@ impl<'a, R: ReplayRuntime + ?Sized> RuntimeReplayOps<'a, R> {
             mergeable.extend(refund_eval.mergeable.iter().cloned());
         }
 
+        // The producer's payment (B2, #150), in the same place and from the same inputs as the play
+        // path: after the refund, from the block data this runtime was set with and the amount the
+        // deploy burned. A payment built from anything else here would be a state hash that only one
+        // of the two paths computes.
+        let pay_executor = SystemDeploy::pay_executor(
+            &self.runtime.block_data().sender,
+            processed_deploy.burned_amount(),
+            rand.split_byte(EXECUTOR_SPLIT_INDEX),
+        );
+        let (_pay_result, pay_eval) = self
+            .replay_system_deploy_internal(&pay_executor, None)
+            .await?;
+        self.runtime.create_soft_checkpoint().await;
+        if pay_eval.succeeded() {
+            mergeable.extend(pay_eval.mergeable.iter().cloned());
+        }
+
         Ok(eval_result.succeeded())
     }
 
@@ -544,6 +571,9 @@ impl<'a, R: ReplayRuntime + ?Sized> RuntimeReplayOps<'a, R> {
             NativeSystemDeployOp::Refund { deployer, amount } => {
                 native.refund(deployer, *amount).await?
             }
+            NativeSystemDeployOp::PayExecutor { executor, burned } => {
+                native.pay_executor(executor, *burned).await?
+            }
             NativeSystemDeployOp::CloseBlock {
                 block_number,
                 fringe_state_hash,
@@ -672,6 +702,10 @@ impl ReplayRuntime for ReplayRhoRuntime {
         ReplayRhoRuntime::set_block_data(self, block_data);
     }
 
+    fn block_data(&self) -> BlockData {
+        ReplayRhoRuntime::block_data(self)
+    }
+
     fn cost(&self) -> &CostAccounting {
         ReplayRhoRuntime::cost(self)
     }
@@ -746,6 +780,10 @@ impl ReplayRuntime for ReplayRhoRuntime {
 impl ReplayRuntime for ReportingRuntime {
     fn set_block_data(&self, block_data: BlockData) {
         ReportingRuntime::set_block_data(self, block_data);
+    }
+
+    fn block_data(&self) -> BlockData {
+        ReportingRuntime::block_data(self)
     }
 
     fn cost(&self) -> &CostAccounting {

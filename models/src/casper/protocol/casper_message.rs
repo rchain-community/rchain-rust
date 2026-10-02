@@ -696,6 +696,22 @@ impl ProcessedDeploy {
         let clamped = i64::try_from(product).unwrap_or(i64::MAX);
         NonNegI64::saturating(clamped)
     }
+
+    /// **The REV this deploy burned**: `cost × phlo_price` — the phlo it consumed, priced. This is
+    /// what the staking vault keeps for the deploy once the refund has left, and it is the base the
+    /// producer's share is taken from (B2, #150).
+    ///
+    /// The same shared-by-play-and-replay argument as [`Self::refund_amount`], whose bracketing this
+    /// mirrors exactly — `cost` is a `u64` and `phlo_price` a bare `i64` off the wire, so the product
+    /// is taken in `i128` and clamped at both ends. It is `charge − refund` whenever neither of those
+    /// clamps, which is every deploy that plays normally; where they can disagree the vault's own
+    /// arithmetic is authoritative and this is what the *share* is computed from, with the payment
+    /// bounded by the share rather than by this value.
+    pub fn burned_amount(&self) -> NonNegI64 {
+        let product = i128::from(self.cost.cost) * i128::from(self.deploy.data.phlo_price);
+        let clamped = i64::try_from(product).unwrap_or(i64::MAX);
+        NonNegI64::saturating(clamped)
+    }
 }
 
 /// Rholang tuple-space state change (port of `RholangState`).

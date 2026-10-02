@@ -269,6 +269,18 @@ impl RhoRuntime {
         *self.block_data.lock().unwrap_or_else(|p| p.into_inner()) = block_data;
     }
 
+    /// The per-block data as it stands — the getter's pair, added for the producer's payment
+    /// (B2, #150), which needs the block's **sender** while the deploy fold runs.
+    ///
+    /// A copy rather than a guard: the block data is four small fields and holding the lock across
+    /// the fold would serialise anything else that wants it, for no benefit.
+    pub fn block_data(&self) -> BlockData {
+        self.block_data
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone()
+    }
+
     /// Set the effect-scheduler mode (forwards to the reducer, which also arms the Law 24
     /// per-commit certificate for `RelaxedValidated`). Interior-mutable so the casper block
     /// path can switch around the per-deploy sequential fallback re-run.
@@ -562,6 +574,18 @@ impl ReplayRhoRuntime {
     /// Set the per-block data exposed to the `rho:block:data` contract (port of `setBlockData`).
     pub fn set_block_data(&self, block_data: BlockData) {
         *self.block_data.lock().unwrap_or_else(|p| p.into_inner()) = block_data;
+    }
+
+    /// The per-block data as it stands — the getter's pair, added for the producer's payment
+    /// (B2, #150), which needs the block's **sender** while the deploy fold runs.
+    ///
+    /// A copy rather than a guard: the block data is four small fields and holding the lock across
+    /// the fold would serialise anything else that wants it, for no benefit.
+    pub fn block_data(&self) -> BlockData {
+        self.block_data
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone()
     }
 
     /// Execute a `Closed` process in the given environment (port of `inj`). The `Closed` proof is

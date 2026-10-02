@@ -27,8 +27,11 @@ Two consequences follow directly.
 
 - **Rewards are paid out of fees, not minted.** Nothing creates REV at a boundary; the epoch moves it
   from the vault to the validators.
-- **The validator that executed a deploy is paid exactly as one that executed nothing.** The deploy's
-  phlo goes into the pot, and the pot is split by stake (below), not by who did the work.
+- **Part of what a deploy burned is paid to the producer of the block that carried it**, before the rest
+  reaches the pot — `executor-share`, a quarter of it by default, so the epoch pot is the burned phlo
+  *minus* the producer's shares. That is the one place the protocol's payout reads who did the work, and
+  it is a payment out of the same vault rather than a second pot: the pie is what was burned, and this
+  decides who gets a slice of it (below).
 
 ## The formula: proportional to stake, in units of the minimum bond
 
@@ -57,19 +60,29 @@ under a configured minimum; it is not `PosParams::default()`, whose minimum is `
 ## What the formula does not read
 
 The inputs are the pot, `minimum_bond`, `active_bonds` and the validator's own `bond` — and nothing
-else. Not blocks proposed, not attestations made, not deploys executed, and not whether the validator
-was **live at all**. An absent validator is paid on the same terms as one that ran all epoch, because
-there is **no inactivity leak, no decay and no eviction** in this tree: a stopped validator's stake stays
-in the pool and counts in the finality denominator for ever. That is measured and written up in
+else. Not attestations made, not how many blocks it proposed, and not whether it was **live at all**. An
+absent validator is paid on the same terms as one that ran all epoch, because there is **no inactivity
+leak, no decay and no eviction** in this tree: a stopped validator's stake stays in the pool and counts
+in the finality denominator for ever. That is measured and written up in
 [The public testnet](testnet.md) (the *Do not onboard a validator yet* measurements), and
 [#149](https://github.com/rchain-community/rchain-rust/issues/149) owns the consequence — its
 predecessor #148 was closed into it with the close condition carried verbatim: a validator that bonds
-and goes offline makes production unbounded and freezes finality, **and still collects its share**.
+and goes offline makes production unbounded and freezes finality, **and still collects its share** of
+whatever the epoch's pot does hold.
 
-So the protocol's only performance input is the liveness hypothesis finality carries — `Participation`,
-named in [Progress: the shapes of non-progress](../formal/progress.md) — and liveness affects whether the
-chain *finalises*, not what a validator *earns*. Nothing in the reward is a function of the work a node
-did.
+**The producer's share is the exception, and it is outside this formula.** It is not part of
+`epoch_rewards` at all: `pay_executor` (`rholang/src/native_state.rs`) runs at the end of each deploy's
+cost accounting and pays the **block's own signed sender** a share of what that deploy burned, so the
+money never reaches the pot the formula divides. That makes production the one thing the payout reads
+about a node's work — and it is coarse rather than graduated: a block's producer is paid for the deploys
+it carried, weighted by what they burned, and nothing else it did (attesting, relaying, staying up)
+pays anything at all.
+
+So the protocol's liveness signal remains the one finality carries — `Participation`, named in
+[Progress: the shapes of non-progress](../formal/progress.md) — and liveness decides whether the chain
+*finalises*. What a validator earns is a function of two things only: **how much stake it holds** (the
+formula above, if it is drawn) and **how much phlo the blocks it signs burn** (the producer's share).
+Everything else a node does for the network is unpaid.
 
 ## Who is paid: the drawn set, and where "pro-rata" stops holding
 

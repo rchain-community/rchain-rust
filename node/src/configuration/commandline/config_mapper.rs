@@ -267,6 +267,11 @@ pub fn from_options(options: &Options) -> Hocon {
             "casper.genesis-block-data.number-of-active-validators",
             run.number_of_active_validators,
         );
+        opt_i32(
+            &mut e,
+            "casper.genesis-block-data.executor-share",
+            run.executor_share,
+        );
         opt_str(
             &mut e,
             "casper.genesis-block-data.pos-vault-pub-key",

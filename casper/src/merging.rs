@@ -2396,6 +2396,7 @@ mod boundary_merge_tests {
                     minimum_bond: nn(1),
                     maximum_bond: nn(100),
                     number_of_active_validators: 10,
+                    executor_share: nn(0),
                 },
             })
             .unwrap();

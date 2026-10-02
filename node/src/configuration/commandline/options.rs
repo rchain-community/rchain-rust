@@ -537,6 +537,13 @@ pub struct Run {
     #[arg(long = "number-of-active-validators")]
     pub number_of_active_validators: Option<i32>,
 
+    /// **The block producer's share of a deploy's burned phlo, in basis points** (B2, #150): 2500 pays
+    /// the validator that signed a block a quarter of the fees that block consumed, before the rest of
+    /// the epoch's burned phlo reaches the pot. A *genesis* parameter, so every node on a network must
+    /// agree on it — see `docs/src/node/running-a-public-testnet.md`.
+    #[arg(long = "executor-share")]
+    pub executor_share: Option<i32>,
+
     /// Public key for transfers from the PoS vault.
     ///
     /// Reserved: parsed and validated, but not yet wired to the native PoS contract

@@ -555,4 +555,60 @@ theorem slash_clears_every_ledger (s : PosState) (v : Validator) (bps : Nat) :
       ∧ (slash s v bps).claims.filter (fun c => c.who = v) = [] := by
   refine ⟨?_, ?_, ?_⟩ <;> simp only [slash] <;> simp [List.filter_filter]
 
+/-! ## The block's producer is paid for the work (B2)
+
+The transitions above say what a validator earns *for being drawn*; `slash` says what it can lose.
+Neither says anything about **producing a block**, which is the work the protocol actually needs: a
+drawn validator earns its share of the epoch pot whether it proposes or not, and a validator that
+never proposes is, in the port's own words, "a drag instead".
+
+This is the one production signal the protocol can read without new state — a block's **own signed
+sender**. Every deploy's burned phlo passes through the staking vault on its way to the epoch pot
+(`pre_charge` in, `refund` out), so paying a share of what was burned to the address that signed the
+block which burned it is a transfer inside that same vault. It needs no participation score, no new
+leaf, and it cannot be steered by anyone but the signer. -/
+
+/-- The share of a deploy's burned phlo paid to the block's producer
+    (`PosParams::executor_share`; 2 500 = a quarter, the shipped default). -/
+def executorShare : Nat := 2500
+
+/-- **Pay the block's producer** (`native_state.rs`'s `pay_executor`): `burned * executorShare /
+    10000` leaves the staking vault and arrives in the producer's own vault. The pool, the active
+    set and every ledger are untouched — this moves income, never stake. -/
+def payExecutor (s : PosState) (burned : Nat) : PosState :=
+  { s with vault := s.vault - burned * executorShare / 10000,
+           user := s.user + burned * executorShare / 10000 }
+
+/-- A producer's share is never more than what the deploy burned: `share ≤ 10000` bounds it. -/
+theorem producer_share_le_burned (burned : Nat) {share : Nat} (h : share ≤ 10000) :
+    burned * share / 10000 ≤ burned := by
+  have h1 : burned * share ≤ 10000 * burned := by
+    rw [Nat.mul_comm 10000]
+    exact Nat.mul_le_mul_left _ h
+  exact Nat.div_le_of_le_mul h1
+
+/-- **The producer's payment is a transfer, not a mint** — the same conservation the epoch's own
+    transitions and the slash carry. `burned ≤ vault` is exactly the hypothesis under which the
+    subtraction does not saturate: the phlo was charged into this vault, so it is there to pay out. -/
+theorem payExecutor_conserves (s : PosState) (burned : Nat) (hburned : burned ≤ s.vault) :
+    totalRev (payExecutor s burned) = totalRev s := by
+  have hshare := producer_share_le_burned burned (show executorShare ≤ 10000 by decide)
+  simp only [totalRev, payExecutor]
+  omega
+
+/-- **And it moves income, never stake.** The pool, the active set and the committed ledger are the
+    ones it was handed — a producer payment that could touch a bond would be a slash in disguise. -/
+theorem payExecutor_leaves_the_stake (s : PosState) (burned : Nat) :
+    (payExecutor s burned).pool = s.pool
+      ∧ (payExecutor s burned).active = s.active
+      ∧ (payExecutor s burned).committed = s.committed := by
+  refine ⟨?_, ?_, ?_⟩ <;> simp only [payExecutor]
+
+/-- **The payment is monotone in what was burned**, which is the whole of "producing pays": a deploy
+    that burns more phlo pays its producer more. Stated because a share is only a *reward for work*
+    if it is a function of work and not a flat grant. -/
+theorem producer_pay_is_monotone {a b : Nat} (h : a ≤ b) :
+    a * executorShare / 10000 ≤ b * executorShare / 10000 :=
+  Nat.div_le_div_right (Nat.mul_le_mul_right _ h)
+
 end Rchain

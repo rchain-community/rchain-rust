@@ -276,6 +276,10 @@ fn tls_conf_from_hocon(h: &Hocon) -> Result<TlsConf, String> {
     })
 }
 
+/// The shipped `executor-share`, in basis points — the fallback for a config file that predates the
+/// key, and the value `defaults.conf` carries (B2, #150).
+const DEFAULT_EXECUTOR_SHARE: i32 = 2500;
+
 fn genesis_block_data_from_hocon(h: &Hocon) -> Result<GenesisBlockData, String> {
     Ok(GenesisBlockData {
         genesis_data_dir: to_path(get(h, "genesis-data-dir")?)?,
@@ -287,6 +291,16 @@ fn genesis_block_data_from_hocon(h: &Hocon) -> Result<GenesisBlockData, String> 
         quarantine_length: to_i32(get(h, "quarantine-length")?)?,
         genesis_block_number: to_i64(get(h, "genesis-block-number")?)?,
         number_of_active_validators: to_i32(get(h, "number-of-active-validators")?)?,
+        // **Optional, unlike its neighbours**, and the difference is deliberate: this key is newer
+        // than the other twelve, so a config file written before it must not stop a node from
+        // starting — the shipped `defaults.conf` carries 2500 and is merged under every config, so
+        // the fallback here is the same value a default install resolves to. A network that wants a
+        // different share sets it, and a node that disagrees with its peers about it is disagreeing
+        // about genesis identity, which is the same class as a differing `epoch-length`.
+        executor_share: match get_opt(h, "executor-share") {
+            Some(v) => to_i32(v)?,
+            None => DEFAULT_EXECUTOR_SHARE,
+        },
         pos_multi_sig_public_keys: to_string_list(get(h, "pos-multi-sig-public-keys")?)?,
         pos_multi_sig_quorum: to_i32(get(h, "pos-multi-sig-quorum")?)?,
         pos_vault_pub_key: to_string(get(h, "pos-vault-pub-key")?)?,
@@ -328,6 +342,9 @@ fn genesis_block_data_over(
     }
     if let Some(v) = get_opt(h, "number-of-active-validators") {
         out.number_of_active_validators = to_i32(v)?;
+    }
+    if let Some(v) = get_opt(h, "executor-share") {
+        out.executor_share = to_i32(v)?;
     }
     if let Some(v) = get_opt(h, "pos-multi-sig-public-keys") {
         out.pos_multi_sig_public_keys = to_string_list(v)?;
@@ -664,6 +681,7 @@ mod tests {
 
     fn genesis() -> GenesisBlockData {
         GenesisBlockData {
+            executor_share: 2500,
             genesis_data_dir: PathBuf::from("/genesis"),
             bonds_file: "/genesis/bonds.txt".to_string(),
             wallets_file: "/genesis/wallets.txt".to_string(),

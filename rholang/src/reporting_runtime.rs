@@ -103,6 +103,14 @@ impl ReportingRuntime {
         *self.block_data.lock().unwrap_or_else(|p| p.into_inner()) = block_data;
     }
 
+    /// The per-block data as it stands (the getter's pair; see `RhoRuntime::block_data`, B2, #150).
+    pub fn block_data(&self) -> BlockData {
+        self.block_data
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone()
+    }
+
     pub async fn inj(
         &self,
         par: &Closed,

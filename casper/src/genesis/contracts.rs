@@ -35,6 +35,11 @@ pub struct ProofOfStake {
     pub epoch_length: i32,
     pub quarantine_length: i32,
     pub number_of_active_validators: i32,
+    /// **The producer's share of a deploy's burned phlo, in basis points** (B2, #150). Refined like
+    /// `minimum_bond` for the same reason: this is copied straight into the native state, so the
+    /// "at most the whole" invariant has to hold where a config becomes a number and where the number
+    /// is read back.
+    pub executor_share: NonNegI64,
     pub pos_multi_sig_public_keys: Vec<String>,
     pub pos_multi_sig_quorum: i32,
     pub pos_vault_pub_key: String,

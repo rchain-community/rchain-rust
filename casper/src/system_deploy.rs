@@ -121,6 +121,20 @@ pub enum NativeSystemDeployOp {
         /// can check the offence against its own DAG. `None` is the metadata-justified kind.
         evidence: Option<Vec<u8>>,
     },
+    /// **Pay the block's producer for the work it did** (B2, #150): a share of what this deploy
+    /// burned, taken out of the staking vault by [`NativeSystemState::pay_executor`].
+    ///
+    /// The op carries the *whole* burned amount and the native state applies the share from its own
+    /// `PosParams` — so the percentage lives in consensus state rather than in each caller, and the
+    /// caller cannot pay a different fraction than the network's genesis named.
+    ///
+    /// The executor is a `PublicKey` and not a `Validator` because it is the block's **sender** field,
+    /// which is a public key; a validator id would be a different value that happens to be the same
+    /// length, and the address the payment goes to is derived from the key.
+    PayExecutor {
+        executor: PublicKey,
+        burned: NonNegI64,
+    },
 }
 
 impl SystemDeploy {
@@ -146,6 +160,26 @@ impl SystemDeploy {
             op: Some(NativeSystemDeployOp::Refund {
                 deployer: deployer.to_owned(),
                 amount,
+            }),
+        }
+    }
+
+    /// **Pay the block's producer** (B2, #150). Built by both folds from the block's own `sender` and
+    /// the deploy's burned amount, so play and replay pay the same address the same amount; the share
+    /// itself is applied by the native state from `PosParams`.
+    pub fn pay_executor(
+        executor: &PublicKey,
+        burned: NonNegI64,
+        rand: Blake2b512Random,
+    ) -> SystemDeploy {
+        SystemDeploy {
+            source: "",
+            normalizer_env: BTreeMap::new(),
+            rand,
+            return_channel: Par::default(),
+            op: Some(NativeSystemDeployOp::PayExecutor {
+                executor: executor.to_owned(),
+                burned,
             }),
         }
     }
