@@ -482,8 +482,8 @@ The implementation models the full lifecycle natively (`rholang/src/native_state
 > stakeholder group; only a trusted key may bond · **bonded / pool** — a bond within
 > `[minimum, maximum]`, deducted from the validator's REV vault · **active** — the consensus set,
 > recomputed only at an epoch boundary: the whole eligible pool when it fits under
-> `number_of_active_validators`, otherwise a seeded uniform draw from it (`select_active`, not a
-> stake ranking) · **withdrawing** — deactivation, stake escrowed until the quarantine deadline ·
+> `number_of_active_validators`, otherwise a seeded **stake-weighted** draw from it (`select_active` —
+> proportional to stake, *not* a ranking) · **withdrawing** — deactivation, stake escrowed until the quarantine deadline ·
 > **removed** — `slash`/`untrust`, stake confiscated. What each state earns and risks:
 > [Validator economics](validator-economics.md).
 

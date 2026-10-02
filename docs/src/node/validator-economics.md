@@ -77,8 +77,8 @@ did.
 is `0` for anyone outside the active set, so a validator that is bonded but not drawn for the epoch earns
 nothing in it.
 
-The active set is not a ranking. It is recomputed only at an epoch boundary (`select_active`, `:580`),
-and when the cap bites it is a **seeded uniform sample without replacement** from the eligible pool —
+The active set is not a ranking. It is recomputed only at an epoch boundary (`select_active`), and when
+the cap bites it is a **seeded stake-weighted draw without replacement** from the eligible pool —
 positive stake, not withdrawing — with the cap set by `number-of-active-validators`
 (`node/src/configuration/defaults.conf:334`, default `100`). The seed comes from the last **finalised**
 fringe, one boundary ahead. The reason, the residuals, and the alternative are in
@@ -90,25 +90,28 @@ there and not repeated here.
 - **The cap does not bite** — the eligible pool is within `number-of-active-validators`, which on a
   bonded network of ≤100 validators is simply all of it. Every pooled validator is active, nobody is
   undrawn, and the split is stake-proportional: the largest bond takes the largest share.
-- **The cap bites.** Membership is a uniform draw, so expected income is close to **uniform across the
-  drawn members** whatever their stake, and a member that is not drawn earns nothing that epoch. In this
-  regime "the largest stake earns most" is false, and what is true instead is the residual **O3**:
-  per-unit-of-stake income *favours* a stake split across several keys, since each key draws
-  independently.
+- **The cap bites.** Membership is a weighted draw, so a larger stake is drawn in proportion to its size
+  and a member that is not drawn earns nothing that epoch. Stake still predicts income — but not exactly
+  pro-rata, and which way it misses is worth knowing (below).
 
-**How large that reversal is, on the shipped rule** (derived from `select_active`'s uniform draw; pot 1,
-six rival keys at stake 10, cap 4, 200,000 trials):
+**How far from pro-rata, on the shipped rule** (pot 1, six rival keys at stake 10, cap 4 — the same
+measurement before and after the draw was weighted on 2026-10-02; 4 096 fixed seeds, so these are pins
+rather than samples):
 
-| how one stake of 40 is held | expected income |
-|---|---|
-| one key of 40 | **0.326** — *below* the flat pro-rata benchmark of 0.400 |
-| four keys of 10 | 0.400 |
-| twenty keys of 2 | **0.528** — **62 % more** than holding it whole |
+| how one stake of 40 is held | uniform draw (before) | weighted draw (now) |
+|---|---|---|
+| one key of 40 | **0.326** — *below* the flat pro-rata 0.400 | **0.5285** — *above* it |
+| four keys of 10 | 0.400 — exactly pro-rata | 0.4005 — exactly pro-rata |
+| twenty keys of 2 | **0.528** — 62 % *more* than whole | **0.1685** — 58 % *less* |
 
-So above the cap the operative lever is **the number of keys, not the size of the stake** — per-unit
-income falls as one's own stake grows, because a large drawn key inflates the normaliser the share
-divides by. This is O3 read from the validator's side rather than the network's, and it is a property of
-the rule as shipped, not of any proposal.
+Each pair is the same pool at the same total stake, differing only in how the stake is held. **Under the
+uniform rule the lever was the number of keys, and splitting was worth 62 %** — a per-key rule mints
+finality weight (and income) for free, which is a consensus-safety problem and not just an economic
+quirk. **Under the weighted rule the lever is the size of the key, and splitting costs 58 %.** Neither
+regime is exactly pro-rata; the cap is what breaks proportionality, and the two rules differ only in
+which side of it a staker lands on. Weighting is the side chosen: it is the side on which **stake buys
+weight**, which is what the cap exists to bound — a bond is bounded above by `maximum_bond`, and the
+concentration is the operator's own risk, borne per validator since everything at risk is per-validator.
 
 Which regime a net is in is a property of its size, not a policy — and the two are the same code path
 (`select_active` returns the whole eligible pool when the cap does not bite).
@@ -251,11 +254,13 @@ stated.** Both conclusions are arguments about the code above, not preferences.
    and the two primitives that needs are not both present: `bond` takes only the deploy signer's own
    unforgeable `deployerId` (`rholang/src/system_processes.rs:1707`), and a reward is paid only to the
    vault derived from `fromPublicKey(validator)` (`rholang/src/native_state.rs:1086`). So **every pool
-   reachable today is one more validator key** — which *concentrates* the whole-bond slash on the operator
-   rather than spreading it, and leaves members with no on-chain claim at all. Above the cap it is worse:
-   merging many small stakes into one key **forfeits** precisely the key-count income the draw pays
-   (above). A pool that would actually spread risk needs a new primitive — bonding from a named vault, or
-   a delegation leaf — which is a genesis-plus-hard-fork change, not a contract. Tracked on
+   reachable today is one more validator key** — which *concentrates* the slash on the operator rather
+   than spreading it, and leaves members with no on-chain claim at all. Above the cap it is the wrong
+   direction economically too: merging many small stakes into one key **raises** income under the
+   weighted draw (0.1685 for twenty keys of 2 against 0.5285 for one key of 40, above) — a pool
+   *concentrates* the stake it claims to spread, and it concentrates the cap's reward too. A pool that
+   would actually spread risk needs a new primitive — bonding from a named vault, or a delegation leaf —
+   which is a genesis-plus-hard-fork change, not a contract. Tracked on
    [#150](https://github.com/rchain-community/rchain-rust/issues/150).
 2. **Should the pot be weighted by participation as well as stake?** *It cannot do what it looks like it
    does.* The pot is a fixed pie of phlo already burned, so a multiplier is pure **reallocation** — with

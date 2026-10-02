@@ -441,9 +441,11 @@ chose the entropy, and the entropy is not one party's to choose. **The residuals
 proposer may still present a stale fringe, so the steering space is the distinct fringes its own
 candidates induce rather than one per justification subset — and the pre-state anchor that would
 have restored the larger space is deliberately *not* kept beside the fringe), capital pre-positioning
-before a public seed, the sybil exposure uniform sampling carries where stake-weighting does not, and a
-security budget that now fluctuates epoch to epoch — and the uniform draw is the one decision there
-worth revisiting. **And the draw carries a liveness consequence that the deterministic rule masked**,
+before a public seed, the per-key exposure the draw carried while it was uniform, and a security budget
+that now fluctuates epoch to epoch — **and the uniform rule was revisited on 2026-10-02**: the draw is
+now stake-weighted, so the per-key exposure is closed and what remains is that the draw is *sequential*,
+which makes the first slot exactly proportional and the later ones proportional to the weights that
+remain. **And the draw carries a liveness consequence that the deterministic rule masked**,
 measured on devnets with a cap below the validator count: an epoch's proposal duty can land on a
 validator whose own view of the active set is stale, while the node that could propose is drawn out —
 so the chain waits. With no cap every bonded validator is always in the set, so there is always a

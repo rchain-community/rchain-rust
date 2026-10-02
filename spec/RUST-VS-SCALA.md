@@ -177,17 +177,26 @@ concrete, auditable ways:
    entropy the reference does not have.** `Pos.rhox:718-726`'s `pickActiveValidators` takes the first
    `$$numberOfActiveValidators$$` entries of the bonds map in *key* order and carries the comment
    `// TODO: Randomly select 100 active validators once we have on-chain randomness`. The Scala
-   reference selects the highest-staked; the port now draws uniformly without replacement from the
-   eligible pool (`rholang/src/native_state.rs`'s `select_active`), seeded by a `pos:epoch_seed`
-   leaf written **one boundary ahead** from the state hash of the last **finalised fringe**, so the
-   block that draws is not the block that chose the entropy — and the entropy itself is the
-   >2/3-agreed frontier rather than anything one proposer reaches. The divergence is the reference's stated intent, and the part the reference lacks is the
-   seed: the port's `BlockRandomSeed` was `hash(shard_id, block_number, sender, pre_state_hash)`
-   computed *at the moment of use*, and all four inputs but the shard id are proposer-chosen — so the
-   pre-change rule was a free, unbounded reroll by the one party that also chose the sample frame.
-   The register row `spec/audit/passes.md:327` states the *reason* the cap exists (finality's
-   supermajority is stake-weighted, so membership decides who can finalise) and is kept, rewritten
-   rather than deleted.
+   reference selects the highest-staked; the port now draws **in proportion to stake**, without
+   replacement, from the eligible pool (`rholang/src/native_state.rs`'s `select_active`), seeded by a
+   `pos:epoch_seed` leaf written **one boundary ahead** from the state hash of the last **finalised
+   fringe**, so the block that draws is not the block that chose the entropy — and the entropy itself is
+   the >2/3-agreed frontier rather than anything one proposer reaches. The divergence is the reference's
+   stated intent, and the part the reference lacks is the seed: the port's `BlockRandomSeed` was
+   `hash(shard_id, block_number, sender, pre_state_hash)` computed *at the moment of use*, and all four
+   inputs but the shard id are proposer-chosen — so the pre-change rule was a free, unbounded reroll by
+   the one party that also chose the sample frame. The register row `spec/audit/passes.md:327` states
+   the *reason* the cap exists (finality's supermajority is stake-weighted, so membership decides who
+   can finalise) and is kept, rewritten rather than deleted.
+
+   **The rule was uniform until 2026-10-02, and weighting is what closed the exposure below.** A uniform
+   draw is a per-*key* rule: the first slot went to a dust validator as readily as to the largest one,
+   so splitting a stake across keys bought slots (and income, since only drawn members are paid). The
+   weighted rule gives the first slot to a validator with probability exactly `stake / total`, and the
+   measurement that pins it is `the_first_slot_is_awarded_in_proportion_to_stake` (a three-to-one stake
+   takes the slot `0.75` of the time over 512 fixed seeds; a uniform draw gives `0.51`) and
+   `splitting_a_stake_across_keys_does_not_buy_slots`. **The uniform rule was the one decision in this
+   item worth revisiting**, as this item used to say, and it has now been revisited.
 
    **Residuals, named rather than implied.**
    - **O1 — the seed-setter's influence, and where the line now falls.** The anchor is the **last
@@ -217,14 +226,30 @@ concrete, auditable ways:
      bond to enter or stage a withdrawal to leave the pool in time for `B_k`. Neither this design nor
      commit-reveal closes that without an extra rule (a withdrawal delay longer than the
      seed→snapshot window, or an earlier snapshot). This is a design gap, not an implementation one.
-   - **O3 — uniform selection is sybil-sensitive, in the weight set and in the income.** Splitting a
-     stake across `k` validators yields roughly `k` times the expected slots of the same stake held
-     whole, while a large honest validator is no likelier to be drawn than a dust one. The cap
-     (default 100) bites, so this is a live exposure in the finality weight set. Weighted sampling
-     without replacement — an exact-integer walk of the pool in canonical order, no floats — is the
-     drop-in alternative and changes nothing else in the file. **The same is true of rewards**:
-     `epoch_rewards` pays pool members that were drawn and zero for everyone else, so a pool member not drawn for an
-     epoch earns nothing in it, and stake stops predicting income.
+   - **O3 — CLOSED 2026-10-02: the selection is stake-weighted.** It read: *uniform selection is
+     sybil-sensitive, in the weight set and in the income* — splitting a stake across `k` validators
+     yielded roughly `k` times the expected slots of the same stake held whole, while a large honest
+     validator was no likelier to be drawn than a dust one, with the cap (default 100) making it a live
+     exposure in the finality weight set; and `epoch_rewards` pays only the members that were drawn, so
+     stake stopped predicting income. The named drop-in is now the rule: `draw_weighted_without_replacement`
+     in `rholang/src/native_state.rs` walks the pool in canonical `BTreeMap` order accumulating weights,
+     takes the first entry past a uniform 128-bit draw, removes it and renormalises — exact integers
+     throughout, no floats. **A residual remains and is stated rather than implied**: the draw is
+     sequential, so the *first* slot is exactly proportional and the later ones are proportional to the
+     weights that remain. **The measured direction of the residue is the opposite of what a per-key rule
+     gave, and it is worth stating**: `the_cap_regime_no_longer_rewards_a_split_stake` re-measures the
+     same pool the book publishes — one stake of 40 held as one key, four keys of 10, or twenty keys of
+     2, against six rivals at 10, cap 4 — and reads **0.5285 / 0.4005 / 0.1685** where the uniform rule
+     read 0.326 / 0.400 / 0.528. Splitting now *costs* 58 % instead of *earning* 32 %, because the cap
+     is fixed and a large key both draws more often and crowds the denominator when it does. Neither
+     regime is pro-rata; the cap is what breaks proportionality, and the two rules differ only in which
+     side of it a staker lands on. Weighting is the side chosen — the side on which **stake buys
+     weight**, which is what the cap exists to bound, with the concentration already the operator's own
+     per-validator risk and the bond already bounded by `maximum_bond`. The exact-proportional
+     alternative is a systematic (rotated-interval) scheme, which assigns a fixed share rather than a
+     random one, and collides for any stake above `1/count` of the total. Falsifiers both ways:
+     `the_first_slot_is_awarded_in_proportion_to_stake` (0.75 against a uniform draw's 0.51) and
+     `splitting_a_stake_across_keys_does_not_buy_slots`.
    - **O4 — the absolute security budget now fluctuates** epoch to epoch, more so with a cap. It
      should be measured by simulation over many seeds with a stated tolerance rather than asserted.
 

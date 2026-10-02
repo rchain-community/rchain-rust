@@ -557,8 +557,8 @@ impl PosGenesis {
 }
 
 /// Select the active validator set from the pool: drop zero-stake and withdrawing validators, then
-/// **draw** up to `number_of_active_validators` of the rest uniformly without replacement, seeded by
-/// `seed` (`0` = unlimited, no draw).
+/// **draw** up to `number_of_active_validators` of the rest **in proportion to stake**, without
+/// replacement, seeded by `seed` (`0` = unlimited, no draw).
 ///
 /// **Why a draw and not the top N.** The set this returns *is* the finality weight set
 /// (`casper/src/multi_parent_casper.rs`'s `Finalizer`), so who is in it decides who can finalise.
@@ -567,13 +567,24 @@ impl PosGenesis {
 /// the moment of use, so every candidate block was a fresh, free reroll — a proposer could try
 /// headers until it drew the set it wanted. See `close_block` step 5 for what anchors the draw now.
 ///
-/// **Uniform, and the residual that carries** (a security property, not a preference): splitting a
-/// stake across `k` validators yields about `k` times the expected slots of the same stake held
-/// whole, while a large honest validator is no likelier to be drawn than a dust one. The cap bites
-/// (default 100), so this is a live sybil exposure in the finality weight set, registered with the
-/// rest of the rule's residuals in `spec/RUST-VS-SCALA.md` §3. Weighted sampling without replacement
-/// — an exact-integer walk of the pool in canonical order, no floats — is the drop-in alternative and
-/// changes nothing else in this file.
+/// **Why weighted, and not uniform.** The rule was a uniform draw until 2026-10-02, and a uniform
+/// draw pays per **key** rather than per stake: the first slot went to a dust validator as readily as
+/// to the largest one, so splitting a stake across `k` keys bought about `k` times the expected slots
+/// (registered as residual O3 in `spec/RUST-VS-SCALA.md` §3). That is a sybil incentive in the
+/// finality weight set *and* an income bug — `epoch_rewards` pays the drawn members, so a staker that
+/// split its stake out-earned the same stake held whole, while a single large validator earned less
+/// than its share. The weighted draw gives the **first** slot to a validator with probability exactly
+/// `stake / total`, which is the property that removes the split incentive, and it needs no
+/// participation score, no delegation and no new state: `(pool, seed)` still determines the result.
+///
+/// **Successive weighting, and the residual that stays.** The draw is sequential — pick by weight,
+/// remove, renormalise, repeat — so it is exactly proportional for the first slot and *approximately*
+/// so for the later ones (an item already drawn cannot be drawn again, so the tail slightly favours
+/// the items that were not picked). Splitting a stake is therefore no longer worth ~`k` times the
+/// slots, but it is not provably neutral either, and the honest statement is that O3 is reduced rather
+/// than closed. The exact-proportional alternative is a systematic (rotated-interval) scheme, which
+/// assigns a fixed share instead of a random one and would collide for any stake above `1/k` of the
+/// total; that is a different rule with a different variance, and it is not this one.
 ///
 /// Generic over what the withdrawal map holds, because only its key set matters here and the port has
 /// two of them: the staged requests (`validator → deadline`, `pendingWithdrawers`) and the claims
@@ -586,7 +597,7 @@ pub fn select_active<V>(
 ) -> BTreeMap<Validator, NonNegI64> {
     // Eligible candidates, in the `BTreeMap`'s key order — the canonical container order, which is
     // what makes the draw a function of `(pool, seed)` and nothing else.
-    let mut candidates: Vec<(&Validator, NonNegI64)> = pool
+    let candidates: Vec<(&Validator, NonNegI64)> = pool
         .iter()
         .filter(|(v, stake)| i64::from(**stake) > 0 && !withdrawers.contains_key(*v))
         .map(|(v, stake)| (v, *stake))
@@ -612,7 +623,7 @@ pub fn select_active<V>(
             .collect();
     }
     let mut rand = Blake2b512Random::from_init(&seed.rng_input());
-    draw_without_replacement(&mut candidates, cap, &mut rand)
+    draw_weighted_without_replacement(&candidates, cap, &mut rand)
         .into_iter()
         .map(|(v, stake)| (*v, stake))
         .collect()
@@ -2271,6 +2282,11 @@ mod tests {
     /// Every other test here asserts a *property*, so a refactor that changed the draw would satisfy
     /// all of them — only a full chain replay would notice. This pins the output itself, in the style
     /// of `Blake2b512Random`'s own vectors.
+    ///
+    /// **The vector moved on 2026-10-02 and that is the point of it.** It read
+    /// `[1, 3, 5]` under the uniform draw; the weighted rule draws `[2, 3, 5]` — it takes the stake-20
+    /// validator where the uniform rule took the stake-10 one. Both are the same kind of statement: a
+    /// change here is a consensus change.
     #[test]
     fn the_draw_matches_a_known_answer_vector() {
         let pool = pool_of(&[(1, 10), (2, 20), (3, 30), (4, 40), (5, 50)]);
@@ -2286,8 +2302,194 @@ mod tests {
         );
         assert_eq!(
             active.keys().copied().collect::<Vec<_>>(),
-            vec![validator(1), validator(3), validator(5)],
+            vec![validator(2), validator(3), validator(5)],
             "the draw for this pool and seed; a change here is a consensus change"
+        );
+    }
+
+    /// **The book's "cap bites" table, re-measured on the weighted rule — and the direction of the
+    /// reversal has flipped.**
+    ///
+    /// `epoch_rewards` pays a pooled validator `bond / active_bonds` of the pot when it is drawn and
+    /// zero otherwise, so a staker's expected income is the drawn holdings over the drawn total,
+    /// averaged over seeds. The published table (pot 1, six rival keys at stake 10, cap 4) read
+    /// **0.326 / 0.400 / 0.528** for one stake of 40 held as one key, four keys of 10 and twenty keys of
+    /// 2 — splitting bought 62 %, holding whole was *penalised*, and every key was an independent
+    /// lottery ticket. That is the sybil exposure O3 named.
+    ///
+    /// On the weighted rule the same measurement reads **0.5285 / 0.4005 / 0.1685**. Splitting a stake
+    /// into twenty keys now **loses** 58 % of the fair share instead of gaining 32 %, so the per-key
+    /// lever is gone — and the reason the four-equal-keys case sits exactly at the pro-rata 0.4 is that
+    /// it *is* the rivals' configuration, which is the cleanest statement of proportionality available.
+    ///
+    /// **The concentration side of this is real and is stated rather than hidden.** Above the cap, a
+    /// single large key earns ~32 % *more* than the flat pro-rata share, because the drawn set is capped
+    /// at four and a large key both draws more often and crowds the denominator when it does. The
+    /// uniform rule had the same magnitude pointing the other way. Neither is "pro-rata"; the cap is
+    /// what breaks proportionality, and the two rules differ only in which side of it a staker is on.
+    /// Weighting is the side chosen, for two reasons: a per-key income rule *mints finality weight for
+    /// free* (a consensus-safety problem, not a preference), and a large bond is already the thing the
+    /// cap exists to bound — a bond is bounded above by `maximum_bond`, and the operator carries the
+    /// concentration risk itself, since everything at risk is per-validator. The seeds are fixed, so
+    /// these are pins rather than samples.
+    #[test]
+    fn the_cap_regime_no_longer_rewards_a_split_stake() {
+        let params = PosParams {
+            number_of_active_validators: 4,
+            ..PosParams::default()
+        };
+        let seeds = 4096i64;
+        // Six rivals of stake 10, plus the holder's 40 however it is held: every configuration has the
+        // same total weight, so the same pool total and the same denominator distribution.
+        let measure = |held: &[i64]| -> f64 {
+            let mut pool = pool_of(&[(1, 10), (2, 10), (3, 10), (4, 10), (5, 10), (6, 10)]);
+            let mut held_keys = BTreeSet::new();
+            for (index, stake) in held.iter().enumerate() {
+                let address = u8::try_from(100 + index).expect("a test key");
+                let key = validator(address);
+                pool.insert(key, NonNegI64::try_from(*stake).expect("a test stake"));
+                held_keys.insert(key);
+            }
+            let mut total = 0.0;
+            for epoch in 0..seeds {
+                let seed = EpochSeed {
+                    epoch,
+                    anchors: vec![Blake2b256Hash::create(&epoch.to_le_bytes())],
+                };
+                let active =
+                    select_active(&pool, &BTreeMap::<Validator, ()>::new(), &params, &seed);
+                let drawn_total: i64 = active.values().map(|s| i64::from(*s)).sum();
+                let drawn_holdings: i64 = active
+                    .iter()
+                    .filter(|(v, _)| held_keys.contains(v))
+                    .map(|(_, s)| i64::from(*s))
+                    .sum();
+                if drawn_total > 0 {
+                    total += drawn_holdings as f64 / drawn_total as f64;
+                }
+            }
+            total / seeds as f64
+        };
+
+        let whole = measure(&[40]);
+        let four = measure(&[10, 10, 10, 10]);
+        let twenty = measure(&[2; 20]);
+        for (label, value, expected) in [
+            ("one key of 40", whole, 0.5285),
+            ("four keys of 10", four, 0.4005),
+            ("twenty keys of 2", twenty, 0.1685),
+        ] {
+            assert!(
+                (value - expected).abs() < 0.005,
+                "{label} earned {value}, not {expected}: the weights moved, so the rule moved"
+            );
+        }
+        assert!(
+            whole > four && four > twenty,
+            "income must not fall as a stake is held in fewer keys — the uniform rule had it the other \
+             way round, which is the defect; got {whole}, {four}, {twenty}"
+        );
+        assert!(
+            (four - 0.4).abs() < 0.005,
+            "a staker that looks exactly like its rivals must earn exactly the pro-rata share; got {four}"
+        );
+    }
+
+    /// How often, over `seeds` epochs, the single slot of a one-member draw goes to `target`.
+    ///
+    /// A *measurement*, in the register's sense: the drawn set is a deterministic function of the seed,
+    /// so "in proportion to stake" is a property of the distribution over seeds rather than of one
+    /// call, and the only way to state it is to draw many. The seeds are fixed constants, so the
+    /// measurement is reproducible.
+    fn slot_share(pool: &BTreeMap<Validator, NonNegI64>, target: &Validator, seeds: i64) -> f64 {
+        let params = PosParams {
+            number_of_active_validators: 1,
+            ..PosParams::default()
+        };
+        let hits = (0..seeds)
+            .filter(|epoch| {
+                let seed = EpochSeed {
+                    epoch: *epoch,
+                    anchors: vec![Blake2b256Hash::create(&epoch.to_le_bytes())],
+                };
+                select_active(pool, &BTreeMap::<Validator, ()>::new(), &params, &seed)
+                    .contains_key(target)
+            })
+            .count();
+        hits as f64 / seeds as f64
+    }
+
+    /// **The B1 falsifier: the one slot is awarded in proportion to stake, not per key.**
+    ///
+    /// Three parts of stake against one. Under the uniform rule this was `0.5` — the ratio of *keys* —
+    /// and that is the whole defect: a staker could split its stake across keys and buy slots, because
+    /// each key was a ticket regardless of what it was worth. Under the weighted rule it is `0.75`,
+    /// the ratio of stake.
+    ///
+    /// The tolerance is four standard deviations of the binomial at 512 trials, so this is a
+    /// measurement of the rule rather than a flake: a correct rule misses the band about once in
+    /// sixteen thousand runs, and restoring the uniform draw moves the value to `0.5`, far outside it.
+    #[test]
+    fn the_first_slot_is_awarded_in_proportion_to_stake() {
+        let pool = pool_of(&[(1, 3), (2, 1)]);
+        let share = slot_share(&pool, &validator(1), 512);
+        assert!(
+            (0.70..=0.80).contains(&share),
+            "a three-to-one stake must take the slot about three times in four; got {share}"
+        );
+    }
+
+    /// **And splitting a stake across keys does not buy slots** — the same measurement, stated the way
+    /// a staker would try it.
+    ///
+    /// The stake is 4 either way. Held as one key against four equal keys it takes about half the
+    /// draws; split into four keys of 1 against the same four, the *four keys together* still take
+    /// about half — not four fifths, which is what a per-key rule would give them.
+    #[test]
+    fn splitting_a_stake_across_keys_does_not_buy_slots() {
+        let whole = pool_of(&[(1, 4), (2, 1), (3, 1), (4, 1), (5, 1)]);
+        let split = pool_of(&[
+            (1, 1),
+            (2, 1),
+            (3, 1),
+            (4, 1),
+            (5, 1),
+            (6, 1),
+            (7, 1),
+            (8, 1),
+        ]);
+        let params = PosParams {
+            number_of_active_validators: 1,
+            ..PosParams::default()
+        };
+        let split_group: BTreeSet<Validator> = (1..=4).map(validator).collect();
+        let seeds = 512i64;
+
+        let wins = |pool: &BTreeMap<Validator, NonNegI64>, group: &BTreeSet<Validator>| {
+            (0..seeds)
+                .filter(|epoch| {
+                    let seed = EpochSeed {
+                        epoch: *epoch,
+                        anchors: vec![Blake2b256Hash::create(&epoch.to_le_bytes())],
+                    };
+                    select_active(pool, &BTreeMap::<Validator, ()>::new(), &params, &seed)
+                        .keys()
+                        .any(|v| group.contains(v))
+                })
+                .count() as f64
+                / seeds as f64
+        };
+
+        let whole_share = wins(&whole, &BTreeSet::from([validator(1)]));
+        let split_share = wins(&split, &split_group);
+        assert!(
+            (0.45..=0.55).contains(&whole_share),
+            "half the stake takes about half the draws; got {whole_share}"
+        );
+        assert!(
+            (0.40..=0.60).contains(&split_share),
+            "the same half of the stake, split across four keys, must still take about half the \
+             draws — a per-key rule gives it four fifths; got {split_share}"
         );
     }
 
@@ -3914,57 +4116,106 @@ pub fn genesis_epoch_seed() -> EpochSeed {
     }
 }
 
-/// A uniform `u64` in `[0, bound)`, rejection-sampled — never reduced modulo.
+/// A uniform `u128` in `[0, bound)`, rejection-sampled — never reduced modulo.
 ///
-/// A modulo of a 64-bit draw biases the low indices when `bound` does not divide 2^64, and "negligible
-/// bias" is not a phrase this codebase accepts on a consensus path. `accept` is the largest multiple of
-/// `bound` that fits a `u64`, so every accepted value maps to exactly `2^64 / bound` rejected-or-taken
-/// values and `v % bound` is uniform.
+/// A modulo biases the low values when `bound` does not divide `2^128`, and "negligible bias" is not a
+/// phrase this codebase accepts on a consensus path. `accept` is the largest multiple of `bound` that
+/// fits a `u128`, so every accepted value maps to exactly `2^128 / bound` rejected-or-taken values and
+/// `v % bound` is uniform.
+///
+/// **Why 128 bits and not 64.** The bound here is a *stake total*, not a count: it is the sum of the
+/// pool's `i64`-bounded stakes, and a total that overflows the draw's width would make the draw
+/// unreachable rather than biased. Two `usize` draws from the stream give the 128 bits without a
+/// narrowing conversion in either direction, which is the property the previous 64-bit form was
+/// written to keep (see the module's type-system notes).
 ///
 /// **The rejection loop consumes the stream a data-dependent number of times.** That is harmless here
 /// and it is checked rather than assumed: nothing reads the stream after a draw, and the draw's output
-/// is pinned by a known-answer test, so a change in consumption would show up there.
-fn uniform_below(rand: &mut Blake2b512Random, bound: usize) -> usize {
+/// is pinned by a known-answer test, so a change in consumption shows up there.
+fn uniform_below_u128(rand: &mut Blake2b512Random, bound: u128) -> u128 {
     if bound <= 1 {
         return 0;
     }
-    // The draw is `size_of::<usize>()` bytes wide, so the arithmetic is natively `usize`: there is no
-    // narrowing conversion here to flatten, which is what makes this total on 32- and 64-bit alike.
-    // (The first draft used `u64` and narrowed at the call site with `unwrap_or(0)` — the type-system
-    // gate refused it as a *silent* conversion, correctly, because a flattened failure there would
-    // have silently picked index 0.)
-    let mut buf = [0u8; std::mem::size_of::<usize>()];
-    let width = buf.len();
-    let accept = (usize::MAX / bound) * bound;
+    let accept = (u128::MAX / bound) * bound;
+    let width = std::mem::size_of::<usize>();
+    let mut half = [0u8; std::mem::size_of::<usize>()];
     loop {
-        let draw = rand.next();
-        buf.copy_from_slice(&draw[..width]);
-        let value = usize::from_le_bytes(buf);
+        let mut bytes = [0u8; 2 * std::mem::size_of::<usize>()];
+        let low = rand.next();
+        half.copy_from_slice(&low[..width]);
+        bytes[..width].copy_from_slice(&half);
+        let high = rand.next();
+        half.copy_from_slice(&high[..width]);
+        bytes[width..].copy_from_slice(&half);
+        let value = u128::from_le_bytes(bytes);
         if value < accept {
             return value % bound;
         }
     }
 }
 
-/// Draw `count` distinct entries from `candidates`, uniformly without replacement, in draw order.
+/// Draw `count` distinct entries from `candidates` **in proportion to their weight**, without
+/// replacement, in draw order.
 ///
-/// Partial Fisher–Yates over a slice whose order is the caller's canonical order. `candidates` is built
-/// from a `BTreeMap`, so that order is key order — which is what makes the result a function of
-/// `(the pool, the seed)` and nothing else.
-fn draw_without_replacement<T: Clone>(
-    candidates: &mut [T],
+/// `weight_of` is the stake, and the walk is a sequential weighted draw: take a uniform value in
+/// `[0, remaining_total)`, walk the candidate list in its canonical order accumulating weights, take
+/// the first entry whose cumulative weight exceeds the value, remove it, repeat. Exact integer
+/// arithmetic throughout — no floats, no logarithms, no rounding, so `(pool, seed)` determines the
+/// result on every machine. `candidates` is built from a `BTreeMap`, so its order is key order, and
+/// `Vec::remove` preserves that order across the iteration, which is what makes the walk canonical.
+///
+/// **Exact for the first slot, and that is the property that matters.** The first pick is
+/// `stake / total` exactly. The later picks renormalise over what is left, so they are proportional to
+/// the *remaining* weights rather than to the original ones; an item's expected share of `count` slots
+/// is therefore near — not identically — `count · stake / total`. The exact-proportional alternative
+/// is a systematic (rotated-interval) scheme, which is a different rule with a different variance and
+/// a collision problem for any stake above `1/count` of the total. This is the sequential rule, and
+/// the residual is stated where the rule is documented rather than left implicit.
+fn draw_weighted_without_replacement<T>(
+    candidates: &[T],
     count: usize,
     rand: &mut Blake2b512Random,
-) -> Vec<T> {
+) -> Vec<T>
+where
+    T: Clone + Weighted,
+{
+    let mut remaining: Vec<T> = candidates.to_vec();
     let mut out = Vec::with_capacity(count);
-    let mut remaining = candidates.len();
     for _ in 0..count {
-        let pick = uniform_below(rand, remaining);
-        candidates.swap(pick, remaining - 1);
-        remaining -= 1;
-        out.push(candidates[remaining].clone());
+        let total: u128 = remaining.iter().map(|c| u128::from(c.weight())).sum();
+        if total == 0 {
+            break;
+        }
+        let draw = uniform_below_u128(rand, total);
+        let mut cumulative: u128 = 0;
+        let mut pick = remaining.len() - 1;
+        for (index, candidate) in remaining.iter().enumerate() {
+            cumulative += u128::from(candidate.weight());
+            if draw < cumulative {
+                pick = index;
+                break;
+            }
+        }
+        out.push(remaining.remove(pick));
     }
     out
+}
+
+/// A candidate's weight in the active-set draw: its stake.
+///
+/// A trait rather than a closure so the helper stays generic and the weight is read in exactly one
+/// place. It is implemented for the `(validator, stake)` pair the pool yields.
+trait Weighted {
+    fn weight(&self) -> u64;
+}
+
+impl Weighted for (&Validator, NonNegI64) {
+    fn weight(&self) -> u64 {
+        // Non-negative by the refinement on the field, and `i64`-bounded by the type, so the
+        // conversion is total. The cast is the reason the weight is `u64` and not `i64`: a negative
+        // weight would make the cumulative walk skip a candidate rather than refuse it.
+        u64::try_from(i64::from(self.1)).unwrap_or(0)
+    }
 }
 
 // ----------------------------------------------------------------------------------------------
