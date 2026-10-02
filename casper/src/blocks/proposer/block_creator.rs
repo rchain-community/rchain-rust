@@ -4,6 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use rchain_block_storage::dag::dag_storage::{BlockDagStorage, DeployId};
 use rchain_crypto::hash::blake2b256_hash::Blake2b256Hash;
+use rchain_crypto::hash::blake2b512_random::Blake2b512Random;
 use rchain_models::block::state_hash::StateHash;
 use rchain_models::block_hash::BlockHash;
 use rchain_models::block_version::CURRENT;
@@ -108,38 +109,14 @@ impl BlockCreator {
                 .map(|(_, d)| d)
                 .collect();
 
-            // Slash + close-block system deploys. `to_slash` is a `BTreeMap`, so its iteration order is
-            // already the canonical one the seed index depends on.
-            let mut system_deploys: Vec<SystemDeploy> = Vec::new();
-            // **The block accounts for itself first** (B4, #150). Its position in this list is the
-            // position it occupies in the block's recorded `system_deploys`, and the replay assigns
-            // each entry's rand by that position (`terms.len() + i`), so the seeds line up because the
-            // lists line up — which is why this one is pushed *before* the rest rather than appended.
-            system_deploys.push(SystemDeploy::record_spoke(
-                rand.split_byte(u8::try_from(selected.len()).map_err(|e| e.to_string())?),
-            ));
-            for (i, (v, slash)) in to_slash.iter().enumerate() {
-                let seed = rand
-                    .split_byte(u8::try_from(selected.len() + 1 + i).map_err(|e| e.to_string())?);
-                system_deploys.push(SystemDeploy::slash(
-                    v,
-                    slash.severity,
-                    slash.evidence.clone(),
-                    seed,
-                ));
-            }
-            let close_seed = rand.split_byte(
-                u8::try_from(selected.len() + 1 + to_slash.len()).map_err(|e| e.to_string())?,
-            );
-            // The **fringe's** state hash goes in with the close deploy: it is what the next epoch's
-            // active-set draw is anchored to, and unlike `rand` (or the pre-state, which this
-            // proposer's own justification set determines) it is not this proposer's to choose — the
-            // fringe is the >2/3-agreed frontier.
-            system_deploys.push(SystemDeploy::close_block(
+            // Slash + close-block system deploys, in the one order the replay will read them in.
+            let system_deploys = block_system_deploys(
+                &to_slash,
+                selected.len(),
                 i64::from(block_num),
                 pre_state.fringe_state,
-                close_seed,
-            ));
+                &rand,
+            )?;
 
             Some(
                 compute_deploys_checkpoint(
@@ -201,5 +178,173 @@ impl BlockCreator {
                 Ok(BlockCreatorResult::Created(signed_block))
             }
         }
+    }
+}
+
+/// **The block-level system deploys a proposer attaches, in the order they are recorded.**
+///
+/// A function rather than an inline block, for the reason `slashable_offenders` is one: the *list* is
+/// what consensus turns on, and it was reachable only through `create_block` — which needs a runtime, a
+/// DAG and a signing identity, so nothing in the tree pinned it. That was a real gap: deleting the
+/// `RecordSpoke` push below left every other test green, and the loss would have been the proposer's
+/// own activity record (see `spec/audit/passes.md` §55).
+///
+/// **The order is load-bearing, not cosmetic.** The replay rebuilds each entry's random seed from its
+/// *position* in the recorded list (`runtime_replay.rs`'s `replay_deploys`:
+/// `rand.split_byte(terms.len() + i)`), and this side derives the same seed from the same position
+/// (`deploy_count + i`). The two lists agree because both are this one, in this order — so an entry
+/// inserted anywhere but the end moves every seed after it, and `deploy_count` is the *selected* count
+/// rather than the requested one for the same reason (a requested deploy absent from the pool would
+/// otherwise shift them all; S2/S4).
+///
+/// Three entries, and each is a rule: the block **accounts for itself** first (B4), then one `Slash`
+/// per offender in `to_slash`'s canonical `BTreeMap` order (C110, C199, C200), then the `CloseBlock`
+/// that carries the **fringe's** state hash — the value the next epoch's draw is anchored to, and the
+/// one input here that is not the proposer's to choose (O1).
+fn block_system_deploys(
+    to_slash: &BTreeMap<Validator, ProposedSlash>,
+    deploy_count: usize,
+    block_number: i64,
+    fringe_state: Blake2b256Hash,
+    rand: &Blake2b512Random,
+) -> Result<Vec<SystemDeploy>, String> {
+    let mut system_deploys: Vec<SystemDeploy> = Vec::new();
+    system_deploys.push(SystemDeploy::record_spoke(seed_at(rand, deploy_count)?));
+    for (i, (v, slash)) in to_slash.iter().enumerate() {
+        system_deploys.push(SystemDeploy::slash(
+            v,
+            slash.severity,
+            slash.evidence.clone(),
+            seed_at(rand, deploy_count + 1 + i)?,
+        ));
+    }
+    system_deploys.push(SystemDeploy::close_block(
+        block_number,
+        fringe_state,
+        seed_at(rand, deploy_count + 1 + to_slash.len())?,
+    ));
+    Ok(system_deploys)
+}
+
+/// The seed for the entry at `position` of the block-level list — the one derivation both this side and
+/// the replay use, in one place so the two cannot drift apart.
+fn seed_at(rand: &Blake2b512Random, position: usize) -> Result<Blake2b512Random, String> {
+    Ok(rand.split_byte(u8::try_from(position).map_err(|e| e.to_string())?))
+}
+
+#[cfg(test)]
+mod block_system_deploy_tests {
+    use super::block_system_deploys;
+    use crate::blocks::proposer::proposer::ProposedSlash;
+    use crate::system_deploy::NativeSystemDeployOp;
+    use rchain_crypto::hash::blake2b256_hash::Blake2b256Hash;
+    use rchain_crypto::hash::blake2b512_random::Blake2b512Random;
+    use rchain_models::block_metadata::SlashSeverity;
+    use rchain_models::validator::Validator;
+    use std::collections::BTreeMap;
+
+    fn offender(
+        byte: u8,
+        tier: SlashSeverity,
+        evidence: Option<Vec<u8>>,
+    ) -> (Validator, ProposedSlash) {
+        (
+            Validator::new([byte; 65]),
+            ProposedSlash {
+                severity: tier,
+                evidence,
+            },
+        )
+    }
+
+    /// **The list is the block's own record first, its slashes next, and the close last** — and every
+    /// entry's seed is the one the *replay* will derive from its position.
+    ///
+    /// The seed arm is the one that cannot be replaced by reading the code twice: `replay_deploys`
+    /// assigns `rand.split_byte(terms.len() + i)` by position, so this test derives exactly that from
+    /// the same base rand and requires the proposer to have done the same. Inserting an entry, or
+    /// starting `deploy_count` from the *requested* rather than the selected count, turns it red.
+    #[test]
+    fn the_proposer_attaches_the_list_the_replay_will_read() {
+        let rand = Blake2b512Random::from_init(&[7u8; 32]);
+        let fringe = Blake2b256Hash::from_bytes([9u8; 32]);
+        let to_slash = BTreeMap::from([
+            offender(2, SlashSeverity::Malicious, Some(vec![1, 2, 3])),
+            offender(1, SlashSeverity::HonestMistake, None),
+        ]);
+        let deploy_count = 4usize;
+        let deploys = block_system_deploys(&to_slash, deploy_count, 12, fringe, &rand)
+            .expect("a list of system deploys");
+
+        // Three entries: the block's own record, two slashes, and the close — in that order.
+        assert_eq!(
+            deploys.len(),
+            4,
+            "the block records itself and closes itself"
+        );
+        assert_eq!(
+            deploys[0].op,
+            Some(NativeSystemDeployOp::RecordSpoke),
+            "the block accounts for itself first, so the replay's first positional seed is its own"
+        );
+        // `to_slash` is a `BTreeMap`, so validator 1 precedes validator 2 whatever order it was built
+        // in — which is the property the seed indices depend on.
+        assert_eq!(
+            deploys[1].op,
+            Some(NativeSystemDeployOp::Slash {
+                validator: Validator::new([1u8; 65]),
+                severity: SlashSeverity::HonestMistake,
+                evidence: None,
+            })
+        );
+        assert_eq!(
+            deploys[2].op,
+            Some(NativeSystemDeployOp::Slash {
+                validator: Validator::new([2u8; 65]),
+                severity: SlashSeverity::Malicious,
+                evidence: Some(vec![1, 2, 3]),
+            }),
+            "the tier and the evidence travel with the slash"
+        );
+        assert_eq!(
+            deploys[3].op,
+            Some(NativeSystemDeployOp::CloseBlock {
+                block_number: 12,
+                fringe_state_hash: fringe,
+            }),
+            "and the close carries the fringe's own state hash, which is not the proposer's to choose"
+        );
+
+        // **The positional seeds.** This is `replay_deploys`'s derivation, spelled the same way.
+        for (i, deploy) in deploys.iter().enumerate() {
+            let expected =
+                rand.split_byte(u8::try_from(deploy_count + i).expect("a test position"));
+            assert_eq!(
+                deploy.rand.to_bytes(),
+                expected.to_bytes(),
+                "entry {i} must carry the seed the replay assigns to position {i}"
+            );
+        }
+    }
+
+    /// A block with nothing to slash still records itself, and still closes: the two entries that are
+    /// always there are not conditional on anything.
+    #[test]
+    fn a_block_with_no_offenders_still_records_itself_and_closes() {
+        let rand = Blake2b512Random::from_init(&[1u8; 32]);
+        let deploys = block_system_deploys(
+            &BTreeMap::new(),
+            0,
+            1,
+            Blake2b256Hash::from_bytes([0u8; 32]),
+            &rand,
+        )
+        .expect("a list of system deploys");
+        assert_eq!(deploys.len(), 2);
+        assert_eq!(deploys[0].op, Some(NativeSystemDeployOp::RecordSpoke));
+        assert!(matches!(
+            deploys[1].op,
+            Some(NativeSystemDeployOp::CloseBlock { .. })
+        ));
     }
 }

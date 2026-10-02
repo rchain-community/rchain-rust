@@ -6592,11 +6592,19 @@ whose proposer attached the deploy records *its own sender at its own height* in
 store, the block's `state` carries the record for a receiver to replay, and the replay reaches the same
 post-state hash.
 
-**One link is not pinned by a test, and it is named here rather than left to be discovered**:
-`block_creator`'s *attachment* of the deploy to the proposer's own block. Pinning it needs a live
-proposer fixture (a runtime, a DAG and a signing identity), which no test in this tree builds, and the
-two arms above would both stay green if the attachment were deleted. What that would cost is the
-proposer's **own** record — it would stop being paid at the boundaries it did not act in, and a chain
-whose validators all omitted it would simply have the rule do nothing, which is the shipped default
-anyway. There is no way to harm another validator by omitting it, which is why this is a gap in
-*coverage* and not in safety.
+**And the proposer's *attachment* of the deploy is pinned, which it was not when this landed.**
+`create_block`'s list construction was inline, so the only way to reach it was through a whole proposer —
+a runtime, a DAG and a signing identity, which no test in this tree builds — and deleting the
+`RecordSpoke` push left every other test in the tree green. The list is now
+`block_system_deploys` (`casper/src/blocks/proposer/block_creator.rs`), a function for the same reason
+`slashable_offenders` is one, and `the_proposer_attaches_the_list_the_replay_will_read` pins it: the
+block's own record first, the slashes next in `to_slash`'s canonical order with their tiers and evidence,
+the close last carrying the fringe's state hash — and, for every entry, the **positional seed the replay
+will derive for it** (`rand.split_byte(terms.len() + i)`, spelled the same way on both sides). Removing
+the `RecordSpoke` push turns both new tests red.
+
+What the positional arm protects is the thing that was never expressible before: the two sides agree
+about seeds *because the lists are the same list*, so an entry inserted anywhere but the end moves every
+seed after it. The one property still left to a comment is `create_block`'s choice of `selected.len()`
+(the deploys actually in the pool) over `deploys.len()` (the ones requested) — pinned only by its own
+note, and predating this change.
