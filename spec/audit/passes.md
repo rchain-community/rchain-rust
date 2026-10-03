@@ -7148,3 +7148,42 @@ as the `decide`d pair.
 Mechanism (a) — a forking DAG in which no candidate is seen by every live validator — produces the same
 `0 of 250` line and is untouched, and #213's `100 of 250` with all three validators live is not this
 mechanism (with nobody stopped, every seer is in the partition). Nothing here has been run on a live net.
+
+## 63. A deploy sent to one validator was never finalised, because the guard read the round's parents (C209, #214)
+
+**The mechanism.** With no autopropose, the only proposal attempts are the deploy itself and the
+attestation tap. The attestation guard decided whether anything was left to finalise from
+`seen(parents) − seen(fringe)`, and the parents are the round snapshot: a deploy-bearing block another
+validator made this round is in `latest_msgs` and in no parent until the round closes. So every other
+validator computed `nothing_to_finalize`, stayed silent, and the round — which closes only when every
+bonded sender has spoken — never closed. Where the scan did see the deploy, its licence
+(`new_state_transition`, "a parent carries deploys") lapsed one round later, every validator was paced
+to a cadence that is never due on a chain that is not moving, and the fringe stopped one layer short of
+the deploy. A block needs every bonded sender to speak for several rounds after it; the old inputs
+licensed one.
+
+**The evidence.** The live reports on #214 are this signature: deploys to one node left finality at
+`none` (six deploys on a fully live three-validator chain; 693 samples on `f9d36b9c4`), and sending
+them to the validators in rotation started it. In process, `quiet_chain_tests` runs the proposer's own
+round gate, escape, pre-state fringe, guard and epoch trigger over one `DagMessageState` until no attempt
+would produce a block. On the old inputs with a bonded genesis signer, three deploys to one of
+100/100/50 finalise none (`on_the_round_snapshot_a_deploy_sent_to_one_validator_is_never_finalised`).
+On the new ones (`attestation_inputs`: both read from `latest_msgs`, the fringe still the parents'),
+`every_deploy_finalises_and_then_the_chain_is_quiet` holds for 2, 3, 5 and 8 validators, deploys to one
+or several, the 50 killed, killed and returned, a 100 of four killed, a joiner that speaks and one that
+never does, with genesis signed by a bonded and an unbonded key: every deploy finalises, within 10·N
+blocks each (measured: 4 to 8 rounds), and the net then stops. With the quorum lost (a 100 of 100/100/50,
+or one of two) nothing finalises, as it must not, and production stays bounded (`a_lost_quorum_does_not_storm`).
+
+**The storm bound.** Read from the seen view, the licence holds for as long as a deploy is unfinalised,
+so a finality stall from any other cause would bring C171 back. `ATTESTATION_HORIZON` (three liveness
+windows) ends the licence that many heights after the oldest unfinalised deploy-bearing block, after
+which the guard falls back to the cadence. The worst age measured in process is 7 heights, with a
+validator killed and the partition waiting for it to age out.
+
+**What it rules out, and what it does not.** It rules out the guard as the reason a deploy to one node
+does not finalise. It is node-local — block validity is unchanged, so it needs no new genesis and old and
+new nodes interoperate. Not modelled: delivery delay and reordering. A deploy refused by the round gate
+while the net is quiet waits for the next attempt to take the stall escape (`ROUND_STALL_ESCAPE`); in
+process that is the next deploy, and with a supermajority live none was ever left waiting. Nothing here
+has been run on a live net.
