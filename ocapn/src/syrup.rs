@@ -9,9 +9,12 @@
 //! the draft, and a silent choice there would be a silent incompatibility, so they are *not* fixed
 //! here:
 //!
-//! * OCapN's `Undefined`, `Null`, `Tagged`, `Reference` and `Error` values
-//!   (`draft-specifications/Model.md`) have no concrete Syrup form anywhere in `Notation.md`. They
-//!   are settled where the CapTP message layer first needs them (`captp.rs`, stage 1) — not here.
+//! * OCapN's `Tagged` value crosses as a labelled **record** — the `desc:tagged` form a Rholang
+//!   tuple takes (`Rchain.Syrup`'s `taggedRecord`) — so it needs no constructor of its own here.
+//!   `Undefined`, `Null`, `Reference` and `Error` (`draft-specifications/Model.md`) have no concrete
+//!   Syrup form anywhere in `Notation.md`, and no CapTP message this port speaks carries one, so they
+//!   are left unimplemented rather than guessed: a value with no wire form cannot become a silent
+//!   incompatibility if it never reaches the wire.
 //! * Dictionaries: `Notation.md` gives `{ … }` with unordered key/value pairs; `Model.md` fixes an
 //!   OCapN *Struct* to String keys, pairwise non-Equal. This codec implements the Struct — string
 //!   keys, duplicates refused — since that is the only keyed container OCapN defines. General

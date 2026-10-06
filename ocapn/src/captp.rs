@@ -121,9 +121,9 @@ pub struct Deliver {
     pub to: Desc,
     /// The message's arguments.
     pub args: Vec<Value>,
-    /// `None` is the wire's `false`: no result is expected. (Stage 1 sends only `None`; a
-    /// non-`None` value is *parsed* so a pipelining peer is understood, and refused at dispatch
-    /// until stage 2 teaches the answer table.)
+    /// `None` is the wire's `false`: no result is expected. A `Some` position is a **pipelining**
+    /// peer asking us to remember what this delivery resolves to, so a later `<desc:answer N>`
+    /// reaches it — the answer table, in `conn.rs`.
     pub answer_pos: Option<BigUint>,
     /// `None` is the wire's `false`. The reference constrains this to an import descriptor.
     pub resolve_me_desc: Option<Desc>,

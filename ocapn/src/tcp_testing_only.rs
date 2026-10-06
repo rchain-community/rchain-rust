@@ -3,9 +3,10 @@
 //! The OCapN test suite's transport of the same name is described there as "HIGHLY INSECURE, DO NOT
 //! USE IN PRODUCTION": it "streams pure Syrup-encoded data directly, without encryption or metadata
 //! beyond regular CapTP messages", which makes it "simple to implement, and should be enough to get
-//! you through the tests". This is a faithful implementation of exactly that, and it is the wire
-//! [`crate::session`]'s handshake and stage 1's `op:deliver` will be exercised over. A deployment
-//! uses a different netlayer through the same [`Netlayer`] trait; nothing above this module changes.
+//! you through the tests". This is a faithful implementation of exactly that, and it is the transport
+//! the OCapN conformance suite and this crate's own session tests run over (`ocapn/tests/`). A
+//! deployment uses a different netlayer through the same [`Netlayer`] trait; nothing above this
+//! module changes.
 //!
 //! Framing is one netstring per message, shared with the `unix` transport in [`crate::framed`] — the
 //! two differ only in the socket underneath, and a framing written twice is a framing that can drift.

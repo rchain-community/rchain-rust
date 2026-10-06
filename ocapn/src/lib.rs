@@ -7,15 +7,12 @@
 //! ([`docs/src/node/shard-invoke.md`](../../docs/src/node/shard-invoke.md)): the delegation layer
 //! built over Layer 1's primitive, *a cross-shard call is a caller-signed deploy*.
 //!
-//! Built in stages (the design record is `docs/src/node/ocapn.md`; the OCapN implementation
-//! guide numbers them):
-//!
-//! * **Stage 0** — the Syrup wire codec and the locators (`syrup`, `locator`, `peer`). ✓ this pass
-//! * **Stage 0** — the netlayer trait, the `tcp-testing-only` netlayer, `op:start-session`.
-//! * **Stage 1** — the import/export tables, `op:deliver`, the bootstrap object at position 0.
-//! * **Stage 2–5** — promises/answers, `op:listen`, pipelining, GC.
-//! * **Stage 6** — third-party handoffs.
-//! * Then the bridge: `op:deliver` to a chain-backed export becomes a signed deploy.
+//! **The implementation guide is built, not a stage of it** (the design record is
+//! `docs/src/node/ocapn.md`): the Syrup codec and the locators (`syrup`, `locator`, `peer`); the
+//! netlayer trait with the `tcp-testing-only` and `unix` transports ([`multi`] dispatches a dial by
+//! the locator's transport name); `op:start-session`; the import/export and answer tables with
+//! `op:deliver`, `op:listen`, pipeline answers and GC; third-party handoffs and the sturdyref
+//! enlivener; and the bridge — a delivery to a chain-backed export becomes a signed deploy.
 //!
 //! Nothing here is on-chain by itself: sessions, wire bytes, and answer bookkeeping are node-local
 //! state. What reaches consensus is only the signed deploy the bridge produces.

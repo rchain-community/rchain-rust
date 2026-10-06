@@ -115,10 +115,11 @@ port had to choose. They matter to anyone integrating a new peer.
   `<length>:<payload>`. Bare Syrup interoperates with nothing.
 - **The swiss number is a byte array to the suite and a string to Endo.** The two reference
   implementations disagree, so the bootstrap accepts either and keys its directory by bytes.
-- **A tuple crosses Syrup as a list.** A Syrup record is *labelled*, and a Rholang tuple has no label,
-  so `(true, 0)` arrives at a peer as `[true, 0]`. It does not convert back: a list from the peer does
-  not match a contract's `(brand, value)` tuple pattern, which is what keeps the ERTP arms that take an
-  amount out of reach over OCapN (see [ERTP](ertp.md)).
+- **A tuple crosses as OCapN's tagged value.** A Syrup record is *labelled* and a Rholang tuple has no
+  label, so `(true, 0)` crosses as `<desc:tagged 'rho:tuple' [true, 0]>` — the passable union's own
+  extension point — and comes back a tuple. A bare list would not do: a list from the peer does not
+  match a contract's `(brand, value)` pattern, which is what had kept the ERTP arms that take an amount
+  out of reach (see [ERTP](ertp.md); the wire-shape decision is AUDIT C226, Law 59).
 - **Struct members are ordered by their encoded key bytes**, not by the key string — the reference's
   own sort. The session signature covers a struct, so this is load-bearing.
 - The session Public Identifier is two SHA-256 rounds over the session public key; the Session ID is

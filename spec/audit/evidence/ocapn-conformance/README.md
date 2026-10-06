@@ -14,14 +14,17 @@ implementation rather than to itself.
 | Suite | `github.com/ocapn/ocapn-test-suite` at `31f0b80` |
 | Netlayer | `tcp-testing-only` (the suite's own; no encryption — it is not a deployment transport) |
 
-**Eight** whole-suite runs are kept. `run-10.txt` is the eighth, and it is the one that matters for
-AUDIT C226: the bridge's outbound tuple encoding changed from a Syrup **list** to OCapN's **tagged**
-value (`<desc:tagged 'rho:tuple' [fields…]>`), and the suite is unchanged at **24/24** — so the shape
-the law forced is one a foreign implementation already speaks. (The suite never sends a tuple of its
-own, so this run shows the change is *compatible*; it is not the run that exercises it.
+**Eleven** whole-suite runs are kept, and every one from `run-7.txt` on is **24/24**. The later runs
+are the ones a reader needs to date a change: `run-8.txt` is the session-layer residue work (issue
+#254), `run-9.txt` wave 2 (issue #255), `run-10.txt` the bridge's outbound tuple encoding changing from
+a Syrup **list** to OCapN's **tagged** value (`<desc:tagged 'rho:tuple' [fields…]>`, AUDIT C226), and
+`run-11.txt` the deferred-answer work that moved the deposit wait off the serving loop (Law 61, AUDIT
+C223). `run-10.txt` is the one that matters for the wire shape: the suite is unchanged at **24/24**, so
+the shape the law forced is one a foreign implementation already speaks. (The suite never sends a tuple
+of its own, so that run shows the change is *compatible*; it is not the run that exercises it.
 `node/tests/lean_syrup_corpus.rs` and `node/tests/ocapn_listener.rs` are the parties that do.)
 
-**Seven** whole-suite runs precede it. `run-1.txt` (`failures=9, errors=8`), `run-2.txt` after
+**Six** whole-suite runs precede them. `run-1.txt` (`failures=9, errors=8`), `run-2.txt` after
 `op:listen` (`failures=6, errors=8`), `run-3.txt` after `op:gc-exports` (`failures=6, errors=5`), and
 `run-4.txt` after `op:gc-answers` (`failures=6, errors=4`) are the stage-0–3 pass; `run-5.txt` is the
 driver's baseline; `run-6.txt` is stage 6's first half (the owned dialed session and the sturdyref

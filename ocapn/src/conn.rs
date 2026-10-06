@@ -1,7 +1,7 @@
 //! The CapTP connection: a session over a netlayer, with its tables and its loop.
 //!
-//! This is stages 1 and 2 of the implementation guide, in the shapes the reference implementation
-//! actually uses (`utils/captp.py`, `utils/captp_types.py`):
+//! This is the connection the implementation guide describes — the tables and the loop — in the
+//! shapes the reference implementation actually uses (`utils/captp.py`, `utils/captp_types.py`):
 //!
 //! * **The export table** — position 0 is the bootstrap object, and every object we hand a peer
 //!   gets the next position. A peer addresses those with `<desc:export N>`.
