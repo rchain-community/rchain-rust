@@ -6,10 +6,21 @@
 //! characteristics of each underlying protocol": those are the netlayer's business, and the
 //! protocol above sees only a queue of messages.
 //!
-//! A message on the channel is one CapTP operation, carried as one Syrup value. The only netlayer
-//! implemented here is [`crate::tcp_testing_only`], the conformance suite's transport; a
-//! production netlayer (Tor, libp2p, IBC) would implement the same two functions and nothing above
-//! would change.
+//! A message on the channel is one CapTP operation, carried as one Syrup value. The netlayers
+//! implemented here are [`crate::tcp_testing_only`] — the conformance suite's transport — and
+//! [`crate::unix`], a domain socket authenticated by the socket's file mode, with [`crate::multi`]
+//! dispatching a dial by the locator's transport name.
+//!
+//! **A Noise transport is deliberately not built.** Noise is the one OCapN names for a real
+//! deployment, and a third layer is cheap (unit 2's dispatcher exists to make it so) — but OCapN is
+//! still pre-specification and **neither reference implementation in reach speaks Noise**: the
+//! conformance suite at `31f0b80` offers `testing_only_tcp` and `onion`, and the Endo version vendored
+//! for the spike (`1.1.1`) offers `tcp-test-only` and `websocket`. A Noise layer here would therefore
+//! talk only to itself — it could not be interop-tested, and its parameters (the pattern, the
+//! prologue, and how the static key relates to the Ed25519 session identity) would be guesses rather
+//! than a specification. **The gate that unblocks it is a reference that speaks it.** Until then the
+//! transport to add is the one the peers you care about actually speak, and a production netlayer
+//! (Tor, libp2p, IBC) implements the same two functions with nothing above the seam moving.
 
 use std::io;
 

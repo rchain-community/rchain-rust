@@ -1479,8 +1479,11 @@ def laws : List Law := [
       six are the crypto API stated as the model's boundary, so that laws about it are statable, not \
       assumptions any proof leaned on; the register now says which is which instead of leaving nine \
       axioms looking equally exercised. **The tie is a witness the gate runs** (`rustWitness`): the \
-      known-answer vectors — X25519's RFC 7748 vector, a known ECDSA signature and its verification, \
-      and the RNG's fixed empty-input stream — because they are what catches a wrong primitive. No test \
+      known-answer vectors — the RNG's fixed empty-input stream and its two merge cases, a known ECDSA \
+      signature and its verification, and the `Curve25519` **sealed-box** round-trip \
+      (`crypto/src/encryption/curve25519.rs:decrypts`, a `crypto_box` vector rather than an RFC 7748 \
+      X25519 one, which this repository does not carry) — because they are what catches a wrong \
+      primitive. No test \
       can witness the idealization itself: `blake2b256_collision_free` states collision-*resistance* as \
       injectivity, which the pigeonhole refutes as a fact about the real function \
       (`spec/Rchain/Crypto/Spec.lean:41-49`)" },

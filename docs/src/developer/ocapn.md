@@ -151,14 +151,14 @@ Two behaviours to expect:
 | call an arm that takes plain values | yes — strings, numbers, booleans, byte arrays, lists |
 | call an arm that takes **a capability** | yes — pass a remote reference as an argument |
 | hold a returned capability and call it | yes |
-| pass an **amount** (`(brand, value)`) back to the node | **no** |
+| pass an **amount** (`(brand, value)`) back to the node | yes — a tuple crosses as OCapN's tagged value |
 
-The last row is the current edge. A tuple crosses to a peer as a **list**, and a list coming back does
-not match a contract's `(brand, value)` tuple pattern. So the ERTP arms that read or take no amount —
-`getCurrentAmount`, `makeEmptyPurse`, `getBrand` — are reachable, while the arms that *move* value —
-`mintPayment(amount)`, `withdraw(amount)`, `revFund(funder, amount)` — are not. A peer can make a
-purse and read it, but cannot yet put anything in it. See [ERTP](../node/ertp.md) for the ledger
-underneath and [`spec/AUDIT.md`](../../../spec/AUDIT.md) (C226) for the wire-shape decision it needs.
+The last row is the edge that has since been crossed. A tuple crosses to a peer as OCapN's **tagged**
+value — `<desc:tagged 'rho:tuple' [fields…]>` — because a Syrup record is labelled and a Rholang tuple
+has no label, and it comes back a **tuple**, so a contract's `(brand, value)` pattern matches. (A bare
+list would not; that was the reading this wire shape replaced — AUDIT C226, Law 59.) The arms that
+*move* value — `mintPayment(amount)`, `withdraw(amount)`, `revFund(funder, amount)` — are therefore
+reachable. See [ERTP](../node/ertp.md) for the ledger underneath.
 
 Also note:
 
@@ -281,6 +281,15 @@ production one: the conformance suite (`31f0b80`) has `testing_only_tcp` and `on
 Endo version vendored for the spike (`1.1.1`) has `tcp-test-only` and `websocket`. So the transport to
 write is the one the peers you care about actually speak — and whatever it is, it is the two functions
 above with the channel underneath it, and nothing above the seam moves.
+
+**Noise is the one to write if any is, and it is not built.** It is the transport the OCapN project
+names for a real deployment, and the reason to stop at "not built" is **interop**: neither
+implementation this repository tests against speaks it (see the list above), so a layer written here
+would talk only to itself — and its parameters (the pattern, the prologue, and how the Noise static key
+relates to the Ed25519 session identity) would be guesses rather than a specification to check against.
+The gate that changes this is a reference that speaks Noise; until one is reachable, the layer would be
+un-verifiable, which is the one thing this repository does not ship. `ocapn/src/netlayer.rs` records the
+same decision where a reader of the code will find it.
 
 ### Unix domain sockets as the inner hop
 
