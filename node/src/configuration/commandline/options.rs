@@ -390,6 +390,12 @@ pub struct Run {
     #[arg(long = "ocapn-listen")]
     pub ocapn_listen: Option<String>,
 
+    /// Bind the OCapN **`unix`** listener at this socket path; off when unset. Unlike
+    /// `--ocapn-listen`, this transport authenticates by the socket's file mode (`0600`) rather than
+    /// by a network address (issue #249).
+    #[arg(long = "ocapn-listen-unix")]
+    pub ocapn_listen_unix: Option<String>,
+
     /// Port for external gRPC API.
     #[arg(short = 'e', long = "api-port-grpc-external")]
     pub api_port_grpc_external: Option<i32>,

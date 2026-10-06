@@ -234,16 +234,21 @@ recipe anyone has followed.
 locator and the greeter to a handoff give's `exporter-location`, each over whatever netlayer the node
 holds (`ocapn/src/enliven.rs`, `ocapn/src/fixtures.rs`). A boundary wants two things beyond that: a
 session the **node** starts — notifying a peer that nothing has dialled in from — and per-transport
-dispatch, so a locator naming a transport other than its one netlayer resolves. Neither is built. And
-neither is free of the perimeter below: "dial an address of the peer's choosing" *is* the SSRF surface
-the dial policy exists for, so a gateway that dials out is one that wants `ocapn-deny-local-dial` set
-and the origin rule holding — the same trade Law 62 names.
+dispatch, so a locator naming a transport other than its one netlayer resolves. **Per-transport
+dispatch is built**: `ocapn/src/multi.rs`'s `MultiNetlayer` routes a dial by the locator's transport
+name, and the node hands it to its fixtures, so a peer dialled over unix and one dialled over TCP are
+reached by the layer each named. **A session the node starts is not** — the node dials only when a peer
+asks it to; there is no local surface that makes it originate one. And neither is free of the perimeter
+below: "dial an address of the peer's choosing" *is* the SSRF surface the dial policy exists for, so a
+gateway that dials out is one that wants `ocapn-deny-local-dial` set and the origin rule holding — the
+same trade Law 62 names.
 
 ## 7. Writing a transport
 
-The node speaks exactly one: `tcp-testing-only`, the conformance suite's own transport — plain TCP, no
-encryption, no authentication, which is why the listener is off unless you name an address. A second
-transport is small, because the seam is two functions (`ocapn/src/netlayer.rs`):
+The node speaks two: `tcp-testing-only`, the conformance suite's own transport — plain TCP, no
+encryption, no authentication, which is why the listener is off unless you name an address — and
+`unix`, a domain socket authenticated by its file mode (`0600`). A third is small, because the seam is
+two functions (`ocapn/src/netlayer.rs`):
 
 ```rust
 async fn new_outgoing_connection(&self, locator: &PeerLocator) -> io::Result<Box<dyn NetConn>>;
@@ -256,8 +261,8 @@ to know before writing one:
 
 - **The locator already names the transport.** It is `ocapn://<designator>.<transport>`, and designator
   plus transport *is* the spec's peer identity (`ocapn/src/locator.rs`) — so a new transport is a name
-  plus whatever hints it needs. What does not exist yet is per-transport dispatch: the node holds one
-  `Arc<dyn Netlayer>`.
+  plus whatever hints it needs. Dispatch is by that name: `ocapn/src/multi.rs` routes a dial to the
+  layer the locator names, and the node holds one `MultiNetlayer` over its transports.
 - **`recv` promises a bidirectional FIFO and nothing else.** Not liveness, not that the session stays
   up. CapTP above assumes it does, and `op:abort` has no analogue on a packet network — so decide what
   a session means when a packet is merely late before writing one.
@@ -275,13 +280,14 @@ above with the channel underneath it, and nothing above the seam moves.
 
 ### Unix domain sockets as the inner hop
 
-A Unix domain socket is the smallest transport that is not `testing-only`, and the security is the
-operating system's rather than ours: a UDS peer is a process whose uid and gid the socket's filesystem
-permissions admitted. That is authentication, where `tcp-testing-only` has none, with no key exchange
-to write. The netlayer is the same two functions — connect to a path, accept on a bound socket — plus
-`transport = "unix"` and a `path` hint. `NetConn::peer_address` returns `None` for it, which the dial
-policy already reads as "cannot be judged" and which is right here: a UDS peer is local by
-construction, and the permission on the socket is what admitted it.
+**Implemented** as `ocapn/src/unix.rs`, bound with `api-server.ocapn-listen-unix`. It is the smallest
+transport that is not `testing-only`, and the security is the operating system's rather than ours: a
+UDS peer is a process whose uid and gid the socket's filesystem permissions admitted. That is
+authentication, where `tcp-testing-only` has none, with no key exchange to write. The netlayer is the
+same two functions — connect to a path, accept on a bound socket — plus `transport = "unix"` and a
+`path` hint. `NetConn::peer_address` returns `None` for it, which the dial policy reads as "cannot be
+judged" and which is right here: a UDS peer is local by construction, and the permission on the socket
+is what admitted it.
 
 **And it is the right place to compose.** A gateway speaking UDS to a handful of local agents, each of
 which speaks something else outward, keeps the wide-area transport and its credentials out of the

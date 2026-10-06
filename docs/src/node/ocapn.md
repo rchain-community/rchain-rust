@@ -28,9 +28,21 @@ api-server {
 }
 ```
 
-The only netlayer implemented is the OCapN project's `tcp-testing-only`: plain TCP, **no encryption
-and no authentication**. The project's own README flags it "HIGHLY INSECURE — DO NOT USE IN
-PRODUCTION".
+The netlayers implemented are the OCapN project's `tcp-testing-only` — plain TCP, **no encryption and
+no authentication**, which the project's own README flags "HIGHLY INSECURE — DO NOT USE IN
+PRODUCTION" — and `unix`, a Unix domain socket whose authentication is the socket's file mode
+(`0600`). Either or both may be bound, on separate keys:
+
+```hocon
+api-server {
+  ocapn-listen = "127.0.0.1:22045"            # tcp-testing-only
+  ocapn-listen-unix = "/run/rnode/ocapn.sock" # unix
+}
+```
+
+A node may bind **neither**, in which case it is **dial-only**: it starts no listener but can still be
+driven to dial out. **Noise is not implemented** — until a reference implementation speaks it, a Noise
+netlayer here would talk only to itself.
 
 **A peer that completes a handshake can do two things, and both are the node's own authority:**
 
@@ -110,7 +122,8 @@ port had to choose. They matter to anyone integrating a new peer.
 | `syrup.rs`, `netstring.rs` | the Syrup codec and the length-prefixed framing |
 | `locator.rs`, `peer.rs` | the URI and in-band locator forms |
 | `session.rs`, `session_id.rs` | `op:start-session`, Public Identifier, Session ID, `op:abort` |
-| `netlayer.rs`, `tcp_testing_only.rs` | the netlayer trait and the test transport |
+| `netlayer.rs`, `tcp_testing_only.rs`, `unix.rs` | the netlayer trait and the two transports |
+| `multi.rs` | the dialing dispatcher: a locator's transport name picks the layer |
 | `captp.rs`, `conn.rs` | the import/export and answer tables, `op:deliver`, `op:listen`, GC |
 | `bootstrap.rs`, `fixtures.rs` | the bootstrap object and the conformance fixtures |
 | `owner.rs`, `proxy.rs` | session ownership (a handle and the loop that owns the socket) and cross-session forwarding |
@@ -127,8 +140,10 @@ itself differently from a peer passes every local test and fails every handshake
 
 ## Limits
 
-- **`tcp-testing-only` is the only transport.** A production netlayer (Tor, libp2p, IBC) implements
-  the same two-function trait; nothing above it changes.
+- **The transports are `tcp-testing-only` and `unix`.** `tcp-testing-only` is the OCapN project's own
+  test transport, unauthenticated by design; `unix` authenticates by the socket's file mode. **Noise is
+  not built** (it would talk only to itself until a reference speaks it), and a production netlayer
+  (Tor, libp2p, IBC) implements the same two-function trait; nothing above it changes.
 - **A bridged call's reply is written to the permanent registry**, because a Rholang value returned to
   a peer has no source literal and must be registered to be reachable. Nothing deletes those entries.
 - **The node cannot yet name the peer on chain.** Until a session is bound to a deployer key, binding

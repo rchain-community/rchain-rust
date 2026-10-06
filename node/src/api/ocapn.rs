@@ -5,10 +5,14 @@
 //! the node's end of that — a listener that serves a fresh session per connection — and the
 //! **bridge**: a chain-backed capability whose deliveries become signed deploys.
 //!
-//! **The transport is `tcp-testing-only`**, which the OCapN project's own README flags as "HIGHLY
-//! INSECURE — DO NOT USE IN PRODUCTION": plain TCP, no encryption, no authentication. The listener
-//! is therefore off unless `api-server.ocapn-listen` names an address, and a node that is reachable
-//! from anywhere it does not control should leave it unset.
+//! **A node may listen on either of two transports, both, or (dial-only) neither.**
+//! `tcp-testing-only` is the OCapN project's own, which its README flags as "HIGHLY INSECURE — DO NOT
+//! USE IN PRODUCTION": plain TCP, no encryption, no authentication, so it is off unless
+//! `api-server.ocapn-listen` names an address and a node reachable from anywhere it does not control
+//! should leave it unset. `unix` (`api-server.ocapn-listen-unix`) takes a socket path and
+//! authenticates by the socket's file mode — what admitted a peer is the filesystem's permission,
+//! which is what makes it more than a testing transport. **A Noise netlayer is deliberately not
+//! offered**: it is not built, because it would talk only to itself (see `ocapn/src/netlayer.rs`).
 //!
 //! **The bridge reuses Layer 1 rather than re-implementing it.** `docs/src/node/shard-invoke.md`
 //! established that a cross-shard call *is* a caller-signed deploy whose reply arrives on
@@ -43,12 +47,15 @@ use rchain_ocapn::captp::{
     IMPORT_PROMISE_LABEL as EXPORT_IMPORT_PROMISE_LABEL,
 };
 use rchain_ocapn::conn::{Act, Export, ExportView, Identity, Named};
+use rchain_ocapn::dial_policy::{DialPolicy, PolicyNetlayer};
 use rchain_ocapn::fixtures;
 use rchain_ocapn::locator::PeerLocator;
-use rchain_ocapn::netlayer::Netlayer;
+use rchain_ocapn::multi::MultiNetlayer;
+use rchain_ocapn::netlayer::{NetConn, Netlayer};
 use rchain_ocapn::par_value;
 use rchain_ocapn::syrup::Value;
 use rchain_ocapn::tcp_testing_only::TcpTestingOnly;
+use rchain_ocapn::unix::UnixNetlayer;
 use rchain_rholang::pretty_printer::PrettyPrinter;
 use rchain_shared::base16;
 use tokio::sync::watch;
@@ -116,68 +123,191 @@ const CHAIN_REPLY_DEPTH: i32 = 50;
 /// descriptor ceiling; the parameter that matters for an operator is that it is *finite*.
 const MAX_SESSIONS: usize = 64;
 
-/// Serve OCapN on `listen` (`host:port`) until the node is asked to stop.
+/// Where the node listens for OCapN peers (issue #249).
 ///
-/// `None` means the listener is not configured. The task is spawned either way — one that is simply
-/// waiting on the stop word when there is nothing to serve — so the node's listener set stays
-/// uniform and its `select!` does not need a second optional arm.
+/// **A fixed struct rather than a list, because the accept loop's `select!` is fixed-arity**: each
+/// configured transport gets an arm, and one that is not configured gets an arm over a
+/// never-completing future rather than a conditionally-built one. A node with **no** transport
+/// configured is not an error — it is a **dial-only** node, and the task still runs so the surfaces
+/// that dial out have somewhere to live.
 ///
-/// `chain` is the chain-backed capabilities to publish on each session's bootstrap — a swiss number
-/// and the object it names — empty when the node has no deployer key to sign with. They are shared
-/// across sessions: they hold no per-session state.
-pub async fn serve_ocapn(
-    listen: Option<String>,
-    chain: Vec<(Vec<u8>, Arc<dyn Export>)>,
-    designator: String,
-    deny_local_dial: bool,
-    log: Arc<dyn rchain_shared::log::Log>,
-    stop: watch::Receiver<bool>,
-) -> Result<(), String> {
-    let Some(listen) = listen else {
-        stop_requested(stop).await;
-        return Ok(());
-    };
-    let bound = TcpTestingOnly::bind(&listen)
+/// **`noise` is deliberately absent.** The Noise netlayer is not built (see `ocapn/src/netlayer.rs`
+/// for the gate that would unblock it), so a key naming it would configure a transport this node
+/// cannot construct.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct OcapnListeners {
+    /// `host:port` for the `tcp-testing-only` transport.
+    pub tcp: Option<String>,
+    /// A socket path for the `unix` transport, whose authentication is the socket's file mode.
+    pub unix: Option<String>,
+}
+
+impl OcapnListeners {
+    /// Whether the node listens on any transport. A node that listens on none is dial-only.
+    pub fn any(&self) -> bool {
+        self.tcp.is_some() || self.unix.is_some()
+    }
+}
+
+/// One transport the node listens on: the policy-wrapped netlayer, and the location a connection it
+/// accepts advertises. `None` for a transport the node does not listen on.
+///
+/// The location is carried **per listener** because it is the honest answer only for the transport
+/// that accepted: `owner::peer_key` is `(designator, transport)`, so a session dialled over unix and
+/// the same peer dialled back over TCP are two peers, and a connection advertising the wrong
+/// transport would advertise a location no peer can use.
+struct Listener {
+    inner: Option<(Arc<dyn Netlayer>, PeerLocator)>,
+}
+
+impl Listener {
+    fn new(inner: Option<(Arc<dyn Netlayer>, PeerLocator)>) -> Listener {
+        Listener { inner }
+    }
+
+    /// Accept one connection and the location to advertise for it — or never, for a transport the
+    /// node does not listen on. Never completing keeps the accept loop's arm count fixed without a
+    /// conditionally-built future.
+    async fn accept(&self) -> std::io::Result<(Box<dyn NetConn>, PeerLocator)> {
+        match &self.inner {
+            Some((layer, location)) => {
+                Ok((layer.accept_incoming_connection().await?, location.clone()))
+            }
+            None => std::future::pending().await,
+        }
+    }
+}
+
+/// Bind the `tcp-testing-only` listener and build the location a peer reaches it at.
+async fn listen_tcp(
+    address: &str,
+    policy: DialPolicy,
+    designator: &str,
+    chain: usize,
+    log: &Arc<dyn rchain_shared::log::Log>,
+    source: rchain_shared::log::LogSource,
+) -> Result<(Arc<dyn Netlayer>, PeerLocator), String> {
+    let bound = TcpTestingOnly::bind(address)
         .await
         .map_err(|e| e.to_string())?;
     // `local_addr` belongs to the concrete netlayer, not the trait: take it before the Arc.
     let local = bound.local_addr().map_err(|e| e.to_string())?;
-    // **The line an operator needs first** (HAZOP row E6): this surface spent money and wrote
+    // **The line an operator needs first** (HAZOP row E6): this surface spends money and writes
     // consensus state with no local trace of its own, so "is it serving?" had no answer short of
     // reading chain state. `local` rather than the configured string, because `:0` is legal and the
     // chosen port is the only useful thing to print.
-    let source = rchain_shared::log::LogSource::new("coop.rchain.node.api.ocapn");
     log.info(
         source,
         &format!(
-            "OCapN listener serving on {local} ({} chain-backed capability/ies)",
-            chain.len()
+            "OCapN listener serving tcp-testing-only on {local} ({chain} chain-backed capability/ies)"
         ),
     );
-    // **The dial policy wraps the transport**, so every dial this surface makes — the enlivener's and
-    // the greeter's, both to peer-named addresses — is measured before a connection exists (HAZOP row
-    // B4). The policy is configuration, not a property of the test netlayer: the fixture peer wraps
-    // nothing, because the conformance suite must be able to dial whatever it names.
-    let listener: Arc<dyn Netlayer> = Arc::new(rchain_ocapn::dial_policy::PolicyNetlayer::new(
-        bound,
-        rchain_ocapn::dial_policy::DialPolicy {
-            deny_local: deny_local_dial,
-            allow: Vec::new(),
-        },
-    ));
+    // **The designator is this node's, not a shared constant** (C224 item 2). Peer identity *is*
+    // `(designator, transport)` (`owner::peer_key`), so with every node calling itself `"rnode"` two
+    // nodes were one peer: a sturdyref to one resolved at the other, and the crossed-hello registry
+    // conflated their sessions. Derived from the node's key (or its node id when there is no key) in
+    // `node_designator`, so it is stable across restarts and distinct per node.
     let location = PeerLocator {
-        // **The designator is this node's, not a shared constant** (C224 item 2). Peer identity *is*
-        // `(designator, transport)` (`owner::peer_key`), so with every node calling itself `"rnode"`
-        // two nodes were one peer: a sturdyref to one resolved at the other, and the crossed-hello
-        // registry conflated their sessions. Derived from the node's key (or its node id when there is
-        // no key) in `node_designator`, so it is stable across restarts and distinct per node.
-        designator: designator.clone(),
+        designator: designator.to_string(),
         transport: "tcp-testing-only".to_string(),
         hints: BTreeMap::from([
             ("host".to_string(), local.ip().to_string()),
             ("port".to_string(), local.port().to_string()),
         ]),
     };
+    Ok((Arc::new(PolicyNetlayer::new(bound, policy)), location))
+}
+
+/// Bind the `unix` listener and build the location a peer reaches it at.
+///
+/// The location carries a `path` hint and **no host**, which is what the dial policy reads as
+/// "cannot be judged" — the right answer for a peer admitted by the socket's file mode rather than by
+/// an address (`dial_policy`'s note).
+async fn listen_unix(
+    path: &str,
+    policy: DialPolicy,
+    designator: &str,
+    chain: usize,
+    log: &Arc<dyn rchain_shared::log::Log>,
+    source: rchain_shared::log::LogSource,
+) -> Result<(Arc<dyn Netlayer>, PeerLocator), String> {
+    let bound = UnixNetlayer::bind(path).await.map_err(|e| e.to_string())?;
+    let local = bound.local_path().display().to_string();
+    log.info(
+        source,
+        &format!("OCapN listener serving unix on {local} ({chain} chain-backed capability/ies)"),
+    );
+    let location = PeerLocator {
+        designator: designator.to_string(),
+        transport: "unix".to_string(),
+        hints: BTreeMap::from([("path".to_string(), local)]),
+    };
+    Ok((Arc::new(PolicyNetlayer::new(bound, policy)), location))
+}
+
+/// Serve OCapN on every configured transport until the node is asked to stop.
+///
+/// The task is spawned whether or not any transport is configured — a node that listens on none is
+/// **dial-only**, and its surfaces still need a task to live in — so the node's listener set stays
+/// uniform and its drain slot does not need a second optional arm.
+///
+/// `chain` is the chain-backed capabilities to publish on each session's bootstrap — a swiss number
+/// and the object it names — empty when the node has no deployer key to sign with. They are shared
+/// across sessions: they hold no per-session state.
+pub async fn serve_ocapn(
+    listeners: OcapnListeners,
+    chain: Vec<(Vec<u8>, Arc<dyn Export>)>,
+    designator: String,
+    deny_local_dial: bool,
+    log: Arc<dyn rchain_shared::log::Log>,
+    stop: watch::Receiver<bool>,
+) -> Result<(), String> {
+    let source = rchain_shared::log::LogSource::new("coop.rchain.node.api.ocapn");
+    // **The dial policy wraps each transport**, so every dial this surface makes — the enlivener's and
+    // the greeter's, both to peer-named addresses — is measured before a connection exists (HAZOP row
+    // B4). The policy is configuration, not a property of the test netlayer: the fixture peer wraps
+    // nothing, because the conformance suite must be able to dial whatever it names.
+    let policy = DialPolicy {
+        deny_local: deny_local_dial,
+        allow: Vec::new(),
+    };
+    // **Bind every configured listener before the accept loop**, so a bad address is an error the node
+    // reports (this task returns `Err`, which `listener_stopped` names) rather than a listener that
+    // dies quietly inside the loop.
+    let tcp = match listeners.tcp.as_deref() {
+        Some(address) => Some(
+            listen_tcp(
+                address,
+                policy.clone(),
+                &designator,
+                chain.len(),
+                &log,
+                source,
+            )
+            .await?,
+        ),
+        None => None,
+    };
+    let unix = match listeners.unix.as_deref() {
+        Some(path) => {
+            Some(listen_unix(path, policy.clone(), &designator, chain.len(), &log, source).await?)
+        }
+        None => None,
+    };
+    // **The dialing netlayer is the dispatcher over every transport the node has**: a fixture that
+    // dials `ocapn://peer.unix?path=…` reaches the unix layer and one that names `tcp-testing-only`
+    // reaches the TCP layer. Accepting stays per listener below, because a session has to advertise
+    // the transport it arrived on, which the dispatcher cannot say.
+    let mut dialer = MultiNetlayer::new();
+    if let Some((layer, _)) = &tcp {
+        dialer = dialer.with("tcp-testing-only", layer.clone());
+    }
+    if let Some((layer, _)) = &unix {
+        dialer = dialer.with("unix", layer.clone());
+    }
+    let dialer: Arc<dyn Netlayer> = Arc::new(dialer);
+    let tcp = Listener::new(tcp);
+    let unix = Listener::new(unix);
     // One registry and one gift store for the node's whole OCapN surface: the crossed-hello rule
     // compares the sessions *this node* has with a peer, and a handoff is deposited on one session
     // and withdrawn on another.
@@ -191,10 +321,14 @@ pub async fn serve_ocapn(
     let sessions = Arc::new(tokio::sync::Semaphore::new(MAX_SESSIONS));
 
     loop {
-        let connection = tokio::select! {
+        // **One arm per transport.** A transport the node does not listen on is `pending()`, so its
+        // arm never fires — and with no transport at all the loop waits on the stop word alone, which
+        // is what keeps a dial-only node's task alive.
+        let (connection, location) = tokio::select! {
             // The operator's word, and a dropped coordinator, both land here.
             _ = stop_requested(stop.clone()) => return Ok(()),
-            accepted = listener.accept_incoming_connection() => accepted.map_err(|e| e.to_string())?,
+            accepted = tcp.accept() => accepted.map_err(|e| e.to_string())?,
+            accepted = unix.accept() => accepted.map_err(|e| e.to_string())?,
         };
         let Ok(permit) = sessions.clone().try_acquire_owned() else {
             // At the ceiling: close the socket rather than queue it. A peer that keeps connecting
@@ -208,9 +342,8 @@ pub async fn serve_ocapn(
             drop(connection);
             continue;
         };
-        let location = location.clone();
         let chain = chain.clone();
-        let netlayer = listener.clone();
+        let netlayer = dialer.clone();
         let registry = registry.clone();
         let handoffs = handoffs.clone();
         let log = log.clone();
@@ -912,7 +1045,10 @@ mod tests {
         let log = Arc::new(RecordingLog::default());
         let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
         let serving = tokio::spawn(serve_ocapn(
-            Some("127.0.0.1:0".to_string()),
+            OcapnListeners {
+                tcp: Some("127.0.0.1:0".to_string()),
+                unix: None,
+            },
             Vec::new(),
             "rnode-test".to_string(),
             false,
@@ -934,12 +1070,84 @@ mod tests {
 
         let line = said.join(" | ");
         assert!(
-            line.contains("OCapN listener serving on 127.0.0.1:"),
+            line.contains("OCapN listener serving tcp-testing-only on 127.0.0.1:"),
             "the operator must learn the listener is up, and on which port: {line}"
         );
         assert!(
             !line.contains("127.0.0.1:0"),
             "the *chosen* port, not the configured one: {line}"
         );
+    }
+
+    /// **The `unix` transport binds its own socket and says so on its own line** (issue #249). A node
+    /// serving both transports would otherwise leave an operator unable to tell which one came up, and
+    /// the path is the only thing that identifies a unix listener.
+    #[tokio::test]
+    async fn the_unix_listener_reports_the_socket_it_bound() {
+        let log = Arc::new(RecordingLog::default());
+        let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
+        let path = std::env::temp_dir().join(format!("rnode-ocapn-{}.sock", std::process::id()));
+        let serving = tokio::spawn(serve_ocapn(
+            OcapnListeners {
+                tcp: None,
+                unix: Some(path.display().to_string()),
+            },
+            Vec::new(),
+            "rnode-test".to_string(),
+            false,
+            log.clone(),
+            stop_rx,
+        ));
+
+        let mut said = Vec::new();
+        for _ in 0..200 {
+            said = log.0.lock().unwrap_or_else(|p| p.into_inner()).clone();
+            if !said.is_empty() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        stop_tx.send(true).expect("ask the listener to stop");
+        let _ = serving.await;
+        let _ = std::fs::remove_file(&path);
+
+        let line = said.join(" | ");
+        assert!(
+            line.contains("OCapN listener serving unix on "),
+            "the operator must learn the unix listener is up: {line}"
+        );
+        assert!(line.contains("rnode-ocapn-"), "and on which socket: {line}");
+    }
+
+    /// **A node that listens on no transport is dial-only, and its task still runs** — the property
+    /// that keeps `serve_ocapn`'s drain slot unconditional and gives the surfaces that dial out a task
+    /// to live in. It must not return at once; it returns when the operator's word arrives.
+    #[tokio::test]
+    async fn a_dial_only_node_keeps_its_task_until_the_stop_word() {
+        let log = Arc::new(RecordingLog::default());
+        let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
+        let serving = tokio::spawn(serve_ocapn(
+            OcapnListeners::default(),
+            Vec::new(),
+            "rnode-test".to_string(),
+            false,
+            log.clone(),
+            stop_rx,
+        ));
+        // Give it every chance to return early; it must not.
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert!(
+            !serving.is_finished(),
+            "a dial-only node's listener task must stay alive, not return at once"
+        );
+        assert!(
+            log.0.lock().unwrap_or_else(|p| p.into_inner()).is_empty(),
+            "and with nothing to serve it binds nothing and logs no listener line"
+        );
+        stop_tx.send(true).expect("ask the listener to stop");
+        serving
+            .await
+            .expect("the task ends cleanly")
+            .expect("and without error");
     }
 }

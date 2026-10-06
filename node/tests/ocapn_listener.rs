@@ -21,6 +21,7 @@ use rchain_ocapn::locator::PeerLocator;
 use rchain_ocapn::netlayer::Netlayer;
 use rchain_ocapn::syrup::Value;
 use rchain_ocapn::tcp_testing_only::TcpTestingOnly;
+use rchain_ocapn::unix::UnixNetlayer;
 
 /// The echo fixture's swiss number, as the conformance suite spells it.
 const ECHO_SWISS: &[u8] = b"IO58l1laTyhcrgDKbEzFOO32MDd6zE5w";
@@ -79,6 +80,31 @@ fn locator(port: u16) -> PeerLocator {
     }
 }
 
+/// A `unix` locator: the transport name and the socket path, and no host at all — which the dial
+/// policy reads as "cannot be judged", the right answer for a peer the filesystem admitted.
+fn unix_locator(path: &std::path::Path) -> PeerLocator {
+    PeerLocator {
+        designator: "rnode".to_string(),
+        transport: "unix".to_string(),
+        hints: BTreeMap::from([("path".to_string(), path.display().to_string())]),
+    }
+}
+
+/// Wait until the node's `unix` OCapN socket accepts a connection. There is no port to poll — the
+/// socket file is the bind, and a successful connect is the proof it is listening.
+async fn wait_for_ocapn_unix(path: &std::path::Path) {
+    for _ in 0..300 {
+        if tokio::net::UnixStream::connect(path).await.is_ok() {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    panic!(
+        "the OCapN unix listener at {} never came up",
+        path.display()
+    );
+}
+
 #[test]
 fn a_peer_dials_the_node_and_fetches_a_fixture() {
     let dir = common::temp_dir("ocapn-listener");
@@ -135,6 +161,84 @@ fn a_peer_dials_the_node_and_fetches_a_fixture() {
         assert!(
             matches!(delivered.args[1], Value::Record(_)),
             "the node should hand back a descriptor for the object; got {:?}",
+            delivered.args[1]
+        );
+
+        drop(client);
+        node.shutdown();
+    });
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// **The node serves a peer over `unix`** (issue #249): the transport that is *not* a testing one,
+/// authenticated by the socket's file mode rather than by a network address.
+///
+/// This pins the **transport**, and deliberately stops at the bootstrap: the peer dials over UDS,
+/// completes the CapTP handshake, and fetches the node's **ERTP capability** from its bootstrap. The
+/// bridge's own round trip — a delivery becoming a deploy and a block — is the two tests below, and it
+/// is transport-agnostic: a delivery is handled inside the session loop, on whichever transport the
+/// session arrived, so those tests' transport does not need duplicating here.
+#[test]
+fn a_peer_dials_the_node_over_unix_and_reaches_its_ertp_capability() {
+    let dir = common::temp_dir("ocapn-unix");
+    let ports = common::free_ports(6);
+    let mut conf = common::deploy_conf(&dir, &ports);
+    // A key, so the node publishes its chain-backed capabilities — ERTP among them — on the bootstrap.
+    conf.dev.deployer_private_key = Some(common::VALIDATOR_PRIV_HEX.to_string());
+    let node_socket = dir.join("ocapn.sock");
+    conf.api_server.ocapn_listen_unix = Some(node_socket.display().to_string());
+    // One transport at a time: this node listens on unix only.
+    conf.api_server.ocapn_listen = None;
+
+    common::test_runtime().block_on(async {
+        let node = common::start(&conf, ports[2], ports[0]).await;
+        wait_for_ocapn_unix(&node_socket).await;
+
+        // A dialing side needs a listener of its own (the trait bears on one); it is never accepted on.
+        let client_socket = dir.join("client.sock");
+        let dialer = UnixNetlayer::bind(&client_socket)
+            .await
+            .expect("bind the dialing side");
+        let connection = dialer
+            .new_outgoing_connection(&unix_locator(&node_socket))
+            .await
+            .expect("dial the node over unix");
+        let identity = Identity::fresh(unix_locator(&client_socket)).expect("a session key");
+        let mut client = Session::dial(connection, &identity, Arc::new(Bootstrap::default()))
+            .await
+            .expect("the node should complete the handshake over unix");
+
+        // Fetch the ERTP capability from the node's bootstrap (its export 0), reply to our export 0 —
+        // the same shape the first test uses for the echo fixture.
+        let fetch = Deliver {
+            to: Desc::Export(0u64.into()),
+            args: vec![
+                Value::Symbol("fetch".into()),
+                Value::Bytes(ERTP_SWISS.to_vec()),
+            ],
+            answer_pos: None,
+            resolve_me_desc: Some(Desc::ImportObject(0u64.into())),
+        };
+        client
+            .send_message(&fetch.to_syrup())
+            .await
+            .expect("send the fetch");
+
+        let reply = client
+            .recv_message()
+            .await
+            .expect("read the reply")
+            .expect("a reply, not a closed connection");
+        let delivered = Deliver::from_syrup(&reply).expect("a delivery");
+        assert_eq!(
+            delivered.args[0],
+            Value::Symbol("fulfill".into()),
+            "the ERTP capability should be fulfilled over unix, not refused; got {:?}",
+            delivered.args.get(1)
+        );
+        assert!(
+            matches!(delivered.args[1], Value::Record(_)),
+            "the node should hand back a descriptor for the capability; got {:?}",
             delivered.args[1]
         );
 

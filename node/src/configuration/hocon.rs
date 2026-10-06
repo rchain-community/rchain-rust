@@ -243,6 +243,8 @@ fn api_server_from_hocon(h: &Hocon) -> Result<ApiServer, String> {
         max_connection_age_grace: to_duration(get(h, "max-connection-age-grace")?)?,
         // Absent (or empty) means no OCapN listener — see `ApiServer::ocapn_listen`.
         ocapn_listen: to_optional_string(h, "ocapn-listen")?.filter(|s| !s.is_empty()),
+        // The `unix` transport, same shape: absent or empty means the node does not listen on UDS.
+        ocapn_listen_unix: to_optional_string(h, "ocapn-listen-unix")?.filter(|s| !s.is_empty()),
         // Absent means `false`: a node that has not thought about it keeps today's behaviour, where a
         // loopback peer works. Link-local and the metadata range are refused whatever this says.
         ocapn_deny_local_dial: to_bool(get(h, "ocapn-deny-local-dial")?)?,

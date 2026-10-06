@@ -492,6 +492,7 @@ mod tests {
                 max_connection_age: secs(60 * 60),
                 max_connection_age_grace: secs(60 * 60),
                 ocapn_listen: None,
+                ocapn_listen_unix: None,
                 ocapn_deny_local_dial: false,
             },
             storage: Storage {
@@ -1073,6 +1074,7 @@ mod tests {
                 max_connection_age: secs(111111),
                 max_connection_age_grace: secs(111111),
                 ocapn_listen: None,
+                ocapn_listen_unix: None,
                 ocapn_deny_local_dial: false,
             },
             storage: Storage {
