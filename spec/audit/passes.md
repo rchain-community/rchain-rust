@@ -7335,3 +7335,149 @@ well: the two fixed rejoins in `n223-rejoin-blocks/` record **zero** refusals ac
 A parked block would not have been inert even so — it rode **every** subsequent batch, so an unresolvable
 one would be replayed up to the cap on every delivery for ever. The deferral and its predicate test are
 gone; `apply` now carries the note that says why nothing should be added back.
+
+## 67. The OCapN wire: where the draft and the implementations disagree, the port follows the implementations (C216–C218, C224, C226, #249)
+
+**The pass.** Bringing `rchain-ocapn` from "speaks to itself" to "speaks to a foreign implementation" — the
+OCapN project's conformance suite at `31f0b80`, and `@endo/ocapn` `1.1.1` for the ERTP transcript. Every
+finding here is the same *kind* of fact: a place where the draft, or the prose about the draft, and the
+implementations a peer actually runs disagree. The rule the pass settled is **the implementation is the
+oracle, and where two implementations disagree the port accepts both** — which cost one round of believing
+the rule too literally (C217, below).
+
+**C216 — `op:start-session` has four fields, not five.** The draft defines it with `captp-version`,
+`crypto-version`, `session-pubkey`, `acceptable-location` and `acceptable-location-sig`, and contradicts
+itself about one of them (`Ed25519_SHA256` when constructing, `Ed25519` when receiving). The suite's own
+`OpStartSession` carries **four** — `captp_version`, `session_pubkey`, `location`, `location_sig` — with no
+`crypto-version` on the wire at all, so a port built from the prose fails every handshake against every
+existing implementation. Two of the fields are also not raw bytes: `session_pubkey` and the signature are
+the gcrypt s-expressions `['public-key ['ecc ['curve 'Ed25519] ['flags 'eddsa] ['q …]]]` and
+`['sig-val ['eddsa ['r …] ['s …]]]`. `ocapn/src/session.rs` follows the implementation, and pins both
+shapes with byte-level known-answer tests (`start_session_has_the_reference_four_fields`,
+`public_key_list_kat`, `signature_list_kat`). The divergence is recorded in `docs/src/node/ocapn.md`.
+
+**C217 — the two references disagree on the swiss number's type, so "the implementation is the oracle" has
+no single oracle.** `@endo/ocapn` sends the swiss number as a Syrup **String**, which is what
+`draft-specifications/Locators.md` says it is; the Python suite sends a **byte array**. A peer built to
+either alone refuses the other — ours did, and that is how this was found, by applying C216's rule too
+literally: there are two implementations. `Bootstrap::deliver` now accepts a swiss number as bytes or as a
+string and keys its directory by bytes, so one peer serves both. The same spike settled framing the *other*
+way: Endo's default `syrup` framing is `<length>:<payload>`, which is what the suite writes and what this
+port already implemented, so the specification's "raw Syrup, no length prefix" describes a wire no
+implementation speaks.
+
+**C218 — the reply channel was an ordinary name nothing read.** `invoke_term` passed the reply channel as a
+backticked `` `rho:rchain:deployId` ``. A backticked URI inside a term is a `GUri` **ground** — an ordinary,
+guessable name — not the unforgeable per-deploy channel the node binds from the deploy signature and reads
+back (`RhoDeployId::apply`, `casper/src/api/block_api_impl.rs`). So every reply went to a channel nobody
+watched: the deploy reported `ProcessedWithSuccess` with an **empty** `deploy_result`, and the caller waited
+on the id channel until it timed out — which is exactly what the bridge's first chain-backed capability saw.
+`txn_term` had it right, and its comment says why (`casper/src/txn_coordinator.rs`); but `invoke_term` had
+**no production caller**, so its reply contract was never exercised beyond a parse test. Fixed by binding
+the name, and `invoke_term_targets_uri_method_and_deploy_id` pins the binding so it cannot come back
+silently. Two earlier readings of this row were wrong and are superseded: a calling-convention mismatch
+(refuted — a system process is `arity: 1, remainder: true`) and then a registry miss (refuted by experiment).
+
+**C224 — four points where one reference reading is defensible and another is not.** (1) A locator whose
+`hints` are Syrup `f` was refused because the location signature was verified over a **re-encoding**;
+`StartSession` now keeps the record as it arrived and verifies over that. (2) The designator was the
+constant `"rnode"` for every node, and peer identity *is* `(designator, transport)` (`owner::peer_key`), so
+two nodes were one peer; it is now derived from the node's deployer key (or its node id when keyless). (3)
+The outbound swiss number stays `Bytes`, decided by citation: the suite asserts the byte form on that
+argument (`third_party_handoffs.py` against `sturdyref.swiss_num`), so the Locators draft's String would
+fail a conformance test — inbound, either is accepted (C217). (4) A capability **as an argument** crosses:
+`Export` gained provided `deliver_in`/`named`, the session's export table is the view, and a `desc:export N`
+resolves to the registry location the node minted, so the term binds the name and passes it bare.
+
+**C226 — a tuple crosses as OCapN's tagged value, and a capability inside a value is named.** A Rholang
+tuple crossed CapTP as a Syrup **list**, and there was no path back: a Syrup list decoded to an `EList`,
+which does not match a contract's `@(brand, value)` tuple pattern, so an amount the node handed a peer could
+not be handed back and ERTP's amount-taking arms stayed unreachable even though a capability argument now
+crossed (C224 item 4). **The shape was decided by the references, not by preference**: a *bare* record needs
+a label, the label must be a string, selector or bytestring (`@endo/ocapn`'s `decode.js`), and `(true, 0)`
+— every `(ok, value)` reply in this codebase — would need the label `true`; worse, a record is not in
+Endo's CapTP passable union (`{list, struct, tagged}`) at all. A tuple therefore crosses as the union's own
+extension point, `<desc:tagged 'rho:tuple' [fields…]>`, and comes back a tuple. The *bridge-level rendering
+rule* the row proposed — turning an inbound list argument into a tuple — is refuted rather than judged
+worse: it makes one wire form stand for two values, which is exactly the injectivity **Law 59b** forbids.
+Two things fell out of the same law: the URI loss (`GUri → Symbol` outbound, `Symbol` refused inbound) was
+clause 59c's case, and a capability *inside* a value is now named rather than refused. The wire decision is
+pinned by `ocapn/tests/reference_vectors.rs`, the corpus consumer `node/tests/lean_syrup_corpus.rs`, and the
+end-to-end `a_captp_peer_sends_an_amount_and_the_contract_reads_it`.
+
+**The laws this pass produced.** 59 (`spec/Rchain/Syrup.lean`: the tag is a value's own shape, so the round
+trip is structural) and 64 (`spec/Rchain/Interop.lean`: the port speaks the implementations' reading). The
+remaining reading — Law 65, the printer that writes only what a lexer can read back — came from C220 and is
+accounted in §68.
+
+## 68. The OCapN surface: what a peer could break, and the guards that now hold (C219–C223, C225, #249)
+
+**The pass.** A red-team HAZOP over the peer-facing surface (`spec/audit/evidence/ocapn-hazop.md`, rows
+A1–A3, B1–B5, C1–C3, E1–E6) plus the ERTP bridge work that produced C219. What a peer that completes an
+unauthenticated handshake can reach is the node's own authority — it can make the node sign deploys and
+dial addresses — so every finding here is about *where the guards sit*, and the answer the pass settled is
+that **a guard is a hypothesis of the step rather than a check after it**.
+
+**C220 — the pretty printer is not a faithful serializer, and two paths parsed what it printed.** Row A1,
+and the pass's critical finding. `PrettyPrinter` wrote a string as `"…"` with no escaping, and Rholang's
+lexer reads a string from `"` to the next `"` (`rholang/src/parser.rs`), so a string containing a quote has
+no faithful literal at all. Two production paths printed values into terms they then parse and sign:
+`casper/src/shard_invoke.rs`'s builders (where the values arrive from a peer over CapTP) and
+`casper/src/txn_coordinator.rs`'s `render_arg` (where a caller supplies the destination). In both the deploy
+is signed by this node's key, so `rho:rchain:deployerId` binds the node: **a value delivered by a peer
+became Rholang code in a deploy the node signs with its own key.** Fixed with `check_renderable` and a
+`Result` on all three builders, and the *distinction* the tree was missing — display versus serialization —
+is Law 65 (`spec/Rchain/Literal.lean`). Also fixed with it: `GByteArray` printed as a bare hex token, which
+is an identifier, so a byte-array argument named an unbound variable.
+
+**C222 — no socket had a timeout, and the node spawned a task per connection with no cap.** Row B1,
+measured: 3 000 idle connections cost +41 MB and the RSS never returned, one pinned task each; and a give
+naming a silent exporter blocked a session past 35 s because the greeter's dial runs inside the serving
+loop. Fixed: `HANDSHAKE_TIMEOUT`, `CONNECT_TIMEOUT` (on a peer-chosen address), `HANDOFF_SEND_TIMEOUT`, and
+`MAX_SESSIONS` in the node. `SessionRegistry::forget` turned out to have a second defect underneath it — it
+compared the caller's identifier against the stored one, and the accepted slot stores the *peer's*, so an
+accepted session (every peer that connects) was never cleared. **The bound is Law 55's clause a, not a law
+of its own** (rule 3: one home): the caps are guards that sit *before* the work.
+
+**C223 — six tables a peer can grow, three keyed by peer-chosen bytes.** Row B2, measured. All six are now
+bounded, and the *keys* bounded separately — the resource lens's correction, since a count cap of 1024 over
+a peer-chosen 4 MiB gift id is a 4 GiB table. Two residues closed with them: an inbound
+`op:gc-exports`/`op:gc-answers` now removes positions rather than being a no-op, and a re-used `answer_pos`
+is refused rather than silently re-pointed. **The last residue is closed by Law 61**: `Bootstrap`'s withdraw
+arm polled for a gift *inside* `handle_deliver`, which the session's loop awaits, so a peer that claimed a
+handoff gift before the gifter deposited it froze its own session for up to ten seconds. The arm now returns
+`Reply::Deferred`; the loop keeps reading and writes the answer when the waiter lands. The observable is the
+**stall**, not the timeout: `ocapn/tests/session_owner.rs:a_claim_that_waits_does_not_stall_its_session`.
+
+**C219 — a minted channel keeps one continuation, so the vault handle's `balance` arm had never existed.**
+`install_vault_handle` installed two arms on one channel (`balance` at arity 2, `transfer` at arity 5), and
+`InMemHotStore::install_continuation` writes them into a map keyed by the *channel*, so the second install
+**replaced** the first. Measured on a handle over the deployer's own funded vault: in the committed order the
+handle answered **nothing** to `balance` and nothing to a nonsense method at the same arity, while
+`transfer` replied `(true, Nil)` and moved the funds; swapping the installs inverted it exactly. The port's
+comment asserted the opposite of what the store does, and the existing test asserted the handle's *effect*
+and never its reply, which is why it survived. **Closed by Law 60** (`spec/Rchain/Install.lean`):
+`install_continuation` now returns a `Result` and refuses an install that would replace a *different*
+continuation, and `install_vault_handle` installs **one** continuation at `arity: 1, remainder: true` and
+dispatches the arms inside it. Consensus-visible: the continuation's `body_ref` is derived from
+`(name, arity)`, so newly minted handles move (the note is in `spec/GENESIS.md`).
+
+**C221 — a bridged delivery writes unbounded consensus state and spends the node's own REV.** Row A3.
+Every delivery to a method-carrying capability runs `register!(reply, *uriOut)` unconditionally, and
+`rho:registry:insertArbitrary` has **no delete** anywhere, so each call mints a permanent entry holding the
+whole reply. The spend half was fixed here (one node-wide limiter, from the chain's cadence rather than a
+round number); the growth half is **closed by decision** — the closure is the relay, and the relay is a
+cross-implementation change this tree cannot land, so the residual (permanent growth, rate-bounded only) is
+stated in the row rather than left open. The law is **63a**, which stays `open` for the same reason.
+
+**C225 — the dial policy, and the origin rule.** Row B4, measured: a peer could aim the node at any
+host:port, so the node is a blind port-probe into its own network position. The policy refuses link-local
+and the metadata range with no configuration, refuses loopback and private ranges when
+`api-server.ocapn-deny-local-dial` is set, **resolves a hostname and judges what it resolves to** (checking
+only the spelling was the classic evasion), and refuses a name that does not resolve. The open case — a
+*remote* peer aiming the node at the node's own loopback services — is closed by **Law 62**
+(`spec/Rchain/Perimeter.lean`), which is a **containment rather than a longer list of denied targets**: the
+node's reach under a peer is inside that peer's own reach, proved for every configuration of the policy's
+ingredients, with the origin-blind rule modelled beside it as the rule it replaces. The cheap alternative —
+refusing local targets outright — is ruled out by `denying_local_targets_outright_would_refuse_a_local_peer`:
+it would break the loopback demo the conformance suite is.

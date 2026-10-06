@@ -103,7 +103,11 @@ pub fn ertp_capability(
 /// **Not a per-peer bound.** `Export::deliver` is handed the arguments, not the session they arrived
 /// on, so a chain capability cannot tell one peer from another; the fairness refinement — a limiter
 /// keyed by peer, so one peer cannot spend the whole allowance — needs the caller's identity threaded
-/// to the capability, which is the same work as binding a session to a deployer key.
+/// to the capability, which is the same work as binding a session to a deployer key. **That work is
+/// declined with Law 63a** (AUDIT C221): a session-key binding changes only what the node *knows*, not
+/// who pays, so it would leave the node funding a stranger's deploys — the liability C221 names — and
+/// the closure is the relay, which is a cross-implementation change. Law 63a's note carries the
+/// decision; this limiter, plus `MAX_SESSIONS`, is the bound that holds until then.
 pub const BRIDGED_DEPLOYMENTS_PER_SEC: u64 = 4;
 
 /// Phlo for a bridged deploy — the same budget the faucet and the 2PC coordinator use.
@@ -695,9 +699,11 @@ fn check_deploy_budget(limiter: &rchain_shared::rate_limiter::RateLimiter) -> Re
 pub struct ChainCapability {
     block_api: Arc<dyn BlockApi>,
     /// The key that signs. Today it is the node's own dev deployer key, so a bridged deploy spends
-    /// the node's REV and the far contract sees the *node* as the caller. Binding a CapTP session
-    /// to a caller's secp256k1 identity is the identity work `docs/src/node/ocapn.md` lists as
-    /// future; until then this is the node acting as itself.
+    /// the node's REV and the far contract sees the *node* as the caller. **Binding a CapTP session
+    /// to a caller's secp256k1 identity is declined with Law 63a** (AUDIT C221): it changes what the
+    /// node *knows*, not who pays, so it does not dissolve the liability that the node funds a
+    /// stranger's deploys — the relay does, and the relay is a cross-implementation change. Until it
+    /// lands this is the node acting as itself, bounded by [`BRIDGED_DEPLOYMENTS_PER_SEC`].
     key: PrivateKey,
     shard_id: String,
     /// The registry URI the object is reachable at: a contract's own URI, or the URI a *bridge

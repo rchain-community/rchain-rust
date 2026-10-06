@@ -165,6 +165,23 @@ unresolved="$(
       done)"
 rm -f "$tree_ids"
 
+# --- the `section` column: the pass that carries the finding's account ---------------------------
+#
+# **A `section` that resolves to nothing is the defect this check exists for.** The column "is the
+# `## N.` pass in `spec/audit/passes.md` that carries the full account", and until this check nothing
+# verified that the pass existed: the OCapN wave cited §67–§71 while `passes.md` ended at §66, so eleven
+# findings pointed at five accounts no reader could open. It is the same class as the evidence check
+# above — a name that resolves to nothing is refused rather than left to read as a citation.
+PASSES_MD="$ROOT/spec/audit/passes.md"
+[[ -f "$PASSES_MD" ]] || {
+  printf 'emit-findings-register: no %s, so a `section` citation cannot be resolved\n' "$PASSES_MD" >&2
+  exit 1
+}
+declared_passes="$(grep -oE '^## [0-9]+\.' "$PASSES_MD" | grep -oE '[0-9]+' | sort -u | tr '\n' ' ')"
+bad_section="$(printf '%s\n' "$rows" | awk -F'\t' -v have="$declared_passes" '
+  BEGIN { n = split(have, a, " "); for (i = 1; i <= n; i++) if (a[i] != "") ok[a[i]] = 1 }
+  $3 != "" && $3 != "-" && !($3 in ok) { printf " %s(§%s)", $1, $3 }')"
+
 fail=0
 if [[ -n "$bad_vocab" ]]; then
   printf 'emit-findings-register: state outside the closed vocabulary:%s\n' "$bad_vocab" >&2
@@ -181,6 +198,11 @@ if [[ -n "$todo_unowed" ]]; then
 fi
 if [[ -n "$unresolved" ]]; then
   printf 'emit-findings-register: evidence naming nothing in the tree:%s\n' "$unresolved" >&2
+  fail=1
+fi
+if [[ -n "$bad_section" ]]; then
+  printf 'emit-findings-register: finding(s) naming a pass spec/audit/passes.md does not have:%s\n' "$bad_section" >&2
+  printf '  write the `## N.` pass, or point the row at the one that carries its account\n' >&2
   fail=1
 fi
 if [[ -n "$todo_lawless" ]]; then
