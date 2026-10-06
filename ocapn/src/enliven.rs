@@ -81,7 +81,9 @@ impl Enlivener {
         sturdyref: &Sturdyref,
         serving: &crate::owner::SessionContext,
     ) -> Result<Act, String> {
-        let (handle, _to, fetched) = self.enliven(&sturdyref.peer, &sturdyref.swiss_num).await?;
+        let (handle, _to, fetched) = self
+            .dial_and_fetch(&sturdyref.peer, &sturdyref.swiss_num)
+            .await?;
         let session_id = handle
             .id
             .clone()
@@ -118,14 +120,23 @@ impl Enlivener {
         Ok(Act::value(envelope.to_syrup()))
     }
 
-    /// Reach the object a sturdyref names: **reuse the session we already have with that peer, or
-    /// dial one**. Returns the session that owns the object, and how to address it there.
+    /// Reach the object a peer's locator and swiss number name: **reuse the session we already have
+    /// with that peer, or dial one**. Returns the session that owns the object, and how to address it
+    /// there.
     ///
     /// Reuse is not an optimization: the suite's handoff fixture hands the enlivener a sturdyref to a
     /// peer whose session *it* dialed, and expects the fetch on that session — dialing a second one
     /// would put the fetch on a connection nobody is reading. And a dial is *deferred* rather than
     /// completed, because the crossed-hello fixture reads our start-session and never sends one.
-    async fn enliven(
+    ///
+    /// **This is also the node's own dial-out** (issue #249): a dial the *node* starts and one a peer
+    /// asked for differ in **who asked**, not in what a dial is, so there is one implementation rather
+    /// than two that could drift. The origin a dial carries
+    /// ([`crate::owner::session_origin`]) is `None` for a node-started dial — the slot it is built over
+    /// is empty — which is what makes Law 62's origin rule inapplicable to it, and correct: there is no
+    /// peer origin to judge. The guard on such a dial is the target policy alone, which the netlayer
+    /// applies.
+    pub async fn dial_and_fetch(
         &self,
         peer: &PeerLocator,
         swiss: &[u8],
@@ -234,7 +245,9 @@ impl Export for Enlivener {
             // A peer that published the enlivener without a session (a bare fixture, not a session's
             // bootstrap) still gets the enlivening itself, which is the part that needs no give.
             None => {
-                let (handle, to, _) = self.enliven(&sturdyref.peer, &sturdyref.swiss_num).await?;
+                let (handle, to, _) = self
+                    .dial_and_fetch(&sturdyref.peer, &sturdyref.swiss_num)
+                    .await?;
                 Ok(Act::object(Arc::new(Forward::new(handle, to))))
             }
         }

@@ -248,6 +248,8 @@ fn api_server_from_hocon(h: &Hocon) -> Result<ApiServer, String> {
         // Absent means `false`: a node that has not thought about it keeps today's behaviour, where a
         // loopback peer works. Link-local and the metadata range are refused whatever this says.
         ocapn_deny_local_dial: to_bool(get(h, "ocapn-deny-local-dial")?)?,
+        // Absent means `false`: a node-started dial is an egress primitive, so it is opt-in.
+        enable_ocapn_dial: to_bool(get(h, "enable-ocapn-dial")?)?,
     })
 }
 

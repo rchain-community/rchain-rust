@@ -230,18 +230,22 @@ node and coordinates a two-shard transaction, and the bridge's tests are above �
 in this section has not been run in this repository. It is the deployment these parts add up to, not a
 recipe anyone has followed.
 
-**Dialling out.** The node does dial, but only on a peer's word: the enlivener connects to a sturdyref's
-locator and the greeter to a handoff give's `exporter-location`, each over whatever netlayer the node
-holds (`ocapn/src/enliven.rs`, `ocapn/src/fixtures.rs`). A boundary wants two things beyond that: a
-session the **node** starts — notifying a peer that nothing has dialled in from — and per-transport
-dispatch, so a locator naming a transport other than its one netlayer resolves. **Per-transport
-dispatch is built**: `ocapn/src/multi.rs`'s `MultiNetlayer` routes a dial by the locator's transport
-name, and the node hands it to its fixtures, so a peer dialled over unix and one dialled over TCP are
-reached by the layer each named. **A session the node starts is not** — the node dials only when a peer
-asks it to; there is no local surface that makes it originate one. And neither is free of the perimeter
-below: "dial an address of the peer's choosing" *is* the SSRF surface the dial policy exists for, so a
-gateway that dials out is one that wants `ocapn-deny-local-dial` set and the origin rule holding — the
-same trade Law 62 names.
+**Dialling out.** The node dials on a peer's word — the enlivener connects to a sturdyref's locator and
+the greeter to a handoff give's `exporter-location` — and, since issue #249, on its **own**: `POST
+/api/v1/ocapn/dial` on the admin server makes the node dial a peer a caller names and fetch the object
+at the swiss number it gives. Both uses are the *same code* (`Enlivener::dial_and_fetch`), because a
+dial the node starts and one a peer asked for differ in who asked, not in what a dial is.
+
+**Per-transport dispatch is built**: `ocapn/src/multi.rs`'s `MultiNetlayer` routes a dial by the
+locator's transport name, and the node hands it to its fixtures and its own dialer, so a peer dialled
+over unix and one dialled over TCP are reached by the layer each named.
+
+Neither is free of the perimeter below: "dial an address of the peer's choosing" *is* the SSRF surface
+the dial policy exists for, so a gateway that dials out is one that wants `ocapn-deny-local-dial` set
+and the origin rule holding — the same trade Law 62 names. **The node-started dial has no origin**, so
+Law 62's origin rule cannot apply to it: there is no peer asking. What guards it is the target policy
+(`ocapn-deny-local-dial`) plus the route's own `enable-ocapn-dial` gate, the loopback-by-default admin
+bind, and a rate limit — which is why that route is off by default.
 
 ## 7. Writing a transport
 

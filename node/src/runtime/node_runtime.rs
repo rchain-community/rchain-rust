@@ -95,7 +95,7 @@ use rchain_shared::typed_store::{BytesCodec, Codec, KeyValueTypedStore};
 use crate::api::admin_web_api::AdminWebApi;
 use crate::api::admin_web_api_impl::AdminWebApiImpl;
 use crate::api::grpc::{serve_deploy, serve_internal, GrpcServices};
-use crate::api::ocapn::{serve_ocapn, ChainCapability, OcapnListeners};
+use crate::api::ocapn::{serve_ocapn, ChainCapability, OcapnDialSlot, OcapnListeners};
 use crate::api::shard_routing::ShardRoutingBlockApi;
 use crate::api::web_api::WebApi;
 use crate::api::web_api_impl::WebApiImpl;
@@ -465,6 +465,11 @@ pub struct NodeProgram {
     /// The transports to bind the OCapN listener on — `tcp-testing-only` and/or `unix`, or neither
     /// for a dial-only node (issue #249).
     ocapn_listeners: OcapnListeners,
+    /// Where the listener publishes the [`OcapnDialSlot`]'s dialer, and the admin server reads it to
+    /// serve a node-started dial (issue #249).
+    ocapn_dial: OcapnDialSlot,
+    /// Whether the node-started dial route is mounted (`api-server.enable-ocapn-dial`).
+    enable_ocapn_dial: bool,
     /// Refuse to dial loopback and private addresses on a peer's word (HAZOP row B4).
     ocapn_deny_local_dial: bool,
     /// The name this node advertises in every session (C224 item 2).
@@ -509,6 +514,8 @@ impl NodeProgram {
             enable_devnet_cors,
             enable_devnet_admin_public,
             ocapn_listeners,
+            ocapn_dial,
+            enable_ocapn_dial,
             ocapn_deny_local_dial,
             ocapn_designator,
             log,
@@ -578,6 +585,9 @@ impl NodeProgram {
         let mut admin = tokio::spawn({
             let host = host.clone();
             let stop = stop.clone();
+            // The listener publishes the dialer through this slot; the admin route reads it. Cloned
+            // here so the listener task below can still take the slot by value.
+            let ocapn_dial = ocapn_dial.clone();
             async move {
                 // The admin HTTP server hosts the **unauthenticated** `/api/propose`, which triggers
                 // block production. It used to bind `api-server.host` — `0.0.0.0` — unconditionally,
@@ -599,6 +609,8 @@ impl NodeProgram {
                     enable_devnet_cors,
                     gateway,
                     enable_txn_api,
+                    ocapn_dial,
+                    enable_ocapn_dial,
                     max_connection_idle,
                     stop,
                 )
@@ -613,6 +625,7 @@ impl NodeProgram {
             ocapn_chain,
             ocapn_designator,
             ocapn_deny_local_dial,
+            ocapn_dial,
             log.clone(),
             stop.clone(),
         ));
@@ -1274,6 +1287,9 @@ pub async fn setup_node_program(
         tcp: conf.api_server.ocapn_listen.clone(),
         unix: conf.api_server.ocapn_listen_unix.clone(),
     };
+    // Where the listener publishes the dialer it builds once its transports are bound; the admin
+    // route reads it to start a dial of the node's own (issue #249).
+    let ocapn_dial: OcapnDialSlot = Arc::new(std::sync::OnceLock::new());
     // The OCapN bridge (issue #249): a delivery to a chain-backed capability becomes a signed deploy.
     // Built only when the node both listens and has a key to sign with — today the node's own dev
     // deployer key, because binding a CapTP session to a caller's identity is the work
@@ -1371,6 +1387,8 @@ pub async fn setup_node_program(
         enable_devnet_cors: conf.api_server.enable_devnet_cors,
         enable_devnet_admin_public: conf.api_server.enable_devnet_admin_public,
         ocapn_listeners,
+        ocapn_dial,
+        enable_ocapn_dial: conf.api_server.enable_ocapn_dial,
         ocapn_deny_local_dial: conf.api_server.ocapn_deny_local_dial,
         ocapn_designator,
         log: log.clone(),

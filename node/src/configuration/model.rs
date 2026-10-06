@@ -121,6 +121,11 @@ pub struct ApiServer {
     /// Refuse to dial loopback and private addresses on a peer's word (HAZOP row B4; off by default
     /// because the conformance suite and the ERTP transcript both dial loopback).
     pub ocapn_deny_local_dial: bool,
+    /// Mount the **node-started dial** route (`POST /api/v1/ocapn/dial`) on the admin server, or
+    /// `false` for the default (issue #249). A new **egress** primitive, so it gets an explicit switch
+    /// in the same shape as `enable_txn_api`: a peer-chosen locator is one the node then connects to,
+    /// and a peer-chosen swiss number is one it fetches. Off unless an operator asks for it.
+    pub enable_ocapn_dial: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]

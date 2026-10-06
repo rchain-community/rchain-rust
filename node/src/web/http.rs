@@ -72,6 +72,12 @@ const MAX_TXN_LEGS: usize = 32;
 /// deploys with the node's own key and holds a 2PC transaction open across phase timeouts.
 const TXN_RATE_LIMIT_PER_SEC: u64 = 10;
 
+/// Rate limit for the node-started OCapN dial (issue #249). Far below the deploy API's 100/s: each
+/// admitted request makes the node open (or reuse) a session to a caller-named peer and fetch an
+/// object over it — an **egress** primitive, and one whose cost is a connection to someone else's
+/// host, so it is bounded like the transaction routes rather than like a read.
+const OCAPN_DIAL_RATE_LIMIT_PER_SEC: u64 = 2;
+
 /// Comm state needed by `GET /status` (port of the `ConnectionsCell`/`NodeDiscovery`/`RPConfAsk`
 /// arguments of `StatusInfo.service`).
 #[derive(Clone)]
@@ -164,6 +170,15 @@ pub struct AdminState {
     /// one admitted request can open up to [`MAX_TXN_LEGS`] node-signed deploys and drives a 2PC
     /// transaction that holds per-phase timeouts.
     pub txn_rate_limiter: Arc<RateLimiter>,
+    /// The node's **outbound** OCapN surface (issue #249), published by the listener once its
+    /// transports are bound. An empty slot means no transport is bound — the listener has not started
+    /// or has none configured — and the dial route answers 503 rather than dialing with no layer.
+    pub ocapn_dial: crate::api::ocapn::OcapnDialSlot,
+    /// Whether the node-started dial route is enabled (`api-server.enable-ocapn-dial`). Off by
+    /// default: it is an egress primitive, so it gets an explicit switch, as `enable_txn_api` does.
+    pub enable_ocapn_dial: bool,
+    /// Rate limiter for the dial route. See [`OCAPN_DIAL_RATE_LIMIT_PER_SEC`].
+    pub ocapn_dial_rate_limiter: Arc<RateLimiter>,
 }
 
 /// `GET /version` (port of `VersionInfo.service`): the node version string.
@@ -314,6 +329,103 @@ fn gateway_or_not_found(state: &AdminState) -> Result<Arc<GatewayTxn>, Response>
     match (&state.gateway, state.enable_txn_api) {
         (Some(gateway), true) => Ok(gateway.clone()),
         _ => Err((StatusCode::NOT_FOUND, ()).into_response()),
+    }
+}
+
+/// The dial route's gate: **404** when the feature is off, **503** when the listener has bound no
+/// transport.
+///
+/// Mirrors [`gateway_or_not_found`]: mounted unconditionally so a node without the feature has an
+/// unchanged surface, and a client can tell "this node does not dial" (404) from "not ready yet"
+/// (503) rather than reading one status for both.
+fn dialer_or_not_found(state: &AdminState) -> Result<crate::api::ocapn::OcapnDialer, Response> {
+    if !state.enable_ocapn_dial {
+        return Err((StatusCode::NOT_FOUND, ()).into_response());
+    }
+    match state.ocapn_dial.get() {
+        Some(dialer) => Ok(dialer.clone()),
+        // Enabled, but the OCapN listener has bound no transport: there is no layer to dial with, so
+        // say so rather than attempting a dial that would fail with a less useful reason.
+        None => Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(
+                "the OCapN listener has no transport bound; set api-server.ocapn-listen or \
+                 api-server.ocapn-listen-unix"
+                    .to_string(),
+            ),
+        )
+            .into_response()),
+    }
+}
+
+/// The body of `POST /api/v1/ocapn/dial`: the peer to dial and the object to fetch there.
+#[derive(Deserialize)]
+pub struct OcapnDialRequest {
+    /// The peer's designator — the name it advertises, and half of its OCapN identity.
+    pub designator: String,
+    /// The transport to reach it on: `tcp-testing-only` or `unix`.
+    pub transport: String,
+    /// The transport's hints — `host` and `port` for tcp, `path` for unix.
+    #[serde(default)]
+    pub hints: std::collections::BTreeMap<String, String>,
+    /// The swiss number of the object to fetch, base16-encoded.
+    pub swiss: String,
+}
+
+/// `POST /api/v1/ocapn/dial` — the node dials the peer the request names and fetches the object at the
+/// swiss number it gives (issue #249).
+///
+/// **This is the node starting a session of its own.** Until here the node dialled only when a peer's
+/// sturdyref or handoff give asked it to; this route is the local surface that makes it originate one.
+/// It reuses `Enlivener::dial_and_fetch`, so a node-started dial and a peer-asked one are the same
+/// code rather than two that could drift.
+///
+/// **The guard is the target policy, not an origin.** A node-started dial carries no peer origin — the
+/// session slot it is built over is empty — so Law 62's origin rule has nothing to judge. What decides
+/// whether a target may be dialled is `api-server.ocapn-deny-local-dial` (applied by the transport's
+/// policy), plus this route's own `enable-ocapn-dial` gate, the loopback-by-default admin bind,
+/// `admin_origin_guard`, and the rate limiter. It is served on the admin listener for the reason
+/// `/api/propose` and `/api/v1/txn` are: it makes the node act, on the caller's word, against a peer
+/// of the caller's choosing.
+async fn admin_ocapn_dial(
+    State(state): State<AdminState>,
+    Json(req): Json<OcapnDialRequest>,
+) -> Response {
+    let dialer = match dialer_or_not_found(&state) {
+        Ok(dialer) => dialer,
+        Err(response) => return response,
+    };
+    if !state.ocapn_dial_rate_limiter.allow() {
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            Json("ocapn dial rate limit exceeded".to_string()),
+        )
+            .into_response();
+    }
+    let Some(swiss) = base16::decode(&req.swiss) else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json("`swiss` is not base16".to_string()),
+        )
+            .into_response();
+    };
+    let peer = rchain_ocapn::locator::PeerLocator {
+        designator: req.designator,
+        transport: req.transport,
+        hints: req.hints,
+    };
+    match dialer.dial_and_fetch(&peer, &swiss).await {
+        // The fetch succeeded. The answer is a **descriptor** on that peer's table — the object the
+        // swiss number named — which is what the node now holds a live reference to.
+        Ok((_session, to, _value)) => Json(json!({
+            "peer": format!("{}.{}", peer.designator, peer.transport),
+            "fetched": format!("{to:?}"),
+        }))
+        .into_response(),
+        // 502: the node could not complete the dial-and-fetch. The reason is the one the transport or
+        // the policy gave — a refused dial, a peer that did not answer, a policy refusal — so a
+        // link-local target is refused *with its reason* rather than a bare status.
+        Err(reason) => (StatusCode::BAD_GATEWAY, Json(reason)).into_response(),
     }
 }
 
@@ -1129,11 +1241,12 @@ pub fn router(state: HttpState) -> Router {
 /// Refuse a **cross-origin** request to the admin surface — the residual AUDIT C133 named and did not
 /// close, closed here.
 ///
-/// **Why this is a layer and not a check in each handler.** Every route on this router acts with the
-/// node's own key: `/api/propose` produces a block, and the `/api/txn` family spends out of the
-/// validator's account. A guard written into the handlers would be a bound enforced by the callers
-/// that happen to exist — the shape this register keeps recording — and the next admin route added
-/// would not have it. A layer applies to every route on the router, including later ones.
+/// **Why this is a layer and not a check in each handler.** Every route on this router makes the node
+/// act on the caller's word with its own authority: `/api/propose` produces a block, the `/api/txn`
+/// family spends out of the validator's account, and `/api/v1/ocapn/dial` makes the node open a
+/// connection to a peer the caller names. A guard written into the handlers would be a bound enforced
+/// by the callers that happen to exist — the shape this register keeps recording — and the next admin
+/// route added would not have it. A layer applies to every route on the router, including later ones.
 ///
 /// **What it allows, and why each exception is principled rather than convenient:**
 ///
@@ -1220,6 +1333,11 @@ pub fn admin_router(state: AdminState) -> Router {
         .route("/api/txn/{txn_id}", get(api_txn_status))
         .route("/api/v1/txn", get(api_txn_list).post(api_txn_run))
         .route("/api/v1/txn/{txn_id}", get(api_txn_status))
+        // The node-started OCapN dial (issue #249). Served on the privileged listener for the same
+        // reason the txn routes are: it makes the node act on the caller's word — dial a peer the
+        // caller names and fetch what it points at. `dialer_or_not_found` answers 404 when
+        // `enable-ocapn-dial` is off, so a node without the feature has an unchanged surface.
+        .route("/api/v1/ocapn/dial", post(admin_ocapn_dial))
         .route("/api/v1/openapi.json", get(api_v1_openapi))
         .layer(cors)
         // Outermost, so a cross-origin request is refused before any handler on this router runs —
@@ -1291,11 +1409,11 @@ pub async fn acquire_http_server(
 
 /// Bind and serve the admin HTTP routes (port of `web/acquireAdminHttpServer`).
 ///
-/// This listener carries the two surfaces that act with the node's own key: `POST /api/propose` and,
-/// since AUDIT C121, the cross-shard transaction routes. The caller chooses the bind host
-/// (`admin_bind_host`), which is loopback unless the operator opts in — that choice is what makes the
-/// transaction routes' absence from the public server an authorization boundary rather than a
-/// rearrangement.
+/// This listener carries the surfaces that make the node act on a caller's word with its own
+/// authority: `POST /api/propose`, since AUDIT C121 the cross-shard transaction routes, and since
+/// issue #249 the node-started OCapN dial. The caller chooses the bind host (`admin_bind_host`),
+/// which is loopback unless the operator opts in — that choice is what makes those routes' absence
+/// from the public server an authorization boundary rather than a rearrangement.
 pub async fn acquire_admin_http_server(
     host: &str,
     port: Port,
@@ -1303,6 +1421,8 @@ pub async fn acquire_admin_http_server(
     enable_devnet_cors: bool,
     gateway: Option<Arc<GatewayTxn>>,
     enable_txn_api: bool,
+    ocapn_dial: crate::api::ocapn::OcapnDialSlot,
+    enable_ocapn_dial: bool,
     max_connection_idle: Duration,
     stop: watch::Receiver<bool>,
 ) -> Result<(), String> {
@@ -1319,6 +1439,9 @@ pub async fn acquire_admin_http_server(
         gateway,
         enable_txn_api,
         txn_rate_limiter: Arc::new(RateLimiter::new(TXN_RATE_LIMIT_PER_SEC)),
+        ocapn_dial,
+        enable_ocapn_dial,
+        ocapn_dial_rate_limiter: Arc::new(RateLimiter::new(OCAPN_DIAL_RATE_LIMIT_PER_SEC)),
     })
     .layer(TimeoutLayer::with_status_code(
         StatusCode::REQUEST_TIMEOUT,
@@ -2179,6 +2302,9 @@ mod tests {
             gateway,
             enable_txn_api,
             txn_rate_limiter: Arc::new(RateLimiter::new(TXN_RATE_LIMIT_PER_SEC)),
+            ocapn_dial: Arc::new(std::sync::OnceLock::new()),
+            enable_ocapn_dial: false,
+            ocapn_dial_rate_limiter: Arc::new(RateLimiter::new(OCAPN_DIAL_RATE_LIMIT_PER_SEC)),
         }
     }
 
@@ -2379,6 +2505,63 @@ mod tests {
                 StatusCode::NOT_FOUND
             );
         }
+    }
+
+    /// **The dial route is off unless asked for, and says so before any transport is bound**
+    /// (issue #249). Two distinct answers, because they mean different things: 404 is "this node does
+    /// not dial" (the feature is off), 503 is "not ready yet" (enabled, but the listener has bound no
+    /// transport). One status for both would leave a client unable to tell them apart.
+    #[tokio::test]
+    async fn the_dial_route_is_404_unless_asked_for_and_503_before_transports_bind() {
+        let body = |swiss: &str| {
+            Json(OcapnDialRequest {
+                designator: "peer".to_string(),
+                transport: "tcp-testing-only".to_string(),
+                hints: Default::default(),
+                swiss: swiss.to_string(),
+            })
+        };
+
+        // Off by default: the gate answers 404, the same shape `/api/v1/txn` uses.
+        let off = txn_state(None, false);
+        assert!(!off.enable_ocapn_dial);
+        assert_eq!(
+            admin_ocapn_dial(State(off), body("aabb")).await.status(),
+            StatusCode::NOT_FOUND
+        );
+
+        // Enabled but nothing bound: 503, not a dial into "this node speaks nothing".
+        let mut on = txn_state(None, false);
+        on.enable_ocapn_dial = true;
+        assert_eq!(
+            admin_ocapn_dial(State(on), body("aabb")).await.status(),
+            StatusCode::SERVICE_UNAVAILABLE
+        );
+
+        // A dialer bound, and a swiss number that is not base16: 400 — and the decode is before the
+        // dial, so no layer is ever asked to connect.
+        let mut bound = txn_state(None, false);
+        bound.enable_ocapn_dial = true;
+        let published = bound.ocapn_dial.set(crate::api::ocapn::OcapnDialer::new(
+            Arc::new(
+                rchain_ocapn::tcp_testing_only::TcpTestingOnly::bind("127.0.0.1:0")
+                    .await
+                    .expect("bind a throwaway layer"),
+            ),
+            Arc::new(rchain_ocapn::owner::SessionRegistry::default()),
+            rchain_ocapn::locator::PeerLocator {
+                designator: "self".to_string(),
+                transport: "tcp-testing-only".to_string(),
+                hints: Default::default(),
+            },
+        ));
+        assert!(published.is_ok(), "the slot starts empty");
+        assert_eq!(
+            admin_ocapn_dial(State(bound), body("not-hex!!"))
+                .await
+                .status(),
+            StatusCode::BAD_REQUEST
+        );
     }
 
     /// The leg count is bounded before the coordinator is driven (AUDIT C121). One request used to buy

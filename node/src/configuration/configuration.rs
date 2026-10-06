@@ -494,6 +494,7 @@ mod tests {
                 ocapn_listen: None,
                 ocapn_listen_unix: None,
                 ocapn_deny_local_dial: false,
+                enable_ocapn_dial: false,
             },
             storage: Storage {
                 data_dir: PathBuf::from("/var/lib/rnode"),
@@ -1076,6 +1077,7 @@ mod tests {
                 ocapn_listen: None,
                 ocapn_listen_unix: None,
                 ocapn_deny_local_dial: false,
+                enable_ocapn_dial: false,
             },
             storage: Storage {
                 data_dir: PathBuf::from("/var/lib/rnode"),

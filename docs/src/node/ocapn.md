@@ -19,14 +19,10 @@ The listener is **off unless `api-server.ocapn-listen` names an address**.
 
 | Config key | CLI flag | Meaning |
 |---|---|---|
-| `api-server.ocapn-listen` | `--ocapn-listen` | `host:port` to bind. Unset: no listener. |
+| `api-server.ocapn-listen` | `--ocapn-listen` | `host:port` to bind for `tcp-testing-only`. Unset: no TCP listener. |
+| `api-server.ocapn-listen-unix` | `--ocapn-listen-unix` | Socket path to bind for `unix`. Unset: no UDS listener. |
 | `api-server.ocapn-deny-local-dial` | — | Refuse to dial loopback and private addresses a peer names. Off by default. |
-
-```hocon
-api-server {
-  ocapn-listen = "127.0.0.1:22045"
-}
-```
+| `api-server.enable-ocapn-dial` | — | Mount `POST /api/v1/ocapn/dial` on the admin server. Off by default. |
 
 The netlayers implemented are the OCapN project's `tcp-testing-only` — plain TCP, **no encryption and
 no authentication**, which the project's own README flags "HIGHLY INSECURE — DO NOT USE IN
@@ -40,9 +36,23 @@ api-server {
 }
 ```
 
-A node may bind **neither**, in which case it is **dial-only**: it starts no listener but can still be
-driven to dial out. **Noise is not implemented** — until a reference implementation speaks it, a Noise
-netlayer here would talk only to itself.
+A node that binds **neither** has no transport at all: it does not listen, and the dial route answers
+**503** rather than dialing into "this node speaks nothing". **Noise is not implemented** — until a
+reference implementation speaks it, a Noise netlayer here would talk only to itself.
+
+**The node can also start a session of its own.** With `enable-ocapn-dial = true`, `POST
+/api/v1/ocapn/dial` on the admin server makes it dial a peer the request names and fetch the object at
+the swiss number it gives:
+
+```json
+{ "designator": "peer", "transport": "unix",
+  "hints": { "path": "/run/peer.sock" }, "swiss": "3c0f…" }
+```
+
+It is off by default and rate limited, and it is served on the admin listener — loopback unless
+`enable-devnet-admin-public` — because it makes the node act, on a caller's word, against a peer of
+that caller's choosing. **A dial the node starts carries no peer origin**, so Law 62's origin rule has
+nothing to judge; the guard is the target policy (`ocapn-deny-local-dial`) alone, plus that gate.
 
 **A peer that completes a handshake can do two things, and both are the node's own authority:**
 

@@ -43,7 +43,7 @@ use rchain_crypto::private_key::PrivateKey;
 use rchain_models::casper::protocol::casper_message::SignedDeployData;
 use rchain_models::rholang::RhoType::RhoString;
 use rchain_ocapn::captp::{
-    EXPORT_LABEL, IMPORT_OBJECT_LABEL as EXPORT_IMPORT_OBJECT_LABEL,
+    Desc, EXPORT_LABEL, IMPORT_OBJECT_LABEL as EXPORT_IMPORT_OBJECT_LABEL,
     IMPORT_PROMISE_LABEL as EXPORT_IMPORT_PROMISE_LABEL,
 };
 use rchain_ocapn::conn::{Act, Export, ExportView, Identity, Named};
@@ -148,6 +148,70 @@ impl OcapnListeners {
         self.tcp.is_some() || self.unix.is_some()
     }
 }
+
+/// The node's **outbound** OCapN surface (issue #249): what a dial this node starts itself needs.
+///
+/// Built by [`serve_ocapn`] once its listeners are bound — a transport that can dial is one that has
+/// bound a layer — and shared with the admin route that starts a dial, so a session the node opens
+/// lands in the **same** [`rchain_ocapn::owner::SessionRegistry`] the listener consults, which the
+/// crossed-hello rule requires: two registries would not see each other's sessions.
+#[derive(Clone)]
+pub struct OcapnDialer {
+    /// The dispatcher over the node's transports: a locator naming `unix` reaches the unix layer.
+    netlayer: Arc<dyn Netlayer>,
+    /// The live-session registry, shared with the listener.
+    registry: Arc<rchain_ocapn::owner::SessionRegistry>,
+    /// The location this node advertises in a dial's `op:start-session` — one of the transports it
+    /// listens on, so the peer can dial back.
+    location: PeerLocator,
+}
+
+impl OcapnDialer {
+    /// Build a dialer over an already-bound layer. [`serve_ocapn`] publishes one through an
+    /// [`OcapnDialSlot`]; this is for a caller that has its own.
+    pub fn new(
+        netlayer: Arc<dyn Netlayer>,
+        registry: Arc<rchain_ocapn::owner::SessionRegistry>,
+        location: PeerLocator,
+    ) -> OcapnDialer {
+        OcapnDialer {
+            netlayer,
+            registry,
+            location,
+        }
+    }
+
+    /// Dial the peer `peer` names (reusing a live session if there is one), fetch the object at
+    /// `swiss`, and return the session that owns it, how to address it there, and the raw value.
+    ///
+    /// **The origin is `None` and the target policy is the only guard.** This dial is the node's own,
+    /// not a peer's request, so there is no peer origin for Law 62's rule to judge; what decides
+    /// whether it may run is `ocapn-deny-local-dial` (applied by the layer's policy) and the route's
+    /// own `enable-ocapn-dial` gate.
+    pub async fn dial_and_fetch(
+        &self,
+        peer: &PeerLocator,
+        swiss: &[u8],
+    ) -> Result<(rchain_ocapn::owner::SessionHandle, Desc, Value), String> {
+        // An empty slot, so `session_origin` is `None` — see the doc above. The dial is deferred and
+        // its loop runs in its own task, so the fetch below does not block on the handshake.
+        let enlivener = rchain_ocapn::enliven::Enlivener::new(
+            self.netlayer.clone(),
+            self.location.clone(),
+            self.registry.clone(),
+            rchain_ocapn::owner::session_slot(),
+        );
+        enlivener.dial_and_fetch(peer, swiss).await
+    }
+}
+
+/// Where the listener publishes the [`OcapnDialer`] it built, for the admin route to read.
+///
+/// A slot rather than a value threaded through the builder: the dialer wraps the netlayers the
+/// listener **binds**, and binding is the listener's own first step — so a bad address is still
+/// reported by the listener task, as it was, and the route sees "not ready" rather than dialing with
+/// no transport.
+pub type OcapnDialSlot = Arc<std::sync::OnceLock<OcapnDialer>>;
 
 /// One transport the node listens on: the policy-wrapped netlayer, and the location a connection it
 /// accepts advertises. `None` for a transport the node does not listen on.
@@ -259,6 +323,7 @@ pub async fn serve_ocapn(
     chain: Vec<(Vec<u8>, Arc<dyn Export>)>,
     designator: String,
     deny_local_dial: bool,
+    dial_slot: OcapnDialSlot,
     log: Arc<dyn rchain_shared::log::Log>,
     stop: watch::Receiver<bool>,
 ) -> Result<(), String> {
@@ -306,6 +371,13 @@ pub async fn serve_ocapn(
         dialer = dialer.with("unix", layer.clone());
     }
     let dialer: Arc<dyn Netlayer> = Arc::new(dialer);
+    // The location this node advertises in a dial it starts itself: the first configured transport in
+    // a fixed order (tcp, then unix). A node listening on both still has one location to put in a
+    // start-session, and it must be one a peer can dial back.
+    let outward = tcp
+        .as_ref()
+        .or(unix.as_ref())
+        .map(|(_, location)| location.clone());
     let tcp = Listener::new(tcp);
     let unix = Listener::new(unix);
     // One registry and one gift store for the node's whole OCapN surface: the crossed-hello rule
@@ -313,6 +385,16 @@ pub async fn serve_ocapn(
     // and withdrawn on another.
     let registry = Arc::new(rchain_ocapn::owner::SessionRegistry::default());
     let handoffs = Arc::new(rchain_ocapn::handoff::Handoffs::default());
+    // **Publish the dialer** for the admin route that starts a dial of the node's own. A node with no
+    // transport does not publish one: there is no layer to dial with, and the route says so rather
+    // than dialing into "this node speaks nothing".
+    if let Some(location) = outward {
+        let _ = dial_slot.set(OcapnDialer {
+            netlayer: dialer.clone(),
+            registry: registry.clone(),
+            location,
+        });
+    }
     // **The accept loop is bounded, and the permit is taken before the task exists** (HAZOP row B1).
     // An unbounded accept loop let one peer hold 3 000 idle connections (+41 MB, RSS never returned)
     // and one task each; the handshake bound now stops a *silent* connection from holding its task,
@@ -1052,6 +1134,7 @@ mod tests {
             Vec::new(),
             "rnode-test".to_string(),
             false,
+            Arc::new(std::sync::OnceLock::new()),
             log.clone(),
             stop_rx,
         ));
@@ -1095,6 +1178,7 @@ mod tests {
             Vec::new(),
             "rnode-test".to_string(),
             false,
+            Arc::new(std::sync::OnceLock::new()),
             log.clone(),
             stop_rx,
         ));
@@ -1131,6 +1215,7 @@ mod tests {
             Vec::new(),
             "rnode-test".to_string(),
             false,
+            Arc::new(std::sync::OnceLock::new()),
             log.clone(),
             stop_rx,
         ));
