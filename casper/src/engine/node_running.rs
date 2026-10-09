@@ -794,17 +794,30 @@ impl<E: RSpaceExporter> NodeRunning<E> {
                         .get(&BlockHeight::zero())
                         .and_then(|s| s.iter().next().copied());
                     match genesis_hash {
-                        Some(genesis_hash) => self
-                            .block_store
-                            .get(&[genesis_hash])
-                            .await
-                            .ok()
-                            .and_then(|mut v| v.pop().flatten())
-                            .map(|b| FinalizedFringe {
+                        Some(genesis_hash) => {
+                            let genesis = match self.block_store.get(&[genesis_hash]).await {
+                                Ok(mut v) => v.pop().flatten(),
+                                Err(e) => {
+                                    // **A read that fails is not "there is no genesis block"** (C249's
+                                    // class). This branch exists so a joining validator downloads the
+                                    // genesis and its bonds instead of ending up unbonded with an empty
+                                    // DAG — which is exactly what it would do on a silent `None`.
+                                    self.log.error(
+                                        self.log_source,
+                                        &format!(
+                                            "Failed to read the genesis block {}: {e}",
+                                            genesis_hash.to_hex()
+                                        ),
+                                    );
+                                    None
+                                }
+                            };
+                            genesis.map(|b| FinalizedFringe {
                                 hashes: vec![genesis_hash],
                                 state_hash: b.post_state_hash,
                                 ancestry: Vec::new(),
-                            }),
+                            })
+                        }
                         None => None,
                     }
                 } else {

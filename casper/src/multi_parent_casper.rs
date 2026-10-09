@@ -571,12 +571,19 @@ where
                 latest.map(|l| l.to_string()).unwrap_or_else(|| "none".to_string()),
             ),
         );
-        let Some(msg) = block_store
-            .get(&[hash])
-            .await
-            .ok()
-            .and_then(|mut v| v.pop().flatten())
-        else {
+        let msg = match block_store.get(&[hash]).await {
+            Ok(mut v) => v.pop().flatten(),
+            Err(e) => {
+                // A read that fails is not "this block has no message" (C249's class): the scan would
+                // skip a hash it never actually looked at.
+                log.error(
+                    source,
+                    &format!("Failed to read block {} to re-validate: {e}", hash.to_hex()),
+                );
+                None
+            }
+        };
+        let Some(msg) = msg else {
             continue;
         };
         let outcome = validate_checks(
@@ -680,12 +687,20 @@ async fn restore_divergent_justifications<F, Fut>(
             continue;
         }
 
-        let Some(msg) = block_store
-            .get(&[*j])
-            .await
-            .ok()
-            .and_then(|mut v| v.pop().flatten())
-        else {
+        let msg = match block_store.get(&[*j]).await {
+            Ok(mut v) => v.pop().flatten(),
+            Err(e) => {
+                // **A read error does not say the block is gone.** The comment below describes a *pruned*
+                // store; this is a store that cannot answer, and the erasure made the two the same thing
+                // (C249's class). The budget is not spent either way — this only says which happened.
+                log.error(
+                    source,
+                    &format!("Failed to read block {} to restore: {e}", j.to_hex()),
+                );
+                None
+            }
+        };
+        let Some(msg) = msg else {
             // The record says the block failed here, but the block itself is gone (a pruned store).
             // There is nothing to re-validate, and the budget is for revalidations.
             continue;

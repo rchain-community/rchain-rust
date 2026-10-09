@@ -445,13 +445,23 @@ async fn incoming_blocks(
         }
 
         // Store the block and resolve its parent dependencies.
-        let block_stored = block_store
-            .contains(&[block.block_hash])
-            .await
-            .unwrap_or_default()
-            .first()
-            .copied()
-            .unwrap_or(false);
+        let block_stored = match block_store.contains(&[block.block_hash]).await {
+            Ok(present) => present.first().copied().unwrap_or(false),
+            Err(e) => {
+                // **A read that fails is not "not stored" *silently*.** This erasure is the same shape
+                // `send_to_validate` had (C249's class, AUDIT C67's family): "not stored" is a decision
+                // about the block, and a store that cannot answer has not made one. The put below would
+                // fail too, but only after this line had pretended the store replied.
+                log.error(
+                    source,
+                    &format!(
+                        "Failed to read whether block {} is stored, skipping: {e}",
+                        block.block_hash.to_hex()
+                    ),
+                );
+                continue;
+            }
+        };
         if !block_stored {
             if let Err(e) = block_store.put(&[(block.block_hash, block.clone())]).await {
                 log.error(

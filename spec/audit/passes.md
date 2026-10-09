@@ -7937,3 +7937,50 @@ TE-1 witness on its branch. `ran:` `git rev-parse`, `git fetch`, `git show origi
 of `merging.rs`/`dag.rs`/`multi_parent_casper.rs` (the named functions only). Every `file:line` in the
 worksheet was re-derived in this pass: the programme's plan lost its line numbers between sessions, and a
 citation is re-derived, never remapped by a delta.
+
+---
+
+## 74. The rule that F-U8-01 motivated, and the five sites it found (C251)
+
+**What prompted it.** The worksheet's F-U8-01 was one store read whose error had been erased into an
+absence — `block_store.get(..).await.ok()` — and the loud leg's first unit fixed it (C249). The next
+question is whether that shape is unique, and the answer to "is this shape unique" is a *check*, not a
+hand-grep.
+
+**The measurement, before writing the rule — and it is the whole reason the rule is narrow.** The broad
+candidates are unusable: `.ok()` appears **81** times in production code, `unwrap_or_default()` **86**,
+`let _ =` **166**. A rule over those needs 333 allow-list entries, which is the "gate satisfied by
+bookkeeping" that the deleted 78-second register gate was. The narrow shape is sharp: **an awaited call
+whose error is erased into an absence**, `\.await…\.ok\(\)` and `\.await…\.unwrap_or_default\(\)`. It
+must scan across lines, because the defect's own `.await` and `.ok()` were on separate lines and a
+single-line grep misses it — the same reason the class already reads whole files through
+`scan_spanning` (AUDIT C126). Measured against this tree it matched **five production sites** and nothing
+else.
+
+**The five, and why the same fix.** Each is the same decision taken silently — "the store could not
+answer" recorded as "there is nothing here":
+
+- `casper/src/blocks/block_receiver.rs` — `contains(..).unwrap_or_default()`, read as "not stored";
+- `casper/src/engine/lfs_block_requester.rs` — a `get` in the LFS pump, read as "no such block";
+- `casper/src/engine/node_running.rs` — the genesis read whose whole purpose is to stop a joining
+  validator ending up unbonded with an empty DAG, read as "no genesis";
+- `casper/src/multi_parent_casper.rs` ×2 — the stale-snapshot scan, and the **restore** rule, whose own
+  comment reads *"the block itself is gone (a pruned store)"* while the code also meant *"the store is
+  broken"*. Those are different facts and the erasure made them one.
+
+Each is fixed the same way, and for the same reason: **log the error and keep the branch.** What the
+branch should *do* is the call site's own policy — the finding is about the *silence*, not the policy —
+and re-deciding five failure policies in one pass would be inventing policy rather than reporting it.
+Where the branch is genuinely ambiguous (`restore`'s "gone"), the log is what tells an operator which
+happened.
+
+**The rule gates now.** Both patterns are in `tools/audit-type-system.sh`'s `silent` class, and the hard
+classes have no allow-list by design — so the class is empty because the sites are *fixed*, not because
+they are excused. Negative control, run rather than asserted: with the fix reverted the pattern matches
+exactly those five sites and the gate fails; with it, `silent` reports nothing and the gate exits green.
+C251's row records the sweep and its falsifier is the gate, which CI runs on every change.
+
+**And the lesson, because it is the second time.** Four of these five were invisible to the disposition
+pass: it read *behaviour* — what a node does when a store fails — and the erasure is a **shape**, visible
+only by reading the call. `docs/src/spec/failure-hazop.md` §6 item 6 records the first instance
+(F-U4-05's `Ord`/`Eq` disagreement); this is the argument for the pass the worksheet still owes.

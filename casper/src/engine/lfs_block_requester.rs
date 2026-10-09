@@ -297,13 +297,18 @@ pub async fn request_blocks(
                 hash = response_hash_rx.recv() => {
                     match hash {
                         Some(hash) => {
-                            let block = block_store
-                                .get(&[hash])
-                                .await
-                                .unwrap_or_default()
-                                .into_iter()
-                                .flatten()
-                                .next();
+                            let block = match block_store.get(&[hash]).await {
+                                Ok(v) => v.into_iter().flatten().next(),
+                                Err(e) => {
+                                    // A read that fails is not "there is no such block" (C249's class):
+                                    // the loop below would move on believing the store had answered.
+                                    log.error(
+                                        source,
+                                        &format!("Failed to read block {}: {e}", hash.to_hex()),
+                                    );
+                                    None
+                                }
+                            };
                             if let Some(block) = block {
                                 log.info(
                                     source,
