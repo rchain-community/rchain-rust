@@ -7842,3 +7842,98 @@ fixed; what remains is a fringe that cannot gather supermajority support at eigh
 100,100,50 --epoch-length 10` with eight stakes. So the reading is "N=8 with equal stakes", which is the
 closest measurement that exists; promoting it to A1.3's verdict wants that arm run at its own
 configuration. One host, one tree, 4 GiB per container, three attempts per arm.
+
+---
+
+## 73. The disposition pass: two silent paths, and the rung the tree does not have (C249, C250)
+
+**What was asked.** After #280/C248 — a merge that lost a committed deploy's write *unanimously, with no
+counter and no log line moving* — the target property was stated plainly: these failure modes should
+ideally be **unrepresentable**; where they are not they must **fail loudly and hard**, and then **hard
+reset to a safe state and catch up** — never wedge silently. This pass dispositions the node's deviations
+against that property, on a four-rung ladder: **R1** unrepresentable, **R2** fail loudly, **R3** hard
+reset then catch up, **R4** runbook.
+
+**What was built.** `docs/src/spec/failure-hazop.md` — a companion to the acceptance worksheet
+(`docs/src/spec/testnet-acceptance.md` §1), reusing its ten study nodes so a hazard appears once, and
+adding the axis the acceptance sheet does not have: for each deviation, its **class**
+(`Void`/`Terminal`/`Drift`/`Split`/`Historic`), its **current behaviour** with an anchor, its
+**disposition**, and a **falsifier**. Its guide-word grid is machine-read by
+`tools/check-hazop-worksheet.sh`, which refuses a guide word dispositioned nowhere, a row with no decided
+rung, a falsifier that is not an `owed:` marker or a `path::symbol` that exists **and occurs in that
+file**, and a debt count that disagrees with the page. Six negative controls were run against it (a
+removed word, a rotted count, an empty falsifier, an undecided `R1/R2` rung, a fabricated test name, a
+fabricated path) and every one is refused. The pass's own debt — **19 of 21 rows owe a falsifier; 45 of
+the 110 node×word cells are owed** — is a number on the page rather than a silence.
+
+**The finding, and it is not the one the programme expected (C249).** The ladder's *second* rung is
+largely **won**: the merge refusal is a `log.error` (`casper/src/blocks/block_processor.rs:172`), an I1/I2
+violation a non-rate-limited `log.warn` (`casper/src/interpreter_util.rs:535`), a finality stall a
+`log.warn` that re-fires on change (`:519`), an ingress drop a `log.warn`
+(`casper/src/engine/node_running.rs:664`). **Two paths are genuinely silent** and both are drops:
+`send_to_validate` reads the store with `.ok()` (`casper/src/blocks/block_receiver.rs:378`), so an
+unreadable block leaves the batch with no log, no re-queue and no counter; and `rlock`/`wlock`/`mlock`
+recover a **poisoned** lock with `PoisonError::into_inner` (`rspace/src/lock.rs:10`, `:16`, `:20`), so a
+torn state is used and the caller cannot tell it from a healthy lock. **The third rung does not exist at
+all.** A running node that diverges permanently never re-enters sync: `NodeSyncing::new` is called
+*exactly once*, in the boot guard's `else if repr.dag_set.is_empty()` (`casper/src/engine/node_launch.rs:265`);
+after that the node stays in `NodeRunning`, keeps serving, and permanently refuses the block and its
+descendants (`casper/src/multi_parent_casper.rs:883`). The one path back is an operator deleting the shard
+data dir — which exists as a **comment** (`casper/src/dag.rs:534`) and nowhere as code. The bounded inverse
+the model proves is law **53b** (`RESTORE_ATTEMPT_LIMIT = 3`, `casper/src/multi_parent_casper.rs:434`,
+`restore_is_warranted` at `:478`); what is absent for a *running* node is any inverse at all. So the
+programme's headline was wrong in a useful direction: **the node does not mostly wedge silently — it
+fails loudly and then does nothing.** R2 is largely won; R3 is entirely unbuilt.
+
+**Where R3 is owed.** The net-wide half has an owner: **#287**, the reconciliation utility ("bring a
+busted network back to one chain without a genesis"), whose design and acceptance drill are stated there
+and whose falsifier is a network in the four-head state converging to one head with agreeing block hashes.
+The *per-node* half — a node that detects its own unrecoverable divergence and resets — is not yet
+anyone's, and is named as F-U5-01 in the worksheet rather than left implied.
+
+**The record, corrected (C250).** The #280 capture is a reading of **node A alone** and says so: only A
+was reachable through the public endpoint. The register's C248 row drew a conclusion wider than that
+reading — *"It is not C215: no two-node divergence, no `InvalidPreStateHash` between peers"* — and the
+**TE-1 witness** for the same incident (`spec/audit/evidence/te-1-2026-10-09-four-divergent-heads.md`, on
+branch `spec/te-1-witness`) records the opposite *above* the write loss: `state-hash disagreement on
+pre-state: block #104` with **three different `#104` hashes** cited by three peers, four distinct `#106`
+blocks, finality frozen at 101 for over thirteen hours, and two restart experiments that restored
+*production* and added two more heads. The clause is **true of the write-loss mechanism** (unanimous
+agreement at 103, which is why no peer refused a block there) and **false as a statement about the
+incident**, which also carries C215's shape — law **17a**. The witness likewise supplies the node-A log
+C248's residue clause 4 asked for (`ERROR Self-created block #106 (seq 106) failed validation: the block's
+rejected-deploy set does not match its parent`), so that residue is narrower than the register reads. Two
+defects in the witness itself are recorded because it is about to merge: it cites the reconciliation issue
+as **#283** (which is the #144 soft-checkpoint issue — the reconciliation utility is **#287**), and it
+labels the validators with letters rotated against the #280 capture's, so its "A and D share a host"
+conclusion is about `0410b8c5` and `04dce59b`. **Not claimed**: that the divergent heads and the write
+loss are one mechanism. The witness says the opposite is possible, #280 remains open, and the falsifier
+that would settle it is the four nodes' logs read together.
+
+**The seed catalogue, refuted in one place.** The programme's reconnaissance listed *"Unbounded
+merge-scope search — measured but not bounded"* as an R1/R2 candidate. The measurement is real and **the
+bound is too**: `SearchBudget::NODE` (10,000,000 steps / 1,000,000 options,
+`sdk/src/dag/merging.rs:280`) is applied at `casper/src/merging.rs:1825`, and *exceeding* it is exactly the
+drop the worksheet's F-U4-01 rows. What is unbounded is the **neighbouring fold** —
+`fold_rejection`/`traverse_tree` take no budget and `traverse_tree` walks with no visited set — which the
+acceptance sheet already records as H-U4-04. The seed's conclusion was right about the node and wrong
+about the site.
+
+**What is owed.** The worksheet's `owed` cells (its debt line, checked by the tool): the two silent paths'
+fixes and falsifiers, the per-node reset (F-U5-01), and 17 further rows that name a deviation and a rung
+but not yet a proof.
+
+**Provenance.** `read:` at `410af4cbf` — `casper/src/{merging.rs, dag.rs, multi_parent_casper.rs,
+interpreter_util.rs, validate.rs}`, `casper/src/blocks/{block_processor.rs, block_receiver.rs,
+block_retriever.rs}`, `casper/src/blocks/proposer/proposer.rs`, `casper/src/engine/{node_launch.rs,
+node_running.rs, node_syncing.rs}`, `casper/src/api/block_api.rs`, `casper/src/protocol/comm_util.rs`,
+`block-storage/src/dag/{finalizer.rs, liveness.rs}`, `node/src/{main.rs, api/dto.rs, api/conversion.rs,
+runtime/node_runtime.rs, runtime/node_main.rs}`, `sdk/src/dag/merging.rs`, `rspace/src/{lock.rs,
+hot_store.rs, rspace.rs, history/radix_tree.rs, history/instances/radix_history.rs}`,
+`spec/Rchain/Casper/Stranding.lean`, `spec/TYPE-SYSTEM.md` §1.7, `docs/src/formal/progress.md`,
+`docs/src/spec/testnet-acceptance.md` §1–§2, `spec/laws.tsv` (17a, 53a, 53b), the #280 capture, and the
+TE-1 witness on its branch. `ran:` `git rev-parse`, `git fetch`, `git show origin/spec/te-1-witness:<path>`,
+`grep`/`sed`/`ls`, and `tools/check-hazop-worksheet.sh` with six negative controls. `not read:` the whole
+of `merging.rs`/`dag.rs`/`multi_parent_casper.rs` (the named functions only). Every `file:line` in the
+worksheet was re-derived in this pass: the programme's plan lost its line numbers between sessions, and a
+citation is re-derived, never remapped by a delta.

@@ -33,6 +33,7 @@ deploy, and one for what a matched deploy is charged), the ρ-calculus core
 | Run a validator (hardware requirements / sizing) | [Running a validator: hardware requirements](node/validator-requirements.md) |
 | Understand what a validator is **paid** and what it can **lose** (epoch pot, slashing, the draw) | [Validator economics](node/validator-economics.md) |
 | Know whether the node is **ready for outside validators** (the testnet gate and the falsifiers that decide it) | [Testnet acceptance specification](spec/testnet-acceptance.md) |
+| Know how the node **fails**, and what it does about it (the R1–R4 ladder, the silent paths, and the recovery that does not exist) | [Failure-mode HAZOP and disposition](spec/failure-hazop.md) |
 | Build an app against a running node (deploy rholang, read responses) | [Building applications on the local devnet](developer/building-apps.md) |
 | Understand the port (why Rust, module status) | [Part V](contributor/why-rust.md) |
 | Find the machine-checked proofs | [`spec/Rchain/`](../../spec/Rchain/) (Lean), [`spec/coq/`](../../spec/coq/) (Coq) |

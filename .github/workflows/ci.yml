@@ -197,6 +197,16 @@ jobs:
         # only be satisfied by adding bookkeeping rows is the thing it exists to avoid.
         run: tools/check-review-ledger.sh --gate
 
+      - name: Hazop-worksheet gate
+        # `docs/src/spec/failure-hazop.md` claims something about *itself*: that every one of the ten
+        # study nodes dispositions all eleven IEC guide words, and that every deviation row carries a
+        # decided rung (R1–R4) and a falsifier. A claim about a document is checked by reading the
+        # document, so this is the same shape as the review-ledger gate above. It refuses an empty
+        # cell, a rung left as "R1/R2", a falsifier naming a test that does not exist *or* a symbol
+        # that does not occur in the file it names, and a debt count that disagrees with the page —
+        # because a number nothing checks is a number that rots.
+        run: tools/check-hazop-worksheet.sh --gate
+
       - name: Reducer wasm32 check
         # Issue #98: the reducer must stay compilable for `wasm32-unknown-unknown` — the in-browser
         # ZFA endgame, where every room member runs the reducer with RSpace behind a host-provided

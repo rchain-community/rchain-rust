@@ -80,6 +80,7 @@
 # Part VII — Testnet acceptance
 
 - [Testnet acceptance specification](spec/testnet-acceptance.md)
+- [Failure-mode HAZOP and disposition](spec/failure-hazop.md)
 
 ---
 
