@@ -3016,6 +3016,130 @@ mod native_merge_tests {
         );
     }
 
+    /// **The merge-level acceptance condition** (aixaria0's review on #281): two deploys in one block
+    /// write the same native slot, the **later** writer is rejected by an actual merge conflict, and the
+    /// **earlier** accepted value is what the merged state holds.
+    ///
+    /// `a_blocks_own_chains_are_ordered_and_dependent` pins the *relation* — a block's own chains are
+    /// ordered by deploy order and dependent, later on earlier. What that cannot show is the consequence
+    /// the relation exists for. Here a sibling block writes the second slot the later chain wrote, so
+    /// resolution must reject exactly one of {later, sibling}; the later chain carries the smaller cost,
+    /// so it is the one rejected — and the earlier chain's value must still be **in the merged state**,
+    /// rather than going down with its block-mate.
+    ///
+    /// **What this adds over the rejection-set tests, including the one beside it.**
+    /// `a_rejected_boundary_chain_does_not_take_its_blocks_other_chains` asserts *which* chains land in
+    /// the rejection set and says nothing about the merged state. This asserts the **value**: the earlier
+    /// chain's write is what the merged state holds for the contended slot. That is the condition a reader
+    /// of the incident actually depends on — the lost write was a *value* missing from the tip, not an id
+    /// in a set — and it is the form the pre-#280 rule fails, because `reject_whole_blocks` closed a
+    /// rejection over the whole block: the earlier chain would have been rejected as the later one's
+    /// block-mate and the slot would hold nothing at all. The inversion of
+    /// `a_rejected_native_block_loses_every_chain` into the test beside it is the witness that the old
+    /// rule did exactly that.
+    #[tokio::test]
+    async fn a_rejected_later_chain_leaves_the_earlier_ones_value_in_the_merged_state() {
+        let base_repo = empty_repo().await;
+        let base_state = base_repo.root();
+        let contended = key(21);
+        let only_later = key(22);
+
+        let host = BlockHash::new([0xa0; 32]);
+        let sibling_host = BlockHash::new([0xb0; 32]);
+
+        let chain =
+            |host: BlockHash, ordinal: u32, id: u8, cost: i64, writes: &[(Blake2b256Hash, u8)]| {
+                DeployChainIndex {
+                    host_block: Blake2b256Hash::from_bytes(*host.as_bytes()),
+                    deploys_with_cost: BTreeSet::from([DeployIdWithCost { id: vec![id], cost }]),
+                    pre_state_hash: base_state,
+                    post_state_hash: base_state,
+                    event_log_index: EventLogIndex::empty(),
+                    state_changes: StateChange::empty(),
+                    cost_moves: BTreeMap::new(),
+                    executor: String::new(),
+                    native_effects: writes
+                        .iter()
+                        .map(|(key, value)| NativeStoreAction::Put {
+                            prefix: PREFIX_POS,
+                            key: *key,
+                            value: vec![*value],
+                        })
+                        .collect(),
+                    first_deploy_ordinal: ordinal,
+                }
+            };
+
+        // The block's own two chains: both write `contended`, and the later one also writes `only_later`.
+        let earlier = chain(host, 0, 0xa1, 1000, &[(contended, 1)]);
+        let later = chain(host, 1, 0xa2, 1, &[(contended, 2), (only_later, 2)]);
+        // The sibling wrote only `only_later`, so it conflicts with the later chain and with nothing
+        // else; it carries the larger cost, so resolution rejects the later chain rather than it.
+        let sibling = chain(sibling_host, 0, 0xb1, 1000, &[(only_later, 9)]);
+
+        let block = BlockIndex {
+            block_hash: host,
+            deploy_chains: vec![Arc::new(earlier), Arc::new(later)],
+        };
+        let other = BlockIndex {
+            block_hash: sibling_host,
+            deploy_chains: vec![Arc::new(sibling)],
+        };
+        let lookup = move |h: BlockHash| {
+            let found = if block.block_hash == h {
+                Some(block.clone())
+            } else if other.block_hash == h {
+                Some(other.clone())
+            } else {
+                None
+            };
+            async move {
+                found
+                    .map(Arc::new)
+                    .ok_or_else(|| format!("no index for {h:?}"))
+            }
+        };
+        let scope = MergeScope {
+            final_scope: BTreeSet::new(),
+            conflict_scope: BTreeSet::from([host, sibling_host]),
+            ancestry: BTreeMap::new(),
+        };
+        let outcome = MergeScope::merge(
+            &scope,
+            base_state,
+            &BTreeMap::<Blake2b256Hash, FringeData>::new(),
+            &base_repo,
+            &lookup,
+            DeployChainIndex::deploy_chain_cost,
+        )
+        .await
+        .expect("a block whose own chains share a slot, beside a conflicting sibling, merges");
+
+        assert_eq!(
+            outcome.rejected_deploys,
+            BTreeSet::from([vec![0xa2u8]]),
+            "the later chain is rejected, and only it"
+        );
+        let reader = base_repo.get_history_reader(outcome.state).await;
+        assert_eq!(
+            reader
+                .get_native(PREFIX_POS, contended)
+                .await
+                .expect("a readable native slot"),
+            Some(vec![1]),
+            "so the merged state holds the **earlier** chain's value: the later chain's rejection \
+             cannot take a write it never made"
+        );
+        assert_eq!(
+            reader
+                .get_native(PREFIX_POS, only_later)
+                .await
+                .expect("a readable native slot"),
+            Some(vec![9]),
+            "and the sibling that won the contended slot keeps its write"
+        );
+    }
+
     #[tokio::test]
     async fn a_merge_carries_the_native_writes_of_the_branches_it_merges() {
         // A base state that already holds a native leaf, so the test also shows the merge keeps the
