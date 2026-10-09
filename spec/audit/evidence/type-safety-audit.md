@@ -340,6 +340,13 @@ the size-derived tier.
 | 8 | `node/src/configuration/commandline/config_mapper.rs :: Hocon::Integer(v.as_nanos() as i64)` (`:55`) | narrowing | a CLI duration's `as_nanos()` (`u128`) truncated to `i64`; > ~292 years yields a wrong, possibly negative, nanosecond count | round-trip `Duration::from_secs(1<<62)` through `parse_duration` | config | silent-wrong-value | Void | R2 |
 | 9 | `models/src/wire.rs :: bitset.iter().map(\|e\| *e as usize).max()` (`:26`), `let e = e as usize;` (`:34`) | sign | `BitSet` positions are `i32` cast to `usize` with no sign check; a negative position makes `num_words = max/64+1` a huge allocation and `words[e/64]` an out-of-range index — bounded only by an unenforced "positions ≥ 0" invariant | `wire.rs`: `bitset_to_bytes(&[-1])` | process | **panic-kill** | Terminal | R1 |
 
+**Rows 1–2 were refuted, and the refutation is worth more than the rows were.** Neither `u16` count can be
+large — the outer is capped at `MAX_BLOCK_DEPLOYS = 255` and **the inner is identically 0** — so the
+truncation cannot fire (E7). But the reason the inner is 0 is a finding of its own: **the mergeable-channel
+mechanism is inert** (E8) — `EvaluateResult.mergeable` is empty at every construction site and the reducer's
+own collection is **dead code**, a divergence from the Scala oracle. So the codec's missing trailing-bytes
+check is a live trap behind a dormant feature: wire the collection up and E7 becomes real.
+
 **L3's second mandate returned a negative result, and it is worth as much as a finding.** It swept the
 **unflattened** fallible-conversion family — `try_into`/`try_from`/`.parse` whose error is discarded by a
 *other* spelling (`.ok()`, `unwrap_or(MAX)`) — found **~20 sites and no defect**: every `.ok()` is mapped to
@@ -574,6 +581,13 @@ reading it — which is what the stage is for.
 | **E6a** | **there is no mechanism whose job is to notice a detached task's death** | L5 | the absence, established positively rather than asserted: no `JoinSet`/`TaskTracker`/`task::Builder` in `node`, `casper` or `comm` (the only `JoinSet`s are a *local* accept-task set inside the already-awaited `serve_ocapn`, `node/src/api/ocapn.rs:871`, and rholang's reducer); no `is_finished()` outside tests; no `std::panic::set_hook` anywhere; no production `catch_unwind`; no `panic = "abort"` in any `Cargo.toml` | **CONFIRMED** — and it is the cluster's real finding, stronger than any row | a supervisor, a task registry, or a health poll | its own unit |
 | **E6b** | whether a dead downstream is *noticed* is a **per-edge accident** | L5 | sibling producers discard the **identical** error where others log it: `out_tx` (`block_receiver.rs:542`, `:688`), `processor_input_tx` (`node_runtime.rs:791`), `validated_tx` (`block_processor.rs:193`) and `tap_tx` (`node_runtime.rs:2994`) are bare `let _ = `, while the router and the shard's ingress log `is_err()`. So the signal exists on some edges and is thrown away on their siblings | **CONFIRMED** | a convention or lint that a closed-channel send is always surfaced | folds into E6a's unit |
 
+### The refutation that found a dormancy instead
+
+| # | claim | source | deciding artifact | verdict | falsifier (direction) | trk |
+|---|---|---|---|---|---|---|
+| E7 | a `u16` mergeable-length prefix can truncate into a **silent partial merge** | L3 (#1/#2) | **REFUTED — and not by economics.** The codec *has* the property: its decode loop (`rholang/src/merging.rs:259-278`) reads `count` then consumes what it can with **no trailing-bytes check** (unlike the `u32` native-changes sidecar, which refuses them at `:459`). But neither count can be large: the **outer** is bounded by `MAX_BLOCK_DEPLOYS = 255` (`casper/src/blocks/proposer/proposer.rs:622`, enforced in `casper/src/validate.rs:642-651`, and the merge refuses a mismatch at `merging.rs:767-771`), and the **inner is identically 0** — see E8 | **REFUTED** | **wiring the dead `merge_chs` into `EvaluateResult.mergeable`** (E8's one-line port of the Scala reducer's `mergeableChannels`): the per-deploy count then becomes user-controlled, and the refuter's own arithmetic puts 65 536 inside one deploy's budget (holding it out at `MAX_BLOCK_PHLO = 25_500_000_000` would need ≥ 389 099 phlo per channel; the actual cost is a few dozen), at which point the truncation is live and the missing trailing-bytes check makes it **silent** | |
+| **E8** | **the mergeable-channel mechanism is inert — a divergence from the oracle** | refutation of E7 | `DeployMergeableData.channels` is `[]` for every deploy: `EvaluateResult.mergeable` (`rholang/src/evaluate_result.rs:16`) is `BTreeSet::new()` at **every one of its 15 construction sites** and is never mutated (play, replay, reporting, casper's two managers), and the reducer's own collection — `update_mergeable_channels`'s `merge_chs` (`rholang/src/reduce.rs:3089`) — is **written and never read anywhere in the workspace** (its only three occurrences are the push sites, and there is no getter). So `get_number_channels_data` returns an empty map and the merge-side fold `for (k, v) in &b.event_log_index.number_channels_data` (`casper/src/merging.rs:2010`) iterates nothing | **CONFIRMED** | a deploy that reports a mergeable channel — which today is impossible | **its own C-row** — it is a `spec/AUDIT.md` §6 **Scala deviation** (the oracle's reducer returns `mergeableChannels`; this port collects them and drops them) *and* the precondition of E7 |
+
 ### The confirmed defect, with an observed artifact
 
 | # | claim | source | deciding artifact | verdict | falsifier (direction) | trk |
@@ -732,6 +746,7 @@ What the six lenses established, in one line each:
 | **E2** | the published `poison_recoveries()` sees **0 of 77** production recoveries, so the surface added to end the silence itself under-reports | accounting | the refutation's count, and `rlock`/`wlock`/`mlock` being `pub(crate)` |
 | **E6** | **six** detached tasks die silently (of thirteen claimed; seven have a named observer) | process | per-site observers, and their absence |
 | **E6a** | **there is no supervisor at all** — the observation that exists is a per-edge accident of whether an author wrote `is_err()` or `let _ =` | structural | the absence: no `JoinSet`, no registry, no `is_finished()`, no hook, no `catch_unwind` |
+| **E8** | **the mergeable-channel mechanism is inert** — `EvaluateResult.mergeable` is empty everywhere and the reducer's collection is dead code, a **divergence from the Scala oracle**, and the reason E7 is refuted | dormant feature / oracle divergence | `evaluate_result.rs:16`, `reduce.rs:3089`, `merging.rs:2010` |
 
 **What the audit corrects in the record — its own and the repository's.**
 

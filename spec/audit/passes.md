@@ -7984,3 +7984,133 @@ C251's row records the sweep and its falsifier is the gate, which CI runs on eve
 pass: it read *behaviour* — what a node does when a store fails — and the erasure is a **shape**, visible
 only by reading the call. `docs/src/spec/failure-hazop.md` §6 item 6 records the first instance
 (F-U4-05's `Ord`/`Eq` disagreement); this is the argument for the pass the worksheet still owes.
+
+---
+
+## 75. The type-safety audit: the census, the classification, and the rules it yields (C252, C253)
+
+**What was asked.** A **multi-agent audit** of every non-type-safe construct in the port — the `unwrap`
+family (`expect`, `unwrap_or*`, `.ok()`, `let _ =`) and its relatives (`as` casts, slicing, arithmetic,
+`Deref`/`get`/`into_inner` escapes, lock poisoning, ignored `JoinHandle`s) — producing a classified
+inventory and, for every class that survives, a rule that **fails the build** rather than a paragraph that
+reads well.
+
+**Why it needed doing, in the repository's own words.** `docs/src/node/security-audit.md` §5: *"The computed
+gates are weaker than they read. The type-system gate's counted classes — `cast`, `lax`, `get`, `index`,
+`div`, `overflow` — are reported and **not enforced**; the ratchet that once failed the build is no longer
+wired. … Nothing in the register asks what an attacker pays."*
+
+**The method, taken unchanged** from that same page §1 — three stages (lenses that must produce a
+reproduction or nothing; a *second* agent per candidate instructed to refute; grading with a falsifier),
+three verdicts (`CONFIRMED` / `NOT-RE-ESTABLISHED` / `REFUTED`, where only `REFUTED` removes a finding and it
+must carry a **positive artifact**) — with the artifact form from `spec/audit/evidence/n117-audit.md`.
+
+**Stage 0 — the census was *taken*, not re-derived** (`spec/audit/evidence/type-safety-audit/census.txt`,
+973 lines, `tools/audit-type-system.sh --sites`). The gate already enumerates ~880 counted rows keyed on site
+text; a lens that "discovers" a `.unwrap` the `panic` class names has spent an agent to rebuild an artifact
+the repository owns. **Three instrument findings came out of the census itself, and a fourth was refuted:**
+
+- **(I1)** — the baseline is stale by 128 sites and read by nothing.** `tools/type-system-baseline.tsv` says
+  `cast` 331 / `index` 316 / `div` 54; the gate measures **358 / 397 / 74**. The ratchet was deleted
+  2026-09-27, `ratchet_failures` is declared and never incremented, and the run says *"count that moved is
+  worth a look"* to nobody.
+- **(I2)** — the `panic` zero is an allow-list.** 30 sites, 29 entries. C97 is the gate's own record of why that
+  is not "no reachable panic": four sites were green *"because an allowlist entry keyed on the *site* cannot
+  see whether a caller supplies wire bytes."*
+- **(I3)** — the site key is coarser than a site.** The gate keys on `(path, text)`; a site is a line; **59 keys
+  are shared by two or more rows** (`blake2b512_random.rs:42` and `:240` are the same text, 198 lines apart).
+  An allow-list entry's evidence window (`[line−25, line+8]`) is around *one* line, so for the second row it
+  can read as evidenced while never being checked.
+- **TSA-5 — refuted by the auditor.** The listing/count gap of 3 is **not** an instrument defect of the
+  `SITE_AWK`-vs-`COUNT_AWK` class: three census rows have no space after the colon
+  (`models/src/murmur_hash3.rs:7:const PRODUCT_SEED: …`), and 355 + 3 = 358. Recorded because the next
+  reader will make the same mistake, and because a claim about an instrument needs the instrument's own
+  output as its artifact.
+
+*The `(I#)` and `(E#)` labels below are this pass's own finding names, not register C-numbers — the
+register rows are C252–C256, and the gate that refuses an undeclared register row is right to refuse a
+bullet shaped like one.*
+
+**Stage 1 — six lenses, 57 candidates.** Panics and the counted mass (1); silent defaulting and erasure
+(15); numeric conversion and width (9); refinement escape hatches (6); concurrency partiality (18); the
+wasm32 target (8). Each stated its own input domain, and three of the six ended in a **hole in a boundary**
+rather than a defect in a site: the escape gate's roster (L4), the absence of any supervisor for a detached
+task (L5), and whether a second compilation target ships (L3/L6).
+
+**Stage 2 — seven refutations, and they narrowed more than they confirmed.**
+
+- The **wasm32 target is executed**, not merely compiled (CI's `Reducer wasm32 tests` step runs the reducer
+  on the target under a configured `wasm-bindgen-test-runner`, and `rholang/tests/wasm_reduce.rs` drives
+  `rt.evaluate(…)`), so the width family is **live** and its dispositions stay R1 — with the caveat that the
+  corpus *reaches* the four bypassed methods without calling them.
+- The **poison-accounting count is 77**, not 8 (L5) and not 49 (L2): both used the narrow inline
+  `.lock().unwrap_or_else(|p| …)` spelling and L5 additionally scoped to `rspace`; L2's own breakdown sums to
+  50 while its headline says 49, and it has no `comm` rows at all. **No site is counted** — `rlock`/`wlock`/
+  `mlock` are `pub(crate)`, so no non-`rspace` site *can* increment. Reachability at the named sites is
+  `NOT-RE-ESTABLISHED`, deliberately **not** folded into the confirmed row (their in-guard bodies are pure
+  in-memory operations with no panic source).
+- **(E3)** — `revalidated_record(&stored, outcome.ok())` — **CONFIRMED**: `ValidateError::Internal` is
+  constructible **four ways** (`multi_parent_casper.rs:855`, `:865`, `:894`, `:907`), none of those helpers
+  logs before returning, and the `None` arm (`:640`) provably carries `validation_failed: true`. One clause
+  **narrowed**: "the reason is never logged" fails for the replay sub-case, whose cause is logged at
+  `interpreter_util.rs:685`.
+- **(E4)** — the genesis bonds/private-key write discard — **CONFIRMED and scoped narrower than the lens
+  claimed**: the fresh-key hazard belongs to the **standalone/ceremony** node (`conf.standalone`); a
+  non-ceremony node is protected twice (`genesis/mod.rs:128`, `:130`).
+- **(E6)** — of 13 claimed silent task deaths, **7 have a named observer** (the block pipeline's queue-observer
+  Drop guard, the router's and the shard's ingress WARNs, the propose queue's) and **6 stand**; the
+  structural claim is the one that matters and it **stands** — no `JoinSet` (outside a local accept-set and
+  the reducer), no registry, no `is_finished()` outside tests, no hook, no production `catch_unwind`.
+- **(E5)** — the `silent` rule is narrower than the class it names**, and the refuter **specified the
+  extension**: `let\s+([A-Za-z_]\w*)\s*=[^;]*\.await(?:\s|\d+\t)*;[\s\S]*?\b\1\.ok\(\)`, a backreference that
+  keeps `.await` provenance, additive to the chain form and matching **none** of the other ~60 production
+  `.ok()` sites — so it needs **no allow-list**.
+- **(E1)** — observed, not argued.** A probe reduced `"aéa".hexToBytes()` through the real evaluator and panicked
+  at `rholang/src/reduce.rs:1102:39`, *"end byte index 2 is not a char boundary"*, unwinding out of a
+  `Result`-returning path with nothing catching it. The trace is complete to the deploy term, and **neither
+  gas nor arity guards it**.
+
+**The confirmed defects, and what each implies.** **E1** — an ingress panic (a deploy kills the node); R1,
+because `hex_decode` can read `s.as_bytes()` instead of slicing, which makes the panic unrepresentable and
+lands on the function's own `ReduceError` arm. **E2** — the surface added to end the poison silence sees
+**0 of 77** recoveries, so the fix must route them through the accessors *before* a rule forbids the raw
+pattern. **E3** — an internal fault recorded as a validation verdict, on the validation and restore paths.
+**E4** — a ceremony hazard. **E6/E6a** — six silent task deaths and **no supervisor at all**; and the sharpest
+detail the audit found: whether a dead downstream is *noticed* is a **per-edge accident** of whether the
+author wrote `is_err()` or `let _ =`, with sibling producers discarding the identical error.
+
+**What the audit's rules can and cannot do.** Adoptable now: the raw poison pattern (after routing), the
+escape gate's **roster scope** (`G2` derives brace-form refinements in roster files only — which is how
+`NodeIdentifier` and `Blake2b512Block` stayed invisible), and the erasure rule's **specified** binding-form
+extension. **One class cannot be text-gated at all**, and the audit says so rather than shipping a rule that
+fails open: `.unwrap_or_default()` / `.unwrap_or(…)` / `let _ = ` on a `Result`, because `unwrap_or` on an
+`Option` is total and only the *type* separates them — L2 removed ~220 of 270 candidates by reading each
+receiver. For that class the levers are the **compiler's own lints** (`unwrap_used`,
+`clippy::let_underscore_must_use` — enabled nowhere in this tree and never told to look away) or per-site
+adjudication, which is what the artifact is. Every rule gets a **probe pair** run by an agent that did not
+write it.
+
+**What this pass cannot claim.** ~520 "contained" verdicts are **readings of guards, not runs** — one
+artifact in the audit is a run (E1's probe) and the rest is read code. `dead` vs `config` is unresolved for
+three rows because `-A dead-code` is workspace-wide and a green build says nothing about whether a knob is
+wired. Nothing was driven live: no peer socket, no corrupted store, no hostile host, no browser tab.
+
+**Provenance.** `read:` the gate and its baseline, `spec/TYPE-SYSTEM.md` §1.6/§1.7/§3.2, the register, the
+worksheet, `security-audit.md` §1/§5, `n117-audit.md`, ~380 production files across 13 crates.
+`ran:` `tools/audit-type-system.sh` (report and `--sites`), the census capture, and **one probe test** (E1,
+removed afterwards; `git status` clean). `not read:` the whole of `rholang/src/reduce.rs`,
+`casper/src/multi_parent_casper.rs`, and the ~200 method arms L1 sampled.
+
+**Addendum — the last refutation, and it found a dormancy.** L3's rows 1–2 (a `u16` mergeable-length prefix
+that truncates into a silent partial merge) were **REFUTED**, and not by economics: the **outer** count is
+bounded by `MAX_BLOCK_DEPLOYS = 255` and **the inner count is identically 0**. The reason is the finding —
+`EvaluateResult.mergeable` is `BTreeSet::new()` at every one of its 15 construction sites and never mutated,
+and the reducer's own collection (`merge_chs`, `rholang/src/reduce.rs:3089`) is **written and never read
+anywhere in the workspace**: the mergeable-channel mechanism is **inert**, a divergence from the Scala
+oracle whose reducer returns `mergeableChannels`. So the codec's missing trailing-bytes check is a live trap
+behind a dormant feature — wiring the collection up makes 65 536 channels affordable (the refuter's
+arithmetic: ≥ 389 099 phlo per channel would be needed to hold it out at `MAX_BLOCK_PHLO`) and the
+truncation silent. Recorded as **C256** (`todo`, with the decision as its close condition). It is also the
+cleanest example of why the refutation stage exists: the lens graded the row **R1** in good faith, and the
+refuter's answer was neither "confirmed" nor "refuted for the reason you gave" but *"the mechanism you are
+reasoning about is not wired"*.
