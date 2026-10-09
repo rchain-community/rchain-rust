@@ -67,7 +67,8 @@ def envelopeCatalog : List EnvelopeRow :=
       keys := ["version", "address", "networkId", "shardId", "peers", "nodes", "minPhloPrice",
         "latestBlockNumber", "autopropose", "proposeOnDeploy", "manualPropose", "adminHttp", "devMode",
         "consecutiveSelfValidationFailures", "autoproposeTimerHalted",
-        "staleSnapshotSelfEquivocations"] }
+        "staleSnapshotSelfEquivocations", "finalityStall", "finalityStallEpisodes",
+        "nonQuietMergeReports", "poisonRecoveries"] }
   , { name := "NodeCapabilities", endpoint := "GET /api/v1/capabilities",
       keys := ["autopropose", "proposeOnDeploy", "manualPropose", "adminHttp", "devMode", "faucet"] }
   , { name := "LightBlockInfo", endpoint := "the `block` field of most responses",

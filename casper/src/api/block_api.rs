@@ -125,6 +125,27 @@ impl ProposeHealth {
     }
 }
 
+/// The merge and finality observations a node can report, in the [`ProposerHealth`] shape.
+///
+/// **Why this is a surface at all.** The finality-stall *reason* and the merge's report both reached the
+/// **log** and nothing else: a node that had stopped advancing said so only to whoever was reading
+/// stderr, and the incident that started the failure-mode audit produced no counter and no line
+/// anywhere. These are the values the status surface carries (C249's F-U10-01 and F-U4-02); the statics
+/// that back them live beside their writers in `crate::interpreter_util`.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct FinalityHealth {
+    /// The reason finality is not advancing, as last observed — `None` when the last observation saw a
+    /// merge that advanced. **Not** a health verdict: it reports the gate's own reason when there is
+    /// one, and says nothing when there is not.
+    pub stall_reason: Option<String>,
+    /// How many times this process has **entered** a stall, monotone — so a reader can tell "stalled
+    /// now" from "stalled and recovered" without watching.
+    pub stall_episodes: u64,
+    /// Merges whose report was not quiet: a dropped chain, or an invariant violation (#280). The log
+    /// carries the detail; this is the number the live incident would have moved.
+    pub non_quiet_merge_reports: u64,
+}
+
 /// The block API (port of `BlockApi[F]`). Implementations read from the block store/DAG and drive
 /// propose via the runtime.
 #[async_trait]
@@ -149,6 +170,21 @@ pub trait BlockApi: Send + Sync {
     /// implementation that matters is `BlockApiImpl`'s, which reads the live cell the proposer writes.
     async fn proposer_health(&self) -> ProposerHealth {
         ProposerHealth::default()
+    }
+
+    /// C249's F-U10-01: the merge's and finality's observations.
+    ///
+    /// **The default reads this process's own counters rather than defaulting to `Default`**, and that
+    /// differs from [`proposer_health`](Self::proposer_health) on purpose. Proposer health is a per-shard
+    /// *cell* an implementation must hold, so a stub has nothing real to report; these are process-wide
+    /// statics that the validation path writes, so reading them is correct for every implementation and
+    /// a stub reports the truth rather than a polite zero.
+    async fn finality_health(&self) -> FinalityHealth {
+        FinalityHealth {
+            stall_reason: crate::interpreter_util::finality_stall_reason(),
+            stall_episodes: crate::interpreter_util::finality_stall_episodes(),
+            non_quiet_merge_reports: crate::interpreter_util::non_quiet_merge_reports(),
+        }
     }
 
     async fn create_block(&self, is_async: bool) -> ApiErr<String>;

@@ -266,6 +266,10 @@ fn dto_by_name(name: &str) -> Value {
             consecutive_self_validation_failures: 0,
             autopropose_timer_halted: false,
             stale_snapshot_self_equivocations: 0,
+            finality_stall: None,
+            finality_stall_episodes: 0,
+            non_quiet_merge_reports: 0,
+            poison_recoveries: 0,
         }),
         "NodeCapabilities" => to_json(&NodeCapabilities {
             autopropose: false,

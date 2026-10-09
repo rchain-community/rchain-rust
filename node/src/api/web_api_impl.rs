@@ -565,7 +565,17 @@ impl WebApi for WebApiImpl {
         let status = self.block_api.status().await;
         let caps = self.block_api.capabilities().await;
         let health = self.block_api.proposer_health().await;
-        Ok(to_api_status(&status, &caps, &health))
+        // C249's F-U10-01: the merge's and finality's observations, which reached the log and nothing
+        // else — plus the poisoned-lock count, read from `rspace` because the poisoning is a
+        // storage-layer event and the count is process-wide (F-U9-03).
+        let finality = self.block_api.finality_health().await;
+        Ok(to_api_status(
+            &status,
+            &caps,
+            &health,
+            &finality,
+            rchain_rspace::lock::poison_recoveries(),
+        ))
     }
 
     async fn deploy(&self, request: &DeployRequest) -> Result<String, BlockApiException> {

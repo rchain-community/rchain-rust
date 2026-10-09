@@ -103,6 +103,22 @@ pub struct ApiStatus {
     /// does not count toward the timer halt; it is reported so a node that never recovers from the race
     /// is still visible.
     pub stale_snapshot_self_equivocations: u64,
+    /// C249's F-U10-01: **why** finality is not advancing, as the merge gate last reported it. The
+    /// reason existed only on stderr — a node that had stopped advancing said so to whoever was reading
+    /// the log, and to nothing a probe could ask. `None` when the last observation saw a merge that
+    /// advanced; that is not "healthy", it is "the gate reported no reason".
+    pub finality_stall: Option<String>,
+    /// …and how many times this process has entered a stall, so a reader can tell "stalled now" from
+    /// "stalled and recovered" without watching.
+    pub finality_stall_episodes: u64,
+    /// #280's ledger, counted: merges that returned a report which was not quiet — a dropped chain, or a
+    /// violated invariant. The live incident produced no counter and no line anywhere moving; this is
+    /// the number it would have moved, and the log still carries the detail.
+    pub non_quiet_merge_reports: u64,
+    /// A poisoned lock was recovered from, which means a panic happened while shared state was held.
+    /// Monotone and process-wide, because the poisoning is: the panic happened in whichever thread held
+    /// the guard (`rspace::lock`). Counted rather than silently absorbed, which is F-U9-03.
+    pub poison_recoveries: u64,
 }
 
 /// The node's capabilities, returned by `GET /api/v1/capabilities` (the app-facing "can I propose /
@@ -226,6 +242,10 @@ mod tests {
             consecutive_self_validation_failures: 0,
             autopropose_timer_halted: false,
             stale_snapshot_self_equivocations: 0,
+            finality_stall: None,
+            finality_stall_episodes: 0,
+            non_quiet_merge_reports: 0,
+            poison_recoveries: 0,
         };
         assert_eq!(status.min_phlo_price, 3);
         assert_eq!(status.latest_block_number, 4);

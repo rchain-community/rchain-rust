@@ -935,7 +935,11 @@ pub const OPENAPI_JSON: &str = r##"{
           "devMode": { "type": "boolean", "description": "Dev mode is on" },
           "consecutiveSelfValidationFailures": { "type": "integer", "format": "int64", "description": "Self-validation failures the proposer has recorded in a row; cleared by a successful propose" },
           "autoproposeTimerHalted": { "type": "boolean", "description": "The autopropose timer has stopped and will not restart until the process does. Not the same as block production having stopped: the tap and POST /api/propose keep running" },
-          "staleSnapshotSelfEquivocations": { "type": "integer", "format": "int64", "description": "Times the node's own block collided with its already-synced block at a sequence number derived from a stale parent set. Not a self-validation failure, so it does not halt the timer" }
+          "staleSnapshotSelfEquivocations": { "type": "integer", "format": "int64", "description": "Times the node's own block collided with its already-synced block at a sequence number derived from a stale parent set. Not a self-validation failure, so it does not halt the timer" },
+          "finalityStall": { "type": "string", "nullable": true, "description": "Why finality is not advancing, as the merge gate last reported it, with the numbers that make it a diagnosis (supporting stake, partitions, candidates). Null when the last observation saw a merge that advanced — which is not the same as healthy" },
+          "finalityStallEpisodes": { "type": "integer", "format": "int64", "description": "Times this node has entered a finality stall, monotone, so 'stalled now' is distinguishable from 'stalled and recovered'" },
+          "nonQuietMergeReports": { "type": "integer", "format": "int64", "description": "Merges whose report was not quiet: a chain dropped, or an invariant violated. The log carries the detail; this is the count the live incident would have moved" },
+          "poisonRecoveries": { "type": "integer", "format": "int64", "description": "Times a poisoned lock was recovered from, which means a panic happened while shared state was held. Process-wide and monotone" }
         }
       },
       "DeployData": {
@@ -1552,6 +1556,12 @@ mod tests {
             consecutive_self_validation_failures: 0,
             autopropose_timer_halted: false,
             stale_snapshot_self_equivocations: 0,
+            // The "nothing to report" arm of each new field, which is what a healthy node answers: no
+            // stall reason, no episodes, no non-quiet merge, no poison recovered from.
+            finality_stall: None,
+            finality_stall_episodes: 0,
+            non_quiet_merge_reports: 0,
+            poison_recoveries: 0,
         }
     }
 

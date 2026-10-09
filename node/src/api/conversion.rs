@@ -1,6 +1,6 @@
 //! Web API protobuf conversion functions (port of the conversion fns in `api/WebApi.scala`).
 
-use rchain_casper::api::block_api::{Capabilities, ProposerHealth};
+use rchain_casper::api::block_api::{Capabilities, FinalityHealth, ProposerHealth};
 use rchain_casper::runtime_manager::CapturedReply;
 use rchain_crypto::public_key::PublicKey;
 use rchain_crypto::signatures::signatures_alg::from_algorithm;
@@ -28,7 +28,13 @@ use super::rho_expr::{expr_from_par, RhoExpr};
 /// stopped. `Status` is the wrong home for it for a second reason: that struct is a wire type with a
 /// protobuf counterpart, so adding a field there would force a schema change for a value the gRPC
 /// surface has no use for.
-pub fn to_api_status(status: &Status, caps: &Capabilities, health: &ProposerHealth) -> ApiStatus {
+pub fn to_api_status(
+    status: &Status,
+    caps: &Capabilities,
+    health: &ProposerHealth,
+    finality: &FinalityHealth,
+    poison_recoveries: u64,
+) -> ApiStatus {
     ApiStatus {
         version: VersionInfo {
             api: status.version.api.clone(),
@@ -49,6 +55,10 @@ pub fn to_api_status(status: &Status, caps: &Capabilities, health: &ProposerHeal
         consecutive_self_validation_failures: health.consecutive_self_validation_failures,
         autopropose_timer_halted: health.autopropose_timer_halted,
         stale_snapshot_self_equivocations: health.stale_snapshot_self_equivocations,
+        finality_stall: finality.stall_reason.clone(),
+        finality_stall_episodes: finality.stall_episodes,
+        non_quiet_merge_reports: finality.non_quiet_merge_reports,
+        poison_recoveries,
     }
 }
 
@@ -222,7 +232,14 @@ mod tests {
             autopropose_timer_halted: true,
             stale_snapshot_self_equivocations: 5,
         };
-        let api = to_api_status(&status, &caps, &health);
+        let finality = FinalityHealth {
+            stall_reason: Some(
+                "a layer exists but its supporting stake is not a supermajority".to_string(),
+            ),
+            stall_episodes: 7,
+            non_quiet_merge_reports: 2,
+        };
+        let api = to_api_status(&status, &caps, &health, &finality, 11);
         assert_eq!(api.version.api, "1.0");
         assert_eq!(api.address, "addr");
         assert_eq!(api.min_phlo_price, 3);
@@ -234,6 +251,21 @@ mod tests {
         assert!(api.autopropose_timer_halted);
         // #156: the stale-snapshot count is carried too, distinct from the halt.
         assert_eq!(api.stale_snapshot_self_equivocations, 5);
+        // C249's F-U10-01: the *reason* finality is not advancing reaches the surface rather than only
+        // the log. It is a `String` and not a flag because the diagnosis is in the numbers it carries
+        // ("400 of 800", "4 full partitions among 4 candidates") — which is why the log line was worth
+        // having and why a probe could not ask for it.
+        assert_eq!(
+            api.finality_stall.as_deref(),
+            Some("a layer exists but its supporting stake is not a supermajority")
+        );
+        // …with the episode count beside it, so "stalled now" is distinguishable from "recovered".
+        assert_eq!(api.finality_stall_episodes, 7);
+        // #280's ledger, counted: the number the live incident would have moved, and now a fifth source
+        // rather than the third — the merge's own report, not the proposer's health.
+        assert_eq!(api.non_quiet_merge_reports, 2);
+        // F-U9-03: a poisoned-lock recovery is reported rather than absorbed.
+        assert_eq!(api.poison_recoveries, 11);
     }
 
     #[test]
