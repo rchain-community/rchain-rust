@@ -1,11 +1,13 @@
 # Failure-mode HAZOP and disposition
 
-**Reviewed revision.** `hazop/failure-modes`, branched from `410af4cbf` — the tip of
-`fix/n280-merge-loses-a-write` (PR #281), which is `dev` (`777f7e65a`) plus the **C248** fix and its
-evidence. Every `file:line` below was read at that revision *during this pass*, not inherited: the
-programme's own plan lost its line numbers between sessions, and the repository's rule
-(`spec/audit/evidence/ocapn-hazop.md` §6, hypothesis **R4**) is that a citation is re-derived, never
-remapped by a delta.
+**Reviewed revision.** `dev` at the merge of #281 (`5fc591e33`) — the tree every `file:line` below was
+**re-derived** against. The pass began on that branch (`410af4cbf`, the tip of
+`fix/n280-merge-loses-a-write`), and the citations were re-derived a second time after the branch was
+squash-merged, because the fix for CI's hang moved `casper/src/merging.rs` by ~28 lines and this
+repository's rule is that a citation is re-derived, never remapped by a delta
+(`spec/audit/evidence/ocapn-hazop.md` §6, hypothesis **R4**). That rule paid for itself here: the drift
+was 26 lines at one end of the file and 28 at the other, so a delta would have been wrong in both
+directions.
 
 **Why this study exists.** A merge lost a committed deploy's write at an epoch boundary, **unanimously,
 with no counter and no log line anywhere moving** — four nodes agreeing on a state that three rounds
@@ -132,7 +134,7 @@ CH-U3-03, which this pass does not reopen). The folds are its folds.
 **Design intent.** The merge of a branch set is deterministic, order-independent, and declines safely
 when its budget is exhausted.
 
-**Guide words.** row: MORE, AS WELL AS, OTHER THAN · folded: NO → MORE, BEFORE → LATE, AFTER → LATE · vacuous: REVERSE, EARLY · owed: LESS, PART OF, LATE
+**Guide words.** row: MORE, AS WELL AS, OTHER THAN, PART OF · folded: NO → MORE, BEFORE → LATE, AFTER → LATE · vacuous: REVERSE, EARLY · owed: LESS, LATE
 
 The vacuity reasons are the acceptance sheet's (§1 U4: a `min` over a materialised `BTreeSet` has no
 order to reverse; the search is a synchronous pure function metered in work units, not time).
@@ -141,9 +143,11 @@ order to reverse; the search is a synchronous pure function metered in work unit
 
 | ID | Guide word | Deviation | RCA → causal chain | Current behaviour | Class | Disposition | Falsifier |
 |---|---|---|---|---|---|---|---|
-| **F-U4-01** | MORE | A **search-budget refusal, a native-relation refusal and a number-channel overflow all become one drop with no re-queue** — the node cannot advance at that height until the scope shrinks (H-U4-01) | the three refusals are `Err(String)` inside `MergeScope::merge` (`casper/src/merging.rs:1848`, `:1613`, `:1986`) → `validate_block_checkpoint` carries them out (`casper/src/interpreter_util.rs:485`) → `validate_block` maps them to `ValidateError::Internal` (`casper/src/multi_parent_casper.rs:850`) → `block_processor::apply` logs and `continue`s (`casper/src/blocks/block_processor.rs:168`), and the comment there states that no deferral loop is intended for this class | **loud** (`log.error`, `block_processor.rs:172`) and **actionless**: nothing retries, nothing re-queues | Terminal | R2 + R3 | owed: a test that a refused merge is re-queued rather than dropped (the search *budget* test exists — `sdk/src/dag/merging.rs:a_budget_refuses_without_answering_and_never_changes_the_answer` — but it witnesses the refusal, not the recovery) |
-| **F-U4-02** | AS WELL AS | **The merge's two invariants are computed, reported and not enforced** — a merge that violates I1 or I2 still returns a state hash | I1 (every rejected chain conflicts with a kept one) and I2 (every kept chain's write is in the batch) are computed into `MergeReport` (`casper/src/merging.rs:1931`, `:1948`) and `MergeOutcome` is returned unconditionally right after (`casper/src/merging.rs:1955`) → the only consumer is `describe()`/`is_quiet()` (`casper/src/merging.rs:299`, `:322`) → the caller logs it when non-quiet (`casper/src/interpreter_util.rs:534`) | loud (`log.warn`, not rate-limited) but **informational**: the violating state is used | Void | R2 | owed: a counter for a non-quiet `MergeReport`, surfaced where an operator reads (the fields exist; nothing counts them) |
+| **F-U4-01** | MORE | A **search-budget refusal, a native-relation refusal and a number-channel overflow all become one drop with no re-queue** — the node cannot advance at that height until the scope shrinks (H-U4-01) | the three refusals are `Err(String)` inside `MergeScope::merge` (`casper/src/merging.rs:1876`, `:1641`, `:2014`) → `validate_block_checkpoint` carries them out (`casper/src/interpreter_util.rs:485`) → `validate_block` maps them to `ValidateError::Internal` (`casper/src/multi_parent_casper.rs:850`) → `block_processor::apply` logs and `continue`s (`casper/src/blocks/block_processor.rs:168`), and the comment there states that no deferral loop is intended for this class | **loud** (`log.error`, `block_processor.rs:172`) and **actionless**: nothing retries, nothing re-queues | Terminal | R2 + R3 | owed: a test that a refused merge is re-queued rather than dropped (the search *budget* test exists — `sdk/src/dag/merging.rs:a_budget_refuses_without_answering_and_never_changes_the_answer` — but it witnesses the refusal, not the recovery) |
+| **F-U4-02** | AS WELL AS | **The merge's two invariants are computed, reported and not enforced** — a merge that violates I1 or I2 still returns a state hash | I1 (every rejected chain conflicts with a kept one) and I2 (every kept chain's write is in the batch) are computed into `MergeReport` (`casper/src/merging.rs:1957`, `:1974`) and `MergeOutcome` is returned unconditionally right after (`casper/src/merging.rs:1981`) → the only consumer is `describe()`/`is_quiet()` (`casper/src/merging.rs:299`, `:322`) → the caller logs it when non-quiet (`casper/src/interpreter_util.rs:534`) | loud (`log.warn`, not rate-limited) but **informational**: the violating state is used | Void | R2 | owed: a counter for a non-quiet `MergeReport`, surfaced where an operator reads (the fields exist; nothing counts them) |
 | **F-U4-03** | OTHER THAN | **Historical / closed — the R1 precedent.** `reject_whole_blocks` propagated one rejected chain to its *whole block*, so a rejection took chains that wrote no contended slot; the fix **deleted** the operation rather than narrowing it (C248) | the native relation was keyed on the host block (`NativeRelations::conflicting`), so at an epoch boundary every concurrent pair conflicted → the rejection closed over the block → chains died with their host | (closed) the operation no longer exists; the relation is on the chain (`DeployChainIndex::native_effects`) | Terminal | **R1** (worked precedent) | casper/src/merging.rs::a_rejected_boundary_chain_does_not_take_its_blocks_other_chains |
+| **F-U4-04** | PART OF | **Historical / closed — the second R1 precedent, and it came from #281's review, not from this pass.** A block's native effects were drained **one action per slot, credited to that slot's last writer**, so when two deploys of one block wrote the same slot the earlier deploy's write was a value no chain could reconstruct | `NativeStoreAction`'s drain kept one action per key (the trie refuses two), so the sidecar's per-chain effects held the **last** writer only → had resolution rejected that later chain and kept the earlier, the merged state could not have rebuilt the earlier's value: rejecting one chain would have silently dropped a *different* deploy's write, one layer below the defect this fix was for (and I2 could not see it, the earlier chain's slot set already having been emptied) | (closed) `Slot` carries per-deploy write **history** now, and the drain produces two views — `by_deploy`, each deploy's own last write per slot, and `all`, the checkpoint's one action per slot | Terminal | **R1** (worked precedent) | rspace/src/native_store.rs::two_deploys_writing_one_slot_keep_their_own_writes |
+| **F-U4-05** | MORE | **A type whose order disagreed with its equality made two distinct chains one key** — `DeployChainIndex` ordered by `(host_block, post_state_hash)` and compared by `deploys_with_cost`, which Rust forbids because `BTreeMap`/`BTreeSet`/`sort` read the order as the identity | the port carried the Scala split deliberately and **pinned it as a known hazard** ("visible rather than latent"); the chain-level native relation is what made it fire on an ordinary block, since two chains of one block share both host and post-state → a set of chains silently held one of them, and the dependency map it built held a key whose own value looked that key up again | realized **twice**: as a hang (how it was found — CI's job limit, not a failing assertion) and, with the loop fixed alone, as a merge that keeps one of two distinct chains — a **silent** lost chain | Terminal | **R1** (one key for `Eq`/`Ord`/`Hash`) | casper/src/merging.rs::a_chains_order_agrees_with_its_equality |
 
 ### U5 — LFS sync & join / bootstrap
 
@@ -220,7 +224,7 @@ and records a candidate deviation instead; this pass does not reopen it. The fol
 
 | ID | Guide word | Deviation | RCA → causal chain | Current behaviour | Class | Disposition | Falsifier |
 |---|---|---|---|---|---|---|---|
-| **F-U8-01** | PART OF | **`send_to_validate` swallows a store-read error** — an unreadable block in the batch is dropped with no log, no re-queue and no counter | `block_store.get(&[*hash]).await.ok()` (`casper/src/blocks/block_receiver.rs:378`) discards the `Err`; only `Some(block)` reaches `put_to_incoming_queue` (`:383`), so the hash is consumed by the batch and never re-requested | **silent** — the one genuinely silent path this pass found (no `log` call at all on the error arm) | Terminal | R2 | owed: a test that an unreadable block is logged and re-requested |
+| **F-U8-01** | PART OF | **`send_to_validate` swallows a store-read error** — an unreadable block in the batch is dropped with no log, no re-queue and no counter | `block_store.get(&[*hash]).await.ok()` (`casper/src/blocks/block_receiver.rs:377`) discards the `Err`; only `Some(block)` reaches `put_to_incoming_queue` (`:383`), so the hash is consumed by the batch and never re-requested | **silent** — the one genuinely silent path this pass found (no `log` call at all on the error arm) | Terminal | R2 | owed: a test that an unreadable block is logged and re-requested |
 | **F-U8-02** | MORE | **A full ingress queue drops the block with a warning** — `try_send(...).is_err()` covers "full" and "receiver dropped" alike, and the block is gone | `casper/src/engine/node_running.rs:664` (BlockMessage arm; the same shape at `:746` for HasBlock) warns and returns; the bounded queue is `MAX_PENDING_BLOCKS` (`node/src/runtime/node_runtime.rs:852`) | loud (`log.warn`) and **actionless**: no re-request, no back-pressure on the sender | Terminal | R2 | owed: a test that a dropped ingress block is re-requested or the peer is told to slow |
 | **F-U8-03** | NO | **The block retriever forgets a hash at capacity** — `CapacityReached` returns the state unchanged, so the hash is never recorded and never requested | `admit_hash` returns early when `state.len() >= MAX_REQUESTED_BLOCKS` (`casper/src/blocks/block_retriever.rs:116`) → `CapacityReached` is handled by a bare warn (`:227`) and the hash is neither inserted nor broadcast | loud (`log.warn`) and **forgetting**: recoverable only if a peer re-offers the same hash | Terminal | R2 | owed: a test that a capacity-reached hash is retained for a later request |
 
@@ -278,10 +282,10 @@ contested there in CH-U10-03 and this pass does not reopen it). The folds are it
  the merge    the file       the lock      the operator   the buffers
  refuses      ingests       serializes     cannot see     never shrink
     │            │              │              │              │
- F-U4-01      F-U8-01        F-U9-01        F-U10-01       F-U9-04 caches
- F-U4-02      F-U8-02        F-U9-02        F-U10-02       F-U9-05 pool
- F-U1-01      F-U8-03        F-U9-03        F-U10-03       F-U2-01 guard
- F-U5-02      F-U2-01           │              │          vs partition
+ F-U4-01..05  F-U8-01        F-U9-01        F-U10-01       F-U9-04 caches
+ F-U1-01      F-U8-02        F-U9-02        F-U10-02       F-U9-05 pool
+ F-U5-02      F-U8-03        F-U9-03        F-U10-03       F-U2-01 guard
+    │         F-U2-01           │              │          vs partition
     │            │              └──────┬───────┘              │
     └────────────┴─────────────────────┤                      │
                                        │                      │
@@ -358,12 +362,20 @@ surface is the prerequisite, not a nicety.
 5. **The programme's own seed catalogue carries a claim this pass refutes.** It listed *"Unbounded
    merge-scope search — measured (`search_census`) but not bounded"* as an R1/R2 candidate. The
    measurement is real and **the bound is too**: `SearchBudget::NODE` (10,000,000 steps / 1,000,000
-   options, `sdk/src/dag/merging.rs:280`) is applied to the merge search at `casper/src/merging.rs:1825`,
+   options, `sdk/src/dag/merging.rs:280`) is applied to the merge search at `casper/src/merging.rs:1851`,
    and *exceeding* it is precisely the drop F-U4-01 rows. What is unbounded is the **neighbouring fold**,
    which the acceptance sheet already records: `fold_rejection`/`traverse_tree` take no budget and
    `traverse_tree` walks with no visited set (H-U4-04, U4's `PART OF`, `owed` here). So the seed's
    conclusion was right about the node and wrong about the site — it pointed at the one place a budget
    already exists.
+6. **Two of the rows above were not found by this pass, and the page says so rather than implying
+   otherwise.** F-U4-04 came from #281's review and F-U4-05 from the fix for the CI hang that review led
+   to. Both deserve their row and both were missed here, and the reason is specific enough to be useful:
+   this pass looked for hazards in **behaviour** — what a node does when a store read fails, a lock is
+   poisoned, a search is refused — and neither of these is a behaviour. One is a **sidecar** that kept one
+   action per slot; the other is a **type** whose order disagreed with its equality. The class they share
+   is the one the ladder's first rung exists for, and it is reachable only by reading the types rather
+   than the control flow — which is the pass this page has not yet run.
 
 ## 7. Provenance
 
@@ -397,7 +409,7 @@ not read: the whole of `casper/src/merging.rs` (3,800+ lines), `casper/src/dag.r
 `spec/findings.tsv`'s C248 row in the register's emitted form; the remaining `spec/audit/evidence/`
 runs; and the `rspace` history and store internals beyond the named cache and lock sites.
 
-**Debt.** falsifiers owed: 19 · node-words owed: 45
+**Debt.** falsifiers owed: 19 · node-words owed: 44
 
 *(A `F-` row with an `owed` falsifier is a deviation this pass **dispositioned** but did not **prove**;
 the number above is checked against the page by `tools/check-hazop-worksheet.sh`, so it cannot rot.
