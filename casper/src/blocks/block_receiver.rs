@@ -365,22 +365,35 @@ async fn request_missing_dependencies(
 }
 
 /// Re-send stored blocks back to the incoming queue for validation (port of `sendToValidate`).
+///
+/// **A store read that fails is not "there is nothing to re-send".** The port's earlier form read with
+/// `.ok()` and dropped the error on the floor: the hash left the batch, nothing was logged, and no
+/// other path would offer it again — one of only two genuinely silent paths the failure-mode HAZOP
+/// found (C249). It is the **third site of AUDIT C67's class**, after `parents_not_stored` and
+/// `not_validated`, both of which answer `Err` and are logged by the caller; this one was the site
+/// that was missed, and it is fixed the same way rather than a third way.
+///
+/// **What stays owed is the recovery, and it is named rather than faked.** A parent that is never
+/// re-sent is a parent whose `finished` never re-runs, so the block waiting on it stays pending — a
+/// wedge, which belongs with the node-wedge work (C249's F-U5-01) rather than here. The obvious
+/// re-request does not recover it: re-admitting the hash makes a peer send a block the store already
+/// holds, and the receiver's `begin_stored` sees a block it has already processed and drops it. A
+/// recovery that does not recover is worse than the missing one, so the honest change is the loud half.
 async fn send_to_validate(
     hashes: &BTreeSet<BlockHash>,
     block_store: &BlockStore,
     put_to_incoming_queue: &(dyn Fn(BlockMessage) + Send + Sync),
-) {
+) -> Result<(), String> {
     for hash in hashes {
-        let block = block_store
+        let mut stored = block_store
             .get(&[*hash])
             .await
-            .ok()
-            .and_then(|mut v| v.pop())
-            .flatten();
-        if let Some(block) = block {
+            .map_err(|e| format!("could not read stored block {}: {e}", hash.to_hex()))?;
+        if let Some(block) = stored.pop().flatten() {
             put_to_incoming_queue(block);
         }
     }
+    Ok(())
 }
 
 /// Process incoming blocks (port of `incomingBlocks`): filter, store, resolve dependencies, and
@@ -522,12 +535,21 @@ async fn incoming_blocks(
                 request_missing_dependencies(&pending_requests, block_retriever.as_ref()).await;
             }
             if !parents_to_validate.is_empty() {
-                send_to_validate(
+                if let Err(e) = send_to_validate(
                     &parents_to_validate,
                     &block_store,
                     put_to_incoming_queue.as_ref(),
                 )
-                .await;
+                .await
+                {
+                    log.error(
+                        source,
+                        &format!(
+                            "Failed to re-send block {}'s stored parents for re-validation: {e}",
+                            block.block_hash.to_hex()
+                        ),
+                    );
+                }
             }
         }
     }
@@ -1023,6 +1045,43 @@ mod tests {
         assert!(
             err.contains("the block store is down"),
             "and the refusal must name the failure, got: {err}"
+        );
+    }
+
+    /// **A store that cannot be read is not "there is nothing to re-send"** — the third site of AUDIT
+    /// C67's class, beside the two tests above.
+    ///
+    /// `send_to_validate` re-injects a stored, validated parent so the receiver's state machine can run
+    /// `finished` for it and release the block waiting on it. It read the store with `.ok()`, so a
+    /// store failure was answered with *silence*: the hash left the batch, nothing was logged, and
+    /// nothing re-offered it (C249's F-U8-01).
+    ///
+    /// Falsifier, both forms. **Pre-fix, witnessed**: the pre-fix body was run verbatim against this
+    /// store during this change and printed `forwarded=0` — no error, no log line, nothing re-offered —
+    /// so the `expect_err` below fails on exactly the old behaviour. Post-fix: an `Err` naming the
+    /// failure — and still nothing forwarded, because a failed read is not a re-send.
+    #[tokio::test]
+    async fn a_store_that_cannot_be_read_is_not_a_parent_with_nothing_to_re_send() {
+        let block_store: BlockStore = Arc::new(FailingBlockStore);
+        let hash = BlockHash::new([0x22; 32]);
+        let hashes: BTreeSet<BlockHash> = std::iter::once(hash).collect();
+        let forwarded = Arc::new(std::sync::Mutex::new(0usize));
+        let sink = {
+            let forwarded = forwarded.clone();
+            move |_: BlockMessage| *forwarded.lock().unwrap() += 1
+        };
+
+        let err = send_to_validate(&hashes, &block_store, &sink)
+            .await
+            .expect_err("a store that cannot be read must not answer \"nothing to re-send\"");
+        assert!(
+            err.contains("the block store is down"),
+            "and the refusal must name the failure, got: {err}"
+        );
+        assert_eq!(
+            *forwarded.lock().unwrap(),
+            0,
+            "a failed read forwards nothing, so the error is the only signal there is"
         );
     }
 
