@@ -461,9 +461,9 @@ pub struct DeployChainIndex {
     pub event_log_index: EventLogIndex,
     pub state_changes: StateChange,
     /// **The cost-accounting moves this chain's deploys made** (AUDIT C207), by deploy id — what the
-    /// merge re-applies per accepted chain. Deliberately **outside the chain's identity**: the
-    /// `PartialEq`/`Hash` impls below are over `deploys_with_cost` only (the Scala override), so this
-    /// field cannot move a chain's equality, its hash, or the rejection-option computation.
+    /// merge re-applies per accepted chain. Deliberately **outside the chain's identity**: the one key
+    /// below is `(host_block, post_state_hash, deploys_with_cost)`, so this field cannot move a chain's
+    /// equality, its hash, or the rejection-option computation.
     pub cost_moves: BTreeMap<Vec<u8>, CostMoves>,
     /// The address the producer's share of this chain's deploys is paid to — the **host block's own
     /// signed sender**, which is what `pay_executor` reads on both play and replay. Outside the
@@ -475,9 +475,9 @@ pub struct DeployChainIndex {
     /// alone, which left the merge no relation to key a conflict on but the *host* — so a chain that
     /// wrote nothing contended was still a conflict partner, and `reject_whole_blocks` dropped it
     /// with its host. Here the relation reads the chain's own slots, and a chain with none cannot
-    /// conflict. Outside the chain's identity, for the same reason as `cost_moves`: `PartialEq`/`Hash`
-    /// are over `deploys_with_cost` and `Ord` over `(host_block, post_state_hash)`, so this field
-    /// cannot move law 17a's rejection-option key.
+    /// conflict. Outside the chain's identity, for the same reason as `cost_moves`: the one key is
+    /// `(host_block, post_state_hash, deploys_with_cost)`, so this field cannot move law 17a's
+    /// rejection-option key.
     pub native_effects: Vec<NativeStoreAction>,
     /// **Where this chain sits in its block's deploy order** — the smallest ordinal among the deploys
     /// it carries, where the ordinal is the position in `state.deploys` followed by
@@ -491,11 +491,27 @@ pub struct DeployChainIndex {
     pub first_deploy_ordinal: u32,
 }
 
-// Equality/hash are over `deploysWithCost` only (the Scala override), to speed up rejection-option
-// computation.
+// **Ordering, equality and hashing are one key**, and this is a correction rather than a port.
+//
+// The Scala kept the two apart — `Ordering.by((hostBlock, postStateHash))` beside an `equals` over
+// `deploysWithCost` — and that is legal there, because a Scala `TreeMap` reads only the `Ordering`.
+// Rust is not: `Ord` **must** agree with `Eq` (`a == b` iff `a.cmp(b) == Equal`), because `BTreeMap`,
+// `BTreeSet` and `sort` all read the order as the identity. Kept apart they did exactly what the
+// std docs say they must not: two chains of one block — same host, same post-state, different deploys
+// — compared `Ordering::Equal` while `==` said they differed, so a `BTreeSet` of chains silently held
+// **one** of them and a `BTreeMap` keyed on one answered `get` for the other.
+//
+// On the chain-level native relation (#280) that is not a lost lookup but a **hang**: the dependency
+// map held one such key whose value was the other chain, so `get` returned that value for *either*
+// chain, and `traverse_tree` — which has no visited set — walked the one-element cycle for ever.
+// `merging::native_merge_tests::a_blocks_own_chains_are_ordered_and_dependent` is the reproduction,
+// and it hung CI on #281 rather than failing it.
+//
+// The Scala ordering's primary pair is kept, so the relative order of chains from *different* blocks
+// is unchanged; the equality key is the tie-breaker, which is what makes the order total.
 impl PartialEq for DeployChainIndex {
     fn eq(&self, other: &Self) -> bool {
-        self.deploys_with_cost == other.deploys_with_cost
+        self.order_key() == other.order_key()
     }
 }
 
@@ -503,12 +519,10 @@ impl Eq for DeployChainIndex {}
 
 impl Hash for DeployChainIndex {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        self.deploys_with_cost.hash(state);
+        self.order_key().hash(state);
     }
 }
 
-// Ordering is over `(hostBlock, postStateHash)` (the Scala `Ordering.by`), distinct from equality
-// (which is over `deploysWithCost`).
 impl PartialOrd for DeployChainIndex {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
@@ -517,11 +531,23 @@ impl PartialOrd for DeployChainIndex {
 
 impl Ord for DeployChainIndex {
     fn cmp(&self, other: &Self) -> Ordering {
-        (self.host_block, self.post_state_hash).cmp(&(other.host_block, other.post_state_hash))
+        self.order_key().cmp(&other.order_key())
     }
 }
 
 impl DeployChainIndex {
+    /// The one key that ordering, equality and hashing share — see the `Ord` impl above for why Rust
+    /// cannot let those three be three different things, and for the hang that proved it.
+    ///
+    /// Borrowed, not cloned: `cmp` is called from the merge search's inner loop.
+    fn order_key(&self) -> (Blake2b256Hash, Blake2b256Hash, &BTreeSet<DeployIdWithCost>) {
+        (
+            self.host_block,
+            self.post_state_hash,
+            &self.deploys_with_cost,
+        )
+    }
+
     /// The native slots this chain wrote — the domain of the native relation (#280).
     ///
     /// Computed rather than stored: the chain's `native_effects` are the authority, and a second
@@ -2124,16 +2150,34 @@ mod tests {
         assert_eq!(DeployChainIndex::deploy_chain_cost(&b), 7);
     }
 
+    /// **Equality is the same key as ordering and hashing** — `(host_block, post_state_hash,
+    /// deploys_with_cost)`; see the `Ord` impl above for why, and for the hang that proved it.
+    ///
+    /// Until #281 this test asserted the opposite: equality was over `deploysWithCost` alone (the Scala
+    /// override), so two chains of *different blocks* with the same deploy set were equal while the
+    /// order called them apart. That is legal in Scala, where a `TreeMap` reads only the `Ordering`, and
+    /// it is not legal in Rust, where `BTreeMap`/`BTreeSet`/`sort` read the order as the identity. Its
+    /// cost was not a slower search but a **lost chain** — a `BTreeSet` of chains held one of two
+    /// distinct members. Inverted rather than deleted, so the correction stands where the claim stood.
     #[test]
-    fn equality_is_by_deploys_with_cost() {
+    fn equality_is_the_same_key_as_ordering_and_hashing() {
         let a = chain(1, 5);
         let mut b = chain(1, 5);
-        // Different host block — equality is over deploysWithCost only.
+        // A different host block is a different chain.
         b.host_block = Blake2b256Hash::from_bytes([9; 32]);
-        assert_eq!(a, b);
-        // Different cost — not equal.
+        assert_ne!(a, b, "chains of different blocks are different chains");
+        assert_ne!(
+            a.cmp(&b),
+            Ordering::Equal,
+            "and the order agrees with that, which is the requirement Rust imposes on the pair"
+        );
+        // Different cost — not equal, and ordered apart for the same reason.
         let c = chain(1, 6);
         assert_ne!(a, c);
+        assert_ne!(a.cmp(&c), Ordering::Equal);
+        // A chain is equal to itself, both ways round.
+        assert_eq!(a, chain(1, 5));
+        assert_eq!(a.cmp(&chain(1, 5)), Ordering::Equal);
     }
 
     #[test]
@@ -2596,43 +2640,47 @@ mod merge_relation_tests {
         assert_eq!(DeployIndex::SYS_SLASH_DEPLOY_COST, 0);
     }
 
-    /// **`DeployChainIndex`'s equality and ordering are over *different* fields** — equality over the
-    /// deploy set (the Scala override, to speed up rejection-option computation), ordering over
-    /// `(host_block, post_state_hash)`. That mismatch is faithful to the Scala, and it is a real
-    /// hazard for a Rust `BTreeSet<Arc<DeployChainIndex>>` (which uses `Ord`), because `Ord` is supposed to
-    /// agree with `Eq`: a set can then hold two members that compare unequal yet `==` each other.
-    /// Pinned here so the mismatch is visible rather than latent.
+    /// **A chain's equality, ordering and hash are one key** — `(host_block, post_state_hash,
+    /// deploys_with_cost)` — which is what Rust requires of a type used as a `BTreeMap`/`BTreeSet` key.
+    ///
+    /// Until #281 this test asserted the *mismatch*: "equality over the deploy set (the Scala override),
+    /// ordering over `(host_block, post_state_hash)` … pinned here so the mismatch is visible rather
+    /// than latent." It was visible, and it still hung the merge. Chains of one block are equal on the
+    /// hash pair and distinct on the deploy set, so the dependency map the chain-level native relation
+    /// builds could hold one key whose own value looked that key up again — and `traverse_tree`, which
+    /// had no visited set, walked a one-element cycle until CI's 45-minute job limit killed the job. The
+    /// debt the pin marked is paid here rather than carried further.
     #[test]
-    fn chain_equality_is_over_the_deploys_and_ordering_over_the_hashes() {
-        let same_deploys_different_hashes = chain(1, 2, &[(1, 10, 1)]);
-        let mut other = chain(9, 8, &[(1, 10, 1)]);
-        other.pre_state_hash = hash(7);
+    fn a_chains_equality_ordering_and_hash_are_one_key() {
+        let a = chain(1, 2, &[(1, 10, 1)]);
+        let mut b = chain(9, 8, &[(1, 10, 1)]);
+        b.pre_state_hash = hash(7);
 
-        assert_eq!(
-            same_deploys_different_hashes, other,
-            "equality is over the deploy set"
+        assert_ne!(
+            a, b,
+            "same deploys, different block hashes — different chains, so not equal"
         );
         assert_ne!(
-            same_deploys_different_hashes.cmp(&other),
+            a.cmp(&b),
             Ordering::Equal,
-            "…while the ordering is over (host_block, post_state_hash): the two notions disagree"
+            "and the ordering agrees with that, which is the whole requirement"
         );
 
-        // The same deploy set with the *same* hashes agrees on both.
+        // Identical in every part of the key: equal, and ordered equal.
         let identical = chain(1, 2, &[(1, 10, 1)]);
-        assert_eq!(same_deploys_different_hashes, identical);
-        assert_eq!(
-            same_deploys_different_hashes.cmp(&identical),
-            Ordering::Equal
-        );
+        assert_eq!(a, identical);
+        assert_eq!(a.cmp(&identical), Ordering::Equal);
 
-        // A different deploy set orders by the hash pair, not by the deploys.
-        let different = chain(1, 3, &[(2, 5, 1)]);
-        assert_ne!(same_deploys_different_hashes, different);
-        assert!(
-            same_deploys_different_hashes < different,
-            "post state hash 2 < 3"
-        );
+        // A different deploy set on the same hashes is a different chain: the deploy key is the
+        // tie-breaker the hash pair alone does not carry.
+        let different_deploys = chain(1, 2, &[(2, 5, 1)]);
+        assert_ne!(a, different_deploys);
+        assert_ne!(a.cmp(&different_deploys), Ordering::Equal);
+
+        // The Scala ordering's primary pair still decides chains of *different* blocks, so the relative
+        // order the merge relied on is unchanged: post-state hash 2 sorts before 3.
+        let later_post = chain(1, 3, &[(1, 10, 1)]);
+        assert!(a < later_post, "post state hash 2 < 3");
     }
 
     /// `deploy_chain_cost` is the sum of the member costs (the merge's cost objective).
@@ -2904,6 +2952,67 @@ mod native_merge_tests {
             Some(vec![2]),
             "the slot holds the **later** chain's value: the deploy order is applied, which is the \
              obligation the `(seen_count, host)` key could not express"
+        );
+    }
+
+    /// **A chain's order must agree with its equality**, because `BTreeMap`, `BTreeSet` and `sort` all
+    /// read the order as the identity.
+    ///
+    /// The port kept the Scala's split — order over `(hostBlock, postStateHash)`, equality over
+    /// `deploysWithCost` — which is legal in Scala (a `TreeMap` there reads only the `Ordering`) and is
+    /// not legal in Rust. Two chains of one block, same host and same post-state but different deploys,
+    /// therefore compared `Ordering::Equal` while `==` said they differed: a `BTreeSet` of them held
+    /// **one**, and the dependency map the merge builds could hold a key whose own value looked the key
+    /// up again.
+    ///
+    /// Falsifier, both forms. **Pre-fix (witnessed)**: the two assertions below fail on the old impls —
+    /// `cmp` answered `Equal` for the pair and the set held one element — and the merge test above does
+    /// not fail at all for the same input, it **hangs**: the dependency map had one key whose value was
+    /// the other chain, so `traverse_tree`, which had no visited set, walked a one-element cycle until
+    /// CI's 45-minute job limit killed the job (`#281`). Post-fix: the order is total, and the set holds
+    /// both chains.
+    #[test]
+    fn a_chains_order_agrees_with_its_equality() {
+        let chain = |ordinal: u32, id: u8, value: u8| DeployChainIndex {
+            host_block: Blake2b256Hash::from_bytes(*BlockHash::new([0xa0; 32]).as_bytes()),
+            deploys_with_cost: BTreeSet::from([DeployIdWithCost {
+                id: vec![id],
+                cost: 0,
+            }]),
+            pre_state_hash: key(31),
+            post_state_hash: key(32),
+            event_log_index: EventLogIndex::empty(),
+            state_changes: StateChange::empty(),
+            cost_moves: BTreeMap::new(),
+            executor: String::new(),
+            native_effects: vec![NativeStoreAction::Put {
+                prefix: PREFIX_POS,
+                key: key(21),
+                value: vec![value],
+            }],
+            first_deploy_ordinal: ordinal,
+        };
+        let earlier = chain(0, 1, 1);
+        let later = chain(1, 2, 2);
+
+        assert_ne!(earlier, later, "different deploys are different chains");
+        assert_ne!(
+            earlier.cmp(&later),
+            Ordering::Equal,
+            "so the order must not call them equal — this is the disagreement that hung the merge"
+        );
+        assert_eq!(earlier, chain(0, 1, 1), "the same chain is equal to itself");
+        assert_eq!(
+            earlier.cmp(&chain(0, 1, 1)),
+            Ordering::Equal,
+            "and it orders equal to itself, the other direction of the same requirement"
+        );
+
+        let set: BTreeSet<DeployChainIndex> = [earlier.clone(), later].into_iter().collect();
+        assert_eq!(
+            set.len(),
+            2,
+            "a set of two distinct chains holds two elements; holding one is a lost chain"
         );
     }
 

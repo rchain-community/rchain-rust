@@ -774,13 +774,28 @@ fn calc_merged_result<D: Ord + Clone, CH: Ord + Clone, V: Borrow<BTreeMap<CH, i6
     Some(acc)
 }
 
+/// The nodes reachable from `root` by `next`, **each visited once**.
+///
+/// `seen` is every node ever discovered, so a cycle in `next` terminates here instead of walking for
+/// ever — and it did not, which is what `#281` cost: `DeployChainIndex`'s order disagreed with its
+/// equality, so a dependency map could hold a key whose own value looked the key up again, and this
+/// loop walked a one-element cycle until CI's 45-minute job limit killed the job. `with_dependencies`,
+/// three functions above, has always subtracted what it had seen; this is the sibling that did not.
+/// A node reachable by two paths is also returned once now, which is the meaning of "the branch of a
+/// root" rather than an accident of the walk order.
 fn traverse_tree<D: Ord + Clone, F: Fn(&D) -> BTreeSet<D>>(root: &D, next: &F) -> Vec<D> {
     let mut result = Vec::new();
+    let mut seen: BTreeSet<D> = BTreeSet::new();
     let mut frontier: Vec<D> = vec![root.clone()];
+    seen.insert(root.clone());
     while !frontier.is_empty() {
         frontier.sort();
         result.extend(frontier.iter().cloned());
-        let next_frontier: BTreeSet<D> = frontier.iter().flat_map(|d| next(d)).collect();
+        let next_frontier: BTreeSet<D> = frontier
+            .iter()
+            .flat_map(|d| next(d))
+            .filter(|d| seen.insert(d.clone()))
+            .collect();
         frontier = next_frontier.into_iter().collect();
     }
     result
