@@ -8806,3 +8806,84 @@ both the hole and the decision.
 **What this pass does not do.** It does not read the four logs (C263 is blocked on the artefact), and it
 does not claim the incident's cause is now known — only that C215's map is not it, in the sibling shape, and
 that the map cannot be a carrier either way. C249, C254, C256, C259 and C260 stay open and owned elsewhere.
+
+## 89. The reconciliation tool verifies what it prints — and the drill that found three more defects (C261, C264, C265, C266)
+
+**What was asked.** #287's review found two places in `tools/reconcile-network.sh` where the tool claims more
+than it does: §4's write report counted *observations* rather than blocks, and §10 named finality as a
+verification while printing and exiting 0. The rows that carry them are **C264** and **C265**. Re-running the
+devnet drill with the fixed tool was the way to settle both — and the drill is also a test of the instrument,
+which failed it in two further ways (**C266** and the trigger half of C265).
+
+**What the two defects were, and why the class matters.** §4 walked every node's answer at every height above
+the anchor and counted each block it saw: `/api/blocks/{h}/{h}` is answered *per node*, so a block held by
+three nodes was counted three times and its `deployCount` added three times. That is **#302's double-count** —
+the arithmetic defect that got the old stake-weighted meet deleted at §3 — reappearing one section down, in
+the record an operator re-submits from. Measured on a diverged net
+(`spec/audit/evidence/n-reconcile-drill/run-4-plan-diverged-prefix.txt` against `run-4-plan-diverged.txt`):
+the pre-fix tool printed `#42: 12 block(s) #43: 12 block(s) #44: 10 block(s)` and wrote 34 records; the fixed
+tool prints `#42: 4 unique block(s) from 12 answer(s)` and writes **12** records, one per unique block, each
+naming its `observers` and carrying the `rejectedDeploys` its merge refused. The record is now what the
+runbook already promised (`docs/src/node/testnet.md`), which is why the claim was made true rather than
+deleted.
+
+§10 printed each node's last-finalised block and **fell off the end of the script with exit 0**, under a
+closing sentence claiming to be #287's falsifier — including when every node answered
+`"Finalized fringe is not available."`, which is exactly what the committed transcript
+`run-3/restore-run.txt` shows. It now asserts the acceptance clause from four rules with named refusals and a
+distinct exit code: every node reports a usable finalised block; its height is **strictly past** `$MEET`; no
+two nodes finalise different blocks at one **height**; and each finalised hash is one that node's own block
+index serves **and** that every node which reached its height also holds. Rule three is not decoration: a DAG
+legitimately holds every sibling at a height, so "in the common DAG" is true while two finalised heads exist.
+Measured live (`run-4-restore-finality-refused.txt`): a converged net whose finality had not moved past the
+anchor — the reviewer's own negative case — exits **9** with
+`NOT final: V1 finalised at 41, which is not past the point (41)`. The old section exited 0 on that state.
+
+**The two the drill found.** (1) **§9 read a round counter as the block frontier.** The comparison walks
+`h = MEET..MAXH` and required a non-empty hash set at every step, but `MAXH` is `/api/status`'s
+`latestBlockNumber`, which counts the round a node is in and sits one ahead of the highest height the block
+API serves. On 2026-10-10 the first `--restore-from-master` of the fourth run exited 6 — *"the nodes still
+disagree on a block hash at or above 41"* — on a net whose three nodes in fact agreed at **every** height
+40–44 and had nothing at all at 45 (`run-4-restore-prefix-section9.txt`). A height no node has produced is
+the frontier, not a disagreement: it is skipped; a height some nodes have and others do not still fails.
+(2) **The block trigger could not reach a `local` host.** §8b POSTed to `http://${HOST[$MASTER]}:…` — the
+node file's own token — and for `local`, one of the three spellings the header documents, that does not
+resolve (`http://local:42403` exits 6, `http://localhost:42403` answers). The section printed *"no block could
+be requested"*, which reads as a net without a faucet rather than as a broken request. On a
+`--no-autopropose` net an unreached trigger means no blocks, and no blocks means no finality — so §10's
+clause was **unsatisfiable** on an idle net, which is a large part of why nobody noticed it was a print. The
+POST now uses `api()`'s transport.
+
+**The drill's result, and it is the tool's own output.** `run-4-restore.txt`: anchor height **51**, unanimously
+reported; §9 `[1] V1=65 V2=65 V3=65 hashes-agree=1`; §10 `finality [1] V1=61 V2=61 V3=61 past-the-point=1`;
+exit **0**. That is the first transcript in that evidence directory where the acceptance's clauses are proved
+by the tool rather than read off by hand afterwards. `run-4-refusal-no-anchor.txt` is the other side: four
+heads with no agreed anchor are **refused** (exit 4) rather than resolved — the tool's design, and C259's
+subject.
+
+**What this pass does not claim.**
+
+- **Not a frozen four-heads recovery.** With no node finalising, §3 has no unanimity to accept and refuses;
+  the state the acceptance names is reachable by this tool only where some finality survives. That limit is
+  the design (C261's gate), not a defect, and the mechanism that would cover the no-anchor case is C259's.
+- **Not a recovery from a net whose instrument is still armed.** The store copy converges the stores, but a
+  node restarted with the C215 injection re-perturbs what it recomputes and §9 refuses the result. Removing
+  the instrument first is the sequencing the third run found, and the third and fourth runs both used it.
+- **Not validity.** The staged chain's blocks were produced under perturbation; what is demonstrated is
+  convergence and resumed finality.
+
+**C261 closes here, and it closes on its own second alternative** rather than on a meet. The row's condition
+was either a stake-weighted strict supermajority over reports that are authenticated, signed and
+ancestry-verified with equivocators removed by proof — or *"the anchors-gate design is stated as the design
+rather than as a placeholder, and §2's report says what it is wherever it prints"*. The second is now the
+state of the world: the tool's header (items 1–3, 6), §2's own output, the runbook
+(`docs/src/node/testnet.md`'s recovery section) and #287 itself all state the unanimous-anchor gate as what
+the tool computes, and §2 prints that it verifies no signature and decides nothing. The four obligations stay
+recorded on #287, which stays open as the meet's issue — the sign-offs are the node's (#290 part 1), and
+nothing here pretends the arithmetic exists.
+
+**What remains.** #287 stays **open** for the meet (its four obligations), for the live-testnet venue the
+acceptance names, and for `--sync-anchor`'s catch-up (C259, tracked on #139). C263 stays blocked on the
+capture. The tool's own limits are now stated where they are used: a node file whose master is unreachable, a
+net with no anchor, and a net with no faucet and no deploys each produce a named refusal rather than a number
+that reads as evidence.
