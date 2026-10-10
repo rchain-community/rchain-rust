@@ -210,7 +210,14 @@ async fn request_next(
     };
     if !is_end && !ids.is_empty() {
         for id in &ids {
-            log.info(source, "Sending StoreItemsRequest to bootstrap");
+            // **The path is the walk's cursor, and nothing logged it.** A joiner stuck in this loop is
+            // indistinguishable from one that is not asking at all unless the path is visible: the
+            // capture that found `Sending 29 history and 230 data store items` 440 times on the
+            // responder side had no requester-side counterpart to compare it with (C268, pass §94).
+            log.info(
+                source,
+                &format!("Sending StoreItemsRequest to bootstrap for path {id:?}"),
+            );
             let req = StoreItemsMessageRequest {
                 start_path: id.clone(),
                 skip: 0,
