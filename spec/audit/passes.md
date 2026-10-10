@@ -9167,3 +9167,59 @@ Whether its cursor advances in such a run is now answerable rather than guessabl
 `LfsTupleSpaceRequester` logs `Sending StoreItemsRequest to bootstrap for path {id:?}` per request from this
 commit on; the next run that sticks is compared against the control line for line. The row's evidence file
 carries both captures.
+
+## 95. The distributed-system laws land, and the refutation that chose the fix (C250, C267, C270, C271)
+
+**What was built.** Six theorems, written refutation-first and then attacked by two adversarial reviewers, are
+now **laws 66–71 in the machine register** — the first rows about *the node as a distributed system* rather
+than about rholang evaluation. `lake build rchain-laws` reports what the register's own checker makes of them:
+*"71 laws, 94 entries, 10 axioms in the tree, all cited; of the 840 declarations the rows name, 0 rest on the
+compiler (`native_decide`) and 441 on Lean's logic."* The register is `spec/laws.tsv`/`spec/LAWS.md`, emitted
+from `Rchain/Laws.lean` and refused stale by the gate, so the claims are checked data rather than prose.
+
+**The laws, in one line each.**
+
+- **66 Casper** — the value a node stores at a fringe key is **not** determined by that key, and
+  `the_join_rewrites_a_writers_value` is what the `min` tie-break costs (C270, measured).
+- **67 Casper** — the record join is a commutative idempotent semigroup **at one key** (the code's own stated
+  precondition, proven necessary), and the sharpening that matters: order-independence does *not* come from
+  the arrivals agreeing — `min` is commutative, so two records that **disagree** still fold to one, *which is
+  why the divergence was invisible in the store*.
+- **68 Casper** — a read is a function of the version it names, and the discriminator is **append-only vs
+  overwrite**, not hashed vs not.
+- **69 Sync** — a joiner's page walk **need not terminate** (an infinite run, proved; the adversary need only
+  be silent), and with a give-up rule it is paced.
+- **70 Sync** — importing the walk of a root yields the trie rooted there, and the checker is sound: the
+  joiner checks the peer rather than trusting it, resting on exactly one assumption — law 19's
+  collision-freeness, through law 10.
+- **71 Sync** — a catch-up window bounds what a joiner holds, so its progress does not depend on the network
+  standing still.
+
+**The refutation that chose the fix, and it is the pass's most important result.** The plan (approved
+2026-10-10) chose to make the record's key name the merge **base**. The adversarial review refuted it as
+implementable: `multi_parent_casper.rs:156-165` reads by the fringe-only key and the base it would need is
+computed *later* (`:230-238`) as the previous fringe's state — **the base is the value that read returns**, so
+a reader asking for a fringe's state cannot name which base the record it wants was written under, and the
+second "reader" (`merging.rs:1516`) forms no key at all. The tension is structural: a store that caches
+*derived* state needs a key that is both computable by its readers and sufficient to determine its value, and
+the fringe is computable-but-insufficient while the base is sufficient-but-wanted. **The design chosen after
+the refutation is that the value drops the derived state** — the record keeps the contributions and the reader
+derives — which makes the store append-only, the property Law 68 proves is what makes a read a function of its
+version. No Rust was written before the refutation, which is the whole point of proving first.
+
+**What was deliberately *not* registered as proved.** Law 66's positive half and Law 67's `writeKey` section
+are **tuple tautologies** (`rfl`) — the statement that `recordOf` and `writeKey` are functions — and their
+cells say so. The review also found `no_fringe_only_key_can_be_complete`'s universal quantifier decorative
+(the same content as its sibling), Law 71 **citing the wrong row** in its module header (C268 where the
+catch-up is C267 — fixed here), and `windowPending` counting heights while `MAX_PENDING_BLOCKS` counts blocks,
+so Law 71's bound is a *proxy* and its cell says that too.
+
+**A defect the Lean found, filed rather than noted.** Proving Law 69 exposed that **an unfinished page walk is
+returned as `Ok`** — `lfs_tuple_space_requester.rs:418-422` checks nothing on the way out, and
+`node_syncing.rs:462` drops the state, unlike the block leg's guard at `:475-481`. A node can therefore leave
+`NodeSyncing` holding a partial state. **C271** filed `todo`, law 69 cited as its statement, with the
+companion hazard that the walk's `request_timeout` is 120 s where the give-up rule's rationale assumes 30 s.
+
+**Rows.** C250's residue, C267, C270 and C271 are the Rust-side rows the laws name; C268's trigger stays open
+(the laws make a stalled walk **bounded and reported**, not impossible, and the pass says so rather than
+implying otherwise).
