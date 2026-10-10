@@ -1069,6 +1069,10 @@ pub struct BlockRange {
     pub from: i64,
     pub to: i64,
     pub hashes: Vec<BlockHash>,
+    /// The responder's own frontier (its highest block height), so a requester can tell "the peer has
+    /// nothing above my frontier" from "the peer has nothing *in this window*" — the difference between
+    /// ending a catch-up and chasing a producing peer for ever. `0` means the responder did not say.
+    pub tip: i64,
 }
 
 /// A block-hash message (port of `BlockHashMessage`).
@@ -1210,6 +1214,7 @@ impl BlockRange {
             from: m.from,
             to: m.to,
             hashes,
+            tip: m.tip,
         })
     }
     pub fn to_proto(&self) -> BlockRangeProto {
@@ -1217,6 +1222,7 @@ impl BlockRange {
             from: self.from,
             to: self.to,
             hashes: self.hashes.iter().map(|h| h.as_bytes().to_vec()).collect(),
+            tip: self.tip,
         }
     }
     pub fn to_bytes(&self) -> Vec<u8> {
@@ -1849,6 +1855,7 @@ mod tests {
             from: 3,
             to: 4,
             hashes: vec![h1, h2],
+            tip: 99,
         };
         let decoded = BlockRange::from_bytes(&range.to_bytes()).expect("round trip");
         assert_eq!(decoded, range);
@@ -1863,6 +1870,7 @@ mod tests {
             from: 3,
             to: 4,
             hashes: vec![vec![7u8; 31]],
+            tip: 99,
         };
         assert!(
             BlockRange::from_proto(&short).is_err(),

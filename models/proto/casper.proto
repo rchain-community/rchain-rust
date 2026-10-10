@@ -82,6 +82,14 @@ message BlockRangeProto {
   int64          from   = 1;
   int64          to     = 2;
   repeated bytes hashes = 3;
+  // The **responder's own frontier** (its highest block height). The requester needs it because "no
+  // hashes in this window" is not the only way a walk ends: a peer that keeps producing — the case a
+  // frozen-finality recovery is in, since the survivors keep proposing above the meet — closes every
+  // window it is asked for, so a walk that stopped only on an empty answer would chase a moving tip and
+  // hold the ingest window shut for as long as it was asked. An absent field reads as 0, which no
+  // production chain has, and which the requester treats as "unknown: keep the walk bounded by its own
+  // limits" — see `catchup::run_catchup`.
+  int64          tip    = 4;
 }
 
 message BlockHashMessageProto {

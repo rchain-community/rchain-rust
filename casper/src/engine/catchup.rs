@@ -174,12 +174,33 @@ pub async fn run_catchup(
             );
             break;
         }
+        // **The peer's own frontier ends the walk too, and it is the case that matters.** A peer that
+        // keeps producing — which is what a frozen-finality net's survivors do, proposing above the
+        // meet — closes every window it is asked for, so a walk that only stopped on an empty answer
+        // would chase a moving tip and hold the ingest window shut for as long as the peer produced
+        // (up to `MAX_WINDOWS`). `tip` is 0 when the responder did not say, and then the walk falls
+        // back to its own bounds.
+        if answer.tip > 0 && answer.tip <= frontier {
+            log.info(
+                source,
+                &format!(
+                    "this node's frontier ({frontier}) has reached the peer's tip ({}); catch-up finished",
+                    answer.tip
+                ),
+            );
+            break;
+        }
         for hash in &answer.hashes {
             comm.request_for_block(&peer, hash).await;
         }
         // Ask for the window, then let it validate: the next window starts only once this node's own
-        // frontier has reached the height this one covered.
-        let reached = wait_for_frontier(dag.as_ref(), answer.to, frontier).await;
+        // frontier has reached the height this one covered — or the peer's tip, if that is nearer.
+        let target = if answer.tip > 0 {
+            answer.to.min(answer.tip)
+        } else {
+            answer.to
+        };
+        let reached = wait_for_frontier(dag.as_ref(), target, frontier).await;
         frontier = reached;
         window.hold(frontier);
     }

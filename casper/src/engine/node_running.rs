@@ -382,6 +382,10 @@ pub async fn block_range_response(
 ) -> Option<BlockRange> {
     let to = req.to.min(req.from.saturating_add(MAX_BLOCK_RANGE as i64));
     let repr = dag.get_representation().await;
+    // The requester cannot tell "you have nothing above my frontier" from "you have nothing in this
+    // window" from the hashes alone, and the difference is whether a walk against a *producing* peer
+    // ever ends. So the answer says where this node's own frontier is.
+    let tip = repr.latest_block_number() - 1;
     match repr.topo_sort_unsafe(req.from, Some(to)) {
         Ok(topo) => {
             let mut hashes = Vec::new();
@@ -392,6 +396,7 @@ pub async fn block_range_response(
                 from: req.from,
                 to,
                 hashes,
+                tip,
             })
         }
         Err(e) => {
@@ -2028,6 +2033,10 @@ mod tests {
             "ascending height, parent before child"
         );
         assert_eq!((answer.from, answer.to), (0, 2));
+        assert_eq!(
+            answer.tip, 2,
+            "and it says where its own frontier is, so a walk against a producing peer can end"
+        );
 
         // A window above anything this node holds is an *empty answer*, not a refusal: the requester's
         // walk reads that as "the peer has nothing above my frontier" and stops.
