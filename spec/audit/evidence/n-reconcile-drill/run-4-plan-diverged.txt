@@ -1,0 +1,23 @@
+== 1. what each node is showing ==
+  V1 h=45     finalised=41     b3b161ff4e730998cf3f0cf6ca33bdef3fd2b4d073d0
+  V2 h=45     finalised=41     b3b161ff4e730998cf3f0cf6ca33bdef3fd2b4d073d0
+  V3 h=45     finalised=41     b3b161ff4e730998cf3f0cf6ca33bdef3fd2b4d073d0
+== 2. reported equivocation from the block API — a report, not a proof (heights 0..45) ==
+  none reported — every sender has at most one block per height in these endpoints' answers
+== 3. finalized anchor (unanimous LFB; no inferred stake votes) ==
+  unanimously reported finalized anchor: height 41, hash b3b161ff4e730998cf3f0cf6ca33bdef3fd2b4d073d0ca6042bcaf373dd1f54d
+  No stake-weighted quorum or finalized ancestry is inferred from block producers.
+== 4. what is above the point ==
+  The survivor is V2's DAG, not a chain: every validator proposes its own block each round, so
+  a height legitimately holds one sibling per validator and there is no single line to extract. The
+  joiners resync onto this DAG; the writers re-submit what they can see is missing.
+  #42: 4 unique block(s) from 12 answer(s)
+  #43: 4 unique block(s) from 12 answer(s)
+  #44: 4 unique block(s) from 10 answer(s)
+  0 deploy(s) above the point across 12 unique block(s); the per-block record is target/drill287/plan-deploys.jsonl
+  (a block's *bodies* are not in the heights route — /api/block/{hash} carries the terms, the heights
+   route carries counts. The owners re-submit; this tool does not claim to replay them.)
+== plan only ==
+  would: stop every non-master node, move each data directory aside (never delete), restart them to
+        resync onto V2's DAG, then verify block hashes per height.
+  re-run with --apply to execute. V2's data directory is never touched.

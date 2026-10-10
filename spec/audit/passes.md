@@ -8806,3 +8806,219 @@ both the hole and the decision.
 **What this pass does not do.** It does not read the four logs (C263 is blocked on the artefact), and it
 does not claim the incident's cause is now known — only that C215's map is not it, in the sibling shape, and
 that the map cannot be a carrier either way. C249, C254, C256, C259 and C260 stay open and owned elsewhere.
+
+## 89. The reconciliation tool verifies what it prints — and the drill that found three more defects (C261, C264, C265, C266)
+
+**What was asked.** #287's review found two places in `tools/reconcile-network.sh` where the tool claims more
+than it does: §4's write report counted *observations* rather than blocks, and §10 named finality as a
+verification while printing and exiting 0. The rows that carry them are **C264** and **C265**. Re-running the
+devnet drill with the fixed tool was the way to settle both — and the drill is also a test of the instrument,
+which failed it in two further ways (**C266** and the trigger half of C265).
+
+**What the two defects were, and why the class matters.** §4 walked every node's answer at every height above
+the anchor and counted each block it saw: `/api/blocks/{h}/{h}` is answered *per node*, so a block held by
+three nodes was counted three times and its `deployCount` added three times. That is **#302's double-count** —
+the arithmetic defect that got the old stake-weighted meet deleted at §3 — reappearing one section down, in
+the record an operator re-submits from. Measured on a diverged net
+(`spec/audit/evidence/n-reconcile-drill/run-4-plan-diverged-prefix.txt` against `run-4-plan-diverged.txt`):
+the pre-fix tool printed `#42: 12 block(s) #43: 12 block(s) #44: 10 block(s)` and wrote 34 records; the fixed
+tool prints `#42: 4 unique block(s) from 12 answer(s)` and writes **12** records, one per unique block, each
+naming its `observers` and carrying the `rejectedDeploys` its merge refused. The record is now what the
+runbook already promised (`docs/src/node/testnet.md`), which is why the claim was made true rather than
+deleted.
+
+§10 printed each node's last-finalised block and **fell off the end of the script with exit 0**, under a
+closing sentence claiming to be #287's falsifier — including when every node answered
+`"Finalized fringe is not available."`, which is exactly what the committed transcript
+`run-3/restore-run.txt` shows. It now asserts the acceptance clause from four rules with named refusals and a
+distinct exit code: every node reports a usable finalised block; its height is **strictly past** `$MEET`; no
+two nodes finalise different blocks at one **height**; and each finalised hash is one that node's own block
+index serves **and** that every node which reached its height also holds. Rule three is not decoration: a DAG
+legitimately holds every sibling at a height, so "in the common DAG" is true while two finalised heads exist.
+Measured live (`run-4-restore-finality-refused.txt`): a converged net whose finality had not moved past the
+anchor — the reviewer's own negative case — exits **9** with
+`NOT final: V1 finalised at 41, which is not past the point (41)`. The old section exited 0 on that state.
+
+**The two the drill found.** (1) **§9 read a round counter as the block frontier.** The comparison walks
+`h = MEET..MAXH` and required a non-empty hash set at every step, but `MAXH` is `/api/status`'s
+`latestBlockNumber`, which counts the round a node is in and sits one ahead of the highest height the block
+API serves. On 2026-10-10 the first `--restore-from-master` of the fourth run exited 6 — *"the nodes still
+disagree on a block hash at or above 41"* — on a net whose three nodes in fact agreed at **every** height
+40–44 and had nothing at all at 45 (`run-4-restore-prefix-section9.txt`). A height no node has produced is
+the frontier, not a disagreement: it is skipped; a height some nodes have and others do not still fails.
+(2) **The block trigger could not reach a `local` host.** §8b POSTed to `http://${HOST[$MASTER]}:…` — the
+node file's own token — and for `local`, one of the three spellings the header documents, that does not
+resolve (`http://local:42403` exits 6, `http://localhost:42403` answers). The section printed *"no block could
+be requested"*, which reads as a net without a faucet rather than as a broken request. On a
+`--no-autopropose` net an unreached trigger means no blocks, and no blocks means no finality — so §10's
+clause was **unsatisfiable** on an idle net, which is a large part of why nobody noticed it was a print. The
+POST now uses `api()`'s transport.
+
+**The drill's result, and it is the tool's own output.** `run-4-restore.txt`: anchor height **51**, unanimously
+reported; §9 `[1] V1=65 V2=65 V3=65 hashes-agree=1`; §10 `finality [1] V1=61 V2=61 V3=61 past-the-point=1`;
+exit **0**. That is the first transcript in that evidence directory where the acceptance's clauses are proved
+by the tool rather than read off by hand afterwards. `run-4-refusal-no-anchor.txt` is the other side: four
+heads with no agreed anchor are **refused** (exit 4) rather than resolved — the tool's design, and C259's
+subject.
+
+**What this pass does not claim.**
+
+- **Not a frozen four-heads recovery.** With no node finalising, §3 has no unanimity to accept and refuses;
+  the state the acceptance names is reachable by this tool only where some finality survives. That limit is
+  the design (C261's gate), not a defect, and the mechanism that would cover the no-anchor case is C259's.
+- **Not a recovery from a net whose instrument is still armed.** The store copy converges the stores, but a
+  node restarted with the C215 injection re-perturbs what it recomputes and §9 refuses the result. Removing
+  the instrument first is the sequencing the third run found, and the third and fourth runs both used it.
+- **Not validity.** The staged chain's blocks were produced under perturbation; what is demonstrated is
+  convergence and resumed finality.
+
+**C261 closes here, and it closes on its own second alternative** rather than on a meet. The row's condition
+was either a stake-weighted strict supermajority over reports that are authenticated, signed and
+ancestry-verified with equivocators removed by proof — or *"the anchors-gate design is stated as the design
+rather than as a placeholder, and §2's report says what it is wherever it prints"*. The second is now the
+state of the world: the tool's header (items 1–3, 6), §2's own output, the runbook
+(`docs/src/node/testnet.md`'s recovery section) and #287 itself all state the unanimous-anchor gate as what
+the tool computes, and §2 prints that it verifies no signature and decides nothing. The four obligations stay
+recorded on #287, which stays open as the meet's issue — the sign-offs are the node's (#290 part 1), and
+nothing here pretends the arithmetic exists.
+
+**What remains.** #287 stays **open** for the meet (its four obligations), for the live-testnet venue the
+acceptance names, and for `--sync-anchor`'s catch-up (C259, tracked on #139). C263 stays blocked on the
+capture. The tool's own limits are now stated where they are used: a node file whose master is unreachable, a
+net with no anchor, and a net with no faucet and no deploys each produce a named refusal rather than a number
+that reads as evidence.
+
+## 90. The anchor path's catch-up: a window at the ingest, and a walk that uses it (C259, C267, C268)
+
+**What this pass was for.** C259's second half is the remediation the operator path needs: make a node that
+restored at an agreed anchor catch up to the tip **without a data-directory copy**. The register said the
+remaining work was the two sidecar caches a restored block must regenerate. The drill said otherwise, and the
+measurement is the pass.
+
+**What the drill found, with the control that made it legible.** A four-validator devnet, a chain of ~400
+heights, a node wiped and started with `--sync-anchor <a finalised block 300 heights below the tip>`:
+
+- **the restore works** — `LFS state is successfully restored` — and it is now *fast* when the anchor is low,
+  because the LFS walk goes *down* from its root: 2.9 seconds for an anchor at height 15;
+- **the catch-up did not** — the node sat at height **121** while the master ran to **577**, with **one**
+  block validated and **173** `block receiver state full (1024 blocks); dropping` lines
+  (`spec/audit/evidence/n-anchor-drill/run-2-catchup-stall.txt`);
+- and the reason is structural, not a broken edge case. `MAX_PENDING_BLOCKS` (1024) bounds how many blocks
+  may wait for their parents — R29's defence against a peer streaming blocks whose justifications never
+  resolve. It also bounds *how far above the node's own frontier* they may be, and since every block request
+  in this protocol is keyed by hash, the only way to learn a gap is to walk **downward** from a peer's tip
+  through justifications. Each new block justifies blocks inside the gap, so the whole gap pends at once and
+  the bound turns progress into drops. The drop is worse than a loss: the receiver's `Err` arm logs and
+  `continue`s **without** `ack_received` (`block_receiver.rs:513-516`), so the hash stays requested, the
+  retriever re-offers it on every trigger, and the pending set never drains because draining is what
+  validation does.
+
+**What the control taught, and it corrected me twice.** A wiped joiner on the *ordinary* path behaves the
+same way on a rig where the master is racing — but for the *other* reason: its restore pays the O(chain)
+tuple-space hydration (`Requesting tuple-space data for 316 approved block state roots`, ~2.5 minutes) and it
+is that, not the pending bound, that kept it at zero while I watched. Two of my own interim readings were
+wrong for want of patience: a restore in progress looks exactly like a stall from outside, and only the
+control distinguishes the two costs. The freeze is a function of the **gap**, and an anchor is how a gap gets
+big — an ordinary joiner syncs to a fringe within a few dozen heights of the tip and never approaches the
+bound, while a node anchored at a meet in a frozen net is hundreds of heights back **on purpose**.
+
+**The fix, in two halves.**
+
+1. **A bounded height-window fetch** (`BlockRangeRequest`/`BlockRange`): the blocks at heights `[from, to]`,
+   answered as the hashes at them in **topological order** (ascending height, parent before child). Hashes
+   rather than blocks — a window is tens of blocks, the requester already has `BlockRequest`, and keeping the
+   answer under a kilobyte is what lets the window be small. The responder bounds the range by its own
+   `MAX_BLOCK_RANGE` and answers an unorderable range with **silence**, the same degraded exchange
+   `FinalizedFringeRequest.anchor` gets, which is what makes it a non-breaking addition on the wire.
+2. **`engine::catchup`**: a `CatchupWindow` that narrows the ingest to `frontier + 8` heights while a walk is
+   running — above it, a block is left **un-acked**, so the retriever offers it again once the frontier has
+   moved past (a pace, not a loss) — and a driver that asks for the next window, requests its hashes in the
+   order they were listed, and waits for its own frontier to reach the window before asking for more. It
+   releases on **every** exit path, including its first empty answer and a peer that never answers, so a node
+   that never catches up is exactly the node it was. R29's bound and its drop path are untouched.
+
+**The result.** The same shape, the same rig, the same 1200-block gap: **98 seconds** from the anchor to the
+tip, **0** drops (`run-3-windowed-catchup.txt` — `frontier is height 15 … the peer has nothing above height
+318 … released the ingest window at height 318`, while the master sat at 319). The control reached the tip
+too, 2.5 minutes later, having paid the hydration the anchored path did not.
+
+**What this pass does not claim.**
+
+- **Not the tool's exact case.** The walk does not depend on finality — it asks a peer for heights, and a tip
+  exists whether or not anything below it finalised — but the run was made on a tracking-finality rig, and
+  the same walk on a net whose finality is **frozen** is owed (C259).
+- **Not the O(chain) cost.** A restore still hydrates the state root of every block from its root down to
+  genesis. The anchored path dodges it by choosing a *low* root, which is a virtue of the anchor rather than
+  a fix, and it is why the control was slow.
+- **Not the sidecars.** C259 predicted the two merge caches as the blocker; they are not reached in this
+  failure and remain a hypothesis about what comes after.
+- **Not a new bound.** The window is a **pace**, and the only thing it can do is delay a block's admission;
+  every block it admits goes through the ordinary validation path, so nothing above the anchor is installed
+  and #287's first invariant holds.
+- **Not the fresh-rig failure.** A *fresh* four-validator autopropose devnet failed to form twice while this
+  was being measured — two joiners never answered, finality stalled on the stake they never contributed
+  (`fresh-rig-autopropose-deadlock.txt`). Filed as **C268** `todo`: the reading is a deadlock, the cause is
+  not established, and the pass does not assume it.
+
+**The frozen-finality variant could not be staged, and the reason matters more than the attempt.** The
+walk does not consult finality at all, so what the variant would add is the *state* rather than the
+mechanism — and that state proved unreachable under this rig's control:
+
+- the one shape that froze finality by itself (four validators, `--epoch-length 10`, autopropose) is the
+  shape whose joiners never join (**C268**, three sightings now, and this run's master also stopped
+  producing at h=73 with a joiner at 0);
+- freezing it *deliberately* by halving the stake does not work either: with two of the four bonded
+  validators up, both reported `h=305 LFB=301` unanimously — the epoch draw leaves a small active set, so
+  the two are a supermajority of what counts, and finality tracks. A solo master finalises too.
+
+So the frozen state is owed, and it is owed a *rig*: what is missing is a staging where finality stops while
+the tip keeps moving. The measurement that would settle it is the same walk from an anchor at a frozen meet.
+
+**And one gap is the tool's, not the node's** (**C269** `todo`). §3 of `tools/reconcile-network.sh` accepts an
+anchor only by *computing* one — a unanimous usable last-finalised block — and in the state `--sync-anchor`
+exists for, no node reports one, so the tool refuses (measured: `finalized heads differ`, exit 4, and
+`no usable finalized block`, exit 4). The operator path needs both answers: a refusal when the tool cannot
+compute a meet, and a way to say *this is the block I am restoring to* when nobody can.
+
+**Rows.** C267 `done` (the ingest could not take a gap), C268 `todo` (the fresh rig), C269 `todo` (the tool
+cannot name an anchor where the anchor is needed), C259 updated — its stated blocker was not the first one,
+and its close condition still wants the frozen-finality walk.
+
+## 91. The operator may name the anchor, and the tool says whose root it is (C269)
+
+**What was wrong.** §3 of `tools/reconcile-network.sh` accepted an anchor only by *computing* one: every
+listed node had to report the same usable last-finalised block, or the tool refused. The node flag it exists
+to drive, `--sync-anchor`, is for the state where there is nothing to sync to — a net whose finality is
+frozen, where the responder substitutes the genesis block (C259) — and in exactly that state no node reports
+a usable finalised block. So the tool refused in the one state its own recovery exists for, and the recovery
+was unreachable from the tool (measured both ways on 2026-10-10: `finalized heads differ`, exit 4, and
+`no usable finalized block`, exit 4).
+
+**What it does now.** `RECONCILE_ANCHOR=<block hash>`:
+
+- §3 takes the **operator's** block, reads its height from the block itself (`/api/block/{hash}` answers with
+  its own `blockInfo`, so the operator supplies a hash and not a height), and checks the one thing it can
+  check without a quorum: that the master **holds** the block. An anchor nobody has is nothing to restore to,
+  and that refusal is by name.
+- It prints that this is **your** root and not a computed meet — "not that stake finalised it, not that any
+  other node agrees" — and then reports what each node claimed, rather than resolving it. The disagreement is
+  the state being recovered from; naming a point does not make the nodes' claims agree.
+- §4 enumerates what is above the operator's point exactly as it does above a computed one, and §10 still
+  asserts finality past it (exit 9 when it does not arrive). The wipe path still requires the node side, and
+  the tool's usage says so: the joiners are configured with `--sync-anchor <the same hash>`;
+  `--restore-from-master` needs no flag because it copies the master's chain state.
+
+**The refusals name the way out.** Both refusal branches now print *"if you know the block this net last
+agreed on, name it: `RECONCILE_ANCHOR=<hash>`"*. A tool that refuses, in the state its own recovery exists
+for, without saying what the operator can do instead is a dead end — and that is what this row was.
+
+**Fixtures** (`tests/reconcile-regression.py`, all offline): the operator's anchor accepted with the
+disagreement reported (exit 0), an anchor nobody holds refused by name (exit 4), and the plain refusal
+asserting that it names the alternative (exit 4). The §3 slice's banner moved with the section, which the
+fixture caught rather than passing silently — the property that slicing by marker is for.
+
+**The row stays open for its run**, and this is the honest state rather than a formality: the row's close
+condition asks for a frozen net recovered through the operator's anchor, and that needs a rig where finality
+stops while the tip keeps moving — the same rig C259 is waiting on (pass §90 records three failed stagings).
+What is *not* owed on the node side is the mechanism: `run-3-windowed-catchup.txt` shows the catch-up from a
+named anchor working, so the remaining gap is a staging, not a code path.

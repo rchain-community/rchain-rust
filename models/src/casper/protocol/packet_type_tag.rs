@@ -14,6 +14,8 @@ pub enum PacketTypeTag {
     HasBlockRequest,
     HasBlock,
     BlockRequest,
+    BlockRangeRequest,
+    BlockRange,
     ForkChoiceTipRequest,
     FinalizedFringeRequest,
     FinalizedFringe,
@@ -30,6 +32,8 @@ impl PacketTypeTag {
             PacketTypeTag::HasBlockRequest => "HasBlockRequest",
             PacketTypeTag::HasBlock => "HasBlock",
             PacketTypeTag::BlockRequest => "BlockRequest",
+            PacketTypeTag::BlockRangeRequest => "BlockRangeRequest",
+            PacketTypeTag::BlockRange => "BlockRange",
             PacketTypeTag::ForkChoiceTipRequest => "ForkChoiceTipRequest",
             PacketTypeTag::FinalizedFringeRequest => "FinalizedFringeRequest",
             PacketTypeTag::FinalizedFringe => "FinalizedFringe",
@@ -46,6 +50,8 @@ impl PacketTypeTag {
             "HasBlockRequest" => Some(PacketTypeTag::HasBlockRequest),
             "HasBlock" => Some(PacketTypeTag::HasBlock),
             "BlockRequest" => Some(PacketTypeTag::BlockRequest),
+            "BlockRangeRequest" => Some(PacketTypeTag::BlockRangeRequest),
+            "BlockRange" => Some(PacketTypeTag::BlockRange),
             "ForkChoiceTipRequest" => Some(PacketTypeTag::ForkChoiceTipRequest),
             "FinalizedFringeRequest" => Some(PacketTypeTag::FinalizedFringeRequest),
             "FinalizedFringe" => Some(PacketTypeTag::FinalizedFringe),
@@ -94,12 +100,14 @@ mod tests {
     use crate::errors::ModelsError;
 
     /// Every tag, so a variant added without a wire name (or with a duplicated one) fails here.
-    const ALL: [PacketTypeTag; 10] = [
+    const ALL: [PacketTypeTag; 12] = [
         PacketTypeTag::BlockHashMessage,
         PacketTypeTag::BlockMessage,
         PacketTypeTag::HasBlockRequest,
         PacketTypeTag::HasBlock,
         PacketTypeTag::BlockRequest,
+        PacketTypeTag::BlockRangeRequest,
+        PacketTypeTag::BlockRange,
         PacketTypeTag::ForkChoiceTipRequest,
         PacketTypeTag::FinalizedFringeRequest,
         PacketTypeTag::FinalizedFringe,

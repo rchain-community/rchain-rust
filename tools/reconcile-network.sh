@@ -9,13 +9,18 @@
 #   1. reads every node's explicitly reported finalised block and requires them to **agree** — the same
 #      height *and* the same hash on every listed node — or refuses, naming what differs. A block producer
 #      is not a validator vote and the heights API cannot prove stake-weighted finalized ancestry, so this
-#      equality is the whole of the anchor: no quorum is inferred, and no stake fraction is printed;
+#      equality is the whole of the computed anchor: no quorum is inferred, and no stake fraction is
+#      printed. When no node has a usable finalised block at all — the state this tool's own recovery
+#      exists for — the operator may **name** the anchor instead (`RECONCILE_ANCHOR=<hash>`), and the tool
+#      states that it is the operator's root rather than a meet it computed (C269);
 #   2. **reports** suspected equivocation from the block API's own `sender` field (two distinct blocks by
 #      one sender at one height). It is one endpoint's word — this script checks no signature and binds no
 #      endpoint to a bonded key — so it is a suspicion worth a human's attention, never an attributable
 #      artefact, and **nothing is dropped, reweighted or decided on it** (§2);
-#   3. states the anchor and what each node reported, rather than implying a quorum it did not compute;
-#   4. enumerates what is above the point, per block, and never drops it silently;
+#   3. states the anchor — **which** anchor it is, computed or operator-named — and what each node
+#      reported, rather than implying a quorum it did not compute;
+#   4. enumerates what is above the point, per **unique** block — the nodes that served it, its accepted
+#      deploy count, and the signatures of the deploys its merge rejected — and never drops it silently;
 #   5. (`--apply`) stops every non-master node, moves each data directory aside — **never deleting** —
 #      and restarts them to resync from the master's DAG;
 #   5b. (`--restore-from-master`) copies the master's *chain state* onto each joiner instead, for the case
@@ -23,7 +28,8 @@
 #      **not a sync**: the joiners adopt the master's view wholesale, which is the operator asserting a
 #      winner. It is a labelled stopgap, it never copies node identity, and the tool prints what it is
 #      adopting and what it is dropping before it runs;
-#   6. verifies the outcome on **block hashes per height**, not on heights.
+#   6. verifies the outcome on **block hashes per height** — not on heights, where four nodes at zero
+#      are equal — **and** on finality past the point, refusing (exit 9) when either is unmet.
 #
 # What it never does
 #   * treat an unfinalised block as the truth;
@@ -43,6 +49,11 @@
 #
 # Usage:  RECONCILE_NODES=<file> RECONCILE_CONTROL=docker reconcile-network.sh \
 #           [--apply | --restore-from-master] [--master NAME]
+#   and, when the nodes cannot agree on a finalised block because none has one:
+#         RECONCILE_ANCHOR=<block hash> ... reconcile-network.sh [--apply]
+#   The hash is the block the net last agreed on (the operator's call, not this tool's). The joiners must
+#   be configured with `--sync-anchor <the same hash>` for the wipe path to resync there; `--restore-from-
+#   master` does not need it, because it copies the master's chain state.
 
 set -uo pipefail
 
@@ -73,9 +84,20 @@ api() { # host port path
   fi
 }
 
-# Every block a node holds at one height: "<blockHash> <sender> <postStateHash> <deployCount> <bonds>".
+# Every block a node holds at one height, one line per block:
+#   "<blockHash> <sender> <postStateHash> <deployCount> <rejectedDeploys>"
 # A height legitimately holds one block per bonded validator, so this returns *all* of them — which is
 # what makes the equivocation check possible from the API alone, with no node-internal surface.
+#
+# **The last field is a compact JSON array and is never empty** (`[]` when a block rejected nothing),
+# so the line has a fixed field count with nothing that can vanish. `read` splits on *runs* of
+# whitespace with the default IFS, so an absent field would shift every field after it — the shape a
+# reader here must not have. The rejected deploys are base16 deploy **signatures** (the deploy id,
+# `casper/src/merging.rs`: `deploy_id: d.deploy.sig`), so no element of the array can carry a space.
+#
+# The bond map was a sixth field until the stake-weighted meet was removed (#305). Nothing reads it
+# now — the meet and the `stake_of` helper that consumed it went together — and a field that only
+# looks like a denominator is worse than no field: this tool has **no** stake arithmetic (C261).
 blocks_at() { # host port height
   api "$1" "$2" "/api/blocks/$3/$3" | python3 -c "
 import json,sys
@@ -88,9 +110,9 @@ except Exception:
 for x in b:
     if not isinstance(x,dict): continue
     if x.get('blockNumber') != h: continue
-    bonds=';'.join('%s=%s' % (y.get('validator',''), y.get('stake','')) for y in (x.get('bonds') or []))
+    rejected=json.dumps([str(d) for d in (x.get('rejectedDeploys') or [])], separators=(',',':'))
     print('%s %s %s %s %s' % (x.get('blockHash',''), x.get('sender',''),
-                              x.get('postStateHash',''), x.get('deployCount',0), bonds))"
+                              x.get('postStateHash',''), x.get('deployCount',0), rejected))"
 }
 # The last-finalised endpoint answers with an *error string* rather than an object when there is no
 # finalised fringe yet (`"Finalized fringe is not available."`) — which is the state a diverged net is in,
@@ -107,16 +129,10 @@ except Exception: print('')"
 lfb_num()  { api "$1" "$2" /api/last-finalized-block | json_field "b.get('blockNumber','')"; }
 lfb_hash() { api "$1" "$2" /api/last-finalized-block | json_field "b.get('blockHash','')"; }
 height_of() { api "$1" "$2" /api/status | json_field "d.get('latestBlockNumber','')"; }
+# The height of a named block, read from the block itself — `/api/block/{hash}` answers with its own
+# `blockInfo`, which carries the number, so an operator-named anchor needs no height from the operator.
+anchor_height() { api "$1" "$2" "/api/block/$3" | json_field "b.get('blockNumber','')"; }
 
-# A validator's stake, read from a block's own bond map. Absent means zero weight, which is what a node
-# that has never seen the validator should conclude — not an error.
-stake_of() { # sender bonds
-  local sender="$1" bonds="$2" kv
-  for kv in ${bonds//;/ }; do
-    [ "${kv%%=*}" = "$sender" ] && { echo "${kv##*=}"; return; }
-  done
-  echo 0
-}
 
 # --- A: the chain-state environments, by `casper/src/storage.rs::rnode_db_mapping` ---------------
 #
@@ -252,6 +268,32 @@ move_data_dir_aside() {
 }
 
 declare -A HOST PORT UNIT LFB LFH HGT
+
+# Ask the master for one block. A `--no-autopropose` net that nobody deploys to produces nothing, and
+# finality is a function of the blocks' justifications, so it cannot move: a converged net can *still*
+# report no finality, which reads as the recovery failing when it is the measurement that is idle. §8b
+# found this by measuring; §10 needs it repeatedly, because a fringe can take more than one round of new
+# blocks to pass the anchor. Best-effort by design — the live net's faucet is mounted only in dev mode,
+# so a refusal is a note and the wait still runs.
+trigger_block() {
+  # **The transport is `api()`'s, and for a while it was not.** This POSTed to
+  # `http://${HOST[$MASTER]}:…`, which is the *table's* host token: for a node file that spells a local
+  # node `local` — one of the three spellings the header documents — that URL does not resolve, the
+  # curl fails, and the section printed "no block could be requested", which reads as a net without the
+  # faucet rather than as a broken request. Measured 2026-10-10: `http://local:42403` exits 6 while
+  # `http://localhost:42403` answers, and the run that should have driven the chain produced nothing.
+  local body='{"address":"11112wWGeUA5qt6MpH9CantYj2UWWt4C3LP4cx8TpQmeM79dyen6Sk"}'
+  if is_local "${HOST[$MASTER]}"; then
+    curl -s -X POST --max-time 30 -H 'Content-Type: application/json' --data-binary "$body" \
+      "http://127.0.0.1:${PORT[$MASTER]}/api/faucet" >/dev/null 2>&1
+  else
+    $SSH "root@${HOST[$MASTER]}" "curl -s -X POST --max-time 30 -H 'Content-Type: application/json' \
+      --data-binary '$body' http://127.0.0.1:${PORT[$MASTER]}/api/faucet" >/dev/null 2>&1
+  fi \
+    && echo "    a block was requested (a faucet transfer on the master)" \
+    || { echo "    NOTE: no block could be requested — on a net without the faucet, deploy something" >&2; return 1; }
+}
+
 NAMES=()
 echo "== 1. what each node is showing =="
 while read -r host port unit name master; do
@@ -280,7 +322,7 @@ echo "== 2. reported equivocation from the block API — a report, not a proof (
 for (( h=0; h<=MAXH; h++ )); do
   declare -A seen_sender_block=()
   for n in "${NAMES[@]}"; do
-    while read -r bh sender _post _deploys _bonds; do
+    while read -r bh sender _post _deploys _rejected; do
       [ -z "${bh:-}" ] && continue
       prev="${seen_sender_block[$sender]:-}"
       if [ -n "$prev" ] && [ "$prev" != "$bh" ]; then
@@ -302,26 +344,58 @@ else
   echo "  A report only: the sender fields are unverified, and no stake is weighed, dropped or decided."
 fi
 
-# --- 3. conservative finalized anchor -----------------------------------------
+# --- 3. the anchor: computed by agreement, or named by the operator -----------
 # A block producer is not a validator vote for the block. The heights API
-# cannot prove stake-weighted finalized ancestry. Require identical explicit
-# last-finalized blocks from every listed node instead of fabricating quorum.
-echo "== 3. finalized anchor (unanimous LFB; no inferred stake votes) =="
+# cannot prove stake-weighted finalized ancestry. So the anchor is either what the
+# nodes **report identically** — no quorum inferred, nothing fabricated — or, when
+# they cannot agree because a net's finality is frozen and no node has a usable
+# finalised block at all, the block the **operator** names (`RECONCILE_ANCHOR`).
+# The two are different answers and the tool says which one it has: a refusal when
+# it cannot compute a meet, and an operator's root when nobody can (C269). What it
+# never does is present the operator's choice as a computed one.
+echo "== 3. the anchor =="
+ANCHOR=${RECONCILE_ANCHOR:-}
 MEET=""; MEET_HASH=""
-for n in "${NAMES[@]}"; do
-  h="${LFB[$n]:-}"; bh="${LFH[$n]:-}"
-  if ! [[ "$h" =~ ^[0-9]+$ ]] || [ -z "$bh" ]; then
-    echo "  REFUSING: $n has no usable finalized block (height/hash)." >&2
+if [ -n "$ANCHOR" ]; then
+  # **The operator's anchor, and it is labelled as theirs.** Checked here only for the one thing this
+  # tool can check without a quorum: that the master holds the block at all (an anchor nobody has is
+  # nothing to restore to). Its height comes from the block itself, because §4 enumerates by height.
+  MEET=$(anchor_height "${HOST[$MASTER]}" "${PORT[$MASTER]}" "$ANCHOR")
+  if ! [[ "$MEET" =~ ^[0-9]+$ ]]; then
+    echo "  REFUSING: RECONCILE_ANCHOR $ANCHOR could not be read from ${MASTER} (no such block, or the" >&2
+    echo "            node did not answer). An anchor to restore to has to be a block a node holds." >&2
     exit 4
   fi
-  if [ -z "$MEET" ]; then MEET="$h"; MEET_HASH="$bh"
-  elif [ "$h" != "$MEET" ] || [ "$bh" != "$MEET_HASH" ]; then
-    echo "  REFUSING: finalized heads differ; block observations cannot prove a stake quorum." >&2
-    exit 4
-  fi
-done
-echo "  unanimously reported finalized anchor: height $MEET, hash $MEET_HASH"
-echo "  No stake-weighted quorum or finalized ancestry is inferred from block producers."
+  MEET_HASH="$ANCHOR"
+  echo "  the operator's anchor: height $MEET, hash $MEET_HASH"
+  echo "  This is **your** root, not a computed meet: this tool has verified that ${MASTER} holds the block"
+  echo "  and nothing else about it — not that stake finalised it, not that any other node agrees."
+  echo "  What the nodes report, reported rather than resolved:"
+  for n in "${NAMES[@]}"; do
+    printf "    %-2s finalised %-6s %s\n" "$n" "${LFB[$n]:-none}" "${LFH[$n]:0:44}"
+  done
+  echo "  If they disagree, that is the state you are recovering from; the block you named is the point"
+  echo "  this recovery starts at, and every block above it is validated rather than installed."
+else
+  for n in "${NAMES[@]}"; do
+    h="${LFB[$n]:-}"; bh="${LFH[$n]:-}"
+    if ! [[ "$h" =~ ^[0-9]+$ ]] || [ -z "$bh" ]; then
+      echo "  REFUSING: $n has no usable finalized block (height/hash)." >&2
+      echo "            Nothing to compute a meet from. If you know the block this net last agreed on," >&2
+      echo "            name it: RECONCILE_ANCHOR=<hash> (the operator's root, stated as yours, not ours)." >&2
+      exit 4
+    fi
+    if [ -z "$MEET" ]; then MEET="$h"; MEET_HASH="$bh"
+    elif [ "$h" != "$MEET" ] || [ "$bh" != "$MEET_HASH" ]; then
+      echo "  REFUSING: finalized heads differ; block observations cannot prove a stake quorum." >&2
+      echo "            The nodes do not agree on a point, so this tool cannot compute one. If you know" >&2
+      echo "            the block this net last agreed on, name it: RECONCILE_ANCHOR=<hash>." >&2
+      exit 4
+    fi
+  done
+  echo "  unanimously reported finalized anchor: height $MEET, hash $MEET_HASH"
+  echo "  No stake-weighted quorum or finalized ancestry is inferred from block producers."
+fi
 
 # --- 4. what is above the point ----------------------------------------------
 echo "== 4. what is above the point =="
@@ -330,20 +404,42 @@ echo "  a height legitimately holds one sibling per validator and there is no si
 echo "  joiners resync onto this DAG; the writers re-submit what they can see is missing."
 REPORT="${RECONCILE_REPORT:-/tmp/reconcile-deploys.jsonl}"
 : > "$REPORT"
-total=0
+total=0; ublocks=0; nobs=0
 for (( h=MEET+1; h<=MAXH; h++ )); do
-  nblocks=0
+  # **One block is one block, however many nodes serve it.** `/api/blocks/h/h` is answered *per node*,
+  # so a block held by all four comes back four times — and the version this replaces counted each
+  # *observation*, inflating both the block count and the deploy total by the replication factor. That
+  # is #302's double-count (the one that got the stake meet deleted) reappearing one section down, and
+  # a write report an operator re-submits from has to be the block's own count, not the network's view
+  # of it. The key is the block's **hash**; `obs_seen` also keys on the observing node, so a node that
+  # answers with one block twice cannot inflate it either. `observers` keeps where it was seen, so the
+  # dedupe is visible rather than silent.
+  declare -A obs_seen=() obs_sender=() obs_deploys=() obs_rejected=() obs_nodes=()
+  seen_bh=""; nblocks=0; nobs=0
   for n in "${NAMES[@]}"; do
-    while read -r bh sender _post deploys _bonds; do
+    while read -r bh sender _post deploys rejected; do
       [ -z "${bh:-}" ] && continue
-      nblocks=$((nblocks+1)); total=$((total + ${deploys:-0}))
-      printf '{"height":%s,"blockHash":"%s","sender":"%s","deployCount":%s,"sourceNode":"%s"}\n' \
-        "$h" "$bh" "$sender" "${deploys:-0}" "$n" >> "$REPORT"
+      [ -n "${obs_seen[$bh:$n]:-}" ] && continue
+      obs_seen[$bh:$n]=1; nobs=$((nobs+1))
+      if [ -z "${obs_nodes[$bh]:-}" ]; then
+        nblocks=$((nblocks+1)); seen_bh="$seen_bh $bh"
+        obs_sender[$bh]="$sender"; obs_deploys[$bh]="${deploys:-0}"
+        obs_rejected[$bh]="${rejected:-[]}"; obs_nodes[$bh]="\"$n\""
+      else
+        obs_nodes[$bh]="${obs_nodes[$bh]},\"$n\""
+      fi
     done < <(blocks_at "${HOST[$n]}" "${PORT[$n]}" "$h")
   done
-  [ "$nblocks" -gt 0 ] && printf "  #%s: %s block(s)\n" "$h" "$nblocks"
+  for bh in $seen_bh; do
+    total=$(( total + ${obs_deploys[$bh]:-0} ))
+    printf '{"height":%s,"blockHash":"%s","sender":"%s","deployCount":%s,"observers":[%s],"rejectedDeploys":%s}\n' \
+      "$h" "$bh" "${obs_sender[$bh]}" "${obs_deploys[$bh]}" "${obs_nodes[$bh]}" "${obs_rejected[$bh]}" \
+      >> "$REPORT"
+  done
+  ublocks=$((ublocks+nblocks))
+  [ "$nblocks" -gt 0 ] && printf "  #%s: %s unique block(s) from %s answer(s)\n" "$h" "$nblocks" "$nobs"
 done
-echo "  $total deploy(s) above the point; the per-block record is $REPORT"
+echo "  $total deploy(s) above the point across $ublocks unique block(s); the per-block record is $REPORT"
 echo "  (a block's *bodies* are not in the heights route — /api/block/{hash} carries the terms, the heights"
 echo "   route carries counts. The owners re-submit; this tool does not claim to replay them.)"
 
@@ -364,10 +460,12 @@ if [ "$RESTORE" = "1" ]; then
   echo "== 6. the fiat, printed before it is applied =="
   echo "  This is NOT a sync. The joiners adopt ${MASTER}'s chain state wholesale, so what they agree about"
   echo "  afterwards is ${MASTER}'s view of the chain — including any block above the point that ${MASTER}"
-  echo "  accepted and its peers did not. The blocks this drops are enumerated in section 4; that count is"
-  echo "  the write set the owners re-submit. Running this is the operator asserting that ${MASTER} is the"
-  echo "  chain. It is a stopgap because it depends on the data-dir layout being movable — which #287's"
-  echo "  design deliberately avoided depending on — and not a substitute for an agreed anchor."
+  echo "  accepted and its peers did not. Section 4 enumerates the blocks this drops, one record per unique"
+  echo "  block, with each block's accepted deploy count and the signatures of the deploys its merge"
+  echo "  rejected; that record — not its total, which counts accepted deploys — is what the owners"
+  echo "  re-submit from. Running this is the operator asserting that ${MASTER} is the chain. It is a"
+  echo "  stopgap because it depends on the data-dir layout being movable — which #287's design"
+  echo "  deliberately avoided depending on — and not a substitute for an agreed anchor."
 
   TS=$(date -u +%Y%m%d-%H%M)
   echo "== 7. chain state copied onto each joiner (identity and genesis untouched) =="
@@ -386,15 +484,11 @@ if [ "$RESTORE" = "1" ]; then
 
   echo "== 8b. triggering a block, because an idle chain cannot finalise =="
   # **Found by measuring.** The first run of this mode reported no finality and looked like a failure of
-  # the restore; it was an idle net. This is a `--no-autopropose` network, so a chain that nobody deploys to
-  # produces nothing and finality cannot move — the same reason the wipe path above has its own trigger.
-  # Without this the mode can converge a net to one head and *still* report no finality, which reads as
-  # the recovery failing when it is the measurement that is idle.
-  curl -s -X POST --max-time 30 "http://${HOST[$MASTER]}:${PORT[$MASTER]}/api/faucet" \
-    -H 'Content-Type: application/json' \
-    --data-binary '{"address":"11112wWGeUA5qt6MpH9CantYj2UWWt4C3LP4cx8TpQmeM79dyen6Sk"}' >/dev/null 2>&1 \
-    && echo "    a block was requested (a faucet transfer on the master)" \
-    || echo "    NOTE: no block could be requested — on a net without the faucet, deploy something" >&2
+  # the restore; it was an idle net. This is a `--no-autopropose` network, so a chain that nobody deploys
+  # to produces nothing and finality cannot move. §10 asks again while it waits, for both paths — the
+  # wipe path has no trigger of its own, which is why its §7 waits on a joiner reaching the anchor and
+  # then hands over to §10, whose wait drives the chain rather than only watching it.
+  trigger_block || true
 else
 echo "== 5. apply: every non-master node is stopped first, before anything is moved =="
 # All of them, then the moves. The version this derives from stopped and restarted each node inside one
@@ -447,15 +541,23 @@ for i in $(seq 1 40); do
   ok=1; line=""
   for n in "${NAMES[@]}"; do line="$line $n=$(height_of "${HOST[$n]}" "${PORT[$n]}")"; done
   for (( h=MEET; h<=MAXH; h++ )); do
-    first=""
+    # **A height nobody has produced is not a disagreement.** `MAXH` is `/api/status`'s
+    # `latestBlockNumber`, which counts the round a node is in and sits one ahead of the highest
+    # height the block API serves — so the walk's last step is routinely a height with no blocks on
+    # any node. Requiring a non-empty set there failed a **converged** net on 2026-10-10: the three
+    # nodes agreed at every height 40–44, height 45 was empty on all three, and this section reported
+    # "the nodes still disagree on a block hash at or above 41". Empty on *every* node is the frontier
+    # and is skipped; empty on *one* node while another has blocks is the divergence being compared
+    # for, and still fails.
+    first=""; any_empty=0; any_full=0
     for n in "${NAMES[@]}"; do
-      # Compare the complete unordered block-hash set at this height.
       hashes="$(blocks_at "${HOST[$n]}" "${PORT[$n]}" "$h" | awk 'NF {print $1}' | LC_ALL=C sort -u)"
-      if [ -z "$hashes" ]; then ok=0; break; fi
+      if [ -z "$hashes" ]; then any_empty=1; continue; fi
+      any_full=1
       if [ -z "$first" ]; then first="$hashes"
       elif [ "$hashes" != "$first" ]; then ok=0; break; fi
     done
-    [ "$ok" = "0" ] && break
+    if [ "$ok" = "0" ] || { [ "$any_empty" = "1" ] && [ "$any_full" = "1" ]; }; then ok=0; break; fi
   done
   echo "  [$i]$line  hashes-agree=$ok"
   [ "$ok" = "1" ] && break
@@ -466,8 +568,92 @@ if [ "$ok" != "1" ]; then
 fi
 
 echo "== 10. finality past the point =="
-for n in "${NAMES[@]}"; do
-  f=$(lfb_num "${HOST[$n]}" "${PORT[$n]}"); hh=$(lfb_hash "${HOST[$n]}" "${PORT[$n]}")
-  printf "  %-2s finalised %-6s %s\n" "$n" "${f:-?}" "${hh:0:44}"
+# **This section used to be a print.** It printed each node's last-finalized height and hash and exited
+# 0 — including when every node still answered "Finalized fringe is not available.", which is what the
+# drill transcript `spec/audit/evidence/n-reconcile-drill/restore-run.txt` shows: four `finalised ?`
+# lines and a zero exit, under a closing sentence claiming to be #287's falsifier. Nothing here could
+# fail. It asserts the acceptance clause instead — *finality advances past the reconciliation point* —
+# from four rules, each refusing with a named reason:
+#
+#   A. **usable** — every node reports an integer finalized height and a non-empty hash: the same
+#      condition §3 refuses on at the anchor, applied at the end. A frozen fringe reads as unusable.
+#   B. **advanced** — every node's finalized height is strictly greater than $MEET. This is the clause
+#      itself; equal to the anchor is not progress.
+#   C. **one head** — no two nodes report *different* hashes at the *same* finalized height. Two
+#      finalized blocks at one height is a finality conflict; different finalized *heights* are a lag,
+#      which is why this is not §3's unanimity rule.
+#   D. **in the common DAG** — each node's finalized block is present at its height in that node's own
+#      block answer, and in the answer of every *other* node whose own height reaches that height. The
+#      last-finalized endpoint and the block API are different surfaces: a hash one reports and no
+#      node's block index holds is a string, not a block.
+#
+# **D alone is not enough, and C is why.** A DAG legitimately holds every sibling at a height, so
+# "each node's finalized block is in every node's answer" is true while two *finalized* heads exist.
+# C is what makes the pairwise rule mean one chain, and it cannot fire on an honest net: the fringe's
+# `max()` is by (height, id), so nodes holding one fringe finalize the same block.
+#
+# **What this cannot decide, stated rather than implied.** The heights API carries no ancestry, so
+# nothing here proves the finalized blocks lie on one chain — only that they are blocks every node that
+# reached their height actually holds. With §9 (identical unordered hash sets at every height
+# MEET..MAXH) that is the strongest statement these two endpoints support; the ancestry question is
+# #287's, and it is why the meet is still owed rather than declared.
+adv_ok=0; why="the finality wait never ran"
+for i in $(seq 1 "${RECONCILE_FINALITY_ROUNDS:-40}"); do
+  sleep 15
+  trigger_block >/dev/null 2>&1 || true
+  declare -A FINH=() FINB=() NOWH=()
+  adv_ok=1; line=""
+  for n in "${NAMES[@]}"; do
+    FINH[$n]="$(lfb_num "${HOST[$n]}" "${PORT[$n]}")"
+    FINB[$n]="$(lfb_hash "${HOST[$n]}" "${PORT[$n]}")"
+    NOWH[$n]="$(height_of "${HOST[$n]}" "${PORT[$n]}")"
+    line="$line $n=${FINH[$n]:-?}"
+  done
+  for n in "${NAMES[@]}"; do
+    if ! [[ "${FINH[$n]:-}" =~ ^[0-9]+$ ]] || [ -z "${FINB[$n]:-}" ]; then
+      adv_ok=0; why="$n reports no usable finalized block (height '${FINH[$n]:-}', hash '${FINB[$n]:-}')"; break
+    fi
+  done
+  if [ "$adv_ok" = "1" ]; then
+    for n in "${NAMES[@]}"; do
+      if [ "${FINH[$n]}" -le "$MEET" ] 2>/dev/null; then
+        adv_ok=0; why="$n finalised at ${FINH[$n]}, which is not past the point ($MEET)"; break
+      fi
+    done
+  fi
+  if [ "$adv_ok" = "1" ]; then
+    declare -A fin_seen=()
+    for n in "${NAMES[@]}"; do
+      k="${FINH[$n]}"
+      if [ -n "${fin_seen[$k]:-}" ] && [ "${fin_seen[$k]}" != "${FINB[$n]}" ]; then
+        adv_ok=0; why="two finalized blocks at height $k: ${fin_seen[$k]:0:12}… and ${FINB[$n]:0:12}…"; break
+      fi
+      fin_seen[$k]="${FINB[$n]}"
+    done
+  fi
+  if [ "$adv_ok" = "1" ]; then
+    for n in "${NAMES[@]}"; do
+      fh="${FINH[$n]}"; fb="${FINB[$n]}"
+      for m in "${NAMES[@]}"; do
+        # A node's own block index must serve its finalized block whatever its tip says; another
+        # node's must, but only once it has reached that height — below it, absence is a lag.
+        if [ "$m" != "$n" ] && ! [ "${NOWH[$m]:-0}" -ge "$fh" ] 2>/dev/null; then continue; fi
+        if ! blocks_at "${HOST[$m]}" "${PORT[$m]}" "$fh" | awk 'NF {print $1}' | grep -Fqx "$fb"; then
+          adv_ok=0; why="$n finalised $fh ${fb:0:12}… but $m (height ${NOWH[$m]:-?}) does not hold it"
+          break 2
+        fi
+      done
+    done
+  fi
+  echo "  finality [$i]$line  past-the-point=$adv_ok"
+  [ "$adv_ok" = "1" ] && break
 done
+if [ "$adv_ok" != "1" ]; then
+  echo "  NOT final: $why" >&2
+  echo "  Finality has not advanced past $MEET on every node, so the recovery is not verified." >&2
+  echo "  (a chain that converged to one head but cannot finalise is C259's state, and this refuses it" >&2
+  echo "   rather than reporting it as recovered.)" >&2
+  exit 9
+fi
+echo "  finality advanced past $MEET on every node, and every finalized block is one the nodes' own DAGs hold."
 echo "  (this section plus section 9 is #287's falsifier: one head, agreeing block hashes, no genesis.)"

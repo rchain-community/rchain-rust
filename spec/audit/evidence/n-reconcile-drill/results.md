@@ -196,3 +196,104 @@ asserting a winner, which the tool prints before it applies. It does not make th
 would close the partial-divergence case properly. And the instrument's limit stands: this chain's blocks
 were produced under perturbation, so its *validity* is not what was demonstrated — its **convergence and
 resumed finality** are.
+
+---
+
+# Fourth run: the tool's own transcript, and the three defects the drill found in the tool
+
+**Why a fourth run.** The first three measured the *mechanism*; the acceptance's proof was assembled by hand
+afterwards (`restore-disarmed.txt`), because the tool itself could not prove it. #287's review then found two
+places where the tool claimed more than it did, and re-running the drill with the fixed tool was the way to
+settle both. It settled three more besides — the drill is also a test of the instrument, and the instrument
+failed it in three new ways.
+
+**Rig, unchanged except where the run says so.** A four-validator docker devnet (`devnet-bootstrap` +
+`devnet-validator-1..3`), `--no-autopropose --epoch-length 10`, driven by faucet transfers so that a chain
+that nobody deploys to still produces blocks. The divergence instrument is the C215 injection
+(`--merge-divergence-injection`, distinct value per node), armed on the joiners; the survivor stays clean.
+The tool is `tools/reconcile-network.sh` on this branch, run with `RECONCILE_CONTROL=docker` and a node file
+whose hosts are `local`.
+
+## What was measured
+
+**1. Four heads with no agreed anchor are refused, not resolved** —
+[`run-4-refusal-no-anchor.txt`](run-4-refusal-no-anchor.txt). With the injection armed from the start on all
+three joiners, the four nodes finished at different heights and froze (57 / 47 / 48 / 48, no node finalising
+above its own head). This is TE-1's shape. `== 3.` reports
+`REFUSING: finalized heads differ; block observations cannot prove a stake quorum.` and exits **4**, having
+touched nothing. The four clauses of the acceptance are not reachable from this state by this tool, and that
+is the design rather than a failure of it: an anchor it cannot verify is not an anchor (#287's refusal; C259
+owns the mechanism that would recover the no-anchor case).
+
+**2. The write report counted observations** — [`run-4-plan-diverged-prefix.txt`](run-4-plan-diverged-prefix.txt)
+against [`run-4-plan-diverged.txt`](run-4-plan-diverged.txt). A second staging took the *same* divergence but
+left a usable anchor (three joiners mutually refusing, all three finalised at the same height on one hash,
+`b3b161ff…`, while the clean survivor ran ahead). On that state:
+
+```
+pre-fix:  #42: 12 block(s)   #43: 12 block(s)   #44: 10 block(s)   → 34 records, one per observation
+fixed:    #42: 4 unique block(s) from 12 answer(s) …              → 12 records, one per block,
+                                                                    with "observers" and "rejectedDeploys"
+```
+
+`/api/blocks/{h}/{h}` is answered per node, so every block came back three times and the counts were the
+replication factor. The record is now the block's own: `run-4-deploys.jsonl` is the same run's file.
+
+**3. The finality check printed, and the joiners' block trigger could not reach a `local` host** —
+[`run-4-restore-finality-refused.txt`](run-4-restore-finality-refused.txt). `--restore-from-master` against
+the anchored divergence: `== 3.` accepts the anchor (height 41), the copy converges the three stores, and
+`== 9.` reports `hashes-agree=1` on the first attempt — **the store-level restore worked**. Then `== 10.`
+refused:
+
+```
+  finality [40] V1=41 V2=41 V3=41  past-the-point=0
+  NOT final: V1 finalised at 41, which is not past the point (41)
+exit 9
+```
+
+The old section would have printed `finalised ?` and exited **0**; this is the reviewer's own negative case
+("every node's LFB remains at MEET"), on real nodes. The reason it was 41 was the third defect: `== 8b.` had
+printed `no block could be requested`, because the trigger POSTed to `http://${HOST[$MASTER]}:…` — the node
+file's token `local`, which does not resolve (`http://local:42403` exits 6) though the tool's header
+documents `local` as one of three valid spellings. On a `--no-autopropose` net an unreached trigger means no
+blocks, and no blocks means no finality, which reads as the recovery failing.
+
+**4. The acceptance, asserted by the tool itself** — [`run-4-restore.txt`](run-4-restore.txt). With all of
+the above fixed, the same run completes:
+
+```
+== 9. verification: block hashes per height, not heights ==
+  [1] V1=65 V2=65 V3=65  hashes-agree=1
+== 10. finality past the point ==
+  finality [1] V1=61 V2=61 V3=61  past-the-point=1
+  finality advanced past 51 on every node, and every finalized block is one the nodes' own DAGs hold.
+exit 0
+```
+
+Anchor height **51** (above genesis, unanimously reported), every height's hash set identical across the
+three, finality **61** — past the point — and the exit code is the tool's own. This is the first transcript
+in this file where the acceptance's clauses are proved by the tool rather than read off by hand.
+
+## The three defects the drill found in the tool
+
+1. **§4 counted observations, not unique blocks** (register **C264**) — §2 above.
+2. **§10 named a verification and printed** (register **C265**) — §3 above. The same section's trigger could
+   not reach a `local` host, which is why the clause it claims had never been satisfiable on an idle net.
+3. **§9 treated a height nobody had produced as a disagreement** (register **C266**) — found between §3 and
+   §4 above: the walk runs to `MAXH`, which is `/api/status`'s `latestBlockNumber` and sits one round ahead
+   of the highest height the block API serves, so its last step was a height with no blocks on any node. The
+   first `--restore-from-master` attempt exited 6, "the nodes still disagree on a block hash at or above 41",
+   on a net whose three nodes in fact agreed at every height 40–44.
+
+## What this does not show
+
+- **A frozen four-heads net recovered end to end.** With no node finalising, there is no unanimity for §3 to
+  accept, so the tool refuses (measurement 1, and C259's whole subject). The state the acceptance names is
+  reachable by this tool only where *some* finality survives.
+- **A recovery from a divergent net whose instrument is still armed.** The store copy converges the stores,
+  but a node restarting with the injection still armed re-perturbs what it recomputes, and `== 9.` refuses
+  the result (this run's third attempt, not committed: `hashes-agree=0` for forty rounds). Removing the
+  instrument first — which the devnet's own `reset` does — is the sequencing the third run already found, and
+  it is what the successful runs here did.
+- **Validity.** As the third run said: these blocks were produced under perturbation, so what is demonstrated
+  is convergence and resumed finality, not that the chain they converge on is one anybody would call valid.

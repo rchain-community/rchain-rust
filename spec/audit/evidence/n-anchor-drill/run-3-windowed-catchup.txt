@@ -1,0 +1,50 @@
+== the windowed catch-up: an anchor 300 heights back reaches the tip in 98 seconds ==
+
+rig: one validator (`up --validators 1`, autopropose) built the chain to h=315 with finality at 311 —
+    "one" because on this devnet's first epoch the draw leaves validator 0 alone in the active set, so a
+    solo master finalises. The master was then brought back **quiet** (`down`; `up --validators 4
+    --no-autopropose`, volumes preserved) and the three joiners synced it: all four at h=319, LFB=315.
+    A quiet master is the right rig for this measurement: the gap does not move while it is walked.
+
+the anchor: **height 15, hash 145dcc59aa4f18ba7f80be5d485c31516333d21b65add6654eee90201597da4d** — a
+    finalised block 300 heights below the finalised tip, so the gap is 300 heights × four validators ≈
+    **1200 blocks**, well over `MAX_PENDING_BLOCKS` (1024). This is the shape the old code froze on.
+
+V1, wiped and started with `--sync-anchor <that block>` (its own log, `devnet-validator-1`):
+
+  2026-10-10T11:43:42.497Z INFO [casper.engine.NodeLaunch] Syncing to the operator-named anchor 145dcc59aa4f18ba7f80be5d485c31516333d21b65add6654eee90201597da4d rather than to a fringe a peer offers: with finality frozen no peer has one, and the answer to an ordinary fringe request would be the genesis block (C259)
+  2026-10-10T11:43:45.365Z INFO [casper.engine.NodeSyncing] LFS state is successfully restored.
+  2026-10-10T11:43:45.365Z INFO [casper.engine.Catchup] catch-up against devnet-bootstrap: this node's frontier is height 15, walking outward in windows of 8 heights (nothing above the anchor is installed — every window is validated)
+  2026-10-10T11:45:20.699Z INFO [casper.engine.Catchup] the peer has nothing above height 318; catch-up finished
+  2026-10-10T11:45:20.699Z INFO [casper.engine.Catchup] catch-up released the ingest window at height 318
+
+so: **the restore took 2.9 s** (the walk below the anchor is 15 heights, not 315), and the walk from the
+anchor to the tip took **98 s** — 15 → 318 while the master sat at 319.
+
+`block receiver state full` on V1: **0**. In the run before this change (run-2, same file's sibling) the
+same shape produced **173** drops, **one** block validated, and a node frozen at 121 while the master ran
+to 577.
+
+heights, sampled every 25 s (master / V1 anchored / V3 control):
+
+  t1  master=319  V1anch=231  V3ctrl=0
+  t2  master=319  V1anch=319  V3ctrl=0
+  t3 … t7  master=319  V1anch=319  V3ctrl=0
+  t8  master=319  V1anch=319  V3ctrl=319
+
+the control (V3, wiped with no anchor, the ordinary path) is the comparison that makes the anchored path
+legible: it has a *smaller* gap (4 heights above the fringe at 315) but must hydrate the state of the whole
+chain below its root, and its own log says so —
+
+  2026-10-10T11:44:18.229Z INFO [casper.engine.NodeSyncing] Requesting tuple-space data for 316 approved block state roots.
+  2026-10-10T11:46:51.856Z INFO [casper.engine.NodeSyncing] LFS state is successfully restored.
+
+— 2.5 minutes of hydration before it could even start, against V1's 2.9 seconds. Both reach the tip; the
+anchored path is the cheaper one here because its root is *low*, and what was owed for it was the walk
+above it, which is what this run measures. (The O(chain) hydration is a separate cost, unchanged, and the
+reason the control is slower — not a virtue of the anchor.)
+
+what this does not show: the same walk on a net whose finality is **frozen** (the tool's exact case). The
+walk itself does not depend on finality — it asks a peer for heights, and a tip exists whether or not
+anything below it finalised — so the mechanism is the same, but the run was made on a tracking-finality
+rig and the frozen variant is owed.

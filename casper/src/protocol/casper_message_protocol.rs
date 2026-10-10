@@ -4,8 +4,9 @@
 //! (the casper wire protos are crate-private there).
 
 use rchain_models::casper::protocol::casper_message::{
-    BlockHashMessage, BlockMessage, BlockRequest, FinalizedFringe, FinalizedFringeRequest,
-    ForkChoiceTipRequest, HasBlock, HasBlockRequest, StoreItemsMessage, StoreItemsMessageRequest,
+    BlockHashMessage, BlockMessage, BlockRange, BlockRangeRequest, BlockRequest, FinalizedFringe,
+    FinalizedFringeRequest, ForkChoiceTipRequest, HasBlock, HasBlockRequest, StoreItemsMessage,
+    StoreItemsMessageRequest,
 };
 use rchain_models::casper::protocol::packet_type_tag::{
     FromPacket, PacketParseResult, PacketTypeTag, ToPacket,
@@ -38,6 +39,12 @@ impl_serde!(
     PacketTypeTag::BlockHashMessage
 );
 impl_serde!(BlockRequestSerde, BlockRequest, PacketTypeTag::BlockRequest);
+impl_serde!(
+    BlockRangeRequestSerde,
+    BlockRangeRequest,
+    PacketTypeTag::BlockRangeRequest
+);
+impl_serde!(BlockRangeSerde, BlockRange, PacketTypeTag::BlockRange);
 impl_serde!(HasBlockSerde, HasBlock, PacketTypeTag::HasBlock);
 impl_serde!(
     HasBlockRequestSerde,

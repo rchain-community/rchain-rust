@@ -1,0 +1,32 @@
+== the anchored catch-up stall: restore works, ingest does not ==
+rig: four validators, autopropose, default epoch-length; tip ~130 when the anchor was taken, master's
+latest finalised block = the anchor (f5fe4fa2...), i.e. the flag used as documented.
+
+== V1 (wiped, --sync-anchor <finalised block>): restored, then stopped ==
+  2026-10-10T10:30:58.402Z INFO  [casper.engine.NodeLaunch] Syncing to the operator-named anchor f5fe4fa2...
+  2026-10-10T10:30:58.509Z INFO  [casper.engine.NodeSyncing] Received finalized fringe from bootstrap node
+  (later)                 INFO  [casper.engine.NodeSyncing] LFS state is successfully restored.
+  2026-10-10T10:31:25.361Z INFO  [casper.engine.NodeSyncing] Requesting tuple-space data for 337 approved block state roots.
+
+== and then the receiver refuses the suffix ==
+2026-10-10T10:36:57.920Z ERROR [casper.blocks.BlockReceiver] block receiver state full (1024 blocks); dropping BlockHash(Hash32([46, 208, 156, 99, 172
+2026-10-10T10:36:58.664Z ERROR [casper.blocks.BlockReceiver] block receiver state full (1024 blocks); dropping BlockHash(Hash32([214, 40, 130, 254, 89
+  ... 173 such drops in total; the last is minutes after the restore.
+
+== heights while the master ran away ==
+  master  121 -> 577 over 6 x 20 s
+  V1       121 -> 121   (LFB 105, i.e. it did finalise four blocks past the anchor)
+      h=121  master: (100s of blocks above)
+
+== blocks that reached validation on V1 after the restore: 1 ==
+
+== the bound ==
+659:pub const MAX_PENDING_BLOCKS: usize = 1024;
+        // Bound the receiver state (R29): a peer can stream valid-signed blocks whose justifications
+        // point at nonexistent hashes; those never resolve and would otherwise accumulate here
+        // forever (in `blocks_st`/`receive_st`/`child_relations`).
+        if self.blocks_st.len() >= MAX_PENDING_BLOCKS && !self.blocks_st.contains_key(&id) {
+            return Err(format!(
+                "block receiver state full ({} blocks); dropping {:?}",
+                MAX_PENDING_BLOCKS, id
+            ));

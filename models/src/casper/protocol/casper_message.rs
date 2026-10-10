@@ -1048,6 +1048,33 @@ pub struct BlockRequest {
     pub hash: BlockHash,
 }
 
+/// A request for the blocks at heights `[from, to]` (C259's catch-up — see `BlockRangeRequestProto`).
+///
+/// **Why a height range exists at all.** Every other block request in this protocol is keyed by hash,
+/// so a node that has just restored at an anchor well below the tip can only learn the gap by walking
+/// *downward* from a peer's tip through `justifications` — and since each new block justifies blocks
+/// inside the gap, that walk pulls the whole gap in at once and the receiver's pending set saturates
+/// (`MAX_PENDING_BLOCKS`) before the node has covered it. A height range lets the walk be ordered.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BlockRangeRequest {
+    pub from: i64,
+    pub to: i64,
+}
+
+/// The answer to a [`BlockRangeRequest`]: the heights asked for, and the hashes at them in
+/// **topological order** — ascending height, every parent before its children — so a requester can
+/// validate them in the order they are listed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BlockRange {
+    pub from: i64,
+    pub to: i64,
+    pub hashes: Vec<BlockHash>,
+    /// The responder's own frontier (its highest block height), so a requester can tell "the peer has
+    /// nothing above my frontier" from "the peer has nothing *in this window*" — the difference between
+    /// ending a catch-up and chasing a producing peer for ever. `0` means the responder did not say.
+    pub tip: i64,
+}
+
 /// A block-hash message (port of `BlockHashMessage`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BlockHashMessage {
@@ -1148,6 +1175,63 @@ impl HasBlock {
         let proto = HasBlockProto::decode(bytes)
             .map_err(|e| crate::errors::ModelsError::Decode(e.to_string()))?;
         HasBlock::from_proto(&proto)
+    }
+}
+
+impl BlockRangeRequest {
+    pub fn from_proto(m: &BlockRangeRequestProto) -> Result<Self, crate::errors::ModelsError> {
+        Ok(BlockRangeRequest {
+            from: m.from,
+            to: m.to,
+        })
+    }
+    pub fn to_proto(&self) -> BlockRangeRequestProto {
+        BlockRangeRequestProto {
+            from: self.from,
+            to: self.to,
+        }
+    }
+    pub fn to_bytes(&self) -> Vec<u8> {
+        self.to_proto().encode_to_vec()
+    }
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, crate::errors::ModelsError> {
+        let proto = BlockRangeRequestProto::decode(bytes)
+            .map_err(|e| crate::errors::ModelsError::Decode(e.to_string()))?;
+        BlockRangeRequest::from_proto(&proto)
+    }
+}
+
+impl BlockRange {
+    /// **Every hash is a refinement, not raw bytes.** `BlockHash::try_from` refuses a short slice, so a
+    /// peer cannot make this decoder panic the way AUDIT R12's three raw-`Vec<u8>` variants could —
+    /// a malformed element is an `Err`, and the whole answer is dropped.
+    pub fn from_proto(m: &BlockRangeProto) -> Result<Self, crate::errors::ModelsError> {
+        let mut hashes = Vec::with_capacity(m.hashes.len());
+        for h in &m.hashes {
+            hashes.push(BlockHash::try_from(h.as_slice())?);
+        }
+        Ok(BlockRange {
+            from: m.from,
+            to: m.to,
+            hashes,
+            tip: m.tip,
+        })
+    }
+    pub fn to_proto(&self) -> BlockRangeProto {
+        BlockRangeProto {
+            from: self.from,
+            to: self.to,
+            hashes: self.hashes.iter().map(|h| h.as_bytes().to_vec()).collect(),
+            tip: self.tip,
+        }
+    }
+    pub fn to_bytes(&self) -> Vec<u8> {
+        self.to_proto().encode_to_vec()
+    }
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, crate::errors::ModelsError> {
+        let proto = BlockRangeProto::decode(bytes)
+            .map_err(|e| crate::errors::ModelsError::Decode(e.to_string()))?;
+        BlockRange::from_proto(&proto)
     }
 }
 
@@ -1348,6 +1432,8 @@ impl StoreItemsMessage {
 pub enum CasperMessage {
     BlockMessage(BlockMessage),
     BlockRequest(BlockRequest),
+    BlockRangeRequest(BlockRangeRequest),
+    BlockRange(BlockRange),
     BlockHashMessage(BlockHashMessage),
     HasBlock(HasBlock),
     HasBlockRequest(HasBlockRequest),
@@ -1363,6 +1449,8 @@ pub enum CasperMessage {
 pub enum CasperMessageProto {
     BlockMessage(BlockMessageProto),
     BlockRequest(BlockRequestProto),
+    BlockRangeRequest(BlockRangeRequestProto),
+    BlockRange(BlockRangeProto),
     BlockHashMessage(BlockHashMessageProto),
     HasBlock(HasBlockProto),
     HasBlockRequest(HasBlockRequestProto),
@@ -1383,6 +1471,12 @@ impl CasperMessage {
             }
             CasperMessageProto::BlockRequest(m) => {
                 Ok(CasperMessage::BlockRequest(BlockRequest::from_proto(m)?))
+            }
+            CasperMessageProto::BlockRangeRequest(m) => Ok(CasperMessage::BlockRangeRequest(
+                BlockRangeRequest::from_proto(m)?,
+            )),
+            CasperMessageProto::BlockRange(m) => {
+                Ok(CasperMessage::BlockRange(BlockRange::from_proto(m)?))
             }
             CasperMessageProto::BlockHashMessage(m) => Ok(CasperMessage::BlockHashMessage(
                 BlockHashMessage::from_proto(m)?,
@@ -1415,6 +1509,10 @@ impl CasperMessage {
         match self {
             CasperMessage::BlockMessage(m) => CasperMessageProto::BlockMessage(m.to_proto()),
             CasperMessage::BlockRequest(m) => CasperMessageProto::BlockRequest(m.to_proto()),
+            CasperMessage::BlockRangeRequest(m) => {
+                CasperMessageProto::BlockRangeRequest(m.to_proto())
+            }
+            CasperMessage::BlockRange(m) => CasperMessageProto::BlockRange(m.to_proto()),
             CasperMessage::BlockHashMessage(m) => {
                 CasperMessageProto::BlockHashMessage(BlockHashMessageProto {
                     hash: m.block_hash.as_bytes().to_vec(),
@@ -1744,6 +1842,41 @@ mod tests {
     ///
     /// The request flag is pinned with it: a responder reads *that* to decide whether to send the
     /// ancestry at all, so a codec that dropped the flag would silently turn the addition off.
+    /// A height window round-trips through the wire, and **a hash that is not 32 bytes is refused by
+    /// the decoder rather than panicking in the handler** — AUDIT R12's class: three message types
+    /// carried raw `Vec<u8>` and the handler's first statement panicked on a short one, so any
+    /// connected peer could kill a shard's task. The refinement makes that unconstructible.
+    #[test]
+    fn a_block_range_round_trips_and_a_short_hash_is_refused() {
+        let h1 = BlockHash::new([1u8; 32]);
+        let h2 = BlockHash::new([2u8; 32]);
+        let range = BlockRange {
+            from: 3,
+            to: 4,
+            hashes: vec![h1, h2],
+            tip: 99,
+        };
+        let decoded = BlockRange::from_bytes(&range.to_bytes()).expect("round trip");
+        assert_eq!(decoded, range);
+
+        let req = BlockRangeRequest { from: 3, to: 4 };
+        assert_eq!(
+            BlockRangeRequest::from_bytes(&req.to_bytes()).expect("round trip"),
+            req
+        );
+
+        let short = BlockRangeProto {
+            from: 3,
+            to: 4,
+            hashes: vec![vec![7u8; 31]],
+            tip: 99,
+        };
+        assert!(
+            BlockRange::from_proto(&short).is_err(),
+            "a 31-byte hash is an error, not a panic"
+        );
+    }
+
     #[test]
     fn the_fringe_ancestry_round_trips() {
         let fringe = FinalizedFringe {

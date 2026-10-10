@@ -333,15 +333,37 @@ stating what it does and does not do, because **it is not a sync**.
   stake-weighted finalised ancestry, so no quorum is inferred from it. A stake-weighted meet would need
   reports authenticated to bonded validators, carrying a signed vote, with verified ancestry — issue
   [#287](https://github.com/rchain-community/rchain-rust/issues/287)'s design, which is not implemented here.
+  This gate is **the design as it stands**, not a placeholder for one (register row **C261**), and its
+  consequence is worth stating plainly: a divergence whose four heads share no agreed anchor is **refused**,
+  not resolved, because there is nothing this API can prove about which of them the network committed to.
+- **When nothing can be computed, you name the block.** The state this tool exists for — heads that
+  disagree *and* no node holding a usable finalised block — is exactly the state where a computed anchor is
+  impossible, and until 2026-10-10 the tool refused there and stopped, which left its own recovery path
+  unreachable (register row **C269**). It now takes `RECONCILE_ANCHOR=<block hash>`: the block you know the
+  net last agreed on. The tool checks only that your master holds it, says in the plan that this is **your**
+  root and not a meet it computed, reports what each node claimed rather than resolving it, and enumerates
+  what is above your point. Configure the joiners with `--sync-anchor <the same hash>` and the wipe path
+  resyncs to it; `--restore-from-master` does not need the flag, because it copies the master's chain state.
+  Nothing above your anchor is taken on trust either way: every block above it is validated, not installed.
 - **Its equivocation check is a report, not a proof.** The tool's section 2 flags a sender with two distinct
   blocks at one height, read from the block API's own `sender` field. It verifies no signature and binds no
   endpoint to a bonded key, so what it prints is a suspicion to chase; nothing is dropped or reweighted on
   it, and the proof — and the slash — belong to the node ([#290](https://github.com/rchain-community/rchain-rust/issues/290)'s
   part 1). A validator that is merely quiet, slow or absent keeps its weight: silence is not evidence.
-- **What it does not do.** It does not repair the discarded heads' deploys: they are enumerated per block
-  with their signatures, and their owners re-submit. It is also **not** the protocol answer — a node-side
-  path that syncs to an agreed anchor exists in part (`--sync-anchor`) and does not yet catch up
-  (register row **C259**(a)); until it does, this is the mechanism an operator has.
+- **What it does not do.** It does not repair the discarded heads' deploys: they are enumerated **one record
+  per unique block** — the block's own hash, the endpoints that served it, its accepted deploy count, and the
+  **signatures of the deploys its merge rejected** (`rejectedDeploys`, base16; a deploy's id *is* its
+  signature) — and their owners re-submit. The record is per block, not per observation: a block held by every
+  node is one line, because `/api/blocks/{h}/{h}` answers per node and counting answers inflated the work list
+  by the replication factor. It is also **not** the protocol answer — a node-side path that syncs to an agreed
+  anchor exists in part (`--sync-anchor`) and does not yet catch up (register row **C259**(a)); until it does,
+  this is the mechanism an operator has.
+- **It verifies the fourth clause, and refuses without it.** After restarting, the tool compares each height's
+  **block-hash set** across the nodes (not their heights, where four nodes at zero are equal), and then
+  requires every node to have **finalised past the reconciliation point**, on a block the nodes' own DAGs
+  hold — a converged chain that cannot finalise is **not** a recovery, and the run exits 9 saying so rather
+  than printing a reading that looks like success. Both assertions, and the four clauses, are in the tool's own
+  output: `spec/audit/evidence/n-reconcile-drill/run-4-restore.txt`.
 - **Nothing is deleted.** Data directories are moved aside or tarred before anything is removed, and the
   genesis inputs are preserved across it — a joiner without them cannot validate what it pulls.
 

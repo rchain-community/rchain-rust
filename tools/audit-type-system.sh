@@ -1162,6 +1162,7 @@ REFINEMENT_EXEMPT=(
   'casper/src/protocol/casper_message_protocol.rs;;BlockMessageSerde;;G1b:impl_serde;;`impl_serde!` expands to `pub struct $serde;` — a unit struct, not a newtype; a false positive of the macro net'
   'casper/src/protocol/casper_message_protocol.rs;;BlockRequestSerde;;G1b:impl_serde;;as `BlockMessageSerde`: a unit struct from the same macro'
   'casper/src/protocol/casper_message_protocol.rs;;HasBlockSerde;;G1b:impl_serde;;as `BlockMessageSerde`: a unit struct from the same macro'
+  'casper/src/protocol/casper_message_protocol.rs;;BlockRangeSerde;;G1b:impl_serde;;as `BlockMessageSerde`: a unit struct from the same macro'
   'crypto/src/hash/blake2b512_random.rs;;Blake2b512Random;;G2;;an RNG state machine: every field is private and internally maintained, and there is no wider input type a validator could reject. Its *serialized* form does carry that invariant, and that one is `SerializedRandom`, in the roster'
   'rspace/src/history/radix_tree.rs;;RadixTreeImpl;;G2;;a service struct: a store handle and its locks, private because the fields are the implementation, not because an invariant is carried'
   'rholang/src/util/rev_address.rs;;AddressTools;;G2;;a parser/tool holding `prefix`/`key_length`/`checksum_length`: private for encapsulation, with no invariant beyond "these are the parameters it was built with"'

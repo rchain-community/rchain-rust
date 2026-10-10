@@ -20,8 +20,9 @@ use rchain_crypto::hash::blake2b256_hash::Blake2b256Hash;
 use rchain_models::block::state_hash::StateHash;
 use rchain_models::block_hash::BlockHash;
 use rchain_models::casper::protocol::casper_message::{
-    BlockFringe, BlockMessage, BlockRequest, CasperMessage, FinalizedFringe,
-    FinalizedFringeRequest, HasBlock, HasBlockRequest, StoreItemsMessage, StoreItemsMessageRequest,
+    BlockFringe, BlockMessage, BlockRange, BlockRangeRequest, BlockRequest, CasperMessage,
+    FinalizedFringe, FinalizedFringeRequest, HasBlock, HasBlockRequest, StoreItemsMessage,
+    StoreItemsMessageRequest,
 };
 use rchain_models::casper::protocol::packet_type_tag::ToPacket;
 use rchain_models::fringe_data::FringeData;
@@ -31,8 +32,9 @@ use rchain_shared::refined::BlockHeight;
 
 use crate::blocks::block_receiver::not_validated;
 use crate::blocks::block_retriever::{AdmitHashReason, BlockRetriever};
+use crate::engine::catchup::CatchupWindow;
 use crate::protocol::casper_message_protocol::{
-    BlockMessageSerde, FinalizedFringeSerde, HasBlockSerde, StoreItemsMessageSerde,
+    BlockMessageSerde, BlockRangeSerde, FinalizedFringeSerde, HasBlockSerde, StoreItemsMessageSerde,
 };
 use crate::validator_identity::ValidatorIdentity;
 
@@ -313,6 +315,101 @@ pub async fn handle_fork_choice_tip_request(
             peer.endpoint.host
         ),
     );
+}
+
+/// Answer a height-window request with the hashes at those heights, in topological order (C259's
+/// catch-up).
+///
+/// **The window is bounded by this node's own limit, not by the requester's word** — a peer asking for
+/// a hundred thousand heights gets the limit's worth, exactly as the block API's own depth limit
+/// refuses a wider range (`casper/src/api/block_api_impl.rs::get_blocks_by_heights`, the worked example
+/// of `topo_sort_unsafe`). The answer is hashes rather than blocks: a window is tens of blocks, the
+/// requester already has `BlockRequest`, and keeping the payload to a kilobyte is what lets the window
+/// be small enough to pace.
+///
+/// **A height with no blocks is simply absent from the answer**, which is why the response echoes the
+/// bounds instead of a count: the requester advances by `to`, not by what it received.
+pub async fn handle_block_range_request(
+    transport: &dyn TransportLayer,
+    conf: &RPConf,
+    dag: &dyn BlockDagStorage,
+    log: &dyn Log,
+    source: LogSource,
+    peer: &PeerNode,
+    req: BlockRangeRequest,
+) {
+    let Some(response) = block_range_response(dag, log, source, &req).await else {
+        return;
+    };
+    log.info(
+        source,
+        &format!(
+            "answering a block-range request {}..={} from {} with {} hash(es)",
+            response.from,
+            response.to,
+            peer.endpoint.host,
+            response.hashes.len()
+        ),
+    );
+    if let Err(e) = transport_layer_syntax::send_to_peer(
+        transport,
+        conf,
+        peer,
+        BlockRangeSerde.mk_packet(&response),
+    )
+    .await
+    {
+        log.warn(
+            source,
+            &format!(
+                "could not answer a block-range request from {}: {e}",
+                peer.endpoint.host
+            ),
+        );
+    }
+}
+
+/// The answer to a height-window request, or `None` when the range cannot be ordered — the silence the
+/// requester degrades on, and the same answer an unaware responder gives (C259's catch-up).
+///
+/// A free function of the DAG so the choice has a test that does not need a whole engine, which is the
+/// shape `finalized_fringe_response` already has for its own (C259a).
+pub async fn block_range_response(
+    dag: &dyn BlockDagStorage,
+    log: &dyn Log,
+    source: LogSource,
+    req: &BlockRangeRequest,
+) -> Option<BlockRange> {
+    let to = req.to.min(req.from.saturating_add(MAX_BLOCK_RANGE as i64));
+    let repr = dag.get_representation().await;
+    // The requester cannot tell "you have nothing above my frontier" from "you have nothing in this
+    // window" from the hashes alone, and the difference is whether a walk against a *producing* peer
+    // ever ends. So the answer says where this node's own frontier is.
+    let tip = repr.latest_block_number() - 1;
+    match repr.topo_sort_unsafe(req.from, Some(to)) {
+        Ok(topo) => {
+            let mut hashes = Vec::new();
+            for level in &topo {
+                hashes.extend(level.iter().copied());
+            }
+            Some(BlockRange {
+                from: req.from,
+                to,
+                hashes,
+                tip,
+            })
+        }
+        Err(e) => {
+            // A range this node cannot order — below its own floor, or malformed — is answered with
+            // nothing rather than with a guess: a wrong window would have the requester validate the
+            // wrong blocks, where silence costs it one empty step and it stops.
+            log.warn(
+                source,
+                &format!("refusing a block-range request {}..={}: {e}", req.from, to),
+            );
+            None
+        }
+    }
 }
 
 /// Stream a finalized fringe to a peer (port of `handleFinalizedFringeRequest`).
@@ -658,6 +755,12 @@ pub async fn handle_store_items_request<E: RSpaceExporter>(
 /// drops blocks (via `try_send`) rather than blocking the inbound task when it is full.
 pub const MAX_PENDING_BLOCKS: usize = 1024;
 
+/// How many heights one `BlockRange` answer may cover (C259's catch-up). **A window, not a limit on
+/// what a node may hold**: the requester validates one window before asking for the next, so a
+/// catch-up of any length stays far below `MAX_PENDING_BLOCKS` instead of saturating it. Eight heights
+/// is at most 32 blocks on a four-validator shard and under a kilobyte of hashes.
+pub const MAX_BLOCK_RANGE: usize = 8;
+
 /// Whether the block store holds `hash` — the `contains` half of the receiver's presence reads.
 ///
 /// **A store that cannot be read is an error, not "unknown".** The oracle reads presence inside `F`
@@ -711,6 +814,12 @@ pub struct NodeRunning<E: RSpaceExporter> {
     /// Operator switch: refuse store-items (state-sync) requests (port of the Scala's
     /// `disableStateExporter`).
     disable_state_exporter: bool,
+    /// The temporary ingest window a catch-up holds (C259). Released — admitting every height — unless
+    /// a driver is walking, so an ordinary node's ingest is unchanged by this field.
+    catchup: Arc<CatchupWindow>,
+    /// Where a `BlockRange` answer goes: the catch-up driver owns the receiver. A full channel is not
+    /// an error — it means the walk that asked has ended.
+    block_range_tx: tokio::sync::mpsc::Sender<BlockRange>,
 }
 
 impl<E: RSpaceExporter> NodeRunning<E> {
@@ -726,6 +835,8 @@ impl<E: RSpaceExporter> NodeRunning<E> {
         incoming_blocks: tokio::sync::mpsc::Sender<BlockMessage>,
         exporter: E,
         disable_state_exporter: bool,
+        catchup: Arc<CatchupWindow>,
+        block_range_tx: tokio::sync::mpsc::Sender<BlockRange>,
     ) -> Self {
         NodeRunning {
             transport,
@@ -737,6 +848,8 @@ impl<E: RSpaceExporter> NodeRunning<E> {
             log_source: LogSource::new("casper.engine.NodeRunning"),
             validator_id,
             incoming_blocks,
+            catchup,
+            block_range_tx,
             block_request_limit: Arc::new(PeerRateLimiter::new(
                 DEFAULT_BLOCK_REQUEST_LIMIT_PER_SEC,
             )),
@@ -807,6 +920,23 @@ impl<E: RSpaceExporter> NodeRunning<E> {
                         ),
                     );
                 } else {
+                    // **The catch-up window** (C259, `engine::catchup`). While a walk is catching this
+                    // node up, a block above the window is one whose parents are not validated yet, and
+                    // pending it is exactly what fills `MAX_PENDING_BLOCKS` and freezes the node
+                    // (measured: 173 drops, one block validated, height 121 against a master's 577).
+                    // This one is left **un-acked** rather than refused, so the retriever offers it
+                    // again once the frontier has moved past it: a pace, not a loss.
+                    if !self.catchup.admits(i64::from(b.block_number)) {
+                        self.log.debug(
+                            self.log_source,
+                            &format!(
+                                "Block #{} from {} is above the catch-up window; leaving it for the \
+                                 retriever",
+                                b.block_number, peer.endpoint.host
+                            ),
+                        );
+                        return;
+                    }
                     if self.incoming_blocks.try_send(b.clone()).is_err() {
                         self.log.warn(
                             self.log_source,
@@ -933,6 +1063,43 @@ impl<E: RSpaceExporter> NodeRunning<E> {
                     peer,
                 )
                 .await;
+            }
+            CasperMessage::BlockRangeRequest(req) => {
+                handle_block_range_request(
+                    self.transport.as_ref(),
+                    &self.conf,
+                    self.dag.as_ref(),
+                    self.log.as_ref(),
+                    self.log_source,
+                    peer,
+                    req.clone(),
+                )
+                .await;
+            }
+            CasperMessage::BlockRange(answer) => {
+                // The answer to a window this node asked for: hand it to the catch-up driver, which
+                // owns the receiver. A closed or full channel is not an error — it means the walk that
+                // asked for it has ended, and the answer is then simply stale.
+                // Logged at `info` rather than `debug`: the only traffic on this message is a
+                // catch-up's own windows, so the line is rare by construction, and "the answer arrived
+                // but the walk never moved" is otherwise invisible from outside — which is exactly the
+                // shape a wiring mistake takes (found by running it, 2026-10-10).
+                self.log.info(
+                    self.log_source,
+                    &format!(
+                        "received a block-range answer {}..={} with {} hash(es), tip {}",
+                        answer.from,
+                        answer.to,
+                        answer.hashes.len(),
+                        answer.tip
+                    ),
+                );
+                if self.block_range_tx.try_send(answer.clone()).is_err() {
+                    self.log.warn(
+                        self.log_source,
+                        "a block-range answer arrived with no catch-up waiting for it",
+                    );
+                }
             }
             CasperMessage::FinalizedFringeRequest(req) => {
                 // The response construction — the peer's own fringe, or the block a recovery sync
@@ -1561,6 +1728,79 @@ mod tests {
         )
     }
 
+    /// **A block above the catch-up window is left for the retriever, not pended** (C259).
+    ///
+    /// This is the gate that keeps the pending set from filling with a whole gap: while a walk is
+    /// catching a node up, anything above `frontier + window` is left **un-acked** — the retriever
+    /// offers it again once the frontier has moved past, so nothing is lost — and the control below
+    /// shows the same node queueing a block *inside* its window, so the assertion is about the height
+    /// and not about the message being ignored for some other reason.
+    #[tokio::test]
+    async fn a_block_above_the_catchup_window_is_left_for_the_retriever_and_one_inside_is_queued() {
+        let local = peer("src", 40400);
+        let remote = peer("peer", 40400);
+        let transport = Arc::new(MockTransport::default());
+        let connections: ConnectionsCell = Arc::new(tokio::sync::RwLock::new(Vec::new()));
+        let comm_util = Arc::new(CommUtil::new(
+            transport.clone(),
+            conf(&local),
+            connections,
+            Arc::new(NopLog),
+        ));
+        let retriever = Arc::new(BlockRetriever::new(comm_util, Arc::new(NopLog)));
+        let store = block_store(vec![]).await;
+        let (incoming_tx, mut incoming_rx) = tokio::sync::mpsc::channel(4);
+        let (block_range_tx, _block_range_rx) = tokio::sync::mpsc::channel(4);
+        let window = Arc::new(CatchupWindow::new(crate::engine::catchup::WINDOW_HEIGHTS));
+
+        let running = NodeRunning::new(
+            transport.clone(),
+            conf(&local),
+            store.clone(),
+            build_dag().await,
+            retriever,
+            Arc::new(NopLog),
+            None,
+            incoming_tx,
+            MockExporter,
+            false,
+            window.clone(),
+            block_range_tx,
+        );
+
+        // A block far above the node's frontier: the gap, not the window.
+        let far = chain_block(9, 500, &[]);
+        window.hold(100); // admits up to 108
+        running
+            .handle(&remote, &CasperMessage::BlockMessage(far.clone()))
+            .await;
+        assert!(
+            incoming_rx.try_recv().is_err(),
+            "height 500 is above a window held at 100 and must not be pended"
+        );
+
+        // The control: a block *inside* the window is queued as usual, so the drop above is about the
+        // height and not about the message, the sender or the store.
+        let inside = chain_block(8, 105, &[]);
+        running
+            .handle(&remote, &CasperMessage::BlockMessage(inside.clone()))
+            .await;
+        let taken = incoming_rx
+            .try_recv()
+            .expect("a block inside the catch-up window is queued");
+        assert_eq!(taken.block_hash, inside.block_hash);
+
+        // Released, the same far block is queued: the gate is a pace, not a filter.
+        window.release();
+        running
+            .handle(&remote, &CasperMessage::BlockMessage(far.clone()))
+            .await;
+        let taken = incoming_rx
+            .try_recv()
+            .expect("with the window released the gap block is ordinary ingress again");
+        assert_eq!(taken.block_hash, far.block_hash);
+    }
+
     /// **`NodeRunning::handle`'s dispatch, and the hand-offs it owns.** Every arm calls a free handler
     /// that has its own test, so what is uncovered is the *routing* — which arm a message takes — and
     /// the two hand-offs into the node's own machinery: an unseen block goes into `incoming_blocks`,
@@ -1585,6 +1825,7 @@ mod tests {
         let unseen = block(hash(2));
         let store = block_store(vec![known.clone()]).await;
         let (incoming_tx, mut incoming_rx) = tokio::sync::mpsc::channel(4);
+        let (block_range_tx, _block_range_rx) = tokio::sync::mpsc::channel(4);
 
         let running = NodeRunning::new(
             transport.clone(),
@@ -1597,6 +1838,8 @@ mod tests {
             incoming_tx,
             MockExporter,
             false,
+            Arc::new(CatchupWindow::new(crate::engine::catchup::WINDOW_HEIGHTS)),
+            block_range_tx,
         );
 
         // An unseen block is handed to the block-processing queue — this is the node's ingress.
@@ -1774,6 +2017,61 @@ mod tests {
         b.justifications = parents.to_vec();
         b.post_state_hash = StateHash::new([id; 32]);
         b
+    }
+
+    /// **A window is answered in topological order, and only as wide as this node allows.** The
+    /// requester walks the gap upward from its own frontier, so the order is the contract: ascending
+    /// height, every parent before its children. And the *width* is the responder's limit, not the
+    /// requester's word — a peer asking for a hundred thousand heights gets a window.
+    #[tokio::test]
+    async fn a_block_range_request_is_answered_in_topological_order_within_the_responder_limit() {
+        use rchain_models::block_metadata::BlockMetadata;
+
+        let dag = build_dag().await;
+        let g = chain_block(0, 0, &[]);
+        let a = chain_block(1, 1, &[g.block_hash]);
+        let anchor = chain_block(2, 2, &[a.block_hash]);
+        for b in [&g, &a, &anchor] {
+            dag.insert(BlockMetadata::from_block(b), b.clone())
+                .await
+                .expect("the block inserts");
+        }
+
+        let req = BlockRangeRequest { from: 0, to: 2 };
+        let answer = block_range_response(dag.as_ref(), &NopLog, LogSource::new("test"), &req)
+            .await
+            .expect("a range this node holds is answered");
+        assert_eq!(
+            answer.hashes,
+            vec![g.block_hash, a.block_hash, anchor.block_hash],
+            "ascending height, parent before child"
+        );
+        assert_eq!((answer.from, answer.to), (0, 2));
+        assert_eq!(
+            answer.tip, 2,
+            "and it says where its own frontier is, so a walk against a producing peer can end"
+        );
+
+        // A window above anything this node holds is an *empty answer*, not a refusal: the requester's
+        // walk reads that as "the peer has nothing above my frontier" and stops.
+        let above = BlockRangeRequest { from: 3, to: 5 };
+        let empty = block_range_response(dag.as_ref(), &NopLog, LogSource::new("test"), &above)
+            .await
+            .expect("an empty window is still an answer");
+        assert!(empty.hashes.is_empty());
+
+        // The requester's `to` is a request, not a promise: the answer never exceeds one window.
+        let wide = BlockRangeRequest {
+            from: 0,
+            to: i64::MAX,
+        };
+        let bounded = block_range_response(dag.as_ref(), &NopLog, LogSource::new("test"), &wide)
+            .await
+            .expect("a wide range is bounded, not refused");
+        assert_eq!(
+            bounded.to, MAX_BLOCK_RANGE as i64,
+            "the responder bounds the window by its own limit"
+        );
     }
 
     /// **A recovery sync's root, and the ancestry that makes it replayable** (C259a).

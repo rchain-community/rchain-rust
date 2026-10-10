@@ -16,14 +16,15 @@ use rchain_comm::transport::transport_layer::TransportLayer;
 use rchain_comm::transport::transport_layer_syntax;
 use rchain_models::block_hash::BlockHash;
 use rchain_models::casper::protocol::casper_message::{
-    BlockHashMessage, BlockRequest, FinalizedFringeRequest, ForkChoiceTipRequest, HasBlockRequest,
+    BlockHashMessage, BlockRangeRequest, BlockRequest, FinalizedFringeRequest,
+    ForkChoiceTipRequest, HasBlockRequest,
 };
 use rchain_models::casper::protocol::packet_type_tag::ToPacket;
 use rchain_models::comm::protocol::{Packet, Protocol};
 use rchain_shared::log::{Log, LogSource};
 
 use crate::protocol::casper_message_protocol::{
-    BlockHashMessageSerde, BlockRequestSerde, FinalizedFringeRequestSerde,
+    BlockHashMessageSerde, BlockRangeRequestSerde, BlockRequestSerde, FinalizedFringeRequestSerde,
     ForkChoiceTipRequestSerde, HasBlockRequestSerde,
 };
 
@@ -176,6 +177,36 @@ impl CommUtil {
                     "could not request block {} from {}: {e} (AUDIT C254's E6b)",
                     hash.to_hex(),
                     peer.endpoint.host
+                ),
+            );
+        }
+    }
+
+    /// Ask a peer for the blocks at heights `[from, to]` (C259's catch-up — see
+    /// [`BlockRangeRequest`]).
+    ///
+    /// One peer, not a broadcast: the answer is a window of the peer's DAG, and the walk depends on
+    /// knowing *which* peer's chain it is walking up. A peer that does not know the message answers
+    /// nothing, which the driver reads as "no progress" and stops on — the same degraded exchange the
+    /// anchored fringe request gets.
+    pub async fn request_block_range(&self, peer: &PeerNode, req: &BlockRangeRequest) {
+        self.log.debug(
+            self.log_source,
+            &format!(
+                "Requesting heights {}..={} from {}.",
+                req.from, req.to, peer.endpoint.host
+            ),
+        );
+        let packet = BlockRangeRequestSerde.mk_packet(req);
+        if let Err(e) =
+            transport_layer_syntax::send_to_peer(self.transport.as_ref(), &self.conf, peer, packet)
+                .await
+        {
+            self.log.warn(
+                self.log_source,
+                &format!(
+                    "could not request heights {}..={} from {}: {e}",
+                    req.from, req.to, peer.endpoint.host
                 ),
             );
         }
