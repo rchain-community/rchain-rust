@@ -1,0 +1,80 @@
+== C268, corrected twice: the joiner is answered, served, and stuck in its state-page walk ==
+
+rig: a master already at height ~250 under autopropose (racing), then a wiped joiner:
+
+    tools/devnet.sh down                                            # volumes kept, master tall
+    tools/devnet.sh up --validators 3                               # master + v1 + v2, autopropose
+    tools/devnet.sh reset 1                                         # wipe v1, join the racing master
+
+== the joiner asks, and the master answers — in five milliseconds ==
+
+  13:31:52.935Z INFO [casper.engine.NodeRunning] Received FinalizedFringeRequest from rnode://575238a5…@devnet-validator-1
+  13:31:52.940Z INFO [casper.engine.NodeRunning] FinalizedFringe sent to rnode://575238a5…@devnet-validator-1?protocol=…
+  13:31:52.942Z INFO [casper.engine.NodeSyncing] Received finalized fringe from bootstrap node (0674114441b89163…)
+  13:31:52.956Z INFO [casper.engine.LfsTupleSpaceRequester] Sending StoreItemsRequest to bootstrap
+  13:31:53.047Z INFO [casper.engine.NodeSyncing] Received StoreItems(history: 29, data: 230) from rnode://ea0d98ac…
+
+So the row's own wording — "the joiners are never answered" — was wrong, and the earlier sightings said the
+same thing wrongly. The answer arrives; the *state walk* is what does not finish.
+
+== ninety seconds later ==
+
+  master h=303    joiner h=0
+  joiner: Sending StoreItemsRequest ×443, Received StoreItems ×171, of which 168 are the identical slice
+          StoreItems(history: 29, data: 230); zero validation errors, zero refusals; its log ends in the
+          runtime's '[pos] not proposing: … is not in the active set this node reads'.
+  master: 'Sending 29 history and 230 data store items to devnet-validator-1' ×440, and 'Sending 0 history
+          and 0 data store items' ×3 — the same page, content-identical, at ~5 per second.
+
+== and the control refuted half of that reading, the same day ==
+
+A *healthy* walk was captured with the requester's cursor now logged (the same rig, a joiner that DID
+finish: master h=189, joiner h=189). It shows two things that undo the inference above:
+
+  - **the pages are uniform**: the responder's answers in a healthy walk are `Sending 29 history and 230 data
+    store items` over and over, with `Sending 0 history and 0 data store items` interleaved (that empty page
+    answers the requester's `[]` path, which the healthy walk asks for too). So "the same page 440 times" was
+    **never** evidence that the cursor had stopped — every page looks like that;
+  - **a healthy walk is long**: 153 requests, with the cursor advancing through distinct paths
+    (`[(Hash32([134,139,128,86…` → `[]` → `[(Hash32([0,20,146,114…` → `[…[1,164,61,31…` → …).
+
+So the stuck run's 443 requests in 90 s are not by themselves a loop either — the walk may simply not have
+finished. What is still unknown, and now instrumented, is whether the cursor advances in a run that does not
+finish. `LfsTupleSpaceRequester` logs `Sending StoreItemsRequest to bootstrap for path {id:?}` per request from
+this build on, so the next stuck run can be compared against this control line for line.
+
+== what that localises ==
+
+That the joiner is not starved stands: the master received the request and sent the fringe, and it answers
+state pages throughout. What the first reading got wrong is *which* observation says the walk is stuck —
+the uniform page does not (see the control above). Whether the cursor advances in a run that never finishes,
+and where it stalls if it does not, is the open question, and it is now instrumented at the requester's
+doorstep with the control to compare against.
+
+== why this did not show on the quiet rigs ==
+
+Every sighting of this shape (three before this one) was against a master that was *producing*; the rigs
+that always worked put the joiners against a chain nobody was producing to (solo master, then joiners, then
+autopropose off). That is consistent with a cursor that only fails to advance under load — and it is not yet
+shown, which is why this is written as the next question rather than as the cause.
+
+== and it would not reproduce on demand: three deliberate stagings, all healthy ==
+
+With the cursor logged, the shape was staged three ways and did **not** recur:
+
+  1. solo master racing (autopropose) at h=151, then `reset 1` — joiner reached the master's height
+     (189 = 189), 171 requests, `LFS state is successfully restored`, cursors advancing (distinct paths,
+     `[]` twice);
+  2. solo master at h=169, then `reset 1` — 219 = 219, restored, cursors advancing;
+  3. the same master, then `reset 1` **and** `reset 2` concurrently (the hypothesis being that two walks at
+     once starve one) — both reached 280 = 280, 226 requests each, both restored.
+
+So the two sightings that stuck are not "a joiner against a racing master" (that worked three times), and
+they are not "two joiners at once" (that worked too). What both sightings had, and these three did not, is a
+master that had been producing for a while **and** other nodes joining the same net — which is a description,
+not a cause, and it is not treated as one here.
+
+What is in place is the discriminator: `LfsTupleSpaceRequester` logs `Sending StoreItemsRequest to bootstrap
+for path {id:?}` per request, so the next run that sticks is compared against the control line for line
+(healthy: distinct cursors, ~150-230 requests, then restored). Until then C268 records: *when it happens, the
+joiner is answered, is served, and never finishes; nothing is refused and nothing fails.*

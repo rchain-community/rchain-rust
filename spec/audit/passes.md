@@ -9022,3 +9022,148 @@ condition asks for a frozen net recovered through the operator's anchor, and tha
 stops while the tip keeps moving — the same rig C259 is waiting on (pass §90 records three failed stagings).
 What is *not* owed on the node side is the mechanism: `run-3-windowed-catchup.txt` shows the catch-up from a
 named anchor working, so the remaining gap is a staging, not a code path.
+
+## 92. C250's residue, produced: a node rejects its own block and halts (C215, C250, C268, C270)
+
+**What this pass was asked to do, and what it found instead.** C268 was a note about a *rig*: a fresh
+four-validator devnet under autopropose appeared not to form, twice, with two joiners sitting at height 0 and
+never answered. It was filed `todo` because the reading was a deadlock with no cause. Reproducing it on an
+idle box (24 cores, no builds, no containers before it) produced a **different and much larger thing**, and
+the row is now answered rather than open.
+
+**The capture** (`spec/audit/evidence/n-anchor-drill/self-reject-stall.txt`). `tools/devnet.sh down -v` then
+`tools/devnet.sh up --validators 4 --fresh` — autopropose on, default epoch length, **nothing injected and
+nothing faulting**. Four minutes later the four heights were 49, 133, 45, 46 and all four nodes were alive
+(`peers` 1 each, the master 3), so the earlier "never answered" reading is not this: nothing was stuck in
+syncing. Three of the four had **halted their own production at height 49**.
+
+**The chain, in the order the log shows it** (all four nodes, within ten seconds):
+
+1. **Four fringe keys recorded with two states each** —
+   `[fringe-divergence] block <hash> finalises a fringe already recorded with a different state <a> vs <b>`,
+   four times on **every** node, the same four blocks and the same two hashes each. This is C215's signal,
+   and it is what C250's residue predicted and could not produce: two honest blocks finalising one fringe
+   from two bases, in ordinary operation, with no byzantine actor anywhere.
+2. **The node's own block fails its own validation** —
+   *"the block's declared pre-state hash is not the state this node computed from its justifications — this
+   node's view of the parents differs from the proposer's, so the disagreement is about the merge rather than
+   about the block's deploys"*. For a self-created block, "the proposer" is the node itself: it computed the
+   pre-state when it built the block and recomputes a different one when it validates it.
+3. **The proposer counts it and halts autopropose** — its own arm says *"count it so the caller can halt
+   autopropose"* — so the node stops producing at that height. Three of four nodes stopped at 49 (45, 46,
+   49); the fourth passed it and reached 133. No two heights meet again, and finality cannot advance
+   (88–101 `finality did not advance` lines per node).
+
+**Why this is the register's business and not a rig's.** C215's fix — the join at a fringe key — is what makes
+the map *deterministic*; the row's own residue clause said the tie-broken `state_hash` "is meaningless and the
+`[fringe-divergence]` line is the signal, but **nothing consumes that line yet**". This pass answers what
+consumes it: the proposer's own validation. So the disagreement is not inert, and the tie-break is not a
+harmless tie-break: it changes a value a node has already built on, the node refuses its own work, and the net
+loses a producer. C250's residue is therefore **produced** — and worse than the row hoped.
+
+**The boundary of the claim, stated because the hashes cannot settle it.** Steps 1, 2 and their ordering are
+measured, on all four nodes, with the logs committed. That the tie-broke keys are what the *merge* for the
+failing block consulted is **inferred**: a pre-state is a merge result over many records, not one record's
+value, so the two cannot be compared literally. One instrumented run would close it — log the tie-break's
+decision, and whether that key is read while building the block whose validation then fails.
+
+**Rows.** **C270** filed `todo` (law 17a): a node cannot be stalled by a disagreement about a fringe key's
+value, by whichever of the three routes that is taken — pin the derivation the proposer built with, make the
+value monotone, or do not halt production on this class. **C250**'s residue is marked produced. **C215**'s
+"nothing consumes that line yet" is answered in place. **C268** closes: the fresh devnet does not form, and
+the reason is C270's stall rather than the joiners it named.
+
+**What this pass does not do.** It does not fix C270, and it does not re-open C215: the join is right and its
+tests still pin it. The question C270 asks is the next unit's — what a node should *do* when its own merge
+result changes under it — and it is a consensus-core decision, not a patch: every route changes what a node
+does with a disagreement rather than merely silencing one.
+
+## 93. The proposer no longer halts on a divergence, and the rig's other half names itself (C268, C270)
+
+**The fix, and it was already typed.** C270's mechanism — a fringe key recorded with two states makes a node
+reject its own block — ran into a policy that is *deliberate*: the proposer's `ValidationFailed` arm counts
+any self-rejection toward the autopropose halt, because a self-created block failing its own validation means
+"node state accounting is inconsistent". But `BlockStatus::failure_cause()` — a classification the codebase
+already carries, with the doc *"Decided by this node's state or replay, so a node with a different view
+reaches the same verdict for a block that is valid elsewhere"* — puts `InvalidPreStateHash` and its class in
+`FailureCause::Divergence`, and the arm never consulted it. So one arm treated as a node-side bug what another
+part of the tree classifies as a property of views.
+
+The arm now takes the divergence case first: **not counted** toward the halt, **not broadcast** (the block this
+node's own view rejected must not go out), and read as "not due" so the next tick re-derives — exactly the
+shape the stale-snapshot arm has had since §48, for exactly the same reason. A status that is the *block's own
+fault* still counts and still halts; two unit tests pin both sides, and the divergence test asserts the
+counter — the one the timer halts on — does not move, which is the whole claim.
+
+**What the drill did and did not show.** The same command that had stalled three of four nodes at height 49
+(`up --validators 4 --fresh`, autopropose) was run with the fix in place: **zero self-rejections on all three
+live nodes** (4 each before) and the three levels at **317/318/319**, past the height that used to stop them.
+But that run also produced **zero `[fringe-divergence]` events**, so the trigger never fired — the net formed
+because the condition did not arise, *not* provably because of the carve-out. The drill therefore shows the
+fix breaks nothing and that nothing regressed; it is **not** evidence for the carve-out, and the row stays
+`in progress` for a run where a divergence occurs and the node keeps producing. Forcing one is the choice:
+`--merge-divergence-injection` is the instrument C215 used to stage this exact shape.
+
+**And the rig's other half named itself, on its third sighting.** With the stall carved out, the same command
+left **validator 3 at height 0** — 132 log lines, one `Starting from bootstrap node, syncing LFS...`, **zero**
+`Received StoreItems`. That is C268's original shape, not C270's: the joiner asks for a fringe and is never
+served. So the fresh-rig failure has **two** causes, one fixed and one open, and pass §92's attempt to explain
+the joiners by the stall was premature — both were happening. §92's own correction ("the joiners-at-0 reading
+did not reproduce") is itself corrected here: it reproduced twice before and once now, and the quiet rigs
+(solo master, then joiners against a chain nobody is producing to) are the ones that have never shown it.
+
+**Rows.** C270 `in progress` (the carve-out is in, unit-tested, owed a run in which the divergence fires).
+C268 reopened `todo` with the shape it originally recorded, its close condition now naming the capture to take
+— the master's side: whether it received the joiner's `FinalizedFringeRequest`, and whether it answered.
+
+## 94. The joiner is answered — the state walk is what does not finish (C268)
+
+**What the row said, and what the capture shows.** C268's shape was "a joiner is never served": two joiners at
+height 0, one log line each, and a master racing ahead. Staged deliberately — a master already at height ~250
+under autopropose, then a wiped joiner against it — the two-sided capture says the opposite of "never served":
+
+```
+13:31:52.935Z INFO [casper.engine.NodeRunning]  Received FinalizedFringeRequest from …@devnet-validator-1
+13:31:52.940Z INFO [casper.engine.NodeRunning]  FinalizedFringe sent to …@devnet-validator-1?protocol=…
+13:31:52.942Z INFO [casper.engine.NodeSyncing]  Received finalized fringe from bootstrap node (0674114441b89163…)
+13:31:52.956Z INFO [casper.engine.LfsTupleSpaceRequester] Sending StoreItemsRequest to bootstrap
+13:31:53.047Z INFO [casper.engine.NodeSyncing]  Received StoreItems(history: 29, data: 230) from …
+```
+
+The master answers in five milliseconds. Ninety seconds later it is at **h=303**, the joiner is at **h=0**, and
+the master has sent **the same page 440 times** — `Sending 29 history and 230 data store items to
+devnet-validator-1`, content-identical, roughly five per second — while the joiner has sent 443
+`StoreItemsRequest`s, received 171 of them (168 the same slice) and logged **zero** validation errors, zero
+refusals, nothing refused by name.
+
+**What that localises, and what it does not.** The walk neither advances nor fails: either the requester
+re-asks the same page — its cursor does not advance — or the responder ignores the cursor and always answers
+from the start. Both ends are named and neither is yet read: the requester's loop in
+`lfs_tuple_space_requester.rs`, the responder's path handling in `node_running.rs`. What the capture *does* fix
+is the shape: a joiner can be served completely, in milliseconds, and still never leave `NodeSyncing`, which is
+a different defect from the one this row was filed with.
+
+**Why the quiet rigs never showed it.** Every sighting was against a master that was *producing*; the rigs that
+always worked joined against a chain nobody was producing to (solo master, then joiners, then autopropose off).
+That is consistent with a cursor that fails under load — and it is written as the next question rather than as
+the cause, because nothing here shows the cursor's value.
+
+**Rows.** C268 `in progress`, sharpened: it now closes when the page walk advances against a producing master
+and a wiped joiner reaches the tip, and its next capture is the request itself — the path the joiner names in
+successive `StoreItemsRequest`s. C270 stays `in progress` (the carve-out is in and unit-tested; the run that
+would demonstrate it needs a divergence to fire).
+
+### §94 addendum: the control refuted the inference, and the cursor is instrumented
+
+The paragraph above read "the same page 440 times" as evidence that the requester's cursor had stopped. **It is
+not evidence, and the same day's control says so**: on a run that finished, the responder's pages are
+identical-looking too (`Sending 29 history and 230 data store items`, with `0 history and 0 data store items`
+interleaved for the `[]` path the *healthy* walk also asks for), across **153** requests whose cursors advance
+through distinct paths. Every page looks like that one; only the paths differ, and nothing logged the paths.
+
+What survives of §94 is the half that was measured on both sides: the joiner **is** answered — fringe in five
+milliseconds — and it **is** served state pages throughout, while it never finishes and never refuses anything.
+Whether its cursor advances in such a run is now answerable rather than guessable, because
+`LfsTupleSpaceRequester` logs `Sending StoreItemsRequest to bootstrap for path {id:?}` per request from this
+commit on; the next run that sticks is compared against the control line for line. The row's evidence file
+carries both captures.

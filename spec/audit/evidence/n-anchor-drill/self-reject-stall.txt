@@ -1,0 +1,81 @@
+== a self-created block failing its own validation stalls three of four nodes at one height ==
+
+**A raw capture**, taken 2026-10-10 on an idle box (24 cores, no builds running; the machine's load
+was its desktop, and no containers were up before this). Command:
+
+    tools/devnet.sh down -v
+    tools/devnet.sh up --validators 4 --fresh          # autopropose on, default epoch length
+
+The rig never converged, and the reason is not the joiners: three of the four nodes each **reject their
+own block at height 49**, repeatedly, while the fourth (validator 1) passes it and runs away.
+
+== heights after four minutes, and self-rejections per node ==
+
+  40403 (master) h=49    peers=3   self-rejections 4
+  41403 (v1)     h=133   peers=1   self-rejections 0
+  42403 (v2)     h=45    peers=1   self-rejections 4
+  43403 (v3)     h=46    peers=1   self-rejections 4
+
+== the line, from three nodes (master shown; v2 and v3 are the same text at their own seq) ==
+
+2026-10-10T13:06:15.247Z ERROR [casper.blocks.Proposer] Self-created block #49 (seq 49) failed validation: the block's declared pre-state hash is not the state this node computed from its justifications — this node's view of the
+2026-10-10T13:06:18.825Z ERROR [casper.blocks.Proposer] Self-created block #49 (seq 49) failed validation: the block's declared pre-state hash is not the state this node computed from its justifications — this node's view of the
+
+== and the disagreement it reports, in full for the first one ==
+
+2026-10-10T13:05:50.093Z WARN  [casper.interpreter.validate] state-hash disagreement on pre-state: block #33 44584157228ec606ad2eeed002e14a9c8b76db0bf94508782de90734220ba222 by 04ea3ce0 — declared 34fcfd78d2edbe817ed551fca7b1b3d172636961aea480388c8a2df4bc37e2b5 vs recomputed a1fb5bd75c9440b114b248a695b877ad37e9c6d7b412c16885c48ee3cd315b3f (pre_state=a1fb5bd75c9440b114b248a695b877ad37e9c6d7b412c16885c48ee3cd315b3f fringe_state=15a2395fe3de87f82ceac5d8d4fb80de025200c66ed401cffd99028f015f4751 prev_fringe_lookup=a778449e85427acc21e8b02b591271f28dfba381b21bf4b431a094699237441f prev_fringe=["3aea3b8f07e9829fdcb6e82797712f0b1bb5689042b98a3cddd0d45f7c3fcd68", "8b937bbd9ec928b118180f78aff41fccb6e63
+
+== the proposer's own view: the round does not close ==
+
+2026-10-10T13:06:09.518Z WARN  [casper.blocks.Proposer] round gate escaped after 13 attempt(s) and 10431 ms blocked — the round is not closing (AUDIT #213).
+2026-10-10T13:06:11.366Z WARN  [casper.blocks.Proposer] round gate escaped after 14 attempt(s) and 12279 ms blocked — the round is not closing (AUDIT #213).
+
+== what the register does not yet have ==
+
+* **not** the shape C268 recorded (joiners stuck at height 0): that did not reproduce here — all four
+  nodes were alive and producing, and this box was idle, so the earlier reading was not this one;
+* the same *message family* the TE-1 witness quotes from node A —
+  `ERROR Self-created block #106 (seq 106) failed validation: the block's rejected-deploy set does not
+  match its parent` — whose row (C250) was settled on the code answer with the four logs still blocked
+  on a tarball (C263). Here the field that disagrees is the **pre-state hash** rather than the
+  rejected-deploy set, so it is a sibling shape and not the same line;
+* and it is a *self*-inflicted stall: nothing external has to fault for a node to stop making progress.
+
+== and the four events immediately before it: a fringe key recorded with two states (C215's signal) ==
+
+**All four nodes** logged these four, in this order, between ten and two seconds before the first
+self-rejection — the same four blocks, the same two state hashes each:
+
+  [fringe-divergence] block f72a0bb54557c9805637b74c0d74208dce26a62e3244cf5ae468600d7939ea60 finalises a
+    fringe already recorded with a different state 15a2395fe3de87f82ceac5d8d4fb80de025200c66ed401cffd99028f015f4751
+    vs d4a0ee2fb66eda21ca7429f793bcbcccf5262f62e1f60fc3a859885f85d7b1a6 — two blocks disagree about one
+    fringe's state. The smaller is kept so that every node holding these blocks holds the same record, and
+    the rejection sets are unioned (C215)
+  [fringe-divergence] block dcb88c28feea291df103a61ba6140028cda783e2d0ab2d85c9108b007ca33ed3 … 15a2395f… vs 8588af1b…
+  [fringe-divergence] block 3592056b08374eafc10ac321dee6a9ed2c4a545f82285693e03bd08b3f8e8d50 … 2caae38e… vs ed227b45…
+  [fringe-divergence] block e0a99108630f6f29872509a4f81f9ba845a1c7120a57e6dbc14c13bc3dce8d5d … 2caae38e… vs ed227b45…
+
+Counts: 4 on every node, including the one that did not stall.
+
+== the causal chain, as far as it is measured ==
+
+1. **Four fringe keys are recorded with two different states each**, on every node, in normal operation —
+   no injection, no fault, no byzantine actor. The signal's own text says what happens next: *the smaller is
+   kept*, so the **value at those keys changes** from what a node had computed when it built its block.
+2. **Within seconds, the node's own block fails its own validation** — *"the block's declared pre-state hash
+   is not the state this node computed from its justifications — this node's view of the parents differs from
+   the proposer's, so the disagreement is about the merge rather than about the block's deploys"*. For a
+   self-created block, "the proposer" is this node: it computed the pre-state when it built the block, and
+   recomputes a different one when it validates it.
+3. **The proposer counts it as a failure and halts autopropose** — the code says so in the arm that fired
+   (`proposer.rs`: *"count it so the caller can halt autopropose"*) — so the node stops producing at that
+   height. Measured: three of four nodes stop at height **49** (45, 46, 49), the fourth passes it and runs
+   to 133, and the four heights never meet again.
+4. The net therefore diverges into four heads **with nobody at fault**, and finality cannot advance (88-101
+   `finality did not advance` lines per node).
+
+**The boundary of the claim.** (1), (2) and the ordering are measured, on all four nodes, with the logs
+above. (3) is the code's own stated intent plus the heights. What is **inferred** is that the tie-broke keys
+are what the *merge* for block #49 consulted — the hashes cannot be compared directly, because a pre-state is
+a merge result over many records and not one record's value. Proving it needs one instrumented run: log the
+tie-break's decision and whether that key is read while building the block whose validation then fails.
