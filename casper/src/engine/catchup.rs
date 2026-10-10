@@ -6,9 +6,16 @@
 //! in at once — and `MAX_PENDING_BLOCKS` then turns progress into drops. Measured 2026-10-10 on a
 //! four-validator devnet: `block receiver state full (1024 blocks); dropping` 173 times, **one** block
 //! validated, the node frozen at height 121 while the master ran to 577
-//! (`spec/audit/evidence/n-anchor-drill/run-2-catchup-stall.txt`). A wiped joiner on the *ordinary*
-//! path behaves the same way on that rig, which is what rules the anchor out as the cause: the ingest
-//! is what cannot take a gap.
+//! (`spec/audit/evidence/n-anchor-drill/run-2-catchup-stall.txt`).
+//!
+//! **What the anchor has to do with it, precisely.** The freeze is a function of the *size of the
+//! gap*, not of the anchor: an anchor is how a gap becomes large. An ordinary joiner syncs to a
+//! peer's latest finalised fringe, which is within a few dozen heights of the tip, so its gap is tens
+//! of blocks and never approaches the bound — while a node restored at a meet in a net whose finality
+//! has frozen has an anchor hundreds of heights below the tip on purpose, and that is the state this
+//! exists for. (An ordinary joiner measured on the same rig does share the *restore's* cost — the LFS
+//! walk hydrates the state root of every block from its root down to genesis, O(chain) either way —
+//! which is a separate cost, recorded and not fixed here.)
 //!
 //! **What this does instead.** Walk the gap *upward* in windows: ask the peer for the heights
 //! `[H+1, H+W]` (`BlockRangeRequest`), ask for those blocks by hash, and only ask for the next window
