@@ -28,31 +28,36 @@ colliding write (`rspace/src/history/radix_tree.rs:208-223,226-258`). That is th
 content-addressed store's key already is the value's identity.
 
 The half that is **not** anchored is every store keyed by something else, and the node's record store
-is exactly that today (`spec/Rchain/Casper/Record.lean`): the key is the fringe hash alone
-(`models/src/fringe_data.rs:31-35` — the `Hash` impl hashes only `fringe_hash`), and the value it holds
-also depends on the merge base the merge started at, which the key never mentions (`casper/src/dag.rs:820-850`,
-the read-then-put of `fringe_data_store`; `casper/src/storage.rs:52`, the `fringe-data` DB).
-`the_fringe_only_key_is_incomplete` already proves the key cannot tell two such records apart; this file
-says what that costs a **reader**, which is the half the node feels: the version no longer determines
-the value.
+was exactly that (`spec/Rchain/Casper/Record.lean`; it is retired — see the section at the foot of this
+file): its key was the fringe hash alone (`models/src/fringe_data.rs:31-35` — the `Hash` impl hashes
+only `fringe_hash`), while the value it held also depended on the merge base the merge started at, which
+the key never mentioned (`casper/src/dag.rs:820-850`, the read-then-put of `fringe_data_store`;
+`casper/src/storage.rs:52`, the `fringe-data` DB). `the_fringe_only_key_is_incomplete` proves the key
+cannot tell two such records apart; this file says what that cost a **reader**, which is the half the
+node felt: the version no longer determined the value.
 
-## The consequence, plainly
+## The consequence, plainly, and how the design moved (2026-10-10)
 
-With the composite key the fix specifies (`writeKey`, the fringe **and** the base — `Record.lean`), the
-record store's key names everything its value is built from, so the store joins the content-addressed
-class and the positive theorem holds for it too: a read becomes a function of the version it names.
-**Until that keying is in place, a copy of the record store is a copy of a moment and not of a
-version** — which is why the tool stops the network before taking one (`--restore-from-master`, the
-fiat printed at `tools/reconcile-network.sh:456-470`). Read as a reader's problem, that is register row
-**C270**: a node that reads a joined value at a fringe key is reading a "version" that names no value,
-and its own validation refuses its own block. And it is the cost **C250**'s residue predicted: "the
-merge for a fringe is a function of the DAG" is true, and it is still not a function of the *key* the
-store reads by.
+The composite-key fix this paragraph first described (`writeKey`, the fringe **and** the base —
+`Record.lean`) is **retired**: a review refuted it as inexpressible at the reader that needs it
+(`casper/src/multi_parent_casper.rs:156-165` reads by the fringe-only key while the base is computed
+*later*, `:230-238`). The design chosen instead drops the keyed store: the reader **names a block** and
+reads that block's claim (`Record.lean`'s `BlockClaim`), and because a block's claim is written once the
+claim store is **append-only** — so the positive half below, `a_read_of_an_append_only_store_is_stable`,
+applies to the fringe state after all, without content-addressing and without a composite key. **Until
+that shape was in place, a copy of the record store was a copy of a moment and not of a version** —
+which is why the tool stops the network before taking one (`--restore-from-master`, the fiat printed at
+`tools/reconcile-network.sh:456-470`). Read as a reader's problem, that is register row **C270**: a node
+that reads a joined value at a fringe key is reading a "version" that names no value, and its own
+validation refuses its own block. And it is the cost **C250**'s residue predicted: "the merge for a
+fringe is a function of the DAG" is true, and it was still not a function of the *key* the store reads
+by.
 
 Nothing here edits another file: `Merkle.lean` supplies the content-addressed half, `Record.lean` the
 refuting witness. The model reuses `Node`, `Item`, `WellFormed`, `nodeHash` and `root_collision_free`
-from the former, and `FringeRecord`, `recordOf`, `key` and the witness of
-`the_fringe_only_key_is_incomplete` from the latter, rather than re-deriving either.
+from the former, and `FringeRecord`, `recordOf`, `key`, the witness of
+`the_fringe_only_key_is_incomplete`, and (for the claim store below) `BlockClaim` and `BlockId` from the
+latter, rather than re-deriving either.
 -/
 
 namespace Rchain
@@ -245,5 +250,56 @@ theorem one_version_two_writers_two_values (s : Store Nat FringeRecord) (k : Nat
   rw [read_after_write, read_after_write]
   intro hc
   exact hstate (congrArg FringeRecord.stateHash (Option.some.inj hc))
+
+/-! ## The positive half, now for the fringe state: the claim store is append-only
+
+The refutation above is of the *keyed* store. The design that replaced it (2026-10-10, `Record.lean`'s
+`BlockClaim`) brings the positive half back **without** content-addressing, by the append-only route
+`a_read_of_an_append_only_store_is_stable` already gives: a block's claim is written once, at the block's
+own id, so the claim store never rewrites a key it held, and a read of it is a function of the version it
+names. Every theorem below is that declaration instantiated at the claim store — nothing is re-proved. -/
+
+/-- The claim store: a block id ↦ the claim the block carries (the shape that replaces the keyed
+    `fringe-data` store — `Record.lean`'s `BlockClaim`). A **version** here is a block id. -/
+abbrev ClaimStore := Store BlockId BlockClaim
+
+/-- **The node writes a block's claim once, at the block's own id** — `BlockMetadata`'s write
+    (`casper/src/dag.rs:887-895`), which is `put` at the key the block names. -/
+def writeClaim (s : ClaimStore) (c : BlockClaim) : ClaimStore := put s c.block c
+
+/-- **The claim write pattern is append-only.** A block's claim is written once, so at the moment a claim
+    is written its key is fresh (`s c.block = none`) and the write touches no key the store already held.
+    This is exactly what the *keyed* store lacked: there `join_fringe_records` merged into an existing key
+    (`casper/src/dag.rs:826-843`), which is the pattern `SubStore` (above) names as the record store's
+    opposite. -/
+theorem a_claim_write_is_append_only {s : ClaimStore} {c : BlockClaim} (h : s c.block = none) :
+    SubStore s (writeClaim s c) := by
+  intro k v hk
+  have hkc : k ≠ c.block := by
+    intro hk'
+    have : s c.block = some v := by rw [← hk', hk]
+    rw [h] at this
+    exact Option.noConfusion this
+  simp only [writeClaim, put, if_neg hkc]
+  exact hk
+
+/-- **A read of a block's claim is stable under extension** — `a_read_of_an_append_only_store_is_stable`
+    instantiated at the claim store, and law 68's positive half for the fringe state: because a block's
+    claim is written once, a store that extends `s` reads at `b` the claim `s` did. The version is the
+    block, and it names the value. -/
+theorem a_read_of_a_blocks_claim_is_stable {s s' : ClaimStore} (h : SubStore s s')
+    {b : BlockId} {c : BlockClaim} (hc : s b = some c) : read s' b = some c :=
+  a_read_of_an_append_only_store_is_stable h hc
+
+/-- **Two reads of one block's claim agree** — the headline shape of the positive half
+    (`two_content_addressed_reads_of_one_version_agree`) for the claim store, reached by the
+    *append-only* route rather than the content-addressed one: if two stores each hold a claim at `b` and
+    one extends the other, the two claims are equal. So a reader reaches one value for the version —
+    which, for the fringe state, is exactly what the keyed store could not promise
+    (`a_non_content_addressed_read_is_not_a_function_of_its_version`). -/
+theorem two_reads_of_one_blocks_claim_agree {s s' : ClaimStore} (h : SubStore s s')
+    {b : BlockId} {c c' : BlockClaim} (hs : s b = some c) (hs' : s' b = some c') : c = c' := by
+  have hstab : s' b = some c := a_read_of_an_append_only_store_is_stable h hs
+  exact Option.some.inj (hstab.symm.trans hs')
 
 end Rchain
