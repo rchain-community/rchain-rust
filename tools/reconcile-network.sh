@@ -330,22 +330,51 @@ echo "  a height legitimately holds one sibling per validator and there is no si
 echo "  joiners resync onto this DAG; the writers re-submit what they can see is missing."
 REPORT="${RECONCILE_REPORT:-/tmp/reconcile-deploys.jsonl}"
 : > "$REPORT"
-total=0
+# Record every observation, then aggregate by block hash. Never count the
+# same block once per endpoint. Keep provenance for operator inspection.
+OBSERVATIONS=$(mktemp)
+trap 'rm -f "$OBSERVATIONS"' EXIT
 for (( h=MEET+1; h<=MAXH; h++ )); do
-  nblocks=0
   for n in "${NAMES[@]}"; do
     while read -r bh sender _post deploys _bonds; do
       [ -z "${bh:-}" ] && continue
-      nblocks=$((nblocks+1)); total=$((total + ${deploys:-0}))
-      printf '{"height":%s,"blockHash":"%s","sender":"%s","deployCount":%s,"sourceNode":"%s"}\n' \
-        "$h" "$bh" "$sender" "${deploys:-0}" "$n" >> "$REPORT"
+      printf '%s\t%s\t%s\t%s\t%s\n' "$h" "$bh" "$sender" "${deploys:-0}" "$n" >> "$OBSERVATIONS"
     done < <(blocks_at "${HOST[$n]}" "${PORT[$n]}" "$h")
   done
-  [ "$nblocks" -gt 0 ] && printf "  #%s: %s block(s)\n" "$h" "$nblocks"
 done
-echo "  $total deploy(s) above the point; the per-block record is $REPORT"
-echo "  (a block's *bodies* are not in the heights route — /api/block/{hash} carries the terms, the heights"
-echo "   route carries counts. The owners re-submit; this tool does not claim to replay them.)"
+python3 - "$OBSERVATIONS" "$REPORT" <<'PYREPORT'
+import collections
+import json
+import sys
+
+blocks = {}
+for line in open(sys.argv[1], encoding="utf-8"):
+    height, block_hash, sender, count, observer = line.rstrip("\n").split("\t")
+    count = int(count)
+    if count < 0 or not block_hash:
+        raise SystemExit("REFUSING: invalid block record")
+    key = block_hash
+    existing = blocks.get(key)
+    if existing is None:
+        blocks[key] = dict(height=int(height), blockHash=block_hash,
+                           sender=sender, deployCount=count, observers={observer})
+    else:
+        if (existing["height"], existing["sender"], existing["deployCount"]) != (int(height), sender, count):
+            raise SystemExit("REFUSING: conflicting observations for block " + block_hash)
+        existing["observers"].add(observer)
+per_height = collections.Counter()
+total = 0
+with open(sys.argv[2], "w", encoding="utf-8") as output:
+    for record in sorted(blocks.values(), key=lambda x: (x["height"], x["blockHash"])):
+        record["observers"] = sorted(record["observers"])
+        total += record["deployCount"]
+        per_height[record["height"]] += 1
+        output.write(json.dumps(record, sort_keys=True) + "\n")
+for height, count in sorted(per_height.items()):
+    print(f"  #{height}: {count} unique block(s)")
+print(f"  {total} deploy(s) in {len(blocks)} unique block(s) above the point; per-block record: {sys.argv[2]}")
+print("  Counts only: this API does not provide deploy signatures in this report.")
+PYREPORT
 
 if [ "$APPLY" != "1" ]; then
   echo "== plan only =="
@@ -465,9 +494,36 @@ if [ "$ok" != "1" ]; then
   exit 6
 fi
 
-echo "== 10. finality past the point =="
-for n in "${NAMES[@]}"; do
-  f=$(lfb_num "${HOST[$n]}" "${PORT[$n]}"); hh=$(lfb_hash "${HOST[$n]}" "${PORT[$n]}")
-  printf "  %-2s finalised %-6s %s\n" "$n" "${f:-?}" "${hh:0:44}"
+echo "== 10. finality past the point (mandatory) =="
+# Finality must advance strictly beyond the anchor on every configured node.
+# An idle --no-autopropose network may require an operator-triggered block;
+# do not silently claim recovery success if that has not happened.
+FINALITY_ATTEMPTS=${RECONCILE_FINALITY_ATTEMPTS:-40}
+FINALITY_INTERVAL=${RECONCILE_FINALITY_INTERVAL:-15}
+finality_ok=0
+for (( attempt=1; attempt<=FINALITY_ATTEMPTS; attempt++ )); do
+  finality_ok=1
+  final_height=""
+  final_hash=""
+  for n in "${NAMES[@]}"; do
+    f=$(lfb_num "${HOST[$n]}" "${PORT[$n]}")
+    hh=$(lfb_hash "${HOST[$n]}" "${PORT[$n]}")
+    printf "  [%s] %-2s finalised %-6s %s\n" "$attempt" "$n" "${f:-?}" "${hh:0:44}"
+    if ! [[ "$f" =~ ^[0-9]+$ ]] || [ "$f" -le "$MEET" ] || [ -z "$hh" ]; then
+      finality_ok=0
+      continue
+    fi
+    if [ -z "$final_height" ]; then
+      final_height="$f"; final_hash="$hh"
+    elif [ "$f" != "$final_height" ] || [ "$hh" != "$final_hash" ]; then
+      finality_ok=0
+    fi
+  done
+  [ "$finality_ok" = "1" ] && break
+  [ "$attempt" -lt "$FINALITY_ATTEMPTS" ] && sleep "$FINALITY_INTERVAL"
 done
-echo "  (this section plus section 9 is #287's falsifier: one head, agreeing block hashes, no genesis.)"
+if [ "$finality_ok" != "1" ]; then
+  echo "  NOT RECOVERED: finalized blocks have not unanimously advanced beyond anchor $MEET" >&2
+  exit 9
+fi
+echo "  VERIFIED: all nodes finalized height $final_height, hash $final_hash (anchor $MEET)"
