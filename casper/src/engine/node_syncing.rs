@@ -26,7 +26,9 @@ use rchain_rspace::state::RSpaceImporter;
 use rchain_shared::log::{Log, LogSource};
 
 use super::lfs_block_requester::request_blocks;
-use super::lfs_tuple_space_requester::{request_tuple_space, request_tuple_space_roots};
+use super::lfs_tuple_space_requester::{
+    request_tuple_space, request_tuple_space_roots, REQUEST_TIMEOUT,
+};
 use crate::protocol::comm_util::CommUtil;
 use crate::validator_identity::ValidatorIdentity;
 
@@ -451,7 +453,7 @@ async fn run_approved_state_sync<I: RSpaceImporter + Send + 'static>(
     let tuple_fut = request_tuple_space(
         fringe,
         tuple_space_rx,
-        Duration::from_secs(120),
+        REQUEST_TIMEOUT,
         transport.as_ref(),
         &conf,
         importer,
@@ -459,10 +461,29 @@ async fn run_approved_state_sync<I: RSpaceImporter + Send + 'static>(
     );
 
     let (block_st, tuple_res) = tokio::join!(block_fut, tuple_fut);
-    tuple_res.map_err(|e| e.to_string())?;
+    // **The tuple leg's state is bound, not dropped** (C271). This used to be
+    // `tuple_res.map_err(|e| e.to_string())?;` — the error was propagated and the state thrown away, so
+    // a walk that stopped early was indistinguishable from one that completed. Law 69
+    // (`spec/Rchain/Sync/Walk.lean`) is a statement about the walk's *exit*, and the consumer's half of
+    // it is reading the state that exit returned.
+    let tuple_st = tuple_res.map_err(|e| e.to_string())?;
     // A store failure while walking the blocks fails the sync attempt (the oracle's stream fails
     // the same way) rather than leaving a block marked done that was never persisted (AUDIT C65).
     let block_st = block_st.map_err(|e| e.to_string())?;
+
+    // **An unfinished page walk is not a restored state** (C271) — the tuple leg's twin of the block
+    // guard below, in the same shape: what was expected, what was found. `request_tuple_space_roots`
+    // now refuses its own non-completion exits by name (Law 69), so this is the consumer's independent
+    // reading of the same contract, and it documents at the call site what "restored" means: a node that
+    // left `NodeSyncing` on anything but a complete state would serve an API over a partial one.
+    if !tuple_st.is_finished() {
+        return Err(format!(
+            "the tuple-space walk finished without completing every page: {} key(s) still \
+             outstanding (expected the walk to reach `is_finished` before the state is called \
+             restored)",
+            tuple_st.outstanding_count()
+        ));
+    }
 
     // **A finished walk that received nothing is not a restored state** (issue #100). The block walk
     // starts from the fringe's own hashes, so any fringe that names a block records at least that block
@@ -499,10 +520,14 @@ async fn run_approved_state_sync<I: RSpaceImporter + Send + 'static>(
                 extra_roots.len()
             ),
         );
+        // This walk's returned state is not bound here, and unlike the joined leg above that is safe
+        // (C271): `request_tuple_space_roots` now returns `Ok` **only** for a walk that reached
+        // `is_finished`, so there is no partial state left to read — the check that mattered is the one
+        // inside the walk, and the one above is its twin at the call site.
         request_tuple_space_roots(
             &extra_roots,
             tuple_space_rx,
-            Duration::from_secs(120),
+            REQUEST_TIMEOUT,
             transport.as_ref(),
             &conf,
             importer,
@@ -637,8 +662,7 @@ mod tests {
     use super::*;
     use async_trait::async_trait;
     use rchain_block_storage::dag::codecs::{
-        Blake2b256HashCodec, BlockHashCodec, BlockMessageCodec, BlockMetadataCodec,
-        FringeDataCodec, SignedDeployDataCodec,
+        BlockHashCodec, BlockMessageCodec, BlockMetadataCodec, SignedDeployDataCodec,
     };
     use rchain_block_storage::dag::dag_storage::DeployId;
     use rchain_comm::errors::CommErr;
@@ -652,7 +676,6 @@ mod tests {
         BlockMessage, RholangState, SignedDeployData,
     };
     use rchain_models::comm::protocol::Protocol;
-    use rchain_models::fringe_data::FringeData;
     use rchain_models::validator::Validator;
     use rchain_rspace::state::RSpaceImporter;
     use rchain_shared::log::{Log, LogSource, NopLog};
@@ -716,12 +739,6 @@ mod tests {
             .await
             .unwrap(),
         );
-        let fringe_store: Arc<dyn KeyValueTypedStore<Blake2b256Hash, FringeData>> =
-            Arc::new(KeyValueTypedStoreCodec::new(
-                in_memory(),
-                Arc::new(Blake2b256HashCodec),
-                Arc::new(FringeDataCodec),
-            ));
         let deploy_index: Arc<dyn KeyValueTypedStore<DeployId, BlockHash>> =
             Arc::new(KeyValueTypedStoreCodec::new(
                 in_memory(),
@@ -735,14 +752,9 @@ mod tests {
                 Arc::new(SignedDeployDataCodec),
             ));
         Arc::new(
-            BlockDagKeyValueStorage::create(
-                metadata_store,
-                fringe_store,
-                deploy_index,
-                deploy_store,
-            )
-            .await
-            .unwrap(),
+            BlockDagKeyValueStorage::create(metadata_store, deploy_index, deploy_store)
+                .await
+                .unwrap(),
         )
     }
 

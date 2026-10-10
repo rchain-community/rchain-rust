@@ -100,6 +100,25 @@ impl<Key: Ord + Clone> LfsTupleSpaceState<Key> {
     pub fn is_finished(&self) -> bool {
         self.d.values().all(|v| *v == ReqStatus::Done)
     }
+
+    /// **The give-up rule's measure** (Law 69, `spec/Rchain/Sync/Walk.lean`'s `finished`): how many
+    /// keys the walk has completed.
+    ///
+    /// Monotone by construction — [`done`](Self::done) only moves `Received → Done` and
+    /// [`add`](Self::add) refuses a key it already holds — which is what makes "did it move since the
+    /// last idle round?" a well-formed question, and what makes the give-up rule a **pace** condition
+    /// rather than a deadline. The block leg counts the same quantity as `finished.len()`
+    /// (`lfs_block_requester.rs:250-252`); this is its accessor on the page walk's map.
+    pub fn finished_count(&self) -> usize {
+        self.d.values().filter(|v| **v == ReqStatus::Done).count()
+    }
+
+    /// How many keys the walk still holds — the block leg's `d.len()`
+    /// (`lfs_block_requester.rs:251`), reported beside the measure so a failure message can tell a
+    /// walk that is stuck from one that is nearly done.
+    pub fn outstanding_count(&self) -> usize {
+        self.d.len()
+    }
 }
 
 #[cfg(test)]
@@ -190,6 +209,119 @@ mod tests {
 // -------------------------------------------------------------------------------------------------
 // Effectful stream (port of `LfsTupleSpaceRequester.stream`)
 // -------------------------------------------------------------------------------------------------
+
+// -------------------------------------------------------------------------------------------------
+// The give-up rule and the exit verdict (Law 69, C271)
+// -------------------------------------------------------------------------------------------------
+
+/// How many **consecutive** idle resend intervals may complete no state page before the walk gives up
+/// and the sync attempt fails.
+///
+/// **The quantity is [`finished_count`](LfsTupleSpaceState::finished_count) — pages the walk has
+/// completed — and it is monotone**, which is what makes "did it move" a well-formed question. So the
+/// rule is a **pace** condition, not a deadline, exactly as the block leg's is
+/// (`lfs_block_requester.rs:36-52`): steps continue, the measure does not move, and nothing bounds the
+/// steps between two increases — **Law 69**'s `Drift` shape, which
+/// `Rchain.Sync.Walk.the_page_walk_as_written_is_unpaced` refuses of the walk as it was written and
+/// `Rchain.Sync.Walk.the_page_walk_with_the_give_up_rule_is_paced` and
+/// `the_fixed_walk_cannot_run_for_ever` prove of the walk carrying this rule.
+///
+/// **The pair (`MAX_IDLE_ROUNDS`, [`REQUEST_TIMEOUT`]) is the bound, and the wall clock is a
+/// decision.** This constant is copied from the block leg, whose rationale is written against a 30 s
+/// interval (`lfs_block_requester.rs:44-47`); the page walk used to be called with **120 s** at both of
+/// `node_syncing.rs`'s call sites, so a verbatim copy would have meant six minutes of silence — the
+/// companion hazard C271 names. The interval is therefore brought to the block leg's own 30 s, and the
+/// pair is **3 × 30 s**: *an operator waits 90 seconds of complete silence — no page completing on any
+/// outstanding path — before the page-walk leg fails the attempt*. That is the same number the block
+/// leg bounds its own leg with, so the `join!` in `run_approved_state_sync` bounds an attempt at the one
+/// wall clock `max(block, tuple) = 90 s`, which is what makes that function's retry-bound doc ("the
+/// total wait is bounded by the product of the two") a product of two *bounds*.
+///
+/// A *slow* walk is not touched: the counter resets on every completed page, so only consecutive empty
+/// rounds count, and `a_slow_but_progressing_walk_is_not_abandoned` pins that.
+///
+/// **Provisional, and deliberately a constant.** It is node-local policy — it changes no state and no
+/// hash — so a `PosParams` field would be wrong, but what it *should* be is a measurement; this is the
+/// same treatment the block leg's constant and `block-storage/src/dag/liveness.rs`'s `LIVENESS_WINDOW`
+/// record for their own provisional numbers.
+pub const MAX_IDLE_ROUNDS: u32 = 3;
+
+/// The idle resend interval the page walk is driven with — how long one round of silence lasts, and
+/// therefore the unit [`MAX_IDLE_ROUNDS`] counts in.
+///
+/// **Named rather than left to the call site so that the pair is one decision**: the give-up's bound is
+/// `MAX_IDLE_ROUNDS × REQUEST_TIMEOUT`, and a caller that changed one without the other would silently
+/// change the bound — the mismatch C271 found, where the rule assumed 30 s and the caller passed 120 s.
+/// It is the block leg's own interval (`lfs_block_requester.rs:44-47`), so both legs of `run_approved_state_sync`'s
+/// `join!` bound an attempt at the same wall clock.
+pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Why the state-page walk failed (C271, Law 69).
+///
+/// **The two cases are different facts and the walk keeps them apart.** [`StateValidation`] means a
+/// peer *answered* and the state it sent failed to check against the trie — the walk's integrity gate
+/// fired, so the peer lied or erred. [`Abandoned`] means *nobody answered*: no page arrived to
+/// complete a key within the give-up bound, or a channel closed under the walk, so there is nothing to
+/// check and no state that failed. Folding the second into the first would report a silent peer as
+/// having sent bad state, which is a different and false claim — which is why this is its own type
+/// rather than a variant of `rspace`'s `StateValidationError`, a type that is rspace's own and means
+/// exactly one thing.
+///
+/// [`StateValidation`]: TupleSpaceWalkError::StateValidation
+/// [`Abandoned`]: TupleSpaceWalkError::Abandoned
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TupleSpaceWalkError {
+    /// A received page failed validation: the peer answered, but the state it sent does not check.
+    StateValidation(StateValidationError),
+    /// The walk gave up before reaching `is_finished`, or a channel closed under it. The message names
+    /// the silence and the walk's measure.
+    Abandoned(String),
+}
+
+impl std::fmt::Display for TupleSpaceWalkError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TupleSpaceWalkError::StateValidation(e) => write!(f, "{e}"),
+            TupleSpaceWalkError::Abandoned(m) => {
+                write!(f, "the state-page walk was abandoned: {m}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for TupleSpaceWalkError {}
+
+impl From<StateValidationError> for TupleSpaceWalkError {
+    fn from(e: StateValidationError) -> Self {
+        TupleSpaceWalkError::StateValidation(e)
+    }
+}
+
+/// **The verdict at every exit** (C271, Law 69): an `Ok` page walk is a *finished* page walk, and
+/// nothing else.
+///
+/// `is_finished` is the contract, and this is the one place it is read on the way out, so that a future
+/// exit added to either loop cannot silently return `Ok` on a partial state. That is exactly what
+/// `request_tuple_space_roots` did: it returned `Ok` after the `select!` without checking, and its
+/// caller dropped the state, so a walk that stopped early was indistinguishable from one that completed
+/// and the node went on to `NodeRunning` holding a partial state. `Ok(())` here means "the walk reached
+/// its goal"; `Err` names what was expected and what was found, the way the block leg's empty-walk
+/// refusal does in `run_approved_state_sync`.
+fn finished_or_abandoned(
+    st: &LfsTupleSpaceState<StatePartPath>,
+    why: &str,
+) -> Result<(), TupleSpaceWalkError> {
+    if st.is_finished() {
+        Ok(())
+    } else {
+        Err(TupleSpaceWalkError::Abandoned(format!(
+            "{why}: {} key(s) still outstanding ({} finished), so the walk did not reach \
+             `is_finished` — a partial state is not a restored one",
+            st.outstanding_count(),
+            st.finished_count()
+        )))
+    }
+}
 
 /// Take the next set of state-part paths to request and send a `StoreItemsMessageRequest` for each
 /// (port of `requestStream`'s broadcast step).
@@ -312,7 +444,7 @@ pub async fn request_tuple_space<I: RSpaceImporter>(
     conf: &RPConf,
     importer: &mut I,
     log: &dyn Log,
-) -> Result<LfsTupleSpaceState<StatePartPath>, StateValidationError> {
+) -> Result<LfsTupleSpaceState<StatePartPath>, TupleSpaceWalkError> {
     let state_hash = Blake2b256Hash::from_byte_array(fringe.state_hash.as_bytes());
     request_tuple_space_roots(
         &[state_hash],
@@ -338,9 +470,11 @@ pub async fn request_tuple_space_roots<I: RSpaceImporter>(
     conf: &RPConf,
     importer: &mut I,
     log: &dyn Log,
-) -> Result<LfsTupleSpaceState<StatePartPath>, StateValidationError> {
+) -> Result<LfsTupleSpaceState<StatePartPath>, TupleSpaceWalkError> {
     let source = LogSource::new("casper.engine.LfsTupleSpaceRequester");
 
+    // A walk over no root is **the vacuous completion** `is_finished` already names: an empty map is
+    // finished, so this is a genuine `Ok` and every other exit below has to earn one.
     if state_hashes.is_empty() {
         return Ok(LfsTupleSpaceState::new(Vec::new()));
     }
@@ -359,22 +493,75 @@ pub async fn request_tuple_space_roots<I: RSpaceImporter>(
     let (request_tx, mut request_rx) = tokio::sync::mpsc::channel::<bool>(2);
     chan::send(&request_tx, false).await;
 
-    let error: Arc<tokio::sync::Mutex<Option<StateValidationError>>> =
+    // **The shared failure slot holds either kind of failure** (C271): a page that failed to check
+    // (`StateValidation`) or a walk nobody answered (`Abandoned`). The loop that ends first writes it
+    // here, and the exit below reads it — which is what makes every exit below a `Result` rather than a
+    // silent `return`.
+    let error: Arc<tokio::sync::Mutex<Option<TupleSpaceWalkError>>> =
         Arc::new(tokio::sync::Mutex::new(None));
 
-    // Request loop: pull request triggers (or resend on idle timeout), terminating when finished.
+    // Request loop: pull request triggers (or resend on idle timeout), terminating when finished — or,
+    // now, when the give-up rule is spent (Law 69). The counter state is the block leg's
+    // (`lfs_block_requester.rs:236-238`): how many pages were finished at the last idle round that saw
+    // progress, and how many consecutive idle rounds have seen none since.
     let request_loop = async {
+        let mut last_finished: usize = 0;
+        let mut idle_rounds: u32 = 0;
         loop {
             let resend = tokio::select! {
                 r = request_rx.recv() => match r {
                     Some(r) => r,
-                    None => return,
+                    None => {
+                        // **The request channel closed** — the walk's first silent exit (C271). Nothing
+                        // can trigger another round, so the walk is over whether or not it reached
+                        // `is_finished`, and a bare `return` here read as a completed walk.
+                        let guard = st.lock().await;
+                        let verdict = finished_or_abandoned(
+                            &guard,
+                            "the request channel closed before the walk finished",
+                        );
+                        drop(guard);
+                        if let Err(e) = verdict {
+                            *error.lock().await = Some(e);
+                        }
+                        return;
+                    }
                 },
                 _ = tokio::time::sleep(request_timeout) => {
+                    // An idle round: a whole resend interval with no page completed. Whether the walk
+                    // is *stuck* is a different question from whether it is *quiet*, and the count of
+                    // finished pages is the measure that answers it.
+                    let (finished, outstanding) = {
+                        let guard = st.lock().await;
+                        (guard.finished_count(), guard.outstanding_count())
+                    };
+                    if finished == last_finished {
+                        idle_rounds += 1;
+                        if idle_rounds >= MAX_IDLE_ROUNDS {
+                            // **The give-up** (Law 69): the walk has completed nothing across
+                            // `MAX_IDLE_ROUNDS` whole resend intervals, so the peer is not answering
+                            // and no node-side rule can make an answer arrive. This is the block leg's
+                            // rule (`lfs_block_requester.rs:255-261`) with the page walk's measure, and
+                            // it spends the attempt rather than spinning for ever in `NodeSyncing`
+                            // (C268/C271).
+                            *error.lock().await = Some(TupleSpaceWalkError::Abandoned(format!(
+                                "no tuple-space state page finished in {idle_rounds} consecutive \
+                                 idle rounds of {request_timeout:?} ({finished} page(s) finished, \
+                                 {outstanding} key(s) still outstanding): the peer is not answering, \
+                                 so the walk cannot complete"
+                            )));
+                            return;
+                        }
+                    } else {
+                        idle_rounds = 0;
+                        last_finished = finished;
+                    }
                     log.warn(
                         source,
                         &format!(
-                            "No tuple space state responses for {request_timeout:?}. Resending requests."
+                            "No tuple space state responses for {request_timeout:?}. Resending \
+                             requests ({idle_rounds}/{MAX_IDLE_ROUNDS} idle rounds without a \
+                             finished page)."
                         ),
                     );
                     true
@@ -399,11 +586,25 @@ pub async fn request_tuple_space_roots<I: RSpaceImporter>(
                         process_store_items(&st, &mut *importer, log, source, &request_tx, &msg)
                             .await
                     {
-                        *error.lock().await = Some(e);
+                        *error.lock().await = Some(e.into());
                         return;
                     }
                 }
-                None => return,
+                None => {
+                    // **The response channel closed** — the walk's second silent exit (C271). No
+                    // further page can arrive, so the walk cannot complete; a bare `return` here read
+                    // as a completed walk.
+                    let guard = st.lock().await;
+                    let verdict = finished_or_abandoned(
+                        &guard,
+                        "the tuple-space response channel closed before the walk finished",
+                    );
+                    drop(guard);
+                    if let Err(e) = verdict {
+                        *error.lock().await = Some(e);
+                    }
+                    return;
+                }
             }
         }
     };
@@ -418,7 +619,13 @@ pub async fn request_tuple_space_roots<I: RSpaceImporter>(
     if let Some(e) = error.lock().await.clone() {
         return Err(e);
     }
+    // **The `Ok` path checks `is_finished()`, and it is the single authority** (C271). Every exit above
+    // that is not a completion lands here — the two channel closes, the give-up, and any exit yet to be
+    // written — so `Ok` cannot come to mean anything but a completed walk. That is the property the walk
+    // as written lacked: it returned `Ok` after the `select!` without checking, and its caller dropped
+    // the state, so an unfinished walk was indistinguishable from a finished one.
     let guard = st.lock().await;
+    finished_or_abandoned(&guard, "the walk returned before it finished")?;
     Ok(guard.clone())
 }
 
@@ -438,6 +645,7 @@ mod stream_tests {
     use rchain_rspace::state::RSpaceImporter;
     use rchain_shared::log::NopLog;
     use rchain_shared::state::TrieImporter;
+    use std::collections::BTreeMap;
 
     use rchain_comm::peer_node::PeerNode;
     use rchain_comm::transport::chunker::Blob;
@@ -708,5 +916,337 @@ mod stream_tests {
                 num_of_connections_pinged: 10,
             },
         }
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // Law 69 / C271: the give-up rule, and every exit checked
+    // ---------------------------------------------------------------------------------------------
+
+    /// **`Ok` means `is_finished`, and nothing else** (C271, Law 69). This is the refusal the walk
+    /// lacked: `request_tuple_space_roots` returned `Ok` after its `select!` without checking, and
+    /// `node_syncing.rs` dropped the returned state, so a walk that stopped early was indistinguishable
+    /// from one that completed. The contract lives in `finished_or_abandoned`, so it is testable on its
+    /// own: an unfinished map is named a failure, a complete one is not, and the failure is `Abandoned`
+    /// rather than a state-validation error — a partial walk is nobody's lie, it is nobody's answer.
+    #[test]
+    fn an_unfinished_walk_is_refused_by_name_and_a_finished_one_is_not() {
+        let path: StatePartPath = vec![(Blake2b256Hash::create(&[1, 2, 3]), None)];
+
+        // `Init` — named, not asked for: not finished, and refused by name.
+        let fresh = LfsTupleSpaceState::new(vec![path.clone()]);
+        let err = finished_or_abandoned(&fresh, "the walk returned before it finished")
+            .expect_err("a walk that has asked for nothing is not finished");
+        assert!(
+            matches!(err, TupleSpaceWalkError::Abandoned(_)),
+            "a partial walk is not a validation failure: {err:?}"
+        );
+        assert!(
+            err.to_string().contains("still outstanding"),
+            "the message must say what was expected and what was found: {err}"
+        );
+
+        // Requested → received → done: the map is complete, and the same call now succeeds.
+        let (st, _ids) = fresh.get_next(false);
+        let (st, _is_received) = st.received(path.clone());
+        let st = st.done(path);
+        assert!(st.is_finished());
+        assert!(
+            finished_or_abandoned(&st, "the walk returned before it finished").is_ok(),
+            "a completed walk must not be refused"
+        );
+    }
+
+    /// **A silent peer fails the walk rather than hanging it** (Law 69, C271) — the page walk's twin of
+    /// `lfs_block_requester`'s `a_walk_nobody_serves_fails_rather_than_hangs`, and the reason this row
+    /// exists: the request loop ended only on an error or `is_finished`, so a peer that simply never
+    /// answered left an infinite run —
+    /// `Rchain.Sync.Walk.the_page_walk_as_written_spins_for_ever` is exactly that run, and the give-up
+    /// rule is what removes it. The bound is the walk's own ([`MAX_IDLE_ROUNDS`]), not a harness: the
+    /// `timeout` below exists only so a regression *hangs the assertion* rather than the suite.
+    ///
+    /// Three assertions carry the content. The walk **fails**; the failure is `Abandoned` and names the
+    /// silence rather than the state (nobody sent anything to validate, so this is not a
+    /// `StateValidationError`); and it **retried first** — a rule that abandoned the walk at the first
+    /// empty round would kill every slow honest sync, and shows exactly one request.
+    #[tokio::test]
+    async fn a_silent_peer_fails_the_walk_rather_than_hanging() {
+        const REQUEST_TIMEOUT: Duration = Duration::from_millis(20);
+        // Three idle rounds of 20 ms is 60 ms; two seconds is thirty times that, and the timeout is a
+        // harness guard rather than the bound under test.
+        const HARNESS_BOUND: Duration = Duration::from_secs(2);
+
+        let (message, _history) = valid_chunk(vec![1, 2, 3]);
+        let root = message.start_path[0].0;
+        let mut importer = RecordingImporter::default();
+        // Nobody answers: every request is recorded and dropped, which is what "the peer is not
+        // answering" looks like from the requester's own point of view.
+        let transport = RecordingTransport::default();
+        // The sender is kept alive, so the response channel is *open* and silent — the case the give-up
+        // rule exists for. (A closed channel is the other test.)
+        let (_tuple_space_tx, mut tuple_space_rx) =
+            tokio::sync::mpsc::channel::<StoreItemsMessage>(16);
+
+        let outcome = tokio::time::timeout(
+            HARNESS_BOUND,
+            request_tuple_space_roots(
+                &[root],
+                &mut tuple_space_rx,
+                REQUEST_TIMEOUT,
+                &transport,
+                &test_conf(),
+                &mut importer,
+                &NopLog,
+            ),
+        )
+        .await;
+
+        let err = match outcome {
+            Ok(Ok(state)) => panic!(
+                "the walk reported success with the peer silent: {} page(s) finished, {} key(s) \
+                 outstanding",
+                state.finished_count(),
+                state.outstanding_count()
+            ),
+            Ok(Err(e)) => e,
+            Err(_) => panic!(
+                "the walk hung: {HARNESS_BOUND:?} with no answer and no failure — Law 69's infinite \
+                 run, the defect the give-up rule removes"
+            ),
+        };
+        assert!(
+            matches!(err, TupleSpaceWalkError::Abandoned(_)),
+            "a silent peer is not a state-validation failure — nothing was sent to validate: {err:?}"
+        );
+        assert!(
+            err.to_string()
+                .contains("no tuple-space state page finished"),
+            "the failure must name the silence, not the peer's data: {err}"
+        );
+        assert!(
+            transport.sends.lock().unwrap().len() > 1,
+            "the walk must have re-requested before giving up: one request is the initial fire, so a \
+             rule that abandoned the walk at the first empty round would show exactly one"
+        );
+    }
+
+    /// **A closed response channel is a named failure, not a silent `return`** (C271's second silent
+    /// exit). The node's tuple-space sender is gone, so no page can ever arrive: the walk is over
+    /// whether or not it reached `is_finished`, and the old code read that as a completed walk.
+    #[tokio::test]
+    async fn a_closed_response_channel_fails_the_walk_by_name() {
+        let (message, _history) = valid_chunk(vec![1, 2, 3]);
+        let root = message.start_path[0].0;
+        let mut importer = RecordingImporter::default();
+        let transport = RecordingTransport::default();
+        // The sender is dropped before the walk runs: the channel is closed from the first poll.
+        let (tuple_space_tx, mut tuple_space_rx) =
+            tokio::sync::mpsc::channel::<StoreItemsMessage>(16);
+        drop(tuple_space_tx);
+
+        let outcome = tokio::time::timeout(
+            Duration::from_secs(5),
+            request_tuple_space_roots(
+                &[root],
+                &mut tuple_space_rx,
+                Duration::from_secs(30),
+                &transport,
+                &test_conf(),
+                &mut importer,
+                &NopLog,
+            ),
+        )
+        .await
+        .expect("a closed channel must end the walk at once, not wait out the idle timeout");
+
+        let err = outcome.expect_err("a walk whose response channel closed cannot complete");
+        assert!(
+            matches!(err, TupleSpaceWalkError::Abandoned(_)),
+            "a closed channel is silence, not a bad state: {err:?}"
+        );
+        assert!(
+            err.to_string().contains("response channel closed"),
+            "the failure must name which channel closed: {err}"
+        );
+    }
+
+    /// A transport that *answers*: every `StoreItemsMessageRequest` it sees is served by pushing the
+    /// page for that path into the requester's incoming channel, the way a peer's handler does. `after`
+    /// is how many times a path must be asked for before it is served — the shape a *slow but honest*
+    /// peer has from the requester's point of view.
+    struct ServingTupleTransport {
+        pages: BTreeMap<Blake2b256Hash, StoreItemsMessage>,
+        incoming: tokio::sync::mpsc::Sender<StoreItemsMessage>,
+        after: usize,
+        asked: std::sync::Mutex<BTreeMap<Blake2b256Hash, usize>>,
+    }
+
+    #[async_trait::async_trait]
+    impl TransportLayer for ServingTupleTransport {
+        async fn send(&self, _peer: &PeerNode, msg: Protocol) -> rchain_comm::errors::CommErr<()> {
+            use rchain_models::casper::protocol::packet_type_tag::FromPacket;
+
+            let Ok(packet) = rchain_comm::rp::protocol_helper::to_packet(&msg) else {
+                return Ok(());
+            };
+            let Ok(request) = StoreItemsMessageRequestSerde.parse_from(&packet) else {
+                return Ok(());
+            };
+            let Some((key, _)) = request.start_path.first().copied() else {
+                return Ok(());
+            };
+            let ask_count = {
+                let mut asked = self.asked.lock().expect("ask-count lock");
+                let n = asked.entry(key).or_insert(0);
+                *n += 1;
+                *n
+            };
+            if ask_count >= self.after {
+                if let Some(page) = self.pages.get(&key) {
+                    let _ = self.incoming.send(page.clone()).await;
+                }
+            }
+            Ok(())
+        }
+
+        async fn broadcast(
+            &self,
+            _peers: &[PeerNode],
+            _msg: Protocol,
+        ) -> Vec<rchain_comm::errors::CommErr<()>> {
+            Vec::new()
+        }
+
+        async fn stream(&self, _peers: &[PeerNode], _blob: Blob) {}
+    }
+
+    /// Two pages of one walk: page `a` answers the root and names page `b`'s path as its `last_path`,
+    /// so the walk must complete **both** to finish. The pages are real chunks that pass
+    /// `validate_state_items`, so the walk genuinely makes progress rather than being handed a
+    /// pre-cooked "finished" state.
+    fn two_page_walk() -> (
+        Blake2b256Hash,
+        BTreeMap<Blake2b256Hash, StoreItemsMessage>,
+        HashMap<Blake2b256Hash, Vec<u8>>,
+    ) {
+        let (page_b, history_b) = valid_chunk(vec![4, 5, 6]);
+        let b_root = page_b.start_path[0].0;
+        let (mut page_a, mut history) = valid_chunk(vec![1, 2, 3]);
+        // Page `a` names page `b`'s root as the next path to request.
+        page_a.last_path = vec![(b_root, None)];
+        let a_root = page_a.start_path[0].0;
+        history.extend(history_b);
+        (
+            a_root,
+            BTreeMap::from([(a_root, page_a), (b_root, page_b)]),
+            history,
+        )
+    }
+
+    /// **A served walk completes and returns a finished state** (Law 69's positive direction,
+    /// `Rchain.Sync.Walk.all_keys_done_of_full_measure`). Both pages are delivered, both keys are `Done`,
+    /// and the walk returns `Ok` with `is_finished` true — the shape the gated exits must not spoil.
+    #[tokio::test]
+    async fn a_served_walk_finishes_and_returns_a_finished_state() {
+        let (root, pages, history) = two_page_walk();
+        let (incoming_tx, mut tuple_space_rx) = tokio::sync::mpsc::channel::<StoreItemsMessage>(16);
+        let transport = ServingTupleTransport {
+            pages,
+            incoming: incoming_tx,
+            after: 1,
+            asked: std::sync::Mutex::new(BTreeMap::new()),
+        };
+        let mut importer = RecordingImporter {
+            history,
+            ..Default::default()
+        };
+
+        let state = tokio::time::timeout(
+            Duration::from_secs(5),
+            request_tuple_space_roots(
+                &[root],
+                &mut tuple_space_rx,
+                Duration::from_secs(5),
+                &transport,
+                &test_conf(),
+                &mut importer,
+                &NopLog,
+            ),
+        )
+        .await
+        .expect("a served walk must finish well inside the harness bound")
+        .expect("a peer that answers every page must not fail the walk");
+
+        assert!(
+            state.is_finished(),
+            "the walk reached `is_finished`: both pages were answered"
+        );
+        assert_eq!(
+            state.finished_count(),
+            2,
+            "and it completed every key of the walk"
+        );
+        assert_eq!(state.outstanding_count(), 2);
+    }
+
+    /// **The other direction: a slow walk that is still completing pages is not abandoned.** This is
+    /// what makes [`MAX_IDLE_ROUNDS`] a *pace* rule rather than a deadline, exactly as
+    /// `lfs_block_requester`'s `a_slow_but_progressing_walk_is_not_abandoned` does for the block leg.
+    /// The transport serves each page only on its **third** request — the initial fire plus one resend
+    /// per idle round — so each page costs two idle rounds with no completion, the counter reaches
+    /// `MAX_IDLE_ROUNDS - 1`, and the page that then lands resets it. A rule that counted idle rounds
+    /// without resetting on progress, or one that measured elapsed time instead of progress, fails here:
+    /// the first abandons the walk on the second page, and the second abandons a walk that is long
+    /// rather than stuck.
+    ///
+    /// **The timeout is 100 ms and the count is calibrated to it**: the reset depends on the response
+    /// loop having processed the page before the next idle round fires, which is microseconds of work
+    /// against a hundred-millisecond interval — three orders of margin, not a race the test leans on.
+    #[tokio::test]
+    async fn a_slow_but_progressing_walk_is_not_abandoned() {
+        const REQUEST_TIMEOUT: Duration = Duration::from_millis(100);
+        const ASKED_BEFORE_SERVED: usize = 3;
+        const HARNESS_BOUND: Duration = Duration::from_secs(10);
+
+        let (root, pages, history) = two_page_walk();
+        let (incoming_tx, mut tuple_space_rx) = tokio::sync::mpsc::channel::<StoreItemsMessage>(16);
+        let transport = ServingTupleTransport {
+            pages,
+            incoming: incoming_tx,
+            after: ASKED_BEFORE_SERVED,
+            asked: std::sync::Mutex::new(BTreeMap::new()),
+        };
+        let mut importer = RecordingImporter {
+            history,
+            ..Default::default()
+        };
+
+        let state = tokio::time::timeout(
+            HARNESS_BOUND,
+            request_tuple_space_roots(
+                &[root],
+                &mut tuple_space_rx,
+                REQUEST_TIMEOUT,
+                &transport,
+                &test_conf(),
+                &mut importer,
+                &NopLog,
+            ),
+        )
+        .await
+        .expect("a progressing walk must finish well inside the harness bound")
+        .expect(
+            "a peer that is slow but answering must not fail the walk: the give-up rule counts \
+             *consecutive* rounds without a finished page, and every page resets it",
+        );
+
+        assert!(
+            state.is_finished(),
+            "the walk reached the goal after {ASKED_BEFORE_SERVED} requests per page"
+        );
+        assert_eq!(
+            state.finished_count(),
+            2,
+            "and it completed every page of the walk"
+        );
     }
 }
