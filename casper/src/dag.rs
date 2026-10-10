@@ -442,6 +442,7 @@ impl BlockDagKeyValueStorage {
                 representation.logical_bytes(),
             );
             self.set_merge_shape_gauges();
+            self.set_soft_checkpoint_gauges();
         }
         self
     }
@@ -550,6 +551,49 @@ impl BlockDagKeyValueStorage {
                 self.metrics
                     .record(&source, "states_expanded", count(edge), count(delta));
             }
+        }
+    }
+
+    /// Publish #144's Stage-1 play-path soft-checkpoint census. These are monotone process counters,
+    /// not verdict inputs: the node computes exactly the same state and block with or without a
+    /// metrics sink. A campaign reads deltas between two `/metrics` scrapes so earlier activity in
+    /// the process cannot be mistaken for work done by the measured arm.
+    fn set_soft_checkpoint_gauges(&self) {
+        use crate::runtime_manager::soft_checkpoint_census::{self, Site};
+
+        let source = Source::base().sub("runtime");
+        let count = |n: u64| i64::try_from(n).unwrap_or(i64::MAX);
+        let census = soft_checkpoint_census::snapshot();
+
+        self.metrics
+            .set_gauge(&source, "deploy_units", count(census.deploy_units));
+        self.metrics.set_gauge(
+            &source,
+            "deploy_unit_total_ns",
+            count(census.deploy_unit_total_ns),
+        );
+        self.metrics.set_gauge(
+            &source,
+            "deploy_unit_max_ns",
+            count(census.deploy_unit_max_ns),
+        );
+        for site in Site::ALL {
+            let sample = census.sites[site.index()];
+            self.metrics.set_gauge(
+                &source,
+                &format!("soft_checkpoint_{}_count", site.metric_stem()),
+                count(sample.count),
+            );
+            self.metrics.set_gauge(
+                &source,
+                &format!("soft_checkpoint_{}_total_ns", site.metric_stem()),
+                count(sample.total_ns),
+            );
+            self.metrics.set_gauge(
+                &source,
+                &format!("soft_checkpoint_{}_max_ns", site.metric_stem()),
+                count(sample.max_ns),
+            );
         }
     }
 
@@ -903,6 +947,7 @@ impl BlockDagStorage for BlockDagKeyValueStorage {
                 repr.logical_bytes(),
             );
             self.set_merge_shape_gauges();
+            self.set_soft_checkpoint_gauges();
         }
 
         BlockIndex::prune_cache(&prune_cache_ids);

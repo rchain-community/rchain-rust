@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use rchain_crypto::hash::blake2b256_hash::Blake2b256Hash;
 use rchain_crypto::hash::blake2b512_random::Blake2b512Random;
@@ -32,6 +32,7 @@ use rchain_rholang::runtime::{ReplayRhoRuntime, RhoRuntime};
 use rchain_rholang::scheduler::EffectMode;
 use rchain_rholang::storage::{RhoHistoryRepository, RhoMatch};
 use rchain_rholang::system_processes::BlockData;
+use rchain_rspace::checkpoint::SoftCheckpoint;
 use rchain_rspace::hot_store::InMemHotStore;
 use rchain_rspace::merger::event_log_index::NumberChannelsDiff;
 use rchain_rspace::native_store::{BlockNativeEffects, NativeWriter, PREFIX_POS};
@@ -75,6 +76,152 @@ const EXPLORATORY_EVAL_TIMEOUT: Duration = Duration::from_secs(60);
 /// steps/s at depth 16k, so 10k steps completes in ~22s worst case — issue #12). The wall clock is
 /// the backstop, not the operative bound.
 const EXPLORATORY_MAX_REDUCE_STEPS: i64 = 10_000;
+
+/// Stage-1 instrument for #144: how much time the block play path spends taking rollback/log
+/// snapshots, and where those snapshots come from. This deliberately changes no scheduling or
+/// rollback behaviour; it only counts and times the calls that already exist.
+///
+/// The counters are process-wide for the same reason as the merge-search census: the async runtime
+/// manager has no metrics handle. `BlockDagKeyValueStorage` publishes a snapshot of them on the DAG's
+/// normal observability tick, so a devnet campaign can read the numbers from `/metrics` without
+/// adding logging to the hot deploy loop.
+pub mod soft_checkpoint_census {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::Duration;
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub enum Site {
+        DeployFallback,
+        DeployLog,
+        CostUnitFallback,
+        PreChargeLog,
+        SystemDeployLog,
+    }
+
+    impl Site {
+        pub const ALL: [Site; 5] = [
+            Site::DeployFallback,
+            Site::DeployLog,
+            Site::CostUnitFallback,
+            Site::PreChargeLog,
+            Site::SystemDeployLog,
+        ];
+
+        pub const fn index(self) -> usize {
+            match self {
+                Site::DeployFallback => 0,
+                Site::DeployLog => 1,
+                Site::CostUnitFallback => 2,
+                Site::PreChargeLog => 3,
+                Site::SystemDeployLog => 4,
+            }
+        }
+
+        pub const fn metric_stem(self) -> &'static str {
+            match self {
+                Site::DeployFallback => "deploy_fallback",
+                Site::DeployLog => "deploy_log",
+                Site::CostUnitFallback => "cost_unit_fallback",
+                Site::PreChargeLog => "pre_charge_log",
+                Site::SystemDeployLog => "system_deploy_log",
+            }
+        }
+    }
+
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+    pub struct SiteSnapshot {
+        pub count: u64,
+        pub total_ns: u64,
+        pub max_ns: u64,
+    }
+
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+    pub struct Snapshot {
+        pub deploy_units: u64,
+        pub deploy_unit_total_ns: u64,
+        pub deploy_unit_max_ns: u64,
+        pub sites: [SiteSnapshot; 5],
+    }
+
+    static COUNTS: [AtomicU64; 5] = [const { AtomicU64::new(0) }; 5];
+    static TOTAL_NS: [AtomicU64; 5] = [const { AtomicU64::new(0) }; 5];
+    static MAX_NS: [AtomicU64; 5] = [const { AtomicU64::new(0) }; 5];
+    static DEPLOY_UNITS: AtomicU64 = AtomicU64::new(0);
+    static DEPLOY_UNIT_TOTAL_NS: AtomicU64 = AtomicU64::new(0);
+    static DEPLOY_UNIT_MAX_NS: AtomicU64 = AtomicU64::new(0);
+
+    fn ns(duration: Duration) -> u64 {
+        u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX)
+    }
+
+    pub fn record(site: Site, duration: Duration) {
+        let i = site.index();
+        let n = ns(duration);
+        COUNTS[i].fetch_add(1, Ordering::Relaxed);
+        TOTAL_NS[i].fetch_add(n, Ordering::Relaxed);
+        MAX_NS[i].fetch_max(n, Ordering::Relaxed);
+    }
+
+    pub fn record_deploy_unit(duration: Duration) {
+        let n = ns(duration);
+        DEPLOY_UNITS.fetch_add(1, Ordering::Relaxed);
+        DEPLOY_UNIT_TOTAL_NS.fetch_add(n, Ordering::Relaxed);
+        DEPLOY_UNIT_MAX_NS.fetch_max(n, Ordering::Relaxed);
+    }
+
+    pub fn snapshot() -> Snapshot {
+        let mut sites = [SiteSnapshot::default(); 5];
+        for site in Site::ALL {
+            let i = site.index();
+            sites[i] = SiteSnapshot {
+                count: COUNTS[i].load(Ordering::Relaxed),
+                total_ns: TOTAL_NS[i].load(Ordering::Relaxed),
+                max_ns: MAX_NS[i].load(Ordering::Relaxed),
+            };
+        }
+        Snapshot {
+            deploy_units: DEPLOY_UNITS.load(Ordering::Relaxed),
+            deploy_unit_total_ns: DEPLOY_UNIT_TOTAL_NS.load(Ordering::Relaxed),
+            deploy_unit_max_ns: DEPLOY_UNIT_MAX_NS.load(Ordering::Relaxed),
+            sites,
+        }
+    }
+
+    /// Human-readable form for an evidence capture or a diagnostic line. The campaign should use
+    /// the raw `/metrics` counters for arithmetic; this exists so a captured log still names the
+    /// same quantities without reverse-engineering metric names.
+    pub fn summary() -> String {
+        let s = snapshot();
+        let mut parts = Vec::new();
+        for site in Site::ALL {
+            let x = s.sites[site.index()];
+            parts.push(format!(
+                "{}={} snapshots/{} ns (max {} ns)",
+                site.metric_stem(),
+                x.count,
+                x.total_ns,
+                x.max_ns
+            ));
+        }
+        format!(
+            "soft checkpoints: {} deploy units / {} ns (max {} ns); {}",
+            s.deploy_units,
+            s.deploy_unit_total_ns,
+            s.deploy_unit_max_ns,
+            parts.join("; ")
+        )
+    }
+}
+
+async fn measured_soft_checkpoint(
+    runtime: &RhoRuntime,
+    site: soft_checkpoint_census::Site,
+) -> SoftCheckpoint<SortedProc, BindPattern, ListParWithRandom, TaggedContinuation> {
+    let started = Instant::now();
+    let checkpoint = runtime.create_soft_checkpoint().await;
+    soft_checkpoint_census::record(site, started.elapsed());
+    checkpoint
+}
 
 pub struct RuntimeManager {
     runtime: RhoRuntime,
@@ -450,7 +597,8 @@ impl RuntimeManager {
         deploy: &SignedDeployData,
         rand: &Blake2b512Random,
     ) -> Result<(ProcessedDeploy, EvaluateResult), RuntimeRunError> {
-        let fallback = runtime.create_soft_checkpoint().await;
+        let fallback =
+            measured_soft_checkpoint(runtime, soft_checkpoint_census::Site::DeployFallback).await;
         // Bind `rho:rchain:deployerId` (and `rho:rchain:deployId`) so the deploy's free URI names
         // resolve during normalization (port of `NormalizerEnv(deploy).toEnv`).
         let normalizer_env = NormalizerEnv::new(deploy);
@@ -483,7 +631,8 @@ impl RuntimeManager {
             runtime.revert_to_soft_checkpoint(fallback).await;
             return Err(RuntimeRunError::SpeculationInvalidated);
         }
-        let checkpoint = runtime.create_soft_checkpoint().await;
+        let checkpoint =
+            measured_soft_checkpoint(runtime, soft_checkpoint_census::Site::DeployLog).await;
         let succeeded = eval_result.errors.is_empty();
         // The deploy-level outcome, next to the pos call's own log. They can disagree: a deploy whose
         // state changes are reverted below still logs `[pos] ok` from inside the call, which is how a
@@ -604,7 +753,8 @@ impl RuntimeManager {
         // the whole unit (pre-charge → deploy → refund). The event log is empty at each unit start
         // (`play_deploys_with_cost_accounting_with` resets to `start_hash` first), so this drain is
         // a no-op on the success path.
-        let pre = runtime.create_soft_checkpoint().await;
+        let pre =
+            measured_soft_checkpoint(runtime, soft_checkpoint_census::Site::CostUnitFallback).await;
         match Self::play_deploy_with_cost_accounting_once(runtime, deploy, rand).await {
             Err(RuntimeRunError::SpeculationInvalidated) => {
                 runtime.revert_to_soft_checkpoint(pre).await;
@@ -644,7 +794,8 @@ impl RuntimeManager {
             .begin_writer(NativeWriter::CostAccounting);
         let (pre_result, pre_eval) = Self::eval_system_deploy_with(runtime, &pre_charge).await?;
         runtime.native_store().end_writer();
-        let pre_checkpoint = runtime.create_soft_checkpoint().await;
+        let pre_checkpoint =
+            measured_soft_checkpoint(runtime, soft_checkpoint_census::Site::PreChargeLog).await;
         collector = collector.add(
             &pre_checkpoint
                 .log
@@ -739,6 +890,7 @@ impl RuntimeManager {
         for (i, d) in terms.iter().enumerate() {
             let r = rand
                 .split_byte(u8::try_from(i).map_err(|e| RuntimeRunError::Other(e.to_string()))?);
+            let started = Instant::now();
             // The deploy's **ordinal** in the block's list is the name its native writes travel
             // under (#280), so it is threaded down to the window rather than re-derived there.
             let ordinal = u32::try_from(i).map_err(|_| {
@@ -752,6 +904,7 @@ impl RuntimeManager {
                 .begin_writer(NativeWriter::Deploy(ordinal));
             let played = Self::play_deploy_with_cost_accounting_with(runtime, d, &r).await;
             runtime.native_store().end_writer();
+            soft_checkpoint_census::record_deploy_unit(started.elapsed());
             results.push(played?);
         }
         let checkpoint = runtime
@@ -984,7 +1137,8 @@ impl RuntimeManager {
             .await
             .map_err(RuntimeRunError::Other)?;
         let (result, _eval_result) = Self::eval_system_deploy_with(runtime, deploy).await?;
-        let checkpoint = runtime.create_soft_checkpoint().await;
+        let checkpoint =
+            measured_soft_checkpoint(runtime, soft_checkpoint_census::Site::SystemDeployLog).await;
         let event_list: Vec<Event> = checkpoint.log.iter().map(to_casper_event).collect();
         let final_hash = runtime
             .create_checkpoint()

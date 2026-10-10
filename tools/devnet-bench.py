@@ -16,12 +16,11 @@ Three measurements, in the order they run:
 * **Deploy throughput and latency** — fire signed deploys at a concurrency, then time each one from
   submission to the block that processed it, read from `/api/v1/deploy-status/{id}`.
 
-**Everything is measured from outside the process, and that is a property of the node rather than a
-shortcut.** The node publishes exactly five metrics, all of them DAG residency gauges
-(`casper/src/dag.rs`'s `set_gauges`); there is no block counter, no deploy counter and no cost
-histogram, so a rate cannot be scraped — it has to be timed here. RSS likewise comes from
-`docker stats`, because process memory is not in the registry either (the JVM-era pool/GC metrics
-went with the JVM).
+**The benchmark remains externally driven.** DAG residency comes from the node's existing gauges,
+RSS from `docker stats`, and rates from wall-clock observation. #144 adds one deliberately narrow
+exception: monotone `rchain_runtime_*` gauges expose the count and time of already-existing soft
+checkpoints, because attributing that internal copy cost from outside the process is impossible. The
+metrics are observation-only and are read as before/after deltas; they do not drive block execution.
 
 Three caveats, stated because they bound what the numbers mean:
 
@@ -44,7 +43,10 @@ Three caveats, stated because they bound what the numbers mean:
 """
 
 import argparse
+import hashlib
 import json
+import os
+from pathlib import Path
 import re
 import statistics
 import subprocess
@@ -67,11 +69,25 @@ ADMIN_BASE = 40405
 DEPLOYER_PRIV = "a68a6e6cca30f81bd24a719f3145d20e8424bd7b396309b0708a16c7d8000b76"
 DEPLOY_ID_RE = re.compile(r"DeployId is: ([0-9a-fA-F]+)")
 
-# `rchain_dag_*` — the five gauges `casper/src/dag.rs` publishes, and the only numbers the node
-# reports about its own state. `messages` is the one the residency claim is about; `seen_entries` is
-# the sum of the per-message ancestry sets, which is where N(N+1)/2 shows up.
-GAUGES = ("rchain_dag_messages", "rchain_dag_seen_entries", "rchain_dag_fringe_states",
-          "rchain_dag_index_entries", "rchain_dag_logical_bytes")
+# `rchain_dag_*` — the five DAG-residency gauges. `messages` is the one the residency claim is
+# about; `seen_entries` is the sum of the per-message ancestry sets, which is where N(N+1)/2 shows
+# up. #144 adds a separate `rchain_runtime_*` census below; neither family changes node behaviour.
+DAG_GAUGES = ("rchain_dag_messages", "rchain_dag_seen_entries", "rchain_dag_fringe_states",
+              "rchain_dag_index_entries", "rchain_dag_logical_bytes")
+
+# #144 Stage 1: play-path soft-checkpoint census. The four user-deploy sites are intentionally
+# separate from the block-level system-deploy site so the campaign can compute the actual
+# snapshots/deploy and checkpoint-time/deploy ratios rather than infer "up to four" from source.
+CHECKPOINT_SITES = ("deploy_fallback", "deploy_log", "cost_unit_fallback", "pre_charge_log")
+RUNTIME_GAUGES = (
+    "rchain_runtime_deploy_units",
+    "rchain_runtime_deploy_unit_total_ns",
+    "rchain_runtime_deploy_unit_max_ns",
+    *(f"rchain_runtime_soft_checkpoint_{site}_{suffix}"
+      for site in (*CHECKPOINT_SITES, "system_deploy_log")
+      for suffix in ("count", "total_ns", "max_ns")),
+)
+GAUGES = DAG_GAUGES + RUNTIME_GAUGES
 
 # The default image name `devnet.sh up` produces, i.e. the container the measurements are taken from.
 CONTAINER = "devnet-bootstrap"
@@ -95,8 +111,8 @@ def height(port=HTTP_BASE):
 
 
 def gauges(port=HTTP_BASE):
-    """Scrape the five DAG gauges. Returns {} if the route is unreachable, so a sample is never
-    silently read as zero growth."""
+    """Scrape the benchmark's DAG and runtime gauges. Returns {} if the route is unreachable,
+    so a sample is never silently read as zero growth or zero checkpoint work."""
     try:
         req = urllib.request.Request(f"http://localhost:{port}/metrics")
         with urllib.request.urlopen(req, timeout=5) as resp:
@@ -209,33 +225,37 @@ def bench_blocks(args, container):
 # --- measurement 2: deploy throughput and latency -------------------------------------------
 
 
-def one_deploy(container, deployer_key, scratch, term, valid_after, shard):
+def one_deploy(container, deployer_key, scratch, term, valid_after, shard, native_rnode=None):
     """Submit one signed deploy and return (deploy_id, client_seconds).
 
-    `docker exec rnode deploy` is the node's own client, so this exercises the real ingress path
-    (gRPC → deploy pool → block path) with a signature and a shard check. The alternative — signing
-    in Python and POSTing to `/api/v1/deploy` — would need the exact bytes the SDK signs, which is a
-    protobuf encoding this harness has no business re-deriving: a signature that is *nearly* right
-    fails as an invalid deploy, which would read as node throughput failure.
+    The normal arm uses `docker exec rnode deploy`. `--native-rnode` is the same Rust client against
+    the same external gRPC API, used when the node itself is running directly on the host (for
+    example Termux, where Docker is unavailable). No deploy bytes are reimplemented in Python.
     """
-    # **One scratch file per worker, not one for the run.** `cat > /tmp/bench.rho` from K threads is a
-    # race on a single path: a worker that writes between another's write and its own `deploy` ships a
-    # half-overwritten term, which the node refuses as a parse error — measured, 9 of 200 deploys, with
-    # the error naming the *other* deploy's syntax. A path per worker removes the sharing entirely.
-    write = subprocess.run(
-        ["docker", "exec", "-i", container, "sh", "-c", f"cat > {scratch}"],
-        input=term, text=True, capture_output=True,
-    )
-    if write.returncode != 0:
-        return None, None, write.stderr
+    if native_rnode:
+        local_scratch = os.path.join(os.environ.get("TMPDIR", "/tmp"), f"rchain-{os.path.basename(scratch)}")
+        try:
+            Path(local_scratch).write_text(term)
+        except Exception as e:
+            return None, None, str(e)
+        cmd = [native_rnode, "--grpc-host", "localhost", "--grpc-port", str(GRPC_BASE), "deploy",
+               "--phlo-limit", "1000000", "--phlo-price", "1",
+               "--private-key", deployer_key, "--shard-id", shard,
+               "--valid-after-block-number", str(valid_after), local_scratch]
+    else:
+        # **One scratch file per worker, not one for the run.** Shared scratch paths corrupt terms.
+        write = subprocess.run(
+            ["docker", "exec", "-i", container, "sh", "-c", f"cat > {scratch}"],
+            input=term, text=True, capture_output=True,
+        )
+        if write.returncode != 0:
+            return None, None, write.stderr
+        cmd = ["docker", "exec", container, "rnode", "--grpc-host", "localhost", "deploy",
+               "--phlo-limit", "1000000", "--phlo-price", "1",
+               "--private-key", deployer_key, "--shard-id", shard,
+               "--valid-after-block-number", str(valid_after), scratch]
     t0 = time.monotonic()
-    proc = subprocess.run(
-        ["docker", "exec", container, "rnode", "--grpc-host", "localhost", "deploy",
-         "--phlo-limit", "1000000", "--phlo-price", "1",
-         "--private-key", deployer_key, "--shard-id", shard,
-         "--valid-after-block-number", str(valid_after), scratch],
-        text=True, capture_output=True, timeout=120,
-    )
+    proc = subprocess.run(cmd, text=True, capture_output=True, timeout=120)
     dt = time.monotonic() - t0
     m = DEPLOY_ID_RE.search(proc.stdout or "")
     if not m:
@@ -257,10 +277,60 @@ def deploy_status(deploy_id):
     return False, None
 
 
+def soft_checkpoint_delta(before, after):
+    """Derive #144's Stage-1 measurements from two process-counter scrapes.
+
+    Only monotone count/total gauges are subtracted. Missing or decreasing counters make the reading
+    unavailable rather than silently turning it into zero: a process restart or a partial scrape is a
+    void arm, not a cheap checkpoint. Maxima are process-wide and are therefore diagnostic only.
+    """
+    required = ["rchain_runtime_deploy_units", "rchain_runtime_deploy_unit_total_ns"]
+    for site in CHECKPOINT_SITES:
+        required.extend((
+            f"rchain_runtime_soft_checkpoint_{site}_count",
+            f"rchain_runtime_soft_checkpoint_{site}_total_ns",
+        ))
+    missing = [name for name in required if name not in before or name not in after]
+    if missing:
+        return {"available": False, "reason": f"missing runtime gauge(s): {', '.join(missing)}"}
+    backwards = [name for name in required if after[name] < before[name]]
+    if backwards:
+        return {"available": False, "reason": f"runtime gauge(s) moved backwards: {', '.join(backwards)}"}
+
+    def delta(name):
+        return after[name] - before[name]
+
+    deploy_units = delta("rchain_runtime_deploy_units")
+    deploy_ns = delta("rchain_runtime_deploy_unit_total_ns")
+    sites = {}
+    checkpoint_count = 0.0
+    checkpoint_ns = 0.0
+    for site in CHECKPOINT_SITES:
+        count = delta(f"rchain_runtime_soft_checkpoint_{site}_count")
+        total_ns = delta(f"rchain_runtime_soft_checkpoint_{site}_total_ns")
+        sites[site] = {"count": count, "total_ns": total_ns}
+        checkpoint_count += count
+        checkpoint_ns += total_ns
+
+    return {
+        "available": True,
+        "deploy_units": deploy_units,
+        "checkpoint_count": checkpoint_count,
+        "snapshots_per_deploy": checkpoint_count / deploy_units if deploy_units else None,
+        "checkpoint_total_ms": checkpoint_ns / 1_000_000,
+        "checkpoint_ms_per_deploy": (checkpoint_ns / deploy_units / 1_000_000)
+        if deploy_units else None,
+        "deploy_unit_total_ms": deploy_ns / 1_000_000,
+        "deploy_unit_ms_per_deploy": (deploy_ns / deploy_units / 1_000_000)
+        if deploy_units else None,
+        "checkpoint_fraction_of_deploy_unit": checkpoint_ns / deploy_ns if deploy_ns else None,
+        "sites": sites,
+    }
+
+
 def bench_deploys(args, container):
     print(f"==> deploys: {args.deploys} signed deploys, concurrency {args.concurrency}")
     shard = (status().get("shardId") or "/root")
-    valid_after = height() or 0
     lock = threading.Lock()
     submitted = []          # (id, t_submit, client_seconds)
     failures = []
@@ -276,8 +346,16 @@ def bench_deploys(args, container):
             # A unique term per deploy: the node refuses a replayed deploy id, so a repeated term
             # would be rejected by the pool rather than measured.
             term = f'@"bench-{w}-{n}"!({n})'
+            # Anchor each deploy to the chain height at submission time. A single height captured
+            # before a long load ages the earliest deploys across DEPLOY_LIFESPAN while the chain is
+            # still processing later submissions; #144's first preregistered arm exposed the node's
+            # separate pool/validation boundary bug that way. Per-submit anchoring is also what
+            # `tools/devnet.sh deploy` does, and keeps this performance arm from manufacturing stale
+            # deploys as client-side load progresses. The checkpoint decision thresholds are unchanged.
+            valid_after = height() or 0
             did, client_dt, err = one_deploy(
-                container, args.deployer_key, f"/tmp/bench-{w}.rho", term, valid_after, shard)
+                container, args.deployer_key, f"bench-{w}.rho", term, valid_after, shard,
+                native_rnode=args.native_rnode)
             with lock:
                 if did is None:
                     failures.append(err or "no deploy id")
@@ -285,6 +363,7 @@ def bench_deploys(args, container):
                     submitted.append((did, time.monotonic(), client_dt))
 
     threads = [threading.Thread(target=worker, args=(w,)) for w in range(args.concurrency)]
+    runtime_before = gauges()
     t_start = time.monotonic()
     for t in threads:
         t.start()
@@ -346,6 +425,8 @@ def bench_deploys(args, container):
     first, last = samples[0], samples[-1]
     d_blocks = (last["height"] or 0) - (first["height"] or 0)
     load_seconds = (last["seconds"] - first["seconds"]) or elapsed
+    runtime_after = gauges()
+    checkpoint = soft_checkpoint_delta(runtime_before, runtime_after)
     return {
         "requested": args.deploys,
         "submitted": len(submitted),
@@ -365,6 +446,7 @@ def bench_deploys(args, container):
         "seconds": load_seconds,
         "blocks_per_sec": (d_blocks / load_seconds) if load_seconds else None,
         "height_delta": d_blocks,
+        "soft_checkpoints": checkpoint,
         "samples": samples,
         "errors": failures[:5],
     }
@@ -409,6 +491,38 @@ def residency(block_result):
     }
 
 
+def git_head():
+    try:
+        return subprocess.run(
+            ["git", "rev-parse", "HEAD"], capture_output=True, text=True, timeout=5, check=True
+        ).stdout.strip()
+    except Exception:
+        return None
+
+
+def container_image_id(container):
+    try:
+        return subprocess.run(
+            ["docker", "inspect", "--format", "{{.Image}}", container],
+            capture_output=True, text=True, timeout=5, check=True,
+        ).stdout.strip() or None
+    except Exception:
+        return None
+
+
+def file_sha256(path):
+    if not path:
+        return None
+    try:
+        h = hashlib.sha256()
+        with open(path, "rb") as f:
+            for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                h.update(chunk)
+        return h.hexdigest()
+    except Exception:
+        return None
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -428,6 +542,8 @@ def main():
                     help="private key of a deployer funded in the devnet's wallets file")
     ap.add_argument("--container", default=CONTAINER,
                     help="container the node under test runs in, for `docker stats` and exec")
+    ap.add_argument("--native-rnode",
+                    help="host path to the rnode binary; use the native Rust client instead of docker exec")
     args = ap.parse_args()
 
     container = args.container
@@ -437,7 +553,33 @@ def main():
         sys.exit(f"no devnet on :{HTTP_BASE} ({e}) — start one with tools/devnet.sh up")
     print(f"    node {st.get('address')} shard {st.get('shardId')} height {st.get('latestBlockNumber')}")
 
-    result = {"node": st.get("address"), "shard": st.get("shardId")}
+    result = {
+        "tree": git_head(),
+        "node": st.get("address"),
+        "shard": st.get("shardId"),
+        "image_id": container_image_id(container),
+        "node_status": {
+            "devMode": st.get("devMode"),
+            "autopropose": st.get("autopropose"),
+            "proposeOnDeploy": st.get("proposeOnDeploy"),
+            "peers": st.get("peers"),
+            "nodes": st.get("nodes"),
+        },
+        "configuration": {
+            "validators": args.validators,
+            "blocks": args.blocks,
+            "deploys": args.deploys,
+            "concurrency": args.concurrency,
+            "drain": args.drain,
+            "container": args.container,
+            "native_rnode": args.native_rnode,
+            "native_rnode_sha256": file_sha256(args.native_rnode),
+            "sample_every": args.sample_every,
+            "sample_seconds": args.sample_seconds,
+            "block_timeout": args.block_timeout,
+            "deploy_timeout": args.deploy_timeout,
+        },
+    }
     if args.only != "deploys":
         result["blocks"] = bench_blocks(args, container)
         result["residency"] = residency(result["blocks"])
@@ -491,6 +633,18 @@ def main():
                 if r["rss_per_block_kib"] is not None:
                     print(f"               rss {r['rss_first_mib']:.0f} -> "
                           f"{r['rss_last_mib']:.0f} MiB ({r['rss_per_block_kib']:.1f} KiB/block)")
+        c = d.get("soft_checkpoints", {})
+        if c.get("available"):
+            print(f"soft checkpoints {c['checkpoint_count']:.0f} across "
+                  f"{c['deploy_units']:.0f} deploy units -> "
+                  f"{c['snapshots_per_deploy']:.2f}/deploy")
+            print(f"               {c['checkpoint_ms_per_deploy']:.3f} ms/deploy, "
+                  f"{100 * c['checkpoint_fraction_of_deploy_unit']:.1f}% of measured deploy-unit time")
+            for site, sample in c["sites"].items():
+                per = sample["total_ns"] / c["deploy_units"] / 1_000_000 if c["deploy_units"] else 0
+                print(f"               {site:18s} {sample['count']:.0f} calls, {per:.3f} ms/deploy")
+        elif c:
+            print(f"soft checkpoints unavailable: {c.get('reason', 'unknown runtime-census error')}")
         for e in d["errors"]:
             print(f"    error: {e.strip()[:160]}")
 
