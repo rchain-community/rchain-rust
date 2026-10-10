@@ -9022,3 +9022,58 @@ condition asks for a frozen net recovered through the operator's anchor, and tha
 stops while the tip keeps moving — the same rig C259 is waiting on (pass §90 records three failed stagings).
 What is *not* owed on the node side is the mechanism: `run-3-windowed-catchup.txt` shows the catch-up from a
 named anchor working, so the remaining gap is a staging, not a code path.
+
+## 92. C250's residue, produced: a node rejects its own block and halts (C215, C250, C268, C270)
+
+**What this pass was asked to do, and what it found instead.** C268 was a note about a *rig*: a fresh
+four-validator devnet under autopropose appeared not to form, twice, with two joiners sitting at height 0 and
+never answered. It was filed `todo` because the reading was a deadlock with no cause. Reproducing it on an
+idle box (24 cores, no builds, no containers before it) produced a **different and much larger thing**, and
+the row is now answered rather than open.
+
+**The capture** (`spec/audit/evidence/n-anchor-drill/self-reject-stall.txt`). `tools/devnet.sh down -v` then
+`tools/devnet.sh up --validators 4 --fresh` — autopropose on, default epoch length, **nothing injected and
+nothing faulting**. Four minutes later the four heights were 49, 133, 45, 46 and all four nodes were alive
+(`peers` 1 each, the master 3), so the earlier "never answered" reading is not this: nothing was stuck in
+syncing. Three of the four had **halted their own production at height 49**.
+
+**The chain, in the order the log shows it** (all four nodes, within ten seconds):
+
+1. **Four fringe keys recorded with two states each** —
+   `[fringe-divergence] block <hash> finalises a fringe already recorded with a different state <a> vs <b>`,
+   four times on **every** node, the same four blocks and the same two hashes each. This is C215's signal,
+   and it is what C250's residue predicted and could not produce: two honest blocks finalising one fringe
+   from two bases, in ordinary operation, with no byzantine actor anywhere.
+2. **The node's own block fails its own validation** —
+   *"the block's declared pre-state hash is not the state this node computed from its justifications — this
+   node's view of the parents differs from the proposer's, so the disagreement is about the merge rather than
+   about the block's deploys"*. For a self-created block, "the proposer" is the node itself: it computed the
+   pre-state when it built the block and recomputes a different one when it validates it.
+3. **The proposer counts it and halts autopropose** — its own arm says *"count it so the caller can halt
+   autopropose"* — so the node stops producing at that height. Three of four nodes stopped at 49 (45, 46,
+   49); the fourth passed it and reached 133. No two heights meet again, and finality cannot advance
+   (88–101 `finality did not advance` lines per node).
+
+**Why this is the register's business and not a rig's.** C215's fix — the join at a fringe key — is what makes
+the map *deterministic*; the row's own residue clause said the tie-broken `state_hash` "is meaningless and the
+`[fringe-divergence]` line is the signal, but **nothing consumes that line yet**". This pass answers what
+consumes it: the proposer's own validation. So the disagreement is not inert, and the tie-break is not a
+harmless tie-break: it changes a value a node has already built on, the node refuses its own work, and the net
+loses a producer. C250's residue is therefore **produced** — and worse than the row hoped.
+
+**The boundary of the claim, stated because the hashes cannot settle it.** Steps 1, 2 and their ordering are
+measured, on all four nodes, with the logs committed. That the tie-broke keys are what the *merge* for the
+failing block consulted is **inferred**: a pre-state is a merge result over many records, not one record's
+value, so the two cannot be compared literally. One instrumented run would close it — log the tie-break's
+decision, and whether that key is read while building the block whose validation then fails.
+
+**Rows.** **C270** filed `todo` (law 17a): a node cannot be stalled by a disagreement about a fringe key's
+value, by whichever of the three routes that is taken — pin the derivation the proposer built with, make the
+value monotone, or do not halt production on this class. **C250**'s residue is marked produced. **C215**'s
+"nothing consumes that line yet" is answered in place. **C268** closes: the fresh devnet does not form, and
+the reason is C270's stall rather than the joiners it named.
+
+**What this pass does not do.** It does not fix C270, and it does not re-open C215: the join is right and its
+tests still pin it. The question C270 asks is the next unit's — what a node should *do* when its own merge
+result changes under it — and it is a consensus-core decision, not a patch: every route changes what a node
+does with a disagreement rather than merely silencing one.
