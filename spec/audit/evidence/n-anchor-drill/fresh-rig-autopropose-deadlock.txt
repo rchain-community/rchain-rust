@@ -1,0 +1,43 @@
+== a fresh four-validator devnet under autopropose does not form: two joiners never leave height 0 ==
+
+**A summary of readings, not a raw log dump.** Taken from the shell in one session on 2026-10-10; the
+readings below are verbatim numbers from `/api/status`, the `/api/last-finalized-block` shape and `docker
+logs`, but the containers were torn down before a log capture was committed. Filed as a `todo` row on that
+basis: what it needs is a raw capture, which is what would confirm the cause as against the rig.
+
+rig: `tools/devnet.sh up --validators 4 --fresh` — autopropose on (the `up` default), default epoch length,
+    the image built from the tree at the time (which contains the windowed catch-up; the catch-up is
+    dormant without `--sync-anchor`, so this is not that code path).
+
+readings, about ten minutes after `up`:
+
+  40403 (bootstrap/master) h=243  peers=3  stall="a layer exists but its supporting stake is not a supermajority — 200 o…"
+  41403 (validator 1)      h=242  peers=1  stall="… 200 o…"
+  42403 (validator 2)      h=0    peers=1  stall=None
+  43403 (validator 3)      h=0    peers=1  stall=None
+  master LFB: not available ("Finalized fringe is not available.")
+
+validator 2's log, in full for the engine — one line and then silence:
+
+  11:20:49.159Z INFO [casper.engine.NodeLaunch] Starting from bootstrap node, syncing LFS...
+
+  `Received StoreItems` on validator 2: **0**. `block receiver state full`: **0**. It is not refusing
+  blocks — it was never answered, and it never left `NodeSyncing`.
+
+the master's own log at the same time, repeatedly:
+
+  WARN [casper.interpreter.validate] merge search: 705 merges · widest scope 0 chains / 0 conflict pairs / 0 asymmetric …
+  WARN [casper.interpreter.validate] finality did not advance at tip 240: a layer exists but its supporting stake is not a supermajority — 200 o…
+  WARN [casper.blocks.Proposer] round gate escaped after 6 attempt(s) and 5381 ms blocked — the round is not closing (AUDIT #213).
+
+so the net's shape is a deadlock with a plausible reading and no proof: the master produces at ~0.85
+heights/second, its round gate is blocked for 5–8 seconds at a time, the joiners are never answered, and
+finality cannot advance because two of the four bonded validators have never spoken (200 of 400 stake is
+not a supermajority). Whether the master's slowness is the cause — it cannot serve a fringe answer while its
+round gate is blocked — or a symptom of the same overload is exactly what a raw capture would settle.
+
+why it matters anyway: the same command on the same rig *did* form earlier in the session, on a chain that
+was short when the joiners arrived (h≈37), and the windowed-catch-up run (`run-3-windowed-catchup.txt`)
+sidesteps it by building the height on a solo master and bringing the joiners on against a **quiet** chain.
+Whatever the cause, a joiner that starts while its master is racing cannot join, and the network then stalls
+on the stake it never got.

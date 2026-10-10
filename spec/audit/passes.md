@@ -8887,3 +8887,78 @@ acceptance names, and for `--sync-anchor`'s catch-up (C259, tracked on #139). C2
 capture. The tool's own limits are now stated where they are used: a node file whose master is unreachable, a
 net with no anchor, and a net with no faucet and no deploys each produce a named refusal rather than a number
 that reads as evidence.
+
+## 90. The anchor path's catch-up: a window at the ingest, and a walk that uses it (C259, C267, C268)
+
+**What this pass was for.** C259's second half is the remediation the operator path needs: make a node that
+restored at an agreed anchor catch up to the tip **without a data-directory copy**. The register said the
+remaining work was the two sidecar caches a restored block must regenerate. The drill said otherwise, and the
+measurement is the pass.
+
+**What the drill found, with the control that made it legible.** A four-validator devnet, a chain of ~400
+heights, a node wiped and started with `--sync-anchor <a finalised block 300 heights below the tip>`:
+
+- **the restore works** — `LFS state is successfully restored` — and it is now *fast* when the anchor is low,
+  because the LFS walk goes *down* from its root: 2.9 seconds for an anchor at height 15;
+- **the catch-up did not** — the node sat at height **121** while the master ran to **577**, with **one**
+  block validated and **173** `block receiver state full (1024 blocks); dropping` lines
+  (`spec/audit/evidence/n-anchor-drill/run-2-catchup-stall.txt`);
+- and the reason is structural, not a broken edge case. `MAX_PENDING_BLOCKS` (1024) bounds how many blocks
+  may wait for their parents — R29's defence against a peer streaming blocks whose justifications never
+  resolve. It also bounds *how far above the node's own frontier* they may be, and since every block request
+  in this protocol is keyed by hash, the only way to learn a gap is to walk **downward** from a peer's tip
+  through justifications. Each new block justifies blocks inside the gap, so the whole gap pends at once and
+  the bound turns progress into drops. The drop is worse than a loss: the receiver's `Err` arm logs and
+  `continue`s **without** `ack_received` (`block_receiver.rs:513-516`), so the hash stays requested, the
+  retriever re-offers it on every trigger, and the pending set never drains because draining is what
+  validation does.
+
+**What the control taught, and it corrected me twice.** A wiped joiner on the *ordinary* path behaves the
+same way on a rig where the master is racing — but for the *other* reason: its restore pays the O(chain)
+tuple-space hydration (`Requesting tuple-space data for 316 approved block state roots`, ~2.5 minutes) and it
+is that, not the pending bound, that kept it at zero while I watched. Two of my own interim readings were
+wrong for want of patience: a restore in progress looks exactly like a stall from outside, and only the
+control distinguishes the two costs. The freeze is a function of the **gap**, and an anchor is how a gap gets
+big — an ordinary joiner syncs to a fringe within a few dozen heights of the tip and never approaches the
+bound, while a node anchored at a meet in a frozen net is hundreds of heights back **on purpose**.
+
+**The fix, in two halves.**
+
+1. **A bounded height-window fetch** (`BlockRangeRequest`/`BlockRange`): the blocks at heights `[from, to]`,
+   answered as the hashes at them in **topological order** (ascending height, parent before child). Hashes
+   rather than blocks — a window is tens of blocks, the requester already has `BlockRequest`, and keeping the
+   answer under a kilobyte is what lets the window be small. The responder bounds the range by its own
+   `MAX_BLOCK_RANGE` and answers an unorderable range with **silence**, the same degraded exchange
+   `FinalizedFringeRequest.anchor` gets, which is what makes it a non-breaking addition on the wire.
+2. **`engine::catchup`**: a `CatchupWindow` that narrows the ingest to `frontier + 8` heights while a walk is
+   running — above it, a block is left **un-acked**, so the retriever offers it again once the frontier has
+   moved past (a pace, not a loss) — and a driver that asks for the next window, requests its hashes in the
+   order they were listed, and waits for its own frontier to reach the window before asking for more. It
+   releases on **every** exit path, including its first empty answer and a peer that never answers, so a node
+   that never catches up is exactly the node it was. R29's bound and its drop path are untouched.
+
+**The result.** The same shape, the same rig, the same 1200-block gap: **98 seconds** from the anchor to the
+tip, **0** drops (`run-3-windowed-catchup.txt` — `frontier is height 15 … the peer has nothing above height
+318 … released the ingest window at height 318`, while the master sat at 319). The control reached the tip
+too, 2.5 minutes later, having paid the hydration the anchored path did not.
+
+**What this pass does not claim.**
+
+- **Not the tool's exact case.** The walk does not depend on finality — it asks a peer for heights, and a tip
+  exists whether or not anything below it finalised — but the run was made on a tracking-finality rig, and
+  the same walk on a net whose finality is **frozen** is owed (C259).
+- **Not the O(chain) cost.** A restore still hydrates the state root of every block from its root down to
+  genesis. The anchored path dodges it by choosing a *low* root, which is a virtue of the anchor rather than
+  a fix, and it is why the control was slow.
+- **Not the sidecars.** C259 predicted the two merge caches as the blocker; they are not reached in this
+  failure and remain a hypothesis about what comes after.
+- **Not a new bound.** The window is a **pace**, and the only thing it can do is delay a block's admission;
+  every block it admits goes through the ordinary validation path, so nothing above the anchor is installed
+  and #287's first invariant holds.
+- **Not the fresh-rig failure.** A *fresh* four-validator autopropose devnet failed to form twice while this
+  was being measured — two joiners never answered, finality stalled on the stake they never contributed
+  (`fresh-rig-autopropose-deadlock.txt`). Filed as **C268** `todo`: the reading is a deadlock, the cause is
+  not established, and the pass does not assume it.
+
+**Rows.** C267 `done` (the ingest could not take a gap), C268 `todo` (the fresh rig), C259 updated — its
+stated blocker was not the first one, and its close condition still wants the frozen-finality walk.
