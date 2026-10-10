@@ -12,24 +12,30 @@ import subprocess
 import tempfile
 
 SCRIPT = Path(__file__).resolve().parents[1] / "tools/reconcile-network.sh"
-def run_case(name, finalized, expected, required):
+def run_case(name, finalized, expected, required, anchor=None, anchor_height=None):
     # Exercise the production anchor selection in isolation with injected API snapshots.
     source = SCRIPT.read_text()
-    a = source.index('echo "== 3. finalized anchor')
+    a = source.index('echo "== 3. the anchor')
     b = source.index("# --- 4. what is above", a)
     fragment = source[a:b]
     shell = """set -uo pipefail
 NAMES=(A B)
-declare -A LFB LFH
+declare -A LFB LFH HOST PORT
 LFB[A]="$A_HEIGHT"; LFH[A]="$A_HASH"
 LFB[B]="$B_HEIGHT"; LFH[B]="$B_HASH"
+HOST[A]=A; PORT[A]=1; HOST[B]=B; PORT[B]=1; MASTER=A
+anchor_height() { printf '%s' "${STUB_ANCHOR_HEIGHT:-}"; }
 """ + fragment
+    if anchor is not None:
+        shell = 'RECONCILE_ANCHOR="%s"\n' % anchor + shell
     def fields(v):
         if isinstance(v, dict):
             return str(v.get("blockNumber", "")), v.get("blockHash", "")
         return "", ""
     ah, ab = fields(finalized[0]); bh, bb = fields(finalized[1])
     env = {**os.environ, "A_HEIGHT": ah, "A_HASH": ab, "B_HEIGHT": bh, "B_HASH": bb}
+    if anchor_height is not None:
+        env["STUB_ANCHOR_HEIGHT"] = anchor_height
     p = subprocess.run(["bash", "-c", shell], env=env, capture_output=True, text=True, timeout=10)
     combined = p.stdout + p.stderr
     assert p.returncode == expected, f"{name}: exit={p.returncode}, expected={expected}\n{combined}"
@@ -48,6 +54,21 @@ if __name__ == "__main__":
     run_case("same hash at different finalized heights",
              [anchor, {"blockNumber": 1, "blockHash": "anchor"}],
              4, "finalized heads differ")
+    # **The operator's anchor** (C269): when nothing can be computed, the operator names the block — and
+    # the tool says whose root it is rather than presenting it as a meet.
+    run_case("the operator names the anchor",
+             ["Finalized fringe is not available.", "Finalized fringe is not available."],
+             0, "the operator's anchor: height 41",
+             anchor="ab" * 32, anchor_height="41")
+    run_case("the operator names an anchor nobody holds",
+             ["Finalized fringe is not available.", "Finalized fringe is not available."],
+             4, "could not be read from A",
+             anchor="cd" * 32, anchor_height="")
+    # The refusal *names the way out*: a tool that refuses in the state its own recovery exists for must
+    # say what the operator can do instead, or the refusal is a dead end.
+    run_case("the refusal to compute a meet names the operator's alternative",
+             [anchor, "Finalized fringe is not available."],
+             4, "name it: RECONCILE_ANCHOR=<hash>")
     # Same first block but a different second block must not be reported as convergence.
     # Verification is behind --apply, so test the actual set-comparison fragment below.
     fragment = SCRIPT.read_text()
@@ -86,7 +107,7 @@ blocks_at() { if [ "$1" = A ]; then printf '%b\\n' "$LEFT"; else printf '%b\\n' 
     # associative array, and a fragment that begins below the `declare -A` re-reads it as an
     # arithmetic index — the failure mode this slice-by-marker style has.
     a = src.index("declare -A REPORTED=() REPORTED_WHY=()")
-    b = src.index("# --- 3. conservative finalized anchor", a)
+    b = src.index("# --- 3. the anchor", a)
     section2 = src[a:b]
     script = """set -uo pipefail
 MAXH=1

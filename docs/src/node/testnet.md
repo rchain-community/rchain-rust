@@ -336,6 +336,15 @@ stating what it does and does not do, because **it is not a sync**.
   This gate is **the design as it stands**, not a placeholder for one (register row **C261**), and its
   consequence is worth stating plainly: a divergence whose four heads share no agreed anchor is **refused**,
   not resolved, because there is nothing this API can prove about which of them the network committed to.
+- **When nothing can be computed, you name the block.** The state this tool exists for — heads that
+  disagree *and* no node holding a usable finalised block — is exactly the state where a computed anchor is
+  impossible, and until 2026-10-10 the tool refused there and stopped, which left its own recovery path
+  unreachable (register row **C269**). It now takes `RECONCILE_ANCHOR=<block hash>`: the block you know the
+  net last agreed on. The tool checks only that your master holds it, says in the plan that this is **your**
+  root and not a meet it computed, reports what each node claimed rather than resolving it, and enumerates
+  what is above your point. Configure the joiners with `--sync-anchor <the same hash>` and the wipe path
+  resyncs to it; `--restore-from-master` does not need the flag, because it copies the master's chain state.
+  Nothing above your anchor is taken on trust either way: every block above it is validated, not installed.
 - **Its equivocation check is a report, not a proof.** The tool's section 2 flags a sender with two distinct
   blocks at one height, read from the block API's own `sender` field. It verifies no signature and binds no
   endpoint to a bonded key, so what it prints is a suspicion to chase; nothing is dropped or reweighted on

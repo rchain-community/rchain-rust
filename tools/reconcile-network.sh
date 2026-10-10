@@ -9,12 +9,16 @@
 #   1. reads every node's explicitly reported finalised block and requires them to **agree** — the same
 #      height *and* the same hash on every listed node — or refuses, naming what differs. A block producer
 #      is not a validator vote and the heights API cannot prove stake-weighted finalized ancestry, so this
-#      equality is the whole of the anchor: no quorum is inferred, and no stake fraction is printed;
+#      equality is the whole of the computed anchor: no quorum is inferred, and no stake fraction is
+#      printed. When no node has a usable finalised block at all — the state this tool's own recovery
+#      exists for — the operator may **name** the anchor instead (`RECONCILE_ANCHOR=<hash>`), and the tool
+#      states that it is the operator's root rather than a meet it computed (C269);
 #   2. **reports** suspected equivocation from the block API's own `sender` field (two distinct blocks by
 #      one sender at one height). It is one endpoint's word — this script checks no signature and binds no
 #      endpoint to a bonded key — so it is a suspicion worth a human's attention, never an attributable
 #      artefact, and **nothing is dropped, reweighted or decided on it** (§2);
-#   3. states the anchor and what each node reported, rather than implying a quorum it did not compute;
+#   3. states the anchor — **which** anchor it is, computed or operator-named — and what each node
+#      reported, rather than implying a quorum it did not compute;
 #   4. enumerates what is above the point, per **unique** block — the nodes that served it, its accepted
 #      deploy count, and the signatures of the deploys its merge rejected — and never drops it silently;
 #   5. (`--apply`) stops every non-master node, moves each data directory aside — **never deleting** —
@@ -45,6 +49,11 @@
 #
 # Usage:  RECONCILE_NODES=<file> RECONCILE_CONTROL=docker reconcile-network.sh \
 #           [--apply | --restore-from-master] [--master NAME]
+#   and, when the nodes cannot agree on a finalised block because none has one:
+#         RECONCILE_ANCHOR=<block hash> ... reconcile-network.sh [--apply]
+#   The hash is the block the net last agreed on (the operator's call, not this tool's). The joiners must
+#   be configured with `--sync-anchor <the same hash>` for the wipe path to resync there; `--restore-from-
+#   master` does not need it, because it copies the master's chain state.
 
 set -uo pipefail
 
@@ -120,6 +129,9 @@ except Exception: print('')"
 lfb_num()  { api "$1" "$2" /api/last-finalized-block | json_field "b.get('blockNumber','')"; }
 lfb_hash() { api "$1" "$2" /api/last-finalized-block | json_field "b.get('blockHash','')"; }
 height_of() { api "$1" "$2" /api/status | json_field "d.get('latestBlockNumber','')"; }
+# The height of a named block, read from the block itself — `/api/block/{hash}` answers with its own
+# `blockInfo`, which carries the number, so an operator-named anchor needs no height from the operator.
+anchor_height() { api "$1" "$2" "/api/block/$3" | json_field "b.get('blockNumber','')"; }
 
 
 # --- A: the chain-state environments, by `casper/src/storage.rs::rnode_db_mapping` ---------------
@@ -332,26 +344,58 @@ else
   echo "  A report only: the sender fields are unverified, and no stake is weighed, dropped or decided."
 fi
 
-# --- 3. conservative finalized anchor -----------------------------------------
+# --- 3. the anchor: computed by agreement, or named by the operator -----------
 # A block producer is not a validator vote for the block. The heights API
-# cannot prove stake-weighted finalized ancestry. Require identical explicit
-# last-finalized blocks from every listed node instead of fabricating quorum.
-echo "== 3. finalized anchor (unanimous LFB; no inferred stake votes) =="
+# cannot prove stake-weighted finalized ancestry. So the anchor is either what the
+# nodes **report identically** — no quorum inferred, nothing fabricated — or, when
+# they cannot agree because a net's finality is frozen and no node has a usable
+# finalised block at all, the block the **operator** names (`RECONCILE_ANCHOR`).
+# The two are different answers and the tool says which one it has: a refusal when
+# it cannot compute a meet, and an operator's root when nobody can (C269). What it
+# never does is present the operator's choice as a computed one.
+echo "== 3. the anchor =="
+ANCHOR=${RECONCILE_ANCHOR:-}
 MEET=""; MEET_HASH=""
-for n in "${NAMES[@]}"; do
-  h="${LFB[$n]:-}"; bh="${LFH[$n]:-}"
-  if ! [[ "$h" =~ ^[0-9]+$ ]] || [ -z "$bh" ]; then
-    echo "  REFUSING: $n has no usable finalized block (height/hash)." >&2
+if [ -n "$ANCHOR" ]; then
+  # **The operator's anchor, and it is labelled as theirs.** Checked here only for the one thing this
+  # tool can check without a quorum: that the master holds the block at all (an anchor nobody has is
+  # nothing to restore to). Its height comes from the block itself, because §4 enumerates by height.
+  MEET=$(anchor_height "${HOST[$MASTER]}" "${PORT[$MASTER]}" "$ANCHOR")
+  if ! [[ "$MEET" =~ ^[0-9]+$ ]]; then
+    echo "  REFUSING: RECONCILE_ANCHOR $ANCHOR could not be read from ${MASTER} (no such block, or the" >&2
+    echo "            node did not answer). An anchor to restore to has to be a block a node holds." >&2
     exit 4
   fi
-  if [ -z "$MEET" ]; then MEET="$h"; MEET_HASH="$bh"
-  elif [ "$h" != "$MEET" ] || [ "$bh" != "$MEET_HASH" ]; then
-    echo "  REFUSING: finalized heads differ; block observations cannot prove a stake quorum." >&2
-    exit 4
-  fi
-done
-echo "  unanimously reported finalized anchor: height $MEET, hash $MEET_HASH"
-echo "  No stake-weighted quorum or finalized ancestry is inferred from block producers."
+  MEET_HASH="$ANCHOR"
+  echo "  the operator's anchor: height $MEET, hash $MEET_HASH"
+  echo "  This is **your** root, not a computed meet: this tool has verified that ${MASTER} holds the block"
+  echo "  and nothing else about it — not that stake finalised it, not that any other node agrees."
+  echo "  What the nodes report, reported rather than resolved:"
+  for n in "${NAMES[@]}"; do
+    printf "    %-2s finalised %-6s %s\n" "$n" "${LFB[$n]:-none}" "${LFH[$n]:0:44}"
+  done
+  echo "  If they disagree, that is the state you are recovering from; the block you named is the point"
+  echo "  this recovery starts at, and every block above it is validated rather than installed."
+else
+  for n in "${NAMES[@]}"; do
+    h="${LFB[$n]:-}"; bh="${LFH[$n]:-}"
+    if ! [[ "$h" =~ ^[0-9]+$ ]] || [ -z "$bh" ]; then
+      echo "  REFUSING: $n has no usable finalized block (height/hash)." >&2
+      echo "            Nothing to compute a meet from. If you know the block this net last agreed on," >&2
+      echo "            name it: RECONCILE_ANCHOR=<hash> (the operator's root, stated as yours, not ours)." >&2
+      exit 4
+    fi
+    if [ -z "$MEET" ]; then MEET="$h"; MEET_HASH="$bh"
+    elif [ "$h" != "$MEET" ] || [ "$bh" != "$MEET_HASH" ]; then
+      echo "  REFUSING: finalized heads differ; block observations cannot prove a stake quorum." >&2
+      echo "            The nodes do not agree on a point, so this tool cannot compute one. If you know" >&2
+      echo "            the block this net last agreed on, name it: RECONCILE_ANCHOR=<hash>." >&2
+      exit 4
+    fi
+  done
+  echo "  unanimously reported finalized anchor: height $MEET, hash $MEET_HASH"
+  echo "  No stake-weighted quorum or finalized ancestry is inferred from block producers."
+fi
 
 # --- 4. what is above the point ----------------------------------------------
 echo "== 4. what is above the point =="
