@@ -1,0 +1,202 @@
+name: "#144 paired soft-checkpoint ablation"
+
+on:
+  pull_request:
+    branches: [dev]
+    paths-ignore:
+      - "spec/audit/evidence/n144-soft-checkpoint-ablation/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  BASELINE_SHA: 7df8d642d935683ebd099cb9877f0a378a4d9662
+
+jobs:
+  paired-ablation:
+    if: github.event_name == 'workflow_dispatch' || github.head_ref == 'perf/144-soft-checkpoint-ablation'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - name: Check out ablation head
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Build paired images
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE_DIR="$RUNNER_TEMP/n144-baseline"
+          git worktree add --detach "$BASE_DIR" "$BASELINE_SHA"
+          (cd "$BASE_DIR" && RNODE_IMAGE=rnode:n144-baseline bash tools/devnet.sh build)
+          RNODE_IMAGE=rnode:n144-ablation bash tools/devnet.sh build
+          printf '%s\n' "$BASE_DIR" > "$RUNNER_TEMP/n144-baseline-path"
+
+      - name: Run three paired fresh-devnet arms
+        shell: bash
+        env:
+          ABLATION_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          BASE_DIR="$(cat "$RUNNER_TEMP/n144-baseline-path")"
+          OUT="$GITHUB_WORKSPACE/target/n144-soft-checkpoint-ablation"
+          mkdir -p "$OUT"
+
+          cleanup() {
+            (cd "$GITHUB_WORKSPACE" && bash tools/devnet.sh down -v >/dev/null 2>&1 || true)
+          }
+          trap cleanup EXIT
+
+          run_arm() {
+            local pair="$1" label="$2" image="$3" tree="$4"
+            local dir bench
+            if [[ "$label" == baseline ]]; then
+              dir="$BASE_DIR"
+            else
+              dir="$GITHUB_WORKSPACE"
+            fi
+            bench="$dir/tools/devnet-bench.py"
+
+            cleanup
+            (cd "$dir" && RNODE_IMAGE="$image" bash tools/devnet.sh up --validators 1 --fresh --no-autopropose)
+            (cd "$dir" && python3 "$bench" \
+              --validators 1 \
+              --only deploys \
+              --deploys 200 \
+              --concurrency 4 \
+              --json "$OUT/pair-${pair}-${label}.json")
+            docker logs devnet-bootstrap > "$OUT/pair-${pair}-${label}.log" 2>&1 || true
+            cleanup
+
+            python3 - "$OUT/pair-${pair}-${label}.json" "$tree" <<'PY'
+          import json, sys
+          p, expected = sys.argv[1:]
+          doc = json.load(open(p))
+          if doc.get("tree") != expected:
+              raise SystemExit(f"{p}: tree={doc.get('tree')} expected={expected}")
+          PY
+          }
+
+          # Alternate order to reduce first/second-run bias on one runner.
+          run_arm 1 baseline rnode:n144-baseline "$BASELINE_SHA"
+          run_arm 1 ablation rnode:n144-ablation "$ABLATION_SHA"
+          run_arm 2 ablation rnode:n144-ablation "$ABLATION_SHA"
+          run_arm 2 baseline rnode:n144-baseline "$BASELINE_SHA"
+          run_arm 3 baseline rnode:n144-baseline "$BASELINE_SHA"
+          run_arm 3 ablation rnode:n144-ablation "$ABLATION_SHA"
+
+      - name: Derive frozen paired decision
+        shell: bash
+        env:
+          ABLATION_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          python3 - <<'PY'
+          import json, pathlib, re, statistics, os
+
+          root = pathlib.Path("target/n144-soft-checkpoint-ablation")
+          baseline_sha = os.environ["BASELINE_SHA"]
+          ablation_sha = os.environ["ABLATION_SHA"]
+          failure_re = re.compile(
+              r"self[- ]validation.{0,80}(?:fail|error)|"
+              r"self-created block.{0,120}failed validation|"
+              r"replay.{0,80}mismatch|validation failure",
+              re.IGNORECASE,
+          )
+
+          rows = []
+          void = []
+          for pair in (1, 2, 3):
+              pair_row = {"pair": pair}
+              for label, expected_tree, expected_snaps in (
+                  ("baseline", baseline_sha, 4.0),
+                  ("ablation", ablation_sha, 3.0),
+              ):
+                  path = root / f"pair-{pair}-{label}.json"
+                  log_path = root / f"pair-{pair}-{label}.log"
+                  if not path.exists():
+                      void.append(f"pair {pair} {label}: JSON missing")
+                      continue
+                  doc = json.loads(path.read_text())
+                  deploys = doc.get("deploys", {})
+                  census = deploys.get("soft_checkpoints", {})
+                  item = {
+                      "tree": doc.get("tree"),
+                      "submitted": deploys.get("submitted"),
+                      "processed": deploys.get("processed"),
+                      "available": census.get("available"),
+                      "reason": census.get("reason"),
+                      "snapshots": census.get("snapshots_per_deploy"),
+                      "checkpoint_ms": census.get("checkpoint_ms_per_deploy"),
+                      "deploy_unit_ms": census.get("deploy_unit_ms_per_deploy"),
+                      "fraction": census.get("checkpoint_fraction_of_deploy_unit"),
+                  }
+                  pair_row[label] = item
+                  if item["tree"] != expected_tree:
+                      void.append(f"pair {pair} {label}: tree={item['tree']} expected={expected_tree}")
+                  if not item["available"]:
+                      void.append(f"pair {pair} {label}: census unavailable ({item['reason']})")
+                  if item["submitted"] != 200 or item["processed"] != 200:
+                      void.append(f"pair {pair} {label}: processed={item['processed']}/{item['submitted']}")
+                  if item["snapshots"] is None or abs(item["snapshots"] - expected_snaps) > 1e-9:
+                      void.append(f"pair {pair} {label}: snapshots/deploy={item['snapshots']} expected={expected_snaps}")
+                  if not log_path.exists():
+                      void.append(f"pair {pair} {label}: node log missing")
+                  else:
+                      m = failure_re.search(log_path.read_text(errors="replace"))
+                      if m:
+                          void.append(f"pair {pair} {label}: consensus-failure log match {m.group(0)[:120]!r}")
+              if "baseline" in pair_row and "ablation" in pair_row:
+                  b = pair_row["baseline"]["deploy_unit_ms"]
+                  a = pair_row["ablation"]["deploy_unit_ms"]
+                  if b is None or a is None or b <= 0:
+                      void.append(f"pair {pair}: invalid deploy-unit timing baseline={b} ablation={a}")
+                  else:
+                      pair_row["reduction"] = 1.0 - a / b
+              rows.append(pair_row)
+
+          lines = ["# #144 paired soft-checkpoint ablation", ""]
+          lines += [
+              "| pair | baseline ms/deploy | ablation ms/deploy | reduction | baseline snapshots | ablation snapshots | baseline checkpoint fraction | ablation checkpoint fraction |",
+              "|---:|---:|---:|---:|---:|---:|---:|---:|",
+          ]
+          reductions = []
+          for row in rows:
+              if "baseline" not in row or "ablation" not in row or "reduction" not in row:
+                  continue
+              b, a, r = row["baseline"], row["ablation"], row["reduction"]
+              reductions.append(r)
+              lines.append(
+                  f"| {row['pair']} | {b['deploy_unit_ms']:.6f} | {a['deploy_unit_ms']:.6f} | "
+                  f"{100*r:.3f}% | {b['snapshots']:.1f} | {a['snapshots']:.1f} | "
+                  f"{100*b['fraction']:.3f}% | {100*a['fraction']:.3f}% |"
+              )
+
+          lines += ["", "## Frozen decision", ""]
+          if void or len(reductions) != 3:
+              lines += ["**VOID**", ""] + [f"- {x}" for x in void]
+          else:
+              median = statistics.median(reductions)
+              worst = min(reductions)
+              earns_merge = median >= 0.05 and worst >= -0.05
+              lines += [
+                  f"Median paired deploy-unit reduction: **{100*median:.3f}%**.",
+                  f"Worst pair: **{100*worst:.3f}%**.",
+                  "",
+                  "**Decision: ablation-earns-merge.**" if earns_merge else "**Decision: measured-no-win.**",
+              ]
+
+          (root / "summary.md").write_text("\n".join(lines) + "\n")
+          print("\n".join(lines))
+          PY
+
+      - name: Upload paired evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: n144-soft-checkpoint-ablation-${{ github.event.pull_request.head.sha || github.sha }}
+          path: target/n144-soft-checkpoint-ablation/
+          if-no-files-found: error
+          retention-days: 14

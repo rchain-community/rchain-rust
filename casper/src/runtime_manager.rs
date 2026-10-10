@@ -738,17 +738,34 @@ impl RuntimeManager {
             .map_err(Into::into)
     }
 
+    /// Whether the cost-accounting *unit* needs a rollback snapshot before it starts.
+    ///
+    /// Only the relaxed schedulers can invalidate a speculative commit. Sequential is the reference
+    /// execution and Gate preserves DFS commit order, so neither has a path that can return
+    /// `SpeculationInvalidated` from this unit. Taking the O(hot-state) snapshot there bought no
+    /// recovery path; #144 measured it anyway on every successful deploy. Keep the snapshot for both
+    /// relaxed modes so Law 25's whole-unit rollback remains unchanged wherever invalidation exists.
+    fn cost_unit_needs_fallback(mode: EffectMode) -> bool {
+        matches!(mode, EffectMode::Relaxed | EffectMode::RelaxedValidated)
+    }
+
     /// The body of `play_deploy_with_cost_accounting`, parameterized on the runtime (the
     /// validation oracle runs it on a forked sequential runtime), with the Law 25 per-deploy
     /// fallback: if the certificate invalidates any commit of this deploy's unit, the whole
     /// unit — pre-charge, user deploy, refund — reverts to the pre-unit soft checkpoint and
-    /// re-runs sequentially, then the validated mode is restored. Sequential cannot invalidate,
-    /// so the retry always returns a plain result.
+    /// re-runs sequentially, then the validated mode is restored.
     async fn play_deploy_with_cost_accounting_with(
         runtime: &RhoRuntime,
         deploy: &SignedDeployData,
         rand: &Blake2b512Random,
     ) -> Result<UserDeployRuntimeResult, RuntimeRunError> {
+        let mode = runtime.effect_mode();
+        if !Self::cost_unit_needs_fallback(mode) {
+            // Sequential/Gate cannot invalidate this unit. Running it directly is behaviorally the
+            // same success/error path without cloning the full hot store only to drop the clone.
+            return Self::play_deploy_with_cost_accounting_once(runtime, deploy, rand).await;
+        }
+
         // Capture the pre-unit state BEFORE the speculative run, so an invalidation can roll back
         // the whole unit (pre-charge → deploy → refund). The event log is empty at each unit start
         // (`play_deploys_with_cost_accounting_with` resets to `start_hash` first), so this drain is
@@ -758,7 +775,6 @@ impl RuntimeManager {
         match Self::play_deploy_with_cost_accounting_once(runtime, deploy, rand).await {
             Err(RuntimeRunError::SpeculationInvalidated) => {
                 runtime.revert_to_soft_checkpoint(pre).await;
-                let mode = runtime.effect_mode();
                 runtime.set_effect_mode(EffectMode::Sequential);
                 let retried =
                     Self::play_deploy_with_cost_accounting_once(runtime, deploy, rand).await;
@@ -1706,6 +1722,20 @@ mod tests {
             native_changes_store,
             EffectMode::Sequential,
         )
+    }
+
+    #[test]
+    fn only_speculative_modes_pay_for_the_cost_unit_fallback_snapshot() {
+        assert!(!RuntimeManager::cost_unit_needs_fallback(
+            EffectMode::Sequential
+        ));
+        assert!(!RuntimeManager::cost_unit_needs_fallback(EffectMode::Gate));
+        assert!(RuntimeManager::cost_unit_needs_fallback(
+            EffectMode::Relaxed
+        ));
+        assert!(RuntimeManager::cost_unit_needs_fallback(
+            EffectMode::RelaxedValidated
+        ));
     }
 
     /// A forked replay runtime (used for parallel block validation) must be constructible at the
