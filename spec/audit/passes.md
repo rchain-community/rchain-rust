@@ -8960,5 +8960,26 @@ too, 2.5 minutes later, having paid the hydration the anchored path did not.
   (`fresh-rig-autopropose-deadlock.txt`). Filed as **C268** `todo`: the reading is a deadlock, the cause is
   not established, and the pass does not assume it.
 
-**Rows.** C267 `done` (the ingest could not take a gap), C268 `todo` (the fresh rig), C259 updated — its
-stated blocker was not the first one, and its close condition still wants the frozen-finality walk.
+**The frozen-finality variant could not be staged, and the reason matters more than the attempt.** The
+walk does not consult finality at all, so what the variant would add is the *state* rather than the
+mechanism — and that state proved unreachable under this rig's control:
+
+- the one shape that froze finality by itself (four validators, `--epoch-length 10`, autopropose) is the
+  shape whose joiners never join (**C268**, three sightings now, and this run's master also stopped
+  producing at h=73 with a joiner at 0);
+- freezing it *deliberately* by halving the stake does not work either: with two of the four bonded
+  validators up, both reported `h=305 LFB=301` unanimously — the epoch draw leaves a small active set, so
+  the two are a supermajority of what counts, and finality tracks. A solo master finalises too.
+
+So the frozen state is owed, and it is owed a *rig*: what is missing is a staging where finality stops while
+the tip keeps moving. The measurement that would settle it is the same walk from an anchor at a frozen meet.
+
+**And one gap is the tool's, not the node's** (**C269** `todo`). §3 of `tools/reconcile-network.sh` accepts an
+anchor only by *computing* one — a unanimous usable last-finalised block — and in the state `--sync-anchor`
+exists for, no node reports one, so the tool refuses (measured: `finalized heads differ`, exit 4, and
+`no usable finalized block`, exit 4). The operator path needs both answers: a refusal when the tool cannot
+compute a meet, and a way to say *this is the block I am restoring to* when nobody can.
+
+**Rows.** C267 `done` (the ingest could not take a gap), C268 `todo` (the fresh rig), C269 `todo` (the tool
+cannot name an anchor where the anchor is needed), C259 updated — its stated blocker was not the first one,
+and its close condition still wants the frozen-finality walk.
