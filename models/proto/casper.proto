@@ -324,14 +324,7 @@ message BlockMetadataProto {
   bytes memberOfFringe          = 40;
 }
 
-message FringeDataProto {
-  bytes fringeHash               = 1;
-  repeated bytes fringe          = 2;
-  repeated bytes fringeDiff      = 3;
-  bytes stateHash                = 4;
-  repeated bytes rejectedDeploys = 10;
-  repeated bytes rejectedBlocks  = 11;
-  repeated bytes rejectedSenders = 12;
-}
+// `FringeDataProto` retired with the `fringe-data` store (Law 66/68; C250's residue, C270): the
+// claim it carried is per-block metadata now, so there is no derived-state record to put on the wire.
 
 // --------- End Internal types ---------

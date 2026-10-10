@@ -11,9 +11,8 @@ use rchain_block_storage::dag::message_map;
 use rchain_crypto::hash::blake2b256_hash::Blake2b256Hash;
 use rchain_models::block::state_hash::StateHash;
 use rchain_models::block_hash::BlockHash;
-use rchain_models::block_metadata::{BlockMetadata, FailureCause, SlashSeverity};
+use rchain_models::block_metadata::{fringe_hash_of, BlockMetadata, FailureCause, SlashSeverity};
 use rchain_models::casper::protocol::casper_message::{BlockMessage, SignedDeployData};
-use rchain_models::fringe_data::FringeData;
 use rchain_models::normalizer_env::NormalizerEnv;
 use rchain_models::validator::Validator;
 use rchain_shared::log::{Log, LogSource};
@@ -22,7 +21,8 @@ use rchain_shared::refined::BlockHeight;
 use crate::block_status::BlockStatus;
 use crate::interpreter_util::validate_block_checkpoint;
 use crate::merging::{
-    BlockIndex, DeployChainIndex, MergeOutcome, MergeReport, MergeScope, ParentsMergedState,
+    rejections_of_fringe, BlockIndex, DeployChainIndex, MergeOutcome, MergeReport, MergeScope,
+    ParentsMergedState, RejectionsMap,
 };
 use crate::runtime_manager::RuntimeManager;
 
@@ -101,6 +101,80 @@ async fn get_block_unsafe(
         .ok_or_else(|| format!("missing block {}", hash.to_hex()))
 }
 
+/// **The merge's rejection input, derived from per-block facts** (Law 66/68; C250's residue, C270).
+///
+/// `MergeScope::merge` used to read a `fringe-data` record keyed by the fringe. That store retired —
+/// one key, many bases was the ambiguity Law 66 names — so the claim it held, "the union of the
+/// `rejected_deploys` the blocks that *finalised* this fringe declared", is reproduced here from what
+/// each block already carries:
+///
+/// - a final-scope block `h` names the fringe it belongs to by the hash of that fringe's sorted set
+///   (`BlockMetadata.member_of_fringe`, written by `dag.rs::insert`);
+/// - the blocks that finalised a fringe `F` are the **children of `F`'s members whose own `fringe`
+///   equals `F`** — `child_map` is the index, and a block's `fringe` is the set it built on;
+/// - their `rejected_deploys` is a fact on the block itself, not on the metadata.
+///
+/// **The cost is the plan's first risk, answered**: O(|scope| + children of the scope) metadata and
+/// body reads, bounded by the merge's own final scope rather than the DAG. It replaces a walk over
+/// every record in the store — a lookup per final-scope block, not a fringe-history walk.
+///
+/// A final-scope block whose metadata names no fringe contributes no entry, and `merge` reads that as
+/// "not rejected" (its `_ => false`), which is what the store's absent record meant too.
+async fn final_scope_rejections(
+    dag: &dyn BlockDagStorage,
+    block_store: &BlockStore,
+    child_map: &BTreeMap<BlockHash, BTreeSet<BlockHash>>,
+    final_scope: &BTreeSet<BlockHash>,
+) -> Result<RejectionsMap, String> {
+    if final_scope.is_empty() {
+        return Ok(RejectionsMap::new());
+    }
+    // Which fringe each final-scope block belongs to (`member_of_fringe`), so each block is handed
+    // *its own* fringe's finalisers and not another's.
+    let mut members_of: BTreeMap<Blake2b256Hash, BTreeSet<BlockHash>> = BTreeMap::new();
+    for h in final_scope {
+        if let Some(f) = dag
+            .lookup(h)
+            .await
+            .ok()
+            .flatten()
+            .and_then(|meta| meta.member_of_fringe)
+        {
+            members_of.entry(f).or_default().insert(*h);
+        }
+    }
+    // The finalisers, grouped by the fringe *they* named: the children of the scope's members whose
+    // own `fringe` hashes to that fringe. Each child is read once, so the cost is bounded by the
+    // children of the scope rather than by the scope × children product.
+    let mut finalisers_of: BTreeMap<Blake2b256Hash, Vec<BTreeSet<Vec<u8>>>> = BTreeMap::new();
+    for m in final_scope {
+        for child in child_map.get(m).into_iter().flatten() {
+            let Some(meta) = dag.lookup(child).await.ok().flatten() else {
+                continue;
+            };
+            let Some(block) = block_store
+                .get(&[*child])
+                .await?
+                .into_iter()
+                .next()
+                .flatten()
+            else {
+                continue;
+            };
+            finalisers_of
+                .entry(fringe_hash_of(&meta.fringe))
+                .or_default()
+                .push(block.rejected_deploys);
+        }
+    }
+    let mut map = RejectionsMap::new();
+    for (f, members) in &members_of {
+        let finalisers = finalisers_of.remove(f).unwrap_or_default();
+        map.extend(rejections_of_fringe(members, finalisers));
+    }
+    Ok(map)
+}
+
 /// Compute the merged pre-state for a set of parent blocks (port of `getPreStateForParents`).
 pub async fn get_pre_state_for_parents<F, Fut>(
     dag: &dyn BlockDagStorage,
@@ -153,22 +227,91 @@ where
     // the fringe is simply absent from the map, which the rule reads as silence.
     let participation: BTreeMap<Validator, BlockHeight> =
         liveness::latest_heights(prev_fringe.iter().map(|m| (m.sender, m.height)));
-    let fringe_record = dag_repr
-        .fringe_states
-        .get(&FringeData::fringe_hash_of(&prev_fringe_hashes))
-        .ok_or_else(|| {
+    // **The state at the previous fringe, read from the blocks that finalised it** (Law 66, C270).
+    //
+    // The record store used to hold one derived value per fringe key, joined with a `min` tie-break when
+    // two writers disagreed — and a writer whose value was overwritten then found its *own* block failing
+    // its *own* validation, which is the stall C270 measured. The claim belongs to the block that made it:
+    // `BlockMetadata.fringe_state_hash` is written once, when this node validates that block, and the
+    // rejected deploys are on the block itself. So this reader names a **block** (Law 68's version) rather
+    // than a key, and a disagreement is two visible claims rather than one silently-rewritten value.
+    //
+    // A disagreement is still possible — two blocks of one fringe validated at moments when this node's
+    // view differed — so the claim taken is the one from the block with the greatest (height, hash), which
+    // is a function of the fringe alone, and the split is reported. That is the same signal the record
+    // store's writer used to log as `[fringe-divergence]`, moved to the point of use because there is no
+    // longer a store to log it (`spec/audit/evidence/n-anchor-drill/self-reject-stall.txt` is the measured
+    // case). The report goes to stderr because this function takes no `Log`: it is called from paths that
+    // hold one, and threading it here is the follow-up that removes this wart.
+    let mut claims: Vec<(i64, BlockHash, Blake2b256Hash)> = Vec::new();
+    let mut prev_fringe_rejected_deploys: BTreeSet<Vec<u8>> = BTreeSet::new();
+    for m in &prev_fringe {
+        let meta = dag.lookup(&m.id).await?.ok_or_else(|| {
             format!(
-                "Fringe state not available in state cache, fringe: {:?}",
+                "missing fringe block {} in the metadata store: the fringe {:?} names a block this node \
+                 does not hold",
+                m.id.to_hex(),
                 prev_fringe_hashes
             )
         })?;
-    let prev_fringe_state = fringe_record.state_hash;
-    let prev_fringe_rejected_deploys = fringe_record.rejected_deploys.clone();
+        let block = block_store
+            .get(&[m.id])
+            .await?
+            .into_iter()
+            .next()
+            .flatten()
+            .ok_or_else(|| format!("missing fringe block {} in the block store", m.id.to_hex()))?;
+        // The metadata carries a `StateHash`; the readers below work in `Blake2b256Hash`, which is the
+        // type the fringe merge and the wire both use — convert once, here, at the boundary.
+        claims.push((
+            i64::from(block.block_number),
+            m.id,
+            Blake2b256Hash::from_byte_array(meta.fringe_state_hash.as_bytes()),
+        ));
+        prev_fringe_rejected_deploys.extend(block.rejected_deploys.iter().cloned());
+    }
+    // **The disagreement, reported where it is read** (C215's `[fringe-divergence]`, moved from the store's
+    // writer to the point of use because the store is gone). Two blocks of one fringe claiming different
+    // states is a disagreement between two *views*; it is visible here as two claims rather than settled by
+    // a tie-break, and the reader takes the greatest (height, hash) so that every node holding these blocks
+    // reaches the same answer.
+    let distinct: BTreeSet<Vec<u8>> = claims
+        .iter()
+        .map(|(_, _, s)| s.as_bytes().to_vec())
+        .collect();
+    if distinct.len() > 1 {
+        eprintln!(
+            "[fringe-divergence] fringe {:?}: {} distinct claim(s) — {}",
+            prev_fringe_hashes,
+            distinct.len(),
+            claims
+                .iter()
+                .map(|(h, id, s)| format!(
+                    "block {} (height {}) claims {}",
+                    id.to_hex(),
+                    h,
+                    s.to_hex()
+                ))
+                .collect::<Vec<_>>()
+                .join("; "),
+        );
+    }
+    let prev_fringe_state = match claims.into_iter().max_by_key(|(h, id, _)| (*h, *id)) {
+        Some((_, _, state)) => state,
+        // **The empty previous fringe is the genesis claim, not an error.** A block whose parents have
+        // finalised nothing yet — the first block after genesis, and *every* block while no round has
+        // finalised — merges from the empty state. The retired store held exactly that under
+        // `fringe_hash_of(∅)`, written by the genesis insert; the model says the same thing, and this is
+        // the boundary at which the claim has to be *supplied* rather than read, because an empty fringe
+        // names no block to carry it (Law 66; the genesis arm of `interpreter_util` derives the same
+        // value, `genesis_pre_state_hash`).
+        None => crate::interpreter_util::empty_state_hash_fixed(),
+    };
     // Captured here rather than at the struct literal, because `prev_fringe_hashes` is moved into
     // `new_fringe` below (#139). These two are what a state disagreement is reported with: the fringe
     // the node began from, and the key it looked that fringe up under.
     let prev_fringe_for_report = prev_fringe_hashes.clone();
-    let prev_fringe_lookup = FringeData::fringe_hash_of(&prev_fringe_hashes);
+    let prev_fringe_lookup = fringe_hash_of(&prev_fringe_hashes);
 
     // Bonds map: from the newest justification's *state* while nothing has finalised, else from the PoS
     // contract at the fringe.
@@ -236,10 +379,13 @@ where
                 ),
                 None => prev_fringe_state,
             };
+            let rejections =
+                final_scope_rejections(dag, block_store, &dag_repr.child_map, &m_scope.final_scope)
+                    .await?;
             let result = MergeScope::merge(
                 &m_scope,
                 base_state,
-                &dag_repr.fringe_states,
+                &rejections,
                 runtime.get_history_repo(),
                 block_index,
                 DeployChainIndex::deploy_chain_cost,
@@ -294,10 +440,13 @@ where
             ),
             None => fringe_state,
         };
+        let rejections =
+            final_scope_rejections(dag, block_store, &dag_repr.child_map, &m_scope.final_scope)
+                .await?;
         MergeScope::merge(
             &m_scope,
             base_state,
-            &dag_repr.fringe_states,
+            &rejections,
             runtime.get_history_repo(),
             block_index,
             DeployChainIndex::deploy_chain_cost,

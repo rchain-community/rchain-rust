@@ -20,7 +20,6 @@ pub mod block_version;
 pub mod casper;
 pub mod comm;
 pub mod errors;
-pub mod fringe_data;
 pub mod murmur_hash3;
 pub mod normalizer_env;
 pub mod par_ops;

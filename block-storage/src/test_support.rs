@@ -18,7 +18,6 @@ use rchain_models::block_metadata::BlockMetadata;
 use rchain_models::casper::protocol::casper_message::{
     BlockMessage, DeployData, FinalizedFringe, RholangState, SignedDeployData,
 };
-use rchain_models::fringe_data::FringeData;
 use rchain_models::validator::Validator;
 use rchain_shared::refined::{BlockHeight, SeqNum};
 
@@ -63,18 +62,9 @@ pub fn fringe() -> FinalizedFringe {
     }
 }
 
-/// Fringe data with every collection populated, so a codec that drops one is caught.
-pub fn fringe_data() -> FringeData {
-    FringeData {
-        fringe_hash: rchain_crypto::hash::blake2b256_hash::Blake2b256Hash::from_bytes([10u8; 32]),
-        fringe: BTreeSet::from([BlockHash::new([11u8; 32])]),
-        fringe_diff: BTreeSet::from([BlockHash::new([12u8; 32])]),
-        state_hash: rchain_crypto::hash::blake2b256_hash::Blake2b256Hash::from_bytes([13u8; 32]),
-        rejected_deploys: BTreeSet::from([vec![1, 2]]),
-        rejected_blocks: BTreeSet::from([BlockHash::new([14u8; 32])]),
-        rejected_senders: BTreeSet::from([vec![3]]),
-    }
-}
+// `fringe_data()` retired with the `fringe-data` store and the `FringeData` type (Law 66/68;
+// C250's residue, C270): the claim is a per-block fact now, so there is no derived-state record to
+// build a fixture around.
 
 /// A signed deploy with non-empty payload, signature and deployer.
 pub fn signed_deploy() -> SignedDeployData {

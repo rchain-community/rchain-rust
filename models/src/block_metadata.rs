@@ -18,6 +18,21 @@ use crate::casper::protocol::casper_message::BlockMessage;
 use crate::proto::casper::{BlockMetadataProto, BondProto};
 use crate::validator::Validator;
 
+/// **The key of a fringe** — the hash over its blocks, which is what a block records as its
+/// [`BlockMetadata::member_of_fringe`] and what `BlockDagKeyValueStorage` used to key its retired
+/// `fringe-data` store by (Law 18: fringe identity is order-independent — the hash is over the
+/// `BTreeSet`, so the input order cannot move it).
+///
+/// This lived on `FringeData` until the store retired (Law 66/68; C250's residue, C270): the claim a
+/// fringe held is now a per-block fact (`BlockMetadata.fringe_state_hash`, `BlockMetadata.fringe`, the
+/// block's `rejected_deploys`, and `member_of_fringe`), so the *type* goes while this one computation
+/// — which names the fringe a block belongs to — stays, because the readers that replaced the store
+/// still need to name a fringe to *find* its blocks.
+pub fn fringe_hash_of(fringe: &BTreeSet<BlockHash>) -> Blake2b256Hash {
+    let parts: Vec<&[u8]> = fringe.iter().map(|h| h.as_bytes() as &[u8]).collect();
+    Blake2b256Hash::create_many(&parts)
+}
+
 /// **Why** a block was marked failed, which decides whether a restoring rule may clear the record and
 /// whether the failure is the block's own fault (AUDIT C173).
 ///

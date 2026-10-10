@@ -21,7 +21,6 @@ use rchain_models::block_metadata::BlockMetadata;
 use rchain_models::casper::protocol::casper_message::{
     BlockMessage, Event, ProcessedDeploy, ProcessedSystemDeploy, SystemDeployData,
 };
-use rchain_models::fringe_data::FringeData;
 use rchain_models::runtime::{BindPattern, ListParWithRandom, TaggedContinuation};
 use rchain_models::sorted::SortedProc;
 use rchain_models::validator::Validator;
@@ -1499,29 +1498,59 @@ fn decode_balance(bytes: &[u8]) -> Result<i64, String> {
     Ok(i64::from_le_bytes(arr))
 }
 
-/// The finalization decisions the final scope's blocks carry, by block. A block belongs to exactly
-/// one fringe, so this is the whole of `merge`'s rejection lookup; a block absent from the map is
-/// "not rejected" (`merge`'s own reading of an absent entry).
+/// **Which final-scope blocks were already rejected, by block — the merge's rejection lookup.**
 ///
-/// **Bounded by the question, not by the DAG.** This used to walk *every* fringe in `fringe_states`
-/// and clone every `rejected_deploys` set into the map — on every merge, for a lookup that then
-/// touched at most the final scope's blocks (AUDIT C56's owed paragraph). The map now holds a
-/// *borrow* of each fringe's set and only for blocks the final scope asks about, so the cost is
-/// O(final scope) set-membership probes and zero clones; with the whole-DAG shape restored the map
-/// holds one entry per fringe member and `rejections_are_indexed_for_the_final_scope_only` fails.
-fn rejections_for<'a>(
-    fringe_states: &'a BTreeMap<Blake2b256Hash, FringeData>,
-    final_hashes: &BTreeSet<BlockHash>,
-) -> BTreeMap<BlockHash, &'a BTreeSet<Vec<u8>>> {
-    fringe_states
-        .values()
-        .flat_map(|fd| {
-            fd.fringe
-                .iter()
-                .filter(|h| final_hashes.contains(h))
-                .map(move |h| (*h, &fd.rejected_deploys))
-        })
-        .collect()
+/// The value for a final-scope block `h` is the union of the `rejected_deploys` of the blocks that
+/// **finalised the fringe `h` belongs to**. That is what the retired `fringe-data` record held: the
+/// record was keyed by `fringe_hash_of(fringe)` and its `rejected_deploys` was the join — a union —
+/// of the `rejected_deploys` of the blocks that wrote it, i.e. the blocks `X` with `X.fringe` equal
+/// to that key's fringe. A block absent from the map is "not rejected" (`merge`'s own reading of an
+/// absent entry), and the map is keyed by `block_hash` alone, so the lookup is one `BTreeMap` probe.
+///
+/// **`rejections_for` used to build this map by walking the whole `fringe_states` map** — every
+/// fringe in the DAG, cloning each `rejected_deploys` set into the answer, on every merge, for a
+/// lookup that then touched at most the final scope's blocks (AUDIT C56's owed paragraph). It cannot
+/// any more: the store retired (Law 66/68; C250's residue, C270) and the per-block derivation needs
+/// the DAG's `child_map`, each block's `fringe`, and each block's `rejected_deploys` — none of which
+/// `merge` holds. So the derivation is done by the **caller**, which has the DAG
+/// (`multi_parent_casper.rs::final_scope_rejections`), and this function's job — indexing the answer
+/// for the final scope, borrowed, with no clones — is subsumed by the caller's map builder. What
+/// remains here is the *shape* of the map and the one probe `merge` makes:
+///
+/// ```text
+/// // how the caller derives it, per final-scope block h:
+/// //   F  = the fringe h belongs to      (h.member_of_fringe names it)
+/// //   Xs = the blocks that finalised F   (children of F's members whose own fringe == F)
+/// //   h  -> union over X in Xs of X.rejected_deploys
+/// ```
+///
+/// This is simpler than the record: the record held a *derived value* keyed by the fringe, and the
+/// ambiguity Law 66 describes was one key with many bases. Here every value is a per-block fact and
+/// the key is the block, so a disagreement is two visible claims rather than one rewritten value —
+/// and `merge` no longer needs to know which fringe a block was in.
+pub type RejectionsMap = BTreeMap<BlockHash, BTreeSet<Vec<u8>>>;
+
+/// **The per-block map for one fringe, folded from the finalisers' own declared rejects.**
+///
+/// `members` are the fringe's blocks (the merge's final scope); `finalisers` are the
+/// `rejected_deploys` sets of the blocks whose own `fringe` is this fringe — the blocks that
+/// *finalised* it. Every member carries the **union**, which is the record the retired store held
+/// (its value was joined across writers by union) and the answer the merge reads.
+///
+/// **Why a union and not a choice.** The old store's value was decided by *arrival order* when two
+/// finalisers disagreed (last write, then a `min` tie-break) — the ambiguity Law 66 names, and the
+/// C215/C270 stall. A union is commutative, associative and idempotent, so every node holding these
+/// blocks derives the same value regardless of the order it saw them in, and the direction is
+/// fail-closed: a merge can only ever reject *more* of what some finaliser rejected. The finalisers'
+/// own claims stay distinct on the blocks themselves (Law 68: a block is written once), so a
+/// disagreement is still *visible* to the reader that wants it
+/// (`multi_parent_casper.rs::get_pre_state_for_parents` logs it), rather than being folded away.
+pub fn rejections_of_fringe(
+    members: &BTreeSet<BlockHash>,
+    finalisers: impl IntoIterator<Item = BTreeSet<Vec<u8>>>,
+) -> RejectionsMap {
+    let union: BTreeSet<Vec<u8>> = finalisers.into_iter().flatten().collect();
+    members.iter().map(|m| (*m, union.clone())).collect()
 }
 
 /// **How native writes relate the deploy chains of a merge — on the chain, not on the block** (#280).
@@ -1747,7 +1776,7 @@ impl MergeScope {
     pub async fn merge<F, Fut>(
         merge_scope: &MergeScope,
         base_state: Blake2b256Hash,
-        fringe_states: &BTreeMap<Blake2b256Hash, FringeData>,
+        rejections: &RejectionsMap,
         history_repository: &RhoHistoryRepository,
         block_index: &F,
         rejection_cost: impl Fn(&DeployChainIndex) -> i64,
@@ -1786,22 +1815,14 @@ impl MergeScope {
             .flat_map(|b| b.deploy_chains.iter().cloned())
             .collect();
 
-        // Finalization decisions made in the final set. `rejections_map.get` treats absence as "not
-        // rejected", so only the blocks the final scope actually asks about are indexed — this used
-        // to walk *every* fringe and clone every `rejected_deploys` set into the map on every merge,
-        // for a lookup that then touched at most the final scope's blocks (AUDIT C56's owed
-        // paragraph). The values are borrowed: nothing is cloned at all.
-        let rejections_map = rejections_for(
-            fringe_states,
-            &final_indices
-                .iter()
-                .map(|b| b.block_hash)
-                .collect::<BTreeSet<BlockHash>>(),
-        );
+        // Finalization decisions made in the final set — see [`RejectionsMap`]. The caller derived
+        // this from per-block facts (`multi_parent_casper.rs::final_scope_rejections`); `merge` only
+        // reads it, and `rejections.get` treats absence as "not rejected", so a block the caller did
+        // not derive has no rejections rather than an error.
         let mut rejected_finally: BTreeSet<Arc<DeployChainIndex>> = BTreeSet::new();
         let mut accepted_finally: BTreeSet<Arc<DeployChainIndex>> = BTreeSet::new();
         for b in &final_indices {
-            let rejected = rejections_map.get(&b.block_hash).copied();
+            let rejected = rejections.get(&b.block_hash);
             for chain in &b.deploy_chains {
                 // Borrowed rather than cloned: only used for a set lookup below.
                 let first_id = chain.deploys_with_cost.iter().next().map(|d| &d.id);
@@ -2515,130 +2536,106 @@ mod tests {
         BlockHash::new(bytes)
     }
 
-    fn fringe_data(state: u8, blocks: impl Iterator<Item = u16>) -> FringeData {
-        let fringe: BTreeSet<BlockHash> = blocks.map(block_hash).collect();
-        FringeData {
-            fringe_hash: FringeData::fringe_hash_of(&fringe),
-            fringe,
-            fringe_diff: BTreeSet::new(),
-            state_hash: Blake2b256Hash::from_bytes([state; 32]),
-            rejected_deploys: [vec![state]].into_iter().collect(),
-            rejected_blocks: BTreeSet::new(),
-            rejected_senders: BTreeSet::new(),
-        }
+    /// The rejections a finaliser declares, as a one-element set — the per-block fact the derivation
+    /// folds. Named `finaliser_rejects` rather than `fringe_data`: there is no record type any more.
+    fn finaliser_rejects(marker: u8) -> BTreeSet<Vec<u8>> {
+        [vec![marker]].into_iter().collect()
     }
 
-    /// AUDIT C56's owed paragraph, second part — the merge indexes rejections for the **final
-    /// scope**, not for every fringe in the DAG.
+    /// **The merge's rejection map is keyed by block, for the final scope only — absence means "not
+    /// rejected".**
     ///
-    /// `MergeScope::merge` built `rejections_map` by walking every fringe in `fringe_states` and
-    /// cloning each `rejected_deploys` set into it — 50 fringes × 10 blocks, so 500 clones per merge
-    /// here — and then read the map only for the final scope's blocks, of which there are three
-    /// (`rejections_map.get` has always treated absence as "not rejected"). The map is now built
-    /// from the final scope's own hashes and holds a *borrow* of each fringe's set.
+    /// This replaces `rejections_are_indexed_for_the_final_scope_only`. That test asserted the merge
+    /// built its map by walking every fringe in `fringe_states` and cloning each set — the whole-DAG
+    /// shape, with a *bound* (50 fringes × 10 blocks became 500 clones). **Both the store and that
+    /// walk retired** (Law 66/68; C250's residue, C270): the derivation is per-block now and lives at
+    /// the caller (`multi_parent_casper.rs::final_scope_rejections`), bounded by the fringe's members
+    /// and their children rather than by the DAG. What is left here, and what `merge` itself reads,
+    /// is the *shape*: one entry per final-scope block, the union of that fringe's finalisers, and
+    /// **absence read as "not rejected"** (`merge`'s `_ => false`).
     ///
-    /// **Falsified against this tree (2026-09-24)**: with the whole-DAG shape restored inside
-    /// `rejections_for` — `for fd in fringe_states.values() { for h in &fd.fringe { insert } }` —
-    /// the map holds 500 entries and this fails on its first assertion. The second assertion is the
-    /// one that keeps the bound honest: the three entries must be the *right* fringes' rejections,
-    /// so the size cannot be met by indexing the wrong blocks.
+    /// The old test's bound half is not re-expressible here — there is no whole-DAG walk on this side
+    /// of the call any more to be large — so it is *moved*, not weakened: the caller's derivation is
+    /// where the bound now has to be shown, and the derivation is exercised over a real DAG by
+    /// `casper/tests/merge_determinism.rs`. What stays here is the part `merge` owns.
     #[test]
-    fn rejections_are_indexed_for_the_final_scope_only() {
-        let mut fringes: BTreeMap<Blake2b256Hash, FringeData> = BTreeMap::new();
-        for f in 0..50u16 {
-            let fd = fringe_data(f as u8, (0..10u16).map(|b| f * 10 + b));
-            fringes.insert(fd.fringe_hash, fd);
-        }
-        // The final scope: the last fringe's first three blocks.
-        let final_hashes: BTreeSet<BlockHash> =
-            [490u16, 491, 492].into_iter().map(block_hash).collect();
+    fn rejections_are_keyed_by_block_for_the_final_scope_and_absence_means_not_rejected() {
+        // A fringe of three blocks, finalised by two blocks that both rejected the deploy `7`.
+        let members: BTreeSet<BlockHash> = [490u16, 491, 492].into_iter().map(block_hash).collect();
+        let map = rejections_of_fringe(&members, [finaliser_rejects(7), finaliser_rejects(7)]);
 
-        let map = rejections_for(&fringes, &final_hashes);
         assert_eq!(
             map.len(),
             3,
-            "one entry per final-scope block, not one per fringe member"
+            "one entry per fringe member — keyed by block, not by a fringe key"
         );
-        let last_fringe = fringe_data(49, (490..500u16).map(|b| b));
-        for h in &final_hashes {
-            let rejected = map.get(h).expect("a final-scope block in a fringe");
+        for h in &members {
             assert_eq!(
-                *rejected, &fringes[&last_fringe.fringe_hash].rejected_deploys,
-                "the entry must be its own fringe's rejections"
+                map.get(h).expect("every member of the fringe has an entry"),
+                &finaliser_rejects(7),
+                "and the entry is the finalisers' rejected set"
             );
         }
+        // The merge's own read: a block the derivation did not put in the map is not rejected
+        // (`_ => false`), and a deploy outside the set is not rejected either.
+        let absent = block_hash(499);
+        assert!(
+            !map.get(&absent).is_some_and(|rej| rej.contains(&vec![7u8])),
+            "absence reads as 'not rejected'"
+        );
+        assert!(
+            !map.get(&block_hash(490))
+                .is_some_and(|rej| rej.contains(&vec![9u8])),
+            "and so does a deploy the set does not name"
+        );
     }
 
-    /// **C215's second link: the merge's rejection input is a function of the cache, not of the scope.**
+    /// **A disagreement between a fringe's finalisers is a union, not a written value.**
     ///
-    /// The first link is `casper/tests/merge_determinism.rs`, over the real `BlockDagKeyValueStorage`:
-    /// two arrival orders of *one* block set leave two different `FringeData` records at **one key**,
-    /// because that map is keyed by the fringe *set* and carries a value the set does not determine
-    /// (`state_hash`, `rejected_deploys`, …), and its write is last-write-wins.
+    /// This replaces `two_caches_of_one_block_set_reject_differently`, C215's second link. That test
+    /// showed the merge's *input* was a function of the cache: two finalisers of one fringe wrote one
+    /// key, last write won, and the two arrival orders read different records → different verdicts on
+    /// the same chain. **The key retired with the store** (Law 66/68; C250's residue, C270), so that
+    /// collision cannot arise — there is no one-key-many-bases to be written — and the assertion is
+    /// re-expressed around what replaced it: the map is folded by **union**, so it is the same value
+    /// in either arrival order, and it is *not* vacuously so (the two finalisers' sets differ, and
+    /// the union is strictly larger than either).
     ///
-    /// This is what the difference costs. `MergeScope::merge` reads the map once per final-scope block
-    /// (`rejections_map.get(&b.block_hash)`), tests the chain's first deploy id against it, and reads
-    /// **absence as "not rejected"** (`_ => false`) — so the chain is *accepted*. Two nodes holding the
-    /// same blocks, with the same scope, differing only in arrival order therefore put the same chain in
-    /// `rejected_finally` on one and `accepted_finally` on the other, and from there the merged state
-    /// differs. That is the shape the incident's log shows from outside: `state-hash disagreement on
-    /// pre-state: block #104`, three different hashes, four nodes, no equivocation.
-    ///
-    /// **The collision is not exotic**, and the pair below is what a height with one block per validator
-    /// produces: two blocks finalising the same fringe set that disagree about which deploy that set
-    /// rejected. `fringe_data`'s first argument is the state/rejection marker, so the two arguments here
-    /// give one key and two records.
-    ///
-    /// **What settles whether this is reachable on a real chain** is whether two blocks at one height
-    /// ever share a fringe set with different `rejected_deploys` — the storage test constructs it, and the
-    /// live capture would confirm it. This test does not need it to be *common*; it needs it to be
-    /// *possible*, and shows what happens when it is.
+    /// This is the property the whole unit exists for: the merge's answer is a function of the blocks,
+    /// not of the order they arrived in.
     #[test]
-    fn two_caches_of_one_block_set_reject_differently() {
-        let scope: BTreeSet<BlockHash> = (490u16..500).map(block_hash).collect();
+    fn a_disagreement_between_a_fringes_finalisers_is_a_union_not_a_written_value() {
+        let members: BTreeSet<BlockHash> = (490u16..500).map(block_hash).collect();
 
-        let a = fringe_data(7, 490u16..500);
-        let b = fringe_data(8, 490u16..500);
-        assert_eq!(
-            a.fringe_hash, b.fringe_hash,
-            "the two records are one key — that is the collision, and without it this test says nothing"
-        );
+        // Two finalisers of *one* fringe that disagree about what it rejected — the C215 pair.
+        let a = finaliser_rejects(7);
+        let b = finaliser_rejects(8);
         assert_ne!(
-            a.rejected_deploys, b.rejected_deploys,
-            "…and they disagree about what that fringe rejected"
+            a, b,
+            "the finalisers disagree — without this the union test says nothing"
         );
 
-        let cache_a: BTreeMap<Blake2b256Hash, FringeData> = BTreeMap::from([(a.fringe_hash, a)]);
-        let cache_b: BTreeMap<Blake2b256Hash, FringeData> = BTreeMap::from([(b.fringe_hash, b)]);
-
-        let map_a = rejections_for(&cache_a, &scope);
-        let map_b = rejections_for(&cache_b, &scope);
+        let forward = rejections_of_fringe(&members, [a.clone(), b.clone()]);
+        let reversed = rejections_of_fringe(&members, [b.clone(), a.clone()]);
         assert_eq!(
-            map_a.len(),
-            scope.len(),
-            "the same scope indexes the same blocks"
+            forward, reversed,
+            "arrival order does not reach the map: the fold is a union, so every node holding these \
+             blocks derives the same rejections"
         );
-        assert_eq!(map_b.len(), scope.len());
 
-        // The merge's own read, on the same block, for a chain whose first deploy id is this one:
-        // `rejections_map.get(&b.block_hash)` → `rej.contains(first_id)`, absence meaning "not rejected".
+        // …and the union is not a constant: it is strictly the two finalisers' sets together, larger
+        // than either alone, so the equality above is about the union and not about an empty map.
+        let expected: BTreeSet<Vec<u8>> = a.union(&b).cloned().collect();
         let block = block_hash(495);
-        let chain_first_deploy: Vec<u8> = vec![7];
-        let rejected_on_a = map_a
-            .get(&block)
-            .is_some_and(|rej| rej.contains(&chain_first_deploy));
-        let rejected_on_b = map_b
-            .get(&block)
-            .is_some_and(|rej| rej.contains(&chain_first_deploy));
-
-        assert!(
-            rejected_on_a,
-            "node A's cache rejects this chain, so `merge` files it under `rejected_finally`"
+        assert_eq!(
+            forward.get(&block),
+            Some(&expected),
+            "the entry is the union of what the finalisers rejected"
         );
         assert!(
-            !rejected_on_b,
-            "…and node B's cache does not, so the same chain goes under `accepted_finally`. Same blocks, \
-             same scope, two verdicts — decided by which block arrived last, one link after the storage"
+            expected.len() > a.len() && expected.len() > b.len(),
+            "the union is strictly larger than either finaliser's set — the disagreement is not folded \
+             away, it is *added*"
         );
     }
 }
@@ -3006,7 +3003,7 @@ mod native_merge_tests {
         let outcome = MergeScope::merge(
             &scope,
             base_state,
-            &BTreeMap::<Blake2b256Hash, FringeData>::new(),
+            &RejectionsMap::new(),
             &base_repo,
             &lookup,
             DeployChainIndex::deploy_chain_cost,
@@ -3182,7 +3179,7 @@ mod native_merge_tests {
         let outcome = MergeScope::merge(
             &scope,
             base_state,
-            &BTreeMap::<Blake2b256Hash, FringeData>::new(),
+            &RejectionsMap::new(),
             &base_repo,
             &lookup,
             DeployChainIndex::deploy_chain_cost,
@@ -3276,7 +3273,7 @@ mod native_merge_tests {
         let outcome = MergeScope::merge(
             &scope,
             base_state,
-            &BTreeMap::<Blake2b256Hash, FringeData>::new(),
+            &RejectionsMap::new(),
             &base_repo,
             &block_index,
             |_| 0,
@@ -3382,7 +3379,7 @@ mod native_merge_tests {
             let outcome = MergeScope::merge(
                 &scope,
                 base_state,
-                &BTreeMap::<Blake2b256Hash, FringeData>::new(),
+                &RejectionsMap::new(),
                 &base_repo,
                 &block_index,
                 |_| 0,
@@ -3776,7 +3773,7 @@ mod boundary_merge_tests {
         MergeScope::merge(
             &scope,
             base,
-            &BTreeMap::<Blake2b256Hash, FringeData>::new(),
+            &RejectionsMap::new(),
             repo,
             &lookup,
             DeployChainIndex::deploy_chain_cost,
@@ -3843,16 +3840,9 @@ mod boundary_merge_tests {
                     .ok_or_else(|| format!("no index for {h:?}"))
             }
         };
-        MergeScope::merge(
-            &scope,
-            base,
-            &BTreeMap::<Blake2b256Hash, FringeData>::new(),
-            repo,
-            &lookup,
-            |_| 0,
-        )
-        .await
-        .map(|o| (o.state, o.rejected_deploys))
+        MergeScope::merge(&scope, base, &RejectionsMap::new(), repo, &lookup, |_| 0)
+            .await
+            .map(|o| (o.state, o.rejected_deploys))
     }
 
     /// Every native value the writes of `actions` leave behind, read back from `state`.
@@ -4307,7 +4297,7 @@ mod boundary_merge_tests {
         MergeScope::merge(
             &scope,
             base,
-            &BTreeMap::<Blake2b256Hash, FringeData>::new(),
+            &RejectionsMap::new(),
             repo,
             &lookup,
             DeployChainIndex::deploy_chain_cost,

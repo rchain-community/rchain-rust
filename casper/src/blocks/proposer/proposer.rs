@@ -1285,7 +1285,6 @@ mod tests {
                     )])),
                     dag_message_state:
                         rchain_block_storage::dag::message_state::DagMessageState::empty(),
-                    fringe_states: std::collections::BTreeMap::new(),
                 },
             )
         }
@@ -2796,7 +2795,6 @@ mod active_validator_tests {
                 ])),
                 dag_message_state: rchain_block_storage::dag::message_state::DagMessageState::empty(
                 ),
-                fringe_states: BTreeMap::new(),
             })
         }
 

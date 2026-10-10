@@ -22,8 +22,7 @@ use std::sync::Arc;
 
 use rchain_block_storage::block_store::BlockStore;
 use rchain_block_storage::dag::codecs::{
-    Blake2b256HashCodec, BlockHashCodec, BlockMessageCodec, BlockMetadataCodec, FringeDataCodec,
-    SignedDeployDataCodec,
+    BlockHashCodec, BlockMessageCodec, BlockMetadataCodec, SignedDeployDataCodec,
 };
 use rchain_casper::block_metadata_store::BlockMetadataStore;
 use rchain_casper::block_random_seed::BlockRandomSeed;
@@ -37,7 +36,6 @@ use rchain_models::block_hash::BlockHash;
 use rchain_models::casper::protocol::casper_message::{
     BlockMessage, DeployData, RholangState, SignedDeployData,
 };
-use rchain_models::fringe_data::FringeData;
 use rchain_models::validator::Validator;
 use rchain_rholang::merging::SidecarRecord;
 use rchain_rholang::native_state::PosGenesis;
@@ -67,13 +65,6 @@ async fn build_dag() -> Arc<rchain_casper::dag::BlockDagKeyValueStorage> {
         .await
         .expect("metadata store"),
     );
-    let fringe_store: Arc<
-        dyn rchain_shared::typed_store::KeyValueTypedStore<Blake2b256Hash, FringeData>,
-    > = Arc::new(KeyValueTypedStoreCodec::new(
-        in_memory(),
-        Arc::new(Blake2b256HashCodec),
-        Arc::new(FringeDataCodec),
-    ));
     let deploy_index: Arc<
         dyn rchain_shared::typed_store::KeyValueTypedStore<
             rchain_block_storage::dag::dag_storage::DeployId,
@@ -97,7 +88,6 @@ async fn build_dag() -> Arc<rchain_casper::dag::BlockDagKeyValueStorage> {
     Arc::new(
         rchain_casper::dag::BlockDagKeyValueStorage::create(
             metadata_store,
-            fringe_store,
             deploy_index,
             deploy_store,
         )
@@ -455,7 +445,7 @@ async fn a_merge_reproduces_a_branchs_post_state_including_its_native_writes() {
     let merged = MergeScope::merge(
         &scope,
         Blake2b256Hash::from_byte_array(genesis_post.as_bytes()),
-        &BTreeMap::<Blake2b256Hash, FringeData>::new(),
+        &rchain_casper::merging::RejectionsMap::new(),
         rm.get_history_repo(),
         &block_index,
         |_| 0,
@@ -649,7 +639,7 @@ async fn a_slashed_validator_is_absent_from_the_bonds_at_a_merged_root() {
     let merged_alone = MergeScope::merge(
         &alone,
         Blake2b256Hash::from_byte_array(genesis_post.as_bytes()),
-        &BTreeMap::<Blake2b256Hash, FringeData>::new(),
+        &rchain_casper::merging::RejectionsMap::new(),
         rm.get_history_repo(),
         &block_index,
         |_| 0,
@@ -689,7 +679,7 @@ async fn a_slashed_validator_is_absent_from_the_bonds_at_a_merged_root() {
     let merged = MergeScope::merge(
         &scope,
         Blake2b256Hash::from_byte_array(genesis_post.as_bytes()),
-        &BTreeMap::<Blake2b256Hash, FringeData>::new(),
+        &rchain_casper::merging::RejectionsMap::new(),
         rm.get_history_repo(),
         &block_index,
         |_| 0,

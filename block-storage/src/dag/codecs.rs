@@ -10,7 +10,6 @@ use rchain_models::block_metadata::BlockMetadata;
 use rchain_models::casper::protocol::casper_message::{
     BlockMessage, FinalizedFringe, SignedDeployData,
 };
-use rchain_models::fringe_data::FringeData;
 use rchain_shared::typed_store::Codec;
 
 use crate::block_store::{block_message_to_bytes, bytes_to_block_message};
@@ -60,19 +59,9 @@ impl Codec<BlockMetadata> for BlockMetadataCodec {
     }
 }
 
-/// Protobuf fringe-data codec (the Scala `codecFringeData`).
-#[derive(Default)]
-pub struct FringeDataCodec;
-
-impl Codec<FringeData> for FringeDataCodec {
-    fn encode(&self, value: &FringeData) -> Vec<u8> {
-        value.to_bytes()
-    }
-
-    fn decode(&self, bytes: &[u8]) -> Result<FringeData, String> {
-        FringeData::from_bytes(bytes).map_err(|e| e.to_string())
-    }
-}
+// **`FringeDataCodec` retired with the `fringe-data` store** (Law 66/68; C250's residue, C270).
+// `FringeData` was the derived-state record the store keyed by `fringe_hash_of(fringe)`; the claim
+// it held is per-block metadata now, so there is no such value to encode.
 
 /// Protobuf finalized-fringe codec (the Scala `codecFringe`).
 #[derive(Default)]
@@ -139,7 +128,7 @@ impl Codec<SignedDeployData> for SignedDeployDataCodec {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::{block, block_metadata, fringe, fringe_data, signed_deploy};
+    use crate::test_support::{block, block_metadata, fringe, signed_deploy};
 
     /// Both raw-hash codecs are exactly 32 bytes wide, and a wrong length is an error naming the
     /// number that arrived — never a panic and never a zero-fill. This is the store boundary, so a
@@ -212,8 +201,12 @@ mod tests {
         assert!(BlockMessageCodec.decode(&[]).is_err());
     }
 
-    /// The four protobuf codecs round-trip their values, and malformed bytes are an error rather
-    /// than a default-valued message (which a store would then serve as real metadata).
+    /// The protobuf codecs round-trip their values, and malformed bytes are an error rather than a
+    /// default-valued message (which a store would then serve as real metadata).
+    ///
+    /// **One codec fewer than before** (Law 66/68; C250's residue, C270): `FringeDataCodec` round-
+    /// tripped a type the node no longer stores, so its assertions retired with it rather than being
+    /// re-expressed — there is no value left for them to mean anything about.
     #[test]
     fn the_protobuf_codecs_round_trip_and_reject_malformed_bytes() {
         let metadata = BlockMetadataCodec
@@ -229,23 +222,16 @@ mod tests {
             fringe()
         );
         assert_eq!(
-            FringeDataCodec
-                .decode(&FringeDataCodec.encode(&fringe_data()))
-                .expect("round trip"),
-            fringe_data()
-        );
-        assert_eq!(
             SignedDeployDataCodec
                 .decode(&SignedDeployDataCodec.encode(&signed_deploy()))
                 .expect("round trip"),
             signed_deploy()
         );
 
-        // A field tag of `0xFF` is not a valid protobuf tag (wire type 7), so all four refuse it.
+        // A field tag of `0xFF` is not a valid protobuf tag (wire type 7), so all three refuse it.
         let junk = [0xFFu8; 8];
         assert!(BlockMetadataCodec.decode(&junk).is_err());
         assert!(FringeCodec.decode(&junk).is_err());
-        assert!(FringeDataCodec.decode(&junk).is_err());
         assert!(SignedDeployDataCodec.decode(&junk).is_err());
     }
 }

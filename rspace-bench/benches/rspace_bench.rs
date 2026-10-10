@@ -442,7 +442,6 @@ fn chain_representation(n: usize) -> DagRepresentation {
         child_map: dag_state.child_map,
         height_map: dag_state.height_map,
         dag_message_state: messages,
-        fringe_states: BTreeMap::new(),
     }
 }
 

@@ -21,7 +21,7 @@ use tokio::sync::watch;
 use rchain_block_storage::approved_store::{self, ApprovedStore};
 use rchain_block_storage::block_store::{self, BlockStore};
 use rchain_block_storage::dag::codecs::{
-    Blake2b256HashCodec, BlockHashCodec, BlockMetadataCodec, FringeDataCodec, SignedDeployDataCodec,
+    BlockHashCodec, BlockMetadataCodec, SignedDeployDataCodec,
 };
 use rchain_block_storage::dag::dag_storage::{BlockDagStorage, DeployId};
 use rchain_casper::api::block_api::{BlockApi, ProposeHealth, ProposerHealth};
@@ -64,7 +64,6 @@ use rchain_comm::transport::grpc_transport_receiver::BoxFuture;
 use rchain_comm::transport::grpc_transport_server::TransportLayerServer;
 use rchain_comm::transport::transport_layer::TransportLayer;
 use rchain_comm::who_am_i;
-use rchain_crypto::hash::blake2b256_hash::Blake2b256Hash;
 use rchain_crypto::private_key::PrivateKey;
 use rchain_models::block_hash::BlockHash;
 use rchain_models::block_metadata::BlockMetadata;
@@ -74,7 +73,6 @@ use rchain_models::casper::protocol::casper_message::{
 use rchain_models::casper::protocol::casper_message_protocol::to_casper_message_proto;
 use rchain_models::casper::protocol::report::BlockEventInfo;
 use rchain_models::comm::protocol::Protocol;
-use rchain_models::fringe_data::FringeData;
 use rchain_models::runtime::{BindPattern, ListParWithRandom, TaggedContinuation};
 use rchain_models::sorted::SortedProc;
 use rchain_rholang::merging::{DeployMergeableDataCodec, NativeSidecarCodec};
@@ -124,9 +122,10 @@ use rchain_ocapn::conn::Export;
 /// no ceiling: a devnet left running grows ~1,800 blocks an hour, and one reached 5,844 blocks — the chain
 /// that made the DAG's costs visible and through which C55/C56 were found. Capping it would change the
 /// instrument (on a local testnet the chain length *is* the variable), so the decision is to document it
-/// and expose the cost: `/metrics` carries the DAG's five gauges — `rchain_dag_messages`,
-/// `rchain_dag_seen_entries`, `rchain_dag_fringe_states`, `rchain_dag_index_entries` and
-/// `rchain_dag_logical_bytes` — and that doc also states the measurement volumes' disposition.
+/// and expose the cost: `/metrics` carries the DAG's four gauges — `rchain_dag_messages`,
+/// `rchain_dag_seen_entries`, `rchain_dag_index_entries` and `rchain_dag_logical_bytes` (a fifth,
+/// `rchain_dag_fringe_states`, retired with the `fringe-data` store; Law 66/68, C250's residue,
+/// C270) — and that doc also states the measurement volumes' disposition.
 const AUTOPROPOSE_INTERVAL: Duration = Duration::from_secs(2);
 
 /// After this many consecutive self-validation failures the autopropose **timer** halts, so a node with
@@ -2021,15 +2020,9 @@ pub async fn setup_shard(
             .await
             .map_err(|e| e.to_string())?,
     );
-    let fringe_data_store: Arc<dyn KeyValueTypedStore<Blake2b256Hash, FringeData>> = Arc::new(
-        database(
-            &store_manager,
-            "fringe-data",
-            Arc::new(Blake2b256HashCodec),
-            Arc::new(FringeDataCodec),
-        )
-        .await?,
-    );
+    // **No `fringe-data` store** (Law 66/68; C250's residue, C270): the claim it keyed by fringe is
+    // per-block metadata now, so the DAG is built over the metadata store alone. A shard that still
+    // holds `fringe-data` rows from an earlier build leaves them on disk, unread.
     let deploy_index: Arc<dyn KeyValueTypedStore<DeployId, BlockHash>> = Arc::new(
         database(
             &store_manager,
@@ -2059,21 +2052,16 @@ pub async fn setup_shard(
         .await?,
     );
     let dag_kv = Arc::new(
-        BlockDagKeyValueStorage::create(
-            block_metadata_store,
-            fringe_data_store,
-            deploy_index,
-            deploy_store,
-        )
-        .await
-        .map_err(|e| e.to_string())?
-        // The shard's DAG publishes its gauges into the node's registry (`/metrics`).
-        .with_metrics(metrics)
-        // `0` (the default, and the only value a non-dev node can hold — see
-        // `check_merge_divergence_injection`) injects nothing.
-        .with_merge_divergence_injection(conf.casper.merge_divergence_injection)
-        .with_deployer_index(deployer_index)
-        .await?,
+        BlockDagKeyValueStorage::create(block_metadata_store, deploy_index, deploy_store)
+            .await
+            .map_err(|e| e.to_string())?
+            // The shard's DAG publishes its gauges into the node's registry (`/metrics`).
+            .with_metrics(metrics)
+            // `0` (the default, and the only value a non-dev node can hold — see
+            // `check_merge_divergence_injection`) injects nothing.
+            .with_merge_divergence_injection(conf.casper.merge_divergence_injection)
+            .with_deployer_index(deployer_index)
+            .await?,
     );
     let block_dag_storage: Arc<dyn BlockDagStorage> = dag_kv.clone();
 
@@ -2866,6 +2854,7 @@ mod tests {
 
     #[tokio::test]
     async fn create_rspace_importer_round_trips_over_lmdb() {
+        use rchain_crypto::hash::blake2b256_hash::Blake2b256Hash;
         use rchain_rspace::state::RSpaceImporter;
         use rchain_shared::state::TrieImporter;
 

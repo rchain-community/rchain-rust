@@ -25,7 +25,6 @@ use rchain_models::casper::protocol::casper_message::{
     StoreItemsMessageRequest,
 };
 use rchain_models::casper::protocol::packet_type_tag::ToPacket;
-use rchain_models::fringe_data::FringeData;
 use rchain_rspace::state::RSpaceExporter;
 use rchain_shared::log::{Log, LogSource};
 use rchain_shared::refined::BlockHeight;
@@ -552,13 +551,35 @@ pub(crate) async fn finalized_fringe_response(
             None => None,
         }
     } else {
-        repr.fringe_states
-            .get(&FringeData::fringe_hash_of(&latest_fringe_hashes))
-            .map(|fringe_data| FinalizedFringe {
-                hashes: latest_fringe_hashes.iter().copied().collect(),
-                state_hash: StateHash::from_slice(fringe_data.state_hash.as_bytes()),
-                ancestry: Vec::new(),
-            })
+        // **The latest finalised block's claim, read from that block's metadata** (Law 66/68; C250's
+        // residue, C270). The `fringe-data` record this used to read retired — and with it the last
+        // reason this handler needed a runtime or a replay, because a block's metadata needs neither.
+        // The claim is that block's own `fringe_state_hash`; the version a reader names is the block
+        // (Law 68), and the latest finalised block is the max `(height, hash)` member of the latest
+        // fringe, which is a function of the fringe so every node holding it names the same block.
+        //
+        // The tie-break here is the same rule the reader in `multi_parent_casper.rs` uses for the
+        // previous fringe's state, so the root a joiner is handed and the root a proposer starts from
+        // agree.
+        let mut latest: Option<(BlockHeight, BlockHash, StateHash)> = None;
+        for h in &latest_fringe_hashes {
+            // `lookup` is a metadata read, not a replay; a member this node cannot read is skipped
+            // rather than served as a bogus state.
+            if let Ok(Some(meta)) = dag.lookup(h).await {
+                let candidate = (meta.block_num, *h, meta.fringe_state_hash);
+                let better = latest
+                    .as_ref()
+                    .is_none_or(|(height, hash, _)| (candidate.0, candidate.1) > (*height, *hash));
+                if better {
+                    latest = Some(candidate);
+                }
+            }
+        }
+        latest.map(|(_, _, state_hash)| FinalizedFringe {
+            hashes: latest_fringe_hashes.iter().copied().collect(),
+            state_hash,
+            ancestry: Vec::new(),
+        })
     };
     // **A recovery sync names its own root** (C259a). The joiner asks for the block the operator's
     // reconciliation chose, and the answer is that block's post-state — the same pair the genesis
@@ -1679,11 +1700,8 @@ mod tests {
     /// here, so it is duplicated rather than widened into a production constructor.
     async fn build_dag() -> Arc<dyn BlockDagStorage> {
         use crate::block_metadata_store::BlockMetadataStore;
-        use rchain_block_storage::dag::codecs::{
-            Blake2b256HashCodec, BlockMetadataCodec, FringeDataCodec, SignedDeployDataCodec,
-        };
+        use rchain_block_storage::dag::codecs::{BlockMetadataCodec, SignedDeployDataCodec};
         use rchain_models::casper::protocol::casper_message::SignedDeployData;
-        use rchain_models::fringe_data::FringeData;
         use rchain_shared::typed_store::{BytesCodec, KeyValueTypedStore, SharedStore};
 
         let fresh = || -> SharedStore {
@@ -1700,12 +1718,6 @@ mod tests {
             .await
             .expect("metadata store"),
         );
-        let fringe: Arc<dyn KeyValueTypedStore<Blake2b256Hash, FringeData>> =
-            Arc::new(KeyValueTypedStoreCodec::new(
-                fresh(),
-                Arc::new(Blake2b256HashCodec),
-                Arc::new(FringeDataCodec),
-            ));
         type DeployId = rchain_block_storage::dag::dag_storage::DeployId;
         let deploy_index: Arc<dyn KeyValueTypedStore<DeployId, BlockHash>> = Arc::new(
             KeyValueTypedStoreCodec::new(fresh(), Arc::new(BytesCodec), Arc::new(BlockHashCodec)),
@@ -1717,14 +1729,9 @@ mod tests {
                 Arc::new(SignedDeployDataCodec),
             ));
         Arc::new(
-            crate::dag::BlockDagKeyValueStorage::create(
-                metadata,
-                fringe,
-                deploy_index,
-                deploy_store,
-            )
-            .await
-            .expect("dag storage"),
+            crate::dag::BlockDagKeyValueStorage::create(metadata, deploy_index, deploy_store)
+                .await
+                .expect("dag storage"),
         )
     }
 

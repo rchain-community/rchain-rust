@@ -1345,7 +1345,6 @@ mod effectful_tests {
                 child_map: Arc::new(BTreeMap::new()),
                 height_map: Arc::new(BTreeMap::new()),
                 dag_message_state: DagMessageState::empty(),
-                fringe_states: BTreeMap::new(),
             },
         }
     }
@@ -1822,7 +1821,6 @@ mod effectful_tests {
                 child_map: Arc::new(BTreeMap::new()),
                 height_map: Arc::new(BTreeMap::new()),
                 dag_message_state: DagMessageState::from_parts(BTreeMap::new(), msg_map),
-                fringe_states: BTreeMap::new(),
             },
         }
     }

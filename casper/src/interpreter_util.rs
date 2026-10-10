@@ -16,7 +16,6 @@ use rchain_models::block::state_hash::StateHash;
 use rchain_models::block_hash::BlockHash;
 use rchain_models::block_metadata::{BlockMetadata, FailureCause, SlashSeverity};
 use rchain_models::casper::protocol::casper_message::{BlockMessage, SignedDeployData};
-use rchain_models::fringe_data::FringeData;
 use rchain_models::validator::Validator;
 use rchain_rholang::errors::RholangError;
 use rchain_rholang::runtime::ReplayRhoRuntime;
@@ -642,7 +641,7 @@ where
             // The genesis has no parents, so the fringe it begins from is the empty one — the same
             // key a restored node's blocks carry, which is why the two are worth telling apart by the
             // *block number* in the log rather than by this field alone (#139).
-            prev_fringe_lookup: FringeData::fringe_hash_of(&BTreeSet::new()),
+            prev_fringe_lookup: rchain_models::block_metadata::fringe_hash_of(&BTreeSet::new()),
             prev_fringe: BTreeSet::new(),
             fringe_bonds_map: block.bonds.clone(),
             // Genesis has no parents and therefore no fringe, so it has no participation: an empty map,

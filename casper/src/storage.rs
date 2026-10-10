@@ -48,10 +48,9 @@ pub fn rnode_db_mapping() -> Vec<(Db, LmdbEnvConfig)> {
             Db::new("block-metadata"),
             LmdbEnvConfig::new("dagstorage", 100 * GB),
         ),
-        (
-            Db::new("fringe-data"),
-            LmdbEnvConfig::new("dagstorage", 100 * GB),
-        ),
+        // `fringe-data` retired with the store itself (Law 66/68; C250's residue, C270): the claim
+        // it keyed is per-block metadata now, so there is no DB to open. An upgraded node leaves any
+        // existing rows on disk and ignores them.
         (
             Db::new("finalized-store"),
             LmdbEnvConfig::new("dagstorage", 100 * GB),

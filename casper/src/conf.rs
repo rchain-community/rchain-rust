@@ -145,15 +145,17 @@ pub struct CasperConf {
     /// It is *self-harm* on a real network and it says so: the twin is equally signed, so every peer
     /// records the node as having equivocated, and it is the node's own bond the peers will take.
     pub equivocation_injection: bool,
-    /// **Perturb this node's fringe records, so its merge answers differently from its peers'** (default
-    /// `0` = off). A devnet-only injection, and the instrument the reconciliation drill needs: it makes
-    /// the `fringe_states` ambiguity — a map keyed by the fringe *set* whose value the set does not
-    /// determine (C215) — bite on every arrival order rather than only when honest nodes happen to
-    /// disagree, which is what four divergent heads and a frozen chain were made of.
+    /// **A retired devnet instrument** (default `0` = off). It perturbed this node's `fringe-data`
+    /// record so its merge answered differently from its peers' — the `fringe_states` ambiguity (C215)
+    /// made to bite on every arrival order. That store and that ambiguity retired with the per-block
+    /// change (Law 66/68; C250's residue, C270), so the flag no longer perturbs anything; it is kept
+    /// because the devnet CLI still parses it, and the node reports it as armed-but-inert rather than
+    /// silently doing nothing.
     ///
-    /// It refuses to arm without `--dev-mode` (`check_merge_divergence_injection`), and every perturbed
-    /// write prints a line saying so. See `BlockDagKeyValueStorage::with_merge_divergence_injection` for
-    /// what it does and does not fabricate.
+    /// It still refuses to arm without `--dev-mode` (`check_merge_divergence_injection`), so the guard
+    /// is unchanged even though its effect is gone. See
+    /// `BlockDagKeyValueStorage::with_merge_divergence_injection` for what it used to stage and why the
+    /// divergence rig (`up --validators 4 --fresh`) no longer needs it.
     pub merge_divergence_injection: u8,
     /// **An operator-named block to sync to, instead of a finalised fringe** (default `None`).
     ///

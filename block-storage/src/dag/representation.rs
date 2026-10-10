@@ -6,9 +6,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Bound::{Excluded, Unbounded};
 use std::sync::Arc;
 
-use rchain_crypto::hash::blake2b256_hash::Blake2b256Hash;
 use rchain_models::block_hash::BlockHash;
-use rchain_models::fringe_data::FringeData;
 use rchain_models::validator::Validator;
 use rchain_shared::base16;
 use rchain_shared::refined::{BlockHeight, NonNegI64};
@@ -44,11 +42,13 @@ pub struct DagRepresentation {
     pub child_map: Arc<BTreeMap<BlockHash, BTreeSet<BlockHash>>>,
     pub height_map: Arc<BTreeMap<BlockHeight, BTreeSet<BlockHash>>>,
     pub dag_message_state: DagMessageState<BlockHash, Validator>,
-    /// Finalized-fringe data by **`FringeData::fringe_hash_of(fringe)`** — the same key the
-    /// persisted fringe store uses, so this is a faithful cache of it rather than a second, set-keyed
-    /// index (AUDIT C56's owed paragraph; the set key cost a comparison of whole fringe sets per
-    /// lookup and a fresh key construction per insert).
-    pub fringe_states: BTreeMap<Blake2b256Hash, FringeData>,
+    // **The `fringe_states` map retired with the `fringe-data` store** (Law 66/68; C250's residue,
+    // C270). It was a `BTreeMap<fringe_hash, FringeData>` — one derived value per fringe key, joined
+    // with a `min` tie-break when two writers disagreed — and the ambiguity Law 66 describes was
+    // *created by it*: one key, many bases. The claim it cached is a per-block fact now
+    // (`BlockMetadata.fringe_state_hash`, `BlockMetadata.fringe`, the block's `rejected_deploys`, and
+    // `BlockMetadata.member_of_fringe`), so the readers derive from `dag_set`/`child_map` and a
+    // metadata lookup instead, and there is no second index here to drift from the store.
 }
 
 impl DagRepresentation {
@@ -207,8 +207,8 @@ impl DagRepresentation {
     ///
     /// This is the number that makes H6's residency measurable rather than argued: Σ|seen| × 32 B is
     /// the Θ(N²) floor, and every other term is a copy of it. It is a *value* accounting, so nothing
-    /// about how the maps are keyed or shared (AUDIT C56's owed paragraph: `fringe_states`, the
-    /// index's `Arc`s) can move it — `logical_bytes_is_a_value_not_a_representation` pins that.
+    /// about how the maps are keyed or shared (AUDIT C56's owed paragraph: the index's `Arc`s) can
+    /// move it — `logical_bytes_is_a_value_not_a_representation` pins that.
     pub fn logical_bytes(&self) -> usize {
         self.dag_message_state
             .msg_map
@@ -280,7 +280,6 @@ mod tests {
                 .collect(),
             ),
             dag_message_state: DagMessageState::empty(),
-            fringe_states: BTreeMap::new(),
         }
     }
 
@@ -323,7 +322,6 @@ mod tests {
             child_map: Arc::new(BTreeMap::new()),
             height_map: Arc::new(BTreeMap::new()),
             dag_message_state: DagMessageState::empty(),
-            fringe_states: BTreeMap::new(),
         };
         assert_eq!(dag.last_finalized_block_hash(), None);
         assert_eq!(

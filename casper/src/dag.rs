@@ -15,7 +15,6 @@ use rchain_crypto::hash::blake2b256_hash::Blake2b256Hash;
 use rchain_models::block_hash::BlockHash;
 use rchain_models::block_metadata::BlockMetadata;
 use rchain_models::casper::protocol::casper_message::{BlockMessage, SignedDeployData};
-use rchain_models::fringe_data::FringeData;
 use rchain_models::validator::Validator;
 use rchain_shared::metrics::{Metrics, MetricsNop, Source};
 use rchain_shared::refined::{BlockHeight, SeqNum};
@@ -53,67 +52,12 @@ pub fn message_from_block_metadata(
     })
 }
 
-/// **A fringe record is a function of its fringe key** (C215).
-///
-/// `FringeData`'s identity *is* its key: its `Hash` impl hashes `fringe_hash` and nothing else, and
-/// the Scala it mirrors says the same ("uniquely identified by the hash of its fringe hashes"). The
-/// store is therefore `key → value(key)` — and `insert` wrote it last-write-wins, so two blocks that
-/// finalise **the same fringe set** and arrive carrying different reports left a record decided by
-/// arrival order. Two nodes holding the same blocks then read different values:
-/// `merging.rs::rejections_for` turns the difference into different `accepted_finally` sets (so the
-/// merge's own outcome differs — `casper/tests/merge_determinism.rs`), and
-/// `multi_parent_casper.rs::get_pre_state_for_parents` reads `state_hash` straight into a block's
-/// pre-state, which is the `state-hash disagreement on pre-state` the TE-1 incident logged.
-///
-/// The join below is commutative, associative and idempotent, so **every arrival order reaches the
-/// same record**:
-///
-/// - the rejection sets and `fringe_diff` are **unioned** — monotone, so the merges that read them
-///   can only ever reject *more* of what some finalising block rejected, which is the fail-closed
-///   direction;
-/// - `state_hash` cannot be joined, so it is settled deterministically by taking the **smaller**. A
-///   disagreement is not a correction but two claims about one fringe, i.e. a divergence already in
-///   progress: the caller reports it, and the value carries no meaning once they differ — what
-///   matters is that every node holding these blocks reaches the same one.
-///
-/// Both arguments are records for one key: the caller reads `existing` out of the store *by* the key
-/// `incoming` was built for, so `fringe` and `fringe_hash` agree by construction and are taken from
-/// the existing record without a check.
-fn join_fringe_records(existing: &FringeData, incoming: &FringeData) -> FringeData {
-    FringeData {
-        fringe_hash: existing.fringe_hash,
-        fringe: existing.fringe.clone(),
-        fringe_diff: existing
-            .fringe_diff
-            .union(&incoming.fringe_diff)
-            .copied()
-            .collect(),
-        state_hash: existing.state_hash.min(incoming.state_hash),
-        rejected_deploys: existing
-            .rejected_deploys
-            .union(&incoming.rejected_deploys)
-            .cloned()
-            .collect(),
-        rejected_blocks: existing
-            .rejected_blocks
-            .union(&incoming.rejected_blocks)
-            .copied()
-            .collect(),
-        rejected_senders: existing
-            .rejected_senders
-            .union(&incoming.rejected_senders)
-            .cloned()
-            .collect(),
-    }
-}
-
 /// The concrete block DAG storage (port of `BlockDagKeyValueStorage`). Fringe pruning (the
 /// `BlockIndex` cache) and deploy-pool expiry run on finalization.
 pub struct BlockDagKeyValueStorage {
     representation: tokio::sync::RwLock<Arc<DagRepresentation>>,
     lock: tokio::sync::Mutex<()>,
     block_metadata_store: Arc<BlockMetadataStore>,
-    fringe_data_store: Arc<dyn KeyValueTypedStore<Blake2b256Hash, FringeData>>,
     deploy_index: Arc<dyn KeyValueTypedStore<DeployId, BlockHash>>,
     deploy_store: Arc<dyn KeyValueTypedStore<DeployId, SignedDeployData>>,
     /// Where the DAG's own gauges go (defaults to the no-op sink; the node wires its
@@ -135,8 +79,10 @@ pub struct BlockDagKeyValueStorage {
     /// The height at and above which every inserted block has been indexed (see
     /// [`DeployerLookup::indexed_from`]); persisted under [`DEPLOYER_INDEXED_FROM_KEY`].
     deployer_indexed_from: AtomicI64,
-    /// **A devnet-only injection**: make this node's own fringe records disagree with its peers'
-    /// (default `0` = off). See [`Self::with_merge_divergence_injection`].
+    /// **A devnet-only injection, now inert** (default `0` = off): it perturbed the `fringe-data`
+    /// record, which retired with the store (Law 66/68; C250's residue, C270). Kept so the devnet
+    /// CLI still parses, and reported as armed-but-inert on every insert. See
+    /// [`Self::with_merge_divergence_injection`].
     merge_divergence_injection: u8,
 }
 
@@ -149,17 +95,14 @@ impl BlockDagKeyValueStorage {
     /// Rebuild the in-memory DAG representation from the stores (port of `BlockDagKeyValueStorage.create`).
     pub async fn create(
         block_metadata_store: Arc<BlockMetadataStore>,
-        fringe_data_store: Arc<dyn KeyValueTypedStore<Blake2b256Hash, FringeData>>,
         deploy_index: Arc<dyn KeyValueTypedStore<DeployId, BlockHash>>,
         deploy_store: Arc<dyn KeyValueTypedStore<DeployId, SignedDeployData>>,
     ) -> Result<Self, String> {
-        let representation =
-            Self::rebuild_representation(&block_metadata_store, &fringe_data_store).await?;
+        let representation = Self::rebuild_representation(&block_metadata_store).await?;
         Ok(BlockDagKeyValueStorage {
             representation: tokio::sync::RwLock::new(Arc::new(representation)),
             lock: tokio::sync::Mutex::new(()),
             block_metadata_store,
-            fringe_data_store,
             deploy_index,
             deploy_store,
             metrics: Arc::new(MetricsNop),
@@ -176,16 +119,19 @@ impl BlockDagKeyValueStorage {
     /// ([`Self::drop_above`]) rewinds the metadata and then has to produce the *same* representation
     /// this produced at boot. Two implementations of that fold would be two chances for the rebuilt
     /// view to differ from the booted one, and the view is what every dependency check reads.
+    ///
+    /// **The `fringe-data` store is not folded any more** (Law 66/68; C250's residue, C270). The fold
+    /// reads block *metadata* only — the message map, the index maps, and the per-block claims
+    /// (`fringe_state_hash`, `fringe`, `member_of_fringe`) the readers now derive from. A store that
+    /// predates this change still holds its `fringe-data` rows on disk; they are simply never read.
     async fn rebuild_representation(
         block_metadata_store: &Arc<BlockMetadataStore>,
-        fringe_data_store: &Arc<dyn KeyValueTypedStore<Blake2b256Hash, FringeData>>,
     ) -> Result<DagRepresentation, String> {
         let dag_set = block_metadata_store.dag_set().await;
         let child_map = block_metadata_store.child_map_data().await;
         let height_map = block_metadata_store.height_map().await;
 
         let mut dag_msg_state = DagMessageState::<BlockHash, Validator>::empty();
-        let mut fringe_states: BTreeMap<Blake2b256Hash, FringeData> = BTreeMap::new();
         // H-1's gate, re-applied to a *restored* store. `insert` refuses a second message by the same
         // sender reusing a `seq_num`, but this fold rebuilds the message map from persisted metadata
         // without that check, and the persisted layer never looks at `(sender, seq_num)` at all
@@ -219,25 +165,6 @@ impl BlockDagKeyValueStorage {
             // each step — Θ(N³) over a stored chain, which is what made a 5,844-block restart take
             // longer than the devnet waits for one (AUDIT C55).
             dag_msg_state.insert_msg_mut(&msg);
-            // Keyed by the hash of the fringe — the store's own key (`FringeData.fringe_hash`), so
-            // the in-memory map is a cache of the persisted one and a lookup is one hash compare
-            // rather than a comparison of whole fringe sets (AUDIT C56's owed paragraph).
-            let fringe_hash = FringeData::fringe_hash_of(&msg.fringe);
-            // The entry API rather than `contains_key` + `insert`: the borrow is held across the
-            // store read, so a fringe that is already cached costs no lookup at all.
-            if let std::collections::btree_map::Entry::Vacant(entry) =
-                fringe_states.entry(fringe_hash)
-            {
-                let fd = fringe_data_store
-                    .get(&[fringe_hash])
-                    .await?
-                    .into_iter()
-                    .next()
-                    .flatten();
-                if let Some(fd) = fd {
-                    entry.insert(fd);
-                }
-            }
         }
 
         Ok(DagRepresentation {
@@ -245,7 +172,6 @@ impl BlockDagKeyValueStorage {
             child_map,
             height_map,
             dag_message_state: dag_msg_state,
-            fringe_states,
         })
     }
 
@@ -269,12 +195,26 @@ impl BlockDagKeyValueStorage {
     /// while the rewind is in flight. Without it the insert and the rebuild race, and the representation
     /// keeps a block the store has just dropped — a node serving a block it cannot replay.
     ///
+    /// **The one new invariant the per-block shape introduces** (Law 66/68; C250's residue, C270):
+    /// **an orphaned member-of-fringe mark is cleared.**
+    ///
+    /// A surviving block's `member_of_fringe` names the fringe it belongs to, and a fringe *is*
+    /// `X.fringe` for the block(s) X that finalised it — so the mark resolves against a DAG only while
+    /// some surviving block still declares that fringe. A rewind above the anchor drops the finalisers;
+    /// a surviving block whose mark names a fringe no surviving block declares is left holding a claim
+    /// that names nothing. The old design could not have this: the store's record was read *by* the
+    /// key, and a key with no finalisers simply was not consulted. With the mark travelling on the
+    /// block, the orphan would still be found by a reader that resolves it — a rewound claim re-entering
+    /// the view. So it is cleared, here, before the rebuild.
+    ///
+    /// The dropped blocks' own marks need no clearing: they are rows above the anchor and the store's
+    /// rewind takes them whole. What this pass fixes is the *survivor* — the anchor, whose finalisers
+    /// were the blocks just dropped.
+    ///
     /// **What this does not drop, stated rather than implied.** The block *messages* live in
-    /// `BlockStore`, which this type does not own, so the bodies stay on disk; and `fringe_data_store`
-    /// keeps its entries, which are keyed by fringe hash and read only for messages the map still holds,
-    /// so they are dead weight rather than a wrong answer. `deployer_indexed_from` also stays as it is:
-    /// its claim is "complete from this height **up to the tip**", and with the tip now at the anchor
-    /// that claim is still true of the shorter chain.
+    /// `BlockStore`, which this type does not own, so the bodies stay on disk. `deployer_indexed_from`
+    /// also stays as it is: its claim is "complete from this height **up to the tip**", and with the tip
+    /// now at the anchor that claim is still true of the shorter chain.
     pub async fn drop_above(&self, height: BlockHeight) -> Result<Vec<BlockHash>, String> {
         let _guard = self.lock.lock().await;
 
@@ -283,9 +223,43 @@ impl BlockDagKeyValueStorage {
             return Ok(dropped);
         }
 
-        let rebuilt =
-            Self::rebuild_representation(&self.block_metadata_store, &self.fringe_data_store)
-                .await?;
+        // Clear the survivours' orphaned marks (see the doc above). One pass over what the store now
+        // holds: the fringes a surviving block *declares* are the names that are still resolvable, and
+        // any mark naming a hash outside that set has lost its finalisers.
+        let surviving: Vec<BlockHash> = self
+            .block_metadata_store
+            .dag_set()
+            .await
+            .iter()
+            .copied()
+            .collect();
+        let mut metas: BTreeMap<BlockHash, BlockMetadata> = BTreeMap::new();
+        for h in &surviving {
+            metas.insert(*h, self.block_metadata_store.get_unchecked(h).await?);
+        }
+        let declared: BTreeSet<Blake2b256Hash> = metas
+            .values()
+            .map(|m| rchain_models::block_metadata::fringe_hash_of(&m.fringe))
+            .collect();
+        for (h, m) in &metas {
+            if let Some(f) = m.member_of_fringe {
+                if !declared.contains(&f) {
+                    eprintln!(
+                        "[rewind] block {}: cleared its member-of-fringe mark {f:?} — no surviving \
+                         block declares that fringe, so the mark names a claim the rewind removed",
+                        h.to_hex()
+                    );
+                    self.block_metadata_store
+                        .add(BlockMetadata {
+                            member_of_fringe: None,
+                            ..m.clone()
+                        })
+                        .await?;
+                }
+            }
+        }
+
+        let rebuilt = Self::rebuild_representation(&self.block_metadata_store).await?;
         *self.representation.write().await = Arc::new(rebuilt);
 
         let gone: BTreeSet<Vec<u8>> = dropped.iter().map(|h| h.as_bytes().to_vec()).collect();
@@ -399,30 +373,20 @@ impl BlockDagKeyValueStorage {
     ///
     /// The publish is on attach as well as per insert: a restart has a whole chain to report before
     /// it accepts its first block, and `/metrics` should say so.
-    /// **Perturb this node's own fringe records, so the merge here answers differently from its peers'**
-    /// — a devnet-only injection, and the instrument the reconciliation drill needs.
+    /// **A retired devnet instrument, kept so the flag still parses.** It perturbed this node's own
+    /// `fringe-data` record — one synthetic rejected-deploy id per record, so four nodes with four
+    /// values held four different records at any shared fringe key and the merge (which read that
+    /// record) answered differently. The record retired with the store (Law 66/68; C250's residue,
+    /// C270): the claim a merge reads is now the block's own metadata, and a block's metadata is not a
+    /// node-local derived value, so there is nothing left to perturb without also changing a block's
+    /// content — which would not be the same instrument. The flag is therefore accepted and *reported
+    /// as armed but inert* on every insert (see `insert`): a node asked to do this cannot be mistaken
+    /// for one that has gone wrong on its own, and an operator cannot be misled into believing an
+    /// injection happened. The divergence rig it staged is `up --validators 4 --fresh`, which needs no
+    /// injection (`spec/audit/evidence/n-anchor-drill/self-reject-stall.txt`).
     ///
-    /// **What it stages.** `fringe_states` is keyed by `fringe_hash_of(fringe_set)` and carries
-    /// per-block values, so two blocks that finalise the same fringe set and disagree about that set are
-    /// one key with one winner, last write first (`insert` below). On an honest net the records agree, the
-    /// winner does not matter, and that is why the ambiguity was never noticed; when two blocks *do*
-    /// disagree, the node that saw one of them last reads that one's rejections and the node that saw the
-    /// other last reads the other's, and their merges produce different states. That is C215, reproduced
-    /// in process by `casper/tests/merge_determinism.rs::two_arrival_orders_of_one_block_set_leave_different_fringe_caches`
-    /// and `merging::tests::two_caches_of_one_block_set_reject_differently`.
-    ///
-    /// **What it injects.** With `n > 0`, every fringe record this node writes gains one synthetic
-    /// rejected-deploy id derived from `n` — so four nodes with four values hold four *different* records
-    /// at any key they share, the collision bites on every arrival order rather than only when honest
-    /// nodes happen to disagree, and four different merged states follow at the first height where the
-    /// merge reads them. It is the *cause* that is injected, not the symptom: nothing fabricates a state
-    /// hash or a block, and the divergence that follows is computed by the real merge from real records.
-    ///
-    /// **It is self-disclosing.** Every perturbed write prints a line naming the block and the key, so a
-    /// node that has been asked to do this cannot be mistaken for one that has gone wrong on its own —
-    /// the same standard the equivocation injection holds itself to. The node refuses to arm it without
-    /// `--dev-mode` (see `node/src/configuration`), because a chain that forks on purpose on a real
-    /// network is indistinguishable, from every other node's side, from one that forked by accident.
+    /// The node still refuses to arm it without `--dev-mode` (see `node/src/configuration`), so the
+    /// flag's own guard is unchanged even though its effect is gone.
     pub fn with_merge_divergence_injection(mut self, injection: u8) -> Self {
         self.merge_divergence_injection = injection;
         self
@@ -437,7 +401,6 @@ impl BlockDagKeyValueStorage {
             self.set_gauges(
                 representation.message_count(),
                 representation.seen_entries(),
-                representation.fringe_states.len(),
                 representation.index_entries(),
                 representation.logical_bytes(),
             );
@@ -447,12 +410,15 @@ impl BlockDagKeyValueStorage {
         self
     }
 
-    /// Push the five gauges (no lock: the caller has the values).
+    /// Push the four gauges (no lock: the caller has the values).
+    ///
+    /// **Four, not five.** The `fringe_states` gauge counted entries in the retired map (Law 66/68;
+    /// C250's residue, C270): with the record gone there is no such set to size, and the per-block
+    /// claims are already counted by `index_entries` (the block metadata store's own index).
     fn set_gauges(
         &self,
         messages: usize,
         seen_entries: usize,
-        fringe_states: usize,
         index_entries: usize,
         logical_bytes: usize,
     ) {
@@ -461,8 +427,6 @@ impl BlockDagKeyValueStorage {
         self.metrics.set_gauge(&source, "messages", count(messages));
         self.metrics
             .set_gauge(&source, "seen_entries", count(seen_entries));
-        self.metrics
-            .set_gauge(&source, "fringe_states", count(fringe_states));
         self.metrics
             .set_gauge(&source, "index_entries", count(index_entries));
         self.metrics
@@ -736,32 +700,16 @@ impl BlockDagStorage for BlockDagKeyValueStorage {
             }
         }
 
-        // Compute and store the fringe data **before** the block's own metadata (AUDIT F-5).
-        //
-        // The order is the whole of this fix. `block_metadata_store.add` below is what makes a block
-        // *known* — `contains` short-circuits a re-insert on the next call — so a crash between the two
-        // writes used to leave a block present with its fringe record missing, and nothing rebuilds
-        // that record: `create`'s fold skips a missing entry in silence while its three sibling arms
-        // fail closed, and `get_pre_state_for_parents` then refuses every block for which the torn one
-        // is the max-fringe parent. On a single-validator node that is permanent, and the only way back
-        // is deleting the shard data dir so `dag_set` empties and `NodeSyncing` runs.
-        //
-        // Writing the data first means a crash leaves an *orphan* fringe record instead, which
-        // `create` ignores because it folds over stored metadata. That is the same data-then-pointer
-        // order `rspace/src/history/roots_store.rs` already uses — the audit found the RSpace side
-        // getting this right and the DAG side getting it wrong.
-        //
-        // Safe to hoist: this computation reads only the in-memory representation and the incoming
-        // `block_metadata`, and `representation` is not updated until the write guard at the end of
-        // this function, so `add` has no effect on it.
-        let fringe_hash = FringeData::fringe_hash_of(&block_metadata.fringe);
+        // The fringe a block belongs to — the key its `member_of_fringe` mark uses, and the name the
+        // readers find a fringe's blocks by (Law 66/68; C250's residue, C270).
+        let fringe_hash = rchain_models::block_metadata::fringe_hash_of(&block_metadata.fringe);
 
         // One read of the representation, and the guard is a *block expression* rather than a
         // binding: everything below is synchronous, so the copy this used to take
         // (`dag_message_state.clone()`, Θ(N²) in the messages' `seen` sets, once per block) bought
         // nothing except releasing the lock — and a binding left in scope would hold the read lock
-        // across `fringe_data_store.put`, making the write at the end of this function wait on
-        // itself. The borrow checker cannot catch a stale guard; the block can.
+        // across the metadata write at the end of this function, making that write wait on itself.
+        // The borrow checker cannot catch a stale guard; the block can.
         let fringe_diff: BTreeSet<BlockHash> = {
             let repr = self.representation.read().await;
             let msg_map = &repr.dag_message_state.msg_map;
@@ -787,67 +735,35 @@ impl BlockDagStorage for BlockDagKeyValueStorage {
             fringe_seen.difference(&prev_seen).copied().collect()
         };
 
-        let mut fringe_data = FringeData {
-            fringe_hash,
-            fringe: block_metadata.fringe.clone(),
-            fringe_diff: fringe_diff.clone(),
-            state_hash: Blake2b256Hash::from_byte_array(
-                block_metadata.fringe_state_hash.as_bytes(),
-            ),
-            rejected_deploys: block.rejected_deploys.clone(),
-            rejected_blocks: block.rejected_blocks.clone(),
-            rejected_senders: block.rejected_senders.clone(),
-        };
-
-        // **The injection** — see `with_merge_divergence_injection`. One synthetic rejected deploy, its
-        // one byte the injection number, added to every record this node writes: records that would
-        // otherwise agree now differ, so the `fringe_states` collision below bites on every arrival order
-        // instead of only when honest nodes happen to disagree. The id is a function of the injection
-        // alone, so the perturbation is deterministic and every node is distinguishable in the log.
+        // **The `fringe-data` record is not written any more.** `insert` used to build a `FringeData`
+        // from this block's claim and *join* it with whatever a sibling had written at the same fringe
+        // key — `join_fringe_records`, with a `min` tie-break on the state when two writers disagreed —
+        // and the store returned it last-write-first. That was the cache the ambiguity Law 66 describes
+        // came from: one key, many bases, so the value a reader saw depended on the arrival order
+        // (C215/C270). The claim is a per-block fact now — this block's `fringe_state_hash`, its
+        // `fringe`, and its own `rejected_deploys` — written once under the block's hash, and `insert`
+        // short-circuits on a known block, so the write is append-only (Law 68's positive half: a read
+        // names a *block*, a version that names a value). With the key gone there is no join left to be
+        // a semigroup (Law 67 retired), and the `[fringe-divergence]` report moved to the reader that
+        // sees two claims of one fringe disagree
+        // (`multi_parent_casper.rs::get_pre_state_for_parents`), where the disagreement is still
+        // visible rather than folded.
+        //
+        // **The injection, now inert.** It perturbed the record this node wrote; there is no
+        // node-local derived record left to perturb without also changing a block's content, so the
+        // flag is accepted (the devnet CLI still parses it) and *reports itself as armed but inert* on
+        // every insert — an operator must not be able to believe an injection happened when it did
+        // not. The divergence rig it staged is `up --validators 4 --fresh`, which needs no injection
+        // (`spec/audit/evidence/n-anchor-drill/self-reject-stall.txt`).
         if self.merge_divergence_injection > 0 {
-            fringe_data
-                .rejected_deploys
-                .insert(vec![0xd1, self.merge_divergence_injection]);
             eprintln!(
-                "[merge-divergence-injection {}] perturbed the fringe record for block {} at key {:?}: \
-                 one synthetic rejected deploy added, so this node's merge answers differently from a peer \
-                 that saw a different block finalising the same fringe last (C215's staging instrument)",
-                self.merge_divergence_injection,
-                block.block_hash.to_hex(),
-                fringe_hash
+                "[merge-divergence-injection {}] armed but inert: the fringe record this instrument \
+                 perturbed retired with the `fringe-data` store (Law 66/68; C250's residue, C270), so \
+                 there is no node-local derived value left to perturb — the drill it staged is \
+                 `up --validators 4 --fresh`, which needs no injection",
+                self.merge_divergence_injection
             );
         }
-        // **C215: the value at a fringe key must be a function of that key.** A record already stored
-        // under this key is joined with, not overwritten — see `join_fringe_records`. Read from the
-        // store rather than from the in-memory map because the store is the single source of truth
-        // (`rebuild_representation` reloads from it), and the two are otherwise identical.
-        let fringe_data = match self
-            .fringe_data_store
-            .get(&[fringe_hash])
-            .await?
-            .into_iter()
-            .next()
-            .flatten()
-        {
-            Some(existing) if existing != fringe_data => {
-                if existing.state_hash != fringe_data.state_hash {
-                    eprintln!(
-                        "[fringe-divergence] block {} finalises a fringe already recorded with a \
-                         different state {} vs {} — two blocks disagree about one fringe's state. \
-                         The smaller is kept so that every node holding these blocks holds the same \
-                         record, and the rejection sets are unioned (C215)",
-                        block.block_hash.to_hex(),
-                        existing.state_hash.to_hex(),
-                        fringe_data.state_hash.to_hex(),
-                    );
-                }
-                join_fringe_records(&existing, &fringe_data)
-            }
-            _ => fringe_data,
-        };
-        self.fringe_data_store
-            .put(&[(fringe_hash, fringe_data.clone())])
-            .await?;
 
         // The deployer index is data too, so it is written **before** the block becomes known (review
         // of #277). In the other order a crash between the two writes left the block known — and
@@ -860,9 +776,10 @@ impl BlockDagStorage for BlockDagKeyValueStorage {
             index_deployers(index.as_ref(), &block).await?;
         }
 
-        // Only now make the block known. Everything above this line is data the block *refers to*;
-        // this is the pointer, and the crash window it opens is the one described at the top of this
-        // function — an orphan fringe record rather than a block with no fringe.
+        // Make the block known, with its claim on it. This single write *is* the claim's write now
+        // (the F-5 order the record's own write used to need — data before the pointer — has nothing
+        // left to order against: the block's metadata carries the claim, so there is no second write
+        // a crash could tear it from).
         self.block_metadata_store
             .add(block_metadata.clone())
             .await?;
@@ -916,7 +833,6 @@ impl BlockDagStorage for BlockDagKeyValueStorage {
             } else {
                 repr.dag_message_state.insert_msg_mut(&msg);
             }
-            repr.fringe_states.insert(fringe_hash, fringe_data);
             repr.dag_set = dag_set;
             repr.child_map = child_map;
             repr.height_map = height_map;
@@ -942,7 +858,6 @@ impl BlockDagStorage for BlockDagKeyValueStorage {
             self.set_gauges(
                 repr.message_count(),
                 repr.seen_entries(),
-                repr.fringe_states.len(),
                 repr.index_entries(),
                 repr.logical_bytes(),
             );
@@ -1070,8 +985,7 @@ impl BlockDagStorage for BlockDagKeyValueStorage {
 mod tests {
     use super::*;
     use rchain_block_storage::dag::codecs::{
-        Blake2b256HashCodec, BlockHashCodec, BlockMetadataCodec, FringeDataCodec,
-        SignedDeployDataCodec,
+        BlockHashCodec, BlockMetadataCodec, SignedDeployDataCodec,
     };
     use rchain_models::block::state_hash::StateHash;
     use rchain_models::block_metadata::SlashSeverity;
@@ -1158,12 +1072,6 @@ mod tests {
     async fn build_storage_over_unshared(
         metadata_store: Arc<BlockMetadataStore>,
     ) -> BlockDagKeyValueStorage {
-        let fringe_store: Arc<dyn KeyValueTypedStore<Blake2b256Hash, FringeData>> =
-            Arc::new(KeyValueTypedStoreCodec::new(
-                in_memory(),
-                Arc::new(Blake2b256HashCodec),
-                Arc::new(FringeDataCodec),
-            ));
         let deploy_index: Arc<dyn KeyValueTypedStore<DeployId, BlockHash>> =
             Arc::new(KeyValueTypedStoreCodec::new(
                 in_memory(),
@@ -1176,7 +1084,7 @@ mod tests {
                 Arc::new(BytesCodec),
                 Arc::new(SignedDeployDataCodec),
             ));
-        BlockDagKeyValueStorage::create(metadata_store, fringe_store, deploy_index, deploy_store)
+        BlockDagKeyValueStorage::create(metadata_store, deploy_index, deploy_store)
             .await
             .unwrap()
     }
@@ -1243,6 +1151,74 @@ mod tests {
         assert!(
             metadata.get(&hash(4)).await.unwrap().is_none(),
             "and the store agrees, which is what the next boot reads"
+        );
+    }
+
+    /// **A rewind clears a survivor's orphaned `member_of_fringe` mark** — the one new invariant the
+    /// per-block shape introduces (Law 66/68; C250's residue, C270).
+    ///
+    /// A block's mark names the fringe it belongs to, and a fringe *is* `X.fringe` for the block(s) X
+    /// that finalised it. Rewinding above the anchor drops those finalisers, so a survivor whose mark
+    /// names a fringe no surviving block declares would be holding a claim the rewind removed — and
+    /// because the mark travels on the block, a reader resolving it would *find* that orphan and read
+    /// a claim out of a DAG that no longer has it. The old store could not do this: a record was read
+    /// *by* its key, and a key with no finalisers was simply never consulted.
+    ///
+    /// The chain is `g → a → b`, each block declaring the previous as its fringe (so `insert`'s
+    /// `fringe_diff` marks each finalised block with the fringe's own key). Rewinding to `a` drops only
+    /// `b`, which declared the fringe `{a}` that `a`'s mark names — so `a`'s mark is the orphan and is
+    /// cleared, while `g`'s mark names `{g}`, still declared by the surviving `a`, and is the control
+    /// that the pass clears orphans rather than everything.
+    #[tokio::test]
+    async fn a_rewind_clears_a_survivors_orphaned_member_of_fringe_mark() {
+        let storage = build_storage().await;
+        let (g, a, b) = (hash(0), hash(1), hash(2));
+        let mark = |h: BlockHash| {
+            Some(rchain_models::block_metadata::fringe_hash_of(
+                &[h].into_iter().collect(),
+            ))
+        };
+
+        // g: no parents, empty fringe; a: justifies g, declares fringe {g}; b: justifies a, declares
+        // fringe {a}. Sequence numbers climb so H-1's gate (same sender, same seq) stays out of it.
+        storage.insert(meta(g, &[], 0), block(g)).await.unwrap();
+        let mut a_meta = meta(a, &[g], 1);
+        a_meta.seq_num = 1.try_into().unwrap();
+        a_meta.fringe = [g].into_iter().collect();
+        storage.insert(a_meta, block(a)).await.unwrap();
+        let mut b_meta = meta(b, &[a], 2);
+        b_meta.seq_num = 2.try_into().unwrap();
+        b_meta.fringe = [a].into_iter().collect();
+        storage.insert(b_meta, block(b)).await.unwrap();
+
+        // Before the rewind: `a` is marked with the fringe it belongs to (`{a}`, declared by `b`) and
+        // `g` with `{g}` (declared by `a`).
+        assert_eq!(
+            storage.lookup(&a).await.unwrap().unwrap().member_of_fringe,
+            mark(a)
+        );
+        assert_eq!(
+            storage.lookup(&g).await.unwrap().unwrap().member_of_fringe,
+            mark(g)
+        );
+
+        // Rewind to the anchor `a`: height 2 goes, so `b` — the sole declarer of `{a}` — goes with it.
+        let dropped = storage
+            .drop_above(BlockHeight::try_from(1).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(dropped, vec![b], "only the tip is above the anchor");
+
+        assert_eq!(
+            storage.lookup(&a).await.unwrap().unwrap().member_of_fringe,
+            None,
+            "the orphaned mark is cleared — a rewound block's claim must not re-enter the view"
+        );
+        assert_eq!(
+            storage.lookup(&g).await.unwrap().unwrap().member_of_fringe,
+            mark(g),
+            "and a mark whose fringe a survivor still declares is kept — the pass clears orphans, not \
+             everything"
         );
     }
 
@@ -2037,16 +2013,17 @@ mod tests {
             metrics.gauge("rchain.dag", "index_entries"),
             Some(i64::try_from(repr.index_entries()).expect("fits i64"))
         );
-        // Every block in this chain declares the empty fringe, so the DAG caches exactly one
-        // fringe state — the gauge counts entries, not fringes ever seen.
-        assert_eq!(metrics.gauge("rchain.dag", "fringe_states"), Some(1));
+        // **Four gauges, not five** (Law 66/68; C250's residue, C270): the `fringe_states` gauge and
+        // the map it sized retired with the `fringe-data` store. There is no set of records left to
+        // count, so the published set is exactly these four.
+        assert_eq!(metrics.gauge("rchain.dag", "fringe_states"), None);
         assert!(
             expected > 0 && repr.seen_entries() > 0,
             "a non-empty DAG has a non-zero account"
         );
         // The negative control for a representation-only change, in exact units: this chain's account
-        // is a fixed number. Stage 5's re-keying of `fringe_states`, its `Arc`-ing of the index and
-        // this stage's own gauges must not move it — the accounting reads the *messages*, so a change
+        // is a fixed number. The retired `fringe_states` map, the `Arc`-ing of the index and this
+        // stage's own gauges must not move it — the accounting reads the *messages*, so a change
         // that moved this value would be a change to the DAG rather than to how it is held.
         assert_eq!(
             repr.logical_bytes(),
@@ -2075,14 +2052,15 @@ mod tests {
         assert_eq!(metrics.gauge("rchain.dag", "messages"), Some(7));
     }
 
-    /// A canonical digest of the representation's **value**: every message and every fringe datum,
-    /// independent of how the maps are keyed or whether they are shared. The fringe data is digested
-    /// *sorted on `fringe_hash`*, so re-keying `fringe_states` (5a) or `Arc`-ing the index (5c)
-    /// cannot move the digest — only a change to the data can.
+    /// A canonical digest of the representation's **value**: every message and the three index-map
+    /// sizes, independent of how the maps are keyed or whether they are shared.
     ///
-    /// This is the negative control the pass's own rule asks for on a representation-only change, and
-    /// it is falsifiable in both directions: it *moves* when the value moves (below), so a constant
-    /// digest is evidence rather than a tautology.
+    /// **The fringe records are not digested any more** (Law 66/68; C250's residue, C270): the map
+    /// they came from retired with the `fringe-data` store, and with it the only part of this digest
+    /// that had to be *sorted* before hashing. The digest is therefore simpler and pins less — it is
+    /// the messages and the index, exactly what the representation still is — and it remains
+    /// falsifiable in both directions: it *moves* when the value moves (below), so a constant digest
+    /// is evidence rather than a tautology.
     fn representation_digest(repr: &Arc<DagRepresentation>) -> String {
         let mut parts: Vec<String> = Vec::new();
         for (id, m) in &repr.dag_message_state.msg_map {
@@ -2102,18 +2080,6 @@ mod tests {
             repr.child_map.len(),
             repr.height_map.len()
         ));
-        let mut fringes: Vec<&rchain_models::fringe_data::FringeData> =
-            repr.fringe_states.values().collect();
-        fringes.sort_by_key(|fd| fd.fringe_hash);
-        for fd in fringes {
-            parts.push(format!(
-                "f {} n{} d{} r{}",
-                fd.fringe_hash.to_hex(),
-                fd.fringe.len(),
-                fd.fringe_diff.len(),
-                fd.rejected_deploys.len()
-            ));
-        }
         let refs: Vec<&[u8]> = parts.iter().map(|p| p.as_bytes()).collect();
         Blake2b256Hash::create_many(&refs).to_hex()
     }
@@ -2141,8 +2107,9 @@ mod tests {
 
         let before = representation_digest(&storage.get_representation().await);
         assert_eq!(
-            before, "be621d6c14454e0e4f69c81205ef0fe21457f8aea08db843dba63cbdb725c0c0",
-            "the representation's value for a 4-block chain"
+            before, "555361e149afda515e025bb54e3d7732b236c687de82521b241002bcc26b8459",
+            "the representation's value for a 4-block chain — recomputed when the fringe records \
+             left the digest as the `fringe-data` store retired (Law 66/68; C250's residue, C270)"
         );
 
         let mut m = meta(chain_hash(4), &[chain_hash(3)], 4);
@@ -2152,32 +2119,31 @@ mod tests {
         assert_ne!(before, after, "the digest moves when the DAG does");
     }
 
-    /// AUDIT C56's owed paragraph, first part — `fringe_states` is keyed by the **fringe store's own
-    /// key**, so the in-memory map is a faithful cache of the persisted one rather than a second
-    /// index with a different identity.
+    /// **The fringe claim travels with the block, and the mark names the fringe by its own key.**
     ///
-    /// The key is `FringeData::fringe_hash_of(fringe)` — a hash over the sorted fringe, which is what
-    /// `fringe_data_store` is keyed by (`insert`'s `put` and `create`'s `get` both use it). The old
-    /// key was the fringe *set* itself: every lookup compared whole sets, every insert built a fresh
-    /// set key, and the map's identity for a fringe could in principle disagree with the store's.
+    /// This test replaces `fringe_states_are_keyed_by_the_stores_own_key`. That one asserted the
+    /// in-memory `fringe_states` map was keyed by the fringe store's own key
+    /// (`FringeData::fringe_hash_of(fringe)`), so the map was a faithful cache of the store rather
+    /// than a second index with a different identity. **Both the map and the store retired** (Law
+    /// 66/68; C250's residue, C270), so that assertion is unstatable — there is no map to key — and
+    /// it is *re-expressed* around what is still checkable and still load-bearing: the single fact
+    /// both the old map and the readers now agree on, which is that a fringe is *named* by
+    /// `fringe_hash_of(its sorted set)`, and that a block which belongs to one records that name.
     ///
-    /// **How this is falsified (2026-09-24).** The map now *is* the store's index, so the claim is
-    /// checkable by construction rather than by a bound: this test reads the map with the store's key
-    /// and asserts the map's key, the datum's own `fringe_hash`, the persisted datum and the
-    /// finalized block's recorded `member_of_fringe` all agree. Restoring
-    /// `BTreeMap<BTreeSet<BlockHash>, FringeData>` makes the assertion unstatable — the map's `get`
-    /// takes a set while the store's takes the hash, so the two indexes cannot be compared at all —
-    /// and the compile failure is the falsifier; there is no runtime bound here to calibrate against
-    /// a tree that has moved (the pass has paid for that mistake twice), and the *value* half is the
-    /// negative control: `logical_bytes` and the fringe datum are unchanged by the re-keying.
+    /// The old test's key claim survives in this form: `member_of_fringe` is `fringe_hash_of(fringe)`
+    /// — a hash over the sorted set (Law 18: fringe identity is order-independent), not the set
+    /// itself — and it is written on the blocks that were *finalised by* the declaring block, which
+    /// is exactly the index the new readers (`multi_parent_casper.rs::get_pre_state_for_parents`,
+    /// `merging.rs`'s rejection derivation) walk. The claim half is now per-block metadata: a block's
+    /// own `fringe` and `fringe_state_hash`, written once under the block's hash.
     #[tokio::test]
-    async fn fringe_states_are_keyed_by_the_stores_own_key() {
+    async fn the_fringe_claim_travels_with_the_block_it_marks() {
         let storage = build_storage().await;
         let (genesis, left, right, tip) = (hash(0), hash(1), hash(2), hash(3));
 
-        // Two children of genesis, then a block that justifies only one of them but declares both
-        // as its fringe — so the fringe diff is non-empty and a block is marked with its member
-        // fringe (`insert`'s `member_of_fringe`), which is the record this test compares against.
+        // Two children of genesis, then a block that justifies only one of them but declares both as
+        // its fringe — so the fringe diff is non-empty and the *finalised* blocks are marked with
+        // their member fringe (`insert`'s `member_of_fringe`), which is what this test reads.
         for (seq, h, parents) in [
             (0i64, genesis, vec![]),
             (1, left, vec![genesis]),
@@ -2191,52 +2157,44 @@ mod tests {
         let mut m = meta(tip, &[left], 3);
         m.seq_num = 3.try_into().unwrap();
         m.fringe = fringe.clone();
+        // A distinct state, so the claim assertion below is about the value the block carried rather
+        // than about a fixture default.
+        m.fringe_state_hash = StateHash::new([0x7au8; 32]);
         storage.insert(m, block(tip)).await.unwrap();
 
-        let repr = storage.get_representation().await;
-        let key = FringeData::fringe_hash_of(&fringe);
-
-        // The map is keyed by the store's key: the empty fringe the genesis blocks declared is
-        // cached under *its* hash, and this fringe under its own — two distinct hashes, no set.
-        assert_eq!(
-            repr.fringe_states.len(),
-            2,
-            "the empty fringe and this one, each by its own hash"
+        // **The name.** A fringe's key is the hash of its *sorted set* — the mark below is that value,
+        // and building the set in either order gives it, which is Law 18 on the type that replaces
+        // the retired `FringeData::fringe_hash_of`.
+        let key = rchain_models::block_metadata::fringe_hash_of(&fringe);
+        let reversed_key = rchain_models::block_metadata::fringe_hash_of(
+            &[right, left].into_iter().collect::<BTreeSet<_>>(),
         );
-        assert!(
-            repr.fringe_states
-                .contains_key(&FringeData::fringe_hash_of(&BTreeSet::new())),
-            "an empty fringe has its own key"
-        );
-        let cached = repr
-            .fringe_states
-            .get(&key)
-            .unwrap_or_else(|| panic!("no fringe data cached under the store's key {key:?}"));
-        assert_eq!(cached.fringe_hash, key, "the datum's own key agrees");
-        assert_eq!(cached.fringe, fringe, "and its fringe is the fringe");
+        assert_eq!(key, reversed_key, "fringe identity is order-independent");
 
-        // The persisted store answers the same key with the same datum: one identity, two places.
-        let persisted = storage
-            .fringe_data_store
-            .get(&[key])
-            .await
-            .unwrap()
-            .into_iter()
-            .next()
-            .flatten()
-            .expect("the fringe data was persisted under that key");
-        assert_eq!(persisted, *cached);
+        // **The mark.** Both finalised blocks record that key as their member fringe — the index is
+        // the fringe's own hash, exactly as the retired map's key was (the re-expressed half of the
+        // old test's claim).
+        for h in [left, right] {
+            assert_eq!(
+                storage.lookup(&h).await.unwrap().unwrap().member_of_fringe,
+                Some(key),
+                "a block finalised by the fringe is marked with the fringe's own key"
+            );
+        }
 
-        // And the finalized block records that same key as its member fringe.
+        // **The claim.** It is the declaring block's *own* metadata — its `fringe` and the state it
+        // derived for that fringe — written once under its hash. The old test read this same value
+        // out of the store's record; a reader names the block now (Law 68's version), so the block's
+        // metadata is where the value lives. There is no second place (no map) that could disagree.
+        let tip_meta = storage.lookup(&tip).await.unwrap().unwrap();
         assert_eq!(
-            storage
-                .lookup(&right)
-                .await
-                .unwrap()
-                .unwrap()
-                .member_of_fringe,
-            Some(key),
-            "a block finalized by the fringe is marked with the fringe's key"
+            tip_meta.fringe, fringe,
+            "the block declares the fringe it finalised"
+        );
+        assert_eq!(
+            tip_meta.fringe_state_hash,
+            StateHash::new([0x7au8; 32]),
+            "and carries the state it derived for it — the claim, on the block"
         );
     }
 
@@ -2443,12 +2401,6 @@ mod tests {
             .await
             .unwrap();
 
-        let fringe_store: Arc<dyn KeyValueTypedStore<Blake2b256Hash, FringeData>> =
-            Arc::new(KeyValueTypedStoreCodec::new(
-                in_memory(),
-                Arc::new(Blake2b256HashCodec),
-                Arc::new(FringeDataCodec),
-            ));
         let deploy_index: Arc<dyn KeyValueTypedStore<DeployId, BlockHash>> =
             Arc::new(KeyValueTypedStoreCodec::new(
                 in_memory(),
@@ -2462,13 +2414,8 @@ mod tests {
                 Arc::new(SignedDeployDataCodec),
             ));
 
-        let err = match BlockDagKeyValueStorage::create(
-            metadata_store,
-            fringe_store,
-            deploy_index,
-            deploy_store,
-        )
-        .await
+        let err = match BlockDagKeyValueStorage::create(metadata_store, deploy_index, deploy_store)
+            .await
         {
             Ok(_) => panic!("a store that already contains a fork must not restore silently"),
             Err(e) => e,

@@ -364,7 +364,6 @@ async fn an_undelegation_stages_through_the_block_path() {
 async fn a_merged_block_reproduces_its_own_post_state() {
     use rchain_casper::merging::{BlockIndex, MergeScope};
     use rchain_models::block_hash::BlockHash;
-    use rchain_models::fringe_data::FringeData;
     use rchain_rspace::merger::event_log_index::NumberChannelsDiff;
 
     let rm = build_runtime_manager_with_mode(EffectMode::Sequential).await;
@@ -455,7 +454,7 @@ async fn a_merged_block_reproduces_its_own_post_state() {
     let outcome = MergeScope::merge(
         &scope,
         start,
-        &BTreeMap::<Blake2b256Hash, FringeData>::new(),
+        &rchain_casper::merging::RejectionsMap::new(),
         rm.get_history_repo(),
         &lookup,
         |_| 0,

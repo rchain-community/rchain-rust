@@ -20,19 +20,17 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use rchain_block_storage::dag::codecs::{
-    Blake2b256HashCodec, BlockHashCodec, BlockMetadataCodec, FringeDataCodec, SignedDeployDataCodec,
+    BlockHashCodec, BlockMetadataCodec, SignedDeployDataCodec,
 };
 use rchain_block_storage::dag::dag_storage::BlockDagStorage;
 use rchain_casper::block_metadata_store::BlockMetadataStore;
 use rchain_casper::block_status::BlockStatus;
 use rchain_casper::dag::{BlockDagKeyValueStorage, EQUIVOCATION_PREFIX};
 use rchain_casper::validate::{equivocation_is_proved, slashable_senders};
-use rchain_crypto::hash::blake2b256_hash::Blake2b256Hash;
 use rchain_crypto::private_key::PrivateKey;
 use rchain_models::block_hash::BlockHash;
 use rchain_models::block_metadata::BlockMetadata;
 use rchain_models::casper::protocol::casper_message::{BlockMessage, RholangState};
-use rchain_models::fringe_data::FringeData;
 use rchain_models::validator::Validator;
 use rchain_shared::refined::{BlockHeight, SeqNum};
 use rchain_shared::store::{InMemoryKeyValueStore, KeyValueStore};
@@ -58,13 +56,6 @@ async fn build_storage() -> Arc<BlockDagKeyValueStorage> {
         .await
         .expect("metadata store"),
     );
-    let fringe_store: Arc<
-        dyn rchain_shared::typed_store::KeyValueTypedStore<Blake2b256Hash, FringeData>,
-    > = Arc::new(KeyValueTypedStoreCodec::new(
-        in_memory(),
-        Arc::new(Blake2b256HashCodec),
-        Arc::new(FringeDataCodec),
-    ));
     let deploy_index: Arc<
         dyn rchain_shared::typed_store::KeyValueTypedStore<
             rchain_block_storage::dag::dag_storage::DeployId,
@@ -86,7 +77,7 @@ async fn build_storage() -> Arc<BlockDagKeyValueStorage> {
         Arc::new(SignedDeployDataCodec),
     ));
     Arc::new(
-        BlockDagKeyValueStorage::create(metadata_store, fringe_store, deploy_index, deploy_store)
+        BlockDagKeyValueStorage::create(metadata_store, deploy_index, deploy_store)
             .await
             .expect("dag storage"),
     )

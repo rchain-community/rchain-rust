@@ -937,7 +937,6 @@ mod tests {
                 (BlockHeight::try_from(1).unwrap(), BTreeSet::from([tip])),
             ])),
             dag_message_state: DagMessageState::from_parts(latest_msgs, msg_map),
-            fringe_states: BTreeMap::new(),
         };
 
         assert_eq!(
@@ -1046,7 +1045,6 @@ mod tests {
             child_map: Arc::new(BTreeMap::new()),
             height_map: Arc::new(BTreeMap::new()),
             dag_message_state: state,
-            fringe_states: BTreeMap::new(),
         }
     }
 

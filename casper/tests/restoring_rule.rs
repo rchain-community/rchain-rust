@@ -88,7 +88,6 @@ impl BlockDagStorage for RecordingDag {
             child_map: Arc::new(BTreeMap::new()),
             height_map: Arc::new(BTreeMap::new()),
             dag_message_state: self.message_state.lock().expect("message state").clone(),
-            fringe_states: BTreeMap::new(),
         })
     }
     async fn insert(&self, m: BlockMetadata, _b: BlockMessage) -> Result<(), String> {
