@@ -27,6 +27,7 @@ use tokio::sync::mpsc;
 use crate::blocks::block_retriever::BlockRetriever;
 use crate::bonds_parser;
 use crate::conf::ShardSpec;
+use crate::engine::catchup::{self, CatchupWindow};
 use crate::engine::node_running::NodeRunning;
 use crate::engine::node_syncing::NodeSyncing;
 use crate::genesis::contracts::{ProofOfStake, Registry, Validator};
@@ -370,20 +371,69 @@ pub async fn apply<I: RSpaceImporter + Send + 'static, E: RSpaceExporter>(
         log.info(source, "Reconnecting to existing network...");
     }
 
+    // **The catch-up window and the driver that walks it** (C259). A node restored at an anchor below
+    // its peers' tip cannot ingest the gap through the hash-keyed pull: the walk runs downward from a
+    // peer's tip, each block justifies ones inside the gap, and the receiver's pending set saturates
+    // (measured: 173 drops, one block validated, frozen 121 against a master's 577). The window narrows
+    // the ingest to a couple of windows' worth while the driver walks outward asking for heights;
+    // released — by the driver's every exit path, including its first empty answer — the ingest is
+    // exactly what it was before, so a node that never catches up is unaffected.
+    let catchup = Arc::new(CatchupWindow::new(catchup::WINDOW_HEIGHTS));
+    let (block_range_tx, block_range_rx) = tokio::sync::mpsc::channel(4);
+
     // Transition to running mode.
     let engine = NodeRunning::new(
-        transport,
-        rp_conf,
+        transport.clone(),
+        rp_conf.clone(),
         block_store,
-        dag,
+        dag.clone(),
         block_retriever,
         log.clone(),
         validator_identity_opt,
         incoming_blocks,
         exporter,
         disable_state_exporter,
+        catchup.clone(),
+        block_range_tx,
     );
     log.info(source, "Making a transition to Running state.");
+
+    // **Only a node that named an anchor catches up.** An ordinary joiner is level with the fringe it
+    // synced to; its first window would come back empty and the driver would release the gate having
+    // done nothing, which is a round trip this avoids. If there is no bootstrap there is nobody to
+    // walk against, so the driver is not started and the receive end is dropped with it.
+    if sync_anchor.is_some() {
+        match rp_conf.bootstrap.clone() {
+            Some(peer) => {
+                let (transport, conf, connections, dag, log) = (
+                    transport.clone(),
+                    rp_conf.clone(),
+                    connections.clone(),
+                    dag.clone(),
+                    log.clone(),
+                );
+                tokio::spawn(async move {
+                    catchup::run_catchup(
+                        transport,
+                        conf,
+                        connections,
+                        dag,
+                        log,
+                        catchup,
+                        peer,
+                        block_range_rx,
+                    )
+                    .await;
+                });
+            }
+            None => {
+                log.warn(
+                    source,
+                    "--sync-anchor was given without a bootstrap: nothing to catch up against",
+                );
+            }
+        }
+    }
     wait_for_first_connection(&connections, log.as_ref()).await;
     comm_util.send_fork_choice_tip_request().await;
     while let Some(pm) = packet_rx.recv().await {

@@ -32,6 +32,7 @@ use rchain_shared::refined::BlockHeight;
 
 use crate::blocks::block_receiver::not_validated;
 use crate::blocks::block_retriever::{AdmitHashReason, BlockRetriever};
+use crate::engine::catchup::CatchupWindow;
 use crate::protocol::casper_message_protocol::{
     BlockMessageSerde, BlockRangeSerde, FinalizedFringeSerde, HasBlockSerde, StoreItemsMessageSerde,
 };
@@ -808,6 +809,12 @@ pub struct NodeRunning<E: RSpaceExporter> {
     /// Operator switch: refuse store-items (state-sync) requests (port of the Scala's
     /// `disableStateExporter`).
     disable_state_exporter: bool,
+    /// The temporary ingest window a catch-up holds (C259). Released — admitting every height — unless
+    /// a driver is walking, so an ordinary node's ingest is unchanged by this field.
+    catchup: Arc<CatchupWindow>,
+    /// Where a `BlockRange` answer goes: the catch-up driver owns the receiver. A full channel is not
+    /// an error — it means the walk that asked has ended.
+    block_range_tx: tokio::sync::mpsc::Sender<BlockRange>,
 }
 
 impl<E: RSpaceExporter> NodeRunning<E> {
@@ -823,6 +830,8 @@ impl<E: RSpaceExporter> NodeRunning<E> {
         incoming_blocks: tokio::sync::mpsc::Sender<BlockMessage>,
         exporter: E,
         disable_state_exporter: bool,
+        catchup: Arc<CatchupWindow>,
+        block_range_tx: tokio::sync::mpsc::Sender<BlockRange>,
     ) -> Self {
         NodeRunning {
             transport,
@@ -834,6 +843,8 @@ impl<E: RSpaceExporter> NodeRunning<E> {
             log_source: LogSource::new("casper.engine.NodeRunning"),
             validator_id,
             incoming_blocks,
+            catchup,
+            block_range_tx,
             block_request_limit: Arc::new(PeerRateLimiter::new(
                 DEFAULT_BLOCK_REQUEST_LIMIT_PER_SEC,
             )),
@@ -904,6 +915,23 @@ impl<E: RSpaceExporter> NodeRunning<E> {
                         ),
                     );
                 } else {
+                    // **The catch-up window** (C259, `engine::catchup`). While a walk is catching this
+                    // node up, a block above the window is one whose parents are not validated yet, and
+                    // pending it is exactly what fills `MAX_PENDING_BLOCKS` and freezes the node
+                    // (measured: 173 drops, one block validated, height 121 against a master's 577).
+                    // This one is left **un-acked** rather than refused, so the retriever offers it
+                    // again once the frontier has moved past it: a pace, not a loss.
+                    if !self.catchup.admits(i64::from(b.block_number)) {
+                        self.log.debug(
+                            self.log_source,
+                            &format!(
+                                "Block #{} from {} is above the catch-up window; leaving it for the \
+                                 retriever",
+                                b.block_number, peer.endpoint.host
+                            ),
+                        );
+                        return;
+                    }
                     if self.incoming_blocks.try_send(b.clone()).is_err() {
                         self.log.warn(
                             self.log_source,
@@ -1043,10 +1071,16 @@ impl<E: RSpaceExporter> NodeRunning<E> {
                 )
                 .await;
             }
-            CasperMessage::BlockRange(_) => {
-                // The answer to a window this node asked for; the catch-up driver owns it, and the
-                // engine has nothing to do with it — the same shape as `HasBlock`, which the retriever
-                // consumes rather than the engine.
+            CasperMessage::BlockRange(answer) => {
+                // The answer to a window this node asked for: hand it to the catch-up driver, which
+                // owns the receiver. A closed or full channel is not an error — it means the walk that
+                // asked for it has ended, and the answer is then simply stale.
+                if self.block_range_tx.try_send(answer.clone()).is_err() {
+                    self.log.debug(
+                        self.log_source,
+                        "a block-range answer arrived with no catch-up waiting for it",
+                    );
+                }
             }
             CasperMessage::FinalizedFringeRequest(req) => {
                 // The response construction — the peer's own fringe, or the block a recovery sync
@@ -1675,6 +1709,79 @@ mod tests {
         )
     }
 
+    /// **A block above the catch-up window is left for the retriever, not pended** (C259).
+    ///
+    /// This is the gate that keeps the pending set from filling with a whole gap: while a walk is
+    /// catching a node up, anything above `frontier + window` is left **un-acked** — the retriever
+    /// offers it again once the frontier has moved past, so nothing is lost — and the control below
+    /// shows the same node queueing a block *inside* its window, so the assertion is about the height
+    /// and not about the message being ignored for some other reason.
+    #[tokio::test]
+    async fn a_block_above_the_catchup_window_is_left_for_the_retriever_and_one_inside_is_queued() {
+        let local = peer("src", 40400);
+        let remote = peer("peer", 40400);
+        let transport = Arc::new(MockTransport::default());
+        let connections: ConnectionsCell = Arc::new(tokio::sync::RwLock::new(Vec::new()));
+        let comm_util = Arc::new(CommUtil::new(
+            transport.clone(),
+            conf(&local),
+            connections,
+            Arc::new(NopLog),
+        ));
+        let retriever = Arc::new(BlockRetriever::new(comm_util, Arc::new(NopLog)));
+        let store = block_store(vec![]).await;
+        let (incoming_tx, mut incoming_rx) = tokio::sync::mpsc::channel(4);
+        let (block_range_tx, _block_range_rx) = tokio::sync::mpsc::channel(4);
+        let window = Arc::new(CatchupWindow::new(crate::engine::catchup::WINDOW_HEIGHTS));
+
+        let running = NodeRunning::new(
+            transport.clone(),
+            conf(&local),
+            store.clone(),
+            build_dag().await,
+            retriever,
+            Arc::new(NopLog),
+            None,
+            incoming_tx,
+            MockExporter,
+            false,
+            window.clone(),
+            block_range_tx,
+        );
+
+        // A block far above the node's frontier: the gap, not the window.
+        let far = chain_block(9, 500, &[]);
+        window.hold(100); // admits up to 108
+        running
+            .handle(&remote, &CasperMessage::BlockMessage(far.clone()))
+            .await;
+        assert!(
+            incoming_rx.try_recv().is_err(),
+            "height 500 is above a window held at 100 and must not be pended"
+        );
+
+        // The control: a block *inside* the window is queued as usual, so the drop above is about the
+        // height and not about the message, the sender or the store.
+        let inside = chain_block(8, 105, &[]);
+        running
+            .handle(&remote, &CasperMessage::BlockMessage(inside.clone()))
+            .await;
+        let taken = incoming_rx
+            .try_recv()
+            .expect("a block inside the catch-up window is queued");
+        assert_eq!(taken.block_hash, inside.block_hash);
+
+        // Released, the same far block is queued: the gate is a pace, not a filter.
+        window.release();
+        running
+            .handle(&remote, &CasperMessage::BlockMessage(far.clone()))
+            .await;
+        let taken = incoming_rx
+            .try_recv()
+            .expect("with the window released the gap block is ordinary ingress again");
+        assert_eq!(taken.block_hash, far.block_hash);
+    }
+
     /// **`NodeRunning::handle`'s dispatch, and the hand-offs it owns.** Every arm calls a free handler
     /// that has its own test, so what is uncovered is the *routing* — which arm a message takes — and
     /// the two hand-offs into the node's own machinery: an unseen block goes into `incoming_blocks`,
@@ -1699,6 +1806,7 @@ mod tests {
         let unseen = block(hash(2));
         let store = block_store(vec![known.clone()]).await;
         let (incoming_tx, mut incoming_rx) = tokio::sync::mpsc::channel(4);
+        let (block_range_tx, _block_range_rx) = tokio::sync::mpsc::channel(4);
 
         let running = NodeRunning::new(
             transport.clone(),
@@ -1711,6 +1819,8 @@ mod tests {
             incoming_tx,
             MockExporter,
             false,
+            Arc::new(CatchupWindow::new(crate::engine::catchup::WINDOW_HEIGHTS)),
+            block_range_tx,
         );
 
         // An unseen block is handed to the block-processing queue — this is the node's ingress.
