@@ -164,6 +164,16 @@ pub async fn run_catchup(
                 break;
             }
         };
+        log.info(
+            source,
+            &format!(
+                "window {}..={} arrived with {} hash(es), peer tip {}",
+                answer.from,
+                answer.to,
+                answer.hashes.len(),
+                answer.tip
+            ),
+        );
         // **An empty window is the end of the gap**, and it is also what this node gets from a peer
         // that does not know the message — the same degraded exchange the anchored fringe request
         // gets, and the reason the message is a non-breaking addition.

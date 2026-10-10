@@ -1080,8 +1080,22 @@ impl<E: RSpaceExporter> NodeRunning<E> {
                 // The answer to a window this node asked for: hand it to the catch-up driver, which
                 // owns the receiver. A closed or full channel is not an error — it means the walk that
                 // asked for it has ended, and the answer is then simply stale.
+                // Logged at `info` rather than `debug`: the only traffic on this message is a
+                // catch-up's own windows, so the line is rare by construction, and "the answer arrived
+                // but the walk never moved" is otherwise invisible from outside — which is exactly the
+                // shape a wiring mistake takes (found by running it, 2026-10-10).
+                self.log.info(
+                    self.log_source,
+                    &format!(
+                        "received a block-range answer {}..={} with {} hash(es), tip {}",
+                        answer.from,
+                        answer.to,
+                        answer.hashes.len(),
+                        answer.tip
+                    ),
+                );
                 if self.block_range_tx.try_send(answer.clone()).is_err() {
-                    self.log.debug(
+                    self.log.warn(
                         self.log_source,
                         "a block-range answer arrived with no catch-up waiting for it",
                     );
