@@ -20,8 +20,9 @@ use rchain_crypto::hash::blake2b256_hash::Blake2b256Hash;
 use rchain_models::block::state_hash::StateHash;
 use rchain_models::block_hash::BlockHash;
 use rchain_models::casper::protocol::casper_message::{
-    BlockFringe, BlockMessage, BlockRequest, CasperMessage, FinalizedFringe,
-    FinalizedFringeRequest, HasBlock, HasBlockRequest, StoreItemsMessage, StoreItemsMessageRequest,
+    BlockFringe, BlockMessage, BlockRange, BlockRangeRequest, BlockRequest, CasperMessage,
+    FinalizedFringe, FinalizedFringeRequest, HasBlock, HasBlockRequest, StoreItemsMessage,
+    StoreItemsMessageRequest,
 };
 use rchain_models::casper::protocol::packet_type_tag::ToPacket;
 use rchain_models::fringe_data::FringeData;
@@ -32,7 +33,7 @@ use rchain_shared::refined::BlockHeight;
 use crate::blocks::block_receiver::not_validated;
 use crate::blocks::block_retriever::{AdmitHashReason, BlockRetriever};
 use crate::protocol::casper_message_protocol::{
-    BlockMessageSerde, FinalizedFringeSerde, HasBlockSerde, StoreItemsMessageSerde,
+    BlockMessageSerde, BlockRangeSerde, FinalizedFringeSerde, HasBlockSerde, StoreItemsMessageSerde,
 };
 use crate::validator_identity::ValidatorIdentity;
 
@@ -313,6 +314,96 @@ pub async fn handle_fork_choice_tip_request(
             peer.endpoint.host
         ),
     );
+}
+
+/// Answer a height-window request with the hashes at those heights, in topological order (C259's
+/// catch-up).
+///
+/// **The window is bounded by this node's own limit, not by the requester's word** — a peer asking for
+/// a hundred thousand heights gets the limit's worth, exactly as the block API's own depth limit
+/// refuses a wider range (`casper/src/api/block_api_impl.rs::get_blocks_by_heights`, the worked example
+/// of `topo_sort_unsafe`). The answer is hashes rather than blocks: a window is tens of blocks, the
+/// requester already has `BlockRequest`, and keeping the payload to a kilobyte is what lets the window
+/// be small enough to pace.
+///
+/// **A height with no blocks is simply absent from the answer**, which is why the response echoes the
+/// bounds instead of a count: the requester advances by `to`, not by what it received.
+pub async fn handle_block_range_request(
+    transport: &dyn TransportLayer,
+    conf: &RPConf,
+    dag: &dyn BlockDagStorage,
+    log: &dyn Log,
+    source: LogSource,
+    peer: &PeerNode,
+    req: BlockRangeRequest,
+) {
+    let Some(response) = block_range_response(dag, log, source, &req).await else {
+        return;
+    };
+    log.info(
+        source,
+        &format!(
+            "answering a block-range request {}..={} from {} with {} hash(es)",
+            response.from,
+            response.to,
+            peer.endpoint.host,
+            response.hashes.len()
+        ),
+    );
+    if let Err(e) = transport_layer_syntax::send_to_peer(
+        transport,
+        conf,
+        peer,
+        BlockRangeSerde.mk_packet(&response),
+    )
+    .await
+    {
+        log.warn(
+            source,
+            &format!(
+                "could not answer a block-range request from {}: {e}",
+                peer.endpoint.host
+            ),
+        );
+    }
+}
+
+/// The answer to a height-window request, or `None` when the range cannot be ordered — the silence the
+/// requester degrades on, and the same answer an unaware responder gives (C259's catch-up).
+///
+/// A free function of the DAG so the choice has a test that does not need a whole engine, which is the
+/// shape `finalized_fringe_response` already has for its own (C259a).
+pub async fn block_range_response(
+    dag: &dyn BlockDagStorage,
+    log: &dyn Log,
+    source: LogSource,
+    req: &BlockRangeRequest,
+) -> Option<BlockRange> {
+    let to = req.to.min(req.from.saturating_add(MAX_BLOCK_RANGE as i64));
+    let repr = dag.get_representation().await;
+    match repr.topo_sort_unsafe(req.from, Some(to)) {
+        Ok(topo) => {
+            let mut hashes = Vec::new();
+            for level in &topo {
+                hashes.extend(level.iter().copied());
+            }
+            Some(BlockRange {
+                from: req.from,
+                to,
+                hashes,
+            })
+        }
+        Err(e) => {
+            // A range this node cannot order — below its own floor, or malformed — is answered with
+            // nothing rather than with a guess: a wrong window would have the requester validate the
+            // wrong blocks, where silence costs it one empty step and it stops.
+            log.warn(
+                source,
+                &format!("refusing a block-range request {}..={}: {e}", req.from, to),
+            );
+            None
+        }
+    }
 }
 
 /// Stream a finalized fringe to a peer (port of `handleFinalizedFringeRequest`).
@@ -658,6 +749,12 @@ pub async fn handle_store_items_request<E: RSpaceExporter>(
 /// drops blocks (via `try_send`) rather than blocking the inbound task when it is full.
 pub const MAX_PENDING_BLOCKS: usize = 1024;
 
+/// How many heights one `BlockRange` answer may cover (C259's catch-up). **A window, not a limit on
+/// what a node may hold**: the requester validates one window before asking for the next, so a
+/// catch-up of any length stays far below `MAX_PENDING_BLOCKS` instead of saturating it. Eight heights
+/// is at most 32 blocks on a four-validator shard and under a kilobyte of hashes.
+pub const MAX_BLOCK_RANGE: usize = 8;
+
 /// Whether the block store holds `hash` — the `contains` half of the receiver's presence reads.
 ///
 /// **A store that cannot be read is an error, not "unknown".** The oracle reads presence inside `F`
@@ -933,6 +1030,23 @@ impl<E: RSpaceExporter> NodeRunning<E> {
                     peer,
                 )
                 .await;
+            }
+            CasperMessage::BlockRangeRequest(req) => {
+                handle_block_range_request(
+                    self.transport.as_ref(),
+                    &self.conf,
+                    self.dag.as_ref(),
+                    self.log.as_ref(),
+                    self.log_source,
+                    peer,
+                    req.clone(),
+                )
+                .await;
+            }
+            CasperMessage::BlockRange(_) => {
+                // The answer to a window this node asked for; the catch-up driver owns it, and the
+                // engine has nothing to do with it — the same shape as `HasBlock`, which the retriever
+                // consumes rather than the engine.
             }
             CasperMessage::FinalizedFringeRequest(req) => {
                 // The response construction — the peer's own fringe, or the block a recovery sync
@@ -1774,6 +1888,57 @@ mod tests {
         b.justifications = parents.to_vec();
         b.post_state_hash = StateHash::new([id; 32]);
         b
+    }
+
+    /// **A window is answered in topological order, and only as wide as this node allows.** The
+    /// requester walks the gap upward from its own frontier, so the order is the contract: ascending
+    /// height, every parent before its children. And the *width* is the responder's limit, not the
+    /// requester's word — a peer asking for a hundred thousand heights gets a window.
+    #[tokio::test]
+    async fn a_block_range_request_is_answered_in_topological_order_within_the_responder_limit() {
+        use rchain_models::block_metadata::BlockMetadata;
+
+        let dag = build_dag().await;
+        let g = chain_block(0, 0, &[]);
+        let a = chain_block(1, 1, &[g.block_hash]);
+        let anchor = chain_block(2, 2, &[a.block_hash]);
+        for b in [&g, &a, &anchor] {
+            dag.insert(BlockMetadata::from_block(b), b.clone())
+                .await
+                .expect("the block inserts");
+        }
+
+        let req = BlockRangeRequest { from: 0, to: 2 };
+        let answer = block_range_response(dag.as_ref(), &NopLog, LogSource::new("test"), &req)
+            .await
+            .expect("a range this node holds is answered");
+        assert_eq!(
+            answer.hashes,
+            vec![g.block_hash, a.block_hash, anchor.block_hash],
+            "ascending height, parent before child"
+        );
+        assert_eq!((answer.from, answer.to), (0, 2));
+
+        // A window above anything this node holds is an *empty answer*, not a refusal: the requester's
+        // walk reads that as "the peer has nothing above my frontier" and stops.
+        let above = BlockRangeRequest { from: 3, to: 5 };
+        let empty = block_range_response(dag.as_ref(), &NopLog, LogSource::new("test"), &above)
+            .await
+            .expect("an empty window is still an answer");
+        assert!(empty.hashes.is_empty());
+
+        // The requester's `to` is a request, not a promise: the answer never exceeds one window.
+        let wide = BlockRangeRequest {
+            from: 0,
+            to: i64::MAX,
+        };
+        let bounded = block_range_response(dag.as_ref(), &NopLog, LogSource::new("test"), &wide)
+            .await
+            .expect("a wide range is bounded, not refused");
+        assert_eq!(
+            bounded.to, MAX_BLOCK_RANGE as i64,
+            "the responder bounds the window by its own limit"
+        );
     }
 
     /// **A recovery sync's root, and the ancestry that makes it replayable** (C259a).

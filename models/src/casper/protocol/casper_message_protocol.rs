@@ -4,9 +4,10 @@ use crate::casper::protocol::casper_message::CasperMessageProto;
 use crate::casper::protocol::packet_type_tag::{PacketParseResult, PacketTypeTag};
 use crate::errors::ModelsError;
 use crate::proto::casper::{
-    BlockHashMessageProto, BlockMessageProto, BlockRequestProto, FinalizedFringeProto,
-    FinalizedFringeRequestProto, ForkChoiceTipRequestProto, HasBlockProto, HasBlockRequestProto,
-    StoreItemsMessageProto, StoreItemsMessageRequestProto,
+    BlockHashMessageProto, BlockMessageProto, BlockRangeProto, BlockRangeRequestProto,
+    BlockRequestProto, FinalizedFringeProto, FinalizedFringeRequestProto,
+    ForkChoiceTipRequestProto, HasBlockProto, HasBlockRequestProto, StoreItemsMessageProto,
+    StoreItemsMessageRequestProto,
 };
 use crate::proto::routing::Packet;
 
@@ -44,6 +45,16 @@ pub fn to_casper_message_proto(packet: &Packet) -> PacketParseResult<CasperMessa
         >(
             &packet.content
         )?)),
+        PacketTypeTag::BlockRangeRequest => {
+            Ok(CasperMessageProto::BlockRangeRequest(decode_proto::<
+                BlockRangeRequestProto,
+            >(
+                &packet.content
+            )?))
+        }
+        PacketTypeTag::BlockRange => Ok(CasperMessageProto::BlockRange(decode_proto::<
+            BlockRangeProto,
+        >(&packet.content)?)),
         PacketTypeTag::ForkChoiceTipRequest => {
             Ok(CasperMessageProto::ForkChoiceTipRequest(decode_proto::<
                 ForkChoiceTipRequestProto,

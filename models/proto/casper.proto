@@ -61,6 +61,29 @@ message BlockRequestProto {
   bytes hash = 1;
 }
 
+// A bounded window of the DAG by height (C259's catch-up). Every other block request here is keyed by
+// hash, so a node that has restored at an anchor well below the tip can only walk **downward** from a
+// peer's tip through justifications — and because each new block's justifications point into the gap,
+// that pull drags the whole gap in at once and the receiver's pending set saturates long before the gap
+// is covered (measured: 173 drops, one block validated, the node frozen). This asks for the blocks at
+// heights [from, to] instead, so the walk can be ordered ascending and paced in windows.
+// A responder that does not know this message answers nothing — the same degraded exchange
+// `FinalizedFringeRequest.anchor` gets — so a mixed pair keeps today's behaviour rather than failing.
+message BlockRangeRequestProto {
+  int64 from = 1;
+  int64 to   = 2;
+}
+
+// The answer: the heights asked for and the hashes at them, in **topological order** — ascending
+// height, every parent before its children. Hashes rather than blocks: a window is tens of blocks and
+// the requester asks for each one by the ordinary `BlockRequest` path, which keeps this response small
+// (a window of eight heights is under a kilobyte) and leaves the pacing in one place.
+message BlockRangeProto {
+  int64          from   = 1;
+  int64          to     = 2;
+  repeated bytes hashes = 3;
+}
+
 message BlockHashMessageProto {
   bytes hash         = 1;
   bytes blockCreator = 2;
