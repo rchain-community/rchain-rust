@@ -57,3 +57,24 @@ Every sighting of this shape (three before this one) was against a master that w
 that always worked put the joiners against a chain nobody was producing to (solo master, then joiners, then
 autopropose off). That is consistent with a cursor that only fails to advance under load — and it is not yet
 shown, which is why this is written as the next question rather than as the cause.
+
+== and it would not reproduce on demand: three deliberate stagings, all healthy ==
+
+With the cursor logged, the shape was staged three ways and did **not** recur:
+
+  1. solo master racing (autopropose) at h=151, then `reset 1` — joiner reached the master's height
+     (189 = 189), 171 requests, `LFS state is successfully restored`, cursors advancing (distinct paths,
+     `[]` twice);
+  2. solo master at h=169, then `reset 1` — 219 = 219, restored, cursors advancing;
+  3. the same master, then `reset 1` **and** `reset 2` concurrently (the hypothesis being that two walks at
+     once starve one) — both reached 280 = 280, 226 requests each, both restored.
+
+So the two sightings that stuck are not "a joiner against a racing master" (that worked three times), and
+they are not "two joiners at once" (that worked too). What both sightings had, and these three did not, is a
+master that had been producing for a while **and** other nodes joining the same net — which is a description,
+not a cause, and it is not treated as one here.
+
+What is in place is the discriminator: `LfsTupleSpaceRequester` logs `Sending StoreItemsRequest to bootstrap
+for path {id:?}` per request, so the next run that sticks is compared against the control line for line
+(healthy: distinct cursors, ~150-230 requests, then restored). Until then C268 records: *when it happens, the
+joiner is answered, is served, and never finishes; nothing is refused and nothing fails.*
