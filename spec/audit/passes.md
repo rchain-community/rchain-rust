@@ -9077,3 +9077,41 @@ the reason is C270's stall rather than the joiners it named.
 tests still pin it. The question C270 asks is the next unit's — what a node should *do* when its own merge
 result changes under it — and it is a consensus-core decision, not a patch: every route changes what a node
 does with a disagreement rather than merely silencing one.
+
+## 93. The proposer no longer halts on a divergence, and the rig's other half names itself (C268, C270)
+
+**The fix, and it was already typed.** C270's mechanism — a fringe key recorded with two states makes a node
+reject its own block — ran into a policy that is *deliberate*: the proposer's `ValidationFailed` arm counts
+any self-rejection toward the autopropose halt, because a self-created block failing its own validation means
+"node state accounting is inconsistent". But `BlockStatus::failure_cause()` — a classification the codebase
+already carries, with the doc *"Decided by this node's state or replay, so a node with a different view
+reaches the same verdict for a block that is valid elsewhere"* — puts `InvalidPreStateHash` and its class in
+`FailureCause::Divergence`, and the arm never consulted it. So one arm treated as a node-side bug what another
+part of the tree classifies as a property of views.
+
+The arm now takes the divergence case first: **not counted** toward the halt, **not broadcast** (the block this
+node's own view rejected must not go out), and read as "not due" so the next tick re-derives — exactly the
+shape the stale-snapshot arm has had since §48, for exactly the same reason. A status that is the *block's own
+fault* still counts and still halts; two unit tests pin both sides, and the divergence test asserts the
+counter — the one the timer halts on — does not move, which is the whole claim.
+
+**What the drill did and did not show.** The same command that had stalled three of four nodes at height 49
+(`up --validators 4 --fresh`, autopropose) was run with the fix in place: **zero self-rejections on all three
+live nodes** (4 each before) and the three levels at **317/318/319**, past the height that used to stop them.
+But that run also produced **zero `[fringe-divergence]` events**, so the trigger never fired — the net formed
+because the condition did not arise, *not* provably because of the carve-out. The drill therefore shows the
+fix breaks nothing and that nothing regressed; it is **not** evidence for the carve-out, and the row stays
+`in progress` for a run where a divergence occurs and the node keeps producing. Forcing one is the choice:
+`--merge-divergence-injection` is the instrument C215 used to stage this exact shape.
+
+**And the rig's other half named itself, on its third sighting.** With the stall carved out, the same command
+left **validator 3 at height 0** — 132 log lines, one `Starting from bootstrap node, syncing LFS...`, **zero**
+`Received StoreItems`. That is C268's original shape, not C270's: the joiner asks for a fringe and is never
+served. So the fresh-rig failure has **two** causes, one fixed and one open, and pass §92's attempt to explain
+the joiners by the stall was premature — both were happening. §92's own correction ("the joiners-at-0 reading
+did not reproduce") is itself corrected here: it reproduced twice before and once now, and the quiet rigs
+(solo master, then joiners against a chain nobody is producing to) are the ones that have never shown it.
+
+**Rows.** C270 `in progress` (the carve-out is in, unit-tested, owed a run in which the divergence fires).
+C268 reopened `todo` with the shape it originally recorded, its close condition now naming the capture to take
+— the master's side: whether it received the joiner's `FinalizedFringeRequest`, and whether it answered.

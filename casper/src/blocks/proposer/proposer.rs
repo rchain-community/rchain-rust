@@ -33,6 +33,7 @@ use crate::merging::BlockIndex;
 use crate::multi_parent_casper::{get_pre_state_for_new_block, ValidateError, DEPLOY_LIFESPAN};
 use crate::runtime_manager::RuntimeManager;
 use crate::validator_identity::ValidatorIdentity;
+use rchain_models::block_metadata::FailureCause;
 
 type BoxFuture<T> = Pin<Box<dyn Future<Output = T> + Send + 'static>>;
 
@@ -309,6 +310,43 @@ impl Proposer {
                             propose_status: ProposeStatus::ProposeSuccess,
                         },
                         Some(block),
+                    ))
+                }
+                // **A divergence is not this node's accounting being broken** (C270, pass §92).
+                //
+                // `InvalidPreStateHash` — and its class — is `FailureCause::Divergence`: the same block
+                // is valid for a node whose view of the parents is the one the block was built under,
+                // and what changed is *this* node's view, because a fringe key it had already read was
+                // recorded with the other state (the join keeps the smaller and unions the rejection
+                // sets, which is what makes the map deterministic — C215). Counting that as a failure
+                // halts autopropose on a block this node **built and would have accepted a moment
+                // earlier**, and it was measured doing exactly that: a four-validator devnet lost three
+                // of four producers at one height, and the four heads never met again
+                // (`spec/audit/evidence/n-anchor-drill/self-reject-stall.txt`).
+                //
+                // Not counted toward the halt, and not due: the next tick re-derives the pre-state from
+                // the now-current records, exactly as the stale-snapshot arm below does. The warn line
+                // is the visibility — deliberately not a new gauge: this arm does not silence anything,
+                // it declines to convert a divergence into a halt, and a node that keeps re-deriving
+                // without succeeding says so on every tick.
+                Err(ValidateError::ValidationFailed(_, status))
+                    if status.failure_cause() == FailureCause::Divergence =>
+                {
+                    self.log.warn(
+                        LogSource::new("casper.blocks.Proposer"),
+                        &format!(
+                            "Self-created block #{} (seq {}) no longer validates against this node's own \
+                             view: {status} — a divergence about the merge rather than about the block's \
+                             deploys, so it is not counted toward the autopropose halt. Re-deriving next \
+                             round (C270).",
+                            block.block_number, block.seq_num
+                        ),
+                    );
+                    Ok((
+                        ProposeResult {
+                            propose_status: ProposeStatus::NotEnoughNewBlocks,
+                        },
+                        None,
                     ))
                 }
                 Err(ValidateError::ValidationFailed(_, status)) => {
@@ -1578,6 +1616,59 @@ mod tests {
         )
     }
 
+    /// A proposer whose own validation refuses the block it just built, with `status` — the rig the two
+    /// tests above need and the existing helpers do not provide (`proposer(..)` fixes the *creation*
+    /// outcome, not the validation one).
+    fn proposer_failing_validation(status: crate::block_status::BlockStatus) -> Proposer {
+        let get_seq: Arc<dyn Fn(Validator) -> BoxFuture<i64> + Send + Sync> =
+            Arc::new(|_v| Box::pin(async { 0i64 }));
+        let check_active: Arc<
+            dyn Fn(&ValidatorIdentity) -> BoxFuture<Result<bool, String>> + Send + Sync,
+        > = Arc::new(|_v| Box::pin(async { Ok(true) }));
+        let create_block: Arc<
+            dyn Fn(
+                    &ValidatorIdentity,
+                    ProposeSource,
+                ) -> BoxFuture<Result<BlockCreatorResult, String>>
+                + Send
+                + Sync,
+        > = Arc::new(|_v, _source| Box::pin(async { Ok(BlockCreatorResult::Created(block())) }));
+        let validate: Arc<
+            dyn Fn(&BlockMessage) -> BoxFuture<Result<(), ValidateError>> + Send + Sync,
+        > = Arc::new(move |b| {
+            let status = status;
+            let b = b.clone();
+            Box::pin(async move {
+                Err(ValidateError::ValidationFailed(
+                    rchain_models::block_metadata::BlockMetadata::from_block(&b),
+                    status,
+                ))
+            })
+        });
+        let effect: Arc<dyn Fn(&BlockMessage) -> BoxFuture<()> + Send + Sync> =
+            Arc::new(|_b| Box::pin(async {}));
+        let validator = ValidatorIdentity::from_hex(
+            "67e56582298859ddae725f972992a07c6c4fb9f62a8fff58ce3ca926a1063530",
+        )
+        .unwrap();
+        let log: Arc<dyn Log> = Arc::new(rchain_shared::log::NopLog);
+        let consecutive_failures = Arc::new(AtomicU64::new(0));
+        let stale_snapshot_equivocations = Arc::new(AtomicU64::new(0));
+        Proposer::new(
+            get_seq,
+            check_active,
+            create_block,
+            validate,
+            effect,
+            validator,
+            log,
+            consecutive_failures,
+            stale_snapshot_equivocations,
+            false,
+            block_store(),
+        )
+    }
+
     /// A block store for tests that never read it — this file's tests run with the injection off.
     fn block_store() -> BlockStore {
         use rchain_block_storage::dag::codecs::{BlockHashCodec, BlockMessageCodec};
@@ -1638,6 +1729,62 @@ mod tests {
         assert_eq!(result.propose_status, ProposeStatus::ProposeSuccess);
         assert!(block_opt.is_some());
         assert!(matches!(rx.await.unwrap(), ProposerResult::Success { .. }));
+    }
+
+    /// **A divergence about a fringe key's value must not halt this node's production** (C270, pass §92).
+    ///
+    /// `InvalidPreStateHash` is `FailureCause::Divergence`: the block is valid for a node whose view of
+    /// the parents is the one it was built under. Counting it toward the halt is what stopped three of
+    /// four nodes at one height on a devnet and left four heads that never met
+    /// (`spec/audit/evidence/n-anchor-drill/self-reject-stall.txt`). So: counted *not at all*, read as
+    /// "not due" so the next tick re-derives, and **no block broadcast** — the block that this node's own
+    /// view rejected must not go out. The control below shows the halt still works for a status that is
+    /// the block's own fault, so this is a carve-out and not a disabled safety property.
+    #[tokio::test]
+    async fn a_divergence_self_rejection_is_not_counted_toward_the_autopropose_halt() {
+        let p = proposer_failing_validation(crate::block_status::BlockStatus::InvalidPreStateHash);
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let (result, block_opt) = p
+            .propose(ProposeSource::Explicit { is_async: false }, tx)
+            .await
+            .unwrap();
+        assert_eq!(
+            result.propose_status,
+            ProposeStatus::NotEnoughNewBlocks,
+            "a divergence is 'not due', not a failure of this node's accounting"
+        );
+        assert!(
+            block_opt.is_none(),
+            "and the block this node no longer agrees with is not broadcast"
+        );
+        assert_eq!(
+            p.consecutive_failures.load(Ordering::Relaxed),
+            0,
+            "the counter the autopropose timer halts on must not move — this is the whole claim"
+        );
+        assert!(matches!(rx.await.unwrap(), ProposerResult::Failure { .. }));
+    }
+
+    /// The control: a status that is the **block's own fault** is still counted, so the halt is a
+    /// carve-out for divergence rather than a disabled property.
+    #[tokio::test]
+    async fn a_block_fault_self_rejection_is_still_counted() {
+        let p =
+            proposer_failing_validation(crate::block_status::BlockStatus::InvalidDeploySignature);
+        assert_eq!(
+            p.consecutive_failures.load(Ordering::Relaxed),
+            0,
+            "the counter starts at zero"
+        );
+        let (tx, _rx) = tokio::sync::oneshot::channel();
+        let _ = p
+            .propose(ProposeSource::Explicit { is_async: false }, tx)
+            .await;
+        assert_eq!(
+            p.consecutive_failures.load(Ordering::Relaxed),
+            1,
+            "a block-fault failure still counts toward the halt"
+        );
     }
 
     /// **The falsifier for the §48 race fix.** A self-created block whose insert collides as an
