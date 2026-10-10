@@ -1,0 +1,43 @@
+== C268, corrected twice: the joiner is answered, served, and stuck in its state-page walk ==
+
+rig: a master already at height ~250 under autopropose (racing), then a wiped joiner:
+
+    tools/devnet.sh down                                            # volumes kept, master tall
+    tools/devnet.sh up --validators 3                               # master + v1 + v2, autopropose
+    tools/devnet.sh reset 1                                         # wipe v1, join the racing master
+
+== the joiner asks, and the master answers — in five milliseconds ==
+
+  13:31:52.935Z INFO [casper.engine.NodeRunning] Received FinalizedFringeRequest from rnode://575238a5…@devnet-validator-1
+  13:31:52.940Z INFO [casper.engine.NodeRunning] FinalizedFringe sent to rnode://575238a5…@devnet-validator-1?protocol=…
+  13:31:52.942Z INFO [casper.engine.NodeSyncing] Received finalized fringe from bootstrap node (0674114441b89163…)
+  13:31:52.956Z INFO [casper.engine.LfsTupleSpaceRequester] Sending StoreItemsRequest to bootstrap
+  13:31:53.047Z INFO [casper.engine.NodeSyncing] Received StoreItems(history: 29, data: 230) from rnode://ea0d98ac…
+
+So the row's own wording — "the joiners are never answered" — was wrong, and the earlier sightings said the
+same thing wrongly. The answer arrives; the *state walk* is what does not finish.
+
+== ninety seconds later ==
+
+  master h=303    joiner h=0
+  joiner: Sending StoreItemsRequest ×443, Received StoreItems ×171, of which 168 are the identical slice
+          StoreItems(history: 29, data: 230); zero validation errors, zero refusals; its log ends in the
+          runtime's '[pos] not proposing: … is not in the active set this node reads'.
+  master: 'Sending 29 history and 230 data store items to devnet-validator-1' ×440, and 'Sending 0 history
+          and 0 data store items' ×3 — the same page, content-identical, at ~5 per second.
+
+== what that localises ==
+
+The master answers every request with the *same* page, so the joiner is not being starved and the responder
+is not dropping: either the requester asks for the same page each time (its cursor is not advancing) or the
+responder ignores the cursor and always answers from the start. Either way the walk neither advances nor
+fails — it cannot finish, and the node never leaves NodeSyncing. The next capture is the request itself
+(the path the joiner names in each StoreItemsRequest); the code that computes it is
+`LfsTupleSpaceRequester`'s request loop, and the responder's path handling is in `node_running.rs`.
+
+== why this did not show on the quiet rigs ==
+
+Every sighting of this shape (three before this one) was against a master that was *producing*; the rigs
+that always worked put the joiners against a chain nobody was producing to (solo master, then joiners, then
+autopropose off). That is consistent with a cursor that only fails to advance under load — and it is not yet
+shown, which is why this is written as the next question rather than as the cause.

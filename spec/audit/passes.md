@@ -9115,3 +9115,40 @@ did not reproduce") is itself corrected here: it reproduced twice before and onc
 **Rows.** C270 `in progress` (the carve-out is in, unit-tested, owed a run in which the divergence fires).
 C268 reopened `todo` with the shape it originally recorded, its close condition now naming the capture to take
 — the master's side: whether it received the joiner's `FinalizedFringeRequest`, and whether it answered.
+
+## 94. The joiner is answered — the state walk is what does not finish (C268)
+
+**What the row said, and what the capture shows.** C268's shape was "a joiner is never served": two joiners at
+height 0, one log line each, and a master racing ahead. Staged deliberately — a master already at height ~250
+under autopropose, then a wiped joiner against it — the two-sided capture says the opposite of "never served":
+
+```
+13:31:52.935Z INFO [casper.engine.NodeRunning]  Received FinalizedFringeRequest from …@devnet-validator-1
+13:31:52.940Z INFO [casper.engine.NodeRunning]  FinalizedFringe sent to …@devnet-validator-1?protocol=…
+13:31:52.942Z INFO [casper.engine.NodeSyncing]  Received finalized fringe from bootstrap node (0674114441b89163…)
+13:31:52.956Z INFO [casper.engine.LfsTupleSpaceRequester] Sending StoreItemsRequest to bootstrap
+13:31:53.047Z INFO [casper.engine.NodeSyncing]  Received StoreItems(history: 29, data: 230) from …
+```
+
+The master answers in five milliseconds. Ninety seconds later it is at **h=303**, the joiner is at **h=0**, and
+the master has sent **the same page 440 times** — `Sending 29 history and 230 data store items to
+devnet-validator-1`, content-identical, roughly five per second — while the joiner has sent 443
+`StoreItemsRequest`s, received 171 of them (168 the same slice) and logged **zero** validation errors, zero
+refusals, nothing refused by name.
+
+**What that localises, and what it does not.** The walk neither advances nor fails: either the requester
+re-asks the same page — its cursor does not advance — or the responder ignores the cursor and always answers
+from the start. Both ends are named and neither is yet read: the requester's loop in
+`lfs_tuple_space_requester.rs`, the responder's path handling in `node_running.rs`. What the capture *does* fix
+is the shape: a joiner can be served completely, in milliseconds, and still never leave `NodeSyncing`, which is
+a different defect from the one this row was filed with.
+
+**Why the quiet rigs never showed it.** Every sighting was against a master that was *producing*; the rigs that
+always worked joined against a chain nobody was producing to (solo master, then joiners, then autopropose off).
+That is consistent with a cursor that fails under load — and it is written as the next question rather than as
+the cause, because nothing here shows the cursor's value.
+
+**Rows.** C268 `in progress`, sharpened: it now closes when the page walk advances against a producing master
+and a wiped joiner reaches the tip, and its next capture is the request itself — the path the joiner names in
+successive `StoreItemsRequest`s. C270 stays `in progress` (the carve-out is in and unit-tested; the run that
+would demonstrate it needs a divergence to fire).
