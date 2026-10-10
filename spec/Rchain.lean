@@ -38,11 +38,13 @@ import Rchain.RSpace.Join
 import Rchain.RSpace.Comm
 import Rchain.RSpace.Merge
 import Rchain.RSpace.Merkle
+import Rchain.Sync.Progress
 import Rchain.Casper.Stake
 import Rchain.Proto
 import Rchain.Casper.Dag
 import Rchain.Casper.Fringe
 import Rchain.Casper.Validate
+import Rchain.Casper.Record
 import Rchain.Casper.Liveness
 import Rchain.Casper.Stranding
 import Rchain.Casper.Views
