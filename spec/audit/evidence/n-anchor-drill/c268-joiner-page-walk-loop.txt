@@ -26,14 +26,30 @@ same thing wrongly. The answer arrives; the *state walk* is what does not finish
   master: 'Sending 29 history and 230 data store items to devnet-validator-1' ×440, and 'Sending 0 history
           and 0 data store items' ×3 — the same page, content-identical, at ~5 per second.
 
+== and the control refuted half of that reading, the same day ==
+
+A *healthy* walk was captured with the requester's cursor now logged (the same rig, a joiner that DID
+finish: master h=189, joiner h=189). It shows two things that undo the inference above:
+
+  - **the pages are uniform**: the responder's answers in a healthy walk are `Sending 29 history and 230 data
+    store items` over and over, with `Sending 0 history and 0 data store items` interleaved (that empty page
+    answers the requester's `[]` path, which the healthy walk asks for too). So "the same page 440 times" was
+    **never** evidence that the cursor had stopped — every page looks like that;
+  - **a healthy walk is long**: 153 requests, with the cursor advancing through distinct paths
+    (`[(Hash32([134,139,128,86…` → `[]` → `[(Hash32([0,20,146,114…` → `[…[1,164,61,31…` → …).
+
+So the stuck run's 443 requests in 90 s are not by themselves a loop either — the walk may simply not have
+finished. What is still unknown, and now instrumented, is whether the cursor advances in a run that does not
+finish. `LfsTupleSpaceRequester` logs `Sending StoreItemsRequest to bootstrap for path {id:?}` per request from
+this build on, so the next stuck run can be compared against this control line for line.
+
 == what that localises ==
 
-The master answers every request with the *same* page, so the joiner is not being starved and the responder
-is not dropping: either the requester asks for the same page each time (its cursor is not advancing) or the
-responder ignores the cursor and always answers from the start. Either way the walk neither advances nor
-fails — it cannot finish, and the node never leaves NodeSyncing. The next capture is the request itself
-(the path the joiner names in each StoreItemsRequest); the code that computes it is
-`LfsTupleSpaceRequester`'s request loop, and the responder's path handling is in `node_running.rs`.
+That the joiner is not starved stands: the master received the request and sent the fringe, and it answers
+state pages throughout. What the first reading got wrong is *which* observation says the walk is stuck —
+the uniform page does not (see the control above). Whether the cursor advances in a run that never finishes,
+and where it stalls if it does not, is the open question, and it is now instrumented at the requester's
+doorstep with the control to compare against.
 
 == why this did not show on the quiet rigs ==
 
