@@ -9152,3 +9152,18 @@ the cause, because nothing here shows the cursor's value.
 and a wiped joiner reaches the tip, and its next capture is the request itself — the path the joiner names in
 successive `StoreItemsRequest`s. C270 stays `in progress` (the carve-out is in and unit-tested; the run that
 would demonstrate it needs a divergence to fire).
+
+### §94 addendum: the control refuted the inference, and the cursor is instrumented
+
+The paragraph above read "the same page 440 times" as evidence that the requester's cursor had stopped. **It is
+not evidence, and the same day's control says so**: on a run that finished, the responder's pages are
+identical-looking too (`Sending 29 history and 230 data store items`, with `0 history and 0 data store items`
+interleaved for the `[]` path the *healthy* walk also asks for), across **153** requests whose cursors advance
+through distinct paths. Every page looks like that one; only the paths differ, and nothing logged the paths.
+
+What survives of §94 is the half that was measured on both sides: the joiner **is** answered — fringe in five
+milliseconds — and it **is** served state pages throughout, while it never finishes and never refuses anything.
+Whether its cursor advances in such a run is now answerable rather than guessable, because
+`LfsTupleSpaceRequester` logs `Sending StoreItemsRequest to bootstrap for path {id:?}` per request from this
+commit on; the next run that sticks is compared against the control line for line. The row's evidence file
+carries both captures.
