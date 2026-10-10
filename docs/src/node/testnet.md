@@ -7,11 +7,11 @@ The **generalised** procedure — standing up a testnet of your own, from the st
 is [Running a public testnet](running-a-public-testnet.md). This page is the concrete instance: the live
 hosts, the genesis, the wallets.
 
-> **Status: four bonded validators at 250 each, and the chain finalises — re-measured 2026-10-04**
-> (evidence in [Status](#status)). A brand-new key can be funded, deploy, be trusted
-> and bond into the pool. **Losing any one validator is survivable**: stopping A — the genesis master and
-> the node the endpoint routes to — left the other three at 75 % finalising (f 65 → 90), and A was level
-> with the tip again in under 20 s. `/api/status`, `/api/explore-deploy`, `getBonds`,
+> **Status: four bonded validators at 250 each, pool 1000, and the chain finalises.**
+> A brand-new key can be funded, deploy, be trusted and bond into the pool. **Losing one validator is
+> survivable** — the other three keep finalising at 75 %; losing two leaves 50 %, which is not a quorum
+> under the strict supermajority rule, so finality stops until one returns
+> ([#214](https://github.com/rchain-community/rchain-rust/issues/214)). `/api/status`, `/api/explore-deploy`, `getBonds`,
 > `getActiveValidators`, `/health`, and `rnode deploy` all work — a CLI deploy needs a **funded** key, or
 > it is accepted and mined and then reports `processedWithError` for phlo. The chain is deliberately
 > **idle** (no `--autopropose`): blocks appear when a deploy arrives. A continuously-producing chain
@@ -26,11 +26,11 @@ hosts, the genesis, the wallets.
 
 | | |
 |---|---|
-| Chain | `testnet` network id, shard `/root`, genesis `713c0ebb…ea91` (four equal validators, rebuilt 2026-10-04) |
-| Validators | **four, at equal stake — 250 each, pool 1000** (A `0410b8c5…`, B `04d7707c…`, C `04dce59b…`, D `041ed2a2…`). Equal stakes are the point: every validator is 25 %, so **any one of them can be lost and the survivors still finalise** — measured 2026-10-04 by stopping A, the genesis master and the endpoint's own node (finality 65 → 90 with the height 69 → 94, three survivors in lockstep), and A rejoined to the tip in under 20 s. Joiners are capped by the chain (`--bond-maximum 250`) and the active set is bounded at 4, so the quarter-share survives growth. See [Recovery](#recovery) |
+| Chain | `testnet` network id, shard `/root`; genesis built from this net's `bonds.txt`, four equal stakes |
+| Validators | **four, at equal stake — 250 each, pool 1000**, two per host. Equal stakes are the point: every validator is 25 %, so **any one of them can be lost and the survivors still finalise** — measured 2026-10-04 by stopping A, the genesis master and the endpoint's own node (finality 65 → 90 with the height 69 → 94, three survivors in lockstep), and A rejoined to the tip in under 20 s. Joiners are capped by the chain (`--bond-maximum 250`) and the active set is bounded at 4, so the quarter-share survives growth. See [Recovery](#recovery) |
 | Hosts | A `164.90.140.144` (private `10.108.0.3`), B `104.131.176.164` (private `10.108.0.4`) |
 | Cost | 2 × DigitalOcean `s-1vcpu-1gb`, **$12/mo** |
-| Binary | `dev` @ `efc1be75f`, static musl, `sha256:675980ee95bb…`, **the same build on all four nodes** — it carries the #223 rejoin fix (`7d5c22a9c`). The net was rebuilt onto one build on 2026-10-06; before that the two hosts ran different ones |
+| Binary | `dev` @ `b4f1cbfdb`, static musl, `sha256:06d1823e6b80…`, **the same build on all four nodes** |
 | Endpoint | **https://testnet.rhobot.net** (nginx → node A's HTTP API) |
 
 Short hashes in this document are the first twelve hex characters of the value they name, and each is
