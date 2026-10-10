@@ -264,9 +264,20 @@ declare -A HOST PORT UNIT LFB LFH HGT
 # blocks to pass the anchor. Best-effort by design — the live net's faucet is mounted only in dev mode,
 # so a refusal is a note and the wait still runs.
 trigger_block() {
-  curl -s -X POST --max-time 30 "http://${HOST[$MASTER]}:${PORT[$MASTER]}/api/faucet" \
-    -H 'Content-Type: application/json' \
-    --data-binary '{"address":"11112wWGeUA5qt6MpH9CantYj2UWWt4C3LP4cx8TpQmeM79dyen6Sk"}' >/dev/null 2>&1 \
+  # **The transport is `api()`'s, and for a while it was not.** This POSTed to
+  # `http://${HOST[$MASTER]}:…`, which is the *table's* host token: for a node file that spells a local
+  # node `local` — one of the three spellings the header documents — that URL does not resolve, the
+  # curl fails, and the section printed "no block could be requested", which reads as a net without the
+  # faucet rather than as a broken request. Measured 2026-10-10: `http://local:42403` exits 6 while
+  # `http://localhost:42403` answers, and the run that should have driven the chain produced nothing.
+  local body='{"address":"11112wWGeUA5qt6MpH9CantYj2UWWt4C3LP4cx8TpQmeM79dyen6Sk"}'
+  if is_local "${HOST[$MASTER]}"; then
+    curl -s -X POST --max-time 30 -H 'Content-Type: application/json' --data-binary "$body" \
+      "http://127.0.0.1:${PORT[$MASTER]}/api/faucet" >/dev/null 2>&1
+  else
+    $SSH "root@${HOST[$MASTER]}" "curl -s -X POST --max-time 30 -H 'Content-Type: application/json' \
+      --data-binary '$body' http://127.0.0.1:${PORT[$MASTER]}/api/faucet" >/dev/null 2>&1
+  fi \
     && echo "    a block was requested (a faucet transfer on the master)" \
     || { echo "    NOTE: no block could be requested — on a net without the faucet, deploy something" >&2; return 1; }
 }
@@ -486,15 +497,23 @@ for i in $(seq 1 40); do
   ok=1; line=""
   for n in "${NAMES[@]}"; do line="$line $n=$(height_of "${HOST[$n]}" "${PORT[$n]}")"; done
   for (( h=MEET; h<=MAXH; h++ )); do
-    first=""
+    # **A height nobody has produced is not a disagreement.** `MAXH` is `/api/status`'s
+    # `latestBlockNumber`, which counts the round a node is in and sits one ahead of the highest
+    # height the block API serves — so the walk's last step is routinely a height with no blocks on
+    # any node. Requiring a non-empty set there failed a **converged** net on 2026-10-10: the three
+    # nodes agreed at every height 40–44, height 45 was empty on all three, and this section reported
+    # "the nodes still disagree on a block hash at or above 41". Empty on *every* node is the frontier
+    # and is skipped; empty on *one* node while another has blocks is the divergence being compared
+    # for, and still fails.
+    first=""; any_empty=0; any_full=0
     for n in "${NAMES[@]}"; do
-      # Compare the complete unordered block-hash set at this height.
       hashes="$(blocks_at "${HOST[$n]}" "${PORT[$n]}" "$h" | awk 'NF {print $1}' | LC_ALL=C sort -u)"
-      if [ -z "$hashes" ]; then ok=0; break; fi
+      if [ -z "$hashes" ]; then any_empty=1; continue; fi
+      any_full=1
       if [ -z "$first" ]; then first="$hashes"
       elif [ "$hashes" != "$first" ]; then ok=0; break; fi
     done
-    [ "$ok" = "0" ] && break
+    if [ "$ok" = "0" ] || { [ "$any_empty" = "1" ] && [ "$any_full" = "1" ]; }; then ok=0; break; fi
   done
   echo "  [$i]$line  hashes-agree=$ok"
   [ "$ok" = "1" ] && break

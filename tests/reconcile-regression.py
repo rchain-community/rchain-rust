@@ -60,6 +60,9 @@ if __name__ == "__main__":
             ("extra sibling block", "a\\nb", "a", 0),
             ("different second block", "a\\nb", "a\\nc", 0),
             ("missing height", "a", "", 0),
+            # A height nobody has produced is the frontier, not a disagreement: `MAXH` comes from
+            # `/api/status`, which sits one round ahead of the highest height the block API serves.
+            ("height nobody has produced", "", "", 1),
         ]:
             script = """set -uo pipefail
 MEET=0; MAXH=0; ok=1

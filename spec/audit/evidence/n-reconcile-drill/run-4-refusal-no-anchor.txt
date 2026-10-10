@@ -1,0 +1,9 @@
+== 1. what each node is showing ==
+  A  h=200    finalised=57     8cb71b3ecad7271ba5e7b34ad89cd59fc92486d67f76
+  V1 h=64     finalised=47     d72dc2833a3cf5c06f4e6098b17685667255e819ad98
+  V2 h=72     finalised=48     cdbe9390c61a3358e79ffbd6ecf10f07a9a4be80ab32
+  V3 h=123    finalised=48     cdbe9390c61a3358e79ffbd6ecf10f07a9a4be80ab32
+== 2. reported equivocation from the block API — a report, not a proof (heights 0..200) ==
+  none reported — every sender has at most one block per height in these endpoints' answers
+== 3. finalized anchor (unanimous LFB; no inferred stake votes) ==
+  REFUSING: finalized heads differ; block observations cannot prove a stake quorum.

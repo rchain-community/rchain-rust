@@ -1,0 +1,58 @@
+== 1. what each node is showing ==
+  V1 h=55     finalised=51     e4ea7a9604960e7ed2e87998b9fea7d7babe69f31423
+  V2 h=55     finalised=51     e4ea7a9604960e7ed2e87998b9fea7d7babe69f31423
+  V3 h=55     finalised=51     e4ea7a9604960e7ed2e87998b9fea7d7babe69f31423
+== 2. reported equivocation from the block API — a report, not a proof (heights 0..55) ==
+  none reported — every sender has at most one block per height in these endpoints' answers
+== 3. finalized anchor (unanimous LFB; no inferred stake votes) ==
+  unanimously reported finalized anchor: height 51, hash e4ea7a9604960e7ed2e87998b9fea7d7babe69f31423aa4b0f479252a6e69504
+  No stake-weighted quorum or finalized ancestry is inferred from block producers.
+== 4. what is above the point ==
+  The survivor is V2's DAG, not a chain: every validator proposes its own block each round, so
+  a height legitimately holds one sibling per validator and there is no single line to extract. The
+  joiners resync onto this DAG; the writers re-submit what they can see is missing.
+  #52: 3 unique block(s) from 9 answer(s)
+  #53: 3 unique block(s) from 9 answer(s)
+  #54: 3 unique block(s) from 9 answer(s)
+  0 deploy(s) above the point across 9 unique block(s); the per-block record is target/drill287/restore-deploys-final.jsonl
+  (a block's *bodies* are not in the heights route — /api/block/{hash} carries the terms, the heights
+   route carries counts. The owners re-submit; this tool does not claim to replay them.)
+== 5. apply (--restore-from-master): the whole network is stopped, the survivor included ==
+  V1:
+    devnet-validator-1 stopped (container)
+  V2:
+    devnet-validator-2 stopped (container)
+  V3:
+    devnet-validator-3 stopped (container)
+== 6. the fiat, printed before it is applied ==
+  This is NOT a sync. The joiners adopt V2's chain state wholesale, so what they agree about
+  afterwards is V2's view of the chain — including any block above the point that V2
+  accepted and its peers did not. Section 4 enumerates the blocks this drops, one record per unique
+  block, with each block's accepted deploy count and the signatures of the deploys its merge
+  rejected; that record — not its total, which counts accepted deploys — is what the owners
+  re-submit from. Running this is the operator asserting that V2 is the chain. It is a
+  stopgap because it depends on the data-dir layout being movable — which #287's design
+  deliberately avoided depending on — and not a substitute for an agreed anchor.
+== 7. chain state copied onto each joiner (identity and genesis untouched) ==
+  V1:
+tools/reconcile-network.sh: line 162: transaction: command not found
+    copied: blockstorage dagstorage rspace/history rspace/cold; not present on the survivor: transaction
+    chain state copied from devnet-validator-2's volume; identity and genesis untouched
+  V3:
+tools/reconcile-network.sh: line 162: transaction: command not found
+    copied: blockstorage dagstorage rspace/history rspace/cold; not present on the survivor: transaction
+    chain state copied from devnet-validator-2's volume; identity and genesis untouched
+== 8. restarted: the survivor first, then the joiners ==
+    devnet-validator-2 started (container)
+  V1:
+    devnet-validator-1 started (container)
+  V3:
+    devnet-validator-3 started (container)
+== 8b. triggering a block, because an idle chain cannot finalise ==
+    a block was requested (a faucet transfer on the master)
+== 9. verification: block hashes per height, not heights ==
+  [1] V1=65 V2=65 V3=65  hashes-agree=1
+== 10. finality past the point ==
+  finality [1] V1=61 V2=61 V3=61  past-the-point=1
+  finality advanced past 51 on every node, and every finalized block is one the nodes' own DAGs hold.
+  (this section plus section 9 is #287's falsifier: one head, agreeing block hashes, no genesis.)

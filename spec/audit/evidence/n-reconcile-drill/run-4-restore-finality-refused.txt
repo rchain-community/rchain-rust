@@ -1,0 +1,99 @@
+== 1. what each node is showing ==
+  V1 h=45     finalised=41     b3b161ff4e730998cf3f0cf6ca33bdef3fd2b4d073d0
+  V2 h=45     finalised=41     b3b161ff4e730998cf3f0cf6ca33bdef3fd2b4d073d0
+  V3 h=45     finalised=41     b3b161ff4e730998cf3f0cf6ca33bdef3fd2b4d073d0
+== 2. reported equivocation from the block API — a report, not a proof (heights 0..45) ==
+  none reported — every sender has at most one block per height in these endpoints' answers
+== 3. finalized anchor (unanimous LFB; no inferred stake votes) ==
+  unanimously reported finalized anchor: height 41, hash b3b161ff4e730998cf3f0cf6ca33bdef3fd2b4d073d0ca6042bcaf373dd1f54d
+  No stake-weighted quorum or finalized ancestry is inferred from block producers.
+== 4. what is above the point ==
+  The survivor is V2's DAG, not a chain: every validator proposes its own block each round, so
+  a height legitimately holds one sibling per validator and there is no single line to extract. The
+  joiners resync onto this DAG; the writers re-submit what they can see is missing.
+  #42: 4 unique block(s) from 12 answer(s)
+  #43: 4 unique block(s) from 12 answer(s)
+  #44: 3 unique block(s) from 9 answer(s)
+  0 deploy(s) above the point across 11 unique block(s); the per-block record is target/drill287/restore-deploys-verified.jsonl
+  (a block's *bodies* are not in the heights route — /api/block/{hash} carries the terms, the heights
+   route carries counts. The owners re-submit; this tool does not claim to replay them.)
+== 5. apply (--restore-from-master): the whole network is stopped, the survivor included ==
+  V1:
+    devnet-validator-1 stopped (container)
+  V2:
+    devnet-validator-2 stopped (container)
+  V3:
+    devnet-validator-3 stopped (container)
+== 6. the fiat, printed before it is applied ==
+  This is NOT a sync. The joiners adopt V2's chain state wholesale, so what they agree about
+  afterwards is V2's view of the chain — including any block above the point that V2
+  accepted and its peers did not. Section 4 enumerates the blocks this drops, one record per unique
+  block, with each block's accepted deploy count and the signatures of the deploys its merge
+  rejected; that record — not its total, which counts accepted deploys — is what the owners
+  re-submit from. Running this is the operator asserting that V2 is the chain. It is a
+  stopgap because it depends on the data-dir layout being movable — which #287's design
+  deliberately avoided depending on — and not a substitute for an agreed anchor.
+== 7. chain state copied onto each joiner (identity and genesis untouched) ==
+  V1:
+tools/reconcile-network.sh: line 162: transaction: command not found
+    copied: blockstorage dagstorage rspace/history rspace/cold; not present on the survivor: transaction
+    chain state copied from devnet-validator-2's volume; identity and genesis untouched
+  V3:
+tools/reconcile-network.sh: line 162: transaction: command not found
+    copied: blockstorage dagstorage rspace/history rspace/cold; not present on the survivor: transaction
+    chain state copied from devnet-validator-2's volume; identity and genesis untouched
+== 8. restarted: the survivor first, then the joiners ==
+    devnet-validator-2 started (container)
+  V1:
+    devnet-validator-1 started (container)
+  V3:
+    devnet-validator-3 started (container)
+== 8b. triggering a block, because an idle chain cannot finalise ==
+    NOTE: no block could be requested — on a net without the faucet, deploy something
+== 9. verification: block hashes per height, not heights ==
+  [1] V1=45 V2=45 V3=45  hashes-agree=1
+== 10. finality past the point ==
+  finality [1] V1=41 V2=41 V3=41  past-the-point=0
+  finality [2] V1=41 V2=41 V3=41  past-the-point=0
+  finality [3] V1=41 V2=41 V3=41  past-the-point=0
+  finality [4] V1=41 V2=41 V3=41  past-the-point=0
+  finality [5] V1=41 V2=41 V3=41  past-the-point=0
+  finality [6] V1=41 V2=41 V3=41  past-the-point=0
+  finality [7] V1=41 V2=41 V3=41  past-the-point=0
+  finality [8] V1=41 V2=41 V3=41  past-the-point=0
+  finality [9] V1=41 V2=41 V3=41  past-the-point=0
+  finality [10] V1=41 V2=41 V3=41  past-the-point=0
+  finality [11] V1=41 V2=41 V3=41  past-the-point=0
+  finality [12] V1=41 V2=41 V3=41  past-the-point=0
+  finality [13] V1=41 V2=41 V3=41  past-the-point=0
+  finality [14] V1=41 V2=41 V3=41  past-the-point=0
+  finality [15] V1=41 V2=41 V3=41  past-the-point=0
+  finality [16] V1=41 V2=41 V3=41  past-the-point=0
+  finality [17] V1=41 V2=41 V3=41  past-the-point=0
+  finality [18] V1=41 V2=41 V3=41  past-the-point=0
+  finality [19] V1=41 V2=41 V3=41  past-the-point=0
+  finality [20] V1=41 V2=41 V3=41  past-the-point=0
+  finality [21] V1=41 V2=41 V3=41  past-the-point=0
+  finality [22] V1=41 V2=41 V3=41  past-the-point=0
+  finality [23] V1=41 V2=41 V3=41  past-the-point=0
+  finality [24] V1=41 V2=41 V3=41  past-the-point=0
+  finality [25] V1=41 V2=41 V3=41  past-the-point=0
+  finality [26] V1=41 V2=41 V3=41  past-the-point=0
+  finality [27] V1=41 V2=41 V3=41  past-the-point=0
+  finality [28] V1=41 V2=41 V3=41  past-the-point=0
+  finality [29] V1=41 V2=41 V3=41  past-the-point=0
+  finality [30] V1=41 V2=41 V3=41  past-the-point=0
+  finality [31] V1=41 V2=41 V3=41  past-the-point=0
+  finality [32] V1=41 V2=41 V3=41  past-the-point=0
+  finality [33] V1=41 V2=41 V3=41  past-the-point=0
+  finality [34] V1=41 V2=41 V3=41  past-the-point=0
+  finality [35] V1=41 V2=41 V3=41  past-the-point=0
+  finality [36] V1=41 V2=41 V3=41  past-the-point=0
+  finality [37] V1=41 V2=41 V3=41  past-the-point=0
+  finality [38] V1=41 V2=41 V3=41  past-the-point=0
+  finality [39] V1=41 V2=41 V3=41  past-the-point=0
+  finality [40] V1=41 V2=41 V3=41  past-the-point=0
+  NOT final: V1 finalised at 41, which is not past the point (41)
+  Finality has not advanced past 41 on every node, so the recovery is not verified.
+  (a chain that converged to one head but cannot finalise is C259's state, and this refuses it
+   rather than reporting it as recovered.)
