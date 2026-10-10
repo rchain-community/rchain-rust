@@ -8983,3 +8983,42 @@ compute a meet, and a way to say *this is the block I am restoring to* when nobo
 **Rows.** C267 `done` (the ingest could not take a gap), C268 `todo` (the fresh rig), C269 `todo` (the tool
 cannot name an anchor where the anchor is needed), C259 updated — its stated blocker was not the first one,
 and its close condition still wants the frozen-finality walk.
+
+## 91. The operator may name the anchor, and the tool says whose root it is (C269)
+
+**What was wrong.** §3 of `tools/reconcile-network.sh` accepted an anchor only by *computing* one: every
+listed node had to report the same usable last-finalised block, or the tool refused. The node flag it exists
+to drive, `--sync-anchor`, is for the state where there is nothing to sync to — a net whose finality is
+frozen, where the responder substitutes the genesis block (C259) — and in exactly that state no node reports
+a usable finalised block. So the tool refused in the one state its own recovery exists for, and the recovery
+was unreachable from the tool (measured both ways on 2026-10-10: `finalized heads differ`, exit 4, and
+`no usable finalized block`, exit 4).
+
+**What it does now.** `RECONCILE_ANCHOR=<block hash>`:
+
+- §3 takes the **operator's** block, reads its height from the block itself (`/api/block/{hash}` answers with
+  its own `blockInfo`, so the operator supplies a hash and not a height), and checks the one thing it can
+  check without a quorum: that the master **holds** the block. An anchor nobody has is nothing to restore to,
+  and that refusal is by name.
+- It prints that this is **your** root and not a computed meet — "not that stake finalised it, not that any
+  other node agrees" — and then reports what each node claimed, rather than resolving it. The disagreement is
+  the state being recovered from; naming a point does not make the nodes' claims agree.
+- §4 enumerates what is above the operator's point exactly as it does above a computed one, and §10 still
+  asserts finality past it (exit 9 when it does not arrive). The wipe path still requires the node side, and
+  the tool's usage says so: the joiners are configured with `--sync-anchor <the same hash>`;
+  `--restore-from-master` needs no flag because it copies the master's chain state.
+
+**The refusals name the way out.** Both refusal branches now print *"if you know the block this net last
+agreed on, name it: `RECONCILE_ANCHOR=<hash>`"*. A tool that refuses, in the state its own recovery exists
+for, without saying what the operator can do instead is a dead end — and that is what this row was.
+
+**Fixtures** (`tests/reconcile-regression.py`, all offline): the operator's anchor accepted with the
+disagreement reported (exit 0), an anchor nobody holds refused by name (exit 4), and the plain refusal
+asserting that it names the alternative (exit 4). The §3 slice's banner moved with the section, which the
+fixture caught rather than passing silently — the property that slicing by marker is for.
+
+**The row stays open for its run**, and this is the honest state rather than a formality: the row's close
+condition asks for a frozen net recovered through the operator's anchor, and that needs a rig where finality
+stops while the tip keeps moving — the same rig C259 is waiting on (pass §90 records three failed stagings).
+What is *not* owed on the node side is the mechanism: `run-3-windowed-catchup.txt` shows the catch-up from a
+named anchor working, so the remaining gap is a staging, not a code path.
