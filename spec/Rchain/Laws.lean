@@ -14,7 +14,7 @@ drifted from the tree. The same tool, for the same reason, is already used in `P
 below is 5× the default and still an order of magnitude under the heaviest block in the tree; if it
 ever needs raising again, that is a signal about this module's shape rather than about Lean.
 -/
-set_option maxHeartbeats 1000000
+set_option maxHeartbeats 4000000
 
 /-!
 
@@ -216,7 +216,7 @@ structure Law where
 -- and elaborating it is a unification problem over the rows' field types rather than a proof: it fits
 -- the default 200 000 heartbeats at 58 laws and not at 59, so the budget is raised here rather than the
 -- register split into chunks an accidental duplicate could hide between.
-set_option maxHeartbeats 1000000
+set_option maxHeartbeats 4000000
 
 /-- Every law in the catalog, the orphaned ones and the open ones included, because a register
 that lists only the formalized laws cannot notice a law that was dropped.
@@ -3744,8 +3744,186 @@ def laws : List Law := [
       an escape (it cannot — that is the grammar's choice, and it is why the answer is refusal rather \
       than quoting) is stated in the module doc, not modelled. **What the tie does not reach:** the \
       three printer warts Law 33 names are a different row's." },
-]
 
+  -- ---------------------------------------------------------------------------------------------
+  -- The distributed-system assumptions: an atomicity model and a model of join (2026-10-10).
+  -- These six rows are the first laws about *the node as a distributed system* rather than about
+  -- rholang evaluation. Each was written refutation-first, and two of them are the refutation: Law
+  -- 66's statement is false of the code, and that is the theorem. Two adversarial reviewers attacked
+  -- all six; their verdicts are in each row's `note`, including the verdicts that cost the plan its
+  -- chosen fix.
+  -- ---------------------------------------------------------------------------------------------
+
+  { number := 66, layer := "Casper",
+    statement := "**The value a node stores at a fringe key is not determined by that key.** The record \
+      at `fringe_hash_of(fringe)` holds a `state_hash` the key never mentions: the merge that produced \
+      it started from a **base** (the previous fringe's state, or the base block's post-state), and two \
+      writers whose merges started from different bases store different states under one key. The join's \
+      `min` tie-break then silently settles it — and `the_join_rewrites_a_writers_value` is what that \
+      costs: a writer that had computed the other value finds its own block failing its own validation \
+      (C270, measured)",
+    status := .provedModel,
+    declarations := [`Rchain.the_fringe_only_key_is_incomplete, `Rchain.the_join_rewrites_a_writers_value],
+    axioms := [],
+    rust := ["models/src/fringe_data.rs", "casper/src/dag.rs", "casper/src/multi_parent_casper.rs"],
+    witness := [`Rchain.the_fringe_only_key_is_incomplete],
+    falsifiable := "Two honest writers whose merges started from different bases, reaching one fringe: \
+      their records share the key and disagree about `stateHash`. The measured instance is the four-key \
+      divergence in `spec/audit/evidence/n-anchor-drill/self-reject-stall.txt`.",
+    note := "**What this law is, precisely, and what the reviewers took away from it.** The statement is \
+      an *impossibility about the design*: a key reading only the fringe cannot determine a value that \
+      also depends on the base. It is **not** a re-derivation of the measured incident — the witness \
+      (`recordOf ∅ 0` / `recordOf ∅ 1`) is an artefact of the model's abstract `mergeFringe f b := b` \
+      in which the state *is* the base by construction, while the incident's pair had non-empty fringes. \
+      **The positive half of that module is vacuous and is deliberately not cited**: \
+      `the_composite_key_determines_the_value` and its join-side twins are tuple injectivity (`rfl`), \
+      i.e. the statement that `recordOf` is a function; and `no_fringe_only_key_can_be_complete` is a \
+      near-duplicate whose universal quantifier adds nothing (a remark, not a cell). **The refutation \
+      that mattered was of the fix, not of the claim**: keying by `(fringe, base)` is *not implementable \
+      at the reader that needs it*. `multi_parent_casper.rs:156-165` reads by the fringe-only key, and \
+      the base it would need is computed *later* (`:230-238`) as the base block's post-state else the \
+      previous fringe's state — the base **is** the value that read returns, so a reader asking for a \
+      fringe's state cannot name which base the record it wants was written under. The design chosen \
+      afterwards (2026-10-10) is that the **value drops the derived state**: the record keeps the \
+      contributions and the reader derives, which makes the store append-only — the property Law 68 \
+      proves is what makes a read a function of its version." },
+
+  { number := 67, layer := "Casper",
+    statement := "**The record join is a commutative idempotent semigroup at one key, so the value at a \
+      key is a function of the set of arriving records — and it is not a monoid.** `joinRecord` copies \
+      `fringe_hash` and `fringe` from its left operand, so commutativity holds exactly when both \
+      arguments are records for one key (the code's own stated precondition, `dag.rs:79-80`), and it has \
+      no identity, which the model proves absent rather than fabricating. The sharpening is the one that \
+      matters: order-independence does not come from the arrivals agreeing — `min` is commutative, so two \
+      records that **disagree** still fold to one, which is why a divergence was invisible in the store",
+    status := .provedModel,
+    declarations := [`Rchain.joinRecord_assoc, `Rchain.joinRecord_comm, `Rchain.joinRecord_idempotent,
+      `Rchain.joinRecord_fold_perm, `Rchain.the_joined_value_is_a_function_of_the_set,
+      `Rchain.the_join_changes_nothing_iff_the_report_adds_nothing],
+    axioms := [],
+    rust := ["casper/src/dag.rs:82"],
+    witness := [`Rchain.joinRecord_fold_perm],
+    falsifiable := "A pair of records at one key whose folds in two orders differ — \
+      `joinRecord_not_commutative` exhibits the failure for records at *different* keys, so the \
+      `AtOneKey` hypothesis cannot be read as a convenience.",
+    note := "**Verified faithful field by field** against `join_fringe_records` (left-biased key data, \
+      unioned `fringeDiff` and rejection sets, `min` state) by a review that tried and failed to break \
+      the laws, and confirmed `the_join_changes_nothing_iff_the_report_adds_nothing` has no missing \
+      conjunct. **What is not cited: that module's `writeKey` section.** `writers_at_one_writeKey_agree` \
+      and its four siblings are consequences of the tuple identity `writeKey f b = (f, b)`, as vacuous \
+      as Law 66's positive half — and their premise, that a caller can *form* a `writeKey`, is exactly \
+      what the review refuted. One honesty note the review added: `joinRecord_not_commutative`'s witness \
+      violates the model's own `fringeHash = fringeHashOf fringe` invariant, so it is a non-vacuity \
+      check and not a pair the store can hold." },
+
+  { number := 68, layer := "Casper",
+    statement := "**A read is a function of the version it names, and what a store must be for that to \
+      hold is append-only, not content-addressed.** Two content-addressed reads of one version agree \
+      because a hash collision is impossible (Law 10's `root_collision_free`); a store that only ever \
+      appends has the same property without hashing at all. The record store today is neither: its \
+      `put` and join **merge into an existing key**, and a read for a fringe's state can then return \
+      either of two values",
+    status := .provedModel,
+    declarations := [`Rchain.two_content_addressed_reads_of_one_version_agree,
+      `Rchain.a_read_of_an_append_only_store_is_stable,
+      `Rchain.a_non_content_addressed_read_is_not_a_function_of_its_version],
+    axioms := [],
+    rust := ["rspace/src/history/radix_tree.rs", "models/src/fringe_data.rs",
+      "tools/reconcile-network.sh"],
+    witness := [`Rchain.a_read_of_an_append_only_store_is_stable],
+    falsifiable := "Two stores that differ only in the base of the record at one key, read at that key: \
+      different values for one version. The Rust instance is the `fringe-data` environment; the \
+      operational one is the recovery tool's `--restore-from-master`, whose own text calls a copy of a \
+      live store a torn snapshot.",
+    note := "**The dichotomy is the finding.** The positive half is a composition over Law 10 and adds \
+      no new mathematics; the refutations restate Law 66's collision in store vocabulary, which the \
+      review called duplicative and which is registered here as **clauses in substance rather than a \
+      second law** — the declaration cited is the append-only half, the part that is new. The general \
+      theorems (`read_is_a_function_of_its_version`, `read_reads_by_version`) are `rfl` unpackings of \
+      `read` and are **not cited**. **And the row corrects the tool's own framing**: a torn copy of a \
+      *content-addressed* store cannot violate a read for any key it holds whole, so the fiat is needed \
+      only for the non-append-only half. That module's header claim — that the composite key would bring \
+      the record store into the safe class — is unproved and, as Law 66 records, inexpressible; the \
+      chosen design gets there another way." },
+
+  { number := 69, layer := "Sync",
+    statement := "**A joiner's state-page walk need not terminate, and with a give-up rule it is paced.** \
+      As written, the walk's request loop exits only on an error or `is_finished`, so a peer that simply \
+      never answers leaves an infinite run — an infinite *trace*, not the absence of reachability, \
+      because the walk can finish and need not. Add the idle give-up the block leg already has and every \
+      turn spends fuel: no infinite run, and a bounded exit",
+    status := .provedModel,
+    declarations := [`Rchain.Sync.Walk.the_page_walk_as_written_spins_for_ever,
+      `Rchain.Sync.Walk.the_fixed_walk_cannot_run_for_ever,
+      `Rchain.Sync.Walk.the_page_walk_with_the_give_up_rule_is_paced],
+    axioms := [],
+    rust := ["casper/src/engine/lfs_tuple_space_requester.rs", "casper/src/engine/lfs_block_requester.rs",
+      "casper/src/engine/node_syncing.rs"],
+    witness := [`Rchain.Sync.Walk.the_page_walk_as_written_spins_for_ever],
+    falsifiable := "A run of the machine as written that never reaches `is_finished` — and the adversary \
+      need not answer unsolicited keys: the same constant trace is an infinite run using only the \
+      request loop's resend, which the Rust does with no bound. The measured stall is C268's stuck \
+      joiner. `ReachesTheGoal` is left as an unproved `Prop`: reaching the goal needs the *peer* to \
+      answer, which a give-up rule cannot supply.",
+    note := "**The review strengthened this one.** The falsifier looks as if it depends on an adversarial \
+      environment answering a key the walk never requested; a reviewer compiled the variant that uses \
+      only the resend, so it needs nothing but a silent peer — the machine the Rust is in, with no \
+      bound. The modelled `accept` also makes the stall condition precise: the model cannot represent \
+      \"answered the requested keys and still unfinished\", so the stall is exactly the open C268 \
+      question, whether the cursor advances in a run that does not finish. `MAX_IDLE_ROUNDS = 3` matches \
+      the block leg — and **the page walk's own timeout is 120 s, not the 30 s that constant's rationale \
+      assumes**, so a copied value means six minutes of silence. **Two Rust defects were found while \
+      proving this** and are filed as their own rows: that timeout mismatch, and an unfinished walk \
+      returned as `Ok`." },
+
+  { number := 70, layer := "Sync",
+    statement := "**Importing the walk of a root yields exactly the trie rooted there, and the checker \
+      is sound.** The walk delivers the reachable nodes however the pages are cut; a page-wise import \
+      whose pages pass their checks reads at the root what the peer reads there. The joiner is not \
+      trusting the peer, it is checking it — and the whole of that rests on one assumption, \
+      `blake2b256_collision_free`, through Law 10",
+    status := .provedModel,
+    declarations := [`Rchain.Sync.import_reads_the_rooted_trie, `Rchain.Sync.reads_determined,
+      `Rchain.Sync.WalkListing.pages_are_the_nodes],
+    axioms := [],
+    rust := ["rspace/src/state/mod.rs", "rspace/src/history/export.rs",
+      "rspace/src/history/radix_tree.rs"],
+    witness := [`Rchain.Sync.import_reads_the_rooted_trie],
+    falsifiable := "Two stores that agree on the reachable set and read differently at the root: \
+      impossible, which is `reads_determined`; or a page whose leaves do not hash to their keys, which \
+      `validate_state_items` refuses.",
+    note := "**Survives attack**, with the gap named: the model's checker is deliberately **weaker** than \
+      `validate_state_items` — it keeps key-honesty and coverage and drops the Rust's key-*sequence* \
+      equality, its boundedness against extras, and the data (leaf-value) store. That is the right \
+      direction: the Rust's stronger check implies the model's hypotheses, so soundness is not \
+      compromised, and the one unproved bridge (per-chunk sequence equality implies whole-walk coverage) \
+      is prose, not a theorem. `reads_determined` does not itself invoke `root_collision_free` — the \
+      axiom is consumed in `import_agrees`." },
+
+  { number := 71, layer := "Sync",
+    statement := "**A catch-up window bounds what a joining node holds, so its progress does not depend \
+      on the network standing still.** The frontier is monotone along any run, stalls included; an \
+      answered window advances it one width; and the pending set is a function of the *window* and the \
+      frontier — never of how far above it the peer's tip has run. The hash-keyed downward walk has no \
+      such property: what it must hold is the whole gap",
+    status := .provedModel,
+    declarations := [`Rchain.Sync.run_monotone, `Rchain.Sync.answered_run_reaches,
+      `Rchain.Sync.windowPending_independent_of_tip, `Rchain.Sync.gapPending_exceeds_the_window],
+    axioms := [],
+    rust := ["casper/src/engine/catchup.rs", "casper/src/engine/node_running.rs"],
+    witness := [`Rchain.Sync.run_monotone],
+    falsifiable := "A run that lowers the frontier, or a tip above it that changes what is pending. The \
+      measured instances of the failures this replaces are `run-2-catchup-stall.txt` (frozen at 121, 173 \
+      drops) against `run-3-windowed-catchup.txt` (the same 1200-block gap closed in 98 s, zero drops).",
+    note := "**Two corrections the review made.** The module **cited the wrong row** in its header — C268 \
+      where the catch-up is C267; the rows were split after it was written, and the citation is fixed in \
+      this pass. And `windowPending` counts **heights** while `MAX_PENDING_BLOCKS` counts **blocks**: the \
+      bridge (a window of eight heights is at most 32 blocks on a four-validator shard) is prose in the \
+      module, not a theorem, so the headline is a *proxy* for the bound the receiver needs, and this cell \
+      says so. The step's terminal condition is an **idealisation** — the Rust frontier is the local \
+      DAG's and can exceed a peer's advertised tip — so the bound statements describe a narrower machine \
+      than the Rust; the window arithmetic itself was verified correct and faithful to `catchup.rs`." },
+]
 
 /-- Every law number the catalog defines. Laws with clauses repeat. -/
 def numbers : List Nat := laws.map (·.number)
