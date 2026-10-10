@@ -21,7 +21,7 @@ crypto_box = "0.9"
 # `SalsaBox` is a construction with a nonce and a MAC, and a Noise handshake needs the bare scalar
 # multiplication underneath one. BSD-3-Clause, and it pulls `curve25519-dalek` 4.x, which the lock file
 # already holds for `crypto_box`.
-x25519-dalek = "2"
+x25519-dalek = "3"
 rand = "0.10"
 serde = { version = "1", features = ["derive"] }
 # `PrivateKey` zeroes its buffer on drop (AUDIT §12). MIT OR Apache-2.0, already in the lock

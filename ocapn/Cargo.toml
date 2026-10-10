@@ -36,7 +36,7 @@ noise-rust-crypto = { version = "0.6.2", features = ["x25519", "use-chacha20poly
 # there is a live interop target for. MIT / Apache-2.0. The `rustls` half is for `wss://`, which Endo
 # does not do but the other reference implementation does; `rustls` and `tokio-rustls` are already in
 # the lock file through `rchain-comm`, so this adds the WebSocket layer and nothing below it.
-tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
+tokio-tungstenite = { version = "0.30", features = ["rustls-tls-webpki-roots"] }
 # `WebSocketStream` implements `Stream`/`Sink`, and the extension traits that let one be driven are
 # here. Already in the lock file through `tonic`; named explicitly because `ocapn` now uses it.
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
