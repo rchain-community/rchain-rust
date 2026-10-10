@@ -1842,7 +1842,6 @@ mod tests {
     ///
     /// The request flag is pinned with it: a responder reads *that* to decide whether to send the
     /// ancestry at all, so a codec that dropped the flag would silently turn the addition off.
-    #[test]
     /// A height window round-trips through the wire, and **a hash that is not 32 bytes is refused by
     /// the decoder rather than panicking in the handler** — AUDIT R12's class: three message types
     /// carried raw `Vec<u8>` and the handler's first statement panicked on a short one, so any
@@ -1878,6 +1877,7 @@ mod tests {
         );
     }
 
+    #[test]
     fn the_fringe_ancestry_round_trips() {
         let fringe = FinalizedFringe {
             hashes: vec![block_hash(2)],
