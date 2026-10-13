@@ -4,6 +4,8 @@ import importlib.util
 from pathlib import Path
 import unittest
 from unittest.mock import patch
+from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 
 spec = importlib.util.spec_from_file_location("drill", Path(__file__).resolve().parents[1] / "tools/consensus-acceptance-drill.py")
 drill = importlib.util.module_from_spec(spec)
@@ -11,6 +13,25 @@ spec.loader.exec_module(drill)
 
 
 class EvidenceTests(unittest.TestCase):
+    def test_before_finalization_is_waiting_but_later_loss_fails(self):
+        with TemporaryDirectory() as out:
+            run = drill.Drill(SimpleNamespace(out=out, validators=1, window=30))
+            snapshot = [({}, {"blockInfo": {"blockNumber": 2, "blockHash": "ab" * 32}, "deploys": []})]
+            with patch.object(run, "snapshot", return_value=snapshot), patch.object(drill, "probe", return_value={"expr": []}):
+                self.assertIsNone(run.finalized_marker(1))
+                with self.assertRaises(RuntimeError):
+                    run.finalized_marker(1, required=True)
+
+    def test_original_finalized_snapshot_must_still_contain_the_marker(self):
+        with TemporaryDirectory() as out:
+            run = drill.Drill(SimpleNamespace(out=out, validators=1, window=30))
+            identity = [{"node": 0, "hash": "ab" * 32}]
+            with patch.object(drill, "probe", return_value={"expr": [{"ExprInt": {"data": 42}}]}):
+                run.fixed_snapshots(identity)
+            with patch.object(drill, "probe", return_value={"expr": [{"ExprInt": {"data": 43}}]}):
+                with self.assertRaises(RuntimeError):
+                    run.fixed_snapshots(identity)
+
     def test_campaign_refuses_to_touch_a_non_ci_network(self):
         with patch.dict(drill.fuzz.os.environ, {"GITHUB_ACTIONS": "false"}), patch.object(drill.fuzz.subprocess, "run") as run:
             with self.assertRaises(SystemExit):
@@ -25,6 +46,13 @@ class EvidenceTests(unittest.TestCase):
                       {"blockNumber": 10, "blockHash": "abc"}]:
             with self.subTest(value=value), self.assertRaises(ValueError):
                 drill.block_identity(value)
+
+    def test_finalized_endpoint_uses_its_block_info_envelope(self):
+        light = {"blockNumber": 10, "blockHash": "ab" * 32}
+        self.assertEqual(drill.finalized_identity({"blockInfo": light, "deploys": []}), (10, "ab" * 32))
+        for value in [light, {"blockInfo": None}, {"blockInfo": {}}]:
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                drill.finalized_identity(value)
 
     def test_only_the_exact_marker_value_passes(self):
         self.assertTrue(drill.marker_present({"expr": [{"ExprInt": {"data": 42}}]}, 42))

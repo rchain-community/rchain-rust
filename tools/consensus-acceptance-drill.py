@@ -12,6 +12,7 @@ import os
 from pathlib import Path
 import subprocess
 import time
+import urllib.error
 import uuid
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -49,6 +50,13 @@ def marker_present(response, expected):
     return len(values) == 1 and values[0] == {"ExprInt": {"data": expected}}
 
 
+def finalized_identity(response):
+    # last-finalized-block returns BlockInfo, unlike blocks/1's LightBlockInfo.
+    if not isinstance(response, dict) or "blockInfo" not in response:
+        raise ValueError("finalized response has no blockInfo envelope")
+    return block_identity(response["blockInfo"])
+
+
 def probe(i, name, block_hash):
     term = f'new return in {{ for (@v <- @{json.dumps(name)}) {{ return!(v) }} }}'
     return get(i, "/api/v1/explore-deploy-by-block-hash",
@@ -73,14 +81,30 @@ class Drill:
         results = []
         for i in range(self.args.validators):
             status = get(i, "/api/v1/status")
-            finalized = get(i, "/api/last-finalized-block")
+            try:
+                finalized = get(i, "/api/last-finalized-block")
+            except urllib.error.HTTPError as error:
+                finalized = {"http_error": error.code, "body": error.read().decode(errors="replace")}
             self.record(node=i, status=status, finalized=finalized)
             results.append((status, finalized))
         return results
 
     def deploy(self, term):
         status = get(0, "/api/v1/status")
-        result = fuzz.signed_deploy(node_name(0), term, status["latestBlockNumber"], status["shardId"])
+        node = node_name(0)
+        write = subprocess.run(
+            ["docker", "exec", "-i", node, "sh", "-c", "cat > /tmp/acceptance.rho"],
+            input=term, text=True, capture_output=True, timeout=10)
+        if write.returncode:
+            self.record(deploy_term=term, exit_code=write.returncode,
+                        stdout=write.stdout, stderr=write.stderr)
+            raise RuntimeError("deploy file write failed; see observations.jsonl")
+        result = subprocess.run(
+            ["docker", "exec", node, "rnode", "--grpc-host", "localhost", "deploy",
+             "--phlo-limit", "1000000", "--phlo-price", "1",
+             "--private-key", fuzz.DEPLOYER_PRIV, "--shard-id", status["shardId"],
+             "--valid-after-block-number", str(status["latestBlockNumber"]),
+             "/tmp/acceptance.rho"], text=True, capture_output=True, timeout=30)
         self.record(deploy_term=term, exit_code=result.returncode,
                     stdout=result.stdout, stderr=result.stderr)
         if result.returncode:
@@ -108,11 +132,11 @@ class Drill:
             time.sleep(2)
         raise RuntimeError(f"{description} did not pass within {self.args.window}s; last read error={last_error}")
 
-    def finalized_marker(self, min_height):
+    def finalized_marker(self, min_height, required=False):
         identities = []
         for i, (_, finalized) in enumerate(self.snapshot()):
             try:
-                height, block_hash = block_identity(finalized)
+                height, block_hash = finalized_identity(finalized)
             except ValueError:
                 return None
             if height < min_height:
@@ -120,9 +144,19 @@ class Drill:
             answer = probe(i, self.marker, block_hash)
             self.record(node=i, finalized_marker_at=block_hash, response=answer)
             if not marker_present(answer, self.value):
+                if not required:
+                    return None
                 raise RuntimeError(f"validator {i} lost or changed the marker in finalized post-state")
             identities.append({"node": i, "height": height, "hash": block_hash})
         return identities
+
+    def fixed_snapshots(self, identities):
+        for identity in identities:
+            i, block_hash = identity["node"], identity["hash"]
+            answer = probe(i, self.marker, block_hash)
+            self.record(node=i, original_finalized_snapshot=block_hash, response=answer)
+            if not marker_present(answer, self.value):
+                raise RuntimeError(f"validator {i} changed the original finalized post-state snapshot")
 
     def run(self):
         self.record(tree=subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip(),
@@ -162,14 +196,18 @@ class Drill:
                 tips.append(height)
             return max(tips)
 
-        observed_height = self.wait("marker observed on every validator", visible)
+        self.wait("marker observed on every validator", visible, drive=False)
+        # The primary arm submits exactly one deploy. A quiet chain may leave
+        # its *tip* unfinalized, so the barrier is the marker in finalized state,
+        # not a requirement that finality catch up to the observed tip.
         initial = self.wait("marker present in finalized state on every validator",
-                            lambda: self.finalized_marker(observed_height))
+                            lambda: self.finalized_marker(1), drive=False)
         first_height = max(x["height"] for x in initial)
         # Cross two *further* boundaries after the finalized-write observation.
         target = (first_height // 10 + 2) * 10 + 4
         final = self.wait("finalized marker retained through two further epoch boundaries",
-                          lambda: self.finalized_marker(target))
+                          lambda: self.finalized_marker(target, required=True))
+        self.fixed_snapshots(initial)
         summary = {"result": "pass", "validators": self.args.validators,
                    "initial_finalized": initial, "final_finalized": final,
                    "target_height": target,
