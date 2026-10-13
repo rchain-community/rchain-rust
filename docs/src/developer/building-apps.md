@@ -456,7 +456,8 @@ Requests and responses are JSON (`camelCase` keys).
 
 | Method | Path | Purpose | Body / response |
 |---|---|---|---|
-| GET | `/api/v1/status` | node version, address, peers, block height | `ApiStatus` |
+| GET | `/api/v1/status` | node version, address, peers, block height | `PublicStatus` |
+| GET | `/api/v1/status/operator` | **admin listener only** — divergence records, the safety halt, the report counters, the sync task's state, the reset marker | `OperatorStatus` (a superset of `PublicStatus`) |
 | GET | `/api/v1/capabilities` | block-creation mode + dev/admin/faucet surfaces | `NodeCapabilities` |
 | GET | `/api/v1/deploys` | the pooled (not-yet-included) deploys | `PooledDeploy[]` |
 | POST | `/api/v1/deploy` | submit a signed deploy | `DeployRequest` → deploy signature (string) |

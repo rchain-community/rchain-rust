@@ -75,12 +75,16 @@ pub struct ProposerHealth {
     pub autopropose_timer_halted: bool,
     /// **How many times this process's autopropose timer has stopped** (W-N10-01).
     ///
-    /// The flag above is sticky and process-wide, and that is a defect rather than a feature: a node
-    /// that restarts reports `false`, which reads as an all-clear that the *earlier* halt never
-    /// happened — so a reader cannot tell "halted now" from "restarted and healthy". A monotone
-    /// counter cannot reverse, so it survives the restart as the fact the flag loses. A clearing
-    /// writer would need a restart-aware generation stamp — more state, more ways to be wrong — which
-    /// is why this is a counter and not a second flag.
+    /// **What this does not do, stated because a first draft of it claimed otherwise.** It is an
+    /// in-memory count, so after a restart it is zero — exactly like the flag beside it. The ambiguity
+    /// the row names is therefore *not* resolved: `autoproposeTimerHalted: false` still reads the same
+    /// on a node that never halted and on one that halted and restarted. That case is F-U10-02, open
+    /// since #157, and its fix is a **durable record** — the shape the reset marker already has —
+    /// which is a store write on the halt path and a different unit of work.
+    ///
+    /// What it is worth: a count that cannot reverse within the process it describes, so a reader can
+    /// see the flag *has* been set and how many distinct stops the timer has had. Beside a sticky
+    /// boolean that is a small increment, and it is recorded here as one rather than as a fix.
     pub autopropose_timer_halt_episodes: u64,
     /// Autopropose requests the validated-block tap refused because the timer is halted (W-N4-08).
     pub autopropose_tap_suppressed: u64,
@@ -531,17 +535,17 @@ mod tests {
         );
     }
 
-    /// **A restart is distinguishable from never having halted** (W-N10-01).
+    /// **The count is of halts, not of calls** (W-N10-01).
     ///
-    /// `autopropose_timer_halted` is sticky and process-wide, so on a node that restarts it reads
-    /// `false` — an all-clear which is indistinguishable from a node that never halted, because the
-    /// halt it is reporting on happened in a process that no longer exists. The episode counter is the
-    /// half that survives: monotone, so it cannot reverse into the same `false`.
+    /// A second `note_timer_halted` in the same process — a timer that stops twice, or a caller that
+    /// records the same halt twice — must not move it. Falsified by dropping the `swap` guard and
+    /// storing unconditionally, under which the count is 2 and this says so.
     ///
-    /// **The count is of halts, not of calls.** This is the assertion that makes it one: a second
-    /// `note_timer_halted` in the same process — a timer that stops twice, or a caller that records the
-    /// same halt twice — must not move it. Falsified by dropping the `swap` guard and storing
-    /// unconditionally, under which the count is 2 and this says so.
+    /// **This test does not assert anything about a restart, and the first version of this comment
+    /// claimed it did.** `autopropose_timer_halted`'s real ambiguity — a restarted node reporting
+    /// `false`, indistinguishable from one that never halted — is untouched by an in-memory counter,
+    /// which is also zero after a restart. That case is F-U10-02 and needs a durable record; see the
+    /// field's own doc.
     #[test]
     fn a_second_halt_in_one_process_is_not_a_second_episode() {
         let health = ProposeHealth::new();

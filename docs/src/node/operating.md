@@ -302,10 +302,13 @@ Two reads, and the difference between them matters:
   the delegation ledger is unbounded in how many people have delegated, and hanging it here would make a
   single status call's size a function of that.
 - **`GET /api/v1/pos/delegations?delegator=<65-byte hex>`** — **one delegator's positions**, across
-  every operator it has staked with. Scoped to the key you ask about, which is the bounded direction:
+  every operator it has staked with. Scoped to the key you ask about, which is the bounded direction.
+  **On the admin listener (40405), not the public one** (W-N3-03): it is a store query keyed on a
+  caller-supplied key, not chain state a peer would read, and it answered any caller's question about
+  any delegator's portfolio while it was public.
 
   ```sh
-  curl -s "http://localhost:40403/api/v1/pos/delegations?delegator=04f700a4…" | jq
+  curl -s "http://localhost:40405/api/v1/pos/delegations?delegator=04f700a4…" | jq
   ```
 
   Each entry is `{operator, amount, accruedRewards, pendingUndelegation}`:

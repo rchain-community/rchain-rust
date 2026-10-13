@@ -154,8 +154,12 @@ Four consequences a client feels:
 - **The node is the caller on chain.** The deploy is signed by the node's deployer key, so the node's
   vault pays the phlo and the chain records the node as `deployerId` for every peer. There is no
   binding between a CapTP session and a deployer key, so the chain cannot tell one peer from another.
-- **Bridged deploys are rate-limited** to 4 per second, across every session and capability. Each one
-  spends the node's REV, so the bound is on the node's spend.
+- **Bridged deploys are rate-limited** to 4 per second **across every session and capability** — each
+  one spends the node's REV, so the total is on the node's spend. A second bound sits *under* that
+  total: one capability may take at most 1 per second (W-N8-02). The total alone is unfair rather than
+  unsafe — the one object a peer loops on can spend the whole allowance while every other capability
+  the node exports is refused — and a limiter per capability *instead of* the total would be a bound of
+  N times the number, which is the resource-amplification class the row itself is filed under.
 
 ## Interop notes
 

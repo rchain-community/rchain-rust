@@ -148,9 +148,13 @@ pub struct OperatorStatus {
     /// Deliberately not called `halted`: the tap and the admin `POST /api/propose` keep running, so a
     /// node can have a stopped timer and still be producing blocks.
     pub autopropose_timer_halted: bool,
-    /// **How many times this process's autopropose timer has stopped** (W-N10-01). The flag above is
-    /// sticky and process-wide, so a restarted node reports `false` — an all-clear that the earlier
-    /// halt never happened. A monotone count cannot reverse, which is what tells the two apart.
+    /// **How many times this process's autopropose timer has stopped** (W-N10-01), counted on the
+    /// transition rather than on the call.
+    ///
+    /// **It is not a restart-surviving record**, and saying so here matters because the flag beside it
+    /// makes the reading ambiguous: after a restart this is `0` exactly like `autoproposeTimerHalted`,
+    /// so `false` still cannot be told from "never halted". That is F-U10-02 (open since #157) and its
+    /// fix is a durable record on the halt path — see `ProposeHealth`'s own doc.
     pub autopropose_timer_halt_episodes: u64,
     /// Autopropose requests the validated-block **tap** refused because the timer is halted (W-N4-08).
     /// Beside the episode count because it is the measurement of what the halt cost: without it, the

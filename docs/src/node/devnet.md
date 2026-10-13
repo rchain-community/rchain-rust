@@ -204,7 +204,9 @@ What is installed, and by whom:
 - the `GetMe`/`SendThem` feature — the first call a governance client makes.
 
 The last three are signed by **the genesis ceremony's key** — the bootstrap validator's own key on a
-devnet (`--validator-private-key`). They must share one key, because the template publishes its admin
+devnet — written into the node's own data volume as a file and passed as
+`--validator-private-key-path`, not as hex on the command line, where `docker inspect` returns it to
+anyone who can talk to the daemon (W-N6-06)). They must share one key, because the template publishes its admin
 capability for its own deployer and the feature's registration reads it back. The consequence worth
 knowing: that validator also holds the `MasterContractAdmin` locker, so `newMemberDirectory` (which
 requires it) is callable by that key and not by others. See "Ceiling of this arrangement" in
