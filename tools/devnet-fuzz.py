@@ -5,7 +5,7 @@ Drives a running Docker devnet (started by tools/devnet.sh). **Nothing here gate
 Docker, a built image and a live network, so it is a nightly/manual job rather than a PR check
 (`.github/workflows/devnet-fuzz.yml`).
 
-Modes (`--mode`, repeatable, `all` = every mode):
+Modes (`--mode`, repeatable, `all` = the four ordinary fuzz modes):
 
   valid      (default) robustness + determinism: random *syntactically-valid* terms through the
              read-only reducer (POST /api/v1/explore-deploy, which forks a throwaway runtime) must
@@ -25,6 +25,8 @@ Modes (`--mode`, repeatable, `all` = every mode):
   gateway    the single-shard surface: `/api/v1/shards` reports exactly one shard and the txn
              routes are 404 (the gateway needs a multi-shard node, which the Docker devnet cannot
              build — per-shard LFS sync is a missing product feature, see spec/TEST-COVERAGE.md).
+  acceptance opt-in, CI-only, standalone: replace this job's disposable devnet with N=4 and N=8
+             arms, and measure real finalized writes across two further epoch boundaries.
 
 Stdlib only (urllib + json + subprocess). Run against an already-up devnet:
 
@@ -34,6 +36,8 @@ Stdlib only (urllib + json + subprocess). Run against an already-up devnet:
 
 import argparse
 import json
+import os
+from pathlib import Path
 import random
 import subprocess
 import sys
@@ -425,6 +429,49 @@ def run_gateway(args, rng):
     print("==> gateway: one shard reported, txn routes absent (single-shard surface unchanged)")
 
 
+def run_acceptance_campaign():
+    """Opt-in CI-only campaign; preserve the ordinary fuzz modes and their network."""
+    if os.environ.get("GITHUB_ACTIONS") != "true":
+        raise SystemExit("acceptance mode requires an isolated GitHub Actions runner")
+    # The existing workflow started this default devnet in this same disposable
+    # job. Stop it to free its ports; no public node or user data is reachable.
+    subprocess.run(["tools/devnet.sh", "down"], check=True)
+    env = {**os.environ, "DEVNET_PREFIX": "acceptance", "DEVNET_NETWORK": "acceptance",
+           "DEVNET_NODE_MEMORY": "2g", "DEVNET_THREAD_POOL_SIZE": "2"}
+    outcomes = []
+    for validators in (4, 8):
+        out = Path("target/consensus-acceptance") / f"n{validators}"
+        out.mkdir(parents=True, exist_ok=True)
+        code = 1
+        try:
+            subprocess.run(["tools/devnet.sh", "up", "--validators", str(validators),
+                            "--fresh", "--no-autopropose", "--epoch-length", "10"],
+                           env=env, check=True)
+            code = subprocess.run([sys.executable, "tools/consensus-acceptance-drill.py",
+                                   "--validators", str(validators), "--out", str(out)], env=env).returncode
+        except (OSError, subprocess.CalledProcessError) as error:
+            (out / "result.json").write_text(json.dumps({"result": "fail", "reason": str(error)}) + "\n")
+        finally:
+            for i in range(validators):
+                node = "acceptance-bootstrap" if i == 0 else f"acceptance-validator-{i}"
+                print(f"=== n={validators} node={i} resource status ===", flush=True)
+                subprocess.run(["docker", "inspect", "--format", "{{json .State}}", node], check=False)
+                print(f"=== n={validators} node={i} log tail ===", flush=True)
+                subprocess.run(["docker", "logs", "--tail", "80", node], check=False)
+            # The existing workflow has no upload step. Put machine-readable
+            # observations in its retained log; refuse to silently truncate.
+            for path in (out / "result.json", out / "observations.jsonl"):
+                if path.exists():
+                    print(f"=== BEGIN {path} ===", flush=True)
+                    print(path.read_text(), flush=True)
+                    print(f"=== END {path} ===", flush=True)
+            subprocess.run(["tools/devnet.sh", "down", "-v"], env=env, check=True)
+        outcomes.append({"validators": validators, "exit_code": code})
+    print("ACCEPTANCE_OUTCOMES " + json.dumps(outcomes), flush=True)
+    if any(x["exit_code"] for x in outcomes):
+        raise SystemExit(1)
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--validators", type=int, default=3, help="bonded validators (default 3)")
@@ -435,7 +482,7 @@ def main():
     ap.add_argument(
         "--mode",
         action="append",
-        choices=["valid", "malformed", "scheduler", "gateway", "all"],
+        choices=["valid", "malformed", "scheduler", "gateway", "all", "acceptance"],
         default=None,
         help="which mode(s) to run (repeatable; default: valid)",
     )
@@ -449,6 +496,15 @@ def main():
     modes = args.mode or ["valid"]
     if "all" in modes:
         modes = ["valid", "malformed", "scheduler", "gateway"]
+
+    if "acceptance" in modes:
+        if modes != ["acceptance"]:
+            ap.error("acceptance is a standalone campaign; do not combine it with fuzz modes")
+        if args.dry_run:
+            print("isolated CI: N=4 control, N=8; real finalized marker, two further epoch boundaries")
+            return
+        run_acceptance_campaign()
+        return
 
     if args.dry_run:
         # The generator half of `malformed` is checkable without a node: print what a run would send
