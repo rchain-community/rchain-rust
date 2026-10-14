@@ -20,14 +20,18 @@ spec = importlib.util.spec_from_file_location("devnet_fuzz", ROOT / "tools/devne
 fuzz = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fuzz)
 PREFIX = os.environ.get("DEVNET_PREFIX", "acceptance")
+trace_spec = importlib.util.spec_from_file_location("causal_trace", ROOT / "tools/consensus-causal-trace.py")
+causal_trace = importlib.util.module_from_spec(trace_spec)
+trace_spec.loader.exec_module(causal_trace)
 
 
 def node_name(i):
     return f"{PREFIX}-bootstrap" if i == 0 else f"{PREFIX}-validator-{i}"
 
 
-def get(i, path, body=None):
-    return fuzz.http_json(f"http://127.0.0.1:{40403 + i * 1000}{path}",
+def get(i, path, body=None, admin=False):
+    port = (40405 if admin else 40403) + i * 1000
+    return fuzz.http_json(f"http://127.0.0.1:{port}{path}",
                           "POST" if body is not None else "GET", body, timeout=10)[1]
 
 
@@ -80,7 +84,7 @@ class Drill:
     def snapshot(self):
         results = []
         for i in range(self.args.validators):
-            status = get(i, "/api/v1/status")
+            status = get(i, "/api/v1/status/operator", admin=True)
             try:
                 finalized = get(i, "/api/last-finalized-block")
             except urllib.error.HTTPError as error:
@@ -218,10 +222,12 @@ class Drill:
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--validators", type=int, choices=[4, 8], required=True)
+    parser.add_argument("--validators", type=int, choices=[4, 5, 8], required=True)
     parser.add_argument("--window", type=int, default=240)
     parser.add_argument("--out", required=True)
     args = parser.parse_args()
+    if os.environ.get("GITHUB_ACTIONS") != "true":
+        parser.error("execution requires an isolated GitHub Actions runner")
     if not 30 <= args.window <= 600:
         parser.error("window must be between 30 and 600 seconds")
     drill = Drill(args)
@@ -230,6 +236,8 @@ def main():
     except Exception as error:
         (drill.out / "result.json").write_text(json.dumps({"result": "fail", "reason": str(error)}) + "\n")
         raise
+    finally:
+        causal_trace.capture(drill, get, node_name)
 
 
 if __name__ == "__main__":

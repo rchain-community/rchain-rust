@@ -13,6 +13,11 @@ spec.loader.exec_module(drill)
 
 
 class EvidenceTests(unittest.TestCase):
+    def test_operator_status_uses_the_admin_port(self):
+        with patch.object(drill.fuzz, "http_json", return_value=(200, {})) as read:
+            drill.get(2, "/api/v1/status/operator", admin=True)
+            self.assertEqual(read.call_args.args[0], "http://127.0.0.1:42405/api/v1/status/operator")
+
     def test_before_finalization_is_waiting_but_later_loss_fails(self):
         with TemporaryDirectory() as out:
             run = drill.Drill(SimpleNamespace(out=out, validators=1, window=30))
