@@ -18,6 +18,14 @@ def block(n=1, parents=None):
 
 
 class TraceTests(unittest.TestCase):
+    def test_capture_transport_preserves_long_raw_preimages_and_rejects_corruption(self):
+        data = (b'"encoded":"' + b"abcde01234" * 100000 + b'"')
+        digest, encoded = trace.encode_capture(data)
+        self.assertEqual(trace.decode_capture(digest, encoded), data)
+        self.assertLess(len(encoded), len(data))
+        with self.assertRaises(ValueError):
+            trace.decode_capture("00" * 32, encoded)
+
     def test_repeated_observation_does_not_create_a_second_message(self):
         self.assertEqual(len(trace.index_blocks([block(), block()])), 1)
 

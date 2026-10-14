@@ -43,6 +43,12 @@ class EvidenceTests(unittest.TestCase):
                 drill.fuzz.run_acceptance_campaign()
             run.assert_not_called()
 
+    def test_trace_campaign_also_refuses_a_non_ci_network(self):
+        with patch.dict(drill.fuzz.os.environ, {"GITHUB_ACTIONS": "false"}), patch.object(drill.fuzz.subprocess, "run") as run:
+            with self.assertRaises(SystemExit):
+                drill.fuzz.run_acceptance_campaign(trace=True)
+            run.assert_not_called()
+
     def test_block_identity_is_validated(self):
         self.assertEqual(drill.block_identity({"blockNumber": 10, "blockHash": "ab" * 32}), (10, "ab" * 32))
         for value in [None, [], {}, {"blockNumber": -1, "blockHash": "ab" * 32},

@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """Capture and compare accepted DAG views; diagnostics, not consensus proof."""
+import base64
 import hashlib
 import json
 from pathlib import Path
 import re
 import subprocess
 import time
+import zlib
 
 
 def hex_value(value, size, label):
@@ -116,6 +118,25 @@ def verify_raw(block, raw):
         raise ValueError("raw block preimage hash mismatch")
 
 
+def encode_capture(data):
+    return hashlib.sha256(data).hexdigest(), base64.b64encode(zlib.compress(data, 9)).decode()
+
+
+def decode_capture(digest, text):
+    data = zlib.decompress(base64.b64decode(text, validate=True))
+    if hashlib.sha256(data).hexdigest() != digest:
+        raise ValueError("capture transport checksum mismatch")
+    return data
+
+
+def emit_capture(path):
+    digest, text = encode_capture(path.read_bytes())
+    print(f"=== BEGIN ZLIB {path} sha256={digest} ===", flush=True)
+    for offset in range(0, len(text), 4096):
+        print(text[offset:offset + 4096], flush=True)
+    print(f"=== END ZLIB {path} ===", flush=True)
+
+
 def capture(run, get, node_name):
     out = run.out / "causal"
     out.mkdir(exist_ok=True)
@@ -128,6 +149,7 @@ def capture(run, get, node_name):
     for i in range(run.args.validators):
         node = node_name(i)
         try:
+            capture_start = time.time()
             status = get(i, "/api/v1/status/operator", admin=True)
             height = status["latestBlockNumber"]
             if type(height) is not int or not 0 <= height <= 256:
@@ -156,6 +178,8 @@ def capture(run, get, node_name):
             views[i] = view
             payload = {"node": i, "operator_status": status, "blocks": blocks,
                        "raw_blocks": raw_blocks, "summary": view,
+                       "capture_started_utc": capture_start, "capture_finished_utc": time.time(),
+                       "operator_status_after": get(i, "/api/v1/status/operator", admin=True),
                        "attestation_decisions": decisions(text)}
             (out / f"node-{i}.json").write_text(json.dumps(payload, indent=2) + "\n")
             manifest["nodes"][str(i)] = {"binary_sha256": binary, "container_state": json.loads(state)}
@@ -169,9 +193,10 @@ def capture(run, get, node_name):
     print("CAUSAL_CAPTURE " + json.dumps(comparison), flush=True)
     # The existing runner retains logs but has no artifact-upload step. Keep
     # each capture there too, with delimiters for mechanical extraction.
-    for path in sorted(out.glob("*.json")):
-        print(f"=== BEGIN {path} ===", flush=True)
-        print(path.read_text(), flush=True)
-        print(f"=== END {path} ===", flush=True)
+    # Bound log lines, preserve exact bytes, and retain the full rejection and
+    # transport logs too. Uncompressed raw preimages made multi-megabyte lines
+    # in run 38506033100 and delayed evidence retrieval substantially.
+    for path in sorted([*out.glob("*.json"), *out.glob("*.log")]):
+        emit_capture(path)
     if not comparison["complete_capture"]:
         raise RuntimeError("causal capture is incomplete; see causal/comparison.json")

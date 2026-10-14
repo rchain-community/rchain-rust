@@ -429,7 +429,7 @@ def run_gateway(args, rng):
     print("==> gateway: one shard reported, txn routes absent (single-shard surface unchanged)")
 
 
-def run_acceptance_campaign():
+def run_acceptance_campaign(trace=False):
     """Opt-in CI-only campaign; preserve the ordinary fuzz modes and their network."""
     if os.environ.get("GITHUB_ACTIONS") != "true":
         raise SystemExit("acceptance mode requires an isolated GitHub Actions runner")
@@ -438,8 +438,12 @@ def run_acceptance_campaign():
     subprocess.run(["tools/devnet.sh", "down"], check=True)
     env = {**os.environ, "DEVNET_PREFIX": "acceptance", "DEVNET_NETWORK": "acceptance",
            "DEVNET_NODE_MEMORY": "2g", "DEVNET_THREAD_POOL_SIZE": "2"}
+    if trace:
+        # A diagnostic arm, not a replacement for the N=4/N=8 acceptance gate.
+        # Full inbound traces distinguish propagation from validation rejection.
+        env["DEVNET_LOG_LEVEL"] = "debug"
     outcomes = []
-    for validators in (4, 8):
+    for validators in ((5, 8) if trace else (4, 8)):
         out = Path("target/consensus-acceptance") / f"n{validators}"
         out.mkdir(parents=True, exist_ok=True)
         code = 1
@@ -482,7 +486,7 @@ def main():
     ap.add_argument(
         "--mode",
         action="append",
-        choices=["valid", "malformed", "scheduler", "gateway", "all", "acceptance"],
+        choices=["valid", "malformed", "scheduler", "gateway", "all", "acceptance", "acceptance-trace"],
         default=None,
         help="which mode(s) to run (repeatable; default: valid)",
     )
@@ -497,13 +501,14 @@ def main():
     if "all" in modes:
         modes = ["valid", "malformed", "scheduler", "gateway"]
 
-    if "acceptance" in modes:
-        if modes != ["acceptance"]:
+    if any(mode in modes for mode in ("acceptance", "acceptance-trace")):
+        if len(modes) != 1:
             ap.error("acceptance is a standalone campaign; do not combine it with fuzz modes")
         if args.dry_run:
-            print("isolated CI: N=4 control, N=8; real finalized marker, two further epoch boundaries")
+            print("isolated CI: " + ("N=5 control, N=8, debug traces" if modes == ["acceptance-trace"] else
+                                    "N=4 control, N=8") + "; real finalized marker, two further epoch boundaries")
             return
-        run_acceptance_campaign()
+        run_acceptance_campaign(trace=modes == ["acceptance-trace"])
         return
 
     if args.dry_run:
