@@ -12,6 +12,7 @@
 //! is preserved, because the bucket starts full.
 
 use crate::lock::Unpoison;
+use std::collections::HashMap;
 use std::sync::Mutex;
 
 // The wasm build takes the host's clock (`web-time`); `std`'s panics there (issue #98).
@@ -58,6 +59,89 @@ impl RateLimiter {
     }
 }
 
+/// A token bucket **per key**, so one caller cannot spend another's allowance.
+///
+/// The deploy ingress's bound was a single bucket for the whole node: it was keyed on the node, not
+/// on the caller, so one identity's burst refused every other identity's deploys — the bound measured
+/// the wrong subject. Here the subject is explicit, which is also what makes the bound *per reachable
+/// identity* rather than per process.
+///
+/// **The map is itself a resource**, and on an unauthenticated surface it would be the next unbounded
+/// one, so `max_keys` caps it. A bucket that has refilled to full carries no information — it is
+/// indistinguishable from a key never seen — so it is dropped rather than held; and when the map is
+/// at its cap with no such bucket to drop, a new key is refused rather than admitted. Fail-closed,
+/// because the alternative is an allocation the caller sizes.
+pub struct KeyedRateLimiter {
+    max_per_sec: u64,
+    max_keys: usize,
+    buckets: Mutex<HashMap<Vec<u8>, (f64, Instant)>>,
+}
+
+impl KeyedRateLimiter {
+    pub fn new(max_per_sec: u64, max_keys: usize) -> Self {
+        KeyedRateLimiter {
+            max_per_sec,
+            max_keys,
+            buckets: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// Admit a request from `key` if that key has a token. An unseen key starts full.
+    pub fn allow(&self, key: &[u8]) -> bool {
+        let now = Instant::now();
+        let full = self.max_per_sec as f64;
+        let mut buckets = self.buckets.lock().unpoison();
+
+        // The cap is enforced before the entry is taken, so the `None` arm below means "not seen"
+        // rather than "refused" — and it is total: no panic, and no unreachable arm to leave.
+        if !buckets.contains_key(key) && buckets.len() >= self.max_keys {
+            // Drop the buckets that have refilled to full: they say nothing an unseen key does not,
+            // so keeping them is what would let the map grow without bound.
+            buckets.retain(|_, (tokens, last)| {
+                *tokens + now.duration_since(*last).as_secs_f64() * full < full
+            });
+            if buckets.len() >= self.max_keys {
+                return false;
+            }
+        }
+
+        match buckets.get_mut(key) {
+            Some((tokens, last)) => {
+                let refill = now.duration_since(*last).as_secs_f64() * full;
+                *tokens = (*tokens + refill).min(full);
+                *last = now;
+                if *tokens >= 1.0 {
+                    *tokens -= 1.0;
+                    true
+                } else {
+                    false
+                }
+            }
+            None => {
+                // **An unseen key starts with a full bucket, and a full bucket of less than one
+                // token admits nothing.** This is `RateLimiter`'s own "zero means closed, not
+                // unlimited" rule, and the keyed form broke it: it spent a token from `full`
+                // unconditionally, so a limiter configured to `0` — a plausible way to turn one
+                // ingress's bound off — admitted the first request from *every* key, which is a
+                // fail-open on the surface whose whole purpose is to bind a rate. Refused keys are
+                // not inserted, so the map still cannot be grown by a caller whose requests are all
+                // refused.
+                if full >= 1.0 {
+                    buckets.insert(key.to_vec(), (full - 1.0, now));
+                    true
+                } else {
+                    false
+                }
+            }
+        }
+    }
+
+    /// The number of keys currently tracked. For tests and for the node's own gauges.
+    pub fn tracked_keys(&self) -> usize {
+        self.buckets.lock().unpoison().len()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -87,6 +171,30 @@ mod tests {
         for _ in 0..5 {
             assert!(!limiter.allow());
         }
+    }
+
+    /// **And neither does the keyed form** — the same rule, on the limiter whose whole reason for
+    /// existing is that one caller must not spend another's allowance.
+    ///
+    /// This was a fail-open: the unseen-key arm spent a token from `full` unconditionally, so
+    /// `KeyedRateLimiter::new(0, …)` admitted the *first* request from every key it ever saw — a
+    /// limiter configured to zero admitting one request per caller, on an unauthenticated surface,
+    /// with the map still refusing to grow so nothing looked wrong. Found while wiring the HTTP
+    /// ingress onto this limiter, which is exactly where a bound of zero would have been used.
+    #[test]
+    fn a_keyed_limiter_of_zero_admits_nothing_either() {
+        let limiter = KeyedRateLimiter::new(0, 8);
+        for key in [b"alice".as_slice(), b"bob".as_slice(), b"carol".as_slice()] {
+            assert!(
+                !limiter.allow(key),
+                "a limiter of zero must refuse every key, including an unseen one"
+            );
+        }
+        assert_eq!(
+            limiter.tracked_keys(),
+            0,
+            "and a refused key must not be tracked, or the map is grown by callers it refuses"
+        );
     }
 
     /// The bucket refills, so a client that was refused is not refused forever.
@@ -120,6 +228,55 @@ mod tests {
         assert!(
             !limiter.allow(),
             "and one only: the allowance was refilled, not re-granted"
+        );
+    }
+
+    /// **One key cannot spend another key's allowance.** This is the defect the keyed limiter exists
+    /// for: as a single bucket for the whole node, one identity's burst refused every other identity's
+    /// deploys — the bound held, and it held the wrong subject. Exhaust `alice` completely; `bob` must
+    /// be untouched.
+    #[test]
+    fn one_key_cannot_spend_another_keys_allowance() {
+        let limiter = KeyedRateLimiter::new(2, 8);
+        assert!(limiter.allow(b"alice"), "alice's first");
+        assert!(limiter.allow(b"alice"), "alice's second");
+        assert!(!limiter.allow(b"alice"), "alice is spent");
+        assert!(
+            limiter.allow(b"bob"),
+            "bob's allowance is his own; alice's flood must not refuse him"
+        );
+    }
+
+    /// **The map is bounded**: an unauthenticated caller can present keys as fast as it likes, so the
+    /// tracking map is the next unbounded resource. At `max_keys` distinct keys, a further new key is
+    /// refused rather than admitted.
+    #[test]
+    fn the_map_is_bounded_and_refuses_new_keys_at_capacity() {
+        let limiter = KeyedRateLimiter::new(2, 2);
+        assert!(limiter.allow(b"a"));
+        assert!(limiter.allow(b"b"));
+        assert_eq!(limiter.tracked_keys(), 2);
+        assert!(
+            !limiter.allow(b"c"),
+            "a third distinct key is refused rather than growing the map"
+        );
+        assert!(
+            limiter.allow(b"a"),
+            "and a known key is unaffected by the cap"
+        );
+    }
+
+    /// A bucket that has refilled to full carries nothing an unseen key does not, so it is dropped —
+    /// which is what keeps a stream of one-shot keys from filling the map permanently.
+    #[test]
+    fn a_refilled_bucket_is_dropped_so_one_shot_keys_do_not_fill_the_map() {
+        let limiter = KeyedRateLimiter::new(100, 2);
+        assert!(limiter.allow(b"one-shot"));
+        std::thread::sleep(Duration::from_millis(30)); // 3 tokens at 100/s: back to full
+        assert!(limiter.allow(b"b"));
+        assert!(
+            limiter.allow(b"c"),
+            "the spent-and-refilled key was dropped, so the map was not full"
         );
     }
 }

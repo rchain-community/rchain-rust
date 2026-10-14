@@ -602,23 +602,38 @@ where
 {
     async fn create_checkpoint(&self) -> std::result::Result<Checkpoint, String> {
         let changes = self.current_store().changes().await;
+        // **The overlay is not discarded until the fold that consumes it has succeeded** (law 74,
+        // `spec/Rchain/Checkpoint.lean`). `drain_native` clears the overlay as it reads it, and the fold
+        // below is the only fallible step — so without this a fold that returns `Err` would lose native
+        // mutations it never committed, while the hot-store side (read above, not cleared) is left
+        // untouched. The snapshot is the overlay as it stands and is restored if the fold fails; the
+        // drain itself stays atomic, so the restore is the only place the overlay is written back.
+        let before = self.native_store.snapshot();
         let drain = self.native_store.drain_native();
-        // Keep the drained mutations for the caller (the block path folds them into the block index so
-        // the merge can re-apply them; issue #74). Replacement, not accumulation: a caller that needs a
-        // whole block accumulates across this and the block's checkpoints.
         let native_changes = drain.all();
+        let next_history = {
+            let history = self.current_history();
+            match history
+                .checkpoint_with_native(&changes, &native_changes)
+                .await
+            {
+                Ok(next) => next,
+                Err(e) => {
+                    self.native_store.revert(before);
+                    return Err(e);
+                }
+            }
+        };
+        // **The drain is recorded only once the fold that consumed it has committed.** Keep the drained
+        // mutations for the caller (the block path folds them into the block index so the merge can
+        // re-apply them; issue #74). Replacement, not accumulation: a caller that needs a whole block
+        // accumulates across this and the block's checkpoints.
         *crate::lock::wlock(&self.last_native_changes) = native_changes.clone();
         // **And the same drain, attributed** (#280), which is what the block's sidecar is built from.
         // The checkpoint folds every action; only the by-deploy view travels in the sidecar, because
         // cost accounting's writes are re-derived by the merge (AUDIT C207) and a write outside any
         // deploy's window has no deploy to travel under.
         *crate::lock::wlock(&self.last_native_drain) = drain;
-        let next_history = {
-            let history = self.current_history();
-            history
-                .checkpoint_with_native(&changes, &native_changes)
-                .await?
-        };
         *crate::lock::wlock(&self.history_repository) = next_history.clone();
         let log = std::mem::take(&mut *crate::lock::wlock(&self.event_log));
         *crate::lock::wlock(&self.produce_counter) = BTreeMap::new();

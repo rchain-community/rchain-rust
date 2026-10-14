@@ -19,7 +19,7 @@ use std::sync::Arc;
 use rchain_casper::api::block_api::BlockApi;
 use rchain_casper::api::block_report_api::BlockReportApi;
 use rchain_rholang::runtime::RhoRuntime;
-use rchain_shared::rate_limiter::RateLimiter;
+use rchain_shared::rate_limiter::KeyedRateLimiter;
 
 /// The trio of node gRPC services (port of `GrpcServices`).
 pub struct GrpcServices {
@@ -52,6 +52,85 @@ impl GrpcServices {
 /// server. Documented Scala deviation: Scala binds the deploy service to `0.0.0.0` with no limit.
 pub const DEFAULT_API_RATE_LIMIT_PER_SEC: u64 = 100;
 
+/// Distinct peers the deploy service's ingress bound tracks at once — the same rule as the HTTP
+/// listener's `MAX_TRACKED_PEERS`, and for the same reason: the per-peer map is itself a resource an
+/// unauthenticated caller sizes by opening connections.
+pub const MAX_TRACKED_PEERS: usize = 4_096;
+
+/// The subject of an ingress bound on the deploy gRPC service.
+///
+/// **The peer, and it is all the interceptor can have.** tonic runs an interceptor *after* the request
+/// has been decoded, and what it hands over is an empty body: the deployer is inside that body, so it
+/// does not exist yet at the point this bound runs. That is not a defect in this bound but the reason
+/// it is a *different* bound from the deployer's: this one bounds what a connection may make the node
+/// decode, and the deployer's own rate and pool share are charged downstream at `add_deploy`, where
+/// the identity the node can hold a submitter to finally exists.
+#[derive(Clone, Copy, Debug)]
+pub struct PeerAddress(pub Option<std::net::SocketAddr>);
+
+/// The key the deploy service's ingress bound is charged to: the peer, or **one shared bucket** when
+/// the address could not be named at accept time.
+///
+/// A shared bucket rather than a bypass, and deliberately: a key that meant "do not charge this" would
+/// be indistinguishable from the defect this bound exists to close.
+fn ingress_key(peer: Option<std::net::SocketAddr>) -> Vec<u8> {
+    match peer {
+        Some(addr) => addr.ip().to_string().into_bytes(),
+        None => b"unattributed-peer".to_vec(),
+    }
+}
+
+/// A plaintext inbound connection carrying its peer address, for tonic's `Connected`.
+struct PeerAddressIo {
+    stream: tokio::net::TcpStream,
+    peer: Option<std::net::SocketAddr>,
+}
+
+impl ::tonic::transport::server::Connected for PeerAddressIo {
+    type ConnectInfo = PeerAddress;
+    /// Total: the address is captured at accept time rather than looked up here, because
+    /// `connect_info` is infallible and a lookup that could fail would have to be answered with
+    /// something invented.
+    fn connect_info(&self) -> Self::ConnectInfo {
+        PeerAddress(self.peer)
+    }
+}
+
+// The `AsyncRead`/`AsyncWrite` half of the wrapper, forwarding to the socket — the same shape
+// `comm`'s `TlsIo` uses, and the reason `Connected` is not enough on its own: tonic needs an IO it
+// can read and write, and this is one with an address attached.
+impl tokio::io::AsyncRead for PeerAddressIo {
+    fn poll_read(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut self.stream).poll_read(cx, buf)
+    }
+}
+
+impl tokio::io::AsyncWrite for PeerAddressIo {
+    fn poll_write(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &[u8],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        std::pin::Pin::new(&mut self.stream).poll_write(cx, buf)
+    }
+    fn poll_flush(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut self.stream).poll_flush(cx)
+    }
+    fn poll_shutdown(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut self.stream).poll_shutdown(cx)
+    }
+}
+
 /// Serve the external gRPC service (deploy) on `addr` (port of the external `GrpcServer`).
 pub async fn serve_deploy(
     deploy: DeployGrpcServiceV1,
@@ -60,12 +139,20 @@ pub async fn serve_deploy(
     stop: tokio::sync::watch::Receiver<bool>,
 ) -> Result<(), String> {
     use ::tonic::service::interceptor::InterceptedService;
+    use futures_util::StreamExt;
     use rchain_models::proto::casper::deploy_service_server::DeployServiceServer;
 
-    let limiter = Arc::new(RateLimiter::new(DEFAULT_API_RATE_LIMIT_PER_SEC));
+    // **The bound's subject is the peer** (W-N2-01, W-N2-08). It was one process-wide bucket, so one
+    // caller's burst exhausted the allowance and refused every other caller's deploys — the bound
+    // held, and the wrong counterparty paid for it.
+    let limiter = Arc::new(KeyedRateLimiter::new(
+        DEFAULT_API_RATE_LIMIT_PER_SEC,
+        MAX_TRACKED_PEERS,
+    ));
     let server = DeployServiceServer::new(deploy).max_decoding_message_size(max_message_size);
     let service = InterceptedService::new(server, move |req: ::tonic::Request<()>| {
-        if limiter.allow() {
+        let key = ingress_key(req.extensions().get::<PeerAddress>().and_then(|p| p.0));
+        if limiter.allow(&key) {
             Ok(req)
         } else {
             Err(::tonic::Status::resource_exhausted(
@@ -74,11 +161,24 @@ pub async fn serve_deploy(
         }
     });
 
+    // **Served from an accepted stream, so the peer address reaches the interceptor.** `serve` binds
+    // its own listener and hands the service nothing but the request; `Connected::connect_info` is the
+    // only way an address gets into a request's extensions, and it needs the socket.
+    let listener = tokio::net::TcpListener::bind(addr)
+        .await
+        .map_err(|e| format!("cannot bind {addr}: {e}"))?;
+    let incoming = tokio_stream::wrappers::TcpListenerStream::new(listener).map(|accepted| {
+        accepted.map(|stream| PeerAddressIo {
+            peer: stream.peer_addr().ok(),
+            stream,
+        })
+    });
+
     // Graceful shutdown (AUDIT C144): on the operator's word this stops accepting and lets the RPCs
     // already in flight finish, instead of the process being killed with them outstanding.
     ::tonic::transport::Server::builder()
         .add_service(service)
-        .serve_with_shutdown(addr, crate::runtime::shutdown::stop_requested(stop))
+        .serve_with_incoming_shutdown(incoming, crate::runtime::shutdown::stop_requested(stop))
         .await
         .map_err(|e| e.to_string())
 }
@@ -106,14 +206,33 @@ pub async fn serve_internal(
 mod tests {
     use super::*;
 
+    /// **The gRPC ingress bound is charged to the peer, not to the node** (W-N2-01, W-N2-08).
+    ///
+    /// It was one process-wide bucket, so one caller's burst exhausted the allowance and every other
+    /// caller's deploys were refused — the bound held, and the wrong counterparty paid for it. This is
+    /// the assertion that can tell a keyed bound from an unkeyed one; the single-peer case cannot.
+    ///
+    /// Falsified by keying on anything constant, under which `bob`'s request is refused too.
     #[test]
-    fn rate_limiter_throttles_over_capacity() {
-        let limiter = RateLimiter::new(3);
-        // The first `max_per_sec` requests within the same window are admitted…
-        assert!(limiter.allow());
-        assert!(limiter.allow());
-        assert!(limiter.allow());
-        // …and the next is rejected (the 4 calls happen well within one second).
-        assert!(!limiter.allow());
+    fn the_deploy_ingress_is_charged_to_the_peer() {
+        let alice: std::net::SocketAddr = "192.0.2.1:5000".parse().expect("addr");
+        let bob: std::net::SocketAddr = "192.0.2.2:5000".parse().expect("addr");
+        let limiter = KeyedRateLimiter::new(1, MAX_TRACKED_PEERS);
+
+        assert!(limiter.allow(&ingress_key(Some(alice))));
+        assert!(
+            !limiter.allow(&ingress_key(Some(alice))),
+            "alice is over her allowance"
+        );
+        assert!(
+            limiter.allow(&ingress_key(Some(bob))),
+            "bob's allowance is his own; one caller's burst must not refuse every caller"
+        );
+
+        // A socket whose peer could not be named shares one bucket rather than being let through —
+        // a key meaning "do not charge this" would be indistinguishable from the defect.
+        let unattributed = ingress_key(None);
+        assert!(limiter.allow(&unattributed));
+        assert!(!limiter.allow(&unattributed));
     }
 }

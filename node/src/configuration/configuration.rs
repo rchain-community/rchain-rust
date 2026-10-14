@@ -1333,8 +1333,10 @@ mod tests {
 
         const HEX: &str = "67e56582298859ddae725f972992a07c6c4fb9f62a8fff58ce3ca926a1063530";
         let key_path = dir.join("validator.hex");
-        // Trailing newline: what any editor or `echo` leaves behind.
-        std::fs::write(&key_path, format!("{HEX}\n")).unwrap();
+        // Trailing newline: what any editor or `echo` leaves behind. Owner-only, because the loader
+        // refuses a key file another uid can reach (W-N5-09) — the accepted fixture has to be written
+        // the way the writers write it, which is what makes the refusal below meaningful.
+        rchain_crypto::util::key_util::write_private_key(&key_path, format!("{HEX}\n")).unwrap();
 
         let mut conf = default_expected();
         conf.casper.validator_private_key = None;
@@ -1354,10 +1356,27 @@ mod tests {
 
         // A path that is set but is not a key is an error, not a silent no-op.
         let junk = dir.join("junk.txt");
-        std::fs::write(&junk, "not a key\n").unwrap();
+        rchain_crypto::util::key_util::write_private_key(&junk, "not a key\n").unwrap();
         conf.casper.validator_private_key = None;
         conf.casper.validator_private_key_path = Some(junk);
         assert!(resolve_validator_private_key(&mut conf).is_err());
+
+        // And a key file the whole host can read is an error too (W-N5-09): the node refuses to adopt
+        // a signing identity that another local account could have taken a copy of. The mode is set
+        // explicitly, because the process umask would otherwise mask the fixture into being readable
+        // only by its owner.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let wide = dir.join("wide.hex");
+            std::fs::write(&wide, format!("{HEX}\n")).unwrap();
+            std::fs::set_permissions(&wide, std::fs::Permissions::from_mode(0o644)).unwrap();
+            conf.casper.validator_private_key = None;
+            conf.casper.validator_private_key_path = Some(wide.clone());
+            let err = resolve_validator_private_key(&mut conf)
+                .expect_err("a world-readable validator key must not be adopted");
+            assert!(err.contains("wide.hex"), "{err}");
+        }
 
         // No path and no hex key at all is fine (an observer node).
         conf.casper.validator_private_key = None;

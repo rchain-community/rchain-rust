@@ -1,0 +1,60 @@
+# syntax=docker/dockerfile:1
+
+# --- The profiling build — not the artifact that ships --------------------------
+#
+# `tools/devnet.sh build` selects this file when one of the `RNODE_BUILD_*` passthroughs is set, and
+# only then. It exists because a build argument that reaches `cargo` compiles a *different* binary, so
+# a definition that accepts one must not be the definition a release is produced from (W-N7-03). The
+# shipped artifact is `docker/rnode/Dockerfile`; everything here is for the memory investigations of
+# #117, where the whole point is to change the artifact under test.
+#
+# Keep this stage identical to the shipped file except for the three arguments at the bottom, so a
+# profile is a profile of the shipped build and not of a second, subtly different one.
+FROM rust:1.95.0@sha256:f49565f188ee00bc2a18dd418183f2c5f23ef7d6e691890517ed341a598f67c3 AS builder
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends protobuf-compiler libprotobuf-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+COPY . .
+
+ARG GIT_HEAD_COMMIT=""
+
+# Profiling knobs for the memory investigations (#117), all defaulting to the shipped build.
+# `CARGO_FEATURES=dhat-heap` installs dhat's global allocator and `CARGO_FEATURES=jemalloc-profiling`
+# compiles jemalloc's sampler in; `RUSTFLAGS=-C debuginfo=1` is what makes the resulting profile
+# *nameable* — the default release profile is `debug = 0` and the shipped binary carries no debug
+# sections at all, so a profile built without it is addresses with no symbols.
+ARG CARGO_FEATURES=""
+ARG RUSTFLAGS=""
+# The allocator's own configuration, for a profiling build: `prof:true,lg_prof_sample:20,prof_prefix:…`
+# on top of the purge settings `.cargo/config.toml` compiles in. **The empty case is guarded, and that
+# is not decoration**: `ARG NAME=""` puts a *set but empty* variable into the `RUN` environment, and
+# cargo's `[env]` does not override a variable that already exists — so a bare `export` would strip the
+# purge settings from this build and nothing would report it.
+ARG JEMALLOC_SYS_WITH_MALLOC_CONF=""
+RUN ${JEMALLOC_SYS_WITH_MALLOC_CONF:+export JEMALLOC_SYS_WITH_MALLOC_CONF="$JEMALLOC_SYS_WITH_MALLOC_CONF";} \
+    cargo build --release --locked -p rchain-node --bin rnode ${CARGO_FEATURES:+--features "$CARGO_FEATURES"}
+
+# --- Runtime stage -------------------------------------------------------------
+FROM debian:trixie-slim@sha256:a29215f6a35e51e22adffa17f89e9d2ef06214e64a2bad10d765c46aea49f11f
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /app/target/release/rnode /usr/local/bin/rnode
+
+RUN useradd --create-home rnode \
+    && mkdir -p /var/lib/rnode \
+    && chown -R rnode:rnode /var/lib/rnode
+
+HEALTHCHECK --interval=10s --timeout=3s --start-period=30s --retries=5 \
+    CMD curl -fsS http://localhost:40403/api/status || exit 1
+
+USER rnode
+WORKDIR /var/lib/rnode
+
+ENTRYPOINT ["rnode"]

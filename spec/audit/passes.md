@@ -361,6 +361,10 @@ Every place the Rust port deliberately departs from the Scala oracle, with the r
 
 | **A new block justifies the `latest_msgs` as of the last round boundary, not `latest_msgs`** (`DagMessageState::round_parents`, `block-storage/src/dag/message_state.rs`; the proposer reads it in `get_pre_state_for_new_block`) | `BlockCreator`'s `getPreStateForNewBlock` builds the parent set as `dag.latestMessages.map(_.id)`, every sender's newest message | the oracle's parent set is one its **own** finalizer cannot advance on. `calculate_next_fringe_support_map` derives each candidate's `seen_by` from `parents ∖ next_layer`, so a parent set that *is* every sender's newest message has almost no remainder: the head of each round has an empty one and the later movers have seen a prefix. Measured in-process through the production entry point with three live validators at the devnet's `100/100/50`: `Support { supporting: 0, total: 250, full_partitions: 0, candidates: 2 }`, refusing before the quorum is ever consulted. With the round snapshot the same chain publishes a fringe and tracks the tip at a constant 12-height lag (48/60, 168/180, 348/360). Nothing else moves: heights stay `max + 1`, the validity rules are untouched, and the gate is unchanged. **What this is not:** not a validation fork — a block justifying a snapshot is an ordinary block every existing check accepts, so an unpatched node accepts a patched node's blocks — but it *is* a proposer divergence, because the two produce different blocks on the same history, which is why it is registered rather than assumed. The `150 of 250` the devnet logged is this defect's half-fixed shape, reproduced in-process on the way to the correction. AUDIT C185; pass §35. |
 | **A block's justification set is bounded by `max-number-of-parents`, refused on the receiving side** (`casper/src/validate.rs::justification_count`, read off `casper.max-number-of-parents`, whose shipped default moved from `2147483647` to `255`; the proposer refuses to build a block above it in `proposer.rs::create_block`) | **the oracle composes no per-block bound at all** — the same fact the `ExceedsBlockPhloLimit` row records — and this tree carries no `legacy/` to check a Scala `maxNumberOfParents` against, so the honest statement is that the key was configuration in this port and nothing more: no proposer cap and no validation rule, while two doc comments (`proposer.rs`, `validate.rs`) and **C123's fix rationale** each asserted it bounded exactly this set. **Hard fork (#51 category A):** a block justifying more parents than the bound is valid today and refused after, so an upgraded node rejects what an unupgraded one accepts. `0` or negative disables the check, which is how a chain keeps the pre-#153 semantics exactly rather than by accident. **It is also the tenth key of AUDIT C143's class** — parsed into `NodeConf` and read by nothing — which C143's own list of nine did not reach; the register's disposition for that class is to *refuse* the key, and this key takes the other horn of it, enforcing the setting rather than rejecting it, because unlike the keepalive and random-port knobs its documented purpose is one this port can honour. AUDIT C191; #153. |
+
+| **A block's own timestamp is bounded below by its parents** (`casper/src/validate.rs::block_timestamp`, in `block_summary` after the pure list, refusing `InvalidBlockTimestamp`; the tolerance is `MAX_BLOCK_TIMESTAMP_DRIFT_MS` = five minutes, a constant rather than a `casper.*` key) | **the oracle composes no timestamp predicate at all.** `BlockMessage.timestamp` is inside `hash_block`'s cover and is republished verbatim as the block's canonical time — `rho:block:data` serves it to contracts and every client surface returns it — and nothing in `blockSummary` reads the field, so a proposer could stamp a block with any time at all and every validator would build the next block on top of it. **Hard fork (#51 category A):** a block stamped more than five minutes before its parents is valid today and refused after, so an upgraded node rejects what an unupgraded one accepts. **The bound is one-sided — a lower bound against the block's own parents, never this node's clock — and both halves are load-bearing.** Never the local clock, because a wall-clock comparison inside a *validity* predicate decides differently on every validator and is a fork by construction. Only a lower bound, because a validator that was offline builds a block stamped *now* on a parent stamped hours ago — a large **positive** gap, which a lower bound cannot see, so C267 (`a-bound-must-not-refuse-a-legitimate-backlog`) is discharged by construction rather than by argument, and the #223 shape (a returning validator proposing at twenty missed heights in two seconds) is not refused by it. The **forward** case is deliberately not closed here, for that same reason: an upper bound against the parent is exactly the shape that refuses a legitimate backlog. What that leaves is that `rho:block:data` can read ahead by one block on a chain whose bonded proposer stamps ahead; the amplification that made the field worth attacking — every replay of a far-future block prompting an attestation — is closed at the receiving node's own gate (`attest_is_live`, now bounded in *both* directions, where `saturating_sub` had made any future stamp read as live), and at the node's own clock, where refusing costs no fork. A constant rather than a configuration key because a rule that cannot be configured is a rule two operators cannot configure differently: the keys that *are* configuration (`max-number-of-parents`, `min-phlo-price`) are properties of the network the consensus algorithm is defined over, and clock tolerance is not. **Not an offence** (`slash_severity` is `None`): a slow clock and a proposer choosing the chain's time are the same bytes, and the slash machinery exists for offences the network has agreed to punish. W-N14-01, W-N14-02, W-N14-03, W-N14-04. |
+
+| **A deploy whose term exceeds 64 KiB is refused at this node's own ingress** (`casper/src/multi_parent_casper.rs::MAX_DEPLOY_TERM_BYTES`, checked in `deploy` before the parse) | **the oracle's deploy service has no such bound.** `parse` refuses by AST *depth* and by the length of a `|`-chain, and by nothing else, so a term's **breadth** (`a!(1, 1, …, 1)`, `new x, x, …, x`, a wide `match`) is bounded only by the term's own size — and every element is then normalized, on a term an unauthenticated caller supplies, before the admission decision that would refuse it. **Not a hard fork, and the reason is structural rather than a promise:** a deploy refused here never enters the pool and therefore never enters a block, so no two nodes can disagree about a block over it — and the block path never calls this function, so a peer's block is unaffected however wide its terms are. It is the same class as the deploy service's own 256 KiB decode cap, one layer in: the cap bounds the *message*, this bounds the *work*, and 64 KiB of Rholang source is several times the largest contract in this tree. **What is deliberately not done, and why:** a breadth rule inside the *parser*, which would be fork-visible — the oracle accepts a wide term, so refusing one here would make this node reject a block the oracle accepts, a split the day someone writes one. What makes that affordable is that the accumulation a breadth rule would guard is O(k) rather than O(k²) since W-N12-01, so breadth now costs linear work on an input already bounded by the wire. W-N12-02. |
 | **A validator's bond may be other people's stake: `pos:bonds` carries the *aggregate*, and `pos:delegations` attributes it** — `rho:rchain:pos!("delegate", …)` moves a principal from the **delegator's own** vault into the staking vault and adds it to the operator's pool entry, so the entry a slash reaches and the weight `select_active` draws on are the operator's own stake **plus** every delegation to it; the ledger `pos:delegations` (`(operator, delegator) → amount`) records which part is whose, and `pos:pending_delegations`, `pos:delegation_claims` and `pos:delegated_rewards` carry the staged exit, its escrow and a delegator's accrued share | `Pos.rhox:355-404` — the contract's `bond` writes `allBonds` out of the **deployer's own** vault only (`deposit!(deployerId, amount, posVaultAddr)`) and nothing in `Pos.rhox` lets a key carry another's stake: there is no delegation primitive, no ledger to attribute one, and `getBonds` returns a per-key bond that is self-funded by construction | A delegator spends from its own vault through its own `deployerId` and the **protocol** attributes the stake elsewhere — so this needs no capability `spec/RUST-FIRST.md`'s B2 declined, and the alternative shape (bonding from a named vault, which would) is the one issue #193 rejected for that reason. Admission is open — any bonded operator is delegable-to, with no commission and no consent step — and the per-delegation floor is `minimum_bond`, reused rather than a new parameter. **Hard fork (#51 category A):** an operator's post-state depends on a third party's deploys, so every block hash from the first delegation onward differs between a fixed and an unfixed node. **What makes the fork point late rather than at genesis is stated as a requirement**: the four leaves are absent on a chain that never delegates and no setter is called until its value is non-empty — `set_*` is an unconditional `put`, so an empty write is a different trie root from an absent leaf (`pos:epoch_seed` is the precedent) — and with no delegations the aggregate *is* the stake, so such a chain's post-state is byte-identical to one without the primitive. **Decided here, implemented in the same change's second unit** (AUDIT C204) |
 | **An epoch's reward for a key with delegators is split pro-rata, and a delegator's share is credited to `pos:delegated_rewards` rather than to the operator's `pos:committed`** — after `epoch_rewards` and the participation weight, each drawn validator's reward is divided across its own stake and its delegations in canonical key order; the operator keeps the integer-division remainder, and `epoch_pot` subtracts **both** ledgers | `Pos.rhox:241-256` — `getCurrentEpochRewards` computes one share per **validator** and `commitCurrentEpochRewards` (`:568-576`) writes it to that validator's `committedRewards` entry; there is no second party for a share to belong to, because there is no delegation | Crediting a delegator's share to the operator's `committed` entry would put money the operator may spend into the operator's ledger — the single most likely way to get this primitive wrong, which is why the split is a separate leaf rather than an extra field. The split is **exact** (`split_sums_to_the_reward`): the delegators' shares plus the operator's remainder are the reward the key was paid, so a validator with delegators commits the same total it would have alone and law 46's `sum_rewards_le_pot` survives the split rather than needing restatement. It is the **identity** with no delegators (`split_with_no_delegators_is_the_operator`), which is what makes the dormancy claim above hold arithmetically and not only at the store. The rule is one `proRata` shared with the fan-out below. **Hard fork (#51 category A):** the split moves REV between two ledgers, so every block hash from the first post-delegation boundary differs. **Decided here, implemented in the same change's second unit** (AUDIT C204) |
 | **A slash fans the untaken remainder out to each delegator's own vault, and clears the delegation ledgers** — `atRisk` reads the operator's **aggregate** pool entry, so the tier applies to a delegator's principal exactly as to the operator's; `returned` is distributed pro-rata by each party's at-risk contribution — the operator's own part to its vault, each delegator's part to **its own** vault — with the dust to the operator, and the offender is removed from `pos:delegations`, `pos:pending_delegations`, `pos:delegation_claims` and `pos:delegated_rewards` together | `Pos.rhox:470-482` — the contract's slash moves the whole bond to the Coop vault and **deletes the validator's own entries**; the port already deviates by returning the untaken remainder to the offender's own vault (AUDIT C199), and there is no third party in the contract for a remainder to belong to | This is the sharpest correctness risk in the primitive and it is stated as such: the port's post-C199 slash pays `at_risk − taken` to `vault_address(validator)`, and with delegations present that hands a delegator's principal to the party it was delegated to. The fan-out is the same `proRata` the reward split uses (with `base = 0`, since every principal is at risk), so its sum arithmetic is one theorem rather than two. **The model cannot state the per-vault attribution and says so**: `PosState.user` is the total over every user vault, so `spec/Rchain/Pos.lean`'s law 57 proves the *amounts* and the clearing, and which vault is credited is pinned by a Rust witness — the identical simplification the withdrawal path already carries. An escrowed (`pos:delegation_claims`) principal is reached too, mirroring the validator's own escrowed claim, because it stays at risk until its deadline passes. **Hard fork (#51 category A):** the payment destination changes the block's post-state. **Decided here, implemented in the same change's second unit** (AUDIT C204) |
@@ -10042,3 +10046,536 @@ read false.
 **Evidence.** `spec/audit/evidence/n328-quorum/` — `results.md` (the reading), `run.txt` (the raw capture),
 `attestation-lines.txt` (the collected lines), driven by `n328-quorum-run.sh` in the same directory. One
 host, one run.
+
+## 105. A queued reset must reach the installed driver (C275, #338)
+
+The request can exist before its waker. Installation previously recorded only the waker, leaving a pending request without a wake. The existing serial request test now fails on that ordering before the fix (CI run 38341642556, commit 0aff751). Installation takes the request lock before the waker lock, matching submission, and notifies the installed driver when the slot is occupied. Pending-driver handover and empty-slot installation are covered in the same test. This establishes local request delivery; it does not execute the full engine re-entry or prove global finalized-state safety.
+
+Verified on 47540f5 by CI run 38342542544: the delivery regression, existing DAG/store reset tests, formatting/static gates and dependency checks pass. Casper reports 437 passed, 0 failed, 1 ignored. C275 is closed for local delivery.
+
+## 106. The durability rewinds: a HAZOP, and the laws it owed (C276–C278, #340's line)
+
+PR #340 fixed one delivery bug in the self-reset and drew a line: *"full running-engine reset-to-sync
+re-entry and universal finalized-state rollback safety remain separate acceptance boundaries"*. This pass
+took that line as its subject — not as an audit-plus-fix, but as the repository's own method applied at
+its own altitude: **HAZOP, root-cause analysis, and Lean4 first**. Every failure state is mathematically
+representable, so a deviation is either *demonstrated* to be an instance of an existing law, or it earns a
+**new law written before any Rust**.
+
+**The HAZOP layer.** `docs/src/spec/failure-hazop.md` gained six study nodes, one per rewind site — U11
+the reset request's lifecycle, U12 the durable rewind, U13 the runtime root, U14 the refusal budget, U15
+the RSpace checkpoint, U16 the operator's reconciliation. Each dispositions all eleven IEC 61882 guide
+words, carries Table A deviations with an RCA chain, and adds a **Table C — law coverage** naming the law
+a deviation instantiates or the one it owes. Thirty-eight rows, twenty-three falsifiers owed, checked by
+`tools/check-hazop-worksheet.sh --gate`.
+
+**What an existing law already captured, and what it did not.** Law 53c's `rewindStep`
+(`Rchain/Casper/Stranding.lean`) gives the rewind's *availability* (an anchored state) and its *effect* (a
+refusal is removed) — but it is a pure state relation: it says nothing about durability, crashes, or a
+completion record, which is the whole subject here. So four laws were written first, modelled on law 51's
+`System`:
+
+- **law 72** — a completion record brackets every durable effect (`Rchain/Durability.lean`);
+- **law 73** — a raised request is not spent until the act commits (`Rchain/Requests.lean`);
+- **law 74** — a checkpoint does not drain an overlay it has not folded (`Rchain/Checkpoint.lean`);
+- **law 75** — a dependent action is taken only on a committed record (`Rchain/Attempts.lean`).
+
+Each carries a **falsifier theorem that is red on the code as it stood** —
+`an_early_commit_reaches_a_record_that_lies`, `a_split_take_reaches_a_state_that_spent_the_request`,
+`a_drain_before_the_fold_reaches_a_state_that_lost_the_overlay`,
+`a_raised_request_on_an_uncommitted_record_is_reachable` — and a non-vacuity witness. The register moved
+from 71 laws / 95 entries to **75 / 99**.
+
+**The Rust halves that landed** — law 72's and 73's with witnesses the formal gate runs, law 74's without
+one, because its falsifier needs a fault-injection point the rspace tests do not yet have:
+
+- the reset wrote `ResetMarker{Rewound}` when the two *stores* had returned and moved the runtime root
+  *afterwards* — a durable `CURRENT_ROOT` write — so a crash between them left a record claiming the
+  stores agree while the root named the dropped state, and the boot guard repaired nothing. The two
+  marker writes now bracket all three effects, and the guard's `Rewinding` branch re-establishes the root
+  (`casper/src/engine/reset.rs`, `casper/tests/reset.rs`);
+- the reset request is spent only by the act that commits: the act peeks, runs the anchor pre-flight, and
+  takes only once `perform_reset` has returned, so a failure that destroyed nothing leaves the request
+  pending;
+- `create_checkpoint` snapshots the native overlay before the drain and restores it if the fold fails, and
+  records `last_native_*` only after the fold has committed (`rspace/src/rspace.rs`).
+
+**What this pass does not claim.** The Rust halves of law 75, of F-U11-02 (the reset cells are
+process-global while the reset state is per-shard), of F-U13's own crash-window falsifier, of F-U15-02/03
+(the soft checkpoint's absent root; the leaf-before-root commit) and of F-U16 (the reconciliation tool's
+missing journal, its same-minute aside collision, and its in-place systemd restore) are **owed**, each
+named with its law or its `candidate:` slug in the HAZOP's Table C. The devnet arm that would exercise a
+real reset end to end — stageable since §92 — is unrun.
+
+**A correction this pass made to its own work.** The first draft carried a row (U11-02) claiming a
+duplicate request strands a pending one. Reading `request_reset` against tokio's `Notify` shows the
+opposite: `notify_one` stores a permit when no driver is waiting, so the first request's wake is not lost.
+The row was wrong, the word is folded, and the debt adjusted — recorded here because a worksheet's
+citations are claims, and this repository's rule is that a claim found false is corrected rather than
+quietly dropped.
+
+**Evidence.** `docs/src/spec/failure-hazop.md` (nodes U11–U16 and the debt line);
+`spec/Rchain/{Durability,Requests,Checkpoint,Attempts}.lean` with register rows 72–75;
+`casper/src/engine/reset.rs`, `casper/tests/reset.rs`, `rspace/src/rspace.rs`;
+`tools/check-hazop-worksheet.sh --gate` and `tools/check-lean-conformance.sh` (173 Rust witnesses ran).
+
+## 107. The durability rewinds, part 2: the stop, the shard, and the tool (C279–C283, #342's residue)
+
+§106 landed the HAZOP layer, four laws and three of the Rust halves, and named what it did not reach.
+This is that residue, closed in the same order — **a law written before the Rust** wherever the deviation
+earns one.
+
+**A law for the stop — 76.** §106's D3 was the sharpest thing it left: the reset's failed act says a node
+in that shape "must not keep serving", and the LFS sync terminal says "this node is stopping rather than
+serving a chain it never synced" — and **neither stopped anything**. Both are a `return Err` from a task
+nobody joins; the launched `node_launch` future's error was only logged, and `NodeProgram::serve` never
+awaited it, so the block receiver, the processor, the proposer and the API kept running. **Law 76
+(`Rchain/Stop.lean`)** states the requirement — a reported fault and the stop are *one step*, and it is
+the last step available — with its falsifier, `a_note_without_a_stop_leaves_the_node_serving`, exhibiting
+exactly the port's old state: the latch set, the listeners up. The register is now **76 laws / 100
+entries**.
+
+**The Rust halves.** Four, and law 76's is the one with a witness the gate runs:
+
+- **F-U12-03, the concluded stop (C279).** `shutdown::report_fatal` sets a latch the spawn wrapper writes
+  and `main`'s wait selects on — a third arm beside the listeners and the signal — so a failed reset, and
+  the terminal path that shares the sentence, **stop the process without draining**. No drain, because the
+  fault means a store has moved under a view that was not rebuilt, which is the state the reset's own
+  comment forbids serving from. Witnessed by
+  `node/src/runtime/shutdown.rs::a_reported_fatal_resolves_the_wait_with_the_first_reason`.
+- **F-U11-02, the reset cells are process-global (C280).** Both are keyed by the shard's lane
+  (`ShardId::to_string()`): a node may be a member of several shards, each with its own DAG, block store
+  and runtime, and the key is what makes "shard B takes shard A's request" **unrepresentable** rather than
+  refused. That ordering mattered: with F-U12-03 landed, a misdelivered request refused at the anchor
+  check would have killed the whole node. Keying over a config gate because the doctrine is to make the
+  bad state unrepresentable rather than to guard against it.
+- **F-U14-02, the request on the uncommitted record (C281).** `note_unrestorable_if_exhausted` now runs
+  *after* the `update_metadata` that persists the count, in both paths, so a request raised by it names a
+  count the store holds (law 75).
+- **F-U16-01/02, the reconciliation tool (C282, C283).** The aside names are to the second and the docker
+  branch **refuses an existing target**, where a same-minute retry used to re-tar the already-cleared
+  volume over the only good backup; and the systemd `--restore-from-master` branch now stages beside the
+  data dir and swaps each environment only once the whole copy has arrived, so the `"$n is unchanged"`
+  it prints is true when printed.
+
+**What this pass does not claim.** The tool's rows carry `candidate:` slugs, not laws — the tool is not
+modelled, and a shell refusal is not a theorem; the four rows whose falsifier is a fault-injection point
+the tree does not have (law 74's fold, law 75's write, F-U16-01's refusal, F-U16-02's swap) stay **owed**
+in the HAZOP's debt line rather than claimed. F-U11-02's law is owed too — law 73's model is a one-shot
+cell with one lane, and stating it per shard is a change to that model, not a citation. And the devnet arm
+that would exercise a real reset end to end remains **unrun**.
+
+**Evidence.** `docs/src/spec/failure-hazop.md` (F-U11-02, F-U12-03, F-U14-02, F-U16-01/02, and the debt
+line at 22); `spec/Rchain/Stop.lean` with register row 76; `node/src/runtime/shutdown.rs`,
+`node/src/main.rs`, `node/src/runtime/node_runtime.rs`, `casper/src/interpreter_util.rs`,
+`casper/src/engine/reset.rs`, `casper/src/engine/node_launch.rs`,
+`casper/src/multi_parent_casper.rs`, `tools/reconcile-network.sh`;
+`tools/check-hazop-worksheet.sh --gate`, `tools/check-lean-conformance.sh` and the casper test suite.
+
+## 108. The reset arm, attempted: the staging route §101 named no longer reproduces (C284)
+
+§106 and §107 both left the **devnet arm** owed — F-U5-01's falsifier, *a diverged running node re-enters
+sync*, the acceptance-level instrument for the self-reset — and §101 had recorded it as **stageable but
+unrun**: *"now stageable with `up --validators 4 --fresh` (the §92 self-reject divergence needs no
+instrument)"*.
+
+**What ran.** `tools/devnet.sh build` (image at `731ac4b1c`, this tree), `down -v`, then
+`DEVNET_EXTRA_FLAGS_devnet_validator_{1,2,3}="--self-reset" tools/devnet.sh up --validators 4 --fresh` — the
+bootstrap plus three, which is the four bonded nodes §92's capture had, with the flag **confirmed present on
+each container** (`docker inspect … .Config.Cmd`). Sampled every 15 s for ~9 minutes.
+
+**What happened.** Nothing. Heights ran 98→270 (bootstrap), 149→277, 148→275, 144→271, and across the whole
+run every node recorded **zero** `[fringe-divergence]`, zero `Self-created block …` and zero reset lines,
+with `consecutiveSelfValidationFailures` 0, `autoproposeTimerHalted` false and `unrestorableRecords` 0
+throughout. The net produced ~170 blocks and stayed healthy.
+
+**Why, and this is the finding.** §92's self-reject came from the fringe-record store's **`min` tie-break**
+on one key: two honest blocks finalising one fringe from two bases wrote the key, the `min` chose a
+`state_hash`, and the node then refused its own block against the state that implied. That store is gone —
+law 66/67/68's record redesign retired `join_fringe_records`, its `min` and the in-memory map
+(`casper/src/dag.rs:812`, `models/src/block_metadata.rs:464`, `block-storage/src/test_support.rs:65`) — and
+the `[fringe-divergence]` string that survives is a **reader-side** report of distinct claims, not a store
+write. So §101's "stageable now" was true when written and is **false on this tree**: the divergence the
+route relied on was fixed, and the arm needs a **new instrument** rather than a longer run.
+
+**What this does not claim.** The reset's durable half, its boot guard and its ordering are pinned by
+`casper/tests/reset.rs` and run by the formal gate (§106, §107) — this run says nothing about those. It says
+the **acceptance-level** property F-U5-01 names is still **unrun**, and that the tree no longer has a
+recorded way to stage it. That is the residue, stated rather than implied.
+
+**Evidence.** `spec/audit/evidence/reset-arm/run.md` (the reading) and `observe.log` (the sampler's output,
+136 lines). One host, one run; the devnet was torn down with `down -v` after the capture. The instrument the
+arm now needs is designed beside them (`instrument-design.md`): a synthetic spent record written into a
+stopped node's `block-metadata`, which reaches the drive loop's third exit — the half no test can — while
+being explicit that it exercises the re-entry and not the healing. **That recommendation was refuted by
+reading before anything was built — §109.**
+
+## 109. The instrument design, refuted before it was built (C285)
+
+§108's design recommended a synthetic spent record and pointed at it as what the arm needs. Reading the
+code it was designed against refutes it, and refutes the obvious config route beside it.
+
+**The synthetic record cannot reach the reset.** `restore_divergent_justifications` does not trust the
+record: it re-runs `validate_checks` on the block (`casper/src/multi_parent_casper.rs:1178`) and
+`revalidated_record` answers `Restored` for a block that passes — so a merely-*marked* valid block is
+**cleared**, not escalated, and `restore_budget_is_spent` is only ever reached *through* a genuine
+revalidation. Marking a spent budget from the start skips the restore path entirely, because
+`restore_is_warranted` requires attempts left.
+
+**And `--min-phlo-price`** — the devnet's own documented example for `DEVNET_EXTRA_FLAGS_*` — refuses with
+`BlockStatus::ContainsLowCostDeploy`, whose cause is `FailureCause::Attributable` and **not** `Divergence`
+(`casper/src/block_status.rs:132-160`): no restore, no budget, no reset. (That the status reads a *node*
+input while being classified Attributable is the C198 nuance, not a route.)
+
+**What survives.** `Divergence` is exactly five statuses, all of them — the map's own words — "decided by
+this node's state or replay". So the instrument must make the node compute differently, which means a
+different **code** or a different **trie**, and a trie edit that changes the computation breaks the node's
+own reads first. The route is a **perturbed image**, with one constraint the genesis imposes: the
+difference must be **outside the genesis path**, or block #0 fails and the node sits in `NodeSyncing`,
+where the drive loop — and so the reset — does not exist. The **merge** satisfies it (genesis has no
+justifications); the perturbed node would validate genesis, enter the running phase, and fail the first
+merged block with `InvalidPreStateHash`.
+
+**What this changes.** The route is known and constrained, and the arm is still **unrun**, so F-U5-01 stays
+owed. What is *closed* is the wrong route, before it cost a build — this repository's rule is that a claim
+found false is corrected rather than quietly dropped, and §108 published one.
+
+**Evidence.** `spec/audit/evidence/reset-arm/instrument-design.md`'s correction, with its anchors;
+`casper/src/multi_parent_casper.rs` (the restore's revalidation), `casper/src/block_status.rs` (the cause
+map); `observe.log` beside it for the run the design was for.
+
+## 110. The reset arm, attempted twice more: a partition and a state tamper (C286)
+
+§108 tried the route §101 named and found it retired; §109 refuted the first replacement by reading. This
+pass *measured* the next two, as the new plan's Phase 1 requires — each experiment cheap enough to kill its
+own instrument, with the result written down either way.
+
+**A partition stages nothing.** `up --validators 4 --fresh`, `docker network disconnect` on one validator
+for 60 s: the two heads formed exactly as predicted (isolated node 98 and still producing; survivors
+144/142) — and on reconnect it simply **caught up** (98 → 148), with the falsifier's grep returning **0** for
+`state-hash disagreement`, for each of the five statuses, and for every link of the reset's chain, and
+`unrestorableRecords` 0 throughout. That is `casper/tests/merge_determinism.rs`'s property — the merge is a
+pure function of the parent set — measured live, and it agrees with the repo's own `n223-rejoin-results.md`
+R3 (*"nothing is refused"*). `e1-partition.md`.
+
+**A state tamper is effective and cannot be aimed.** The route the two refutations leave: edit the **state
+the merge computes its base from**. A dev-only helper (`node/examples/tamper-fringe-claim.rs`) rewrites, on
+a stopped node's volume, the greatest-height block's `post_state_hash` and its per-block
+`fringe_state_hash` — both fields, because which one is read depends on whether a fringe exists
+(`multi_parent_casper.rs:302` vs `:334-338`, and a fresh net is in the second). Six runs:
+
+- tampering one node's own newest block: **nothing** — and the run *diagnosed* it, because the printed true
+  claim was the empty state hash, which names the branch the merge actually takes;
+- tampering **every** node's greatest-height blocks: **the chain stalls**, every node logging
+  `propose failed … active-bonds leaf not found in state` — **the merge's own comment names that exact
+  stall as the consequence of a wrong base** (`:248-252`). So the tamper *reaches the computation*;
+- tampering one validator, then the three armed validators with the bootstrap left clean so it would keep
+  publishing: **both absorbed**, heights advancing, zero markers.
+
+**The conclusion, and it is about the trigger rather than about the drill.** The tamper works and the
+mechanism is sound; the **aim** cannot be held. The trigger needs the tampered block to be the greatest
+`(height, hash)` **justification of a block the subject validates** — and on a live net the target moves
+every block, while a freeze-and-restart cannot pin it: the snapshot's max is already below the net's, and a
+node re-fetching the block overwrites the tampered body with the true one.
+
+**So the reset's trigger is not reachable by an external instrument at all — and that is by design.** A
+`Divergence` must be *intrinsic*: the node's own state or replay against a block everyone else accepts. Any
+difference applied from outside is either overwritten by the re-sync or is not the block the merge selects.
+The narrowness is the feature — a trigger loose enough for an external edit would also fire on a healthy
+node, and the reset is destructive. It follows that the arm can be staged only by an **intrinsic**
+divergence, the perturbed *build* (the route §109/#345 recorded), and that route **exercises the drive
+loop's third exit without satisfying F-U5-01's falsifier**, because a code-diverged node rewinds and fails
+again rather than healing.
+
+**What this changes.** F-U5-01's cell now says the arm is unrun *and why it cannot be run this way*, with
+both attempts measured rather than asserted. The instrument is committed beside them
+(`tools/reset-drill.sh`) with a header that states its own status, so the next reader does not rebuild a
+route that has already been shown not to hold.
+
+**Evidence.** `spec/audit/evidence/reset-arm/e1-partition.md` and `e2-tamper.md` (the readings, with the
+numbers); `tools/reset-drill.sh` and `node/examples/tamper-fringe-claim.rs` (the instrument);
+`casper/tests/merge_determinism.rs` (the property E1 measured live);
+`casper/src/multi_parent_casper.rs:248-252` (the stall the all-node tamper produced) and `:302`/`:334-338`
+(the two branches the tamper had to cover).
+
+## 111. The standing reset marker, on the status surface (C287, F-U12-02)
+
+§106's HAZOP left one deviation with the ladder's R2 shape and nothing to show for it: **the reset
+marker's lifetime is unbounded.** `clear_reset_marker` has exactly one caller — the catch-up walk, and
+only when its frontier passes the anchor (`casper/src/engine/catchup.rs:276-296`) — so a node that resets
+and *cannot catch up* stays under a marker for ever, re-entering the boot guard at every restart, with the
+residue reported only in a boot-time log line. Nothing a probe could ask said a marker was standing at all.
+
+**The surface.** `GET /api/v1/status` gains **`resetMarker`** — null when the node is not mid-reset, else
+the record rendered with its **phase**, anchor and height. The phase is the part that matters: `Rewinding`
+is the state a boot repairs, `Rewound` is the state a boot only names, and an operator reading a stalled
+node needs to tell them apart. The rendered height is the age proxy the row asked for: **a marker that
+stands while `latestBlockNumber` does not move** is a repair that is not converging, which is readable
+without watching.
+
+**Where it is written, and why there.** The cell lives with the reset's other cells in
+`interpreter_util` (`note_reset_marker` / `reset_marker_state`), and it is written by the **marker store's
+own three methods** (`BlockDagKeyValueStorage::write_reset_marker`, `read_reset_marker`,
+`clear_reset_marker`, `casper/src/dag.rs`) rather than at the call sites. That is deliberate: every writer
+goes through those methods, so a future one cannot miss the surface, and the surface cannot drift from the
+store it reports — the same reason `drop_above`'s trait forward exists two methods up.
+
+**The envelope discipline moves with it, which is the part that is easy to forget.** A new status field is
+`nullable`-and-**always present**, and law 43's catalog checks a *key set* — so
+`spec/Rchain/Envelope.lean`'s `ApiStatus` row gained `resetMarker`, the corpus was re-emitted
+(`spec/conformance/envelope.tsv`), and `node/tests/lean_envelope_corpus.rs`'s fixture gained the field. The
+corpus test is the gate that holds the DTO's own serialization, the served OpenAPI schema and the Lean
+catalog to one shape; it passed on the first run after all four moved together, which is what it is for.
+
+**What this does not change.** The marker's lifetime is still unbounded — the row asked for a surface *or*
+a bound, and the surface is the honest half: a bound would have to guess at how long a legitimate repair
+may take, and the catch-up frontier is the only condition that knows. What changed is that a standing
+marker is now **observable**, so "this node has been repairing for an hour" is a reading rather than an
+inference from a log line nobody is watching.
+
+**Evidence.** `casper/src/interpreter_util.rs` (the cell, and
+`the_reset_marker_surface_follows_the_store`) · `casper/src/dag.rs` (the three writers) ·
+`node/src/api/dto.rs`, `node/src/api/conversion.rs`, `node/src/api/web_api_impl.rs`, `node/src/web/http.rs`
+(the field, the mapping, the schema) · `spec/Rchain/Envelope.lean` + `spec/conformance/envelope.tsv` +
+`node/tests/lean_envelope_corpus.rs` (the catalog and its consumers) ·
+`docs/src/spec/failure-hazop.md` F-U12-02.
+
+## 112. The R3 rung closes over: each residue item's true state (—, F-U5-01)
+
+The plan that took PR #340's line ("full running-engine reset-to-sync re-entry") listed five residue items
+beside the arm. This pass **checked each one's true state rather than assuming it was owed** — and three of
+the five were already where the plan asked them to be, which is worth recording because a residue left
+unread is a residue somebody re-opens.
+
+1. **F-U5-02's inverse — already dispositioned, not owed.** The row is R3 with `the_refusal_is_persistent`
+   as its falsifier, and the theorem that answers it is law 53c's
+   `the_refusal_is_not_persistent_once_a_rule_rewinds`; §101's correction already records that the
+   reddening came from #125's restoring rule rather than from the rewind, and that the reset is a **prefix**
+   step rather than an unmark. Nothing to add.
+2. **F-U11-02's per-shard law — R1, and no theorem is owed.** The lane *is* the key
+   (`ShardId::to_string()`), so "a request raised for shard A is taken by shard B" has no state to write: a
+   per-lane model would make the bad state **unrepresentable**, and a law about an unwritable state
+   restates its own definition — the register's `vacuous` status, which exists to stop exactly that.
+   U11's Table C now says so, where it previously said "owed: the same request law, stated per shard".
+3. **F-U12-02's marker lifetime — closed.** §111 / C287: the standing marker is on the status surface, and
+   the HAZOP row carries the surface as its falsifier. The lifetime is still unbounded, and the row says
+   why that is the honest half.
+4. **The four owed falsifiers — each carries its seam decision *and its reason*, where the plan asked for
+   the reason rather than silence.** F-U14-02: the `update_metadata` failure path has no injection point.
+   F-U15-01: the fold's failure path needs a failing history store, which the rspace test modules hold
+   privately (a new double for one branch; the *mechanism* it guards is already pinned at
+   `rspace/src/native_store.rs`). F-U16-01 and F-U16-02: the tool has no test harness, so the refusal and
+   the swap are pinned by reading. All four were recorded when their fixes landed; this pass confirmed the
+   cells say so.
+5. **TE-6, the net-wide rung — exercised, and now named.** The reconciliation's two halves are already
+   measured: the **meet** over artefacts (§98, three arms including the lagging-validator and node-down
+   refusals) and the **store-level restore that converged a stalled net** (§103,
+   `n-reconcile-drill/restore-disarmed.txt`: heights 17/17/17/17 with identical per-height hashes and
+   finality resumed to 11 where every node had answered *"Finalized fringe is not available."*). What was
+   missing was the *name*: TE-6 appeared six times in the failure page and nowhere in the pass record, so
+   a reader following the top event found no run. It is named here.
+
+**What the rung still leaves, and it is one thing.** F-U5-01's own arm — *a diverged running node re-enters
+sync* — is **unrun**, for the reason §110 measured: no external instrument can stage the trigger, because a
+`Divergence` must be intrinsic and the trigger's narrowness is the feature. The only remaining route is the
+perturbed **build** (§109's correction), and that route **exercises the drive loop's third exit without
+satisfying the falsifier** — a code-diverged node rewinds and fails again rather than healing. That is the
+rung's honest edge, and it is stated rather than papered over.
+
+**Evidence.** Each item's own record: `docs/src/spec/failure-hazop.md` (F-U5-02, U11's Table C,
+F-U12-02, F-U14-02, F-U15-01, F-U16-01/02) · `spec/Rchain/Casper/Stranding.lean` (law 53c) ·
+`spec/audit/passes.md` §98 and §103 with `spec/audit/evidence/n-reconcile-drill/` ·
+§110 and §111 for the two items this rung closed.
+
+## 113. The perturbed build reaches the detector, and the anchor refuses (C288, F-U5-01)
+
+§109's correction named the perturbed **build** as the route that survives both refutations: an *intrinsic*
+divergence, which is what §110 showed no external edit could aim at. This pass built it and ran it. **The
+route does not reach the act either, and §109's own expectation was too generous.**
+
+**The build.** One line, never committed, at `casper/src/multi_parent_casper.rs:468`: a non-genesis block's
+pre-state is computed with one byte flipped, so a clean node's block fails this node's
+`InvalidPreStateHash` — a `FailureCause::Divergence`, the class the restore budget spends. Genesis does not
+take that path, so the node still joins. The tree was reverted after the build.
+
+**What it measured.** The perturbed node sat at height **1** while its three clean peers ran to **99** — it
+refused every clean block, so the perturbation is exactly what it was for. And the trigger's halves
+**split**: the detector fired — `cannot restore block … (seq 2): its revalidation budget is spent after 3
+attempt(s) … unless a reset follows`, **96 times** — and the act was refused:
+`could not name a safe state: the 0 block(s) this node holds above genesis would have to be replayed from
+it`, the **`RefuseNoAnchor`** arm. A node that diverges from height 1 never finalises anything, so
+`rewind_plan` names no anchor, and the reset is withheld — correctly, because a node with nothing finalised
+above genesis has nowhere to rewind *to*.
+
+**The finding completes §110 rather than repeating it.** The trigger needs **three** things together: a
+genuine repeated `Divergence`, a spent budget, **and a finalised anchor with a height**. The external edits
+(§110) could not hold the aim; a *whole-build* perturbation cannot produce the anchor, and the sharper the
+perturbation the less the node finalises — so a perturbation reliable enough to be refused is one that
+refuses from the earliest block. The act is therefore reachable only by a node that diverged **after
+finalising something**: a *partial* view divergence, which is the same target §110 showed no instrument can
+aim, arrived at from the other side.
+
+**What it closes.** F-U5-01's arm has **no route at all** on this tree — external or built — and the reason
+is structural rather than a gap in the tooling: the three preconditions cannot be met simultaneously by
+anything that is not a genuine partial divergence. The row's close condition says so, and the two earlier
+attempts' instruments stay committed beside the reading so no future session rebuilds a route already
+shown not to hold.
+
+**Evidence.** `spec/audit/evidence/reset-arm/e3-perturbed.md` (the reading, with the four status readings
+and both log lines verbatim); `casper/src/multi_parent_casper.rs:468` (the perturbed site, reverted);
+`spec/audit/evidence/reset-arm/e1-partition.md` and `e2-tamper.md` (the two routes it completes).
+
+## 114. The hardening is the finding, not the unrun arm (—, F-U5-01)
+
+Three passes (§108, §110, §113) spent three instruments failing to produce the state the self-reset
+repairs, and the pass record framed each as a *deficit* — the arm unrun. That framing was wrong, and this
+pass corrects it: **the tree has been hardened against the failure, and the three failures to stage it are
+the measurement of that.**
+
+The chain, and each step is measured rather than argued (`docs/src/spec/failure-hazop.md` §8 carries it in
+full): **the producer was deleted, not guarded** — the fringe-record `min` tie-break that produced §92's
+self-reject and TE-1's four heads was retired by law 66/67/68's per-block redesign, so two blocks that
+disagree are two visible claims rather than one rewritten value, and the class has no producer left
+(measured: zero `[fringe-divergence]` and zero self-rejections over ~170 blocks where the pre-fix build
+stalled three of four nodes); **the merge is now a pure function of the parent set** — `merge_determinism.rs`
+is the standing property and E1 measured it live, a partition's two heads re-converging because a node with
+a different block set computes the same answer; **and what remains is healed before the budget spends** —
+the restoring rule revalidates a view-dependent refusal up to three times and does not manufacture
+agreement, so the counter the reset acts on is a backstop for a *persistent* disagreement.
+
+**The instruments' failure is step four of that chain.** A partition could not create a difference; a state
+tamper *did* change the computation — it stalls the chain with the merge's own documented wrong-base error —
+but could not be aimed at the block the merge selects; and a whole-build perturbation produced the
+divergence and the spent budget **96 times** and then found **nothing to rewind to**, because a node that
+diverges before finalising has no anchor. The state R3 repairs therefore needs a **partial** divergence —
+one arising *after* a node has finalised — which is exactly the class the record redesign removed the
+producer of.
+
+**What the R3 backstop is for, and what this does not claim.** The disposition stays **R3**: a hard reset
+and catch-up is what the node does if it ever gets there. Its likelihood is what the hardening changed. So
+the rung's remaining duty is not to *drill* the reset but to keep it **safe if it ever fires** — the durable
+half, the two-phase crash marker, the boot repair, the fatal stop, and the ordered request-and-spend, each
+pinned by a test and, where the state is representable, by a law (72–76). That is a fire escape's standing:
+harden the building so it is never needed, and keep the escape sound and tested in pieces. **The hazard is
+not impossible** — a future regression, or a genuine disagreement no local restore heals (TE-6, the
+net-wide case, §112 item 5), would still need R3 or the reconciliation. The claim is narrower and
+checkable: the producers this tree had are gone, and the instruments that tried to re-create one could not.
+
+**Evidence.** `docs/src/spec/failure-hazop.md` §8 (the hardening, quoted above) and F-U5-01's cell (which
+now leads with it); `spec/audit/evidence/reset-arm/{e1-partition,e2-tamper,e3-perturbed}.md` (the three
+measurements); `casper/tests/merge_determinism.rs` (the standing property E1 measured live);
+`casper/tests/reset.rs` and laws 72–76 (the backstop's own pieces).
+
+## 115. F-U5-01 is not a register item: the failure mode is unstatable on this build (—, F-U5-01)
+
+§114 made the hardening the finding. This pass draws the consequence for the *row*, because §108, §110 and
+§113 had each left F-U5-01 reading as an open item — "the arm is unrun" — and that reading is wrong in a way
+this repository has a rule against.
+
+**The progression, stated because it is real.** An inherently safe design *retires* the reproducible failure
+mode, and that is forward motion: the states F-U5-01's own reproductions exhibited (§92's self-reject,
+TE-1's four heads) can no longer be constructed from before. §8 of the failure page lays out the chain, each
+step measured.
+
+**And the limit, which is the part that had gone unsaid.** Retiring the old producer says nothing about what
+**this** build's failure mode would be. The old reproduction is evidence about the old build. No failure mode
+is statable for the current one: every candidate reduces either to *a future regression that reintroduces a
+producer* — a statement about a build that does not exist — or to a net-wide disagreement whose cause is by
+construction not in the tree (TE-6). **A failure mode nobody can name is a nebulous risk, not a register
+item**, and this repository's own rule says so from the other side: a statement nothing can falsify is not a
+statement (the register's `vacuous` status). An item that cannot be reproduced, cannot be named and cannot be
+falsified is that shape whatever column it sits in.
+
+**What changed, then.** F-U5-01's *deviation* — *there is no reset-and-resync path for a running node* — is
+**closed**: the path landed (R3), and its falsifier is the crash-repair test, which the HAZOP already names.
+The *arm* — *produce a diverged running node and watch it heal* — is **not owed and not done**: it is
+recorded as a **risk** in §8, kept **out of the debt** (the row's falsifier is a path, so it was never
+counted), and F-U5-01's own cell says so in its own words. What remains checkable is the backstop's own
+pieces — the durable half, the crash marker, the boot repair, the fatal stop, the ordering (laws 72–76,
+`casper/tests/reset.rs`) — and the `apply`-level wiring, which stays read rather than run.
+
+**Why this is worth a section rather than a cell edit.** Three passes treated a retired failure mode as an
+open coverage gap, and the register grew three rows (§110's C286, §113's C288) around a state no instrument
+could produce. That is the shape this repository's `vacuous` status exists to stop: work about a statement
+nothing can falsify. Naming it here is what stops a fourth pass from trying a fourth instrument.
+
+**Evidence.** `docs/src/spec/failure-hazop.md` §8 (the hardening, the progression and its limit) and
+F-U5-01's cell (rewritten: *not owed — unstatable*); `spec/audit/evidence/reset-arm/` (the three attempts it
+supersedes); `casper/tests/merge_determinism.rs` and laws 72–76 (what remains checkable).
+
+
+---
+
+## 116. The bond cannot be checked at the packet dispatch, and that is the finding (W-N1-04, W-N1-07, W-N9-08, and the "remote peer · any valid cert" precondition)
+
+**The decision: the peer-admission seam is not built, and the residual is recorded rather than papered over.**
+
+The wargame's precondition table gives ten rows the precondition *`remote peer · any valid cert`*: the
+transport proves a peer holds a P-256 key and admits any keypair, so a stranger that generated a
+certificate a second ago is a peer. The planned remedy was a **bonded-identity seam at the packet
+dispatch, actuation-only** — gate the block-bearing packet types on the sender's bond, leave the sync
+and join paths open to any valid cert.
+
+**It cannot be built, and the reason is a fact about the tree rather than a shortage of effort.** At the
+dispatch the only subject available is the **node address** the certificate proves — a 20-byte keccak of
+the P-256 public point. A bond is keyed by a `Validator`: a 65-byte secp256k1 point
+(`models/src/validator.rs`). **Nothing in the tree maps one to the other.** `comm` holds no bond data at
+all, and `casper` never turns a `NodeIdentifier` into a `Validator` — `is_active_validator`
+(`casper/src/blocks/proposer/proposer.rs:105`) reads the newest block's bond map for a `Validator` it is
+already given, which is the propose path's own identity and not a peer's.
+
+Three routes to the mapping, and only two of them are sound:
+
+1. **Certify the validator key in the node's certificate** — the certificate carries the validator's
+   secp256k1 public key and a signature by that key over the node address, so a peer that proved
+   possession of the node key has also, verifiably, been named by a bonded validator key. Sound and
+   chain-tied. Costs a certificate-format change, a change to node identity generation, a verification
+   path in `comm`, **and** the bonded set still has to be published into `comm` — which is a second seam
+   on top of the first.
+2. **An operator-supplied list of permitted node addresses.** Cheap, needs no chain access, needs no
+   identity change — and is hand-maintained, so it goes stale the moment the validator set changes,
+   which is the failure the chain-tied version exists to avoid.
+3. **The peer announces its own validator key in-band.** Unsound, and worth stating so it is not
+   re-proposed: the announcement is exactly what an attacker forges, so a check on it admits the
+   attacker and refuses nobody.
+
+**Decided 2026-10-13: route 3 is out, routes 1 and 2 are declined for now, and the residual is this
+row.** The grounds are that the seam is **defence in depth and not the authorization boundary**.
+
+**The ten rows are W-N1-01 … W-N1-10, and they are not one thing.** Six were closed at the layer where
+the harm was real, all in PR #350 — W-N1-01 (the discovery server's decode cap), W-N1-03 (the hosts a
+`Lookup` response names, guarded on the way in), W-N1-05 (the Kademlia token keyed to an identity),
+W-N1-08 (that token charged *after* the identity check), W-N1-09 and W-N1-10 (the streamed header
+decided when it arrives rather than after the stream is paid for). **W-N1-02 is REFUTED**, with an
+artifact: the authentication does cover the headerless case.
+
+**Three are deliberately not closed, and a party-keyed seam would not have closed any of them:**
+
+- **W-N1-04** — there is no *rate* bound on the inbound transport surface. What bounds it is
+  **in-flight concurrency**, keyed on nothing because it bounds a *resource* rather than a *party*: a
+  peer may hold at most so many dispatches and so many streams, whichever peer it is. Keying that on a
+  bond would change who may hold them, not how many there are.
+- **W-N1-06** — a rate or concurrency rejection is reported as a *size* error (`ResourceExhausted` →
+  `CommError::MessageTooLarge`). This is a **registered deliberate deviation** (AUDIT C4) and a faithful
+  port of Scala's `processError`; un-pinning it is a decision with a paper trail, not a fix.
+- **W-N1-07** — a heartbeat moves its sender to the **end** of the bounded connection table, so a
+  heartbeating peer escapes oldest-first eviction. This mirrors Scala's `refreshConn`, and by the time a
+  heartbeat arrives the sender is **certificate-proven**, so entrenching an identifier costs the
+  attacker a handshake each.
+
+**What a non-bonded peer can still do, stated as a threat model rather than implied:** hold a valid
+certificate; open a connection; send packets, including block-bearing ones; request blocks. What it
+cannot do is have a block accepted — `deploy_signatures`, the bonds cache and the merge's own
+rejections are the authorization boundary, and none of them reads the transport's identity. So the
+residual is **resource cost, not authority**: a stranger may spend the node's bandwidth and CPU up to
+the bounds above, and may not spend its stake.
+
+**What would change this decision**, so it is not re-litigated from scratch: a bonded-set publication
+into `comm` for another reason (which would make route 1 a smaller change than it is today), or a
+measured resource attack that the existing bounds do not hold, or an operator who wants route 2 and
+will maintain it. None of the three exists today.
+
+**The wargame's join is the reason this is a row rather than a note.** Table F labels the ten rows
+`remote peer · any valid cert` and counts them among the 32 with no precondition; a reader who works
+down that table will reach them, so the decision lives beside them on `docs/src/spec/adversary.md` as
+well as here.

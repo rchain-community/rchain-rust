@@ -12,7 +12,7 @@ use rchain_models::comm::discovery::kademlia_rpc_service_server::{
     KademliaRpcService, KademliaRpcServiceServer,
 };
 use rchain_models::comm::discovery::{Lookup, LookupResponse, Ping, Pong};
-use rchain_shared::rate_limiter::RateLimiter;
+use rchain_shared::rate_limiter::KeyedRateLimiter;
 use tonic::{Request, Response, Status};
 
 use crate::discovery::{to_node, to_peer_node};
@@ -47,12 +47,16 @@ fn sender_not_proven(proven: &Option<String>, claimed: &str) -> Option<Status> {
 /// transport, so a caller is an authenticated peer rather than any host that can reach the port.
 const DEFAULT_KADEMLIA_RATE_LIMIT_PER_SEC: u64 = 100;
 
+/// Distinct peer identities the Kademlia admission limiter will track at once — the map is itself a
+/// resource a caller would otherwise size, so it is capped (`KeyedRateLimiter`).
+const MAX_TRACKED_KADEMLIA_PEERS: usize = 4_096;
+
 /// The Kademlia RPC service (port of `GrpcKademliaRPCServer`).
 pub struct GrpcKademliaRpcServer {
     network_id: String,
     ping_handler: Arc<dyn Fn(PeerNode) -> BoxFuture<()> + Send + Sync>,
     lookup_handler: Arc<dyn Fn(PeerNode, Vec<u8>) -> BoxFuture<Vec<PeerNode>> + Send + Sync>,
-    rate_limiter: Arc<RateLimiter>,
+    rate_limiter: KeyedRateLimiter,
 }
 
 impl GrpcKademliaRpcServer {
@@ -65,7 +69,10 @@ impl GrpcKademliaRpcServer {
             network_id,
             ping_handler: Arc::new(ping_handler),
             lookup_handler: Arc::new(lookup_handler),
-            rate_limiter: Arc::new(RateLimiter::new(DEFAULT_KADEMLIA_RATE_LIMIT_PER_SEC)),
+            rate_limiter: KeyedRateLimiter::new(
+                DEFAULT_KADEMLIA_RATE_LIMIT_PER_SEC,
+                MAX_TRACKED_KADEMLIA_PEERS,
+            ),
         }
     }
 }
@@ -73,9 +80,6 @@ impl GrpcKademliaRpcServer {
 #[async_trait]
 impl KademliaRpcService for GrpcKademliaRpcServer {
     async fn send_ping(&self, request: Request<Ping>) -> Result<Response<Pong>, Status> {
-        if !self.rate_limiter.allow() {
-            return Err(Status::resource_exhausted("kademlia rate limit exceeded"));
-        }
         // The identity the client certificate proves, read before the request is consumed
         // (AUDIT C116). Without it the `sender` below is whatever the peer wrote — the same spoof
         // C115 closed on the transport, one service over.
@@ -88,13 +92,27 @@ impl KademliaRpcService for GrpcKademliaRpcServer {
         if ping.network_id == self.network_id {
             if let Some(sender) = ping.sender.as_ref() {
                 if let Ok(peer) = to_peer_node(sender) {
+                    // **Identity, then the token, then the resolution** (W-N1-08). The order was the
+                    // reverse: the token was spent before the sender was examined, so a caller drained
+                    // the allowance with requests the node refused anyway, and
+                    // `is_local_address_resolved` — a DNS lookup of a name the caller chose — ran
+                    // *behind* the identity check that would have refused that caller outright. Now an
+                    // unproven sender costs nothing, the token is charged only to a request the node
+                    // will act on, and it is charged per proven identity instead of to one bucket the
+                    // whole network shares (W-N1-05).
+                    if let Some(error) = sender_not_proven(&proven.0, &peer.id.to_string()) {
+                        return Err(error);
+                    }
+                    if !self
+                        .rate_limiter
+                        .allow(proven.0.as_deref().unwrap_or_default().as_bytes())
+                    {
+                        return Err(Status::resource_exhausted("kademlia rate limit exceeded"));
+                    }
                     // Reject attacker-chosen private/loopback/link-local/unspecified hosts before
                     // they reach the routing table (SSRF guard; see FIX 5). Resolved first: a
                     // hostname is a way of aiming the node at its own network too (AUDIT C117).
                     if !is_local_address_resolved(&peer.endpoint.host).await {
-                        if let Some(error) = sender_not_proven(&proven.0, &peer.id.to_string()) {
-                            return Err(error);
-                        }
                         (self.ping_handler)(peer).await;
                     }
                 }
@@ -109,9 +127,6 @@ impl KademliaRpcService for GrpcKademliaRpcServer {
         &self,
         request: Request<Lookup>,
     ) -> Result<Response<LookupResponse>, Status> {
-        if !self.rate_limiter.allow() {
-            return Err(Status::resource_exhausted("kademlia rate limit exceeded"));
-        }
         let proven = request
             .extensions()
             .get::<PeerId>()
@@ -120,15 +135,26 @@ impl KademliaRpcService for GrpcKademliaRpcServer {
         let lookup = request.into_inner();
         let nodes = if lookup.network_id == self.network_id {
             match lookup.sender.as_ref().and_then(|s| to_peer_node(s).ok()) {
-                // Reject attacker-chosen private/loopback/link-local/unspecified hosts before they
-                // reach the routing table (SSRF guard; see FIX 5); resolved, for the same reason
-                // (AUDIT C117).
-                Some(sender) if !is_local_address_resolved(&sender.endpoint.host).await => {
+                Some(sender) => {
+                    // Identity, then the token, then the resolution — see `send_ping` (W-N1-08).
                     if let Some(error) = sender_not_proven(&proven.0, &sender.id.to_string()) {
                         return Err(error);
                     }
-                    let peers = (self.lookup_handler)(sender, lookup.id).await;
-                    peers.iter().map(to_node).collect()
+                    if !self
+                        .rate_limiter
+                        .allow(proven.0.as_deref().unwrap_or_default().as_bytes())
+                    {
+                        return Err(Status::resource_exhausted("kademlia rate limit exceeded"));
+                    }
+                    // Reject attacker-chosen private/loopback/link-local/unspecified hosts before
+                    // they reach the routing table (SSRF guard; see FIX 5); resolved, for the same
+                    // reason (AUDIT C117).
+                    if is_local_address_resolved(&sender.endpoint.host).await {
+                        Vec::new()
+                    } else {
+                        let peers = (self.lookup_handler)(sender, lookup.id).await;
+                        peers.iter().map(to_node).collect()
+                    }
                 }
                 _ => Vec::new(),
             }
@@ -159,6 +185,7 @@ impl KademliaRpcService for GrpcKademliaRpcServer {
 pub async fn serve(
     addr: SocketAddr,
     service: GrpcKademliaRpcServer,
+    max_message_size: usize,
     tls: Arc<rustls::ServerConfig>,
 ) -> Result<(), String> {
     let listener = tokio::net::TcpListener::bind(addr)
@@ -171,7 +198,15 @@ pub async fn serve(
         crate::transport::grpc_transport_receiver::MAX_CONCURRENT_HANDSHAKES,
     );
     tonic::transport::Server::builder()
-        .add_service(KademliaRpcServiceServer::new(service))
+        // **The operator's inbound decode cap, installed here as it is on the transport** (AUDIT
+        // C113's class, one service over). Without this line the server falls back to tonic's default
+        // — 4 MiB, sixteen times the configured `protocol-server.grpc-max-recv-message-size` — so a
+        // certificate-bearing peer could force a decode four megabytes wide while the operator
+        // believed 256 KiB was in force. Both services are served by the same accept path, and now by
+        // the same bound, so they cannot drift in what they will admit.
+        .add_service(
+            KademliaRpcServiceServer::new(service).max_decoding_message_size(max_message_size),
+        )
         .serve_with_incoming(incoming)
         .await
         .map_err(|e| e.to_string())
@@ -274,7 +309,7 @@ mod tests {
         let tls = server_config(&server_cert, &server_key).expect("a server TLS config");
         let srv = server(h.clone());
         tokio::spawn(async move {
-            let _ = serve(addr, srv, tls).await;
+            let _ = serve(addr, srv, 262_144, tls).await;
         });
         tokio::time::sleep(Duration::from_millis(200)).await;
 
@@ -528,15 +563,58 @@ mod tests {
     #[tokio::test]
     async fn the_kademlia_rate_limit_refuses_past_its_bound() {
         let s = server(Arc::new(Handlers::default()));
+        // A request that actually does work, so it is one the bound applies to: the ping carries a
+        // sender whose identity its certificate proves, and a reachable public address. (This used to
+        // be a sender-less ping, which the guard refuses to act on — a request that does no work and,
+        // since W-N1-08, spends no token either.)
+        let sender = node(b"abcd", "203.0.113.7", 40400);
         for i in 0..DEFAULT_KADEMLIA_RATE_LIMIT_PER_SEC {
-            s.send_ping(ping("testnet", None))
+            s.send_ping(ping("testnet", Some(sender.clone())))
                 .await
                 .unwrap_or_else(|e| panic!("request {i} must be admitted: {e}"));
         }
         let refused = s
-            .send_ping(ping("testnet", None))
+            .send_ping(ping("testnet", Some(sender.clone())))
             .await
             .expect_err("the bound must refuse");
         assert_eq!(refused.code(), tonic::Code::ResourceExhausted);
+    }
+
+    /// **The allowance is spent on admitted work, not on work the node discards** (W-N1-08).
+    ///
+    /// The token was charged before the sender was examined, so a caller drained the node's discovery
+    /// allowance with requests the node refused anyway — and, because the bucket was one for the whole
+    /// node (W-N1-05), it drained everyone's. Here an honest peer's full allowance must survive a flood
+    /// three times its size, every request of which is refused for a sender the flood cannot prove.
+    ///
+    /// Remove the reordering — put the `allow` back above the `sender_not_proven` check — and the
+    /// honest peer's first request is refused.
+    #[tokio::test]
+    async fn refused_kademlia_requests_do_not_spend_the_allowance() {
+        let s = server(Arc::new(Handlers::default()));
+        let honest = node(b"honest", "203.0.113.7", 40400);
+        let spoofed = node(b"spoofed", "203.0.113.7", 40400);
+        // A certificate that proves some other node: every ping below is refused, and none of them
+        // may cost the honest peer anything.
+        let other = "ab".repeat(32);
+
+        for i in 0..(DEFAULT_KADEMLIA_RATE_LIMIT_PER_SEC * 3) {
+            let refused = s
+                .send_ping(ping_from(
+                    "testnet",
+                    Some(spoofed.clone()),
+                    Some(other.clone()),
+                ))
+                .await;
+            assert!(refused.is_err(), "spoofed request {i} must be refused");
+        }
+
+        for i in 0..DEFAULT_KADEMLIA_RATE_LIMIT_PER_SEC {
+            s.send_ping(ping("testnet", Some(honest.clone())))
+                .await
+                .unwrap_or_else(|e| {
+                    panic!("the honest peer's allowance must be intact, but request {i}: {e}")
+                });
+        }
     }
 }

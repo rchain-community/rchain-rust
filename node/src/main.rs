@@ -197,6 +197,7 @@ async fn async_main(options: Options, log_level: rchain_shared::log::Level) {
     let stopping = tokio::select! {
         result = &mut serving => Stopping::Served(result),
         signal = rchain_node::runtime::shutdown::shutdown_signal() => Stopping::Signal(signal),
+        reason = rchain_node::runtime::shutdown::fatal_requested() => Stopping::Fatal(reason),
     };
     match stopping {
         Stopping::Served(Err(e)) => {
@@ -204,6 +205,16 @@ async fn async_main(options: Options, log_level: rchain_shared::log::Level) {
             std::process::exit(1);
         }
         Stopping::Served(Ok(())) => {}
+        Stopping::Fatal(reason) => {
+            // **A concluded stop stops the process** (§106's owed D3): **no drain**. The fault means a
+            // store has moved under a view that was not rebuilt — the state the reset's own comment
+            // says the node "must not keep serving" — and draining the listeners would serve requests
+            // out of exactly that state. `stderr` is unbuffered, so the reason reaches the supervisor
+            // (which will restart the node, and the boot guard repairs the interrupted work) before
+            // the exit.
+            eprintln!("Fatal: {reason}");
+            std::process::exit(1);
+        }
         Stopping::Signal(signal) => {
             log.info(
                 LogSource::new("coop.rchain.node.Main"),
@@ -233,4 +244,8 @@ enum Stopping {
     Served(Result<(), String>),
     /// The operator asked the node to stop, naming the signal so the log can say which one arrived.
     Signal(&'static str),
+    /// A task concluded the node cannot serve on — a failed reset, or the LFS sync terminal (both say
+    /// so in their own words today, and neither stopped anything until this arm existed). The process
+    /// stops **without draining**: the reason is printed and the exit code is non-zero.
+    Fatal(String),
 }

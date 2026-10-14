@@ -1,0 +1,104 @@
+node	word	kind	expect	verdict	artifact
+N1	MORE			CONFIRMED	comm/src/discovery/grpc_kademlia_rpc_server.rs:173-175 (`.add_service(KademliaRpcServiceServer::new(service))`
+N1	PART OF			REFUTED	/home/patrick/RNodeRust/comm/src/rp/handle_messages.rs:134-137 (the production dispatch closure is this functi
+N1	REVERSE			CONFIRMED	comm/src/discovery/grpc_kademlia_rpc.rs:121-124 (`.nodes.iter().filter_map(|n| to_peer_node(n).ok())` — no hos
+N1	NO			CONFIRMED	comm/src/transport/grpc_transport_receiver.rs:432-435 — `tokio::spawn(async move { let _permit = permit; let _
+N1	LESS			CONFIRMED	/home/patrick/RNodeRust/comm/src/discovery/grpc_kademlia_rpc_server.rs:76 (and :112) — `if !self.rate_limiter.
+N1	OTHER THAN			CONFIRMED	comm/src/transport/grpc_transport.rs:39
+N1	AS WELL AS			CONFIRMED	comm/src/rp/handle_messages.rs:152 — the Heartbeat arm (lines 150-154) does `*conns = refresh_conn(&*conns, &s
+N1	EARLY			CONFIRMED	comm/src/discovery/grpc_kademlia_rpc_server.rs:76 (and the identical :112)
+N1	LATE			CONFIRMED	comm/src/transport/grpc_transport_receiver.rs:439-556 (the `stream` handler). The binding lives in the breaker
+N1	AFTER			CONFIRMED	comm/src/transport/grpc_transport_receiver.rs:522 (stream_handler::collect call after the drain loop) with the
+N2	OTHER THAN			CONFIRMED	node/src/api/grpc/mod.rs:65 (one `Arc::new(RateLimiter::new(...))` captured by the interceptor) with the effec
+N2	AS WELL AS			CONFIRMED	node/src/api/grpc/mod.rs:65 (`let limiter = Arc::new(RateLimiter::new(DEFAULT_API_RATE_LIMIT_PER_SEC));` insid
+N2	MORE			CONFIRMED	casper/src/dag.rs:1046-1054 (check at :1049, write at :1051-1053), reinforced by shared/src/typed_store.rs wit
+N2	LESS			CONFIRMED	casper/src/dag.rs:1049-1050 (add_deploy: `if self.deploy_store.count().await? >= MAX_POOLED_DEPLOYS { return E
+N2	BEFORE			CONFIRMED	casper/src/multi_parent_casper.rs:83-92 (the `deploy` fn): `rchain_rholang::normalizer::source_to_adt_with_env
+N2	LATE			CONFIRMED	node/src/web/http.rs:553-554 — `async fn api_deploy(State(state): State<HttpState>, Json(req): Json<DeployRequ
+N2	AFTER			REFUTED	casper/src/dag.rs:953 (`self.expire_deploys(latest_block_number).await?;`) — the evictor is called uncondition
+N2	PART OF			CONFIRMED	node/src/web/http.rs:554 (with shared/src/rate_limiter.rs:45)
+N2	EARLY			CONFIRMED	/home/patrick/RNodeRust/node/src/web/http.rs:554 (api_deploy spends `state.deploy_rate_limiter.allow()` before
+N2	NO			CONFIRMED	casper/src/dag.rs:1049-1053 — `add_deploy`: `if self.deploy_store.count().await? >= MAX_POOLED_DEPLOYS { retur
+N3	MORE			CONFIRMED	node/src/web/http.rs:1262 `.route("/api/status", get(api_status))` on the public `router()` (bound to api_serv
+N3	AS WELL AS			CONFIRMED	node/src/web/http.rs:1502 (`axum::serve(listener, app)` over the plain `tokio::net::TcpListener` bound at :147
+N3	OTHER THAN			CONFIRMED	node/src/web/http.rs:289-317 — `async fn api_pos_delegations(State(state): State<HttpState>, Query(query): Que
+N3	EARLY			CONFIRMED	casper/src/api/block_api_impl.rs:552
+N3	REVERSE			CONFIRMED	node/src/web/http.rs:575 (api_explore_deploy: `Json(term): Json<String>` -> `state.web_api.exploratory_deploy(
+N4	NO			CONFIRMED	node/src/web/http.rs:1247-1249 (`async fn admin_propose(State(state): State<AdminState>) -> Response { json_re
+N4	MORE			CONFIRMED	node/src/web/http.rs:447 (api_txn_run, mounted at :1430 under admin_origin_guard :1444-1447, MAX_TXN_LEGS=32 c
+N4	LESS			CONFIRMED	/home/patrick/RNodeRust/node/src/web/http.rs:1332 (route /api/faucet mounted on the public router, permissive
+N4	AS WELL AS			CONFIRMED	node/src/runtime/node_runtime.rs:1834 — the attest-on-new-blocks tap: `tap_tx.try_send((ProposeSource::Automat
+N4	PART OF			CONFIRMED	node/src/runtime/node_runtime.rs:166-172 (fn admin_bind_host) invoked at node_runtime.rs:616-617 `let admin_ho
+N4	OTHER THAN			CONFIRMED	node/src/web/http.rs:1381 — `if host != Some(authority)` inside `admin_origin_guard` (lines 1363-1393), mounte
+N4	REVERSE			CONFIRMED	node/src/web/http.rs:414-419 (admin_ocapn_dial builds PeerLocator from the caller body and calls dialer.dial_a
+N4	LATE			CONFIRMED	/home/patrick/RNodeRust/node/src/runtime/node_runtime.rs:1720 (autopropose tap: `tap_tx.try_send((ProposeSourc
+N5	NO			CONFIRMED	node/src/configuration/configuration.rs:168-170 — `if node_conf.casper.validator_private_key.is_some() { retur
+N5	MORE			CONFIRMED	node/src/configuration/commandline/options.rs:508-509 — `#[arg(long = "validator-private-key", hide = true)] p
+N5	AS WELL AS			CONFIRMED	node/src/runtime/node_main.rs:262-269
+N5	PART OF			CONFIRMED	casper/src/bonds_parser.rs:98-100 (in new_validators, line 75): rchain_crypto::util::key_util::write_private_k
+N5	OTHER THAN			CONFIRMED	node/src/runtime/node_runtime.rs:1220-1224 (identity built solely from conf.casper.validator_private_key via V
+N5	REVERSE			NOT-RE-ESTABLISHED	node/src/configuration/configuration.rs:167 resolve_validator_private_key (re-reads the key file into the hex
+N5	AFTER			CONFIRMED	casper/src/api/block_api_impl.rs:755-783 (`finality_attestation`); the signing site is `identity.attest_finali
+N5	LATE			NOT-RE-ESTABLISHED	/home/patrick/RNodeRust/casper/src/conf.rs:127 (pub validator_private_key: Option<String>); /home/patrick/RNod
+N5	BEFORE			CONFIRMED	crypto/src/util/key_util.rs:150-163 (loader body: `let contents = fs::read_to_string(path)...` at line 151, th
+N6	NO			NOT-RE-ESTABLISHED	Nearest sites, neither of which performs the claimed mechanism: tools/devnet.sh:386 `docker_opts()` (lines 386
+N6	MORE			CONFIRMED	node/src/web/http.rs:1247 (admin_propose: no-auth POST handler calling state.admin_web_api.propose()), mounted
+N6	LESS			CONFIRMED	node/src/runtime/node_environment.rs:33
+N6	AS WELL AS			CONFIRMED	/home/patrick/RNodeRust/node/src/runtime/node_main.rs:263
+N6	PART OF			CONFIRMED	comm/src/transport/generate_certificate_if_absent.rs:41 (TLS key written via rchain_crypto::util::key_util::wr
+N6	OTHER THAN			CONFIRMED	/home/patrick/RNodeRust/tools/devnet.sh:612 — `--validator-private-key "${VALIDATOR_PRIV[0]}"` handed to `rnod
+N6	EARLY			CONFIRMED	docker/rnode/Dockerfile:4 (`FROM rust:1.95.0 AS builder`) and docker/rnode/Dockerfile:46 (`FROM debian:trixie-
+N7	OTHER THAN			CONFIRMED	node/build.rs:59-65 — the `if let Ok(provided) = std::env::var("GIT_HEAD_COMMIT")` branch reads the ambient en
+N7	NO			CONFIRMED	node/src/runtime/node_main.rs:100-119 (the only two verify handlers, Commands::VerifyBlock -> recovery_verify:
+N7	MORE			CONFIRMED	docker/rnode/Dockerfile:42 `cargo build --release -p rchain-node --bin rnode ${CARGO_FEATURES:+--features "$CA
+N7	LESS			CONFIRMED	/home/patrick/RNodeRust/docker/rnode/Dockerfile:42
+N7	AS WELL AS			CONFIRMED	tools/check-workflow-pins.sh — the scope expression `files=("$WORKFLOWS"/*.yml)` (with `WORKFLOWS="$ROOT/.gith
+N7	PART OF			CONFIRMED	/home/patrick/RNodeRust/.github/workflows/build-rnode.yml:67 (with the upload step at lines 69-76)
+N7	REVERSE			CONFIRMED	tools/audit-vendored-sources.sh:39 ORIGINALS="$ROOT/casper/src/genesis/vendored-originals"; :99 original="$ORI
+N8	NO			CONFIRMED	node/src/api/ocapn.rs:1472-1474 — `signed_invoke(&term, &self.key, timestamp, CHAIN_PHLO_LIMIT, CHAIN_PHLO_PRI
+N8	MORE			CONFIRMED	node/src/api/ocapn.rs:1406 — `check_deploy_budget(&self.limiter)?;` is the first statement of ChainCapability:
+N8	LESS			CONFIRMED	ocapn/src/websocket.rs:235-241 — the accept-path cleartext arm `let io: BoxedIo = match &self.tls { Some(confi
+N8	AS WELL AS			CONFIRMED	node/src/api/ocapn.rs:1444 (`let registering = self.method.is_none();`, forced true for ERTP by ertp_capabilit
+N8	PART OF			REFUTED	/home/patrick/RNodeRust/ocapn/src/owner.rs:284 (with owner.rs:542-549 and owner.rs:609; fed by /home/patrick/R
+N8	OTHER THAN			CONFIRMED	ocapn/src/owner.rs:284-293 (book_key fallback `None => peer.clone()` at :292) + :542-548 (peer_key reads the d
+N8	REVERSE			REFUTED	ocapn/src/dial_policy.rs:212-231 (`DialPolicy::not_a_local_target`), reached from `DialPolicy::permits_from` a
+N8	EARLY			CONFIRMED	/home/patrick/RNodeRust/ocapn/src/conn.rs:761 (`target.deliver_in(&self.exports, &deliver.args).await`), drivi
+N9	NO			REFUTED	casper/src/blocks/proposer/proposer.rs:2089 (`return !(new_state_transition || cadence_due);`) together with b
+N9	MORE			CONFIRMED	casper/src/blocks/proposer/proposer.rs:2086 (the `if !paced { return false; }` arm inside the `if quorum_reach
+N9	LESS			CONFIRMED	casper/src/blocks/proposer/proposer.rs:881-883 (guard: `pre_state_bonds = runtime.compute_bonds(&StateHash::fr
+N9	REVERSE			CONFIRMED	casper/src/blocks/proposer/proposer.rs:2493-2499 (equivocation_twin), invoked at casper/src/blocks/proposer/pr
+N9	LATE			CONFIRMED	/home/patrick/RNodeRust/casper/src/blocks/proposer/proposer.rs:818 — `let stalled_ms = stall_ms_since(blocked_
+N9	OTHER THAN			CONFIRMED	casper/src/validate.rs:259-262 (predicate inside `equivocation_is_proved`, fn at validate.rs:246) executed via
+N9	BEFORE			CONFIRMED	casper/src/blocks/proposer/proposer.rs:1955 — the branch `Some(f) if f > h => f` inside `work_age_floor` (1950
+N9	AS WELL AS			NOT-RE-ESTABLISHED	casper/src/api/block_api_impl.rs:772-775; node/src/runtime/recovery_verify.rs:151-156; block-storage/src/dag/r
+N10	REVERSE			CONFIRMED	/home/patrick/RNodeRust/casper/src/api/block_api.rs:112 (the sole writer `self.timer_halted.store(true, Orderi
+N10	LESS			CONFIRMED	casper/src/interpreter_util.rs:263 (`static STALL_EPISODES: AtomicU64 = AtomicU64::new(0);`, only fetch_add at
+N10	MORE			CONFIRMED	casper/src/interpreter_util.rs:325 `*CURRENT_STALL_REASON.lock().unpoison() = rendered;` and :321 `STALL_EPISO
+N10	PART OF			CONFIRMED	node/src/api/shard_routing.rs:122-124 — `async fn proposer_health(&self) -> ProposerHealth { self.primary_api(
+N11	BEFORE			CONFIRMED	casper/src/engine/node_launch.rs:402-421 — the boot guard branch on a non-empty DAG: ``` if let Some(anchor) =
+N11	PART OF			NOT-RE-ESTABLISHED	casper/src/dag.rs:355-358 (the `let upto = self.deployer_indexed_from.load(...); if upto <= 0 { return Ok(0);
+N11	REVERSE			NOT-RE-ESTABLISHED	node/src/runtime/node_runtime.rs:2336-2381 (check_shard_data_dir) — the only data-directory guard, and it vali
+N11	OTHER THAN			CONFIRMED	tools/reconcile-network.sh:194 restore_chain_state_from_master() — the raw copy at :218 (cp -a "/src/$d" "/dst
+N11	AS WELL AS			CONFIRMED	node/src/configuration/commandline/options.rs:508
+N11	NO			CONFIRMED	casper/src/multi_parent_casper.rs: reset_decision (line 1051, arm `(Some(anchor), None) => ResetDecision::Refu
+N11	MORE			CONFIRMED	tools/reconcile-network.sh — function restore_chain_state_from_master (lines 194-255): docker branch cp -a "/s
+N11	LESS			CONFIRMED	tools/reconcile-network.sh:245 (ssh) `[ -e '$staging'/\$d ] || continue` and :211 (docker) `if [ ! -e \"/src/\
+N11	EARLY			CONFIRMED	tools/reconcile-network.sh:617 (`if [ -n "$ANCHOR" ]`) through :636 — the branch that sets MEET/MEET_HASH from
+N11	LATE			CONFIRMED	casper/src/multi_parent_casper.rs:1092 — in `report_reset_dry_run`, the dry-run sentence renders `i64::from(he
+N12	MORE			CONFIRMED	rholang/src/normalizer.rs:912 — `data_pars.insert(0, result.par.clone());` inside `for e in data.iter().rev()`
+N12	NO			CONFIRMED	rholang/src/parser.rs:672-680 (`new` decl list: `decls.push(p.parse_name_decl()?)` under `while p.peek() != &T
+N12	EARLY			CONFIRMED	casper/src/multi_parent_casper.rs:90 (source_to_adt_with_env, parse+normalize) executes before casper/src/dag.
+N12	PART OF			CONFIRMED	comm/src/transport/grpc_transport_receiver.rs:471-488 (the `if let Some(chunk::Content::Data(d)) = &chunk.cont
+N12	AS WELL AS			REFUTED	casper/src/storage.rs:92-93 — the deploy pool maps to `LmdbEnvConfig::new("deploypoolstorage", 1 * GB)`; share
+N12	LESS			CONFIRMED	node/src/api/grpc/mod.rs:65 (`let limiter = Arc::new(RateLimiter::new(DEFAULT_API_RATE_LIMIT_PER_SEC));`, cons
+N12	LATE			CONFIRMED	comm/src/transport/grpc_transport_receiver.rs:507-522 (breaker closure with guards at 509-514, run only via st
+N14	NO			CONFIRMED	casper/src/validate.rs:558-586 — the `pure` array inside `block_summary` (the exhaustive list of checks the ac
+N14	REVERSE			CONFIRMED	node/src/runtime/node_runtime.rs:3042 — `fn attest_is_live(block_ms, now_ms) -> bool { now_ms.saturating_sub(b
+N14	AS WELL AS			CONFIRMED	rholang/src/system_processes.rs:1435-1439 (the `get_block_data` ScalaBodyFn replying `RhoNumber::apply(timesta
+N14	PART OF			CONFIRMED	node/src/runtime/node_runtime.rs:1822 — `if !attest_is_live(block.timestamp, now) { return; }`, the sole non-t
+N4	PART OF	known-true	CONFIRMED	CONFIRMED	node/src/web/http.rs:1369 — the entire origin comparison in `admin_origin_guard` is wrapped in `if let Some(or
+N4	MORE	false	REFUTED	REFUTED	node/src/runtime/node_runtime.rs:166-171 — `fn admin_bind_host(public_host: &str, enable_devnet_admin_public:
+N4	OTHER THAN	out-of-model	NOT-RE-ESTABLISHED	NOT-RE-ESTABLISHED	No in-tree site. Closest sign-path line (a related capability, not the claimed mechanism): /home/patrick/RNode
+N2	PART OF	known-true	CONFIRMED	CONFIRMED	node/src/runtime/node_runtime.rs:546-547 (deploy bind: grpc_external_addr = format!("{}:{}", host, u16::from(p
+N3	NO	false	REFUTED	REFUTED	/home/patrick/RNodeRust/node/src/web/http.rs:1336
+N9	OTHER THAN	out-of-model	NOT-RE-ESTABLISHED	NOT-RE-ESTABLISHED	crypto/src/signatures/secp256k1.rs:50-64 (`Secp256k1::verify_bytes`) — the site that runs is `VerifyingKey::fr

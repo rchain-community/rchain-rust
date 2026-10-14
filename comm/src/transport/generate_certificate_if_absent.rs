@@ -44,7 +44,11 @@ pub fn run(tls: &TlsConf) -> Result<(), String> {
 /// Compute the node identity (the 20-byte keccak-20 address) from the generated key (port of
 /// `NodeEnvironment.name`; the Scala reads the certificate, whose public key equals the key's).
 pub fn node_address(tls: &TlsConf) -> Result<Vec<u8>, String> {
-    let key_pem = fs::read_to_string(&tls.key_path).map_err(|e| e.to_string())?;
+    // The node identity key is secret material, so the read is checked (W-N6-05): `run` above writes
+    // it `0600`, and a key at any other mode was not written by this node and is refused rather than
+    // trusted — a node identity another account can read is one it can impersonate.
+    let key_pem =
+        rchain_crypto::util::secret_file::read_owner_only_to_string(Path::new(&tls.key_path))?;
     let key_pair = KeyPair::from_pem(&key_pem).map_err(|e| e.to_string())?;
     let raw = key_pair.public_key_raw();
     Ok(rchain_crypto::util::certificate_helper::public_address(
@@ -71,5 +75,39 @@ mod tests {
         let raw = key_pair.public_key_raw();
         let addr = rchain_crypto::util::certificate_helper::public_address(&raw[1..]);
         assert_eq!(addr.len(), 20);
+    }
+
+    /// **A node identity key another account can read is refused** (W-N6-05). `run` writes this file
+    /// `0600`; anything else was not written by this node. The key names the node on every transport,
+    /// so a reader for it means anyone on the host can impersonate the node — and `run` returns early
+    /// on an existing certificate, so a key that arrived by copy or restore is read exactly here.
+    ///
+    /// The wide mode is the falsifier: with the check removed the key parses and the address is
+    /// returned, so this test goes red rather than silently passing.
+    #[cfg(unix)]
+    #[test]
+    fn node_address_refuses_a_group_readable_key() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = std::env::temp_dir().join(format!("rchain-node-addr-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let key_path = dir.join("node.key.pem");
+
+        let (_, key_pem) = generate_certificate().unwrap();
+        std::fs::write(&key_path, &key_pem).unwrap();
+        std::fs::set_permissions(&key_path, fs::Permissions::from_mode(0o644)).unwrap();
+
+        let tls = TlsConf {
+            certificate_path: dir.join("node.certificate.pem"),
+            key_path,
+            secure_random_non_blocking: true,
+            custom_certificate_location: false,
+            custom_key_location: true,
+        };
+        let err = node_address(&tls).expect_err("a readable node key must not be adopted");
+        assert!(err.contains("node.key.pem"), "{err}");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

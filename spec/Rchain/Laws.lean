@@ -3991,6 +3991,138 @@ def laws : List Law := [
       says so. The step's terminal condition is an **idealisation** — the Rust frontier is the local \
       DAG's and can exceed a peer's advertised tip — so the bound statements describe a narrower machine \
       than the Rust; the window arithmetic itself was verified correct and faithful to `catchup.rs`." },
+
+  { number := 72, layer := "Casper",
+    statement := "**A completion record brackets every durable effect.** The reset's marker may be \
+      written only once *every* effect it brackets has been applied — the DAG rewind, the body purge, \
+      and the runtime's durable root. No reachable state has the record written with an effect missing, \
+      and the boot repair re-applies the whole set from any half-applied state",
+    status := .provedModel,
+    declarations := [`Rchain.ResetState, `Rchain.resetStep, `Rchain.resetSystem,
+      `Rchain.a_rewound_record_implies_every_effect_applied],
+    axioms := [],
+    rust := ["casper/src/engine/reset.rs", "rspace/src/history/history_repository.rs"],
+    rustWitness := ["casper/tests/reset.rs:a_crash_after_the_rewind_is_repaired_at_boot_by_the_marker",
+      "casper/tests/reset.rs:the_guard_refuses_a_rewinding_whose_anchor_body_is_absent"],
+    witness := [`Rchain.an_early_commit_reaches_a_record_that_lies,
+      `Rchain.a_reset_can_complete],
+    falsifiable := "The port's own order, recording the completion after the rewind and the purge but \
+      before the runtime root. `an_early_commit_reaches_a_record_that_lies` exhibits the state that \
+      order admits — a `rewound` record with the root unmoved — so the law is red on the code as it \
+      stands and `a_reset_can_complete` keeps it from being vacuous.",
+    note := "**Why the record must bracket all three effects.** `rewind_and_purge` writes the marker when \
+      the first two have returned (`casper/src/engine/reset.rs:81`), and the runtime root is written \
+      *afterwards* (`:261-266`), through `HistoryRepository::reset` → `validate_and_set_current_root` \
+      (`rspace/src/history/history_repository.rs:337`), itself a durable write. A crash between the two \
+      leaves the record claiming the stores agree while a third does not, and the boot guard reading \
+      `rewound` re-applies nothing (`reset.rs:140-151`). `reset_volatile`'s doc \
+      (`history_repository.rs:346-358`) names the same class for the merge. HAZOP rows F-U13-01 and \
+      F-U13-02 (docs/src/spec/failure-hazop.md). The fix is in the tree: the two marker writes moved to \
+      the callers, around all three effects, and the guard's `Rewinding` branch re-establishes the \
+      runtime root — witnessed by the two reset tests named above." },
+
+  { number := 73, layer := "Casper",
+    statement := "**A raised request is not spent until the act commits.** The self-reset's request cell \
+      is cleared by, and only by, the step that applies the reset's effects: no reachable state has the \
+      request taken with nothing applied, so a raised request is always still actionable",
+    status := .provedModel,
+    declarations := [`Rchain.RequestState, `Rchain.spendRequestStep, `Rchain.spendSystem,
+      `Rchain.a_request_is_not_spent_without_the_act],
+    axioms := [],
+    rust := ["casper/src/engine/reset.rs"],
+    rustWitness := ["casper/tests/reset.rs:a_reset_request_rewinds_the_stores_when_the_switch_is_on_and_does_nothing_when_it_is_off"],
+    witness := [`Rchain.a_split_take_reaches_a_state_that_spent_the_request,
+      `Rchain.a_raised_request_can_be_acted_on],
+    falsifiable := "The port's split: taking the request and applying the effects in two statements. \
+      `a_split_take_reaches_a_state_that_spent_the_request` exhibits the reachable state that admits — \
+      the cell empty, nothing applied, and nothing to re-raise it in-process — and \
+      `a_raised_request_can_be_acted_on` keeps the law from being vacuous.",
+    note := "**The port takes first and acts second.** `act_on_reset_request` calls `take_reset_request()` \
+      as its opening statement (`casper/src/engine/reset.rs:215`) and only then runs `perform_reset`, \
+      which can fail before touching a store (the anchor body absent, `:246-258`). A failure there spends \
+      the request with nothing done; recovery is a restart, re-derivable only because the detector's \
+      count (`restore_attempts`) is persisted. HAZOP row F-U11-03 (docs/src/spec/failure-hazop.md). \
+      **Fixed 2026-10-13**: `act_on_reset_request` peeks (`reset_request()`) and runs the anchor \
+      pre-flight *before* the take, so a failure that destroyed nothing leaves the request pending — \
+      witnessed by the reset test named above; the switch-off arm still consumes, because that is a \
+      terminal configuration rather than a transient fault." },
+
+  { number := 74, layer := "RSpace",
+    statement := "**A checkpoint does not drain an overlay it has not folded.** The hot-store and native \
+      overlays are folded into the trie before they are cleared, so an interrupted checkpoint loses \
+      nothing it has not committed — no reachable state has an overlay empty while its changes are \
+      unfolded",
+    status := .provedModel,
+    declarations := [`Rchain.CheckpointState, `Rchain.checkpointStep, `Rchain.checkpointSystem,
+      `Rchain.a_checkpoint_does_not_drain_what_it_has_not_folded],
+    axioms := [],
+    rust := ["rspace/src/rspace.rs", "rspace/src/native_store.rs"],
+    witness := [`Rchain.a_drain_before_the_fold_reaches_a_state_that_lost_the_overlay,
+      `Rchain.a_checkpoint_can_complete],
+    falsifiable := "The port's order, clearing the native overlay before the fold. \
+      `a_drain_before_the_fold_reaches_a_state_that_lost_the_overlay` exhibits the state it admits — the \
+      overlay empty, the changes unfolded — and `a_checkpoint_can_complete` keeps the law from being \
+      vacuous.",
+    note := "**The two overlays are not treated alike.** `create_checkpoint` reads the hot-store changes \
+      (`rspace/src/rspace.rs:604-605`, a snapshot that is not cleared) and clears the native overlay at \
+      `:606-609` (whose `drain_native` ends in `overlay.clear()`, `rspace/src/native_store.rs:477`) \
+      *before* the only fallible step, `checkpoint_with_native` (`:616-621`). A fold that returns `Err` \
+      therefore loses the native mutations and records the failed drain in `last_native_*`, while the \
+      hot-store side is untouched. The model is one overlay because the property is per-overlay — \
+      applying it to both is what \"both overlays or neither\" means. HAZOP rows F-U15-01/02 \
+      (docs/src/spec/failure-hazop.md). **Fixed 2026-10-13**: `create_checkpoint` snapshots the native \
+      overlay before the drain and restores it if the fold fails, and writes `last_native_*` only after \
+      the fold has committed. `rustWitness` is empty: the fold's failure path has no fault-injection \
+      point in the rspace tests yet, so that falsifier is owed." },
+
+  { number := 75, layer := "Casper",
+    statement := "**A dependent action is taken only on a committed record.** The refusal budget's \
+      increment and the reset request it can raise are ordered: no reachable state has the request raised \
+      while the record it rests on is uncommitted, so the request's premise is always durable",
+    status := .provedModel,
+    declarations := [`Rchain.AttemptState, `Rchain.attemptStep, `Rchain.attemptSystem,
+      `Rchain.a_dependent_action_is_taken_only_on_a_committed_record],
+    axioms := [],
+    rust := ["casper/src/multi_parent_casper.rs"],
+    witness := [`Rchain.a_raised_request_on_an_uncommitted_record_is_reachable,
+      `Rchain.a_committed_record_can_gate_an_action],
+    falsifiable := "The port's order, raising the request on the uncommitted record. \
+      `a_raised_request_on_an_uncommitted_record_is_reachable` exhibits the state it admits — the request \
+      raised, the record it rests on uncommitted — and `a_committed_record_can_gate_an_action` keeps the \
+      law from being vacuous.",
+    note := "**The request runs on the value the store has not yet accepted.** `revalidated_record` builds \
+      the incremented `BlockMetadata` and `note_unrestorable_if_exhausted` — which raises the request — \
+      runs on it before the `update_metadata` that persists it (`casper/src/multi_parent_casper.rs:796` \
+      and `:1202` precede `:797` and `:1214`). The node's read-modify-write half of the same node \
+      (F-U14-01) is the shape law 73 states and is not modelled twice. HAZOP rows F-U14-01/02 \
+      (docs/src/spec/failure-hazop.md). **Fixed 2026-10-13**: `note_unrestorable_if_exhausted` now runs \
+      *after* the `update_metadata` that persists the count, so a request raised by it names a count the \
+      store holds. `rustWitness` is owed — the write's failure path has no fault-injection point here." },
+
+  { number := 76, layer := "Casper",
+    statement := "**A concluded stop stops.** Once a fault the node cannot serve through is reported, \
+      the node is not serving and cannot return to serving: the report and the stop are one step, and it \
+      is the last step available",
+    status := .provedModel,
+    declarations := [`Rchain.ServeState, `Rchain.serveStep, `Rchain.serveSystem,
+      `Rchain.a_reported_fault_stops_the_node],
+    axioms := [],
+    rust := ["node/src/runtime/shutdown.rs", "node/src/main.rs",
+      "node/src/runtime/node_runtime.rs"],
+    rustWitness := ["node/src/runtime/shutdown.rs:a_reported_fatal_resolves_the_wait_with_the_first_reason"],
+    witness := [`Rchain.a_note_without_a_stop_leaves_the_node_serving,
+      `Rchain.a_reported_fault_reaches_a_stopped_state],
+    falsifiable := "The port's old shape, where reporting the fault leaves the node serving. \
+      `a_note_without_a_stop_leaves_the_node_serving` exhibits the reachable state it admits — the latch \
+      set, the listeners up — and `a_reported_fault_reaches_a_stopped_state` keeps the law from being \
+      vacuous.",
+    note := "**Two statements, one gap.** The self-reset's failed act and the LFS sync terminal both say \
+      \"this node is stopping\", and both were a `return Err` from a task nobody joins: the launched \
+      `node_launch` future's error was only logged and `NodeProgram::serve` never awaited it, so the \
+      receiver, processor, proposer and API kept serving a node whose stores may have moved under a view \
+      that was not rebuilt. **Fixed 2026-10-13**: `shutdown::report_fatal` sets a latch the spawn wrapper \
+      writes and `main`'s wait selects on, stopping the process without draining. HAZOP row F-U12-03 \
+      (docs/src/spec/failure-hazop.md)." },
 ]
 
 /-- Every law number the catalog defines. Laws with clauses repeat. -/

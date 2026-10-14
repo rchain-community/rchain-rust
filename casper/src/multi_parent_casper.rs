@@ -79,17 +79,64 @@ pub async fn add_deploy(
     Ok(deploy.sig.clone())
 }
 
+/// The largest deploy term this node will parse, in bytes.
+///
+/// **A bound the parser does not have, added where it costs no fork** (W-N12-02). `parse` refuses by
+/// AST *depth* and by the length of a `|`-chain and by nothing else, so a term's **breadth**
+/// (`a!(1, 1, …, 1)`, `new x, x, …, x`, a wide `match`) is bounded only by the term's own size — and
+/// each element is then normalized, on a term that arrives from an unauthenticated caller and is
+/// parsed *before* the admission decision that would refuse it.
+///
+/// **A breadth rule inside the parser would be fork-visible** and is therefore not what this is: the
+/// oracle accepts a wide term, so refusing one here would make this node reject a block the oracle
+/// accepts, which is a chain split the day someone writes one. A bound on the **wire form of a deploy
+/// this node chooses to accept** is not: a deploy refused here never enters the pool, so it never
+/// enters a block, so no two nodes can disagree about a block over it — and the block path never
+/// reaches this function, so a peer's block is unaffected however wide its terms are. It sits
+/// deliberately below the deploy service's own 256 KiB decode cap, because the decode cap bounds the
+/// *message* and this bounds the *work*: 64 KiB of Rholang source is several times the largest
+/// contract in this tree.
+pub const MAX_DEPLOY_TERM_BYTES: usize = 64 * 1024;
+
 /// Parse-check a deploy term, then add the deploy to the pool (port of `deploy`).
+///
+/// **The order is admit → parse → commit, and the order is the point** (W-N2-05, W-N12-03). It used
+/// to parse and fully normalize the term *first* and only then ask whether the deploy could be
+/// admitted, so every caller — including one the node was always going to refuse — bought the parse.
+/// On an unauthenticated ingress that is the amplification: the work is done before the decision that
+/// would have avoided it.
+///
+/// The admission is `dag.admit_deploy`, which charges the submitter's rate and its share of the pool;
+/// the commit is `dag.commit_deploy`, which re-checks the pool's capacity under the admission lock,
+/// where it is exact, and stores the deploy. Between them is the parse, and a parse that fails drops
+/// the permit, which returns the place — so a malformed term costs the node the parse and nothing
+/// else.
 pub async fn deploy(
     dag: &dyn BlockDagStorage,
     deploy: &SignedDeployData,
 ) -> Result<DeployId, ParsingError> {
+    // Charged before the parse, which is the whole point: the work this bounds is the parsing and
+    // normalization below, not anything downstream that could refuse the deploy later.
+    if deploy.data.term.len() > MAX_DEPLOY_TERM_BYTES {
+        return Err(parsing_error(format!(
+            "deploy term is {} bytes; this node parses at most {MAX_DEPLOY_TERM_BYTES}",
+            deploy.data.term.len()
+        )));
+    }
+    let permit = dag
+        .admit_deploy(&deploy.deployer)
+        .await
+        .map_err(parsing_error)?;
     // Normalize against the deploy's environment (deployer id / deploy id), so a term that
     // references `rho:rchain:deployerId`/`deployId` parses the same way it will when processed.
     let normalizer_env = NormalizerEnv::new(deploy);
     rchain_rholang::normalizer::source_to_adt_with_env(&deploy.data.term, normalizer_env.to_env())
         .map_err(|e| parsing_error(format!("Error in parsing term: \n{e}")))?;
-    add_deploy(dag, deploy).await.map_err(parsing_error)
+    let id = deploy.sig.clone();
+    dag.commit_deploy(permit, deploy.clone())
+        .await
+        .map_err(parsing_error)?;
+    Ok(id)
 }
 
 async fn get_block_unsafe(
@@ -793,7 +840,12 @@ where
                 continue;
             }
         };
-        note_unrestorable_if_exhausted(dag, &record, &hash, source, log).await;
+        // **The note runs on the committed record** (law 75, `spec/Rchain/Attempts.lean`): the request it
+        // may raise asks the node to reset on the strength of a count, and a request raised *before* the
+        // `update_metadata` that persists that count has a premise the store may not hold — the write can
+        // fail, leaving the node having asked for a reset on a count one lower than any it stored. The
+        // clone carries the record past the move into the store.
+        let committed = record.clone();
         match dag.update_metadata(record).await {
             Ok(()) if cleared => {
                 log.warn(
@@ -808,7 +860,13 @@ where
             }
             // The attempt is spent either way (`revalidated_record` counts it), so a record that keeps
             // failing stops being retried at `RESTORE_ATTEMPT_LIMIT` rather than on every proposal.
-            Ok(()) => continue,
+            Ok(()) => {
+                // The write returned, so a request raised here names a count the store holds. A restored
+                // record takes the arm above — its budget is not spent, so the note there would be a
+                // no-op and is not called.
+                note_unrestorable_if_exhausted(dag, shard_id, &committed, &hash, source, log).await;
+                continue;
+            }
             Err(e) => log.error(
                 source,
                 &format!(
@@ -904,6 +962,7 @@ fn revalidated_record(
 /// arm keeps refusing and logs what it would have had to replay.
 async fn note_unrestorable_if_exhausted(
     dag: &dyn BlockDagStorage,
+    shard_id: &str,
     record: &BlockMetadata,
     hash: &BlockHash,
     source: LogSource,
@@ -934,12 +993,15 @@ async fn note_unrestorable_if_exhausted(
             blocks_above,
             refused,
         } => {
-            let raised = crate::interpreter_util::request_reset(ResetRequest {
-                anchor,
-                anchor_height,
-                blocks_above,
-                refused,
-            });
+            let raised = crate::interpreter_util::request_reset(
+                shard_id.to_string(),
+                ResetRequest {
+                    anchor,
+                    anchor_height,
+                    blocks_above,
+                    refused,
+                },
+            );
             let prefix = if raised {
                 "reset requested"
             } else {
@@ -1199,7 +1261,9 @@ async fn restore_divergent_justifications<F, Fut>(
                 continue;
             }
         };
-        note_unrestorable_if_exhausted(dag, &record, j, source, log).await;
+        // **The note runs on the committed record** (law 75, `spec/Rchain/Attempts.lean`): see where it
+        // is called, below the write. The clone carries the record past the move into the store.
+        let committed = record.clone();
 
         // **`update_metadata`, not `insert` — and that is AUDIT C193.** This writes the record of a block
         // the DAG already holds, and `insert` returns `Ok(())` for a hash it knows without writing
@@ -1222,6 +1286,11 @@ async fn restore_divergent_justifications<F, Fut>(
             );
             continue;
         }
+
+        // **The note runs on the committed record** (law 75): the write returned, so a request raised
+        // here names a count the store holds. Above the write it would be a request whose premise the
+        // store may not have accepted.
+        note_unrestorable_if_exhausted(dag, shard_id, &committed, j, source, log).await;
 
         if restored {
             log.warn(
@@ -1447,6 +1516,124 @@ fn mark_failed(meta: &BlockMetadata, status: BlockStatus) -> BlockMetadata {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A `BlockDagStorage` that is **never reached**: the term-size bound is the first statement of
+    /// [`deploy`], so a term it refuses never gets as far as the parser or the pool. Every method
+    /// panics, which is what makes the test below a *placement* assertion as well as a bound one.
+    struct UnreachedDag;
+
+    #[async_trait::async_trait]
+    impl rchain_block_storage::dag::dag_storage::BlockDagStorage for UnreachedDag {
+        async fn get_representation(
+            &self,
+        ) -> Arc<rchain_block_storage::dag::representation::DagRepresentation> {
+            unreachable!("deploy refuses an oversized term before it looks at the DAG")
+        }
+        async fn insert(
+            &self,
+            _block_metadata: rchain_models::block_metadata::BlockMetadata,
+            _block: BlockMessage,
+        ) -> Result<(), String> {
+            unreachable!("unreached")
+        }
+        async fn lookup(
+            &self,
+            _block_hash: &BlockHash,
+        ) -> Result<Option<rchain_models::block_metadata::BlockMetadata>, String> {
+            unreachable!("unreached")
+        }
+        async fn lookup_by_deploy_id(
+            &self,
+            _deploy_id: &rchain_block_storage::dag::dag_storage::DeployId,
+        ) -> Result<Option<BlockHash>, String> {
+            unreachable!("unreached")
+        }
+        async fn add_deploy(
+            &self,
+            _deploy: rchain_models::casper::protocol::casper_message::SignedDeployData,
+        ) -> Result<(), String> {
+            unreachable!("unreached")
+        }
+        async fn pooled_deploys(
+            &self,
+        ) -> Result<
+            std::collections::BTreeMap<
+                rchain_block_storage::dag::dag_storage::DeployId,
+                rchain_models::casper::protocol::casper_message::SignedDeployData,
+            >,
+            String,
+        > {
+            unreachable!("unreached")
+        }
+        async fn contains_deploy_in_pool(
+            &self,
+            _deploy_id: &rchain_block_storage::dag::dag_storage::DeployId,
+        ) -> Result<bool, String> {
+            unreachable!("unreached")
+        }
+    }
+
+    /// **A deploy whose term is larger than this node parses is refused, and before the parse**
+    /// (W-N12-02).
+    ///
+    /// Two properties in one test, and the second is why the DAG above panics rather than stubs out:
+    /// the bound is the *first* statement of `deploy`, so a refused term is never parsed and never
+    /// pooled — a term refused *after* the parse would have cost the node the parse, which is the
+    /// whole reason the bound exists.
+    ///
+    /// The term is deliberately **also unparseable**, so the two possible orderings produce different
+    /// errors rather than the same one: size-first says "parses at most", a parse-first
+    /// implementation says "Error in parsing term". Falsified by deleting the bound — under which this
+    /// panics inside the stub instead of failing an assertion, which is a red test either way.
+    #[tokio::test]
+    async fn a_deploy_term_over_the_parse_bound_is_refused_before_the_parse() {
+        use rchain_models::casper::protocol::casper_message::{DeployData, SignedDeployData};
+
+        let oversized = SignedDeployData {
+            data: DeployData {
+                attachments: Vec::new(),
+                // Not valid Rholang, and longer than the bound: whichever check runs first decides.
+                term: "x".repeat(MAX_DEPLOY_TERM_BYTES + 1),
+                timestamp: 0,
+                phlo_price: 1,
+                phlo_limit: 1,
+                valid_after_block_number: 0,
+                shard_id: "root".to_string(),
+            },
+            deployer: vec![0u8; 65],
+            sig: vec![0u8; 65],
+            sig_algorithm: "secp256k1".to_string(),
+        };
+
+        let err = deploy(&UnreachedDag, &oversized)
+            .await
+            .expect_err("a term over the bound must be refused");
+        // `ParsingError` is a newtype over the rendered message, so the assertion is on its `.0`.
+        let message = &err.0;
+        assert!(
+            message.contains("parses at most"),
+            "the refusal must be the size bound, not the parser's: {message}"
+        );
+
+        // And the bound is inclusive at its own size: exactly `MAX_DEPLOY_TERM_BYTES` is not refused
+        // for its *length* — this term is still unparseable, so it fails in the parser, which is what
+        // says the size check let it through.
+        let at_bound = SignedDeployData {
+            data: DeployData {
+                term: "x".repeat(MAX_DEPLOY_TERM_BYTES),
+                ..oversized.data.clone()
+            },
+            ..oversized.clone()
+        };
+        let err = deploy(&UnreachedDag, &at_bound)
+            .await
+            .expect_err("it is still not a term");
+        assert!(
+            !err.0.contains("parses at most"),
+            "a term at the bound is the parser's business, not the bound's: {}",
+            err.0
+        );
+    }
 
     /// The deploy lifespan is a **consensus-visible parameter**: it decides which deploys a block may
     /// still include, so two nodes disagreeing on it disagree about validity. Pinned as a value, not

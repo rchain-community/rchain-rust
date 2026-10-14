@@ -153,6 +153,21 @@ impl BlockApi for ShardRoutingBlockApi {
         self.primary_api().get_propose_result().await
     }
 
+    async fn get_unfinalised_name_data_response(
+        &self,
+        depth: i32,
+        listening_name: &Par,
+    ) -> ApiErr<(Vec<DataWithBlockInfo>, i32)> {
+        // **Forwarded, and this is the implementation the default would have broken.** A wrapper that
+        // does not forward this one answers the bridge with the *floored* read, which times out on any
+        // chain whose finality lags — the three multi-delivery OCapN integration tests were red on
+        // exactly that. Routing is not a place to have an opinion about finality: the shard that owns
+        // the data decides.
+        self.primary_api()
+            .get_unfinalised_name_data_response(depth, listening_name)
+            .await
+    }
+
     async fn get_listening_name_data_response(
         &self,
         depth: i32,
@@ -428,6 +443,8 @@ mod tests {
             // A non-zero count on the primary only, so the router test can prove the primary answered
             // rather than the trait default (which is all zeros and records nothing).
             ProposerHealth {
+                autopropose_timer_halt_episodes: 0,
+                autopropose_tap_suppressed: 0,
                 consecutive_self_validation_failures: if self.shard_id.ends_with("root") {
                     7
                 } else {
@@ -465,6 +482,18 @@ mod tests {
             self.record("get_propose_result");
             Ok(self.shard_id.clone())
         }
+        /// Delegates to the recorded read: this double has no unfinalised view of its own, and the
+        /// method is required rather than defaulted so that is a decision rather than an oversight —
+        /// the production wrapper over it had to forward the call for real.
+        async fn get_unfinalised_name_data_response(
+            &self,
+            depth: i32,
+            listening_name: &Par,
+        ) -> ApiErr<(Vec<DataWithBlockInfo>, i32)> {
+            self.get_listening_name_data_response(depth, listening_name)
+                .await
+        }
+
         async fn get_listening_name_data_response(
             &self,
             depth: i32,

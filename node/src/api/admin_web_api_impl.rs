@@ -7,7 +7,7 @@ use async_trait::async_trait;
 use rchain_casper::api::block_api::BlockApi;
 
 use super::admin_web_api::AdminWebApi;
-use super::dto::BlockApiException;
+use super::dto::{BlockApiException, OperatorStatus};
 
 /// The admin web API implementation (port of `AdminWebApi.AdminWebApiImpl`).
 pub struct AdminWebApiImpl {
@@ -34,6 +34,57 @@ impl AdminWebApi for AdminWebApiImpl {
             .get_propose_result()
             .await
             .map_err(BlockApiException)
+    }
+
+    /// **The operator half of the status** (W-N3-01), read here rather than on the public listener.
+    ///
+    /// Everything it needs is reachable from `self.block_api` plus four process-wide counters — which
+    /// is why this is a method on the admin API and not a new dependency threaded into `HttpState`:
+    /// the capability was never the missing part, the *route* was on the wrong listener.
+    async fn operator_status(&self) -> Result<OperatorStatus, BlockApiException> {
+        let status = self.block_api.status().await;
+        let caps = self.block_api.capabilities().await;
+        let health = self.block_api.proposer_health().await;
+        // C249's F-U10-01: the merge's and finality's observations, which reached the log and nothing
+        // else — plus the poisoned-lock count, read from `rspace` because the poisoning is a
+        // storage-layer event and the count is process-wide (F-U9-03).
+        let finality = self.block_api.finality_health().await;
+        // Law 69's other half: the sync task's own state, so a node latched in `NodeSyncing` says so on
+        // this surface instead of only on stderr. `None` is the ordinary reading — the task has
+        // returned — and it is not the same as a completed sync.
+        let sync = self.block_api.sync_health().await;
+        let core = super::conversion::to_public_status(&status, &caps);
+        Ok(super::conversion::to_operator_status(
+            core,
+            &caps,
+            &health,
+            &finality,
+            sync.as_ref(),
+            // F-U12-02: the durable reset marker, rendered. Read from the marker store's own cell — which
+            // every writer writes — so it cannot go stale behind the store it reports.
+            rchain_casper::interpreter_util::reset_marker_state().map(|m| {
+                use rchain_block_storage::dag::dag_storage::ResetPhase;
+                let phase = match m.phase {
+                    ResetPhase::Rewinding => "rewinding",
+                    ResetPhase::Rewound => "rewound",
+                };
+                format!(
+                    "{phase} to {} at height {} (the catch-up walk clears it when its frontier passes \
+                     that height)",
+                    m.anchor.to_hex(),
+                    i64::from(m.height)
+                )
+            }),
+            rchain_rspace::lock::poison_recoveries(),
+            // C254: the supervisor's counters. Every long-lived background task is watched by
+            // `rchain_shared::supervise::spawn_supervised`, so "a subsystem stopped" is a number a
+            // probe can read rather than an absence an operator has to infer from the silence.
+            rchain_shared::supervise::tasks_panicked(),
+            rchain_shared::supervise::tasks_exited(),
+            // C254's other residual: `rchain_shared::chan` counts every send a closed channel
+            // swallowed, and nothing published the count.
+            rchain_shared::chan::undelivered_sends(),
+        ))
     }
 }
 
@@ -75,6 +126,18 @@ mod tests {
         async fn get_propose_result(&self) -> ApiErr<String> {
             Ok("Success! Block created.".to_string())
         }
+        /// Delegates to the floored read: this double has no unfinalised view of its own, and the
+        /// method is required rather than defaulted so that is a decision rather than an oversight
+        /// (`ShardRoutingBlockApi` is the implementation that had to forward it for real).
+        async fn get_unfinalised_name_data_response(
+            &self,
+            depth: i32,
+            listening_name: &Par,
+        ) -> ApiErr<(Vec<DataWithBlockInfo>, i32)> {
+            self.get_listening_name_data_response(depth, listening_name)
+                .await
+        }
+
         async fn get_listening_name_data_response(
             &self,
             _: i32,

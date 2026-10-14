@@ -4,5 +4,6 @@
 
 pub mod certificate_helper;
 pub mod key_util;
+pub mod secret_file;
 pub mod secure_random_util;
 pub mod sorting;

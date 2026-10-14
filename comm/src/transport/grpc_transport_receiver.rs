@@ -260,6 +260,65 @@ fn charge_stream_budget(
     }
 }
 
+/// What a chunk costs its receiver, in bytes — **header or data**.
+///
+/// The aggregate budget and the per-stream size cap were both charged only inside the `Data` arm, so
+/// a peer could stream `MAX_STREAM_CHUNKS` header chunks and pay for none of them: `received` never
+/// moved, so `max_stream_message_size` never fired, and the only cost was one permit per chunk. A
+/// `ChunkHeader`'s `type_id`, `network_id` and claimed sender are all `string`/`bytes` fields with no
+/// bound of their own (`models/proto/routing.proto:77`), and a header is allocated, buffered into
+/// `chunks` and carried through reassembly exactly as a data chunk is — so it is charged exactly as
+/// one is (W-N12-04).
+///
+/// The *cost* of that is one budget unit per stream for a legitimate peer, because a real stream
+/// carries a single header (`chunker::chunk_packet`): the budget is `blobs × max_stream_message_size`
+/// = 16 × 256 MiB, so 4096 units, against which one is nothing. Charging headers cannot refuse a
+/// legitimate stream, which is the property that had to be checked before changing this.
+fn chunk_encoded_cost(chunk: &Chunk) -> usize {
+    match &chunk.content {
+        Some(chunk::Content::Data(d)) => d.content_data.len(),
+        Some(chunk::Content::Header(h)) => {
+            let sender = h.sender.as_ref().map_or(0, |n| n.id.len() + n.host.len());
+            h.type_id.len() + h.network_id.len() + sender
+        }
+        None => 0,
+    }
+}
+
+/// The streamed path's admission decision on a header chunk: the network id, and the claimed sender
+/// against the identity the certificate proves.
+///
+/// **Exactly the circuit breaker's rule**, deliberately — extracted so the decision can run in the
+/// drain loop, where it refuses a stream before the stream is paid for, rather than only in
+/// `stream_handler::collect`, which runs after every chunk has been buffered, size-checked and
+/// charged (W-N1-09/W-N1-10). Because the rule is the same one the breaker applies, moving it earlier
+/// cannot admit anything `collect` would have refused; it only refuses sooner. A non-header chunk
+/// decides nothing and is admitted to the loop.
+fn stream_header_admits(
+    network_id: &str,
+    proven: Option<&str>,
+    chunk: &Chunk,
+) -> Result<(), Status> {
+    let Some(chunk::Content::Header(h)) = &chunk.content else {
+        return Ok(());
+    };
+    if h.network_id != network_id {
+        return Err(Status::permission_denied("Wrong network id"));
+    }
+    let claimed = h
+        .sender
+        .as_ref()
+        .and_then(|n| PeerNode::from_node(n).ok())
+        .map(|p| p.s_key())
+        .ok_or_else(|| Status::permission_denied("stream header carries no verifiable sender"))?;
+    if proven != Some(claimed.as_str()) {
+        return Err(Status::permission_denied(
+            "Stream sender does not match the identity its certificate proves",
+        ));
+    }
+    Ok(())
+}
+
 fn stream_byte_budget(blobs: usize, max_stream_message_size: i64) -> usize {
     // Written as an explicit match rather than as a fallible conversion with a zero default — the
     // *silent* class `tools/audit-type-system.sh` refuses, and it refused the first draft of this
@@ -468,22 +527,30 @@ impl transport_layer_server::TransportLayer for GrpcTransportReceiver {
         // exists to bound.
         let mut byte_permits: Vec<tokio::sync::OwnedSemaphorePermit> = Vec::new();
         while let Some(chunk) = incoming.message().await? {
-            if let Some(chunk::Content::Data(d)) = &chunk.content {
-                received += d.content_data.len() as i64;
-                if received > self.max_stream_message_size {
-                    return Ok(Response::new(internal_server_error(&stream_error_message(
-                        &StreamError::MaxSizeReached,
-                    ))));
-                }
-                // Charge the aggregate budget. The per-stream cap above bounds *this* stream; this
-                // bounds the sum over all of them, which is the number that multiplies.
-                if charge_stream_budget(&self.stream_bytes, &mut byte_permits, d.content_data.len())
-                    .is_err()
-                {
-                    return Ok(Response::new(internal_server_error(&stream_error_message(
-                        &StreamError::MaxSizeReached,
-                    ))));
-                }
+            // **The authentication decision runs when the header arrives, not after the whole stream
+            // has been paid for** (W-N1-09/W-N1-10). The circuit breaker below is the backstop, but it
+            // runs inside `collect` — by which time this loop has already buffered every chunk,
+            // size-checked it and charged it against the aggregate byte budget, so a peer whose header
+            // was never going to verify still bought a full stream first.
+            stream_header_admits(&self.network_id, proven.0.as_deref(), &chunk)?;
+            // **Every chunk is charged, not only the data ones** (W-N12-04). The header arm used to
+            // fall through with no accounting at all, which made a header's `type_id`, `network_id`
+            // and sender free to size: `received` stayed put, so the per-stream cap never fired, and
+            // the aggregate budget saw only the data chunks. Both now see the same number.
+            let charged = chunk_encoded_cost(&chunk);
+            received += charged as i64;
+            if received > self.max_stream_message_size {
+                return Ok(Response::new(internal_server_error(&stream_error_message(
+                    &StreamError::MaxSizeReached,
+                ))));
+            }
+            // Charge the aggregate budget. The per-stream cap above bounds *this* stream; this bounds
+            // the sum over all of them, which is the number that multiplies. A chunk of any size costs
+            // at least one unit, so an empty chunk is bounded by the same count that bounds the rest.
+            if charge_stream_budget(&self.stream_bytes, &mut byte_permits, charged).is_err() {
+                return Ok(Response::new(internal_server_error(&stream_error_message(
+                    &StreamError::MaxSizeReached,
+                ))));
             }
             chunks.push(chunk);
             if chunks.len() > MAX_STREAM_CHUNKS {
@@ -927,6 +994,158 @@ mod tests {
             1,
             "an unproven sender must not reach the dispatcher"
         );
+    }
+
+    /// **The streamed header's admission decision is a unit, and it is the breaker's own rule**
+    /// (W-N1-09/W-N1-10).
+    ///
+    /// The streamed path made this decision only inside `stream_handler::collect`, which runs *after*
+    /// the drain loop has buffered, size-checked and budget-charged every chunk — so a stream whose
+    /// header could never verify still bought a full stream first. The decision now runs when the
+    /// header arrives, and it is this function.
+    ///
+    /// **What is pinned here is the decision, not its placement.** `tonic::Streaming` has no
+    /// constructor a test can call, so the drain loop that calls this first is verified by reading it,
+    /// exactly as this module already states for the aggregate budget. The rule being *the breaker's*
+    /// is what makes the placement safe: a check that refuses a subset of what `collect` refuses can
+    /// only refuse sooner, never more.
+    #[test]
+    fn a_stream_header_is_admitted_only_for_the_identity_its_certificate_proves() {
+        let peer = |id: Vec<u8>, host: &str| {
+            PeerNode::from(
+                crate::peer_node::NodeIdentifier::new(id),
+                host.into(),
+                Port::new(40400),
+                Port::new(40404),
+            )
+        };
+        let proven = peer(vec![1, 2, 3], "host");
+        let other = peer(vec![0x22; 20], "elsewhere");
+        let header = |p: &PeerNode, net: &str| Chunk {
+            content: Some(chunk::Content::Header(
+                rchain_models::comm::protocol::ChunkHeader {
+                    sender: Some(p.to_node()),
+                    type_id: "BlockMessage".to_string(),
+                    compressed: false,
+                    content_length: 1,
+                    network_id: net.to_string(),
+                },
+            )),
+        };
+        let s_key = proven.s_key();
+
+        // The honest case, and a data chunk, which decides nothing.
+        assert!(
+            super::stream_header_admits("testnet", Some(&s_key), &header(&proven, "testnet"))
+                .is_ok()
+        );
+        let data = Chunk {
+            content: Some(chunk::Content::Data(
+                rchain_models::comm::protocol::ChunkData {
+                    content_data: vec![1, 2, 3],
+                },
+            )),
+        };
+        assert!(super::stream_header_admits("testnet", Some(&s_key), &data).is_ok());
+
+        // The spoof: the certificate proves one node and the header claims another.
+        assert_eq!(
+            super::stream_header_admits("testnet", Some(&s_key), &header(&other, "testnet"))
+                .expect_err("a sender its certificate does not prove must be refused at the header")
+                .code(),
+            tonic::Code::PermissionDenied
+        );
+        // The wrong network.
+        assert_eq!(
+            super::stream_header_admits("testnet", Some(&s_key), &header(&proven, "mainnet"))
+                .expect_err("a wrong-network header must be refused")
+                .code(),
+            tonic::Code::PermissionDenied
+        );
+        // No proof at all: client auth is mandatory, so this is a broken invariant, not "unverified".
+        assert_eq!(
+            super::stream_header_admits("testnet", None, &header(&proven, "testnet"))
+                .expect_err("a stream with no proven identity must be refused")
+                .code(),
+            tonic::Code::PermissionDenied
+        );
+        // A header carrying no sender at all.
+        let senderless = Chunk {
+            content: Some(chunk::Content::Header(
+                rchain_models::comm::protocol::ChunkHeader {
+                    sender: None,
+                    type_id: "BlockMessage".to_string(),
+                    compressed: false,
+                    content_length: 1,
+                    network_id: "testnet".to_string(),
+                },
+            )),
+        };
+        assert!(
+            super::stream_header_admits("testnet", Some(&s_key), &senderless).is_err(),
+            "a header with no sender is not one whose identity is unknown-but-probably-fine"
+        );
+    }
+
+    /// **A header chunk is charged for the bytes a peer chooses** (W-N12-04).
+    ///
+    /// The drain loop charged the per-stream size cap and the aggregate budget *inside its `Data`
+    /// arm only*, so a header chunk cost one permit and nothing else: `received` never moved, so
+    /// `max_stream_message_size` never fired, and `type_id`, `network_id` and the claimed sender —
+    /// all unbounded `string`/`bytes` on the wire — were free to size. `MAX_STREAM_CHUNKS` headers of
+    /// a megabyte each were a megabyte-times-100 000 the node would buffer.
+    ///
+    /// This pins the cost function, which is where the fix is; as with `stream_header_admits`, its
+    /// *placement* in the drain loop is verified by reading, because `tonic::Streaming` has no
+    /// constructor a test can call. Falsified by making the header arm return `0` — which is what the
+    /// old code did — and the first assertion goes red.
+    #[test]
+    fn a_header_chunk_is_charged_for_the_bytes_a_peer_chooses() {
+        let header = |type_id: &str, network_id: &str| Chunk {
+            content: Some(chunk::Content::Header(
+                rchain_models::comm::protocol::ChunkHeader {
+                    sender: Some(
+                        crate::peer_node::PeerNode::from(
+                            crate::peer_node::NodeIdentifier::new(vec![7u8; 40]),
+                            "a-host-of-thirty-characters-here".to_string(),
+                            Port::new(40400),
+                            Port::new(40404),
+                        )
+                        .to_node(),
+                    ),
+                    type_id: type_id.to_string(),
+                    compressed: false,
+                    content_length: 1,
+                    network_id: network_id.to_string(),
+                },
+            )),
+        };
+
+        let host_len = "a-host-of-thirty-characters-here".len();
+        assert_eq!(
+            super::chunk_encoded_cost(&header("BlockMessage", "testnet")),
+            "BlockMessage".len() + "testnet".len() + 40 + host_len,
+            "a header's price is its own fields — the ones a peer sizes"
+        );
+
+        // The property the row is about: a wider field costs strictly more, so a peer cannot make the
+        // node's buffering free by putting the weight in a field the accounting ignores.
+        let narrow = super::chunk_encoded_cost(&header("BlockMessage", "testnet"));
+        let wide = super::chunk_encoded_cost(&header(&"x".repeat(4_096), "testnet"));
+        assert!(
+            wide > narrow + 4_000,
+            "a 4 KiB type id must cost 4 KiB more ({narrow} → {wide})"
+        );
+
+        // And a data chunk is still charged its content, exactly as before.
+        let data = Chunk {
+            content: Some(chunk::Content::Data(
+                rchain_models::comm::protocol::ChunkData {
+                    content_data: vec![1, 2, 3],
+                },
+            )),
+        };
+        assert_eq!(super::chunk_encoded_cost(&data), 3);
     }
 
     /// **The dispatch bound.** With one slot and a handler that has not finished, a second inbound

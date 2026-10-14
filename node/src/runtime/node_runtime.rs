@@ -356,8 +356,15 @@ pub async fn create_comm_state(
         let kademlia_tls =
             rchain_comm::transport::hostname_trust_manager::server_config(&cert, &key)
                 .map_err(|e| format!("kademlia server TLS: {e}"))?;
+        // The same cap the peer transport honours: the discovery service is reached by the same
+        // certificate-bearing peers over the same accept path, so it is bounded by the same operator
+        // key (W-N1-01). Read here, not in the task, so the future captures a `usize` and not `conf`.
+        let kademlia_max_recv =
+            usize::try_from(conf.protocol_server.grpc_max_recv_message_size).unwrap_or(262144);
         rchain_shared::supervise::spawn_supervised("kademlia-serve", async move {
-            if let Err(e) = kademlia_serve(discovery_addr, server, kademlia_tls).await {
+            if let Err(e) =
+                kademlia_serve(discovery_addr, server, kademlia_max_recv, kademlia_tls).await
+            {
                 log.error(source, &format!("Kademlia RPC server failed: {e}"));
             }
         });
@@ -572,6 +579,10 @@ impl NodeProgram {
         let mut http = tokio::spawn({
             let host = host.clone();
             let stop = stop.clone();
+            // **Cloned before the closure, because the admin listener needs the same read.** The
+            // delegations route moved to the admin port (W-N3-03) and takes the PoS read with it; an
+            // `async move` that captures it here would take it from there.
+            let pos_read = pos_read.clone();
             async move {
                 // No gateway here: the cross-shard transaction routes are on the admin listener, which
                 // is loopback by default (AUDIT C121), and `HttpState` no longer carries the capability.
@@ -584,7 +595,7 @@ impl NodeProgram {
                     block_report_api,
                     shards,
                     status_provider,
-                    pos_read,
+                    pos_read.clone(),
                     max_connection_idle,
                     enable_reporting,
                     faucet_enabled,
@@ -623,6 +634,7 @@ impl NodeProgram {
                     enable_txn_api,
                     ocapn_dial,
                     enable_ocapn_dial,
+                    pos_read.clone(),
                     max_connection_idle,
                     stop,
                 )
@@ -1336,11 +1348,20 @@ pub async fn setup_node_program(
             (true, Some(key)) => {
                 // **One limiter for the node's whole OCapN surface**, shared by every capability and
                 // every session: each bridged delivery is a signed deploy paid for out of the node's own
-                // REV, so the bound has to be on the node, not per capability — two capabilities with a
-                // limiter each are a bound of twice the number (HAZOP row A3).
+                // REV, so the *total* has to be on the node — a limiter per capability instead of this
+                // is a bound of N times the number (HAZOP row A3).
                 let limiter = Arc::new(rchain_shared::rate_limiter::RateLimiter::new(
                     crate::api::ocapn::BRIDGED_DEPLOYMENTS_PER_SEC,
                 ));
+                // **And a share of it per capability** (W-N8-02). The total alone is unfair rather
+                // than unsafe: the one object a peer loops on can spend the whole allowance while
+                // every other exported capability is refused. Keyed on the capability's designator,
+                // so the share is per object and the node's total spend is unchanged.
+                let capability_limiter =
+                    Arc::new(rchain_shared::rate_limiter::KeyedRateLimiter::new(
+                        crate::api::ocapn::BRIDGED_DEPLOYMENTS_PER_CAPABILITY_PER_SEC,
+                        crate::api::ocapn::MAX_TRACKED_CAPABILITIES,
+                    ));
                 vec![
                     (
                         crate::api::ocapn::REV_VAULT_BALANCE_SWISS.to_vec(),
@@ -1349,6 +1370,7 @@ pub async fn setup_node_program(
                             key.clone(),
                             primary_id.to_string(),
                             limiter.clone(),
+                            capability_limiter.clone(),
                         )) as Arc<dyn Export>,
                     ),
                     (
@@ -1358,6 +1380,7 @@ pub async fn setup_node_program(
                             key.clone(),
                             primary_id.to_string(),
                             limiter,
+                            capability_limiter,
                         )),
                     ),
                 ]
@@ -1715,6 +1738,22 @@ async fn setup_shard_runtime(
                 // The tap runs on every validated block; if the propose queue is full or the
                 // proposer stream is gone, the request is dropped — and nothing else would say so.
                 let tap: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
+                    // **A halted timer halts the tap too** (W-N4-08). The timer stops itself after a
+                    // burst of consecutive self-validation failures, and until this line it was the
+                    // only thing that stopped: the tap kept proposing on every validated block, so a
+                    // node the status surface called halted was still producing — on inbound traffic,
+                    // without an operator, which is the exact failure the halt exists to prevent.
+                    if tap_health.timer_halted() {
+                        // **Counted rather than silently dropped**, which is the shape this row is
+                        // about: a refusal nobody can see is the same defect as a report that cannot
+                        // become untrue. `push_proposer_health` is still called first, so the gauges
+                        // say the timer is halted beside the count of what that cost.
+                        push_proposer_health(&tap_metrics, &tap_source, &tap_health);
+                        tap_health
+                            .tap_suppressed_halted()
+                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        return;
+                    }
                     push_proposer_health(&tap_metrics, &tap_source, &tap_health);
                     let (otx, _orx) = tokio::sync::oneshot::channel();
                     if let Err(e) = tap_tx.try_send((ProposeSource::Automatic, otx)) {
@@ -1893,6 +1932,13 @@ async fn setup_shard_runtime(
                 LogSource::new("coop.rchain.node.runtime.Setup"),
                 &format!("NodeLaunch exited with error: {err}"),
             );
+            // **And the node actually stops** (§106's owed D3). `apply`'s error is a *concluded* stop
+            // — a failed reset, or the LFS sync terminal, each of which says "this node is stopping" in
+            // its own words — and a logged line is not a stop: this task ending leaves the block
+            // receiver, the processor, the proposer and the API serving a node whose stores may have
+            // moved under a view that was not rebuilt. The latch is what `main`'s wait selects on; the
+            // first reporter wins, so two shards that both fail still produce one reason.
+            crate::runtime::shutdown::report_fatal(format!("NodeLaunch exited with error: {err}"));
         }
     });
 
@@ -3029,10 +3075,27 @@ fn tap_validated_blocks(
 const ATTEST_MAX_BLOCK_AGE_MS: i64 =
     rchain_casper::blocks::proposer::proposer::ROUND_STALL_ESCAPE.as_millis() as i64;
 
-/// Whether a remote block with timestamp `block_ms` is still a live round at `now_ms`. A block stamped in
-/// the future (the proposer's clock ahead of ours) is live: skew must not silence a validator.
+/// How far ahead of this node's clock a remote block may be stamped and still be a live round.
+///
+/// **The forward half of the same window, and it was missing.** A block whose timestamp is in the
+/// future is live — the proposer's clock being ahead of ours must not silence a validator — but that
+/// was implemented as `now.saturating_sub(block)` being *small*, and `saturating_sub` clamps at
+/// `i64::MIN`… it clamps at *zero*: a block stamped in the year 3000 subtracts to `0`, which is well
+/// under the age bound, so **every far-future-stamped block read as perfectly live** (W-N14-02). The
+/// tap then fires on every replay of it, which is the amplification the age bound exists to prevent.
+///
+/// Symmetric with the age bound on purpose, and for the same reason: a block is a live round when its
+/// own timestamp is within one round-stall of now, in either direction. A validator whose clock drifts
+/// by more than fifteen seconds is not one whose blocks this node should be attesting to anyway.
+const ATTEST_MAX_CLOCK_SKEW_MS: i64 = ATTEST_MAX_BLOCK_AGE_MS;
+
+/// Whether a remote block with timestamp `block_ms` is still a live round at `now_ms`.
+///
+/// Both directions are bounded, and both are computed with saturating arithmetic: `block_ms` is wire
+/// data and may be `i64::MIN` or `i64::MAX`, so neither subtraction may be trusted to stay in range.
 fn attest_is_live(block_ms: i64, now_ms: i64) -> bool {
-    now_ms.saturating_sub(block_ms) <= ATTEST_MAX_BLOCK_AGE_MS
+    block_ms <= now_ms.saturating_add(ATTEST_MAX_CLOCK_SKEW_MS)
+        && now_ms.saturating_sub(block_ms) <= ATTEST_MAX_BLOCK_AGE_MS
 }
 
 /// Whether a validated block is a reason for this node to attest: any block from someone else.
@@ -3330,6 +3393,31 @@ mod attest_warranted_tests {
             attest_is_live(now + 5_000, now),
             "a peer's clock ahead of ours must not silence us"
         );
+    }
+
+    /// **A block stamped in the far future is not live** (W-N14-02).
+    ///
+    /// The forward bound is the half that was missing: `now.saturating_sub(block_ms)` gives `0` for any
+    /// stamp ahead of `now`, and `0 <= ATTEST_MAX_BLOCK_AGE_MS` is true, so a block dated in the year
+    /// 3000 was indistinguishable from one dated now — the tap answered every replay of it, which is
+    /// precisely the amplification the backstop bound exists to prevent.
+    ///
+    /// Falsified by restoring the one-sided form, under which every assertion below is `true`.
+    #[test]
+    fn a_block_stamped_far_in_the_future_is_not_answered() {
+        let now = 1_000_000_000;
+        assert!(
+            !attest_is_live(now + ATTEST_MAX_BLOCK_AGE_MS + 1, now),
+            "a block past the forward window is not a live round"
+        );
+        assert!(
+            !attest_is_live(now + 86_400_000, now),
+            "a block dated a day ahead must not prompt an attestation"
+        );
+        // The wire extremes must not wrap: `i64::MAX` saturates rather than overflowing into the
+        // window, and `i64::MIN` is history as far as the age bound is concerned.
+        assert!(!attest_is_live(i64::MAX, now), "the far end of the range");
+        assert!(!attest_is_live(i64::MIN, now), "and the near end");
     }
 
     #[test]

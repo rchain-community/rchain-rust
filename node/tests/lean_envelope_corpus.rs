@@ -27,14 +27,14 @@ use rchain_models::casper::protocol::deploy_service::{
     BondInfo, DeployInfo, FinalityAttestation, LightBlockInfo, RawBlock,
 };
 use rchain_node::api::dto::{
-    ApiStatus, ExploratoryDeployResponse, FaucetDripStatus, FaucetResponse, NodeCapabilities,
-    PooledDeploys, RhoDataResponse, VersionInfo,
+    ExploratoryDeployResponse, FaucetDripStatus, FaucetResponse, NodeCapabilities, OperatorStatus,
+    PooledDeploys, PublicStatus, RhoDataResponse, VersionInfo,
 };
 use rchain_node::web::http::OPENAPI_JSON;
 use serde_json::Value;
 
 /// The catalog's declared size (`Rchain/Envelope.lean`'s `envelopeCaseCount`).
-const ENVELOPE_CASES: usize = 11;
+const ENVELOPE_CASES: usize = 12;
 
 #[tokio::test]
 async fn every_envelope_is_the_lean_catalogs_and_the_served_schemas() {
@@ -248,7 +248,7 @@ fn schema_keys(schema: &Value) -> Vec<String> {
 /// is under test is the envelope's keys, not the data.
 fn dto_by_name(name: &str) -> Value {
     match name {
-        "ApiStatus" => to_json(&ApiStatus {
+        "ApiStatus" => to_json(&PublicStatus {
             version: VersionInfo {
                 api: "0".into(),
                 node: "0".into(),
@@ -263,14 +263,39 @@ fn dto_by_name(name: &str) -> Value {
             autopropose: false,
             propose_on_deploy: false,
             manual_propose: false,
-            admin_http: false,
             dev_mode: false,
+        }),
+        // The operator envelope, which is the public one flattened plus its own keys (W-N3-01). Both
+        // rows are in the catalog because both are served, and a row that was not would be the
+        // AUDIT C29 drift — a response a client can call with nothing checking its shape.
+        "OperatorStatus" => to_json(&OperatorStatus {
+            core: PublicStatus {
+                version: VersionInfo {
+                    api: "0".into(),
+                    node: "0".into(),
+                },
+                address: "0".into(),
+                network_id: "0".into(),
+                shard_id: "0".into(),
+                peers: 0,
+                nodes: 0,
+                min_phlo_price: 0,
+                latest_block_number: 0,
+                autopropose: false,
+                propose_on_deploy: false,
+                manual_propose: false,
+                dev_mode: false,
+            },
+            admin_http: false,
             consecutive_self_validation_failures: 0,
             autopropose_timer_halted: false,
+            autopropose_timer_halt_episodes: 0,
+            autopropose_tap_suppressed: 0,
             stale_snapshot_self_equivocations: 0,
             finality_stall: None,
             finality_stalled: false,
             finality_stall_episodes: 0,
+            reset_marker: None,
             non_quiet_merge_reports: 0,
             sync: None,
             poison_recoveries: 0,

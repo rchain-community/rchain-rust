@@ -235,6 +235,15 @@ cmd_build() {
   # is `debug = 0`, so without it the profile is addresses with no symbols. Read from the environment
   # rather than flags for the same reason the node's diagnostic knobs are: they change the *artifact*
   # under investigation, not the network being started.
+  #
+  # **They select a different Dockerfile, and that is the fix rather than the inconvenience.** A build
+  # argument that reaches `cargo` compiles a different binary, so the definition that accepts one must
+  # not be the definition a release is produced from (W-N7-03) — `docker/rnode/Dockerfile` no longer
+  # declares `RUSTFLAGS` or `CARGO_FEATURES` at all, and this is the only caller that passes them.
+  local dockerfile="docker/rnode/Dockerfile"
+  if [[ -n "${RNODE_BUILD_FEATURES:-}${RNODE_BUILD_RUSTFLAGS:-}${RNODE_BUILD_MALLOC_CONF:-}" ]]; then
+    dockerfile="docker/rnode/Dockerfile.profiling"
+  fi
   if [[ -n "${RNODE_BUILD_FEATURES:-}" ]]; then
     opts+=(--build-arg "CARGO_FEATURES=$RNODE_BUILD_FEATURES")
   fi
@@ -249,7 +258,7 @@ cmd_build() {
   if [[ -n "${RNODE_BUILD_MALLOC_CONF:-}" ]]; then
     opts+=(--build-arg "JEMALLOC_SYS_WITH_MALLOC_CONF=$RNODE_BUILD_MALLOC_CONF")
   fi
-  docker build "${opts[@]}" -f docker/rnode/Dockerfile -t "$IMAGE" .
+  docker build "${opts[@]}" -f "$dockerfile" -t "$IMAGE" .
 }
 
 # Write genesis files (N validators + optionally a funded deployer wallet) into `$1`.
@@ -383,15 +392,45 @@ wait_for_peer_http() {
 }
 
 # `docker run` flags shared by every node (container name/network/ports + data + contracts mounts).
+# The named volume a node's data directory lives in.
+#
+# One definition, because two things have to agree about it: the container that runs the node, and
+# the `seed_validator_key` step that writes that node's signing key into it. `--data-volume` names the
+# *bootstrap's* volume, and only the bootstrap's: the recorded long chain measurements run against is
+# the bootstrap's, and pointing every node at one directory would have them fight over the same LMDB
+# environments.
+data_volume() {
+  local name="$1"
+  if [[ "$name" == "$BOOTSTRAP" && -n "$BOOTSTRAP_DATA_VOLUME" ]]; then
+    echo "$BOOTSTRAP_DATA_VOLUME"
+  else
+    echo "${name}-data"
+  fi
+}
+
+# Write this validator's signing key into its own data volume, **from inside a container**.
+#
+# It is deliberately not a host bind-mount. The image's `rnode` is uid 1000 and a CI runner's uid is
+# 1001, so a host file at `0600` is unreadable in-container — while any wider mode is exactly what the
+# loader now refuses (`load_validator_private_key`, W-N5-09). Writing the file with the container's
+# own uid and `umask 077` makes its owner and its mode right for whatever uid the node runs as, on any
+# host, and it is what lets the key stay off the command line: `--validator-private-key` puts the
+# scalar in the container's argument list, where `docker inspect` returns it to anyone who can talk to
+# the daemon (W-N6-06).
+seed_validator_key() {
+  local name="$1" idx="$2" vol
+  vol="$(data_volume "$name")"
+  docker volume create "$vol" >/dev/null
+  printf '%s\n' "${VALIDATOR_PRIV[$idx]}" \
+    | docker run --rm -i --entrypoint sh -v "${vol}:/var/lib/rnode" "$(node_image "$name")" \
+        -c 'umask 077; cat > /var/lib/rnode/validator.hex'
+}
+
 docker_opts() {
   local name="$1" grpc_host="$2" http_host="$3" admin_host="$4"
   local ports="-p ${grpc_host}:40401 -p ${http_host}:40403"
   if $ADMIN; then ports="$ports -p ${admin_host}:40405"; fi
-  local data="${name}-data"
-  # `--data-volume` names the *bootstrap's* data volume, and only the bootstrap's: the recorded
-  # long chain that measurements run against is the bootstrap's, and pointing every node at one
-  # directory would have them fight over the same LMDB environments.
-  if [[ "$name" == "$BOOTSTRAP" && -n "$BOOTSTRAP_DATA_VOLUME" ]]; then data="$BOOTSTRAP_DATA_VOLUME"; fi
+  local data; data="$(data_volume "$name")"
   # See `DEVNET_NODE_MEMORY` at the top of this file: the ceiling and the no-swap pair are what keep
   # a runaway node inside its own cgroup instead of in the host's swap.
   local limits=""
@@ -604,12 +643,13 @@ cmd_up() {
 
   # Validator 0 = bootstrap: creates + approves genesis (autopropose optional).
   echo "==> starting $BOOTSTRAP (validator 0, standalone, creates genesis)"
+  seed_validator_key "$BOOTSTRAP" 0
   # shellcheck disable=SC2046
   docker run $(docker_opts "$BOOTSTRAP" "$GRPC_BASE" "$HTTP_BASE" "$ADMIN_BASE") \
     -v "${genesis_dir}:/genesis:ro" \
     "$(node_image "$BOOTSTRAP")" $(rnode_run_common "$BOOTSTRAP") -s \
       --bonds-file /genesis/bonds.txt --wallets-file /genesis/wallets.txt \
-      --validator-private-key "${VALIDATOR_PRIV[0]}"
+      --validator-private-key-path /var/lib/rnode/validator.hex
 
   wait_for_cert "$BOOTSTRAP"
   local id
@@ -627,6 +667,7 @@ cmd_up() {
     http_port=$((HTTP_BASE + i * 1000))
     admin_port=$((ADMIN_BASE + i * 1000))
     echo "==> starting $name (validator $i, bootstraps from $BOOTSTRAP)"
+    seed_validator_key "$name" "$i"
     # The genesis files go to every *bonded* validator, not only the bootstrap. They are part of the
     # network configuration: a joining validator replays the genesis block when it first indexes it
     # (the finalized fringe points at block #0), and the genesis's native PoS state and REV vault
@@ -640,7 +681,7 @@ cmd_up() {
       "$(node_image "$name")" $(rnode_run_common "$name") \
         --bootstrap "rnode://${id}@${BOOTSTRAP}?protocol=40400&discovery=40404" \
         --bonds-file /genesis/bonds.txt --wallets-file /genesis/wallets.txt \
-        --validator-private-key "${VALIDATOR_PRIV[$i]}"
+        --validator-private-key-path /var/lib/rnode/validator.hex
   done
 
   # Observers / bare peers: unbonded, replicate the chain.
@@ -812,13 +853,14 @@ cmd_reset() {
   local http_port=$((HTTP_BASE + idx * 1000))
   local admin_port=$((ADMIN_BASE + idx * 1000))
   echo "==> reset $name: empty store, syncing the chain from $BOOTSTRAP"
+  seed_validator_key "$name" "$idx"
   # shellcheck disable=SC2046
   docker run $(docker_opts "$name" "$host_port" "$http_port" "$admin_port") \
     -v "${genesis_dir}:/genesis:ro" \
     "$(node_image "$name")" $(rnode_run_common "$name") \
       --bootstrap "rnode://${id}@${BOOTSTRAP}?protocol=40400&discovery=40404" \
       --bonds-file /genesis/bonds.txt --wallets-file /genesis/wallets.txt \
-      --validator-private-key "${VALIDATOR_PRIV[$idx]}"
+      --validator-private-key-path /var/lib/rnode/validator.hex
   echo "reset $name: back up with an empty store; it will LFS-sync the chain from $BOOTSTRAP"
 }
 

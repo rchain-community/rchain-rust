@@ -1,7 +1,14 @@
 # syntax=docker/dockerfile:1
 
 # --- Build stage ---------------------------------------------------------------
-FROM rust:1.95.0 AS builder
+#
+# **Pinned by digest, not by tag.** A tag is a mutable name: whoever controls the upstream image can
+# repoint `rust:1.95.0` at different content and the artifact that ships changes with no commit here.
+# A digest cannot be repointed, so the base the binary was actually built on is a fact rather than a
+# promise (W-N6-07). Re-derive either digest with
+#   docker buildx imagetools inspect <ref>
+# and read the top-level `Digest:` — it is the *index* digest, so both platforms stay served.
+FROM rust:1.95.0@sha256:f49565f188ee00bc2a18dd418183f2c5f23ef7d6e691890517ed341a598f67c3 AS builder
 
 # `protoc` (prost-build .proto codegen) + the protobuf well-known types
 # (`google/protobuf/empty.proto` etc., shipped by libprotobuf-dev) + build-essential
@@ -22,28 +29,26 @@ COPY . .
 # (issue #32) set out to answer for the artifact that actually ships. `tools/devnet.sh build` passes
 # `--build-arg GIT_HEAD_COMMIT=$(git rev-parse HEAD)`; a plain `docker build` without it keeps the
 # honest `commit # unknown` rather than inventing one.
+#
+# **It is honoured only where git cannot answer** (W-N7-01). `node/build.rs` gives git precedence and
+# warns when the two disagree, so setting this to a canonical hash while building modified source no
+# longer makes `/version` name a commit the binary was not built from. Here git cannot answer, which
+# is the one case the argument is for.
 ARG GIT_HEAD_COMMIT=""
 
-# Profiling knobs for the memory investigations (#117), all defaulting to the shipped build.
-# `CARGO_FEATURES=dhat-heap` installs dhat's global allocator and `CARGO_FEATURES=jemalloc-profiling`
-# compiles jemalloc's sampler in; `RUSTFLAGS=-C debuginfo=1` is what makes the resulting profile
-# *nameable* — the default release profile is `debug = 0` and the shipped binary carries no debug
-# sections at all, so a profile built without it is addresses with no symbols. They are build args
-# rather than defaults so the artifact that ships is unchanged.
-ARG CARGO_FEATURES=""
-ARG RUSTFLAGS=""
-# The allocator's own configuration, for a profiling build: `prof:true,lg_prof_sample:20,prof_prefix:…`
-# on top of the purge settings `.cargo/config.toml` compiles in. **The empty case is guarded, and that
-# is not decoration**: `ARG NAME=""` puts a *set but empty* variable into the `RUN` environment, and
-# cargo's `[env]` does not override a variable that already exists — so a bare `export` would strip the
-# purge settings from the shipped image and nothing would report it.
-ARG JEMALLOC_SYS_WITH_MALLOC_CONF=""
-RUN ${JEMALLOC_SYS_WITH_MALLOC_CONF:+export JEMALLOC_SYS_WITH_MALLOC_CONF="$JEMALLOC_SYS_WITH_MALLOC_CONF";} \
-    cargo build --release -p rchain-node --bin rnode ${CARGO_FEATURES:+--features "$CARGO_FEATURES"}
+# `--locked`: the shipped binary is built from the `Cargo.lock` that was reviewed, not from whatever
+# resolution the registry happened to produce at build time (W-N7-04). CI builds the release the same
+# way, so a lockfile drift fails here rather than shipping a differently-resolved binary.
+#
+# **No `RUSTFLAGS`/`CARGO_FEATURES` build argument on the shipped artifact.** A build argument is
+# caller-controlled, so one that reaches `cargo` lets a caller compile a *different* binary under the
+# audited tag — and the two that used to be here existed for the #117 memory profiling, which is not
+# the artifact that ships. That build has its own definition: `docker/rnode/Dockerfile.profiling`.
+RUN cargo build --release --locked -p rchain-node --bin rnode
 
 # --- Runtime stage -------------------------------------------------------------
 # Must match the builder's glibc (rust:1.95.0 = Debian trixie / glibc 2.41).
-FROM debian:trixie-slim
+FROM debian:trixie-slim@sha256:a29215f6a35e51e22adffa17f89e9d2ef06214e64a2bad10d765c46aea49f11f
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates curl \

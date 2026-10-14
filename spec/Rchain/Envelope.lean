@@ -65,9 +65,19 @@ are held to. `endpoint` is for the reader; the check is on the type, which both 
 def envelopeCatalog : List EnvelopeRow :=
   [ { name := "ApiStatus", endpoint := "GET /api/v1/status",
       keys := ["version", "address", "networkId", "shardId", "peers", "nodes", "minPhloPrice",
-        "latestBlockNumber", "autopropose", "proposeOnDeploy", "manualPropose", "adminHttp", "devMode",
+        "latestBlockNumber", "autopropose", "proposeOnDeploy", "manualPropose", "devMode"] }
+  -- **The operator half, on its own endpoint** (W-N3-01). The row above used to carry every key
+  -- below, and served them on a public listener; the split *is* the finding, so the catalog splits
+  -- with it. A superset of the row above by construction: `OperatorStatus` flattens `PublicStatus`
+  -- and adds these, which is why every public key appears again here.
+  , { name := "OperatorStatus", endpoint := "GET /api/v1/status/operator",
+      keys := ["version", "address", "networkId", "shardId", "peers", "nodes", "minPhloPrice",
+        "latestBlockNumber", "autopropose", "proposeOnDeploy", "manualPropose", "devMode",
+        "adminHttp",
         "consecutiveSelfValidationFailures", "autoproposeTimerHalted",
+        "autoproposeTimerHaltEpisodes", "autoproposeTapSuppressed",
         "staleSnapshotSelfEquivocations", "finalityStall", "finalityStalled", "finalityStallEpisodes",
+        "resetMarker",
         "nonQuietMergeReports", "sync", "poisonRecoveries", "unrestorableRecords", "unrestorableBlock", "tasksPanicked", "tasksExited",
         "undeliveredSends"] }
   , { name := "NodeCapabilities", endpoint := "GET /api/v1/capabilities",
@@ -119,7 +129,7 @@ theorem envelopeCatalog_decide :
   decide
 
 /-- The count the Rust consumer asserts it read. -/
-def envelopeCaseCount : Nat := 11
+def envelopeCaseCount : Nat := 12
 
 /-- The catalog carries exactly `envelopeCaseCount` rows. -/
 theorem envelopeCatalog_length : envelopeCatalog.length = envelopeCaseCount := by decide

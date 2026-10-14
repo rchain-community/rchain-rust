@@ -837,7 +837,14 @@ fn normalize_contr(
             },
         )?;
         fail_on_invalid_connective(&input, &res)?;
-        formal_pars.insert(0, res.par.clone());
+        // **`push`, not `insert(0, …)`** (W-N12-01). Every other accumulator here threads `free_map`
+        // through the loop — `free_map = res.free_map` — and free-variable indices are assigned in
+        // *visit* order, so the iteration order is part of the meaning and must not change. What
+        // changes is only how the accumulated list is built: `insert(0, …)` is O(n) per element and
+        // so O(k²) in the number of formals, on a term a caller supplies. `push` is O(1) and the
+        // list is reversed once, below — which is what `insert(0, …)` was doing one element at a
+        // time. The order is unchanged, and the `.rev()` at the use site is what it always was.
+        formal_pars.push(res.par.clone());
         formal_locally_free = union_free(&formal_locally_free, &res.par.locally_free.0);
         free_map = res.free_map;
     }
@@ -858,7 +865,9 @@ fn normalize_contr(
 
     let receive = Receive {
         binds: vec![ReceiveBind {
-            patterns: formal_pars.into_iter().rev().map(|p| p.quote()).collect(),
+            // The accumulator is built in source order by the `push` above; the `.rev()` that
+            // undoes the old `insert(0, …)` is therefore gone with it. Same order either way.
+            patterns: formal_pars.into_iter().map(|p| p.quote()).collect(),
             source: Box::new(name_result.par.clone().quote()),
             remainder: remainder_var.map(Box::new),
             free_count: bound_count,
@@ -909,11 +918,16 @@ fn normalize_send(
                 env: input.env.clone(),
             },
         )?;
-        data_pars.insert(0, result.par.clone());
+        data_pars.push(result.par.clone());
         data_locally_free = union_free(&data_locally_free, &result.par.locally_free.0);
         data_connective_used = data_connective_used || result.par.connective_used;
         free_map = result.free_map;
     }
+    // Reversed once rather than per element (W-N12-01): the loop walks `data.iter().rev()` and
+    // `free_map` threads through it in that order, so the *pushed* order is the reverse of the
+    // source. `insert(0, …)` undid that one element at a time — O(k²) in the message's arity, on
+    // data a caller chooses — and one `reverse()` is the same list for O(k).
+    data_pars.reverse();
 
     let persistent = matches!(send, SendKind::SendMultiple);
     let s = Send {
@@ -964,11 +978,14 @@ fn normalize_method(
                 env: input.env.clone(),
             },
         )?;
-        arg_pars.insert(0, result.par.clone());
+        arg_pars.push(result.par.clone());
         arg_locally_free = union_free(&arg_locally_free, &result.par.locally_free.0);
         arg_connective_used = arg_connective_used || result.par.connective_used;
         free_map = result.free_map;
     }
+    // As in `normalize_send`: one reverse instead of a per-element `insert(0, …)` (W-N12-01). The
+    // loop order is fixed by the `free_map` threading and does not change.
+    arg_pars.reverse();
 
     let expr = Expr::EMethod(rchain_models::ast::EMethod {
         method_name: method.to_string(),
@@ -2146,5 +2163,157 @@ mod tests {
     fn repeated_wildcards_are_accepted() {
         source_to_adt("new x in { for (@[_, _] <- x) { Nil } }")
             .expect("`_` names nothing, so using it twice binds nothing twice");
+    }
+
+    // --- accumulator order and cost (W-N12-01) ---------------------------------------------------
+    //
+    // Three accumulators in this file build a list by visiting the source backwards or forwards and
+    // used to prepend each element (`insert(0, …)`), which is O(k) per element and so O(k²) in the
+    // arity — on a term a caller supplies, parsed before any admission decision. They now push and
+    // reverse once, which is O(k).
+    //
+    // **The reason that is not simply "flip the loop" is the trap these tests exist for.** Every one
+    // of the three loops threads `free_map` through it (`free_map = result.free_map`), and
+    // free-variable indices are assigned in *visit* order — so the iteration order is part of the
+    // meaning of the term. Changing it would renumber free variables, which is a different term and
+    // possibly a fork. `insert(0, …)` moved the *list* without touching the *visit order*, and
+    // push-then-reverse reproduces that exactly. A naive flip reverses each of the lists below.
+
+    /// Normalize a source term into its `Par`, before sorting — the order of a `Send`'s data is
+    /// lost by `sort_par_term`, so the sorting entry point cannot be used to check it.
+    fn unsorted_par(source: &str) -> Par {
+        let proc = source_to_ast(source).unwrap_or_else(|e| panic!("{source:?} parses: {e}"));
+        normalize_term(&proc, &BTreeMap::new())
+            .unwrap_or_else(|e| panic!("{source:?} normalizes: {e}"))
+    }
+
+    /// The integers a list of terms carries, in the order given. Generic over the sort because a
+    /// send's data is quoted (`NameSort`) and a method's arguments are not (`ProcSort`).
+    fn par_ints<S: rchain_models::ast::Sort>(pars: &[Par<S>]) -> Vec<i64> {
+        pars.iter()
+            .map(|p| match p.exprs.as_slice() {
+                [Expr::GInt(i)] => *i,
+                other => panic!("expected one ground int per element, got {other:?}"),
+            })
+            .collect()
+    }
+
+    /// A bare `x!(…)` at top level has a free variable — `normalize_term` refuses those — so every
+    /// term below is wrapped in a `new`, and the send is one level in at `news[0].p`. Descending
+    /// keeps the assertions about list order rather than about `Par` nesting.
+    fn first_send(par: &Par) -> &Send {
+        par.sends
+            .first()
+            .or_else(|| par.news.first().and_then(|n| n.p.sends.first()))
+            .unwrap_or_else(|| panic!("no send under {par:?}"))
+    }
+
+    fn first_receive(par: &Par) -> &Receive {
+        par.receives
+            .first()
+            .or_else(|| par.news.first().and_then(|n| n.p.receives.first()))
+            .unwrap_or_else(|| panic!("no receive under {par:?}"))
+    }
+
+    /// A send's data is in the order it was written. Swapping `push` back to `insert(0, …)` at this
+    /// site reverses it (the trailing `reverse()` would then be a second flip), so this fails under
+    /// the old code rather than merely passing under the new.
+    #[test]
+    fn a_sends_data_is_in_source_order() {
+        let par = unsorted_par("new x in { x!(1, 2, 3) }");
+        assert_eq!(
+            par_ints(&first_send(&par).data),
+            vec![1, 2, 3],
+            "a message's data is a sequence, and its order is part of the term"
+        );
+    }
+
+    /// And a single datum still lands in the one-element list it always did — the degenerate case
+    /// the reversal must not disturb.
+    #[test]
+    fn a_single_datum_is_unaffected() {
+        let par = unsorted_par("new x in { x!(7) }");
+        assert_eq!(par_ints(&first_send(&par).data), vec![7]);
+    }
+
+    /// A method call's arguments are in the order they were written, by the same argument. Asserted
+    /// on a *list literal* target so the term is closed without a `new`.
+    #[test]
+    fn a_methods_arguments_are_in_source_order() {
+        let par = unsorted_par("[1, 2].nth(30, 20, 10)");
+        let args = match par.exprs.as_slice() {
+            [Expr::EMethod(m)] => par_ints(&m.arguments),
+            other => panic!("expected one method expression, got {other:?}"),
+        };
+        assert_eq!(args, vec![30, 20, 10]);
+    }
+
+    /// A contract's formals are in the order they were declared, by the same argument as a send's
+    /// data.
+    ///
+    /// **The patterns are literals, and that is what makes the test able to fail.** A first version
+    /// of this used named binders — `contract c(a, b, c)` and its reverse — and was vacuous: a
+    /// pattern's free variable is numbered by *position*, so both spellings normalize to
+    /// `[FreeVar(0), FreeVar(1), FreeVar(2)]` and the list is the same either way. Quoting ground
+    /// terms makes the order the thing under test, so restoring the `insert(0, …)` here reverses
+    /// this list and goes red.
+    #[test]
+    fn a_contracts_formals_are_in_source_order() {
+        let par = unsorted_par("new c in { contract c(@1, @2, @3) = { Nil } }");
+        assert_eq!(
+            par_ints(&first_receive(&par).binds[0].patterns),
+            vec![1, 2, 3]
+        );
+    }
+
+    /// **The cost is linear in the arity.** This is the property the row is about, and the one the
+    /// order tests above cannot see: `insert(0, …)` and push-then-reverse produce the *same list* —
+    /// it is the time that differs, so no assertion on the term can distinguish them.
+    ///
+    /// Timed as a **ratio against itself** rather than against a wall-clock budget, because an
+    /// absolute threshold is a statement about the machine. **Both sides were measured**, at 1 000
+    /// and 8 000 data terms (an 8× step) on this host:
+    ///
+    ///   * push-then-reverse: `small 6.1 ms, large 49.6 ms` → ratio **8.1**, which is what linear
+    ///     looks like for an 8× step;
+    ///   * the per-element `insert(0, …)`: `small 7.8 ms, large 199.6 ms` → ratio **25.6**.
+    ///
+    /// 16 sits between them with room on both sides. The smallest of three runs is taken so one
+    /// scheduler hiccup cannot decide it, and the minimum rather than the mean is the right statistic
+    /// for "how fast can this go" on a shared box.
+    #[test]
+    fn a_send_with_many_data_normalizes_quadratically_no_longer() {
+        use std::time::Instant;
+
+        fn best_of_three(k: usize) -> std::time::Duration {
+            let data: Vec<Proc> = (0..k)
+                .map(|i| Proc::PGround(Ground::GroundInt(i.to_string())))
+                .collect();
+            let term = Proc::PNew(
+                vec![NameDecl::NameDeclSimpl("x".to_string())],
+                Box::new(Proc::PSend(
+                    Name::NameVar("x".to_string()),
+                    SendKind::SendSingle,
+                    data,
+                )),
+            );
+            (0..3)
+                .map(|_| {
+                    let start = Instant::now();
+                    normalize_term(&term, &BTreeMap::new()).expect("a wide send normalizes");
+                    start.elapsed()
+                })
+                .min()
+                .expect("three runs")
+        }
+
+        let small = best_of_three(1_000);
+        let large = best_of_three(8_000);
+        let ratio = large.as_secs_f64() / small.as_secs_f64().max(f64::EPSILON);
+        assert!(
+            ratio < 16.0,
+            "8× the data took {ratio:.1}× the time (small {small:?}, large {large:?}) — linear is \
+             about 8, and the per-element `insert(0, …)` this replaced measured about 25"
+        );
     }
 }

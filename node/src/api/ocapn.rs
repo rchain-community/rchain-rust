@@ -91,6 +91,7 @@ pub fn ertp_capability(
     key: PrivateKey,
     shard_id: String,
     limiter: Arc<rchain_shared::rate_limiter::RateLimiter>,
+    capability_limiter: Arc<rchain_shared::rate_limiter::KeyedRateLimiter>,
 ) -> ChainCapability {
     ChainCapability {
         block_api,
@@ -100,6 +101,7 @@ pub fn ertp_capability(
         pattern: None,
         method: None,
         limiter,
+        capability_limiter,
         reply_timeout: CHAIN_REPLY_TIMEOUT,
         reply_interval: CHAIN_REPLY_INTERVAL,
     }
@@ -122,6 +124,34 @@ pub fn ertp_capability(
 /// the closure is the relay, which is a cross-implementation change. Law 63a's note carries the
 /// decision; this limiter, plus `MAX_SESSIONS`, is the bound that holds until then.
 pub const BRIDGED_DEPLOYMENTS_PER_SEC: u64 = 4;
+
+/// **One capability's share of the node's bridged-deploy budget** (W-N8-02).
+///
+/// The node-wide bound above is the right bound for the *spend* — every bridged delivery is a signed
+/// deploy paid out of the node's own REV, so replacing it with a per-capability limiter would be a
+/// bound of *N* times the number, one per exported capability, and the wargame row's own
+/// `resource-amplification` classification is what that would worsen.
+///
+/// What a node-wide bound alone gets wrong is fairness, which is a different fault: the one
+/// capability a peer is looping on can spend the whole allowance, and every other capability this
+/// node exports is refused for as long as it does. A share *under* the total answers that without
+/// moving the total — the same shape the deploy pool's own bound took, for the same reason.
+/// **A quarter, derived from the total rather than written beside it.** The point is that one
+/// capability cannot take the whole allowance: at a quarter, four capabilities are served at once and
+/// a fifth waits its turn — the node's spend is unchanged and no single object can starve the rest of
+/// its surface. Stated as its own number it could be edited to something that is *not* under the
+/// total, which would leave the first capability to arrive holding the entire budget, which is the
+/// state this exists to leave; derived, that cannot be done by editing one of the two.
+///
+/// A total below four therefore makes the share zero, and `KeyedRateLimiter` treats zero as *closed*
+/// rather than unlimited: the bridge stops loudly instead of quietly serving one caller per
+/// capability. That is the fail-safe direction, and it is why the zero case is a refusal rather than a
+/// special case here.
+pub const BRIDGED_DEPLOYMENTS_PER_CAPABILITY_PER_SEC: u64 = BRIDGED_DEPLOYMENTS_PER_SEC / 4;
+
+/// Distinct capabilities the share's map will track at once. Same rule as every other keyed bound
+/// here: the map is itself a resource, and at the cap a new key is refused rather than admitted.
+pub const MAX_TRACKED_CAPABILITIES: usize = 1_024;
 
 /// Phlo for a bridged deploy — the same budget the faucet and the 2PC coordinator use.
 const CHAIN_PHLO_LIMIT: i64 = 1_000_000;
@@ -1271,14 +1301,28 @@ pub fn node_designator(
     format!("rnode-{}", rchain_shared::base16::encode(&digest[..8]))
 }
 
-/// Take one unit of the node's bridged-deploy budget, or refuse with a reason.
+/// Take one unit of the node's bridged-deploy budget **and one of this capability's share of it**, or
+/// refuse with a reason naming which bound was hit.
 ///
-/// Extracted from `ChainCapability::deliver` so it is testable without a `BlockApi`: the check runs
+/// Extracted from `ChainCapability::call` so it is testable without a `BlockApi`: the check runs
 /// *before* the capability touches the chain, which means the whole observable is "the limiter was
 /// consulted and the refusal names the bound" — and a bound that cannot be tested is one that gets
 /// removed. The same reason `admin_bind_host` was lifted out of its spawn (AUDIT C112).
-fn check_deploy_budget(limiter: &rchain_shared::rate_limiter::RateLimiter) -> Result<(), String> {
-    if limiter.allow() {
+///
+/// The share is consulted first, so the common refusal — one object looping — does not spend a token
+/// from the budget every other capability shares.
+fn check_deploy_budget(
+    node: &rchain_shared::rate_limiter::RateLimiter,
+    per_capability: &rchain_shared::rate_limiter::KeyedRateLimiter,
+    capability: &[u8],
+) -> Result<(), String> {
+    if !per_capability.allow(capability) {
+        return Err(format!(
+            "one capability may take at most {BRIDGED_DEPLOYMENTS_PER_CAPABILITY_PER_SEC} of the \
+             chain bridge's {BRIDGED_DEPLOYMENTS_PER_SEC} deploys per second"
+        ));
+    }
+    if node.allow() {
         return Ok(());
     }
     Err(format!(
@@ -1316,9 +1360,13 @@ pub struct ChainCapability {
     /// means the method is the first `Symbol` of each delivery — which is what an ERTP object, an
     /// object with several arms, requires.
     method: Option<String>,
-    /// **The node's whole OCapN surface shares one**, so the bound is on the node's spend rather than
-    /// on one capability — see [`BRIDGED_DEPLOYMENTS_PER_SEC`] (HAZOP row A3).
+    /// **The node's whole OCapN surface shares this one**: the bound is on the node's spend, because
+    /// every delivery is paid out of the node's own REV — see [`BRIDGED_DEPLOYMENTS_PER_SEC`].
     limiter: Arc<rchain_shared::rate_limiter::RateLimiter>,
+    /// **And this capability's share of it** (see [`BRIDGED_DEPLOYMENTS_PER_CAPABILITY_PER_SEC`]).
+    /// Keyed on the capability's own designator, so the one object a peer loops on cannot spend the
+    /// allowance every other exported capability shares.
+    capability_limiter: Arc<rchain_shared::rate_limiter::KeyedRateLimiter>,
     reply_timeout: Duration,
     reply_interval: Duration,
 }
@@ -1330,6 +1378,7 @@ impl ChainCapability {
         key: PrivateKey,
         shard_id: String,
         limiter: Arc<rchain_shared::rate_limiter::RateLimiter>,
+        capability_limiter: Arc<rchain_shared::rate_limiter::KeyedRateLimiter>,
     ) -> ChainCapability {
         ChainCapability {
             block_api,
@@ -1339,9 +1388,22 @@ impl ChainCapability {
             pattern: None,
             method: Some("getBalance".to_string()),
             limiter,
+            capability_limiter,
             reply_timeout: CHAIN_REPLY_TIMEOUT,
             reply_interval: CHAIN_REPLY_INTERVAL,
         }
+    }
+
+    /// What this capability *is* in the node's own registry: the URI it is reachable at and the
+    /// pattern that binds the object inside the registered value. Two capabilities with the same pair
+    /// are the same object to a peer, which is what makes it the right key for a per-object share.
+    fn designator(&self) -> Vec<u8> {
+        let mut key = self.target_uri.clone().into_bytes();
+        key.push(b'|');
+        if let Some(pattern) = &self.pattern {
+            key.extend_from_slice(pattern.as_bytes());
+        }
+        key
     }
 
     /// Wait for the deploy's reply channel to carry a value.
@@ -1349,9 +1411,15 @@ impl ChainCapability {
         let name = rchain_casper::shard_invoke::reply_channel(deploy_id);
         let deadline = Instant::now() + self.reply_timeout;
         loop {
+            // **Without the finality floor.** The value being waited for is in a block this node has
+            // just produced, and on a chain whose finality lags — or on every single-validator
+            // fixture, where it never advances past genesis — that block is above the floor by
+            // construction. The floored read is for a *caller* asking what a chain says; this is the
+            // node asking what its own deploy said, and waiting for finality here would mean the
+            // bridge could not answer at all (W-N3-04).
             let (data, _length) = self
                 .block_api
-                .get_listening_name_data_response(CHAIN_REPLY_DEPTH, &name)
+                .get_unfinalised_name_data_response(CHAIN_REPLY_DEPTH, &name)
                 .await?;
             if !data.is_empty() {
                 return match reply_outcome(&data) {
@@ -1403,7 +1471,7 @@ impl ChainCapability {
         // **The spend bound comes first, before any work.** Every delivery below becomes a signed
         // deploy paid for out of the node's own REV, so a peer that loops is stopped here rather than
         // by its own patience (HAZOP row A3). The peer sees a `break` naming the limit.
-        check_deploy_budget(&self.limiter)?;
+        check_deploy_budget(&self.limiter, &self.capability_limiter, &self.designator())?;
         // The arguments crossed CapTP as Syrup; Rholang is what the chain runs. A value with no
         // `Par` shape (a Symbol, a float) is refused here rather than guessed at.
         // **The method is the first `Symbol` of the delivery**, which is Endo's calling convention
@@ -1517,9 +1585,12 @@ impl ChainCapability {
                     target_uri: uri.clone(),
                     pattern: Some(pattern),
                     method: None,
-                    // The child shares the node's limiter: a returned capability is the same node's
-                    // spend, not a new budget.
+                    // **The child shares the node's limiter but not the parent's share.** A returned
+                    // capability is the same node's spend, so it draws on the same budget — but its
+                    // own designator is the share's key, so a peer looping on one returned object
+                    // cannot spend the allowance its siblings share.
                     limiter: self.limiter.clone(),
+                    capability_limiter: self.capability_limiter.clone(),
                     reply_timeout: self.reply_timeout,
                     reply_interval: self.reply_interval,
                 }) as Arc<dyn Export>
@@ -1635,13 +1706,22 @@ mod tests {
     #[test]
     fn the_bridged_deploy_budget_admits_its_number_and_then_refuses() {
         let limiter = rchain_shared::rate_limiter::RateLimiter::new(BRIDGED_DEPLOYMENTS_PER_SEC);
+        let share = rchain_shared::rate_limiter::KeyedRateLimiter::new(
+            BRIDGED_DEPLOYMENTS_PER_CAPABILITY_PER_SEC,
+            MAX_TRACKED_CAPABILITIES,
+        );
+        // **A distinct capability each time**, so what refuses the fifth delivery is the *total* and
+        // not the per-capability share — the share has its own test below, and with the share at one
+        // a single looping capability would never reach the total.
         for i in 0..BRIDGED_DEPLOYMENTS_PER_SEC {
+            let key = format!("rho:rchain:cap{i}|");
             assert!(
-                check_deploy_budget(&limiter).is_ok(),
+                check_deploy_budget(&limiter, &share, key.as_bytes()).is_ok(),
                 "deploy {i} is inside the budget"
             );
         }
-        let refused = check_deploy_budget(&limiter).expect_err("the budget is spent");
+        let refused = check_deploy_budget(&limiter, &share, b"rho:rchain:cap5|")
+            .expect_err("the budget is spent");
         assert!(
             refused.contains(&BRIDGED_DEPLOYMENTS_PER_SEC.to_string()),
             "the refusal names the limit so a peer can read it: {refused}"
@@ -1649,6 +1729,45 @@ mod tests {
         assert!(
             refused.contains("deploys per second"),
             "and what it is limiting: {refused}"
+        );
+    }
+
+    /// **One capability cannot spend the allowance every other one shares** (W-N8-02).
+    ///
+    /// The node-wide bound is the right bound for the *spend* — a limiter per capability instead of it
+    /// would be a bound of N times the number, which is the class the row itself is filed under. What
+    /// it gets wrong on its own is fairness: the object a peer loops on takes the whole allowance and
+    /// every other exported capability is refused while it does. The share is *under* the total, so
+    /// this asserts both halves at once — the looping capability is refused while the total is
+    /// demonstrably unspent, and a different capability is served.
+    ///
+    /// Falsified by passing the same key for both capabilities, or by dropping the share check: the
+    /// second capability is then refused as well.
+    #[test]
+    fn one_capability_cannot_spend_anothers_share_of_the_bridge_budget() {
+        let limiter = rchain_shared::rate_limiter::RateLimiter::new(BRIDGED_DEPLOYMENTS_PER_SEC);
+        let share = rchain_shared::rate_limiter::KeyedRateLimiter::new(
+            BRIDGED_DEPLOYMENTS_PER_CAPABILITY_PER_SEC,
+            MAX_TRACKED_CAPABILITIES,
+        );
+        let looping = b"rho:rchain:ertp|";
+        let other = b"rho:rchain:revVault|";
+
+        for i in 0..BRIDGED_DEPLOYMENTS_PER_CAPABILITY_PER_SEC {
+            assert!(
+                check_deploy_budget(&limiter, &share, looping).is_ok(),
+                "delivery {i} is inside this capability's share"
+            );
+        }
+        let refused = check_deploy_budget(&limiter, &share, looping)
+            .expect_err("the looping capability is over its share");
+        assert!(
+            refused.contains("one capability"),
+            "and the refusal says it is the share rather than the budget: {refused}"
+        );
+        assert!(
+            check_deploy_budget(&limiter, &share, other).is_ok(),
+            "another capability's share is its own; the looping one must not have refused it"
         );
     }
 

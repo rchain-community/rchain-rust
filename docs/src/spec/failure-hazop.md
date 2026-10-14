@@ -24,6 +24,16 @@ The property every row below is dispositioned against is the requirement, stated
 a design intent, the eleven IEC 61882 guide words each dispositioned, and a row per credible deviation.
 The study nodes **U1–U10 are reused verbatim**, so a hazard appears once and is dispositioned here.
 
+**Extended 2026-10-13 — the durability nodes U11–U16.** This pass studied the node's *functions*. A later
+one studies its **durability** — every place it discards or rewinds durable state — which is a different
+grain and needed its own nodes. U11–U16 are this pass's own, derived against `dev` at the merge of #340
+(`9b88b0825`); the citations above are unchanged and remain against `5fc591e33`. Each new node carries a
+**Table C — law coverage** naming the law a deviation instantiates, or the law it owes. That column is the
+**Lean4-first rule**: a deviation an existing law does not already capture is a deviation whose law is
+written — as a theorem, in `spec/Rchain/`, with a `witness` and a bumped `lawCeiling` — **before** any Rust
+changes. A `candidate:` slug would be the register's marker that the property has *no theorem*, which this
+pass does not accept where the state is representable.
+
 **Companion, not a replacement.** The hazards and their root-cause analysis live in
 `testnet-acceptance.md` §1 as rows `H-U*-*`; this page does not restate them. What it adds is the
 **disposition** — which rung of the ladder below the deviation lands on, what the node does today, and
@@ -148,7 +158,7 @@ order to reverse; the search is a synchronous pure function metered in work unit
 | ID | Guide word | Deviation | RCA → causal chain | Current behaviour | Class | Disposition | Falsifier |
 |---|---|---|---|---|---|---|---|
 | **F-U4-01** | MORE | A **search-budget refusal, a native-relation refusal and a number-channel overflow all become one drop with no re-queue** — the node cannot advance at that height until the scope shrinks (H-U4-01) | the three refusals are `Err(String)` inside `MergeScope::merge` (`casper/src/merging.rs:1876`, `:1641`, `:2014`) → `validate_block_checkpoint` carries them out (`casper/src/interpreter_util.rs:485`) → `validate_block` maps them to `ValidateError::Internal` (`casper/src/multi_parent_casper.rs:850`) → `block_processor::apply` logs and `continue`s (`casper/src/blocks/block_processor.rs:168`), and the comment there states that no deferral loop is intended for this class | **loud** (`log.error`, `block_processor.rs:172`) and **actionless**: nothing retries, nothing re-queues | Terminal | R2 + R3 | owed: a test that a refused merge is re-queued rather than dropped (the search *budget* test exists — `sdk/src/dag/merging.rs:a_budget_refuses_without_answering_and_never_changes_the_answer` — but it witnesses the refusal, not the recovery) |
-| **F-U4-02** | AS WELL AS | **The merge's two invariants are computed, reported and not enforced** — a merge that violates I1 or I2 still returns a state hash | I1 (every rejected chain conflicts with a kept one) and I2 (every kept chain's write is in the batch) are computed into `MergeReport` (`casper/src/merging.rs:1957`, `:1974`) and `MergeOutcome` is returned unconditionally right after (`casper/src/merging.rs:1981`) → the only consumer is `describe()`/`is_quiet()` (`casper/src/merging.rs:299`, `:322`) → the caller logs it when non-quiet (`casper/src/interpreter_util.rs:534`) | loud (`log.warn`, not rate-limited) but **informational**: the violating state is used. **Counted now** — a non-quiet report increments `non_quiet_merge_reports` (`casper/src/interpreter_util.rs:595`), so the event is a number on `/api/status` and not only a line | Void | R2 | node/src/api/conversion.rs::to_api_status_maps_fields |
+| **F-U4-02** | AS WELL AS | **The merge's two invariants are computed, reported and not enforced** — a merge that violates I1 or I2 still returns a state hash | I1 (every rejected chain conflicts with a kept one) and I2 (every kept chain's write is in the batch) are computed into `MergeReport` (`casper/src/merging.rs:1957`, `:1974`) and `MergeOutcome` is returned unconditionally right after (`casper/src/merging.rs:1981`) → the only consumer is `describe()`/`is_quiet()` (`casper/src/merging.rs:299`, `:322`) → the caller logs it when non-quiet (`casper/src/interpreter_util.rs:534`) | loud (`log.warn`, not rate-limited) but **informational**: the violating state is used. **Counted now** — a non-quiet report increments `non_quiet_merge_reports` (`casper/src/interpreter_util.rs:595`), so the event is a number on the operator status and not only a line (`/api/v1/status/operator` on the admin listener since 2026-10-13 — W-N3-01 moved the divergence counters off the public one) | Void | R2 | node/src/api/conversion.rs::to_api_status_maps_fields |
 | **F-U4-03** | OTHER THAN | **Historical / closed — the R1 precedent.** `reject_whole_blocks` propagated one rejected chain to its *whole block*, so a rejection took chains that wrote no contended slot; the fix **deleted** the operation rather than narrowing it (C248) | the native relation was keyed on the host block (`NativeRelations::conflicting`), so at an epoch boundary every concurrent pair conflicted → the rejection closed over the block → chains died with their host | (closed) the operation no longer exists; the relation is on the chain (`DeployChainIndex::native_effects`) | Terminal | **R1** (worked precedent) | casper/src/merging.rs::a_rejected_boundary_chain_does_not_take_its_blocks_other_chains |
 | **F-U4-04** | PART OF | **Historical / closed — the second R1 precedent, and it came from #281's review, not from this pass.** A block's native effects were drained **one action per slot, credited to that slot's last writer**, so when two deploys of one block wrote the same slot the earlier deploy's write was a value no chain could reconstruct | `NativeStoreAction`'s drain kept one action per key (the trie refuses two), so the sidecar's per-chain effects held the **last** writer only → had resolution rejected that later chain and kept the earlier, the merged state could not have rebuilt the earlier's value: rejecting one chain would have silently dropped a *different* deploy's write, one layer below the defect this fix was for (and I2 could not see it, the earlier chain's slot set already having been emptied) | (closed) `Slot` carries per-deploy write **history** now, and the drain produces two views — `by_deploy`, each deploy's own last write per slot, and `all`, the checkpoint's one action per slot | Terminal | **R1** (worked precedent) | rspace/src/native_store.rs::two_deploys_writing_one_slot_keep_their_own_writes |
 | **F-U4-05** | MORE | **A type whose order disagreed with its equality made two distinct chains one key** — `DeployChainIndex` ordered by `(host_block, post_state_hash)` and compared by `deploys_with_cost`, which Rust forbids because `BTreeMap`/`BTreeSet`/`sort` read the order as the identity | the port carried the Scala split deliberately and **pinned it as a known hazard** ("visible rather than latent"); the chain-level native relation is what made it fire on an ordinary block, since two chains of one block share both host and post-state → a set of chains silently held one of them, and the dependency map it built held a key whose own value looked that key up again | realized **twice**: as a hang (how it was found — CI's job limit, not a failing assertion) and, with the loop fixed alone, as a merge that keeps one of two distinct chains — a **silent** lost chain | Terminal | **R1** (one key for `Eq`/`Ord`/`Hash`) | casper/src/merging.rs::a_chains_order_agrees_with_its_equality |
@@ -168,7 +178,7 @@ for a second pass for exactly that reason. The folds are its folds. **This node 
 
 | ID | Guide word | Deviation | RCA → causal chain | Current behaviour | Class | Disposition | Falsifier |
 |---|---|---|---|---|---|---|---|
-| **F-U5-01** | NO | **There is no reset-and-resync path for a running node.** `NodeSyncing` is entered only at boot, when the DAG is empty; once running, a permanent divergence has no way back but deleting the shard data dir by hand | the boot guard is an `if` chain — `repr.dag_set.is_empty() && standalone` → genesis, `else if repr.dag_set.is_empty()` → `NodeSyncing::new` (`casper/src/engine/node_launch.rs:249`, `:265`), `else` → straight to `NodeRunning` (`:316`) — and `NodeSyncing::new` is called **nowhere else**; a running node that diverges stays in `NodeRunning` and permanently refuses the block and its descendants (`casper/src/multi_parent_casper.rs:883`, neglected-invalid rule), while `populate_dag` is reachable only from the sync task the boot branch starts (`casper/src/engine/node_syncing.rs:515`) | loud (`log.warn` per refused block) and **permanent** — unless the node resets itself. **The acting half landed 2026-10-11 (#325, register C274, law 53c)**: with `casper.self-reset` on, a spent restore budget raises a reset — rewind to the last finalised block, remove the dropped bodies, reset the runtime to that state, restart the catch-up walk from the anchor (row 168's numbers are the dry run's, now also the action's). It refuses where it cannot name a height, and stays off by default. **Still owed**: the `apply`-level wiring (the five lines that call the guard and hand the anchor to the catch-up walk), and the devnet arm — **stageable now** (`up --validators 4 --fresh` self-diverges; §92), and unrun. **Delivered since**: the Lean `rewindStep` + companion theorem (law 53c, #325) and **the persisted marker that closes the crash window** (#328, register C274, §101) | Terminal / Unrestorable | **R3** (owner: **#328**) | `casper/tests/reset.rs::a_crash_after_the_rewind_is_repaired_at_boot_by_the_marker` |
+| **F-U5-01** | NO | **There is no reset-and-resync path for a running node.** `NodeSyncing` is entered only at boot, when the DAG is empty; once running, a permanent divergence has no way back but deleting the shard data dir by hand | the boot guard is an `if` chain — `repr.dag_set.is_empty() && standalone` → genesis, `else if repr.dag_set.is_empty()` → `NodeSyncing::new` (`casper/src/engine/node_launch.rs:249`, `:265`), `else` → straight to `NodeRunning` (`:316`) — and `NodeSyncing::new` is called **nowhere else**; a running node that diverges stays in `NodeRunning` and permanently refuses the block and its descendants (`casper/src/multi_parent_casper.rs:883`, neglected-invalid rule), while `populate_dag` is reachable only from the sync task the boot branch starts (`casper/src/engine/node_syncing.rs:515`) | **The failure it is about has since been designed out — see §8.** The producer was retired, not guarded (the fringe-record `min` tie-break, law 66/67/68); the merge became a pure function of the parent set, so a *view* difference no longer diverges at all; and three instruments built to re-create the state could not (§110, §113) — the last producing the divergence and the spent budget 96 times and then finding no anchor to rewind to. So the arm's being unrun is the hardening rather than a gap. **And the node's own behaviour where the state is reachable:** loud (`log.warn` per refused block) and **permanent** — unless the node resets itself. **The acting half landed 2026-10-11 (#325, register C274, law 53c)**: with `casper.self-reset` on, a spent restore budget raises a reset — rewind to the last finalised block, remove the dropped bodies, reset the runtime to that state, restart the catch-up walk from the anchor (row 168's numbers are the dry run's, now also the action's). It refuses where it cannot name a height, and stays off by default. ****Not owed — unstatable, and that is the honest treatment.** The deviation this row names (*there is no reset-and-resync path*) is **closed**: the path landed, and its falsifier is the crash-repair test above. What is *not* closed — and is **not owed either** — is the *arm*: the claim *a diverged running node re-enters sync* has no **statable failure mode on this build**. The producers it had are gone (the fringe-record tie-break retired with law 66/67/68; the merge is now a pure function of the parent set), and three instruments built to re-create one could not (§110, §113 — the last producing the divergence and the spent budget 96 times and then finding no anchor to rewind to). **A failure mode nobody can name is a nebulous risk, not a register item**: this repository's own rule is that a statement nothing can falsify is not a statement (the register's `vacuous` status), and an item that cannot be reproduced, named or falsified is that shape. It is therefore recorded as a risk and kept out of the debt. What *is* verified is the backstop's own pieces — the durable half, the crash marker, the boot repair, the fatal stop and the ordering (laws 72–76, `casper/tests/reset.rs`); the `apply`-level wiring remains read rather than run. | Terminal / Unrestorable | **R3** (owner: **#328**) | `casper/tests/reset.rs::a_crash_after_the_rewind_is_repaired_at_boot_by_the_marker` |
 | **F-U5-02** | REVERSE | **The divergence has no inverse.** The refusal rules are absorbing: the only local undo is capped at three attempts and then the refusal is permanent for the process lifetime | `restore_is_warranted` requires `stored.restore_attempts < RESTORE_ATTEMPT_LIMIT` (`casper/src/multi_parent_casper.rs:478`, the constant `= 3` at `:434`), the count is persisted so it survives restart (`:430`), and `restore_divergent_justifications` (`:652`) is the only rule that could clear the refusal — after three it never fires again | loud, bounded, and then **absorbing** (C173's shape: `Persistent`) | Terminal / Persistent | **R3** | spec/Rchain/Casper/Stranding.lean::the_refusal_is_persistent — *the guard on the fix*: the theorem is stated over the rule set **without** a restoring rule, so adding one (which is what R3 is) reddens it by construction |
 
 **F-U5-02 is the programme's sharpest instrument.** The Lean module is named `Stranding.lean`, and its
@@ -269,7 +279,7 @@ operator can size for"), and a node that dies of any of them reaches TE-4 identi
 |---|---|---|---|---|---|---|---|
 | **F-U9-01** | MORE | **The global insert lock is held across all store I/O and both representation locks**, so one slow insert serializes *all* block admission | `insert` binds `let _guard = self.lock.lock().await` (`casper/src/dag.rs:489`) and that guard drops only at the end of the body (`:696`); inside it are sixteen further `.await` points and `representation.read().await` (`:502`, `:554`) and `.write().await` (`:649`), with the author's own comment "this function is serialized by `self.lock`" (`:647`) | not loud and not silent: the node is *slow*, not wedged, until a slow store makes admission stop entirely | Drift → Terminal | R2 | owed: a bound or a timing assertion on admission under a slow store |
 | **F-U9-02** | PART OF | **`update_metadata` holds the representation write lock across an LMDB read**, against the discipline `insert` documents — so the lock discipline holds for *part* of the module | `let mut guard = self.representation.write().await` (`casper/src/dag.rs:729`) then `repr.height_map = self.block_metadata_store.height_map().await` (`:736`); `insert` documents the opposite at `:547` ("the guard is a *block expression* rather than a binding … a binding left in scope would hold the read lock across `fringe_data_store.put`") | not loud; a held write lock across an await is a stall if the store stalls | → Terminal | R2 | owed: a test or lint that a representation guard is not held across an await |
-| **F-U9-03** | MORE | **A poisoned-lock recovery was invisible.** The recovery itself is **deliberate** — `shared/src/lock.rs`'s module doc and `spec/TYPE-SYSTEM.md` §3.2 record it as the remedy that closed the port's production panic sources, so "refuse the torn state" is **not** the intent and this row does not claim it. The deviation is the **event**: a poison means a panic happened while shared state was held | `rlock`/`wlock`/`mlock` (`shared/src/lock.rs:79`, `:84`, `:89`) each recover via `PoisonError::into_inner`; the stores funnel through these accessors, so the policy is one function rather than a scatter. **Fixed at the source**: a process-wide counter and `poison_recoveries()` (`shared/src/lock.rs:48`) | **was silent**; **now counted and published** — `poison_recoveries` on `/api/status`, read from the process-wide counter at the node's status gather | Terminal | R2 | shared/src/lock.rs::a_poisoned_recovery_is_counted |
+| **F-U9-03** | MORE | **A poisoned-lock recovery was invisible.** The recovery itself is **deliberate** — `shared/src/lock.rs`'s module doc and `spec/TYPE-SYSTEM.md` §3.2 record it as the remedy that closed the port's production panic sources, so "refuse the torn state" is **not** the intent and this row does not claim it. The deviation is the **event**: a poison means a panic happened while shared state was held | `rlock`/`wlock`/`mlock` (`shared/src/lock.rs:79`, `:84`, `:89`) each recover via `PoisonError::into_inner`; the stores funnel through these accessors, so the policy is one function rather than a scatter. **Fixed at the source**: a process-wide counter and `poison_recoveries()` (`shared/src/lock.rs:48`) | **was silent**; **now counted and published** — `poison_recoveries` on the operator status (`/api/v1/status/operator`; public until W-N3-01 moved it, 2026-10-13), read from the process-wide counter at the node's status gather | Terminal | R2 | shared/src/lock.rs::a_poisoned_recovery_is_counted |
 | **F-U9-04** | MORE | **The memo caches have no count bound** — the radix read/write caches and the hot-store channel memo grow until a checkpoint clears them, in a struct with no eviction path | `RadixTreeImpl`'s `cache_read`/`cache_write` are plain `HashMap`s (`rspace/src/history/radix_tree.rs:152`), the write cache cleared only at the end of `save_and_commit` (`:660`) and the read cache only from `RadixHistory::process` (`rspace/src/history/instances/radix_history.rs:73`); the channel memo is a `HistoryStoreCache` behind a `Mutex` with **no** `clear` method (`rspace/src/hot_store.rs:80`, `:137`), dropped only when the whole `InMemHotStore` is rebuilt at `create_checkpoint`/`reset`/`revert_to_soft_checkpoint` (`rspace/src/rspace.rs:627`, `:649`, `:702`) | not loud: the growth is invisible until memory is exhausted (TE-4) | Drift | R2 | owed: a count bound per cache, with the bound as an observable |
 | **F-U9-05** | MORE | **The blocking pool is uncapped** — `spawn_blocking` runs on tokio's 512-thread default, each thread on the runtime's 32 MiB stack | the runtime is built without `max_blocking_threads` (`node/src/main.rs:91`; `thread_stack_size(32 * 1024 * 1024)` at `:92`), the setting appears **nowhere** in the workspace, and the production sites are `node/src/runtime/node_main.rs:45`, `:69` | not loud: a thread explosion reads as a slow node, and then as an OOM (TE-4) | Drift → Terminal | R2 | owed: a `max_blocking_threads` bound, set and tested |
 
@@ -287,9 +297,157 @@ contested there in CH-U10-03 and this pass does not reopen it). The folds are it
 
 | ID | Guide word | Deviation | RCA → causal chain | Current behaviour | Class | Disposition | Falsifier |
 |---|---|---|---|---|---|---|---|
-| **F-U10-01** | NO | **The wedge had no machine-readable surface**: the finality-stall *reason* (`NoAdvance`'s three exits) was log-only, so `/api/status` could not say *why* finality had stopped | `describe_no_advance` (`casper/src/interpreter_util.rs:588`) had exactly one call site, the rate-limited warn beside it; the reason is carried on `ParentsMergedState.finality_stall` (`casper/src/merging.rs:419`, assigned `casper/src/multi_parent_casper.rs:347`) and reached no response type — `ApiStatus` (`node/src/api/dto.rs:74`) had no field for it. **Fixed**: a second cell written on **every** observation — *not* the log's rate limiter, because a surface inheriting that would report a stale reason for up to `STALL_LOG_INTERVAL` heights, exactly while an operator is looking — exposed as `finality_stall` and `finality_stall_episodes` (`casper/src/interpreter_util.rs:307`, `:333`) | loud (`log.warn`, rate-limited, re-firing on change) and **only** in the log; **now** on the surface a probe can ask, with the numbers that make it a diagnosis. **Refined 2026-10-10 (#318, register C273):** the counter this row exposed counted every single refusal, and on a producing net most blocks are refused — so it read as an alarm while liveness was fine. It now counts a *sustained* run (twice the partition, from the gate's own payload), reports `finalityStalled` for "stalled now", and says in the reason string which partition the layer was partial against | Terminal | R2 | casper/src/interpreter_util.rs::a_stall_is_a_run_of_refusals_and_the_run_scales_with_the_partition/node/src/api/conversion.rs::to_api_status_maps_fields |
-| **F-U10-02** | AFTER | **The halt is sticky and not persisted**, so a restart makes the surface forget a halt it just reported | `ProposeHealth` is three `Arc<Atomic*>` fields (`casper/src/api/block_api.rs:85`); `note_timer_halted` is the only write (`:111`, called from `node/src/runtime/node_runtime.rs:1745`) and there is **no `store(false)` anywhere**; the process reads a fresh `false` after a restart | loud while the process lives; **forgotten after a restart** — an operator restarting to clear an alarm gets a false all-clear | Historic | R2 | owed: a test that a halt survives, or is re-derived at, a restart |
+| **F-U10-01** | NO | **The wedge had no machine-readable surface**: the finality-stall *reason* (`NoAdvance`'s three exits) was log-only, so `/api/status` could not say *why* finality had stopped | `describe_no_advance` (`casper/src/interpreter_util.rs:588`) had exactly one call site, the rate-limited warn beside it; the reason is carried on `ParentsMergedState.finality_stall` (`casper/src/merging.rs:419`, assigned `casper/src/multi_parent_casper.rs:347`) and reached no response type — `ApiStatus` (`node/src/api/dto.rs:74`, since 2026-10-13 the operator half `OperatorStatus` at `node/src/api/dto.rs:137` — the public status no longer carries it, W-N3-01) had no field for it. **Fixed**: a second cell written on **every** observation — *not* the log's rate limiter, because a surface inheriting that would report a stale reason for up to `STALL_LOG_INTERVAL` heights, exactly while an operator is looking — exposed as `finality_stall` and `finality_stall_episodes` (`casper/src/interpreter_util.rs:313`, `:333`) | loud (`log.warn`, rate-limited, re-firing on change) and **only** in the log; **now** on the surface a probe can ask, with the numbers that make it a diagnosis. **Refined 2026-10-10 (#318, register C273):** the counter this row exposed counted every single refusal, and on a producing net most blocks are refused — so it read as an alarm while liveness was fine. It now counts a *sustained* run (twice the partition, from the gate's own payload), reports `finalityStalled` for "stalled now", and says in the reason string which partition the layer was partial against | Terminal | R2 | casper/src/interpreter_util.rs::a_stall_is_a_run_of_refusals_and_the_run_scales_with_the_partition/node/src/api/conversion.rs::to_api_status_maps_fields |
+| **F-U10-02** | AFTER | **The halt is sticky and not persisted**, so a restart makes the surface forget a halt it just reported | `ProposeHealth` is five `Arc<Atomic*>` fields (`casper/src/api/block_api.rs:101`); `note_timer_halted` is the only write (`:148`, called from `node/src/runtime/node_runtime.rs:1791`) and there is **no `store(false)` anywhere**; the process reads a fresh `false` after a restart. **The row is not closed by the 2026-10-13 work, and the first draft of that work said it was**: `autopropose_timer_halt_episodes` (`casper/src/api/block_api.rs:76`) is an in-memory counter, so it too is `0` after a restart, and the ambiguity this row names — `false` on a node that never halted versus `false` on one that halted and restarted — is untouched. Its fix is a **durable record on the halt path**, the shape the reset marker already has (`ResetMarker`, `block-storage/src/dag/dag_storage.rs`) | loud while the process lives; **forgotten after a restart** — an operator restarting to clear an alarm gets a false all-clear | Historic | R2 | owed: a test that a halt survives, or is re-derived at, a restart |
 | **F-U10-03** | OTHER THAN | **`[pos]` diagnostics bypass the log sink** — three sites write to stderr with `eprintln!`, not the `Log` source, so they are outside rate-limiting, log routing and any scrape | `casper/src/blocks/proposer/proposer.rs:232`, `:861`, `:897` all call `eprintln!` where the module has a `log` in scope | loud on the terminal, invisible to every surface that reads the `Log` sink | —  | R2 | owed: route the three `[pos]` sites through the module's `Log` source |
+
+### U11 — The reset request's lifecycle
+
+**Design intent.** A spent restore budget raises exactly one request for a shard; the request reaches the
+driver that can act on it; and it is consumed only at the point of commitment, so a failure before any
+durable effect leaves it actionable rather than spent.
+
+**Guide words.** row: NO, AS WELL AS, EARLY · folded: MORE → NO, LESS → NO, PART OF → NO, AFTER → NO, OTHER THAN → AS WELL AS, BEFORE → EARLY, LATE → EARLY · vacuous: REVERSE (the lifecycle is one directed sequence — raise, deliver, take, act — so there is no inverse to deviate from)
+
+The consolidation is the node's own. A request that cannot name a height is not raised at all
+(`reset_decision`'s two refusing arms), so PART OF and LESS collapse into "no request"; an out-of-order
+delivery (BEFORE, LATE, AFTER) is the same failure as no delivery; and MORE is *not* a deviation — a
+second request while one is pending changes nothing that matters, because `notify_one` **stores a permit**
+when no driver is waiting, so the first request's single wake is not lost. (That the guarantee rests on
+the primitive's permit retention rather than on this module is why it is folded here and stated, not
+left to be rediscovered.)
+
+### Table A — deviations
+
+| ID | Guide word | Deviation | RCA → causal chain | Current behaviour | Class | Disposition | Falsifier |
+|---|---|---|---|---|---|---|---|
+| **F-U11-01** | NO | **A request raised before a driver is installed was stranded**: the detector records it, but nothing wakes a driver, and the later request that would re-wake it is refused because the slot is already occupied | `request_reset` stores the request and notifies only when a waker is present (`casper/src/interpreter_util.rs:429-441`) → before #340 `install_reset_waker` overwrote the cell without observing the pending slot (`:423-425`), and a duplicate request returns `false` at the `slot.is_some()` guard (`:432`) *before* any notify → a request raised between a detector scan and the waker's installation had no wake at all | **loud** (the detector's `log.error` fires) but the node never resets; **closed 2026-10-13 (#340, register C275)**: installation now takes the request lock before the waker lock and notifies when the slot is occupied | Drift | R2 | casper/src/interpreter_util.rs::a_reset_request_is_raised_once_taken_once_and_wakes_the_driver |
+| **F-U11-02** | AS WELL AS | **The cells were process-global while the reset state is per-shard**: a request raised in shard A woke whichever shard installed the waker last | `RESET_REQUEST`/`RESET_WAKE` were process statics, and `install_reset_waker` runs once per shard (`casper/src/engine/node_launch.rs`, from the shard loop at `node/src/runtime/node_runtime.rs`) — so the last shard won and `take_reset_request` consumed A's request for B | silent: shard A never saw its own request; shard B refused it (A's anchor is not in its block store). **Closed 2026-10-13 (C280)**: both cells are keyed by the shard's lane (`ShardId::to_string()`), so a request reaching another shard's driver is unrepresentable rather than refused — and with the fatal stop of F-U12-03 landed, a misdelivery that refused would have been a whole-node kill | Drift | R1 | casper/src/interpreter_util.rs::a_reset_request_is_raised_once_taken_once_and_wakes_the_driver |
+| **F-U11-03** | EARLY | **The request is consumed before the act**: `act_on_reset_request` took it, then `perform_reset` could fail before touching any store (the anchor body may be absent), spending the request with nothing done | `take_reset_request()` was the first statement; the anchor read that can fail was inside `perform_reset` | loud (`apply` returns the error) but the request was gone and there was no in-process retry; recovery was a restart, re-derivable only because `restore_attempts` is persisted. **Closed 2026-10-13 (law 73, C276)**: the act peeks (`reset_request()`), runs the anchor pre-flight, and only takes the request once `perform_reset` has returned — so a failure that destroyed nothing leaves the request pending and the detector's next scan can act on it | Unrestorable | R2 | casper/tests/reset.rs::a_reset_request_rewinds_the_stores_when_the_switch_is_on_and_does_nothing_when_it_is_off |
+
+### Table C — law coverage
+
+| deviation | law that captures it, or the law owed | why |
+|---|---|---|
+| U11-01 | law 53c (`rewindStep`, `strandSystemRewinding`) | the rewind's *availability* (anchored) and *effect* (a refusal is removed); the delivery half is Rust-only and not a state relation |
+| U11-02 | **R1 — unrepresentable, and no theorem is owed.** The lane *is* the key (`ShardId::to_string()`), so "a request raised for shard A is taken by shard B" has no state to write; a per-lane model would make the bad state unwritable, and a law about an unwritable state restates its own definition — the register's `vacuous` status, which exists to stop exactly that | the shard lane is a Rust partition, and the doctrine is to make the bad state unrepresentable rather than to guard (or prove) against it |
+| U11-03 | owed, and written first as law 73: **a raised request is not spent until the act commits** | idempotent retry of a pre-commit failure — law 53c models the rewind as an *effect*, not as a retryable transaction |
+
+### U12 — The durable rewind (metadata, bodies, marker)
+
+**Design intent.** A rewind either completes and is recorded, or is repaired at boot — never half-applied
+and unrecorded — and the bodies it drops go with the metadata so nothing can serve or re-inject them.
+
+**Guide words.** row: PART OF, AFTER, NO · folded: MORE → PART OF, LATE → AFTER, EARLY → PART OF, LESS → PART OF, BEFORE → PART OF, AS WELL AS → PART OF, OTHER THAN → PART OF · vacuous: REVERSE (a rewind is a one-way truncation)
+
+### Table A — deviations
+
+| ID | Guide word | Deviation | RCA → causal chain | Current behaviour | Class | Disposition | Falsifier |
+|---|---|---|---|---|---|---|---|
+| **F-U12-01** | PART OF | **The rewind is two store operations with no transaction between them**, so a crash between them leaves bodies the DAG does not hold — the receiver's own re-injection set | `drop_above` rewrites `block-metadata` in the `dagstorage` LMDB environment while `block_store.delete` removes bodies from the separate `blockstorage` environment (`casper/src/storage.rs:47-56`; no cross-store batch or two-phase commit exists anywhere in `shared/src/lmdb.rs`) → the window → **closed 2026-10-11 (#328, C274)**: a two-phase `ResetMarker` brackets the pair and `resume_after_reset` repairs a `Rewinding` at boot | **loud and repaired**: the marker is read at boot, the rewind re-applied, and the bodies purged by predicate (`casper/src/engine/reset.rs:105-186`) | Drift | R3 | casper/tests/reset.rs::a_crash_after_the_rewind_is_repaired_at_boot_by_the_marker |
+| **F-U12-02** | AFTER | **The marker's lifetime is unbounded on a node that cannot catch up**: it is cleared only when the catch-up frontier passes the anchor, so a node that resets and never catches up re-enters the boot guard at every restart | `clear_reset_marker` has exactly one caller, `run_catchup`, and only when `frontier > marker.height` (`casper/src/engine/catchup.rs:276-296`); a walk that times out or ends below the anchor leaves it → intended (the doc says the condition is the walk's result, not its exit reason) — but the residue is a durable artifact that outlives its reset with no bound and no surface | loud (the boot guard warns each time) and **unbounded**: nothing reported how long a marker had stood. **Closed 2026-10-13 (C287, §111)**: the marker is on the status surface — `resetMarker` renders its phase, anchor and height, written by every marker write, read and clear (`casper/src/dag.rs`) so it cannot go stale behind the store — and a standing marker read beside `unrestorableRecords` and a height that does not move is the operator's signal that the repair is not converging | Historic | R2 | casper/src/interpreter_util.rs::the_reset_marker_surface_follows_the_store |
+| **F-U12-03** | NO | **A failed reset does not stop the node**: the "fatal on purpose" error is a `return Err` from a task nobody joins, so the block receiver, processor, proposer and API keep serving a node whose stores may have moved under a view that was not rebuilt | `engine::reset` propagates its error (`casper/src/engine/reset.rs`) and the spawn wrapper only logs it (`node/src/runtime/node_runtime.rs`), while `main`'s wait selects on the listeners and a signal only (`node/src/main.rs`) — so the process does not end and the other tasks are not signalled. The same gap makes the LFS terminal path's "this node is stopping" (`casper/src/engine/node_launch.rs`) a logged sentence | loud (the line is logged) but **not a stop** — the outcome the reset's own comment says must not happen. **Closed 2026-10-13 (C279)**: `shutdown::report_fatal` sets a latch the wrapper writes and `main`'s wait selects on, so a failed reset — and the terminal path that shares the sentence — stops the process without draining | Terminal | R2 | node/src/runtime/shutdown.rs::a_reported_fatal_resolves_the_wait_with_the_first_reason |
+
+### Table C — law coverage
+
+| deviation | law that captures it, or the law owed | why |
+|---|---|---|
+| U12-01 | **law 72**, a completion record brackets every durable effect (`Rchain/Durability.lean`) | `rewindStep` (law 53c) gives the rewind's *effect*; law 72 gives its *durability* |
+| U12-02 | owed: law 72's release condition — when the record may be cleared | law 72 states that the record is written and what it brackets, not when it is released |
+| U12-03 | owed, and written first as **law 76**: a concluded stop stops (`Rchain/Stop.lean`) | the fault's response is the process's own liveness, stated over law 51's system |
+
+### U13 — The runtime root
+
+**Design intent.** When the reset completes, the runtime's durable root names the anchor's state, so the
+node validates and serves from the state it rewound to.
+
+**Guide words.** row: AFTER, PART OF · folded: LATE → AFTER, EARLY → PART OF, NO → PART OF, LESS → PART OF, MORE → PART OF, BEFORE → PART OF, AS WELL AS → PART OF, OTHER THAN → PART OF · vacuous: REVERSE (the root is a single pointer, not a directed operation)
+
+### Table A — deviations
+
+| ID | Guide word | Deviation | RCA → causal chain | Current behaviour | Class | Disposition | Falsifier |
+|---|---|---|---|---|---|---|---|
+| **F-U13-01** | AFTER | **The runtime root is written *after* the completion marker**, so a crash between the two leaves the record claiming the stores agree while `CURRENT_ROOT` still names the dropped tip | `rewind_and_purge` wrote `Rewound` and only then did `perform_reset` call `runtime().reset()` → `HistoryRepository::reset` → `roots_repository.validate_and_set_current_root` (`rspace/src/history/history_repository.rs:337`), a durable write; `reset_volatile`'s own doc (`:346-358`) names this exact class for the merge ("a crash between the two leaves `CURRENT_ROOT` naming an ancestor … resumes from neither state") | **silent** before the fix: `resume_after_reset` on a `Rewound` marker re-applies nothing, so the disagreement was permanent within the marker protocol. **Closed 2026-10-13 (law 72, C277)**: the two marker writes moved to the callers, around all three effects, so a `Rewound` record is now written only once the root has moved — the state is gone by construction | Split | R1 | casper/tests/reset.rs::the_guard_refuses_a_rewinding_whose_anchor_body_is_absent |
+| **F-U13-02** | PART OF | **The boot repair covered two of the three durable effects**: the `Rewinding` branch re-applied the rewind and the body purge but not the root, because the guard held no `RuntimeManager` | `resume_after_reset`'s signature took `dag`, `block_store`, `log`, `source` only (`casper/src/engine/reset.rs:105-110`); its caller (`casper/src/engine/node_launch.rs:401-402`) *does* hold the `RuntimeManager` | loud at the point of failure, but a node that crashed after the rewind and before the root write repaired two-thirds of its reset and then served from the wrong base. **Closed 2026-10-13 (law 72, C277)**: the guard now takes the manager and re-establishes the root, and refuses an anchor whose body it cannot read | Drift | R2 | casper/tests/reset.rs::a_crash_after_the_rewind_is_repaired_at_boot_by_the_marker |
+
+### Table C — law coverage
+
+| deviation | law that captures it, or the law owed | why |
+|---|---|---|
+| U13-01 | owed: the completion-record law (U12), whose shape is *three effects, one record* | no existing law orders a record against a set of durable effects |
+| U13-02 | owed: the same law's repair clause | the guard's repair must be total over the effects the record brackets |
+
+### U14 — The refusal budget
+
+**Design intent.** An attempt is spent exactly once per revalidation; the cap bounds the process; and the
+count survives a restart rather than handing the record a fresh budget.
+
+**Guide words.** row: MORE, AS WELL AS · folded: LATE → MORE, NO → MORE, LESS → MORE, PART OF → AS WELL AS, OTHER THAN → AS WELL AS, BEFORE → MORE, AFTER → MORE, EARLY → MORE · vacuous: REVERSE (the count is monotone; it is never decremented)
+
+### Table A — deviations
+
+| ID | Guide word | Deviation | RCA → causal chain | Current behaviour | Class | Disposition | Falsifier |
+|---|---|---|---|---|---|---|---|
+| **F-U14-01** | MORE | **The read-modify-write of `restore_attempts` is two separately-locked operations**, so two concurrent restores of one hash can both read `n` and both write `n + 1` — two revalidations spending one attempt | the read is `dag.lookup` (`casper/src/multi_parent_casper.rs:726`, `:1138`) and the write is `dag.update_metadata` (`:797`, `:1214`), and the insert lock is taken only *inside* `update_metadata` (`casper/src/dag.rs:961-974`) → the pair is crash-atomic (one `store.put`) but not concurrent-atomic | silent: the cap is reached one revalidation early or late, and nothing counts the discrepancy | Drift | R2 | owed: the read-modify-write under one lock, with the test that a concurrent double-restore spends two attempts |
+| **F-U14-02** | AS WELL AS | **The reset request was raised on the uncommitted record**: `note_unrestorable_if_exhausted` ran with the incremented-but-unpersisted `restore_attempts`, so a request could be raised for a count the store then failed to record | the call sites ran *before* the `update_metadata` that persists the record, so if the write failed the node had already asked for a reset on a record whose stored count is one lower | loud (the detector logged) but the request's premise was not durable. **Closed 2026-10-13 (law 75, C281)**: the note now runs *after* the write in both paths, so a request raised by it names a count the store holds | Drift | R2 | owed: the write's failure path has no fault-injection point here, so the ordering is pinned by reading rather than by a test |
+
+### Table C — law coverage
+
+| deviation | law that captures it, or the law owed | why |
+|---|---|---|
+| U14-01 | law 73's shape — a two-phase operation on a cell is one step — applied to the count | the cap is a count, not a state, so the concurrency half is the split-read-write shape law 73 already states, and the fix is the Rust one-lock section |
+| U14-02 | owed, and written first as law 75: **a dependent action is taken only on a committed record** | the request must be raised on the committed count, not on the value the store has not accepted |
+
+### U15 — The RSpace checkpoint
+
+**Design intent.** A checkpoint commits the hot-store overlay and the native overlay together, or
+neither.
+
+**Guide words.** row: PART OF, EARLY, AFTER · folded: MORE → PART OF, LESS → PART OF, NO → PART OF, AS WELL AS → PART OF, OTHER THAN → PART OF, BEFORE → EARLY, LATE → AFTER · vacuous: REVERSE (a checkpoint is a one-way commit)
+
+### Table A — deviations
+
+| ID | Guide word | Deviation | RCA → causal chain | Current behaviour | Class | Disposition | Falsifier |
+|---|---|---|---|---|---|---|---|
+| **F-U15-01** | EARLY | **`create_checkpoint` drains the native overlay before the trie fold**, so a fold failure loses it while the hot-store side is left untouched — the two sides do not commit or fail together | `native_store.drain_native()` clears the overlay (`rspace/src/native_store.rs:477`) at `rspace/src/rspace.rs:604-609`, and `last_native_changes`/`last_native_drain` are written there — all *before* `checkpoint_with_native`, the only `?` in the function (`:616-621`) | **silent**: on a fold error the native mutations were gone from memory and not in the trie, and `last_native_*` held the failed checkpoint's drain. **Closed 2026-10-13 (law 74, C278)**: the overlay is snapshotted before the drain and restored if the fold fails, and `last_native_*` is written only once the fold has committed — the state a failed fold leaves is the state it started in | Split | R1 | owed: a fault-injection point for the fold, which the rspace tests do not yet have |
+| **F-U15-02** | PART OF | **A `SoftCheckpoint` carries no root**, so a revert rebuilds the snapshot over the history base *at revert time* — a hard checkpoint between the snapshot and the revert silently restores old overlay over a new base | `SoftCheckpoint` holds the cache snapshot, log, produce counter and native snapshot, no root (`rspace/src/checkpoint.rs:14-21`); `revert_to_soft_checkpoint` re-reads `history.root()` at revert time (`rspace/src/rspace.rs:698-707`) | silent but **latent**: no production caller runs a hard checkpoint between a soft checkpoint and its revert (the per-deploy fallback is taken and reverted inside one `validate`) | Historic | R2 | owed: either a root on the soft checkpoint, or a guard, with a test of the interleaving |
+| **F-U15-03** | AFTER | **The hard commit is leaf-before-root**: the new root is recorded last, so an interrupted commit leaves orphaned leaves and trie nodes that are not reachable from any root | leaves are written (`rspace/src/history/history_repository.rs:302-313`), then trie nodes (`:316`), then the root (`:317`) — three independent transactions in one LMDB environment, not one | not loud; the orphans are harmless because content-addressed, but the record's partial state is the programme's **named atomicity deviation** | Drift | R2 | owed: the deviation is documented (`docs/src/spec/failure-hazop.md` §1's ladder target); a test would pin the reachability, not the write order |
+
+### Table C — law coverage
+
+| deviation | law that captures it, or the law owed | why |
+|---|---|---|
+| U15-01 | owed, and written first as law 74: **a checkpoint does not drain an overlay it has not folded** | no existing law models the overlay's drain against its fold; `Rchain/RSpace/*.lean` models the trie, not the clear |
+| U15-02 | owed: the same law, with the soft checkpoint's base as a modelled field | the missing field is the absent root |
+| U15-03 | law 49 / `Rchain/RSpace/Merkle.lean` cover content addressing; the *ordering* is owed | content-addressing makes the orphans harmless; the write order is not a modelled state |
+
+### U16 — The operator's reconciliation
+
+**Design intent.** A recovery the operator runs is resumable, never overwrites its own asides, and states
+what it adopted rather than implying a quorum it did not compute.
+
+**Guide words.** row: PART OF, MORE, AFTER · folded: AS WELL AS → MORE, NO → PART OF, LESS → PART OF, EARLY → PART OF, LATE → PART OF, BEFORE → PART OF, OTHER THAN → PART OF · vacuous: REVERSE (the tool performs one directed recovery)
+
+### Table A — deviations
+
+| ID | Guide word | Deviation | RCA → causal chain | Current behaviour | Class | Disposition | Falsifier |
+|---|---|---|---|---|---|---|---|
+| **F-U16-01** | MORE | **The aside names collided at minute resolution**, so a retry within the same minute **overwrote the only good backup** on the docker path — the operator's one guarantee ("never deleted") failing exactly when it is needed | `TS` was `%Y%m%d-%H%M`; the docker branch's `tar cf "$backup"` wrote the same-named file again, so a second same-minute run re-tarred the *already-cleared* volume over the first (good) backup. **Closed 2026-10-13 (C282)**: the name is to the second *and* the branch refuses an existing target (`tools/reconcile-network.sh`) | loud on the terminal, but the data was gone; the systemd branch `mv`s into the existing dir instead (mangled, not lost) | Unrestorable | R2 | owed: the tool has no test harness, so the refusal is pinned by reading |
+| **F-U16-02** | AFTER | **The systemd `--restore-from-master` branch overwrote in place and printed "unchanged"**: a mid-stream `tar` failure left the joiner partially written while the message said it was not | the branch streamed a `tar` into the live data dir, never removing envs the master lacks (joiner-only files survived → divergence residue), and printed `"the copy failed — $n is unchanged"` on failure; the docker branch was already the careful copy-beside-then-swap. **Closed 2026-10-13 (C283)**: the systemd branch stages beside the data dir and swaps each environment only once the whole copy has arrived, so "unchanged" is true when it is printed (`tools/reconcile-network.sh`) | loud but **false**, the message contradicting the state | Drift | R2 | owed: the tool has no test harness, so the swap is pinned by reading |
+| **F-U16-03** | PART OF | **The tool keeps no durable intent journal**, so a partial application is reconstructible only from the timestamped asides — unlike the node's own reset, there is no phase record a later run can read | the step-5 move loop (`tools/reconcile-network.sh:953-958`) and the step-5b copy loop (`:906-935`) write no marker; a crash mid-loop leaves some nodes moved and others not, with nothing on disk saying so | loud (each refusal names itself and exits with its own code) but **not resumable**: a retry recomputes the meet against a half-mutated net and may refuse | Drift | R4 | owed: a journal or a `--resume`, stating which nodes were already applied |
+
+**`dagstorage` travels in `CHAIN_ENVS`** (`tools/reconcile-network.sh:180`), and the reset marker lives in
+a `reset-marker` DB inside `dagstorage` — so step 5b copies a marker onto a joiner and step 5's docker
+`rm -rf` clears one. Recorded in F-U16-03's RCA rather than given a row: it is a consequence of the same
+absence of a phase record.
+
+### Table C — law coverage
+
+| deviation | law that captures it, or the law owed | why |
+|---|---|---|
+| U16-01 | owed: nothing in the register speaks of an operator's asides | the register is the node's mathematics and the tool is not modelled — the fix is a shell refusal, not a theorem |
+| U16-02 | owed: — | same; the fix is a copy-beside-then-swap |
+| U16-03 | owed: — | the tool's phases are not modelled, and this row is not fixed here either |
 
 ## 4. The fault tree
 
@@ -456,9 +614,72 @@ not read: the whole of `casper/src/merging.rs` (3,800+ lines), `casper/src/dag.r
 `spec/findings.tsv`'s C248 row in the register's emitted form; the remaining `spec/audit/evidence/`
 runs; and the `rspace` history and store internals beyond the named cache and lock sites.
 
-**Debt.** falsifiers owed: 13 · node-words owed: 44
+**Debt.** falsifiers owed: 21 · node-words owed: 44
 
 *(A `F-` row with an `owed` falsifier is a deviation this pass **dispositioned** but did not **prove**;
 the number above is checked against the page by `tools/check-hazop-worksheet.sh`, so it cannot rot.
 `node-words owed` counts the acceptance worksheet's `row`-declared guide words this pass has not yet
 reached.)*
+
+## 8. Why this failure is hard to reach — the hardening, and what the R3 backstop is for
+
+F-U5-01's arm spent three instruments failing to produce the state the reset repairs (the partition, the
+state tamper, the perturbed build — §108, §110, §113), and the honest reading of that is not "the arm is
+unrun" but **"the state has been designed out".** The hazard was dispositioned against the ladder's target
+("ideally **unrepresentable**; where it is not, fail loudly and hard-reset"), and the tree has moved it
+towards that first rung by *removing its producers* rather than by handling it better. Each step is
+measured:
+
+1. **The producer was deleted, not guarded.** §92's self-reject and TE-1's four heads came from the
+   fringe-record store's `min` tie-break: two honest blocks finalising one fringe from two bases wrote one
+   key, and the tie-break chose a `state_hash` the node had already built on. Law 66/67/68's per-block
+   redesign retired the store, the join and the tie-break — *"two blocks that disagree are two visible
+   claims, not one rewritten value"* — so the class has no producer left. **Measured**: `up --validators 4
+   --fresh` in ordinary operation produced **zero** `[fringe-divergence]` and **zero** self-rejections over
+   ~170 blocks, where the pre-fix build stalled three of four nodes at height 49 (§108, `#344`).
+2. **The merge is a pure function of the parent set.** `casper/tests/merge_determinism.rs` is the standing
+   property — two arrival orders of one block set merge identically — and **E1 measured it live**: a
+   partition's two heads simply *re-converged* on reconnect, because a node with a different block set
+   computes the same answer for a delivered block (`e1-partition.md`). So the whole family of
+   *view* differences — a lag, a split, a reordered delivery — no longer produces a `Divergence` at all.
+3. **What remains is healed before the budget spends.** A view-dependent refusal is revalidated up to three
+   times (`restore_divergent_justifications`), and the budget only spends if the node's view is *still*
+   divergent — so the counter the reset acts on is a **backstop for a genuine, persistent** disagreement,
+   not for the ordinary lag of a producing net. The rule's own doc is explicit that it *"does not
+   manufacture agreement"*: a node whose view has converged restores the block, and one that is still
+   divergent is right to keep refusing.
+4. **And the three instruments' failure is the measurement of (1)–(3).** A partition could not create a
+   difference; a state tamper *did* change the computation (it stalls the chain with the merge's own
+   documented wrong-base error) but could not be *aimed* at the block the merge selects; a whole-build
+   perturbation produced the divergence and the spent budget **96 times** and then found nothing to rewind
+   *to* — because a node that diverges before finalising anything has no anchor. The state R3 repairs
+   needs a **partial** divergence: one that arises *after* a node has finalised, which is exactly the class
+   (1) removed the producer of.
+
+**What the R3 backstop is therefore for.** The deviation's *disposition* is still **R3** — a hard reset and
+catch-up is what the node does if it ever gets there — but its *likelihood* is what the hardening changed:
+nothing in the tree's own operation produces the state. So the arm being unrun is not a gap in coverage; it
+is the **strongest form of the first rung applied to the hazard**, and the rung's remaining duty is not to
+drill the reset but to keep it **safe if it ever fires**: the durable half, the two-phase crash marker, the
+boot repair, the fatal stop when it cannot carry on, and the ordered request/spend — each pinned by a test
+and, where the state is representable, by a law (72–76). That is the same standing a fire escape has: harden
+the building so it is never needed, and keep the escape sound and tested in pieces.
+
+**What it is not.** The hazard is not *impossible* — a future regression, or a genuine disagreement no
+local restore heals (TE-6, the net-wide case), would still need R3 or the reconciliation. The claim is
+narrower and checkable: **the producers this tree had are gone, and the three instruments that tried to
+re-create one could not** (§110, §113). Nothing here rests on the arm having run.
+
+**The progression, and the limit that has to be said with it.** An inherently safe design *retires* the
+reproducible failure mode — that is what the first rung means, and it is forward motion: the states this
+row's own reproductions exhibited (§92's self-reject, TE-1's four heads) **cannot be constructed from before
+any more**. But the progression has a limit, and it is the point a reader is owed: **retiring the old
+producer says nothing about what this build's failure mode would be.** The old reproduction is evidence
+about the old build. **No failure mode is statable for the current one** — every candidate reduces either to
+*a future regression that reintroduces a producer* (a statement about a build that does not exist) or to a
+net-wide disagreement whose cause is by construction not in the tree (TE-6) — and **a failure mode nobody can
+name is a nebulous risk, not a register item.** This repository's own rule is that a statement nothing can
+falsify is not a statement (the register's `vacuous` status); an item that cannot be reproduced, cannot be
+named and cannot be falsified is that shape, whatever column it sits in. So the arm is recorded here as a
+risk and kept **out of the debt**, F-U5-01's row says so in its own words, and what remains checkable is the
+backstop's own pieces — which is the whole of what "keep the fire escape sound" means.

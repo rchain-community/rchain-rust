@@ -192,7 +192,9 @@ to the operator.
   is the DoS control on an unbounded ledger.
 - **A delegator can read its own position** — `rho:rchain:pos!("getDelegations", delegatorKey, *ret)`
   replies one entry per operator that key has staked with, and `GET /api/v1/pos/delegations?delegator=…`
-  renders the same thing for a client that only reaches HTTP (which is the wallet). **Scoped to the key
+  renders the same thing for a client that only reaches HTTP — on the **admin** listener, with the rest
+  of the operator surface (W-N3-03), because it is a store query keyed on a caller-supplied key rather
+  than chain state any peer would read. **Scoped to the key
   asked about**, because the ledger is unbounded in *delegators* and the bounded direction is the one
   keyed by the delegator; the operator-scoped listing is the unbounded direction and is not offered.
   The three numbers — principal, accrued reward, staged deadline — come from three leaves, and a read

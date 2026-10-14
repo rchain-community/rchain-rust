@@ -12,14 +12,64 @@
 //! [`shutdown_signal`] waits for the operator, [`stop_requested`] is what each listener awaits, and
 //! [`crate::runtime::node_runtime::NodeProgram::serve`] drains behind them before returning.
 
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
+use rchain_shared::lock::Unpoison;
 use tokio::sync::watch;
+use tokio::sync::Notify;
 
 /// How long the listeners are given to finish what they have in flight once the operator asks the
 /// node to stop. Bounded on purpose: a wedged listener must not be able to hold the process past the
 /// orchestrator's termination grace, which is the cost this module exists to stop paying.
 pub const SHUTDOWN_DRAIN_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// **The fatal latch** — a fault the node cannot serve through, reported by any task that concludes
+/// the node must stop (2026-10-13, §106's owed D3).
+///
+/// **Why a latch and not an error return.** The node's "this node is stopping" statements are today a
+/// `return Err` from a task nobody joins: the launched `node_launch` future's error is only logged
+/// (`node_runtime`'s spawn wrapper) and `serve` never awaits it, so the block receiver, the processor,
+/// the proposer and the API keep serving a node whose stores may have moved under a view that was not
+/// rebuilt. A *concluded* stop has to be a **process** stop, and this is the word that makes it one:
+/// the reporter sets it, and `main`'s wait selects on it exactly as it selects on a signal.
+static FATAL: Mutex<Option<String>> = Mutex::new(None);
+static FATAL_NOTIFY: OnceLock<Arc<Notify>> = OnceLock::new();
+
+fn fatal_notify() -> &'static Arc<Notify> {
+    FATAL_NOTIFY.get_or_init(|| Arc::new(Notify::new()))
+}
+
+/// Report a fault the node cannot serve through. **The first reason wins** — a later report is the
+/// same fault seen again — and the wait in `main` is woken.
+///
+/// Idempotent and callable from any task: a second reporter changes nothing, so a fault observed
+/// twice (the engine's reset arm and the boot path, say) still produces one reason and one latch.
+pub fn report_fatal(reason: impl Into<String>) {
+    {
+        let mut slot = FATAL.lock().unpoison();
+        if slot.is_some() {
+            return;
+        }
+        *slot = Some(reason.into());
+    }
+    // `notify_one`, not `notify_waiters`: a report that arrives *before* the wait begins stores a
+    // permit, so a wait that starts late cannot miss the word — the same reason `request_reset` uses
+    // it, and the same failure it would otherwise have (`notify_waiters` stores nothing).
+    fatal_notify().notify_one();
+}
+
+/// Resolves when a fault has been reported, carrying the **first** reason. Returns immediately if one
+/// already has been, so nothing can miss the word by arriving late.
+pub async fn fatal_requested() -> String {
+    let notify = fatal_notify().clone();
+    loop {
+        if let Some(reason) = FATAL.lock().unpoison().clone() {
+            return reason;
+        }
+        notify.notified().await;
+    }
+}
 
 /// Resolves when the coordinator asks this listener to stop.
 ///
@@ -81,5 +131,33 @@ mod tests {
         tokio::time::timeout(Duration::from_secs(1), stop_requested(rx))
             .await
             .expect("a listener must stop once the coordinator asks it to");
+    }
+
+    /// **The fatal latch, in both directions** (§106's owed D3). The wait must **not** resolve while
+    /// no fault has been reported — a latch that resolved early would stop the node the moment it
+    /// started — and must resolve as soon as one is, carrying the **first** reason and not a later
+    /// one. The latch is process-wide, so this test owns it, and it is the only reporter.
+    ///
+    /// What it does not run: the `main` arm that selects on this and the `node_runtime` wrapper that
+    /// reports. That wiring is read rather than run, for the reason §106 gives — the `main` wait has
+    /// no harness — and it is said out loud here rather than left as an implication.
+    #[tokio::test]
+    async fn a_reported_fatal_resolves_the_wait_with_the_first_reason() {
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), fatal_requested())
+                .await
+                .is_err(),
+            "the wait must not resolve before any fault is reported"
+        );
+        report_fatal("test: the first reason");
+        let reason = tokio::time::timeout(Duration::from_secs(1), fatal_requested())
+            .await
+            .expect("a reported fault must resolve the wait");
+        assert_eq!(reason, "test: the first reason");
+        report_fatal("test: a later reason");
+        let again = tokio::time::timeout(Duration::from_secs(1), fatal_requested())
+            .await
+            .expect("and the latch stays set");
+        assert_eq!(again, "test: the first reason", "the first reason wins");
     }
 }

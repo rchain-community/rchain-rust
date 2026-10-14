@@ -27,10 +27,30 @@ fn data_dir_error(data_dir: &Path) -> String {
     )
 }
 
+/// Create a directory only its owner may open (mode `0700` on unix).
+///
+/// `std::fs::create_dir` takes the process umask, so under the common `0022` the *data directory*
+/// landed `0755`: the keys written inside it are `0600`, but the parent that holds them — together
+/// with the LMDB store and the persisted node identity — was readable and traversable by any local
+/// account. The containment the key-file discipline buys is undone by a parent anyone can open
+/// (W-N6-03). Set explicitly rather than left to the umask, because the umask is the caller's and
+/// this directory's contents are not the caller's to expose.
+fn create_dir_owner_only(dir: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        std::fs::DirBuilder::new().mode(0o700).create(dir)
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::create_dir(dir)
+    }
+}
+
 /// Create the data dir if absent (port of `canCreateDataDir`).
 pub fn can_create_data_dir(data_dir: &Path) -> Result<(), InitializationException> {
     if !data_dir.exists() {
-        std::fs::create_dir(data_dir)
+        create_dir_owner_only(data_dir)
             .map_err(|_| InitializationException(data_dir_error(data_dir)))?;
     }
     Ok(())
@@ -112,6 +132,34 @@ mod tests {
             custom_certificate_location: false,
             custom_key_location: false,
         }
+    }
+
+    /// A missing data dir is **created**; an existing one is accepted as it is; and a path that
+    /// cannot be created (its parent does not exist) is the `InitializationException` whose message
+    /// tells an operator which directory to look at.
+    /// **The data dir is created owner-only, whatever the umask says** (W-N6-03).
+    ///
+    /// `create_dir` under the common `0022` umask produced `0755`: the keys inside are `0600`, but the
+    /// parent holding them, the LMDB store and the persisted node identity was readable and
+    /// traversable by every local account. This asserts the mode the directory is *created* with, not
+    /// the process's umask — the two are deliberately decoupled, and a test that only ran under a
+    /// restrictive umask would pass without the fix.
+    #[cfg(unix)]
+    #[test]
+    fn the_data_dir_is_created_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = scratch("datadir-mode");
+        can_create_data_dir(&dir).expect("a fresh directory is created");
+        let mode = std::fs::metadata(&dir)
+            .expect("created")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(
+            mode, 0o700,
+            "the data dir holds the store, the node identity and the keys; it must not be reachable by any other account, whatever the umask"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// A missing data dir is **created**; an existing one is accepted as it is; and a path that

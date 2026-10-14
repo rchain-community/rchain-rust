@@ -51,6 +51,11 @@ import Rchain.Casper.Record
 import Rchain.Casper.RecordJoin
 import Rchain.Casper.Liveness
 import Rchain.Casper.Stranding
+import Rchain.Durability
+import Rchain.Requests
+import Rchain.Checkpoint
+import Rchain.Attempts
+import Rchain.Stop
 import Rchain.Casper.Views
 import Rchain.Casper.Bonds
 import Rchain.Casper.Rounds

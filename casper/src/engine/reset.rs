@@ -22,11 +22,21 @@
 //! there is nothing left to serve or to re-insert, and everything above the anchor is re-fetched from
 //! peers, which is the whole of what a rewind means.
 //!
-//! **And the two operations are bracketed, because unrepresentable is not the same as atomic** (register
-//! C274's second item). A process that dies *between* them leaves bodies the DAG does not hold — the very
-//! set the re-insertion arm re-injects — so the node records the intent durably before the first
-//! operation and the completion after the second, and [`resume_after_reset`] is the boot guard that reads
-//! it. Nothing here is best-effort: a reset that cannot record itself does not run, which is why the
+//! **And the effects are bracketed, because unrepresentable is not the same as atomic** (register
+//! C274's second item; law 72, `spec/Rchain/Durability.lean`). A process that dies *between* them leaves
+//! bodies the DAG does not hold — the very set the re-insertion arm re-injects — so the node records the
+//! intent durably before the first operation and the completion after the **last**, and
+//! [`resume_after_reset`] is the boot guard that reads it.
+//!
+//! **The bracket covers three durable effects, not two.** The DAG rewind and the body purge are the two
+//! `rewind_and_purge` performs, and the runtime's root is the third: moving it is a durable
+//! `CURRENT_ROOT` write (`HistoryRepository::reset` → `validate_and_set_current_root`). Writing the
+//! completion before that write returns is the state **law 72** forbids — a `rewound` record with the
+//! root unmoved, which the guard reads as "the stores agree" and repairs nothing, exactly the shape
+//! `reset_volatile`'s own doc names for the merge. So the two marker writes live in the callers, around
+//! all three effects, and the guard's `Rewinding` branch re-applies all three.
+//!
+//! Nothing here is best-effort: a reset that cannot record itself does not run, which is why the
 //! marker's write refuses on a storage that has no store for it.
 
 use std::sync::Arc;
@@ -35,13 +45,14 @@ use rchain_block_storage::block_store::BlockStore;
 use rchain_block_storage::dag::dag_storage::{BlockDagStorage, ResetMarker, ResetPhase};
 use rchain_crypto::hash::blake2b256_hash::Blake2b256Hash;
 use rchain_models::block_hash::BlockHash;
+use rchain_models::casper::protocol::casper_message::BlockMessage;
 use rchain_shared::log::{Log, LogSource};
 use rchain_shared::refined::BlockHeight;
 
 use crate::interpreter_util::ResetRequest;
 use crate::runtime_manager::RuntimeManager;
 
-/// Rewind the DAG to `anchor` at `anchor_height` and remove the bodies of everything it dropped.
+/// Rewind the DAG to `anchor_height` and remove the bodies of everything it dropped.
 ///
 /// Returns `(blocks rewound, bodies removed)`. **An error is fatal and the caller must not carry on**:
 /// `drop_above` deletes the persisted metadata and *then* rebuilds the representation, and the rebuild
@@ -49,26 +60,16 @@ use crate::runtime_manager::RuntimeManager;
 /// view that has not. A node in that shape is worse than the refusal it replaces, so the caller
 /// propagates rather than logging and continuing.
 ///
-/// **The two store operations are bracketed by a durable record** (F-U5-01's crash window, register
-/// C274). `Rewinding` is written *before* the first destructive operation and `Rewound` *after* the
-/// second, so a restart can tell the difference between "a rewind was intended and may be half-done"
-/// and "the two stores agree" — see [`resume_after_reset`]. Without the record the window is
-/// unrepairable: a process dying between the two operations leaves bodies the DAG does not hold, and
-/// the receiver reads those as *"stored but not yet validated"* and re-injects them, undoing the reset.
+/// **This is the destructive half only** — the two store operations, with no record and no runtime.
+/// The record that brackets them (and the runtime root that is the third effect) lives in the callers,
+/// [`perform_reset`] and [`resume_after_reset`]: the bracket must cover *all three* durable effects, so
+/// it cannot be drawn by the function that performs two of them. See law 72
+/// (`spec/Rchain/Durability.lean`).
 pub async fn rewind_and_purge(
     dag: &Arc<dyn BlockDagStorage>,
     block_store: &BlockStore,
-    anchor: BlockHash,
     anchor_height: BlockHeight,
 ) -> Result<(usize, usize), String> {
-    let mark = |phase| ResetMarker {
-        anchor,
-        height: anchor_height,
-        phase,
-    };
-    // The intent is durable before anything is destroyed. A write that fails stops the reset *before*
-    // it has touched a store, which is the only point at which refusing is free.
-    dag.write_reset_marker(mark(ResetPhase::Rewinding)).await?;
     let dropped = dag.drop_above(anchor_height).await.map_err(|e| {
         format!(
             "the reset's rewind failed: {e}. This is fatal on purpose — the store may have been rewound \
@@ -76,28 +77,32 @@ pub async fn rewind_and_purge(
         )
     })?;
     let deleted = block_store.delete(&dropped).await?;
-    // Both operations have returned: the stores agree, and a restart must not rewind again (it may by
-    // now have caught up and produced above the anchor — see `resume_after_reset`).
-    dag.write_reset_marker(mark(ResetPhase::Rewound)).await?;
     Ok((dropped.len(), deleted))
 }
 
 /// **What the boot path does about a reset this node performed and did not finish** (F-U5-01, register
-/// C274) — the guard that closes the crash window [`rewind_and_purge`] opens.
+/// C274) — the guard that closes the crash window the bracketed effects open.
 ///
 /// Returns the anchor the caller must hand to the catch-up walk, or `None` when this node has never
 /// reset. Three states, and the middle two are different facts:
 ///
 /// * **no marker** (`Ok(None)`) — the ordinary boot. The caller logs "reconnecting" and the node runs on
 ///   the DAG it has, which is what every build before this one did;
-/// * **`Rewinding`** — the rewind was intended and may not have completed, so both operations are
-///   re-applied. They are idempotent: `drop_above` returns nothing the second time, and the body purge
-///   is driven by a predicate (see [`purge_orphan_bodies`]) that does not depend on what the rewind
-///   returned — which matters, because after a crash *during* the purge the rewind has already
-///   happened and returns nothing, so a purge keyed on its return value would delete nothing;
-/// * **`Rewound`** — both operations returned and the stores agree. **Nothing is re-applied**: the node
-///   may have caught up and produced blocks above the anchor in the meantime, and a second
-///   `drop_above` would throw those away. The marker is only telling the caller where to catch up from.
+/// * **`Rewinding`** — the reset was intended and may not have completed, so **every** effect it
+///   brackets is re-applied: the DAG rewind, the body purge, and the runtime's root. They are
+///   idempotent: `drop_above` returns nothing the second time, the body purge is driven by a predicate
+///   (see [`purge_orphan_bodies`]) that does not depend on what the rewind returned — which matters,
+///   because after a crash *during* the purge the rewind has already happened and returns nothing, so a
+///   purge keyed on its return value would delete nothing — and the runtime reset re-sets the same
+///   `CURRENT_ROOT`;
+/// * **`Rewound`** — every effect returned and the stores agree. **Nothing is re-applied**: the node
+///   may have caught up and produced blocks above the anchor in the meantime, and a second `drop_above`
+///   would throw those away. The marker is only telling the caller where to catch up from.
+///
+/// **The repair is total over the record's effects** (law 72, `spec/Rchain/Durability.lean`): the
+/// completion is written only once the runtime root has moved, so a `Rewinding` a boot can find is one
+/// whose root may not have — and a guard that repaired only the two stores would hand a node to the
+/// catch-up walk with the runtime still rooted at the state the rewind dropped.
 ///
 /// The marker is **not** cleared here. It is cleared when the node's frontier passes the anchor (the
 /// catch-up walk's own end), and that is the honest condition: until then, a crash must land back in
@@ -105,6 +110,7 @@ pub async fn rewind_and_purge(
 pub async fn resume_after_reset(
     dag: &Arc<dyn BlockDagStorage>,
     block_store: &BlockStore,
+    runtime_manager: &Arc<RuntimeManager>,
     log: &Arc<dyn Log>,
     source: LogSource,
 ) -> Result<Option<BlockHash>, String> {
@@ -120,13 +126,20 @@ pub async fn resume_after_reset(
             )
         })?;
         let purged = purge_orphan_bodies(dag, block_store).await?;
+        let anchor_block = anchor_body(block_store, marker.anchor).await?;
+        runtime_manager
+            .runtime()
+            .reset(Blake2b256Hash::from_byte_array(
+                anchor_block.post_state_hash.as_bytes(),
+            ))
+            .await?;
         log.warn(
             source,
             &format!(
                 "this node was rewinding to {} (height {}) when it stopped, part-way through the \
-                 reset's two store operations: re-applied the rewind ({} block(s)) and removed {purged} \
-                 body(ies) the DAG does not hold, which the receiver would otherwise re-inject above the \
-                 anchor (#320, C274)",
+                 reset's durable effects: re-applied the rewind ({} block(s)), removed {purged} body(ies) \
+                 the DAG does not hold, and reset the runtime to the anchor's state — the three effects \
+                 the completion record brackets (law 72, #320, C274)",
                 marker.anchor.to_hex(),
                 i64::from(marker.height),
                 dropped.len(),
@@ -141,7 +154,7 @@ pub async fn resume_after_reset(
         log.warn(
             source,
             &format!(
-                "this node rewound to {} (height {}) before it stopped: the stores already agree, so \
+                "this node rewound to {} (height {}) before it stopped: every effect returned, so \
                  nothing is re-applied, and the catch-up walk is anchored there rather than reconnecting \
                  to a truncated DAG (#320, C274)",
                 marker.anchor.to_hex(),
@@ -150,6 +163,28 @@ pub async fn resume_after_reset(
         );
     }
     Ok(Some(marker.anchor))
+}
+
+/// Read a block's body from the store, refusing with the reset's own sentence when it is absent.
+///
+/// **Both halves of the reset need the anchor's body** — the act, to reset the runtime to its state, and
+/// the boot guard, to repair a reset whose runtime step may not have run — so the refusal lives here
+/// rather than being restated, and the sentence it prints is the one an operator reads to tell a
+/// genuinely missing anchor from a store fault.
+async fn anchor_body(block_store: &BlockStore, anchor: BlockHash) -> Result<BlockMessage, String> {
+    block_store
+        .get(&[anchor])
+        .await?
+        .pop()
+        .flatten()
+        .ok_or_else(|| {
+            format!(
+                "the reset's anchor {} is not in this node's block store, so the state to reset the \
+                 runtime to cannot be read — refusing the reset rather than rewinding to a block this \
+                 node cannot replay from",
+                anchor.to_hex()
+            )
+        })
 }
 
 /// Remove every body the DAG does not hold — **the receiver's own re-injection set**, which is what the
@@ -205,6 +240,7 @@ async fn purge_orphan_bodies(
 /// rewound under a view that was not, and a node in that shape serving on is worse than the refusal the
 /// reset replaces.
 pub async fn act_on_reset_request(
+    shard_id: &str,
     self_reset: bool,
     dag: &Arc<dyn BlockDagStorage>,
     block_store: &BlockStore,
@@ -212,10 +248,18 @@ pub async fn act_on_reset_request(
     log: &Arc<dyn Log>,
     source: LogSource,
 ) -> Result<Option<ResetRequest>, String> {
-    let Some(request) = crate::interpreter_util::take_reset_request() else {
+    // **Peek, do not take** (law 73, `spec/Rchain/Requests.lean`). A request is spent only by the act
+    // that commits; taking it first would lose it to a failure that destroyed nothing. *This shard's*
+    // request, too: the lane is the key, so a node that is a member of several shards cannot act on
+    // another's anchor (§107's D4).
+    let Some(request) = crate::interpreter_util::reset_request(shard_id) else {
         return Ok(None);
     };
     if !self_reset {
+        // Consumed rather than left pending: a surface that showed a request for ever would be the same
+        // silence in a different place, and the switch is a *terminal* configuration, not a transient
+        // fault — which is why this arm takes and the pre-flight arm below does not.
+        let _ = crate::interpreter_util::take_reset_request(shard_id);
         log.warn(
             source,
             &format!(
@@ -229,12 +273,32 @@ pub async fn act_on_reset_request(
         );
         return Ok(None);
     }
+    // **The pre-flight read runs before the take** (law 73). A reset whose anchor this node cannot read
+    // has destroyed nothing, so the request stays pending — actionable by the detector's next scan — and
+    // the node is left in the switch-off state: consistent, and still refusing. Every failure *after*
+    // the intent is recorded is fatal instead, because by then a store may have moved.
+    if let Err(e) = anchor_body(block_store, request.anchor).await {
+        log.warn(
+            source,
+            &format!(
+                "a reset was requested (rewind to {} at height {}) but cannot proceed: {e} — the request \
+                 stays pending and the node keeps refusing {} and its descendants (law 73, #320)",
+                request.anchor.to_hex(),
+                i64::from(request.anchor_height),
+                request.refused.to_hex(),
+            ),
+        );
+        return Ok(None);
+    }
     perform_reset(dag, block_store, runtime_manager, &request, log, source).await?;
+    // The act committed; the request is spent now, and not one step earlier.
+    let _ = crate::interpreter_util::take_reset_request(shard_id);
     Ok(Some(request))
 }
 
-/// The act itself, in the order the design requires — see [`rewind_and_purge`] for why the anchor's
-/// state is read first and why the two stores move together.
+/// The act itself, in the order the design requires — the anchor's state is read first (an anchor this
+/// node cannot replay from is a free refusal), and the two stores and the runtime root move under one
+/// completion record (law 72, `spec/Rchain/Durability.lean`).
 async fn perform_reset(
     dag: &Arc<dyn BlockDagStorage>,
     block_store: &BlockStore,
@@ -243,27 +307,27 @@ async fn perform_reset(
     log: &Arc<dyn Log>,
     source: LogSource,
 ) -> Result<(), String> {
-    let anchor_block = block_store
-        .get(&[request.anchor])
-        .await?
-        .pop()
-        .flatten()
-        .ok_or_else(|| {
-            format!(
-                "the reset's anchor {} is not in this node's block store, so the state to reset the \
-                 runtime to cannot be read — refusing the reset rather than rewinding to a block this \
-                 node cannot replay from",
-                request.anchor.to_hex()
-            )
-        })?;
-    let (rewound, removed) =
-        rewind_and_purge(dag, block_store, request.anchor, request.anchor_height).await?;
+    let anchor_block = anchor_body(block_store, request.anchor).await?;
+    let mark = |phase| ResetMarker {
+        anchor: request.anchor,
+        height: request.anchor_height,
+        phase,
+    };
+    // **The intent is durable before anything is destroyed** (law 72). A write that fails stops the
+    // reset before it has touched a store, which is the only point at which refusing is free.
+    dag.write_reset_marker(mark(ResetPhase::Rewinding)).await?;
+    let (rewound, removed) = rewind_and_purge(dag, block_store, request.anchor_height).await?;
+    // **The runtime root is inside the bracket** (law 72). The completion record is written only once
+    // *every* effect has returned, so a crash here leaves `Rewinding` — which the boot guard repairs —
+    // rather than a `Rewound` record claiming the stores agree while `CURRENT_ROOT` still names the
+    // state the rewind dropped, which `resume_after_reset` reads and re-applies nothing.
     runtime_manager
         .runtime()
         .reset(Blake2b256Hash::from_byte_array(
             anchor_block.post_state_hash.as_bytes(),
         ))
         .await?;
+    dag.write_reset_marker(mark(ResetPhase::Rewound)).await?;
     log.warn(
         source,
         &format!(

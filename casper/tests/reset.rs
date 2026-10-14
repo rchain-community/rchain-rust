@@ -45,6 +45,10 @@ use rchain_shared::typed_store::{
     BytesCodec, KeyValueTypedStore, KeyValueTypedStoreCodec, SharedStore,
 };
 
+/// Every cell call in this file names one lane (§107's D4): the reset cells are process-wide and
+/// keyed by shard, and these tests drive a single shard.
+const LANE: &str = "test-shard";
+
 fn hash(byte: u8) -> BlockHash {
     let mut bytes = [0u8; 32];
     bytes[0] = byte;
@@ -161,7 +165,7 @@ async fn has(store: &BlockStore, h: BlockHash) -> bool {
 async fn a_reset_request_rewinds_the_stores_when_the_switch_is_on_and_does_nothing_when_it_is_off()
 {
     // Whatever a previous run left in the cell: this test owns it from here.
-    let _ = take_reset_request();
+    let _ = take_reset_request(LANE);
 
     let dag = build_dag().await;
     let block_store = build_block_store().await;
@@ -206,10 +210,11 @@ async fn a_reset_request_rewinds_the_stores_when_the_switch_is_on_and_does_nothi
     // First half: a node whose operator has not opted in must *not* touch its stores, and must consume
     // the request rather than leaving it pending for ever.
     assert!(
-        rchain_casper::interpreter_util::request_reset(request.clone()),
+        rchain_casper::interpreter_util::request_reset(LANE.to_string(), request.clone()),
         "the request is raised"
     );
     let off = act_on_reset_request(
+        LANE,
         false,
         &(dag.clone() as Arc<dyn BlockDagStorage>),
         &block_store,
@@ -221,7 +226,7 @@ async fn a_reset_request_rewinds_the_stores_when_the_switch_is_on_and_does_nothi
     .expect("a gated reset is not an error");
     assert!(off.is_none(), "the switch is off, so nothing acted");
     assert_eq!(
-        reset_request(),
+        reset_request(LANE),
         None,
         "and the request was consumed, not left pending"
     );
@@ -232,10 +237,11 @@ async fn a_reset_request_rewinds_the_stores_when_the_switch_is_on_and_does_nothi
 
     // --- the switch on ---------------------------------------------------------------------------
     assert!(
-        rchain_casper::interpreter_util::request_reset(request.clone()),
+        rchain_casper::interpreter_util::request_reset(LANE.to_string(), request.clone()),
         "a second request is accepted once the first is consumed"
     );
     let acted = act_on_reset_request(
+        LANE,
         true,
         &(dag.clone() as Arc<dyn BlockDagStorage>),
         &block_store,
@@ -267,9 +273,52 @@ async fn a_reset_request_rewinds_the_stores_when_the_switch_is_on_and_does_nothi
         "the anchor's own body stays — the reset keeps what it rewinds to"
     );
     assert_eq!(
-        reset_request(),
+        reset_request(LANE),
         None,
         "taking the request is not undone by acting on it"
+    );
+
+    // --- a failure that destroyed nothing leaves the request pending ---------------------------------
+    // **Law 73**: the pre-flight read runs before the take, so a reset whose anchor this node cannot
+    // read destroys nothing and leaves the request actionable. Under the old order the take ran first
+    // and spent it on a failure that had touched no store. A fresh DAG and block store make the anchor
+    // genuinely absent rather than already rewound to.
+    let bare_dag = build_dag().await;
+    let bare_store = build_block_store().await;
+    let pending = ResetRequest {
+        anchor: hash(1),
+        anchor_height: BlockHeight::try_from(1).unwrap(),
+        blocks_above: 0,
+        refused: hash(2),
+    };
+    assert!(
+        rchain_casper::interpreter_util::request_reset(LANE.to_string(), pending.clone()),
+        "a request is raised again"
+    );
+    let unacted = act_on_reset_request(
+        LANE,
+        true,
+        &(bare_dag.clone() as Arc<dyn BlockDagStorage>),
+        &bare_store,
+        &manager,
+        &log,
+        LogSource::new("test"),
+    )
+    .await
+    .expect("a pre-flight refusal is not an error");
+    assert!(
+        unacted.is_none(),
+        "nothing acted — the anchor could not be read"
+    );
+    assert_eq!(
+        reset_request(LANE),
+        Some(pending.clone()),
+        "and the request is still pending, not spent on a failure that destroyed nothing"
+    );
+    assert_eq!(
+        take_reset_request(LANE),
+        Some(pending),
+        "and it is still takeable — the detector's next scan can act on it"
     );
 }
 
@@ -295,6 +344,10 @@ async fn a_reset_request_rewinds_the_stores_when_the_switch_is_on_and_does_nothi
 async fn a_crash_after_the_rewind_is_repaired_at_boot_by_the_marker() {
     let dag = build_dag().await;
     let block_store = build_block_store().await;
+    let manager = Arc::new(common::build_runtime_manager().await);
+    // **A root the runtime knows**, so the guard's *third* effect — the runtime reset (law 72) — is the
+    // ordinary one and not a fabricated hash. The anchor carries it, as it does in the act's own test.
+    let root_state = StateHash::new(manager.get_history_repo().root().to_byte_array());
     let log: Arc<dyn rchain_shared::log::Log> = Arc::new(NopLog);
     let source = LogSource::new("test");
 
@@ -302,7 +355,11 @@ async fn a_crash_after_the_rewind_is_repaired_at_boot_by_the_marker() {
     let mut parents: Vec<BlockHash> = Vec::new();
     for n in 0..4i64 {
         let h = hash(n as u8);
-        let post = StateHash::new([0u8; 32]);
+        let post = if n == 1 {
+            root_state
+        } else {
+            StateHash::new([0u8; 32])
+        };
         dag.insert(meta(h, &parents, n, n), block(h, post))
             .await
             .expect("the chain inserts");
@@ -345,6 +402,7 @@ async fn a_crash_after_the_rewind_is_repaired_at_boot_by_the_marker() {
     let resumed = resume_after_reset(
         &(dag.clone() as Arc<dyn BlockDagStorage>),
         &block_store,
+        &manager,
         &log,
         source,
     )
@@ -390,6 +448,7 @@ async fn a_crash_after_the_rewind_is_repaired_at_boot_by_the_marker() {
     let second = resume_after_reset(
         &(dag.clone() as Arc<dyn BlockDagStorage>),
         &block_store,
+        &manager,
         &log,
         source,
     )
@@ -409,6 +468,7 @@ async fn a_crash_after_the_rewind_is_repaired_at_boot_by_the_marker() {
 async fn a_node_that_never_reset_is_not_touched_by_the_reset_guard() {
     let dag = build_dag().await;
     let block_store = build_block_store().await;
+    let manager = Arc::new(common::build_runtime_manager().await);
     let log: Arc<dyn rchain_shared::log::Log> = Arc::new(NopLog);
 
     let h = hash(0);
@@ -423,6 +483,7 @@ async fn a_node_that_never_reset_is_not_touched_by_the_reset_guard() {
     let resumed = resume_after_reset(
         &(dag.clone() as Arc<dyn BlockDagStorage>),
         &block_store,
+        &manager,
         &log,
         LogSource::new("test"),
     )
@@ -437,5 +498,45 @@ async fn a_node_that_never_reset_is_not_touched_by_the_reset_guard() {
         dag.read_reset_marker().await.expect("readable"),
         None,
         "and it wrote nothing"
+    );
+}
+
+/// **The guard now reaches the anchor's *body*, because the third effect it re-applies is the runtime
+/// root** (law 72, `spec/Rchain/Durability.lean`). Before the fix a `Rewinding` guard re-applied two
+/// store operations and never read a body, so an anchor whose body was absent from the block store was
+/// invisible to it; with the fix the repair is total over the record's effects and the absent body is a
+/// refusal. Without the runtime step this test fails with `Ok(Some(anchor))` — the exact state a
+/// crash-window repair must not hand to the catch-up walk.
+#[tokio::test]
+async fn the_guard_refuses_a_rewinding_whose_anchor_body_is_absent() {
+    let dag = build_dag().await;
+    let block_store = build_block_store().await;
+    let manager = Arc::new(common::build_runtime_manager().await);
+    let log: Arc<dyn rchain_shared::log::Log> = Arc::new(NopLog);
+
+    let anchor = hash(1);
+    let anchor_height = BlockHeight::try_from(1).unwrap();
+    // The intent is recorded and nothing above the anchor exists, so the rewind and the purge are
+    // no-ops — the only thing that can stop the repair is the missing anchor, which is the point.
+    dag.write_reset_marker(ResetMarker {
+        anchor,
+        height: anchor_height,
+        phase: ResetPhase::Rewinding,
+    })
+    .await
+    .expect("the intent is recorded");
+
+    let err = resume_after_reset(
+        &(dag.clone() as Arc<dyn BlockDagStorage>),
+        &block_store,
+        &manager,
+        &log,
+        LogSource::new("test"),
+    )
+    .await
+    .expect_err("the guard refuses an anchor whose body it cannot read");
+    assert!(
+        err.contains("is not in this node's block store"),
+        "the refusal is the reset's own sentence about the anchor: {err}"
     );
 }

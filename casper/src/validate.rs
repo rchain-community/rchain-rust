@@ -529,6 +529,58 @@ pub async fn bonds_cache(
     }
 }
 
+/// How far *behind* its own parents a block's timestamp may be.
+///
+/// A constant rather than a `casper.*` configuration key, and deliberately. The bounds that are
+/// configuration — `max-number-of-parents`, `min-phlo-price` — are properties of the *network the
+/// consensus algorithm is defined over*, which is why an operator has to state them and why getting
+/// them wrong splits the chain. This is a tolerance for clock error with no such counterpart: a node
+/// whose clock is minutes behind the parents it has just read is wrong about the time, not differently
+/// configured, and a rule that cannot be configured is a rule two operators cannot configure
+/// differently. Five minutes is some three hundred times the skew of two NTP-synchronised hosts.
+///
+/// Promoting it to configuration is a one-line change if a network ever runs without time
+/// synchronisation and needs to say so.
+pub const MAX_BLOCK_TIMESTAMP_DRIFT_MS: i64 = 300_000;
+
+/// A block's stamp must not precede its parents' by more than [`MAX_BLOCK_TIMESTAMP_DRIFT_MS`].
+///
+/// **Deterministic, and that is the whole design.** Both sides of the comparison are read from the
+/// block and from the parents its own justifications name — never from this node's clock. A wall-clock
+/// comparison here would decide validity differently on every validator and fork the chain, which is
+/// why the bound is relative to the parent chain rather than to `Instant::now()`.
+///
+/// It costs one block-store read per justification, so it runs **after** `block_summary`'s `pure`
+/// array: `justification_count` has by then already refused a block whose set is too wide to be worth
+/// those reads. That ordering is the whole reason those cheap checks exist.
+///
+/// A parent the store does not hold is skipped rather than refused, matching
+/// `check_justification_regression`'s posture: a justification this node cannot resolve is
+/// `justification_regressions`' business, and inventing a refusal here would reject blocks during a
+/// legitimate catch-up. A block with no resolvable parents at all — genesis, and the first block of a
+/// chain this node is still assembling — has nothing to compare against and passes.
+pub async fn block_timestamp(
+    block_store: &BlockStore,
+    block: &BlockMessage,
+) -> Result<ValidBlockProcessing, String> {
+    let mut newest_parent_ms: Option<i64> = None;
+    for justification in &block.justifications {
+        let mut vals = block_store.get(&[*justification]).await?;
+        let Some(Some(parent)) = vals.pop() else {
+            continue;
+        };
+        newest_parent_ms =
+            Some(newest_parent_ms.map_or(parent.timestamp, |m: i64| m.max(parent.timestamp)));
+    }
+    match newest_parent_ms {
+        None => Ok(Ok(())),
+        Some(newest) if block.timestamp.saturating_add(MAX_BLOCK_TIMESTAMP_DRIFT_MS) >= newest => {
+            Ok(Ok(()))
+        }
+        Some(_) => Ok(Err(BlockStatus::InvalidBlockTimestamp)),
+    }
+}
+
 /// Compose the effectful + pure checks (port of `blockSummary`).
 ///
 /// `max_number_of_parents` is threaded here from `casper.max-number-of-parents` exactly as
@@ -588,6 +640,13 @@ pub async fn block_summary(
         if !status.is_valid() {
             return Ok(Err(status));
         }
+    }
+    // **After the cheap checks, because this one reads the block store** (W-N14-01). The block's own
+    // timestamp is the last field of the wire a proposer fully controls that had no predicate, and the
+    // position is not incidental: it costs one read per justification, so `justification_count` above
+    // must already have refused a set too wide to pay for.
+    if let Err(status) = block_timestamp(block_store, block).await? {
+        return Ok(Err(status));
     }
     repeat_deploy(dag, block_store, block, expiration_threshold).await
 }
@@ -1647,6 +1706,77 @@ mod effectful_tests {
             Err(BlockStatus::InvalidDeploySignature),
             "a deploy whose term does not match what was signed must be refused"
         );
+    }
+
+    /// **A block stamped before its own parents is refused, and a catching-up validator is not**
+    /// (W-N14-01).
+    ///
+    /// `timestamp` is inside the block hash and is republished to `rho:block:data`, and nothing read
+    /// it. The bound is one-sided, and this test is as much about the side it *does not* take as about
+    /// the one it does: the last case is the #223 shape — a returning validator stamping *now* on a
+    /// parent stamped a day ago — which a symmetric bound would refuse and a lower bound must not.
+    ///
+    /// Falsified by deleting the call from `block_summary`, which makes the middle assertion below
+    /// return `Ok(())` — the placement is asserted here rather than only read.
+    #[tokio::test]
+    async fn a_block_stamped_before_its_parents_is_refused() {
+        let parent_hash = hash(7);
+        let dag = mock(BTreeMap::from([(
+            parent_hash,
+            meta(parent_hash, 0, 1, 0, false),
+        )]));
+
+        let parent_ms = 1_700_000_000_000i64;
+        let mut parent = block(1, 0, 0, vec![]);
+        parent.block_hash = parent_hash;
+        parent.timestamp = parent_ms;
+        let store = block_store(vec![parent]).await;
+
+        // An hour *before* the parent: the proposer is choosing the chain's time. (A minute of
+        // backdating is inside the five-minute tolerance on purpose, and a first version of this test
+        // asserted the refusal for exactly that and was wrong — the bound is the bound.)
+        let mut early = block(1, 1, 1, vec![parent_hash]);
+        early.timestamp = parent_ms - 3_600_000;
+        assert_eq!(
+            block_timestamp(&store, &early).await.unwrap(),
+            Err(BlockStatus::InvalidBlockTimestamp)
+        );
+        // And it is reached on the acceptance path, not merely available — this is what fails if the
+        // call is removed from `block_summary`.
+        assert_eq!(
+            block_summary(&dag, &store, &early, "root", 100, 1, 0)
+                .await
+                .unwrap(),
+            Err(BlockStatus::InvalidBlockTimestamp),
+            "the check runs before the replay, among the cheap pre-state checks"
+        );
+
+        // Exactly at the tolerance is inside it; one millisecond past is not.
+        let mut at_bound = block(1, 1, 1, vec![parent_hash]);
+        at_bound.timestamp = parent_ms - MAX_BLOCK_TIMESTAMP_DRIFT_MS;
+        assert!(block_timestamp(&store, &at_bound).await.unwrap().is_ok());
+        let mut past_bound = block(1, 1, 1, vec![parent_hash]);
+        past_bound.timestamp = parent_ms - MAX_BLOCK_TIMESTAMP_DRIFT_MS - 1;
+        assert_eq!(
+            block_timestamp(&store, &past_bound).await.unwrap(),
+            Err(BlockStatus::InvalidBlockTimestamp)
+        );
+
+        // **The backlog case, and the reason the bound is one-sided** (#223, law C267): a validator
+        // that was down builds on an old parent and stamps `now`. A day of positive gap is legitimate.
+        let mut catching_up = block(1, 1, 1, vec![parent_hash]);
+        catching_up.timestamp = parent_ms + 86_400_000;
+        assert!(
+            block_timestamp(&store, &catching_up).await.unwrap().is_ok(),
+            "a lower bound must never refuse a block built on old parents"
+        );
+
+        // Genesis, and any block whose justifications this node cannot resolve, has nothing to compare
+        // against. Refusing there would reject a chain this node is still assembling.
+        let genesis = block(1, 0, 0, vec![]);
+        assert!(block_timestamp(&store, &genesis).await.unwrap().is_ok());
+        let orphan = block(1, 1, 1, vec![hash(99)]);
+        assert!(block_timestamp(&store, &orphan).await.unwrap().is_ok());
     }
 
     #[tokio::test]

@@ -147,13 +147,15 @@ pub fn write_keys(
 ///
 /// *Encrypted* PEMs are deliberately rejected here: they need a passphrase, and
 /// [`crate::signatures::secp256k1::Secp256k1::parse_pem_file`] already covers that shape.
+///
+/// **The file's mode is checked before it is read** (W-N5-09). The writing half of this module has
+/// narrowed validator keys to `0600` since C8, but the read half adopted whatever it was given — so a
+/// key that arrived by another route (a copy, a restore, a file another tool made, a genesis
+/// `.sk` handed out by a ceremony) loaded silently and a second local account could sign with it. The
+/// check is [`super::secret_file::read_owner_only_to_string`], so this rule and the OCapN identity's
+/// have one home.
 pub fn load_validator_private_key(path: &Path) -> Result<PrivateKey, String> {
-    let contents = fs::read_to_string(path).map_err(|e| {
-        format!(
-            "could not read validator private key {}: {e}",
-            path.display()
-        )
-    })?;
+    let contents = super::secret_file::read_owner_only_to_string(path)?;
     let trimmed = contents.trim();
 
     // A bare base16 scalar.
@@ -341,7 +343,11 @@ mod tests {
         let (sk, _pk) = Secp256k1.new_key_pair();
         let expected = base16::encode(sk.bytes());
         let path = dir.join("validator.hex");
-        fs::write(&path, format!("  {expected}\n")).unwrap();
+        // Written owner-only, like every fixture below in this module that the loader is expected to
+        // *accept*: the loader now refuses a file another uid can reach, so a fixture written with the
+        // process umask would fail for the wrong reason. That the accepted fixtures need this edit is
+        // half of what makes the refusals below meaningful — the same guard is on both paths.
+        write_private_key(&path, format!("  {expected}\n")).unwrap();
 
         let loaded = load_validator_private_key(&path).unwrap();
         assert_eq!(base16::encode(loaded.bytes()), expected);
@@ -357,7 +363,7 @@ mod tests {
         let (sk, _pk) = Secp256k1.new_key_pair();
         let secret = SecretKey::from_slice(sk.bytes()).unwrap();
         let path = dir.join("validator.pem");
-        fs::write(
+        write_private_key(
             &path,
             secret.to_pkcs8_pem(LineEnding::LF).unwrap().as_bytes(),
         )
@@ -375,20 +381,52 @@ mod tests {
     fn load_validator_private_key_rejects_junk_and_missing_files() {
         let dir = temp_dir_named("junk");
         let path = dir.join("not-a-key.txt");
-        fs::write(&path, "hello, not a key\n").unwrap();
+        // Owner-only, so what rejects it is the *parse* — the mode guard would otherwise reject it
+        // first and this test would be asserting the wrong refusal.
+        write_private_key(&path, "hello, not a key\n").unwrap();
 
         let err = load_validator_private_key(&path).expect_err("junk must be rejected");
         assert!(err.contains("not-a-key.txt"), "{err}");
 
         // An ENCRYPTED PEM is explicitly out of scope (it needs a passphrase).
         let encrypted = dir.join("encrypted.pem");
-        fs::write(&encrypted, "-----BEGIN ENCRYPTED PRIVATE KEY-----\nnope\n").unwrap();
+        write_private_key(&encrypted, "-----BEGIN ENCRYPTED PRIVATE KEY-----\nnope\n").unwrap();
         assert!(load_validator_private_key(&encrypted).is_err());
 
         // A missing file is an error, not a silent `None`.
         let missing = dir.join("absent.pem");
         let err = load_validator_private_key(&missing).expect_err("missing file must error");
         assert!(err.contains("absent.pem"), "{err}");
+
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// **A validator key another local account can read is refused, not loaded** (W-N5-09).
+    ///
+    /// The write half of this module has narrowed key files to `0600` since C8, and that bought
+    /// nothing on the read side: `load_validator_private_key` read whatever it was given. A key at
+    /// `0644` is one any local account can copy and sign with — on a validator, that is the stake.
+    ///
+    /// The fixture is made wide *deliberately*, which is the falsifier: remove the guard and this
+    /// file loads and returns the key, so the test goes red rather than silently passing.
+    #[cfg(unix)]
+    #[test]
+    fn load_validator_private_key_refuses_a_group_readable_file() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = temp_dir_named("loose");
+        let (sk, _pk) = Secp256k1.new_key_pair();
+        let path = dir.join("validator.hex");
+        fs::write(&path, format!("{}\n", base16::encode(sk.bytes()))).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+
+        let err = load_validator_private_key(&path)
+            .expect_err("a world-readable validator key must not load");
+        assert!(
+            err.contains("validator.hex"),
+            "the refusal names the file: {err}"
+        );
+        assert!(err.contains("644"), "and the mode it was found at: {err}");
 
         fs::remove_dir_all(&dir).unwrap();
     }

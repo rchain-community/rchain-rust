@@ -190,8 +190,12 @@ pub fn generate_key_pair() -> EcKeyPair {
 }
 
 /// Read a PKCS#8 (`PRIVATE KEY`) P-256 private key and derive its public key.
+///
+/// **The mode is checked before the file is read** (W-N6-05): this is the consensus validator's or the
+/// node identity's signing key, and a private key another account can read is one it can sign with.
+/// The certificate beside it is deliberately *not* checked — [`from_file`] reads public material.
 pub fn read_key_pair(key_file: &Path) -> Result<EcKeyPair, String> {
-    let pem = fs::read_to_string(key_file).map_err(|e| e.to_string())?;
+    let pem = crate::util::secret_file::read_owner_only_to_string(key_file)?;
     let private_key = p256::SecretKey::from_pkcs8_pem(&pem).map_err(|e| e.to_string())?;
     let public_key = private_key.public_key();
     Ok(EcKeyPair::new(private_key, public_key))
@@ -403,11 +407,36 @@ mod tests {
 
         let pem = print_private_key(&key_pair.private_key).expect("print private key");
         assert!(pem.starts_with("-----BEGIN PRIVATE KEY-----"));
-        fs::write(&key_file, pem).unwrap();
+        // Owner-only: the reader now refuses a key any other uid can reach, so the accepted fixture
+        // has to be written the way the writers write it.
+        crate::util::key_util::write_private_key(&key_file, pem).unwrap();
 
         let read = read_key_pair(&key_file).expect("read key pair");
         assert_eq!(read.private_key, key_pair.private_key);
         assert_eq!(read.public_key, key_pair.public_key);
+
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// **A P-256 private key at a wide mode is refused** (W-N6-05). This is the TLS/node-identity
+    /// key: whoever can read it can impersonate the node on every transport, so the read side has to
+    /// hold the same line the write side (`key_util::write_private_key`) already draws. The wide mode
+    /// is the falsifier — remove the check and the key loads, so the test goes red.
+    #[cfg(unix)]
+    #[test]
+    fn read_key_pair_refuses_a_group_readable_file() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let key_pair = generate_key_pair();
+        let dir = temp_dir("key_pair_loose");
+        let key_file = dir.join("private.pem");
+        let pem = print_private_key(&key_pair.private_key).expect("print private key");
+        fs::write(&key_file, pem).unwrap();
+        fs::set_permissions(&key_file, fs::Permissions::from_mode(0o640)).unwrap();
+
+        let err = read_key_pair(&key_file).expect_err("a group-readable key must not load");
+        assert!(err.contains("private.pem"), "{err}");
+        assert!(err.contains("640"), "{err}");
 
         fs::remove_dir_all(&dir).unwrap();
     }

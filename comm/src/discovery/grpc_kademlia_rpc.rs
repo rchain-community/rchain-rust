@@ -18,6 +18,7 @@ use tower::service_fn;
 
 use crate::discovery::{to_node, to_peer_node, KademliaRpc};
 use crate::peer_node::PeerNode;
+use crate::rp::handle_messages::is_local_address_resolved;
 
 /// The gRPC Kademlia client (port of `GrpcKademliaRPC`).
 pub struct GrpcKademliaRpc {
@@ -117,14 +118,34 @@ impl KademliaRpc for GrpcKademliaRpc {
                 .map_err(|e| e.to_string())
         };
         match tokio::time::timeout(self.timeout, result).await {
-            Ok(Ok(response)) if response.network_id == self.network_id => response
-                .nodes
-                .iter()
-                .filter_map(|n| to_peer_node(n).ok())
-                .collect(),
+            Ok(Ok(response)) if response.network_id == self.network_id => {
+                peers_from_response(&response.nodes).await
+            }
             _ => Vec::new(),
         }
     }
+}
+
+/// The peers a `LookupResponse` names, minus the ones the node must not dial.
+///
+/// **A response is a peer's message, and the node dials what it names** — `discover` records the
+/// result into the routing table and `find_and_connect` connects to each entry. Until now the
+/// private/loopback/link-local/unspecified guard ran only on the *inbound* sender path
+/// (`grpc_kademlia_rpc_server`), so an authenticated peer answering a `Lookup` with `127.0.0.1`, or
+/// with a name that resolves there, steered the victim into connecting to its own loopback services:
+/// SSRF with the guard on the wrong side of the exchange (W-N1-03). Resolved rather than matched as a
+/// literal, for the same reason the inbound guard resolves (AUDIT C117) — a hostname is a way of
+/// aiming the node at its own network too.
+async fn peers_from_response(nodes: &[rchain_models::comm::discovery::Node]) -> Vec<PeerNode> {
+    let mut peers = Vec::new();
+    for n in nodes {
+        let Ok(peer) = to_peer_node(n) else { continue };
+        if is_local_address_resolved(&peer.endpoint.host).await {
+            continue;
+        }
+        peers.push(peer);
+    }
+    peers
 }
 
 #[cfg(test)]
@@ -232,5 +253,36 @@ mod tests {
         let peer = peer_at("this-host-does-not-exist.invalid", 40404);
         assert!(!rpc.ping(&peer).await);
         assert!(rpc.lookup(b"key", &peer).await.is_empty());
+    }
+
+    /// **A response's hosts are guarded on the way in, not only on the way out** (W-N1-03).
+    ///
+    /// `discover` records what a `LookupResponse` names into the routing table and `find_and_connect`
+    /// dials each entry, so an authenticated peer answering a `Lookup` with `127.0.0.1` — or a name
+    /// that resolves there — steered this node into its own loopback services. The
+    /// private/loopback/link-local/unspecified guard already ran on the inbound *sender* path; this
+    /// asserts it runs on the response path too, and that a public host is still carried.
+    #[tokio::test]
+    async fn a_lookup_response_naming_a_local_host_is_not_dialled() {
+        use rchain_models::comm::discovery::Node;
+        let node = |id: &[u8], host: &str| Node {
+            id: id.to_vec(),
+            host: host.as_bytes().to_vec(),
+            tcp_port: 40400,
+            udp_port: 40404,
+        };
+        let nodes = vec![
+            node(b"loopback", "127.0.0.1"),
+            node(b"localhost", "localhost"),
+            node(b"unspecified", "0.0.0.0"),
+            node(b"public", "203.0.113.7"),
+        ];
+        let peers = super::peers_from_response(&nodes).await;
+        assert_eq!(
+            peers.len(),
+            1,
+            "only the public host may survive, or the node dials itself: {peers:?}"
+        );
+        assert_eq!(peers[0].endpoint.host, "203.0.113.7");
     }
 }

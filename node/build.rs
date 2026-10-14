@@ -20,6 +20,10 @@
 
 use std::process::Command;
 
+// The precedence rule, `include!`d so the same source is tested by `node/tests/build_provenance.rs`
+// — a build script's own `#[cfg(test)]` never runs, so the decision cannot be tested from in here.
+include!("build_provenance.rs");
+
 /// Run a git command, returning its trimmed stdout when it succeeds and is non-empty.
 fn git(args: &[&str]) -> Option<String> {
     let out = Command::new("git").args(args).output().ok()?;
@@ -50,21 +54,29 @@ fn main() {
         println!("cargo:rerun-if-changed={git_dir}/packed-refs");
     }
 
-    // **An explicitly-provided commit wins, and it is how the container image gets one.** The
-    // Dockerfile builds from a context that excludes `.git` (`.dockerignore`), so `git rev-parse`
-    // below cannot answer there and the image used to serve `commit # unknown` — the exact gap this
-    // build script exists to close, reintroduced by the packaging. `tools/devnet.sh build` passes the
-    // revision as a build argument; taking it here rather than only as an ambient variable makes the
-    // precedence explicit, and `cargo:rustc-env` is what carries it to `option_env!`.
-    if let Ok(provided) = std::env::var("GIT_HEAD_COMMIT") {
-        let provided = provided.trim();
-        if !provided.is_empty() {
-            println!("cargo:rustc-env=GIT_HEAD_COMMIT={provided}");
-            return;
+    // **Precedence by capability, not by whose word came first** (W-N7-01). `GIT_HEAD_COMMIT` used to
+    // win outright and return early, so a build of modified source could set it to the canonical hash
+    // and `/version` would name a commit the binary was not built from — a provenance string that
+    // lies is worse than one that admits ignorance. But the variable exists for a real reason: the
+    // Docker context excludes `.git/` (`.dockerignore`), so `git rev-parse` cannot answer there and
+    // the image served `commit # unknown`, the exact gap this build script exists to close. So git
+    // wins where git *can* answer, a provided value is used only where it cannot, and a contradiction
+    // between the two is reported rather than resolved silently — the build argument is then stale,
+    // which is itself a fact the operator needs.
+    let git_commit = git(&["rev-parse", "HEAD"]);
+    let provided = std::env::var("GIT_HEAD_COMMIT").ok();
+    let (provenance, disagreed) = resolve(git_commit.as_deref(), provided.as_deref());
+
+    if disagreed {
+        if let (Some(git), Some(provided)) = (git_commit.as_deref(), provided.as_deref()) {
+            println!(
+                "cargo:warning=GIT_HEAD_COMMIT {provided} disagrees with git HEAD {git}; using git \
+                 — the build argument is stale"
+            );
         }
     }
 
-    match git(&["rev-parse", "HEAD"]) {
+    match provenance.commit() {
         Some(commit) => println!("cargo:rustc-env=GIT_HEAD_COMMIT={commit}"),
         None => println!(
             "cargo:warning=could not resolve the git commit for this build; \

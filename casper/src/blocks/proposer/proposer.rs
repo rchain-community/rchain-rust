@@ -102,7 +102,7 @@ impl ProposeSource {
 ///
 /// An *absent* block under a height-map key is an inconsistency, not an empty map: the height map
 /// names blocks the message map holds, which is exactly what `lookupUnsafe` refuses.
-pub(crate) async fn is_active_validator(
+pub async fn is_active_validator(
     dag: &Arc<dyn BlockDagStorage>,
     sender: &Validator,
 ) -> Result<bool, String> {
@@ -1345,6 +1345,40 @@ mod tests {
         assert!(
             err.contains("the DAG store is down"),
             "and the refusal must name the failure, got: {err}"
+        );
+    }
+
+    /// **A DAG read that fails is not "this node is not bonded" — on the attestation path either**
+    /// (W-N5-07).
+    ///
+    /// The propose path's version of this distinction is AUDIT C67, tested above. The attestation path
+    /// had no such gate at all, so a node outside the active set — or one whose DAG could not be read —
+    /// would still sign "the fringe is final" with its own name on it, and the network counts
+    /// attestations toward quorum.
+    ///
+    /// The two refusals are asserted apart, which is the whole reason this is a separate function: a
+    /// flattened version answering `Err` for both would pass the first assertion and fail the second
+    /// on its message.
+    ///
+    /// It lives in this module's tests because `FailingLookupDag` does; the function under test is
+    /// `api::block_api_impl::attestation_is_admissible`, which is what the attestation handler calls.
+    #[tokio::test]
+    async fn a_dag_read_that_fails_is_not_an_unbonded_attester() {
+        let dag: Arc<dyn BlockDagStorage> = Arc::new(FailingLookupDag {
+            first_hash: BlockHash::new([0x11; 32]),
+        });
+        let key = [0x22u8; rchain_models::validator::LENGTH];
+
+        let err = crate::api::block_api_impl::attestation_is_admissible(&dag, &key)
+            .await
+            .expect_err("a DAG that cannot be read must not answer \"not in the active set\"");
+        assert!(
+            err.contains("cannot decide whether this node is bonded"),
+            "the refusal must say it could not *tell*, not that the node is unbonded: {err}"
+        );
+        assert!(
+            err.contains("the DAG store is down"),
+            "and it must name the failure underneath: {err}"
         );
     }
 

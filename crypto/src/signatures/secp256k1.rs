@@ -4,6 +4,10 @@
 //! the native `libsecp256k1` (`NativeSecp256k1`) and produces/consumes DER-encoded signatures; the
 //! Rust port wraps the pure-Rust `k256` crate (RFC-6979 deterministic nonces, low-S DER).
 
+// Only the tests touch the filesystem now that `parse_pem_file` reads through the checked
+// `secret_file` reader; gated so a non-test build does not carry an unused import
+// (`-D warnings`).
+#[cfg(test)]
 use std::fs;
 use std::path::Path;
 
@@ -82,7 +86,10 @@ impl Secp256k1 {
     /// never round-tripped with `KeyUtil.writeKeys` (which emits PKCS#8 `EncryptedPrivateKeyInfo`);
     /// the port reads the PKCS#8 form so it round-trips with `write_keys`.
     pub fn parse_pem_file(path: &Path, password: &str) -> Result<PrivateKey, String> {
-        let pem = fs::read_to_string(path).map_err(|e| format!("Could not read PEM file: {e}"))?;
+        // Checked before it is read (W-N5-01): an encrypted PEM is still a private key, and the
+        // passphrase does not help if another local account can take the file away and guess offline.
+        let pem = crate::util::secret_file::read_owner_only_to_string(path)
+            .map_err(|e| format!("Could not read PEM file: {e}"))?;
         let (label, secret_doc) =
             SecretDocument::from_pem(&pem).map_err(|_| "PEM file is not encrypted".to_string())?;
         if label != "ENCRYPTED PRIVATE KEY" {
@@ -258,7 +265,45 @@ mod tests {
         assert_eq!(parsed.bytes(), sk.bytes());
 
         assert!(Secp256k1::parse_pem_file(&private_path, "wrong").is_err());
+        // A wrong password (`"wrong"`) and a public key file are both refused. The public file is
+        // written at the process umask, so it is refused by whichever check runs first; the point of
+        // the assertion is that a public key is not a private one, and it holds either way.
         assert!(Secp256k1::parse_pem_file(&public_path, "password").is_err());
+
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// **An encrypted private key another uid can read is refused** (W-N5-01). The file is an
+    /// `ENCRYPTED PRIVATE KEY` written by `write_keys`, so the *only* thing wrong with it is its mode
+    /// — the passphrase does not save it, because the attacker takes the file away and guesses
+    /// offline. Widening the mode is the falsifier: with the check removed, the same call returns the
+    /// key.
+    #[cfg(unix)]
+    #[test]
+    fn parse_pem_file_refuses_a_group_readable_key() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let (sk, pk) = Secp256k1.new_key_pair();
+        let dir = std::env::temp_dir().join(format!("rchain_secp_loose_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let private_path = dir.join("private.pem");
+
+        crate::util::key_util::write_keys(
+            &sk,
+            &pk,
+            &Secp256k1,
+            "password",
+            &private_path,
+            &dir.join("public.pem"),
+            &dir.join("public.hex"),
+        )
+        .unwrap();
+        fs::set_permissions(&private_path, fs::Permissions::from_mode(0o644)).unwrap();
+
+        let err = Secp256k1::parse_pem_file(&private_path, "password")
+            .expect_err("a world-readable key must not load");
+        assert!(err.contains("private.pem"), "{err}");
 
         fs::remove_dir_all(&dir).unwrap();
     }

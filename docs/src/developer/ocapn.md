@@ -165,7 +165,9 @@ reachable. See [ERTP](../node/ertp.md) for the ledger underneath.
 Also note:
 
 - **Bridged deploys are rate-limited** to 4 per second across every session and capability; past that
-  a delivery is refused with a reason naming the bound.
+  a delivery is refused with a reason naming the bound. Under that total, **one capability may take at
+  most 1 per second** (W-N8-02), so the object a peer loops on cannot starve the node's other exported
+  capabilities — the refusal names which of the two bounds was hit.
 - **The node is the on-chain caller.** Every bridged deploy is signed by the node's deployer key, so
   the chain sees the node, not you. There is no session-to-deployer binding yet.
 - **The node serves a fixed number of sessions** (64) — 48 to the connections it accepts, shared between

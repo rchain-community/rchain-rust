@@ -95,10 +95,17 @@ pub struct VersionInfo {
     pub node: String,
 }
 
-/// Node status (port of `ApiStatus`).
+/// **What any caller may read**: the chain-public half of the node's status (W-N3-01).
+///
+/// It was one struct. The other half — divergence records, the safety halt, poison recoveries, the
+/// sync task's state — is operator state, and it was served to anyone who could reach the public port.
+/// Split rather than gated, and split *structurally*: `to_public_status` takes no health, finality or
+/// reporter argument, so a field added to one of those cannot leak here by someone forgetting to edit
+/// a serializer — it does not compile. That is the difference between this and one struct with two
+/// serializers, and it is the reason the split is two types.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ApiStatus {
+pub struct PublicStatus {
     pub version: VersionInfo,
     pub address: String,
     pub network_id: String,
@@ -113,10 +120,26 @@ pub struct ApiStatus {
     pub propose_on_deploy: bool,
     /// Blocks are produced only by an explicit `propose`.
     pub manual_propose: bool,
-    /// The admin HTTP surface is published and CORS-enabled.
-    pub admin_http: bool,
-    /// Dev mode is on.
+    /// Dev mode is on. Public: it is a configuration fact, and a client that must not be handed
+    /// dev-only answers has to be able to see it.
     pub dev_mode: bool,
+}
+
+/// **What an operator's own surface may read, and nothing else does**: the operator half of the
+/// node's status.
+///
+/// `#[serde(flatten)]` keeps it a superset of [`PublicStatus`], so a client that reads the operator
+/// route sees every public field under the same name and can move between the two without a shape
+/// change. The fields are the ones W-N3-01 named: a divergence record, the safety halt, the counters
+/// that say whether a subsystem has stopped, the sync task's state, and the durable reset marker.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OperatorStatus {
+    #[serde(flatten)]
+    pub core: PublicStatus,
+    /// The admin HTTP surface is published and CORS-enabled. **Operator state**, and the reason it is
+    /// not public: it tells an unauthenticated caller that the actuator port is reachable.
+    pub admin_http: bool,
     /// #157: self-validation failures the proposer has recorded in a row. `0` on a healthy node, and
     /// cleared by a successful propose — this is what tells "quiet" from "broken" on a chain whose
     /// steady state is a node that produces nothing until work arrives.
@@ -125,6 +148,18 @@ pub struct ApiStatus {
     /// Deliberately not called `halted`: the tap and the admin `POST /api/propose` keep running, so a
     /// node can have a stopped timer and still be producing blocks.
     pub autopropose_timer_halted: bool,
+    /// **How many times this process's autopropose timer has stopped** (W-N10-01), counted on the
+    /// transition rather than on the call.
+    ///
+    /// **It is not a restart-surviving record**, and saying so here matters because the flag beside it
+    /// makes the reading ambiguous: after a restart this is `0` exactly like `autoproposeTimerHalted`,
+    /// so `false` still cannot be told from "never halted". That is F-U10-02 (open since #157) and its
+    /// fix is a durable record on the halt path — see `ProposeHealth`'s own doc.
+    pub autopropose_timer_halt_episodes: u64,
+    /// Autopropose requests the validated-block **tap** refused because the timer is halted (W-N4-08).
+    /// Beside the episode count because it is the measurement of what the halt cost: without it, the
+    /// halt was a flag the tap ignored.
+    pub autopropose_tap_suppressed: u64,
     /// #156: stale-snapshot self-equivocations — the node's own block collided with its already-synced
     /// block at a sequence number derived from a stale parent set. Not a self-validation failure, so it
     /// does not count toward the timer halt; it is reported so a node that never recovers from the race
@@ -148,6 +183,13 @@ pub struct ApiStatus {
     /// the two distinguishable — before #318 it counted single refusals and climbed once per round on a
     /// healthy net.
     pub finality_stall_episodes: u64,
+    /// **The reset marker this node is standing under**, rendered — `None` when it is not mid-reset
+    /// (F-U12-02). The marker is cleared only when the catch-up frontier passes its anchor, so a node
+    /// that resets and never catches up keeps re-entering the boot guard; that lifetime was unbounded
+    /// **and silent**, and this is the surface the ladder's R2 asks for. Read it with `unrestorableRecords`:
+    /// a standing marker says the node is repairing, and one that stands while the height does not move
+    /// says the repair is not converging.
+    pub reset_marker: Option<String>,
     /// #280's ledger, counted: merges that returned a report which was not quiet — a dropped chain, or a
     /// violated invariant. The live incident produced no counter and no line anywhere moving; this is
     /// the number it would have moved, and the log still carries the detail.
@@ -307,7 +349,7 @@ mod tests {
         };
         assert!(!by_hash.use_pre_state_hash);
 
-        let status = ApiStatus {
+        let status = PublicStatus {
             version: VersionInfo {
                 api: "1.0".to_string(),
                 node: "2.0".to_string(),
@@ -322,22 +364,7 @@ mod tests {
             autopropose: true,
             propose_on_deploy: true,
             manual_propose: false,
-            admin_http: true,
             dev_mode: true,
-            consecutive_self_validation_failures: 0,
-            autopropose_timer_halted: false,
-            stale_snapshot_self_equivocations: 0,
-            finality_stall: None,
-            finality_stalled: false,
-            finality_stall_episodes: 0,
-            non_quiet_merge_reports: 0,
-            sync: None,
-            poison_recoveries: 0,
-            unrestorable_records: 0,
-            unrestorable_block: None,
-            tasks_panicked: 0,
-            tasks_exited: 0,
-            undelivered_sends: 0,
         };
         assert_eq!(status.min_phlo_price, 3);
         assert_eq!(status.latest_block_number, 4);

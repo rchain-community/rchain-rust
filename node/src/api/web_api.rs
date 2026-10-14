@@ -8,16 +8,18 @@ use rchain_models::casper::protocol::deploy_service::{
 };
 
 use super::dto::{
-    ApiStatus, BlockApiException, DataAtNameByBlockHashRequest, DataAtNameRequest,
-    DataAtNameResponse, DeployExecStatus, DeployRequest, ExploratoryDeployResponse, FaucetResponse,
-    NodeCapabilities, PooledDeploys, RhoDataResponse,
+    BlockApiException, DataAtNameByBlockHashRequest, DataAtNameRequest, DataAtNameResponse,
+    DeployExecStatus, DeployRequest, ExploratoryDeployResponse, FaucetResponse, NodeCapabilities,
+    PooledDeploys, RhoDataResponse,
 };
 use crate::web::transaction::TransactionResponse;
 
 /// The web API contract (port of `WebApi[F]`; the `F[_]` effect becomes `async` + `Result`).
 #[async_trait]
 pub trait WebApi: Send + Sync {
-    async fn status(&self) -> Result<ApiStatus, BlockApiException>;
+    /// **The public status.** No operator state: see [`super::dto::PublicStatus`] for why the two
+    /// halves are two types rather than one type with two serializers (W-N3-01).
+    async fn status(&self) -> Result<super::dto::PublicStatus, BlockApiException>;
 
     async fn deploy(&self, request: &DeployRequest) -> Result<String, BlockApiException>;
 

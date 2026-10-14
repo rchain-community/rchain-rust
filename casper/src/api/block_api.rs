@@ -73,6 +73,21 @@ pub struct ProposerHealth {
     /// The shard's autopropose timer has stopped. Nothing restarts it but the process, and the value
     /// is therefore sticky: a later success does **not** clear it.
     pub autopropose_timer_halted: bool,
+    /// **How many times this process's autopropose timer has stopped** (W-N10-01).
+    ///
+    /// **What this does not do, stated because a first draft of it claimed otherwise.** It is an
+    /// in-memory count, so after a restart it is zero — exactly like the flag beside it. The ambiguity
+    /// the row names is therefore *not* resolved: `autoproposeTimerHalted: false` still reads the same
+    /// on a node that never halted and on one that halted and restarted. That case is F-U10-02, open
+    /// since #157, and its fix is a **durable record** — the shape the reset marker already has —
+    /// which is a store write on the halt path and a different unit of work.
+    ///
+    /// What it is worth: a count that cannot reverse within the process it describes, so a reader can
+    /// see the flag *has* been set and how many distinct stops the timer has had. Beside a sticky
+    /// boolean that is a small increment, and it is recorded here as one rather than as a fix.
+    pub autopropose_timer_halt_episodes: u64,
+    /// Autopropose requests the validated-block tap refused because the timer is halted (W-N4-08).
+    pub autopropose_tap_suppressed: u64,
     /// Stale-snapshot self-equivocations (§48): the node's own block collided with its already-synced
     /// block at the sequence number it derived. Not a self-validation failure — the DAG advanced under
     /// the proposal — so it is counted separately and does **not** halt the timer.
@@ -86,6 +101,12 @@ pub struct ProposerHealth {
 pub struct ProposeHealth {
     failures: Arc<AtomicU64>,
     timer_halted: Arc<AtomicBool>,
+    /// Monotone, and bumped only when the flag *transitions* to set — see [`ProposeHealth::note_timer_halted`].
+    timer_halt_episodes: Arc<AtomicU64>,
+    /// Autopropose requests the validated-block tap refused because the timer is halted (W-N4-08).
+    /// Counted rather than silently dropped: the halt is only a halt if the tap obeys it, and a
+    /// refusal nobody can see is the shape that row is about.
+    tap_suppressed_halted: Arc<AtomicU64>,
     stale_snapshot_equivocations: Arc<AtomicU64>,
 }
 
@@ -107,9 +128,27 @@ impl ProposeHealth {
         self.stale_snapshot_equivocations.clone()
     }
 
+    /// The counter the validated-block tap bumps when it refuses to propose (W-N4-08).
+    pub fn tap_suppressed_halted(&self) -> &Arc<AtomicU64> {
+        &self.tap_suppressed_halted
+    }
+
+    /// Whether the autopropose timer has stopped. The cell the timer stops on, and the one the
+    /// validated-block tap has to consult: a halt that the tap ignores is not a halt (W-N4-08).
+    pub fn timer_halted(&self) -> bool {
+        self.timer_halted.load(Ordering::Relaxed)
+    }
+
     /// Record that the autopropose timer has stopped, called once immediately before its `break`.
+    ///
+    /// **The episode is counted on the transition, not on the call** (W-N10-01). `swap` returns the
+    /// previous value, so a second call — a restart's timer stopping again, or two halts in one
+    /// process — is the only thing that moves the count. A count of *calls* would be a count of how
+    /// often this was recorded, which is not a fact anyone wants.
     pub fn note_timer_halted(&self) {
-        self.timer_halted.store(true, Ordering::Relaxed);
+        if !self.timer_halted.swap(true, Ordering::Relaxed) {
+            self.timer_halt_episodes.fetch_add(1, Ordering::Relaxed);
+        }
     }
 
     /// All three values as one observation, so a reader cannot see a count from one instant and a flag
@@ -118,6 +157,8 @@ impl ProposeHealth {
         ProposerHealth {
             consecutive_self_validation_failures: self.failures.load(Ordering::Relaxed),
             autopropose_timer_halted: self.timer_halted.load(Ordering::Relaxed),
+            autopropose_timer_halt_episodes: self.timer_halt_episodes.load(Ordering::Relaxed),
+            autopropose_tap_suppressed: self.tap_suppressed_halted.load(Ordering::Relaxed),
             stale_snapshot_self_equivocations: self
                 .stale_snapshot_equivocations
                 .load(Ordering::Relaxed),
@@ -240,6 +281,32 @@ pub trait BlockApi: Send + Sync {
     async fn create_block(&self, is_async: bool) -> ApiErr<String>;
 
     async fn get_propose_result(&self) -> ApiErr<String>;
+
+    /// [`Self::get_listening_name_data_response`], **without the finality floor** — for reading the
+    /// reply channel of a deploy this node submitted itself.
+    ///
+    /// The floor is a rule about what a *caller* may read: a block above the last finalised one may
+    /// yet be rolled back, so a value read out of it is a value from a chain that does not exist yet
+    /// (W-N3-04). The OCapN bridge is not that caller. It waits on the reply channel of a deploy it
+    /// has just had included, and the value it is waiting for is in a block **this node produced** —
+    /// which, on a chain whose finality lags and on every single-validator fixture, where finality
+    /// never advances past genesis at all, is above the floor by construction. Waiting for that block
+    /// to finalise before answering would make the bridge unable to answer, which is a worse failure
+    /// than the one the floor prevents, and it is measured: the three multi-delivery OCapN
+    /// integration tests fail on the floored read and pass on this one.
+    ///
+    /// **Required rather than defaulted, and that is the fix rather than the ceremony.** A default
+    /// that forwarded to the floored read did exactly the wrong thing for the one implementation that
+    /// mattered — `ShardRoutingBlockApi` routes each call to the shard that owns the data, and a
+    /// wrapper that does not forward this one silently answers with the floored read, so the bridge
+    /// went back to timing out on chains whose finality lags. Measured: the three multi-delivery OCapN
+    /// integration tests fail with the default and pass with the forwarding. An implementation that
+    /// does not say what its unfinalised view is now does not compile.
+    async fn get_unfinalised_name_data_response(
+        &self,
+        depth: i32,
+        listening_name: &Par,
+    ) -> ApiErr<(Vec<DataWithBlockInfo>, i32)>;
 
     async fn get_listening_name_data_response(
         &self,
@@ -461,8 +528,48 @@ mod tests {
             ProposerHealth {
                 consecutive_self_validation_failures: 0,
                 autopropose_timer_halted: true,
+                autopropose_timer_halt_episodes: 1,
+                autopropose_tap_suppressed: 0,
                 stale_snapshot_self_equivocations: 0,
             }
         );
+    }
+
+    /// **The count is of halts, not of calls** (W-N10-01).
+    ///
+    /// A second `note_timer_halted` in the same process — a timer that stops twice, or a caller that
+    /// records the same halt twice — must not move it. Falsified by dropping the `swap` guard and
+    /// storing unconditionally, under which the count is 2 and this says so.
+    ///
+    /// **This test does not assert anything about a restart, and the first version of this comment
+    /// claimed it did.** `autopropose_timer_halted`'s real ambiguity — a restarted node reporting
+    /// `false`, indistinguishable from one that never halted — is untouched by an in-memory counter,
+    /// which is also zero after a restart. That case is F-U10-02 and needs a durable record; see the
+    /// field's own doc.
+    #[test]
+    fn a_second_halt_in_one_process_is_not_a_second_episode() {
+        let health = ProposeHealth::new();
+        assert_eq!(health.snapshot().autopropose_timer_halt_episodes, 0);
+
+        health.note_timer_halted();
+        assert_eq!(
+            health.snapshot().autopropose_timer_halt_episodes,
+            1,
+            "the first halt is an episode"
+        );
+        health.note_timer_halted();
+        health.note_timer_halted();
+        assert_eq!(
+            health.snapshot().autopropose_timer_halt_episodes,
+            1,
+            "and further notes of the *same* halt are not: the episode is the transition, not the call"
+        );
+
+        // The tap's own count is separate and monotone, so "the halt cost this many proposals" is a
+        // fact beside "the halt happened once" (W-N4-08).
+        health
+            .tap_suppressed_halted()
+            .fetch_add(3, Ordering::Relaxed);
+        assert_eq!(health.snapshot().autopropose_tap_suppressed, 3);
     }
 }

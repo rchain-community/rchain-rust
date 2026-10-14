@@ -3,7 +3,7 @@
 //! Read paths hit the block store / DAG; write paths (`deploy`, `createBlock`, `getProposeResult`)
 //! drive propose through a caller-supplied trigger + the shared `ProposerState`.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -136,7 +136,128 @@ fn view_blocks_above(dag: &DagRepresentation, lowest_height: i64) -> Vec<Validat
         .collect()
 }
 
+/// The heights a chain-data read may serve, newest first, cut to `depth` **finalised** heights.
+///
+/// **Nothing above the last finalised block is readable** (W-N3-04). `height_map` is the whole DAG,
+/// including blocks this node has accepted and the network has *not* finalised, and this read used to
+/// walk it from the top with no floor — so a caller could read the state of a block that may yet be
+/// rolled back, which is reading a chain that does not exist yet.
+///
+/// The floor is a *height*, which is the cheap form of "is this finalised": finality is a prefix of
+/// the chain, so a fringe cannot finalise out of order, and every block at or below the floor is
+/// finalised while every block above it is not. The `depth` counts finalised heights only, because a
+/// depth of "the last two blocks" is what a caller reading the chain is asking for.
+///
+/// `floor == None` is a DAG that has finalised nothing, and that is **no floor** rather than an empty
+/// set: a node whose finality has not started — and every fixture that never builds a fringe — still
+/// answers from what it holds, as it did before this existed. A `Some` floor that cannot be read is an
+/// error rather than a `None` here, which is what keeps the two apart.
+fn readable_heights(
+    height_map: &BTreeMap<rchain_shared::refined::BlockHeight, BTreeSet<BlockHash>>,
+    floor: Option<rchain_shared::refined::BlockHeight>,
+    depth: usize,
+) -> Vec<&BTreeSet<BlockHash>> {
+    height_map
+        .iter()
+        .rev()
+        .filter(|(height, _)| floor.is_none_or(|floor| **height <= floor))
+        .take(depth)
+        .map(|(_, hashes)| hashes)
+        .collect()
+}
+
+/// Whether this node may sign a finality claim with `key`, and why not if it may not (W-N5-07).
+///
+/// **The propose path has had this gate since #70; the attestation path did not.** An attestation is
+/// a statement the rest of the network counts toward quorum — the fringe rule requires a full
+/// partition of attestations — so a signature from outside the active set is a claim with no standing
+/// made under this node's name, and `finality_attestation` signed one for any caller that asked.
+///
+/// The three answers stay three, deliberately: `Ok(false)` from the gate is "not in the active set",
+/// and an `Err` is "this node cannot read the DAG well enough to say". Both refuse, but only one of
+/// them is about this node's bonds, and the propose path makes the same distinction (AUDIT C67) —
+/// flattening them is what made a broken DAG read look like an unbonded validator.
+pub async fn attestation_is_admissible(
+    dag: &Arc<dyn BlockDagStorage>,
+    key: &[u8],
+) -> Result<(), String> {
+    let sender = Validator::try_from(key).map_err(|e| e.to_string())?;
+    match crate::blocks::proposer::proposer::is_active_validator(dag, &sender).await {
+        Ok(true) => Ok(()),
+        Ok(false) => {
+            Err("this node is not in the active validator set; refusing to attest".to_string())
+        }
+        Err(e) => Err(format!("cannot decide whether this node is bonded: {e}")),
+    }
+}
+
 impl BlockApiImpl {
+    /// The name-data read, with or without the finality floor.
+    ///
+    /// One body rather than two, because the only difference is the floor and a second copy is a
+    /// second place for the depth limit and the sort to drift. `finalised_only` is the public route;
+    /// the node's own reply read is the other (W-N3-04).
+    async fn name_data_response(
+        &self,
+        depth: i32,
+        listening_name: &Par,
+        finalised_only: bool,
+    ) -> ApiErr<(Vec<DataWithBlockInfo>, i32)> {
+        if depth < 0 || depth > self.max_depth_limit {
+            return Err(format!(
+                "Your request on getListeningName depth {depth} exceed the max limit {}",
+                self.max_depth_limit
+            ));
+        }
+        let dag = self.dag.get_representation().await;
+        let floor = match finalised_only {
+            true => self.last_finalized_height().await?,
+            false => None,
+        };
+        let depth_with_limit = depth.min(self.max_depth_limit) as usize;
+        let sorted = sort_par_term(listening_name);
+        let mut out: Vec<DataWithBlockInfo> = Vec::new();
+        for hashes in readable_heights(&dag.height_map, floor, depth_with_limit) {
+            for h in hashes {
+                let block = self.get_block_unsafe(h).await?;
+                if let Some(d) = self.get_data_with_block_info(&sorted, &block).await? {
+                    out.push(d);
+                }
+            }
+        }
+        let len = out.len() as i32;
+        Ok((out, len))
+    }
+
+    /// The height of the last finalised block, or `None` on a DAG that has finalised nothing.
+    ///
+    /// **The floor a read of chain data has to have** (W-N3-04). `height_map` is the whole DAG,
+    /// including blocks this node has accepted and the network has *not* finalised, and it is
+    /// height-ordered — so a height floor is the cheap form of "is this finalised": finality is a
+    /// prefix of the chain (a fringe cannot finalise out of order), so every block at or below the
+    /// floor is finalised and every block above it is not.
+    ///
+    /// A finalised hash with no metadata is an error rather than `None`: treating it as "no floor"
+    /// would silently serve exactly what this exists to withhold, and an unreadable finalised block
+    /// is a node in a state it should say so about.
+    async fn last_finalized_height(&self) -> ApiErr<Option<rchain_shared::refined::BlockHeight>> {
+        let dag = self.dag.get_representation().await;
+        let Some(hash) = dag.last_finalized_block_hash() else {
+            return Ok(None);
+        };
+        self.dag
+            .lookup(&hash)
+            .await?
+            .map(|meta| meta.block_num)
+            .ok_or_else(|| {
+                format!(
+                    "the DAG names {} as finalised but holds no metadata for it",
+                    hash.to_hex()
+                )
+            })
+            .map(Some)
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         dag: Arc<dyn BlockDagStorage>,
@@ -538,31 +659,17 @@ impl BlockApi for BlockApiImpl {
         depth: i32,
         listening_name: &Par,
     ) -> ApiErr<(Vec<DataWithBlockInfo>, i32)> {
-        if depth < 0 || depth > self.max_depth_limit {
-            return Err(format!(
-                "Your request on getListeningName depth {depth} exceed the max limit {}",
-                self.max_depth_limit
-            ));
-        }
-        let dag = self.dag.get_representation().await;
-        let depth_with_limit = depth.min(self.max_depth_limit) as usize;
-        let sorted = sort_par_term(listening_name);
-        let mut out: Vec<DataWithBlockInfo> = Vec::new();
-        let mut heights = 0usize;
-        for (_h, hashes) in dag.height_map.iter().rev() {
-            if heights >= depth_with_limit {
-                break;
-            }
-            heights += 1;
-            for h in hashes {
-                let block = self.get_block_unsafe(h).await?;
-                if let Some(d) = self.get_data_with_block_info(&sorted, &block).await? {
-                    out.push(d);
-                }
-            }
-        }
-        let len = out.len() as i32;
-        Ok((out, len))
+        self.name_data_response(depth, listening_name, true).await
+    }
+
+    /// The same read with no finality floor, for the node's own reply channel — see the trait's doc
+    /// for why the bridge is not the caller the floor is written for.
+    async fn get_unfinalised_name_data_response(
+        &self,
+        depth: i32,
+        listening_name: &Par,
+    ) -> ApiErr<(Vec<DataWithBlockInfo>, i32)> {
+        self.name_data_response(depth, listening_name, false).await
     }
 
     async fn get_listening_name_continuation_response(
@@ -577,15 +684,11 @@ impl BlockApi for BlockApiImpl {
             ));
         }
         let dag = self.dag.get_representation().await;
+        let floor = self.last_finalized_height().await?;
         let depth_with_limit = depth.min(self.max_depth_limit) as usize;
         let sorted: Vec<Par> = listening_names.iter().map(sort_par_term).collect();
         let mut out: Vec<ContinuationsWithBlockInfo> = Vec::new();
-        let mut heights = 0usize;
-        for (_h, hashes) in dag.height_map.iter().rev() {
-            if heights >= depth_with_limit {
-                break;
-            }
-            heights += 1;
+        for hashes in readable_heights(&dag.height_map, floor, depth_with_limit) {
             for h in hashes {
                 let block = self.get_block_unsafe(h).await?;
                 if let Some(c) = self
@@ -768,6 +871,9 @@ impl BlockApi for BlockApiImpl {
                 nonce_bytes.len()
             ));
         }
+        // **Before the signature, not after** (W-N5-07): a claim this node is not entitled to make
+        // must not exist even briefly, because the caller can publish it.
+        attestation_is_admissible(&self.dag, identity.public_key.bytes()).await?;
         let dag = self.dag.get_representation().await;
         let hash = dag.last_finalized_block_unsafe()?;
         let sig = identity
@@ -951,6 +1057,53 @@ mod tests {
     ///
     /// The fixture is exactly the case that distinguishes them: height 1 holds a block the fringe
     /// has not finalized, so the old tip read answered with it — and picked it *arbitrarily* out of
+    /// **Nothing above the last finalised block is read** (W-N3-04).
+    ///
+    /// `data-at-name` and its continuation sibling walked `height_map` — the *whole* DAG, including
+    /// blocks this node has accepted and the network has not finalised — from the top with no floor,
+    /// so a caller could read the state of a block that may yet be rolled back.
+    ///
+    /// Falsified by dropping the floor filter: the third and fourth assertions then see height 5,
+    /// which is exactly the block the row is about.
+    #[test]
+    fn only_finalised_heights_are_readable() {
+        use rchain_shared::refined::BlockHeight;
+
+        let at = |h: i64| BlockHeight::try_from(h).expect("a height");
+        let hash = |b: u8| BlockHash::new([b; 32]);
+        let map: BTreeMap<BlockHeight, BTreeSet<BlockHash>> = (1..=5)
+            .map(|h| (at(h), BTreeSet::from([hash(h as u8)])))
+            .collect();
+
+        // Newest first, and cut to the requested depth.
+        let newest = readable_heights(&map, None, 3);
+        assert_eq!(newest.len(), 3);
+        assert!(
+            newest[0].contains(&hash(5)),
+            "the newest height comes first"
+        );
+
+        // **The floor.** Heights 3, 2 and 1 are readable; 5 and 4 are not.
+        let finalised = readable_heights(&map, Some(at(3)), 10);
+        assert_eq!(finalised.len(), 3, "heights 3, 2 and 1");
+        assert!(
+            !finalised
+                .iter()
+                .any(|set| set.contains(&hash(5)) || set.contains(&hash(4))),
+            "no block above the floor may be read: {finalised:?}"
+        );
+        assert!(
+            finalised[0].contains(&hash(3)),
+            "and the floor itself is finalised, so it is read"
+        );
+
+        // **The depth counts finalised heights.** With the floor at 3 and a depth of 2 the read is
+        // heights 3 and 2 — not 5 and 4, which is what counting from the top would give.
+        let cut = readable_heights(&map, Some(at(3)), 2);
+        assert_eq!(cut.len(), 2);
+        assert!(cut[0].contains(&hash(3)) && cut[1].contains(&hash(2)));
+    }
+
     /// that height's set. The finalized block at height 0 is the only block two honest nodes must
     /// agree on, which is the whole reason the read is anchored there.
     #[test]

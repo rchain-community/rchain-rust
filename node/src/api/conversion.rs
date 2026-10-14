@@ -13,33 +13,19 @@ use rchain_models::casper::protocol::deploy_service::{
 use rchain_shared::base16;
 
 use super::dto::{
-    ApiStatus, DataAtNameResponse, DeployExecStatus as ApiDeployExecStatus, DeployRequest,
-    ExploratoryDeployResponse, NodeCapabilities, PooledDeploy, RhoDataResponse, RhoExprWithBlock,
-    SignatureException, SyncStatus, VersionInfo,
+    DataAtNameResponse, DeployExecStatus as ApiDeployExecStatus, DeployRequest,
+    ExploratoryDeployResponse, NodeCapabilities, OperatorStatus, PooledDeploy, PublicStatus,
+    RhoDataResponse, RhoExprWithBlock, SignatureException, SyncStatus, VersionInfo,
 };
 use super::rho_expr::{expr_from_par, RhoExpr};
 
-/// Map a casper `Status` + `Capabilities` + the proposer's health to an `ApiStatus` (port of
-/// `toApiStatus`).
+/// **The public half, and it takes no operator data — which is the point of the split** (W-N3-01).
 ///
-/// **The third argument is #157's, and it is not a capability.** `Capabilities` reports what the node
-/// was *configured* to do (`--autopropose` and friends); `ProposerHealth` reports what it is *doing* —
-/// how many self-validation failures it has recorded in a row, and whether its autopropose timer has
-/// stopped. `Status` is the wrong home for it for a second reason: that struct is a wire type with a
-/// protobuf counterpart, so adding a field there would force a schema change for a value the gRPC
-/// surface has no use for.
-pub fn to_api_status(
-    status: &Status,
-    caps: &Capabilities,
-    health: &ProposerHealth,
-    finality: &FinalityHealth,
-    sync: Option<&SyncHealth>,
-    poison_recoveries: u64,
-    tasks_panicked: u64,
-    tasks_exited: u64,
-    undelivered_sends: u64,
-) -> ApiStatus {
-    ApiStatus {
+/// There is no `health`, `finality`, `reset_marker` or reporter argument here. A field added to one of
+/// those cannot appear on the public port because this function could not read it: the leak that a
+/// single struct with two serializers invites is a *compile error* rather than a review miss.
+pub fn to_public_status(status: &Status, caps: &Capabilities) -> PublicStatus {
+    PublicStatus {
         version: VersionInfo {
             api: status.version.api.clone(),
             node: status.version.node.clone(),
@@ -54,14 +40,38 @@ pub fn to_api_status(
         autopropose: caps.autopropose,
         propose_on_deploy: caps.propose_on_deploy,
         manual_propose: caps.manual_propose,
-        admin_http: caps.admin_http,
         dev_mode: caps.dev_mode,
+    }
+}
+
+/// The operator half, on top of the public core the caller already built.
+#[allow(clippy::too_many_arguments)]
+pub fn to_operator_status(
+    core: PublicStatus,
+    caps: &Capabilities,
+    health: &ProposerHealth,
+    finality: &FinalityHealth,
+    sync: Option<&SyncHealth>,
+    // F-U12-02: the reset marker's own reading, threaded in like `sync` rather than fetched here, so a
+    // caller that has no store still maps a status deterministically.
+    reset_marker: Option<String>,
+    poison_recoveries: u64,
+    tasks_panicked: u64,
+    tasks_exited: u64,
+    undelivered_sends: u64,
+) -> OperatorStatus {
+    OperatorStatus {
+        core,
+        admin_http: caps.admin_http,
         consecutive_self_validation_failures: health.consecutive_self_validation_failures,
         autopropose_timer_halted: health.autopropose_timer_halted,
+        autopropose_timer_halt_episodes: health.autopropose_timer_halt_episodes,
+        autopropose_tap_suppressed: health.autopropose_tap_suppressed,
         stale_snapshot_self_equivocations: health.stale_snapshot_self_equivocations,
         finality_stall: finality.stall_reason.clone(),
         finality_stalled: finality.stall_sustained,
         finality_stall_episodes: finality.stall_episodes,
+        reset_marker,
         non_quiet_merge_reports: finality.non_quiet_merge_reports,
         // Law 69's other half: the sync task's own state, threaded in by the caller exactly as
         // `finality` is. **`None` travels as `null` rather than as a zeroed object** — a reader must be
@@ -253,6 +263,8 @@ mod tests {
         let health = ProposerHealth {
             consecutive_self_validation_failures: 3,
             autopropose_timer_halted: true,
+            autopropose_timer_halt_episodes: 1,
+            autopropose_tap_suppressed: 4,
             stale_snapshot_self_equivocations: 5,
         };
         let finality = FinalityHealth {
@@ -267,16 +279,43 @@ mod tests {
         };
         // The sync reading is a parameter like `finality`, and the `None` arm is the ordinary one:
         // this process's sync task has returned.
-        let api = to_api_status(&status, &caps, &health, &finality, None, 11, 2, 40, 7);
-        assert_eq!(api.version.api, "1.0");
-        assert_eq!(api.address, "addr");
-        assert_eq!(api.min_phlo_price, 3);
-        assert!(api.autopropose);
-        assert!(!api.manual_propose);
+        // **Two constructors, and which one a field lives on is the subject of the split** (W-N3-01):
+        // `to_public_status` cannot see the health, the finality counters or the reporter counts, so a
+        // field moved into the operator half by mistake is a compile error rather than a leak.
+        let core = to_public_status(&status, &caps);
+        let api = to_operator_status(
+            core.clone(),
+            &caps,
+            &health,
+            &finality,
+            None,
+            None,
+            11,
+            2,
+            40,
+            7,
+        );
+        assert_eq!(core.version.api, "1.0");
+        assert_eq!(core.address, "addr");
+        assert_eq!(core.min_phlo_price, 3);
+        assert!(core.autopropose);
+        assert!(!core.manual_propose);
+        // The operator half is a **superset** — `#[serde(flatten)]` on the wire and the same `core` in
+        // the struct — so a client can move between the two routes without a shape change.
+        assert_eq!(api.core, core);
+        // …and `adminHttp` is the one field that *moved* rather than being added: it tells an
+        // unauthenticated caller that the actuator port is published.
+        assert!(api.admin_http);
         // #157: the health is carried through, and it is the third source rather than a capability —
         // the configured mode above says nothing about whether the proposer is failing.
         assert_eq!(api.consecutive_self_validation_failures, 3);
         assert!(api.autopropose_timer_halted);
+        // W-N10-01: the **episode count** beside the sticky flag, which is what survives a restart —
+        // the flag alone reads `false` on a node that restarted after halting.
+        assert_eq!(api.autopropose_timer_halt_episodes, 1);
+        // W-N4-08: and what the halt cost, counted where it was refused. Without the tap's count the
+        // halt was a flag the tap ignored.
+        assert_eq!(api.autopropose_tap_suppressed, 4);
         // #156: the stale-snapshot count is carried too, distinct from the halt.
         assert_eq!(api.stale_snapshot_self_equivocations, 5);
         // C249's F-U10-01: the *reason* finality is not advancing reaches the surface rather than only
@@ -315,6 +354,74 @@ mod tests {
         // confused with "synced fine". The `Some` shape needs a running sync task, and its decision is
         // pinned in `node_syncing`'s own test where the statics live.
         assert_eq!(api.sync, None);
+    }
+
+    /// **The public status carries no operator key** (W-N3-01), asserted on the *serialized* form
+    /// rather than on the struct: a `#[serde(flatten)]` mistake, a rename, or a field added to
+    /// `PublicStatus` that belongs on the other half would all show up as a key here and nowhere else
+    /// in the type system.
+    ///
+    /// The keys are the ones the row names. Falsified by moving any of them back: this is the test
+    /// that fails, and the compiler is what fails first for the two the constructors separate.
+    #[test]
+    fn the_public_status_serializes_no_operator_key() {
+        let status = Status {
+            version: CasperVersionInfo {
+                api: "1".to_string(),
+                node: "2".to_string(),
+            },
+            address: "addr".to_string(),
+            network_id: "testnet".to_string(),
+            shard_id: "root".to_string(),
+            peers: 0,
+            nodes: 0,
+            min_phlo_price: 0,
+            latest_block_number: 0,
+        };
+        let caps = Capabilities {
+            autopropose: false,
+            propose_on_deploy: false,
+            manual_propose: false,
+            admin_http: true,
+            dev_mode: false,
+        };
+        let json = serde_json::to_value(to_public_status(&status, &caps)).expect("serializes");
+        let keys: Vec<&str> = json
+            .as_object()
+            .expect("an object")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        for forbidden in [
+            "adminHttp",
+            "resetMarker",
+            "unrestorableBlock",
+            "unrestorableRecords",
+            "autoproposeTimerHalted",
+            "consecutiveSelfValidationFailures",
+            "staleSnapshotSelfEquivocations",
+            "finalityStall",
+            "finalityStalled",
+            "finalityStallEpisodes",
+            "nonQuietMergeReports",
+            "sync",
+            "poisonRecoveries",
+            "tasksPanicked",
+            "tasksExited",
+            "undeliveredSends",
+        ] {
+            assert!(
+                !keys.contains(&forbidden),
+                "the public status must not carry operator state: {forbidden} is in {keys:?}"
+            );
+        }
+        // And the public fields *are* there, so the assertion above is not passing on an empty object.
+        for expected in ["version", "address", "networkId", "shardId", "devMode"] {
+            assert!(
+                keys.contains(&expected),
+                "the public status must still carry {expected}: {keys:?}"
+            );
+        }
     }
 
     #[test]

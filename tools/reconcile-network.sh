@@ -192,7 +192,7 @@ data_volume() {
 # marked a stopgap because it depends on the data-dir layout being movable — the thing #287's design
 # deliberately avoided depending on.
 restore_chain_state_from_master() {
-  local n="$1" mvol vol mdir dir
+  local n="$1" mvol vol mdir dir staging
   if [ "$CONTROL" = "docker" ]; then
     # `$MASTER` is the node's *name*; the container that holds its volume is `UNIT[$MASTER]`. Passing the
     # name is the bug that made this report "no data volume on A" while the volume sat there — found by
@@ -230,11 +230,27 @@ restore_chain_state_from_master() {
     mdir="$($SSH "root@${HOST[$MASTER]}" "systemctl cat ${UNIT[$MASTER]} | grep -oP '(?<=--data-dir ).*?(?= |\$)' | head -1" 2>/dev/null)"
     dir="$($SSH "root@${HOST[$n]}" "systemctl cat ${UNIT[$n]} | grep -oP '(?<=--data-dir ).*?(?= |\$)' | head -1" 2>/dev/null)"
     [ -z "$mdir" ] || [ -z "$dir" ] && { echo "    WARNING: a --data-dir could not be read" >&2; return 1; }
-    # tar on the survivor, stream through this host, untar on the joiner: no key between the two.
+    # **Copy beside, then swap, on this side too** (2026-10-13, §107's D6). The first form streamed the
+    # tar straight into the live data directory: a failure mid-stream left the joiner partially written
+    # while it printed *"unchanged"*, and a directory the survivor does not have survived the
+    # "restore" — the divergence residue this mode exists to remove. The tar now lands beside the data
+    # dir and each environment is swapped only once the whole copy has arrived, which is what makes
+    # "unchanged" true when it is printed. tar on the survivor, through this host, so no key passes
+    # between the two.
+    staging="$dir.reconcile-new-$$"
     $SSH "root@${HOST[$MASTER]}" "tar -C '$mdir' -cf - $CHAIN_ENVS" 2>/dev/null \
-      | $SSH "root@${HOST[$n]}" "mkdir -p '$dir' && tar -C '$dir' -xf - && find '$dir' -name lock.mdb -delete" 2>/dev/null \
-      && echo "    chain state streamed from ${MASTER} to $n; identity and genesis untouched" \
-      || { echo "    WARNING: the copy failed — $n is unchanged" >&2; return 1; }
+      | $SSH "root@${HOST[$n]}" "set -e
+          rm -rf '$staging' && mkdir -p '$staging' && tar -C '$staging' -xf -
+          for d in $CHAIN_ENVS; do
+            [ -e '$staging'/\$d ] || continue
+            mkdir -p '$dir'/\$(dirname \$d)
+            rm -rf '$dir'/\$d
+            mv '$staging'/\$d '$dir'/\$d
+          done
+          rm -rf '$staging'
+          find '$dir' -name lock.mdb -delete" 2>/dev/null \
+      && echo "    chain state copied beside and swapped in from ${MASTER}; identity and genesis untouched" \
+      || { echo "    WARNING: the copy failed — $n is unchanged unless the swap had begun (staging: $staging)" >&2; return 1; }
   fi
 }
 
@@ -279,6 +295,14 @@ move_data_dir_aside() {
     vol="$(docker inspect -f '{{range .Mounts}}{{if eq .Destination "/var/lib/rnode"}}{{.Name}}{{end}}{{end}}' "$unit" 2>/dev/null)"
     if [ -z "$vol" ]; then echo "    WARNING: no data volume found on $unit — refusing" >&2; return 1; fi
     backup="${RECONCILE_BACKUP_DIR:-$PWD/target}/reconcile-backup-${vol}-${ts}.tar"
+    # **Never overwrite an aside** (2026-10-13, §107's D6). `TS` was to the minute, so two runs in one
+    # minute named the same file and `tar cf` wrote the *second* run's — already-cleared — volume over
+    # the first run's backup, which is the only copy of the state the operator still had. The name is to
+    # the second now, and this refuses rather than trusting it: a collision is a reason to stop, not to
+    # lose the thing the aside exists for.
+    if [ -e "$backup" ]; then
+      echo "    WARNING: $backup already exists — refusing to overwrite a backup" >&2; return 1
+    fi
     docker run --rm -v "$vol":/data -v "$(dirname "$backup")":/backup alpine \
       tar cf "/backup/$(basename "$backup")" -C /data . >/dev/null 2>&1 \
       && echo "    $vol backed up to $backup (never deleted — this is the 'aside')" \
@@ -919,7 +943,7 @@ if [ "$RESTORE" = "1" ]; then
   echo "  stopgap because it depends on the data-dir layout being movable — which #287's design"
   echo "  deliberately avoided depending on — and not a substitute for an agreed anchor."
 
-  TS=$(date -u +%Y%m%d-%H%M)
+  TS=$(date -u +%Y%m%d-%H%M%S)
   echo "== 7. chain state copied onto each joiner (identity and genesis untouched) =="
   for n in "${NAMES[@]}"; do
     [ "$n" = "$MASTER" ] && continue
@@ -950,7 +974,7 @@ for n in "${NAMES[@]}"; do
   echo "  $n:"; stop_node "$n" || { echo "REFUSING: node stop failed: $n" >&2; exit 6; }
 done
 
-TS=$(date -u +%Y%m%d-%H%M)
+TS=$(date -u +%Y%m%d-%H%M%S)
 echo "== 6. data directories moved aside (never deleted) =="
 for n in "${NAMES[@]}"; do
   [ "$n" = "$MASTER" ] && continue

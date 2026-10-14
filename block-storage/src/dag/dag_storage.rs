@@ -11,6 +11,7 @@ use async_trait::async_trait;
 use rchain_models::block_hash::BlockHash;
 use rchain_models::block_metadata::BlockMetadata;
 use rchain_models::casper::protocol::casper_message::{BlockMessage, SignedDeployData};
+use rchain_shared::lock::Unpoison;
 use rchain_shared::refined::BlockHeight;
 
 use super::representation::DagRepresentation;
@@ -233,9 +234,113 @@ pub trait BlockDagStorage: Send + Sync {
     /// Add a deploy to the (unprocessed) deploy pool.
     async fn add_deploy(&self, deploy: SignedDeployData) -> Result<(), String>;
 
+    /// **Reserve the submitter's place in the pool, before its term is parsed** (W-N2-05, W-N12-03).
+    ///
+    /// The split from [`Self::admit_deploy`]'s other half exists because the term is parsed and
+    /// normalized *between* the two: a deploy that the submitter's own bounds would refuse must be
+    /// refused before that work, and a deploy whose parse fails must give its place back. `add_deploy`
+    /// is both halves at once, which is the right shape when there is nothing in between.
+    ///
+    /// The default reserves nothing, so a test double that does not track a per-submitter share does
+    /// not have to implement this; the concrete storage is where the share lives.
+    async fn admit_deploy(&self, _deployer: &[u8]) -> Result<DeployPermit, String> {
+        Ok(DeployPermit::default())
+    }
+
+    /// Store a deploy that was admitted, handing over the place [`Self::admit_deploy`] reserved.
+    ///
+    /// The default is the whole of `add_deploy`, which is the pre-split behaviour: a storage that does
+    /// not implement the reservation cannot have one to hand over.
+    async fn commit_deploy(
+        &self,
+        _permit: DeployPermit,
+        deploy: SignedDeployData,
+    ) -> Result<(), String> {
+        self.add_deploy(deploy).await
+    }
+
     async fn pooled_deploys(&self) -> Result<BTreeMap<DeployId, SignedDeployData>, String>;
 
     async fn contains_deploy_in_pool(&self, deploy_id: &DeployId) -> Result<bool, String>;
+}
+
+/// A reservation of the submitter's place in the deploy pool, from admission until the deploy is
+/// stored — or until it is dropped, which returns the place.
+///
+/// **Opaque, and that is the point:** what it holds is the storage's business, and the caller that
+/// parses the term in between has no use for it. `Default` reserves nothing, which is what a storage
+/// that does not track a share returns from [`BlockDagStorage::admit_deploy`].
+#[derive(Default)]
+pub struct DeployPermit {
+    /// The share this permit holds: the pool's per-deployer counts, and the key it claimed in them.
+    /// `None` for a storage with no such accounting.
+    ///
+    /// An `Arc` because the permit outlives any borrow of the storage it came from — the term is
+    /// parsed between admission and commit, and holding a borrow across that would be a borrow of the
+    /// DAG for as long as a caller's parse takes.
+    share: Option<(
+        Arc<std::sync::Mutex<std::collections::HashMap<Vec<u8>, usize>>>,
+        Vec<u8>,
+    )>,
+    /// Set by [`BlockDagStorage::commit_deploy`], so dropping the permit after a successful commit
+    /// does not give back a place the stored deploy now owns.
+    committed: bool,
+}
+
+impl DeployPermit {
+    /// Hand the reservation over to a stored deploy: the place is now the deploy's, and dropping this
+    /// must not return it.
+    pub fn commit(&mut self) {
+        self.committed = true;
+    }
+
+    /// A permit that holds a share, for the storage that tracks one.
+    pub fn holding(
+        share: Arc<std::sync::Mutex<std::collections::HashMap<Vec<u8>, usize>>>,
+        deployer: Vec<u8>,
+    ) -> Self {
+        DeployPermit {
+            share: Some((share, deployer)),
+            committed: false,
+        }
+    }
+}
+
+impl Drop for DeployPermit {
+    fn drop(&mut self) {
+        if self.committed {
+            return;
+        }
+        if let Some((share, deployer)) = &self.share {
+            release_deployer_share(share, deployer);
+        }
+    }
+}
+
+/// Return one place to `deployer`'s share, dropping the entry at zero.
+///
+/// An entry at zero carries nothing a missing one does not, and keeping it would let the map outlive
+/// the deploys it counts — the rule `KeyedRateLimiter` applies to a bucket that has refilled.
+///
+/// **A missing entry is not an error.** Two removal paths can see the same deploy — an expiry and a
+/// block that includes it — and the second releasing a place the first already returned is the
+/// fail-*safe* direction: the share reads one too small, so a deployer may hold one deploy more than
+/// its quota until a restart rebuilds the map from the store. The opposite, a *missed* release, is a
+/// permanent lockout, and that is why every release happens only after the delete it accompanies has
+/// succeeded, and why the lock is taken even when poisoned: this is a return path, and skipping it
+/// would leak the place for the life of the process.
+pub fn release_deployer_share(
+    share: &std::sync::Mutex<std::collections::HashMap<Vec<u8>, usize>>,
+    deployer: &[u8],
+) {
+    let mut counts = share.lock().unpoison();
+    match counts.get_mut(deployer) {
+        Some(held) if *held > 1 => *held -= 1,
+        Some(_) => {
+            counts.remove(deployer);
+        }
+        None => {}
+    }
 }
 
 #[cfg(test)]

@@ -243,6 +243,18 @@ impl BlockApi for TestShardApi {
         Ok(rchain_shared::base16::encode(&d.sig))
     }
 
+    /// Delegates to the floored read: this double has no unfinalised view of its own, and the method
+    /// is required rather than defaulted so that is a decision rather than an oversight
+    /// (`ShardRoutingBlockApi` is the implementation that had to forward it for real).
+    async fn get_unfinalised_name_data_response(
+        &self,
+        depth: i32,
+        listening_name: &Par,
+    ) -> ApiErr<(Vec<DataWithBlockInfo>, i32)> {
+        self.get_listening_name_data_response(depth, listening_name)
+            .await
+    }
+
     async fn get_listening_name_data_response(
         &self,
         depth: i32,

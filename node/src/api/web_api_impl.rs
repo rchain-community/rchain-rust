@@ -23,13 +23,14 @@ use rchain_rholang::util::rev_address::RevAddress;
 use rchain_shared::base16;
 
 use super::conversion::{
-    to_api_status, to_data_at_name_response, to_deploy_exec_status, to_exploratory_deploy_response,
-    to_node_capabilities, to_pooled_deploy, to_rho_data_response, to_signed_deploy,
+    to_data_at_name_response, to_deploy_exec_status, to_exploratory_deploy_response,
+    to_node_capabilities, to_pooled_deploy, to_public_status, to_rho_data_response,
+    to_signed_deploy,
 };
 use super::dto::{
-    ApiStatus, BlockApiException, DataAtNameByBlockHashRequest, DataAtNameRequest,
-    DataAtNameResponse, DeployExecStatus, DeployRequest, ExploratoryDeployResponse,
-    FaucetDripStatus, FaucetResponse, NodeCapabilities, PooledDeploys, RhoDataResponse,
+    BlockApiException, DataAtNameByBlockHashRequest, DataAtNameRequest, DataAtNameResponse,
+    DeployExecStatus, DeployRequest, ExploratoryDeployResponse, FaucetDripStatus, FaucetResponse,
+    NodeCapabilities, PooledDeploys, RhoDataResponse,
 };
 use super::faucet;
 use super::rho_expr::{rho_expr_to_par, unforg_to_par};
@@ -346,6 +347,18 @@ mod tests {
         async fn get_propose_result(&self) -> ApiErr<String> {
             unreachable!("WebApiImpl does not read propose results")
         }
+        /// Delegates to the floored read: this double has no unfinalised view of its own, and the
+        /// method is required rather than defaulted so that is a decision rather than an oversight
+        /// (`ShardRoutingBlockApi` is the implementation that had to forward it for real).
+        async fn get_unfinalised_name_data_response(
+            &self,
+            depth: i32,
+            listening_name: &Par,
+        ) -> ApiErr<(Vec<DataWithBlockInfo>, i32)> {
+            self.get_listening_name_data_response(depth, listening_name)
+                .await
+        }
+
         async fn get_listening_name_data_response(
             &self,
             _: i32,
@@ -1040,36 +1053,17 @@ mod tests {
 
 #[async_trait]
 impl WebApi for WebApiImpl {
-    async fn status(&self) -> Result<ApiStatus, BlockApiException> {
+    /// **The public status, and it reads no operator state at all** (W-N3-01).
+    ///
+    /// It used to read the proposer's health, the finality counters, the reset marker and three
+    /// process-wide counters, and serve all of it to anyone who could reach the public port. The
+    /// operator half is `AdminWebApi::operator_status` on the admin listener now. The reads are gone
+    /// from *here* as well as from the response: a public status call no longer touches the health
+    /// cells, so a slow or absent store cannot delay it either.
+    async fn status(&self) -> Result<crate::api::dto::PublicStatus, BlockApiException> {
         let status = self.block_api.status().await;
         let caps = self.block_api.capabilities().await;
-        let health = self.block_api.proposer_health().await;
-        // C249's F-U10-01: the merge's and finality's observations, which reached the log and nothing
-        // else — plus the poisoned-lock count, read from `rspace` because the poisoning is a
-        // storage-layer event and the count is process-wide (F-U9-03).
-        let finality = self.block_api.finality_health().await;
-        // Law 69's other half: the sync task's own state, so a node latched in `NodeSyncing` says so on
-        // this surface instead of only on stderr. `None` is the ordinary reading — the task has
-        // returned — and it is not the same as a completed sync.
-        let sync = self.block_api.sync_health().await;
-        Ok(to_api_status(
-            &status,
-            &caps,
-            &health,
-            &finality,
-            sync.as_ref(),
-            rchain_rspace::lock::poison_recoveries(),
-            // C254: the supervisor's counters. Every long-lived background task is watched by
-            // `rchain_shared::supervise::spawn_supervised`, so "a subsystem stopped" is a number a
-            // probe can read rather than an absence an operator has to infer from the silence.
-            rchain_shared::supervise::tasks_panicked(),
-            rchain_shared::supervise::tasks_exited(),
-            // C254's other residual: `rchain_shared::chan` counts every send a closed channel
-            // swallowed, and nothing published the count — its own module doc said "the surface beside
-            // `poisonRecoveries` … is the next increment". Same shape as the two above: process-wide,
-            // monotone, and the number a silently dropped message would have moved.
-            rchain_shared::chan::undelivered_sends(),
-        ))
+        Ok(to_public_status(&status, &caps))
     }
 
     async fn deploy(&self, request: &DeployRequest) -> Result<String, BlockApiException> {
