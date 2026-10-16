@@ -33,7 +33,7 @@ Two consequences follow directly.
   it is a payment out of the same vault rather than a second pot: the pie is what was burned, and this
   decides who gets a slice of it (below).
 
-## The developer allocation is a genesis vault, not a levy
+## The developer allocation is a genesis account, not a levy
 
 One REV address is credited at genesis that **no wallets file names**: an allocation to the developer, of
 `max(20 000 000 REV, 2% of the total the wallets file allocates)`. The two arms cross at exactly one
@@ -46,7 +46,7 @@ Two things follow from *where* it sits, and both are worth stating because the s
 differently as a different mechanism:
 
 - **It is not a levy on fees, and it is not a mint.** REV's issuer has no mint arm, so nothing here
-  creates REV: the vault is written once, at genesis, by the same installation that writes every other
+  creates REV: the account is written once, at genesis, by the same installation that writes every other
   wallet. `executor-share` and the epoch pot are untouched, and no boundary pays the allocation anything.
 - **It is consensus state, and it is permanent.** The balance is installed outside the genesis
   block's deploys and content-addressed into the genesis post-state hash (AUDIT C46), so the amount must
