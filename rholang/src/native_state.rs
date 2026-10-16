@@ -2956,6 +2956,17 @@ mod tests {
         assert_eq!(decode_trusted(&encode_trusted(&trusted)).unwrap(), trusted);
     }
 
+    /// **Every field carries a distinct, non-zero value, and that is the point of the fixture.**
+    ///
+    /// The record is positional and an absent field decodes to `0`, and for the fields added later the
+    /// *pre-change rule is `0`* — so a fixture that sets them to zero round-trips green even if `encode`
+    /// and `decode` disagree about their **order**. That is exactly the shape a bad merge of two
+    /// branches that each append to `PosParams` produces: no error, no red test, just a genesis
+    /// parameter holding the neighbouring field's number. Distinct values make a transposition fail
+    /// here instead.
+    ///
+    /// The length assertion is the other half: `PARAMS_LEN` decides how many fields `decode` reads, so
+    /// a fixture that passes while the constant and the encoder disagree is a second silent failure.
     #[test]
     fn params_round_trip() {
         let params = PosParams {
@@ -2965,10 +2976,15 @@ mod tests {
             quarantine_length: 5,
             number_of_active_validators: 3,
             executor_share: NonNegI64::try_from(2500).unwrap(),
-            absence_slack: NonNegI64::try_from(0).unwrap(),
-            participation_grace: NonNegI64::try_from(0).unwrap(),
-            dev_tax_vesting_blocks: NonNegI64::zero(),
+            absence_slack: NonNegI64::try_from(3).unwrap(),
+            participation_grace: NonNegI64::try_from(7).unwrap(),
+            dev_tax_vesting_blocks: NonNegI64::try_from(11).unwrap(),
         };
+        assert_eq!(
+            params.encode().len(),
+            PARAMS_LEN,
+            "the encoder writes exactly the fields the decoder reads"
+        );
         assert_eq!(decode_params(&params.encode()).unwrap(), params);
     }
 
