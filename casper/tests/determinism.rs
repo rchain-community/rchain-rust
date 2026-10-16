@@ -735,6 +735,7 @@ async fn play_and_replay_agree_for_a_block_with_a_close_block_deploy() {
             minimum_bond: rchain_shared::refined::NonNegI64::try_from(1).unwrap(),
             ..Default::default()
         },
+        dev_vesting: None,
     };
     let (_pre, post, _) = rm
         .compute_genesis(
@@ -848,6 +849,7 @@ async fn a_block_replayed_against_a_different_fringe_reaches_a_different_post_st
             minimum_bond: rchain_shared::refined::NonNegI64::try_from(1).unwrap(),
             ..Default::default()
         },
+        dev_vesting: None,
     };
     let (_pre, genesis_post, _) = rm
         .compute_genesis(
@@ -1082,6 +1084,7 @@ async fn the_producer_is_paid_a_share_of_the_burned_phlo_on_play_and_replay() {
             executor_share: NonNegI64::try_from(2_500).expect("a quarter"),
             ..PosParams::default()
         },
+        dev_vesting: None,
     };
     let (_pre, genesis_post, _) = rm
         .compute_genesis(&[], &rand, BlockData::empty(), &pos, &[seeded_vault()])

@@ -4158,9 +4158,10 @@ def laws : List Law := [
       census says what removing it buys." },
   { number := 78, layer := "Casper",
     statement := "**The genesis carries a developer allocation, derived from the total the wallets \
-      file allocates.** One vault that no wallets file contains is credited at genesis with \
-      `max(20 000 000 REV, 2% of the allocated total)` — so below a one-billion-REV allocation the \
-      floor governs and at or above it the rate does — and the creator of the genesis and a node \
+      file allocates.** One allocation that no wallets file contains is credited at genesis — to a \
+      **vesting account**, not a spendable vault: *when* it becomes spendable is Law 79 — of \
+      `max(20 000 000 REV, 2% of the allocated total)`, so below a one-billion-REV allocation the \
+      floor governs and at or above it the rate does, and the creator of the genesis and a node \
       replaying it derive the same amount from the same file",
     status := .provedModel,
     declarations := [`Rchain.devTaxAmount, `Rchain.devTaxFloor, `Rchain.devTaxBps,
@@ -4193,6 +4194,44 @@ def laws : List Law := [
       claim**: nothing here is about the allocation being owed, just, or final — those are the \
       decision this row records, taken 2026-10-16, and the arithmetic is the only part a machine can \
       check." },
+  { number := 79, layer := "Casper",
+    statement := "**The developer allocation unlocks on a schedule, and never runs ahead of it.** The \
+      genesis credits it to a vesting account rather than a vault, and each epoch boundary moves what \
+      has vested into the recipient's own vault: the vested fraction is the schedule position, linear \
+      in the height, zero at genesis and total at the end, and a duration of `0` is *no schedule* \
+      rather than a zero-length one",
+    status := .provedModel,
+    declarations := [`Rchain.devTaxVested, `Rchain.devTaxVested_zero_duration,
+      `Rchain.devTaxVested_at_genesis, `Rchain.devTaxVested_at_end,
+      `Rchain.devTaxVested_le_allocation, `Rchain.devTaxVested_monotone],
+    axioms := [],
+    rust := ["rholang/src/native_state.rs", "casper/src/genesis/mod.rs",
+      "node/src/configuration/defaults.conf"],
+    rustWitness := ["rholang/src/native_state.rs:the_dev_allocation_vests_linearly_and_releases_at_boundaries"],
+    witness := [`Rchain.devTaxVested_le_allocation, `Rchain.devTaxVested_monotone,
+      `Rchain.the_schedule_is_not_a_constant, `Rchain.the_schedule_truncates],
+    falsifiable := "The bound and the monotonicity are the falsifiers, and they are what the release \
+      depends on: the release moves `vested − released`, so `devTaxVested_le_allocation` is what keeps \
+      the recipient's vault bounded by the allocation however long the chain runs, and \
+      `devTaxVested_monotone` is what keeps that difference non-negative. \
+      `the_schedule_is_not_a_constant` is the non-vacuity witness — without it every theorem here \
+      would hold of `fun _ => allocation` — and `the_schedule_truncates` pins the direction of the \
+      rounding, which is toward the network rather than the recipient.",
+    note := "**Why this row exists, and what it is for.** Law 78 fixes *how much* the genesis owes; on \
+      its own that is an allocation credited to a vault at genesis and therefore spendable at genesis — \
+      an immediate claim on the whole amount. This row is the schedule that makes it not that. The \
+      allocation is installed into a **vesting account** (`pos:dev-vesting`, holding the recipient, the \
+      total and the unreleased balance in one record) by the same `install_genesis` both the ceremony \
+      and a replaying node call, and `close_block` releases at epoch boundaries — last, and \
+      deliberately independent of the reward steps, because it debits that account and credits a *user* \
+      vault and so can reach neither the staking vault nor the pot. **The term is a genesis \
+      parameter, not a constant** (`dev-tax-vesting-blocks`, 36 months at the cadence \
+      `defaults.conf` states): the arithmetic is this row's, the term is the deal's, and the block \
+      cadence is not a constant in this tree (`docs/src/node/scaling.md`), so a month is an assumption \
+      the parameter makes visible. **What it does not claim**: nothing here is about the term being the \
+      right one. **And the granularity is the epoch, not the block** — native state is written at \
+      boundaries — which is stated because a reader comparing the schedule to a balance needs to know \
+      which clock the balance follows." },
 ]
 
 /-- Every law number the catalog defines. Laws with clauses repeat. -/

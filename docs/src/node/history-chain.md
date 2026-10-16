@@ -138,9 +138,10 @@ accepts — `<REV_address>,<balance>`, one per line:
 **Read that total as the spreadsheet's, not as the genesis's.** The figure above is what the 13 May
 2026 allocation lists — 13,946 addresses and 908,962,714 REV. The genesis a node builds from that file
 credits one vault the file does not name: the developer allocation, `max(20 000 000 REV, 2% of the
-total)`, which on this allocation is the floor — 20,000,000 REV — for a genesis total of **928,962,714
-REV** ([Validator economics](validator-economics.md); Law 78). The addresses and balances in the table
-are unchanged; the difference is one vault added on top.
+total)`, which on this allocation is the floor — 20,000,000 REV — for a wallets-plus-allocation subtotal
+of **928,962,714 REV** ([Validator economics](validator-economics.md); Law 78). The addresses and balances
+in the table are unchanged; the difference is one vault added on top. That subtotal is not all the REV a
+genesis writes: the staking vault is funded separately with the bond sum.
   It does not reject duplicate addresses; the import audit must check uniqueness separately.
 
 The genesis inputs are the ordinary two files:

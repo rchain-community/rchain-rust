@@ -325,6 +325,14 @@ branch, and a value that is set must parse as a REV address or startup refuses i
 it (devnets run `--dev-mode`); a node **joining** a chain whose genesis has no allocation must leave it
 empty, because naming an address there makes it derive a different genesis and refuse the block.
 
+**`dev-tax-vesting-blocks` is how long that allocation takes to unlock**, in blocks from genesis. The
+allocation is credited to a *vesting account* rather than a spendable vault, and each epoch boundary
+releases the vested part into the recipient's vault — linear, no cliff, and released at boundaries
+because that is where native state is written. `0` is no schedule at all. The shipped default is 36
+months at 5 seconds per block (`18934560`); it is a **genesis parameter** rather than a constant because
+the block cadence is not a constant ([scaling](scaling.md)) — if mainnet's cadence differs, this is the
+number that changes, and it is set when genesis is created like the address.
+
 **`participation-grace` is the other omissible one, and its default is not a number.** It is the flat part
 of the participation weight — the lag inside which a validator is paid its whole epoch share, with
 `absence-slack` the knee where the weight reaches zero. Omitting it resolves to **`absence-slack`**, not

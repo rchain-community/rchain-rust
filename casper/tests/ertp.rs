@@ -205,6 +205,7 @@ fn proof_of_stake() -> ProofOfStake {
         pos_multi_sig_public_keys: Vec::new(),
         pos_multi_sig_quorum: 1,
         pos_vault_pub_key: String::new(),
+        dev_tax_vesting_blocks: NonNegI64::zero(),
     }
 }
 

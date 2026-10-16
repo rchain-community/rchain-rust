@@ -230,12 +230,31 @@ pub struct GenesisBlockData {
     /// string for no allocation. The amount is *derived*, not configured — `max(20 000 000 REV, 2% of
     /// the wallets file's total)`, see [`crate::genesis::dev_tax`] — so only the address is a setting.
     ///
-    /// A genesis parameter for the same reason `executor_share` is: it decides an amount, amounts are
-    /// consensus state, and two nodes with different values compute different post-states — a joiner
-    /// whose address disagrees with the chain's refuses the genesis block (AUDIT C46). Empty is
-    /// permitted **only** under `--dev-mode`; outside it `Configuration::build` refuses the node at
-    /// startup, so a mainnet genesis cannot be built or synced without a decision about this.
+    /// A genesis parameter for the same reason `executor_share` is: it decides an amount, and amounts
+    /// are consensus state. A value that is **set** must parse as a REV address, refused at startup
+    /// (`check_dev_tax_address`); a value left **empty** is refused only where it matters — at the
+    /// branch that creates a genesis, and only outside `--dev-mode`
+    /// ([`crate::genesis::dev_tax::refuse_a_production_genesis_without_an_address`]) — because a devnet
+    /// creates a genesis too, and a standalone node restarting onto an existing chain creates none.
+    ///
+    /// **What that does not buy, stated because the prose around this key once claimed it.** The
+    /// guarantee is that the *creator* decides, and that a node **replaying** the genesis derives the
+    /// same vaults and so the same post-state hash (AUDIT C46). A node that instead **restores** the
+    /// chain over LFS does not replay genesis — `insert_genesis` marks it validated as it stands — so
+    /// its local configuration is not checked against what it is restoring.
     pub dev_tax_address: String,
+    /// **How long the developer allocation vests over**, in blocks from genesis (Law 79). `0` is no
+    /// schedule at all: the whole allocation is released at the first epoch boundary.
+    ///
+    /// A genesis parameter for the same reason `executor_share` and `epoch_length` are — it decides
+    /// amounts, and amounts are consensus state — and because the *term* is a decision while the
+    /// arithmetic is not. The network's block cadence is not a constant (`docs/src/node/scaling.md`
+    /// records why), so a "month" is an assumption; the chain enforces a **block count**, and
+    /// `defaults.conf` carries the count that the intended term works out to at the stated cadence.
+    ///
+    /// A config written before this key resolves to `0` — no schedule — which is the rule for a chain
+    /// with no allocation, and the only rule a chain that predates the field could have run.
+    pub dev_tax_vesting_blocks: i64,
 }
 
 #[cfg(test)]
@@ -261,6 +280,7 @@ mod tests {
             pos_vault_pub_key: String::new(),
             system_contract_pub_key: String::new(),
             dev_tax_address: String::new(),
+            dev_tax_vesting_blocks: 0,
         }
     }
 

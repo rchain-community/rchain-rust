@@ -11438,16 +11438,26 @@ dev_tax_amount(total) = max(20 000 000 REV, 2% of total)
 The arms cross at exactly one billion REV (`10^17` drops), so below that allocation the floor governs
 and at or above it the rate does. On the allocation this network has — **908 962 714 REV**, dated
 13 May 2026, `docs/src/node/history-chain.md` — 2% is 18 179 254 REV, under the floor, so the
-allocation is **20 000 000 REV** and the genesis total becomes **928 962 714 REV**.
+allocation is **20 000 000 REV** and the wallets-plus-allocation total becomes **928 962 714 REV**.
+(That subtotal is not all the REV the genesis writes: `install_genesis` also funds the staking vault
+with the bond sum.)
 
 **Why it is derived rather than written into the file.** REV has no mint: supply *is* the wallets file
 (`rholang/src/system_processes.rs`, "REV is minted at genesis only"), and the vault balances are
 installed as native state outside the genesis block's deploys and content-addressed into the post-state
-hash. A number fixed in the operator's file is therefore a number a joiner can disagree about silently;
-deriving it from the same file every node already reads makes the creator and the joiner compute the
-same hash by construction (AUDIT C46). One function, `genesis::vaults_with_dev_tax`, is called by both
-ends — the ceremony (`casper/src/engine/node_launch.rs::create_genesis_block`) and the descriptor
-reader (`casper/src/genesis/mod.rs::genesis_descriptors_from_config`) — so the two cannot drift.
+hash. A number fixed in the operator's file is therefore a number a node can disagree about. But
+*deriving* it is only worth anything if the total is the one the chain will hold: `set_vault_balance`
+keys on the base58 address and overwrites, so a wallets file that repeats an address installs only its
+last row, and a row-wise sum would allocate on REV that never exists. `dev_tax::installed_total`
+canonicalises exactly as the installer does — last row wins, same key — so the balances summed are the
+balances installed. One further function, `genesis::vaults_with_dev_tax`, is called by both ends — the
+ceremony (`casper/src/engine/node_launch.rs::create_genesis_block`) and the descriptor reader
+(`casper/src/genesis/mod.rs::genesis_descriptors_from_config`) — so a creator and a node **replaying**
+the genesis cannot drift (AUDIT C46). **Not a node restoring over LFS**: `insert_genesis` marks the
+genesis validated as it stands, without replaying it, so that path does not check local configuration
+against what it is restoring — the restore path's own trust model, and the reason the earlier draft's
+"a disagreeing joiner refuses the genesis block" was too broad. The review that caught both of these is
+recorded below.
 
 **The amount is not a setting; the address is.** `casper.genesis-block-data.dev-tax-address` names the
 recipient and nothing else. An address that is set must parse as a REV address, refused at startup with
@@ -11475,3 +11485,51 @@ the decision this row records, and the arithmetic is the only part a machine can
 is deliberate: `docs/src/node/validator-economics.md` carries the allocation beside the other economic
 terms, so a reader comparing the two does not find the tree publishing rewards in detail and this
 silently.
+
+**And the deal was completed in the same unit: the allocation vests (Law 79).** The review of the
+allocation drew a second review on the *thread* — a governance reading, not a code one — whose central
+premise did not match the branch (it reviewed a withholding from restored balances; this adds one), but
+whose two live points held, and the second of them was acted on: **the allocation was spendable at
+genesis**, an immediate claim on the whole 20M REV, which is the sell-overhang shape the review named.
+So the allocation is no longer credited to a vault at all. It goes to a **vesting account**
+(`pos:dev-vesting` — recipient, total and unreleased balance in one record, installed by the same
+`install_genesis` both the ceremony and a replaying node call), and `close_block` releases what has
+vested into the recipient's own vault at each epoch boundary — last in the boundary sequence, and
+deliberately independent of the reward steps, because it debits that account and credits a *user* vault
+and so can reach neither the staking vault nor the pot. The schedule is linear with no cliff, and the
+term is a **genesis parameter** (`dev-tax-vesting-blocks`, 36 months at 5 s/block) rather than a
+constant, because this tree records that a block cadence is not a constant. Stated as **Law 79**
+(`spec/Rchain/Vesting.lean`), with the arithmetic in `rholang/src/native_state.rs` and the release pinned
+by `the_dev_allocation_vests_linearly_and_releases_at_boundaries`. **The residual, stated rather than
+implied**: the release is granular to the epoch, not the block, because native state is written at
+boundaries — so a chain with a long epoch releases in visible steps, and a reader comparing the schedule
+to a balance needs to know which clock the balance follows.
+
+**The review, and what it changed.** The pull request drew a changes-requested review carrying two
+reproductions, and both held:
+
+1. **A repeated holder address inflated the total.** The first draft summed the file's rows, while the
+   installer overwrites a repeated key — so two rows of `A,1e17` took the percentage arm on a
+   two-billion-REV sum and allocated 40M, when the chain installs one billion REV for `A` and owes 20M.
+   **Fixed twice, and the second fix is the one that stands.** The first response canonicalised (last row
+   wins, the installer's own key) so the summed balances matched the installed ones; the follow-up review
+   asked for the *precondition* to be enforced instead, which is the better call — a repeated address is
+   a data error, and last-wins is exactly the quiet behaviour this tree rejects elsewhere. So repeated
+   canonical holder addresses are now **refused before the total is computed**, the recipient's own
+   address among them, and only the **empty-recipient path is untouched**: a chain with no allocation
+   keeps taking exactly the wallets files it took before. Pinned by
+   `dev_tax.rs::a_repeated_holder_address_is_refused`, which covers identical *and* different balances
+   for the same address with a distinct-holder control, plus
+   `a_wallets_entry_for_the_recipient_is_refused` and `no_address_allocates_nothing_and_checks_nothing`.
+2. **The joiner claim was too strong.** It read "a node that derives a different amount refuses the
+   genesis block", which is true of the **replay** path (C46) and false of the **LFS restore**, where
+   `insert_genesis` marks the genesis validated without replaying it. The claim is narrowed here and in
+   every document that carried it, and the boundary is stated rather than implied away.
+
+Two accounting corrections came with it: the total is a *wallets-plus-allocation* subtotal and excludes
+the bond-funded staking vault, and the allocation **increases the total by 2.2003%** while **diluting
+existing holders by 2.1529%** — the first draft gave one figure for both. The review also asked for
+startup coverage: the gate's condition and its sentence moved to
+`dev_tax::refuse_a_production_genesis_without_an_address`, which a unit test drives for production
+missing/present and dev-mode omission, leaving the *restart* case to the `dag_set.is_empty()` guard that
+already excludes it and to the node tests that start and restart standalone nodes.

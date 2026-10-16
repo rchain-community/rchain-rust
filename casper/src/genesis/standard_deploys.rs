@@ -917,6 +917,7 @@ mod builder_tests {
             pos_multi_sig_public_keys: Vec::new(),
             pos_multi_sig_quorum: 1,
             pos_vault_pub_key: "cd".repeat(65),
+            dev_tax_vesting_blocks: NonNegI64::zero(),
         };
         let deploy = StandardDeploys::pos_generator(&pos, "/root/child").expect("pos_generator");
         assert_standard(&deploy, "/root/child");

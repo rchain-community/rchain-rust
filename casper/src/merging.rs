@@ -3576,7 +3576,9 @@ mod boundary_merge_tests {
                     executor_share: nn(0),
                     absence_slack: nn(0),
                     participation_grace: nn(0),
+                    dev_tax_vesting_blocks: NonNegI64::zero(),
                 },
+                dev_vesting: None,
             })
             .unwrap();
         for byte in [8, 9] {

@@ -347,10 +347,18 @@ fn genesis_block_data_from_hocon(h: &Hocon) -> Result<GenesisBlockData, String> 
         // Optional for the same reason as `executor-share`, and mandatory in the same *place*: the
         // key is newer than its neighbours, so a config written before it must not stop a node from
         // starting. The fallback is the empty string — no allocation — which is the devnet and
-        // testnet path, and which `Configuration::build` then refuses outside `--dev-mode`.
+        // testnet path; the genesis-creation branch then refuses an empty value outside `--dev-mode`,
+        // which leaves a node that creates no genesis (and every devnet) unaffected.
         dev_tax_address: match get_opt(h, "dev-tax-address") {
             Some(v) => to_string(v)?,
             None => String::new(),
+        },
+        // Optional like its neighbours, and its absence is a *rule* rather than a fallback: `0` is no
+        // vesting schedule, which is what a chain with no allocation runs and the only behaviour a
+        // config written before the key could describe.
+        dev_tax_vesting_blocks: match get_opt(h, "dev-tax-vesting-blocks") {
+            Some(v) => to_i64(v)?,
+            None => 0,
         },
     })
 }
@@ -413,6 +421,9 @@ fn genesis_block_data_over(
     }
     if let Some(v) = get_opt(h, "dev-tax-address") {
         out.dev_tax_address = to_string(v)?;
+    }
+    if let Some(v) = get_opt(h, "dev-tax-vesting-blocks") {
+        out.dev_tax_vesting_blocks = to_i64(v)?;
     }
     Ok(out)
 }
@@ -773,6 +784,7 @@ mod tests {
             pos_vault_pub_key: "vault".to_string(),
             system_contract_pub_key: "system".to_string(),
             dev_tax_address: String::new(),
+            dev_tax_vesting_blocks: 0,
         }
     }
 

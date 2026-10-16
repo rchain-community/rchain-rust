@@ -1,20 +1,34 @@
-//! The developer allocation — a genesis vault derived from the total the wallets file allocates.
+//! The developer allocation — derived from the total the wallets file allocates.
 //!
 //! **A deliberate, registered deviation, not a port.** The Scala ceremony installs exactly the vaults
-//! its wallets file names. This module adds one vault that no wallets file contains, so it is recorded
-//! as a hard-fork deviation in `spec/audit/passes.md` and carries Law 78 in `spec/Rchain/Genesis.lean`:
-//! the rule below is stated and proved there, and this file is the Rust the law is tied to.
+//! its wallets file names. This module derives one allocation that no wallets file contains, so it is
+//! recorded as a hard-fork deviation in `spec/audit/passes.md` and carries Law 78 in
+//! `spec/Rchain/Genesis.lean`: the rule below is stated and proved there, and this file is the Rust the
+//! law is tied to. **The allocation is not a vault**: it is credited to a *vesting account* and
+//! released on a schedule, which is Law 79 (`spec/Rchain/Vesting.lean`, and the arithmetic in
+//! `rholang/src/native_state.rs::dev_tax_vested`). This module is *how much*; that one is *when*.
 //!
-//! **Why a derived vault rather than a data line.** REV has no mint — supply *is* the genesis wallets
+//! **Why derived rather than a data line.** REV has no mint — supply *is* the genesis wallets
 //! file (`rholang/src/system_processes.rs`, "REV is minted at genesis only") — and the vault balances
 //! are installed as native state outside the genesis block's deploys, so they are content-addressed
 //! into the genesis post-state hash (AUDIT C46). A number fixed in a file the operator supplies would
-//! therefore be a number a joiner can disagree about silently; deriving it from the same file every
-//! node already reads makes creator and joiner compute the same hash by construction.
+//! therefore be a number a node replaying the genesis can disagree about; deriving it from the same
+//! file every node already reads makes the two compute the same hash by construction.
+//!
+//! **What "the same file" has to mean, and the seam where the claim stops.** The total this module
+//! reads is the total the genesis will *install*, and `dev_allocation` refuses the wallets files for
+//! which that is not the same as the sum of the rows. And the agreement it buys is between a node that
+//! **replays** the genesis and one that created it: a node that instead **restores** the chain over LFS
+//! takes the bootstrap's genesis as given
+//! (`insert_genesis` marks it validated without replaying it), so local configuration is not enforced
+//! on that path. That boundary is stated here rather than implied away, because an earlier draft of
+//! this module's prose claimed more than the restore path delivers.
 //!
 //! The rule is `max(20 000 000 REV, 2% of the allocated total)`. The arms cross at exactly one billion
 //! REV (`DEV_TAX_CROSSOVER`), so below that allocation the floor governs and above it the percentage
 //! does.
+
+use std::collections::BTreeSet;
 
 use rchain_rholang::util::rev_address::RevAddress;
 use rchain_shared::refined::NonNegI64;
@@ -72,33 +86,84 @@ pub fn parse_address(address: &str) -> Result<RevAddress, String> {
     })
 }
 
-/// The developer vault to append to a parsed wallets file, or `None` when no address is configured.
+/// The developer allocation for a parsed wallets file: the recipient and the amount, or `None` when no
+/// address is configured.
 ///
-/// **Refuses a wallets file that already names the address.** The caller appends this vault to the
-/// list and `set_vault_balance` *overwrites* a repeated key, so a duplicate would silently replace
-/// that holder's balance with the allocation instead of adding to it — a defect the type cannot
-/// catch, so it is caught here.
-pub fn dev_vault(vaults: &[Vault], address: &str) -> Result<Option<Vault>, String> {
+/// **The amount is derived from a file whose addresses are unique, and both of the ways it could be
+/// otherwise are refused rather than absorbed.**
+///
+/// * *A repeated holder address* is refused. `set_vault_balance` keys a vault on its base58 address and
+///   **overwrites**, so a wallets file that names an address twice installs only its last row — the
+///   rows are not a total the chain holds, and deriving from their sum allocates on REV that never
+///   exists. Above the crossover the difference is real: two rows of `A,1e17` sum to `2e17` and would
+///   take the percentage arm for 40M, while the genesis installs one billion REV for `A` and owes 20M.
+///   Enforcing uniqueness here rather than canonicalising silently is deliberate — a repeated address is
+///   a data error, and last-wins is the kind of quiet behaviour this tree rejects elsewhere. **Only the
+///   allocation boundary refuses it**: an empty recipient returns before any of this, so a chain with no
+///   allocation keeps taking exactly the wallets files it took before.
+/// * *An entry for the recipient itself* is refused, because the allocation is credited to a separate
+///   vesting account rather than to a vault — a wallets entry for the same address would be a second,
+///   unvested credit to it.
+///
+/// The total is the sum of the balances the genesis will install, which — with uniqueness enforced — is
+/// now the same number as the sum of the rows.
+pub fn dev_allocation(
+    vaults: &[Vault],
+    address: &str,
+) -> Result<Option<(RevAddress, NonNegI64)>, String> {
     if address.is_empty() {
         return Ok(None);
     }
     let rev_address = parse_address(address)?;
-    if vaults.iter().any(|v| v.rev_address == rev_address) {
-        return Err(format!(
-            "the wallets file already names the developer address {address}: the allocation is \
-             appended to the file's vaults, and a duplicate entry would replace that holder's \
-             balance rather than add to it"
-        ));
+    let mut seen: BTreeSet<String> = BTreeSet::new();
+    let mut total = 0i128;
+    for v in vaults {
+        if v.rev_address == rev_address {
+            return Err(format!(
+                "the wallets file already names the developer address {address}: the allocation is a \
+                 separate vesting account, and an entry for the same address would be a second, \
+                 unvested credit to it"
+            ));
+        }
+        let key = v.rev_address.to_base58();
+        if !seen.insert(key.clone()) {
+            return Err(format!(
+                "the wallets file names the address {key} more than once: the genesis installs one \
+                 balance per address, so the repeated rows are not a total the chain holds, and the \
+                 allocation is derived from the balance that is installed"
+            ));
+        }
+        total = total
+            .checked_add(i128::from(i64::from(v.initial_balance)))
+            .ok_or_else(|| "the allocated total overflows".to_string())?;
     }
-    let total = vaults.iter().try_fold(0i128, |acc, v| {
-        acc.checked_add(i128::from(i64::from(v.initial_balance)))
-            .ok_or_else(|| "the allocated total overflows".to_string())
-    })?;
-    let initial_balance = dev_tax_amount(total)?;
-    Ok(Some(Vault {
-        rev_address,
-        initial_balance,
-    }))
+    Ok(Some((rev_address, dev_tax_amount(total)?)))
+}
+
+/// **The gate at genesis creation** (Law 78): a production genesis must decide the allocation.
+///
+/// `Err` means "refuse". Kept beside the rule so the condition and its sentence are one thing a test
+/// can drive without standing up a node; the caller supplies the context that this is the branch that
+/// creates a genesis.
+///
+/// `dev_mode` is the whole of the predicate, and both of the other candidates are wrong:
+/// `standalone` alone would refuse a standalone node **restarting** onto a chain it already built (the
+/// caller guards that with `dag_set.is_empty()`), and "a genesis is being created" alone would refuse
+/// every devnet, which creates one too.
+pub fn refuse_a_production_genesis_without_an_address(
+    dev_mode: bool,
+    address: &str,
+) -> Result<(), String> {
+    if !dev_mode && address.is_empty() {
+        return Err(
+            "casper.genesis-block-data.dev-tax-address is empty and this node is creating a genesis \
+             block outside --dev-mode: the developer allocation is fixed by the genesis and cannot be \
+             added afterwards without a hard fork, so it is not a value to leave unset. Set it, or \
+             run with --dev-mode for a network that allocates none"
+                .to_string(),
+        );
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -209,51 +274,108 @@ mod tests {
         assert!(dev_tax_amount(i128::MAX).is_err());
     }
 
-    /// No address configured means no vault — the devnet and testnet path, whose genesis is unchanged.
-    #[test]
-    fn no_address_allocates_nothing() {
-        assert_eq!(dev_vault(&[], "").unwrap(), None);
+    /// A distinct address per byte, so a test can name its parties.
+    fn addr(second: u8) -> RevAddress {
+        let mut key = vec![0u8; 65];
+        key[0] = 0x04;
+        key[1] = second;
+        RevAddress::from_public_key(&rchain_crypto::public_key::PublicKey::new(key)).unwrap()
     }
 
-    /// The vault is appended, and a wallets file that already names the address is refused rather
-    /// than folded into it.
+    /// One wallets row.
+    fn row(address: &RevAddress, balance: i64) -> Vault {
+        Vault {
+            rev_address: address.clone(),
+            initial_balance: NonNegI64::try_from(balance).unwrap(),
+        }
+    }
+
+    /// One billion REV, in drops — the amount at which the two arms of the rule meet.
+    const BILLION_REV: i64 = 100_000_000_000_000_000;
+
+    /// **An empty recipient allocates nothing — and checks nothing.** The legacy path returns before
+    /// the allocation boundary, so a chain with no allocation keeps taking exactly the wallets files it
+    /// took before, including one the boundary would refuse.
     #[test]
-    fn the_vault_is_appended_and_a_duplicate_holder_is_refused() {
-        let holder = RevAddress::from_public_key(&rchain_crypto::public_key::PublicKey::new({
-            let mut key = vec![0u8; 65];
-            key[0] = 0x04;
-            key
-        }))
-        .unwrap();
-        let dev = RevAddress::from_public_key(&rchain_crypto::public_key::PublicKey::new({
-            let mut key = vec![0u8; 65];
-            key[0] = 0x04;
-            key[1] = 0x01;
-            key
-        }))
-        .unwrap();
-        let vaults = vec![Vault {
-            rev_address: holder,
-            initial_balance: NonNegI64::try_from(rev(908_962_714) as i64).unwrap(),
-        }];
-
-        let appended = dev_vault(&vaults, &dev.to_base58()).unwrap().unwrap();
+    fn no_address_allocates_nothing_and_checks_nothing() {
+        assert_eq!(dev_allocation(&[], "").unwrap(), None);
+        let a = addr(0x00);
+        let duplicated = vec![row(&a, 1), row(&a, 1)];
         assert_eq!(
-            appended.initial_balance,
-            NonNegI64::try_from(rev(20_000_000) as i64).unwrap()
+            dev_allocation(&duplicated, "").unwrap(),
+            None,
+            "the empty path must not acquire the uniqueness rule"
         );
-        assert_eq!(appended.rev_address, dev);
+    }
 
-        assert!(dev_vault(
-            &[
-                vaults[0].clone(),
-                Vault {
-                    rev_address: dev.clone(),
-                    initial_balance: NonNegI64::try_from(1).unwrap(),
-                }
-            ],
-            &dev.to_base58()
-        )
-        .is_err());
+    /// The allocation is derived from the file's total, and the recipient comes back with it.
+    #[test]
+    fn the_allocation_is_derived_from_the_file_total() {
+        let holder = addr(0x00);
+        let dev = addr(0x01);
+        let vaults = vec![row(&holder, rev(908_962_714) as i64)];
+        let (address, amount) = dev_allocation(&vaults, &dev.to_base58()).unwrap().unwrap();
+        assert_eq!(address, dev, "the recipient is returned with the amount");
+        assert_eq!(i64::from(amount), rev(20_000_000) as i64);
+    }
+
+    /// **A repeated holder address is refused, for identical and for different balances** — the
+    /// regression the review asked for. Above the crossover, where the difference the refusal prevents
+    /// is visible: two rows of `A,1e17` sum to `2e17` and would take the percentage arm for 40M REV,
+    /// while the genesis installs one billion REV for `A` and owes 20M. The distinct-holder control is
+    /// what keeps the test from passing by refusing everything.
+    #[test]
+    fn a_repeated_holder_address_is_refused() {
+        let a = addr(0x00);
+        let b = addr(0x01);
+        let dev = addr(0x02);
+
+        for (label, second) in [("identical", BILLION_REV), ("different", 1)] {
+            let vaults = vec![row(&a, BILLION_REV), row(&a, second)];
+            let err = dev_allocation(&vaults, &dev.to_base58())
+                .expect_err("a repeated holder address must not reach the total");
+            assert!(
+                err.contains("more than once"),
+                "{label} balances: the refusal names the repeat: {err}"
+            );
+        }
+
+        // The control: two *distinct* holders really do sum to 2e17, and 2% of that is 40M.
+        let distinct = vec![row(&a, BILLION_REV), row(&b, BILLION_REV)];
+        let (_, amount) = dev_allocation(&distinct, &dev.to_base58())
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            i64::from(amount),
+            rev(40_000_000) as i64,
+            "the refusal is about the repeat, not about the amount"
+        );
+    }
+
+    /// **A wallets entry for the recipient itself is refused.** The allocation is credited to a
+    /// separate vesting account, so an entry for the same address would be a second, unvested credit.
+    #[test]
+    fn a_wallets_entry_for_the_recipient_is_refused() {
+        let a = addr(0x00);
+        let dev = addr(0x01);
+        let vaults = vec![row(&a, 1), row(&dev, 1)];
+        let err = dev_allocation(&vaults, &dev.to_base58())
+            .expect_err("the recipient must not also be a holder");
+        assert!(err.contains("developer address"), "{err}");
+    }
+
+    /// **The gate at genesis creation**: a production genesis must decide, a dev network need not, and
+    /// a set address is the operator's decision either way.
+    #[test]
+    fn a_production_genesis_without_an_address_is_refused() {
+        assert!(refuse_a_production_genesis_without_an_address(false, "").is_err());
+        assert!(refuse_a_production_genesis_without_an_address(false, "any-address").is_ok());
+        assert!(refuse_a_production_genesis_without_an_address(true, "").is_ok());
+        assert!(refuse_a_production_genesis_without_an_address(true, "any-address").is_ok());
+        let err = refuse_a_production_genesis_without_an_address(false, "").unwrap_err();
+        assert!(
+            err.contains("dev-tax-address") && err.contains("--dev-mode"),
+            "the refusal names the key and the escape: {err}"
+        );
     }
 }

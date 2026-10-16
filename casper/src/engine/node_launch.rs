@@ -67,16 +67,18 @@ pub async fn create_genesis_block(
     pos_vault_pub_key: &str,
     system_contract_pub_key: &str,
     dev_tax_address: &str,
+    dev_tax_vesting_blocks: i64,
     runtime: &RuntimeManager,
 ) -> Result<BlockMessage, String> {
     // Initial REV vaults, with the developer allocation derived from their total (Law 78). This is
     // the same derivation `genesis_descriptors_from_config` applies, so the block this ceremony
     // creates and the descriptors every node replays carry the same vaults — and the same genesis
     // post-state hash.
-    let vaults = crate::genesis::vaults_with_dev_tax(
-        vault_parser::parse(Path::new(vaults_path))?,
-        dev_tax_address,
-    )?;
+    let vaults = vault_parser::parse(Path::new(vaults_path))?;
+    // The developer allocation is *derived* from the parsed vaults and rides into the genesis as a
+    // vesting account, exactly where `genesis_descriptors_from_config` derives it, so the block this
+    // ceremony creates and the descriptors every node replays carry the same value (Laws 78–79).
+    let dev_vesting = crate::genesis::dev_allocation(&vaults, dev_tax_address)?;
 
     // Initial validators.
     let bonds = bonds_parser::parse_or_generate(Path::new(bonds_path), autogen_shard_size)?;
@@ -109,11 +111,15 @@ pub async fn create_genesis_block(
             pos_multi_sig_public_keys: pos_multi_sig_public_keys.to_vec(),
             pos_multi_sig_quorum,
             pos_vault_pub_key: pos_vault_pub_key.to_string(),
+            dev_tax_vesting_blocks: NonNegI64::try_from(dev_tax_vesting_blocks).map_err(|e| {
+                format!("casper.genesis.dev-tax-vesting-blocks must not be negative: {e}")
+            })?,
         },
         registry: Registry {
             system_contract_pub_key: system_contract_pub_key.to_string(),
         },
         vaults,
+        dev_vesting,
     };
 
     crate::genesis::create_genesis_block(validator, &genesis, runtime).await
@@ -170,6 +176,7 @@ pub async fn create_genesis_block_from_config(
         &gbd.pos_vault_pub_key,
         &gbd.system_contract_pub_key,
         &gbd.dev_tax_address,
+        gbd.dev_tax_vesting_blocks,
         runtime,
     )
     .await
@@ -282,22 +289,15 @@ pub async fn apply<I: RSpaceImporter + Send + 'static, E: RSpaceExporter>(
     if repr.dag_set.is_empty() && standalone {
         // **The last point at which the developer allocation is still decidable** (Law 78). A genesis
         // vault cannot be added afterwards without a hard fork, so an unset address is refused *here*,
-        // where the node is about to build genesis and the operator can still act, rather than
-        // silently producing a chain with no allocation. Gated on `--dev-mode`, so it is a production
-        // genesis that must decide and a devnet that need not.
-        //
-        // Deliberately *not* in `Configuration::build`: this branch is reachable only when the DAG is
-        // empty, so a standalone node *restarting* onto an existing chain — the public testnet's
-        // bootstrap, whose genesis predates this key — is not refused for a decision it already made.
-        if !dev_mode && spec.genesis_block_data.dev_tax_address.is_empty() {
-            return Err(
-                "casper.genesis-block-data.dev-tax-address is empty and this node is creating a \
-                 genesis block outside --dev-mode: the developer allocation is fixed by the genesis \
-                 and cannot be added afterwards without a hard fork, so it is not a value to leave \
-                 unset. Set it, or run with --dev-mode for a network that allocates none"
-                    .to_string(),
-            );
-        }
+        // where the node is about to build genesis and the operator can still act. The condition and
+        // its sentence live in `dev_tax`, next to the rule, so a test drives them without a node; what
+        // this branch supplies is the context — being reachable only when the DAG is empty is what
+        // keeps a standalone node *restarting* onto a chain it built (the public testnet's bootstrap,
+        // whose genesis predates this key) from being refused for a decision it already made.
+        crate::genesis::dev_tax::refuse_a_production_genesis_without_an_address(
+            dev_mode,
+            &spec.genesis_block_data.dev_tax_address,
+        )?;
         log.info(
             source,
             "Starting as genesis master, creating genesis block...",

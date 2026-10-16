@@ -240,6 +240,7 @@ async fn bond_deploy_updates_the_active_validator_set() {
             minimum_bond: rchain_shared::refined::NonNegI64::try_from(1).unwrap(),
             ..PosParams::default()
         },
+        dev_vesting: None,
     };
     let (_pre, post, _) = rm
         .compute_genesis(
@@ -353,6 +354,7 @@ async fn a_trustee_admits_an_observer_and_it_bonds_in_the_next_block() {
             minimum_bond: rchain_shared::refined::NonNegI64::try_from(1).unwrap(),
             ..PosParams::default()
         },
+        dev_vesting: None,
     };
     let (_pre, genesis_post, _) = rm
         .compute_genesis(&[], &rand, BlockData::empty(), &pos_genesis, &vaults)
@@ -456,6 +458,7 @@ async fn the_bond_cache_is_the_active_pos_state_and_a_differing_one_is_refused()
             number_of_active_validators: 2,
             ..PosParams::default()
         },
+        dev_vesting: None,
     };
     let (_pre, post, _) = rm
         .compute_genesis(&[], &rand, BlockData::empty(), &pos_genesis, &[])
@@ -636,6 +639,7 @@ async fn the_drawn_active_set_is_the_states_and_not_the_boundary_blocks() {
             epoch_length: 2,
             ..PosParams::default()
         },
+        dev_vesting: None,
     };
     // The deployer must be funded: an unfunded deployer's pre-charge fails, a failed deploy writes
     // nothing to the runtime state, and every "these two states differ" assertion below would then be
