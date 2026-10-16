@@ -36,7 +36,7 @@ async fn wait_for_status(client: &reqwest::Client, base: &str) {
 
 /// Boot a node on `conf`, wait until it serves, ask it to stop, and return when it has.
 async fn boot_and_stop(conf: &rchain_node::configuration::model::NodeConf, ports: &[u16]) {
-    let mut node = start(conf, ports[4], ports[0]).await;
+    let node = start(conf, ports[4], ports[0]).await;
     let base = format!("http://127.0.0.1:{}", ports[0]);
     let client = reqwest::Client::new();
     wait_for_status(&client, &base).await;
