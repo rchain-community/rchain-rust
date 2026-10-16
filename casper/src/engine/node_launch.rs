@@ -66,10 +66,17 @@ pub async fn create_genesis_block(
     pos_multi_sig_quorum: i32,
     pos_vault_pub_key: &str,
     system_contract_pub_key: &str,
+    dev_tax_address: &str,
     runtime: &RuntimeManager,
 ) -> Result<BlockMessage, String> {
-    // Initial REV vaults.
-    let vaults = vault_parser::parse(Path::new(vaults_path))?;
+    // Initial REV vaults, with the developer allocation derived from their total (Law 78). This is
+    // the same derivation `genesis_descriptors_from_config` applies, so the block this ceremony
+    // creates and the descriptors every node replays carry the same vaults — and the same genesis
+    // post-state hash.
+    let vaults = crate::genesis::vaults_with_dev_tax(
+        vault_parser::parse(Path::new(vaults_path))?,
+        dev_tax_address,
+    )?;
 
     // Initial validators.
     let bonds = bonds_parser::parse_or_generate(Path::new(bonds_path), autogen_shard_size)?;
@@ -162,6 +169,7 @@ pub async fn create_genesis_block_from_config(
         gbd.pos_multi_sig_quorum,
         &gbd.pos_vault_pub_key,
         &gbd.system_contract_pub_key,
+        &gbd.dev_tax_address,
         runtime,
     )
     .await
@@ -239,6 +247,11 @@ pub async fn apply<I: RSpaceImporter + Send + 'static, E: RSpaceExporter>(
     disable_state_exporter: bool,
     validator_identity_opt: Option<ValidatorIdentity>,
     standalone: bool,
+    // **Whether the node was started in dev mode.** Consulted only at the genesis-creation branch
+    // below, and only to decide whether an unset `dev-tax-address` is a refusal (Law 78). Devnets run
+    // in dev mode — `tools/devnet.sh` starts every node it launches with `--dev-mode` — so the gate
+    // bites on a production genesis and nowhere else.
+    dev_mode: bool,
     transport: Arc<dyn TransportLayer>,
     comm_util: Arc<CommUtil>,
     block_retriever: Arc<BlockRetriever>,
@@ -267,6 +280,24 @@ pub async fn apply<I: RSpaceImporter + Send + 'static, E: RSpaceExporter>(
 
     let repr = dag.get_representation().await;
     if repr.dag_set.is_empty() && standalone {
+        // **The last point at which the developer allocation is still decidable** (Law 78). A genesis
+        // vault cannot be added afterwards without a hard fork, so an unset address is refused *here*,
+        // where the node is about to build genesis and the operator can still act, rather than
+        // silently producing a chain with no allocation. Gated on `--dev-mode`, so it is a production
+        // genesis that must decide and a devnet that need not.
+        //
+        // Deliberately *not* in `Configuration::build`: this branch is reachable only when the DAG is
+        // empty, so a standalone node *restarting* onto an existing chain — the public testnet's
+        // bootstrap, whose genesis predates this key — is not refused for a decision it already made.
+        if !dev_mode && spec.genesis_block_data.dev_tax_address.is_empty() {
+            return Err(
+                "casper.genesis-block-data.dev-tax-address is empty and this node is creating a \
+                 genesis block outside --dev-mode: the developer allocation is fixed by the genesis \
+                 and cannot be added afterwards without a hard fork, so it is not a value to leave \
+                 unset. Set it, or run with --dev-mode for a network that allocates none"
+                    .to_string(),
+            );
+        }
         log.info(
             source,
             "Starting as genesis master, creating genesis block...",

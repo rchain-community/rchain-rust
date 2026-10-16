@@ -344,6 +344,14 @@ fn genesis_block_data_from_hocon(h: &Hocon) -> Result<GenesisBlockData, String> 
         pos_multi_sig_quorum: to_i32(get(h, "pos-multi-sig-quorum")?)?,
         pos_vault_pub_key: to_string(get(h, "pos-vault-pub-key")?)?,
         system_contract_pub_key: to_string(get(h, "system-contract-pub-key")?)?,
+        // Optional for the same reason as `executor-share`, and mandatory in the same *place*: the
+        // key is newer than its neighbours, so a config written before it must not stop a node from
+        // starting. The fallback is the empty string — no allocation — which is the devnet and
+        // testnet path, and which `Configuration::build` then refuses outside `--dev-mode`.
+        dev_tax_address: match get_opt(h, "dev-tax-address") {
+            Some(v) => to_string(v)?,
+            None => String::new(),
+        },
     })
 }
 
@@ -402,6 +410,9 @@ fn genesis_block_data_over(
     }
     if let Some(v) = get_opt(h, "system-contract-pub-key") {
         out.system_contract_pub_key = to_string(v)?;
+    }
+    if let Some(v) = get_opt(h, "dev-tax-address") {
+        out.dev_tax_address = to_string(v)?;
     }
     Ok(out)
 }
@@ -761,6 +772,7 @@ mod tests {
             pos_multi_sig_quorum: 0,
             pos_vault_pub_key: "vault".to_string(),
             system_contract_pub_key: "system".to_string(),
+            dev_tax_address: String::new(),
         }
     }
 

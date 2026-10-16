@@ -1,6 +1,7 @@
 //! Genesis block creation (port of `casper/genesis/Genesis.scala`).
 
 pub mod contracts;
+pub mod dev_tax;
 pub mod rgov;
 pub mod standard_deploys;
 
@@ -103,6 +104,24 @@ pub struct GenesisDescriptors {
     pub vaults: Vec<Vault>,
 }
 
+/// The parsed genesis vaults with the developer allocation appended (Law 78).
+///
+/// **The one place the allocation is derived**, called by both ends of the genesis: the ceremony
+/// that *creates* the block ([`crate::engine::node_launch::create_genesis_block`]) and the descriptor
+/// reader every node uses to *replay* it ([`genesis_descriptors_from_config`]). One function, so the
+/// two cannot disagree about an amount that is consensus state; a second copy is exactly the drift
+/// this indirection exists to prevent. `dev_tax` carries the rule and the duplicate refusal.
+pub fn vaults_with_dev_tax(
+    vaults: Vec<Vault>,
+    dev_tax_address: &str,
+) -> Result<Vec<Vault>, String> {
+    let mut vaults = vaults;
+    if let Some(vault) = dev_tax::dev_vault(&vaults, dev_tax_address)? {
+        vaults.push(vault);
+    }
+    Ok(vaults)
+}
+
 /// Read the genesis descriptors from the configured genesis files.
 ///
 /// Read on **any** node, not only a bootstrap: a joining validator replays the genesis when it
@@ -117,6 +136,12 @@ pub struct GenesisDescriptors {
 /// The vaults use the tolerant `parse_if_exists`: a node whose configuration names a wallets file
 /// that is absent has no vault balances to re-install, which is a state the caller can act on
 /// (empty vaults), unlike a bonds file it would have had to invent.
+///
+/// **The developer allocation is appended to the parsed vaults** (Law 78,
+/// [`dev_tax`]): `max(20 000 000 REV, 2% of the parsed total)`, credited to `dev_tax_address` when
+/// one is configured. It is *derived* rather than read so that the genesis creator and a joining
+/// validator that read the same wallets file compute the same genesis post-state; a wallets file
+/// that already names the address is refused, because the caller's `set_vault_balance` overwrites.
 pub fn genesis_descriptors_from_config(
     spec: &crate::conf::ShardSpec,
     is_ceremony: bool,
@@ -132,6 +157,7 @@ pub fn genesis_descriptors_from_config(
         crate::bonds_parser::parse(bonds_path)?
     };
     let vaults = crate::vault_parser::parse_if_exists(std::path::Path::new(&gbd.wallets_file))?;
+    let vaults = vaults_with_dev_tax(vaults, &gbd.dev_tax_address)?;
     Ok(Some(GenesisDescriptors {
         pos_genesis: build_pos_genesis(&proof_of_stake_from_config(gbd, bonds)?),
         vaults,
@@ -717,6 +743,7 @@ mod tests {
                 pos_multi_sig_quorum: 0,
                 pos_vault_pub_key: String::new(),
                 system_contract_pub_key: String::new(),
+                dev_tax_address: String::new(),
             },
             1,
         )

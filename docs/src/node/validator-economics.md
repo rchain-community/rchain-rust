@@ -33,6 +33,34 @@ Two consequences follow directly.
   it is a payment out of the same vault rather than a second pot: the pie is what was burned, and this
   decides who gets a slice of it (below).
 
+## The developer allocation is a genesis vault, not a levy
+
+One REV address is credited at genesis that **no wallets file names**: an allocation to the developer, of
+`max(20 000 000 REV, 2% of the total the wallets file allocates)`. The two arms cross at exactly one
+billion REV, so below that allocation the floor governs and at or above it the rate does — and on the
+allocation this network has (908 962 714 REV, dated 13 May 2026 — see [the history chain](history-chain.md))
+2% is 18 179 254 REV, under the floor, so the allocation is **20 000 000 REV** and the genesis total
+becomes **928 962 714 REV**.
+
+Two things follow from *where* it sits, and both are worth stating because the same numbers read very
+differently as a different mechanism:
+
+- **It is not a levy on fees, and it is not a mint.** REV's issuer has no mint arm, so nothing here
+  creates REV: the vault is written once, at genesis, by the same installation that writes every other
+  wallet. `executor-share` and the epoch pot are untouched, and no boundary pays the allocation anything.
+- **It is consensus state, and it is permanent.** The vault balances are installed outside the genesis
+  block's deploys and content-addressed into the genesis post-state hash (AUDIT C46), so the amount must
+  be one function of the wallets file — which is why it is *derived* rather than written into that file,
+  and why a node that derives a different amount refuses the genesis block. Only the recipient address is
+  a setting (`casper.genesis-block-data.dev-tax-address`), and a genesis created outside `--dev-mode`
+  without one is refused at the launch branch. After genesis it cannot change without a hard fork.
+
+The rule, its two crossover directions and its non-vacuity witness are Law 78
+([`spec/Rchain/Genesis.lean`](../../../spec/Rchain/Genesis.lean)); the deviation from the Scala oracle is
+recorded in [`spec/audit/passes.md`](../../../spec/audit/passes.md) §138. It **dilutes the published
+allocation by 2.2%** — the 13 946 addresses the spreadsheet lists are unchanged, and the total is
+20 000 000 REV larger.
+
 ## The formula: proportional to stake, in units of the minimum bond
 
 At each epoch boundary every pooled validator's share is committed by `epoch_rewards`

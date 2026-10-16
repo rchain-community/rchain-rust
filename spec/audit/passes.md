@@ -11424,3 +11424,54 @@ arms only on `NotEnoughNewBlocks`). That is the designed shape — a dev chain a
 the live chain shows it working: every block carries one deploy, one block per deploy, finality one
 round behind and following. The playground's own API was read for this (height 1839, fringe 1835, pool
 empty, one deploy per block since 1830); nothing was stuck, and nothing needed clearing.
+
+## 138. The genesis credits a developer vault, and the arithmetic is the law (C332)
+
+**A deliberate deviation, taken 2026-10-16 and recorded here because the register's `done` carries it.**
+The Scala ceremony installs exactly the vaults its wallets file names. This port derives one more from
+their total and credits it to a configured address:
+
+```
+dev_tax_amount(total) = max(20 000 000 REV, 2% of total)
+```
+
+The arms cross at exactly one billion REV (`10^17` drops), so below that allocation the floor governs
+and at or above it the rate does. On the allocation this network has — **908 962 714 REV**, dated
+13 May 2026, `docs/src/node/history-chain.md` — 2% is 18 179 254 REV, under the floor, so the
+allocation is **20 000 000 REV** and the genesis total becomes **928 962 714 REV**.
+
+**Why it is derived rather than written into the file.** REV has no mint: supply *is* the wallets file
+(`rholang/src/system_processes.rs`, "REV is minted at genesis only"), and the vault balances are
+installed as native state outside the genesis block's deploys and content-addressed into the post-state
+hash. A number fixed in the operator's file is therefore a number a joiner can disagree about silently;
+deriving it from the same file every node already reads makes the creator and the joiner compute the
+same hash by construction (AUDIT C46). One function, `genesis::vaults_with_dev_tax`, is called by both
+ends — the ceremony (`casper/src/engine/node_launch.rs::create_genesis_block`) and the descriptor
+reader (`casper/src/genesis/mod.rs::genesis_descriptors_from_config`) — so the two cannot drift.
+
+**The amount is not a setting; the address is.** `casper.genesis-block-data.dev-tax-address` names the
+recipient and nothing else. An address that is set must parse as a REV address, refused at startup with
+the other operator-facing configuration errors (`Configuration::build`'s `check_dev_tax_address`); a
+wallets file that already names it is refused, because `set_vault_balance` *overwrites* a repeated key
+and a duplicate would silently replace that holder's balance rather than add to it; and creating a
+genesis **outside `--dev-mode`** without an address is refused at the launch branch
+(`node_launch::apply`), which is the last point at which the decision is still decidable. The gate is at
+the creation branch and not in `Configuration::build` deliberately: that branch is reachable only when
+the DAG is empty, so a standalone node *restarting* onto an existing chain — the public testnet's
+bootstrap, whose genesis predates this key — is not refused for a decision it already made. Devnets are
+untouched: `tools/devnet.sh` now starts every node it launches with `--dev-mode`, so their genesis (and
+their hashes) are whatever they were.
+
+**The law, and what is machine-checked.** `spec/Rchain/Genesis.lean` states the rule and both crossover
+directions, with `the_rate_strictly_exceeds_the_floor_above_the_crossover` as the non-vacuity witness
+(without it both directions would hold of any constant) and `devTaxAmount_of_the_published_allocation`
+pinning the arm this network is on. The Rust witness is
+`casper/src/genesis/dev_tax.rs::the_floor_governs_below_a_billion_rev_and_two_percent_above`. The status
+is `proved-model`, not `proved-tied`: there is no conformance corpus for a rule the oracle does not
+have.
+
+**What is *not* claimed.** Nothing here is about the allocation being owed, just or final — those are
+the decision this row records, and the arithmetic is the only part a machine can check. The disclosure
+is deliberate: `docs/src/node/validator-economics.md` carries the allocation beside the other economic
+terms, so a reader comparing the two does not find the tree publishing rewards in detail and this
+silently.

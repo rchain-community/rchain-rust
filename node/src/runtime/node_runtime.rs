@@ -1995,6 +1995,7 @@ async fn setup_shard_runtime(
         conf.protocol_server.disable_state_exporter,
         parts.validator_identity_opt.clone(),
         conf.standalone,
+        conf.dev_mode,
         comm_state.transport.clone(),
         comm_state.comm_util.clone(),
         comm_state.block_retriever.clone(),

@@ -4156,6 +4156,43 @@ def laws : List Law := [
       read_path_census`; issue #364). **What it does not claim**: nothing here is about cost. The law \
       says the constructions answer alike; it does not say keeping the pass is cheap, and only the \
       census says what removing it buys." },
+  { number := 78, layer := "Casper",
+    statement := "**The genesis carries a developer allocation, derived from the total the wallets \
+      file allocates.** One vault that no wallets file contains is credited at genesis with \
+      `max(20 000 000 REV, 2% of the allocated total)` — so below a one-billion-REV allocation the \
+      floor governs and at or above it the rate does — and the creator of the genesis and a node \
+      replaying it derive the same amount from the same file",
+    status := .provedModel,
+    declarations := [`Rchain.devTaxAmount, `Rchain.devTaxFloor, `Rchain.devTaxBps,
+      `Rchain.devTaxCrossover, `Rchain.devTaxAmount_ge_floor,
+      `Rchain.devTaxAmount_eq_floor_of_le_crossover,
+      `Rchain.devTaxAmount_eq_percentage_of_crossover_le,
+      `Rchain.devTaxAmount_of_the_published_allocation],
+    axioms := [],
+    rust := ["casper/src/genesis/dev_tax.rs", "casper/src/genesis/mod.rs",
+      "casper/src/engine/node_launch.rs", "node/src/configuration/configuration.rs"],
+    rustWitness := ["casper/src/genesis/dev_tax.rs:the_floor_governs_below_a_billion_rev_and_two_percent_above"],
+    witness := [`Rchain.the_rate_strictly_exceeds_the_floor_above_the_crossover,
+      `Rchain.devTaxAmount_monotone],
+    falsifiable := "Each arm is a theorem, and they are the falsifiers: \
+      `devTaxAmount_eq_floor_of_le_crossover` says an allocation at or below one billion REV takes the \
+      floor, `devTaxAmount_eq_percentage_of_crossover_le` says one above it takes the rate, and the \
+      two would contradict each other if the rule were mis-stated. \
+      `the_rate_strictly_exceeds_the_floor_above_the_crossover` is the non-vacuity witness — without \
+      it both directions would hold of any constant — and \
+      `devTaxAmount_of_the_published_allocation` pins the arm this network is on (908 962 714 REV \
+      allocated, so the floor).",
+    note := "**A deliberate deviation, registered as one.** The Scala ceremony installs exactly the \
+      vaults its wallets file names; this port derives one more from their total, so the row is \
+      `provedModel` — there is no conformance corpus for a rule the oracle does not have — and the \
+      deviation is recorded in `spec/audit/passes.md` §138 with its own finding row. Three things the \
+      law is *for*: the balance is installed outside the genesis block's deploys and content-addressed \
+      into its post-state hash, so the arithmetic has to be one function of a file that a creator and \
+      a joiner both read (AUDIT C46); only the *address* is a setting, never the amount; and the rule \
+      has a home other than the comment that would otherwise be its only one. **What it does not \
+      claim**: nothing here is about the allocation being owed, just, or final — those are the \
+      decision this row records, taken 2026-10-16, and the arithmetic is the only part a machine can \
+      check." },
 ]
 
 /-- Every law number the catalog defines. Laws with clauses repeat. -/

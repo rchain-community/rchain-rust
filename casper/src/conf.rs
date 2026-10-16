@@ -226,6 +226,16 @@ pub struct GenesisBlockData {
     pub pos_multi_sig_quorum: i32,
     pub pos_vault_pub_key: String,
     pub system_contract_pub_key: String,
+    /// **The REV address the developer allocation is credited to at genesis** (Law 78), or the empty
+    /// string for no allocation. The amount is *derived*, not configured — `max(20 000 000 REV, 2% of
+    /// the wallets file's total)`, see [`crate::genesis::dev_tax`] — so only the address is a setting.
+    ///
+    /// A genesis parameter for the same reason `executor_share` is: it decides an amount, amounts are
+    /// consensus state, and two nodes with different values compute different post-states — a joiner
+    /// whose address disagrees with the chain's refuses the genesis block (AUDIT C46). Empty is
+    /// permitted **only** under `--dev-mode`; outside it `Configuration::build` refuses the node at
+    /// startup, so a mainnet genesis cannot be built or synced without a decision about this.
+    pub dev_tax_address: String,
 }
 
 #[cfg(test)]
@@ -250,6 +260,7 @@ mod tests {
             pos_multi_sig_quorum: 0,
             pos_vault_pub_key: String::new(),
             system_contract_pub_key: String::new(),
+            dev_tax_address: String::new(),
         }
     }
 
