@@ -810,4 +810,80 @@ mod tests {
 
         std::fs::remove_dir_all(&dir).ok();
     }
+
+    /// **The descriptors carry the developer allocation, derived from the parsed total** (Law 78).
+    ///
+    /// This is the wiring half of the law's Rust witness: `dev_tax.rs`'s unit tests cover the
+    /// arithmetic, and this covers the one call that puts it on the replay path — the path a *joining*
+    /// validator reads. Delete that call and every other test stays green, which is why it is asserted
+    /// here rather than assumed from the unit tests. The last arm is the reason the file is checked:
+    /// `set_vault_balance` overwrites, so a wallets file that already names the address would have that
+    /// holder's balance *replaced*, not added to.
+    #[test]
+    fn the_descriptors_carry_the_developer_allocation() {
+        fn address(second_byte: u8) -> rchain_rholang::util::rev_address::RevAddress {
+            let mut key = vec![0u8; 65];
+            key[0] = 0x04;
+            key[1] = second_byte;
+            rchain_rholang::util::rev_address::RevAddress::from_public_key(
+                &rchain_crypto::public_key::PublicKey::new(key),
+            )
+            .expect("a valid address")
+        }
+
+        let dir = std::env::temp_dir().join(format!("rchain-dev-tax-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let mut spec = spec_in(&dir);
+        let pub_hex = base16::encode(ceremony_identity().public_key.bytes());
+        std::fs::write(dir.join("bonds.txt"), format!("{pub_hex} 100\n")).expect("bonds");
+        let holder = address(0x00);
+        // The published allocation's total, in drops: 908 962 714 REV.
+        std::fs::write(
+            dir.join("wallets.txt"),
+            format!("{},90896271400000000\n", holder.to_base58()),
+        )
+        .expect("wallets");
+
+        let none = genesis_descriptors_from_config(&spec, false)
+            .expect("the files are present")
+            .expect("descriptors");
+        assert_eq!(none.vaults.len(), 1, "no address configured, no allocation");
+
+        let dev = address(0x01);
+        spec.genesis_block_data.dev_tax_address = dev.to_base58();
+        let d = genesis_descriptors_from_config(&spec, false)
+            .expect("the files are present")
+            .expect("descriptors");
+        assert_eq!(
+            d.vaults.len(),
+            2,
+            "the allocation is appended, not substituted"
+        );
+        let allocation = d
+            .vaults
+            .iter()
+            .find(|v| v.rev_address == dev)
+            .expect("the developer vault is present");
+        assert_eq!(
+            i64::from(allocation.initial_balance),
+            2_000_000_000_000_000,
+            "2% of the total is under the floor, so the floor is allocated"
+        );
+
+        std::fs::write(
+            dir.join("wallets.txt"),
+            format!(
+                "{},90896271400000000\n{},5\n",
+                holder.to_base58(),
+                dev.to_base58()
+            ),
+        )
+        .expect("wallets");
+        assert!(
+            genesis_descriptors_from_config(&spec, false).is_err(),
+            "a wallets file that already names the address would be overwritten, so it is refused"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
 }
