@@ -223,10 +223,9 @@ fn proof_of_stake_from_config(
         // Refused, not clamped, like the bond bounds and the grace. A negative schedule is not a rule
         // this protocol can state — and the `0` an omitted key resolves to is a real rule (no
         // schedule), not a fallback, so the two must not be conflated here.
-        dev_tax_vesting_blocks: NonNegI64::try_from(i64::from(gbd.dev_tax_vesting_blocks))
-            .map_err(|e| {
-                format!("casper.genesis.dev-tax-vesting-blocks must not be negative: {e}")
-            })?,
+        dev_tax_vesting_blocks: NonNegI64::try_from(gbd.dev_tax_vesting_blocks).map_err(|e| {
+            format!("casper.genesis.dev-tax-vesting-blocks must not be negative: {e}")
+        })?,
         pos_multi_sig_public_keys: gbd.pos_multi_sig_public_keys.clone(),
         pos_multi_sig_quorum: gbd.pos_multi_sig_quorum,
         pos_vault_pub_key: gbd.pos_vault_pub_key.clone(),
