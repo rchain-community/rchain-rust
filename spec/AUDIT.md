@@ -102,9 +102,9 @@ on the rows that are not reads.
 
 ## Check-off
 
-**Findings  TODO 0 · IN PROGRESS 1 · DONE 365** &nbsp;&nbsp;·&nbsp;&nbsp; **Coverage  all 89 T1 modules read**
+**Findings  TODO 0 · IN PROGRESS 1 · DONE 366** &nbsp;&nbsp;·&nbsp;&nbsp; **Coverage  all 89 T1 modules read**
 
-**Laws  160 of 366 findings name one** (ceiling 206; 206 done row(s) unclassified)
+**Laws  161 of 367 findings name one** (ceiling 206; 206 done row(s) unclassified)
 
 **Both halves are closed.** A `done` row is settled -- fixed, assessed faithful, a
 deliberate deviation, or refuted -- and names what holds it where there is evidence to
@@ -112,7 +112,7 @@ name. What that does *not* mean is stated under each half below.
 
 ### Findings — closed
 
-All 366 are settled: **302 name the evidence that holds them** and **64 do not** — the
+All 367 are settled: **303 name the evidence that holds them** and **64 do not** — the
 second number is the honest residual, and a column rather than an implication. A `done`
 row says the fix is in the tree or that the decision was taken; it does not say either is
 right. Read a row that matters at the § its account cites.
@@ -130,7 +130,7 @@ defects this register had not recorded (C164, C165).
 |---|---|---|---|
 | `C301` | **The denominator the register is a fraction of has never been reviewed: every study node across the three passes is about running a node, and none is about the chain.** The wargame W-N1..N14, the acceptance worksheet U1..U10 and failure-hazop U11..U16 are transport, ingress, read, admin, keys, host, build, OCapN, validator, observability, upgrade/DR, DoS, entropy, clock, block production, attestation, finality, merge, sync, bonding, deploy pool, wire, storage, operator, reset, rewind, runtime root, refusal budget, checkpoint and reconciliation — all about operating a node, none about the contracts strangers run on it. `spec/review-ledger.tsv` marks all thirty system processes `T3 deferred`, so the whole contract layer (rho:io:http, rho:crypto:*, rho:gov:*, rho:qucalc:*, rho:rchain:pos, revVault, multiSigRevVault, rho:registry:*) was never deep-read, and the ledger's own roster-self row records that its machinery is gone and that no adversarial review of the ledger has run — while the ledger is the denominator every other count is a fraction of. `effect-scheduler` appears in no audit artifact at all. Nineteen read-class findings are filed in the evidence document, each labelled verified-by-reading or agent-reported, and none is armed. | the first arm is the A1 extractState chain: a genesis replay that looks up the AuthKey URI and reads the arm, which decides whether the confirmed leak is also a theft; then the other eighteen, ranked by consequence | §121 |
 
-### DONE (365)
+### DONE (366)
 
 | id | what | evidence | account |
 |---|---|---|---|
@@ -413,6 +413,7 @@ defects this register had not recorded (C164, C165).
 | `C329` | **The clock's behaviour, which this box cannot move.** The escape predicate is already pinned with synthetic `now` values; what is owed is a host-clock step of 15 s while the round gate is held, observing whether the escape fires and whether the emitted block reuses a seq_num. The devnet's containers share the host clock and hold no CAP_SYS_TIME, and the node exposes no clock seam (now_ms reads SystemTime directly). What would close it: an injectable clock, or an image carrying libfaketime. | docs/src/spec/adversary.md | §135 |
 | `C330` | **Three instruments for one row, and the two that did not hold.** W-N8-02 was closed as held on a flooding arm and CI refused it: 110 deliveries in four seconds left the honest session served, 541 got it refused with the share's own sentence. One spend followed by one ask flipped the same way -- served here three runs over, refused on CI. Both readings depend on one number, the share's one-per-second refill, so they measure the runner's speed. The instrument that holds is contention: two sessions ask with nothing between them and exactly one is served, which is the row as a property rather than as a race. A refusal arriving as a bare break record, and two sessions under one designator being a crossed hello, are the two instrument faults that died on the way. | node/tests/ocapn_listener.rs | §136 |
 | `C331` | **A deploy that can never be included, and a node that never said so.** Issue #356's deploy was accepted, held as `Pooled`, and never proposed -- and on a settled lone validator not even the empty attestation block followed, because `nothing_to_finalize=true` withholds the attestation. Two independent clauses, two fixes: admission gained the past half of its own anchor check (a deploy already expired at latest + 1 is refused by name -- a deliberate Scala deviation, section 6), and a block with nothing to include now warns with the pool split by the *same* predicate the filter drops by (`not_selectable`), which covers the case admission cannot: a future anchor, still admitted and still un-includable until something moves the chain. Not about n=1: a fresh single-validator chain produces on a deploy with no extra flags, asserted in `node/tests/deploy_lifespan.rs`. | casper/src/api/block_api_impl.rs/casper/src/blocks/proposer/proposer.rs/node/tests/deploy_lifespan.rs | §137 |
+| `C332` | The genesis credits a developer vault no wallets file contains. A deliberate deviation from the Scala oracle, taken 2026-10-16 and published: the allocation is max(20 000 000 REV, 2% of the wallets file's total), derived from that file's own total rather than written into it, so the genesis creator and a joiner that replays it compute the same post-state hash, and a wallets file that already names the address is refused rather than overwritten. The address is the only setting, and a genesis created outside dev-mode without one is refused at the launch branch; on the published allocation of 908 962 714 REV the floor governs, giving 20 000 000 REV and a genesis total of 928 962 714 REV. | casper/src/genesis/dev_tax.rs/casper/src/genesis/mod.rs/casper/src/engine/node_launch.rs/node/src/configuration/configuration.rs/tools/devnet.sh/spec/Rchain/Genesis.lean | §138 |
 | `F1` | The interpreter core is a mechanical Scala port. `rholang/src/reduce.rs` (1773 lines) | — | §9 |
 | `F2` | The blessed genesis contracts re-implement a HashMap trie in interpreted rholang | — | §9 |
 | `F3` | Silent partiality hides the failure. `compute_bonds` (`casper/src/runtime_manager.rs:503-509`) | — | §9 |
