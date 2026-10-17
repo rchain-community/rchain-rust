@@ -108,6 +108,11 @@ pub fn standalone_conf(dir: &Path, ports: &[u16], validator_hex: Option<&str>) -
     conf.protocol_server.port = ports[3] as i32;
 
     conf.standalone = true;
+    // **A test node is a dev network**, exactly as `tools/devnet.sh` treats every node it starts.
+    // This is what exempts it from the production-genesis gate: Law 78 refuses to create a genesis
+    // outside dev mode without a `dev-tax-address`, and a test chain is not a network that owes one
+    // (its allocation is covered by `casper`'s own tests, not here).
+    conf.dev_mode = true;
     conf.protocol_server.no_upnp = true;
     conf.protocol_server.host = Some("127.0.0.1".to_string());
 

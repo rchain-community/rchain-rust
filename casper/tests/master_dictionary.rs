@@ -22,6 +22,7 @@ use rchain_models::casper::protocol::casper_message::{DeployData, SignedDeployDa
 use rchain_models::rholang::RhoType::RhoString;
 use rchain_rholang::native_state::PosGenesis;
 use rchain_rholang::system_processes::BlockData;
+use rchain_shared::refined::NonNegI64;
 
 use common::build_runtime_manager;
 
@@ -109,6 +110,7 @@ fn proof_of_stake() -> ProofOfStake {
         pos_multi_sig_public_keys: Vec::new(),
         pos_multi_sig_quorum: 1,
         pos_vault_pub_key: String::new(),
+        dev_tax_vesting_blocks: NonNegI64::zero(),
     }
 }
 

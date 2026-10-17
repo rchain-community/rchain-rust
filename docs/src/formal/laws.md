@@ -11,9 +11,9 @@ saying **what it is about**.
 > carry a part of it). It counts *clauses* rather than laws and separates **`proved-tied`** (proved *and*
 > tied to the node by a conformance corpus) from **`proved-model`** (proved about a model a human keeps
 > in sync); the prose on this page is the narrative reading of the same rows, and where the two
-> disagree, the register is right. Its total is **<!-- counts:proved-laws -->70<!-- counts:end --> of
-> <!-- counts:laws -->77 laws<!-- counts:end --> proved at all — <!-- counts:proved-tied-laws -->19<!-- counts:end --> tied to the node by a corpus,
-> <!-- counts:proved-model-laws -->53<!-- counts:end --> over the model — with two more laws proved but *vacuous* (their statements restate their
+> disagree, the register is right. Its total is **<!-- counts:proved-laws -->72<!-- counts:end --> of
+> <!-- counts:laws -->79 laws<!-- counts:end --> proved at all — <!-- counts:proved-tied-laws -->19<!-- counts:end --> tied to the node by a corpus,
+> <!-- counts:proved-model-laws -->55<!-- counts:end --> over the model — with two more laws proved but *vacuous* (their statements restate their
 > own definitions, and the register has a word for that).
 
 ## The set, and what each part of it is about
@@ -37,6 +37,8 @@ saying **what it is about**.
 | 59–65 | **The wire and the session** | the CapTP bridge's round trip and refusals, the install rule, the session loop, the dial policy, attribution, interop, and the printer's literal guard | *(below)* |
 | 66–71 | **The distributed-system set** | the fringe record's key, the record join, versioned reads, the state-page walk's termination, transfer correctness, and the catch-up window | *(below)* |
 | 72–77 | **The durable reset, the stop, and the read construction** | the reset's completion bracket, its request, a checkpoint that folds before it drains, a dependent action ordered on a committed record, a concluded stop, and the reset's projection onto its root | *(below)* |
+| 78 | **The genesis's developer allocation** | a genesis credits one allocation no wallets file contains — `max(20 000 000 REV, 2% of the allocated total)` — derived from the same file the creator and a joiner both read, so the amount is one function of the allocation | *(below)* |
+| 79 | **The allocation's schedule** | it is credited to a *vesting account*, not a spendable vault: the vested fraction is the schedule position, linear in the height, zero at genesis and total at the end, and a duration of `0` is no schedule at all | *(below)* |
 
 The last three sets are the ones a graph of the *calculus* does not reach. Rows 30–43 exist because every
 defect that started the formalisation programme (AUDIT C9–C22) lived there and **nothing errored**: an
@@ -428,6 +430,57 @@ what it drains. Under that rule the pre-reset install survives, so the law is ab
 rather than a restatement of a container (`spec/Rchain/Reset.lean`). The read path took the first shape;
 the law is what made removing its second pass a derivation rather than a guess, and the measurement
 afterwards is what says what it bought (`spec/audit/evidence/read-path-364/`).
+
+## The genesis's developer allocation (Law 78)
+
+**A row the oracle does not have, and the one economic term the chain decides at birth.** The Scala
+ceremony installs exactly the vaults its wallets file names; this port derives one more from their total
+— `max(20 000 000 REV, 2% of the allocated total)` — and credits it to a configured address **as a
+vesting account, not a spendable vault**: Law 79 is the schedule it unlocks on. The two
+arms cross at exactly one billion REV, so below that allocation the floor governs and at or above it the
+rate does; on the allocation this network has (908 962 714 REV, dated 13 May 2026) the floor is the arm
+that applies, and the wallets-plus-allocation total becomes 928 962 714 REV. The arithmetic is stated in
+`spec/Rchain/Genesis.lean`, and the [economics page](../node/validator-economics.md) carries what the
+allocation is and where it sits in the genesis.
+
+**Why it is a law rather than a comment.** The balance is installed outside the genesis block's deploys
+and content-addressed into its post-state hash, so a creator and a node **replaying** the genesis that
+derive different amounts compute different hashes, and the replay refuses the block (AUDIT C46). *One
+function of one file* is therefore the property that matters — and of the file's **installed** total,
+since a repeated address is installed once — and it is the property the row states: the amount is never a
+setting, only the address is, and an address that is set must parse, refused at startup rather than at
+genesis. A node that restores the chain over LFS does not replay genesis and is not checked against its
+local configuration; that boundary belongs to the restore path and is stated in
+[the economics page](../node/validator-economics.md). The deviation from the oracle is recorded with it
+(`spec/audit/passes.md` §138). The falsifier is that the two crossover directions would contradict each
+other if the rule were mis-stated, and the non-vacuity witness is that the rate strictly exceeds the floor
+above the crossover — without which both directions would hold of any constant.
+
+## The allocation's schedule (Law 79)
+
+**A second row for the same deal, because "how much" and "when" are different claims.** Law 78 fixes the
+amount; on its own that is an allocation credited to a vault at genesis and therefore *spendable* at
+genesis — an immediate claim on the whole thing, which is the shape a reviewer called a sell overhang.
+So the genesis credits it to a **vesting account** (`pos:dev-vesting`: the recipient, the total, and the
+unreleased balance in one record), and each epoch boundary moves what has vested into the recipient's own
+vault. Once there it is an ordinary balance, and no other rule in the chain has to know where it came
+from.
+
+**The rule is linear and runs one way.** The vested fraction is the schedule position: zero at genesis,
+total at the end, truncated toward the network so the released amount never runs ahead. The release moves
+`vested − released`, so the two theorems that matter are the bound — `devTaxVested_le_allocation`, which
+keeps the recipient's vault bounded by the allocation however long the chain runs — and the monotonicity,
+which keeps that difference from going negative. A duration of `0` is *no schedule at all* rather than a
+zero-length one, and that is what a params record written before the field decodes to.
+
+**The term is a parameter, not a constant.** `dev-tax-vesting-blocks` is a genesis parameter carrying 36
+months at the cadence `defaults.conf` states (5 s/block, the conservative end of the measured band) —
+the arithmetic is [`spec/Rchain/Vesting.lean`](../../../spec/Rchain/Vesting.lean), and the term is the
+deal's. That split is deliberate: this tree records that **a block cadence is not a constant**
+([scaling](../node/scaling.md)), so a "month" is only ever an assumption, and a parameter makes the
+assumption visible and settable at launch rather than buried in the release rule. The release happens at
+**epoch boundaries** rather than every block, because native state is written at boundaries — stated
+because a reader comparing the schedule to a balance needs to know which clock the balance follows.
 
 ## Reading the formalization
 

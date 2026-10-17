@@ -33,6 +33,56 @@ Two consequences follow directly.
   it is a payment out of the same vault rather than a second pot: the pie is what was burned, and this
   decides who gets a slice of it (below).
 
+## The developer allocation is a genesis account, not a levy
+
+One REV address is credited at genesis that **no wallets file names**: an allocation to the developer, of
+`max(20 000 000 REV, 2% of the total the wallets file allocates)`. The two arms cross at exactly one
+billion REV, so below that allocation the floor governs and at or above it the rate does — and on the
+allocation this network has (908 962 714 REV, dated 13 May 2026 — see [the history chain](history-chain.md))
+2% is 18 179 254 REV, under the floor, so the allocation is **20 000 000 REV** and the
+wallets-plus-allocation total becomes **928 962 714 REV**.
+
+Two things follow from *where* it sits, and both are worth stating because the same numbers read very
+differently as a different mechanism:
+
+- **It is not a levy on fees, and it is not a mint.** REV's issuer has no mint arm, so nothing here
+  creates REV: the account is written once, at genesis, by the same installation that writes every other
+  wallet. `executor-share` and the epoch pot are untouched, and no boundary pays the allocation anything.
+- **It is consensus state, and it is permanent.** The balance is installed outside the genesis
+  block's deploys and content-addressed into the genesis post-state hash (AUDIT C46), so the amount must
+  be one function of the wallets file — which is why it is *derived* rather than written into that file.
+  The function is of the total the genesis will **install**, which is why the allocation boundary
+  refuses a wallets file that repeats an address: `set_vault_balance` overwrites a repeated key, so the
+  rows would not be a total the chain holds. Only the recipient address is a setting
+  (`casper.genesis-block-data.dev-tax-address`), and a genesis created outside `--dev-mode` without one
+  is refused at the launch branch. After genesis it cannot change without a hard fork.
+
+- **It unlocks on a schedule, and that is a separate rule.** The allocation is credited to a *vesting
+  account*, not a spendable vault — nothing is spendable at genesis — and each **epoch boundary** moves
+  what has vested into the recipient's own vault, where it is an ordinary balance. The schedule is
+  linear, with no cliff: zero at genesis, total after `dev-tax-vesting-blocks`, truncated toward the
+  network so the released amount never runs ahead. That term is a **genesis parameter**, not a constant
+  — 36 months at the cadence `defaults.conf` states — because the block cadence is not a constant in
+  this tree ([scaling](scaling.md)), so a "month" is an assumption and the parameter is where it is
+  written down. The rule is Law 79 (`spec/Rchain/Vesting.lean`); the release is granular to the epoch
+  rather than the block, because native state is written at boundaries.
+
+**The boundary of the "creator and joiner agree" claim.** Two nodes that both **replay** the genesis
+derive the same vaults and so the same post-state hash — that is the property the derivation buys. A node
+that instead **restores** the chain over LFS does *not* replay genesis (`insert_genesis` marks it
+validated as it stands), so its local configuration is not checked against what it is restoring: on that
+path the bootstrap's genesis is taken as given. That is the restore path's trust model, it predates this
+allocation, and it is stated here because the claim is narrower than "a disagreeing joiner is refused"
+would suggest.
+
+The rule, its two crossover directions and its non-vacuity witness are Law 78
+([`spec/Rchain/Genesis.lean`](../../../spec/Rchain/Genesis.lean)); the deviation from the Scala oracle is
+recorded in [`spec/audit/passes.md`](../../../spec/audit/passes.md) §138. It **increases the allocated
+total by 20 000 000 REV (2.2003%)**, which dilutes the existing holders' proportional share by 2.1529% —
+the 13 946 addresses the spreadsheet lists keep their balances, and the total they are a share *of* grows.
+The 928 962 714 REV above is the **wallets-plus-allocation** subtotal: the genesis also funds the staking
+vault with the bond sum (`install_genesis`), so it is not all of the REV the genesis writes.
+
 ## The formula: proportional to stake, in units of the minimum bond
 
 At each epoch boundary every pooled validator's share is committed by `epoch_rewards`

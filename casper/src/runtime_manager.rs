@@ -2082,6 +2082,7 @@ mod tests {
                 executor_share: NonNegI64::try_from(2_500).expect("a quarter"),
                 ..PosParams::default()
             },
+            dev_vesting: None,
         };
         let vaults = [Vault {
             rev_address: RevAddress::from_public_key(&deployer).expect("deployer address"),
@@ -2186,6 +2187,7 @@ mod tests {
                 participation_grace: NonNegI64::try_from(2).expect("a grace"),
                 ..PosParams::default()
             },
+            dev_vesting: None,
         };
         let vaults = [Vault {
             rev_address: RevAddress::from_public_key(&deployer).expect("deployer address"),
@@ -2343,6 +2345,7 @@ mod tests {
             ]),
             trusted: BTreeSet::new(),
             params: PosParams::default(),
+            dev_vesting: None,
         };
         let (_pre, genesis_post, _) = rm
             .compute_genesis(&[], &rand, BlockData::empty(), &pos, &[])
