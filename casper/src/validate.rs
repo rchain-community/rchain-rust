@@ -1,7 +1,7 @@
 //! Block validation predicates (port of `Validate.scala`) — the pure, effect-free checks.
 
 use rchain_models::block_hash::BlockHash;
-use rchain_models::block_version::{version_at, SUPPORTED};
+use rchain_models::block_version::{VersionSchedule, COMPILED, SUPPORTED};
 use rchain_models::casper::protocol::casper_message::BlockMessage;
 use rchain_shared::refined::ShardId;
 
@@ -811,7 +811,11 @@ pub fn block_phlo(b: &BlockMessage) -> BlockStatus {
 /// the new one, so no proposer can opt out of the new rules or into them early. With the single shipped
 /// row (version 1 from height 0) the two conditions are the same and no block changes.
 pub fn block_version(b: &BlockMessage) -> BlockStatus {
-    if version(b) && b.version == version_at(i64::from(b.block_number)) {
+    block_version_for_schedule(b, COMPILED)
+}
+
+fn block_version_for_schedule(b: &BlockMessage, schedule: VersionSchedule) -> BlockStatus {
+    if b.version == schedule.version_at(i64::from(b.block_number)) {
         BlockStatus::Valid
     } else {
         BlockStatus::InvalidVersion
@@ -867,6 +871,50 @@ mod tests {
 
         b.version = 999;
         assert_eq!(block_version(&b), BlockStatus::InvalidVersion);
+    }
+
+    #[test]
+    fn scheduled_block_versions_are_required_at_and_after_activation_and_history_replays() {
+        use rchain_models::block_version::Activation;
+        use rchain_shared::refined::BlockHeight;
+
+        const STAGED: VersionSchedule = VersionSchedule::new(&[
+            Activation {
+                version: 1,
+                from_height: 0,
+            },
+            Activation {
+                version: 2,
+                from_height: 10,
+            },
+        ]);
+        for height in [0, 1, 9, 10, 11, 100] {
+            let mut b = block();
+            b.block_number = BlockHeight::try_from(height).unwrap();
+            for version in [1, 2, 999] {
+                b.version = version;
+                let expected = if version == if height < 10 { 1 } else { 2 } {
+                    BlockStatus::Valid
+                } else {
+                    BlockStatus::InvalidVersion
+                };
+                assert_eq!(
+                    block_version_for_schedule(&b, STAGED),
+                    expected,
+                    "height {height}, version {version}"
+                );
+            }
+        }
+        for height in 0..10 {
+            let mut historic = block();
+            historic.block_number = BlockHeight::try_from(height).unwrap();
+            historic.version = 1;
+            assert_eq!(block_version(&historic), BlockStatus::Valid);
+            assert_eq!(
+                block_version_for_schedule(&historic, STAGED),
+                BlockStatus::Valid
+            );
+        }
     }
 
     /// A block carrying more deploys than the seed index can address is refused, and the limit itself

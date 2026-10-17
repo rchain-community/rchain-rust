@@ -529,9 +529,9 @@ pub struct PosParams {
     /// (`Validate::phlo_price`), so two nodes configured differently disagreed about the same block
     /// with nothing committed to say which was right (C198's three withheld knobs,
     /// `casper/src/block_status.rs`). Committing it binds the value to the genesis: a node whose
-    /// setting differs builds a different genesis state and cannot join the chain, and a later change
-    /// of the floor is a change of chain state rather than a config push to every operator. `0`, which
-    /// is what a record written before this field decodes to, means "not committed".
+    /// setting differs builds a different genesis state. LFS restore does not compare the leaf with
+    /// config, and validation still reads config. A missing legacy field defaults to `0`; that value
+    /// alone cannot distinguish absence from an explicitly committed zero floor.
     pub min_phlo_price: NonNegI64,
     /// **The widest justification set a block may carry** (`casper.max-number-of-parents`, #153),
     /// committed at genesis for the reason [`Self::min_phlo_price`] is. A non-positive value disables
@@ -2786,6 +2786,71 @@ mod tests {
         assert_eq!(decode_trusted(&encode_trusted(&trusted)).unwrap(), trusted);
     }
 
+    /// Pin the wire slots independently of the codec: changing both sides together must still fail.
+    #[test]
+    fn params_wire_slots_are_append_only() {
+        let params = PosParams {
+            minimum_bond: NonNegI64::try_from(1).unwrap(),
+            maximum_bond: NonNegI64::try_from(100).unwrap(),
+            epoch_length: 11,
+            quarantine_length: 5,
+            number_of_active_validators: 3,
+            executor_share: NonNegI64::try_from(2500).unwrap(),
+            absence_slack: NonNegI64::try_from(7).unwrap(),
+            participation_grace: NonNegI64::try_from(13).unwrap(),
+            min_phlo_price: NonNegI64::try_from(19).unwrap(),
+            max_number_of_parents: 255,
+        };
+        let wire: Vec<u8> = [1i64, 100, 11, 5, 3, 2500, 7, 13, 19, 255]
+            .into_iter()
+            .flat_map(i64::to_le_bytes)
+            .collect();
+        let mut tagged = vec![1];
+        tagged.extend_from_slice(&wire);
+        assert_eq!(PARAMS_FORMAT, 1);
+        assert_eq!(PARAMS_FIELDS, 10);
+        assert_eq!(PARAMS_LEN, 81);
+        assert_eq!(PARAMS_LEN_WITH_GRACE, 64);
+        assert_eq!(params.encode(), tagged);
+        assert_eq!(decode_params(&tagged).unwrap(), params);
+
+        // These are prefixes of a fixed wire vector, not of the encoder under test.
+        for fields in 5..=8 {
+            let decoded = decode_params(&wire[..fields * 8]).unwrap();
+            let mut expected = PosParams {
+                min_phlo_price: NonNegI64::zero(),
+                max_number_of_parents: 0,
+                ..params
+            };
+            if fields < 6 {
+                expected.executor_share = NonNegI64::zero();
+            }
+            if fields < 7 {
+                expected.absence_slack = NonNegI64::zero();
+            }
+            if fields < 8 {
+                expected.participation_grace = expected.absence_slack;
+            }
+            assert_eq!(decoded, expected, "{fields}-field record");
+        }
+        for fields in 5..10 {
+            assert!(
+                decode_params(&tagged[..1 + fields * 8]).is_err(),
+                "format 1 requires exactly ten fields, not {fields}"
+            );
+        }
+        for fields in 9..=10 {
+            assert!(
+                decode_params(&wire[..fields * 8]).is_err(),
+                "legacy encodings stop at eight fields, not {fields}"
+            );
+        }
+        let defaults = PosParams::default();
+        assert_eq!(defaults.min_phlo_price, NonNegI64::zero());
+        assert_eq!(defaults.max_number_of_parents, 0);
+        assert_eq!(decode_params(&defaults.encode()).unwrap(), defaults);
+    }
+
     /// Every field carries a distinct non-zero value, so a transposition in `encode`/`decode_params`
     /// (the hazard when two branches append fields) fails here: two zeros swapped round-trip silently.
     #[test]
@@ -4016,6 +4081,34 @@ mod tests {
             pot_of(&native).await,
             pot + 30,
             "a bond credits the vault and claims the same amount, so the pot is unchanged"
+        );
+    }
+
+    #[tokio::test]
+    async fn pot_funding_overflow_moves_neither_balance() {
+        let donor = validator(2);
+        let native = native_with(&[donor], PosParams::default(), &[]).await;
+        fund(&native, &donor, 100).await;
+        native.set_pos_vault_balance(NonNegI64::try_from(i64::MAX).unwrap());
+        let before = native
+            .vault_balance(&vault_address_of(&donor))
+            .await
+            .unwrap();
+        let err = native
+            .fund_pot(&donor, NonNegI64::try_from(1).unwrap())
+            .await
+            .expect_err("overflow is a platform error");
+        assert!(err.contains("overflow"), "{err}");
+        assert_eq!(
+            native
+                .vault_balance(&vault_address_of(&donor))
+                .await
+                .unwrap(),
+            before
+        );
+        assert_eq!(
+            i64::from(native.pos_vault_balance().await.unwrap()),
+            i64::MAX
         );
     }
 
@@ -6132,11 +6225,11 @@ impl NativeSystemState {
                 i64::from(balance)
             )));
         }
-        self.set_vault_balance(
-            &address,
-            balance_plus(balance, -stake, "pot funding debit")?,
-        );
-        self.credit_pos_vault(amount).await?;
+        // Check both sides before either write: a failed credit must not consume the donor's REV.
+        let remaining = balance_plus(balance, -stake, "pot funding debit")?;
+        let funded = balance_plus(self.pos_vault_balance().await?, stake, "pot funding credit")?;
+        self.set_vault_balance(&address, remaining);
+        self.set_pos_vault_balance(funded);
         Ok(Ok(()))
     }
 

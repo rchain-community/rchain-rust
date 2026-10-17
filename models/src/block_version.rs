@@ -27,6 +27,37 @@ pub struct Activation {
     pub from_height: i64,
 }
 
+/// A compiled schedule whose rows cannot regress. Invalid release tables fail const evaluation.
+#[derive(Clone, Copy, Debug)]
+pub struct VersionSchedule(&'static [Activation]);
+
+impl VersionSchedule {
+    pub const fn new(rows: &'static [Activation]) -> Self {
+        assert!(!rows.is_empty(), "the schedule must not be empty");
+        assert!(rows[0].from_height == 0, "the schedule starts at genesis");
+        assert!(rows[0].version == 1, "history starts under version 1");
+        let mut i = 1;
+        while i < rows.len() {
+            assert!(rows[i - 1].version < rows[i].version, "versions increase");
+            assert!(
+                rows[i - 1].from_height < rows[i].from_height,
+                "heights increase"
+            );
+            i += 1;
+        }
+        Self(rows)
+    }
+
+    pub fn version_at(self, height: i64) -> i32 {
+        self.0
+            .iter()
+            .take_while(|row| row.from_height <= height)
+            .last()
+            .unwrap_or(&self.0[0])
+            .version
+    }
+}
+
 /// The activation schedule, in strictly increasing `version` and `from_height`, starting at height 0.
 ///
 /// One row today: version 1 from genesis, which is exactly the rule every chain has run, so adding the
@@ -42,17 +73,25 @@ pub const CURRENT: i32 = 1;
 /// All block versions this software implements, oldest first.
 pub const SUPPORTED: [i32; 1] = [CURRENT];
 
+pub const COMPILED: VersionSchedule = VersionSchedule::new(SCHEDULE);
+
+// The supported set and CURRENT must exactly match the checked release table.
+const _: () = {
+    assert!(SCHEDULE[SCHEDULE.len() - 1].version == CURRENT);
+    assert!(SCHEDULE.len() == SUPPORTED.len());
+    let mut i = 0;
+    while i < SCHEDULE.len() {
+        assert!(SCHEDULE[i].version == SUPPORTED[i]);
+        i += 1;
+    }
+};
+
 /// The version a block at `height` must carry.
 ///
 /// A height below the first row's — which the shipped table, starting at 0, never has — reads as the
 /// first row: the schedule says nothing earlier, and the oldest rule is the one a chain started with.
 pub fn version_at(height: i64) -> i32 {
-    SCHEDULE
-        .iter()
-        .take_while(|row| row.from_height <= height)
-        .last()
-        .unwrap_or(&SCHEDULE[0])
-        .version
+    COMPILED.version_at(height)
 }
 
 /// Whether the rules introduced by `version` apply to a block at `height`.
@@ -92,6 +131,113 @@ mod tests {
     fn the_shipped_schedule_changes_no_block() {
         for height in [0, 1, 1_000, i64::MAX] {
             assert_eq!(version_at(height), 1);
+        }
+    }
+
+    #[test]
+    fn staged_versions_preserve_history_and_switch_at_the_boundary() {
+        const STAGED: VersionSchedule = VersionSchedule::new(&[
+            Activation {
+                version: 1,
+                from_height: 0,
+            },
+            Activation {
+                version: 2,
+                from_height: 10,
+            },
+            Activation {
+                version: 3,
+                from_height: 20,
+            },
+        ]);
+        for (height, expected) in [(0, 1), (9, 1), (10, 2), (19, 2), (20, 3), (i64::MAX, 3)] {
+            assert_eq!(STAGED.version_at(height), expected, "height {height}");
+        }
+        for height in 0..10 {
+            assert_eq!(
+                STAGED.version_at(height),
+                version_at(height),
+                "replay height {height}"
+            );
+        }
+    }
+
+    #[test]
+    fn malformed_schedules_are_refused() {
+        const BAD: &[&[Activation]] = &[
+            &[],
+            &[Activation {
+                version: 1,
+                from_height: 1,
+            }],
+            &[Activation {
+                version: 2,
+                from_height: 0,
+            }],
+            &[
+                Activation {
+                    version: 1,
+                    from_height: 0,
+                },
+                Activation {
+                    version: 1,
+                    from_height: 10,
+                },
+            ],
+            &[
+                Activation {
+                    version: 1,
+                    from_height: 0,
+                },
+                Activation {
+                    version: 2,
+                    from_height: 0,
+                },
+            ],
+            &[
+                Activation {
+                    version: 1,
+                    from_height: 0,
+                },
+                Activation {
+                    version: 2,
+                    from_height: -1,
+                },
+            ],
+            &[
+                Activation {
+                    version: 1,
+                    from_height: 0,
+                },
+                Activation {
+                    version: 3,
+                    from_height: 10,
+                },
+                Activation {
+                    version: 2,
+                    from_height: 20,
+                },
+            ],
+            &[
+                Activation {
+                    version: 1,
+                    from_height: 0,
+                },
+                Activation {
+                    version: 2,
+                    from_height: 20,
+                },
+                Activation {
+                    version: 3,
+                    from_height: 10,
+                },
+            ],
+        ];
+        for rows in BAD {
+            assert!(
+                std::panic::catch_unwind(|| VersionSchedule::new(rows)).is_err(),
+                "{rows:?}"
+            );
         }
     }
 

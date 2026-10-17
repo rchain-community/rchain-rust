@@ -263,6 +263,14 @@ WHITELIST_PANIC=(
   'casper/src/block_random_seed.rs;;assert!\( shard_id\.is_ascii\(\), "Shard name should contain only ASCII characters" \);;;Shard name should contain only ASCII characters;;`ShardId` is ASCII by invariant (the refinement), and H2d changed this from a `debug_assert!` to a plain `assert!` so the port'\''s check is live in every profile, as the Scala'\''s `Predef.assert` is — the rename is what staled the previous key, which is this staleness check earning its keep on a real commit rather than on a planted probe'
   'ocapn/src/owner.rs;;receiver is taken exactly once;;let deferred = session;;`owner::split` takes the receiving half of the deferred-answer channel, and it is called exactly once per session — by `accept_and_book`, and by nothing else. The field is an `Option` only because a field cannot be moved out of a `&mut` borrow, so the alternative to this panic is not a total function but `Option::take` returning a *closed* receiver on a second call: the loop would then own a dead channel and answers would be dropped with no error at all. A panic that cannot fire is the better of the two, and this entry is the review that says so (the unit is the deferred-answer one, whose register row is AUDIT C223)'
   'casper/src/engine/catchup.rs;;MAX_BLOCK_RANGE, "WINDOW_HEIGHTS must not exceed;;the responder clamps to the range, so a wider;;the one entry here whose site is a `const` rather than a running assertion: it is `const _: () = assert!(...)`, evaluated while the crate compiles, so it cannot fire at run time at all — the panic class is the *mechanism* (a failed const evaluation is a compile error), not a behaviour. It exists because `WINDOW_HEIGHTS` and `MAX_BLOCK_RANGE` are two constants of this crate coupled by convention: the responder clamps a `BlockRangeRequest` to `MAX_BLOCK_RANGE`, so a window wider than the range leaves the catch-up walk waiting in `wait_for_frontier` for heights nobody was ever asked for — C267'"'"'s stall by another route, one constant edit away. The doc comment above it is the argument; the assertion is where it is enforced'
+  'models/src/block_version.rs;;assert!\(!rows\.is_empty\(;;Invalid release tables fail const evaluation;;the static schedule constructor is evaluated by COMPILED; malformed release tables fail compilation. Test fixtures exercise every refusal; network input never constructs this type'
+  'models/src/block_version.rs;;assert!\(rows\[0\]\.from_height == 0;;Invalid release tables fail const evaluation;;the static schedule constructor is evaluated by COMPILED; malformed release tables fail compilation. Test fixtures exercise every refusal; network input never constructs this type'
+  'models/src/block_version.rs;;assert!\(rows\[0\]\.version == 1;;Invalid release tables fail const evaluation;;the static schedule constructor is evaluated by COMPILED; malformed release tables fail compilation. Test fixtures exercise every refusal; network input never constructs this type'
+  'models/src/block_version.rs;;assert!\(rows\[i - 1\]\.version < rows\[i\]\.version;;Invalid release tables fail const evaluation;;the static schedule constructor is evaluated by COMPILED; malformed release tables fail compilation. Test fixtures exercise every refusal; network input never constructs this type'
+  'models/src/block_version.rs;;assert!\( rows\[i - 1\]\.from_height < rows\[i\]\.from_height;;Invalid release tables fail const evaluation;;the static schedule constructor is evaluated by COMPILED; malformed release tables fail compilation. Test fixtures exercise every refusal; network input never constructs this type'
+  'models/src/block_version.rs;;assert!\(SCHEDULE\[SCHEDULE\.len\(\) - 1\]\.version == CURRENT;;supported set and CURRENT;;const-only consistency gate: a release cannot silently forget a supported version or advertise one outside its checked schedule'
+  'models/src/block_version.rs;;assert!\(SCHEDULE\.len\(\) == SUPPORTED\.len\(\);;supported set and CURRENT;;const-only consistency gate: a release cannot silently forget a supported version or advertise one outside its checked schedule'
+  'models/src/block_version.rs;;assert!\(SCHEDULE\[i\]\.version == SUPPORTED\[i\];;supported set and CURRENT;;const-only consistency gate: a release cannot silently forget a supported version or advertise one outside its checked schedule'
 )
 
 hard_failures=0
@@ -814,6 +822,7 @@ REFINEMENT_FILES=(
   "crypto/src/hash/blake2b512_random.rs"       # SerializedRandom
   "crypto/src/hash/blake2b256_hash.rs"         # Blake2b256Hash
   "models/src/block_hash.rs"                   # BlockHash
+  "models/src/block_version.rs"                # VersionSchedule
   "models/src/block/state_hash.rs"             # StateHash
   "models/src/validator.rs"                    # Validator
   "models/src/sorted.rs"                       # Sorted
@@ -839,7 +848,7 @@ REFINEMENT_FILES=(
 # them by their macro invocation.
 REFINEMENT_TYPES=(BlockHeight SeqNum Port Hash32 ShardId NonNegI64 WireLen SerializedRandom \
   SerializedNode Blake2b256Hash BlockHash StateHash Validator Sorted Closed WellScoped FreeCount \
-  KeySegment Address RevAddress)
+  KeySegment Address RevAddress VersionSchedule)
 
 # A public `.get()` on a refinement: matched *inside* an `impl` block that names one of
 # `REFINEMENT_TYPES`, not file-wide — these files also hold error types with public fields
@@ -890,7 +899,7 @@ BEGIN { n = split(TYPES, t, ","); in_impl = 0; depth = 0 }
 # written reason. Measured with the split: 23 sites in 5 files; without it, the total-inner homes add
 # `Self(Hash32::new(…))`-shaped false positives.
 REFINEMENT_NARROW=(ShardId BlockHeight SeqNum NonNegI64 FreeCount KeySegment Sorted Closed WellScoped \
-  SerializedRandom SerializedNode Address)
+  SerializedRandom SerializedNode Address VersionSchedule)
 REFINEMENT_TOTAL=(Port Hash32 WireLen BlockHash StateHash Blake2b256Hash Validator RevAddress)
 
 # The forms: `T(…)` (C78's), `Self(…)` (the same thing one token later — a legal rewrite that must
@@ -1057,6 +1066,7 @@ ESCAPE_CTOR_ALLOW=(
   # --- models/src/sorted.rs --------------------------------------------------------------------
   'models/src/sorted.rs|Sorted\(sort_par_term\(&par\)\)|Invariant: .self\.0 == sort_par_term|the canonicalizer runs on the way in — the construction *is* the sort'
   'models/src/sorted.rs|Sorted\(Par::default\(\)\)|The empty process is already canonical|the empty `Par` is a fixed point of the canonicalizer'
+  'models/src/block_version.rs|Self\(rows\)|assert!\(!rows.is_empty\(\)|the const constructor checks the genesis row and strictly increasing heights and versions before construction'
   # --- models/src/types.rs ---------------------------------------------------------------------
   'models/src/types.rs|Some\(Closed\(par\)\)|is_closed\(&par\)|the `Closed::new` guard: the construction is inside the branch that proved closure'
   'models/src/types.rs|Some\(WellScoped \{ ctx, par \}\)|well_scoped\(&ctx, &par\)|the `WellScoped::new` guard, same shape as `Closed`'
