@@ -7,7 +7,7 @@ use rchain_crypto::hash::blake2b256_hash::Blake2b256Hash;
 use rchain_crypto::hash::blake2b512_random::Blake2b512Random;
 use rchain_models::block::state_hash::StateHash;
 use rchain_models::block_hash::BlockHash;
-use rchain_models::block_version::CURRENT;
+use rchain_models::block_version::version_at;
 use rchain_models::casper::protocol::casper_message::{
     ProcessedDeploy, ProcessedSystemDeploy, RholangState, SignedDeployData,
 };
@@ -160,7 +160,10 @@ impl BlockCreator {
                     .compute_bonds(&StateHash::from_slice(post_state_hash.as_bytes()))
                     .await?;
                 let unsigned_block = unsigned_block_proto(
-                    CURRENT,
+                    // The version scheduled for this height, which is what `Validate::block_version`
+                    // demands of it — so a release carrying a new row switches proposers over at
+                    // the row's height, with no flag to set.
+                    version_at(i64::from(block_num)),
                     self.shard_id.clone(),
                     block_num,
                     creators_validator,

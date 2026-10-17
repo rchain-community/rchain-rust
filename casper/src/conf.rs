@@ -222,6 +222,14 @@ pub struct GenesisBlockData {
     /// not state it gets the binary rule** (`grace == slack`), which is what a chain that predates the
     /// field was running — see [`crate::genesis::contracts::ProofOfStake`], where the rule is applied.
     pub participation_grace: i32,
+    /// **The fee floor, committed at genesis** (`PosParams::min_phlo_price`). Not a key of
+    /// `genesis-block-data`: it is `casper.min-phlo-price`, copied in when the config is read
+    /// (`configuration::hocon`), so the value a node validates with and the value its genesis commits are
+    /// one setting and cannot drift apart.
+    pub min_phlo_price: i64,
+    /// **The parent bound, committed at genesis** (`PosParams::max_number_of_parents`) — likewise
+    /// `casper.max-number-of-parents`, copied in when the config is read.
+    pub max_number_of_parents: i32,
     pub pos_multi_sig_public_keys: Vec<String>,
     pub pos_multi_sig_quorum: i32,
     pub pos_vault_pub_key: String,
@@ -246,6 +254,8 @@ mod tests {
             executor_share: 2500,
             absence_slack: 0,
             participation_grace: 0,
+            min_phlo_price: 0,
+            max_number_of_parents: 0,
             pos_multi_sig_public_keys: Vec::new(),
             pos_multi_sig_quorum: 0,
             pos_vault_pub_key: String::new(),

@@ -914,6 +914,8 @@ mod builder_tests {
             executor_share: NonNegI64::try_from(0).unwrap(),
             absence_slack: NonNegI64::try_from(0).unwrap(),
             participation_grace: NonNegI64::try_from(0).unwrap(),
+            min_phlo_price: rchain_shared::refined::NonNegI64::zero(),
+            max_number_of_parents: 0,
             pos_multi_sig_public_keys: Vec::new(),
             pos_multi_sig_quorum: 1,
             pos_vault_pub_key: "cd".repeat(65),

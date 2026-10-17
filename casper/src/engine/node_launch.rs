@@ -62,6 +62,8 @@ pub async fn create_genesis_block(
     executor_share: NonNegI64,
     absence_slack: NonNegI64,
     participation_grace: NonNegI64,
+    min_phlo_price: NonNegI64,
+    max_number_of_parents: i64,
     pos_multi_sig_public_keys: &[String],
     pos_multi_sig_quorum: i32,
     pos_vault_pub_key: &str,
@@ -99,6 +101,8 @@ pub async fn create_genesis_block(
             executor_share,
             absence_slack,
             participation_grace,
+            min_phlo_price,
+            max_number_of_parents,
             pos_multi_sig_public_keys: pos_multi_sig_public_keys.to_vec(),
             pos_multi_sig_quorum,
             pos_vault_pub_key: pos_vault_pub_key.to_string(),
@@ -143,6 +147,10 @@ pub async fn create_genesis_block_from_config(
     // (`configuration::hocon`), so this is the value and not a second fallback.
     let participation_grace = NonNegI64::try_from(i64::from(gbd.participation_grace))
         .map_err(|e| format!("casper.genesis.participation-grace must not be negative: {e}"))?;
+    // The fee floor is committed rather than only configured (see `PosParams::min_phlo_price`), so a
+    // negative one is refused here like the other genesis numbers: "no floor" is `0`.
+    let min_phlo_price = NonNegI64::try_from(gbd.min_phlo_price)
+        .map_err(|e| format!("casper.min-phlo-price must not be negative: {e}"))?;
     create_genesis_block(
         validator,
         &shard_id,
@@ -158,6 +166,8 @@ pub async fn create_genesis_block_from_config(
         executor_share,
         absence_slack,
         participation_grace,
+        min_phlo_price,
+        i64::from(gbd.max_number_of_parents),
         &gbd.pos_multi_sig_public_keys,
         gbd.pos_multi_sig_quorum,
         &gbd.pos_vault_pub_key,

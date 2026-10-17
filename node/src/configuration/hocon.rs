@@ -340,6 +340,11 @@ fn genesis_block_data_from_hocon(h: &Hocon) -> Result<GenesisBlockData, String> 
         // contract's behaviour rather than to a rule nobody chose.
         absence_slack,
         participation_grace,
+        // Filled from `casper.min-phlo-price` / `casper.max-number-of-parents` by
+        // `casper_conf_from_hocon`: they are the same settings the node validates with, committed, and
+        // not keys a `genesis-block-data` block can set on its own.
+        min_phlo_price: 0,
+        max_number_of_parents: 0,
         pos_multi_sig_public_keys: to_string_list(get(h, "pos-multi-sig-public-keys")?)?,
         pos_multi_sig_quorum: to_i32(get(h, "pos-multi-sig-quorum")?)?,
         pos_vault_pub_key: to_string(get(h, "pos-vault-pub-key")?)?,
@@ -409,8 +414,16 @@ fn genesis_block_data_over(
 fn casper_conf_from_hocon(h: &Hocon) -> Result<CasperConf, String> {
     // The node-level `genesis-block-data` / `autogen-shard-size` are the defaults for every
     // membership; a `casper.shards` entry may override them wholesale.
-    let default_genesis = genesis_block_data_from_hocon(get(h, "genesis-block-data")?)?;
+    let mut default_genesis = genesis_block_data_from_hocon(get(h, "genesis-block-data")?)?;
     let default_autogen_shard_size = to_i32(get(h, "autogen-shard-size")?)?;
+    // **The two block-validity settings are committed at genesis** (`PosParams::min_phlo_price` and
+    // `max_number_of_parents`). They are copied from the very values `CasperConf` validates with, and
+    // only into the default every membership overlays, so a shard entry cannot commit a bound its node
+    // does not enforce.
+    let min_phlo_price = to_i64(get(h, "min-phlo-price")?)?;
+    let max_number_of_parents = to_i32(get(h, "max-number-of-parents")?)?;
+    default_genesis.min_phlo_price = min_phlo_price;
+    default_genesis.max_number_of_parents = max_number_of_parents;
     Ok(CasperConf {
         validator_public_key: to_optional_string(h, "validator-public-key")?,
         validator_private_key: to_optional_string(h, "validator-private-key")?,
@@ -418,7 +431,7 @@ fn casper_conf_from_hocon(h: &Hocon) -> Result<CasperConf, String> {
         shards: shard_memberships_from_hocon(h, default_genesis, default_autogen_shard_size)?,
         casper_loop_interval: to_duration(get(h, "casper-loop-interval")?)?,
         requested_blocks_timeout: to_duration(get(h, "requested-blocks-timeout")?)?,
-        max_number_of_parents: to_i32(get(h, "max-number-of-parents")?)?,
+        max_number_of_parents,
         fork_choice_stale_threshold: to_duration(get(h, "fork-choice-stale-threshold")?)?,
         fork_choice_check_if_stale_interval: to_duration(get(
             h,
@@ -426,7 +439,7 @@ fn casper_conf_from_hocon(h: &Hocon) -> Result<CasperConf, String> {
         )?)?,
         synchrony_constraint_threshold: to_f64(get(h, "synchrony-constraint-threshold")?)?,
         height_constraint_threshold: to_i64(get(h, "height-constraint-threshold")?)?,
-        min_phlo_price: to_i64(get(h, "min-phlo-price")?)?,
+        min_phlo_price,
         // Defaults to *off* when absent, unlike its neighbours: a config written before the key
         // existed must resolve to the behaviour of a node that does not inject anything.
         equivocation_injection: match get_opt(h, "equivocation-injection") {
@@ -748,6 +761,8 @@ mod tests {
             executor_share: 2500,
             absence_slack: 0,
             participation_grace: 0,
+            min_phlo_price: 0,
+            max_number_of_parents: 0,
             genesis_data_dir: PathBuf::from("/genesis"),
             bonds_file: "/genesis/bonds.txt".to_string(),
             wallets_file: "/genesis/wallets.txt".to_string(),
@@ -929,6 +944,15 @@ mod tests {
         ]);
         let conf = casper_conf_from_hocon(&casper).expect("casper conf");
         assert_eq!(conf.shards.len(), 2);
+        // The block-validity settings reach every membership's genesis data, so what a shard commits
+        // is what its node enforces.
+        for spec in conf.shards.iter() {
+            assert_eq!(spec.genesis_block_data.min_phlo_price, conf.min_phlo_price);
+            assert_eq!(
+                spec.genesis_block_data.max_number_of_parents,
+                conf.max_number_of_parents
+            );
+        }
         assert_eq!(
             conf.shards.primary().shard_name,
             "root",

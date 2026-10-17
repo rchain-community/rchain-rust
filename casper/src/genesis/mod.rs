@@ -8,7 +8,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use rchain_crypto::public_key::PublicKey;
 use rchain_models::block::state_hash::StateHash;
-use rchain_models::block_version::CURRENT;
+use rchain_models::block_version::version_at;
 use rchain_models::casper::protocol::casper_message::{
     BlockMessage, ProcessedDeploy, RholangState, SignedDeployData,
 };
@@ -73,6 +73,8 @@ pub fn build_pos_genesis(proof_of_stake: &ProofOfStake) -> PosGenesis {
             executor_share: proof_of_stake.executor_share,
             absence_slack: proof_of_stake.absence_slack,
             participation_grace: proof_of_stake.participation_grace,
+            min_phlo_price: proof_of_stake.min_phlo_price,
+            max_number_of_parents: proof_of_stake.max_number_of_parents,
         },
     }
 }
@@ -179,6 +181,9 @@ fn proof_of_stake_from_config(
         // the grace set to the slack, not to zero, so this is the value and not a fallback.
         participation_grace: NonNegI64::try_from(i64::from(gbd.participation_grace))
             .map_err(|e| format!("casper.genesis.participation-grace must not be negative: {e}"))?,
+        min_phlo_price: NonNegI64::try_from(gbd.min_phlo_price)
+            .map_err(|e| format!("casper.min-phlo-price must not be negative: {e}"))?,
+        max_number_of_parents: i64::from(gbd.max_number_of_parents),
         pos_multi_sig_public_keys: gbd.pos_multi_sig_public_keys.clone(),
         pos_multi_sig_quorum: gbd.pos_multi_sig_quorum,
         pos_vault_pub_key: gbd.pos_vault_pub_key.clone(),
@@ -204,10 +209,11 @@ fn create_block_with_processed_deploys(
         deploys: processed_deploys,
         system_deploys: Vec::new(),
     };
+    let block_number = BlockHeight::try_from(genesis.block_number).map_err(|e| e.to_string())?;
     Ok(unsigned_block_proto(
-        CURRENT,
+        version_at(i64::from(block_number)),
         genesis.shard_id.clone(),
-        BlockHeight::try_from(genesis.block_number).map_err(|e| e.to_string())?,
+        block_number,
         ModelsValidator::from_slice(genesis.sender.bytes()),
         SeqNum::zero(),
         pre_state_hash,
@@ -619,9 +625,44 @@ mod tests {
             executor_share: NonNegI64::try_from(0).unwrap(),
             absence_slack: NonNegI64::try_from(0).unwrap(),
             participation_grace: NonNegI64::try_from(0).unwrap(),
+            min_phlo_price: NonNegI64::zero(),
+            max_number_of_parents: 0,
             pos_multi_sig_public_keys: vec![],
             pos_multi_sig_quorum: 0,
             pos_vault_pub_key: String::new(),
+        }
+    }
+
+    /// **The fee floor and the parent bound are part of the genesis state**, not only of the node's
+    /// config: they reach `PosParams`, whose encoding is a native-state leaf the genesis post-state hash
+    /// covers. So two configurations that differ in either one encode different params records, and a
+    /// node configured unlike its peers builds a different genesis instead of silently disagreeing with
+    /// them about which blocks are valid.
+    #[test]
+    fn the_validity_bounds_are_committed_in_the_genesis_params() {
+        let committed = ProofOfStake {
+            min_phlo_price: NonNegI64::try_from(1).unwrap(),
+            max_number_of_parents: 255,
+            ..pos()
+        };
+        let params = build_pos_genesis(&committed).params;
+        assert_eq!(i64::from(params.min_phlo_price), 1);
+        assert_eq!(params.max_number_of_parents, 255);
+
+        let other_floor = ProofOfStake {
+            min_phlo_price: NonNegI64::try_from(2).unwrap(),
+            ..committed.clone()
+        };
+        let other_width = ProofOfStake {
+            max_number_of_parents: 256,
+            ..committed.clone()
+        };
+        for other in [other_floor, other_width] {
+            assert_ne!(
+                build_pos_genesis(&other).params.encode(),
+                params.encode(),
+                "a different bound is a different genesis"
+            );
         }
     }
 
@@ -704,6 +745,8 @@ mod tests {
                 executor_share: 2500,
                 absence_slack: 0,
                 participation_grace: 0,
+                min_phlo_price: 0,
+                max_number_of_parents: 0,
                 genesis_data_dir: dir.to_path_buf(),
                 bonds_file: dir.join("bonds.txt").to_string_lossy().into_owned(),
                 wallets_file: dir.join("wallets.txt").to_string_lossy().into_owned(),

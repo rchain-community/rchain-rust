@@ -32,6 +32,12 @@ Two consequences follow directly.
   *minus* the producer's shares. That is the one place the protocol's payout reads who did the work, and
   it is a payment out of the same vault rather than a second pot: the pie is what was burned, and this
   decides who gets a slice of it (below).
+- **Anyone can add to the pot without a fork.** `rho:rchain:pos!("fundPot", *deployerId, amount, *ret)`
+  moves `amount` from the caller's own vault into the staking vault with no claim attached
+  (`NativeSystemState::fund_pot`), so the next boundary pays all of it out by stake. `bond` and
+  `delegate` also credit the vault but record an equal claim, so they add nothing to the pot. This is how
+  rewards can be raised later, by a donor, the Coop or a governance reserve, without changing
+  `executor-share` or minting, both of which would need a new genesis.
 
 ## The formula: proportional to stake, in units of the minimum bond
 

@@ -465,6 +465,12 @@ governance vote, not an emergency release, which is exactly what the emergency p
 H6 now, since it needs no fork. **Land the agility fork now, not when a trigger fires** (§14.2): today a hard fork
 costs only a testnet restart.
 
+**The gate H1 needs now exists, without any scheme in it.** The block path checks a block's version against a
+compiled schedule of `(version, from_height)` rows (`rchain_models::block_version::SCHEDULE`,
+`models/src/block_version.rs`), and new consensus code asks `is_active(version, height)`. The shipped table is the
+single row `(1, 0)`, so nothing is staged yet; the agility fork adds its row, and the algorithm table above can key
+its `active_from` on the same heights.
+
 What still forces a future fork: a break in ML-DSA itself that requires a scheme *not* compiled into the binary,
 or a change to the block format beyond the headroom in H4. H3's dormant SLH-DSA is the hedge for the first.
 

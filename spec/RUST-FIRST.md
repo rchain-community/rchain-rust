@@ -104,6 +104,7 @@ contract's `posVault`), and the Coop multisig vault — so nothing is minted and
 | **delegation** | delegator vault → staking vault | **none** — the contract has no delegation primitive |
 | **undelegation payout** | staking vault → delegator vault | **none**, for the same reason |
 | **slash fan-out** | staking vault → the offender's vault, **and each delegator's own vault** | **none** — the contract returns the remainder to the offender alone |
+| **pot funding** (`fundPot`) | funder vault → staking vault, **with no claim** — so the whole amount is pot at the next boundary | **none** — the contract has no way to add to the pot except burned phlo |
 
 The last three rows are the primitive's whole REV movement, and each is a deviation registered with the
 **"Hard fork (#51 category A)"** marking in `spec/audit/passes.md` §6. A delegation debits the

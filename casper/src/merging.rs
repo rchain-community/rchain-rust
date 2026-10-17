@@ -3576,6 +3576,8 @@ mod boundary_merge_tests {
                     executor_share: nn(0),
                     absence_slack: nn(0),
                     participation_grace: nn(0),
+                    min_phlo_price: NonNegI64::zero(),
+                    max_number_of_parents: 0,
                 },
             })
             .unwrap();

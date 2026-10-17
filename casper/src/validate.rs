@@ -1,7 +1,7 @@
 //! Block validation predicates (port of `Validate.scala`) — the pure, effect-free checks.
 
 use rchain_models::block_hash::BlockHash;
-use rchain_models::block_version::SUPPORTED;
+use rchain_models::block_version::{version_at, SUPPORTED};
 use rchain_models::casper::protocol::casper_message::BlockMessage;
 use rchain_shared::refined::ShardId;
 
@@ -803,8 +803,15 @@ pub fn block_phlo(b: &BlockMessage) -> BlockStatus {
 ///
 /// Declared here rather than beside the other predicates for the reason [`deploy_signatures`]
 /// records: inserting above `block_summary` shifts line numbers the law register cites.
+///
+/// **And the version has to be the one scheduled for the block's height**, not merely one this binary
+/// knows (`rchain_models::block_version::SCHEDULE`). That is what makes a rule change a scheduled one
+/// rather than a new genesis: below an activation height a block must still carry the old version, so
+/// the old rules keep applying to the history a node replays, and at or above it every block must carry
+/// the new one, so no proposer can opt out of the new rules or into them early. With the single shipped
+/// row (version 1 from height 0) the two conditions are the same and no block changes.
 pub fn block_version(b: &BlockMessage) -> BlockStatus {
-    if version(b) {
+    if version(b) && b.version == version_at(i64::from(b.block_number)) {
         BlockStatus::Valid
     } else {
         BlockStatus::InvalidVersion

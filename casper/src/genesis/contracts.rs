@@ -51,6 +51,12 @@ pub struct ProofOfStake {
     /// rule**, because that is the boundary between "a file a person wrote" and "the value consensus
     /// uses". See [`crate::conf::GenesisBlockData::participation_grace`].
     pub participation_grace: NonNegI64,
+    /// **The committed fee floor** — `casper.min-phlo-price`, carried straight into
+    /// `PosParams::min_phlo_price` so the genesis binds it.
+    pub min_phlo_price: NonNegI64,
+    /// **The committed parent bound** — `casper.max-number-of-parents`, carried straight into
+    /// `PosParams::max_number_of_parents`. Non-positive disables it.
+    pub max_number_of_parents: i64,
     pub pos_multi_sig_public_keys: Vec<String>,
     pub pos_multi_sig_quorum: i32,
     pub pos_vault_pub_key: String,

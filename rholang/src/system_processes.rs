@@ -2003,6 +2003,43 @@ impl SystemProcesses {
                         };
                         cc.produce(&rand, &[out], ret, path).await
                     }
+                    // **A top-up of the validators' reward pot** (`NativeSystemState::fund_pot`): REV
+                    // into the staking vault with no claim, so the next boundary pays it out by stake.
+                    // The way to raise rewards later without changing `executor_share` or minting.
+                    "fundPot" => {
+                        let [deployer_id, amount, ret] = rest else {
+                            eprintln!("[pos] bad argument shape: fundPot");
+                            return Err(illegal_arg(
+                                "fundPot expects deployerId, amount and return channel",
+                            ));
+                        };
+                        // Capability, not data (see `bond`): the funder can only spend its own vault.
+                        let funder = RhoDeployerId::unapply(deployer_id)
+                            .and_then(|bytes| Validator::try_from(bytes).ok())
+                            .ok_or_else(|| illegal_arg("fundPot expects a deployerId"))?;
+                        let amount = RhoNumber::unapply(amount)
+                            .ok_or_else(|| illegal_arg("fundPot expects a number amount"))?;
+                        let amount =
+                            NonNegI64::try_from(amount).map_err(|e| illegal_arg(&e.to_string()))?;
+                        let out = match native
+                            .fund_pot(&funder, amount)
+                            .await
+                            .map_err(|e| illegal_arg(&e))?
+                        {
+                            Ok(()) => {
+                                eprintln!("[pos] ok");
+                                RhoTupleN::apply(vec![RhoBoolean::apply(true), RhoNil::apply()])
+                            }
+                            Err(msg) => {
+                                eprintln!("[pos] refused: {msg}");
+                                RhoTupleN::apply(vec![
+                                    RhoBoolean::apply(false),
+                                    RhoString::apply(msg),
+                                ])
+                            }
+                        };
+                        cc.produce(&rand, &[out], ret, path).await
+                    }
                     "trust" | "untrust" => {
                         let [deployer_id, target, ret] = rest else {
                             eprintln!("[pos] bad argument shape: trust/untrust");
@@ -3590,6 +3627,91 @@ mod tests {
         assert_eq!(produced[0].0.as_par(), &ret);
         let map = RhoMap::unapply(produced[0].1.pars[0].as_par()).expect("getBonds returns a map");
         assert_eq!(map.len(), 2);
+    }
+
+    /// `fundPot` is reachable from a deploy and needs the caller's `deployerId`: the funder's vault
+    /// pays, the staking vault receives, and a program-authored byte array in its place is refused —
+    /// the same capability rule as `bond`, so nobody can fund the pot out of someone else's vault.
+    #[tokio::test]
+    async fn pos_fund_pot_moves_the_callers_rev_into_the_staking_vault() {
+        let mock = Arc::new(MockSpace {
+            produced: Mutex::new(Vec::new()),
+        });
+        let charging = ChargingRSpace::new(
+            mock.clone(),
+            Arc::new(crate::accounting::CostAccounting::from_initial(
+                crate::accounting::Costs::unsafe_max(),
+            )),
+        );
+        let dispatcher = Arc::new(RholangAndScalaDispatcher::new(
+            std::collections::BTreeMap::new(),
+        ));
+        let block_data = Arc::new(Mutex::new(BlockData::empty()));
+        let native_state = Arc::new(NativeSystemState::new(Arc::new(
+            rchain_rspace::native_store::InMemNativeStore::empty(),
+        )));
+        let sp = SystemProcesses::new(charging, dispatcher, block_data, native_state.clone());
+        let defs = sp.definitions();
+        let pos = defs
+            .iter()
+            .find(|d| d.body_ref == BodyRefs::POS)
+            .expect("pos definition");
+
+        let donor = RevAddress::from_deployer_id(&[3; 65])
+            .expect("donor address")
+            .to_base58();
+        native_state.set_vault_balance(&donor, NonNegI64::try_from(100).unwrap());
+        let before = native_state.pos_vault_balance().await.unwrap();
+
+        let ret = FixedChannels::stdout();
+        (pos.handler)(
+            vec![lpw(vec![
+                RhoString::apply("fundPot".to_string()),
+                RhoList::apply(vec![
+                    RhoDeployerId::apply(vec![3; 65]),
+                    RhoNumber::apply(40),
+                    ret.clone(),
+                ]),
+            ])],
+            DfsPath::root(),
+        )
+        .await
+        .unwrap();
+        {
+            let produced = mock.produced.lock().unpoison();
+            assert_eq!(produced.len(), 1);
+            assert_eq!(
+                produced[0].1.pars[0].as_par(),
+                &RhoTupleN::apply(vec![RhoBoolean::apply(true), RhoNil::apply()])
+            );
+        }
+        assert_eq!(
+            i64::from(native_state.pos_vault_balance().await.unwrap()),
+            i64::from(before) + 40
+        );
+        assert_eq!(
+            native_state
+                .vault_balance(&donor)
+                .await
+                .unwrap()
+                .map(i64::from),
+            Some(60)
+        );
+
+        let err = (pos.handler)(
+            vec![lpw(vec![
+                RhoString::apply("fundPot".to_string()),
+                RhoList::apply(vec![
+                    RhoByteArray::apply(vec![3; 65]),
+                    RhoNumber::apply(40),
+                    ret,
+                ]),
+            ])],
+            DfsPath::root(),
+        )
+        .await
+        .expect_err("a byte array is not a deployerId");
+        assert!(err.to_string().contains("deployerId"), "{err}");
     }
 
     #[tokio::test]
