@@ -1,6 +1,12 @@
 #!/usr/bin/env python3
 """Negative controls for causal evidence, independent of a running node."""
 import hashlib
+import io
+import contextlib
+import json
+import os
+from tempfile import TemporaryDirectory
+from unittest.mock import patch
 import importlib.util
 from pathlib import Path
 import unittest
@@ -18,6 +24,20 @@ def block(n=1, parents=None):
 
 
 class TraceTests(unittest.TestCase):
+    def test_artifact_capture_is_bounded_but_keeps_full_comparison(self):
+        with TemporaryDirectory() as root:
+            out = Path(root)
+            payload = {"complete_capture": True, "errors": {},
+                       "union_ids": ["a" * 64] * 50000}
+            (out / "comparison.json").write_text(json.dumps(payload))
+            stdout = io.StringIO()
+            with patch.dict(os.environ, {"ACCEPTANCE_ARTIFACTS": "1"}),                  patch.object(trace, "emit_capture") as frames,                  contextlib.redirect_stdout(stdout):
+                trace.report_capture(out, payload)
+            self.assertLess(len(stdout.getvalue()), 500)
+            self.assertIn('"accepted_ids": 50000', stdout.getvalue())
+            self.assertEqual(len(json.loads((out / "comparison.json").read_text())["union_ids"]), 50000)
+            frames.assert_not_called()
+
     def test_capture_transport_preserves_long_raw_preimages_and_rejects_corruption(self):
         data = (b'"encoded":"' + b"abcde01234" * 100000 + b'"')
         digest, encoded = trace.encode_capture(data)

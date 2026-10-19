@@ -3,6 +3,7 @@
 import base64
 import hashlib
 import json
+import os
 from pathlib import Path
 import re
 import subprocess
@@ -203,13 +204,22 @@ def capture(run, get, node_name):
                        "complete_capture": not errors and len(views) == run.args.validators})
     (out / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
     (out / "comparison.json").write_text(json.dumps(comparison, indent=2) + "\n")
-    print("CAUSAL_CAPTURE " + json.dumps(comparison), flush=True)
-    # The existing runner retains logs but has no artifact-upload step. Keep
-    # each capture there too, with delimiters for mechanical extraction.
-    # Bound log lines, preserve exact bytes, and retain the full rejection and
-    # transport logs too. Uncompressed raw preimages made multi-megabyte lines
-    # in run 38506033100 and delayed evidence retrieval substantially.
-    for path in sorted([*out.glob("*.json"), *out.glob("*.log")]):
-        emit_capture(path)
+    report_capture(out, comparison)
     # Capture is diagnostic. An incomplete capture must not replace the drill verdict.
     # comparison.json retains the refusal and complete_capture=false for reviewers.
+
+
+def report_capture(out, comparison):
+    """Preserve complete captures as artifacts without exhausting the step log."""
+    if os.environ.get("ACCEPTANCE_ARTIFACTS") == "1":
+        summary = {"complete_capture": comparison["complete_capture"],
+                   "errors": comparison["errors"],
+                   "accepted_ids": len(comparison.get("union_ids", [])),
+                   "full_evidence": str(out)}
+        print("CAUSAL_CAPTURE " + json.dumps(summary), flush=True)
+        return
+    # For standalone runners without artifact uploads, retain checksum-
+    # verified compressed frames. Never silently discard evidence.
+    print("CAUSAL_CAPTURE " + json.dumps(comparison), flush=True)
+    for path in sorted([*out.glob("*.json"), *out.glob("*.log")]):
+        emit_capture(path)

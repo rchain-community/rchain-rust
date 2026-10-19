@@ -35,6 +35,7 @@ Stdlib only (urllib + json + subprocess). Run against an already-up devnet:
 """
 
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -468,7 +469,13 @@ def run_acceptance_campaign(trace=False):
             for path in (out / "result.json", out / "observations.jsonl"):
                 if path.exists():
                     print(f"=== BEGIN {path} ===", flush=True)
-                    print(path.read_text(), flush=True)
+                    if env.get("ACCEPTANCE_ARTIFACTS") == "1" and path.name == "observations.jsonl":
+                        data = path.read_bytes()
+                        print("EVIDENCE_ARTIFACT " + json.dumps({
+                            "path": str(path), "bytes": len(data),
+                            "sha256": hashlib.sha256(data).hexdigest()}), flush=True)
+                    else:
+                        print(path.read_text(), flush=True)
                     print(f"=== END {path} ===", flush=True)
             teardown = subprocess.run(["tools/devnet.sh", "down", "-v"], env=env, check=False)
             if teardown.returncode:
