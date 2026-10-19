@@ -27,6 +27,33 @@ class EvidenceTests(unittest.TestCase):
                 with self.assertRaises(RuntimeError):
                     run.finalized_marker(1, required=True)
 
+    def test_transient_drive_refusal_does_not_replace_finality_wait(self):
+        with TemporaryDirectory() as out:
+            run = drill.Drill(SimpleNamespace(out=out, validators=1, window=30))
+            ticks = iter([0, 1, 2])
+            next_count = [0]
+            def condition():
+                next_count[0] += 1
+                return None if next_count[0] == 1 else 42
+            with patch.object(drill.time, "monotonic", side_effect=lambda: next(ticks)), \
+                 patch.object(drill.time, "sleep"), \
+                 patch.object(run, "drive", side_effect=RuntimeError("busy")), \
+                 patch.object(run, "record") as record:
+                self.assertEqual(run.wait("finality", condition), 42)
+                self.assertTrue(any("drive_error" in call.kwargs for call in record.call_args_list))
+
+    def test_capture_failure_preserves_the_primary_verdict(self):
+        with TemporaryDirectory() as out:
+            argv = ["drill", "--validators", "4", "--out", out]
+            with patch.dict(drill.os.environ, {"GITHUB_ACTIONS": "true"}), \
+                 patch("sys.argv", argv), \
+                 patch.object(drill.Drill, "run", side_effect=RuntimeError("primary failure")), \
+                 patch.object(drill.causal_trace, "capture", side_effect=RuntimeError("capture failure")):
+                with self.assertRaisesRegex(RuntimeError, "primary failure"):
+                    drill.main()
+            result = __import__("json").loads((Path(out) / "result.json").read_text())
+            self.assertEqual(result["reason"], "primary failure")
+
     def test_original_finalized_snapshot_must_still_contain_the_marker(self):
         with TemporaryDirectory() as out:
             run = drill.Drill(SimpleNamespace(out=out, validators=1, window=30))

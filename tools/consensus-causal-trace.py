@@ -137,6 +137,19 @@ def emit_capture(path):
     print(f"=== END ZLIB {path} ===", flush=True)
 
 
+def read_bounded_blocks(get, node, height):
+    """Read every accepted height without exceeding the API's default range limit."""
+    blocks = []
+    for start in range(0, height + 1, 50):
+        end = min(start + 49, height)
+        page = get(node, f"/api/blocks/{start}/{end}")
+        if not isinstance(page, list):
+            raise ValueError(f"block range {start}..{end} is not a list")
+        blocks.extend(page)
+    index_blocks(blocks)  # Reject inconsistent overlapping observations.
+    return blocks
+
+
 def capture(run, get, node_name):
     out = run.out / "causal"
     out.mkdir(exist_ok=True)
@@ -156,7 +169,7 @@ def capture(run, get, node_name):
                 raise ValueError("capture height outside bounded 0..256 range")
             # Height-range reads include accepted unfinalized blocks. Do not
             # substitute a wallet/name read that now selects finalized state.
-            blocks = get(i, f"/api/blocks/0/{height}")
+            blocks = read_bounded_blocks(get, i, height)
             index = index_blocks(blocks)
             raw_blocks = {}
             for key, block in sorted(index.items()):
@@ -198,5 +211,5 @@ def capture(run, get, node_name):
     # in run 38506033100 and delayed evidence retrieval substantially.
     for path in sorted([*out.glob("*.json"), *out.glob("*.log")]):
         emit_capture(path)
-    if not comparison["complete_capture"]:
-        raise RuntimeError("causal capture is incomplete; see causal/comparison.json")
+    # Capture is diagnostic. An incomplete capture must not replace the drill verdict.
+    # comparison.json retains the refusal and complete_capture=false for reviewers.

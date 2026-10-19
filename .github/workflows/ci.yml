@@ -127,6 +127,11 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      - name: Acceptance diagnostic regression tests
+        run: |
+          python3 tests/consensus-drill-regression.py
+          python3 tests/consensus-trace-regression.py
+
       - name: Install pinned Rust toolchain
         run: |
           rustup toolchain install "$(cat rust-toolchain.toml | grep channel | cut -d'"' -f2)" --profile minimal

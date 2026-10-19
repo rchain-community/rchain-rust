@@ -132,7 +132,11 @@ class Drill:
                 last_error = repr(error)
                 self.record(wait=description, read_error=last_error)
             if drive:
-                self.drive()
+                try:
+                    self.drive()
+                except RuntimeError as error:
+                    last_error = repr(error)
+                    self.record(wait=description, drive_error=last_error)
             time.sleep(2)
         raise RuntimeError(f"{description} did not pass within {self.args.window}s; last read error={last_error}")
 
@@ -237,7 +241,12 @@ def main():
         (drill.out / "result.json").write_text(json.dumps({"result": "fail", "reason": str(error)}) + "\n")
         raise
     finally:
-        causal_trace.capture(drill, get, node_name)
+        try:
+            causal_trace.capture(drill, get, node_name)
+        except Exception as error:
+            # Preserve the primary verdict even if diagnostic capture itself fails.
+            drill.record(causal_capture_error=f"{type(error).__name__}: {error}")
+            print(f"CAUSAL_CAPTURE_ERROR {type(error).__name__}: {error}", flush=True)
 
 
 if __name__ == "__main__":

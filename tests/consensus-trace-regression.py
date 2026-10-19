@@ -59,6 +59,19 @@ class TraceTests(unittest.TestCase):
         self.assertEqual(trace.compare({0: a, 1: b})["missing_by_node"]["0"], [f"{2:064x}"])
         self.assertFalse(trace.compare({})["same_accepted_ids"])
 
+    def test_block_capture_pages_past_the_default_api_limit(self):
+        calls = []
+        def get(node, path):
+            calls.append((node, path))
+            start, end = map(int, path.rsplit("/", 2)[-2:])
+            self.assertLessEqual(end - start, 50)
+            return [block(n) for n in range(start, end + 1)]
+        blocks = trace.read_bounded_blocks(get, 2, 121)
+        self.assertEqual(len(blocks), 122)
+        self.assertEqual(calls, [(2, "/api/blocks/0/49"),
+                                 (2, "/api/blocks/50/99"),
+                                 (2, "/api/blocks/100/121")])
+
     def test_raw_bytes_are_verified_and_a_changed_preimage_fails(self):
         encoded = b"test preimage"
         item = {**block(), "blockHash": hashlib.blake2b(encoded, digest_size=32).hexdigest()}

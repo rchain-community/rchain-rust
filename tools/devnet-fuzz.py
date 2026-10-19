@@ -449,7 +449,8 @@ def run_acceptance_campaign(trace=False):
         code = 1
         try:
             subprocess.run(["tools/devnet.sh", "up", "--validators", str(validators),
-                            "--fresh", "--no-autopropose", "--epoch-length", "10"],
+                            "--fresh", "--no-autopropose", "--epoch-length", "10",
+                            "--effect-scheduler", env.get("EFFECT_SCHEDULER", "dfs")],
                            env=env, check=True)
             code = subprocess.run([sys.executable, "tools/consensus-acceptance-drill.py",
                                    "--validators", str(validators), "--out", str(out)], env=env).returncode
@@ -469,7 +470,9 @@ def run_acceptance_campaign(trace=False):
                     print(f"=== BEGIN {path} ===", flush=True)
                     print(path.read_text(), flush=True)
                     print(f"=== END {path} ===", flush=True)
-            subprocess.run(["tools/devnet.sh", "down", "-v"], env=env, check=True)
+            teardown = subprocess.run(["tools/devnet.sh", "down", "-v"], env=env, check=False)
+            if teardown.returncode:
+                print(f"TEARDOWN_WARNING n={validators} exit={teardown.returncode}", flush=True)
         outcomes.append({"validators": validators, "exit_code": code})
     print("ACCEPTANCE_OUTCOMES " + json.dumps(outcomes), flush=True)
     if any(x["exit_code"] for x in outcomes):
