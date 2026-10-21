@@ -842,6 +842,23 @@ fn round_escape_owed(stalled_ms: i64) -> bool {
     stalled_ms >= ROUND_STALL_ESCAPE.as_millis() as i64
 }
 
+/// **Spend the escape: the next one waits a full [`ROUND_STALL_ESCAPE`] again.**
+///
+/// Without this the clock stayed at the first blocked sighting until the round closed, so after the first
+/// 15 seconds *every* attempt escaped. An escape block builds on the frozen round snapshot plus the
+/// proposer's own newest block, so its height is one above that proposer's last — and with the gate open,
+/// height followed attempt count. The validator taking the deploys (explicit, unpaced proposes) or the
+/// 2-second autopropose ticks climbed fastest, and peers more than `LIVENESS_WINDOW` heights under it were
+/// retired from the live set while healthy: the N=8 one-down stall's suspected driver (#242 A1.3).
+///
+/// Re-armed, each validator escapes at most once per bound whatever its attempt rate, so the live
+/// validators climb together and only the silent one ages out. Everything pooled in the meantime rides
+/// the one escape block. Node-local policy: validators check only the heights and sequence numbers a
+/// block carries, never when it was made, so this changes no validity rule.
+fn rearm_escape_clock(first_sighting: &Mutex<Option<Instant>>, now: Instant) {
+    *first_sighting.lock().unpoison() = Some(now);
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn create_block<'a, F, Fut>(
     runtime: &'a RuntimeManager,
@@ -909,6 +926,7 @@ where
             if !round_escape_owed(stalled_ms) {
                 return Ok(BlockCreatorResult::AlreadyProposedThisRound);
             }
+            rearm_escape_clock(blocked_since, Instant::now());
             log.warn(
                 LogSource::new("casper.blocks.Proposer"),
                 &format!(
@@ -1343,6 +1361,33 @@ mod tests {
             first + ROUND_STALL_ESCAPE
         )));
         assert_eq!(stall_ms_since(&since, first - Duration::from_secs(1)), 0);
+    }
+
+    /// **One escape per bound.** Taking an escape restarts the clock, so a validator flooded with
+    /// attempts after the first 15 seconds cannot turn each one into a block a height higher.
+    #[test]
+    fn an_escape_rearms_the_stall_clock() {
+        let since = Mutex::new(None);
+        let first = Instant::now();
+        let _ = stall_ms_since(&since, first);
+        let escaped_at = first + ROUND_STALL_ESCAPE;
+        assert!(round_escape_owed(stall_ms_since(&since, escaped_at)));
+        rearm_escape_clock(&since, escaped_at);
+        assert!(
+            !round_escape_owed(stall_ms_since(&since, escaped_at + Duration::from_secs(2))),
+            "an attempt 2 s after an escape (an autopropose tick, a deploy) is refused"
+        );
+        assert!(
+            !round_escape_owed(stall_ms_since(
+                &since,
+                escaped_at + ROUND_STALL_ESCAPE - Duration::from_millis(1)
+            )),
+            "the next escape waits the whole bound"
+        );
+        assert!(round_escape_owed(stall_ms_since(
+            &since,
+            escaped_at + ROUND_STALL_ESCAPE
+        )));
     }
 
     /// **A burst of attempts is not a licence to escape before the stall bound.**
@@ -3308,6 +3353,11 @@ mod quiet_chain_tests {
         Revive(usize),
         /// Bond a validator into every later block's bond map (it has not spoken yet).
         Bond(usize, i64),
+        /// The node's own not-due retry (`NOT_DUE_RETRY`, just past `ROUND_STALL_ESCAPE`): one later
+        /// moment at which every live validator the round gate is holding asks again. Appended by
+        /// [`run`] after the script until one produces nothing, because with the escape spent per bound
+        /// it is this retry, not a cascade of attempts, that carries a stalled round forward.
+        Retry,
     }
 
     #[derive(Clone, Copy, PartialEq, Eq)]
@@ -3374,9 +3424,17 @@ mod quiet_chain_tests {
         let (mut blocks, mut escapes, mut deploys, mut hit_cap) = (0usize, 0usize, 0usize, false);
         let mut max_age = 0i64;
 
-        for (step, s) in script.iter().enumerate() {
+        // The script, then retries until one of them produces no block (bounded far above any scenario).
+        const MAX_RETRIES: usize = 200;
+        let steps = script
+            .iter()
+            .copied()
+            .chain(std::iter::repeat_n(Step::Retry, MAX_RETRIES));
+        for (step, s) in steps.enumerate() {
             let mut queue: VecDeque<(usize, Ev)> = VecDeque::new();
-            match *s {
+            let blocks_before = blocks;
+            let retry = matches!(s, Step::Retry);
+            match s {
                 Step::Deploy(v) => {
                     deploys += 1;
                     pool[v] += 1;
@@ -3393,6 +3451,16 @@ mod quiet_chain_tests {
                 }
                 Step::Bond(v, stake) => {
                     bonds.insert(v as u8, NonNegI64::try_from(stake).unwrap());
+                }
+                Step::Retry => {
+                    for u in 0..n_max {
+                        if !dead.contains(&u)
+                            && bonds.contains_key(&(u as u8))
+                            && st.has_advanced_past_the_round(&(u as u8))
+                        {
+                            queue.push_back((u, Ev::Tap));
+                        }
+                    }
                 }
             }
             while let Some((v, ev)) = queue.pop_front() {
@@ -3413,6 +3481,8 @@ mod quiet_chain_tests {
                     if since >= step {
                         continue;
                     }
+                    // And spend it, as `rearm_escape_clock` does: the next escape waits a later step.
+                    blocked_since[v] = Some(step);
                     escapes += 1;
                     true
                 } else {
@@ -3522,7 +3592,7 @@ mod quiet_chain_tests {
                     }
                 }
             }
-            if hit_cap {
+            if hit_cap || (retry && blocks == blocks_before) {
                 break;
             }
         }
