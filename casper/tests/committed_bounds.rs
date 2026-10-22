@@ -161,6 +161,49 @@ fn blocks() -> BlockStore {
     ))
 }
 
+/// A snapshot-restore shape: the approved fringe names `fringe_params`'s root, while the newest
+/// block's post-state carries `block_params`. The two roots are real checkpoints, so reading the
+/// wrong one is observable rather than a missing-block accident.
+async fn snapshot_fixture(
+    runtime: &RuntimeManager,
+    fringe_params: Option<Vec<u8>>,
+    block_params: Vec<u8>,
+) -> (
+    Arc<rchain_casper::dag::BlockDagKeyValueStorage>,
+    BlockStore,
+    rchain_block_storage::approved_store::ApprovedStore,
+) {
+    let fringe_root = params_root(runtime, fringe_params).await;
+    let block_root = params_root(runtime, Some(block_params)).await;
+    let dag = build_dag().await;
+    let store = blocks();
+    let approved = rchain_block_storage::approved_store::create(&InMemoryStoreManager::default())
+        .await
+        .unwrap();
+
+    let genesis = block(1, 0, block_root);
+    put_block(&store, genesis.clone()).await.unwrap();
+    insert_genesis(dag.as_ref(), genesis).await.unwrap();
+    let latest = block(2, 1, block_root);
+    put_block(&store, latest.clone()).await.unwrap();
+    let mut metadata = rchain_models::block_metadata::BlockMetadata::from_block(&latest);
+    metadata.validated = true;
+    metadata.validation_failed = false;
+    dag.insert(metadata, latest.clone()).await.unwrap();
+
+    put_approved_block(
+        &approved,
+        FinalizedFringe {
+            hashes: vec![latest.block_hash],
+            state_hash: fringe_root,
+            ancestry: vec![],
+        },
+    )
+    .await
+    .unwrap();
+    (dag, store, approved)
+}
+
 #[tokio::test]
 async fn committed_bounds_control_the_block_path_with_opposing_local_configs() {
     let runtime = common::build_runtime_manager().await;
@@ -358,5 +401,57 @@ async fn restore_guard_checks_committed_zero_legacy_and_bad_records_before_runni
         check_running_validation_bounds(dag.as_ref(), &store, &approved, &runtime, 1, 0)
             .await
             .is_err()
+    );
+}
+
+/// **The restore guard reads the newest block's post-state, not the approved fringe's
+/// `state_hash`.**
+///
+/// A snapshot restore's approved fringe names a *fringe* state; the native leaves (the committed PoS
+/// params) are written in a block's post-state. The old guard read the fringe root, found no params
+/// leaf and refused a good restore with "PoS params leaf not found in committed state". This test
+/// makes the two roots distinct: the fringe root has no leaf, the newest block's post-state carries
+/// `(2,2)`. The old guard fails on the first assertion; the fixed guard passes it and still refuses a
+/// genuinely different configured bound.
+#[tokio::test]
+async fn restore_guard_reads_the_newest_block_post_state_not_a_fringe_state() {
+    let runtime = common::build_runtime_manager().await;
+    let (dag, store, approved) = snapshot_fixture(&runtime, None, params(2, 2)).await;
+
+    assert!(
+        check_running_validation_bounds(dag.as_ref(), &store, &approved, &runtime, 2, 2)
+            .await
+            .is_ok(),
+        "the guard must read the block post-state, where the params leaf is"
+    );
+    assert!(
+        check_running_validation_bounds(dag.as_ref(), &store, &approved, &runtime, 1, 2)
+            .await
+            .is_err(),
+        "a different configured bound is still refused"
+    );
+}
+
+/// **A fringe state with *different* bounds must not be used either.**
+///
+/// If the guard read the fringe root it would compare `(1,1)` against the configured `(2,2)` and
+/// refuse; the block's post-state carries `(2,2)`, so the restore is valid. The second assertion is
+/// the other direction: configured `(1,1)` is refused because the committed block state is `(2,2)`.
+#[tokio::test]
+async fn restore_guard_ignores_a_fringe_state_with_different_bounds() {
+    let runtime = common::build_runtime_manager().await;
+    let (dag, store, approved) = snapshot_fixture(&runtime, Some(params(1, 1)), params(2, 2)).await;
+
+    assert!(
+        check_running_validation_bounds(dag.as_ref(), &store, &approved, &runtime, 2, 2)
+            .await
+            .is_ok(),
+        "the fringe root's different bounds must not be the guard's reading"
+    );
+    assert!(
+        check_running_validation_bounds(dag.as_ref(), &store, &approved, &runtime, 1, 1)
+            .await
+            .is_err(),
+        "the committed block state is (2,2), not the fringe's (1,1)"
     );
 }

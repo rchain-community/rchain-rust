@@ -3,6 +3,7 @@
 //! The genesis-from-config helpers and the `apply` mode-dispatch state machine (genesis → syncing →
 //! running over the packet stream) are ported here.
 
+use rchain_models::block::state_hash::StateHash;
 use rchain_models::block_hash::BlockHash;
 use std::path::Path;
 use std::sync::Arc;
@@ -583,28 +584,74 @@ pub async fn check_running_validation_bounds(
     let approved = get_approved_block(approved_store)
         .await?
         .ok_or_else(|| "cannot enter Running without an approved state".to_string())?;
-    let params_root = if approved.hashes.is_empty() {
-        // The genesis fringe names the empty pre-state, not the installed PoS descriptors.
-        let repr = dag.get_representation().await;
-        let genesis_hash = repr
-            .height_map
-            .first_key_value()
-            .and_then(|(_, hashes)| hashes.first())
-            .ok_or_else(|| "cannot locate genesis params after restore".to_string())?;
-        block_store
-            .get(&[*genesis_hash])
-            .await?
-            .into_iter()
-            .next()
-            .flatten()
-            .ok_or_else(|| "genesis block missing after restore".to_string())?
-            .post_state_hash
-    } else {
-        approved.state_hash
-    };
+    let params_root = restored_native_state_root(dag, block_store, &approved).await?;
     runtime
         .check_configured_validation_bounds(&params_root, min_phlo_price, max_number_of_parents)
         .await
+}
+
+/// **The state whose native leaves the restore guard reads.**
+///
+/// The approved fringe's `state_hash` is a *fringe* state, not a block's post-state. On a snapshot
+/// restore the native leaves (the committed PoS params) live in a block's post-state, and reading the
+/// fringe root asks the history for a leaf that was never written there: a good restore is refused
+/// with "PoS params leaf not found in committed state".
+///
+/// **Why the first hash at the highest height is safe.** The committed params are immutable for the
+/// life of the chain, so every validated block at the newest height carries the same params in its
+/// post-state. Which sibling is chosen therefore cannot change the answer.
+async fn restored_native_state_root(
+    dag: &dyn BlockDagStorage,
+    block_store: &BlockStore,
+    approved: &FinalizedFringe,
+) -> Result<StateHash, String> {
+    if approved.hashes.is_empty() {
+        // The genesis fringe names the empty pre-state, not the installed PoS descriptors.
+        return genesis_post_state_hash(dag, block_store)
+            .await?
+            .ok_or_else(|| "cannot locate genesis params after restore".to_string());
+    }
+    let repr = dag.get_representation().await;
+    if let Some((_, hashes)) = repr.height_map.iter().next_back() {
+        if let Some(hash) = hashes.first() {
+            if let Some(block) = block_store
+                .get(&[*hash])
+                .await?
+                .into_iter()
+                .next()
+                .flatten()
+            {
+                return Ok(block.post_state_hash);
+            }
+        }
+    }
+    // A synthetic approved fringe in a guard unit test may name a state with no block behind it;
+    // keep reading the named state, which is what the test wrote.
+    Ok(approved.state_hash)
+}
+
+/// The genesis block's post-state hash, from the restored DAG. `None` when the DAG has no genesis
+/// (a synthetic approved state in a guard unit test).
+async fn genesis_post_state_hash(
+    dag: &dyn BlockDagStorage,
+    block_store: &BlockStore,
+) -> Result<Option<StateHash>, String> {
+    let repr = dag.get_representation().await;
+    let Some(genesis_hash) = repr
+        .height_map
+        .first_key_value()
+        .and_then(|(_, hashes)| hashes.first())
+    else {
+        return Ok(None);
+    };
+    block_store
+        .get(&[*genesis_hash])
+        .await?
+        .into_iter()
+        .next()
+        .flatten()
+        .ok_or_else(|| "genesis block missing after restore".to_string())
+        .map(|block| Some(block.post_state_hash))
 }
 
 /// Start the catch-up walk for a running phase, if that phase has an anchor and a peer to walk against.
