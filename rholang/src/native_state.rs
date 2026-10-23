@@ -71,9 +71,13 @@ const TRUSTED_ENTRY_LEN: usize = VALIDATOR_LEN;
 /// the same length that decode to the wrong values with no error. Now each layout has a number: adding a
 /// field means a new format, a record in a format this node does not know is refused rather than read,
 /// and two branches that both claim the next number collide on this line at merge time.
-const PARAMS_FORMAT: u8 = 1;
+///
+/// **Format 2 appends the developer allocation's vesting term** (Law 79) at payload index 10, after the
+/// committed validity bounds #376 placed at indices 8 and 9. Append-only: indices 0–9 are format 1's
+/// fields in format 1's order.
+const PARAMS_FORMAT: u8 = 2;
 /// The number of fields in a format-[`PARAMS_FORMAT`] record.
-const PARAMS_FIELDS: usize = 10;
+const PARAMS_FIELDS: usize = 11;
 /// The length of a current record: the format byte and [`PARAMS_FIELDS`] fields. It is one more than a
 /// multiple of eight, which is what tells it from an unversioned record (always a multiple of eight).
 const PARAMS_LEN: usize = 1 + PARAMS_FIELDS * 8;
@@ -83,9 +87,10 @@ const PARAMS_LEN: usize = 1 + PARAMS_FIELDS * 8;
 /// unversioned record any chain wrote: everything after it is versioned.
 const PARAMS_LEN_WITH_GRACE: usize = 8 * 8;
 /// The length of the *original* `PosParams` — the five fields before the producer's share (B2, #150),
-/// the absence knee (B4, #150) and the participation grace (B4, #150) were added, in that order. A
-/// unversioned record at least this long reads the fields it carries and defaults the rest, which is
-/// the pre-change rule for each (see [`decode_params`]).
+/// the absence knee (B4, #150), the participation grace (B4, #150), the committed validity bounds
+/// (#373/#376) and the vesting term (Law 79) were added, in that order. A unversioned record at least
+/// this long reads the fields it carries and defaults the rest, which is the pre-change rule for each
+/// (see [`decode_params`]).
 const PARAMS_LEN_ORIGINAL: usize = 5 * 8;
 
 // --- Leaf keys ---------------------------------------------------------------
@@ -145,6 +150,110 @@ pub fn pos_coop_key() -> Blake2b256Hash {
 /// an epoch distributes — see [`NativeSystemState::close_block`].
 pub fn pos_vault_key() -> Blake2b256Hash {
     Blake2b256Hash::create(b"pos:vault")
+}
+
+/// Leaf key for the developer allocation's vesting state (Laws 78–79) — recipient, total, and how much
+/// is still unreleased.
+///
+/// One leaf rather than three, because the three move together: a boundary that releases REV changes
+/// the unreleased amount, and nothing else ever writes here. A separate *account* rather than a vault,
+/// because the allocation is not spendable at genesis and the schedule is the only thing that makes it
+/// spendable — once released it is an ordinary balance in the recipient's vault, and no other rule in
+/// the chain has to know this leaf exists.
+pub fn pos_dev_vesting_key() -> Blake2b256Hash {
+    Blake2b256Hash::create(b"pos:dev-vesting")
+}
+
+/// The developer allocation's vesting state, as stored under [`pos_dev_vesting_key`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DevVesting {
+    /// The recipient, as its base58 address — the same spelling `vault_key` uses, so the account and
+    /// the vault it releases into agree on what an address is.
+    pub address: String,
+    /// The whole allocation, fixed at genesis. The rate is applied to this and to nothing else.
+    pub allocation: NonNegI64,
+    /// What has not vested yet. `0` once the schedule has run out.
+    pub unreleased: NonNegI64,
+}
+
+impl DevVesting {
+    /// Encode as `<u32 little-endian address length><address bytes><allocation i64><unreleased i64>`.
+    pub fn encode(&self) -> Vec<u8> {
+        let mut out = Vec::with_capacity(4 + self.address.len() + 16);
+        out.extend_from_slice(&(self.address.len() as u32).to_le_bytes());
+        out.extend_from_slice(self.address.as_bytes());
+        out.extend_from_slice(&i64::from(self.allocation).to_le_bytes());
+        out.extend_from_slice(&i64::from(self.unreleased).to_le_bytes());
+        out
+    }
+
+    /// Decode [`DevVesting`]. Refuses a malformed record and a negative either amount — the same rule
+    /// the bond bounds and the params fields get, since a corrupted leaf must not become a permissive
+    /// reading of the same bytes.
+    pub fn decode(bytes: &[u8]) -> Result<DevVesting, String> {
+        if bytes.len() < 4 {
+            return Err(format!(
+                "dev vesting record is {} bytes, too short",
+                bytes.len()
+            ));
+        }
+        let len = u32::from_le_bytes(
+            bytes[..4]
+                .try_into()
+                .map_err(|_| "dev vesting address length is malformed".to_string())?,
+        ) as usize;
+        if bytes.len() != 4 + len + 16 {
+            return Err(format!(
+                "dev vesting record is {} bytes, expected {}",
+                bytes.len(),
+                4 + len + 16
+            ));
+        }
+        let address = String::from_utf8(bytes[4..4 + len].to_vec())
+            .map_err(|e| format!("the dev vesting address is not UTF-8: {e}"))?;
+        let read = |at: usize| -> i64 {
+            let mut arr = [0u8; 8];
+            arr.copy_from_slice(&bytes[at..at + 8]);
+            i64::from_le_bytes(arr)
+        };
+        Ok(DevVesting {
+            address,
+            allocation: NonNegI64::try_from(read(4 + len))
+                .map_err(|e| format!("the dev vesting allocation is not a valid amount: {e}"))?,
+            unreleased: NonNegI64::try_from(read(4 + len + 8)).map_err(|e| {
+                format!("the dev vesting unreleased balance is not a valid amount: {e}")
+            })?,
+        })
+    }
+}
+
+/// How much of `allocation` has vested at `height`, over a schedule of `duration` blocks from genesis
+/// (**Law 79**).
+///
+/// Linear and with no cliff: the vested fraction is `height / duration`, truncated toward the network
+/// so the released amount never runs ahead of the schedule. Total at or after `duration`.
+///
+/// `duration <= 0` means *no schedule*, and the whole allocation is vested from the start — which is
+/// what a params record written before the vesting field existed decodes to (see `decode_params`), and
+/// the rule for a chain that wants the allocation spendable at its first boundary.
+///
+/// **Why `Result`.** The product `allocation × height` does not fit an `i64` for a large allocation on
+/// a long schedule, so it is taken in `i128`; the quotient provably fits here (`height < duration`
+/// implies a strictly sub-`allocation` result), but a `try_from` that cannot fail is still written as
+/// one rather than as a cast or an `expect`, both of which this crate audits.
+pub fn dev_tax_vested(allocation: i64, duration: i64, height: i64) -> Result<i64, String> {
+    if duration <= 0 || height >= duration {
+        return Ok(allocation);
+    }
+    if height <= 0 {
+        return Ok(0);
+    }
+    let vested = (i128::from(allocation) * i128::from(height)) / i128::from(duration);
+    i64::try_from(vested).map_err(|_| {
+        format!(
+            "the vested developer allocation {vested} does not fit a balance, at height {height}"
+        )
+    })
 }
 
 /// Leaf key for the HTTP-result oracle table (`url → (value, captured block)`); RCHIP #54.
@@ -539,6 +648,18 @@ pub struct PosParams {
     /// the bound, exactly as `Validate::justification_count` reads it, and is also what a record
     /// written before this field decodes to.
     pub max_number_of_parents: i64,
+    /// **How long the developer allocation vests over**, in blocks from genesis (Law 79). `0` means
+    /// there is no schedule: the whole allocation is released at the first epoch boundary.
+    ///
+    /// A genesis parameter rather than a constant in the rule, because it is a *term of the deal*
+    /// rather than arithmetic — and because the network's block cadence is not a constant either
+    /// (`docs/src/node/scaling.md` records why a "month" is only ever an assumption here). The
+    /// **arithmetic** is in `casper/src/genesis/dev_tax.rs` and stated as Law 79; the term is data.
+    ///
+    /// A params record written before this field decodes it to `0`, which is the rule for a chain that
+    /// has no allocation to vest — and the allocation cannot exist without an address, so a chain that
+    /// predates the field has no vesting account to release from.
+    pub dev_tax_vesting_blocks: NonNegI64,
 }
 
 impl Default for PosParams {
@@ -557,12 +678,13 @@ impl Default for PosParams {
             participation_grace: NonNegI64::zero(),
             min_phlo_price: NonNegI64::zero(),
             max_number_of_parents: 0,
+            dev_tax_vesting_blocks: NonNegI64::zero(),
         }
     }
 }
 
 impl PosParams {
-    /// Encode as the format byte [`PARAMS_FORMAT`] and ten little-endian `i64`s (inverse:
+    /// Encode as the format byte [`PARAMS_FORMAT`] and eleven little-endian `i64`s (inverse:
     /// [`decode_params`]).
     pub fn encode(&self) -> Vec<u8> {
         let mut out = Vec::with_capacity(PARAMS_LEN);
@@ -577,6 +699,7 @@ impl PosParams {
         out.extend_from_slice(&i64::from(self.participation_grace).to_le_bytes());
         out.extend_from_slice(&i64::from(self.min_phlo_price).to_le_bytes());
         out.extend_from_slice(&self.max_number_of_parents.to_le_bytes());
+        out.extend_from_slice(&i64::from(self.dev_tax_vesting_blocks).to_le_bytes());
         out
     }
 }
@@ -642,6 +765,11 @@ pub fn decode_params(record: &[u8]) -> Result<PosParams, String> {
     } else {
         absence_slack
     };
+    // The vesting term (Law 79), appended after the two committed validity bounds. Unlike the grace,
+    // its absence *does* default to zero, and that zero is the right rule for a record written before
+    // it: a chain cannot have an allocation to vest without an address, and the address is a genesis
+    // input newer than any record that lacks this field.
+    let dev_tax_vesting_blocks = read(10);
     if executor_share > 10_000 {
         return Err(format!(
             "executor_share is {executor_share} basis points, above the whole of what was burned"
@@ -662,6 +790,8 @@ pub fn decode_params(record: &[u8]) -> Result<PosParams, String> {
             .map_err(|e| format!("executor_share is not a valid basis-point share: {e}"))?,
         absence_slack: NonNegI64::try_from(absence_slack)
             .map_err(|e| format!("absence_slack is not a valid number of heights: {e}"))?,
+        dev_tax_vesting_blocks: NonNegI64::try_from(dev_tax_vesting_blocks)
+            .map_err(|e| format!("dev_tax_vesting_blocks is not a valid number of blocks: {e}"))?,
         participation_grace: NonNegI64::try_from(participation_grace)
             .map_err(|e| format!("participation_grace is not a valid number of heights: {e}"))?,
         min_phlo_price: NonNegI64::try_from(read(8))
@@ -680,6 +810,15 @@ pub struct PosGenesis {
     pub trusted: BTreeSet<Validator>,
     /// The immutable PoS parameters.
     pub params: PosParams,
+    /// **The developer allocation's recipient and amount** (Laws 78–79), or `None` for a genesis with
+    /// no allocation.
+    ///
+    /// Carried here rather than passed beside the vaults because it belongs to the *native genesis
+    /// state*: it is written by [`NativeSystemState::install_genesis`], which is the one call both the
+    /// ceremony and a replaying node make, so the amount and its recipient cannot be installed on one
+    /// path and not the other. The amount lands in the **vesting** account, not in a vault — it is not
+    /// spendable until it vests.
+    pub dev_vesting: Option<(String, NonNegI64)>,
 }
 
 impl PosGenesis {
@@ -1169,6 +1308,26 @@ impl NativeSystemState {
         self.write_balance(PREFIX_POS, &pos_vault_key(), balance);
     }
 
+    /// Read the developer allocation's vesting state, if this chain has one.
+    pub async fn dev_vesting(&self) -> Result<Option<DevVesting>, String> {
+        match self.store.get(PREFIX_POS, &pos_dev_vesting_key()).await? {
+            None => Ok(None),
+            Some(bytes) => DevVesting::decode(&bytes).map(Some),
+        }
+    }
+
+    /// Write the developer allocation's vesting state. `None` clears it — a tombstone folds to
+    /// "absent", so a genesis with no allocation ends up with no leaf rather than one holding an empty
+    /// value.
+    pub fn set_dev_vesting(&self, vesting: Option<&DevVesting>) {
+        match vesting {
+            Some(v) => self
+                .store
+                .put(PREFIX_POS, pos_dev_vesting_key(), v.encode()),
+            None => self.store.delete(PREFIX_POS, &pos_dev_vesting_key()),
+        }
+    }
+
     /// **The total REV this node's state holds, over every address it can see** (AUDIT C109).
     ///
     /// This is the invariant whose absence let the negative-`phlo_limit` mint live: the existing
@@ -1200,6 +1359,17 @@ impl NativeSystemState {
         let mut total: i64 = i64::from(self.coop_balance().await?)
             .checked_add(i64::from(self.pos_vault_balance().await?))
             .ok_or_else(|| "total_value: overflow summing the named vaults".to_string())?;
+        // **The developer allocation is native value too.** It sits under `PREFIX_POS` rather than
+        // `PREFIX_VAULT` until it vests, so a total that only walks the vault prefixes drops it — and
+        // then the release looks like a mint. Count what is still unreleased; the released part is
+        // already in the recipient's vault.
+        if let Some(vesting) = self.dev_vesting().await? {
+            total = total
+                .checked_add(i64::from(vesting.unreleased))
+                .ok_or_else(|| {
+                    "total_value: overflow summing the developer allocation".to_string()
+                })?;
+        }
         for (key, value) in self.store.live_entries(PREFIX_VAULT) {
             let arr: [u8; 8] = value.as_slice().try_into().map_err(|_| {
                 format!(
@@ -1323,6 +1493,19 @@ impl NativeSystemState {
         self.set_committed_rewards(&BTreeMap::new());
         self.set_coop_balance(NonNegI64::zero());
         self.set_pos_vault_balance(bond_sum);
+        // **The developer allocation's recipient and its *unreleased* balance** (Laws 78–79). Nothing
+        // is credited to its vault here: the allocation is not spendable at genesis, and the release
+        // is the schedule's job at each epoch boundary. Installed in this call rather than beside the
+        // vaults so that the ceremony and a replaying node cannot install it on one path and not the
+        // other.
+        match &genesis.dev_vesting {
+            Some((address, amount)) => self.set_dev_vesting(Some(&DevVesting {
+                address: address.clone(),
+                allocation: *amount,
+                unreleased: *amount,
+            })),
+            None => self.set_dev_vesting(None),
+        }
         Ok(())
     }
 
@@ -1844,7 +2027,76 @@ impl NativeSystemState {
             epoch: next_epoch,
             anchors: vec![previous_seed_anchor(&seed), fringe_state_hash],
         });
+
+        // 6. **The developer allocation's release** (Laws 78–79).
+        //
+        // The allocation is credited to a *vesting* account at genesis and is not spendable; it vests
+        // linearly in blocks from genesis, and each boundary moves whatever has vested but not yet been
+        // released into the recipient's own vault. Once there it is an ordinary balance, and no other
+        // rule in this chain has to know the account exists.
+        //
+        // **Deliberately last and deliberately independent.** It debits the vesting account and credits
+        // a *user* vault, so it can reach neither the staking vault nor the pot; running it after the
+        // reward steps means it cannot change what any of them computes, whatever the schedule says.
+        //
+        // **Granular to the epoch, not the block**, and that is a consequence of the design rather than
+        // a choice: native state is written at boundaries (the `if !boundary` return above), so a chain
+        // with a long epoch releases in steps. Stated here because a reader comparing the schedule to a
+        // balance needs to know which clock the balance follows.
+        self.release_dev_tax(block_number, &params).await?;
         Ok(Ok(()))
+    }
+
+    /// Release the vested part of the developer allocation into its recipient's vault (Law 79).
+    ///
+    /// Moves `vested(block_number) - released_so_far`, where `released_so_far = allocation -
+    /// unreleased` — the account's own two numbers are the whole of its state, so there is no separate
+    /// "last released" record to keep in step. A second call at the same height therefore moves
+    /// nothing, and the released amount is monotone because both `vested` and the account are.
+    ///
+    /// **A chain with no allocation returns having written nothing**, which is what keeps an
+    /// allocation-free chain's boundary byte-identical to the pre-Law-79 one.
+    async fn release_dev_tax(&self, block_number: i64, params: &PosParams) -> Result<(), String> {
+        let Some(vesting) = self.dev_vesting().await? else {
+            return Ok(());
+        };
+        if vesting.unreleased == NonNegI64::zero() {
+            return Ok(());
+        }
+        let allocation = i64::from(vesting.allocation);
+        let unreleased = i64::from(vesting.unreleased);
+        let released_so_far = allocation - unreleased;
+        let vested = dev_tax_vested(
+            allocation,
+            i64::from(params.dev_tax_vesting_blocks),
+            block_number,
+        )?;
+        // Nothing new has vested since the last boundary. `vested` is monotone in the height and the
+        // account only moves forward, so this is the ordinary case on a chain whose epoch is shorter
+        // than the granularity the schedule resolves to.
+        if vested <= released_so_far {
+            return Ok(());
+        }
+        let release = vested - released_so_far;
+        let address = vesting.address.clone();
+        let balance = self
+            .vault_balance(&address)
+            .await?
+            .unwrap_or(NonNegI64::zero());
+        self.set_vault_balance(
+            &address,
+            balance_plus(balance, release, "dev allocation release")?,
+        );
+        self.set_dev_vesting(Some(&DevVesting {
+            address,
+            allocation: vesting.allocation,
+            unreleased: NonNegI64::try_from(unreleased - release).map_err(|e| e.to_string())?,
+        }));
+        eprintln!(
+            "[pos] boundary {block_number}: dev allocation released — {release} ({vested} of \
+             {allocation} vested)"
+        );
+        Ok(())
     }
 
     /// Step 1 of the epoch sequence: every pooled validator's share of the pot, zero for the ones
@@ -2617,6 +2869,7 @@ mod tests {
                 bonds,
                 trusted: trusted.iter().copied().collect(),
                 params,
+                dev_vesting: None,
             })
             .unwrap();
         for (v, _) in pool {
@@ -2767,6 +3020,48 @@ mod tests {
         conserved!("slash");
     }
 
+    /// **Releasing the developer allocation is a transfer, not a mint.** The allocation sits under
+    /// `PREFIX_POS` until it vests; `total_value` must count the unreleased amount, or the release
+    /// into the recipient's vault looks like new value. A zero term releases the whole allocation at
+    /// the first boundary, which is the strongest form of the case.
+    #[tokio::test]
+    async fn releasing_the_developer_allocation_conserves_the_total() {
+        let params = PosParams {
+            dev_tax_vesting_blocks: NonNegI64::zero(),
+            ..PosParams::default()
+        };
+        let native = native_with(&[validator(1)], params.clone(), &[(validator(1), 10)]).await;
+        let recipient = RevAddress::from_public_key(&PublicKey::new(vec![9u8; 65]))
+            .unwrap()
+            .to_base58();
+        let allocation = NonNegI64::try_from(1_000).unwrap();
+        native.set_dev_vesting(Some(&DevVesting {
+            address: recipient.clone(),
+            allocation,
+            unreleased: allocation,
+        }));
+
+        let total = native.total_value().await.unwrap();
+        native.release_dev_tax(1, &params).await.unwrap();
+
+        assert_eq!(
+            native.total_value().await.unwrap(),
+            total,
+            "releasing the allocation moved value — it is a transfer from the vesting account"
+        );
+        let leaf = native
+            .dev_vesting()
+            .await
+            .unwrap()
+            .expect("the vesting leaf remains after a full release");
+        assert_eq!(leaf.unreleased, NonNegI64::zero());
+        assert_eq!(
+            native.vault_balance(&recipient).await.unwrap(),
+            Some(allocation),
+            "the released amount is in the recipient's ordinary vault"
+        );
+    }
+
     #[test]
     fn bonds_round_trip() {
         let mut bonds = BTreeMap::new();
@@ -2801,16 +3096,17 @@ mod tests {
             participation_grace: NonNegI64::try_from(13).unwrap(),
             min_phlo_price: NonNegI64::try_from(19).unwrap(),
             max_number_of_parents: 255,
+            dev_tax_vesting_blocks: NonNegI64::try_from(23).unwrap(),
         };
-        let wire: Vec<u8> = [1i64, 100, 11, 5, 3, 2500, 7, 13, 19, 255]
+        let wire: Vec<u8> = [1i64, 100, 11, 5, 3, 2500, 7, 13, 19, 255, 23]
             .into_iter()
             .flat_map(i64::to_le_bytes)
             .collect();
-        let mut tagged = vec![1];
+        let mut tagged = vec![2];
         tagged.extend_from_slice(&wire);
-        assert_eq!(PARAMS_FORMAT, 1);
-        assert_eq!(PARAMS_FIELDS, 10);
-        assert_eq!(PARAMS_LEN, 81);
+        assert_eq!(PARAMS_FORMAT, 2);
+        assert_eq!(PARAMS_FIELDS, 11);
+        assert_eq!(PARAMS_LEN, 89);
         assert_eq!(PARAMS_LEN_WITH_GRACE, 64);
         assert_eq!(params.encode(), tagged);
         assert_eq!(decode_params(&tagged).unwrap(), params);
@@ -2821,6 +3117,7 @@ mod tests {
             let mut expected = PosParams {
                 min_phlo_price: NonNegI64::zero(),
                 max_number_of_parents: 0,
+                dev_tax_vesting_blocks: NonNegI64::zero(),
                 ..params
             };
             if fields < 6 {
@@ -2834,13 +3131,13 @@ mod tests {
             }
             assert_eq!(decoded, expected, "{fields}-field record");
         }
-        for fields in 5..10 {
+        for fields in 5..11 {
             assert!(
                 decode_params(&tagged[..1 + fields * 8]).is_err(),
-                "format 1 requires exactly ten fields, not {fields}"
+                "format 2 requires exactly eleven fields, not {fields}"
             );
         }
-        for fields in 9..=10 {
+        for fields in 9..=11 {
             assert!(
                 decode_params(&wire[..fields * 8]).is_err(),
                 "legacy encodings stop at eight fields, not {fields}"
@@ -2849,11 +3146,21 @@ mod tests {
         let defaults = PosParams::default();
         assert_eq!(defaults.min_phlo_price, NonNegI64::zero());
         assert_eq!(defaults.max_number_of_parents, 0);
+        assert_eq!(defaults.dev_tax_vesting_blocks, NonNegI64::zero());
         assert_eq!(decode_params(&defaults.encode()).unwrap(), defaults);
     }
 
-    /// Every field carries a distinct non-zero value, so a transposition in `encode`/`decode_params`
-    /// (the hazard when two branches append fields) fails here: two zeros swapped round-trip silently.
+    /// **Every field carries a distinct, non-zero value, and that is the point of the fixture.**
+    ///
+    /// The record is positional and an absent field decodes to `0`, and for the fields added later the
+    /// *pre-change rule is `0`* — so a fixture that sets them to zero round-trips green even if `encode`
+    /// and `decode` disagree about their **order**. That is exactly the shape a bad merge of two
+    /// branches that each append to `PosParams` produces: no error, no red test, just a genesis
+    /// parameter holding the neighbouring field's number. Distinct values make a transposition fail
+    /// here instead.
+    ///
+    /// The length assertion is the other half: `PARAMS_LEN` decides how many fields `decode` reads, so
+    /// a fixture that passes while the constant and the encoder disagree is a second silent failure.
     #[test]
     fn params_round_trip() {
         let params = PosParams {
@@ -2867,8 +3174,13 @@ mod tests {
             participation_grace: NonNegI64::try_from(13).unwrap(),
             min_phlo_price: NonNegI64::try_from(19).unwrap(),
             max_number_of_parents: 255,
+            dev_tax_vesting_blocks: NonNegI64::try_from(11).unwrap(),
         };
-        assert_eq!(params.encode().len(), PARAMS_LEN);
+        assert_eq!(
+            params.encode().len(),
+            PARAMS_LEN,
+            "the encoder writes exactly the fields the decoder reads"
+        );
         assert_eq!(decode_params(&params.encode()).unwrap(), params);
     }
 
@@ -2895,6 +3207,7 @@ mod tests {
             participation_grace: NonNegI64::try_from(3).unwrap(),
             min_phlo_price: NonNegI64::try_from(1).unwrap(),
             max_number_of_parents: 255,
+            dev_tax_vesting_blocks: NonNegI64::zero(),
         };
         // The unversioned forms every earlier chain wrote: the current fields, without the format byte,
         // cut at each length that ever shipped.
@@ -2961,7 +3274,7 @@ mod tests {
 
         // A record that is not a whole number of fields, or shorter than the original, is refused: the
         // tolerance is "a field the record does not carry", not "any byte string".
-        for len in [0usize, 8, 39, 41, 47, 57, 72, 80, 89] {
+        for len in [0usize, 8, 39, 41, 47, 57, 72, 80, 81, 88] {
             assert!(
                 decode_params(&vec![0u8; len]).is_err(),
                 "{len} bytes is not a params record this protocol has ever written"
@@ -2987,8 +3300,18 @@ mod tests {
 
         let mut longer = PosParams::default().encode();
         longer.extend_from_slice(&[0u8; 8]);
-        let err = decode_params(&longer).expect_err("format 1 has exactly ten fields");
+        let err = decode_params(&longer).expect_err("format 2 has exactly eleven fields");
         assert!(err.contains("bytes"), "{err}");
+
+        // Format 1 is a known-shape record from the unmerged committed-bounds branch. It has no
+        // vesting term and is refused rather than read positionally with an absent field defaulted to
+        // zero; no released chain ever wrote one.
+        let mut format_one = PosParams::default().encode();
+        format_one.truncate(1 + 10 * 8);
+        format_one[0] = 1;
+        let err =
+            decode_params(&format_one).expect_err("format 1 is refused, not read positionally");
+        assert!(err.contains("format"), "{err}");
     }
 
     /// **Deferred item 1d, and the shape of the hole it closed.** The wire record held the two bond
@@ -3014,6 +3337,7 @@ mod tests {
             participation_grace: NonNegI64::zero(),
             min_phlo_price: NonNegI64::zero(),
             max_number_of_parents: 0,
+            dev_tax_vesting_blocks: NonNegI64::zero(),
         };
         assert!(
             decode_params(&params.encode()).is_ok(),
@@ -3464,6 +3788,157 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(native.active().await.unwrap().contains_key(&v));
+    }
+
+    /// **Law 79, the arithmetic**: linear, no cliff, total at the end, and truncating toward the
+    /// network so the released amount never runs ahead of the schedule. `duration <= 0` is *no
+    /// schedule*, not a zero-length one.
+    #[test]
+    fn the_vesting_schedule_is_linear_and_never_runs_ahead() {
+        assert_eq!(
+            dev_tax_vested(1_000, 1_000, 0).unwrap(),
+            0,
+            "nothing at genesis"
+        );
+        assert_eq!(dev_tax_vested(1_000, 1_000, 1).unwrap(), 1);
+        assert_eq!(dev_tax_vested(1_000, 1_000, 500).unwrap(), 500);
+        assert_eq!(dev_tax_vested(1_000, 1_000, 1_000).unwrap(), 1_000);
+        assert_eq!(
+            dev_tax_vested(1_000, 1_000, 5_000).unwrap(),
+            1_000,
+            "past the end it is the whole allocation, not more"
+        );
+        assert_eq!(
+            dev_tax_vested(1_000, 0, 7).unwrap(),
+            1_000,
+            "`0` is no schedule at all: spendable at the first boundary"
+        );
+        assert_eq!(
+            dev_tax_vested(1_000, 1_000, -5).unwrap(),
+            0,
+            "before genesis, nothing"
+        );
+
+        // Truncation, and monotone: at every height the vested part is at most the linear share.
+        let (allocation, duration) = (7i64, 3i64);
+        let mut last = 0i64;
+        for height in 0..=6 {
+            let vested = dev_tax_vested(allocation, duration, height).unwrap();
+            assert!(vested >= last, "the schedule never goes backwards");
+            assert!(vested <= allocation, "and never exceeds the allocation");
+            assert!(
+                vested * duration <= allocation * height.max(1),
+                "never ahead of linear"
+            );
+            last = vested;
+        }
+        // 7/3 truncates rather than rounding up: 2 at the sixth of nine, not 3.
+        assert_eq!(dev_tax_vested(7, 3, 1).unwrap(), 2);
+    }
+
+    /// **Law 79's Rust witness: the allocation vests linearly and releases at boundaries.**
+    ///
+    /// The schedule is the whole of the deal — the allocation is credited to a *vesting account* at
+    /// genesis rather than to a spendable vault, and each boundary moves the newly-vested part into
+    /// the recipient's own vault, where nothing else in the chain has to know where it came from.
+    /// `epoch_length: 1` makes every block a boundary, so a height *is* a schedule position.
+    #[tokio::test]
+    async fn the_dev_allocation_vests_linearly_and_releases_at_boundaries() {
+        let native = NativeSystemState::new(Arc::new(InMemNativeStore::empty()));
+        let recipient = "1111111111111111111111111111111111";
+        let allocation = 1_000_000i64;
+        native
+            .install_genesis(&PosGenesis {
+                bonds: BTreeMap::new(),
+                trusted: BTreeSet::new(),
+                params: PosParams {
+                    epoch_length: 1,
+                    dev_tax_vesting_blocks: NonNegI64::try_from(1_000).unwrap(),
+                    ..PosParams::default()
+                },
+                dev_vesting: Some((
+                    recipient.to_string(),
+                    NonNegI64::try_from(allocation).unwrap(),
+                )),
+            })
+            .unwrap();
+
+        async fn balance(native: &NativeSystemState, address: &str) -> i64 {
+            i64::from(
+                native
+                    .vault_balance(address)
+                    .await
+                    .unwrap()
+                    .unwrap_or(NonNegI64::zero()),
+            )
+        }
+
+        // Genesis is not a release: the whole allocation is unreleased and the vault is empty.
+        assert_eq!(
+            i64::from(native.dev_vesting().await.unwrap().unwrap().unreleased),
+            allocation
+        );
+        assert_eq!(
+            balance(&native, recipient).await,
+            0,
+            "nothing is spendable at genesis"
+        );
+
+        for (height, released) in [
+            (0i64, 0i64),
+            (100, 100_000),
+            (500, 500_000),
+            (1_000, 1_000_000),
+            (2_000, 1_000_000),
+        ] {
+            native
+                .close_block(height, fringe_state((height % 256) as u8), &BTreeMap::new())
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                balance(&native, recipient).await,
+                released,
+                "at height {height}"
+            );
+            assert_eq!(
+                i64::from(native.dev_vesting().await.unwrap().unwrap().unreleased),
+                allocation - released,
+                "the account and the vault are two halves of one number, at height {height}"
+            );
+        }
+
+        // Idempotence: a second boundary at the same height moves nothing, because the account's own
+        // numbers are the whole of its state.
+        native
+            .close_block(2_000, fringe_state(1), &BTreeMap::new())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(balance(&native, recipient).await, allocation);
+    }
+
+    /// **A chain with no allocation writes nothing at a boundary.** The release returns before
+    /// touching a key, which is what keeps an allocation-free chain's post-state what it was.
+    #[tokio::test]
+    async fn a_chain_with_no_allocation_releases_nothing() {
+        let native = native_with(
+            &[validator(1)],
+            PosParams::default(),
+            &[(validator(1), 100)],
+        )
+        .await;
+        assert_eq!(
+            native.dev_vesting().await.unwrap(),
+            None,
+            "no allocation, no account"
+        );
+        native
+            .close_block(1_000, fringe_state(1), &BTreeMap::new())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(native.dev_vesting().await.unwrap(), None, "and still none");
     }
 
     #[tokio::test]
@@ -4458,6 +4933,7 @@ mod tests {
                     absence_slack: NonNegI64::zero(),
                     ..PosParams::default()
                 },
+                dev_vesting: None,
             })
             .unwrap();
         let staking_before = i64::from(native.pos_vault_balance().await.unwrap());
@@ -4505,6 +4981,7 @@ mod tests {
                 bonds: BTreeMap::from([(validator, nn(100))]),
                 trusted: BTreeSet::from([validator]),
                 params: PosParams::default(),
+                dev_vesting: None,
             })
             .unwrap();
         let before = i64::from(no_share.pos_vault_balance().await.unwrap());
@@ -5455,6 +5932,7 @@ mod epoch_seed_writer_tests {
                     number_of_active_validators: cap,
                     ..PosParams::default()
                 },
+                dev_vesting: None,
             })
             .unwrap();
         native
@@ -6342,6 +6820,7 @@ mod delegation_tests {
                     minimum_bond: nn(1),
                     ..PosParams::default()
                 },
+                dev_vesting: None,
             })
             .unwrap();
         native

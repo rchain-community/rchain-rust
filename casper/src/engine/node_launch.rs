@@ -71,10 +71,19 @@ pub async fn create_genesis_block(
     pos_multi_sig_quorum: i32,
     pos_vault_pub_key: &str,
     system_contract_pub_key: &str,
+    dev_tax_address: &str,
+    dev_tax_vesting_blocks: i64,
     runtime: &RuntimeManager,
 ) -> Result<BlockMessage, String> {
-    // Initial REV vaults.
+    // Initial REV vaults, with the developer allocation derived from their total (Law 78). This is
+    // the same derivation `genesis_descriptors_from_config` applies, so the block this ceremony
+    // creates and the descriptors every node replays carry the same vaults — and the same genesis
+    // post-state hash.
     let vaults = vault_parser::parse(Path::new(vaults_path))?;
+    // The developer allocation is *derived* from the parsed vaults and rides into the genesis as a
+    // vesting account, exactly where `genesis_descriptors_from_config` derives it, so the block this
+    // ceremony creates and the descriptors every node replays carry the same value (Laws 78–79).
+    let dev_vesting = crate::genesis::dev_allocation(&vaults, dev_tax_address)?;
 
     // Initial validators.
     let bonds = bonds_parser::parse_or_generate(Path::new(bonds_path), autogen_shard_size)?;
@@ -109,11 +118,15 @@ pub async fn create_genesis_block(
             pos_multi_sig_public_keys: pos_multi_sig_public_keys.to_vec(),
             pos_multi_sig_quorum,
             pos_vault_pub_key: pos_vault_pub_key.to_string(),
+            dev_tax_vesting_blocks: NonNegI64::try_from(dev_tax_vesting_blocks).map_err(|e| {
+                format!("casper.genesis.dev-tax-vesting-blocks must not be negative: {e}")
+            })?,
         },
         registry: Registry {
             system_contract_pub_key: system_contract_pub_key.to_string(),
         },
         vaults,
+        dev_vesting,
     };
 
     crate::genesis::create_genesis_block(validator, &genesis, runtime).await
@@ -175,6 +188,8 @@ pub async fn create_genesis_block_from_config(
         gbd.pos_multi_sig_quorum,
         &gbd.pos_vault_pub_key,
         &gbd.system_contract_pub_key,
+        &gbd.dev_tax_address,
+        gbd.dev_tax_vesting_blocks,
         runtime,
     )
     .await
@@ -252,6 +267,11 @@ pub async fn apply<I: RSpaceImporter + Send + 'static, E: RSpaceExporter>(
     disable_state_exporter: bool,
     validator_identity_opt: Option<ValidatorIdentity>,
     standalone: bool,
+    // **Whether the node was started in dev mode.** Consulted only at the genesis-creation branch
+    // below, and only to decide whether an unset `dev-tax-address` is a refusal (Law 78). Devnets run
+    // in dev mode — `tools/devnet.sh` starts every node it launches with `--dev-mode` — so the gate
+    // bites on a production genesis and nowhere else.
+    dev_mode: bool,
     transport: Arc<dyn TransportLayer>,
     comm_util: Arc<CommUtil>,
     block_retriever: Arc<BlockRetriever>,
@@ -280,6 +300,22 @@ pub async fn apply<I: RSpaceImporter + Send + 'static, E: RSpaceExporter>(
 
     let repr = dag.get_representation().await;
     if repr.dag_set.is_empty() && standalone {
+        // **The last point at which the developer allocation is still decidable** (Law 78). A genesis
+        // vault cannot be added afterwards without a hard fork, so an unset address is refused *here*,
+        // where the node is about to build genesis and the operator can still act. The condition and
+        // its sentence live in `dev_tax`, next to the rule, so a test drives them without a node; what
+        // this branch supplies is the context — being reachable only when the DAG is empty is what
+        // keeps a standalone node *restarting* onto a chain it built (the public testnet's bootstrap,
+        // whose genesis predates this key) from being refused for a decision it already made.
+        crate::genesis::dev_tax::refuse_a_production_genesis_without_an_address(
+            dev_mode,
+            &spec.genesis_block_data.dev_tax_address,
+        )?;
+        crate::genesis::dev_tax::refuse_a_production_genesis_with_a_zero_vesting_term(
+            dev_mode,
+            &spec.genesis_block_data.dev_tax_address,
+            spec.genesis_block_data.dev_tax_vesting_blocks,
+        )?;
         log.info(
             source,
             "Starting as genesis master, creating genesis block...",
@@ -453,6 +489,17 @@ pub async fn apply<I: RSpaceImporter + Send + 'static, E: RSpaceExporter>(
         spec.genesis_block_data.max_number_of_parents,
     )
     .await?;
+    // The restored allocation gets the same treatment: the imported leaf must be internally
+    // consistent, and a joiner that made a local allocation claim must match it. A joiner with no
+    // claim (the normal public bootstrap) trusts the chain.
+    check_running_dev_vesting(
+        dag.as_ref(),
+        &block_store,
+        &approved_store,
+        runtime_manager.as_ref(),
+        runtime_manager.genesis_pos().dev_vesting.clone(),
+    )
+    .await?;
 
     // **The catch-up window and the driver that walks it** (C259). A node restored at an anchor below
     // its peers' tip cannot ingest the gap through the hash-keyed pull: the walk runs downward from a
@@ -613,20 +660,20 @@ async fn restored_native_state_root(
     }
     let repr = dag.get_representation().await;
     if let Some((_, hashes)) = repr.height_map.iter().next_back() {
-        if let Some(hash) = hashes.first() {
-            if let Some(block) = block_store
-                .get(&[*hash])
-                .await?
-                .into_iter()
-                .next()
-                .flatten()
-            {
-                return Ok(block.post_state_hash);
-            }
-        }
+        let hash = hashes.first().ok_or_else(|| {
+            "restored DAG has a newest height without any block hashes".to_string()
+        })?;
+        let block = block_store
+            .get(&[*hash])
+            .await?
+            .into_iter()
+            .next()
+            .flatten()
+            .ok_or_else(|| "newest restored DAG block is missing from block storage".to_string())?;
+        return Ok(block.post_state_hash);
     }
-    // A synthetic approved fringe in a guard unit test may name a state with no block behind it;
-    // keep reading the named state, which is what the test wrote.
+    // Only a synthetic, empty DAG has no block post-state to inspect.
+    // Never silently substitute a fringe root when the DAG names a missing block.
     Ok(approved.state_hash)
 }
 
@@ -652,6 +699,88 @@ async fn genesis_post_state_hash(
         .flatten()
         .ok_or_else(|| "genesis block missing after restore".to_string())
         .map(|block| Some(block.post_state_hash))
+}
+
+/// Check the restored developer allocation before admission and proposal enter the running phase.
+///
+/// **Enforce when present, trust when absent.** A joiner that made a local allocation claim — bonds
+/// and wallets files present, and a non-empty `dev-tax-address` — must match the imported genesis.
+/// A joiner with no claim carries `None`, which means *no claim*, not *a claim of no allocation*: the
+/// normal public-testnet bootstrap restores a chain whose genesis predates the joiner's config, and
+/// must not be refused for it.
+///
+/// **The imported leaf's own schedule is always checked.** At the genesis post-state nothing has
+/// vested (`unreleased == allocation`); at any later state the unreleased amount cannot exceed the
+/// allocation. A larger one would make `release_dev_tax` compute a negative already-released amount
+/// and over-credit the recipient — a silent mint at the next boundary.
+pub async fn check_running_dev_vesting(
+    dag: &dyn BlockDagStorage,
+    block_store: &BlockStore,
+    approved_store: &ApprovedStore,
+    runtime: &RuntimeManager,
+    local: Option<(String, NonNegI64)>,
+) -> Result<(), String> {
+    let approved = get_approved_block(approved_store)
+        .await?
+        .ok_or_else(|| "cannot enter Running without an approved state".to_string())?;
+    let genesis_root = genesis_post_state_hash(dag, block_store).await?;
+    // A genesis-only joiner carries `hashes: [genesis_hash]`; the hash comparison, not the fringe
+    // shape, is what identifies the genesis state.
+    let restored_root = restored_native_state_root(dag, block_store, &approved).await?;
+    let at_genesis = genesis_root == Some(restored_root);
+    let imported = runtime.committed_dev_vesting(&restored_root).await?;
+
+    if let Some((local_address, local_allocation)) = local {
+        match &imported {
+            Some(leaf) if leaf.address == local_address && leaf.allocation == local_allocation => {}
+            Some(leaf) => {
+                return Err(format!(
+                    "local developer allocation ({local_address}, {local_allocation:?}) does not \
+                     match the restored genesis ({}, {:?}) at state {}; refusing to enter Running",
+                    leaf.address,
+                    leaf.allocation,
+                    hex(restored_root)
+                ));
+            }
+            None => {
+                return Err(format!(
+                    "local developer allocation ({local_address}, {local_allocation:?}) but the \
+                     restored genesis at state {} has none; refusing to enter Running",
+                    hex(restored_root)
+                ));
+            }
+        }
+    }
+
+    if let Some(leaf) = &imported {
+        if at_genesis {
+            if leaf.unreleased != leaf.allocation {
+                return Err(format!(
+                    "restored genesis allocation at state {} has unreleased {:?} of {:?}; refusing \
+                     to enter Running",
+                    hex(restored_root),
+                    leaf.unreleased,
+                    leaf.allocation
+                ));
+            }
+        } else if leaf.unreleased > leaf.allocation {
+            return Err(format!(
+                "restored allocation at state {} has unreleased {:?} of {:?}; refusing to enter \
+                 Running",
+                hex(restored_root),
+                leaf.unreleased,
+                leaf.allocation
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn hex(hash: StateHash) -> String {
+    hash.as_bytes()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
 }
 
 /// Start the catch-up walk for a running phase, if that phase has an anchor and a peer to walk against.

@@ -146,6 +146,7 @@ impl Configuration {
         check_merge_divergence_injection(&node_conf)?;
         check_sync_anchor(&node_conf)?;
         check_self_reset(&node_conf)?;
+        check_dev_tax_address(&node_conf)?;
 
         Ok((check_dev_mode(node_conf), profile, config_file))
     }
@@ -357,6 +358,30 @@ fn check_sync_anchor(node_conf: &NodeConf) -> Result<(), String> {
                  syncs to, so it is not a value to guess at"
             )
         })
+}
+
+/// **A `dev-tax-address` that is set must be a REV address**, refused at startup rather than at
+/// genesis (Law 78, `casper/src/genesis/dev_tax.rs`).
+///
+/// The allocation's *amount* is derived from the wallets total, so a malformed address cannot make it
+/// wrong — it makes the genesis descriptors fail to build, where the error reads as a genesis-parsing
+/// problem rather than as the operator typo it is. Checked here, with the other operator-facing
+/// configuration errors, which is where this file already puts them.
+///
+/// **Presence is deliberately not checked here.** Whether the address *must* be set is decided at
+/// genesis creation (`node_launch::apply`), because only a node about to build a genesis is making
+/// that decision, and only there can a *new* chain be told from a restart onto an existing one — the
+/// public testnet's bootstrap is standalone and its genesis predates this key.
+fn check_dev_tax_address(node_conf: &NodeConf) -> Result<(), String> {
+    for spec in node_conf.casper.shards.iter() {
+        let address = &spec.genesis_block_data.dev_tax_address;
+        if address.is_empty() {
+            continue;
+        }
+        rchain_casper::genesis::dev_tax::parse_address(address)
+            .map_err(|e| format!("shard '{}': {e}", spec.shard_id))?;
+    }
+    Ok(())
 }
 
 fn check_merge_divergence_injection(node_conf: &NodeConf) -> Result<(), String> {
@@ -600,6 +625,50 @@ mod tests {
         );
     }
 
+    /// **A `dev-tax-address` that does not parse is refused at load, and an empty one is accepted**
+    /// (Law 78).
+    ///
+    /// The allocation's *amount* is derived from the wallets total, so a malformed address cannot make
+    /// it wrong — it makes the genesis descriptors fail to build, where the error reads as a
+    /// genesis-parsing problem rather than the operator typo it is. A set is asserted rather than one
+    /// refusal so the test cannot pass by refusing everything: empty is the devnet and testnet path and
+    /// must stay accepted, and a well-formed REV address is the case the key exists for.
+    #[test]
+    fn a_dev_tax_address_that_is_not_a_rev_address_is_refused() {
+        let mut conf = default_expected();
+        assert!(
+            check_dev_tax_address(&conf).is_ok(),
+            "empty is the path for a network that allocates none"
+        );
+
+        conf.casper
+            .shards
+            .primary_mut()
+            .genesis_block_data
+            .dev_tax_address = "not-an-address".to_string();
+        let err = check_dev_tax_address(&conf).expect_err("a typo must be refused at load");
+        assert!(
+            err.contains("dev-tax-address") && err.contains("not a REV address"),
+            "the refusal says what is wrong: {err}"
+        );
+
+        let mut key = vec![0u8; 65];
+        key[0] = 0x04;
+        let address = rchain_rholang::util::rev_address::RevAddress::from_public_key(
+            &rchain_crypto::public_key::PublicKey::new(key),
+        )
+        .expect("a valid address");
+        conf.casper
+            .shards
+            .primary_mut()
+            .genesis_block_data
+            .dev_tax_address = address.to_base58();
+        assert!(
+            check_dev_tax_address(&conf).is_ok(),
+            "a well-formed REV address is the case the key exists for"
+        );
+    }
+
     /// **`self-reset` is off by default, and refused where it could not work** (#320).
     ///
     /// The switch is the operator's consent to a rewind, so the two ends are what matter: off is the
@@ -730,6 +799,8 @@ mod tests {
                         pos_multi_sig_quorum: 2,
                         pos_vault_pub_key: String::new(),
                         system_contract_pub_key: String::new(),
+                        dev_tax_address: String::new(),
+                        dev_tax_vesting_blocks: 18_934_560,
                     },
                     5,
                 ),
@@ -1325,6 +1396,8 @@ mod tests {
                         pos_multi_sig_quorum: 2,
                         pos_vault_pub_key: default_pos_vault_pub_key(),
                         system_contract_pub_key: default_system_contract_pub_key(),
+                        dev_tax_address: String::new(),
+                        dev_tax_vesting_blocks: 18_934_560,
                     },
                     111111,
                 ),

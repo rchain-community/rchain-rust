@@ -10,21 +10,41 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 
 use rchain_casper::conf::{ShardMemberships, ShardSpec};
+use rchain_casper::runtime_manager::RuntimeManager;
 use rchain_casper::validator_identity::ValidatorIdentity;
-use rchain_comm::peer_node::NodeIdentifier;
+use rchain_comm::peer_node::{NodeIdentifier, PeerNode};
+use rchain_models::block::state_hash::StateHash;
 use rchain_node::configuration::configuration::parse_defaults;
 use rchain_node::configuration::hocon::node_conf_from_hocon;
 use rchain_node::configuration::model::NodeConf;
 use rchain_node::runtime::node_environment;
 use rchain_node::runtime::node_runtime::{setup_node_program, NodeProgram};
+use rchain_rholang::native_state::{DevVesting, NativeSystemState, PosParams};
 use rchain_shared::base16;
-use rchain_shared::log::StderrLog;
+use rchain_shared::log::{Log, LogSource};
 
 /// The default secp256k1 validator private key (hex), port of `ConstructDeploy.defaultSec`.
 pub const VALIDATOR_PRIV_HEX: &str =
     "a68a6e6cca30f81bd24a719f3145d20e8424bd7b396309b0708a16c7d8000b76";
+
+/// A second valid secp256k1 scalar, for the two-validator restore tests. It is a different key
+/// from [`VALIDATOR_PRIV_HEX`], and a chain that must accept its proposal has to bond it at genesis.
+pub const SECOND_VALIDATOR_PRIV_HEX: &str =
+    "1111111111111111111111111111111111111111111111111111111111111111";
+
+fn state_hash_from_hex(hex: &str) -> StateHash {
+    let bytes = base16::decode(hex).expect("state hash is base16");
+    StateHash::from_slice(&bytes)
+}
+
+/// The base16 public key for a private-key hex string.
+pub fn validator_pubkey_hex(private_hex: &str) -> String {
+    let identity = ValidatorIdentity::from_hex(private_hex).expect("validator identity");
+    base16::encode(identity.public_key.bytes())
+}
 
 /// The deployer (validator-0) REV address, funded in the genesis wallets file. Derived from
 /// `VALIDATOR_PRIV_HEX`'s secp256k1 pubkey; a deploy signed with `VALIDATOR_PRIV_HEX` pays phlo from
@@ -108,6 +128,11 @@ pub fn standalone_conf(dir: &Path, ports: &[u16], validator_hex: Option<&str>) -
     conf.protocol_server.port = ports[3] as i32;
 
     conf.standalone = true;
+    // **A test node is a dev network**, exactly as `tools/devnet.sh` treats every node it starts.
+    // This is what exempts it from the production-genesis gate: Law 78 refuses to create a genesis
+    // outside dev mode without a `dev-tax-address`, and a test chain is not a network that owes one
+    // (its allocation is covered by `casper`'s own tests, not here).
+    conf.dev_mode = true;
     conf.protocol_server.no_upnp = true;
     conf.protocol_server.host = Some("127.0.0.1".to_string());
 
@@ -139,6 +164,160 @@ pub fn standalone_conf(dir: &Path, ports: &[u16], validator_hex: Option<&str>) -
     conf
 }
 
+/// A joining node's config: the same loopback setup as [`standalone_conf`], but `standalone =
+/// false`, a bootstrap peer, and its **own** discovery port — the default 40404 is a real listener,
+/// so two in-process nodes otherwise collide.
+pub fn joiner_conf(dir: &Path, ports: &[u16], bootstrap: &PeerNode) -> NodeConf {
+    assert!(
+        ports.len() >= 5,
+        "need [http, admin-http, grpc-internal, protocol, discovery] ports"
+    );
+    let mut conf = standalone_conf(dir, &ports[0..4], None);
+    conf.standalone = false;
+    // A joiner does not create a genesis, so the production-genesis gate is never reached.
+    conf.dev_mode = false;
+    conf.protocol_client.bootstrap = bootstrap.clone();
+    conf.peers_discovery.port = ports[4] as i32;
+    if ports.len() >= 6 {
+        conf.api_server.port_grpc_external = ports[5] as i32;
+    }
+    conf
+}
+
+/// What a joiner's local genesis descriptors claim, for the LFS restore matrix.
+#[derive(Clone, Debug)]
+pub struct JoinerSpec {
+    /// The local `dev-tax-address`, or `None` for no local claim.
+    pub recipient: Option<String>,
+    /// The local wallets file's rows, or `None` to leave the harness's empty file.
+    pub wallets_rows: Option<String>,
+    /// Whether a bonds file is present — `genesis_descriptors_from_config` needs it to derive.
+    pub bonds: bool,
+    /// Whether this joiner is a bonded validator (second key; the genesis bonds include it).
+    pub bonded: bool,
+}
+
+impl JoinerSpec {
+    pub fn apply(&self, conf: &mut NodeConf, dir: &Path) {
+        if self.bonded {
+            conf.casper.validator_private_key = Some(SECOND_VALIDATOR_PRIV_HEX.to_string());
+        }
+        let gbd = &mut conf.casper.shards.primary_mut().genesis_block_data;
+        gbd.dev_tax_address = self.recipient.clone().unwrap_or_default();
+        if self.bonds {
+            let mut rows = format!("{} 100\n", validator_pubkey_hex(VALIDATOR_PRIV_HEX));
+            if self.bonded {
+                rows.push_str(&format!(
+                    "{} 100\n",
+                    validator_pubkey_hex(SECOND_VALIDATOR_PRIV_HEX)
+                ));
+            }
+            let path = dir.join("bonds.txt");
+            std::fs::write(&path, rows).expect("write joiner bonds");
+            gbd.bonds_file = path.to_string_lossy().into_owned();
+        }
+        if let Some(rows) = &self.wallets_rows {
+            let path = dir.join("wallets.txt");
+            std::fs::write(&path, rows).expect("write joiner wallets");
+            gbd.wallets_file = path.to_string_lossy().into_owned();
+        }
+    }
+}
+
+/// Poll `/api/status` until `latestBlockNumber` reaches `height`.
+pub async fn wait_for_height(base: &str, height: i64, timeout: Duration) {
+    let client = reqwest::Client::new();
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        if let Ok(resp) = client.get(format!("{base}/api/status")).send().await {
+            if let Ok(status) = resp.json::<serde_json::Value>().await {
+                let reached = status
+                    .get("latestBlockNumber")
+                    .and_then(|n| n.as_i64())
+                    .unwrap_or(-1);
+                if reached >= height {
+                    return;
+                }
+            }
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the node at {base} never reached height {height}"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+/// Poll the admin status until the LFS sync task has returned (`sync == null`). A named failure is
+/// reported immediately rather than waiting for the timeout.
+pub async fn wait_for_sync_cleared(admin_base: &str, timeout: Duration) {
+    let client = reqwest::Client::new();
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        if let Ok(resp) = client
+            .get(format!("{admin_base}/api/v1/status/operator"))
+            .send()
+            .await
+        {
+            if let Ok(status) = resp.json::<serde_json::Value>().await {
+                match status.get("sync") {
+                    Some(serde_json::Value::Null) => return,
+                    Some(sync) => {
+                        if let Some(failure) = sync.get("lastFailure").and_then(|f| f.as_str()) {
+                            panic!("the LFS sync task failed: {failure}");
+                        }
+                    }
+                    None => {}
+                }
+            }
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the LFS sync task at {admin_base} never returned"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+/// A log that records every line, so a test can observe a refusal the node latches rather than
+/// returns (the launch task's error is logged and the process is asked to stop).
+#[derive(Default)]
+pub struct RecordingLog {
+    messages: std::sync::Mutex<Vec<String>>,
+}
+
+impl RecordingLog {
+    pub fn messages(&self) -> Vec<String> {
+        self.messages.lock().expect("not poisoned").clone()
+    }
+}
+
+impl Log for RecordingLog {
+    fn is_trace_enabled(&self, _source: LogSource) -> bool {
+        false
+    }
+    fn trace(&self, _source: LogSource, _msg: &str) {}
+    fn debug(&self, _source: LogSource, _msg: &str) {}
+    fn info(&self, _source: LogSource, msg: &str) {
+        self.messages
+            .lock()
+            .expect("not poisoned")
+            .push(msg.to_string());
+    }
+    fn warn(&self, _source: LogSource, msg: &str) {
+        self.messages
+            .lock()
+            .expect("not poisoned")
+            .push(msg.to_string());
+    }
+    fn error(&self, _source: LogSource, msg: &str) {
+        self.messages
+            .lock()
+            .expect("not poisoned")
+            .push(msg.to_string());
+    }
+}
+
 /// A running in-process node: the served-program task handle and the node identifier.
 pub struct TestNode {
     pub handle: tokio::task::JoinHandle<Result<(), String>>,
@@ -150,6 +329,13 @@ pub struct TestNode {
     /// transaction routes). Read from the config rather than passed in, so a test that needs it does
     /// not have to thread another argument through `start`.
     pub admin_port: u16,
+    /// The primary shard's runtime manager, from the running program. A test reads the native
+    /// state the node actually installed through it, rather than opening the node's LMDB directory
+    /// behind a live process.
+    pub runtime: Arc<RuntimeManager>,
+    /// Every line this node's logger was given, including a launch refusal that is logged rather
+    /// than returned through `serve`.
+    pub log: Arc<RecordingLog>,
     /// The node's stop path (AUDIT C144), held for the node's lifetime. It is a field rather than a
     /// local in `start` because a **dropped sender resolves every listener's `stop_requested` at
     /// once** — letting it fall out of scope would stop the node the instant it started, and the
@@ -191,6 +377,42 @@ fn heavy_node_lock() -> Arc<tokio::sync::Mutex<()>> {
 }
 
 impl TestNode {
+    /// The node's live native state, through the primary shard's runtime manager.
+    pub fn native_state(&self) -> NativeSystemState {
+        NativeSystemState::new(self.runtime.runtime().native_store())
+    }
+
+    /// The `pos:dev-vesting` leaf the node installed, if any.
+    pub async fn dev_vesting(&self) -> Option<DevVesting> {
+        self.native_state()
+            .dev_vesting()
+            .await
+            .expect("read the dev vesting leaf")
+    }
+
+    /// The node's live `PosParams` record.
+    pub async fn pos_params(&self) -> PosParams {
+        self.native_state().params().await.expect("read PosParams")
+    }
+
+    /// The allocation leaf at a specific committed state, named by the base16 `postStateHash` a
+    /// block-info response carries. This is the read a restored joiner needs: its live hot store is
+    /// not guaranteed to be folded onto the restored root yet.
+    pub async fn dev_vesting_at_hex(&self, hex: &str) -> Option<DevVesting> {
+        self.runtime
+            .committed_dev_vesting(&state_hash_from_hex(hex))
+            .await
+            .expect("read the dev vesting leaf at the committed state")
+    }
+
+    /// The params record at a specific committed state.
+    pub async fn params_at_hex(&self, hex: &str) -> PosParams {
+        self.runtime
+            .committed_params(&state_hash_from_hex(hex))
+            .await
+            .expect("read PosParams at the committed state")
+    }
+
     /// Abort the server task outright — the blunt stop, for tests that want the process killed the
     /// way a `SIGKILL` does.
     pub fn shutdown(self) {
@@ -233,6 +455,26 @@ pub async fn start_pair(
     (a, b)
 }
 
+/// **Two nodes, with the second started only after the first is ready.** The LFS restore tests need
+/// the bootstrap's genesis (and, for a snapshot, its finalized fringe) to exist before the joiner
+/// dials; starting both immediately is the empty-fringe race (#100). The readiness closure runs
+/// while the shared heavy guard is held, so nothing else can start a node in between.
+pub async fn start_pair_after<F, Fut>(
+    first: (&NodeConf, u16, u16),
+    ready: F,
+    second: (&NodeConf, u16, u16),
+) -> (TestNode, TestNode)
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = ()>,
+{
+    let heavy = Arc::new(heavy_node_lock().lock_owned().await);
+    let a = build(first.0, first.1, first.2, heavy.clone()).await;
+    ready().await;
+    let b = build(second.0, second.1, second.2, heavy).await;
+    (a, b)
+}
+
 /// The body of [`start`], with the heavy guard already in hand so a pair can share it.
 async fn build(
     conf: &NodeConf,
@@ -241,9 +483,11 @@ async fn build(
     heavy: Arc<tokio::sync::OwnedMutexGuard<()>>,
 ) -> TestNode {
     let id = node_environment::create(conf).expect("node environment");
-    let program: NodeProgram = setup_node_program(conf, &id, Arc::new(StderrLog::default()))
+    let log = Arc::new(RecordingLog::default());
+    let program: NodeProgram = setup_node_program(conf, &id, log.clone())
         .await
         .expect("setup node program");
+    let runtime = program.primary_runtime.clone();
     let (stop, stop_rx) = tokio::sync::watch::channel(false);
     let handle = tokio::spawn(program.serve(stop_rx));
     TestNode {
@@ -252,6 +496,8 @@ async fn build(
         grpc_port,
         http_port,
         admin_port: conf.api_server.port_admin_http as u16,
+        runtime,
+        log,
         stop,
         _heavy: heavy,
     }

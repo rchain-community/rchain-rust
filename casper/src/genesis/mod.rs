@@ -1,6 +1,7 @@
 //! Genesis block creation (port of `casper/genesis/Genesis.scala`).
 
 pub mod contracts;
+pub mod dev_tax;
 pub mod rgov;
 pub mod standard_deploys;
 
@@ -34,6 +35,10 @@ pub struct Genesis {
     pub proof_of_stake: ProofOfStake,
     pub registry: Registry,
     pub vaults: Vec<Vault>,
+    /// **The developer allocation's recipient and amount** (Laws 78–79), or `None` for a genesis with
+    /// no allocation. Carried here so the ceremony reaches the same `install_genesis` the replay path
+    /// does, with the same value.
+    pub dev_vesting: Option<(String, NonNegI64)>,
 }
 
 /// Build the bonds map (validator pubkey → stake) from the PoS validators (port of `buildBondsMap`).
@@ -53,7 +58,10 @@ fn parse_validator_hex(key: &str) -> Option<ModelsValidator> {
 
 /// Build the genesis PoS descriptors: the bond pool, the trusted stakeholder set (the genesis
 /// validators plus any configured `pos-multi-sig-public-keys`), and the network parameters.
-pub fn build_pos_genesis(proof_of_stake: &ProofOfStake) -> PosGenesis {
+pub fn build_pos_genesis(
+    proof_of_stake: &ProofOfStake,
+    dev_vesting: Option<(String, NonNegI64)>,
+) -> PosGenesis {
     let bonds = build_bonds_map(proof_of_stake);
     let mut trusted: BTreeSet<ModelsValidator> = bonds.keys().copied().collect();
     for key in &proof_of_stake.pos_multi_sig_public_keys {
@@ -75,7 +83,9 @@ pub fn build_pos_genesis(proof_of_stake: &ProofOfStake) -> PosGenesis {
             participation_grace: proof_of_stake.participation_grace,
             min_phlo_price: proof_of_stake.min_phlo_price,
             max_number_of_parents: proof_of_stake.max_number_of_parents,
+            dev_tax_vesting_blocks: proof_of_stake.dev_tax_vesting_blocks,
         },
+        dev_vesting,
     }
 }
 
@@ -89,7 +99,12 @@ pub fn pos_genesis_from_config(spec: &crate::conf::ShardSpec) -> Result<PosGenes
         std::path::Path::new(&gbd.bonds_file),
         spec.autogen_shard_size,
     )?;
-    Ok(build_pos_genesis(&proof_of_stake_from_config(gbd, bonds)?))
+    let vaults = crate::vault_parser::parse_if_exists(std::path::Path::new(&gbd.wallets_file))?;
+    let dev_vesting = dev_allocation(&vaults, &gbd.dev_tax_address)?;
+    Ok(build_pos_genesis(
+        &proof_of_stake_from_config(gbd, bonds)?,
+        dev_vesting,
+    ))
 }
 
 /// The genesis descriptors a node needs to *replay* the genesis block: the native PoS state
@@ -103,6 +118,23 @@ pub fn pos_genesis_from_config(spec: &crate::conf::ShardSpec) -> Result<PosGenes
 pub struct GenesisDescriptors {
     pub pos_genesis: PosGenesis,
     pub vaults: Vec<Vault>,
+}
+
+/// The developer allocation for a parsed wallets file (Laws 78–79), as the recipient's base58 address
+/// and the amount — or `None` when no address is configured.
+///
+/// **The one place the allocation is derived**, called by both ends of the genesis: the ceremony
+/// that *creates* the block ([`crate::engine::node_launch::create_genesis_block`]) and the descriptor
+/// reader every node uses to *replay* it ([`genesis_descriptors_from_config`]). One function, so the
+/// two cannot disagree about an amount that is consensus state; a second copy is exactly the drift
+/// this indirection exists to prevent. `dev_tax` carries the rule, the refusals, and the reason the
+/// allocation is not a vault.
+pub fn dev_allocation(
+    vaults: &[Vault],
+    dev_tax_address: &str,
+) -> Result<Option<(String, NonNegI64)>, String> {
+    Ok(dev_tax::dev_allocation(vaults, dev_tax_address)?
+        .map(|(address, amount)| (address.to_base58(), amount)))
 }
 
 /// Read the genesis descriptors from the configured genesis files.
@@ -119,6 +151,14 @@ pub struct GenesisDescriptors {
 /// The vaults use the tolerant `parse_if_exists`: a node whose configuration names a wallets file
 /// that is absent has no vault balances to re-install, which is a state the caller can act on
 /// (empty vaults), unlike a bonds file it would have had to invent.
+///
+/// **The developer allocation is derived from the parsed vaults** (Laws 78–79, [`dev_tax`]):
+/// `max(20 000 000 REV, 2% of the file's total)`, credited to `dev_tax_address` — when one is
+/// configured — as a **vesting account** rather than a vault, so it is not spendable until it vests.
+/// It rides on [`GenesisDescriptors::pos_genesis`], which is the native state both the ceremony and a
+/// replaying node install through the one call in `install_genesis`; deriving it rather than reading it
+/// is what keeps those two from disagreeing, and a wallets file that repeats an address — or names the
+/// recipient — is refused, because the amount has to be the total the chain will hold.
 pub fn genesis_descriptors_from_config(
     spec: &crate::conf::ShardSpec,
     is_ceremony: bool,
@@ -134,8 +174,9 @@ pub fn genesis_descriptors_from_config(
         crate::bonds_parser::parse(bonds_path)?
     };
     let vaults = crate::vault_parser::parse_if_exists(std::path::Path::new(&gbd.wallets_file))?;
+    let dev_vesting = dev_allocation(&vaults, &gbd.dev_tax_address)?;
     Ok(Some(GenesisDescriptors {
-        pos_genesis: build_pos_genesis(&proof_of_stake_from_config(gbd, bonds)?),
+        pos_genesis: build_pos_genesis(&proof_of_stake_from_config(gbd, bonds)?, dev_vesting),
         vaults,
     }))
 }
@@ -184,6 +225,12 @@ fn proof_of_stake_from_config(
         min_phlo_price: NonNegI64::try_from(gbd.min_phlo_price)
             .map_err(|e| format!("casper.min-phlo-price must not be negative: {e}"))?,
         max_number_of_parents: i64::from(gbd.max_number_of_parents),
+        // Refused, not clamped, like the bond bounds and the grace. A negative schedule is not a rule
+        // this protocol can state — and the `0` an omitted key resolves to is a real rule (no
+        // schedule), not a fallback, so the two must not be conflated here.
+        dev_tax_vesting_blocks: NonNegI64::try_from(gbd.dev_tax_vesting_blocks).map_err(|e| {
+            format!("casper.genesis.dev-tax-vesting-blocks must not be negative: {e}")
+        })?,
         pos_multi_sig_public_keys: gbd.pos_multi_sig_public_keys.clone(),
         pos_multi_sig_quorum: gbd.pos_multi_sig_quorum,
         pos_vault_pub_key: gbd.pos_vault_pub_key.clone(),
@@ -521,7 +568,7 @@ pub async fn create_genesis_block(
     };
     let rand = BlockRandomSeed::random_generator_from_shard_id(&genesis.shard_id)
         .map_err(|e| e.to_string())?;
-    let pos_genesis = build_pos_genesis(&genesis.proof_of_stake);
+    let pos_genesis = build_pos_genesis(&genesis.proof_of_stake, genesis.dev_vesting.clone());
     let (start_hash, state_hash, processed_results) = runtime
         .compute_genesis(
             &blessed_terms,
@@ -630,6 +677,7 @@ mod tests {
             pos_multi_sig_public_keys: vec![],
             pos_multi_sig_quorum: 0,
             pos_vault_pub_key: String::new(),
+            dev_tax_vesting_blocks: NonNegI64::zero(),
         }
     }
 
@@ -645,7 +693,7 @@ mod tests {
             max_number_of_parents: 255,
             ..pos()
         };
-        let params = build_pos_genesis(&committed).params;
+        let params = build_pos_genesis(&committed, None).params;
         assert_eq!(i64::from(params.min_phlo_price), 1);
         assert_eq!(params.max_number_of_parents, 255);
 
@@ -659,7 +707,7 @@ mod tests {
         };
         for other in [other_floor, other_width] {
             assert_ne!(
-                build_pos_genesis(&other).params.encode(),
+                build_pos_genesis(&other, None).params.encode(),
                 params.encode(),
                 "a different bound is a different genesis"
             );
@@ -760,6 +808,8 @@ mod tests {
                 pos_multi_sig_quorum: 0,
                 pos_vault_pub_key: String::new(),
                 system_contract_pub_key: String::new(),
+                dev_tax_address: String::new(),
+                dev_tax_vesting_blocks: 0,
             },
             1,
         )
@@ -823,6 +873,93 @@ mod tests {
             "the pool the genesis installed"
         );
         assert!(d.vaults.is_empty(), "no wallets, no balances");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// **The descriptors carry the developer allocation, derived from the parsed total** (Law 78).
+    ///
+    /// This is the wiring half of the law's Rust witness: `dev_tax.rs`'s unit tests cover the
+    /// arithmetic, and this covers the one call that puts it on the replay path — the path a *joining*
+    /// validator reads. Delete that call and every other test stays green, which is why it is asserted
+    /// here rather than assumed from the unit tests. The last arm is the reason the file is checked:
+    /// `set_vault_balance` overwrites, so a wallets file that already names the address would have that
+    /// holder's balance *replaced*, not added to.
+    #[test]
+    fn the_descriptors_carry_the_developer_allocation() {
+        fn address(second_byte: u8) -> rchain_rholang::util::rev_address::RevAddress {
+            let mut key = vec![0u8; 65];
+            key[0] = 0x04;
+            key[1] = second_byte;
+            rchain_rholang::util::rev_address::RevAddress::from_public_key(
+                &rchain_crypto::public_key::PublicKey::new(key),
+            )
+            .expect("a valid address")
+        }
+
+        let dir = std::env::temp_dir().join(format!("rchain-dev-tax-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let mut spec = spec_in(&dir);
+        let pub_hex = base16::encode(ceremony_identity().public_key.bytes());
+        std::fs::write(dir.join("bonds.txt"), format!("{pub_hex} 100\n")).expect("bonds");
+        let holder = address(0x00);
+        // The published allocation's total, in drops: 908 962 714 REV.
+        std::fs::write(
+            dir.join("wallets.txt"),
+            format!("{},90896271400000000\n", holder.to_base58()),
+        )
+        .expect("wallets");
+
+        let none = genesis_descriptors_from_config(&spec, false)
+            .expect("the files are present")
+            .expect("descriptors");
+        assert_eq!(none.vaults.len(), 1, "no address configured, no allocation");
+        assert_eq!(
+            none.pos_genesis.dev_vesting, None,
+            "and no vesting account either"
+        );
+
+        let dev = address(0x01);
+        spec.genesis_block_data.dev_tax_address = dev.to_base58();
+        spec.genesis_block_data.dev_tax_vesting_blocks = 18_934_560;
+        let d = genesis_descriptors_from_config(&spec, false)
+            .expect("the files are present")
+            .expect("descriptors");
+        assert_eq!(
+            d.vaults.len(),
+            1,
+            "the allocation is a *vesting account*, not a second spendable vault"
+        );
+        let (recipient, amount) = d
+            .pos_genesis
+            .dev_vesting
+            .clone()
+            .expect("the developer vesting account is present");
+        assert_eq!(recipient, dev.to_base58());
+        assert_eq!(
+            i64::from(amount),
+            2_000_000_000_000_000,
+            "2% of the total is under the floor, so the floor is allocated"
+        );
+        assert_eq!(
+            i64::from(d.pos_genesis.params.dev_tax_vesting_blocks),
+            18_934_560,
+            "and the schedule rides on the params, where the boundary reads it"
+        );
+
+        std::fs::write(
+            dir.join("wallets.txt"),
+            format!(
+                "{},90896271400000000\n{},5\n",
+                holder.to_base58(),
+                dev.to_base58()
+            ),
+        )
+        .expect("wallets");
+        assert!(
+            genesis_descriptors_from_config(&spec, false).is_err(),
+            "a wallets file that already names the address would be overwritten, so it is refused"
+        );
 
         std::fs::remove_dir_all(&dir).ok();
     }

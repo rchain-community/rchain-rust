@@ -194,6 +194,87 @@ async fn play_and_replay_agree_for_transfer_deploy_and_vault_writes_persist() {
     );
 }
 
+/// **Genesis creation and genesis replay install the developer allocation in different orders, and
+/// must still agree.**
+///
+/// `compute_genesis` installs `pos:dev-vesting` after the blessed-deploy loop and then writes the
+/// wallet balances; `replay_compute_state` installs the same native genesis state before replaying
+/// the deploys. Aria's review asked for this with a non-empty recipient: identical descriptor vectors
+/// do not prove identical resulting state. The assertion is the post-state hash — the value consensus
+/// compares — plus the leaf itself, so a path that produced the right hash by accident of an empty
+/// allocation cannot pass.
+#[tokio::test]
+async fn genesis_with_a_developer_allocation_creates_and_replays_the_same_state() {
+    let rm = common::build_runtime_manager().await;
+    let rand = Blake2b512Random::from_init(&[0u8; 32]);
+    let dev_address = RevAddress::from_public_key(&PublicKey::new(vec![2u8; 65]))
+        .expect("dev address")
+        .to_base58();
+    // 20,000,000 REV in drops (the floor), so the amount is exact and non-zero.
+    let allocation = NonNegI64::try_from(20_000_000i64 * 100_000_000).unwrap();
+    let pos_genesis = PosGenesis {
+        dev_vesting: Some((dev_address.clone(), allocation)),
+        ..Default::default()
+    };
+    let vaults = [seeded_vault()];
+    let (pre, post, results) = rm
+        .compute_genesis(&[], &rand, BlockData::empty(), &pos_genesis, &vaults)
+        .await
+        .expect("compute_genesis");
+    let processed: Vec<ProcessedDeploy> = results.into_iter().map(|r| r.deploy).collect();
+
+    let (replayed, _) = rm
+        .replay_compute_state(
+            &pre,
+            &processed,
+            &[],
+            &rand,
+            BlockData::empty(),
+            &fringe_state(0),
+            &BTreeMap::new(),
+            // Genesis replay installs the native genesis state only on the no-cost-accounting path
+            // (`runtime_replay.rs`: "Genesis replay (no cost accounting)"). Passing `true` here would
+            // measure a different path and is not the genesis.
+            false,
+            &pos_genesis,
+            &vaults,
+        )
+        .await
+        .expect("replay_compute_state");
+
+    assert_eq!(
+        post, replayed,
+        "genesis creation and replay must reach the same post-state with a non-empty allocation"
+    );
+
+    let fork = rm
+        .fork_play_runtime(post)
+        .await
+        .expect("fork at the genesis post-state");
+    fork.reset(post).await.expect("reset fork");
+    let native = NativeSystemState::new(fork.native_store());
+    let leaf = native
+        .dev_vesting()
+        .await
+        .expect("read the dev vesting leaf")
+        .expect("the allocation leaf is installed at genesis");
+    assert_eq!(leaf.address, dev_address);
+    assert_eq!(leaf.allocation, allocation);
+    assert_eq!(leaf.unreleased, allocation, "nothing has vested at genesis");
+
+    // Nothing is spendable at genesis: the recipient's ordinary vault is still empty.
+    let recipient_balance = native
+        .vault_balance(&dev_address)
+        .await
+        .expect("read the recipient's vault")
+        .map(|b| i64::from(b))
+        .unwrap_or(0);
+    assert_eq!(
+        recipient_balance, 0,
+        "the allocation is a vesting account, not a genesis vault credit"
+    );
+}
+
 /// **The vault capability, end to end** — the deferred half of `spec/RUST-FIRST.md`'s B2.
 ///
 /// A deploy asks `findOrCreate` for a handle and then **spends from it in the same deploy**. Nothing
@@ -735,6 +816,7 @@ async fn play_and_replay_agree_for_a_block_with_a_close_block_deploy() {
             minimum_bond: rchain_shared::refined::NonNegI64::try_from(1).unwrap(),
             ..Default::default()
         },
+        dev_vesting: None,
     };
     let (_pre, post, _) = rm
         .compute_genesis(
@@ -848,6 +930,7 @@ async fn a_block_replayed_against_a_different_fringe_reaches_a_different_post_st
             minimum_bond: rchain_shared::refined::NonNegI64::try_from(1).unwrap(),
             ..Default::default()
         },
+        dev_vesting: None,
     };
     let (_pre, genesis_post, _) = rm
         .compute_genesis(
@@ -1082,6 +1165,7 @@ async fn the_producer_is_paid_a_share_of_the_burned_phlo_on_play_and_replay() {
             executor_share: NonNegI64::try_from(2_500).expect("a quarter"),
             ..PosParams::default()
         },
+        dev_vesting: None,
     };
     let (_pre, genesis_post, _) = rm
         .compute_genesis(&[], &rand, BlockData::empty(), &pos, &[seeded_vault()])

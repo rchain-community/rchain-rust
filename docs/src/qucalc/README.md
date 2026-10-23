@@ -53,7 +53,7 @@ self-signed. That is the seam along which additional AI systems integrate.
 
 In exchange, [quantum-os](https://github.com/rhovision-org/quantum-os) and the
 [Quantum Logical Framework](https://github.com/rhovision-org/quantum-logical-framework)
-(both forked into the RChain community org) gain what rholo already provides:
+(both forked into the Rho Vision org, `rhovision-org`) gain what rholo already provides:
 unforgeable names, a persistent content-addressed registry, consensus and
 replay-determinism, and a gas market for computation.
 

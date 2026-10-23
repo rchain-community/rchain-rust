@@ -1,5 +1,6 @@
 //! Committed validity bounds and the startup/restore boundary, on real persisted state.
 mod common;
+use rchain_block_storage::approved_store::ApprovedStore;
 use rchain_block_storage::block_store::BlockStore;
 use rchain_block_storage::dag::codecs::{
     BlockHashCodec, BlockMessageCodec, BlockMetadataCodec, SignedDeployDataCodec,
@@ -8,7 +9,9 @@ use rchain_block_storage::dag::dag_storage::BlockDagStorage;
 use rchain_block_storage::syntax::{insert_genesis, put_approved_block, put_block};
 use rchain_casper::block_metadata_store::BlockMetadataStore;
 use rchain_casper::block_status::BlockStatus;
-use rchain_casper::engine::node_launch::check_running_validation_bounds;
+use rchain_casper::engine::node_launch::{
+    check_running_dev_vesting, check_running_validation_bounds,
+};
 use rchain_casper::interpreter_util::{empty_state_hash_fixed, ShardHealth};
 use rchain_casper::multi_parent_casper::{validate, ValidateError};
 use rchain_casper::runtime_manager::RuntimeManager;
@@ -22,7 +25,7 @@ use rchain_models::casper::protocol::casper_message::{
     SignedDeployData,
 };
 use rchain_models::validator::Validator;
-use rchain_rholang::native_state::{pos_params_key, PosParams};
+use rchain_rholang::native_state::{pos_dev_vesting_key, pos_params_key, DevVesting, PosParams};
 use rchain_rspace::native_store::PREFIX_POS;
 use rchain_shared::log::{Log, NopLog};
 use rchain_shared::refined::{BlockHeight, NonNegI64, SeqNum};
@@ -123,17 +126,27 @@ fn priced_deploy(price: i64) -> ProcessedDeploy {
         system_deploy_error: None,
     }
 }
-async fn params_root(runtime: &RuntimeManager, bytes: Option<Vec<u8>>) -> StateHash {
+async fn state_root(
+    runtime: &RuntimeManager,
+    params: Option<Vec<u8>>,
+    vesting: Option<Vec<u8>>,
+) -> StateHash {
     runtime
         .runtime()
         .reset(empty_state_hash_fixed())
         .await
         .unwrap();
-    if let Some(bytes) = bytes {
+    if let Some(bytes) = params {
         runtime
             .runtime()
             .native_store()
             .put(PREFIX_POS, pos_params_key(), bytes);
+    }
+    if let Some(bytes) = vesting {
+        runtime
+            .runtime()
+            .native_store()
+            .put(PREFIX_POS, pos_dev_vesting_key(), bytes);
     }
     runtime
         .runtime()
@@ -142,6 +155,84 @@ async fn params_root(runtime: &RuntimeManager, bytes: Option<Vec<u8>>) -> StateH
         .unwrap()
         .root
         .into()
+}
+
+async fn params_root(runtime: &RuntimeManager, bytes: Option<Vec<u8>>) -> StateHash {
+    state_root(runtime, bytes, None).await
+}
+
+/// A DAG with one height-0 block whose post-state is `root`, and an approved fringe of the shape a
+/// restore leaves: `hashes: [genesis]` with `state_hash: root` for a joiner, or the creator's empty
+/// fringe naming the empty pre-state.
+async fn genesis_fixture(
+    root: StateHash,
+    creator_fringe: bool,
+) -> (
+    Arc<rchain_casper::dag::BlockDagKeyValueStorage>,
+    BlockStore,
+    ApprovedStore,
+) {
+    let dag = build_dag().await;
+    let store = blocks();
+    let approved = rchain_block_storage::approved_store::create(&InMemoryStoreManager::default())
+        .await
+        .unwrap();
+    let genesis = block(1, 0, root);
+    put_block(&store, genesis.clone()).await.unwrap();
+    insert_genesis(dag.as_ref(), genesis.clone()).await.unwrap();
+    let fringe = if creator_fringe {
+        FinalizedFringe {
+            hashes: vec![],
+            state_hash: empty_state_hash_fixed().into(),
+            ancestry: vec![],
+        }
+    } else {
+        FinalizedFringe {
+            hashes: vec![genesis.block_hash],
+            state_hash: root,
+            ancestry: vec![],
+        }
+    };
+    put_approved_block(&approved, fringe).await.unwrap();
+    (dag, store, approved)
+}
+
+/// A genesis at `genesis_root` and a restored later state at `later_root`.
+async fn later_fixture(
+    genesis_root: StateHash,
+    later_root: StateHash,
+) -> (
+    Arc<rchain_casper::dag::BlockDagKeyValueStorage>,
+    BlockStore,
+    ApprovedStore,
+) {
+    let dag = build_dag().await;
+    let store = blocks();
+    let approved = rchain_block_storage::approved_store::create(&InMemoryStoreManager::default())
+        .await
+        .unwrap();
+    let genesis = block(1, 0, genesis_root);
+    put_block(&store, genesis.clone()).await.unwrap();
+    insert_genesis(dag.as_ref(), genesis).await.unwrap();
+    // The later block is what makes `later_root` a block post-state, not a fringe-only root; the
+    // guard reads the newest block's post-state because that is where the native leaves live.
+    let later = block(2, 1, later_root);
+    put_block(&store, later.clone()).await.unwrap();
+    let mut metadata = rchain_models::block_metadata::BlockMetadata::from_block(&later);
+    metadata.validated = true;
+    metadata.validation_failed = false;
+    dag.insert(metadata, later).await.unwrap();
+    put_approved_block(
+        &approved,
+        FinalizedFringe {
+            hashes: vec![BlockHash::new([2; 32])],
+            state_hash: later_root,
+            ancestry: vec![],
+        },
+    )
+    .await
+    .unwrap();
+    (dag, store, approved)
 }
 fn params(floor: i64, parents: i64) -> Vec<u8> {
     PosParams {
@@ -353,7 +444,9 @@ async fn restore_guard_checks_committed_zero_legacy_and_bad_records_before_runni
         cases.push((Some(current[1..1 + fields * 8].to_vec()), 99, 1, true));
     }
     let mut unknown = current.clone();
-    unknown[0] = 2;
+    // Format 2 is current; the next unknown format is 3. The truncated record below is 81 bytes —
+    // format 1's length — and is refused because this node reads format 2 only.
+    unknown[0] = 3;
     cases.push((Some(unknown), 2, 2, false));
     cases.push((Some(current[..current.len() - 8].to_vec()), 2, 2, false));
     for (bytes, floor, cap, allowed) in cases {
@@ -401,6 +494,25 @@ async fn restore_guard_checks_committed_zero_legacy_and_bad_records_before_runni
         check_running_validation_bounds(dag.as_ref(), &store, &approved, &runtime, 1, 0)
             .await
             .is_err()
+    );
+}
+
+// A DAG that references a block without its body must not allow the restore guard
+// to fall back to the approved fringe's native state, even when the bounds match.
+#[tokio::test]
+async fn restore_guard_refuses_missing_newest_block_body() {
+    let runtime = common::build_runtime_manager().await;
+    let (dag, store, approved) = snapshot_fixture(&runtime, Some(params(2, 2)), params(2, 2)).await;
+
+    let missing = BlockHash::new([2; 32]);
+    assert_eq!(store.delete(&[missing]).await.unwrap(), 1);
+
+    let error = check_running_validation_bounds(dag.as_ref(), &store, &approved, &runtime, 2, 2)
+        .await
+        .expect_err("restored DAG references a missing block; the guard must fail closed");
+    assert!(
+        error.contains("missing from block storage"),
+        "unexpected restore refusal: {error}"
     );
 }
 
@@ -454,4 +566,114 @@ async fn restore_guard_ignores_a_fringe_state_with_different_bounds() {
             .is_err(),
         "the committed block state is (2,2), not the fringe's (1,1)"
     );
+}
+
+/// **The restored developer allocation is checked before Running, and only a local claim is
+/// enforced.**
+///
+/// The leaf's own schedule is checked in every case: at the genesis post-state nothing has vested,
+/// and at a later state the unreleased amount cannot exceed the allocation. A local claim — the
+/// joiner's own bonds/wallets derivation — must match the imported genesis; a joiner with no claim
+/// trusts the chain and is not refused. Each case gets its own DAG and approved store, so one
+/// acceptance cannot mask another's refusal.
+#[tokio::test]
+async fn restore_guard_checks_the_developer_allocation_before_running() {
+    let runtime = common::build_runtime_manager().await;
+    let address = "11112VYAt8rUGNRRZX3eJdgagaAhtWTK8Js7F7X5iqddMVqyDTtYau".to_string();
+    let other_address = "11112VYAt8rUGNRRZX3eJdgagaAhtWTK8Js7F7X5iqddMVqyDTtYav".to_string();
+    let allocation = 2_000_000_000_000_000i64;
+    let leaf = |unreleased: i64| {
+        DevVesting {
+            address: address.clone(),
+            allocation: NonNegI64::try_from(allocation).unwrap(),
+            unreleased: NonNegI64::try_from(unreleased).unwrap(),
+        }
+        .encode()
+    };
+    let matching_claim = Some((address.clone(), NonNegI64::try_from(allocation).unwrap()));
+
+    // Genesis, both fringe shapes, internally consistent: accepted. The empty fringe is the
+    // creator's own; `hashes: [genesis]` is what a genesis-only joiner actually carries.
+    for creator in [true, false] {
+        let root = state_root(&runtime, None, Some(leaf(allocation))).await;
+        let (dag, store, approved) = genesis_fixture(root, creator).await;
+        assert!(
+            check_running_dev_vesting(dag.as_ref(), &store, &approved, &runtime, None)
+                .await
+                .is_ok(),
+            "a genesis with nothing vested is accepted (creator_fringe={creator})"
+        );
+    }
+
+    // Genesis with part of the schedule already released: refused. `release_dev_tax` would compute
+    // a negative already-released amount from such a leaf and over-credit the recipient.
+    let root = state_root(&runtime, None, Some(leaf(allocation / 2))).await;
+    let (dag, store, approved) = genesis_fixture(root, false).await;
+    let err = check_running_dev_vesting(dag.as_ref(), &store, &approved, &runtime, None)
+        .await
+        .expect_err("a genesis leaf with a released amount is inconsistent");
+    assert!(err.contains("unreleased"), "{err}");
+
+    // A matching local claim is accepted.
+    let root = state_root(&runtime, None, Some(leaf(allocation))).await;
+    let (dag, store, approved) = genesis_fixture(root, false).await;
+    assert!(check_running_dev_vesting(
+        dag.as_ref(),
+        &store,
+        &approved,
+        &runtime,
+        matching_claim.clone()
+    )
+    .await
+    .is_ok());
+
+    // A local claim that differs in address, or in amount, is refused.
+    for claim in [
+        Some((other_address, NonNegI64::try_from(allocation).unwrap())),
+        Some((
+            address.clone(),
+            NonNegI64::try_from(allocation - 1).unwrap(),
+        )),
+    ] {
+        let root = state_root(&runtime, None, Some(leaf(allocation))).await;
+        let (dag, store, approved) = genesis_fixture(root, false).await;
+        let err = check_running_dev_vesting(dag.as_ref(), &store, &approved, &runtime, claim)
+            .await
+            .expect_err("a local claim that differs from the restored genesis is refused");
+        assert!(err.contains("local developer allocation"), "{err}");
+    }
+
+    // A local claim against a genesis that carries no allocation is refused.
+    let root = state_root(&runtime, None, None).await;
+    let (dag, store, approved) = genesis_fixture(root, false).await;
+    let err = check_running_dev_vesting(
+        dag.as_ref(),
+        &store,
+        &approved,
+        &runtime,
+        matching_claim.clone(),
+    )
+    .await
+    .expect_err("a local claim against an allocation-free genesis is refused");
+    assert!(err.contains("has none"), "{err}");
+
+    // A later state whose unreleased amount is still within the allocation is accepted.
+    let genesis_root = state_root(&runtime, None, Some(leaf(allocation))).await;
+    let later_root = state_root(&runtime, None, Some(leaf(allocation / 2))).await;
+    let (dag, store, approved) = later_fixture(genesis_root, later_root).await;
+    assert!(
+        check_running_dev_vesting(dag.as_ref(), &store, &approved, &runtime, None)
+            .await
+            .is_ok(),
+        "a later state may have released part of the allocation"
+    );
+
+    // A later state that claims to have released more than the whole allocation is refused.
+    let genesis_root = state_root(&runtime, None, Some(leaf(allocation))).await;
+    let later_root = state_root(&runtime, None, Some(leaf(allocation + 1))).await;
+    let (dag, store, approved) = later_fixture(genesis_root, later_root).await;
+    let err = check_running_dev_vesting(dag.as_ref(), &store, &approved, &runtime, None)
+        .await
+        .expect_err("an over-released later leaf is inconsistent");
+    assert!(err.contains("unreleased"), "{err}");
 }

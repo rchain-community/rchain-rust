@@ -28,7 +28,8 @@ use rchain_rholang::merging::{
     NumberChannel,
 };
 use rchain_rholang::native_state::{
-    decode_bonds, decode_params, pos_active_key, pos_params_key, NativeSystemState, PosGenesis,
+    decode_bonds, decode_params, pos_active_key, pos_dev_vesting_key, pos_params_key, DevVesting,
+    NativeSystemState, PosGenesis,
 };
 use rchain_rholang::runtime::{ReplayRhoRuntime, RhoRuntime};
 use rchain_rholang::scheduler::EffectMode;
@@ -1964,6 +1965,37 @@ impl RuntimeManager {
         )))
     }
 
+    /// Read and decode the PoS params leaf from a particular committed state.
+    pub async fn committed_params(
+        &self,
+        hash: &StateHash,
+    ) -> Result<rchain_rholang::native_state::PosParams, String> {
+        let reader = self.history_repo.get_history_reader(to_blake(hash)).await;
+        let bytes = reader
+            .get_native(PREFIX_POS, pos_params_key())
+            .await
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| "PoS params leaf not found in committed state".to_string())?;
+        decode_params(&bytes)
+    }
+
+    /// Read the developer allocation's vesting leaf from a particular committed state. `None` means
+    /// the chain carries no allocation (a legacy genesis); a malformed leaf is an error.
+    pub async fn committed_dev_vesting(
+        &self,
+        hash: &StateHash,
+    ) -> Result<Option<DevVesting>, String> {
+        let reader = self.history_repo.get_history_reader(to_blake(hash)).await;
+        match reader
+            .get_native(PREFIX_POS, pos_dev_vesting_key())
+            .await
+            .map_err(|e| e.to_string())?
+        {
+            Some(bytes) => DevVesting::decode(&bytes).map(Some),
+            None => Ok(None),
+        }
+    }
+
     /// Guard startup/restore before the node uses its configured proposal and admission settings.
     /// Validation reads the committed leaf independently. The bounds are immutable in this release;
     /// refusing a mismatch also keeps this node from producing blocks under different local rules.
@@ -2128,6 +2160,7 @@ mod tests {
                 executor_share: NonNegI64::try_from(2_500).expect("a quarter"),
                 ..PosParams::default()
             },
+            dev_vesting: None,
         };
         let vaults = [Vault {
             rev_address: RevAddress::from_public_key(&deployer).expect("deployer address"),
@@ -2232,6 +2265,7 @@ mod tests {
                 participation_grace: NonNegI64::try_from(2).expect("a grace"),
                 ..PosParams::default()
             },
+            dev_vesting: None,
         };
         let vaults = [Vault {
             rev_address: RevAddress::from_public_key(&deployer).expect("deployer address"),
@@ -2389,6 +2423,7 @@ mod tests {
             ]),
             trusted: BTreeSet::new(),
             params: PosParams::default(),
+            dev_vesting: None,
         };
         let (_pre, genesis_post, _) = rm
             .compute_genesis(&[], &rand, BlockData::empty(), &pos, &[])

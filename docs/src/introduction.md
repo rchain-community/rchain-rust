@@ -3,8 +3,7 @@
 > **Provenance.** This repository was developed through commit `14b8b77` on
 > [`PatrickMockridge/rchain-rust`](https://github.com/PatrickMockridge/rchain-rust) — a fork of
 > [`rchain/rchain`](https://github.com/rchain/rchain). As of that commit, the repository moved to
-> `rchain-community/rchain-rust`. On 23 October 2026 the repository was renamed to `rholo`
-> and the organization to `rhovision-org`, making it
+> `rchain-community/rchain-rust`, renamed on 23 October 2026 to
 > [`rhovision-org/rholo`](https://github.com/rhovision-org/rholo). A snapshot of the
 > code at that state is timestamped on Arweave — transaction
 > [`MK4WA8w3NTIIFd6iaD06EPyxVbFhoV9MtfhMNcHWWMw`](https://arweave.net/MK4WA8w3NTIIFd6iaD06EPyxVbFhoV9MtfhMNcHWWMw),
@@ -32,12 +31,14 @@ decade.
   builds up to object-capability smart contracts. Each chapter leads with intuition and ends with a
   pointer into the formal treatment.
 - **Part II — The ρ-calculus, formally** is the precise semantics: the grammar, the sorts, and the
-  **[<!-- counts:laws -->77 laws<!-- counts:end -->](formal/laws.md)** that govern the node — the
+  **[<!-- counts:laws -->79 laws<!-- counts:end -->](formal/laws.md)** that govern the node — the
   calculus (1–29), the surface a client writes and a matcher reads (30–43), the Proof-of-Stake epoch
   (44–47), the fee and charging rows (48–49), the two depth guards (50), the progress rows (51–54), the
   bounded-work and namespace rows (55–56), the delegator's stake (57), the finality gate's forward dual
-  (58), the wire and session laws (59–65), the distributed-system set (66–71), and the durable reset,
-  the stop and the read construction (72–77). Each law is mapped
+  (58), the wire and session laws (59–65), the distributed-system set (66–71), the durable reset,
+  the stop and the read construction (72–77), the genesis's developer allocation (78) and the schedule
+  it unlocks on (79). Each law is
+  mapped
   to its machine-checked formalization, and the [folder's index](formal/README.md) says which document
   carries which set.
 - **Part III — The node** describes the software that executes rholang: the tuple space, the Merkle
@@ -56,5 +57,5 @@ decade.
 If you are an AI agent (or want the shortest path to a specific fact), start at
 [Navigation for AI agents](ai-entrypoint.md) — a goal-indexed map of this book and the machine-checked
 specification it links to. The authoritative formal specification lives outside this book, in the
-[`spec/`](../../spec/) tree (the law register — <!-- counts:laws -->77 laws<!-- counts:end -->, the Lean/Coq proofs, and the conformance corpora
+[`spec/`](../../spec/) tree (the law register — <!-- counts:laws -->79 laws<!-- counts:end -->, the Lean/Coq proofs, and the conformance corpora
 that bind the two to the node); this book explains it, it does not duplicate it.

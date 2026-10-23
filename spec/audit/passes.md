@@ -1266,7 +1266,7 @@ oracle is, and the test that pins the fix.
   carries it into `EList`/`ESet`/`EMap`'s `remainder` field, and the matcher consumes it
   (`fold_match`, `handle_remainder`). Only the parser was missing the arm, which made a valid
   collection pattern unparseable for two of the three forms. Measured payoff: the rgov governance
-  contracts (`rchain-community/rgov`) destructure their message queues exactly this way — `Inbox.rho`
+  contracts (`rhovision-org/rgov`) destructure their message queues exactly this way — `Inbox.rho`
   uses it 16 times with both bindings *used* (`ret!(item) | box!(rest)`), so `Inbox.rho` is
   unparseable and everything importing it is too: `Directory.rho`, `Issue.rho`, `Group.rho`,
   `CrowdFund.rho`, `Kudos.rho`, `memberIdGovRev.rho` and `feature/MemberDirectory.rho` **all failed to
@@ -2027,7 +2027,7 @@ removing the fix and confirming the test fails.
   accepted again on evidence, which is the part worth reading. The port accepted `[1,]`, `Set(1,)`,
   `{a: 1,}`, `c!(1,)`, `contract c(@x,) = …`, `(1, 2,)`, `a.b(1,)` and `for (x <- c;) { … }` at
   eleven loops, and the grammar's `[X] ::= X | X "," [X]` derives none of them, so the checks were
-  added. **They broke real code**: `rchain-community/rgov`'s `rholang/core/CrowdFund.rho` ends each
+  added. **They broke real code**: `rhovision-org/rgov`'s `rholang/core/CrowdFund.rho` ends each
   parameter of its `contract CrowdFund(…)` head with a comma before a comment, and nine of the Scala's
   own test fixtures (`legacy/casper/src/test/resources/*Test.rho`) end list literals the same way —
   files that *ran* in the Scala suite, which is the evidence that the reference node accepts the
@@ -4461,7 +4461,7 @@ found the first symptom **one layer lower** — in the proposer's attestation gu
 the issue names — and a second defect beside it. Both were red first, each against its own mutation,
 and both are the *opposite* of what the guard's shipped comment and the docs said.
 
-[#70]: https://github.com/rchain-community/rholo/issues/70
+[#70]: https://github.com/rhovision-org/rholo/issues/70
 
 ### C170 — the guard counted a validator that had *ever* spoken, and could not suppress in the case it exists for
 
@@ -4605,7 +4605,7 @@ keep on its first run: the arithmetic first treated a second block at an existin
 a lock — the store-first order can only ever leave the index *under*-claiming, which is the answer both
 of its callers want ("not in the DAG yet"). Filed and closed as [#103].
 
-[#103]: https://github.com/rchain-community/rholo/issues/103
+[#103]: https://github.com/rhovision-org/rholo/issues/103
 
 ## 25. One attributable failure estranges a node from the chain (#105)
 
@@ -4714,7 +4714,7 @@ a genuinely valid chain, so the clearing branch is covered at the record-transit
 two-node devnet in #125's thread is the end-to-end measurement — the `restoring_rule.rs` header says so
 rather than leaving the gap to be assumed.
 
-[#105]: https://github.com/rchain-community/rholo/issues/105
+[#105]: https://github.com/rhovision-org/rholo/issues/105
 ## 26. The fringe gate asked two questions of one map: a silent validator capped finality at any stake share (#70)
 
 #70's measurement asked whether the survivors resume finality after a validator is killed. They did not —
@@ -5024,7 +5024,7 @@ C175 — the unbounded ingress queue §27 could not rule out — is not this def
 landed (`#120`) and the depth reads 0.0 at every sample through a ramp that OOM-kills all three nodes, so
 a drained queue is not what held the memory. The profile and the census agree on which path did.
 
-[#117]: https://github.com/rchain-community/rholo/issues/117
+[#117]: https://github.com/rhovision-org/rholo/issues/117
 
 ## 29. The tracker consolidated onto the register's causes — and the rule that says which issues can close
 
@@ -9355,7 +9355,7 @@ paragraph could not explain no longer appears; the jerkiness it describes was th
 chain.*
 The gate's stall/advance cadence on a four-validator autopropose net is a **separate** measured
 property, it is the same rig that produced the pre-fix `200 of 400` reading in C268's row, and it belongs
-to the finality rows (14, 52) rather than to C270. **It is owned by [#318](https://github.com/rchain-community/rholo/issues/318)**,
+to the finality rows (14, 52) rather than to C270. **It is owned by [#318](https://github.com/rhovision-org/rholo/issues/318)**,
 which carries the numbers and the two questions (is a stall entered once per round expected, and is the
 ~15-height lag expected), and says why this rig cannot decide them: it was built for C270's question, and
 the unit that takes #318 on should start by building a rig that can *distinguish* a stall that costs
@@ -11477,3 +11477,122 @@ This does not reject an unknown field accompanying a recognized instance, becaus
 discards that field before this function sees it. It does not implement a new numeric type,
 reserve tag 35, or provide version-aware activation. Those remain #380's separate design and
 implementation work; the fixture uses an unused tag only to demonstrate refusal.
+## 139. The genesis credits a developer allocation, and the arithmetic is the law (C332)
+
+**A deliberate deviation, taken 2026-10-16 and recorded here because the register's `done` carries it.**
+The Scala ceremony installs exactly the vaults its wallets file names. This port derives one more from
+their total and credits it to a configured address:
+
+```
+dev_tax_amount(total) = max(20 000 000 REV, 2% of total)
+```
+
+The arms cross at exactly one billion REV (`10^17` drops), so below that allocation the floor governs
+and at or above it the rate does. On the allocation this network has — **908 962 714 REV**, dated
+13 May 2026, `docs/src/node/history-chain.md` — 2% is 18 179 254 REV, under the floor, so the
+allocation is **20 000 000 REV** and the wallets-plus-allocation total becomes **928 962 714 REV**.
+(That subtotal is not all the REV the genesis writes: `install_genesis` also funds the staking vault
+with the bond sum.)
+
+**Why it is derived rather than written into the file.** REV has no mint: supply *is* the wallets file
+(`rholang/src/system_processes.rs`, "REV is minted at genesis only"), and the vault balances are
+installed as native state outside the genesis block's deploys and content-addressed into the post-state
+hash. A number fixed in the operator's file is therefore a number a node can disagree about. But
+*deriving* it is only worth anything if the total is the one the chain will hold: `set_vault_balance`
+keys on the base58 address and overwrites, so a wallets file that repeats an address installs only its
+last row, and a row-wise sum would allocate on REV that never exists. `dev_tax::dev_allocation`
+**refuses a repeated address outright** rather than canonicalising it, so the total is computed only
+over balances the installer will hold. `genesis::dev_allocation` is the wrapper called by both ends —
+the ceremony (`casper/src/engine/node_launch.rs::create_genesis_block`) and the descriptor reader
+(`casper/src/genesis/mod.rs::genesis_descriptors_from_config`) — so a creator and a node **replaying**
+the genesis cannot drift (AUDIT C46). **A node restoring over LFS** does not replay genesis:
+`check_running_dev_vesting` enforces a local claim when the joiner has one (bonds + wallets + a
+non-empty address) and trusts the bootstrap when it has none, while always checking the imported leaf's
+own schedule before Running. The review that caught the earlier over-claim is recorded below.
+
+The wire is `PosParams` **format 2**, with the vesting term appended at payload index 10 (eleven
+payload fields, 89 bytes including the format byte). That append is what resolves the collision with
+#376's committed validity bounds at payload indices 8 and 9; format 1 is refused rather than read
+positionally, because no released chain ever wrote one.
+
+**The amount is not a setting; the address is.** `casper.genesis-block-data.dev-tax-address` names the
+recipient and nothing else. An address that is set must parse as a REV address, refused at startup with
+the other operator-facing configuration errors (`Configuration::build`'s `check_dev_tax_address`); a
+wallets file that already names it is refused, because `set_vault_balance` *overwrites* a repeated key
+and a duplicate would silently replace that holder's balance rather than add to it; and creating a
+genesis **outside `--dev-mode`** without an address is refused at the launch branch
+(`node_launch::apply`), which is the last point at which the decision is still decidable. The gate is at
+the creation branch and not in `Configuration::build` deliberately: that branch is reachable only when
+the DAG is empty, so a standalone node *restarting* onto an existing chain — the public testnet's
+bootstrap, whose genesis predates this key — is not refused for a decision it already made. Devnets are
+untouched: `tools/devnet.sh` now starts every node it launches with `--dev-mode`, so their genesis (and
+their hashes) are whatever they were.
+
+**The law, and what is machine-checked.** `spec/Rchain/Genesis.lean` states the rule and both crossover
+directions, with `the_rate_strictly_exceeds_the_floor_above_the_crossover` as the non-vacuity witness
+(without it both directions would hold of any constant) and `devTaxAmount_of_the_published_allocation`
+pinning the arm this network is on. The Rust witness is
+`casper/src/genesis/dev_tax.rs::the_floor_governs_below_a_billion_rev_and_two_percent_above`. The status
+is `proved-model`, not `proved-tied`: there is no conformance corpus for a rule the oracle does not
+have.
+
+**What is *not* claimed.** Nothing here is about the allocation being owed, just or final — those are
+the decision this row records, and the arithmetic is the only part a machine can check. The disclosure
+is deliberate: `docs/src/node/validator-economics.md` carries the allocation beside the other economic
+terms, so a reader comparing the two does not find the tree publishing rewards in detail and this
+silently.
+
+**And the deal was completed in the same unit: the allocation vests (Law 79).** The review of the
+allocation drew a second review on the *thread* — a governance reading, not a code one — whose central
+premise did not match the branch (it reviewed a withholding from restored balances; this adds one), but
+whose two live points held, and the second of them was acted on: **the allocation was spendable at
+genesis**, an immediate claim on the whole 20M REV, which is the sell-overhang shape the review named.
+So the allocation is no longer credited to a vault at all. It goes to a **vesting account**
+(`pos:dev-vesting` — recipient, total and unreleased balance in one record, installed by the same
+`install_genesis` both the ceremony and a replaying node call), and `close_block` releases what has
+vested into the recipient's own vault at each epoch boundary — last in the boundary sequence, and
+deliberately independent of the reward steps, because it debits that account and credits a *user* vault
+and so can reach neither the staking vault nor the pot. The schedule is linear with no cliff, and the
+term is a **genesis parameter** (`dev-tax-vesting-blocks`, 36 months at 5 s/block) rather than a
+constant, because this tree records that a block cadence is not a constant. Stated as **Law 79**
+(`spec/Rchain/Vesting.lean`), with the arithmetic in `rholang/src/native_state.rs` and the release pinned
+by `the_dev_allocation_vests_linearly_and_releases_at_boundaries`. **The residual, stated rather than
+implied**: the release is granular to the epoch, not the block, because native state is written at
+boundaries — so a chain with a long epoch releases in visible steps, and a reader comparing the schedule
+to a balance needs to know which clock the balance follows.
+
+**The review, and what it changed.** The pull request drew a changes-requested review carrying two
+reproductions, and both held:
+
+1. **A repeated holder address inflated the total.** The first draft summed the file's rows, while the
+   installer overwrites a repeated key — so two rows of `A,1e17` took the percentage arm on a
+   two-billion-REV sum and allocated 40M, when the chain installs one billion REV for `A` and owes 20M.
+   **Fixed twice, and the second fix is the one that stands.** The first response canonicalised (last row
+   wins, the installer's own key) so the summed balances matched the installed ones; the follow-up review
+   asked for the *precondition* to be enforced instead, which is the better call — a repeated address is
+   a data error, and last-wins is exactly the quiet behaviour this tree rejects elsewhere. So repeated
+   canonical holder addresses are now **refused before the total is computed**, the recipient's own
+   address among them, and only the **empty-recipient path is untouched**: a chain with no allocation
+   keeps taking exactly the wallets files it took before. Pinned by
+   `dev_tax.rs::a_repeated_holder_address_is_refused`, which covers identical *and* different balances
+   for the same address with a distinct-holder control, plus
+   `a_wallets_entry_for_the_recipient_is_refused` and `no_address_allocates_nothing_and_checks_nothing`.
+2. **The joiner claim was too strong.** It read "a node that derives a different amount refuses the
+   genesis block", which is true of the **replay** path (C46) and false of the **LFS restore**, where
+   `insert_genesis` marks the genesis validated without replaying it. The claim is narrowed here and in
+   every document that carried it, and the boundary is enforced rather than implied away: the
+   restore-completion guard enforces a *local* claim when the joiner has one, trusts the bootstrap when
+   it has none, and checks the imported leaf's own schedule. The two-node matrix in
+   `node/tests/lfs_restore_dev_tax.rs` covers matching, a different recipient, changed balances and
+   missing descriptors, for a genesis-only bootstrap and a later finalized snapshot, plus a restored
+   bonded joiner that proposes a block the bootstrap validates. The earlier `PoS params leaf not found`
+   refusal was the guard reading a fringe state instead of a block post-state; it now reads the newest
+   validated block's post-state.
+
+Two accounting corrections came with it: the total is a *wallets-plus-allocation* subtotal and excludes
+the bond-funded staking vault, and the allocation **increases the total by 2.2003102759%** while
+**diluting existing holders by 2.1529389392%** — the first draft gave one figure for both. The review also asked for
+startup coverage: the gate's condition and its sentence moved to
+`dev_tax::refuse_a_production_genesis_without_an_address`, which a unit test drives for production
+missing/present and dev-mode omission, leaving the *restart* case to the `dag_set.is_empty()` guard that
+already excludes it and to the node tests that start and restart standalone nodes.

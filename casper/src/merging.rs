@@ -3578,7 +3578,9 @@ mod boundary_merge_tests {
                     participation_grace: nn(0),
                     min_phlo_price: NonNegI64::zero(),
                     max_number_of_parents: 0,
+                    dev_tax_vesting_blocks: NonNegI64::zero(),
                 },
+                dev_vesting: None,
             })
             .unwrap();
         for byte in [8, 9] {

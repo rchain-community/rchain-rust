@@ -1,7 +1,7 @@
 # QuCalc — upstream references (quantum-os & the Quantum Logical Framework)
 
 QuCalc is the rholo realization of two sibling projects, both now forked into the
-RChain community org and linked throughout the QuCalc docs:
+Rho Vision org (`rhovision-org`) and linked throughout the QuCalc docs:
 
 - [`rhovision-org/quantum-os`](https://github.com/rhovision-org/quantum-os) — the
   peer-to-peer **room**: a shared ZFA process space, capability-token identities, group

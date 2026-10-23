@@ -502,6 +502,10 @@ pub struct NodeProgram {
     ocapn_chain: Vec<(Vec<u8>, Arc<dyn Export>)>,
     protocol_server: Option<ProtocolServer>,
     status_provider: Option<StatusProvider>,
+    /// The primary shard's runtime manager. Exposed so an integration test can read the native
+    /// state the running node actually installed (the developer-allocation leaf, the PoS params)
+    /// without a second reader against the node's LMDB directory while it holds it.
+    pub primary_runtime: Arc<RuntimeManager>,
 }
 
 impl NodeProgram {
@@ -544,6 +548,7 @@ impl NodeProgram {
             protocol_server,
             status_provider,
             gateway,
+            primary_runtime: _,
         } = self;
 
         let GrpcServices {
@@ -1476,6 +1481,7 @@ pub async fn setup_node_program(
             discovery: comm_state.discovery.clone(),
         }),
         gateway,
+        primary_runtime: primary_parts.runtime_manager.clone(),
     })
 }
 
@@ -1995,6 +2001,7 @@ async fn setup_shard_runtime(
         conf.protocol_server.disable_state_exporter,
         parts.validator_identity_opt.clone(),
         conf.standalone,
+        conf.dev_mode,
         comm_state.transport.clone(),
         comm_state.comm_util.clone(),
         comm_state.block_retriever.clone(),

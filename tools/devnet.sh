@@ -486,7 +486,15 @@ rnode_run_common() {
   # whose first propose got `Connection reset by peer` in 10 ms: the node was healthy, autopropose was
   # producing blocks and the port was mapped — the listener was bound to the container's loopback.
   if $ADMIN; then flags="$flags --api-enable-devnet-admin-public"; fi
-  if $DEPLOYER; then flags="$flags --dev-mode --deployer-private-key ${DEPLOYER_PRIV}"; fi
+  # **Every node a devnet starts is in dev mode**, not only when a deployer key is configured. A
+  # *production* genesis must decide the developer allocation and its vesting term and is refused at
+  # creation without them (Laws 78–79), and a devnet is exactly the network that need not — so
+  # passing dev mode here is what lets `--no-deployer` and `--nodes` devnets build genesis at all.
+  # Two things this does **not** preserve: dev mode also enables `exploratory_deploy` on every
+  # validator (`casper/src/api/block_api_impl.rs`), and the format-2 PosParams record changes every
+  # genesis hash, so "the hashes are unchanged" is not a property of this line.
+  flags="$flags --dev-mode"
+  if $DEPLOYER; then flags="$flags --deployer-private-key ${DEPLOYER_PRIV}"; fi
   # A verbosity passthrough for diagnosing the **inbound** path, where a node's silence is otherwise
   # indistinguishable from a message that never arrived (issue #100): the frames a node *receives* are
   # logged at debug/trace and nowhere else, so without this a stalled handshake reads as a healthy
