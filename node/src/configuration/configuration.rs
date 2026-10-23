@@ -799,7 +799,8 @@ mod tests {
                         pos_multi_sig_quorum: 2,
                         pos_vault_pub_key: String::new(),
                         system_contract_pub_key: String::new(),
-                        dev_tax_address: String::new(),
+                        dev_tax_address: "11112aRbXppXw33soKBN3B7tPHpZ18foZvyBqr1tKS2vx3V7aVHsQq"
+                            .to_string(),
                         dev_tax_vesting_blocks: 18_934_560,
                     },
                     5,
@@ -1396,7 +1397,8 @@ mod tests {
                         pos_multi_sig_quorum: 2,
                         pos_vault_pub_key: default_pos_vault_pub_key(),
                         system_contract_pub_key: default_system_contract_pub_key(),
-                        dev_tax_address: String::new(),
+                        dev_tax_address: "11112aRbXppXw33soKBN3B7tPHpZ18foZvyBqr1tKS2vx3V7aVHsQq"
+                            .to_string(),
                         dev_tax_vesting_blocks: 18_934_560,
                     },
                     111111,
