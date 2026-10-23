@@ -1,4 +1,4 @@
-// Adapted from rchain-community/rchain-wallet/src/rholang/{initializeMapStore,login,save,load}.rho
+// Adapted from rhovision-org/rchain-wallet/src/rholang/{initializeMapStore,login,save,load}.rho
 // (GPL-3.0). Adaptations for the Rust node:
 //   * `RevAddress` is bound to the Rust URN `rho:rev:address` (upstream left it a bare name).
 //   * the map store is a private `new` state channel (upstream's `save`/`load` peeked the

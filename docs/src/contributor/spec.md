@@ -19,7 +19,7 @@ book. This page is an index to it; it does not duplicate its contents.
 | [`spec/coq/`](../../../spec/coq/) (Coq) | The substitution / α-equivalence metatheory (`make`). |
 
 The executable semantics of the language are the K-framework rules under
-[`legacy/rholang/src/main/k/rholang/`](https://github.com/rchain-community/rholo/blob/1b7583649/legacy/rholang/src/main/k/rholang/) — the operational
+[`legacy/rholang/src/main/k/rholang/`](https://github.com/rhovision-org/rholo/blob/1b7583649/legacy/rholang/src/main/k/rholang/) — the operational
 definition of Laws 2–6.
 
 ## The gates

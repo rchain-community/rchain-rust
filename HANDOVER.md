@@ -119,7 +119,7 @@ and the primitive are in, shipping dark) · **C250** (needs the four nodes' logs
   in the tree*.
 - **`tools/check-staged-rows.sh <C-row|->`** goes on the left of `&&`; a commit adding no *new* C-number
   declares `-`.
-- **`gh` defaults to the parent repo** (`rchain/rchain`). Always `--repo rchain-community/rholo`.
+- **`gh` defaults to the parent repo** (`rchain/rchain`). Always `--repo rhovision-org/rholo`.
 - **Force-pushing a rebased branch and merging a PR are both blocked by the local auto-mode** ("Merge
   Without Review"). Rebase and hand the push/merge to the user.
 - **A `local` in bash expands with the caller's variables**: `local n="$1" unit="${UNIT[$n]}"` resolves the

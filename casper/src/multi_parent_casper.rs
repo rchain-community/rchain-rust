@@ -2104,7 +2104,7 @@ mod tests {
 /// height and then by hash so every node picks the same one. See the call site for why the bond maps the
 /// blocks carry cannot be used instead ([#73]).
 ///
-/// [#73]: https://github.com/rchain-community/rholo/issues/73
+/// [#73]: https://github.com/rhovision-org/rholo/issues/73
 fn newest_justification(justifications: &[BlockMetadata]) -> Option<&BlockMetadata> {
     justifications.iter().max_by(|a, b| {
         a.block_num

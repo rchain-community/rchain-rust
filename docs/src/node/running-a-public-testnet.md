@@ -108,7 +108,7 @@ then work against you:
 
 An admission tool that applies this order - preflight the newcomer's node, trust, bond, wait for the boundary,
 then require the newcomer's node to propose - is
-[`scripts/qos-cli/admit.mjs`](https://github.com/rchain-community/quantum-os/blob/main/scripts/qos-cli/admit.mjs).
+[`scripts/qos-cli/admit.mjs`](https://github.com/rhovision-org/quantum-os/blob/main/scripts/qos-cli/admit.mjs).
 
 So: start it, wait for its `LFS state is successfully restored`, confirm it is following the chain, and only
 then `trust` and `bond` - and let it stay up, because an active validator that is not proposing is the case
@@ -242,7 +242,7 @@ is OOM-killed, and because every restart replays the same DAG the node loops ins
 
 Give the net headroom for the restart, not just for the run — `≥ 2 GB` for ~1k blocks, `≥ 4 GB` to be
 comfortable — and see [Running a validator: hardware requirements](validator-requirements.md) and
-[#60](https://github.com/rchain-community/rholo/issues/60). A chain that produces blocks
+[#60](https://github.com/rhovision-org/rholo/issues/60). A chain that produces blocks
 continuously (`--autopropose` plus the dev-mode injector) reaches that height in an afternoon, so it hits
 the limit quickly; one that grows only with real traffic stays safe far longer.
 
@@ -437,7 +437,7 @@ against the sender*. That is narrower than "the block's own fault" in one way an
 node could not replay, or replayed to a *different* state (`Divergence`), and a child refused because a
 justification failed (`Cascade`), are **not** slashed — one transient failure must not fabricate slash
 evidence against every validator above it
-([#125](https://github.com/rchain-community/rholo/issues/125)) — **and neither are the three
+([#125](https://github.com/rhovision-org/rholo/issues/125)) — **and neither are the three
 refusals that read a setting this node owns** rather than the block: the fee floor
 `casper.min-phlo-price`, the width `casper.max-number-of-parents`, and the compiled version set
 `SUPPORTED`. Those are `Attributable` and still refused, but not offences, because another node with a

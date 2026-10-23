@@ -31,7 +31,7 @@
 //! reversibility is automatic, because a returning validator's message is at the tip and its stake
 //! re-enters both sides on the next block.
 //!
-//! [#70]: https://github.com/rchain-community/rholo/issues/70
+//! [#70]: https://github.com/rhovision-org/rholo/issues/70
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::hash::Hash;

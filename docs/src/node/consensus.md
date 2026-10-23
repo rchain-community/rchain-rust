@@ -59,7 +59,7 @@ set** — the bonded validators whose latest message is within `LIVENESS_WINDOW`
 is still measured against the **whole** bonded stake, which is what keeps the safety property: a quorum
 over the speaking subset alone would be reached by any self-consistent group, and under a partition two
 groups would finalise different histories
-([#70](https://github.com/rchain-community/rholo/issues/70)).
+([#70](https://github.com/rhovision-org/rholo/issues/70)).
 
 Who is *in* that weight set — and what a validator is paid for being in it — is
 [Validator economics](validator-economics.md).

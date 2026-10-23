@@ -3,8 +3,9 @@
 > **Provenance.** This repository was developed through commit `14b8b77` on
 > [`PatrickMockridge/rchain-rust`](https://github.com/PatrickMockridge/rchain-rust) — a fork of
 > [`rchain/rchain`](https://github.com/rchain/rchain). As of that commit, the repository moved to
-> `rchain-community/rchain-rust`, renamed on 23 October 2026 to
-> [`rchain-community/rholo`](https://github.com/rchain-community/rholo). A snapshot of the
+> `rchain-community/rchain-rust`. On 23 October 2026 the repository was renamed to `rholo`
+> and the organization to `rhovision-org`, making it
+> [`rhovision-org/rholo`](https://github.com/rhovision-org/rholo). A snapshot of the
 > code at that state is timestamped on Arweave — transaction
 > [`MK4WA8w3NTIIFd6iaD06EPyxVbFhoV9MtfhMNcHWWMw`](https://arweave.net/MK4WA8w3NTIIFd6iaD06EPyxVbFhoV9MtfhMNcHWWMw),
 > 22 August 2026 7:15pm.

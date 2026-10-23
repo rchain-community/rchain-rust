@@ -71,7 +71,7 @@ absent validator is paid on the same terms as one that ran all epoch, because th
 leak, no decay and no eviction** in this tree: a stopped validator's stake stays in the pool and counts
 in the finality denominator for ever. That is measured and written up in
 [The public testnet](testnet.md) (the *Do not onboard a validator yet* measurements), and
-[#149](https://github.com/rchain-community/rholo/issues/149) owns the consequence — its
+[#149](https://github.com/rhovision-org/rholo/issues/149) owns the consequence — its
 predecessor #148 was closed into it with the close condition carried verbatim: a validator that bonds
 and goes offline makes production unbounded and freezes finality, **and still collects its share** of
 whatever the epoch's pot does hold.
@@ -136,7 +136,7 @@ the grace and the next boundary pays it exactly as if it had never been away.
 contract absence costs nothing and an absent validator is paid for being drawn — and it is a rule the
 contract does not have, so a network chooses it rather than inheriting it. It is also **not a fix for the
 liveness defect**: a validator that goes offline still freezes finality and still counts in the
-denominator ([#149](https://github.com/rchain-community/rholo/issues/149)); this rule only decides
+denominator ([#149](https://github.com/rhovision-org/rholo/issues/149)); this rule only decides
 that it is paid less for the boundary it sat out.
 
 **Arming it is a genesis decision, and the numbers are the network's to make.** Both parameters live in
@@ -240,10 +240,10 @@ failure_cause: Some(status.failure_cause()),
 
 The cause is `FailureCause` (`models/src/block_metadata.rs`) — `Attributable` (the block's own fault,
 together with the DAG's structure), `Divergence` (this node's state or replay disagreed — the measured
-`InvalidStateHash`, [#105](https://github.com/rchain-community/rholo/issues/105)), or `Cascade` (a
+`InvalidStateHash`, [#105](https://github.com/rhovision-org/rholo/issues/105)), or `Cascade` (a
 justification failed). **Only `Attributable` is the block's fault** — one transient failure must not
 fabricate slash evidence against every validator above it
-([#125](https://github.com/rchain-community/rholo/issues/125)) — and the partition is
+([#125](https://github.com/rhovision-org/rholo/issues/125)) — and the partition is
 `BlockStatus::failure_cause` (`casper/src/block_status.rs:129`).
 
 **But the offence set is narrower than the blame set**, which is a separate question and a separate
@@ -318,7 +318,7 @@ The economics above are closed by who may take part.
   byte-array argument cannot bond another key (`rholang/src/system_processes.rs:1714`). **A key can,
   however, stake on another key**: `rho:rchain:pos!("delegate", *deployerId, operatorPubKey, amount,
   *ret)` moves the principal out of the *delegator's* own vault and adds it to the operator's bond
-  (2026-10-02, [#193](https://github.com/rchain-community/rholo/issues/193), law 57). There is
+  (2026-10-02, [#193](https://github.com/rhovision-org/rholo/issues/193), law 57). There is
   still **no staking pool, no restaking and no liquid-staking mechanism** in this tree: delegation
   attributes stake to an operator's key and gives the delegator no transferable claim, no share and no
   vote — see item 1 below for what it does and does not buy.
@@ -356,7 +356,7 @@ stated.** Both conclusions are arguments about the code above, not preferences.
    which is a genesis-plus-hard-fork change, not a contract.
 
    **Decided 2026-10-02, and it is the second of those two: a delegation leaf**
-   ([#193](https://github.com/rchain-community/rholo/issues/193)). `pos:bonds` becomes the
+   ([#193](https://github.com/rhovision-org/rholo/issues/193)). `pos:bonds` becomes the
    **aggregate** stake on a key — the operator's own plus every delegation to it — and a new ledger
    `pos:delegations` records who owns which part, so the stake counts in the draw and in what a slash
    reaches exactly as the operator's own does while the attribution has an on-chain home. Direction 2 was
@@ -377,7 +377,7 @@ stated.** Both conclusions are arguments about the code above, not preferences.
    participation weight scales the reward the delegators' share is drawn from, so an operator that stops
    attesting withholds its delegators' income with its own. No commission is charged and none is
    specified, and the operator can neither refuse a delegation nor set terms — all of which is the shape
-   [#193](https://github.com/rchain-community/rholo/issues/193) settled on and RCHIP #32's
+   [#193](https://github.com/rhovision-org/rholo/issues/193) settled on and RCHIP #32's
    staking-pool interface does not.
 
    **What is landed and what is owed, because this section's own rule is that a claim names its
@@ -402,17 +402,17 @@ stated.** Both conclusions are arguments about the code above, not preferences.
    epoch seed onto the last *finalised* fringe (residual O1). An epoch-accurate or volume-based score
    would need a counter leaf written on the block path, where native writes today ride only system
    deploys, breaking play/replay symmetry; either way it is hard-fork class. The claim
-   [#150](https://github.com/rchain-community/rholo/issues/150) attributes to an external result (a
+   [#150](https://github.com/rhovision-org/rholo/issues/150) attributes to an external result (a
    `welfare_game_potential`) does **not** survive stake-weighting: the ratio form stake-weighting forces
    has no exact potential. That external file is not in this repository and is not restated here.
 3. **Should a deploy's phlo be shared with the block that executed it?** Today it is not: the phlo joins
    the pot and is split by stake, so the executor is paid like every other active validator. Also on
-   [#150](https://github.com/rchain-community/rholo/issues/150).
+   [#150](https://github.com/rhovision-org/rholo/issues/150).
 
 **And what the economy actually suffers from, which none of the three touches.** The honest loser above is
 a validator with a *small* stake and one key, whose expected income is neither large nor stable; the
-liveness defects are [#149](https://github.com/rchain-community/rholo/issues/149) and
-[#172](https://github.com/rchain-community/rholo/issues/172); and **absence** is not a
+liveness defects are [#149](https://github.com/rhovision-org/rholo/issues/149) and
+[#172](https://github.com/rhovision-org/rholo/issues/172); and **absence** is not a
 reward-formula question at all. The instrument that prices a validator which stops is an **inactivity
 leak** — a state change that burns a silent validator's stake — and this tree has neither the state nor
 any issue that owns the design (the citations this page and the law register used to carry, #24 and #39,
@@ -424,7 +424,7 @@ intent, so it is a registered finding (C197) rather than a design choice.)
 Any accepted change to any of the above is **hard-fork class**: rewards and slashing are consensus state,
 so a change is a deviation from `Pos.rhox` registered in
 [`spec/audit/passes.md`](../../../spec/audit/passes.md) §6 and classified on
-[#51](https://github.com/rchain-community/rholo/issues/51) category A.
+[#51](https://github.com/rhovision-org/rholo/issues/51) category A.
 
 ## See also
 

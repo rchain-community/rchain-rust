@@ -2,7 +2,7 @@
 
 The RChain node executes Rholang, a concurrent message-passing language formally modeled by the
 ρ-calculus — a *reflective, higher-order extension of the π-calculus*. The original node was written
-in Scala on the JVM, with a C++ actor VM ([Rosette](https://github.com/rchain-community/rholo/blob/1b7583649/legacy/rosette/)) underneath. This
+in Scala on the JVM, with a C++ actor VM ([Rosette](https://github.com/rhovision-org/rholo/blob/1b7583649/legacy/rosette/)) underneath. This
 repository rewrites it in Rust.
 
 Two reasons drive the rewrite.
@@ -12,8 +12,8 @@ Two reasons drive the rewrite.
 The Scala/JVM node leaked memory and paused for garbage collection. These were not theoretical
 concerns: the node shipped a `diagnostics` service that reported JVM `Memory`, `MemoryPool`, and
 `GarbageCollector` metrics to its operators (see
-[`legacy/docs/rnode-api/index.md`](https://github.com/rchain-community/rholo/blob/1b7583649/legacy/docs/rnode-api/index.md)), and the build needed an
-enlarged heap and thread stack just to run (see [`legacy/DEVELOPER.md`](https://github.com/rchain-community/rholo/blob/1b7583649/legacy/DEVELOPER.md)):
+[`legacy/docs/rnode-api/index.md`](https://github.com/rhovision-org/rholo/blob/1b7583649/legacy/docs/rnode-api/index.md)), and the build needed an
+enlarged heap and thread stack just to run (see [`legacy/DEVELOPER.md`](https://github.com/rhovision-org/rholo/blob/1b7583649/legacy/DEVELOPER.md)):
 
 ```sh
 export SBT_OPTS="-Xmx4g -Xss2m -Dsbt.supershell=false"
@@ -147,7 +147,7 @@ intuition; `spec/` is its machine-checked realization.
 
 - Meredith & Radestock, *A Reflective Higher-Order Calculus* (2005) — the ρ-calculus.
 - Meredith, *Higher Category Models of the π-Calculus* — the categorical semantics.
-- The in-repo Rholang reference ([`legacy/rholang/reference_doc/`](https://github.com/rchain-community/rholo/blob/1b7583649/legacy/rholang/reference_doc/))
+- The in-repo Rholang reference ([`legacy/rholang/reference_doc/`](https://github.com/rhovision-org/rholo/blob/1b7583649/legacy/rholang/reference_doc/))
   documents the tuplespace model, quoting of processes into names, normalization (de Bruijn
   α-equivalence and the canonical `|` sort), and the ρ/λ/π relationship.
 

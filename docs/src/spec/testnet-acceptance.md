@@ -52,7 +52,7 @@
 
 ## 0.1 The three criteria
 
-This page exists because of issue [#214](https://github.com/rchain-community/rholo/issues/214)
+This page exists because of issue [#214](https://github.com/rhovision-org/rholo/issues/214)
 (*Testnet viability: the three acceptance criteria, as falsifiers*, 2026-10-03), which observed that the
 three requirements deciding whether this net is worth anyone's trust were carried implicitly, by closed
 issues — and so had **no owner, no measurement and no falsifier**.
@@ -68,13 +68,13 @@ issues — and so had **no owner, no measurement and no falsifier**.
 | Criterion | Verdict | Basis |
 |---|---|---|
 | 1 — bounded production | ✅ **on A1.1, A1.2, A1.4, A1.5 · ❌ on A1.3** | re-verified by this pass on `07af032ad` (§3.1): six deploys addressed to a **single** validator now finalise (R1 24, R2 23, R3 23), where the pre-fix tree gave `none` reproducibly. The contradiction this page raised is **closed**: the N=3 pass does reproduce once the guard reads the seen view. **A1.2 (N=5) now passes and A1.3 (N=8) fails**, both measured 2026-10-07 on `bbabc39e8` — the N=5 deploy finalises in 5–6 s while the N=8 chain reaches 112–120 blocks across all eight validators and never finalises, "supporting stake is not a supermajority — 400 of 800". The residual §3.1 used to count here — arms leaving their sixth deploy short, **2 of 3** on `07af032ad`, **0 of 3** on jimscarver's `f1ca009`, **1 of 3** on `513e2192b` — is **not a race and not a loss**: §3.1's own C246 correction read all twelve arms of four runs and found a quiet chain's greatest `finalized` is `tip − 4`, frozen, so a deploy finalises iff production ran at least four heights past it and the spread is **slack, not the node**. A1.5's wording was the thing that failed, and it is **restated and closed** (§3.1, 2026-10-11). Recorded in §3.1 and on #213 |
-| 2 — join and leave | **5 of 5 pass; A2.2 on the live testnet** | re-verified by this pass on `07af032ad` (§3.2): a deploy submitted **after** the kill finalises (block 14 at a tip of 13); the killed validator's restart resumes it with `start` as the only action (block 18); a deploy accepted **while the validator was absent** is included *and* finalised (block 14); a new validator **bonds onto a running net** and produces (`n220-join-results.md`); and the **leave path completes and pays out** on a rig — vault `99998098` → `99998964` after the quarantine deadline (`n220-leave-results.md`, A2.5). **A2.2 passes on the live testnet** at `777953de6`: after a plain `start` the rejoiner is level with the tip within 15 s, proposes when deployed to, and its blocks finalise ([#223](https://github.com/rchain-community/rholo/issues/223)) |
+| 2 — join and leave | **5 of 5 pass; A2.2 on the live testnet** | re-verified by this pass on `07af032ad` (§3.2): a deploy submitted **after** the kill finalises (block 14 at a tip of 13); the killed validator's restart resumes it with `start` as the only action (block 18); a deploy accepted **while the validator was absent** is included *and* finalised (block 14); a new validator **bonds onto a running net** and produces (`n220-join-results.md`); and the **leave path completes and pays out** on a rig — vault `99998098` → `99998964` after the quarantine deadline (`n220-leave-results.md`, A2.5). **A2.2 passes on the live testnet** at `777953de6`: after a plain `start` the rejoiner is level with the tip within 15 s, proposes when deployed to, and its blocks finalise ([#223](https://github.com/rhovision-org/rholo/issues/223)) |
 | 3 — attack vectors | ⬛ **not a pass/fail item** | every cell in §3.C3 reads `absent` against a bounded-adversary statement that does not exist. The section cannot go green by construction |
 
 > **Handover, 2026-10-04.** The maintainer has taken the decision: **the testnet goes up as it stands**, and
 > it becomes the measurement platform. The three issues that owned this work — **#214** (this page),
 > **#213** and **#223** — are **closed**, and everything still open or unmeasured is collected in one
-> place: **[#242](https://github.com/rchain-community/rholo/issues/242), *Testnet residuals***.
+> place: **[#242](https://github.com/rhovision-org/rholo/issues/242), *Testnet residuals***.
 > **This page is unchanged and remains the reference** for the criteria, the worksheet, the bow-ties, the
 > checklist and the register; #242 is the live list of what to measure next.
 >
@@ -1993,13 +1993,13 @@ before/after pair and §3.5 for the cause.
 
 > **§3.2 — 5 ✅ · 0 ❌ · 0 ⬜.** A2.1, A2.3, A2.4 and A2.5 pass, and **A2.2 passes on the live testnet**:
 > the rejoin failure found at `49337ee92` was fixed in `7d5c22a9c` and re-run on the testnet at `777953de6`
-> ([#223](https://github.com/rchain-community/rholo/issues/223)); see the note below. A2.5's ✅ is a
+> ([#223](https://github.com/rhovision-org/rholo/issues/223)); see the note below. A2.5's ✅ is a
 > **rig** result too, and the page keeps that distinction rather than blurring it: see its note.
 
 | ID | Claim (as a falsifier) | Falsifier | Configuration | Run | Tree | Instrument | Witness | Status | CH |
 |---|---|---|---|---|---|---|---|---|---|
 | A2.1 | kill one of three at 100/100/50 on a live net; **the survivors finalise past the kill** | the survivors stop producing, or produce but stop finalising | 3 validators 100/100/50, and **the 50-stake validator is the one killed** — killing a 100-stake validator leaves 150 of 250 = 60 %, which is not `> ⅔`, so finality stopping there is the quorum and not a defect; node argv `--propose-on-deploy --attest-on-new-blocks`, `--autopropose` absent; `--epoch-length 10` | `spec/audit/evidence/n213-blocks/07af032ad-20261004T083816Z/` | `07af032ad` | the deploy's own block found by the union, plus `last-finalized-block` and `is-finalized` | **the block carrying a deploy submitted after the kill finalises** — block 14 at a tip of 13, finality 14 | ✅ **pass** | — |
-| A2.2 | the killed validator **restarts and rejoins**; production and finality resume with **no operator action** | they do not resume | as A2.1 | live testnet, 2026-10-04 — transcript in [#223](https://github.com/rchain-community/rholo/issues/223#issuecomment-5980123339) | `777953de6` (fix `7d5c22a9c`) | `last-finalized-block` per node, the rejoiner's own `proposed and added block` lines, and its `missing justification` count | killed at h=45 (f=41); survivors reached **h=79, f=75**; after a plain `start` the rejoiner was **level with the tip within 15 s**, then **proposed blocks #92–#94** when deployed to, with finality trailing at 4 and **zero `missing justification`** errors | ✅ **pass on a live net** | C211 |
+| A2.2 | the killed validator **restarts and rejoins**; production and finality resume with **no operator action** | they do not resume | as A2.1 | live testnet, 2026-10-04 — transcript in [#223](https://github.com/rhovision-org/rholo/issues/223#issuecomment-5980123339) | `777953de6` (fix `7d5c22a9c`) | `last-finalized-block` per node, the rejoiner's own `proposed and added block` lines, and its `missing justification` count | killed at h=45 (f=41); survivors reached **h=79, f=75**; after a plain `start` the rejoiner was **level with the tip within 15 s**, then **proposed blocks #92–#94** when deployed to, with finality trailing at 4 and **zero `missing justification`** errors | ✅ **pass on a live net** | C211 |
 | A2.3 | a deploy **accepted while the validator is absent** is included once the survivors can finalise | the deploy pool cannot be drained | as A2.1 | `spec/audit/evidence/n213-blocks/07af032ad-20261004T083816Z/` | `07af032ad` | as A2.1 | the deploy sent while `validator-2` was stopped is **included and its block finalises** (block 14) | ✅ **pass** | — |
 | A2.4 | a **new validator bonds onto a running net** and produces | the bond never takes effect, or the new validator never proposes | a 4th validator is admitted, funded with `trust`, then `bond`s against the live net | `spec/audit/evidence/n220-join-results.md` | `9a75d45` (author's run; **read, not re-run** by this pass) | `rho:pos` bond state + the newcomer's producer key + the deploy's `is-finalized` | the bond lands in a boundary block, the newcomer produces, and its deploy's block finalises | ✅ **pass** (healthy joiner — see the caveat below) | CH-ACC-06 |
 | A2.5 | a validator can **leave safely**: `withdraw` → epoch boundary → quarantine → payout | stake is stuck, or the payout never lands | 3 validators 100/100/50, `--epoch-length 10 --quarantine-length 20` | `spec/audit/evidence/n220-leave-results.md` | `a077a87e4` | the active set (`/api/v1/pos` `activeValidators`) **and the withdrawing validator's vault**, each read with the block its datum was produced in, and each probe recording its own deploy's status | the withdrawal stages (`deadline=30 blocks_remaining=20`), the boundary deactivates it (**active 3 → 2**), the entry clears, and **the payout lands: vault `99998098` → `99998964`, +866, blocks 13 → 34** | ✅ **pass** (a rig run — see the note) | CH-U6-09 |
@@ -2048,7 +2048,7 @@ which is #223's question and is measured there. See `n220-silent-join-results.md
 > `h=48` — with exactly two `block summary failed: missing justification` errors and no recovery.
 > **A rig pass is not what the row claims**, which is the distinction this page has applied to everyone
 > else's evidence and had not applied to its own. See
-> [#223](https://github.com/rchain-community/rholo/issues/223); the chain-level consequences are
+> [#223](https://github.com/rhovision-org/rholo/issues/223); the chain-level consequences are
 > nil — a rejoin **liveness** failure, not a safety one. **A2.4's ✅ is a rig result too** and the live run
 > did not reach it; that is recorded as provenance, not as a doubt, because nothing has falsified it.
 >
@@ -2058,7 +2058,7 @@ which is #223's question and is measured there. See `n220-silent-join-results.md
 > `start` the returner was **level with the tip within 15 s**, where the unfixed build had stayed 13 blocks
 > behind indefinitely; it then **proposed blocks #92–#94** when deploys were addressed to it, finality
 > trailing at 4, with **zero `missing justification`** errors
-> ([transcript](https://github.com/rchain-community/rholo/issues/223#issuecomment-5980123339)). The
+> ([transcript](https://github.com/rhovision-org/rholo/issues/223#issuecomment-5980123339)). The
 > testnet was then rebuilt as four equal validators of 250, and stopping **A** (the genesis master) there
 > left the other three finalising (f 65 → 90 while the height ran 69 → 94); A rejoined to the tip in under
 > 20 s (`docs/src/node/testnet.md`). The distinction this note draws still holds: the ✅ is a live-net ✅,

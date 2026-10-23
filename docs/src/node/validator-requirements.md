@@ -89,7 +89,7 @@ blocks are already in the DAG. Three measured points, and they do not lie on a l
 |---|---|
 | 131 produced blocks (the table above) | ~0.02 MB |
 | 100–300 blocks, fresh devnet, 2026-09-28 (`tools/devnet-bench.py`) | 0.16–0.23 MB |
-| **3 200 blocks** ([#68](https://github.com/rchain-community/rholo/issues/68)) | **~1.8 GB peak, ~17 minutes before the API opens** — *pre-`b37410b2e`, and **unreproduced** on this lineage; see below* |
+| **3 200 blocks** ([#68](https://github.com/rhovision-org/rholo/issues/68)) | **~1.8 GB peak, ~17 minutes before the API opens** — *pre-`b37410b2e`, and **unreproduced** on this lineage; see below* |
 
 **Correction, 2026-09-29: the third row is an upper bound, not a measurement of the current build.**
 There were **two** Θ(N²) terms in the start-up path and one of them is gone: the metadata-index rebuild
@@ -131,7 +131,7 @@ serving — but **readiness is still only implicit**: the API binds after replay
 connection-refused, which is indistinguishable from a crash. Bounding the rebuild is tracked as #68; the
 start-up cost is otherwise unbounded and this section is the only place it is written down.
 
-Tracked as [#60](https://github.com/rchain-community/rholo/issues/60), which carries a
+Tracked as [#60](https://github.com/rhovision-org/rholo/issues/60), which carries a
 self-contained reproduction (a memory-capped `systemd-run` unit) and separates what is measured from what
 is still unattributed.
 
@@ -140,7 +140,7 @@ is still unattributed.
 glibc gives each thread its own malloc **arena**, and an arena keeps the high-water mark of what it has
 held; it is not returned to the OS. A node under fork load spreads allocation across its worker threads,
 so what the process retains is the *sum* of the per-thread peaks rather than any one peak. Measured on a
-3-validator devnet ([#117](https://github.com/rchain-community/rholo/issues/117)), the anonymous
+3-validator devnet ([#117](https://github.com/rhovision-org/rholo/issues/117)), the anonymous
 regions are **29 of exactly 32 MiB** — the worker **stacks** (`thread_stack_size(32 MiB)`), holding
 5.7 MiB of RSS between them — and **11 of exactly 64 MiB**, which *are* the arena heaps, while the main
 `[heap]` sat at 1.9 MiB and file-backed RSS at 26.8 MiB.

@@ -3,7 +3,7 @@
 The node ships a set of **blessed contracts** — the genesis contracts that bootstrap the chain's
 state — and they are the best demonstration of everything in this part of the book. Each one is built
 out of unforgeable names, quoting, matching, and the capability patterns of the previous chapter. The
-source is under [`legacy/casper/src/main/resources/`](https://github.com/rchain-community/rholo/blob/1b7583649/legacy/casper/src/main/resources/).
+source is under [`legacy/casper/src/main/resources/`](https://github.com/rhovision-org/rholo/blob/1b7583649/legacy/casper/src/main/resources/).
 
 ## The name registry
 

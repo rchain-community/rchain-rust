@@ -70,6 +70,6 @@ quantum-os demo, using the `rho:qucalc:*` / `rho:gov:*` system processes:
 ## Source of intent
 
 The port replaces rgov's `rholang/core` contracts rather than running them
-verbatim: [rchain-community/rgov — rholang/core](https://github.com/rchain-community/rgov/tree/master/rholang/core)
+verbatim: [rhovision-org/rgov — rholang/core](https://github.com/rhovision-org/rgov/tree/master/rholang/core)
 (`Group.rho`, `Issue.rho`, `Ballot.rho`, `Directory.rho`, `Inbox.rho`,
 `Chat.rho`, `Kudos.rho`, `RevIssuer.rho`, `CrowdFund.rho`, `memberIdGovRev.rho`).

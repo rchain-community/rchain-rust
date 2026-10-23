@@ -38,7 +38,7 @@ modules. Everything under that tier is the remainder, and the remainder is most 
 | `law` | 0 / 60 | the law register's rows — closed |
 
 Two `file` rows moved from `deferred` to `exempt` on 2026-09-28 (the ZFA prototypes deleted under
-[#38](https://github.com/rchain-community/rholo/issues/38)), which is why the file tile reads
+[#38](https://github.com/rhovision-org/rholo/issues/38)), which is why the file tile reads
 306 and not the 308 an earlier count carried. Four crates carry **no verdict at all** — `block-storage`
 (14 rows), `sdk` (10), `qucalc` (2), `graphz` (1) — and RSpace, the largest, carries 8 verdicts of 57.
 
@@ -55,7 +55,7 @@ the tree has taken it one roster too far. Nothing here is a rounding.
 deferred (a `StateChange` merger and an event-log merger among them), as are ten of the fifteen under
 `rspace/src/history/*`. The merge is where the consensus laws (9, 19, 20, 21) are stated, and where the
 chain-halting duplicate-action panic of
-[#83](https://github.com/rchain-community/rholo/issues/83) is assembled. Then
+[#83](https://github.com/rhovision-org/rholo/issues/83) is assembled. Then
 `block-storage/src/dag/*`, where **all eight** rows are deferred — `finalizer.rs`, `representation.rs`
 and `message_state.rs` among them, the fringe and finality machinery. The order follows consequence,
 and it is corroborated rather than asserted: the one open defect that halts a chain points into the
@@ -67,7 +67,7 @@ found C166 in it the same day, in a defect its own doc comment warned about six 
 files should be read the way that pass's other nineteen reads were *not*: with a second reader, or a
 probe, before a `cleared` verdict is written.
 
-**The process and config rows are not reading jobs — the decision [#94](https://github.com/rchain-community/rholo/issues/94) asks for.**
+**The process and config rows are not reading jobs — the decision [#94](https://github.com/rhovision-org/rholo/issues/94) asks for.**
 
 - A `process` row is an installed URN, not a file. What reaches a deploy is its **wire protocol** —
   arity and reply shape — which is what `spec/conformance/protocol.tsv` holds, and

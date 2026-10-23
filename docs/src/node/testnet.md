@@ -1,6 +1,6 @@
 # The public testnet — `testnet.rhobot.net`
 
-A small public RChain testnet running this codebase, used by the [r-wallet](https://rchain-community.github.io/r-wallet) and the [quantum-os](https://github.com/rchain-community/quantum-os/blob/main/README.md) room agents. **Four bonded validators at equal stake, two per host** — A and D on the first, B and C on the
+A small public RChain testnet running this codebase, used by the [r-wallet](https://rhovision-org.github.io/r-wallet) and the [quantum-os](https://github.com/rhovision-org/quantum-os/blob/main/README.md) room agents. **Four bonded validators at equal stake, two per host** — A and D on the first, B and C on the
 second — funded dev wallets, and an **idle** chain that produces a block only when a deploy arrives.
 
 The **generalised** procedure — standing up a testnet of your own, from the stake split to a rebuild —
@@ -11,7 +11,7 @@ hosts, the genesis, the wallets.
 > A brand-new key can be funded, deploy, be trusted and bond into the pool. **Losing one validator is
 > survivable** — the other three keep finalising at 75 %; losing two leaves 50 %, which is not a quorum
 > under the strict supermajority rule, so finality stops until one returns
-> ([#214](https://github.com/rchain-community/rholo/issues/214)). `/api/status`, `/api/explore-deploy`, `getBonds`,
+> ([#214](https://github.com/rhovision-org/rholo/issues/214)). `/api/status`, `/api/explore-deploy`, `getBonds`,
 > `getActiveValidators`, `/health`, and `rnode deploy` all work — a CLI deploy needs a **funded** key, or
 > it is accepted and mined and then reports `processedWithError` for phlo. The chain is deliberately
 > **idle** (no `--autopropose`): blocks appear when a deploy arrives. A continuously-producing chain
@@ -78,7 +78,7 @@ Two entries in that list are easy to confuse, and they are different chains:
 
 Until 2026-09-22 the wallet's only "testnet" entry pointed at the playground, so picking it put you on
 the wrong chain, with a dead faucet link; that is fixed in
-[rchain-wallet#12](https://github.com/rchain-community/rchain-wallet/pull/12).
+[rchain-wallet#12](https://github.com/rhovision-org/rchain-wallet/pull/12).
 
 Two practical notes:
 
@@ -131,7 +131,7 @@ error); and a drip is only visible in a **finalised** block, so read the recipie
 `/api/last-finalized-block` has passed the drip's `blockNumber`. The endpoint is also rate-limited —
 two quick requests earn `HTTP 429 "faucet rate limit exceeded"`.
 **This net's faucet was off until 2026-10-06, and this table said so**; it is on now, signed by a key whose
-vault holds REV ([#247](https://github.com/rchain-community/rholo/issues/247) is the story of the one
+vault holds REV ([#247](https://github.com/rhovision-org/rholo/issues/247) is the story of the one
 that was not). This row describes the currently deployed ten-drips-per-process policy; #246 changes
 eligibility to require the recipient's finalized balance to remain below one drip.
 
@@ -219,12 +219,12 @@ our hosts, keys, genesis and health checks.
 | [Running a public testnet](running-a-public-testnet.md) | the generalised procedure: stake split, genesis ceremony, joining, admitting a validator to a running chain, monitoring, sizing, rebuilds, and the port map |
 | [Operating the node](operating.md#deploying-and-block-production) | `--shard-id`, the deploy-anchor rule, reading a term's return value, the block production modes, finality and withdraw behaviour |
 | [Running a validator: hardware requirements](validator-requirements.md) | host sizing, including the start-up replay floor () |
-| [#60](https://github.com/rchain-community/rholo/issues/60) / [#68](https://github.com/rchain-community/rholo/issues/68) | the start-up replay: measurements, reproductions, and what is still unattributed |
-| [#39](https://github.com/rchain-community/rholo/issues/39) | the validator lifecycle; this net's verified transcript is posted there |
+| [#60](https://github.com/rhovision-org/rholo/issues/60) / [#68](https://github.com/rhovision-org/rholo/issues/68) | the start-up replay: measurements, reproductions, and what is still unattributed |
+| [#39](https://github.com/rhovision-org/rholo/issues/39) | the validator lifecycle; this net's verified transcript is posted there |
 
 The deploy-anchor fix () reached `dev` as
-[#58](https://github.com/rchain-community/rholo/pull/58), and the node docs above came in as
-[#61](https://github.com/rchain-community/rholo/pull/61).
+[#58](https://github.com/rhovision-org/rholo/pull/58), and the node docs above came in as
+[#61](https://github.com/rhovision-org/rholo/pull/61).
 
 ## Topology
 
@@ -273,7 +273,7 @@ learned by breaking it; the host lesson is the third item.
 
 **Every bonded validator proposes; what looks like one proposer is routing.** Every node runs
 `--propose-on-deploy --attest-on-new-blocks`, so any validator that receives a deploy proposes — and
-since [#219](https://github.com/rchain-community/rholo/pull/219) (C209, 2026-10-04) a deploy
+since [#219](https://github.com/rhovision-org/rholo/pull/219) (C209, 2026-10-04) a deploy
 addressed to **any one** of them finalises: the acceptance run sent every deploy to a single validator,
 one arm per validator, and all three finalised. The public hostname proxies to node A's `40403`, so an
 HTTP-only client reaches A. The three **gRPC deploy ports are open, and each one is a valid way in**:
@@ -306,7 +306,7 @@ the others are arithmetic on the same numbers, and are labelled as such.
 
 | what failed | what happens | action |
 |---|---|---|
-| **any one** validator | **nothing** — the survivors hold 750 of 1000 = 75 % and keep finalising. Measured by stopping A: deploys went to the other three and finality advanced, then A rejoined to the tip in under 20 s | `systemctl start rnode` (or `rnode-d`, `rnode-c`) on the host that holds it. A returning validator is level with the tip in seconds; that rejoin path was broken until [#223](https://github.com/rchain-community/rholo/issues/223) |
+| **any one** validator | **nothing** — the survivors hold 750 of 1000 = 75 % and keep finalising. Measured by stopping A: deploys went to the other three and finality advanced, then A rejoined to the tip in under 20 s | `systemctl start rnode` (or `rnode-d`, `rnode-c`) on the host that holds it. A returning validator is level with the tip in seconds; that rejoin path was broken until [#223](https://github.com/rhovision-org/rholo/issues/223) |
 | **two** validators (50 %) | *arithmetic, not yet run:* 500 of 1000 is not `> ⅔`, so the fringe cannot advance however many blocks are produced | **one** of the two coming back restores 75 % and the chain finalises again. Nothing is lost while they are away: the state is on disk, and the pool still counts their stake |
 | **all four** | production stops; every node's state sits unchanged on disk | stop and start all four: each replays its own store and the chain resumes with no loss (this exact restart was measured on the previous shape on 2026-10-04: h 59 → 78, finality 53 → 72 after all nodes were restarted) |
 | a validator's **key or host** permanently | as above, while its stake still sits in the pool | restore that validator's `validator.key` and data directory, or its host from the provider's backup. Because no stake exceeds a quarter, **no single loss is fatal** — but two simultaneous permanent losses are, since 50 % can never reach a quorum |
@@ -362,7 +362,7 @@ stating what it does and does not do, because **it is not a sync**.
   The proof scans a bounded window of heights around the deepest attested block and says which, so the absence
   of a proof is read as a bound rather than a clean bill of health. A validator that is merely quiet, slow or
   absent keeps its weight: silence is not evidence. The on-chain slash is still the node's
-  ([#290](https://github.com/rchain-community/rholo/issues/290)'s part 1).
+  ([#290](https://github.com/rhovision-org/rholo/issues/290)'s part 1).
 - **What it does not do.** It does not repair the discarded heads' deploys: they are enumerated **one record
   per unique block** — the block's own hash, the endpoints that served it, its accepted deploy count, and the
   **signatures of the deploys its merge rejected** (`rejectedDeploys`, base16; a deploy's id *is* its
@@ -395,9 +395,9 @@ stating what it does and does not do, because **it is not a sync**.
 
 What this shape gives up is nothing structural: with no stake above a quarter, the tolerance is
 symmetric — the property a validator set needs before the *join and leave* questions can be answered on
-it. [#214](https://github.com/rchain-community/rholo/issues/214) closed on 2026-10-04; the
+it. [#214](https://github.com/rhovision-org/rholo/issues/214) closed on 2026-10-04; the
 residual join/leave work is
-[#242](https://github.com/rchain-community/rholo/issues/242).
+[#242](https://github.com/rhovision-org/rholo/issues/242).
 
 ## Genesis
 
@@ -431,7 +431,7 @@ so the same bond set no longer gives the same block.
 blessed contract set and the governance deploys are genesis *state*, so a change to any of them moves the
 hash exactly as a bond change does — and unlike a bond change, nothing about it is obvious to a node
 operator. #71's fix is the worked example: publishing the master directory's grant capability (see
-[`spec/GENESIS.md`](https://github.com/rchain-community/rholo/blob/dev/spec/GENESIS.md)) adds a
+[`spec/GENESIS.md`](https://github.com/rhovision-org/rholo/blob/dev/spec/GENESIS.md)) adds a
 registered capability and a native registry entry, so **every chain built from that commit onward has a
 different genesis hash, and the `e525129d…`/`6a6db0db…` hashes above name chains built before it.** An existing net is
 untouched — its genesis is already committed history — but a rebuilt data directory is a *different*
@@ -471,7 +471,7 @@ the `deployer` key is **not** among them, and its vault reads `0`.
 | key | role on this net |
 |---|---|
 | `dave` (`7707a3e0…`) | **the faucet's signing key** — funded, supplied through `/etc/rnode/faucet.env` — and the trusted key seeded by `--pos-multi-sig-public-keys`, so it is the key that can `trust` newcomers |
-| `deployer` (`3554e876…`) | **not funded on this genesis.** This page used to call it the faucet's key; drips signed with it failed the phlo pre-charge while the endpoint still answered success — root cause and fixes in [#247](https://github.com/rchain-community/rholo/issues/247) |
+| `deployer` (`3554e876…`) | **not funded on this genesis.** This page used to call it the faucet's key; drips signed with it failed the phlo pre-charge while the endpoint still answered success — root cause and fixes in [#247](https://github.com/rhovision-org/rholo/issues/247) |
 | the developer keys in `scripts/localnet/pk.txt` | funded accounts for tooling; not part of the net's operation |
 
 Throwaway development keys, published on purpose. Never use them for anything real. Users are not sent
@@ -689,12 +689,12 @@ Two easy-to-miss details:
 | Last verified on this chain | 2026-10-06 — rebuilt onto one build, genesis reproduced, producing and finalising, faucet delivering, bond map 4 × 250 |
 
 The measurements behind each row, the blockers that were fixed to make them true, and the regressions
-found along the way live in the tracker, not here: [#39](https://github.com/rchain-community/rholo/issues/39),
-[#58](https://github.com/rchain-community/rholo/pull/58), [#60](https://github.com/rchain-community/rholo/issues/60),
-[#68](https://github.com/rchain-community/rholo/issues/68), [#70](https://github.com/rchain-community/rholo/issues/70),
-[#105](https://github.com/rchain-community/rholo/issues/105), [#148](https://github.com/rchain-community/rholo/issues/148),
-[#223](https://github.com/rchain-community/rholo/issues/223),
-[#247](https://github.com/rchain-community/rholo/issues/247), and
+found along the way live in the tracker, not here: [#39](https://github.com/rhovision-org/rholo/issues/39),
+[#58](https://github.com/rhovision-org/rholo/pull/58), [#60](https://github.com/rhovision-org/rholo/issues/60),
+[#68](https://github.com/rhovision-org/rholo/issues/68), [#70](https://github.com/rhovision-org/rholo/issues/70),
+[#105](https://github.com/rhovision-org/rholo/issues/105), [#148](https://github.com/rhovision-org/rholo/issues/148),
+[#223](https://github.com/rhovision-org/rholo/issues/223),
+[#247](https://github.com/rhovision-org/rholo/issues/247), and
 [the acceptance specification](../spec/testnet-acceptance.md).
 
 ## Using it from quantum-os
@@ -758,5 +758,5 @@ recovery is a rollback below height 100 or accepting the loss. And it is a **har
 `rejected_deploys` is part of the hashed block body, so any block whose scope held a contended
 boundary hashes differently — the running chain must be rebuilt from genesis to carry it
 (`#51`, category A). The account, the raw readings and the diagnosis:
-[#280](https://github.com/rchain-community/rholo/issues/280) and
+[#280](https://github.com/rhovision-org/rholo/issues/280) and
 `spec/audit/evidence/n280-merge-loses-a-write-results.md`.

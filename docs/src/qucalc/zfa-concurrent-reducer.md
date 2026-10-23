@@ -2,7 +2,7 @@
 
 > **Status: historical.** The two artefacts this page planned were built as a prototype and then
 > **deleted on 2026-09-28** (issue
-> [rchain-community/rholo#38](https://github.com/rchain-community/rholo/issues/38)):
+> [rhovision-org/rholo#38](https://github.com/rhovision-org/rholo/issues/38)):
 > `rholang/src/tree_proc.rs` and `rspace/src/concurrent/zfa_ledger.rs` were each exported by one
 > `pub mod` and referenced by nothing else in the tree, tests included. What they prototyped is
 > **specified and implemented** as Laws 23–25 — see
@@ -16,7 +16,7 @@
 >
 > **Original status line, kept for the record:** this document lived on the
 > `experimental/zfa-concurrent-reducer` branch and tracked issue
-> [rchain-community/rholo#8](https://github.com/rchain-community/rholo/issues/8).
+> [rhovision-org/rholo#8](https://github.com/rhovision-org/rholo/issues/8).
 
 ## 1. Goal
 

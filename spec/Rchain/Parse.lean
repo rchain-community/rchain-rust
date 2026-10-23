@@ -346,7 +346,7 @@ def parseDeviations : List Deviation :=
       [.term "contract", .elem "c", .term "(", .elem "@x", .term ",", .term ")", .term "=",
         .term "{", .elem "Nil", .term "}"],
       "same list rule, at `PContr`'s `[Name]` — and the spelling the vendored contracts use \
-       (`rchain-community/rgov`'s `CrowdFund.rho` ends each parameter with a comma before a comment)",
+       (`rhovision-org/rgov`'s `CrowdFund.rho` ends each parameter with a comma before a comment)",
       "`parser.rs:1502`, AUDIT C31"⟩
   , ⟨"PNew", .accepts,
       [.term "new", .elem "x", .term ",", .term "in", .elem "Nil"],

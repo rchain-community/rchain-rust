@@ -76,7 +76,7 @@ tools/devnet.sh down [-v]                    stop the devnet (+ drop volumes)
 `devnet-validator-2`, and `start` brings the same validator back with its chain, which is the other
 half of the question (a silent validator that returns). It exists because `down` removes the whole
 network and takes no node name, so "kill one validator" had no supported command
-([#70](https://github.com/rchain-community/rholo/issues/70)).
+([#70](https://github.com/rhovision-org/rholo/issues/70)).
 
 **Autopropose and friends are `up` flags, not build flags** — set them per run:
 
@@ -90,7 +90,7 @@ tools/devnet.sh up --validators 1 --no-propose-on-deploy
 **`--no-autopropose` does not make a multi-validator net quiet.** The dummy-`Nil` injector goes away,
 but attestation is still on by default, and each attestation is itself a remote block for the peers,
 which attest in turn: three validators produced **126 blocks in about three minutes** from four deploys
-with autopropose off (2026-09-29, [#70](https://github.com/rchain-community/rholo/issues/70);
+with autopropose off (2026-09-29, [#70](https://github.com/rhovision-org/rholo/issues/70);
 AUDIT C171). On one validator there is nobody to attest to, so the flag does buy quiet there.
 
 `--admin` (default on) publishes the admin HTTP port `40405`, which exposes only `POST /api/v1/propose`
@@ -154,11 +154,11 @@ inputs simplified (theory in [Consensus (Casper)](consensus.md)):
   not resume finality (finality stayed at 8 while the height ran to 126). The partition is now the
   **live weight set** (`block-storage/src/dag/liveness.rs`) while the quorum stays the whole bonded set,
   so the survivors can finalise and a minority still cannot
-  ([#70](https://github.com/rchain-community/rholo/issues/70)).
+  ([#70](https://github.com/rhovision-org/rholo/issues/70)).
 - **A joiner can stall permanently on `missing justification`.** A block can be in the DAG's in-memory
   index before the store that index is built from holds it, so it is queued for validation, fails to
   resolve a justification, and is dropped with nothing to re-queue it; only a restart recovers.
-  [#103](https://github.com/rchain-community/rholo/issues/103), observed on this devnet.
+  [#103](https://github.com/rhovision-org/rholo/issues/103), observed on this devnet.
 - **Dummy `Nil` deploys** stand in for real user traffic, and **autopropose is a tight loop** (no
   backoff), so the block rate is unbounded rather than a production cadence.
 - **Single shard** (`root`); **no Byzantine behavior** (all validators honest — the slash path exists

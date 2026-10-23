@@ -8,7 +8,7 @@
 speeds are order-of-magnitude figures from the published parameter sets and common benchmarks; re-measure
 on the node's own hardware before fixing any budget.*
 
-**Tracking issue:** [rchain-community/rholo#274](https://github.com/rchain-community/rholo/issues/274)
+**Tracking issue:** [rhovision-org/rholo#274](https://github.com/rhovision-org/rholo/issues/274)
 (work items and owner; this document holds the alternatives).
 
 ---

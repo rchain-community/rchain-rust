@@ -29,7 +29,7 @@ its Rust realization. These pages point at those rather than restating them.
   and Rust types is `spec/INVENTORY.md`. These pages exist to be read by a person.
 - **Two relations run through all of it.** The **corpus** (`spec/conformance/*.tsv`, emitted from the
   Lean definitions and read back from the node by a Rust consumer) is what ties a model to the code; and
-  the **gate** ([`tools/check-lean-conformance.sh`](https://github.com/rchain-community/rholo/blob/dev/tools/check-lean-conformance.sh))
+  the **gate** ([`tools/check-lean-conformance.sh`](https://github.com/rhovision-org/rholo/blob/dev/tools/check-lean-conformance.sh))
   is what refuses a `sorry`, a stale corpus, an unimported module or a corpus with no consumer.
 - **Some rows are deliberately not modelled**, and each says so where it is: the Rosette actor VM is
   orphaned; the grammar, the parser and the printer are modelled as data with a corpus of their own (rows 30, 31, 33), while the normalizer's output has no corpus to be held to (row 36); and the

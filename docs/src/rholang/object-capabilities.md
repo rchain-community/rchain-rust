@@ -105,4 +105,4 @@ make such escape impossible by construction — by never handing out a capabilit
 > they restrict capability structurally, so a bundle name cannot be deconstructed through matching.
 > The sealer/unsealer is the `MakeMint`/brand pattern. See
 > [Grammar and sorts](../formal/grammar-sorts.md) and the blessed contracts in
-> [`legacy/casper/src/main/resources/`](https://github.com/rchain-community/rholo/blob/1b7583649/legacy/casper/src/main/resources/).
+> [`legacy/casper/src/main/resources/`](https://github.com/rhovision-org/rholo/blob/1b7583649/legacy/casper/src/main/resources/).

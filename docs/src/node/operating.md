@@ -228,7 +228,7 @@ Deploys reach a node through the **external gRPC** port (40401 by default) or `P
   `deploy-status` answers `notProcessed / Unknown`, and the proposer logs
   `No pooled deploys; injecting dummy deploy for block #NNN`. Pass
   `--valid-after-block-number <current height>` on a binary that predates
-  [#58](https://github.com/rchain-community/rholo/pull/58), which makes the CLI resolve the anchor
+  [#58](https://github.com/rhovision-org/rholo/pull/58), which makes the CLI resolve the anchor
   from the node's own height the way the faucet, the browser client and `txn_coordinator` already do.
   Short chains hide this: below the lifespan, `-1` is not yet "expired".
 

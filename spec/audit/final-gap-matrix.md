@@ -6,7 +6,7 @@ The machine-readable final-gap-matrix.json enumerates all 42 tracker/batch/relea
 
 The section6-gap-inventory.json inventory covers all 90 §6 rows, including C334, the revised Decimal decision, the activation schedule, committed bounds, fundPot and C335. 43 rows are conservative category-A candidates. Source-row hashes, line locations and source links are checked against the pinned register. Classification and source coverage do not establish historical replay or independent sign-off.
 
-The [2026-10-21 close-clause decision](https://github.com/rchain-community/rholo/issues/51#issuecomment-6316299117) accepts a named decision owner and one-line reason without a release name. The [maintainer's recorded owner decisions](https://github.com/rchain-community/rholo/issues/51#issuecomment-6317072399) supply 12 deferral records (11 distinct proposal rows, including the staking-interface cross-reference). Landed implementation and outstanding release evidence remain distinct.
+The [2026-10-21 close-clause decision](https://github.com/rhovision-org/rholo/issues/51#issuecomment-6316299117) accepts a named decision owner and one-line reason without a release name. The [maintainer's recorded owner decisions](https://github.com/rhovision-org/rholo/issues/51#issuecomment-6317072399) supply 12 deferral records (11 distinct proposal rows, including the staking-interface cross-reference). Landed implementation and outstanding release evidence remain distinct.
 
 | Obligation | Classification | Exact invariant / path | Acceptance |
 |---|---|---|---|

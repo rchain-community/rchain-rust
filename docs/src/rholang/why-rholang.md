@@ -81,4 +81,4 @@ stated precisely — as grammar and as law — and mapped to its machine-checked
 > **Lineage.** The ρ-calculus is Meredith & Radestock, *A Reflective Higher-Order Calculus* (2005);
 > its categorical semantics is Meredith, *Higher Category Models of the π-Calculus*. The executable
 > reference semantics of rholang are the K-framework rules under
-> [`legacy/rholang/src/main/k/rholang/`](https://github.com/rchain-community/rholo/blob/1b7583649/legacy/rholang/src/main/k/rholang/).
+> [`legacy/rholang/src/main/k/rholang/`](https://github.com/rhovision-org/rholo/blob/1b7583649/legacy/rholang/src/main/k/rholang/).

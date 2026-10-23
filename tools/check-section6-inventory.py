@@ -55,7 +55,7 @@ def validate(document, inventory, matrix, ledger):
             raise ValueError("authored source evidence changed")
         if type(row.get("source_line")) is not int or row["source_line"] != source_lines[raw]:
             raise ValueError("source row line changed")
-        expected_url = ("https://github.com/rchain-community/rholo/blob/"
+        expected_url = ("https://github.com/rhovision-org/rholo/blob/"
                         + ledger["source_dev_sha"] + "/spec/audit/passes.md")
         if row.get("existing_evidence", {}).get("url") != expected_url:
             raise ValueError("source evidence URL is not pinned to the ledger commit")

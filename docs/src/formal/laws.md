@@ -123,7 +123,7 @@ caveat — is [Cross-shard transactions: two-phase commit](cross-shard-transacti
 Fourteen rows, `spec/INVENTORY.md` 30–43, covering the grammar, the normalizer, the matcher's patterns,
 the reply shapes and the JSON. They close the same way the calculus rows do — a Lean declaration, a
 corpus emitted from it, a Rust consumer held to the same cases — with one addition that matters: the
-gate ([`tools/check-lean-conformance.sh`](https://github.com/rchain-community/rholo/blob/dev/tools/check-lean-conformance.sh))
+gate ([`tools/check-lean-conformance.sh`](https://github.com/rhovision-org/rholo/blob/dev/tools/check-lean-conformance.sh))
 refuses a stale corpus, an unimported module, a `sorry`, and a corpus with no consumer, so a law that
 stops holding is noticed by a machine rather than by a user.
 

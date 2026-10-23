@@ -27,7 +27,7 @@ remaining work (folded from [`AGENTS.md`](../../../AGENTS.md) and the project
 ## Module status
 
 Ported in dependency-respecting order (easiest/leaf modules first). Each crate mirrors one upstream
-Scala module (now under [`legacy/`](https://github.com/rchain-community/rholo/blob/1b7583649/legacy/)):
+Scala module (now under [`legacy/`](https://github.com/rhovision-org/rholo/blob/1b7583649/legacy/)):
 
 | Crate | Status |
 |-------|--------|

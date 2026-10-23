@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "tracker": "https://github.com/rchain-community/rholo/issues/51",
+  "tracker": "https://github.com/rhovision-org/rholo/issues/51",
   "source_dev_sha": "93dbdf364f14d728a27455b4e05282eace2e3c47",
   "observed_date": "2026-10-21",
   "closure_requested": false,
@@ -141,7 +141,7 @@
       ],
       "reason": "Economics decision; ties to #371/#388 and the #372 RFC.",
       "approved_by": "@jimscarver",
-      "approval_url": "https://github.com/rchain-community/rholo/issues/51#issuecomment-6317072399",
+      "approval_url": "https://github.com/rhovision-org/rholo/issues/51#issuecomment-6317072399",
       "notes": "Maintainer-recorded deferral under the 2026-10-21 close clause; this does not certify implementation or deployment."
     },
     {
@@ -155,7 +155,7 @@
       ],
       "reason": "Economics decision; fundPot (#373) is the rail already in place.",
       "approved_by": "@jimscarver",
-      "approval_url": "https://github.com/rchain-community/rholo/issues/51#issuecomment-6317072399",
+      "approval_url": "https://github.com/rhovision-org/rholo/issues/51#issuecomment-6317072399",
       "notes": "Maintainer-recorded deferral under the 2026-10-21 close clause; this does not certify implementation or deployment."
     },
     {
@@ -168,7 +168,7 @@
       ],
       "reason": "Change to the PoS state machine.",
       "approved_by": "@jimscarver",
-      "approval_url": "https://github.com/rchain-community/rholo/issues/51#issuecomment-6317072399",
+      "approval_url": "https://github.com/rhovision-org/rholo/issues/51#issuecomment-6317072399",
       "notes": "Maintainer-recorded deferral under the 2026-10-21 close clause; this does not certify implementation or deployment."
     },
     {
@@ -182,7 +182,7 @@
       ],
       "reason": "Economics decision; min-phlo-price is already committed at genesis.",
       "approved_by": "@jimscarver",
-      "approval_url": "https://github.com/rchain-community/rholo/issues/51#issuecomment-6317072399",
+      "approval_url": "https://github.com/rhovision-org/rholo/issues/51#issuecomment-6317072399",
       "notes": "Maintainer-recorded deferral under the 2026-10-21 close clause; this does not certify implementation or deployment."
     },
     {
@@ -205,7 +205,7 @@
       ],
       "reason": "Economics decision.",
       "approved_by": "@jimscarver",
-      "approval_url": "https://github.com/rchain-community/rholo/issues/51#issuecomment-6317072399",
+      "approval_url": "https://github.com/rhovision-org/rholo/issues/51#issuecomment-6317072399",
       "notes": "Maintainer-recorded deferral under the 2026-10-21 close clause; this does not certify implementation or deployment."
     },
     {
@@ -218,7 +218,7 @@
       ],
       "reason": "Economics decision.",
       "approved_by": "@jimscarver",
-      "approval_url": "https://github.com/rchain-community/rholo/issues/51#issuecomment-6317072399",
+      "approval_url": "https://github.com/rhovision-org/rholo/issues/51#issuecomment-6317072399",
       "notes": "Maintainer-recorded deferral under the 2026-10-21 close clause; this does not certify implementation or deployment."
     },
     {
@@ -242,7 +242,7 @@
       ],
       "reason": "Changes how bonding and vaults behave.",
       "approved_by": "@jimscarver",
-      "approval_url": "https://github.com/rchain-community/rholo/issues/51#issuecomment-6317072399",
+      "approval_url": "https://github.com/rhovision-org/rholo/issues/51#issuecomment-6317072399",
       "notes": "Maintainer-recorded deferral under the 2026-10-21 close clause; this does not certify implementation or deployment."
     },
     {
@@ -255,7 +255,7 @@
       ],
       "reason": "Changes RevVault semantics.",
       "approved_by": "@jimscarver",
-      "approval_url": "https://github.com/rchain-community/rholo/issues/51#issuecomment-6317072399",
+      "approval_url": "https://github.com/rhovision-org/rholo/issues/51#issuecomment-6317072399",
       "notes": "Maintainer-recorded deferral under the 2026-10-21 close clause; this does not certify implementation or deployment."
     },
     {
@@ -300,7 +300,7 @@
       ],
       "reason": "Changes how bonding and vaults behave.",
       "approved_by": "@jimscarver",
-      "approval_url": "https://github.com/rchain-community/rholo/issues/51#issuecomment-6317072399",
+      "approval_url": "https://github.com/rhovision-org/rholo/issues/51#issuecomment-6317072399",
       "notes": "Maintainer-recorded deferral under the 2026-10-21 close clause; this does not certify implementation or deployment."
     },
     {
@@ -412,7 +412,7 @@
       ],
       "reason": "Author of the C173 and Law 53 audit work.",
       "approved_by": "@jimscarver",
-      "approval_url": "https://github.com/rchain-community/rholo/issues/51#issuecomment-6317072399",
+      "approval_url": "https://github.com/rhovision-org/rholo/issues/51#issuecomment-6317072399",
       "notes": "Maintainer-recorded deferral under the 2026-10-21 close clause; this does not certify implementation or deployment."
     },
     {
@@ -494,7 +494,7 @@
       ],
       "reason": "Author of #127 and its staged plan; this is a block-format change.",
       "approved_by": "@jimscarver",
-      "approval_url": "https://github.com/rchain-community/rholo/issues/51#issuecomment-6317072399",
+      "approval_url": "https://github.com/rhovision-org/rholo/issues/51#issuecomment-6317072399",
       "notes": "Maintainer-recorded deferral under the 2026-10-21 close clause; this does not certify implementation or deployment."
     },
     {
@@ -510,7 +510,7 @@
       ],
       "reason": "Next to the finality and liveness drills (#339/#341).",
       "approved_by": "@jimscarver",
-      "approval_url": "https://github.com/rchain-community/rholo/issues/51#issuecomment-6317072399",
+      "approval_url": "https://github.com/rhovision-org/rholo/issues/51#issuecomment-6317072399",
       "notes": "Maintainer-recorded deferral under the 2026-10-21 close clause; this does not certify implementation or deployment."
     },
     {
@@ -527,6 +527,6 @@
       "blocker": "Jim's deferral of RCHIP #47 does not settle his separately open choice of one developer-allocation PR or the #372 RFC."
     }
   ],
-  "close_clause_evidence": "https://github.com/rchain-community/rholo/issues/51#issuecomment-6316299117",
-  "deferral_decision_evidence": "https://github.com/rchain-community/rholo/issues/51#issuecomment-6317072399"
+  "close_clause_evidence": "https://github.com/rhovision-org/rholo/issues/51#issuecomment-6316299117",
+  "deferral_decision_evidence": "https://github.com/rhovision-org/rholo/issues/51#issuecomment-6317072399"
 }

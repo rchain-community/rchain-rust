@@ -8,7 +8,7 @@ This is the precise statement of the **calculus**: the reflective higher-order Ï
 Part II can refer to it.
 
 **This is not the surface grammar a client writes.** The language a deploy is written in is the BNFC
-grammar [`legacy/rholang/src/main/bnfc/rholang_mercury.cf`](https://github.com/rchain-community/rholo/blob/1b7583649/legacy/rholang/src/main/bnfc/rholang_mercury.cf)
+grammar [`legacy/rholang/src/main/bnfc/rholang_mercury.cf`](https://github.com/rhovision-org/rholo/blob/1b7583649/legacy/rholang/src/main/bnfc/rholang_mercury.cf)
 â€” `contract`, `if`/`else`, `let`, `select`, collections with remainders, method calls, `bundle+/-/0`,
 the lot. The parser's relation to it is the surface rows ([The laws](laws.md)): every term the
 parser accepts is in that grammar, and the surface AST it produces is `Rchain/Surface.lean`. The two

@@ -58,7 +58,7 @@ describes every arm, so a generated client is right by construction.
 ## 2. What the parser now refuses
 
 **The parser here is held to the grammar** — the BNFC file the language is defined by
-([`legacy/rholang/src/main/bnfc/rholang_mercury.cf`](https://github.com/rchain-community/rholo/blob/1b7583649/legacy/rholang/src/main/bnfc/rholang_mercury.cf))
+([`legacy/rholang/src/main/bnfc/rholang_mercury.cf`](https://github.com/rhovision-org/rholo/blob/1b7583649/legacy/rholang/src/main/bnfc/rholang_mercury.cf))
 — so it is stricter than a permissive one, and it never accepts a *prefix* of what you sent. Two
 consequences for a term your app already has: it may be **refused**, or it may have been doing
 something other than what it looked like. Check these against the terms you store or deploy:
@@ -82,7 +82,7 @@ silently:
 does not derive, and both are **accepted** — as registered deviations, not silently:
 
 - **A trailing separator**: `[1, 2,]`, `c!(1,)`, `{a: 1,}`, `Set(1,)`, `(1, 2,)`, `contract c(@x,) = { Nil }`,
-  `new x, in { Nil }`. This was briefly *refused* here, and that refusal was a bug: `rchain-community/rgov`'s
+  `new x, in { Nil }`. This was briefly *refused* here, and that refusal was a bug: `rhovision-org/rgov`'s
   `rholang/core/CrowdFund.rho` ends each parameter of its `contract CrowdFund(…)` head with a comma
   before a comment, and nine of the Scala's own test fixtures do the same in list literals — files that
   *ran* in the Scala suite, which is the proof the old node accepts it.

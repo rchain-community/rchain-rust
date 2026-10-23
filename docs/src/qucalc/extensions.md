@@ -318,7 +318,7 @@ and compose with the above without knowing anything about ZFA.
 
 ## Reaching the extensions from a browser
 
-[quantum-os](https://github.com/rchain-community/quantum-os) drives these
+[quantum-os](https://github.com/rhovision-org/quantum-os) drives these
 extensions from a browser peer with its `/global` command, under a zero-trust
 split: a headless room agent expands a macro into rholang and posts it to the
 room, and the browser lints, signs and deploys it. **The signing key never
@@ -336,7 +336,7 @@ new ret in {
 Macro call sites are written `%name(…)` and expand in place inside an ordinary
 rholang program; everything else is passed through untouched. The macro registry
 lives in
-[`packages/browser/src/global-macros.js`](https://github.com/rchain-community/quantum-os/blob/main/packages/browser/src/global-macros.js),
+[`packages/browser/src/global-macros.js`](https://github.com/rhovision-org/quantum-os/blob/main/packages/browser/src/global-macros.js),
 shared by both halves so the rholang a user reviews in chat is the rholang their
 browser signs.
 

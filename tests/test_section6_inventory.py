@@ -51,7 +51,7 @@ class InventoryTests(unittest.TestCase):
             self.check()
 
     def test_source_evidence_url_must_use_pinned_commit(self):
-        self.inventory["rows"][0]["existing_evidence"]["url"] = "https://github.com/rchain-community/rholo/blob/dev/spec/audit/passes.md"
+        self.inventory["rows"][0]["existing_evidence"]["url"] = "https://github.com/rhovision-org/rholo/blob/dev/spec/audit/passes.md"
         with self.assertRaisesRegex(ValueError,"not pinned"):
             self.check()
 

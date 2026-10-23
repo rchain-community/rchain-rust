@@ -123,7 +123,7 @@ So the chain is not a small testnet with writes switched off; it is a **snapshot
 ## How it was built
 
 `wallets.txt` is derived from the allocation spreadsheet, in the form
-[the vault parser](https://github.com/rchain-community/rholo/blob/dev/casper/src/vault_parser.rs)
+[the vault parser](https://github.com/rhovision-org/rholo/blob/dev/casper/src/vault_parser.rs)
 accepts — `<REV_address>,<balance>`, one per line:
 
 - the sheet's `balance` column carries **thousands separators** (`1,000,000`); the parser wants bare

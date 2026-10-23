@@ -2,7 +2,7 @@
 // ========================================================================
 // Issue #33, "Exchange support": a pre-funded escrow on each shard, with a
 // fixed exchange rate. A cross-shard call is a *remote signed deploy* (see
-// rchain-community/rholo docs/src/node/shard-invoke.md); the caller's
+// rhovision-org/rholo docs/src/node/shard-invoke.md); the caller's
 // `deployerId` on the far shard is the same account, so an escrow can gate its
 // `consume` on the caller's own unforgeable identity.
 //

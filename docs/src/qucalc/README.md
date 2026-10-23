@@ -51,24 +51,24 @@ unforgeable-identity machinery is model-agnostic — it does not care *which* AI
 produced the proof, only that the proof is ZFA-closed and the envelope is
 self-signed. That is the seam along which additional AI systems integrate.
 
-In exchange, [quantum-os](https://github.com/rchain-community/quantum-os) and the
-[Quantum Logical Framework](https://github.com/rchain-community/quantum-logical-framework)
+In exchange, [quantum-os](https://github.com/rhovision-org/quantum-os) and the
+[Quantum Logical Framework](https://github.com/rhovision-org/quantum-logical-framework)
 (both forked into the RChain community org) gain what rholo already provides:
 unforgeable names, a persistent content-addressed registry, consensus and
 replay-determinism, and a gas market for computation.
 
 The concrete **AI / agent / decision-support** documents this integration is built
 on are indexed in [`references.md`](references.md): native AI
-([`AI.md`](https://github.com/rchain-community/quantum-logical-framework/blob/main/AI.md),
-[`TheQuantumBrain.md`](https://github.com/rchain-community/quantum-logical-framework/blob/main/TheQuantumBrain.md),
-[`DAICE_QLF_Framing.md`](https://github.com/rchain-community/quantum-logical-framework/blob/main/DAICE_QLF_Framing.md)),
+([`AI.md`](https://github.com/rhovision-org/quantum-logical-framework/blob/main/AI.md),
+[`TheQuantumBrain.md`](https://github.com/rhovision-org/quantum-logical-framework/blob/main/TheQuantumBrain.md),
+[`DAICE_QLF_Framing.md`](https://github.com/rhovision-org/quantum-logical-framework/blob/main/DAICE_QLF_Framing.md)),
 agent support
-([`Developer_Guide.md`](https://github.com/rchain-community/quantum-os/blob/main/Developer_Guide.md),
-[`MyRoom.md`](https://github.com/rchain-community/quantum-os/blob/main/MyRoom.md)), and
+([`Developer_Guide.md`](https://github.com/rhovision-org/quantum-os/blob/main/Developer_Guide.md),
+[`MyRoom.md`](https://github.com/rhovision-org/quantum-os/blob/main/MyRoom.md)), and
 decision support
-([`Governance.md`](https://github.com/rchain-community/quantum-os/blob/main/Governance.md),
-[`Group_Decisions.md`](https://github.com/rchain-community/quantum-os/blob/main/Group_Decisions.md),
-[`Consensus.md`](https://github.com/rchain-community/quantum-os/blob/main/Consensus.md)).
+([`Governance.md`](https://github.com/rhovision-org/quantum-os/blob/main/Governance.md),
+[`Group_Decisions.md`](https://github.com/rhovision-org/quantum-os/blob/main/Group_Decisions.md),
+[`Consensus.md`](https://github.com/rhovision-org/quantum-os/blob/main/Consensus.md)).
 
 ## Documentation map
 

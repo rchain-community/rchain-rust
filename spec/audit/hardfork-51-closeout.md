@@ -1,6 +1,6 @@
 # Issue #51 — Hard-fork closeout ledger
 
-This packet follows the [close-clause decision of 21 October 2026](https://github.com/rchain-community/rholo/issues/51#issuecomment-6316299117): each required row must be landed or deferred with a named decision owner and a one-line reason. A release name is optional. The pinned source is upstream `dev@93dbdf364f14d728a27455b4e05282eace2e3c47`.
+This packet follows the [close-clause decision of 21 October 2026](https://github.com/rhovision-org/rholo/issues/51#issuecomment-6316299117): each required row must be landed or deferred with a named decision owner and a one-line reason. A release name is optional. The pinned source is upstream `dev@93dbdf364f14d728a27455b4e05282eace2e3c47`.
 
 ## Current result
 
@@ -28,7 +28,7 @@ The [gap matrix](final-gap-matrix.md) gives each obligation its invariant, exist
 
 ## Maintainer-recorded deferrals
 
-The [owner decision](https://github.com/rchain-community/rholo/issues/51#issuecomment-6317072399) records 11 distinct deferred proposal rows, represented by 12 ledger entries because RCHIP #32 has an interface cross-reference. C173, #127 stage 4, RCHIPs #4, #32, #31, #47, #46, #7/#8, #38 and #30 are owned by @PatrickMockridge; the inactivity leak is owned by @aixaria0. Each entry retains the specific one-line reason, decision author and source URL. These are actual maintainer dispositions, not inferred approvals.
+The [owner decision](https://github.com/rhovision-org/rholo/issues/51#issuecomment-6317072399) records 11 distinct deferred proposal rows, represented by 12 ledger entries because RCHIP #32 has an interface cross-reference. C173, #127 stage 4, RCHIPs #4, #32, #31, #47, #46, #7/#8, #38 and #30 are owned by @PatrickMockridge; the inactivity leak is owned by @aixaria0. Each entry retains the specific one-line reason, decision author and source URL. These are actual maintainer dispositions, not inferred approvals.
 
 The two newly explicit technical proposals and the separate allocation-track choice were added to the required inventory, bringing it from 39 to 42 obligations. [The integrated run evidence](evidence/hardfork-51-integrated-20261021.md) records successful scoped arms alongside the failed partition arms.
 

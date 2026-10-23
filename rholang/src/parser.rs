@@ -1833,7 +1833,7 @@ mod tests {
     /// **A trailing separator is accepted, as a registered deviation from the grammar.** The grammar's
     /// lists are `[X] ::= X | X "," [X]`, so `[1, 2,]` has no derivation and the port refused it — until
     /// this was checked against the code that was written for the *Scala* node. That code uses the
-    /// spelling: `rchain-community/rgov`'s `rholang/core/CrowdFund.rho` ends each parameter of its
+    /// spelling: `rhovision-org/rgov`'s `rholang/core/CrowdFund.rho` ends each parameter of its
     /// `contract CrowdFund(…)` head with a comma before a comment, and nine of the Scala's own test
     /// fixtures (`legacy/casper/src/test/resources/{ListOps,NonNegativeNumber,Mint,RegistryOps,…}Test.rho`)
     /// end list literals the same way — files that *ran* in the Scala suite, which is the evidence that

@@ -3345,7 +3345,7 @@ fn attest_is_live(block_ms: i64, now_ms: i64) -> bool {
 /// half belongs on *our own* quiet (`our latest message at least k heights behind`) and is not here yet. See
 /// `docs/src/node/running-a-public-testnet.md`, "Attesting on every remote block is a block storm".
 ///
-/// [#70]: https://github.com/rchain-community/rholo/issues/70
+/// [#70]: https://github.com/rhovision-org/rholo/issues/70
 fn attest_warranted(
     me: &[u8],
     sender: &[u8],

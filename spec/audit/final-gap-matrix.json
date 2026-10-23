@@ -210,7 +210,7 @@
       ],
       "existing_evidence": {
         "source": "Existing pinned #51 ledger; Open competing designs; comment period until at least 23 Oct 2026; do not silently select recipients/allocation.",
-        "deferral_decision": "https://github.com/rchain-community/rholo/issues/51#issuecomment-6317072399",
+        "deferral_decision": "https://github.com/rhovision-org/rholo/issues/51#issuecomment-6317072399",
         "decision_by": "@jimscarver"
       },
       "missing_proof": "No first-release implementation or deployment acceptance is claimed by this deferral.",
@@ -230,7 +230,7 @@
       ],
       "existing_evidence": {
         "source": "Existing pinned #51 ledger; fundPot is a rewards rail only; policy and validator-state changes are unlanded.",
-        "deferral_decision": "https://github.com/rchain-community/rholo/issues/51#issuecomment-6317072399",
+        "deferral_decision": "https://github.com/rhovision-org/rholo/issues/51#issuecomment-6317072399",
         "decision_by": "@jimscarver"
       },
       "missing_proof": "No first-release implementation or deployment acceptance is claimed by this deferral.",
@@ -249,7 +249,7 @@
       ],
       "existing_evidence": {
         "source": "Existing pinned #51 ledger; No verified implementation or owner-and-reason deferral.",
-        "deferral_decision": "https://github.com/rchain-community/rholo/issues/51#issuecomment-6317072399",
+        "deferral_decision": "https://github.com/rhovision-org/rholo/issues/51#issuecomment-6317072399",
         "decision_by": "@jimscarver"
       },
       "missing_proof": "No first-release implementation or deployment acceptance is claimed by this deferral.",
@@ -269,7 +269,7 @@
       ],
       "existing_evidence": {
         "source": "Existing pinned #51 ledger; Committed minimum phlo price is partial; exchange and change-limit decisions remain.",
-        "deferral_decision": "https://github.com/rchain-community/rholo/issues/51#issuecomment-6317072399",
+        "deferral_decision": "https://github.com/rhovision-org/rholo/issues/51#issuecomment-6317072399",
         "decision_by": "@jimscarver"
       },
       "missing_proof": "No first-release implementation or deployment acceptance is claimed by this deferral.",
@@ -304,7 +304,7 @@
       ],
       "existing_evidence": {
         "source": "Existing pinned #51 ledger; No verified implementation or owner-and-reason deferral.",
-        "deferral_decision": "https://github.com/rchain-community/rholo/issues/51#issuecomment-6317072399",
+        "deferral_decision": "https://github.com/rhovision-org/rholo/issues/51#issuecomment-6317072399",
         "decision_by": "@jimscarver"
       },
       "missing_proof": "No first-release implementation or deployment acceptance is claimed by this deferral.",
@@ -323,7 +323,7 @@
       ],
       "existing_evidence": {
         "source": "Existing pinned #51 ledger; Conditional decision whether to bless; cannot infer exclusion.",
-        "deferral_decision": "https://github.com/rchain-community/rholo/issues/51#issuecomment-6317072399",
+        "deferral_decision": "https://github.com/rhovision-org/rholo/issues/51#issuecomment-6317072399",
         "decision_by": "@jimscarver"
       },
       "missing_proof": "No first-release implementation or deployment acceptance is claimed by this deferral.",
@@ -359,7 +359,7 @@
       ],
       "existing_evidence": {
         "source": "Existing pinned #51 ledger; fundPot does not replace bonding/pool interface.",
-        "deferral_decision": "https://github.com/rchain-community/rholo/issues/51#issuecomment-6317072399",
+        "deferral_decision": "https://github.com/rhovision-org/rholo/issues/51#issuecomment-6317072399",
         "decision_by": "@jimscarver"
       },
       "missing_proof": "No first-release implementation or deployment acceptance is claimed by this deferral.",
@@ -378,7 +378,7 @@
       ],
       "existing_evidence": {
         "source": "Existing pinned #51 ledger; No verified implementation or deferral.",
-        "deferral_decision": "https://github.com/rchain-community/rholo/issues/51#issuecomment-6317072399",
+        "deferral_decision": "https://github.com/rhovision-org/rholo/issues/51#issuecomment-6317072399",
         "decision_by": "@jimscarver"
       },
       "missing_proof": "No first-release implementation or deployment acceptance is claimed by this deferral.",
@@ -449,7 +449,7 @@
       ],
       "existing_evidence": {
         "source": "Existing pinned #51 ledger; Requires explicit interface decision independent of fundPot.",
-        "deferral_decision": "https://github.com/rchain-community/rholo/issues/51#issuecomment-6317072399",
+        "deferral_decision": "https://github.com/rhovision-org/rholo/issues/51#issuecomment-6317072399",
         "decision_by": "@jimscarver"
       },
       "missing_proof": "No first-release implementation or deployment acceptance is claimed by this deferral.",
@@ -490,7 +490,7 @@
       ],
       "existing_evidence": {
         "typed_seed_length_fix": "886869780974ba6824706f99d35b5fb12d1595e6",
-        "current_ci": "https://github.com/rchain-community/rholo/actions/runs/39388911701",
+        "current_ci": "https://github.com/rhovision-org/rholo/actions/runs/39388911701",
         "tests": [
           "oversized_sender_is_a_typed_error_not_a_panic",
           "oversized_shard_id_is_a_typed_error_not_a_panic",
@@ -548,7 +548,7 @@
         "#51"
       ],
       "existing_evidence": {
-        "issue": "https://github.com/rchain-community/rholo/issues/247",
+        "issue": "https://github.com/rhovision-org/rholo/issues/247",
         "source": "docs/src/node/testnet.md funded dave key through /etc/rnode/faucet.env; unfunded deployer is explicitly not the signing key",
         "outcome_fix": "977056b8c7",
         "code": "node/src/api/faucet.rs"
@@ -628,7 +628,7 @@
           "casper/src/multi_parent_casper.rs::restore_divergent_justifications"
         ],
         "formal_boundary": "Rchain/Casper/Stranding.lean models restoration; does not establish a distributed schedule",
-        "deferral_decision": "https://github.com/rchain-community/rholo/issues/51#issuecomment-6317072399",
+        "deferral_decision": "https://github.com/rhovision-org/rholo/issues/51#issuecomment-6317072399",
         "decision_by": "@jimscarver"
       },
       "missing_proof": "No first-release implementation or deployment acceptance is claimed by this deferral.",
@@ -744,8 +744,8 @@
         "#51"
       ],
       "existing_evidence": {
-        "decision_url": "https://github.com/rchain-community/rholo/issues/51#issuecomment-6317072399",
-        "deferral_decision": "https://github.com/rchain-community/rholo/issues/51#issuecomment-6317072399",
+        "decision_url": "https://github.com/rhovision-org/rholo/issues/51#issuecomment-6317072399",
+        "deferral_decision": "https://github.com/rhovision-org/rholo/issues/51#issuecomment-6317072399",
         "decision_by": "@jimscarver"
       },
       "missing_proof": "No first-release implementation or deployment acceptance is claimed by this deferral.",
@@ -766,8 +766,8 @@
         "#51"
       ],
       "existing_evidence": {
-        "decision_url": "https://github.com/rchain-community/rholo/issues/51#issuecomment-6317072399",
-        "deferral_decision": "https://github.com/rchain-community/rholo/issues/51#issuecomment-6317072399",
+        "decision_url": "https://github.com/rhovision-org/rholo/issues/51#issuecomment-6317072399",
+        "deferral_decision": "https://github.com/rhovision-org/rholo/issues/51#issuecomment-6317072399",
         "decision_by": "@jimscarver"
       },
       "missing_proof": "No first-release implementation or deployment acceptance is claimed by this deferral.",
@@ -788,7 +788,7 @@
         "#51"
       ],
       "existing_evidence": {
-        "decision_url": "https://github.com/rchain-community/rholo/issues/51#issuecomment-6317072399"
+        "decision_url": "https://github.com/rhovision-org/rholo/issues/51#issuecomment-6317072399"
       },
       "missing_proof": "Jim's deferral of RCHIP #47 does not settle his separately open choice of one developer-allocation PR or the #372 RFC.",
       "smallest_corrective_action": "Record one selected implementation track and the disposition of the separate RFC; do not infer recipients or mint policy from a deferral.",

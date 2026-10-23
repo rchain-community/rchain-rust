@@ -39,7 +39,7 @@ class CloseoutTests(unittest.TestCase):
             if item["status"] == "deferred":
                 self.assertIn(item["decision_owner"], ("@PatrickMockridge","@aixaria0"))
                 self.assertEqual(item["approval_url"],
-                  "https://github.com/rchain-community/rholo/issues/51#issuecomment-6317072399")
+                  "https://github.com/rhovision-org/rholo/issues/51#issuecomment-6317072399")
 
     def test_rchip47_deferral_does_not_decide_developer_allocation(self):
         self.assertEqual(next(x for x in self.payload["items"] if x["id"]=="A:rev-economics")["status"], "deferred")
@@ -163,8 +163,8 @@ class CloseoutTests(unittest.TestCase):
             item["id"] = ident
             if ident == gate.AUDIT_SIGNOFF_ID:
                 item["status"] = "verified"
-                item["evidence_url"] = "https://github.com/rchain-community/rholo/issues/51"
-                item["approval_url"] = "https://github.com/rchain-community/rholo/issues/51"
+                item["evidence_url"] = "https://github.com/rhovision-org/rholo/issues/51"
+                item["approval_url"] = "https://github.com/rhovision-org/rholo/issues/51"
                 item["approved_by"] = "Maintainer"
                 item["evidence_sha256"] = "a" * 64
         self.payload["closure_requested"] = True
@@ -183,8 +183,8 @@ class CloseoutTests(unittest.TestCase):
     def test_verified_cannot_bypass_land_or_defer(self):
         item = next(x for x in self.payload["items"] if x["status"] == "open")
         item.update(status="verified",
-                    evidence_url="https://github.com/rchain-community/rholo/issues/51",
-                    approval_url="https://github.com/rchain-community/rholo/issues/51",
+                    evidence_url="https://github.com/rhovision-org/rholo/issues/51",
+                    approval_url="https://github.com/rhovision-org/rholo/issues/51",
                     approved_by="Maintainer", evidence_sha256="a" * 64)
         with self.assertRaisesRegex(gate.LedgerError, "cannot replace"):
             self.inspect()
@@ -192,8 +192,8 @@ class CloseoutTests(unittest.TestCase):
     def test_audit_review_requires_digested_evidence(self):
         item = next(x for x in self.payload["items"] if x["id"] == gate.AUDIT_SIGNOFF_ID)
         item.update(status="verified",
-                    evidence_url="https://github.com/rchain-community/rholo/issues/51",
-                    approval_url="https://github.com/rchain-community/rholo/issues/51",
+                    evidence_url="https://github.com/rhovision-org/rholo/issues/51",
+                    approval_url="https://github.com/rhovision-org/rholo/issues/51",
                     approved_by="Maintainer",
                     evidence_sha256="tbd")
         with self.assertRaisesRegex(gate.LedgerError, "evidence SHA-256 required"):

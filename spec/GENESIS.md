@@ -29,7 +29,7 @@ mainnet values carried in the `.rho` header comments.
 
 ## The rgov governance set — the **testnet** setup
 
-Installed from `casper/src/genesis/resources/rgov/` (vendored from `rchain-community/rgov`; commit,
+Installed from `casper/src/genesis/resources/rgov/` (vendored from `rhovision-org/rgov`; commit,
 licence position and every adaptation: `resources/rgov/NOTICE`), so that a governance client on a
 fresh chain needs **no bootstrap step and no recorded URI**: it hardcodes the constants below.
 
@@ -296,7 +296,7 @@ calls `securityCheck`, and the consumer path — `lookup!` → `(nonce, bundle)`
 ## Not in scope here
 
 The rgov **governance** contracts (`Kudos`, `Inbox`, `Directory`, `memberIdGovRev`, `Issue`, and the
-master directory) live in `rchain-community/rgov`, not in this repository, and are not vendored by
+master directory) live in `rhovision-org/rgov`, not in this repository, and are not vendored by
 this change. Making them genesis content is a separate sourcing decision with its own requirements —
 fixed keys/timestamps, `insertSigned` instead of `insertArbitrary` so their URIs stop shifting per
 chain, and the dependency markers substituted with those constants.
