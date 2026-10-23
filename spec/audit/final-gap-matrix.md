@@ -1,6 +1,6 @@
 # Release gap matrix — 2026-10-21
 
-Pinned upstream dev: 93dbdf364f14d728a27455b4e05282eace2e3c47. #404, #373 (including #376), #391, #392 and #402 are merged. #379, #389 and #390 are also in its ancestry.
+Pinned upstream dev: 93d16d7d865ddade5a47b19dbffa86b954407f05. #404, #373 (including #376), #391, #392 and #402 are merged. #379, #389 and #390 are also in its ancestry.
 
 The machine-readable final-gap-matrix.json enumerates all 42 tracker/batch/release obligations with their invariant, source evidence, remaining proof, next action and acceptance. These obligations overlap; their count is not a defect count.
 
@@ -51,4 +51,4 @@ The [2026-10-21 close-clause decision](https://github.com/rhovision-org/rholo/is
 | Release:decimal-genesis | RELEASE BLOCKER | tools/decimal_release_preflight.py; #373 genesis and validator digest inventory | Reuse 27 preflight controls; real archive/native tag-35/source scan and complete live binary inventory |
 | Audit:merge-resolution-stage4 | EXPLICITLY DEFERRED | #127 stage 4 block carries merge resolution | Recorded owner: @PatrickMockridge; Author of #127 and its staged plan; this is a block-format change. |
 | Audit:inactivity-leak | EXPLICITLY DEFERRED | finality stake weights and full bonded-stake denominator | Recorded owner: @aixaria0; Next to the finality and liveness drills (#339/#341). |
-| Decision:developer-allocation | REQUIRES MAINTAINER DECISION | #371/#388 genesis allocation shape; independent #372 RFC | A landed protocol change must exercise both allowed/refused transitions and historical replay; a deferral must record its owner and reason. |
+| Decision:developer-allocation | IMPLEMENTED / EVIDENCE INCOMPLETE | #388 is the merged canonical format-2 implementation; #371 closed as superseded; #372 governance terms remain separately deferred | Preserve #388 merge evidence and record any later #372 governance decision without conflating it with implementation selection. |

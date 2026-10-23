@@ -29,11 +29,11 @@ class CloseoutTests(unittest.TestCase):
         self.assertEqual(out["result"], "TRACKER_MUST_REMAIN_OPEN")
         self.assertFalse(out["closure_requested"])
         self.assertGreater(out["unresolved"], 0)
-        self.assertEqual(out["merged"], 10)
+        self.assertEqual(out["merged"], 11)
 
     def test_jim_20261021_deferrals_are_source_attributed(self):
         out = self.inspect()
-        self.assertEqual(out["merged"], 10)
+        self.assertEqual(out["merged"], 11)
         self.assertEqual(out["deferred"], 12)
         for item in self.payload["items"]:
             if item["status"] == "deferred":
@@ -41,9 +41,9 @@ class CloseoutTests(unittest.TestCase):
                 self.assertEqual(item["approval_url"],
                   "https://github.com/rhovision-org/rholo/issues/51#issuecomment-6317072399")
 
-    def test_rchip47_deferral_does_not_decide_developer_allocation(self):
+    def test_merged_allocation_track_does_not_resolve_economics_deferral(self):
         self.assertEqual(next(x for x in self.payload["items"] if x["id"]=="A:rev-economics")["status"], "deferred")
-        self.assertEqual(next(x for x in self.payload["items"] if x["id"]=="Decision:developer-allocation")["status"], "open")
+        self.assertEqual(next(x for x in self.payload["items"] if x["id"]=="Decision:developer-allocation")["status"], "merged")
         self.assertEqual(next(x for x in self.payload["items"] if x["id"]=="Audit:inactivity-leak")["decision_owner"], "@aixaria0")
 
     def test_exact_inventory_is_required(self):

@@ -1,10 +1,10 @@
 # Issue #51 — Hard-fork closeout ledger
 
-This packet follows the [close-clause decision of 21 October 2026](https://github.com/rhovision-org/rholo/issues/51#issuecomment-6316299117): each required row must be landed or deferred with a named decision owner and a one-line reason. A release name is optional. The pinned source is upstream `dev@93dbdf364f14d728a27455b4e05282eace2e3c47`.
+This packet follows the [close-clause decision of 21 October 2026](https://github.com/rhovision-org/rholo/issues/51#issuecomment-6316299117): each required row must be landed or deferred with a named decision owner and a one-line reason. A release name is optional. The pinned source is upstream `dev@93d16d7d865ddade5a47b19dbffa86b954407f05`.
 
 ## Current result
 
-**TRACKER_MUST_REMAIN_OPEN.** [hardfork-51-closeout.json](hardfork-51-closeout.json) records 42 overlapping tracker, audit and release obligations: **10 landed implementation references, 12 maintainer-recorded deferrals and 20 open obligations**. These counts are not counts of distinct defects. Landed implementation and outstanding deployment evidence are recorded separately.
+**TRACKER_MUST_REMAIN_OPEN.** [hardfork-51-closeout.json](hardfork-51-closeout.json) records 42 overlapping tracker, audit and release obligations: **11 landed implementation references, 12 maintainer-recorded deferrals and 19 open obligations**. These counts are not counts of distinct defects. Landed implementation and outstanding deployment evidence are recorded separately.
 
 | Landed implementation | Merge reference | Remaining boundary |
 |---|---|---|
@@ -36,9 +36,9 @@ The two newly explicit technical proposals and the separate allocation-track cho
 
 - **Crypto-agility (#274 §14):** @jimscarver owns the track. Freeze the registry/wire, key identity, deploy hash, activation, pricing and sunset policy before implementation. The already-landed seed-length typed error is not the complete agility fork.
 - **RCHIP #43:** decide the governed blessed-contract upgrade shape, then implement its state/replay and authorization tests. The A and B rows share this obligation.
-- **Decisions still open:** choose one #371/#388 developer-allocation track and disposition separate RFC #372; #40 storage rent remains open. Compatibility translation, attestation scope and other uncovered A/B proposals remain as listed in the matrix. The recorded deferral of RCHIP #47 does not choose an allocation PR.
+- **Developer-allocation implementation:** #388 is merged as the canonical implementation and #371 is closed as superseded. That selects the code track only; #372's recipient, custody, distribution cadence and wider governance terms remain under the separately deferred RCHIP #47 economics disposition. #40 storage rent remains open. Compatibility translation, attestation scope and other uncovered A/B proposals remain as listed in the matrix.
 - **Plan H2 and state preservation:** governance-settable rules, authenticated old-state exports, genesis hashes, validator binary hashes and the reviewed rollout remain open. #391's merged preflight checks evidence consistency; it cannot supply missing operator evidence.
-- **Integrated acceptance (#339/#399):** preserve independent N=8 finality/partition and anchored-recovery outcomes on one exact image. #399 also carries the unmerged #403 experiment, so its result cannot be represented as evidence for bare dev without identifying that additional source.
+- **Integrated acceptance (#339/#408):** #408 is merged at `b47c6bc886a82840ad8a17e0196a83e22737edea`. Its exact-head upstream CI and independent two-cycle N=8 partition/rejoin campaign passed on `69bf868f794d15d4ba7ed2924b4c5a5b7d29e955`, including unanimous eight-node finalized height/hash after each rejoin and retained original volumes/snapshots. The accepted activation route is the next new genesis; this is not evidence for an ungated binary swap on an existing chain. #403/#406/#407 were closed as superseded rather than merged.
 - **Historical deviations:** the current Law 53 inventory already records the C173 inverses as shipped. Reconcile their exact ancestry and replay/rejoin evidence rather than implementing them again. Independently review all §6 category dispositions.
 - **Faucet (#247):** the recorded resolution uses an already-funded key; the live key/finalized-drip attestation remains outstanding. Do not invent another genesis allocation.
 
