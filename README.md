@@ -27,6 +27,8 @@ fork is preserved for reference at
 [`1b7583649`](https://github.com/rhovision-org/rholo/tree/1b7583649/legacy) — see
 [Where the Scala went](#where-the-scala-went) for why it is a revision rather than a directory.
 
+For a dated, evidence-linked record of contributions, integration reviews and acceptance limits, see the [engineering and contribution status (18–23 October 2026)](docs/reports/2026-10-23-rholo-engineering-governance-contributions.md).
+
 ## Documentation
 
 The documentation is served as a book (`mdbook serve docs`). It is organized software-first:
